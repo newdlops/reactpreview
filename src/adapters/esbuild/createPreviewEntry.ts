@@ -8,6 +8,10 @@ import {
   PREVIEW_SETUP_SPECIFIER,
   PREVIEW_TARGET_SPECIFIER,
 } from './previewPluginProtocol';
+import {
+  PREVIEW_RUNTIME_DIAGNOSTIC_FALLBACK,
+  PREVIEW_RUNTIME_DIAGNOSTIC_RULES,
+} from './previewRuntimeDiagnostics';
 
 /** Setup environment selected by the compiler's bounded project inspection. */
 export type PreviewEntrySetupKind = 'custom' | 'none' | 'storybook';
@@ -36,6 +40,8 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedGlobalNamespaces = JSON.stringify(options.globalNamespaces);
   const encodedSetupKind = JSON.stringify(options.setupKind);
   const encodedApolloSpecifier = JSON.stringify(PREVIEW_APOLLO_SPECIFIER);
+  const encodedRuntimeDiagnosticFallback = JSON.stringify(PREVIEW_RUNTIME_DIAGNOSTIC_FALLBACK);
+  const encodedRuntimeDiagnosticRules = JSON.stringify(PREVIEW_RUNTIME_DIAGNOSTIC_RULES);
   const encodedSetupSpecifier = JSON.stringify(PREVIEW_SETUP_SPECIFIER);
   const encodedTargetSpecifier = JSON.stringify(PREVIEW_TARGET_SPECIFIER);
   return `
@@ -47,11 +53,55 @@ if (mountNode === null) {
   throw new Error('React Preview could not find its root element.');
 }
 
-/** Converts an unknown browser failure into readable stack or message text. */
+const runtimeDiagnosticRules = ${encodedRuntimeDiagnosticRules};
+const runtimeDiagnosticFallback = ${encodedRuntimeDiagnosticFallback};
+const MAX_RUNTIME_ERROR_DETAILS = 12000;
+
+/** Reads only the direct message used for stable, repository-independent classification. */
+function readRuntimeErrorMessage(error) {
+  try {
+    if (error !== null && typeof error === 'object' && typeof error.message === 'string') {
+      return error.message;
+    }
+    return String(error);
+  } catch {
+    return 'Unknown runtime error';
+  }
+}
+
+/** Selects a library-branded context diagnostic without examining generated stack paths. */
+function classifyRuntimeError(error) {
+  const message = readRuntimeErrorMessage(error).toLowerCase();
+  return runtimeDiagnosticRules.find((rule) =>
+    rule.messageIncludes.some((fragment) => message.includes(fragment)),
+  ) ?? runtimeDiagnosticFallback;
+}
+
+/** Converts an unknown browser failure into bounded actionable text plus original details. */
 function describeRuntimeError(error) {
-  return error instanceof Error
-    ? error.stack ?? error.message
-    : String(error);
+  const diagnostic = classifyRuntimeError(error);
+  let rawDetails;
+  try {
+    const rawValue = error instanceof Error ? error.stack ?? error.message : error;
+    rawDetails = String(rawValue);
+  } catch {
+    rawDetails = 'Unknown runtime error';
+  }
+  const setupDescription = ${encodedSetupKind} === 'none'
+    ? 'none'
+    : ${encodedSetupKind};
+  return [
+    diagnostic.title,
+    '',
+    diagnostic.summary,
+    diagnostic.recovery,
+    '',
+    'Target: ' + ${encodedDocumentName},
+    'Preview setup: ' + setupDescription,
+    '',
+    'Original error:',
+    rawDetails.slice(0, MAX_RUNTIME_ERROR_DETAILS),
+  ].join('\\n');
 }
 
 /** Replaces the preview root with inert text for module and unhandled runtime failures. */

@@ -5,8 +5,10 @@
  */
 import {
   PREVIEW_APOLLO_SPECIFIER,
+  PREVIEW_REDUX_SPECIFIER,
   PREVIEW_SETUP_SPECIFIER,
   PREVIEW_TARGET_SPECIFIER,
+  PREVIEW_THEME_SPECIFIER,
 } from './previewPluginProtocol';
 import {
   PREVIEW_RUNTIME_DIAGNOSTIC_FALLBACK,
@@ -28,9 +30,9 @@ export interface PreviewEntryOptions {
 
 /**
  * Builds a TSX-compatible runtime entry that loads setup before the private target bridge.
- * Custom setup modules may export `initializePreview`, `PreviewProviders`, `previewProps`, or
- * `createPreviewProps`. A discovered Storybook preview contributes its global decorators and its
- * Apollo `MockedProvider` parameter without loading Storybook's server or addon configuration.
+ * Custom setup modules may export initialization, Provider, props, and automatic bridge options.
+ * A discovered Storybook preview contributes its global decorators and Apollo `MockedProvider`
+ * parameter without loading Storybook's server or addon configuration.
  *
  * @param options Safe environment metadata discovered by the extension host.
  * @returns JavaScript source consumed through esbuild's stdin entry point.
@@ -42,8 +44,10 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedApolloSpecifier = JSON.stringify(PREVIEW_APOLLO_SPECIFIER);
   const encodedRuntimeDiagnosticFallback = JSON.stringify(PREVIEW_RUNTIME_DIAGNOSTIC_FALLBACK);
   const encodedRuntimeDiagnosticRules = JSON.stringify(PREVIEW_RUNTIME_DIAGNOSTIC_RULES);
+  const encodedReduxSpecifier = JSON.stringify(PREVIEW_REDUX_SPECIFIER);
   const encodedSetupSpecifier = JSON.stringify(PREVIEW_SETUP_SPECIFIER);
   const encodedTargetSpecifier = JSON.stringify(PREVIEW_TARGET_SPECIFIER);
+  const encodedThemeSpecifier = JSON.stringify(PREVIEW_THEME_SPECIFIER);
   return `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -319,6 +323,8 @@ async function mountPreview() {
   }
 
   const apolloBridge = await import(${encodedApolloSpecifier});
+  const reduxBridge = await import(${encodedReduxSpecifier});
+  const themeBridge = await import(${encodedThemeSpecifier});
   const targetProps = await createTargetProps(setupModule, setupContext);
   const previewModule = await import(${encodedTargetSpecifier});
   const PreviewTarget = previewModule.default;
@@ -354,6 +360,16 @@ async function mountPreview() {
   if (PreviewProviders !== undefined && PreviewProviders !== null) {
     previewElement = React.createElement(PreviewProviders, setupContext, previewElement);
   }
+
+  previewElement = themeBridge.createThemePreviewElement(previewElement, {
+    configuration: readSetupMember(setupModule, 'themePreview'),
+    ...setupContext,
+  });
+
+  previewElement = reduxBridge.createReduxPreviewElement(previewElement, {
+    configuration: readSetupMember(setupModule, 'reduxPreview'),
+    ...setupContext,
+  });
 
   previewElement = apolloBridge.createApolloPreviewElement(previewElement, {
     configuration: readSetupMember(setupModule, 'apolloPreview'),

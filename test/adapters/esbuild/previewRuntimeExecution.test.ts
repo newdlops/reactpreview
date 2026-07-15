@@ -10,12 +10,14 @@ import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/previewApolloBridgePlugin';
+import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
 import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { resolvePreviewRuntimeEnvironment } from '../../../src/adapters/esbuild/previewRuntimeEnvironment';
 import { createPreviewSetupBridgePlugin } from '../../../src/adapters/esbuild/previewSetupBridgePlugin';
 import { createPreviewTargetBridgePlugin } from '../../../src/adapters/esbuild/previewTargetBridgePlugin';
 import { selectPreviewTargetExport } from '../../../src/adapters/esbuild/previewTargetExports';
+import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
 import { installFakeApolloPackage } from './support/fakeApolloPackage';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -208,6 +210,8 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewThemeBridgePlugin({ projectRoot }),
           createPreviewSetupBridgePlugin({ setupModulePath: selectedSetupModulePath }),
           createPreviewTargetBridgePlugin({
             documentPath,
@@ -309,6 +313,8 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewThemeBridgePlugin({ projectRoot }),
           createPreviewSetupBridgePlugin({}),
           createPreviewTargetBridgePlugin({ documentPath }),
         ],
@@ -394,6 +400,8 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewThemeBridgePlugin({ projectRoot }),
           createPreviewSetupBridgePlugin({}),
           createPreviewTargetBridgePlugin({ documentPath }),
         ],

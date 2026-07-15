@@ -17,6 +17,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain("import { createRoot } from 'react-dom/client'");
     expect(entry).toContain('await import("react-preview:setup")');
     expect(entry).toContain('await import("react-preview:apollo")');
+    expect(entry).toContain('await import("react-preview:redux")');
+    expect(entry).toContain('await import("react-preview:theme")');
     expect(entry).toContain('import("react-preview:target")');
     expect(entry.indexOf('await import("react-preview:setup")')).toBeLessThan(
       entry.indexOf('await import("react-preview:target")'),
@@ -37,6 +39,10 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('MAX_RUNTIME_ERROR_DETAILS = 12000');
     expect(entry).toContain('apolloBridge.createApolloPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'apolloPreview')");
+    expect(entry).toContain('themeBridge.createThemePreviewElement');
+    expect(entry).toContain("readSetupMember(setupModule, 'themePreview')");
+    expect(entry).toContain('reduxBridge.createReduxPreviewElement');
+    expect(entry).toContain("readSetupMember(setupModule, 'reduxPreview')");
     expect(entry).toContain("window.addEventListener('unhandledrejection'");
   });
 

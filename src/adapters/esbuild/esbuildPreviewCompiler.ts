@@ -25,15 +25,18 @@ import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
+import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import {
   PREVIEW_ASSET_NAMESPACE,
   PREVIEW_APOLLO_BRIDGE_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_REDUX_BRIDGE_NAMESPACE,
   PREVIEW_SETUP_BRIDGE_NAMESPACE,
   PREVIEW_SNAPSHOT_NAMESPACE,
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
+  PREVIEW_THEME_BRIDGE_NAMESPACE,
 } from './previewPluginProtocol';
 import {
   createPreviewRuntimeWatchInputs,
@@ -44,6 +47,7 @@ import { createPreviewSetupBridgePlugin } from './previewSetupBridgePlugin';
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
 import { selectPreviewTargetExport } from './previewTargetExports';
+import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
 import { createWorkspaceSourcePlugin } from './workspaceSourcePlugin';
 
@@ -134,6 +138,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           platform: 'browser',
           plugins: [
             createPreviewApolloBridgePlugin({ projectRoot }),
+            createPreviewReduxBridgePlugin({ projectRoot }),
+            createPreviewThemeBridgePlugin({ projectRoot }),
             createPreviewSetupBridgePlugin({
               ...(environment.setupModulePath === undefined
                 ? {}
@@ -413,6 +419,8 @@ function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): 
         !inputPath.startsWith('<') &&
         !inputPath.endsWith(VIRTUAL_ENTRY_NAME) &&
         !inputPath.startsWith(`${PREVIEW_APOLLO_BRIDGE_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_REDUX_BRIDGE_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_THEME_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_SETUP_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_TARGET_BRIDGE_NAMESPACE}:`),
     )
@@ -440,8 +448,10 @@ function removeFileBackedPreviewNamespace(inputPath: string): string {
     PREVIEW_ASSET_NAMESPACE,
     PREVIEW_APOLLO_BRIDGE_NAMESPACE,
     PREVIEW_DATA_URL_NAMESPACE,
+    PREVIEW_REDUX_BRIDGE_NAMESPACE,
     PREVIEW_SETUP_BRIDGE_NAMESPACE,
     PREVIEW_SNAPSHOT_NAMESPACE,
+    PREVIEW_THEME_BRIDGE_NAMESPACE,
   ]) {
     const prefix = `${namespace}:`;
     if (inputPath.startsWith(prefix)) {
@@ -541,9 +551,11 @@ function restorePrivateNamespaces(text: string): string {
     PREVIEW_ASSET_NAMESPACE,
     PREVIEW_APOLLO_BRIDGE_NAMESPACE,
     PREVIEW_DATA_URL_NAMESPACE,
+    PREVIEW_REDUX_BRIDGE_NAMESPACE,
     PREVIEW_SETUP_BRIDGE_NAMESPACE,
     PREVIEW_SNAPSHOT_NAMESPACE,
     PREVIEW_TARGET_BRIDGE_NAMESPACE,
+    PREVIEW_THEME_BRIDGE_NAMESPACE,
   ].reduce((restoredText, namespace) => restoredText.replaceAll(`${namespace}:`, ''), text);
 }
 

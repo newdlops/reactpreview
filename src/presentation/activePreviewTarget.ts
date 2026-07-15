@@ -5,7 +5,7 @@
  */
 import path from 'node:path';
 import * as vscode from 'vscode';
-import type { PreviewBuildRequest } from '../domain/preview';
+import type { PreviewBuildRequest, PreviewSourceSnapshot } from '../domain/preview';
 import { getPreviewSourceLanguage } from '../domain/previewTarget';
 
 const SUPPORTED_DOCUMENT_SCHEMES = new Set(['file', 'vscode-remote']);
@@ -64,13 +64,66 @@ export function resolveActivePreviewTarget(): PreviewTargetIssue | ResolvedPrevi
   }
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+  const workspaceRoot = workspaceFolder?.uri.fsPath ?? path.dirname(document.fileName);
+  const configuredTsconfig = vscode.workspace
+    .getConfiguration('reactPreview', document.uri)
+    .get<string>('tsconfig', '')
+    .trim();
+  const baseRequest = {
+    dependencySnapshots: collectDirtyDependencySnapshots(document, workspaceFolder),
+    documentPath: document.fileName,
+    language,
+    sourceText: document.getText(),
+    workspaceRoot,
+  };
   return {
     documentName: path.basename(document.fileName),
-    request: {
-      documentPath: document.fileName,
-      language,
-      sourceText: document.getText(),
-      workspaceRoot: workspaceFolder?.uri.fsPath ?? path.dirname(document.fileName),
-    },
+    request:
+      configuredTsconfig.length === 0
+        ? baseRequest
+        : {
+            ...baseRequest,
+            tsconfigPath: path.resolve(workspaceRoot, configuredTsconfig),
+          },
   };
+}
+
+/**
+ * Captures dirty source documents in the active workspace for reachable-import overlay.
+ * Supplying a snapshot does not include it in the bundle: esbuild still loads only files reached
+ * from the selected component's runtime graph.
+ *
+ * @param activeDocument Current preview target already represented by the request's primary fields.
+ * @param activeWorkspace Workspace folder that bounds related dirty editor documents.
+ * @returns Immutable dirty dependency snapshots with supported source extensions.
+ */
+function collectDirtyDependencySnapshots(
+  activeDocument: vscode.TextDocument,
+  activeWorkspace: vscode.WorkspaceFolder | undefined,
+): readonly PreviewSourceSnapshot[] {
+  const activeWorkspaceKey = activeWorkspace?.uri.toString(true);
+  return vscode.workspace.textDocuments.flatMap((document) => {
+    if (
+      document === activeDocument ||
+      !document.isDirty ||
+      document.isUntitled ||
+      !SUPPORTED_DOCUMENT_SCHEMES.has(document.uri.scheme)
+    ) {
+      return [];
+    }
+
+    const workspaceKey = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.toString(true);
+    const language = getPreviewSourceLanguage(document.fileName);
+    if (workspaceKey !== activeWorkspaceKey || language === undefined) {
+      return [];
+    }
+
+    return [
+      {
+        documentPath: document.fileName,
+        language,
+        sourceText: document.getText(),
+      },
+    ];
+  });
 }

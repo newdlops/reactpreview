@@ -3,9 +3,10 @@
  * Compilation and storage stay behind the BuildPreview use case; this class handles only VS Code
  * state, debounce, stale-result suppression, URI conversion, logging, and secure HTML rendering.
  */
+import path from 'node:path';
 import * as vscode from 'vscode';
 import type { BuildPreview } from '../application/buildPreview';
-import type { PreparedPreview } from '../domain/preview';
+import { PreviewCompilationError, type PreparedPreview } from '../domain/preview';
 import { canonicalizeExistingPath } from '../shared/pathIdentity';
 import { resolveActivePreviewTarget } from './activePreviewTarget';
 import { describeBuildFailure, formatDiagnostic } from './previewFailure';
@@ -128,7 +129,11 @@ export class PreviewController implements vscode.Disposable {
    * @param event VS Code text-document change event.
    */
   private handleDocumentChanged(event: vscode.TextDocumentChangeEvent): void {
-    if (this.panel !== undefined && vscode.window.activeTextEditor?.document === event.document) {
+    const isActiveDocument = vscode.window.activeTextEditor?.document === event.document;
+    const isImportedDependency = this.dependencies.has(
+      canonicalizeExistingPath(event.document.fileName),
+    );
+    if (this.panel !== undefined && (isActiveDocument || isImportedDependency)) {
       this.scheduleRefresh(false);
     }
   }
@@ -148,12 +153,15 @@ export class PreviewController implements vscode.Disposable {
   }
 
   /**
-   * Applies a changed debounce setting to the active preview through a normal delayed rebuild.
+   * Rebuilds after a setting changes the debounce policy or module-resolution context.
    *
    * @param event VS Code configuration change event.
    */
   private handleConfigurationChanged(event: vscode.ConfigurationChangeEvent): void {
-    if (this.panel !== undefined && event.affectsConfiguration('reactPreview.updateDelay')) {
+    const affectsPreviewBuild =
+      event.affectsConfiguration('reactPreview.updateDelay') ||
+      event.affectsConfiguration('reactPreview.tsconfig');
+    if (this.panel !== undefined && affectsPreviewBuild) {
       this.scheduleRefresh(false);
     }
   }
@@ -234,6 +242,7 @@ export class PreviewController implements vscode.Disposable {
       }
 
       this.log.error('React preview build failed.', error);
+      this.rememberFailedDependencyLocations(error, target.request.workspaceRoot);
       const failure = describeBuildFailure(error);
       const errorState = {
         kind: 'error' as const,
@@ -244,6 +253,29 @@ export class PreviewController implements vscode.Disposable {
         panel.webview.cspSource,
         failure.details === undefined ? errorState : { ...errorState, details: failure.details },
       );
+    }
+  }
+
+  /**
+   * Retains source paths reported by a failed build so editing the broken imported file retries.
+   * Relative compiler paths are interpreted from the same workspace root used for resolution.
+   *
+   * @param error Unknown compiler or publication failure.
+   * @param workspaceRoot Absolute directory used as esbuild's working directory.
+   */
+  private rememberFailedDependencyLocations(error: unknown, workspaceRoot: string): void {
+    if (!(error instanceof PreviewCompilationError)) {
+      return;
+    }
+
+    for (const diagnostic of error.diagnostics) {
+      const file = diagnostic.location?.file;
+      if (file === undefined || file.startsWith('<')) {
+        continue;
+      }
+
+      const absolutePath = path.isAbsolute(file) ? file : path.resolve(workspaceRoot, file);
+      this.dependencies.add(canonicalizeExistingPath(absolutePath));
     }
   }
 

@@ -101,110 +101,43 @@ export const apolloPreview = {
 프로젝트의 `PreviewProviders`가 자체 Apollo client를 제공한다면 그 Provider가 자동 outer Provider보다
 가까워 정상적으로 우선합니다. 자동 계층이 필요 없으면 `export const apolloPreview = false`로 끕니다.
 
-## `rtcc-poc-page` 형태의 예시
+## 복잡한 페이지와 preview harness
 
-보고된 프로젝트처럼 `spacing`이 전역 decimal에 의존하고 GraphQL 모듈이 import 시점에
-`window.ZUZU.service`를 읽는 경우에는 초기화와 Provider를 분리합니다.
+이 확장은 특정 저장소 이름, Redux slice, route, theme token 또는 업무 상태를 내장하지 않습니다.
+Apollo operation처럼 문서 자체에 응답 구조가 있는 경우에만 중립값을 자동 생성합니다. Redux selector의
+상태 의미, URL parameter, 권한, locale, theme 함수와 필수 props는 같은 타입 이름이어도 프로젝트마다
+다르므로 임의 Proxy나 빈 객체를 넣지 않습니다. 그런 값은 오류를 숨기면서 잘못된 화면 분기를 만들 수
+있습니다.
+
+앱 루트에 강하게 결합된 페이지는 작은 `*.preview.tsx` harness를 소스 옆이나 별도 preview 폴더에 두는
+방법이 가장 명확합니다. harness는 실제 API client나 앱 bootstrap 대신 메모리 store, 정적 route,
+프로젝트 theme와 의미 있는 props만 조립한 뒤 대상 컴포넌트를 default export합니다.
 
 ```tsx
-import { configureStore } from '@reduxjs/toolkit';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import { Provider } from 'react-redux';
 import { ThemeProvider } from 'styled-components';
 
-import decimal from '../src/common/ui/utils/decimal';
-import dayjs from '../src/common/ui/utils/dayjs';
-import { theme } from '../src/common/ui/theme/theme';
-import type { PropsWithChildren } from 'react';
+import { ComponentUnderPreview } from './component-under-preview';
+import { previewStore } from '../preview/preview-store';
+import { theme } from '../theme/theme';
 
-const previewStore = configureStore({
-  reducer: () => ({
-    company: {
-      hasPaymentRequiredSubscriptions: false,
-      hasStandardPlanUsages: true,
-      isFullDiscountPromotionAvailable: false,
-      subscription: {
-        hasHrmPermission: false,
-        isSuspended: false,
-        isTrial: false,
-        modusignPricePerSigning: '0',
-        subscriptionPlan: {
-          name: 'Standard',
-          renewType: { value: 'monthly' },
-        },
-      },
-    },
-    notification: {},
-    user: {},
-  }),
-});
-
-export function initializePreview() {
-  const previewWindow = window as unknown as {
-    ZUZU?: { service?: string };
-  };
-  previewWindow.ZUZU ??= {};
-  previewWindow.ZUZU.service ??= 'staff-partner';
-  const previewGlobal = globalThis as typeof globalThis & {
-    decimal?: typeof decimal;
-    dayjs?: typeof dayjs;
-  };
-  previewGlobal.decimal = decimal;
-  previewGlobal.dayjs = dayjs;
-}
-
-export function PreviewProviders({ children }: PropsWithChildren) {
+export default function ComponentUnderPreviewHarness() {
   return (
     <Provider store={previewStore}>
-      <MemoryRouter
-        initialEntries={['/company/preview-company/payroll/hr/employee/preview-employee']}
-      >
-        <Routes>
-          <Route
-            path="/company/:companyId/payroll/hr/employee/:employeeId/*"
-            element={<ThemeProvider theme={theme}>{children}</ThemeProvider>}
-          />
-        </Routes>
+      <MemoryRouter initialEntries={['/preview']}>
+        <ThemeProvider theme={theme}>
+          <ComponentUnderPreview title="Static preview" items={[]} />
+        </ThemeProvider>
       </MemoryRouter>
     </Provider>
   );
 }
-
-export const apolloPreview = {
-  resolveOperation({ operationName }: { operationName: string }) {
-    if (operationName === 'StandardPlanIntroPage') {
-      return {
-        findAvailableSubscriptionPromotion: null,
-        standardSubscriptionPlan: { price: '0' },
-      };
-    }
-    return undefined;
-  },
-};
-
-export function createPreviewProps({ documentName }: { documentName: string }) {
-  if (documentName.endsWith('/core-intro-layout.tsx')) {
-    return {
-      badgeLabel: 'Static preview',
-      ctaLabel: 'Continue',
-      features: [],
-      pageTitle: 'Core intro preview',
-      subtitle: 'Backend 없이 렌더링한 정적 화면입니다.',
-      title: 'Core intro',
-    };
-  }
-  if (documentName.endsWith('/company-owner-breadcrumb.tsx')) {
-    return { pageName: 'EmployeePage' };
-  }
-  return {};
-}
 ```
 
-위 store는 보고된 `CoreIntroLayout`의 subscription selector에 필요한 최소 정적 상태입니다. 다른
-페이지의 selector가 더 많은 값을 사용하면 해당 reducer 결과에만 추가하세요. 타입 이름만 보고 Redux
-상태의 의미를 추측하면 실제 화면을 왜곡하므로 확장이 자동 생성하지 않습니다. 위 route는
-`CompanyOwnerBreadcrumb`의 `useParams()`까지 재현하기 위한 예시이므로 다른 페이지를 프리뷰할 때는
-해당 route와 `initialEntries`를 대상 화면에 맞게 바꾸세요.
+여러 컴포넌트가 같은 root context를 공유하면 `.react-preview/setup.tsx`의 `PreviewProviders`로 올리고,
+화면마다 달라지는 state·route·props는 harness가 소유하게 하세요. 플러그인은 두 방식 모두 일반 React
+파일처럼 번들링하며 프로젝트 코드를 extension host에서 실행하지 않습니다.
 
 ## 전역 namespace 발견
 

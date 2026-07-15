@@ -20,6 +20,8 @@
 - Storybook setup graph 오류만 폴백하고 누락된 상대 import의 안전한 생성 디렉터리를 계속 감시
 - 프로젝트 Apollo Client를 자동 감지해 backend 요청 없는 Provider와 bounded selection-shaped 정적
   응답을 제공하고 setup별 operation 결과·cache seed·비활성화 계약 추가
+- 특정 저장소 상태를 내장하지 않고 Redux·Apollo·Router의 library-branded runtime context 오류를
+  번들 실패와 구분하는 범용 preview harness/setup 진단 추가
 
 ## 0.1.0 - 2026-07-15
 

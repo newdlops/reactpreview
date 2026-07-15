@@ -1,8 +1,8 @@
 {
   "name": "react-file-preview",
   "displayName": "React File Preview",
-  "description": "Preview the active React component in an isolated VS Code webview without a web server.",
-  "version": "0.1.1001",
+  "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
+  "version": "0.1.1002",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -60,12 +60,12 @@
     "commands": [
       {
         "command": "reactPreview.open",
-        "title": "Open Current React File",
+        "title": "Open Current React File in New Preview",
         "category": "React Preview"
       },
       {
         "command": "reactPreview.refresh",
-        "title": "Refresh",
+        "title": "Refresh Focused Preview",
         "category": "React Preview"
       }
     ],
@@ -77,7 +77,7 @@
           "default": 300,
           "minimum": 100,
           "maximum": 2000,
-          "description": "Milliseconds to wait after an editor change before rebuilding the preview."
+          "description": "Milliseconds to wait after a pinned target or dependency document change before rebuilding its preview."
         },
         "reactPreview.tsconfig": {
           "type": "string",

@@ -21,14 +21,18 @@ export interface BuildFailureDescription {
  */
 export function formatDiagnostic(diagnostic: PreviewDiagnostic): string {
   const location = diagnostic.location;
-  if (location === undefined) {
-    return diagnostic.message;
-  }
-
-  const file = location.file ?? 'unknown source';
-  const line = location.line === undefined ? '' : `:${location.line.toString()}`;
-  const column = location.column === undefined ? '' : `:${location.column.toString()}`;
-  return `${file}${line}${column} ${diagnostic.message}`;
+  const mainLine =
+    location === undefined
+      ? diagnostic.message
+      : `${location.file ?? 'unknown source'}${
+          location.line === undefined ? '' : `:${location.line.toString()}`
+        }${location.column === undefined ? '' : `:${location.column.toString()}`} ${
+          diagnostic.message
+        }`;
+  const notes = diagnostic.notes ?? [];
+  return notes.length === 0
+    ? mainLine
+    : [mainLine, ...notes.map((note) => `  ↳ ${note}`)].join('\n');
 }
 
 /**

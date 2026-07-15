@@ -31,6 +31,18 @@ export const PREVIEW_APOLLO_BRIDGE_NAMESPACE = 'react-preview-apollo-bridge';
 /** Stable virtual import specifier used to load the no-network Apollo boundary. */
 export const PREVIEW_APOLLO_SPECIFIER = 'react-preview:apollo';
 
+/** Namespace used by the optional, project-owned React Redux runtime bridge. */
+export const PREVIEW_REDUX_BRIDGE_NAMESPACE = 'react-preview-redux-bridge';
+
+/** Stable virtual import specifier used to load the inert static Redux boundary. */
+export const PREVIEW_REDUX_SPECIFIER = 'react-preview:redux';
+
+/** Namespace used by the optional, project-owned styled-components theme bridge. */
+export const PREVIEW_THEME_BRIDGE_NAMESPACE = 'react-preview-theme-bridge';
+
+/** Stable virtual import specifier used to load the structural fallback theme boundary. */
+export const PREVIEW_THEME_SPECIFIER = 'react-preview:theme';
+
 /** Shared metadata marker that prevents nested `build.resolve()` calls from recursing. */
 export const PREVIEW_RESOLVE_GUARD = Symbol('react-preview-resolve-guard');
 
@@ -47,6 +59,8 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_DATA_URL_NAMESPACE ||
     namespace === PREVIEW_SNAPSHOT_NAMESPACE ||
     namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_REDUX_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_THEME_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_SETUP_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_TARGET_BRIDGE_NAMESPACE
   );

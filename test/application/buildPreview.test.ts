@@ -8,6 +8,7 @@ import type { PreviewCompiler } from '../../src/application/previewCompiler';
 import type { PreviewBuildRequest, PreviewBundle } from '../../src/domain/preview';
 
 const REQUEST: PreviewBuildRequest = {
+  dependencySnapshots: [],
   documentPath: '/workspace/Component.tsx',
   language: 'tsx',
   sourceText: 'export default function Component() { return null; }',

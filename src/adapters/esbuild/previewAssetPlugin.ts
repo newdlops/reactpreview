@@ -1,0 +1,410 @@
+/**
+ * Adapts render-oriented asset import conventions without executing framework configuration.
+ * Normal URL assets remain owned by esbuild loaders; this plugin adds explicit `?raw`, SVG
+ * component, and Create React App-style named `ReactComponent` semantics for reachable imports.
+ */
+import { readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { isInlinePreviewAssetPath } from './previewLoaderPolicy';
+import {
+  isFileBackedPreviewNamespace,
+  PREVIEW_ASSET_NAMESPACE,
+  PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_RESOLVE_GUARD,
+  PREVIEW_TARGET_BRIDGE_NAMESPACE,
+} from './previewPluginProtocol';
+
+const JAVASCRIPT_IMPORT_KINDS = new Set(['dynamic-import', 'import-statement', 'require-call']);
+const ASSET_PLUGIN_DATA = Symbol('react-preview-asset-plugin-data');
+const MAX_INLINE_ASSET_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_INLINE_ASSET_BYTES = 20 * 1024 * 1024;
+
+/** Asset transformations that produce JavaScript modules for the browser bundle. */
+type PreviewAssetMode = 'data-url' | 'raw' | 'svg-component' | 'svg-url';
+
+/** Private data transferred from asset resolution to loading. */
+interface PreviewAssetPluginData {
+  /** Marker that distinguishes this adapter's metadata from other esbuild plugins. */
+  readonly [ASSET_PLUGIN_DATA]: true;
+  /** Transformation selected from the original query and import kind. */
+  readonly mode: PreviewAssetMode;
+  /** Optional SVG fragment retained in a generated browser URL. */
+  readonly urlFragment: string;
+}
+
+/** Parsed filesystem request and query suffix for one asset import. */
+interface ParsedAssetRequest {
+  /** Path passed to esbuild's normal resolver without query or fragment text. */
+  readonly path: string;
+  /** Query and fragment retained as part of module identity. */
+  readonly suffix: string;
+}
+
+/** Active path needed when an asset is imported from the target bridge namespace. */
+export interface PreviewAssetPluginOptions {
+  /** Absolute active-document path used as the virtual bridge's filesystem importer. */
+  readonly documentPath: string;
+}
+
+/**
+ * Creates an asset adapter for raw text and SVG component conventions.
+ *
+ * @param options Active document used to restore filesystem resolution from virtual namespaces.
+ * @returns Stateless esbuild plugin scoped to one compilation request.
+ */
+export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Plugin {
+  const canonicalTargetPath = canonicalizeExistingPath(options.documentPath);
+  const assetBudget: AssetBudgetState = {
+    representations: new Set<string>(),
+    totalBytes: 0,
+  };
+
+  return {
+    name: 'react-preview-assets',
+    setup(build): void {
+      /**
+       * Resolves only imports requiring generated JavaScript instead of a normal URL loader.
+       *
+       * @param arguments_ Module-resolution request emitted by esbuild.
+       * @returns Private asset-module identity, normal resolution errors, or `undefined`.
+       */
+      async function resolvePreviewAsset(
+        arguments_: OnResolveArgs,
+      ): Promise<OnResolveResult | undefined> {
+        if ((arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD) {
+          return undefined;
+        }
+
+        const parsedRequest = parseAssetRequest(arguments_.path);
+        const mode = selectAssetMode(arguments_, parsedRequest);
+        if (mode === undefined) {
+          return undefined;
+        }
+
+        const fromVirtualModule = isFileBackedPreviewNamespace(arguments_.namespace);
+        const virtualImporter =
+          arguments_.namespace === PREVIEW_TARGET_BRIDGE_NAMESPACE
+            ? canonicalTargetPath
+            : canonicalizeExistingPath(arguments_.importer);
+        const resolved = await build.resolve(parsedRequest.path, {
+          importer: fromVirtualModule ? virtualImporter : arguments_.importer,
+          kind: arguments_.kind,
+          namespace: fromVirtualModule ? 'file' : arguments_.namespace,
+          pluginData: PREVIEW_RESOLVE_GUARD,
+          resolveDir: fromVirtualModule ? path.dirname(virtualImporter) : arguments_.resolveDir,
+          with: arguments_.with,
+        });
+
+        if (resolved.errors.length > 0) {
+          return { errors: resolved.errors, warnings: resolved.warnings };
+        }
+
+        if (resolved.external) {
+          return {
+            errors: [
+              {
+                text: `Preview asset imports must be bundled instead of external: ${arguments_.path}`,
+              },
+            ],
+          };
+        }
+
+        if (resolved.namespace !== 'file') {
+          return {
+            errors: [
+              {
+                text: `Preview assets must resolve to local files: ${arguments_.path}`,
+              },
+            ],
+          };
+        }
+
+        const policyError = await reserveAssetBudget(
+          resolved.path,
+          parsedRequest.suffix,
+          mode,
+          assetBudget,
+        );
+        if (!policyError.ok) {
+          return {
+            errors: [
+              policyError.error === undefined
+                ? { text: policyError.message }
+                : { detail: policyError.error, text: policyError.message },
+            ],
+          };
+        }
+
+        return {
+          namespace: mode === 'data-url' ? PREVIEW_DATA_URL_NAMESPACE : PREVIEW_ASSET_NAMESPACE,
+          path: resolved.path,
+          pluginData: {
+            [ASSET_PLUGIN_DATA]: true,
+            mode,
+            urlFragment: extractUrlFragment(parsedRequest.suffix),
+          } satisfies PreviewAssetPluginData,
+          sideEffects: resolved.sideEffects,
+          suffix: parsedRequest.suffix,
+          warnings: resolved.warnings,
+        };
+      }
+
+      /**
+       * Reads a resolved asset and generates the requested browser module representation.
+       *
+       * @param arguments_ Asset load request carrying private transformation metadata.
+       * @returns JavaScript module with dependency watching, or a structured read failure.
+       */
+      async function loadPreviewAsset(arguments_: OnLoadArgs): Promise<OnLoadResult | undefined> {
+        const pluginData = readAssetPluginData(arguments_.pluginData);
+        if (pluginData === undefined) {
+          return undefined;
+        }
+
+        try {
+          const source = await readFile(arguments_.path);
+          const contents = createAssetContents(source, pluginData.mode, pluginData.urlFragment);
+
+          return {
+            contents,
+            loader: pluginData.mode === 'data-url' ? 'dataurl' : 'js',
+            resolveDir: path.dirname(arguments_.path),
+            watchFiles: [arguments_.path],
+          };
+        } catch (error) {
+          return {
+            errors: [
+              {
+                detail: error,
+                text: `Could not read preview asset: ${arguments_.path}`,
+              },
+            ],
+          };
+        }
+      }
+
+      build.onResolve({ filter: /.*/ }, resolvePreviewAsset);
+      build.onLoad({ filter: /.*/, namespace: PREVIEW_ASSET_NAMESPACE }, loadPreviewAsset);
+      build.onLoad({ filter: /.*/, namespace: PREVIEW_DATA_URL_NAMESPACE }, loadPreviewAsset);
+    },
+  };
+}
+
+/**
+ * Separates a query or fragment suffix without interpreting filesystem path characters.
+ *
+ * @param importPath Original import string seen by esbuild.
+ * @returns Base path for resolution and suffix retained for unique module identity.
+ */
+function parseAssetRequest(importPath: string): ParsedAssetRequest {
+  const queryIndex = importPath.indexOf('?');
+  const fragmentIndex = importPath.indexOf('#');
+  const suffixIndex = [queryIndex, fragmentIndex]
+    .filter((index) => index >= 0)
+    .reduce((lowest, index) => Math.min(lowest, index), importPath.length);
+
+  return {
+    path: importPath.slice(0, suffixIndex),
+    suffix: importPath.slice(suffixIndex),
+  };
+}
+
+/**
+ * Retains an actual URL fragment while leaving transform queries such as `?url` and `?react` out
+ * of generated data URLs.
+ *
+ * @param suffix Query and fragment separated from the resolved filesystem path.
+ * @returns Fragment beginning with `#`, or an empty string when no fragment was requested.
+ */
+function extractUrlFragment(suffix: string): string {
+  const fragmentIndex = suffix.indexOf('#');
+  return fragmentIndex < 0 ? '' : suffix.slice(fragmentIndex);
+}
+
+/**
+ * Chooses an asset transformation while leaving CSS URL tokens to esbuild's URL loader.
+ *
+ * @param arguments_ Original resolution request including import kind.
+ * @param request Parsed asset path and query suffix.
+ * @returns Selected transformation or `undefined` for normal source and URL imports.
+ */
+function selectAssetMode(
+  arguments_: OnResolveArgs,
+  request: ParsedAssetRequest,
+): PreviewAssetMode | undefined {
+  const query = request.suffix.startsWith('?')
+    ? new URLSearchParams(request.suffix.slice(1).split('#', 1)[0])
+    : undefined;
+  if (query?.has('raw') === true) {
+    return 'raw';
+  }
+
+  const isSvg = request.path.toLowerCase().endsWith('.svg');
+  if (query?.has('react') === true) {
+    return isSvg ? 'svg-component' : undefined;
+  }
+
+  if (isSvg && JAVASCRIPT_IMPORT_KINDS.has(arguments_.kind)) {
+    return 'svg-url';
+  }
+
+  return isInlinePreviewAssetPath(request.path) ? 'data-url' : undefined;
+}
+
+/** Mutable aggregate asset budget scoped to one compilation request. */
+interface AssetBudgetState {
+  /** Canonical path, suffix, and mode identities already counted. */
+  readonly representations: Set<string>;
+  /** Total original bytes reserved by unique representations. */
+  totalBytes: number;
+}
+
+/** Result of validating and reserving one unique asset representation. */
+type AssetBudgetResult =
+  | {
+      /** Marks a successful reservation that requires no diagnostic. */
+      readonly ok: true;
+    }
+  | {
+      /** Underlying filesystem error when metadata could not be read. */
+      readonly error?: unknown;
+      /** Actionable policy failure for the compiler diagnostic. */
+      readonly message: string;
+      /** Marks a rejected reservation. */
+      readonly ok: false;
+    };
+
+/**
+ * Verifies that an asset is a bounded regular file before any callback reads it into memory.
+ * A representation key prevents repeated imports from consuming the aggregate budget more than
+ * once while separately generated forms such as CSS data URLs and SVG components remain counted.
+ *
+ * @param assetPath Resolved local filesystem path.
+ * @param suffix Query or fragment that distinguishes the module representation.
+ * @param mode Transformation that determines the emitted representation.
+ * @param budget Mutable state private to one compilation request.
+ * @returns Empty message after reservation or an actionable policy error.
+ */
+async function reserveAssetBudget(
+  assetPath: string,
+  suffix: string,
+  mode: PreviewAssetMode,
+  budget: AssetBudgetState,
+): Promise<AssetBudgetResult> {
+  try {
+    const metadata = await stat(assetPath);
+    if (!metadata.isFile()) {
+      return { message: `Preview assets must be regular files: ${assetPath}`, ok: false };
+    }
+
+    if (metadata.size > MAX_INLINE_ASSET_BYTES) {
+      return {
+        message: `Preview asset exceeds the ${formatMebibytes(MAX_INLINE_ASSET_BYTES)} MiB per-file safety limit: ${assetPath}`,
+        ok: false,
+      };
+    }
+
+    const representationKey = `${canonicalizeExistingPath(assetPath)}\0${suffix}\0${mode}`;
+    if (budget.representations.has(representationKey)) {
+      return { ok: true };
+    }
+
+    const nextTotalBytes = budget.totalBytes + metadata.size;
+    if (nextTotalBytes > MAX_TOTAL_INLINE_ASSET_BYTES) {
+      return {
+        message: `Preview assets exceed the ${formatMebibytes(MAX_TOTAL_INLINE_ASSET_BYTES)} MiB aggregate safety limit.`,
+        ok: false,
+      };
+    }
+
+    budget.representations.add(representationKey);
+    budget.totalBytes = nextTotalBytes;
+    return { ok: true };
+  } catch (error) {
+    return {
+      error,
+      message: `Could not inspect preview asset: ${assetPath}`,
+      ok: false,
+    };
+  }
+}
+
+/**
+ * Converts validated asset bytes into either a data-URL loader input or generated JavaScript.
+ *
+ * @param source Complete bounded asset contents.
+ * @param mode Representation selected during resolution.
+ * @param urlFragment Optional SVG fragment retained by generated URL modules.
+ * @returns Raw bytes for esbuild's data-URL loader or JavaScript module source.
+ */
+function createAssetContents(
+  source: Buffer,
+  mode: PreviewAssetMode,
+  urlFragment: string,
+): Uint8Array | string {
+  if (mode === 'data-url') {
+    return source;
+  }
+
+  if (mode === 'raw') {
+    return `export default ${JSON.stringify(source.toString('utf8'))};`;
+  }
+
+  return createSvgModule(source, mode === 'svg-component', urlFragment);
+}
+
+/**
+ * Formats a byte count as a stable mebibyte value for asset-policy diagnostics.
+ *
+ * @param bytes Integer safety limit in bytes.
+ * @returns Base-two mebibyte count without a unit suffix.
+ */
+function formatMebibytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toString();
+}
+
+/**
+ * Narrows arbitrary esbuild plugin metadata to this adapter's private contract.
+ *
+ * @param pluginData Unknown metadata received by an on-load callback.
+ * @returns Typed transformation metadata, or `undefined` for other plugins.
+ */
+function readAssetPluginData(pluginData: unknown): PreviewAssetPluginData | undefined {
+  if (typeof pluginData !== 'object' || pluginData === null) {
+    return undefined;
+  }
+
+  return ASSET_PLUGIN_DATA in pluginData ? (pluginData as PreviewAssetPluginData) : undefined;
+}
+
+/**
+ * Builds an SVG module supporting URL imports and a lightweight React component representation.
+ * The component intentionally renders an `img` data URL instead of executing an SVGR transform,
+ * which preserves safe browser rendering without loading project Babel or Vite plugins.
+ *
+ * @param source Original SVG bytes.
+ * @param componentAsDefault Whether `?react` requested the component as the default export.
+ * @param urlFragment Optional symbol or view fragment appended to the generated data URL.
+ * @returns Browser JavaScript containing the data URL and React component exports.
+ */
+function createSvgModule(
+  source: Uint8Array,
+  componentAsDefault: boolean,
+  urlFragment: string,
+): string {
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(source).toString('base64')}${urlFragment}`;
+  const encodedDataUrl = JSON.stringify(dataUrl);
+  const defaultExport = componentAsDefault ? 'ReactComponent' : 'assetUrl';
+
+  return `
+import * as React from 'react';
+
+export const assetUrl = ${encodedDataUrl};
+export const ReactComponent = React.forwardRef(function ReactPreviewSvgAsset(props, ref) {
+  return React.createElement('img', { ...props, ref, src: assetUrl });
+});
+export default ${defaultExport};
+`;
+}

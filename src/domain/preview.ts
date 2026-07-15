@@ -7,17 +7,31 @@
 /** Source loaders supported by the first preview compiler implementation. */
 export type PreviewSourceLanguage = 'js' | 'jsx' | 'ts' | 'tsx';
 
+/** Immutable editor contents for a file-backed source module that may be imported by the target. */
+export interface PreviewSourceSnapshot {
+  /** Absolute filesystem path used to match esbuild's resolved module identity. */
+  readonly documentPath: string;
+  /** esbuild loader selected from the document filename. */
+  readonly language: PreviewSourceLanguage;
+  /** Complete current editor contents, including unsaved changes. */
+  readonly sourceText: string;
+}
+
 /**
  * Immutable snapshot of the active editor at the moment a preview build starts.
  * `sourceText` deliberately comes from the editor rather than disk so unsaved changes are visible.
  */
 export interface PreviewBuildRequest {
+  /** Dirty file-backed editor snapshots that should override saved dependency modules when reached. */
+  readonly dependencySnapshots: readonly PreviewSourceSnapshot[];
   /** Absolute filesystem path used as the module identity and import resolution base. */
   readonly documentPath: string;
   /** esbuild loader selected from the document filename. */
   readonly language: PreviewSourceLanguage;
   /** Complete current editor contents, including unsaved changes. */
   readonly sourceText: string;
+  /** Optional explicit tsconfig/jsconfig path for non-standard project layouts and aliases. */
+  readonly tsconfigPath?: string;
   /** Absolute project directory from which package and tsconfig resolution begins. */
   readonly workspaceRoot: string;
 }
@@ -38,6 +52,8 @@ export interface PreviewDiagnostic {
   readonly message: string;
   /** Optional file, line, and column associated with the message. */
   readonly location?: PreviewDiagnosticLocation;
+  /** Resolver hints and import context supplied by the compiler. */
+  readonly notes?: readonly string[];
   /** Severity used by the output channel and error view. */
   readonly severity: 'error' | 'warning';
 }

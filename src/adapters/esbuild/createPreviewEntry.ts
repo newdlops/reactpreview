@@ -1,19 +1,17 @@
 /**
  * Creates the virtual browser entry module that mounts a current file's default export.
- * The generated module imports React from the user's project, avoiding a second bundled runtime,
- * and renders runtime failures inside the isolated preview document.
+ * The generated module imports React from the user's project and dynamically loads a default-only
+ * bridge so runtime failures remain visible while unused target exports can be tree-shaken.
  */
+import { PREVIEW_TARGET_SPECIFIER } from './previewPluginProtocol';
 
 /**
- * Builds a TSX-compatible virtual entry module for the requested absolute component path.
- * JSON string encoding prevents quotes or backslashes in a path from changing generated syntax.
+ * Builds a TSX-compatible runtime entry that loads the private target bridge.
  *
- * @param documentPath Absolute module path whose default export should be rendered.
  * @returns JavaScript source consumed through esbuild's stdin entry point.
  */
-export function createPreviewEntry(documentPath: string): string {
-  const encodedDocumentPath = JSON.stringify(documentPath.replaceAll('\\', '/'));
-
+export function createPreviewEntry(): string {
+  const encodedTargetSpecifier = JSON.stringify(PREVIEW_TARGET_SPECIFIER);
   return `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -76,7 +74,7 @@ class PreviewErrorBoundary extends React.Component {
   }
 }
 
-import(${encodedDocumentPath})
+import(${encodedTargetSpecifier})
   .then((previewModule) => {
     const PreviewTarget = previewModule.default;
     const previewElement = React.isValidElement(PreviewTarget)

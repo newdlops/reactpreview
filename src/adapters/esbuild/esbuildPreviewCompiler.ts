@@ -9,7 +9,6 @@ import {
   stop,
   type BuildFailure,
   type BuildResult,
-  type Loader,
   type Message,
   type Metafile,
   type OutputFile,
@@ -22,24 +21,20 @@ import {
   type PreviewDiagnostic,
   type PreviewDiagnosticLocation,
 } from '../../domain/preview';
-import { createOpenDocumentPlugin, OPEN_DOCUMENT_NAMESPACE } from './openDocumentPlugin';
 import { createPreviewEntry } from './createPreviewEntry';
-
-const FILE_LOADERS = {
-  '.module.css': 'local-css',
-  '.avif': 'dataurl',
-  '.gif': 'dataurl',
-  '.jpeg': 'dataurl',
-  '.jpg': 'dataurl',
-  '.png': 'dataurl',
-  '.svg': 'dataurl',
-  '.ttf': 'dataurl',
-  '.webp': 'dataurl',
-  '.woff': 'dataurl',
-  '.woff2': 'dataurl',
-} as const satisfies Readonly<Record<string, Loader>>;
+import { createPreviewAssetPlugin } from './previewAssetPlugin';
+import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
+import {
+  PREVIEW_ASSET_NAMESPACE,
+  PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_SNAPSHOT_NAMESPACE,
+  PREVIEW_TARGET_BRIDGE_NAMESPACE,
+} from './previewPluginProtocol';
+import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
+import { createWorkspaceSnapshotPlugin } from './workspaceSnapshotPlugin';
 
 const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
+const MAX_PREVIEW_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 /** esbuild-backed compiler for browser-safe React preview bundles. */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
@@ -71,28 +66,36 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         format: 'esm',
         jsx: 'automatic',
         legalComments: 'none',
-        loader: FILE_LOADERS,
+        loader: PREVIEW_SOURCE_LOADERS,
         logLevel: 'silent',
         metafile: true,
         outdir: 'react-preview-output',
         platform: 'browser',
         plugins: [
-          createOpenDocumentPlugin({
-            documentPath: request.documentPath,
-            loader: request.language,
-            sourceText: request.sourceText,
+          createPreviewTargetBridgePlugin({ documentPath: request.documentPath }),
+          createPreviewAssetPlugin({ documentPath: request.documentPath }),
+          createWorkspaceSnapshotPlugin({
+            snapshots: [
+              {
+                documentPath: request.documentPath,
+                language: request.language,
+                sourceText: request.sourceText,
+              },
+              ...request.dependencySnapshots,
+            ],
           }),
         ],
         sourcemap: false,
         splitting: false,
         stdin: {
-          contents: createPreviewEntry(request.documentPath),
+          contents: createPreviewEntry(),
           loader: 'tsx',
           resolveDir: path.dirname(request.documentPath),
           sourcefile: VIRTUAL_ENTRY_NAME,
         },
         target: 'es2022',
         treeShaking: true,
+        ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
         write: false,
       });
 
@@ -148,6 +151,7 @@ function createPreviewBundle(
   request: PreviewBuildRequest,
   result: BuildResult<{ metafile: true; write: false }>,
 ): PreviewBundle {
+  assertOutputSize(result.outputFiles);
   const javascriptFile = findOutputFile(result.outputFiles, '.js');
   if (javascriptFile === undefined) {
     throw new PreviewCompilationError('Preview build produced no JavaScript entry.', []);
@@ -163,6 +167,37 @@ function createPreviewBundle(
   return stylesheetFile === undefined
     ? baseBundle
     : { ...baseBundle, stylesheet: stylesheetFile.contents };
+}
+
+/**
+ * Rejects an unexpectedly large in-memory result before it reaches global storage or the webview.
+ * The asset plugin applies earlier per-file and aggregate limits; this final boundary also covers
+ * generated JavaScript, CSS, and base64 expansion.
+ *
+ * @param outputFiles Complete in-memory output returned by esbuild.
+ * @throws PreviewCompilationError when combined output exceeds the lightweight preview budget.
+ */
+function assertOutputSize(outputFiles: readonly OutputFile[]): void {
+  const outputBytes = outputFiles.reduce(
+    (totalBytes, outputFile) => totalBytes + outputFile.contents.byteLength,
+    0,
+  );
+  if (outputBytes > MAX_PREVIEW_OUTPUT_BYTES) {
+    throw new PreviewCompilationError(
+      `Preview output exceeds the ${formatMebibytes(MAX_PREVIEW_OUTPUT_BYTES)} MiB safety limit.`,
+      [],
+    );
+  }
+}
+
+/**
+ * Formats a byte count as a stable mebibyte number for compiler diagnostics.
+ *
+ * @param bytes Integer byte limit used by an in-memory compiler boundary.
+ * @returns Human-readable base-two mebibyte count without a unit suffix.
+ */
+function formatMebibytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toString();
 }
 
 /**
@@ -187,20 +222,60 @@ function findOutputFile(
  * @returns Sorted unique absolute input paths.
  */
 function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): readonly string[] {
-  const openDocumentPrefix = `${OPEN_DOCUMENT_NAMESPACE}:`;
   const dependencies = Object.keys(metafile.inputs)
-    .filter((inputPath) => !inputPath.startsWith('<') && !inputPath.endsWith(VIRTUAL_ENTRY_NAME))
+    .filter(
+      (inputPath) =>
+        !inputPath.startsWith('<') &&
+        !inputPath.endsWith(VIRTUAL_ENTRY_NAME) &&
+        !inputPath.startsWith(`${PREVIEW_TARGET_BRIDGE_NAMESPACE}:`),
+    )
     .map((inputPath) => {
-      if (inputPath.startsWith(openDocumentPrefix)) {
-        return path.normalize(request.documentPath);
-      }
-
+      const namespacelessInput = removeFileBackedPreviewNamespace(inputPath);
+      const filesystemInput = stripAssetSuffix(namespacelessInput);
       return path.normalize(
-        path.isAbsolute(inputPath) ? inputPath : path.resolve(request.workspaceRoot, inputPath),
+        path.isAbsolute(filesystemInput)
+          ? filesystemInput
+          : path.resolve(request.workspaceRoot, filesystemInput),
       );
     });
 
   return [...new Set(dependencies)].sort();
+}
+
+/**
+ * Removes a private file-backed namespace from an esbuild metadata input identity.
+ *
+ * @param inputPath Metafile key that may represent a snapshot or generated asset module.
+ * @returns Underlying filesystem path with any query or fragment still attached.
+ */
+function removeFileBackedPreviewNamespace(inputPath: string): string {
+  for (const namespace of [
+    PREVIEW_ASSET_NAMESPACE,
+    PREVIEW_DATA_URL_NAMESPACE,
+    PREVIEW_SNAPSHOT_NAMESPACE,
+  ]) {
+    const prefix = `${namespace}:`;
+    if (inputPath.startsWith(prefix)) {
+      return inputPath.slice(prefix.length);
+    }
+  }
+
+  return inputPath;
+}
+
+/**
+ * Removes a query or fragment used to distinguish generated asset-module representations.
+ *
+ * @param assetPath Filesystem path followed by an optional import suffix.
+ * @returns Filesystem path suitable for dependency watching.
+ */
+function stripAssetSuffix(assetPath: string): string {
+  const queryIndex = assetPath.indexOf('?');
+  const fragmentIndex = assetPath.indexOf('#');
+  const suffixIndex = [queryIndex, fragmentIndex]
+    .filter((index) => index >= 0)
+    .reduce((lowest, index) => Math.min(lowest, index), assetPath.length);
+  return assetPath.slice(0, suffixIndex);
 }
 
 /**
@@ -212,12 +287,29 @@ function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): 
  */
 function convertMessage(message: Message, severity: 'error' | 'warning'): PreviewDiagnostic {
   const location = convertLocation(message);
+  const notes = message.notes.map(formatMessageNote);
   const baseDiagnostic = {
-    message: message.text,
+    message: restorePrivateNamespaces(message.text),
     severity,
   } as const;
+  const diagnosticWithNotes = notes.length === 0 ? baseDiagnostic : { ...baseDiagnostic, notes };
 
-  return location === undefined ? baseDiagnostic : { ...baseDiagnostic, location };
+  return location === undefined ? diagnosticWithNotes : { ...diagnosticWithNotes, location };
+}
+
+/**
+ * Formats one esbuild note with its optional source location for actionable import diagnostics.
+ *
+ * @param note Resolver or parser context attached to a compiler message.
+ * @returns Compact note text safe for the domain diagnostic model.
+ */
+function formatMessageNote(note: Message['notes'][number]): string {
+  const location = note.location;
+  if (location === null) {
+    return restorePrivateNamespaces(note.text);
+  }
+
+  return `${restorePreviewFilePath(location.file)}:${location.line.toString()}:${location.column.toString()} ${restorePrivateNamespaces(note.text)}`;
 }
 
 /**
@@ -233,9 +325,35 @@ function convertLocation(message: Message): PreviewDiagnosticLocation | undefine
 
   return {
     column: message.location.column,
-    file: message.location.file,
+    file: restorePreviewFilePath(message.location.file),
     line: message.location.line,
   };
+}
+
+/**
+ * Restores a diagnostic file identity from an internal esbuild namespace to its filesystem path.
+ *
+ * @param file Compiler location that may begin with a private preview namespace.
+ * @returns User-facing path suitable for display and dependency change tracking.
+ */
+function restorePreviewFilePath(file: string): string {
+  const restoredPath = restorePrivateNamespaces(file);
+  return stripAssetSuffix(restoredPath);
+}
+
+/**
+ * Removes private plugin namespace prefixes from compiler text without changing ordinary content.
+ *
+ * @param text Diagnostic message, note, or location produced by esbuild.
+ * @returns Text containing only the underlying filesystem identities.
+ */
+function restorePrivateNamespaces(text: string): string {
+  return [
+    PREVIEW_ASSET_NAMESPACE,
+    PREVIEW_DATA_URL_NAMESPACE,
+    PREVIEW_SNAPSHOT_NAMESPACE,
+    PREVIEW_TARGET_BRIDGE_NAMESPACE,
+  ].reduce((restoredText, namespace) => restoredText.replaceAll(`${namespace}:`, ''), text);
 }
 
 /**

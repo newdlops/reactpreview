@@ -5,6 +5,9 @@
 .vscode/**
 coverage/**
 docs/**
+!docs/architecture.md
+!docs/project-setup.md
+!docs/publishing.md
 examples/**
 scripts/**
 src/**

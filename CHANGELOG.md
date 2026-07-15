@@ -14,6 +14,12 @@
 - `new URL(..., import.meta.url)`, package별 `public` asset·CSS import, 임의 로컬 파일의 `?url` 변환 추가
 - 프로젝트 설정이나 `.env`를 실행하지 않는 안전한 기본 `import.meta.env` 값 추가
 - 매크로별 패턴/파일/조회/깊이와 빌드 전체 참조·조회·watch directory 정적 리소스 한도 추가
+- default가 없는 파일의 파일명 일치/유일 PascalCase runtime named export 선택과 모호성 진단 추가
+- 대상 import 전 global namespace와 `.react-preview/setup.*` initialize 실행, Provider와 props 계약 추가
+- 정상 Storybook preview decorator/Apollo parameter 자동 재사용과 깨진 setup의 setup-free 재시도 추가
+- Storybook setup graph 오류만 폴백하고 누락된 상대 import의 안전한 생성 디렉터리를 계속 감시
+- 프로젝트 Apollo Client를 자동 감지해 backend 요청 없는 Provider와 bounded selection-shaped 정적
+  응답을 제공하고 setup별 operation 결과·cache seed·비활성화 계약 추가
 
 ## 0.1.0 - 2026-07-15
 

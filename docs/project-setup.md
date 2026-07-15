@@ -21,13 +21,15 @@ Storybook preview 자체가 번들링되지 않으면 대상만 다시 빌드하
 
 setup 모듈은 아래 named export를 필요한 만큼만 제공할 수 있습니다.
 
-| export               | 실행 시점             | 역할                                                |
-| -------------------- | --------------------- | --------------------------------------------------- |
-| `initializePreview`  | 대상 모듈 import 전   | 전역 객체, 날짜/숫자 유틸리티와 mock service 초기화 |
-| `PreviewProviders`   | React render 시       | Theme, Router, GraphQL, Redux 등의 Provider 조립    |
-| `previewProps`       | 대상 element 생성 전  | 모든 대상에 전달할 정적 props 객체                  |
-| `createPreviewProps` | 대상 element 생성 전  | 파일 이름에 따라 props를 만드는 동기/비동기 함수    |
-| `apolloPreview`      | Apollo client 생성 시 | 자동 정적 응답을 조정하거나 `false`로 비활성화      |
+| export               | 실행 시점              | 역할                                                |
+| -------------------- | ---------------------- | --------------------------------------------------- |
+| `initializePreview`  | 대상 모듈 import 전    | 전역 객체, 날짜/숫자 유틸리티와 mock service 초기화 |
+| `PreviewProviders`   | React render 시        | Theme, Router, GraphQL, Redux 등의 Provider 조립    |
+| `previewProps`       | 대상 element 생성 전   | 모든 대상에 전달할 정적 props 객체                  |
+| `createPreviewProps` | 대상 element 생성 전   | 파일 이름에 따라 props를 만드는 동기/비동기 함수    |
+| `apolloPreview`      | Apollo client 생성 시  | 자동 정적 응답을 조정하거나 `false`로 비활성화      |
+| `themePreview`       | ThemeProvider 생성 시  | exact theme을 지정하거나 `false`로 비활성화         |
+| `reduxPreview`       | Redux Provider 생성 시 | exact static state를 지정하거나 `false`로 비활성화  |
 
 `initializePreview`와 `createPreviewProps`에는 `{ documentName, setupKind }`가 전달됩니다.
 `PreviewProviders`도 같은 값과 `children`을 받습니다. setup 파일과 도달 가능한 import는 일반 대상
@@ -101,13 +103,58 @@ export const apolloPreview = {
 프로젝트의 `PreviewProviders`가 자체 Apollo client를 제공한다면 그 Provider가 자동 outer Provider보다
 가까워 정상적으로 우선합니다. 자동 계층이 필요 없으면 `export const apolloPreview = false`로 끕니다.
 
+## styled-components 구조적 프리뷰
+
+대상 package에서 `styled-components`를 찾으면 확장은 같은 package 인스턴스의 `ThemeProvider`를
+자동 사용합니다. 기본 theme은 알려진 token 이름이나 색·간격 값을 포함하지 않는 구조적 Proxy입니다.
+`theme.flex.colCenter` 같은 CSS 조각, `theme.spacing(2)` 같은 helper 호출과 문자열·숫자 변환은 각각
+빈 CSS 또는 `0`으로 축약됩니다. 따라서 markup과 theme에 독립적인 CSS는 계속 렌더링되지만 색·간격 등
+실제 디자인 결과는 비어 있을 수 있습니다.
+
+정확한 theme이 부작용 없는 leaf module에 있다면 setup에서 그대로 전달할 수 있습니다.
+
+```tsx
+import { theme } from '../src/theme/theme';
+
+export const themePreview = { theme };
+```
+
+이 값은 clone하거나 token을 병합하지 않고 자동 Provider에 그대로 전달됩니다. `PreviewProviders`나
+Storybook decorator 안의 실제 ThemeProvider는 target에 더 가까우므로 자동 outer Provider보다
+우선합니다. styled-components를 쓰지만 자동 경계가 필요 없으면 `export const themePreview = false`로
+끕니다.
+
+## React Redux 정적 프리뷰
+
+대상 package에서 `react-redux`를 찾으면 확장은 같은 package 인스턴스의 `Provider`와 안정적인 빈
+state `{}`를 자동 제공합니다. store의 `dispatch`는 action을 그대로 반환하고 reducer, middleware,
+thunk 또는 listener를 실행하지 않으므로 앱 bootstrap과 네트워크 작업을 시작하지 않습니다. 선택적
+selector나 context 존재만 필요한 컴포넌트는 그대로 렌더링됩니다.
+
+빈 root만으로 부족한 selector에는 화면에 필요한 최소 상태를 명시합니다.
+
+```tsx
+export const reduxPreview = {
+  state: {
+    user: { id: 'preview-user', isStaffMode: false },
+    items: [],
+  },
+};
+```
+
+확장은 state를 deep Proxy로 만들거나 slice 이름·권한 값을 추측하지 않습니다. 따라서
+`state.user.profile.name`처럼 필요한 경로를 설정하지 않으면 원래 TypeError와 setup 안내가 계속
+표시됩니다. 정확한 store 동작이 필요하면 `PreviewProviders`에서 프로젝트의 네트워크 없는 store를
+직접 제공하세요. 내부 Provider가 자동 outer Provider보다 우선하며, 자동 경계만 끄려면
+`export const reduxPreview = false`를 사용합니다.
+
 ## 복잡한 페이지와 preview harness
 
 이 확장은 특정 저장소 이름, Redux slice, route, theme token 또는 업무 상태를 내장하지 않습니다.
-Apollo operation처럼 문서 자체에 응답 구조가 있는 경우에만 중립값을 자동 생성합니다. Redux selector의
-상태 의미, URL parameter, 권한, locale, theme 함수와 필수 props는 같은 타입 이름이어도 프로젝트마다
-다르므로 임의 Proxy나 빈 객체를 넣지 않습니다. 그런 값은 오류를 숨기면서 잘못된 화면 분기를 만들 수
-있습니다.
+Apollo operation은 문서 selection 구조만, styled-components theme은 값 없는 token 모양만, Redux는
+빈 root state만 자동 제공합니다. Redux selector의 nested 상태 의미, URL parameter, 권한, locale,
+정확한 디자인 값과 필수 props는 같은 이름이어도 프로젝트마다 다르므로 재귀 Proxy나 추측값을 넣지
+않습니다. 그런 값은 오류를 숨기면서 잘못된 화면 분기나 부작용을 만들 수 있습니다.
 
 앱 루트에 강하게 결합된 페이지는 작은 `*.preview.tsx` harness를 소스 옆이나 별도 preview 폴더에 두는
 방법이 가장 명확합니다. harness는 실제 API client나 앱 bootstrap 대신 메모리 store, 정적 route,

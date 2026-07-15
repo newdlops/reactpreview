@@ -1,0 +1,7 @@
+/**
+ * CSS fixture emitted separately by esbuild so tests cover stylesheet publication inputs.
+ */
+.sample-card {
+  color: rgb(12 34 56);
+  padding: 12px;
+}

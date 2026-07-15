@@ -1,0 +1,6 @@
+/**
+ * CSS Module fixture that verifies local class names become scoped JavaScript exports and CSS.
+ */
+.title {
+  font-weight: 700;
+}

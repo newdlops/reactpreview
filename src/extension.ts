@@ -34,12 +34,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const controller = new PreviewController(buildPreview, artifactStore.resourceRoot, log);
   activeResources = { artifactStore, compiler, controller };
 
-  /** Opens or reveals a preview for the current editor. */
+  /** Opens a new file-pinned preview panel for the current source editor. */
   async function openPreview(): Promise<void> {
     await controller.open();
   }
 
-  /** Immediately rebuilds the current preview, opening a panel when necessary. */
+  /** Immediately rebuilds the focused or source-matched preview, opening one when necessary. */
   async function refreshPreview(): Promise<void> {
     await controller.refresh();
   }

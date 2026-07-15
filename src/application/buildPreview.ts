@@ -33,17 +33,16 @@ export class BuildPreview {
       artifact,
       dependencies: bundle.dependencies,
       diagnostics: bundle.diagnostics,
+      watchDirectories: bundle.watchDirectories,
     };
   }
 
   /**
-   * Removes superseded artifacts only after the presentation layer commits its latest revision.
-   * Keeping cleanup separate from publication prevents an older, slower build from deleting files
-   * referenced by a newer webview.
+   * Returns one artifact lease after a result becomes stale, is replaced, or its panel closes.
    *
-   * @param contentHash Digest of the artifact that is currently visible.
+   * @param contentHash Digest previously acquired through a successful `execute` call.
    */
-  public async pruneArtifactsExcept(contentHash: string): Promise<void> {
-    await this.artifactStore.pruneExcept(contentHash);
+  public async releaseArtifact(contentHash: string): Promise<void> {
+    await this.artifactStore.release(contentHash);
   }
 }

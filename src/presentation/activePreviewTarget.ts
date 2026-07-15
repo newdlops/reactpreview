@@ -12,6 +12,8 @@ const SUPPORTED_DOCUMENT_SCHEMES = new Set(['file', 'vscode-remote']);
 
 /** Successfully resolved active editor and immutable build request. */
 export interface ResolvedPreviewTarget {
+  /** Immutable URI used to reopen the same target without consulting the active editor. */
+  readonly documentUri: vscode.Uri;
   /** Active editor filename displayed in the panel. */
   readonly documentName: string;
   /** Immutable request passed through the application layer. */
@@ -32,6 +34,46 @@ export interface PreviewTargetIssue {
  * @returns Valid current-document request or an issue suitable for safe display.
  */
 export function resolveActivePreviewTarget(): PreviewTargetIssue | ResolvedPreviewTarget {
+  const editor = vscode.window.activeTextEditor;
+  if (editor === undefined) {
+    return {
+      message: 'Open a JS, JSX, TS, or TSX component file and try again.',
+      title: 'No active editor',
+    };
+  }
+
+  return resolvePreviewTarget(editor.document);
+}
+
+/**
+ * Reopens and resolves one pinned document URI without reading the global active editor.
+ *
+ * @param documentUri Immutable resource captured when its preview panel was created.
+ * @returns Latest document snapshot or a recoverable target issue for that same resource.
+ */
+export async function resolvePinnedPreviewTarget(
+  documentUri: vscode.Uri,
+): Promise<PreviewTargetIssue | ResolvedPreviewTarget> {
+  try {
+    const document = await vscode.workspace.openTextDocument(documentUri);
+    return resolvePreviewTarget(document);
+  } catch {
+    return {
+      message: `The pinned preview target could not be reopened: ${documentUri.fsPath}`,
+      title: 'Preview target unavailable',
+    };
+  }
+}
+
+/**
+ * Validates and snapshots an explicit document while preserving its identity for later rebuilds.
+ *
+ * @param document File-backed React source selected at the command boundary.
+ * @returns Immutable build request and pinned URI, or an actionable validation issue.
+ */
+export function resolvePreviewTarget(
+  document: vscode.TextDocument,
+): PreviewTargetIssue | ResolvedPreviewTarget {
   if (!vscode.workspace.isTrusted) {
     return {
       message: 'Trust this workspace before executing its React source in a preview.',
@@ -39,15 +81,6 @@ export function resolveActivePreviewTarget(): PreviewTargetIssue | ResolvedPrevi
     };
   }
 
-  const editor = vscode.window.activeTextEditor;
-  if (editor === undefined) {
-    return {
-      message: 'Open a .tsx, .jsx, .ts, or .js component and try again.',
-      title: 'No active editor',
-    };
-  }
-
-  const document = editor.document;
   if (document.isUntitled || !SUPPORTED_DOCUMENT_SCHEMES.has(document.uri.scheme)) {
     return {
       message: 'Save the component in a filesystem-backed workspace before previewing it.',
@@ -58,13 +91,14 @@ export function resolveActivePreviewTarget(): PreviewTargetIssue | ResolvedPrevi
   const language = getPreviewSourceLanguage(document.fileName);
   if (language === undefined) {
     return {
-      message: 'The initial preview supports .tsx, .jsx, .ts, and .js files.',
+      message: 'React Preview supports JS/JSX/TS/TSX files and their MJS/CJS/MTS/CTS variants.',
       title: 'Unsupported file type',
     };
   }
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
   const workspaceRoot = workspaceFolder?.uri.fsPath ?? path.dirname(document.fileName);
+  const workspaceRelativeName = path.relative(workspaceRoot, document.fileName);
   const configuredTsconfig = vscode.workspace
     .getConfiguration('reactPreview', document.uri)
     .get<string>('tsconfig', '')
@@ -77,7 +111,11 @@ export function resolveActivePreviewTarget(): PreviewTargetIssue | ResolvedPrevi
     workspaceRoot,
   };
   return {
-    documentName: path.basename(document.fileName),
+    documentName:
+      workspaceRelativeName.length === 0 || workspaceRelativeName.startsWith('..')
+        ? path.basename(document.fileName)
+        : workspaceRelativeName,
+    documentUri: document.uri,
     request:
       configuredTsconfig.length === 0
         ? baseRequest

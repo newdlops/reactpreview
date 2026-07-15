@@ -1,33 +1,31 @@
 /**
- * Owns the VS Code panel lifecycle and translates editor events into revisioned preview builds.
- * Compilation and storage stay behind the BuildPreview use case; this class handles only VS Code
- * state, debounce, stale-result suppression, URI conversion, logging, and secure HTML rendering.
+ * Manages independent pinned preview sessions for one VS Code extension window.
+ * Global editor events are routed by each session's dependency graph; active-editor changes are
+ * intentionally ignored so focusing a webview can never retarget or rebuild an existing preview.
  */
-import path from 'node:path';
 import * as vscode from 'vscode';
 import type { BuildPreview } from '../application/buildPreview';
-import { PreviewCompilationError, type PreparedPreview } from '../domain/preview';
-import { canonicalizeExistingPath } from '../shared/pathIdentity';
-import { resolveActivePreviewTarget } from './activePreviewTarget';
-import { describeBuildFailure, formatDiagnostic } from './previewFailure';
-import { createPreviewHtml } from './webview/previewHtml';
+import {
+  resolveActivePreviewTarget,
+  resolvePinnedPreviewTarget,
+  type PreviewTargetIssue,
+  type ResolvedPreviewTarget,
+} from './activePreviewTarget';
+import { PreviewPanelSession } from './previewPanelSession';
 
-/** VS Code-facing coordinator for the current-file React preview panel. */
+/** Extension-scoped manager for any number of file-pinned React preview tabs. */
 export class PreviewController implements vscode.Disposable {
+  private lastFocusedSession: PreviewPanelSession | undefined;
   private disposed = false;
   private readonly extensionDisposables: vscode.Disposable[] = [];
-  private panel: vscode.WebviewPanel | undefined;
-  private panelDisposables: vscode.Disposable[] = [];
-  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
-  private revision = 0;
-  private dependencies = new Set<string>();
+  private readonly sessions = new Set<PreviewPanelSession>();
 
   /**
-   * Creates a controller and subscribes once to editor, save, and configuration changes.
+   * Creates a manager and subscribes once to events shared by every preview panel.
    *
-   * @param buildPreview Application use case for compilation and artifact publication.
-   * @param resourceRoot Session directory the webview may load generated resources from.
-   * @param log Extension log channel for warnings and detailed failures.
+   * @param buildPreview Application use case shared by isolated panel sessions.
+   * @param resourceRoot Session directory every webview may load generated resources from.
+   * @param log Extension log channel shared by all sessions.
    */
   public constructor(
     private readonly buildPreview: BuildPreview,
@@ -35,7 +33,6 @@ export class PreviewController implements vscode.Disposable {
     private readonly log: vscode.LogOutputChannel,
   ) {
     this.extensionDisposables.push(
-      vscode.window.onDidChangeActiveTextEditor(this.handleActiveEditorChanged.bind(this)),
       vscode.workspace.onDidChangeTextDocument(this.handleDocumentChanged.bind(this)),
       vscode.workspace.onDidSaveTextDocument(this.handleDocumentSaved.bind(this)),
       vscode.workspace.onDidChangeConfiguration(this.handleConfigurationChanged.bind(this)),
@@ -43,10 +40,9 @@ export class PreviewController implements vscode.Disposable {
   }
 
   /**
-   * Opens a side panel for the current React source or reveals the existing panel.
-   * Invalid, untitled, virtual, or untrusted targets are rejected before enabling webview scripts.
+   * Captures the current source once and always creates a new independently pinned preview tab.
    *
-   * @returns A promise resolved after validation and refresh scheduling complete.
+   * @returns Promise resolved after validation and initial build scheduling.
    */
   public async open(): Promise<void> {
     if (this.disposed) {
@@ -55,311 +51,168 @@ export class PreviewController implements vscode.Disposable {
 
     const target = resolveActivePreviewTarget();
     if ('title' in target) {
-      await vscode.window.showWarningMessage(`${target.title}: ${target.message}`);
+      await this.showTargetIssue(target);
       return;
     }
 
-    if (this.panel === undefined) {
-      this.panel = vscode.window.createWebviewPanel(
-        'reactPreview.currentFile',
-        'React Preview',
-        vscode.ViewColumn.Beside,
-        {
-          enableScripts: true,
-          localResourceRoots: [this.resourceRoot],
-          retainContextWhenHidden: false,
-        },
-      );
-      this.panelDisposables.push(this.panel.onDidDispose(this.handlePanelDisposed.bind(this)));
-    } else {
-      this.panel.reveal(vscode.ViewColumn.Beside, true);
-    }
-
-    this.scheduleRefresh(true);
+    this.openTarget(target);
   }
 
   /**
-   * Rebuilds immediately when a panel exists, or follows the normal open flow otherwise.
+   * Refreshes the focused preview, a panel matching the active source, or opens a new one.
+   * Existing sessions always rebuild their original URI and are never retargeted by this command.
    *
-   * @returns A promise resolved after opening or scheduling the new build revision.
+   * @returns Promise resolved after refresh or open scheduling.
    */
   public async refresh(): Promise<void> {
     if (this.disposed) {
       return;
     }
 
-    if (this.panel === undefined) {
-      await this.open();
+    const focusedSession = [...this.sessions].find((session) => session.isActive);
+    if (focusedSession !== undefined) {
+      focusedSession.refresh();
       return;
     }
 
-    this.scheduleRefresh(true);
+    const target = resolveActivePreviewTarget();
+    if (!('title' in target)) {
+      const matchingSession = this.findNewestSessionForTarget(target.request.documentPath);
+      if (matchingSession === undefined) {
+        this.openTarget(target);
+      } else {
+        matchingSession.refresh();
+      }
+      return;
+    }
+
+    if (this.lastFocusedSession !== undefined && this.sessions.has(this.lastFocusedSession)) {
+      this.lastFocusedSession.refresh();
+      return;
+    }
+
+    await this.showTargetIssue(target);
   }
 
-  /**
-   * Cancels pending timers, invalidates in-flight revisions, closes the panel, and removes listeners.
-   */
+  /** Closes every panel and removes extension-wide workspace listeners. */
   public dispose(): void {
     if (this.disposed) {
       return;
     }
 
     this.disposed = true;
-    this.revision += 1;
-    this.clearRefreshTimer();
-    this.panel?.dispose();
-    this.disposePanelListeners();
+    const liveSessions = [...this.sessions];
+    this.sessions.clear();
+    this.lastFocusedSession = undefined;
+    for (const session of liveSessions) {
+      session.dispose();
+    }
     for (const disposable of this.extensionDisposables) {
       disposable.dispose();
     }
   }
 
   /**
-   * Follows the newly active editor whenever the preview panel remains open.
+   * Creates a dedicated webview and session from the already validated immutable target.
+   *
+   * @param target Target captured at the command boundary before webview focus can change editors.
    */
-  private handleActiveEditorChanged(): void {
-    if (this.panel !== undefined) {
-      this.scheduleRefresh(true);
-    }
+  private openTarget(target: ResolvedPreviewTarget): void {
+    const panel = vscode.window.createWebviewPanel(
+      'reactPreview.currentFile',
+      `React Preview: ${target.documentName}`,
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        localResourceRoots: [this.resourceRoot],
+        retainContextWhenHidden: true,
+      },
+    );
+    const session = new PreviewPanelSession({
+      buildPreview: this.buildPreview,
+      callbacks: {
+        onDidDispose: this.handleSessionDisposed.bind(this),
+        onDidFocus: this.handleSessionFocused.bind(this),
+      },
+      initialTarget: target,
+      log: this.log,
+      panel,
+      resolveTarget: resolvePinnedPreviewTarget,
+    });
+    this.sessions.add(session);
+    this.lastFocusedSession = session;
+    session.start();
   }
 
   /**
-   * Debounces unsaved edits to the active document so rapid typing does not queue excessive builds.
+   * Routes an unsaved edit only to sessions whose pinned target or last graph contains the file.
    *
    * @param event VS Code text-document change event.
    */
   private handleDocumentChanged(event: vscode.TextDocumentChangeEvent): void {
-    const isActiveDocument = vscode.window.activeTextEditor?.document === event.document;
-    const isImportedDependency = this.dependencies.has(
-      canonicalizeExistingPath(event.document.fileName),
-    );
-    if (this.panel !== undefined && (isActiveDocument || isImportedDependency)) {
-      this.scheduleRefresh(false);
+    for (const session of this.sessions) {
+      session.refreshForDocument(event.document.fileName);
     }
   }
 
   /**
-   * Rebuilds when a saved file belongs to the last successful component dependency graph.
+   * Routes a save only to sessions whose pinned target or last graph contains the file.
    *
    * @param document Document that VS Code finished saving.
    */
   private handleDocumentSaved(document: vscode.TextDocument): void {
-    if (
-      this.panel !== undefined &&
-      this.dependencies.has(canonicalizeExistingPath(document.fileName))
-    ) {
-      this.scheduleRefresh(false);
+    for (const session of this.sessions) {
+      session.refreshForDocument(document.fileName);
     }
   }
 
   /**
-   * Rebuilds after a setting changes the debounce policy or module-resolution context.
+   * Rebuilds only sessions affected by resource-scoped compiler or debounce configuration changes.
    *
    * @param event VS Code configuration change event.
    */
   private handleConfigurationChanged(event: vscode.ConfigurationChangeEvent): void {
-    const affectsPreviewBuild =
-      event.affectsConfiguration('reactPreview.updateDelay') ||
-      event.affectsConfiguration('reactPreview.tsconfig');
-    if (this.panel !== undefined && affectsPreviewBuild) {
-      this.scheduleRefresh(false);
-    }
-  }
-
-  /**
-   * Clears controller state associated with a panel that the user closed.
-   */
-  private handlePanelDisposed(): void {
-    this.revision += 1;
-    this.clearRefreshTimer();
-    this.panel = undefined;
-    this.dependencies.clear();
-    this.disposePanelListeners();
-  }
-
-  /**
-   * Assigns a new monotonically increasing revision and starts it now or after configured debounce.
-   *
-   * @param immediate Whether to bypass the editor-change debounce delay.
-   */
-  private scheduleRefresh(immediate: boolean): void {
-    if (this.disposed) {
-      return;
-    }
-
-    this.clearRefreshTimer();
-    const requestedRevision = ++this.revision;
-
-    if (immediate) {
-      void this.rebuild(requestedRevision);
-      return;
-    }
-
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = undefined;
-      void this.rebuild(requestedRevision);
-    }, this.getUpdateDelay());
-  }
-
-  /**
-   * Builds one editor snapshot and commits it only if no newer revision superseded the request.
-   *
-   * @param requestedRevision Revision identity captured when the build was scheduled.
-   * @returns A promise resolved after the successful, failed, or stale result is handled.
-   */
-  private async rebuild(requestedRevision: number): Promise<void> {
-    const panel = this.panel;
-    if (panel === undefined) {
-      return;
-    }
-
-    const target = resolveActivePreviewTarget();
-    if ('title' in target) {
-      panel.webview.html = createPreviewHtml(panel.webview.cspSource, {
-        kind: 'error',
-        message: target.message,
-        title: target.title,
-      });
-      return;
-    }
-
-    panel.title = `React Preview: ${target.documentName}`;
-    panel.webview.html = createPreviewHtml(panel.webview.cspSource, {
-      documentName: target.documentName,
-      kind: 'loading',
-    });
-
-    try {
-      const preparedPreview = await this.buildPreview.execute(target.request);
-      if (!this.isCurrentRevision(requestedRevision, panel)) {
-        return;
+    for (const session of this.sessions) {
+      const affectsSession =
+        event.affectsConfiguration('reactPreview.updateDelay', session.documentUri) ||
+        event.affectsConfiguration('reactPreview.tsconfig', session.documentUri);
+      if (affectsSession) {
+        session.refreshForConfiguration();
       }
+    }
+  }
 
-      this.commitPreparedPreview(panel, target.documentName, preparedPreview);
-    } catch (error) {
-      if (!this.isCurrentRevision(requestedRevision, panel)) {
-        return;
-      }
+  /** Records the focused session without compiling or changing its pinned target. */
+  private handleSessionFocused(session: PreviewPanelSession): void {
+    if (this.sessions.has(session)) {
+      this.lastFocusedSession = session;
+    }
+  }
 
-      this.log.error('React preview build failed.', error);
-      this.rememberFailedDependencyLocations(error, target.request.workspaceRoot);
-      const failure = describeBuildFailure(error);
-      const errorState = {
-        kind: 'error' as const,
-        message: failure.message,
-        title: 'Preview build failed',
-      };
-      panel.webview.html = createPreviewHtml(
-        panel.webview.cspSource,
-        failure.details === undefined ? errorState : { ...errorState, details: failure.details },
-      );
+  /** Removes one user-closed session while preserving every sibling panel. */
+  private handleSessionDisposed(session: PreviewPanelSession): void {
+    this.sessions.delete(session);
+    if (this.lastFocusedSession === session) {
+      this.lastFocusedSession = undefined;
     }
   }
 
   /**
-   * Retains source paths reported by a failed build so editing the broken imported file retries.
-   * Relative compiler paths are interpreted from the same workspace root used for resolution.
+   * Finds the most recently created panel pinned to an active source editor path.
    *
-   * @param error Unknown compiler or publication failure.
-   * @param workspaceRoot Absolute directory used as esbuild's working directory.
+   * @param documentPath Active text-document path selected by the refresh command.
+   * @returns Matching live session or `undefined` when refresh should open a new panel.
    */
-  private rememberFailedDependencyLocations(error: unknown, workspaceRoot: string): void {
-    if (!(error instanceof PreviewCompilationError)) {
-      return;
-    }
-
-    for (const diagnostic of error.diagnostics) {
-      const file = diagnostic.location?.file;
-      if (file === undefined || file.startsWith('<')) {
-        continue;
-      }
-
-      const absolutePath = path.isAbsolute(file) ? file : path.resolve(workspaceRoot, file);
-      this.dependencies.add(canonicalizeExistingPath(absolutePath));
-    }
+  private findNewestSessionForTarget(documentPath: string): PreviewPanelSession | undefined {
+    return [...this.sessions].reverse().find((session) => session.targetsDocument(documentPath));
   }
 
   /**
-   * Converts stored locations, records dependency paths, logs warnings, and reloads the webview.
+   * Presents a target validation issue at the command edge without mutating existing panels.
    *
-   * @param panel Current panel that initiated the build.
-   * @param documentName Display name for the prepared source document.
-   * @param preparedPreview Published artifact and compiler metadata.
+   * @param issue Recoverable active-editor problem.
    */
-  private commitPreparedPreview(
-    panel: vscode.WebviewPanel,
-    documentName: string,
-    preparedPreview: PreparedPreview,
-  ): void {
-    this.dependencies = new Set(preparedPreview.dependencies.map(canonicalizeExistingPath));
-    for (const diagnostic of preparedPreview.diagnostics) {
-      this.log.warn(formatDiagnostic(diagnostic));
-    }
-
-    const scriptUri = panel.webview
-      .asWebviewUri(vscode.Uri.parse(preparedPreview.artifact.scriptLocation, true))
-      .toString(true);
-    const stylesheetLocation = preparedPreview.artifact.stylesheetLocation;
-    const baseState = {
-      documentName,
-      kind: 'ready' as const,
-      scriptUri,
-    };
-
-    panel.webview.html = createPreviewHtml(
-      panel.webview.cspSource,
-      stylesheetLocation === undefined
-        ? baseState
-        : {
-            ...baseState,
-            stylesheetUri: panel.webview
-              .asWebviewUri(vscode.Uri.parse(stylesheetLocation, true))
-              .toString(true),
-          },
-    );
-    void this.buildPreview.pruneArtifactsExcept(preparedPreview.artifact.contentHash);
-  }
-
-  /**
-   * Confirms that an asynchronous result still belongs to the same live panel and latest revision.
-   *
-   * @param requestedRevision Revision captured before compilation began.
-   * @param panel Panel captured before compilation began.
-   * @returns `true` only when committing the result cannot overwrite newer UI state.
-   */
-  private isCurrentRevision(requestedRevision: number, panel: vscode.WebviewPanel): boolean {
-    return requestedRevision === this.revision && panel === this.panel;
-  }
-
-  /**
-   * Reads and clamps the user-configured debounce delay to the manifest's supported range.
-   *
-   * @returns Delay in milliseconds between 100 and 2,000.
-   */
-  private getUpdateDelay(): number {
-    const configuredDelay = vscode.workspace
-      .getConfiguration('reactPreview')
-      .get<number>('updateDelay', 300);
-    return Math.min(2000, Math.max(100, configuredDelay));
-  }
-
-  /**
-   * Cancels the current debounce timer when a newer revision or disposal supersedes it.
-   */
-  private clearRefreshTimer(): void {
-    if (this.refreshTimer !== undefined) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = undefined;
-    }
-  }
-
-  /**
-   * Disposes listeners tied to the current panel without affecting extension-wide editor events.
-   */
-  private disposePanelListeners(): void {
-    for (const disposable of this.panelDisposables) {
-      disposable.dispose();
-    }
-    this.panelDisposables = [];
+  private async showTargetIssue(issue: PreviewTargetIssue): Promise<void> {
+    await vscode.window.showWarningMessage(`${issue.title}: ${issue.message}`);
   }
 }

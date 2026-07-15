@@ -15,8 +15,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
 
   private disposed = false;
   private operationQueue: Promise<void> = Promise.resolve();
-  private publicationSequence = 0;
-  private readonly publicationSequenceByHash = new Map<string, number>();
+  private readonly referenceCountByHash = new Map<string, number>();
   private shutdownPromise: Promise<void> | undefined;
 
   /**
@@ -33,8 +32,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   }
 
   /**
-   * Writes a complete hashed revision before exposing its URIs without deleting other revisions.
-   * Cleanup waits for the controller to confirm which asynchronous build actually became current.
+   * Writes a complete hashed revision and acquires one ownership reference after the write succeeds.
    *
    * @param bundle In-memory JavaScript and optional stylesheet from the compiler.
    * @returns Serialized local locations suitable for later `webview.asWebviewUri` conversion.
@@ -45,14 +43,27 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     }
 
     const contentHash = createContentHash(bundle);
-    const publicationSequence = ++this.publicationSequence;
-    this.publicationSequenceByHash.set(contentHash, publicationSequence);
+    return this.enqueueOperation(async () => {
+      const currentReferences = this.referenceCountByHash.get(contentHash) ?? 0;
+      if (currentReferences > 0) {
+        this.referenceCountByHash.set(contentHash, currentReferences + 1);
+        return this.describeBundle(contentHash, bundle.stylesheet !== undefined);
+      }
 
-    return this.enqueueOperation(async () => this.writeBundle(contentHash, bundle));
+      let artifact: StoredPreviewArtifact;
+      try {
+        artifact = await this.writeBundle(contentHash, bundle);
+      } catch (error) {
+        await this.deleteDirectory(vscode.Uri.joinPath(this.resourceRoot, contentHash));
+        throw error;
+      }
+      this.referenceCountByHash.set(contentHash, currentReferences + 1);
+      return artifact;
+    });
   }
 
   /**
-   * Writes one complete bundle while the store's mutation queue excludes prune and shutdown work.
+   * Writes one complete bundle while the store's mutation queue excludes release and shutdown work.
    *
    * @param contentHash Deterministic directory name calculated before the operation was queued.
    * @param bundle In-memory JavaScript and optional CSS to publish.
@@ -63,59 +74,63 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     bundle: PreviewBundle,
   ): Promise<StoredPreviewArtifact> {
     const revisionDirectory = vscode.Uri.joinPath(this.resourceRoot, contentHash);
-    const scriptUri = vscode.Uri.joinPath(revisionDirectory, 'entry.js');
 
     await vscode.workspace.fs.createDirectory(revisionDirectory);
-    await vscode.workspace.fs.writeFile(scriptUri, bundle.javascript);
+    await vscode.workspace.fs.writeFile(
+      vscode.Uri.joinPath(revisionDirectory, 'entry.js'),
+      bundle.javascript,
+    );
 
     const stylesheetUri = await this.writeStylesheet(revisionDirectory, bundle.stylesheet);
-    const baseArtifact = {
-      contentHash,
-      scriptLocation: scriptUri.toString(true),
-    };
-
-    return stylesheetUri === undefined
-      ? baseArtifact
-      : { ...baseArtifact, stylesheetLocation: stylesheetUri.toString(true) };
+    return this.describeBundle(contentHash, stylesheetUri !== undefined);
   }
 
   /**
-   * Removes every hash directory except the revision confirmed as current by the controller.
-   * A stale build may publish after this method, but it cannot remove the retained current files and
-   * will be cleaned by the next committed revision or session disposal.
+   * Recreates stable artifact locations for a newly written or already shared content hash.
    *
-   * @param contentHash Hash-directory name that must remain available to the current webview.
+   * @param contentHash Deterministic hash-directory name.
+   * @param hasStylesheet Whether this content identity includes a CSS output.
+   * @returns Opaque local locations without touching the filesystem.
    */
-  public async pruneExcept(contentHash: string): Promise<void> {
+  private describeBundle(contentHash: string, hasStylesheet: boolean): StoredPreviewArtifact {
+    const revisionDirectory = vscode.Uri.joinPath(this.resourceRoot, contentHash);
+    const baseArtifact = {
+      contentHash,
+      scriptLocation: vscode.Uri.joinPath(revisionDirectory, 'entry.js').toString(true),
+    };
+    return hasStylesheet
+      ? {
+          ...baseArtifact,
+          stylesheetLocation: vscode.Uri.joinPath(revisionDirectory, 'entry.css').toString(true),
+        }
+      : baseArtifact;
+  }
+
+  /**
+   * Releases one published ownership reference and deletes the directory after its final owner.
+   * All mutations share the store queue, so a concurrent publish cannot race a zero-count deletion.
+   *
+   * @param contentHash Hash-directory name no longer needed by one preview revision.
+   */
+  public async release(contentHash: string): Promise<void> {
     if (this.disposed) {
       return;
     }
 
-    const retainedSequence = this.publicationSequenceByHash.get(contentHash);
-    if (retainedSequence === undefined) {
-      this.log.debug(`Cannot retain unknown React preview artifact ${contentHash}.`);
-      return;
-    }
-
     await this.enqueueOperation(async () => {
-      try {
-        const entries = await vscode.workspace.fs.readDirectory(this.resourceRoot);
-        const removableEntries = entries.filter(([entryName, fileType]) => {
-          const entrySequence = this.publicationSequenceByHash.get(entryName) ?? 0;
-          return (
-            fileType === vscode.FileType.Directory &&
-            entryName !== contentHash &&
-            entrySequence <= retainedSequence
-          );
-        });
-
-        for (const [entryName] of removableEntries) {
-          await this.deleteDirectory(vscode.Uri.joinPath(this.resourceRoot, entryName));
-          this.publicationSequenceByHash.delete(entryName);
-        }
-      } catch (error) {
-        this.log.debug('Could not prune superseded React preview artifacts.', error);
+      const currentReferences = this.referenceCountByHash.get(contentHash);
+      if (currentReferences === undefined) {
+        this.log.debug(`Cannot release unknown React preview artifact ${contentHash}.`);
+        return;
       }
+
+      if (currentReferences > 1) {
+        this.referenceCountByHash.set(contentHash, currentReferences - 1);
+        return;
+      }
+
+      this.referenceCountByHash.delete(contentHash);
+      await this.deleteDirectory(vscode.Uri.joinPath(this.resourceRoot, contentHash));
     });
   }
 
@@ -141,7 +156,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     this.disposed = true;
     this.shutdownPromise = this.enqueueOperation(async () => {
       await this.deleteDirectory(this.resourceRoot);
-      this.publicationSequenceByHash.clear();
+      this.referenceCountByHash.clear();
     });
     return this.shutdownPromise;
   }
@@ -182,8 +197,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
 
   /**
    * Serializes every filesystem mutation and keeps the queue usable after an operation rejects.
-   * Publication sequence metadata is recorded before enqueueing, so an older prune can recognize and
-   * preserve a newer artifact even when that artifact's write is waiting behind the prune operation.
+   * Reference counts are updated inside the same queue so publish and release stay atomic.
    *
    * @param operation Asynchronous filesystem mutation that must not overlap another store mutation.
    * @returns Promise carrying the operation's original result or rejection.

@@ -4,12 +4,16 @@
  * the compiler can reproduce the editor's current module graph instead of saved files alone.
  */
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { resolveActivePreviewTarget } from '../../src/presentation/activePreviewTarget';
+import {
+  resolveActivePreviewTarget,
+  resolvePinnedPreviewTarget,
+} from '../../src/presentation/activePreviewTarget';
 
 const vscodeState = vi.hoisted(() => ({
   activeTextEditor: undefined as { document: unknown } | undefined,
+  openTextDocument: vi.fn(),
   textDocuments: [] as unknown[],
   trusted: true,
   tsconfig: '',
@@ -73,8 +77,17 @@ vi.mock('vscode', () => {
         }
         return uri.fsPath.startsWith('/other/') ? otherWorkspaceFolder : undefined;
       },
+      openTextDocument: vscodeState.openTextDocument,
     },
   };
+});
+
+afterEach(() => {
+  vscodeState.activeTextEditor = undefined;
+  vscodeState.openTextDocument.mockReset();
+  vscodeState.textDocuments = [];
+  vscodeState.trusted = true;
+  vscodeState.tsconfig = '';
 });
 
 describe('resolveActivePreviewTarget', () => {
@@ -103,6 +116,29 @@ describe('resolveActivePreviewTarget', () => {
       },
     ]);
     expect(target.request.tsconfigPath).toBe(path.join('/workspace', 'tsconfig.app.json'));
+    expect(target.documentUri.fsPath).toBe(activeDocument.fileName);
+    expect(target.documentName).toBe('src/Preview.tsx');
+  });
+
+  /** Reopens the captured URI and ignores an unrelated active editor while refreshing a panel. */
+  it('resolves a pinned document without consulting the active editor', async () => {
+    const pinnedDocument = createDocument('/workspace/src/Pinned.tsx', true, 'pinned source');
+    const activeDocument = createDocument('/workspace/src/Other.tsx', false, 'other source');
+    vscodeState.activeTextEditor = { document: activeDocument };
+    vscodeState.textDocuments = [pinnedDocument, activeDocument];
+    vscodeState.openTextDocument.mockResolvedValue(pinnedDocument);
+
+    const target = await resolvePinnedPreviewTarget(pinnedDocument.uri);
+
+    expect(vscodeState.openTextDocument).toHaveBeenCalledWith(pinnedDocument.uri);
+    expect('request' in target).toBe(true);
+    if (!('request' in target)) {
+      return;
+    }
+    expect(target.documentUri.fsPath).toBe(pinnedDocument.fileName);
+    expect(target.documentName).toBe('src/Pinned.tsx');
+    expect(target.request.documentPath).toBe(pinnedDocument.fileName);
+    expect(target.request.sourceText).toBe('pinned source');
   });
 });
 

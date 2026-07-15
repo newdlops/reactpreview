@@ -68,6 +68,8 @@ export interface PreviewBundle {
   readonly javascript: Uint8Array;
   /** Optional stylesheet emitted when the component imports CSS. */
   readonly stylesheet?: Uint8Array;
+  /** Glob roots whose future file additions can change the statically discovered graph. */
+  readonly watchDirectories: readonly string[];
 }
 
 /** Stable opaque locations returned after an artifact store publishes a preview bundle. */
@@ -88,6 +90,8 @@ export interface PreparedPreview {
   readonly dependencies: readonly string[];
   /** Non-fatal diagnostics produced by the compiler. */
   readonly diagnostics: readonly PreviewDiagnostic[];
+  /** Glob roots used to route newly created matching files to the owning panel. */
+  readonly watchDirectories: readonly string[];
 }
 
 /**

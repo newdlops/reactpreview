@@ -19,6 +19,7 @@ const BUNDLE: PreviewBundle = {
   dependencies: ['/workspace/Component.tsx'],
   diagnostics: [],
   javascript: new TextEncoder().encode('export {};'),
+  watchDirectories: ['/workspace/pages'],
 };
 
 describe('BuildPreview', () => {
@@ -31,10 +32,10 @@ describe('BuildPreview', () => {
       contentHash: 'abc123',
       scriptLocation: 'file:///preview/entry.js',
     });
-    const pruneExcept = vi.fn<PreviewArtifactStore['pruneExcept']>();
-    pruneExcept.mockResolvedValue();
+    const release = vi.fn<PreviewArtifactStore['release']>();
+    release.mockResolvedValue();
     const compiler: PreviewCompiler = { compile };
-    const artifactStore: PreviewArtifactStore = { pruneExcept, publish };
+    const artifactStore: PreviewArtifactStore = { publish, release };
     const useCase = new BuildPreview(compiler, artifactStore);
 
     const result = await useCase.execute(REQUEST);
@@ -48,10 +49,11 @@ describe('BuildPreview', () => {
       },
       dependencies: BUNDLE.dependencies,
       diagnostics: BUNDLE.diagnostics,
+      watchDirectories: BUNDLE.watchDirectories,
     });
 
-    await useCase.pruneArtifactsExcept('abc123');
-    expect(pruneExcept).toHaveBeenCalledWith('abc123');
+    await useCase.releaseArtifact('abc123');
+    expect(release).toHaveBeenCalledWith('abc123');
   });
 
   /** Ensures publication cannot run with missing or stale bytes after a compiler failure. */
@@ -61,8 +63,8 @@ describe('BuildPreview', () => {
       compile: vi.fn().mockRejectedValue(failure),
     };
     const publish = vi.fn<PreviewArtifactStore['publish']>();
-    const pruneExcept = vi.fn<PreviewArtifactStore['pruneExcept']>();
-    const useCase = new BuildPreview(compiler, { pruneExcept, publish });
+    const release = vi.fn<PreviewArtifactStore['release']>();
+    const useCase = new BuildPreview(compiler, { publish, release });
 
     await expect(useCase.execute(REQUEST)).rejects.toBe(failure);
     expect(publish).not.toHaveBeenCalled();

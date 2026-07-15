@@ -15,9 +15,9 @@ export interface PreviewArtifactStore {
   publish(bundle: PreviewBundle): Promise<StoredPreviewArtifact>;
 
   /**
-   * Removes cached revisions other than the artifact confirmed as current by the presentation layer.
+   * Releases one ownership reference acquired by `publish` and removes the files at zero owners.
    *
-   * @param contentHash Content digest of the revision that must remain loadable.
+   * @param contentHash Content digest that a stale, replaced, or closed preview no longer needs.
    */
-  pruneExcept(contentHash: string): Promise<void>;
+  release(contentHash: string): Promise<void>;
 }

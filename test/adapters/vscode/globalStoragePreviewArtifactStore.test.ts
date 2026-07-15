@@ -1,6 +1,6 @@
 /**
- * Verifies cache publication and pruning semantics with a minimal in-memory VS Code filesystem.
- * The key invariant is that out-of-order publish calls never delete a currently displayed revision.
+ * Verifies reference-counted cache leases with a minimal in-memory VS Code filesystem.
+ * The key invariant is that one preview cannot delete bytes still owned by another open panel.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
@@ -10,7 +10,6 @@ import type { PreviewBundle } from '../../../src/domain/preview';
 const vscodeFileSystem = vi.hoisted(() => ({
   createDirectory: vi.fn<(uri: unknown) => Promise<void>>().mockResolvedValue(undefined),
   delete: vi.fn<(uri: unknown, options: unknown) => Promise<void>>().mockResolvedValue(undefined),
-  readDirectory: vi.fn<() => Promise<readonly (readonly [string, number])[]>>(),
   writeFile: vi
     .fn<(uri: unknown, contents: Uint8Array) => Promise<void>>()
     .mockResolvedValue(undefined),
@@ -58,7 +57,6 @@ vi.mock('vscode', () => {
   }
 
   return {
-    FileType: { Directory: 2 },
     Uri: FakeUri,
     workspace: { fs: vscodeFileSystem },
   };
@@ -68,12 +66,14 @@ const FIRST_BUNDLE: PreviewBundle = {
   dependencies: [],
   diagnostics: [],
   javascript: new TextEncoder().encode('first revision'),
+  watchDirectories: [],
 };
 
 const SECOND_BUNDLE: PreviewBundle = {
   dependencies: [],
   diagnostics: [],
   javascript: new TextEncoder().encode('second revision'),
+  watchDirectories: [],
 };
 
 afterEach(() => {
@@ -93,18 +93,13 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     expect(vscodeFileSystem.delete).not.toHaveBeenCalled();
   });
 
-  /** Removes only superseded directories after the latest revision has been committed to HTML. */
-  it('prunes every directory except the confirmed current hash', async () => {
+  /** Releases independent hashes without deleting an artifact still owned by another panel. */
+  it('deletes only the released artifact directory', async () => {
     const store = createStore();
     const firstArtifact = await store.publish(FIRST_BUNDLE);
     const secondArtifact = await store.publish(SECOND_BUNDLE);
-    vscodeFileSystem.readDirectory.mockResolvedValue([
-      [firstArtifact.contentHash, 2],
-      [secondArtifact.contentHash, 2],
-      ['unexpected-file', 1],
-    ]);
 
-    await store.pruneExcept(secondArtifact.contentHash);
+    await store.release(firstArtifact.contentHash);
 
     expect(vscodeFileSystem.delete).toHaveBeenCalledTimes(1);
     expect(String(vscodeFileSystem.delete.mock.calls[0]?.[0])).toContain(firstArtifact.contentHash);
@@ -113,29 +108,33 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     );
   });
 
-  /**
-   * Prevents an older committed revision from deleting a newer publication when prune calls overlap.
-   */
-  it('preserves publications newer than the retained revision', async () => {
+  /** Keeps a shared content hash until every panel has returned its independently acquired lease. */
+  it('reference-counts identical bundles across panels', async () => {
     const store = createStore();
     const firstArtifact = await store.publish(FIRST_BUNDLE);
-    const secondArtifact = await store.publish(SECOND_BUNDLE);
-    const newestArtifact = await store.publish({
-      ...SECOND_BUNDLE,
-      javascript: new TextEncoder().encode('newest revision'),
-    });
-    vscodeFileSystem.readDirectory.mockResolvedValue([
-      [firstArtifact.contentHash, 2],
-      [secondArtifact.contentHash, 2],
-      [newestArtifact.contentHash, 2],
-    ]);
+    const sharedArtifact = await store.publish(FIRST_BUNDLE);
 
-    const olderPrune = store.pruneExcept(secondArtifact.contentHash);
-    const newestPrune = store.pruneExcept(newestArtifact.contentHash);
-    await Promise.all([olderPrune, newestPrune]);
+    expect(sharedArtifact.contentHash).toBe(firstArtifact.contentHash);
+    expect(vscodeFileSystem.writeFile).toHaveBeenCalledTimes(1);
+    await store.release(firstArtifact.contentHash);
+    expect(vscodeFileSystem.delete).not.toHaveBeenCalled();
 
-    const deletedLocations = vscodeFileSystem.delete.mock.calls.map(([uri]) => String(uri));
-    expect(deletedLocations).not.toContain(expect.stringContaining(newestArtifact.contentHash));
+    await store.release(sharedArtifact.contentHash);
+    expect(vscodeFileSystem.delete).toHaveBeenCalledTimes(1);
+    expect(String(vscodeFileSystem.delete.mock.calls[0]?.[0])).toContain(firstArtifact.contentHash);
+  });
+
+  /** Removes a partial unowned hash directory when publication fails before acquiring its lease. */
+  it('cleans a partially written new artifact after publication failure', async () => {
+    const store = createStore();
+    vscodeFileSystem.writeFile.mockRejectedValueOnce(new Error('simulated storage write failure'));
+
+    await expect(store.publish(FIRST_BUNDLE)).rejects.toThrow('simulated storage write failure');
+
+    expect(vscodeFileSystem.delete).toHaveBeenCalledTimes(1);
+    expect(String(vscodeFileSystem.delete.mock.calls[0]?.[0])).toMatch(
+      /preview-cache\/[^/]+\/[a-f0-9]{16}$/u,
+    );
   });
 
   /** Waits for session deletion and rejects later writes that could recreate private source caches. */

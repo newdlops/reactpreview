@@ -19,6 +19,18 @@ export const PREVIEW_TARGET_BRIDGE_NAMESPACE = 'react-preview-target-bridge';
 /** Stable virtual import specifier emitted by the runtime entry for the target bridge. */
 export const PREVIEW_TARGET_SPECIFIER = 'react-preview:target';
 
+/** Namespace used by the optional project setup bridge consumed before the target module. */
+export const PREVIEW_SETUP_BRIDGE_NAMESPACE = 'react-preview-setup-bridge';
+
+/** Stable virtual import specifier emitted by the runtime entry for the project setup bridge. */
+export const PREVIEW_SETUP_SPECIFIER = 'react-preview:setup';
+
+/** Namespace used by the optional, project-owned Apollo runtime bridge. */
+export const PREVIEW_APOLLO_BRIDGE_NAMESPACE = 'react-preview-apollo-bridge';
+
+/** Stable virtual import specifier used to load the no-network Apollo boundary. */
+export const PREVIEW_APOLLO_SPECIFIER = 'react-preview:apollo';
+
 /** Shared metadata marker that prevents nested `build.resolve()` calls from recursing. */
 export const PREVIEW_RESOLVE_GUARD = Symbol('react-preview-resolve-guard');
 
@@ -34,6 +46,8 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_ASSET_NAMESPACE ||
     namespace === PREVIEW_DATA_URL_NAMESPACE ||
     namespace === PREVIEW_SNAPSHOT_NAMESPACE ||
+    namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_SETUP_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_TARGET_BRIDGE_NAMESPACE
   );
 }

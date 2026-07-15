@@ -1,8 +1,10 @@
 .codeidx/**
 .git/**
 .github/**
+.lh/**
 .vscode/**
 coverage/**
+docs/**
 examples/**
 scripts/**
 src/**
@@ -17,4 +19,5 @@ eslint.config.mjs
 tsconfig.json
 vitest.config.ts
 dist/**/*.map
+assets/*.md
 node_modules/esbuild/bin/esbuild

@@ -2,13 +2,28 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Preview the active React component in an isolated VS Code webview without a web server.",
-  "version": "0.1.0",
-  "publisher": "reactpreview",
-  "license": "MIT",
+  "version": "0.1.1001",
+  "publisher": "newdlops",
+  "author": {
+    "name": "newdlops",
+    "url": "https://github.com/newdlops"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://github.com/newdlops/reactpreview#readme",
+  "bugs": {
+    "url": "https://github.com/newdlops/reactpreview/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/newdlops/reactpreview.git"
   },
+  "icon": "assets/icon.png",
+  "galleryBanner": {
+    "color": "#12182F",
+    "theme": "dark"
+  },
+  "preview": true,
+  "pricing": "Free",
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -22,6 +37,7 @@
   "keywords": [
     "react",
     "preview",
+    "component",
     "tsx",
     "jsx",
     "webview"
@@ -62,6 +78,12 @@
           "minimum": 100,
           "maximum": 2000,
           "description": "Milliseconds to wait after an editor change before rebuilding the preview."
+        },
+        "reactPreview.tsconfig": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional workspace-relative tsconfig or jsconfig path used for non-standard module aliases. Leave empty for esbuild's nearest-config discovery."
         }
       }
     }

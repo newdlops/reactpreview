@@ -56,6 +56,30 @@ describe('EsbuildPreviewCompiler', () => {
     expect(javascript).not.toContain('Saved fixture source');
   });
 
+  /** Applies project-source transforms to uppercase extensions accepted by the domain policy. */
+  it('bundles a target with an uppercase TSX extension', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/uppercase-source-preview-'),
+    );
+    const documentPath = path.join(temporaryDirectory, 'Preview.TSX');
+    const sourceText = 'export default function Preview() { return <p>Uppercase TSX source</p>; }';
+
+    try {
+      await writeFile(documentPath, sourceText, 'utf8');
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot: PROJECT_ROOT,
+      });
+
+      expect(new TextDecoder().decode(bundle.javascript)).toContain('Uppercase TSX source');
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   /**
    * Resolves an extensionless circular import back to the same in-memory editor module.
    * Without alias unification, esbuild can bundle a second copy from the saved filesystem file.
@@ -368,6 +392,307 @@ describe('EsbuildPreviewCompiler', () => {
     }
   });
 
+  /**
+   * Expands common Vite/Webpack resource syntax into a finite graph while retaining dirty matches.
+   */
+  it('discovers bounded framework resource macros and dynamic assets', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/static-resource-preview-'),
+    );
+    const pagesDirectory = path.join(temporaryDirectory, 'pages');
+    const assetsDirectory = path.join(temporaryDirectory, 'assets');
+    const publicDirectory = path.join(temporaryDirectory, 'public');
+    const documentPath = path.join(temporaryDirectory, 'Preview.tsx');
+    const pageAPath = path.join(pagesDirectory, 'PageA.tsx');
+    const pageBPath = path.join(pagesDirectory, 'PageB.tsx');
+    const excludedPagePath = path.join(pagesDirectory, 'Excluded.test.tsx');
+    const imagePath = path.join(assetsDirectory, 'logo.png');
+    const modelPath = path.join(assetsDirectory, 'scene.glb');
+    const publicImagePath = path.join(publicDirectory, 'public-logo.png');
+    const publicStylesheetPath = path.join(publicDirectory, 'public-base.css');
+    const stylesheetPath = path.join(temporaryDirectory, 'preview.css');
+    const sourceText = [
+      "import './preview.css';",
+      "const lazyPages = import.meta.glob(['./pages/*.tsx', '!./pages/*.test.tsx'], { import: 'default' });",
+      "const eagerPages = import.meta.glob('./pages/*.tsx', { eager: true, import: 'default' });",
+      "const pageContext = require.context('./pages', false, /Page[A-Z]\\.tsx$/);",
+      "const pageName = 'PageA';",
+      "const imageName = 'logo';",
+      'const loadPage = () => import(`./pages/${pageName}.tsx`);',
+      'const loadImage = () => import(`./assets/${imageName}.png?url`);',
+      "import modelUrl from './assets/scene.glb?url';",
+      "import markedImageUrl from './assets/logo.png?url#asset-fragment';",
+      "const imageUrl = new URL('./assets/logo.png', import.meta.url).href;",
+      "const bareImageUrl = new URL('assets/logo.png?cache=1#preview', import.meta.url).href;",
+      "const publicUrl = new URL('/public-logo.png', import.meta.url).href;",
+      "const environment = import.meta.env.DEV ? import.meta.env.MODE : 'production';",
+      'export default function Preview() {',
+      '  return <main data-env={environment} data-model={modelUrl} data-marked={markedImageUrl} data-image={imageUrl} data-bare-image={bareImageUrl} data-public={publicUrl} data-context={pageContext.keys().length} data-lazy={Object.keys(lazyPages).length} data-eager={Object.keys(eagerPages).length} onClick={() => { void loadPage(); void loadImage(); }} />;',
+      '}',
+    ].join('\n');
+
+    try {
+      await Promise.all([
+        mkdir(pagesDirectory, { recursive: true }),
+        mkdir(assetsDirectory, { recursive: true }),
+        mkdir(publicDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(temporaryDirectory, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          pageAPath,
+          'export default function PageA() { return <p>Saved glob Page A</p>; }',
+          'utf8',
+        ),
+        writeFile(
+          pageBPath,
+          'export default function PageB() { return <p>Static glob Page B</p>; }',
+          'utf8',
+        ),
+        writeFile(
+          excludedPagePath,
+          'export default function Excluded() { return <p>Excluded eager marker</p>; }',
+          'utf8',
+        ),
+        writeFile(imagePath, new Uint8Array([1, 2, 3, 4])),
+        writeFile(modelPath, new Uint8Array([5, 6, 7, 8])),
+        writeFile(publicImagePath, new Uint8Array([9, 10, 11, 12])),
+        writeFile(publicStylesheetPath, '.public-base-marker { color: rgb(1 2 3); }', 'utf8'),
+        writeFile(
+          stylesheetPath,
+          "@import '/public-base.css';\n.preview { background: url('/public-logo.png'); }",
+          'utf8',
+        ),
+      ]);
+
+      const compiler = new EsbuildPreviewCompiler();
+      const bundle = await compiler.compile({
+        dependencySnapshots: [
+          {
+            documentPath: pageAPath,
+            language: 'tsx',
+            sourceText: 'export default function PageA() { return <p>Dirty glob Page A</p>; }',
+          },
+        ],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot: temporaryDirectory,
+      });
+      const javascript = new TextDecoder().decode(bundle.javascript);
+      const stylesheet = new TextDecoder().decode(bundle.stylesheet);
+
+      expect(javascript).toContain('Dirty glob Page A');
+      expect(javascript).not.toContain('Saved glob Page A');
+      expect(javascript).toContain('Static glob Page B');
+      expect(javascript).toContain('development');
+      expect(javascript).not.toContain('import.meta.glob');
+      expect(javascript).not.toMatch(/\brequire\.context\s*\(/u);
+      expect(javascript).toContain('data:application/octet-stream');
+      expect(javascript).toContain('#preview');
+      expect(javascript).toContain('#asset-fragment');
+      expect(javascript).not.toContain('?url#asset-fragment');
+      expect(stylesheet).toContain('data:image/png');
+      expect(stylesheet).toContain('.public-base-marker');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([
+          documentPath,
+          imagePath,
+          modelPath,
+          pageAPath,
+          pageBPath,
+          publicImagePath,
+          publicStylesheetPath,
+          stylesheetPath,
+        ]),
+      );
+      expect(bundle.watchDirectories).toEqual(
+        expect.arrayContaining([assetsDirectory, pagesDirectory]),
+      );
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  /** Applies the same bounded AST discovery to MJS and CommonJS files reached through a package. */
+  it('bundles finite dynamic resources from project modules and dependencies', async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/module-dialects-preview-'),
+    );
+    const packageRoot = path.join(workspaceRoot, 'node_modules', 'bounded-dependency');
+    const localeDirectory = path.join(packageRoot, 'locale');
+    const chunksDirectory = path.join(workspaceRoot, 'chunks');
+    const documentPath = path.join(workspaceRoot, 'Preview.tsx');
+    const loaderPath = path.join(workspaceRoot, 'loader.mjs');
+    const chunkPath = path.join(chunksDirectory, 'feature.mjs');
+    const localePath = path.join(localeDirectory, 'en.cjs');
+    const packageEntryPath = path.join(packageRoot, 'index.cjs');
+    const sourceText = [
+      "import locale from 'bounded-dependency';",
+      "import { loadChunk } from './loader.mjs';",
+      'export default function Preview() {',
+      '  return <button data-locale={locale} onClick={() => void loadChunk("feature")}>Modules</button>;',
+      '}',
+    ].join('\n');
+
+    try {
+      await Promise.all([
+        mkdir(localeDirectory, { recursive: true }),
+        mkdir(chunksDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          loaderPath,
+          "export const loadChunk = (name) => import('./chunks/' + name + '.mjs');",
+          'utf8',
+        ),
+        writeFile(chunkPath, "export default 'MJS_DYNAMIC_RESOURCE';", 'utf8'),
+        writeFile(
+          path.join(packageRoot, 'package.json'),
+          '{"name":"bounded-dependency","main":"index.cjs"}',
+          'utf8',
+        ),
+        writeFile(
+          packageEntryPath,
+          "const language = 'en'; module.exports = module.require('./locale/' + language + '.cjs');",
+          'utf8',
+        ),
+        writeFile(localePath, "module.exports = 'CJS_DYNAMIC_RESOURCE';", 'utf8'),
+      ]);
+
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot,
+      });
+      const javascript = new TextDecoder().decode(bundle.javascript);
+
+      expect(javascript).toContain('MJS_DYNAMIC_RESOURCE');
+      expect(javascript).toContain('CJS_DYNAMIC_RESOURCE');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([chunkPath, loaderPath, localePath, packageEntryPath]),
+      );
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Rejects a public new-URL path before it can escape the workspace public directory. */
+  it('rejects public asset traversal during static URL transformation', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/public-traversal-preview-'),
+    );
+    const documentPath = path.join(temporaryDirectory, 'Preview.tsx');
+    const sourceText = [
+      "const secretUrl = new URL('/../secret.txt', import.meta.url).href;",
+      'export default function Preview() { return <span>{secretUrl}</span>; }',
+    ].join('\n');
+
+    try {
+      await writeFile(documentPath, sourceText, 'utf8');
+      const compiler = new EsbuildPreviewCompiler();
+
+      await expect(
+        compiler.compile({
+          dependencySnapshots: [],
+          documentPath,
+          language: 'tsx',
+          sourceText,
+          workspaceRoot: temporaryDirectory,
+        }),
+      ).rejects.toThrow('must stay inside');
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  /** Uses the nearest package boundary for a nested monorepo app's conventional public directory. */
+  it('resolves public assets from the nearest package in a monorepo workspace', async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/monorepo-public-preview-'),
+    );
+    const projectRoot = path.join(workspaceRoot, 'apps', 'web');
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const publicDirectory = path.join(projectRoot, 'public');
+    const documentPath = path.join(sourceDirectory, 'Preview.tsx');
+    const publicImagePath = path.join(publicDirectory, 'logo.png');
+    const sourceText = [
+      "const logoUrl = new URL('/logo.png', import.meta.url).href;",
+      'export default function Preview() { return <img src={logoUrl} />; }',
+    ].join('\n');
+
+    try {
+      await Promise.all([
+        mkdir(sourceDirectory, { recursive: true }),
+        mkdir(publicDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(publicImagePath, new Uint8Array([1, 2, 3])),
+      ]);
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot,
+      });
+
+      expect(bundle.dependencies).toContain(publicImagePath);
+      expect(new TextDecoder().decode(bundle.javascript)).toContain('data:image/png');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Rejects a workspace-local asset symlink whose canonical target escapes the trusted workspace. */
+  it.runIf(process.platform !== 'win32')(
+    'rejects asset symlink traversal outside the workspace',
+    async () => {
+      const workspaceRoot = await mkdtemp(
+        path.join(PROJECT_ROOT, 'test/fixtures/asset-boundary-preview-'),
+      );
+      const outsideRoot = await mkdtemp(
+        path.join(PROJECT_ROOT, 'test/fixtures/asset-outside-preview-'),
+      );
+      const documentPath = path.join(workspaceRoot, 'Preview.tsx');
+      const linkedAssetPath = path.join(workspaceRoot, 'secret.txt');
+      const outsideAssetPath = path.join(outsideRoot, 'secret.txt');
+      const sourceText = [
+        "import secret from './secret.txt?raw';",
+        'export default function Preview() { return <pre>{secret}</pre>; }',
+      ].join('\n');
+
+      try {
+        await Promise.all([
+          writeFile(documentPath, sourceText, 'utf8'),
+          writeFile(outsideAssetPath, 'OUTSIDE_WORKSPACE_SECRET', 'utf8'),
+        ]);
+        await symlink(outsideAssetPath, linkedAssetPath, 'file');
+
+        await expect(
+          new EsbuildPreviewCompiler().compile({
+            dependencySnapshots: [],
+            documentPath,
+            language: 'tsx',
+            sourceText,
+            workspaceRoot,
+          }),
+        ).rejects.toThrow('outside its trusted project boundary');
+      } finally {
+        await Promise.all([
+          rm(workspaceRoot, { force: true, recursive: true }),
+          rm(outsideRoot, { force: true, recursive: true }),
+        ]);
+      }
+    },
+  );
+
   /** Rejects one oversized inline asset before reading and base64-encoding it into the bundle. */
   it('enforces the per-file inline asset budget', async () => {
     const temporaryDirectory = await mkdtemp(
@@ -447,14 +772,28 @@ describe('EsbuildPreviewCompiler', () => {
       const temporaryDirectory = await mkdtemp(
         path.join(PROJECT_ROOT, 'test/fixtures/symlink-preview-'),
       );
-      const realDocumentPath = path.join(temporaryDirectory, 'RealPreview.tsx');
+      const realDirectory = path.join(temporaryDirectory, 'real');
+      const pagesDirectory = path.join(realDirectory, 'pages');
+      const realDocumentPath = path.join(realDirectory, 'RealPreview.tsx');
       const linkedDocumentPath = path.join(temporaryDirectory, 'LinkedPreview.tsx');
-      const savedSource =
-        'export default function SymlinkPreview() { return <p>Saved symlink source</p>; }';
+      const savedSource = [
+        "const pages = import.meta.glob('./pages/*.tsx', { eager: true });",
+        'export default function SymlinkPreview() {',
+        '  return <p data-pages={Object.keys(pages).length}>Saved symlink source</p>;',
+        '}',
+      ].join('\n');
       const unsavedSource = savedSource.replace('Saved symlink source', 'Unsaved symlink source');
 
       try {
-        await writeFile(realDocumentPath, savedSource, 'utf8');
+        await mkdir(pagesDirectory, { recursive: true });
+        await Promise.all([
+          writeFile(realDocumentPath, savedSource, 'utf8'),
+          writeFile(
+            path.join(pagesDirectory, 'Page.tsx'),
+            'export default function Page() { return <i>Symlink glob page</i>; }',
+            'utf8',
+          ),
+        ]);
         await symlink(realDocumentPath, linkedDocumentPath, 'file');
         const compiler = new EsbuildPreviewCompiler();
         const bundle = await compiler.compile({
@@ -468,6 +807,8 @@ describe('EsbuildPreviewCompiler', () => {
 
         expect(javascript).toContain('Unsaved symlink source');
         expect(javascript).not.toContain('Saved symlink source');
+        expect(javascript).toContain('Symlink glob page');
+        expect(bundle.watchDirectories).toContain(pagesDirectory);
         expect(bundle.dependencies).toContain(linkedDocumentPath);
         expect(canonicalizeExistingPath(linkedDocumentPath)).toBe(
           canonicalizeExistingPath(realDocumentPath),

@@ -2,6 +2,7 @@
  * Bundles the VS Code extension host entry point into one CommonJS file.
  * The `vscode` API and runtime `esbuild` package remain external because VS Code supplies the
  * former and the packaged extension must retain the latter's platform-specific native binary.
+ * TypeScript's parser is bundled so AST resource classification never depends on a user's project.
  */
 import * as esbuild from 'esbuild';
 

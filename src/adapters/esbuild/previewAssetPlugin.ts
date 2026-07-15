@@ -42,10 +42,22 @@ interface ParsedAssetRequest {
   readonly suffix: string;
 }
 
+/** Filesystem request plus the trusted canonical root required after symlink resolution. */
+interface BoundedAssetRequest {
+  /** Local request passed through normal esbuild resolution. */
+  readonly path: string;
+  /** Canonical project boundary that the resolved file must remain within. */
+  readonly requiredRoot?: string;
+}
+
 /** Active path needed when an asset is imported from the target bridge namespace. */
 export interface PreviewAssetPluginOptions {
   /** Absolute active-document path used as the virtual bridge's filesystem importer. */
   readonly documentPath: string;
+  /** Nearest package boundary containing the conventional public directory. */
+  readonly projectRoot: string;
+  /** Trusted workspace boundary applied after filesystem symlinks are resolved. */
+  readonly workspaceRoot: string;
 }
 
 /**
@@ -56,6 +68,9 @@ export interface PreviewAssetPluginOptions {
  */
 export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Plugin {
   const canonicalTargetPath = canonicalizeExistingPath(options.documentPath);
+  const canonicalWorkspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const publicDirectory = path.resolve(options.projectRoot, 'public');
+  const canonicalPublicDirectory = canonicalizeExistingPath(publicDirectory);
   const assetBudget: AssetBudgetState = {
     representations: new Set<string>(),
     totalBytes: 0,
@@ -79,7 +94,8 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
 
         const parsedRequest = parseAssetRequest(arguments_.path);
         const mode = selectAssetMode(arguments_, parsedRequest);
-        if (mode === undefined) {
+        const resolvesPublicStylesheet = isPublicStylesheetImport(arguments_, parsedRequest);
+        if (mode === undefined && !resolvesPublicStylesheet) {
           return undefined;
         }
 
@@ -88,7 +104,30 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
           arguments_.namespace === PREVIEW_TARGET_BRIDGE_NAMESPACE
             ? canonicalTargetPath
             : canonicalizeExistingPath(arguments_.importer);
-        const resolved = await build.resolve(parsedRequest.path, {
+        let boundedRequest: BoundedAssetRequest;
+        try {
+          boundedRequest = resolveAssetRequestPath({
+            canonicalPublicDirectory,
+            canonicalWorkspaceRoot,
+            importerIsWorkspaceOwned: isPathInside(
+              canonicalWorkspaceRoot,
+              canonicalizeExistingPath(virtualImporter),
+            ),
+            publicDirectory,
+            requestPath: parsedRequest.path,
+            workspaceRoot: options.workspaceRoot,
+          });
+        } catch (error) {
+          return {
+            errors: [
+              {
+                detail: error,
+                text: error instanceof Error ? error.message : 'Invalid preview asset path.',
+              },
+            ],
+          };
+        }
+        const resolved = await build.resolve(boundedRequest.path, {
           importer: fromVirtualModule ? virtualImporter : arguments_.importer,
           kind: arguments_.kind,
           namespace: fromVirtualModule ? 'file' : arguments_.namespace,
@@ -121,6 +160,30 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
           };
         }
 
+        if (
+          boundedRequest.requiredRoot !== undefined &&
+          !isPathInside(boundedRequest.requiredRoot, canonicalizeExistingPath(resolved.path))
+        ) {
+          return {
+            errors: [
+              {
+                text: `Preview asset resolved outside its trusted project boundary: ${arguments_.path}`,
+              },
+            ],
+          };
+        }
+
+        if (mode === undefined) {
+          return {
+            namespace: resolved.namespace,
+            path: resolved.path,
+            pluginData: resolved.pluginData as unknown,
+            sideEffects: resolved.sideEffects,
+            suffix: resolved.suffix,
+            warnings: resolved.warnings,
+          };
+        }
+
         const policyError = await reserveAssetBudget(
           resolved.path,
           parsedRequest.suffix,
@@ -146,7 +209,8 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
             urlFragment: extractUrlFragment(parsedRequest.suffix),
           } satisfies PreviewAssetPluginData,
           sideEffects: resolved.sideEffects,
-          suffix: parsedRequest.suffix,
+          suffix:
+            mode === 'data-url' ? extractUrlFragment(parsedRequest.suffix) : parsedRequest.suffix,
           warnings: resolved.warnings,
         };
       }
@@ -190,6 +254,79 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
       build.onLoad({ filter: /.*/, namespace: PREVIEW_DATA_URL_NAMESPACE }, loadPreviewAsset);
     },
   };
+}
+
+/** Reports whether a root-relative CSS `@import` needs public-directory path mapping only. */
+function isPublicStylesheetImport(arguments_: OnResolveArgs, request: ParsedAssetRequest): boolean {
+  return (
+    arguments_.kind === 'import-rule' &&
+    request.path.startsWith('/') &&
+    request.path.toLowerCase().endsWith('.css')
+  );
+}
+
+/**
+ * Maps root-relative browser assets to the conventional workspace `public` directory while
+ * preserving workspace-contained absolute paths and rejecting traversal outside trusted roots.
+ *
+ * @param options Request identity, importer ownership, and lexical/canonical project boundaries.
+ * @returns Resolution path plus the boundary that must still hold after symlinks are followed.
+ */
+function resolveAssetRequestPath(options: {
+  readonly canonicalPublicDirectory: string;
+  readonly canonicalWorkspaceRoot: string;
+  readonly importerIsWorkspaceOwned: boolean;
+  readonly publicDirectory: string;
+  readonly requestPath: string;
+  readonly workspaceRoot: string;
+}): BoundedAssetRequest {
+  const normalizedWorkspaceRoot = path.resolve(options.workspaceRoot);
+  if (
+    path.isAbsolute(options.requestPath) &&
+    isPathInside(normalizedWorkspaceRoot, options.requestPath)
+  ) {
+    return {
+      path: path.resolve(options.requestPath),
+      requiredRoot: options.canonicalWorkspaceRoot,
+    };
+  }
+  if (path.isAbsolute(options.requestPath) && !options.requestPath.startsWith('/')) {
+    throw new Error(
+      `Preview absolute asset paths must stay inside ${normalizedWorkspaceRoot}: ${options.requestPath}`,
+    );
+  }
+
+  if (options.requestPath.startsWith('/')) {
+    if (!isPathInside(options.canonicalWorkspaceRoot, options.canonicalPublicDirectory)) {
+      throw new Error(
+        `Preview public directory must stay inside ${normalizedWorkspaceRoot}: ${options.publicDirectory}`,
+      );
+    }
+    const publicAssetPath = path.resolve(options.publicDirectory, options.requestPath.slice(1));
+    if (!isPathInside(options.publicDirectory, publicAssetPath)) {
+      throw new Error(
+        `Preview public asset paths must stay inside ${options.publicDirectory}: ${options.requestPath}`,
+      );
+    }
+    return { path: publicAssetPath, requiredRoot: options.canonicalPublicDirectory };
+  }
+
+  const isRelativeRequest =
+    options.requestPath.startsWith('./') || options.requestPath.startsWith('../');
+  return {
+    path: options.requestPath,
+    ...(isRelativeRequest && options.importerIsWorkspaceOwned
+      ? { requiredRoot: options.canonicalWorkspaceRoot }
+      : {}),
+  };
+}
+
+/** Reports whether one absolute path is equal to or contained by an absolute directory. */
+function isPathInside(directoryPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(directoryPath, path.resolve(candidatePath));
+  return (
+    relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
+  );
 }
 
 /**
@@ -239,6 +376,10 @@ function selectAssetMode(
     : undefined;
   if (query?.has('raw') === true) {
     return 'raw';
+  }
+
+  if (query?.has('url') === true) {
+    return 'data-url';
   }
 
   const isSvg = request.path.toLowerCase().endsWith('.svg');

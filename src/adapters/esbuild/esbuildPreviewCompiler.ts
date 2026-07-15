@@ -21,9 +21,11 @@ import {
   type PreviewDiagnostic,
   type PreviewDiagnosticLocation,
 } from '../../domain/preview';
+import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
+import { findPreviewProjectRoot } from './previewProjectRoot';
 import {
   PREVIEW_ASSET_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
@@ -31,7 +33,8 @@ import {
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
 } from './previewPluginProtocol';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
-import { createWorkspaceSnapshotPlugin } from './workspaceSnapshotPlugin';
+import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
+import { createWorkspaceSourcePlugin } from './workspaceSourcePlugin';
 
 const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
 const MAX_PREVIEW_OUTPUT_BYTES = 32 * 1024 * 1024;
@@ -55,11 +58,27 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     }
 
     try {
+      const canonicalWorkspaceRoot = canonicalizeExistingPath(request.workspaceRoot);
+      const projectRoot = await findPreviewProjectRoot(
+        canonicalizeExistingPath(request.documentPath),
+        canonicalWorkspaceRoot,
+      );
+      const sourceTransformer = new PreviewSourceTransformer({
+        projectRoot,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
       const result = await build({
         absWorkingDir: request.workspaceRoot,
         bundle: true,
         charset: 'utf8',
         define: {
+          'import.meta.env': JSON.stringify({
+            BASE_URL: '/',
+            DEV: true,
+            MODE: 'development',
+            PROD: false,
+            SSR: false,
+          }),
           'process.env.NODE_ENV': '"development"',
         },
         entryNames: 'entry',
@@ -73,8 +92,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         platform: 'browser',
         plugins: [
           createPreviewTargetBridgePlugin({ documentPath: request.documentPath }),
-          createPreviewAssetPlugin({ documentPath: request.documentPath }),
-          createWorkspaceSnapshotPlugin({
+          createPreviewAssetPlugin({
+            documentPath: request.documentPath,
+            projectRoot,
+            workspaceRoot: canonicalWorkspaceRoot,
+          }),
+          createWorkspaceSourcePlugin({
             snapshots: [
               {
                 documentPath: request.documentPath,
@@ -83,6 +106,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               },
               ...request.dependencySnapshots,
             ],
+            transformer: sourceTransformer,
           }),
         ],
         sourcemap: false,
@@ -99,7 +123,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         write: false,
       });
 
-      return createPreviewBundle(request, result);
+      return createPreviewBundle(request, result, sourceTransformer.getWatchDirectories());
     } catch (error) {
       if (error instanceof PreviewCompilationError) {
         throw error;
@@ -150,6 +174,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
 function createPreviewBundle(
   request: PreviewBuildRequest,
   result: BuildResult<{ metafile: true; write: false }>,
+  watchDirectories: readonly string[],
 ): PreviewBundle {
   assertOutputSize(result.outputFiles);
   const javascriptFile = findOutputFile(result.outputFiles, '.js');
@@ -162,6 +187,7 @@ function createPreviewBundle(
     dependencies: collectDependencies(request, result.metafile),
     diagnostics: result.warnings.map((message) => convertMessage(message, 'warning')),
     javascript: javascriptFile.contents,
+    watchDirectories,
   };
 
   return stylesheetFile === undefined

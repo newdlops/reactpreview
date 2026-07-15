@@ -11,6 +11,10 @@ describe('preview target policy', () => {
     ['Component.JSX', 'jsx'],
     ['component.ts', 'ts'],
     ['component.js', 'jsx'],
+    ['component.mts', 'ts'],
+    ['component.CTS', 'ts'],
+    ['component.mjs', 'jsx'],
+    ['component.CJS', 'jsx'],
   ] as const)('maps %s to %s', (filePath, expectedLanguage) => {
     expect(getPreviewSourceLanguage(filePath)).toBe(expectedLanguage);
     expect(isPreviewSourcePath(filePath)).toBe(true);

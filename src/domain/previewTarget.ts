@@ -6,15 +6,20 @@
 import type { PreviewSourceLanguage } from './preview';
 
 const SOURCE_LANGUAGE_BY_EXTENSION = {
+  '.cjs': 'jsx',
+  '.cts': 'ts',
   '.js': 'jsx',
   '.jsx': 'jsx',
+  '.mjs': 'jsx',
+  '.mts': 'ts',
   '.ts': 'ts',
   '.tsx': 'tsx',
 } as const satisfies Readonly<Record<string, PreviewSourceLanguage>>;
 
 /**
  * Resolves the esbuild source language for a candidate React module path.
- * Matching is case-insensitive and intentionally limited to the MVP's four documented formats.
+ * Matching is case-insensitive and includes Node's module-kind variants so reachable project
+ * dependencies cannot bypass the same bounded source analysis used by ordinary JS/TS modules.
  *
  * @param documentPath Candidate absolute or relative document path.
  * @returns A supported source language, or `undefined` when the extension is unsupported.

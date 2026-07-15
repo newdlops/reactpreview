@@ -378,6 +378,39 @@ describe('PreviewController', () => {
     controller.dispose();
   });
 
+  /** Rebuilds a pinned panel when either project runtime setup setting changes for its resource. */
+  it('routes setup configuration changes to existing sessions', async () => {
+    vi.useFakeTimers();
+    const target = createTarget('/workspace/src/Configured.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    const execute = vi.fn(() => Promise.resolve(createPreparedPreview(target, 'configured')));
+    const controller = new PreviewController(
+      { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    execute.mockClear();
+
+    for (const changedSetting of ['reactPreview.setupFile', 'reactPreview.useStorybookPreview']) {
+      vscodeState.configurationListeners[0]?.({
+        affectsConfiguration: (section) => section === changedSetting,
+      });
+      await vi.advanceTimersByTimeAsync(300);
+      await vi.waitFor(() => {
+        expect(execute).toHaveBeenCalledTimes(1);
+      });
+      execute.mockClear();
+    }
+
+    controller.dispose();
+  });
+
   /** Converts a rejected pinned-document lookup into a panel error and releases its old artifact. */
   it('contains pinned target resolution failures inside the affected session', async () => {
     const target = createTarget('/workspace/src/Unavailable.tsx');

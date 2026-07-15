@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1002",
+  "version": "0.1.1004",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -84,6 +84,18 @@
           "default": "",
           "scope": "resource",
           "description": "Optional workspace-relative tsconfig or jsconfig path used for non-standard module aliases. Leave empty for esbuild's nearest-config discovery."
+        },
+        "reactPreview.setupFile": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional workspace-relative JS/TS module that initializes preview globals and exports PreviewProviders or preview props. It replaces automatic Storybook preview reuse."
+        },
+        "reactPreview.useStorybookPreview": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Reuse the nearest .storybook/preview module's global decorators when no explicit setupFile is configured. Storybook server and main configuration are never executed."
         }
       }
     }

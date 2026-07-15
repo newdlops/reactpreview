@@ -14,9 +14,11 @@ import {
 const vscodeState = vi.hoisted(() => ({
   activeTextEditor: undefined as { document: unknown } | undefined,
   openTextDocument: vi.fn(),
+  setupFile: '',
   textDocuments: [] as unknown[],
   trusted: true,
   tsconfig: '',
+  useStorybookPreview: true,
 }));
 
 vi.mock('vscode', () => {
@@ -69,7 +71,18 @@ vi.mock('vscode', () => {
         return vscodeState.textDocuments;
       },
       getConfiguration: () => ({
-        get: (_key: string, fallback: string): string => vscodeState.tsconfig || fallback,
+        get: <T>(key: string, fallback: T): T => {
+          if (key === 'setupFile') {
+            return (vscodeState.setupFile || fallback) as T;
+          }
+          if (key === 'tsconfig') {
+            return (vscodeState.tsconfig || fallback) as T;
+          }
+          if (key === 'useStorybookPreview') {
+            return vscodeState.useStorybookPreview as T;
+          }
+          return fallback;
+        },
       }),
       getWorkspaceFolder: (uri: FakeUri): unknown => {
         if (uri.fsPath.startsWith('/workspace/')) {
@@ -85,9 +98,11 @@ vi.mock('vscode', () => {
 afterEach(() => {
   vscodeState.activeTextEditor = undefined;
   vscodeState.openTextDocument.mockReset();
+  vscodeState.setupFile = '';
   vscodeState.textDocuments = [];
   vscodeState.trusted = true;
   vscodeState.tsconfig = '';
+  vscodeState.useStorybookPreview = true;
 });
 
 describe('resolveActivePreviewTarget', () => {
@@ -99,7 +114,9 @@ describe('resolveActivePreviewTarget', () => {
     const unrelatedDirtyChild = createDocument('/other/Other.tsx', true, 'other workspace source');
     vscodeState.activeTextEditor = { document: activeDocument };
     vscodeState.textDocuments = [activeDocument, dirtyChild, cleanChild, unrelatedDirtyChild];
+    vscodeState.setupFile = '.react-preview/setup.tsx';
     vscodeState.tsconfig = 'tsconfig.app.json';
+    vscodeState.useStorybookPreview = false;
 
     const target = resolveActivePreviewTarget();
 
@@ -116,6 +133,10 @@ describe('resolveActivePreviewTarget', () => {
       },
     ]);
     expect(target.request.tsconfigPath).toBe(path.join('/workspace', 'tsconfig.app.json'));
+    expect(target.request.setupModulePath).toBe(
+      path.join('/workspace', '.react-preview/setup.tsx'),
+    );
+    expect(target.request.useStorybookPreview).toBe(false);
     expect(target.documentUri.fsPath).toBe(activeDocument.fileName);
     expect(target.documentName).toBe('src/Preview.tsx');
   });

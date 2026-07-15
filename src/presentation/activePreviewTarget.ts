@@ -99,15 +99,16 @@ export function resolvePreviewTarget(
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
   const workspaceRoot = workspaceFolder?.uri.fsPath ?? path.dirname(document.fileName);
   const workspaceRelativeName = path.relative(workspaceRoot, document.fileName);
-  const configuredTsconfig = vscode.workspace
-    .getConfiguration('reactPreview', document.uri)
-    .get<string>('tsconfig', '')
-    .trim();
+  const previewConfiguration = vscode.workspace.getConfiguration('reactPreview', document.uri);
+  const configuredSetupFile = previewConfiguration.get<string>('setupFile', '').trim();
+  const configuredTsconfig = previewConfiguration.get<string>('tsconfig', '').trim();
+  const useStorybookPreview = previewConfiguration.get<boolean>('useStorybookPreview', true);
   const baseRequest = {
     dependencySnapshots: collectDirtyDependencySnapshots(document, workspaceFolder),
     documentPath: document.fileName,
     language,
     sourceText: document.getText(),
+    useStorybookPreview,
     workspaceRoot,
   };
   return {
@@ -116,13 +117,15 @@ export function resolvePreviewTarget(
         ? path.basename(document.fileName)
         : workspaceRelativeName,
     documentUri: document.uri,
-    request:
-      configuredTsconfig.length === 0
-        ? baseRequest
-        : {
-            ...baseRequest,
-            tsconfigPath: path.resolve(workspaceRoot, configuredTsconfig),
-          },
+    request: {
+      ...baseRequest,
+      ...(configuredSetupFile.length === 0
+        ? {}
+        : { setupModulePath: path.resolve(workspaceRoot, configuredSetupFile) }),
+      ...(configuredTsconfig.length === 0
+        ? {}
+        : { tsconfigPath: path.resolve(workspaceRoot, configuredTsconfig) }),
+    },
   };
 }
 

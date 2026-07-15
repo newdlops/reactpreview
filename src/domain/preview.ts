@@ -30,8 +30,12 @@ export interface PreviewBuildRequest {
   readonly language: PreviewSourceLanguage;
   /** Complete current editor contents, including unsaved changes. */
   readonly sourceText: string;
+  /** Optional project module that initializes globals and supplies preview providers or props. */
+  readonly setupModulePath?: string;
   /** Optional explicit tsconfig/jsconfig path for non-standard project layouts and aliases. */
   readonly tsconfigPath?: string;
+  /** Whether the compiler may reuse the nearest Storybook preview configuration when no setup exists. */
+  readonly useStorybookPreview?: boolean;
   /** Absolute project directory from which package and tsconfig resolution begins. */
   readonly workspaceRoot: string;
 }
@@ -60,7 +64,7 @@ export interface PreviewDiagnostic {
 
 /** In-memory browser artifacts produced by a preview compiler. */
 export interface PreviewBundle {
-  /** Absolute input paths from the module graph, used for future targeted rebuilds. */
+  /** Absolute graph inputs and bounded convention candidates used for future targeted rebuilds. */
   readonly dependencies: readonly string[];
   /** Non-fatal diagnostics returned by a successful build. */
   readonly diagnostics: readonly PreviewDiagnostic[];

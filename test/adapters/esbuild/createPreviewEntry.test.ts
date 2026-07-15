@@ -31,6 +31,10 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('findGlobalPropertyDescriptor');
     expect(entry).toContain('"storybook" !== \'none\' && globalThis.global === undefined');
     expect(entry).toContain('PreviewErrorBoundary');
+    expect(entry).toContain('runtimeDiagnosticRules');
+    expect(entry).toContain('React Redux provider required');
+    expect(entry).toContain('Project runtime setup required');
+    expect(entry).toContain('MAX_RUNTIME_ERROR_DETAILS = 12000');
     expect(entry).toContain('apolloBridge.createApolloPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'apolloPreview')");
     expect(entry).toContain("window.addEventListener('unhandledrejection'");

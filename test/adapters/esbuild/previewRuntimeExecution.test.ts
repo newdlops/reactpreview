@@ -358,6 +358,88 @@ describe('generated preview runtime execution', () => {
       await rm(projectRoot, { force: true, recursive: true });
     }
   });
+
+  /**
+   * Distinguishes a successful bundle with a missing app-root context from compilation failure and
+   * retains the original branded error beneath generic recovery guidance.
+   */
+  it('renders actionable guidance for a missing React Redux context', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/runtime-redux-diagnostic-preview-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const documentPath = path.join(sourceDirectory, 'ReduxRuntimePreview.tsx');
+    const sourceText = [
+      'export default function ReduxRuntimePreview() {',
+      "  throw new Error('could not find react-redux context value; please ensure the component is wrapped in a <Provider>');",
+      '}',
+    ].join('\n');
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(documentPath, sourceText, 'utf8'),
+      ]);
+      const bundle = await build({
+        absWorkingDir: projectRoot,
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        jsx: 'automatic',
+        legalComments: 'none',
+        loader: PREVIEW_SOURCE_LOADERS,
+        logLevel: 'silent',
+        platform: 'browser',
+        plugins: [
+          createTestDomClientPlugin(),
+          createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewSetupBridgePlugin({}),
+          createPreviewTargetBridgePlugin({ documentPath }),
+        ],
+        stdin: {
+          contents: createPreviewEntry({
+            documentName: 'src/ReduxRuntimePreview.tsx',
+            globalNamespaces: [],
+            setupKind: 'none',
+          }),
+          loader: 'tsx',
+          resolveDir: sourceDirectory,
+          sourcefile: '<runtime-redux-diagnostic-entry>',
+        },
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = bundle.outputFiles[0]?.text;
+      if (javascript === undefined) {
+        throw new Error('The Redux diagnostic fixture did not emit a JavaScript bundle.');
+      }
+
+      const mountNode = createRuntimeMountNode();
+      const sandbox: Record<string, unknown> = {
+        addEventListener: (): undefined => undefined,
+        clearTimeout,
+        console,
+        document: createRuntimeDocument(mountNode),
+        queueMicrotask,
+        setTimeout,
+      };
+      sandbox.window = sandbox;
+      const context = createContext(sandbox);
+
+      runInContext(javascript, context, { timeout: 10_000 });
+      await waitForRenderedMarkup(mountNode);
+
+      expect(mountNode.innerHTML).toContain('React Redux provider required');
+      expect(mountNode.innerHTML).toContain('The component bundle loaded');
+      expect(mountNode.innerHTML).toContain('Preview setup: none');
+      expect(mountNode.innerHTML).toContain('Original error:');
+      expect(mountNode.innerHTML).toContain('could not find react-redux context value');
+      expect(mountNode.innerHTML).not.toContain('/node_modules/react-redux');
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
 });
 
 /**

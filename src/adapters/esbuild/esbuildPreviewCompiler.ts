@@ -23,21 +23,33 @@ import {
 } from '../../domain/preview';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
+import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import {
   PREVIEW_ASSET_NAMESPACE,
+  PREVIEW_APOLLO_BRIDGE_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_SETUP_BRIDGE_NAMESPACE,
   PREVIEW_SNAPSHOT_NAMESPACE,
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
 } from './previewPluginProtocol';
+import {
+  createPreviewRuntimeWatchInputs,
+  resolvePreviewRuntimeEnvironment,
+  type PreviewRuntimeEnvironment,
+} from './previewRuntimeEnvironment';
+import { createPreviewSetupBridgePlugin } from './previewSetupBridgePlugin';
+import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
+import { selectPreviewTargetExport } from './previewTargetExports';
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
 import { createWorkspaceSourcePlugin } from './workspaceSourcePlugin';
 
 const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
 const MAX_PREVIEW_OUTPUT_BYTES = 32 * 1024 * 1024;
+const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
 
 /** esbuild-backed compiler for browser-safe React preview bundles. */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
@@ -63,67 +75,166 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         canonicalizeExistingPath(request.documentPath),
         canonicalWorkspaceRoot,
       );
-      const sourceTransformer = new PreviewSourceTransformer({
+      const targetExport = selectPreviewTargetExport(request.documentPath, request.sourceText);
+      const runtimeEnvironment = await resolvePreviewRuntimeEnvironment({
+        ...(request.setupModulePath === undefined
+          ? {}
+          : { configuredSetupPath: request.setupModulePath }),
         projectRoot,
+        useStorybookPreview: request.useStorybookPreview ?? true,
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      const result = await build({
-        absWorkingDir: request.workspaceRoot,
-        bundle: true,
-        charset: 'utf8',
-        define: {
-          'import.meta.env': JSON.stringify({
-            BASE_URL: '/',
-            DEV: true,
-            MODE: 'development',
-            PROD: false,
-            SSR: false,
-          }),
-          'process.env.NODE_ENV': '"development"',
-        },
-        entryNames: 'entry',
-        format: 'esm',
-        jsx: 'automatic',
-        legalComments: 'none',
-        loader: PREVIEW_SOURCE_LOADERS,
-        logLevel: 'silent',
-        metafile: true,
-        outdir: 'react-preview-output',
-        platform: 'browser',
-        plugins: [
-          createPreviewTargetBridgePlugin({ documentPath: request.documentPath }),
-          createPreviewAssetPlugin({
-            documentPath: request.documentPath,
-            projectRoot,
-            workspaceRoot: canonicalWorkspaceRoot,
-          }),
-          createWorkspaceSourcePlugin({
-            snapshots: [
-              {
-                documentPath: request.documentPath,
-                language: request.language,
-                sourceText: request.sourceText,
-              },
-              ...request.dependencySnapshots,
-            ],
-            transformer: sourceTransformer,
-          }),
-        ],
-        sourcemap: false,
-        splitting: false,
-        stdin: {
-          contents: createPreviewEntry(),
-          loader: 'tsx',
-          resolveDir: path.dirname(request.documentPath),
-          sourcefile: VIRTUAL_ENTRY_NAME,
-        },
-        target: 'es2022',
-        treeShaking: true,
-        ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
-        write: false,
-      });
+      const runtimeWatchInputs = await createPreviewRuntimeWatchInputs(
+        projectRoot,
+        canonicalWorkspaceRoot,
+      );
+      const storybookFallbackBoundary =
+        runtimeEnvironment.setupKind === 'storybook' &&
+        runtimeEnvironment.setupModulePath !== undefined
+          ? new PreviewSetupFallbackBoundary(
+              runtimeEnvironment.setupModulePath,
+              projectRoot,
+              canonicalWorkspaceRoot,
+            )
+          : undefined;
+      /** Executes one isolated build so a broken automatic Storybook setup cannot consume retry state. */
+      const runBuild = async (
+        environment: PreviewRuntimeEnvironment,
+        fallbackBoundary?: PreviewSetupFallbackBoundary,
+      ): Promise<{
+        readonly result: BuildResult<{ metafile: true; write: false }>;
+        readonly watchDirectories: readonly string[];
+      }> => {
+        const sourceTransformer = new PreviewSourceTransformer({
+          projectRoot,
+          workspaceRoot: canonicalWorkspaceRoot,
+        });
+        const result = await build({
+          absWorkingDir: request.workspaceRoot,
+          bundle: true,
+          charset: 'utf8',
+          define: {
+            'import.meta.env': JSON.stringify({
+              BASE_URL: '/',
+              DEV: true,
+              MODE: 'development',
+              PROD: false,
+              SSR: false,
+            }),
+            'process.env.NODE_ENV': '"development"',
+          },
+          entryNames: 'entry',
+          format: 'esm',
+          jsx: 'automatic',
+          legalComments: 'none',
+          loader: PREVIEW_SOURCE_LOADERS,
+          logLevel: 'silent',
+          metafile: true,
+          outdir: 'react-preview-output',
+          platform: 'browser',
+          plugins: [
+            createPreviewApolloBridgePlugin({ projectRoot }),
+            createPreviewSetupBridgePlugin({
+              ...(environment.setupModulePath === undefined
+                ? {}
+                : { setupModulePath: environment.setupModulePath }),
+            }),
+            createPreviewTargetBridgePlugin({
+              documentPath: request.documentPath,
+              exportName: targetExport.exportName,
+            }),
+            ...(fallbackBoundary === undefined ? [] : [fallbackBoundary.plugin]),
+            createPreviewAssetPlugin({
+              documentPath: request.documentPath,
+              projectRoot,
+              workspaceRoot: canonicalWorkspaceRoot,
+            }),
+            createWorkspaceSourcePlugin({
+              snapshots: [
+                {
+                  documentPath: request.documentPath,
+                  language: request.language,
+                  sourceText: request.sourceText,
+                },
+                ...request.dependencySnapshots,
+              ],
+              transformer: sourceTransformer,
+            }),
+          ],
+          sourcemap: false,
+          splitting: false,
+          stdin: {
+            contents: createPreviewEntry({
+              documentName: createPreviewDocumentName(request),
+              globalNamespaces: environment.globalNamespaces,
+              setupKind: environment.setupKind,
+            }),
+            loader: 'tsx',
+            resolveDir: path.dirname(request.documentPath),
+            sourcefile: VIRTUAL_ENTRY_NAME,
+          },
+          target: 'es2022',
+          treeShaking: true,
+          ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
+          write: false,
+        });
+        assertOutputSize(result.outputFiles);
+        return {
+          result,
+          watchDirectories: mergePreviewWatchDirectories(
+            sourceTransformer.getWatchDirectories(),
+            runtimeWatchInputs.watchDirectories,
+          ),
+        };
+      };
 
-      return createPreviewBundle(request, result, sourceTransformer.getWatchDirectories());
+      let buildExecution: Awaited<ReturnType<typeof runBuild>>;
+      let fallbackDependencies: readonly string[] = [];
+      let fallbackWatchDirectories: readonly string[] = [];
+      let fallbackDiagnostics: readonly PreviewDiagnostic[] = [];
+      try {
+        buildExecution = await runBuild(runtimeEnvironment, storybookFallbackBoundary);
+      } catch (error) {
+        if (!isBuildFailure(error)) {
+          throw error;
+        }
+        if (storybookFallbackBoundary?.shouldRetry(error.errors, request.workspaceRoot) !== true) {
+          throw error;
+        }
+
+        const setupFailureMessage = error.errors[0]?.text ?? 'unknown setup error';
+        const fallbackWatchInputs = await storybookFallbackBoundary.createWatchInputs(
+          error.errors,
+          request.workspaceRoot,
+        );
+        fallbackDependencies = fallbackWatchInputs.dependencyPaths;
+        fallbackWatchDirectories = fallbackWatchInputs.watchDirectories;
+        fallbackDiagnostics = [
+          {
+            message: `Automatic Storybook preview setup was skipped because it could not be bundled: ${restorePrivateNamespaces(setupFailureMessage)}. Configure reactPreview.setupFile or add .react-preview/setup.tsx for this project.${storybookFallbackBoundary.requiresManualRefresh ? ' Refresh this preview manually after fixing a missing package or alias import.' : ''}`,
+            severity: 'warning',
+          },
+        ];
+        buildExecution = await runBuild({
+          globalNamespaces: runtimeEnvironment.globalNamespaces,
+          setupKind: 'none',
+        });
+        buildExecution = {
+          ...buildExecution,
+          watchDirectories: mergePreviewWatchDirectories(
+            buildExecution.watchDirectories,
+            fallbackWatchDirectories,
+          ),
+        };
+      }
+
+      return createPreviewBundle(
+        request,
+        buildExecution.result,
+        buildExecution.watchDirectories,
+        fallbackDiagnostics,
+        [...runtimeWatchInputs.dependencyPaths, ...fallbackDependencies],
+      );
     } catch (error) {
       if (error instanceof PreviewCompilationError) {
         throw error;
@@ -165,16 +276,56 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
 }
 
 /**
+ * Creates a stable setup/decorator title without exposing a path outside the selected workspace.
+ *
+ * @param request Compilation request containing target and workspace identities.
+ * @returns Workspace-relative target name, or the basename when the target is outside that root.
+ */
+function createPreviewDocumentName(request: PreviewBuildRequest): string {
+  const relativeName = path.relative(request.workspaceRoot, request.documentPath);
+  return relativeName.length > 0 && !relativeName.startsWith('..') && !path.isAbsolute(relativeName)
+    ? relativeName.split(path.sep).join('/')
+    : path.basename(request.documentPath);
+}
+
+/**
+ * Merges resource-macro and runtime-convention watch roots under one documented build limit.
+ *
+ * @param resourceDirectories Directories produced by bounded static resource expansion.
+ * @param runtimeDirectories Fixed project setup, Storybook, and public convention directories.
+ * @returns Sorted unique watch directories for one pinned preview session.
+ * @throws PreviewCompilationError when the combined graph exceeds the lightweight watcher budget.
+ */
+function mergePreviewWatchDirectories(
+  resourceDirectories: readonly string[],
+  runtimeDirectories: readonly string[],
+): readonly string[] {
+  const directories = [...new Set([...resourceDirectories, ...runtimeDirectories])].sort();
+  if (directories.length > MAX_PREVIEW_WATCH_DIRECTORIES) {
+    throw new PreviewCompilationError(
+      `Preview build exceeds the ${MAX_PREVIEW_WATCH_DIRECTORIES.toString()} watch directory safety limit.`,
+      [],
+    );
+  }
+  return directories;
+}
+
+/**
  * Converts an esbuild result into the infrastructure-independent bundle model.
  *
  * @param request Original request used to restore the custom document namespace to its file path.
  * @param result Successful esbuild result with output files and metadata enabled.
+ * @param watchDirectories Static resource roots whose future additions can affect this build.
+ * @param additionalDiagnostics Adapter warnings produced outside esbuild's successful result.
+ * @param additionalDependencies Setup files retained after an automatic environment fallback.
  * @returns Validated preview bundle containing one JavaScript output and optional CSS.
  */
 function createPreviewBundle(
   request: PreviewBuildRequest,
   result: BuildResult<{ metafile: true; write: false }>,
   watchDirectories: readonly string[],
+  additionalDiagnostics: readonly PreviewDiagnostic[] = [],
+  additionalDependencies: readonly string[] = [],
 ): PreviewBundle {
   assertOutputSize(result.outputFiles);
   const javascriptFile = findOutputFile(result.outputFiles, '.js');
@@ -184,8 +335,16 @@ function createPreviewBundle(
 
   const stylesheetFile = findOutputFile(result.outputFiles, '.css');
   const baseBundle = {
-    dependencies: collectDependencies(request, result.metafile),
-    diagnostics: result.warnings.map((message) => convertMessage(message, 'warning')),
+    dependencies: [
+      ...new Set([
+        ...collectDependencies(request, result.metafile),
+        ...additionalDependencies.map((dependency) => path.normalize(dependency)),
+      ]),
+    ].sort(),
+    diagnostics: [
+      ...additionalDiagnostics,
+      ...result.warnings.map((message) => convertMessage(message, 'warning')),
+    ],
     javascript: javascriptFile.contents,
     watchDirectories,
   };
@@ -253,6 +412,8 @@ function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): 
       (inputPath) =>
         !inputPath.startsWith('<') &&
         !inputPath.endsWith(VIRTUAL_ENTRY_NAME) &&
+        !inputPath.startsWith(`${PREVIEW_APOLLO_BRIDGE_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_SETUP_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_TARGET_BRIDGE_NAMESPACE}:`),
     )
     .map((inputPath) => {
@@ -277,7 +438,9 @@ function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): 
 function removeFileBackedPreviewNamespace(inputPath: string): string {
   for (const namespace of [
     PREVIEW_ASSET_NAMESPACE,
+    PREVIEW_APOLLO_BRIDGE_NAMESPACE,
     PREVIEW_DATA_URL_NAMESPACE,
+    PREVIEW_SETUP_BRIDGE_NAMESPACE,
     PREVIEW_SNAPSHOT_NAMESPACE,
   ]) {
     const prefix = `${namespace}:`;
@@ -376,7 +539,9 @@ function restorePreviewFilePath(file: string): string {
 function restorePrivateNamespaces(text: string): string {
   return [
     PREVIEW_ASSET_NAMESPACE,
+    PREVIEW_APOLLO_BRIDGE_NAMESPACE,
     PREVIEW_DATA_URL_NAMESPACE,
+    PREVIEW_SETUP_BRIDGE_NAMESPACE,
     PREVIEW_SNAPSHOT_NAMESPACE,
     PREVIEW_TARGET_BRIDGE_NAMESPACE,
   ].reduce((restoredText, namespace) => restoredText.replaceAll(`${namespace}:`, ''), text);

@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1005",
+  "version": "0.1.1006",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -89,7 +89,7 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Optional workspace-relative JS/TS module that initializes preview globals and exports PreviewProviders or preview props. It replaces automatic Storybook preview reuse."
+          "description": "Optional workspace-relative JS/TS module that initializes preview globals and exports providers, props, or static bridge data. It replaces automatic Storybook preview reuse."
         },
         "reactPreview.useStorybookPreview": {
           "type": "boolean",

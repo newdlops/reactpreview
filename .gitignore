@@ -1,0 +1,14 @@
+# Dependencies and generated build output.
+node_modules/
+dist/
+coverage/
+*.vsix
+
+# Local editor, test, and operating-system state.
+.codeidx/
+.vscode-test/
+.DS_Store
+*.log
+
+/.lh/
+/.vscode/

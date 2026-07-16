@@ -34,6 +34,12 @@ describe('createReactContextHookFallbackTransform', () => {
     expect(transform.declarations).toEqual([
       'const __reactPreviewContextHookFallback0 = Object.freeze({ "formikProps": Object.freeze({ "setValues": Object.freeze(() => undefined), "values": Object.freeze({}) }) });',
     ]);
+    expect(transform.registrations).toEqual([
+      {
+        fallbackBinding: '__reactPreviewContextHookFallback0',
+        hookExpression: 'useFormContext',
+      },
+    ]);
     expect(applyTransform(source, transform)).toContain(
       '(useFormContext<FormValue>() ?? __reactPreviewContextHookFallback0)',
     );
@@ -63,6 +69,61 @@ describe('createReactContextHookFallbackTransform', () => {
       '"controls": Object.freeze({ "close": Object.freeze(() => undefined) })',
     );
     expect(transform.declarations.join('\n')).toContain('"submit": Object.freeze(() => undefined)');
+  });
+
+  /**
+   * Reproduces an application permission hook where required Context destructuring and optional
+   * application values coexist. Optional descendants must not discard the already-proven root
+   * fallback, and a mapped value passed as a constructor argument is not a chained call result.
+   */
+  it('keeps required Context fallbacks when optional descendants can remain absent', () => {
+    const source = [
+      `import { useAppContext } from 'legal/app/app-context';`,
+      `import { useCompanyContext } from 'legal/company/app-context';`,
+      'export function usePagePermissionCheck() {',
+      '  const companyContext = useCompanyContext();',
+      '  const {',
+      '    isStaffMode,',
+      '    user: { isStaff, isLegalPartnerStaff, legalPartner },',
+      '  } = useAppContext();',
+      '  const permissionSet = new Set(',
+      '    legalPartner?.companyOwnerPermissionTypes.map((permission) => permission.value),',
+      '  );',
+      '  const ownerRoles = new Set(',
+      '    companyContext?.company.my.ownerRoles?.flatMap((role) => role.permissionTypes),',
+      '  );',
+      '  return { isStaffMode, isStaff, isLegalPartnerStaff, permissionSet, ownerRoles };',
+      '}',
+    ].join('\n');
+
+    const transform = createReactContextHookFallbackTransform(
+      '/workspace/company-navigation.tsx',
+      source,
+    );
+
+    expect(transform.replacements).toHaveLength(1);
+    expect(transform.declarations).toEqual([
+      'const __reactPreviewContextHookFallback0 = Object.freeze({ "user": Object.freeze({}) });',
+    ]);
+    expect(transform.registrations[0]?.hookExpression).toBe('useAppContext');
+  });
+
+  /** Allows a derived call result to be passed into a constructor without calling that result. */
+  it('distinguishes a constructor argument from a context-derived constructor expression', () => {
+    const source = [
+      `import { useFilterContext } from './filter-context';`,
+      'function View() {',
+      '  const { values } = useFilterContext();',
+      '  return new Set(values.map((value) => value.id));',
+      '}',
+    ].join('\n');
+
+    const transform = createReactContextHookFallbackTransform('/workspace/filter.tsx', source);
+
+    expect(transform.replacements).toHaveLength(1);
+    expect(transform.declarations).toEqual([
+      'const __reactPreviewContextHookFallback0 = Object.freeze({ "values": Object.freeze({ "map": Object.freeze(() => undefined) }) });',
+    ]);
   });
 
   /** Propagates an object requirement through a bounded local helper into a nested destructure. */
@@ -161,7 +222,7 @@ describe('createReactContextHookFallbackTransform', () => {
         `/workspace/unsafe-${index.toString()}.tsx`,
         lines.join('\n'),
       );
-      expect(transform).toEqual({ declarations: [], replacements: [] });
+      expect(transform).toEqual({ declarations: [], registrations: [], replacements: [] });
     }
   });
 
@@ -181,6 +242,7 @@ describe('createReactContextHookFallbackTransform', () => {
     ).toEqual(['const __reactPreviewContextHookFallback0 = Object.freeze({});']);
     expect(createReactContextHookFallbackTransform('/workspace/unsafe.tsx', unsafeSource)).toEqual({
       declarations: [],
+      registrations: [],
       replacements: [],
     });
   });

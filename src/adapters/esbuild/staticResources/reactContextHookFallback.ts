@@ -38,10 +38,20 @@ export interface ReactContextHookFallbackReplacement {
   readonly start: number;
 }
 
+/** One runtime-safe hook/fallback pair used by the exact Context identity bridge. */
+export interface ReactContextHookFallbackRegistration {
+  /** Module binding that owns the stable deeply frozen fallback shape. */
+  readonly fallbackBinding: string;
+  /** Original import-proven hook callee expression, such as `useAppContext`. */
+  readonly hookExpression: string;
+}
+
 /** Complete source additions derived for one project module. */
 export interface ReactContextHookFallbackTransform {
   /** Module-level `const` declarations appended once and evaluated before React renders. */
   readonly declarations: readonly string[];
+  /** Hook identities and shapes that an automatic outer Context boundary may compose. */
+  readonly registrations: readonly ReactContextHookFallbackRegistration[];
   /** Ordered, non-overlapping replacements addressing the original source text. */
   readonly replacements: readonly ReactContextHookFallbackReplacement[];
 }
@@ -68,6 +78,8 @@ interface HookFallbackPlan {
   readonly candidate: HookCandidate;
   /** Whether an unsupported or conflicting operation invalidated the entire candidate. */
   invalid: boolean;
+  /** Optional-chain receivers that must remain absent for authored short-circuit semantics. */
+  readonly optionalBasePaths: Map<string, readonly string[]>;
   /** Number of lexical function scopes traversed under the per-candidate bound. */
   scopeCount: number;
   /** Whether JavaScript proves a non-nullish root is required. */
@@ -100,8 +112,10 @@ type RuntimeFunction = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionEx
  *
  * Only value imports whose imported or local name follows `use*Context` are candidates. A hook
  * call is rewritten only when direct object destructuring, a non-optional property read, or a call
- * through a derived property proves that `null`/`undefined` would throw. Optional chains, element
- * access, writes, array binding, and callable/object conflicts invalidate that candidate.
+ * through a derived property proves that `null`/`undefined` would throw. Optional chains remain
+ * admissible only when their receiver stays absent in the generated shape, preserving the authored
+ * short circuit. Element access, writes, array binding, and callable/object conflicts invalidate
+ * that candidate.
  *
  * @param sourcePath Project JavaScript or TypeScript path used to choose parser grammar.
  * @param sourceText Original source contents used for offsets and unchanged hook-call text.
@@ -145,6 +159,7 @@ export function createReactContextHookFallbackTransform(
     { readonly binding: string; readonly source: string }
   >();
   const declarations: string[] = [];
+  const registrations: ReactContextHookFallbackRegistration[] = [];
   const replacements: ReactContextHookFallbackReplacement[] = [];
 
   for (const candidate of candidates) {
@@ -156,6 +171,9 @@ export function createReactContextHookFallbackTransform(
       localFunctionSummaries,
       isGlobalObjectShadowed(sourceFile),
     );
+    if (!plan.invalid && plan.required && wouldBreakOptionalShortCircuit(plan)) {
+      plan.invalid = true;
+    }
     if (plan.invalid || !plan.required) {
       continue;
     }
@@ -184,10 +202,16 @@ export function createReactContextHookFallbackTransform(
       replacement: `(${originalCall} ?? ${declaration.binding})`,
       start,
     });
+    const calleeStart = candidate.call.expression.getStart(sourceFile);
+    registrations.push({
+      fallbackBinding: declaration.binding,
+      hookExpression: sourceText.slice(calleeStart, candidate.call.expression.end),
+    });
   }
 
   return {
     declarations: Object.freeze([...declarations]),
+    registrations: Object.freeze(registrations.map((registration) => Object.freeze(registration))),
     replacements: Object.freeze(replacements.sort((left, right) => left.start - right.start)),
   };
 }
@@ -195,6 +219,7 @@ export function createReactContextHookFallbackTransform(
 /** Shared immutable empty result returned for unsupported or irrelevant modules. */
 const EMPTY_TRANSFORM: ReactContextHookFallbackTransform = Object.freeze({
   declarations: Object.freeze([]),
+  registrations: Object.freeze([]),
   replacements: Object.freeze([]),
 });
 
@@ -375,6 +400,7 @@ function createFallbackPlan(candidate: HookCandidate): HookFallbackPlan {
   return {
     candidate,
     invalid: false,
+    optionalBasePaths: new Map(),
     required: false,
     scopeCount: 0,
     shape: { children: new Map(), kind: 'object' },
@@ -539,7 +565,16 @@ function inspectPropertyAccess(
   plan: HookFallbackPlan,
 ): void {
   if (expression.questionDotToken !== undefined) {
-    if (isRootedAtCandidate(expression.expression, bindings, plan)) plan.invalid = true;
+    // An optional segment does not itself require a fallback. Record its receiver so a fallback
+    // already required elsewhere is admitted only when that receiver stays absent and therefore
+    // preserves the authored short circuit. Outer operations remain unresolved through this
+    // segment instead of inventing work that the original application would never execute.
+    if (
+      isRootedAtCandidate(expression.expression, bindings, plan) &&
+      !recordOptionalBase(expression.expression, bindings, plan)
+    ) {
+      plan.invalid = true;
+    }
     return;
   }
   const resolved = readHookBoundValue(expression, bindings, plan.candidate.call);
@@ -567,7 +602,7 @@ function inspectCallExpression(
   globalObjectShadowed: boolean,
 ): void {
   if (call.questionDotToken !== undefined && isRootedAtCandidate(call.expression, bindings, plan)) {
-    plan.invalid = true;
+    if (!recordOptionalBase(call.expression, bindings, plan)) plan.invalid = true;
     return;
   }
   const callee = readHookBoundValue(call.expression, bindings, plan.candidate.call);
@@ -619,9 +654,9 @@ function isAmbiguousCallResultUse(call: ts.CallExpression): boolean {
     (ts.isPropertyAccessExpression(parent) && parent.expression === call) ||
     (ts.isElementAccessExpression(parent) && parent.expression === call) ||
     (ts.isCallExpression(parent) && parent.expression === call) ||
-    ts.isNewExpression(parent) ||
+    (ts.isNewExpression(parent) && parent.expression === call) ||
     ts.isAwaitExpression(parent) ||
-    ts.isTaggedTemplateExpression(parent)
+    (ts.isTaggedTemplateExpression(parent) && parent.tag === call)
   );
 }
 
@@ -662,6 +697,45 @@ function readHookBoundValue(
     return { path: [...owner.path, unwrapped.name.text] };
   }
   return undefined;
+}
+
+/**
+ * Retains one resolvable optional receiver without requiring it to exist in the fallback.
+ * A path is keyed with NUL separators because validated property names cannot contain NUL in
+ * generated object syntax, and the original segment array remains available for shape lookup.
+ */
+function recordOptionalBase(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, HookBoundValue>,
+  plan: HookFallbackPlan,
+): boolean {
+  const resolved = readHookBoundValue(expression, bindings, plan.candidate.call);
+  if (resolved === undefined || !isSafePath(resolved.path)) return false;
+  plan.optionalBasePaths.set(resolved.path.join('\0'), resolved.path);
+  return true;
+}
+
+/**
+ * Rejects a fallback only when it would make an authored optional receiver non-nullish.
+ * The root fallback is necessarily present; nested receivers stay safely undefined unless some
+ * independently proven non-optional operation materialized that exact path as an object/function.
+ */
+function wouldBreakOptionalShortCircuit(plan: HookFallbackPlan): boolean {
+  for (const path_ of plan.optionalBasePaths.values()) {
+    if (path_.length === 0 || hasMaterializedShapePath(plan.shape, path_)) return true;
+  }
+  return false;
+}
+
+/** Reports whether one exact fallback path has already become a concrete object or callable. */
+function hasMaterializedShapePath(shape: FallbackShape, path_: readonly string[]): boolean {
+  let node = shape;
+  for (const propertyName of path_) {
+    const child = node.children.get(propertyName);
+    if (child === undefined) return false;
+    node = child;
+  }
+  return true;
 }
 
 /** Reports whether an unsupported expression still originates from the candidate hook result. */

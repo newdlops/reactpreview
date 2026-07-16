@@ -22,6 +22,108 @@ afterEach(async () => {
 });
 
 describe('PreviewSourceTransformer', () => {
+  /** Registers only Redux object containers proven by one reached selector module. */
+  it('appends selector container registration to workspace-owned source', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'use-plan.ts');
+    const sourceText = [
+      'import { useSelector } from "common/ui/redux/use-selector";',
+      'export function usePlan() {',
+      '  const company = useSelector((state) => state.company);',
+      '  const plan = company.subscription.subscriptionPlan;',
+      '  return plan.renewType.value;',
+      '}',
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain(
+      'import { registerPreviewReduxStateContainerPaths as __reactPreview_reduxState_0 } from "react-preview:redux";',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_reduxState_0([["company"],["company","subscription"],["company","subscription","subscriptionPlan"],["company","subscription","subscriptionPlan","renewType"]]);',
+    );
+    expect(transformed.contents).not.toContain('"value"]]);');
+  });
+
+  /** Aggregates child-only consumers and setup-owned providers across reached workspace modules. */
+  it('collects router requirements across successive source transforms', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const transformer = createTransformer(workspaceRoot);
+
+    await transformer.transform(
+      path.join(workspaceRoot, 'Child.tsx'),
+      "import { useLocation } from 'react-router-dom'; export default useLocation;",
+    );
+    expect(transformer.getRouterRequirement()).toEqual({
+      consumesRouter: true,
+      ownsRouter: false,
+    });
+
+    await transformer.transform(
+      path.join(workspaceRoot, '.react-preview/setup.tsx'),
+      "import { MemoryRouter } from 'react-router-dom'; export default MemoryRouter;",
+    );
+    expect(transformer.getRouterRequirement()).toEqual({
+      consumesRouter: true,
+      ownsRouter: true,
+    });
+  });
+
+  /** Synthesizes only a workspace-owned, statically typed missing React Context default. */
+  it('adds bounded context defaults without rewriting external source', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const externalRoot = await createTemporaryWorkspace();
+    const sourceText = [
+      "import { createContext } from 'react';",
+      'export const PageContext = createContext<{ title: string; setTitle(value: string): void }>(undefined as any);',
+    ].join('\n');
+    const transformer = createTransformer(workspaceRoot);
+
+    const workspaceResult = await transformer.transform(
+      path.join(workspaceRoot, 'context.tsx'),
+      sourceText,
+    );
+    const externalResult = await transformer.transform(
+      path.join(externalRoot, 'context.tsx'),
+      sourceText,
+    );
+
+    expect(workspaceResult.contents).toContain(`{ "title": '', "setTitle": () => undefined }`);
+    expect(externalResult.contents).toBe(sourceText);
+  });
+
+  /** Connects reached Formik evidence and demand-shaped custom Context hook fallback generation. */
+  it('registers Formik consumers and appends stable Context hook fallbacks', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Field.tsx');
+    const sourceText = [
+      "import * as formik from 'formik';",
+      "import { useFormContext } from './form-context';",
+      'export function Field() {',
+      "  formik.useField('name');",
+      '  const { formikProps } = useFormContext();',
+      '  formikProps.setValues(formikProps.values);',
+      '  return formikProps.values.name;',
+      '}',
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain(
+      'registerPreviewFormikRequirement as __reactPreview_formikRequirement_0',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_formikRequirement_0({"consumesFormik":true,"ownsFormik":false});',
+    );
+    expect(transformed.contents).toContain(
+      '(useFormContext() ?? __reactPreviewContextHookFallback0)',
+    );
+    expect(transformed.contents).toContain(
+      '"setValues": Object.freeze(() => undefined), "values": Object.freeze({})',
+    );
+  });
+
   /** Leaves human-readable JSX examples and a similarly named property chain byte-for-byte intact. */
   it('does not treat JSX text or another object property as a resource macro', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

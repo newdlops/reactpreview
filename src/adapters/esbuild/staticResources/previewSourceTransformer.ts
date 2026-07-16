@@ -13,12 +13,23 @@ import {
   StaticSourceAnalysis,
   type StaticCallExpression,
 } from './staticCallParser';
+import { createReactContextFallbackReplacements } from './reactContextFallback';
+import { createReactContextHookFallbackTransform } from './reactContextHookFallback';
+import { createReactExportPropFallbackReplacements } from './reactExportPropFallback';
+import {
+  collectPreviewRouterRequirement,
+  type PreviewRouterRequirement,
+} from '../previewRouterRequirement';
+import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
+import { PREVIEW_FORMIK_SPECIFIER, PREVIEW_REDUX_SPECIFIER } from '../previewPluginProtocol';
+import { createPreviewThemeRegistrationStatements } from '../previewThemeRegistration';
 import {
   expandStaticPatterns,
   StaticPatternError,
   type StaticPatternExpansion,
   type StaticScanBudget,
 } from './staticPattern';
+import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPaths';
 
 const MAX_BUILD_EXPANSIONS = 128;
 const MAX_BUILD_MATCH_REFERENCES = 1024;
@@ -35,6 +46,8 @@ export interface PreviewSourceTransformResult {
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
+  /** Active editor target whose direct component exports may receive bounded prop defaults. */
+  readonly documentPath?: string;
   /** Nearest package root used for the conventional public asset directory. */
   readonly projectRoot: string;
   /** Trusted workspace boundary used for every static filesystem expansion. */
@@ -95,6 +108,8 @@ export class PreviewSourceTransformer {
   private expansionCount = 0;
   private readonly expansionCache = new Map<string, Promise<StaticPatternExpansion>>();
   private matchedReferenceCount = 0;
+  private routerConsumerDetected = false;
+  private routerProviderDetected = false;
   private readonly scanBudget: StaticScanBudget = {
     maximum: MAX_BUILD_SCANNED_ENTRIES,
     visited: 0,
@@ -120,6 +135,56 @@ export class PreviewSourceTransformer {
     const generatedImports: string[] = [];
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
     const bindings = new SourceBindingAllocator(analysis);
+
+    if (isPathInside(this.options.workspaceRoot, sourcePath)) {
+      if (sourceText.includes('react-router-dom')) {
+        const routerRequirement = collectPreviewRouterRequirement(sourcePath, sourceText);
+        this.routerConsumerDetected ||= routerRequirement.consumesRouter;
+        this.routerProviderDetected ||= routerRequirement.ownsRouter;
+      }
+      if (sourceText.includes('formik')) {
+        const formikRequirement = collectPreviewFormikRequirement(sourcePath, sourceText);
+        if (formikRequirement.consumesFormik || formikRequirement.ownsFormik) {
+          const registrationBinding = bindings.next('formikRequirement');
+          generatedImports.push(
+            `import { registerPreviewFormikRequirement as ${registrationBinding} } from ${JSON.stringify(PREVIEW_FORMIK_SPECIFIER)};`,
+            `${registrationBinding}(${JSON.stringify(formikRequirement)});`,
+          );
+        }
+      }
+      if (sourceText.includes('createContext')) {
+        replacements.push(...createReactContextFallbackReplacements(sourcePath, sourceText));
+      }
+      if (sourceText.includes('Context')) {
+        const contextHookFallback = createReactContextHookFallbackTransform(sourcePath, sourceText);
+        replacements.push(...contextHookFallback.replacements);
+        generatedImports.push(...contextHookFallback.declarations);
+      }
+      if (
+        this.options.documentPath !== undefined &&
+        path.normalize(sourcePath) === path.normalize(this.options.documentPath)
+      ) {
+        replacements.push(...createReactExportPropFallbackReplacements(sourcePath, sourceText));
+      }
+      if (sourceText.includes('styled-components')) {
+        generatedImports.push(
+          ...createPreviewThemeRegistrationStatements(sourcePath, sourceText, (kind) =>
+            bindings.next(kind),
+          ),
+        );
+      }
+      const reduxStateContainerPaths = collectPreviewReduxStateContainerPaths(
+        sourcePath,
+        sourceText,
+      );
+      if (reduxStateContainerPaths.length > 0) {
+        const registrationBinding = bindings.next('reduxState');
+        generatedImports.push(
+          `import { registerPreviewReduxStateContainerPaths as ${registrationBinding} } from ${JSON.stringify(PREVIEW_REDUX_SPECIFIER)};`,
+          `${registrationBinding}(${JSON.stringify(reduxStateContainerPaths)});`,
+        );
+      }
+    }
 
     for (const [calls, eagerByCallee] of [
       [analysis.findCalls('import.meta.globEager'), true],
@@ -177,6 +242,20 @@ export class PreviewSourceTransformer {
   /** Returns every glob directory discovered across modules in this compilation request. */
   public getWatchDirectories(): readonly string[] {
     return [...this.watchDirectories].sort();
+  }
+
+  /**
+   * Returns router evidence accumulated from every workspace module esbuild actually requested.
+   * Consumer and provider flags remain separate so setup-owned or target-owned routers prevent an
+   * unsafe automatic outer boundary while unrelated setup files no longer suppress routing.
+   *
+   * @returns Immutable graph-level router requirement snapshot for adaptive recompilation.
+   */
+  public getRouterRequirement(): PreviewRouterRequirement {
+    return {
+      consumesRouter: this.routerConsumerDetected,
+      ownsRouter: this.routerProviderDetected,
+    };
   }
 
   /** Transforms one Vite glob call into a deterministic lazy or eager object literal. */

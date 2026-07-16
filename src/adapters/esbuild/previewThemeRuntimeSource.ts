@@ -1,8 +1,8 @@
 /**
  * Generates the browser-only styled-components compatibility boundary used by previews.
- * The generated theme deliberately provides structure rather than invented design values: missing
- * mixins and functions collapse to empty CSS, allowing layout markup to render approximately while
- * an explicit project provider remains the nearest and therefore authoritative theme context.
+ * A directly discovered project theme remains authoritative for known values while a structural
+ * overlay fills missing paths without inventing design tokens. Explicit setup themes bypass the
+ * overlay, and absent themes still receive an inert fallback instead of a runtime exception.
  */
 
 /** Resolved project module required to build the optional theme preview boundary. */
@@ -12,9 +12,9 @@ export interface PreviewThemeRuntimeSourceOptions {
 }
 
 /**
- * Creates the source for a safe structural theme and project-owned ThemeProvider wrapper.
- * Proxy tokens are callable and string-coercible, covering both `theme.spacing(2)` and CSS mixin
- * access such as `theme.flex.colCenter` without assuming any repository-specific token names.
+ * Creates the source for discovered-theme overlay, structural fallback, and ThemeProvider wrapper.
+ * Proxy tokens cover both `theme.spacing(2)` and `theme.flex.colCenter` without assuming any
+ * repository-specific token names, while exact setup values are never cloned or proxied.
  *
  * @param options Project-owned styled-components module selected through esbuild resolution.
  * @returns JavaScript source loaded inside the private theme bridge namespace.
@@ -26,6 +26,18 @@ import * as React from 'react';
 import * as StyledComponents from ${encodedModulePath};
 
 const tokenCache = new Map();
+const discoveredProxyCache = new WeakMap();
+const discoveredProxyTargets = new WeakMap();
+const reachableThemeCandidates = new Map();
+const MAX_REACHABLE_THEME_CANDIDATES = 64;
+const MAX_REACHABLE_THEME_EVIDENCE = 256;
+let reachableThemeEvidenceCount = 0;
+let previewRuntimeStatus = 'available: waiting for target-reachable theme evidence';
+
+/** Returns the last automatic styled-components decision for runtime error diagnostics. */
+export function readPreviewRuntimeStatus() {
+  return previewRuntimeStatus;
+}
 
 /** Encodes a property path into a stable cache key without depending on application values. */
 function createTokenCacheKey(path) {
@@ -95,6 +107,122 @@ function createStructuralTheme() {
 
 const structuralTheme = createStructuralTheme();
 
+/** Reports whether a value is a plain record whose missing keys can safely use structural tokens. */
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || prototype === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+/** Collects finite numbers from nested array arguments without accepting coercible values. */
+function collectFiniteNumbers(value, numbers, visitedArrays) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return false;
+    }
+    numbers.push(value);
+    return true;
+  }
+  if (!Array.isArray(value) || visitedArrays.has(value)) {
+    return false;
+  }
+
+  visitedArrays.add(value);
+  for (const item of value) {
+    if (!collectFiniteNumbers(item, numbers, visitedArrays)) {
+      return false;
+    }
+  }
+  visitedArrays.delete(value);
+  return true;
+}
+
+/** Derives an exact rem list only from a helper's numeric unit and numeric invocation arguments. */
+function createUnitHelperFallback(target, arguments_) {
+  let unit;
+  try {
+    unit = Reflect.get(target, 'unit', target);
+  } catch {
+    return '';
+  }
+  if (typeof unit !== 'number' || !Number.isFinite(unit)) {
+    return '';
+  }
+
+  const numbers = [];
+  const visitedArrays = new Set();
+  for (const argument of arguments_) {
+    if (!collectFiniteNumbers(argument, numbers, visitedArrays)) {
+      return '';
+    }
+  }
+  const convertedNumbers = numbers.map((number) =>
+    Number((number * unit).toPrecision(15)),
+  );
+  return convertedNumbers.length > 0 && convertedNumbers.every(Number.isFinite)
+    ? convertedNumbers.map((number) => String(number) + 'rem').join(' ')
+    : '';
+}
+
+/** Returns a structural token for an absent discovered-theme property without creating thenables. */
+function readMissingDiscoveredToken(path, property) {
+  return property === 'then' ? undefined : createStructuralToken([...path, property]);
+}
+
+/**
+ * Overlays a discovered plain object or function while preserving primitives, arrays, and class
+ * instances exactly. Weak caches keep every overlaid project value referentially stable.
+ */
+function overlayDiscoveredThemeValue(value, path) {
+  if (typeof value !== 'function' && !isPlainObject(value)) {
+    return value;
+  }
+  const cachedProxy = discoveredProxyCache.get(value);
+  if (cachedProxy !== undefined) {
+    return cachedProxy;
+  }
+
+  const proxy = new Proxy(value, {
+    apply(target, thisArgument, arguments_) {
+      const targetThis = discoveredProxyTargets.get(thisArgument) ?? thisArgument;
+      try {
+        return overlayDiscoveredThemeValue(
+          Reflect.apply(target, targetThis, arguments_),
+          [...path, '()'],
+        );
+      } catch {
+        return createUnitHelperFallback(target, arguments_);
+      }
+    },
+    get(target, property) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+      if (descriptor?.configurable === false && descriptor.writable === false) {
+        return Reflect.get(target, property, target);
+      }
+      if (!Reflect.has(target, property)) {
+        return readMissingDiscoveredToken(path, property);
+      }
+      try {
+        return overlayDiscoveredThemeValue(
+          Reflect.get(target, property, target),
+          [...path, property],
+        );
+      } catch {
+        return readMissingDiscoveredToken(path, property);
+      }
+    },
+  });
+  discoveredProxyCache.set(value, proxy);
+  discoveredProxyTargets.set(proxy, value);
+  return proxy;
+}
+
 /** Reports whether setup supplied a theme object or theme-producing function. */
 function readConfiguredTheme(configuration) {
   if (configuration === null || typeof configuration !== 'object') {
@@ -106,6 +234,228 @@ function readConfiguredTheme(configuration) {
     : undefined;
 }
 
+/** Reports whether an automatically discovered value can be passed to ThemeProvider. */
+function readDiscoveredTheme(discoveredTheme) {
+  return discoveredTheme !== null &&
+    (typeof discoveredTheme === 'object' || typeof discoveredTheme === 'function')
+    ? discoveredTheme
+    : undefined;
+}
+
+/**
+ * Records one statically discovered theme loader without evaluating the referenced project module.
+ * Evidence is deduplicated by importing source, bounded globally, and retained only while the
+ * generated preview bundle is alive in its isolated webview.
+ */
+export function registerPreviewThemeCandidate(candidate) {
+  if (
+    candidate === null ||
+    typeof candidate !== 'object' ||
+    typeof candidate.candidateKey !== 'string' ||
+    candidate.candidateKey.length === 0 ||
+    candidate.candidateKey.length > 4096 ||
+    typeof candidate.importerKey !== 'string' ||
+    candidate.importerKey.length === 0 ||
+    candidate.importerKey.length > 4096 ||
+    (candidate.confidence !== 'type' && candidate.confidence !== 'value') ||
+    typeof candidate.load !== 'function'
+  ) {
+    return;
+  }
+
+  let registeredCandidate = reachableThemeCandidates.get(candidate.candidateKey);
+  if (registeredCandidate === undefined) {
+    if (reachableThemeCandidates.size >= MAX_REACHABLE_THEME_CANDIDATES) {
+      return;
+    }
+    registeredCandidate = {
+      evidence: new Map(),
+      load: candidate.load,
+      promise: undefined,
+    };
+    reachableThemeCandidates.set(candidate.candidateKey, registeredCandidate);
+  }
+
+  const previousConfidence = registeredCandidate.evidence.get(candidate.importerKey);
+  if (previousConfidence === candidate.confidence || previousConfidence === 'value') {
+    return;
+  }
+  if (previousConfidence === undefined) {
+    if (reachableThemeEvidenceCount >= MAX_REACHABLE_THEME_EVIDENCE) {
+      return;
+    }
+    reachableThemeEvidenceCount += 1;
+  }
+  registeredCandidate.evidence.set(candidate.importerKey, candidate.confidence);
+}
+
+/** Scores runtime value evidence above every bounded collection of erased type references. */
+function scoreReachableThemeCandidate(candidate) {
+  let typeCount = 0;
+  let valueCount = 0;
+  for (const confidence of candidate.evidence.values()) {
+    if (confidence === 'value') {
+      valueCount += 1;
+    } else {
+      typeCount += 1;
+    }
+  }
+  return valueCount * (MAX_REACHABLE_THEME_EVIDENCE + 1) + typeCount;
+}
+
+/** Returns one uniquely strongest target-reachable theme candidate without traversal-order guesses. */
+function selectReachableThemeCandidate() {
+  let winner;
+  let winnerScore = -1;
+  let tied = false;
+  for (const candidate of reachableThemeCandidates.values()) {
+    const score = scoreReachableThemeCandidate(candidate);
+    if (score > winnerScore) {
+      winner = candidate;
+      winnerScore = score;
+      tied = false;
+    } else if (score === winnerScore) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : winner;
+}
+
+/**
+ * Lazily imports one unambiguous reachable project theme after target modules have registered.
+ * Explicit setup and direct-target themes stay authoritative; failed or invalid candidates fall
+ * back to the structural compatibility theme instead of failing component rendering.
+ */
+export async function resolvePreviewTheme(options) {
+  const configuration = options?.configuration;
+  const discoveredTheme = readDiscoveredTheme(options?.discoveredTheme);
+  if (configuration === false) {
+    previewRuntimeStatus = 'disabled by setup (themePreview=false)';
+    return discoveredTheme;
+  }
+  if (readConfiguredTheme(configuration) !== undefined) {
+    previewRuntimeStatus = 'selected: exact setup-owned theme';
+    return discoveredTheme;
+  }
+  if (discoveredTheme !== undefined) {
+    previewRuntimeStatus = 'selected: exact theme imported directly by the target file';
+    return discoveredTheme;
+  }
+
+  const candidate = selectReachableThemeCandidate();
+  if (candidate === undefined) {
+    previewRuntimeStatus = reachableThemeCandidates.size === 0
+      ? 'fallback: no exact target-reachable theme was discovered; structural theme will be used'
+      : 'fallback: reachable theme candidates were ambiguous; structural theme will be used';
+    return undefined;
+  }
+  candidate.promise ??= Promise.resolve()
+    .then(() => candidate.load())
+    .then(readDiscoveredTheme)
+    .catch(() => undefined);
+  const resolvedCandidate = await candidate.promise;
+  previewRuntimeStatus = resolvedCandidate === undefined
+    ? 'fallback: selected reachable theme could not be loaded; structural theme will be used'
+    : 'selected: exact target-reachable theme with a structural missing-token overlay';
+  return resolvedCandidate;
+}
+
+/** Assigns a document style only when its exact string token is present and no inline value exists. */
+function applyInlineStyleDefault(style, property, value) {
+  if (
+    style === null ||
+    typeof style !== 'object' ||
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    (typeof style[property] === 'string' && style[property].length > 0)
+  ) {
+    return;
+  }
+  try {
+    style[property] = value;
+  } catch {
+    // A partial browser document may expose a read-only style object; preview rendering continues.
+  }
+}
+
+/** Flattens only inert string/number CSS arrays without calling project interpolation functions. */
+function readStaticCssText(value, visitedArrays = new Set()) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : undefined;
+  }
+  if (!Array.isArray(value) || visitedArrays.has(value)) {
+    return undefined;
+  }
+
+  visitedArrays.add(value);
+  let text = '';
+  for (const item of value) {
+    const itemText = readStaticCssText(item, visitedArrays);
+    if (itemText === undefined) {
+      visitedArrays.delete(value);
+      return undefined;
+    }
+    text += itemText;
+  }
+  visitedArrays.delete(value);
+  return text;
+}
+
+/** Infers the browser root size only from a bounded, literal body font-size declaration. */
+function inferRootFontSize(theme) {
+  const bodyTypography = readStaticCssText(theme?.typography?.body);
+  if (bodyTypography === undefined) {
+    return undefined;
+  }
+  const match = /(?:^|[;{\\s])font-size\\s*:\\s*(\\d+(?:\\.\\d+)?)rem\\b/i.exec(bodyTypography);
+  const remSize = Number(match?.[1]);
+  return Number.isFinite(remSize) && remSize >= 1 && remSize <= 2
+    ? String(16 / remSize) + 'px'
+    : undefined;
+}
+
+/** Reads a non-empty setup root size without interpreting or normalizing its CSS value. */
+function readConfiguredRootFontSize(configuration) {
+  if (configuration === null || typeof configuration !== 'object') {
+    return undefined;
+  }
+  const rootFontSize = configuration.rootFontSize;
+  return typeof rootFontSize === 'string' && rootFontSize.trim().length > 0
+    ? rootFontSize
+    : undefined;
+}
+
+/** Applies minimal document defaults derived exclusively from exact discovered-theme tokens. */
+function applyDiscoveredDocumentStyles(theme, configuration) {
+  if (
+    configuration?.documentStyles === false ||
+    typeof document === 'undefined' ||
+    document === null
+  ) {
+    return;
+  }
+
+  const bodyStyle = document.body?.style;
+  applyInlineStyleDefault(bodyStyle, 'backgroundColor', theme?.color?.pageBackground);
+  applyInlineStyleDefault(bodyStyle, 'color', theme?.color?.bodyText);
+  applyInlineStyleDefault(bodyStyle, 'fontFamily', theme?.fontFamily?.default);
+
+  const rootStyle = document.documentElement?.style;
+  const configuredRootFontSize = readConfiguredRootFontSize(configuration);
+  if (configuredRootFontSize !== undefined && rootStyle !== null && typeof rootStyle === 'object') {
+    try {
+      rootStyle.fontSize = configuredRootFontSize;
+    } catch {
+      // A partial browser document may reject mutation; the component theme still remains usable.
+    }
+    return;
+  }
+  applyInlineStyleDefault(rootStyle, 'fontSize', inferRootFontSize(theme));
+}
+
 /**
  * Wraps a composed preview tree with the target project's styled-components ThemeProvider.
  * An inner project provider still wins through normal React context precedence. Exporting
@@ -114,13 +464,36 @@ function readConfiguredTheme(configuration) {
 export function createThemePreviewElement(children, options) {
   const configuration = options?.configuration;
   const ThemeProvider = StyledComponents.ThemeProvider ?? StyledComponents.default?.ThemeProvider;
-  if (configuration === false || typeof ThemeProvider !== 'function') {
+  if (configuration === false) {
+    previewRuntimeStatus = 'disabled by setup (themePreview=false)';
+    return children;
+  }
+  if (typeof ThemeProvider !== 'function') {
+    previewRuntimeStatus = 'unavailable: installed styled-components has no ThemeProvider export';
     return children;
   }
   const configuredTheme = readConfiguredTheme(configuration);
+  const discoveredTheme = readDiscoveredTheme(options?.discoveredTheme);
+  const previewTheme = configuredTheme ?? (
+    discoveredTheme === undefined
+      ? structuralTheme
+      : overlayDiscoveredThemeValue(discoveredTheme, [])
+  );
+  if (configuredTheme !== undefined) {
+    previewRuntimeStatus = 'active: exact setup-owned theme';
+  } else if (discoveredTheme === undefined) {
+    previewRuntimeStatus = 'active: structural theme fallback because no unique exact theme loaded';
+  } else if (!previewRuntimeStatus.startsWith('selected:')) {
+    previewRuntimeStatus = 'active: exact discovered theme with a structural missing-token overlay';
+  } else {
+    previewRuntimeStatus = 'active: ' + previewRuntimeStatus.slice('selected: '.length);
+  }
+  if (configuredTheme === undefined && discoveredTheme !== undefined) {
+    applyDiscoveredDocumentStyles(previewTheme, configuration);
+  }
   return React.createElement(
     ThemeProvider,
-    { theme: configuredTheme ?? structuralTheme },
+    { theme: previewTheme },
     children,
   );
 }

@@ -105,8 +105,8 @@ describe('createPreviewThemeBridgePlugin', () => {
     }
   });
 
-  /** Passes an exact setup-owned theme to ThemeProvider instead of merging structural tokens. */
-  it('uses the exact theme supplied through themePreview configuration', async () => {
+  /** Keeps an explicit setup theme exact and gives it precedence over automatic discovery. */
+  it('prefers the exact theme supplied through themePreview configuration', async () => {
     const projectRoot = await createTemporaryProject('theme-custom-preview-');
 
     try {
@@ -119,11 +119,16 @@ describe('createPreviewThemeBridgePlugin', () => {
           "  flex: { colCenter: 'CUSTOM_COLUMN_CENTER' },",
           "  spacing: (factor) => factor * 8 + 'px',",
           '};',
+          'const discoveredTheme = {',
+          "  flex: { colCenter: 'DISCOVERED_COLUMN_CENTER' },",
+          '};',
           "const element = createThemePreviewElement('target', {",
           '  configuration: { theme: configuredTheme },',
+          '  discoveredTheme,',
           '});',
           'globalThis.__themeBridgeResult = {',
           '  exactReference: element.props.theme === configuredTheme,',
+          '  missingRemainsUndefined: element.props.theme.missing === undefined,',
           '  mixin: element.props.theme.flex.colCenter,',
           '  spacing: element.props.theme.spacing(2),',
           '};',
@@ -132,8 +137,196 @@ describe('createPreviewThemeBridgePlugin', () => {
 
       expect(context.__themeBridgeResult).toEqual({
         exactReference: true,
+        missingRemainsUndefined: true,
         mixin: 'CUSTOM_COLUMN_CENTER',
         spacing: '16px',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Preserves discovered primitives and CSS arrays while filling only absent object paths. */
+  it('overlays a discovered theme without replacing its exact design tokens', async () => {
+    const projectRoot = await createTemporaryProject('theme-discovered-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement } from 'react-preview:theme';",
+          "const cssArray = ['display:flex;', 'align-items:center;'];",
+          "const helper = (factor) => factor * 4 + 'px';",
+          'const discoveredTheme = {',
+          "  color: { brand: '#123456' },",
+          '  flex: { colCenter: cssArray },',
+          '  helper,',
+          '};',
+          "const firstElement = createThemePreviewElement('first', { discoveredTheme });",
+          "const secondElement = createThemePreviewElement('second', { discoveredTheme });",
+          'const firstTheme = firstElement.props.theme;',
+          'const missingToken = firstTheme.color.missing;',
+          'globalThis.__themeBridgeResult = {',
+          '  arrayReference: firstTheme.flex.colCenter === cssArray,',
+          "  exactHelperResult: firstTheme.helper(3) === '12px',",
+          "  exactPrimitive: firstTheme.color.brand === '#123456',",
+          "  missingTokenIsCallable: missingToken() === '',",
+          "  missingTokenIsEmpty: String(missingToken) === '',",
+          '  missingTokenIsStable: missingToken === firstTheme.color.missing,',
+          '  nestedProxyIsStable: firstTheme.color === firstTheme.color,',
+          '  rootProxyIsStable: firstTheme === secondElement.props.theme,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        arrayReference: true,
+        exactHelperResult: true,
+        exactPrimitive: true,
+        missingTokenIsCallable: true,
+        missingTokenIsEmpty: true,
+        missingTokenIsStable: true,
+        nestedProxyIsStable: true,
+        rootProxyIsStable: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Recovers a throwing numeric helper only when its own finite unit proves a rem conversion. */
+  it('uses a discovered helper unit to recover numeric and array spacing arguments', async () => {
+    const projectRoot = await createTemporaryProject('theme-helper-unit-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement } from 'react-preview:theme';",
+          "const spacing = () => { throw new Error('missing project global'); };",
+          'spacing.unit = 0.8;',
+          "const unsafeHelper = () => { throw new Error('no numeric contract'); };",
+          'const discoveredTheme = { spacing, unsafeHelper };',
+          "const element = createThemePreviewElement('target', { discoveredTheme });",
+          'const theme = element.props.theme;',
+          'globalThis.__themeBridgeResult = {',
+          "  invalidArgumentIsEmpty: theme.spacing('2') === '',",
+          "  nestedArguments: theme.spacing(1.5, [4, 7]) === '1.2rem 3.2rem 5.6rem',",
+          "  noUnitIsEmpty: theme.unsafeHelper(2) === '',",
+          '  stableHelperProxy: theme.spacing === theme.spacing,',
+          '  unitIsExact: theme.spacing.unit === 0.8,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        invalidArgumentIsEmpty: true,
+        nestedArguments: true,
+        noUnitIsEmpty: true,
+        stableHelperProxy: true,
+        unitIsExact: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Applies exact browser defaults and reads a bounded rem declaration from static CSS arrays. */
+  it('applies minimal document defaults from a discovered theme', async () => {
+    const projectRoot = await createTemporaryProject('theme-document-defaults-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement } from 'react-preview:theme';",
+          'globalThis.document = {',
+          "  body: { style: { backgroundColor: '', color: '', fontFamily: '' } },",
+          "  documentElement: { style: { fontSize: '' } },",
+          '};',
+          'const discoveredTheme = {',
+          "  color: { pageBackground: '#f7f7f7', bodyText: '#222222' },",
+          "  fontFamily: { default: 'Preview Sans, sans-serif' },",
+          "  typography: { body: ['font-size: ', ['1.6', 'rem;'], ' line-height: 1.4;'] },",
+          '};',
+          "createThemePreviewElement('target', { discoveredTheme });",
+          'globalThis.__themeBridgeResult = {',
+          '  ...document.body.style,',
+          '  rootFontSize: document.documentElement.style.fontSize,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        backgroundColor: '#f7f7f7',
+        color: '#222222',
+        fontFamily: 'Preview Sans, sans-serif',
+        rootFontSize: '10px',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Gives an explicit root size priority and honors the complete document-style opt-out. */
+  it('bounds discovered document mutation through themePreview configuration', async () => {
+    const projectRoot = await createTemporaryProject('theme-document-options-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement } from 'react-preview:theme';",
+          'const discoveredTheme = {',
+          "  color: { pageBackground: '#f7f7f7', bodyText: '#222222' },",
+          "  fontFamily: { default: 'Preview Sans' },",
+          "  typography: { body: 'font-size: 1.6rem;' },",
+          '};',
+          'globalThis.document = {',
+          "  body: { style: { backgroundColor: '', color: '', fontFamily: '' } },",
+          "  documentElement: { style: { fontSize: '18px' } },",
+          '};',
+          "createThemePreviewElement('configured', {",
+          "  configuration: { rootFontSize: '12px' },",
+          '  discoveredTheme,',
+          '});',
+          'const configuredRootFontSize = document.documentElement.style.fontSize;',
+          'globalThis.document = {',
+          "  body: { style: { backgroundColor: '', color: '', fontFamily: '' } },",
+          "  documentElement: { style: { fontSize: '18px' } },",
+          '};',
+          "createThemePreviewElement('existing-root', { discoveredTheme });",
+          'const existingRootFontSize = document.documentElement.style.fontSize;',
+          'globalThis.document = {',
+          "  body: { style: { backgroundColor: 'KEEP', color: 'KEEP', fontFamily: 'KEEP' } },",
+          "  documentElement: { style: { fontSize: 'KEEP' } },",
+          '};',
+          "createThemePreviewElement('disabled', {",
+          "  configuration: { documentStyles: false, rootFontSize: '9px' },",
+          '  discoveredTheme,',
+          '});',
+          'globalThis.__themeBridgeResult = {',
+          '  configuredRootFontSize,',
+          '  disabledBody: { ...document.body.style },',
+          '  disabledRootFontSize: document.documentElement.style.fontSize,',
+          '  existingRootFontSize,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        configuredRootFontSize: '12px',
+        disabledBody: {
+          backgroundColor: 'KEEP',
+          color: 'KEEP',
+          fontFamily: 'KEEP',
+        },
+        disabledRootFontSize: 'KEEP',
+        existingRootFontSize: '18px',
       });
     } finally {
       await rm(projectRoot, { force: true, recursive: true });

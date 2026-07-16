@@ -26,7 +26,8 @@ describe('createPreviewReduxBridgePlugin', () => {
       const context = await executeReduxBridgeFixture(
         projectRoot,
         [
-          "import { createReduxPreviewElement } from 'react-preview:redux';",
+          "import { createReduxPreviewElement, registerPreviewReduxStateContainerPaths } from 'react-preview:redux';",
+          "registerPreviewReduxStateContainerPaths([['ignored']]);",
           "const child = { marker: 'PLAIN_REACT_ELEMENT' };",
           'globalThis.__reduxBridgeResult =',
           '  createReduxPreviewElement(child, { configuration: undefined }) === child;',
@@ -102,6 +103,134 @@ describe('createPreviewReduxBridgePlugin', () => {
     }
   });
 
+  /** Uses bounded selector-derived state when setup has not supplied an exact application state. */
+  it('uses deeply frozen automatic state below setup configuration priority', async () => {
+    const projectRoot = await createTemporaryProject('redux-automatic-state-preview-');
+
+    try {
+      await installFakeReactReduxPackage(projectRoot);
+      const automaticState = {
+        company: {
+          subscription: { isSuspended: false },
+        },
+      } as const;
+      const context = await executeReduxBridgeFixture(
+        projectRoot,
+        [
+          "import { createReduxPreviewElement, readPreviewRuntimeStatus } from 'react-preview:redux';",
+          "const element = createReduxPreviewElement('target', { configuration: undefined });",
+          'const state = element.props.store.getState();',
+          'globalThis.__reduxBridgeResult = {',
+          '  frozenRoot: Object.isFrozen(state),',
+          '  frozenSlice: Object.isFrozen(state.company),',
+          '  frozenNested: Object.isFrozen(state.company.subscription),',
+          '  isSuspended: state.company.subscription.isSuspended,',
+          '  status: readPreviewRuntimeStatus(),',
+          '};',
+        ].join('\n'),
+        automaticState,
+      );
+
+      expect(context.__reduxBridgeResult).toEqual({
+        frozenNested: true,
+        frozenRoot: true,
+        frozenSlice: true,
+        isSuspended: false,
+        status: 'active: read-only static store with target-inferred neutral state',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /**
+   * Converts only reached selector container evidence into a stable plain-object state skeleton.
+   * Missing leaves deliberately remain undefined so automatic preview state cannot activate an
+   * application branch by inventing a boolean, enum, identifier, or server-owned value.
+   */
+  it('registers frozen selector container paths without inventing leaf values', async () => {
+    const projectRoot = await createTemporaryProject('redux-registered-path-preview-');
+
+    try {
+      await installFakeReactReduxPackage(projectRoot);
+      const context = await executeReduxBridgeFixture(
+        projectRoot,
+        [
+          "import { createReduxPreviewElement, registerPreviewReduxStateContainerPaths, readPreviewRuntimeStatus } from 'react-preview:redux';",
+          'registerPreviewReduxStateContainerPaths([',
+          "  ['company'],",
+          "  ['company', 'subscription'],",
+          "  ['company', 'subscription', 'subscriptionPlan'],",
+          "  ['company', 'subscription', 'subscriptionPlan', 'renewType'],",
+          "  ['company', 'subscription'],",
+          ']);',
+          "const element = createReduxPreviewElement('target', { configuration: undefined });",
+          'const state = element.props.store.getState();',
+          'globalThis.__reduxBridgeResult = {',
+          '  frozenPlan: Object.isFrozen(state.company.subscription.subscriptionPlan),',
+          '  frozenRenewType: Object.isFrozen(state.company.subscription.subscriptionPlan.renewType),',
+          '  frozenRoot: Object.isFrozen(state),',
+          '  leafAbsent: !("value" in state.company.subscription.subscriptionPlan.renewType),',
+          '  leafUndefined: state.company.subscription.subscriptionPlan.renewType.value === undefined,',
+          '  plainCompany: Object.getPrototypeOf(state.company) === Object.prototype,',
+          '  stable: state === element.props.store.getState(),',
+          '  status: readPreviewRuntimeStatus(),',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__reduxBridgeResult).toEqual({
+        frozenPlan: true,
+        frozenRenewType: true,
+        frozenRoot: true,
+        leafAbsent: true,
+        leafUndefined: true,
+        plainCompany: true,
+        stable: true,
+        status: 'active: read-only static store with target-inferred neutral state',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Ignores prototype keys and malformed registration data at the generated runtime boundary. */
+  it('rejects unsafe or unbounded selector container registrations', async () => {
+    const projectRoot = await createTemporaryProject('redux-unsafe-path-preview-');
+
+    try {
+      await installFakeReactReduxPackage(projectRoot);
+      const context = await executeReduxBridgeFixture(
+        projectRoot,
+        [
+          "import { createReduxPreviewElement, registerPreviewReduxStateContainerPaths } from 'react-preview:redux';",
+          'registerPreviewReduxStateContainerPaths([',
+          "  ['__proto__', 'polluted'],",
+          "  ['safe', 'constructor', 'polluted'],",
+          '  Array.from({ length: 17 }, () => "deep"),',
+          '  [],',
+          '  [3],',
+          ']);',
+          "const element = createReduxPreviewElement('target', { configuration: undefined });",
+          'const state = element.props.store.getState();',
+          'globalThis.__reduxBridgeResult = {',
+          '  empty: Object.keys(state).length === 0,',
+          '  globalObjectClean: ({}).polluted === undefined,',
+          '  prototypeClean: Object.prototype.polluted === undefined,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__reduxBridgeResult).toEqual({
+        empty: true,
+        globalObjectClean: true,
+        prototypeClean: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Preserves the exact application-shaped static state supplied through reduxPreview. */
   it('uses the exact state supplied through reduxPreview configuration', async () => {
     const projectRoot = await createTemporaryProject('redux-custom-state-preview-');
@@ -111,7 +240,8 @@ describe('createPreviewReduxBridgePlugin', () => {
       const context = await executeReduxBridgeFixture(
         projectRoot,
         [
-          "import { createReduxPreviewElement } from 'react-preview:redux';",
+          "import { createReduxPreviewElement, registerPreviewReduxStateContainerPaths } from 'react-preview:redux';",
+          "registerPreviewReduxStateContainerPaths([['automatic', 'branch']]);",
           'const configuredState = {',
           "  company: { identifier: 'preview-company' },",
           "  session: { role: 'owner' },",
@@ -120,6 +250,7 @@ describe('createPreviewReduxBridgePlugin', () => {
           '  configuration: { state: configuredState },',
           '});',
           'globalThis.__reduxBridgeResult = {',
+          '  automaticAbsent: element.props.store.getState().automatic === undefined,',
           '  exactReference: element.props.store.getState() === configuredState,',
           '  identifier: element.props.store.getState().company.identifier,',
           '};',
@@ -127,6 +258,7 @@ describe('createPreviewReduxBridgePlugin', () => {
       );
 
       expect(context.__reduxBridgeResult).toEqual({
+        automaticAbsent: true,
         exactReference: true,
         identifier: 'preview-company',
       });
@@ -225,7 +357,11 @@ async function createTemporaryProject(prefix: string): Promise<string> {
  * @param source JavaScript fixture that records serializable assertions on `globalThis`.
  * @returns Context containing values committed by the generated fixture.
  */
-async function executeReduxBridgeFixture(projectRoot: string, source: string): Promise<Context> {
+async function executeReduxBridgeFixture(
+  projectRoot: string,
+  source: string,
+  automaticState?: Parameters<typeof createPreviewReduxBridgePlugin>[0]['automaticState'],
+): Promise<Context> {
   const result = await build({
     absWorkingDir: projectRoot,
     bundle: true,
@@ -234,7 +370,12 @@ async function executeReduxBridgeFixture(projectRoot: string, source: string): P
     globalName: 'ReduxPreviewFixture',
     logLevel: 'silent',
     platform: 'browser',
-    plugins: [createPreviewReduxBridgePlugin({ projectRoot })],
+    plugins: [
+      createPreviewReduxBridgePlugin({
+        ...(automaticState === undefined ? {} : { automaticState }),
+        projectRoot,
+      }),
+    ],
     stdin: {
       contents: source,
       loader: 'js',

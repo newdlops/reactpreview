@@ -11,12 +11,15 @@ import {
   PREVIEW_RESOLVE_GUARD,
 } from './previewPluginProtocol';
 import { createPreviewReduxRuntimeSource } from './previewReduxRuntimeSource';
+import type { PreviewReduxStaticState } from './previewReduxRuntimeSource';
 
 const REACT_REDUX_SPECIFIER = 'react-redux';
 const REDUX_BRIDGE_DATA_KIND = 'react-preview-redux-bridge-data';
 
 /** Immutable project boundary used for package resolution during one preview compilation. */
 export interface PreviewReduxBridgePluginOptions {
+  /** Lowest-priority neutral state inferred from reachable selector property paths. */
+  readonly automaticState?: PreviewReduxStaticState;
   /** Nearest package root from which the target itself resolves React Redux. */
   readonly projectRoot: string;
 }
@@ -70,6 +73,10 @@ export function createPreviewReduxBridgePlugin(options: PreviewReduxBridgePlugin
             contents: [
               '/** Leaves projects without React Redux unchanged. */',
               'export function createReduxPreviewElement(children) { return children; }',
+              '/** Accepts generated selector evidence as a no-op when React Redux is absent. */',
+              'export function registerPreviewReduxStateContainerPaths(_paths) {}',
+              '/** Describes why the automatic Redux boundary is unavailable. */',
+              "export function readPreviewRuntimeStatus() { return 'unavailable: react-redux was not resolved from the target project'; }",
             ].join('\n'),
             loader: 'js',
           };
@@ -77,6 +84,9 @@ export function createPreviewReduxBridgePlugin(options: PreviewReduxBridgePlugin
 
         return {
           contents: createPreviewReduxRuntimeSource({
+            ...(options.automaticState === undefined
+              ? {}
+              : { automaticState: options.automaticState }),
             reactReduxModulePath: pluginData.reactReduxModulePath,
           }),
           loader: 'js',

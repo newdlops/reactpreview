@@ -78,6 +78,79 @@ describe('EsbuildPreviewCompiler implicit application globals', () => {
     }
   });
 
+  /** Reuses a project process/browser import proven by the app's unexecuted self-fallback bootstrap. */
+  it('injects an exact process browser module from runtime bootstrap evidence', async () => {
+    const projectRoot = await createTemporaryProject('process-bootstrap-global-preview-', {
+      process: '1.0.0',
+    });
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const processDirectory = path.join(projectRoot, 'node_modules', 'process');
+    const documentPath = path.join(sourceDirectory, 'ProcessPage.tsx');
+    const childPath = path.join(sourceDirectory, 'ProcessChild.tsx');
+    const bootstrapPath = path.join(sourceDirectory, 'index.ts');
+    const processBrowserPath = path.join(processDirectory, 'browser.js');
+    const sourceText = [
+      "import { ProcessChild } from './ProcessChild';",
+      'export default function ProcessPage() { return <main><ProcessChild /></main>; }',
+    ].join('\n');
+
+    try {
+      await Promise.all([
+        mkdir(sourceDirectory, { recursive: true }),
+        mkdir(processDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          childPath,
+          [
+            'const processMarker = process.previewMarker;',
+            'export function ProcessChild() { return <span>{processMarker}</span>; }',
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          bootstrapPath,
+          [
+            "import process from 'process/browser';",
+            'window.process = window.process || process;',
+            "throw new Error('BOOTSTRAP_MUST_NOT_EXECUTE');",
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          path.join(processDirectory, 'package.json'),
+          JSON.stringify({ browser: './browser.js', main: './browser.js', name: 'process' }),
+          'utf8',
+        ),
+        writeFile(
+          processBrowserPath,
+          "module.exports = { platform: 'browser', previewMarker: 'PROJECT_PROCESS_MARKER' };",
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = decodeBundleJavascript(bundle);
+
+      expect(javascript).toContain('PROJECT_PROCESS_MARKER');
+      expect(javascript).toContain('from project bootstrap/ambient evidence');
+      expect(javascript).not.toContain('BOOTSTRAP_MUST_NOT_EXECUTE');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([bootstrapPath, childPath, processBrowserPath]),
+      );
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Rebuilds once only after the reached graph proves a free exact-name installed dependency. */
   it('injects an exact installed package for a reached free identifier', async () => {
     const projectRoot = await createTemporaryProject('package-global-preview-', {

@@ -464,7 +464,10 @@ function collectRuntimeAssignmentCandidates(
       continue;
     }
     const globalName = readGlobalAssignmentName(assignment.left);
-    const importedName = readImportedAssignmentValue(assignment.right);
+    const importedName =
+      globalName === undefined
+        ? undefined
+        : readImportedAssignmentValue(assignment.right, globalName);
     const imported = importedName === undefined ? undefined : imports.get(importedName);
     if (globalName === undefined || imported === undefined) {
       continue;
@@ -496,8 +499,15 @@ function readGlobalAssignmentName(expression: ts.Expression): string | undefined
   return unwrapped.name.text;
 }
 
-/** Accepts an imported identifier alone or with the common empty-object availability fallback. */
-function readImportedAssignmentValue(expression: ts.Expression): string | undefined {
+/**
+ * Accepts an imported identifier alone, an empty-object fallback, or an exact self-global fallback.
+ * The last form covers bootstrap statements such as `window.process = window.process || process`
+ * without treating an unrelated global or arbitrary expression as trustworthy module evidence.
+ */
+function readImportedAssignmentValue(
+  expression: ts.Expression,
+  assignedGlobalName: string,
+): string | undefined {
   const unwrapped = unwrapExpression(expression);
   if (ts.isIdentifier(unwrapped)) {
     return unwrapped.text;
@@ -505,13 +515,22 @@ function readImportedAssignmentValue(expression: ts.Expression): string | undefi
   if (
     !ts.isBinaryExpression(unwrapped) ||
     (unwrapped.operatorToken.kind !== ts.SyntaxKind.BarBarToken &&
-      unwrapped.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken) ||
-    !isEmptyObjectLiteral(unwrapExpression(unwrapped.right))
+      unwrapped.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken)
   ) {
     return undefined;
   }
-  const imported = unwrapExpression(unwrapped.left);
-  return ts.isIdentifier(imported) ? imported.text : undefined;
+  const left = unwrapExpression(unwrapped.left);
+  const right = unwrapExpression(unwrapped.right);
+  if (ts.isIdentifier(left) && isEmptyObjectLiteral(right)) {
+    return left.text;
+  }
+  if (readGlobalAssignmentName(left) === assignedGlobalName && ts.isIdentifier(right)) {
+    return right.text;
+  }
+  if (ts.isIdentifier(left) && readGlobalAssignmentName(right) === assignedGlobalName) {
+    return left.text;
+  }
+  return undefined;
 }
 
 /** Reports whether an expression is the inert `{}` fallback used after a real imported value. */

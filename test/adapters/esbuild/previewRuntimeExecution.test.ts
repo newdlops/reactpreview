@@ -155,6 +155,7 @@ describe('generated preview runtime execution', () => {
     const setupModulePath = path.join(setupDirectory, 'setup.tsx');
     const publicDirectory = path.join(projectRoot, 'public');
     const sourceText = [
+      "window.__previewExecutionOrder.push('target-process:' + process.platform + ':' + process.cwd() + ':' + Reflect.get(process.env, 'NODE_ENV'));",
       'const service = window.ZUZU.service;',
       "window.__previewExecutionOrder.push('target-module:' + service);",
       'export function NamedRuntimePreview({ label, theme }) {',
@@ -189,6 +190,7 @@ describe('generated preview runtime execution', () => {
           setupModulePath,
           [
             "import React from 'react';",
+            "window.__previewExecutionOrder.push('setup-process:' + process.platform + ':' + process.cwd() + ':' + Reflect.get(process.env, 'NODE_ENV'));",
             "if (window.ZUZU === undefined) throw new Error('ZUZU namespace was not initialized');",
             "window.__previewExecutionOrder.push('setup-module');",
             'export async function initializePreview() {',
@@ -298,9 +300,11 @@ describe('generated preview runtime execution', () => {
         },
       ]);
       expect(executionOrder).toEqual([
+        'setup-process:browser:/:development',
         'setup-module',
         'initialize-preview',
         'create-preview-props',
+        'target-process:browser:/:development',
         'target-module:staff-partner',
         'preview-provider',
         'target-render',

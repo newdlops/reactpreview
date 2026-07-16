@@ -72,6 +72,15 @@ describe('classifyPreviewRuntimeMessage', () => {
     expect(diagnostic.recovery).toContain('statically proven project bootstrap globals');
   });
 
+  /** Gives the bounded browser compatibility boundary priority over generic package advice. */
+  it('classifies a missing Browserify process global without suggesting a Node runtime', () => {
+    const diagnostic = classifyPreviewRuntimeMessage('ReferenceError: process is not defined');
+
+    expect(diagnostic.kind).toBe('missing-browser-process');
+    expect(diagnostic.title).toBe('Browser process compatibility unavailable');
+    expect(diagnostic.recovery).toContain('without starting Node');
+  });
+
   /** Treats ambiguous property reads and arbitrary render failures as project runtime issues. */
   it.each(['Cannot read properties of undefined', 'Unexpected component failure'])(
     'keeps an unbranded message generic: %s',

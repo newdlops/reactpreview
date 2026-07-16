@@ -397,6 +397,13 @@ setup import 전에 `public/index.html`, package `index.html`, `.storybook/main.
 키와 라이선스를 복사하지 않습니다. 실제 값이 필요하면 `initializePreview`에서 비밀이 아닌 mock을
 명시하세요.
 
+Browserify가 자유 `process`를 주입한다고 가정하는 package는 별도 setup 없이도 bounded browser process
+object를 먼저 받습니다. 기존 `globalThis.process`는 덮어쓰지 않으며 fallback은 `platform`, `env`, `cwd`,
+`nextTick`과 inert event method만 제공합니다. Node filesystem, network, native binding이나 process 제어는
+제공하지 않습니다. application entry에 `window.process = window.process || importedProcess`처럼 동일 global을
+확인한 뒤 imported binding을 쓰는 구문이 있으면 entry를 실행하지 않고 정확한 import를 lexical bridge
+근거로도 사용합니다. 업무적으로 다른 process 값이 필요할 때만 setup에서 명시적으로 교체하세요.
+
 ## export 갤러리
 
 현재 편집기 AST에서 활성 파일의 runtime default와 모든 직접 PascalCase named export를 statement 및
@@ -414,7 +421,10 @@ export 위치에만 진단을 표시합니다.
 
 번들은 성공했지만 React render, lifecycle, setup 또는 비동기 effect에서 실패하면 보고서가 원래 오류의
 direct headline을 가장 먼저 표시합니다. 그 아래에서 실패 phase, target/export/setup/classification과
-Globals·Apollo·Context·Formik·Redux·Router·Theme 자동 경계의 최종 상태를 확인할 수 있습니다. `name is not defined`는
+Globals·Apollo·Context·Formik·Redux·Router·Theme 자동 경계의 최종 상태를 확인할 수 있습니다. Globals에는
+lexical package bridge와 bounded browser process의 설치/보존 상태가 함께 표시됩니다. `process is not defined`는
+Node 실행을 요구하는 오류가 아니라 process compatibility boundary가 설치되지 못한 경우로 별도 분류됩니다.
+그 밖의 `name is not defined`는
 `missing-runtime-global`로 분류되며, Globals 상태에서 project bootstrap/ambient wrapper 또는 exact
 installed-package lexical bridge가 선택되었는지 확인할 수 있습니다. React component stack은 논리적
 컴포넌트 경로를, JavaScript stack은 실제 실행 위치를 보여주며 `cause`, `AggregateError.errors`와 오류

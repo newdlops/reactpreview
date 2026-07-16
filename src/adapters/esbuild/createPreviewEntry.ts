@@ -5,6 +5,7 @@
  */
 import type { PreviewRenderMode } from '../../domain/preview';
 import { createPreviewAutomaticPropsRuntimeSource } from './previewAutomaticPropsRuntimeSource';
+import { createPreviewBrowserProcessRuntimeSource } from './previewBrowserProcessRuntimeSource';
 import { createPreviewPageInspectorRuntimeSource } from './pageInspector/previewPageInspectorRuntimeSource';
 import {
   PREVIEW_APOLLO_SPECIFIER,
@@ -64,6 +65,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedThemeSpecifier = JSON.stringify(PREVIEW_THEME_SPECIFIER);
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
+  const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource();
   const inspectorImportSource =
     renderMode === 'page-inspector' ? "import * as ReactDOMNamespace from 'react-dom';" : '';
   const inspectorRuntimeSource =
@@ -72,6 +74,10 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 ${inspectorImportSource}
+
+${browserProcessRuntimeSource}
+
+const previewBrowserProcessStatus = initializePreviewBrowserProcess();
 
 const mountNode = document.getElementById('react-preview-root');
 if (mountNode === null) {
@@ -83,7 +89,8 @@ ${runtimeErrorSource}
 ${automaticPropsRuntimeSource}
 
 registerPreviewRuntimeCapability('Globals', {
-  readPreviewRuntimeStatus: () => ${encodedGlobalPackageBridgeStatus},
+  readPreviewRuntimeStatus: () =>
+    ${encodedGlobalPackageBridgeStatus} + '; ' + previewBrowserProcessStatus,
 });
 
 const PREVIEW_HOT_RUNTIME_KEY = Symbol.for('newdlops.react-file-preview.hot-runtime');

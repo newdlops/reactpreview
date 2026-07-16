@@ -218,6 +218,49 @@ describe('collectPreviewImplicitGlobalEvidence', () => {
     ]);
   });
 
+  /** Recognizes a bootstrap's exact self-global fallback without executing the application entry. */
+  it('collects imported values behind matching global self-fallbacks', async () => {
+    const sourcePath = '/workspace/src/index.tsx';
+    const sourceText = [
+      'import { Buffer } from "buffer";',
+      'import process from "process/browser";',
+      '(window as any).Buffer = window.Buffer || Buffer;',
+      'window.process = window.process ?? process;',
+      'globalThis.rejected = window.unrelated || process;',
+    ].join('\n');
+    const resolvedPaths = new Map([
+      ['buffer', '/workspace/node_modules/buffer/index.js'],
+      ['process/browser', '/workspace/node_modules/process/browser.js'],
+    ]);
+
+    const result = await collectPreviewImplicitGlobalEvidence({
+      readSource: () => sourceText,
+      resolveModule: (specifier) => resolvedPaths.get(specifier),
+      sourcePaths: [sourcePath],
+    });
+
+    expect(result.evidence).toEqual([
+      {
+        evidenceKind: 'runtime-assignment',
+        exportKind: 'named',
+        exportName: 'Buffer',
+        globalName: 'Buffer',
+        modulePath: '/workspace/node_modules/buffer/index.js',
+        moduleSpecifier: 'buffer',
+        sourcePath,
+      },
+      {
+        evidenceKind: 'runtime-assignment',
+        exportKind: 'default',
+        globalName: 'process',
+        modulePath: '/workspace/node_modules/process/browser.js',
+        moduleSpecifier: 'process/browser',
+        sourcePath,
+      },
+    ]);
+    expect(result.unresolvedGlobalNames).toEqual([]);
+  });
+
   /** Uses runtime syntax even when lower-priority ambient evidence resolves successfully elsewhere. */
   it('applies runtime-assignment priority before comparing module identities', async () => {
     const sources = new Map<string, string>([

@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1021 - 2026-07-16
+
+- Browserify 전제의 브라우저 package가 자유 `process`를 읽어도 target graph 평가 전에 기존 값을 보존하거나
+  `platform`, `env`, `cwd`, `nextTick`만 가진 bounded browser compatibility object를 설치하도록 보강
+- Node filesystem·network·native binding은 제공하지 않고 hot entry 사이에서 같은 fallback을 재사용하며,
+  실제 선택 상태를 Globals runtime boundary에 표시
+- `window.name = window.name || importedBinding` 및 `??` 형태의 app bootstrap을 실행 없이 증명해
+  `process/browser`, `Buffer` 같은 정확한 project import를 기존 lexical bridge로 재사용
+- `process is not defined`를 일반 package 설치 문제가 아닌 browser process boundary 오류로 별도 설명하고,
+  실제 `rtcc-public-upload-page.tsx`의 2,296개 의존 graph와 53개 chunk가 경고 없이 번들되는 것을 검증
+
 ## 0.1.1020 - 2026-07-16
 
 - 직접 export component의 필수 prop 타입과 비옵셔널 receiver 사용 경로를 bounded하게 분석해 string,

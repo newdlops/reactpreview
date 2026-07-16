@@ -103,6 +103,15 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
     title: 'React context value unavailable',
   },
   {
+    kind: 'missing-browser-process',
+    messageIncludes: ['process is not defined'],
+    recovery:
+      'Refresh the pinned preview and inspect the Globals process status below. React Preview supplies bounded browser metadata without starting Node; an explicit setup may provide a project-owned browser process object when different semantics are required.',
+    summary:
+      'A Browserify-oriented dependency evaluated without the bounded browser process compatibility object.',
+    title: 'Browser process compatibility unavailable',
+  },
+  {
     kind: 'missing-runtime-global',
     messageIncludes: [' is not defined'],
     recovery:

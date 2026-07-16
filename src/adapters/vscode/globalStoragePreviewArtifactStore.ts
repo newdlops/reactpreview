@@ -6,7 +6,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { PreviewArtifactStore } from '../../application/previewArtifactStore';
-import type { PreviewBundle, StoredPreviewArtifact } from '../../domain/preview';
+import type {
+  PreviewBundle,
+  PreviewBundleChunk,
+  StoredPreviewArtifact,
+} from '../../domain/preview';
+
+const MAX_PREVIEW_CHUNKS = 128;
 
 /** VS Code filesystem-backed store for cache-busted browser preview artifacts. */
 export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, vscode.Disposable {
@@ -34,7 +40,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   /**
    * Writes a complete hashed revision and acquires one ownership reference after the write succeeds.
    *
-   * @param bundle In-memory JavaScript and optional stylesheet from the compiler.
+   * @param bundle In-memory entry, auxiliary JavaScript chunks, and optional stylesheet.
    * @returns Serialized local locations suitable for later `webview.asWebviewUri` conversion.
    */
   public publish(bundle: PreviewBundle): Promise<StoredPreviewArtifact> {
@@ -42,7 +48,18 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
       return Promise.reject(new Error('The React preview artifact session is already closed.'));
     }
 
-    const contentHash = createContentHash(bundle);
+    let chunks: readonly PreviewBundleChunk[];
+    try {
+      chunks = validateAndSortChunks(bundle.chunks);
+    } catch (error) {
+      return Promise.reject(
+        error instanceof Error
+          ? error
+          : new TypeError('Invalid React preview auxiliary chunk metadata.', { cause: error }),
+      );
+    }
+
+    const contentHash = createContentHash(bundle, chunks);
     return this.enqueueOperation(async () => {
       const currentReferences = this.referenceCountByHash.get(contentHash) ?? 0;
       if (currentReferences > 0) {
@@ -52,7 +69,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
 
       let artifact: StoredPreviewArtifact;
       try {
-        artifact = await this.writeBundle(contentHash, bundle);
+        artifact = await this.writeBundle(contentHash, bundle, chunks);
       } catch (error) {
         await this.deleteDirectory(vscode.Uri.joinPath(this.resourceRoot, contentHash));
         throw error;
@@ -66,12 +83,14 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
    * Writes one complete bundle while the store's mutation queue excludes release and shutdown work.
    *
    * @param contentHash Deterministic directory name calculated before the operation was queued.
-   * @param bundle In-memory JavaScript and optional CSS to publish.
+   * @param bundle In-memory entry, auxiliary JavaScript chunks, and optional CSS to publish.
+   * @param chunks Validated auxiliary modules in deterministic path order.
    * @returns Serialized locations for the completed artifact set.
    */
   private async writeBundle(
     contentHash: string,
     bundle: PreviewBundle,
+    chunks: readonly PreviewBundleChunk[],
   ): Promise<StoredPreviewArtifact> {
     const revisionDirectory = vscode.Uri.joinPath(this.resourceRoot, contentHash);
 
@@ -82,7 +101,42 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     );
 
     const stylesheetUri = await this.writeStylesheet(revisionDirectory, bundle.stylesheet);
+    await this.writeChunks(revisionDirectory, chunks);
     return this.describeBundle(contentHash, stylesheetUri !== undefined);
+  }
+
+  /**
+   * Writes validated auxiliary modules below their revision without flattening relative imports.
+   * Parent directories are created once in lexical order, and files follow the already sorted input
+   * so equivalent bundles produce deterministic filesystem operations as well as deterministic hashes.
+   *
+   * @param revisionDirectory Hash-specific root that already owns the entry bundle.
+   * @param chunks Safe `chunks/.../*.js` outputs validated before publication was queued.
+   */
+  private async writeChunks(
+    revisionDirectory: vscode.Uri,
+    chunks: readonly PreviewBundleChunk[],
+  ): Promise<void> {
+    const createdParentPaths = new Set<string>();
+    for (const chunk of chunks) {
+      const pathSegments = chunk.relativePath.split('/');
+      const fileName = pathSegments.pop();
+      if (fileName === undefined) {
+        throw new TypeError(`Invalid React preview chunk path: ${chunk.relativePath}`);
+      }
+
+      const parentPath = pathSegments.join('/');
+      if (!createdParentPaths.has(parentPath)) {
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.joinPath(revisionDirectory, ...pathSegments),
+        );
+        createdParentPaths.add(parentPath);
+      }
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.joinPath(revisionDirectory, ...pathSegments, fileName),
+        chunk.contents,
+      );
+    }
   }
 
   /**
@@ -213,18 +267,100 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
 }
 
 /**
- * Computes a short deterministic revision digest over JavaScript and optional stylesheet bytes.
+ * Computes a short deterministic revision digest over every published browser artifact.
  *
  * @param bundle Compiled bytes whose identity should be stable across equivalent rebuilds.
+ * @param chunks Validated chunks sorted by their safe relative output path.
  * @returns Sixteen hexadecimal characters used as a cache-busting directory name.
  */
-function createContentHash(bundle: PreviewBundle): string {
+function createContentHash(bundle: PreviewBundle, chunks: readonly PreviewBundleChunk[]): string {
   const hash = createHash('sha256');
   hash.update(bundle.javascript);
   hash.update('\0react-preview-stylesheet\0');
   if (bundle.stylesheet !== undefined) {
     hash.update(bundle.stylesheet);
   }
+  hash.update('\0react-preview-chunks\0');
+  for (const chunk of chunks) {
+    updateLengthPrefixedHash(hash, chunk.relativePath);
+    updateLengthPrefixedHash(hash, chunk.contents);
+  }
 
   return hash.digest('hex').slice(0, 16);
+}
+
+/**
+ * Rejects compiler output paths that could escape, collide, or create non-JavaScript artifacts.
+ * Validation remains inside the storage adapter even when the compiler applies the same policy:
+ * artifact stores are a separate trust boundary and must never depend on a caller's path checks.
+ *
+ * @param chunks Untrusted auxiliary output descriptors supplied through the application port.
+ * @returns A copied array sorted lexically by relative POSIX path.
+ * @throws TypeError when a path violates the private `chunks/…/file.js` contract.
+ * @throws RangeError when one preview exceeds the bounded auxiliary-file count.
+ */
+function validateAndSortChunks(
+  chunks: readonly PreviewBundleChunk[],
+): readonly PreviewBundleChunk[] {
+  if (chunks.length > MAX_PREVIEW_CHUNKS) {
+    throw new RangeError(
+      `React preview bundles may contain at most ${MAX_PREVIEW_CHUNKS.toString()} auxiliary chunks.`,
+    );
+  }
+
+  const seenPaths = new Set<string>();
+  for (const chunk of chunks) {
+    assertSafeChunkPath(chunk.relativePath);
+    if (seenPaths.has(chunk.relativePath)) {
+      throw new TypeError(`Duplicate React preview chunk path: ${chunk.relativePath}`);
+    }
+    seenPaths.add(chunk.relativePath);
+  }
+
+  return [...chunks].sort((left, right) =>
+    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
+  );
+}
+
+/**
+ * Enforces an exact portable path form before any segment reaches `vscode.Uri.joinPath`.
+ * Empty, current-directory, and parent-directory segments are rejected instead of normalized so
+ * the hash identity and the eventual filesystem identity can never disagree.
+ *
+ * @param relativePath Candidate output path supplied by the preview compiler.
+ * @throws TypeError when the value is not a relative POSIX JavaScript path below `chunks/`.
+ */
+function assertSafeChunkPath(relativePath: string): void {
+  const pathSegments = relativePath.split('/');
+  const hasUnsafeSegment = pathSegments.some(
+    (segment) => segment.length === 0 || segment === '.' || segment === '..',
+  );
+  if (
+    relativePath.includes('\0') ||
+    relativePath.includes('\\') ||
+    relativePath.startsWith('/') ||
+    pathSegments[0] !== 'chunks' ||
+    pathSegments.length < 2 ||
+    hasUnsafeSegment ||
+    !relativePath.endsWith('.js')
+  ) {
+    throw new TypeError(`Invalid React preview chunk path: ${relativePath}`);
+  }
+}
+
+/**
+ * Adds an explicit byte length before one hash field so arbitrary chunk bytes cannot blur field
+ * boundaries. Text is encoded as UTF-8 by Node's hash API while typed arrays retain exact bytes.
+ *
+ * @param hash Mutable SHA-256 digest owned by one content-identity calculation.
+ * @param value Portable path text or complete JavaScript chunk bytes.
+ */
+function updateLengthPrefixedHash(
+  hash: ReturnType<typeof createHash>,
+  value: string | Uint8Array,
+): void {
+  const byteLength =
+    typeof value === 'string' ? Buffer.byteLength(value, 'utf8') : value.byteLength;
+  hash.update(`${byteLength.toString()}:`);
+  hash.update(value);
 }

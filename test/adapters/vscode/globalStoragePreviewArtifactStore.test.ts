@@ -63,6 +63,7 @@ vi.mock('vscode', () => {
 });
 
 const FIRST_BUNDLE: PreviewBundle = {
+  chunks: [],
   dependencies: [],
   diagnostics: [],
   javascript: new TextEncoder().encode('first revision'),
@@ -70,10 +71,25 @@ const FIRST_BUNDLE: PreviewBundle = {
 };
 
 const SECOND_BUNDLE: PreviewBundle = {
+  chunks: [],
   dependencies: [],
   diagnostics: [],
   javascript: new TextEncoder().encode('second revision'),
   watchDirectories: [],
+};
+
+const CHUNKED_BUNDLE: PreviewBundle = {
+  ...FIRST_BUNDLE,
+  chunks: [
+    {
+      contents: new TextEncoder().encode('export const later = true;'),
+      relativePath: 'chunks/z-later.js',
+    },
+    {
+      contents: new TextEncoder().encode('export const nested = true;'),
+      relativePath: 'chunks/routes/nested.js',
+    },
+  ],
 };
 
 afterEach(() => {
@@ -81,6 +97,106 @@ afterEach(() => {
 });
 
 describe('GlobalStoragePreviewArtifactStore', () => {
+  /** Preserves nested esbuild output paths so relative dynamic imports resolve in the webview. */
+  it('writes auxiliary chunks below their hash revision in lexical order', async () => {
+    const store = createStore();
+
+    const artifact = await store.publish(CHUNKED_BUNDLE);
+
+    expect(vscodeFileSystem.writeFile.mock.calls.map((call) => String(call[0]))).toEqual([
+      expect.stringContaining(`${artifact.contentHash}/entry.js`),
+      expect.stringContaining(`${artifact.contentHash}/chunks/routes/nested.js`),
+      expect.stringContaining(`${artifact.contentHash}/chunks/z-later.js`),
+    ]);
+    expect(vscodeFileSystem.createDirectory.mock.calls.map((call) => String(call[0]))).toEqual([
+      expect.stringMatching(new RegExp(`${artifact.contentHash}$`, 'u')),
+      expect.stringContaining(`${artifact.contentHash}/chunks/routes`),
+      expect.stringContaining(`${artifact.contentHash}/chunks`),
+    ]);
+    expect(artifact.scriptLocation).toContain(`${artifact.contentHash}/entry.js`);
+    expect(artifact).not.toHaveProperty('stylesheetLocation');
+  });
+
+  /** Makes chunk order irrelevant while retaining both paths and bytes in the content identity. */
+  it('hashes sorted chunk paths and contents', async () => {
+    const store = createStore();
+    const firstArtifact = await store.publish(CHUNKED_BUNDLE);
+    const reorderedArtifact = await store.publish({
+      ...CHUNKED_BUNDLE,
+      chunks: [...CHUNKED_BUNDLE.chunks].reverse(),
+    });
+    const changedBytesArtifact = await store.publish({
+      ...CHUNKED_BUNDLE,
+      chunks: CHUNKED_BUNDLE.chunks.map((chunk, index) =>
+        index === 0
+          ? { ...chunk, contents: new TextEncoder().encode('export const later = false;') }
+          : chunk,
+      ),
+    });
+    const changedPathArtifact = await store.publish({
+      ...CHUNKED_BUNDLE,
+      chunks: CHUNKED_BUNDLE.chunks.map((chunk, index) =>
+        index === 0 ? { ...chunk, relativePath: 'chunks/a-later.js' } : chunk,
+      ),
+    });
+
+    expect(reorderedArtifact.contentHash).toBe(firstArtifact.contentHash);
+    expect(changedBytesArtifact.contentHash).not.toBe(firstArtifact.contentHash);
+    expect(changedPathArtifact.contentHash).not.toBe(firstArtifact.contentHash);
+    expect(vscodeFileSystem.writeFile).toHaveBeenCalledTimes(9);
+  });
+
+  /** Rejects every non-portable or escaping path before creating an artifact revision. */
+  it.each([
+    '/chunks/absolute.js',
+    'chunks\\windows.js',
+    'chunks/../escape.js',
+    'chunks/./same.js',
+    'chunks//empty.js',
+    'chunks/not-javascript.css',
+    'outside/module.js',
+    'chunks/nul\0byte.js',
+  ])('rejects unsafe auxiliary chunk path %j', async (relativePath) => {
+    const store = createStore();
+    const invalidBundle: PreviewBundle = {
+      ...FIRST_BUNDLE,
+      chunks: [{ contents: new Uint8Array(), relativePath }],
+    };
+
+    await expect(store.publish(invalidBundle)).rejects.toThrow('Invalid React preview chunk path');
+
+    expect(vscodeFileSystem.createDirectory).not.toHaveBeenCalled();
+    expect(vscodeFileSystem.writeFile).not.toHaveBeenCalled();
+    expect(vscodeFileSystem.delete).not.toHaveBeenCalled();
+  });
+
+  /** Prevents colliding output identities and bounds filesystem fan-out per preview revision. */
+  it('rejects duplicate paths and more than 128 chunks', async () => {
+    const store = createStore();
+    const duplicateBundle: PreviewBundle = {
+      ...FIRST_BUNDLE,
+      chunks: [
+        { contents: new Uint8Array([1]), relativePath: 'chunks/shared.js' },
+        { contents: new Uint8Array([2]), relativePath: 'chunks/shared.js' },
+      ],
+    };
+    const oversizedBundle: PreviewBundle = {
+      ...FIRST_BUNDLE,
+      chunks: Array.from({ length: 129 }, (_, index) => ({
+        contents: new Uint8Array(),
+        relativePath: `chunks/${index.toString()}.js`,
+      })),
+    };
+
+    await expect(store.publish(duplicateBundle)).rejects.toThrow(
+      'Duplicate React preview chunk path',
+    );
+    await expect(store.publish(oversizedBundle)).rejects.toThrow('at most 128 auxiliary chunks');
+
+    expect(vscodeFileSystem.createDirectory).not.toHaveBeenCalled();
+    expect(vscodeFileSystem.writeFile).not.toHaveBeenCalled();
+  });
+
   /**
    * Keeps both published hashes until the controller identifies the revision that actually won.
    */
@@ -124,13 +240,26 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     expect(String(vscodeFileSystem.delete.mock.calls[0]?.[0])).toContain(firstArtifact.contentHash);
   });
 
-  /** Removes a partial unowned hash directory when publication fails before acquiring its lease. */
-  it('cleans a partially written new artifact after publication failure', async () => {
+  /** Removes entry bytes and parent directories when an auxiliary-file write fails mid-publication. */
+  it('cleans a partially written new artifact after chunk publication failure', async () => {
     const store = createStore();
-    vscodeFileSystem.writeFile.mockRejectedValueOnce(new Error('simulated storage write failure'));
+    vscodeFileSystem.writeFile
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('simulated chunk write failure'));
 
-    await expect(store.publish(FIRST_BUNDLE)).rejects.toThrow('simulated storage write failure');
+    await expect(
+      store.publish({
+        ...FIRST_BUNDLE,
+        chunks: [
+          {
+            contents: new TextEncoder().encode('failed chunk'),
+            relativePath: 'chunks/failed.js',
+          },
+        ],
+      }),
+    ).rejects.toThrow('simulated chunk write failure');
 
+    expect(vscodeFileSystem.writeFile).toHaveBeenCalledTimes(2);
     expect(vscodeFileSystem.delete).toHaveBeenCalledTimes(1);
     expect(String(vscodeFileSystem.delete.mock.calls[0]?.[0])).toMatch(
       /preview-cache\/[^/]+\/[a-f0-9]{16}$/u,

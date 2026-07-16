@@ -1,7 +1,7 @@
 /**
  * Defines generic runtime dependency diagnostics embedded into every browser preview entry.
- * Rules inspect only a library-branded error message and never a stack path, keeping classification
- * stable across bundlers while avoiding assumptions about a particular repository's source tree.
+ * Rules inspect only direct library/public JavaScript error text and never a stack path, keeping
+ * classification stable across bundlers without assuming a particular repository's source tree.
  */
 
 /** Actionable browser error classification shown before the original runtime details. */
@@ -16,14 +16,14 @@ export interface PreviewRuntimeDiagnostic {
   readonly title: string;
 }
 
-/** Library-branded message fragments associated with one diagnostic. */
+/** Stable direct-message fragments associated with one diagnostic. */
 export interface PreviewRuntimeDiagnosticRule extends PreviewRuntimeDiagnostic {
   /** Lowercase message fragments; any one exact fragment selects this rule. */
   readonly messageIncludes: readonly string[];
 }
 
 /**
- * Known context failures whose messages are owned by public ecosystem libraries.
+ * Known context failures expressed by public libraries or stable JavaScript engine diagnostics.
  * Application names, paths, selectors, routes, and state fields deliberately never appear here.
  */
 export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnosticRule[] = [
@@ -90,15 +90,38 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
   {
     kind: 'custom-context',
     messageIncludes: [
+      "context(...)' as it is null",
+      "context(...)' as it is undefined",
       'must be used inside a provider',
       'must be used within a provider',
       'must be used within the provider',
     ],
     recovery:
-      'Add a small static provider in .react-preview/setup.tsx; application-owned context values cannot be inferred safely from hook names alone.',
+      'Refresh the pinned preview so the automatic demand-shaped Context boundary can be rebuilt. If the component needs semantic application values rather than neutral containers, provide them through a small static .react-preview/setup.tsx provider.',
     summary:
-      'An application or library hook explicitly reported that its React context provider is absent.',
-    title: 'React context provider required',
+      'An application or library hook received a nullish React context value while rendering the selected tree.',
+    title: 'React context value unavailable',
+  },
+  {
+    kind: 'missing-runtime-global',
+    messageIncludes: [' is not defined'],
+    recovery:
+      'Refresh after installing or restoring the expected module. React Preview automatically supplies only statically proven project bootstrap globals and exact same-name installed packages; otherwise import the value explicitly or define it in .react-preview/setup.tsx.',
+    summary:
+      'A reached module read an identifier that its normal application bootstrap or bundler provides outside the selected component graph.',
+    title: 'Build-provided global unavailable',
+  },
+  {
+    kind: 'missing-preview-value',
+    messageIncludes: [
+      'cannot read properties of null (reading',
+      'cannot read properties of undefined (reading',
+    ],
+    recovery:
+      'React Preview isolates the failed export and supplies only bounded values inferred from required prop types and direct usage paths. Edit the generated values in React Page Inspector when the neutral choice is not sufficient.',
+    summary:
+      'The component reached a property whose application, form, route, or backend value is absent from the static preview.',
+    title: 'Static preview value unavailable',
   },
 ];
 

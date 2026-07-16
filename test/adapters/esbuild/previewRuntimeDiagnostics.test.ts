@@ -45,11 +45,31 @@ describe('classifyPreviewRuntimeMessage', () => {
     expect(diagnostic.title).toBe('Formik provider required');
   });
 
+  /** Recognizes the JavaScript engine's generic custom-hook destructuring failure. */
+  it('classifies a null custom Context hook result without a project-specific hook name', () => {
+    const diagnostic = classifyPreviewRuntimeMessage(
+      "Cannot destructure property 'isStaffMode' of 'useAppContext(...)' as it is null.",
+    );
+
+    expect(diagnostic.kind).toBe('custom-context');
+    expect(diagnostic.title).toBe('React context value unavailable');
+    expect(diagnostic.recovery).toContain('automatic demand-shaped Context boundary');
+  });
+
   /** Recognizes explicit theme-object language while leaving arbitrary undefined reads generic. */
   it('classifies a branded theme-shape failure', () => {
     expect(
       classifyPreviewRuntimeMessage('TypeError: props.theme.spacing is not a function').kind,
     ).toBe('theme-contract');
+  });
+
+  /** Separates a missing build/bootstrap global from provider and component lifecycle failures. */
+  it('classifies an undefined free runtime identifier', () => {
+    const diagnostic = classifyPreviewRuntimeMessage('dayjs is not defined');
+
+    expect(diagnostic.kind).toBe('missing-runtime-global');
+    expect(diagnostic.title).toBe('Build-provided global unavailable');
+    expect(diagnostic.recovery).toContain('statically proven project bootstrap globals');
   });
 
   /** Treats ambiguous property reads and arbitrary render failures as project runtime issues. */
@@ -59,6 +79,16 @@ describe('classifyPreviewRuntimeMessage', () => {
       expect(classifyPreviewRuntimeMessage(message).kind).toBe('project-runtime');
     },
   );
+
+  /** Explains a concrete nullish property read without assuming that a backend is mandatory. */
+  it('classifies a missing static value independently from provider failures', () => {
+    const diagnostic = classifyPreviewRuntimeMessage(
+      "TypeError: Cannot read properties of undefined (reading 'value')",
+    );
+
+    expect(diagnostic.kind).toBe('missing-preview-value');
+    expect(diagnostic.recovery).toContain('React Page Inspector');
+  });
 
   /** Demonstrates that stack-only package words are outside the classifier contract. */
   it('does not classify a package name supplied separately from the direct message', () => {

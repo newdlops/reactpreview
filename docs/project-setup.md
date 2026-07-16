@@ -1,8 +1,9 @@
 # 프로젝트 프리뷰 환경 설정
 
-React 컴포넌트가 Theme, Router, GraphQL, Redux 또는 브라우저 전역에 의존한다면 import graph만
-번들링하는 것으로는 충분하지 않습니다. React File Preview는 앱 전체 엔트리나 개발 서버를 실행하는
-대신, 프로젝트가 제공한 작은 setup 모듈을 대상 파일보다 먼저 실행합니다.
+React 컴포넌트가 Theme, Router, GraphQL, Redux, Formik 또는 브라우저 전역에 의존한다면 import graph만
+번들링하는 것으로는 충분하지 않습니다. React File Preview는 앱 전체 entry, 인증 bootstrap, 실제 API
+client, backend나 개발 서버를 실행하는 대신 프로젝트가 제공한 작은 setup 모듈을 대상 파일보다 먼저
+실행합니다.
 
 ## 선택 순서
 
@@ -17,19 +18,93 @@ Storybook `main`이나 Vite/Webpack 설정, addon manager와 서버는 실행하
 Storybook preview 자체가 번들링되지 않으면 대상만 다시 빌드하고 Output Channel에 경고를 남깁니다.
 이 경우 전용 setup을 추가하면 프로젝트의 현재 구조를 명확하게 표현할 수 있습니다.
 
+## package 경계, 자동 정적 props와 parent slice
+
+setup, `public` root와 초기 정적 환경 인덱스의 project root는 대상에서 가장 가까운 `package.json`입니다.
+package manifest가 없을 때만 workspace root를 사용하므로 모노레포의 형제 package 설정과 source를
+한 프리뷰 환경으로 섞지 않습니다. 일반 package import는 대상 package에서 시작하는 esbuild resolver가
+처리하므로 workspace root나 그 상위에 hoist된 `node_modules`도 Node의 통상 탐색 규칙으로 찾습니다.
+
+최초 요청은 이 package 안의 authored source 경로를 bounded하게 열거하고, 대상 component를 실제로
+import해 JSX에서 사용한 곳이 있으면 boolean·number·string·null literal attribute만 자동 props로
+수집합니다. 이 값은 가장 낮은 우선순위입니다. `createPreviewProps` 함수가 있으면 그 반환값을, 없으면
+`previewProps`를 공통 props로 덮어쓰고 마지막으로 `previewPropsByExport`를 병합합니다. dynamic spread,
+실행해야 알 수 있는 표현식, 업무 객체와 인증·route 의미는 추측하지 않습니다. source 목록과 정적 사용
+근거는 같은 package의 여러 탭과 재빌드가 잠시 공유하지만, 캐시된 props를 제공한 consumer가 dirty이면
+즉시 다시 분석합니다.
+
+setup이 없는 기본 프리뷰는 같은 JSX 사용에서 target까지 이어지는 ancestor 한 갈래도 정적 recipe로
+만듭니다. lowercase intrinsic element와 직접 import된 wrapper, primitive prop, 일반 children과 명시적인
+render-function children만 보존합니다. sibling JSX와 parent component 함수는 실행하지 않으므로 modal의
+초기 `open=false`, API effect, route gate 때문에 target이 사라지는 문제를 피하면서 `Table → TableBody →
+TargetRow`처럼 구조와 descendant style에 필요한 wrapper만 복원할 수 있습니다. 같은 파일의 private
+`Body` 사용은 최대 8단계, 합성 wrapper는 최대 32개까지 따라갑니다.
+
+imported Form/Provider에 dynamic prop이나 spread가 있으면 해당 wrapper를 불완전하게 복제하지 않고 바로
+안쪽의 검증된 partial path에서 멈춥니다. 바깥쪽에는 Apollo·Formik·Redux·Router·Theme 및 custom Context의
+기존 정적 fallback이 적용됩니다. runtime hook 결과, 업무 상태나 동적 Provider `value`는 추측하지 않으며
+필요하면 아래 setup/harness가 공급해야 합니다. `reactPreview.setupFile`, `.react-preview/setup.*` 또는
+Storybook preview가 선택되면 프로젝트가 명시한 composition을 존중하기 위해 자동 parent slice를 적용하지
+않습니다.
+
+이 인덱스는 source 경로, primitive literal, inert wrapper recipe와 파일 metadata만 저장합니다. 전체 app
+entry, auth bootstrap, store reducer, route table이나 API client를 import·실행하는 환경 복구 기능이
+아니며, target과 선택 wrapper의 실제 component/CSS/library 의존성은 esbuild forward graph가 별도로
+수집합니다. 자동 props와 safe partial slice로 충분하지 않은 계약은 아래 setup 또는 작은 preview
+harness에 명시합니다.
+
+## 실제 페이지 문맥을 여는 Page Inspector
+
+기본 preview가 target 중심의 안전한 한 갈래만 보여주는 것과 달리, 에디터의
+`Inspect Current React File in Page Context`는 실제 작성된 owner를 실행하는 opt-in 모드입니다. 대상
+파일의 default export를 우선하고 없으면 첫 직접 PascalCase export를 선택한 뒤, workspace 안의 실제 JSX
+import 사용과 barrel/consumer tsconfig alias를 역추적해 찾은 바깥쪽 importable owner export를 root로
+마운트합니다. 이
+root가 작성한 children, sibling, 조건식, hook, effect, event handler와 CSS/import graph가 함께 실행되므로
+화면에서 보이는 문맥을 기본 gallery보다 충실하게 확인할 수 있습니다.
+
+toolbar에서는 정적으로 증명된 ancestry와 Target/Root 항목을 선택하고 다음 값을 조작할 수 있습니다.
+
+- `Highlight target`: 대상 component가 commit한 DOM 범위를 강조하거나 해제
+- `Pick element`: portal이나 자동 host lookup 범위 밖의 DOM을 직접 강조 대상으로 지정
+- `Serializable props (JSON)`: 선택한 target 또는 ancestor root의 plain data props를 적용·초기화
+- `Remount`: 선택한 component error/local state를 새 instance로 초기화
+
+예를 들어 root의 `{ "show": false }` 또는 target의 `{ "enabled": true }`를 적용하면 그 prop을 읽는
+삼항식이나 boolean branch가 실제 React render를 거쳐 바뀝니다. component 내부 `useState`는 페이지의
+실제 button/input 같은 UI로 조작할 수 있습니다. Inspector의 버전 격리 adapter는 target boundary 아래
+host 위치만 읽으며 Fiber, hook queue나 local variable slot을 수정하지 않습니다. 함수, symbol, 순환 객체
+prop도 JSON editor에 보존하지 않습니다.
+
+역추적은 project-level owner/barrel 최대 8단계와 same-file private owner 최대 12단계로 제한됩니다. 여러
+사용처가 있을 때 page/layout/App 관례를 우선하고 tests/stories/examples를 후순위로 정렬하지만 프로젝트
+route 의미는 추측하지 않습니다. non-component route config, private terminal, cycle, 깊이 한도에서는
+toolbar에 partial ancestry를 표시합니다. 원하는 scenario가 아니거나 root가 필수 auth,
+route parameter, store leaf, dynamic Provider value 때문에 실패하면 아래 setup 또는 명시적인 preview
+harness가 여전히 올바른 해결책입니다. setup의 `PreviewProviders`, props와 자동 runtime boundary는
+Inspector가 선택한 실제 root 바깥에도 동일하게 적용됩니다.
+
+highlight, 선택 항목과 JSON override는 각 Inspector 탭에 따로 저장되고 source/ancestor dependency hot
+reload 뒤 다시 적용됩니다. 다만 hot reload는 프로젝트 React root를 다시 마운트하므로 일반 hook state는
+보존하지 않습니다. Inspector는 app entry, route table, backend나 개발 서버를 추가로 실행하지 않고
+웹뷰 CSP도 모든 외부 연결을 계속 차단합니다.
+
 ## setup 계약
 
 setup 모듈은 아래 named export를 필요한 만큼만 제공할 수 있습니다.
 
-| export               | 실행 시점              | 역할                                                |
-| -------------------- | ---------------------- | --------------------------------------------------- |
-| `initializePreview`  | 대상 모듈 import 전    | 전역 객체, 날짜/숫자 유틸리티와 mock service 초기화 |
-| `PreviewProviders`   | React render 시        | Theme, Router, GraphQL, Redux 등의 Provider 조립    |
-| `previewProps`       | 대상 element 생성 전   | 모든 대상에 전달할 정적 props 객체                  |
-| `createPreviewProps` | 대상 element 생성 전   | 파일 이름에 따라 props를 만드는 동기/비동기 함수    |
-| `apolloPreview`      | Apollo client 생성 시  | 자동 정적 응답을 조정하거나 `false`로 비활성화      |
-| `themePreview`       | ThemeProvider 생성 시  | exact theme을 지정하거나 `false`로 비활성화         |
-| `reduxPreview`       | Redux Provider 생성 시 | exact static state를 지정하거나 `false`로 비활성화  |
+| export                 | 실행 시점               | 역할                                                  |
+| ---------------------- | ----------------------- | ----------------------------------------------------- |
+| `initializePreview`    | 대상 모듈 import 전     | 전역 객체, 날짜/숫자 유틸리티와 mock service 초기화   |
+| `PreviewProviders`     | React render 시         | Theme, Router, GraphQL, Redux 등의 Provider 조립      |
+| `previewProps`         | 대상 element 생성 전    | 모든 export에 전달할 공통 정적 props 객체             |
+| `createPreviewProps`   | 대상 element 생성 전    | 파일 이름에 따라 공통 props를 만드는 동기/비동기 함수 |
+| `previewPropsByExport` | export element 생성 전  | export 이름별로 공통 props를 덮어쓰는 정적 객체       |
+| `apolloPreview`        | Apollo client 생성 시   | 자동 정적 응답을 조정하거나 `false`로 비활성화        |
+| `themePreview`         | ThemeProvider 생성 시   | exact theme을 지정하거나 `false`로 비활성화           |
+| `reduxPreview`         | Redux Provider 생성 시  | exact static state를 지정하거나 `false`로 비활성화    |
+| `formikPreview`        | Formik Provider 생성 시 | 정적 initial values를 지정하거나 `false`로 비활성화   |
+| `routerPreview`        | MemoryRouter 생성 시    | 정적 location을 지정하거나 `false`로 비활성화         |
 
 `initializePreview`와 `createPreviewProps`에는 `{ documentName, setupKind }`가 전달됩니다.
 `PreviewProviders`도 같은 값과 `children`을 받습니다. setup 파일과 도달 가능한 import는 일반 대상
@@ -67,9 +142,17 @@ export function PreviewProviders({ children }: PropsWithChildren) {
   );
 }
 
+// PreviewProviders가 Router를 직접 소유하므로 자동 outer Router는 사용하지 않습니다.
+export const routerPreview = false;
+
 export function createPreviewProps({ documentName }: { documentName: string }) {
   return documentName.endsWith('/UserCard.tsx') ? { name: 'Preview user', role: 'Developer' } : {};
 }
+
+export const previewPropsByExport = {
+  CompactUserCard: { compact: true },
+  default: { featured: true },
+};
 ```
 
 setup은 웹뷰 안에서 실행되며 extension host에서는 import되지 않습니다. 그래도 대상 코드와 동일한
@@ -103,13 +186,21 @@ export const apolloPreview = {
 프로젝트의 `PreviewProviders`가 자체 Apollo client를 제공한다면 그 Provider가 자동 outer Provider보다
 가까워 정상적으로 우선합니다. 자동 계층이 필요 없으면 `export const apolloPreview = false`로 끕니다.
 
-## styled-components 구조적 프리뷰
+## styled-components theme 프리뷰
 
 대상 package에서 `styled-components`를 찾으면 확장은 같은 package 인스턴스의 `ThemeProvider`를
-자동 사용합니다. 기본 theme은 알려진 token 이름이나 색·간격 값을 포함하지 않는 구조적 Proxy입니다.
-`theme.flex.colCenter` 같은 CSS 조각, `theme.spacing(2)` 같은 helper 호출과 문자열·숫자 변환은 각각
-빈 CSS 또는 `0`으로 축약됩니다. 따라서 markup과 theme에 독립적인 CSS는 계속 렌더링되지만 색·간격 등
-실제 디자인 결과는 비어 있을 수 있습니다.
+자동 사용합니다. 활성 파일뿐 아니라 활성 export에서 정적으로 도달한 자식·손자 소스가
+styled-components를 값으로 사용하면서 `theme` named value/type import(로컬 alias 허용) 또는
+`theme`이라는 이름의 default import를 명시하면 후보로 수집합니다. 상대 경로와 tsconfig alias는
+esbuild가 해석한 실제 파일 identity로 합치고, value 근거를 우선한 유일한 후보만 지연 import합니다.
+서로 다른 최상위 후보가 동점이면 임의 선택하지 않습니다. 앱 entry나 Provider graph를 검색하지
+않으므로 범용성과 부작용 없는 번들링 경계는 유지됩니다.
+
+발견한 theme의 실제 primitive, CSS array와 정상 helper 결과는 그대로 보존합니다. 없는 token은 값
+없는 구조 token으로 보완하고, 프로젝트 전역이 없어 실패한 numeric helper가 자체 `.unit`을 제공하면
+그 단위로 `rem` 값을 계산합니다. exact color/font token과 정적 body typography가 있으면 웹뷰의 기본
+배경·본문색·font family·root font-size에도 적용합니다. 자동 theme을 찾지 못하면 모든 token/helper를
+빈 CSS 또는 `0`으로 축약하는 구조적 fallback을 사용합니다.
 
 정확한 theme이 부작용 없는 leaf module에 있다면 setup에서 그대로 전달할 수 있습니다.
 
@@ -119,19 +210,33 @@ import { theme } from '../src/theme/theme';
 export const themePreview = { theme };
 ```
 
-이 값은 clone하거나 token을 병합하지 않고 자동 Provider에 그대로 전달됩니다. `PreviewProviders`나
+setup의 값은 자동 발견 theme보다 우선하며 clone하거나 token을 병합하지 않고 그대로 전달됩니다.
+`PreviewProviders`나
 Storybook decorator 안의 실제 ThemeProvider는 target에 더 가까우므로 자동 outer Provider보다
 우선합니다. styled-components를 쓰지만 자동 경계가 필요 없으면 `export const themePreview = false`로
 끕니다.
 
 ## React Redux 정적 프리뷰
 
-대상 package에서 `react-redux`를 찾으면 확장은 같은 package 인스턴스의 `Provider`와 안정적인 빈
-state `{}`를 자동 제공합니다. store의 `dispatch`는 action을 그대로 반환하고 reducer, middleware,
-thunk 또는 listener를 실행하지 않으므로 앱 bootstrap과 네트워크 작업을 시작하지 않습니다. 선택적
-selector나 context 존재만 필요한 컴포넌트는 그대로 렌더링됩니다.
+대상 package에서 `react-redux`를 찾으면 확장은 같은 package 인스턴스의 `Provider`와 inert static
+store를 제공합니다. target-reachable source의 `useSelector` 계열 callback과 그 결과를 받은 local
+alias에서 이어지는 비옵셔널 property dereference를 구문 분석해, 접근에 필요한 객체 container path만
+plain object state skeleton으로 만듭니다. 예를 들어 아래 selector와 접근에는
+`{ ui: { panel: { layout: {} } } }` 구조까지만 생성됩니다.
 
-빈 root만으로 부족한 selector에는 화면에 필요한 최소 상태를 명시합니다.
+```tsx
+const panel = useAppSelector((state) => state.ui.panel);
+const mode = panel.layout.mode;
+```
+
+생성된 skeleton은 deep freeze되며 같은 store snapshot으로 안정적으로 제공됩니다. `mode` 같은 leaf 값,
+enum, boolean, 배열 내용이나 업무상 의미는 추측하지 않으므로 위 예시의 `mode`는 `undefined`입니다.
+optional chain, computed key, 동적으로 구성한 selector, 안전성을 증명할 수 없는 alias와 정해진 한도를
+넘는 경로도 fail closed합니다. 이 분석은 프로젝트 reducer, middleware, store module, app bootstrap,
+API client나 backend를 import·실행하지 않습니다. store의 `dispatch`는 action을 그대로 반환하고 thunk나
+listener도 실행하지 않습니다.
+
+정확한 분기나 표시 값이 필요한 selector에는 화면에 필요한 최소 상태를 명시합니다.
 
 ```tsx
 export const reduxPreview = {
@@ -142,19 +247,99 @@ export const reduxPreview = {
 };
 ```
 
-확장은 state를 deep Proxy로 만들거나 slice 이름·권한 값을 추측하지 않습니다. 따라서
-`state.user.profile.name`처럼 필요한 경로를 설정하지 않으면 원래 TypeError와 setup 안내가 계속
-표시됩니다. 정확한 store 동작이 필요하면 `PreviewProviders`에서 프로젝트의 네트워크 없는 store를
+setup의 `reduxPreview.state`가 있으면 자동 skeleton을 병합하거나 clone하지 않고 그 exact reference를
+최우선으로 사용합니다. 확장은 state를 deep Proxy로 만들거나 slice 이름·권한 값을 추측하지 않습니다.
+따라서 계산형 접근, selector가 숨긴 helper 로직이나 의미 있는 leaf 값이 필요하면 위와 같이 setup에서
+명시해야 합니다. 정확한 store 동작이 필요하면 `PreviewProviders`에서 프로젝트의 네트워크 없는 store를
 직접 제공하세요. 내부 Provider가 자동 outer Provider보다 우선하며, 자동 경계만 끄려면
 `export const reduxPreview = false`를 사용합니다.
+
+## Formik 정적 프리뷰
+
+target-rooted graph의 workspace source가 Formik의 `useField`, `useFormikContext`, `Field`, `FieldArray`,
+`Form` 같은 Context consumer를 실제로 사용하고 graph 안에 `Formik`, `FormikProvider`, `withFormik` 같은
+Provider 근거가 없으면 자동 정적 form boundary를 구성합니다. Formik은 대상 package에서 정상적으로
+해석되는 프로젝트 복사본을 사용하므로 hoist된 설치와 모노레포 package도 같은 Context identity를
+공유합니다. 부모 화면의 `<Form>`이나 app bootstrap은 역방향으로 검색하거나 실행하지 않습니다.
+
+기본 `initialValues`는 stable frozen 빈 객체이며 `onSubmit`은 아무 동작도 하지 않습니다. 자동 경계는
+blur/change/mount validation을 끄고 backend, API client, 프로젝트 validator를 직접 실행하지 않습니다.
+정확한 필드 구조가 필요하면 JSON-like plain object만 setup에 제공합니다.
+
+```tsx
+export const formikPreview = {
+  initialValues: {
+    acquisitionPeriod: 24,
+    exercisePeriod: 60,
+  },
+};
+```
+
+설정값은 depth·entry·key·array 한도 안에서 prototype-safe plain container로 복사해 deep freeze합니다.
+함수, class instance, cycle, accessor와 prototype-sensitive key가 있으면 전체 설정을 거부하고 빈 값으로
+돌아갑니다. 실제 내부 Formik Provider가 있으면 React의 nearest-context 규칙으로 우선하며, 자동 경계를
+의도적으로 끄려면 `export const formikPreview = false`를 사용합니다.
+
+## React Router 정적 프리뷰
+
+확장은 편집 중인 파일 하나가 아니라 실제 target-rooted esbuild graph에서 요청된 workspace module
+전체를 분석합니다. 활성 파일이나 도달 가능한 자식·손자가 `react-router-dom`의 `useParams`,
+`useLocation`, `Link`, `NavLink` 같은 location consumer를 import하고 graph 어디에도 `BrowserRouter`,
+`MemoryRouter`, `RouterProvider` 같은 provider 근거가 없으면, 최대 한 번 adaptive rebuild해 대상
+프로젝트가 설치한 같은 package 인스턴스의 `MemoryRouter`를 제공합니다. 기본 history는 `['/']`이며 앱
+route module, browser history, loader/action이나 서버를 불러오지 않습니다.
+
+custom setup이나 Storybook preview가 존재한다는 이유만으로 자동 Router를 끄지는 않습니다. 실제 setup
+graph의 Provider/decorator import가 확인되면 nested Router를 피하고, provider 근거 없이 정적 location만
+조정하려면 다음처럼 `routerPreview`를 지정합니다.
+
+```tsx
+export const routerPreview = {
+  initialEntries: ['/companies/preview/contracts/upload?mode=static'],
+  initialIndex: 0,
+};
+```
+
+`initialEntries`는 1~32개의 비어 있지 않은 문자열이며 각 항목은 최대 2,048자입니다. location object와
+state는 받지 않고 유효 범위의 정수 `initialIndex`만 전달합니다. 실제 route table과 의미 있는 params가
+필요하면 `PreviewProviders`나 harness에서 프로젝트 Router를 직접 구성하고
+`export const routerPreview = false`를 사용하세요.
+
+## React Context 구조 보완
+
+workspace의 TypeScript 소스가 React에서 import한
+`createContext<{ ... }>(undefined as any)` 또는 명시적인 `null`/`void 0` default를 사용하면, 확장은
+인라인 타입에서 완전히 표현할 수 있는 string·number·boolean·배열·함수·중첩 객체를 bounded neutral
+값으로 합성합니다. 같은 파일에 선언된 유일한 non-generic interface/type alias도 순환 없이 모든
+구조를 합성할 수 있을 때 지원합니다.
+
+imported type, generic declaration, recursive reference, interface `extends`, declaration merging은 가벼운
+구문 분석만으로 정확한 의미를 증명할 수 없으므로 변환하지 않습니다. `.js`, declaration,
+`node_modules`, workspace 밖 파일, 실제 default 값이나 실행되는 표현식에도 적용하지 않는 fail-closed
+기능입니다. 실제 Provider가 있으면 React의 가까운 Provider 값이 자동 default보다 그대로 우선합니다.
+
+별도로, workspace runtime source가 정적으로 import한 `use*Context` hook의 반환값을 직접 destructure하거나
+비옵셔널 property로 읽으면 호출부의 실제 사용 형태도 bounded하게 분석합니다. 필요한 plain object
+container와 호출되는 leaf의 frozen no-op 함수만 module-level stable fallback으로 만들고 원래 호출을
+`hookCall ?? fallback`으로 보완합니다. nested `const` alias·closure와 같은 파일 helper의
+`Object.keys/values/entries` 요구는 따라가지만 leaf string/number/boolean, computed key, optional chain,
+array binding, write, callable/object 충돌, prototype-sensitive path는 만들지 않고 해당 후보를 건너뜁니다.
+실제 hook 반환값이 있으면 그대로 우선합니다. hook이 값을 반환하기 전에 자체 오류를 던지거나 의미 있는
+상태가 필요한 경우에는 `PreviewProviders`나 작은 harness가 실제 Provider를 공급해야 합니다.
+
+이 기능은 Context 존재 때문에 첫 정적 DOM조차 만들지 못하는 경우를 위한 구조 보완입니다. 인증,
+선택된 회사, 권한처럼 화면 의미를 결정하는 Context state는 추측하지 않으므로 setup의
+`PreviewProviders`나 작은 harness에서 명시해야 합니다.
 
 ## 복잡한 페이지와 preview harness
 
 이 확장은 특정 저장소 이름, Redux slice, route, theme token 또는 업무 상태를 내장하지 않습니다.
-Apollo operation은 문서 selection 구조만, styled-components theme은 값 없는 token 모양만, Redux는
-빈 root state만 자동 제공합니다. Redux selector의 nested 상태 의미, URL parameter, 권한, locale,
-정확한 디자인 값과 필수 props는 같은 이름이어도 프로젝트마다 다르므로 재귀 Proxy나 추측값을 넣지
-않습니다. 그런 값은 오류를 숨기면서 잘못된 화면 분기나 부작용을 만들 수 있습니다.
+Apollo operation은 문서 selection 구조만, styled-components는 도달한 파일이 명시적으로 참조한 theme만,
+Redux는 selector 접근에 필요한 plain object container만, Formik은 빈 form state만, Router는 정적
+location context만 자동 제공합니다. Redux/Formik/custom Context leaf의 상태 의미, route table과 URL
+parameter 의미, 권한, locale과 필수 props는 같은
+이름이어도 프로젝트마다 다르므로 추측값을 넣지 않습니다. 그런 값은
+오류를 숨기면서 잘못된 화면 분기나 부작용을 만들 수 있습니다.
 
 앱 루트에 강하게 결합된 페이지는 작은 `*.preview.tsx` harness를 소스 옆이나 별도 preview 폴더에 두는
 방법이 가장 명확합니다. harness는 실제 API client나 앱 bootstrap 대신 메모리 store, 정적 route,
@@ -194,13 +379,30 @@ setup import 전에 `public/index.html`, package `index.html`, `.storybook/main.
 키와 라이선스를 복사하지 않습니다. 실제 값이 필요하면 `initializePreview`에서 비밀이 아닌 mock을
 명시하세요.
 
-## named export 선택
+## export 갤러리
 
-대상에 runtime default export가 없으면 현재 편집기 AST를 사용해 다음 순서로 선택합니다.
+현재 편집기 AST에서 활성 파일의 runtime default와 모든 직접 PascalCase named export를 statement 및
+export clause 순서대로 수집해 한 탭에 순차 렌더링합니다. bare `export *`는 그 소스 위치에서 runtime
+namespace의 PascalCase 이름을 안정적인 이름 순서로 확장합니다. type/interface/`declare`, type-only와
+lowercase helper는 제외됩니다.
 
-1. 파일명을 PascalCase로 바꾼 이름과 정확히 같은 named export
-2. 유일한 PascalCase named runtime export
+각 export에는 작은 이름표와 별도 error boundary가 있으므로 한 컴포넌트가 필수 props나 context 때문에
+실패해도 뒤의 export는 계속 표시됩니다. 공통 props 위에 `previewPropsByExport[exportName]`을 병합하며
+default export의 key는 `"default"`입니다. PascalCase 상수가 실제 React component가 아니면 해당
+export 위치에만 진단을 표시합니다.
 
-type/interface/`declare`는 후보에서 제외됩니다. 여러 컴포넌트가 남으면 임의로 고르지 않고 후보를
-포함한 진단을 표시합니다. 그 파일에 원하는 컴포넌트를 default로 다시 export하면 선택이
-명확해집니다.
+## runtime 오류 보고서 읽기
+
+번들은 성공했지만 React render, lifecycle, setup 또는 비동기 effect에서 실패하면 보고서가 원래 오류의
+direct headline을 가장 먼저 표시합니다. 그 아래에서 실패 phase, target/export/setup/classification과
+Apollo·Redux·Router·Theme 자동 경계의 최종 상태를 확인할 수 있습니다. React component stack은 논리적
+컴포넌트 경로를, JavaScript stack은 실제 실행 위치를 보여주며 `cause`, `AggregateError.errors`와 오류
+객체의 primitive own field도 정해진 깊이·길이 안에서 보존됩니다. React 19 root callback과 JSX
+development source metadata가 제공되면 같은 보고서에 더 정확한 component/source 위치를 연결합니다.
+
+Apollo 오류 URL에 압축된 payload가 있으면 client version, invariant message code와 arguments를 로컬에서
+decode합니다. 의미를 알아내기 위해 문서 사이트, backend 또는 프로젝트 API에 요청하지 않습니다.
+진단 element는 전용 root selector와 CSS reset으로 일반적인 프로젝트 전역 스타일에서 격리되므로
+보고서가 앱의 `pre`, 색상 또는 layout 규칙 때문에 사라지는 일을 막습니다. 자동 경계 상태가
+`disabled`, `unavailable`, `not requested`, `active`처럼 표시되면 headline과 component stack에 나온 첫
+소비자를 함께 확인한 뒤 이 문서의 해당 setup 계약이나 작은 harness를 선택하세요.

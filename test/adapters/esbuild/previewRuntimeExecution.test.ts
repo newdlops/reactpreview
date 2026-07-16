@@ -23,6 +23,7 @@ import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/pr
 import { installFakeApolloPackage } from './support/fakeApolloPackage';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const TEST_CONTEXT_BRIDGE_NAMESPACE = 'react-preview-test-context-bridge';
 const TEST_DOM_CLIENT_NAMESPACE = 'react-preview-test-dom-client';
 
 /** Minimal root element state exposed by the browser-like execution sandbox. */
@@ -236,6 +237,7 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -357,6 +359,7 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -452,6 +455,7 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -481,10 +485,11 @@ describe('generated preview runtime execution', () => {
       }
 
       const mountNode = createRuntimeMountNode();
+      const warnings: string[] = [];
       const sandbox: Record<string, unknown> = {
         addEventListener: (): undefined => undefined,
         clearTimeout,
-        console,
+        console: { ...console, warn: (...values: unknown[]) => warnings.push(values.join(' ')) },
         document: createRuntimeDocument(mountNode),
         queueMicrotask,
         setTimeout,
@@ -495,12 +500,13 @@ describe('generated preview runtime execution', () => {
 
       expect(mountNode.innerHTML).toContain('BrokenPreview');
       expect(mountNode.innerHTML).toContain('class="react-preview-export-error"');
-      expect(mountNode.innerHTML).toContain('Export: BrokenPreview');
-      expect(mountNode.innerHTML).toContain('React component stack:');
-      expect(mountNode.innerHTML).toContain('RuntimeFixtureComponent');
+      expect(mountNode.innerHTML).toContain('Static preview placeholder');
       expect(mountNode.innerHTML).toContain('BROKEN_EXPORT_MARKER');
       expect(mountNode.innerHTML).toContain('HealthyPreview');
       expect(mountNode.innerHTML).toContain('<p>HEALTHY_EXPORT_MARKER</p>');
+      expect(warnings.join('\n')).toContain('Export: BrokenPreview');
+      expect(warnings.join('\n')).toContain('React component stack:');
+      expect(warnings.join('\n')).toContain('RuntimeFixtureComponent');
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
@@ -541,6 +547,7 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -570,10 +577,11 @@ describe('generated preview runtime execution', () => {
       }
 
       const mountNode = createRuntimeMountNode();
+      const warnings: string[] = [];
       const sandbox: Record<string, unknown> = {
         addEventListener: (): undefined => undefined,
         clearTimeout,
-        console,
+        console: { ...console, warn: (...values: unknown[]) => warnings.push(values.join(' ')) },
         document: createRuntimeDocument(mountNode),
         queueMicrotask,
         setTimeout,
@@ -584,17 +592,19 @@ describe('generated preview runtime execution', () => {
       runInContext(javascript, context, { timeout: 10_000 });
       await waitForRenderedMarkup(mountNode);
 
-      expect(mountNode.innerHTML).toContain('React Redux provider required');
+      expect(mountNode.innerHTML).toContain('Static preview placeholder');
       expect(mountNode.innerHTML).toContain('Error: could not find react-redux context value');
-      expect(mountNode.innerHTML).toContain('The component bundle loaded');
-      expect(mountNode.innerHTML).toContain('Phase: React export render or lifecycle');
-      expect(mountNode.innerHTML).toContain('Preview setup: none');
-      expect(mountNode.innerHTML).toContain('Automatic runtime boundaries:');
-      expect(mountNode.innerHTML).toContain('Redux: unavailable: react-redux was not resolved');
-      expect(mountNode.innerHTML).toContain('React component stack:');
-      expect(mountNode.innerHTML).toContain('Original error:');
-      expect(mountNode.innerHTML).toContain('could not find react-redux context value');
-      expect(mountNode.innerHTML).not.toContain('/node_modules/react-redux');
+      const warningText = warnings.join('\n');
+      expect(warningText).toContain('React Redux provider required');
+      expect(warningText).toContain('The component bundle loaded');
+      expect(warningText).toContain('Phase: React export render or lifecycle');
+      expect(warningText).toContain('Preview setup: none');
+      expect(warningText).toContain('Automatic runtime boundaries:');
+      expect(warningText).toContain('Redux: unavailable: react-redux was not resolved');
+      expect(warningText).toContain('React component stack:');
+      expect(warningText).toContain('Original error:');
+      expect(warningText).toContain('could not find react-redux context value');
+      expect(warningText).not.toContain('/node_modules/react-redux');
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
@@ -640,6 +650,7 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createTestContextBridgePlugin(),
           createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
           createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
@@ -694,6 +705,32 @@ describe('generated preview runtime execution', () => {
     }
   });
 });
+
+/**
+ * Supplies identity behavior for runtime tests whose hand-written DOM client does not implement
+ * React hooks or raw Context provider tokens. The production Context bridge has separate real
+ * esbuild/VM coverage; this fixture keeps these tests focused on entry ordering and diagnostics.
+ */
+function createTestContextBridgePlugin(): Plugin {
+  return {
+    name: 'react-preview-test-context-bridge',
+    setup(buildContext): void {
+      buildContext.onResolve({ filter: /^react-preview:context$/ }, () => ({
+        namespace: TEST_CONTEXT_BRIDGE_NAMESPACE,
+        path: 'context',
+      }));
+      buildContext.onLoad({ filter: /.*/, namespace: TEST_CONTEXT_BRIDGE_NAMESPACE }, () => ({
+        contents: [
+          'export function createContextPreviewElement(children) { return children; }',
+          'export function registerPreviewContextIdentity(_hook, _context) {}',
+          'export function registerPreviewContextRequirement(_hook, _fallback) {}',
+          "export function readPreviewRuntimeStatus() { return 'inactive: test identity boundary'; }",
+        ].join('\n'),
+        loader: 'js',
+      }));
+    },
+  };
+}
 
 /**
  * Resolves only the generated entry's React DOM client import to the lightweight execution shim.

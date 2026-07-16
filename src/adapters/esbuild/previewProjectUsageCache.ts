@@ -89,7 +89,7 @@ export class PreviewProjectUsageCache {
     }
     this.usageResults.delete(usageKey);
 
-    const sourcePaths = await this.getSourceInventory(options.workspaceRoot, options.projectRoot);
+    const sourcePaths = await this.getSourcePaths(options.workspaceRoot, options.projectRoot);
     const result = await discoverPreviewTargetUsageProps({ ...options, sourcePaths });
     const dependencyStamps = await readDependencyStamps(result.dependencyPaths);
     const cacheEntry = {
@@ -108,8 +108,18 @@ export class PreviewProjectUsageCache {
     this.usageResults.clear();
   }
 
-  /** Returns one short-lived package source inventory shared by tabs and concurrent first builds. */
-  private async getSourceInventory(
+  /**
+   * Returns one short-lived package source inventory shared by usage and runtime-evidence scans.
+   *
+   * Exposing the immutable path list avoids enumerating a large monorepo package twice when the
+   * compiler needs both reverse React ownership and application-bootstrap global declarations.
+   * File contents remain outside this cache and are still read through each bounded analyzer.
+   *
+   * @param workspaceRoot Trusted workspace containing the selected package.
+   * @param projectRoot Nearest package root whose authored source should be enumerated.
+   * @returns Stable package-owned source paths, shared across concurrent callers and preview tabs.
+   */
+  public async getSourcePaths(
     workspaceRoot: string,
     projectRoot: string,
   ): Promise<readonly string[]> {

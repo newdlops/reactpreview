@@ -83,6 +83,19 @@ export class StaticSourceAnalysis {
     return this.identifiers.has(name);
   }
 
+  /**
+   * Exposes the already validated syntax tree to sibling static analyzers.
+   *
+   * Consumers must treat the returned parser-owned tree as immutable. Sharing it keeps resource,
+   * provider, and implicit-global analysis on the exact same TSX-aware parse instead of allocating
+   * a second TypeScript tree for every project module esbuild loads.
+   *
+   * @returns Syntax-valid TypeScript source tree owned by this analysis instance.
+   */
+  public getSourceFile(): ts.SourceFile {
+    return this.sourceFile;
+  }
+
   /** Traverses child nodes once, recording decoded identifiers and recognized call expressions. */
   private visit(node: ts.Node): void {
     if (ts.isIdentifier(node)) {

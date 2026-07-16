@@ -10,6 +10,7 @@ import type { PreviewParentSlicePlansByExport } from './parentSlice';
 import { createPreviewParentSliceSpecifier } from './previewParentSlicePlugin';
 import type { PreviewTargetExportSlot, PreviewThemeImportSelection } from './previewTargetExports';
 import type { PreviewStaticPropsByExport } from './previewTargetUsageProps';
+import type { PreviewInferredPropsByExport } from './staticResources/reactExportPropInference';
 import { PREVIEW_TARGET_BRIDGE_NAMESPACE, PREVIEW_TARGET_SPECIFIER } from './previewPluginProtocol';
 
 /** Immutable source metadata required to create one target gallery bridge. */
@@ -24,6 +25,8 @@ export interface PreviewTargetBridgePluginOptions {
   readonly parentSlicesByExport?: PreviewParentSlicePlansByExport;
   /** Lowest-priority primitive props collected from real target JSX usages. */
   readonly usagePropsByExport?: PreviewStaticPropsByExport;
+  /** Lowest-priority neutral values inferred from target prop types and receiver usage. */
+  readonly inferredPropsByExport?: PreviewInferredPropsByExport;
 }
 
 /**
@@ -65,6 +68,7 @@ export function createPreviewTargetBridgePlugin(options: PreviewTargetBridgePlug
         options.themeImport,
         options.parentSlicesByExport ?? {},
         options.usagePropsByExport ?? {},
+        options.inferredPropsByExport ?? {},
       ),
       loader: 'js',
       resolveDir: path.dirname(options.documentPath),
@@ -94,6 +98,7 @@ function createTargetBridgeSource(
   themeImport: PreviewThemeImportSelection | undefined,
   parentSlicesByExport: PreviewParentSlicePlansByExport,
   usagePropsByExport: PreviewStaticPropsByExport,
+  inferredPropsByExport: PreviewInferredPropsByExport,
 ): string {
   const explicitSelections = selections.filter(
     (selection): selection is Extract<PreviewTargetExportSlot, { readonly kind: 'explicit' }> =>
@@ -127,7 +132,7 @@ function createTargetBridgeSource(
         return [];
       }
       return [
-        `__reactPreviewTargets.push({ automaticProps: ${JSON.stringify(usagePropsByExport[selection.exportName] ?? {})}, displayName: ${JSON.stringify(selection.displayName)}, exportName: ${JSON.stringify(selection.exportName)}, parentSlice: ${serializeParentSliceMetadata(parentSlicesByExport[selection.exportName])}, value: __reactPreviewExport${index.toString()} });`,
+        `__reactPreviewTargets.push({ automaticProps: ${JSON.stringify(usagePropsByExport[selection.exportName] ?? {})}, displayName: ${JSON.stringify(selection.displayName)}, exportName: ${JSON.stringify(selection.exportName)}, inferredPropShape: ${JSON.stringify(inferredPropsByExport[selection.exportName]?.shape)}, inferredProps: ${JSON.stringify(inferredPropsByExport[selection.exportName]?.provenance ?? [])}, parentSlice: ${serializeParentSliceMetadata(parentSlicesByExport[selection.exportName])}, value: __reactPreviewExport${index.toString()} });`,
       ];
     }
     return [

@@ -75,8 +75,9 @@ describe('PreviewSourceTransformer', () => {
     const workspaceRoot = await createTemporaryWorkspace();
     const externalRoot = await createTemporaryWorkspace();
     const sourceText = [
-      "import { createContext } from 'react';",
+      "import { createContext, useContext } from 'react';",
       'export const PageContext = createContext<{ title: string; setTitle(value: string): void }>(undefined as any);',
+      'export const usePageContext = () => useContext(PageContext);',
     ].join('\n');
     const transformer = createTransformer(workspaceRoot);
 
@@ -90,6 +91,12 @@ describe('PreviewSourceTransformer', () => {
     );
 
     expect(workspaceResult.contents).toContain(`{ "title": '', "setTitle": () => undefined }`);
+    expect(workspaceResult.contents).toContain(
+      'registerPreviewContextIdentity as __reactPreview_contextIdentity_0',
+    );
+    expect(workspaceResult.contents).toContain(
+      '__reactPreview_contextIdentity_0(usePageContext, PageContext);',
+    );
     expect(externalResult.contents).toBe(sourceText);
   });
 
@@ -121,6 +128,12 @@ describe('PreviewSourceTransformer', () => {
     );
     expect(transformed.contents).toContain(
       '"setValues": Object.freeze(() => undefined), "values": Object.freeze({})',
+    );
+    expect(transformed.contents).toContain(
+      'registerPreviewContextRequirement as __reactPreview_contextRequirement_',
+    );
+    expect(transformed.contents).toMatch(
+      /__reactPreview_contextRequirement_\d+\(useFormContext, __reactPreviewContextHookFallback0\);/u,
     );
   });
 

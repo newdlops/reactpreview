@@ -4,6 +4,7 @@
  * `require.context`, and `new URL(..., import.meta.url)`; every filesystem expansion is bounded.
  */
 import path from 'node:path';
+import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver';
 import {
   isStaticImportMetaUrl,
   parseDynamicPathSegments,
@@ -15,6 +16,8 @@ import {
 } from './staticCallParser';
 import { createReactContextFallbackReplacements } from './reactContextFallback';
 import { createReactContextHookFallbackTransform } from './reactContextHookFallback';
+import { collectReactContextIdentityPairs } from './reactContextIdentity';
+import { createContextRegistrationStatements } from './reactContextRegistration';
 import { createReactExportPropFallbackReplacements } from './reactExportPropFallback';
 import {
   collectPreviewRouterRequirement,
@@ -30,12 +33,12 @@ import {
   type StaticScanBudget,
 } from './staticPattern';
 import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPaths';
+import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
 
 const MAX_BUILD_EXPANSIONS = 128;
 const MAX_BUILD_MATCH_REFERENCES = 1024;
 const MAX_BUILD_SCANNED_ENTRIES = 16_384;
 const MAX_BUILD_WATCH_DIRECTORIES = 128;
-
 /** Transformed module source and directories that can gain future matching files. */
 export interface PreviewSourceTransformResult {
   /** JavaScript or TypeScript source containing only explicit bundle-visible imports. */
@@ -48,6 +51,10 @@ export interface PreviewSourceTransformResult {
 export interface PreviewSourceTransformerOptions {
   /** Active editor target whose direct component exports may receive bounded prop defaults. */
   readonly documentPath?: string;
+  /** Exact dependency/global names worth checking in modules esbuild actually reaches. */
+  readonly implicitPackageGlobalCandidateNames?: readonly string[];
+  /** Project-aware resolver proving a free name maps to its exact installed package. */
+  readonly implicitPackageGlobalResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
   /** Nearest package root used for the conventional public asset directory. */
   readonly projectRoot: string;
   /** Trusted workspace boundary used for every static filesystem expansion. */
@@ -108,6 +115,7 @@ export class PreviewSourceTransformer {
   private expansionCount = 0;
   private readonly expansionCache = new Map<string, Promise<StaticPatternExpansion>>();
   private matchedReferenceCount = 0;
+  private readonly referencedImplicitPackageGlobals = new Set<string>();
   private routerConsumerDetected = false;
   private routerProviderDetected = false;
   private readonly scanBudget: StaticScanBudget = {
@@ -137,6 +145,21 @@ export class PreviewSourceTransformer {
     const bindings = new SourceBindingAllocator(analysis);
 
     if (isPathInside(this.options.workspaceRoot, sourcePath)) {
+      if (
+        this.options.implicitPackageGlobalResolver !== undefined &&
+        (this.options.implicitPackageGlobalCandidateNames?.length ?? 0) > 0
+      ) {
+        const inventory = collectPreviewImplicitPackageGlobals({
+          candidateNames: this.options.implicitPackageGlobalCandidateNames ?? [],
+          resolver: this.options.implicitPackageGlobalResolver,
+          sourceAnalysis: analysis,
+          sourcePath,
+          sourceText,
+        });
+        for (const packageGlobal of inventory.globals) {
+          this.referencedImplicitPackageGlobals.add(packageGlobal.globalName);
+        }
+      }
       if (sourceText.includes('react-router-dom')) {
         const routerRequirement = collectPreviewRouterRequirement(sourcePath, sourceText);
         this.routerConsumerDetected ||= routerRequirement.consumesRouter;
@@ -156,9 +179,22 @@ export class PreviewSourceTransformer {
         replacements.push(...createReactContextFallbackReplacements(sourcePath, sourceText));
       }
       if (sourceText.includes('Context')) {
+        const contextIdentityInventory =
+          sourceText.includes('createContext') && sourceText.includes('useContext')
+            ? collectReactContextIdentityPairs(sourcePath, sourceText)
+            : { pairs: [], truncated: false };
         const contextHookFallback = createReactContextHookFallbackTransform(sourcePath, sourceText);
         replacements.push(...contextHookFallback.replacements);
-        generatedImports.push(...contextHookFallback.declarations);
+        const contextRegistrations = createContextRegistrationStatements(
+          contextIdentityInventory.pairs,
+          contextHookFallback,
+          (kind) => bindings.next(kind),
+        );
+        generatedImports.push(
+          ...contextRegistrations.imports,
+          ...contextHookFallback.declarations,
+          ...contextRegistrations.statements,
+        );
       }
       if (
         this.options.documentPath !== undefined &&
@@ -242,6 +278,11 @@ export class PreviewSourceTransformer {
   /** Returns every glob directory discovered across modules in this compilation request. */
   public getWatchDirectories(): readonly string[] {
     return [...this.watchDirectories].sort();
+  }
+
+  /** Returns exact installed-package globals proven free in modules reached by this build. */
+  public getReferencedImplicitPackageGlobalNames(): readonly string[] {
+    return [...this.referencedImplicitPackageGlobals].sort();
   }
 
   /**

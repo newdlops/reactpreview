@@ -25,9 +25,16 @@ import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
+import {
+  createPreviewGlobalPackageBridgeEvidencePolicy,
+  createPreviewGlobalPackageBridgePlugin,
+  discoverPreviewGlobalPackageBridges,
+  type PreviewGlobalPackageBridgePlan,
+} from './globalPackageBridge';
 import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
 import { planPreviewBuildOutputs } from './previewBuildOutputPlanner';
+import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
@@ -38,8 +45,10 @@ import { PreviewProjectUsageCache } from './previewProjectUsageCache';
 import {
   PREVIEW_ASSET_NAMESPACE,
   PREVIEW_APOLLO_BRIDGE_NAMESPACE,
+  PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
   PREVIEW_FORMIK_BRIDGE_NAMESPACE,
+  PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE,
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
   PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
   PREVIEW_INSPECTOR_TARGET_NAMESPACE,
@@ -51,18 +60,21 @@ import {
   PREVIEW_THEME_BRIDGE_NAMESPACE,
   PREVIEW_THEME_CANDIDATE_NAMESPACE,
 } from './previewPluginProtocol';
+import { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
 import {
   createPreviewRuntimeWatchInputs,
   resolvePreviewRuntimeEnvironment,
   type PreviewRuntimeEnvironment,
 } from './previewRuntimeEnvironment';
 import { createPreviewSetupBridgePlugin } from './previewSetupBridgePlugin';
+import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver';
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
 import { selectPreviewTargetExports, selectPreviewThemeImport } from './previewTargetExports';
 import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin';
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
+import { collectReactExportPropInference } from './staticResources/reactExportPropInference';
 import { createWorkspaceSourcePlugin } from './workspaceSourcePlugin';
 
 const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
@@ -81,6 +93,8 @@ interface PreviewRouterBuildSelection {
 /** esbuild-backed compiler for browser-safe React preview bundles. */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
   private disposed = false;
+  /** Package-scoped bootstrap/ambient evidence reused across preview tabs and hot rebuilds. */
+  private readonly implicitGlobalEvidenceCache = new PreviewImplicitGlobalEvidenceCache();
   /** Package-scoped inert source inventories reused by multiple tabs and hot rebuilds. */
   private readonly projectUsageCache = new PreviewProjectUsageCache();
   private shutdownPromise: Promise<void> | undefined;
@@ -105,6 +119,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         canonicalWorkspaceRoot,
       );
       const targetExports = selectPreviewTargetExports(request.documentPath, request.sourceText);
+      const inferredPropsByExport = collectReactExportPropInference(
+        request.documentPath,
+        request.sourceText,
+      );
       const explicitTargetExportNames = targetExports.flatMap((slot) =>
         slot.kind === 'explicit' ? [slot.exportName] : [],
       );
@@ -126,15 +144,40 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         }),
         createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
       ]);
-      const targetUsageProps = await this.projectUsageCache.discover({
-        climbParentSlices:
-          request.renderMode !== 'page-inspector' && runtimeEnvironment.setupKind === 'none',
-        documentPath: request.documentPath,
-        exports: targetExports,
-        ...(inspectorExportName === undefined ? {} : { inspectorExportName }),
-        projectRoot: usageSearchRoot,
-        snapshots: request.dependencySnapshots,
-        ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
+      const [targetUsageProps, implicitGlobalSourcePaths] = await Promise.all([
+        this.projectUsageCache.discover({
+          climbParentSlices:
+            request.renderMode !== 'page-inspector' && runtimeEnvironment.setupKind === 'none',
+          documentPath: request.documentPath,
+          exports: targetExports,
+          ...(inspectorExportName === undefined ? {} : { inspectorExportName }),
+          projectRoot: usageSearchRoot,
+          snapshots: request.dependencySnapshots,
+          ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
+          workspaceRoot: canonicalWorkspaceRoot,
+        }),
+        this.projectUsageCache.getSourcePaths(canonicalWorkspaceRoot, projectRoot),
+      ]);
+      const staticModuleResolver = createPreviewStaticModuleResolver({
+        ...(request.tsconfigPath === undefined
+          ? {}
+          : { configuredTsconfigPath: request.tsconfigPath }),
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      const snapshotSourceByPath = createPreviewSnapshotSourceMap(request);
+      const implicitGlobalEvidence = await this.implicitGlobalEvidenceCache.discover({
+        cacheKey: createImplicitGlobalEvidenceCacheKey(projectRoot, request.tsconfigPath),
+        readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
+        resolveModule: staticModuleResolver.resolve,
+        snapshotSourceByPath,
+        sourcePaths: implicitGlobalSourcePaths,
+      });
+      const globalBridgeEvidencePolicy =
+        createPreviewGlobalPackageBridgeEvidencePolicy(implicitGlobalEvidence);
+      const initialGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
+        ...globalBridgeEvidencePolicy,
+        projectRoot,
+        referencedGlobalNames: [],
         workspaceRoot: canonicalWorkspaceRoot,
       });
       /** Creates one trace boundary per esbuild attempt because its resolver inventory is stateful. */
@@ -153,8 +196,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const runBuild = async (
         environment: PreviewRuntimeEnvironment,
         routerSelection: PreviewRouterBuildSelection,
+        globalPackagePlan: PreviewGlobalPackageBridgePlan,
         fallbackBoundary?: PreviewSetupFallbackBoundary,
       ): Promise<{
+        readonly globalPackagePlan: PreviewGlobalPackageBridgePlan;
+        readonly referencedGlobalNames: readonly string[];
         readonly result: BuildResult<{ metafile: true; write: false }>;
         readonly routerRequirement: ReturnType<PreviewSourceTransformer['getRouterRequirement']>;
         readonly watchDirectories: readonly string[];
@@ -167,6 +213,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             : {};
         const sourceTransformer = new PreviewSourceTransformer({
           documentPath: canonicalizeExistingPath(request.documentPath),
+          implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
+          implicitPackageGlobalResolver: staticModuleResolver,
           projectRoot,
           workspaceRoot: canonicalWorkspaceRoot,
         });
@@ -196,6 +244,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           outdir: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
           platform: 'browser',
           plugins: [
+            createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
             ...(inspectorPlan === undefined
               ? []
               : [
@@ -208,11 +257,13 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                         }),
                     documentPath: request.documentPath,
                     exportNames: explicitTargetExportNames,
+                    inferredPropsByExport,
                     originalHasDefaultExport: explicitTargetExportNames.includes('default'),
                   }),
                   createPreviewInspectorRuntimePlugin({ projectRoot }),
                 ]),
             createPreviewApolloBridgePlugin({ projectRoot }),
+            createPreviewContextBridgePlugin({ projectRoot }),
             createPreviewFormikBridgePlugin({ projectRoot }),
             createPreviewReduxBridgePlugin({ projectRoot }),
             createPreviewRouterBridgePlugin({
@@ -238,6 +289,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     exports: targetExports,
                     parentSlicesByExport: activeParentSlices,
                     ...(themeImport === undefined ? {} : { themeImport }),
+                    inferredPropsByExport,
                     usagePropsByExport: targetUsageProps.propsByExport,
                   }),
                 ]
@@ -245,6 +297,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                   createPreviewInspectorRootPlugin({
                     displayName: path.basename(request.documentPath),
                     plan: inspectorPlan,
+                    ...(inferredPropsByExport[inspectorPlan.target.exportName] === undefined
+                      ? {}
+                      : {
+                          targetInference: inferredPropsByExport[inspectorPlan.target.exportName],
+                        }),
                   }),
                 ]),
             ...(fallbackBoundary === undefined ? [] : [fallbackBoundary.plugin]),
@@ -272,6 +329,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             contents: createPreviewEntry({
               documentName: createPreviewDocumentName(request),
               globalNamespaces: environment.globalNamespaces,
+              globalPackageBridgeStatus: describeGlobalPackageBridgeStatus(globalPackagePlan),
               renderMode: request.renderMode ?? 'component',
               setupKind: environment.setupKind,
             }),
@@ -286,6 +344,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         });
         assertOutputSize(result.outputFiles);
         return {
+          globalPackagePlan,
+          referencedGlobalNames: sourceTransformer.getReferencedImplicitPackageGlobalNames(),
           result,
           routerRequirement: sourceTransformer.getRouterRequirement(),
           watchDirectories: mergePreviewWatchDirectories(
@@ -296,9 +356,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       };
 
       /**
-       * Rebuilds at most once when the actual target-rooted graph reveals a child-only router hook.
-       * The discovery build keeps the optional router package out of ordinary previews; the second
-       * build uses the same deterministic graph with a project-owned MemoryRouter bridge enabled.
+       * Rebuilds at most once for graph-proven router hooks or exact installed-package globals.
+       * Strong bootstrap/ambient bridges participate in the first build. Conservative same-name
+       * package fallback is admitted only after that reached graph proves a lexical free reference.
        */
       const runAdaptiveBuild = async (
         environment: PreviewRuntimeEnvironment,
@@ -308,9 +368,31 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         const initialBuild = await runBuild(
           environment,
           { automaticallyWrap: false, enabled: false },
+          initialGlobalPackagePlan,
           fallbackBoundary,
         );
-        if (!initialBuild.routerRequirement.consumesRouter) {
+        const activeGlobalNames = new Set(
+          initialBuild.globalPackagePlan.bridges.map((bridge) => bridge.globalName),
+        );
+        const needsPackageFallback = initialBuild.referencedGlobalNames.some(
+          (globalName) => !activeGlobalNames.has(globalName),
+        );
+        const expandedGlobalPackagePlan = needsPackageFallback
+          ? await discoverPreviewGlobalPackageBridges({
+              ...globalBridgeEvidencePolicy,
+              projectRoot,
+              referencedGlobalNames: initialBuild.referencedGlobalNames,
+              workspaceRoot: canonicalWorkspaceRoot,
+            })
+          : initialBuild.globalPackagePlan;
+        const needsRouterBoundary = initialBuild.routerRequirement.consumesRouter;
+        if (
+          !needsRouterBoundary &&
+          haveEquivalentGlobalPackageBridges(
+            initialBuild.globalPackagePlan,
+            expandedGlobalPackagePlan,
+          )
+        ) {
           return initialBuild;
         }
         fallbackBoundary = createStorybookFallbackBoundary(environment);
@@ -319,8 +401,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           environment,
           {
             automaticallyWrap: !initialBuild.routerRequirement.ownsRouter,
-            enabled: true,
+            enabled: needsRouterBoundary,
           },
+          expandedGlobalPackagePlan,
           fallbackBoundary,
         );
       };
@@ -382,6 +465,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         buildExecution.watchDirectories,
         [...fallbackDiagnostics, ...inspectorFallbackDiagnostics],
         [
+          ...buildExecution.globalPackagePlan.dependencyPaths,
           ...runtimeWatchInputs.dependencyPaths,
           ...fallbackDependencies,
           ...targetUsageProps.dependencyPaths,
@@ -422,10 +506,79 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     }
 
     this.disposed = true;
+    this.implicitGlobalEvidenceCache.clear();
     this.projectUsageCache.clear();
     this.shutdownPromise = stop();
     return this.shutdownPromise;
   }
+}
+
+/** Separates nearest-config and explicitly configured evidence resolution policies per package. */
+function createImplicitGlobalEvidenceCacheKey(
+  projectRoot: string,
+  configuredTsconfigPath: string | undefined,
+): string {
+  const configIdentity =
+    configuredTsconfigPath === undefined
+      ? 'nearest-config'
+      : path.normalize(configuredTsconfigPath);
+  return `${path.normalize(projectRoot)}\0${configIdentity}`;
+}
+
+/** Overlays unsaved target/dependency text on canonical and editor-visible source identities. */
+function createPreviewSnapshotSourceMap(request: PreviewBuildRequest): ReadonlyMap<string, string> {
+  const sourceByPath = new Map<string, string>();
+  for (const snapshot of [
+    {
+      documentPath: request.documentPath,
+      sourceText: request.sourceText,
+    },
+    ...request.dependencySnapshots,
+  ]) {
+    sourceByPath.set(path.normalize(snapshot.documentPath), snapshot.sourceText);
+    sourceByPath.set(
+      path.normalize(canonicalizeExistingPath(snapshot.documentPath)),
+      snapshot.sourceText,
+    );
+  }
+  return sourceByPath;
+}
+
+/** Describes static module injection without claiming that every available candidate was used. */
+function describeGlobalPackageBridgeStatus(plan: PreviewGlobalPackageBridgePlan): string {
+  if (plan.bridges.length === 0) {
+    return plan.truncated
+      ? 'degraded: implicit-global evidence or exact package candidates exceeded a safety budget'
+      : 'available: no active bridge; exact package fallback is enabled only for reached free identifiers';
+  }
+  const projectEvidenceCount = plan.bridges.filter(
+    (bridge) =>
+      bridge.evidence === 'ambient-declaration' || bridge.evidence === 'runtime-assignment',
+  ).length;
+  const packageFallbackCount = plan.bridges.filter(
+    (bridge) => bridge.evidence === 'dependency-name',
+  ).length;
+  return `active: ${plan.bridges.length.toString()} lexical module bridge(s); ${projectEvidenceCount.toString()} from project bootstrap/ambient evidence, ${packageFallbackCount.toString()} from exact installed-package fallback`;
+}
+
+/** Reports whether adaptive discovery selected the same generated module bindings. */
+function haveEquivalentGlobalPackageBridges(
+  left: PreviewGlobalPackageBridgePlan,
+  right: PreviewGlobalPackageBridgePlan,
+): boolean {
+  return (
+    left.bridges.length === right.bridges.length &&
+    left.bridges.every((bridge, index) => {
+      const candidate = right.bridges[index];
+      return (
+        bridge.globalName === candidate?.globalName &&
+        bridge.moduleSpecifier === candidate.moduleSpecifier &&
+        bridge.resolveDir === candidate.resolveDir &&
+        bridge.exportKind === candidate.exportKind &&
+        bridge.exportName === candidate.exportName
+      );
+    })
+  );
 }
 
 /** Selects one stable actual-parent root while the target facade can still wrap every file export. */
@@ -568,7 +721,9 @@ function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): 
         !inputPath.startsWith('<') &&
         !inputPath.endsWith(VIRTUAL_ENTRY_NAME) &&
         !inputPath.startsWith(`${PREVIEW_APOLLO_BRIDGE_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_CONTEXT_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_FORMIK_BRIDGE_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_INSPECTOR_ROOT_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_INSPECTOR_RUNTIME_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_INSPECTOR_TARGET_NAMESPACE}:`) &&
@@ -605,6 +760,7 @@ function removeFileBackedPreviewNamespace(inputPath: string): string {
   for (const namespace of [
     PREVIEW_ASSET_NAMESPACE,
     PREVIEW_APOLLO_BRIDGE_NAMESPACE,
+    PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
     PREVIEW_DATA_URL_NAMESPACE,
     PREVIEW_FORMIK_BRIDGE_NAMESPACE,
     PREVIEW_REDUX_BRIDGE_NAMESPACE,

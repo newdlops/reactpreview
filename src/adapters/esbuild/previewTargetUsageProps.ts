@@ -27,11 +27,15 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   '.next',
   '.react-preview',
   '.turbo',
+  '__generated__',
   'build',
   'coverage',
   'dist',
+  'generated',
+  'graphql-codegen',
   'node_modules',
   'out',
+  'public',
 ]);
 
 /** JSON-safe literal accepted from an inert JSX attribute initializer. */

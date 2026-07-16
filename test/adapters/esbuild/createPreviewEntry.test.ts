@@ -17,6 +17,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain("import { createRoot } from 'react-dom/client'");
     expect(entry).toContain('await import("react-preview:setup")');
     expect(entry).toContain('await import("react-preview:apollo")');
+    expect(entry).toContain('await import("react-preview:context")');
     expect(entry).toContain('await import("react-preview:formik")');
     expect(entry).toContain('await import("react-preview:redux")');
     expect(entry).toContain('await import("react-preview:router")');
@@ -49,6 +50,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain("enterRuntimePhase('load and evaluate target module graph')");
     expect(entry).toContain('Apollo invariant payload (decoded locally):');
     expect(entry).toContain('apolloBridge.createApolloPreviewElement');
+    expect(entry).toContain('contextBridge.createContextPreviewElement');
+    expect(entry).toContain("registerPreviewRuntimeCapability('Context', contextBridge)");
     expect(entry).toContain("readSetupMember(setupModule, 'apolloPreview')");
     expect(entry).toContain('formikBridge.createFormikPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'formikPreview')");
@@ -64,7 +67,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('PreviewExportErrorBoundary');
     expect(entry).toContain('React.createElement(React.Suspense, { fallback: null }, rendered)');
     expect(entry).toContain("readSetupMember(setupModule, 'previewPropsByExport')");
-    expect(entry).toContain('{ ...safeAutomaticProps, ...sharedProps, ...configuredProps }');
+    expect(entry).toContain('createPreviewPropsFromLayers(');
+    expect(entry).toContain('descriptor.inferredPropShape');
     expect(entry).toContain('descriptor.automaticProps');
     expect(entry).toContain('descriptor.parentSlice');
     expect(entry).toContain('Parent render slice: ');

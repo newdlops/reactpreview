@@ -109,22 +109,48 @@ describe('createPreviewTargetBridgePlugin', () => {
           createPreviewTargetBridgePlugin({
             documentPath,
             exports: [{ displayName: 'Card', exportName: 'Card', kind: 'explicit' }],
+            inferredPropsByExport: {
+              Card: {
+                provenance: [{ kind: 'string', path: 'title', source: 'type' }],
+                shape: {
+                  kind: 'object',
+                  properties: { title: { kind: 'string' } },
+                },
+              },
+            },
             usagePropsByExport: { Card: { label: 'real usage', ready: true } },
           }),
         ],
         stdin: {
-          contents:
-            "import targets from 'react-preview:target'; export const props = targets[0].automaticProps;",
+          contents: [
+            "import targets from 'react-preview:target';",
+            'export const props = targets[0].automaticProps;',
+            'export const inferredPropShape = targets[0].inferredPropShape;',
+            'export const inferredProps = targets[0].inferredProps;',
+          ].join('\n'),
           loader: 'js',
           resolveDir: temporaryDirectory,
         },
         write: false,
       });
       const javascript = result.outputFiles[0]?.text ?? '';
-      const sandbox: { __previewBridgeTest?: { props?: Record<string, unknown> } } = {};
+      const sandbox: {
+        __previewBridgeTest?: {
+          inferredPropShape?: Record<string, unknown>;
+          inferredProps?: readonly Record<string, unknown>[];
+          props?: Record<string, unknown>;
+        };
+      } = {};
       runInNewContext(javascript, sandbox);
 
       expect(sandbox.__previewBridgeTest?.props).toEqual({ label: 'real usage', ready: true });
+      expect(sandbox.__previewBridgeTest?.inferredPropShape).toEqual({
+        kind: 'object',
+        properties: { title: { kind: 'string' } },
+      });
+      expect(sandbox.__previewBridgeTest?.inferredProps).toEqual([
+        { kind: 'string', path: 'title', source: 'type' },
+      ]);
     } finally {
       await rm(temporaryDirectory, { force: true, recursive: true });
     }

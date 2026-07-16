@@ -4,9 +4,11 @@
  * preserving bootstrap order without executing a development server or project build configuration.
  */
 import type { PreviewRenderMode } from '../../domain/preview';
+import { createPreviewAutomaticPropsRuntimeSource } from './previewAutomaticPropsRuntimeSource';
 import { createPreviewPageInspectorRuntimeSource } from './pageInspector/previewPageInspectorRuntimeSource';
 import {
   PREVIEW_APOLLO_SPECIFIER,
+  PREVIEW_CONTEXT_SPECIFIER,
   PREVIEW_FORMIK_SPECIFIER,
   PREVIEW_REDUX_SPECIFIER,
   PREVIEW_ROUTER_SPECIFIER,
@@ -25,6 +27,8 @@ export interface PreviewEntryOptions {
   readonly documentName: string;
   /** Safe object namespaces that must exist before any project setup or target import. */
   readonly globalNamespaces: readonly string[];
+  /** Static status for lexical project-global module bridges selected by the compiler. */
+  readonly globalPackageBridgeStatus?: string;
   /** Component gallery by default, or the opt-in authored-page inspector runtime. */
   readonly renderMode?: PreviewRenderMode;
   /** Determines whether standard Storybook decorators and parameters should be applied. */
@@ -43,10 +47,15 @@ export interface PreviewEntryOptions {
 export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedDocumentName = JSON.stringify(options.documentName);
   const encodedGlobalNamespaces = JSON.stringify(options.globalNamespaces);
+  const encodedGlobalPackageBridgeStatus = JSON.stringify(
+    options.globalPackageBridgeStatus ??
+      'unavailable: no statically proven application-global module bridge',
+  );
   const renderMode = options.renderMode ?? 'component';
   const encodedRenderMode = JSON.stringify(renderMode);
   const encodedSetupKind = JSON.stringify(options.setupKind);
   const encodedApolloSpecifier = JSON.stringify(PREVIEW_APOLLO_SPECIFIER);
+  const encodedContextSpecifier = JSON.stringify(PREVIEW_CONTEXT_SPECIFIER);
   const encodedFormikSpecifier = JSON.stringify(PREVIEW_FORMIK_SPECIFIER);
   const encodedReduxSpecifier = JSON.stringify(PREVIEW_REDUX_SPECIFIER);
   const encodedRouterSpecifier = JSON.stringify(PREVIEW_ROUTER_SPECIFIER);
@@ -54,6 +63,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedTargetSpecifier = JSON.stringify(PREVIEW_TARGET_SPECIFIER);
   const encodedThemeSpecifier = JSON.stringify(PREVIEW_THEME_SPECIFIER);
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
+  const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
   const inspectorImportSource =
     renderMode === 'page-inspector' ? "import * as ReactDOMNamespace from 'react-dom';" : '';
   const inspectorRuntimeSource =
@@ -69,6 +79,12 @@ if (mountNode === null) {
 }
 
 ${runtimeErrorSource}
+
+${automaticPropsRuntimeSource}
+
+registerPreviewRuntimeCapability('Globals', {
+  readPreviewRuntimeStatus: () => ${encodedGlobalPackageBridgeStatus},
+});
 
 const PREVIEW_HOT_RUNTIME_KEY = Symbol.for('newdlops.react-file-preview.hot-runtime');
 
@@ -301,20 +317,30 @@ class PreviewExportErrorBoundary extends React.Component {
     if (typeof componentStack === 'string' && componentStack !== this.state.componentStack) {
       this.setState({ componentStack });
     }
-  }
-
-  /** Renders the export-specific error or its untouched component subtree. */
-  render() {
-    if (this.state.error !== undefined) {
-      return React.createElement(
-        'pre',
-        { className: 'react-preview-export-error' },
-        describeRuntimeError(this.state.error, {
-          componentStack: this.state.componentStack,
+    console.warn(
+      'React Preview isolated one failed export and kept the remaining preview mounted.\\n' +
+        describeRuntimeError(error, {
+          componentStack,
           exportName: this.props.exportName,
           parentSlice: this.props.parentSlice,
           phase: 'React export render or lifecycle',
         }),
+    );
+  }
+
+  /** Renders a compact local placeholder; complete diagnostics remain available as a warning. */
+  render() {
+    if (this.state.error !== undefined) {
+      return React.createElement(
+        'react-preview-inline-error',
+        { className: 'react-preview-export-error', role: 'status' },
+        React.createElement('strong', undefined, 'Static preview placeholder'),
+        React.createElement(
+          'span',
+          undefined,
+          String(this.props.exportName ?? 'default') + ': ' +
+            createRuntimeErrorHeadline(this.state.error),
+        ),
       );
     }
     return this.props.children;
@@ -401,8 +427,8 @@ async function createTargetProps(setupModule, setupContext) {
     : {};
 }
 
-/** Merges shared setup props with an optional exact export-name override. */
-function createExportProps(setupModule, exportName, sharedProps, automaticProps) {
+/** Merges inferred, observed, shared setup, and exact-export props in ascending priority. */
+function createExportProps(setupModule, exportName, sharedProps, automaticProps, inferredPropShape) {
   const propsByExport = readSetupMember(setupModule, 'previewPropsByExport');
   const configuredProps = propsByExport !== null && typeof propsByExport === 'object'
     ? propsByExport[exportName]
@@ -410,9 +436,12 @@ function createExportProps(setupModule, exportName, sharedProps, automaticProps)
   const safeAutomaticProps = automaticProps !== null && typeof automaticProps === 'object'
     ? automaticProps
     : {};
-  return configuredProps !== null && typeof configuredProps === 'object'
-    ? { ...safeAutomaticProps, ...sharedProps, ...configuredProps }
-    : { ...safeAutomaticProps, ...sharedProps };
+  return createPreviewPropsFromLayers(
+    inferredPropShape,
+    safeAutomaticProps,
+    sharedProps,
+    configuredProps,
+  );
 }
 
 /** Creates a target element while preserving modules that already export a React element. */
@@ -494,6 +523,7 @@ function PreviewExportRenderer({ descriptor, previewConfig, setupModule, sharedP
     descriptor.exportName,
     sharedProps,
     descriptor.automaticProps,
+    descriptor.inferredPropShape,
   );
   const rendered = ${encodedRenderMode} === 'page-inspector'
     ? React.createElement(PreviewPageInspectorRootRenderer, {
@@ -558,9 +588,15 @@ function PreviewExportGallery({ descriptors, previewConfig, setupModule, sharedP
           ? descriptor.value.displayName ?? descriptor.value.name
           : descriptor.value?.displayName
         : undefined;
-      const label = descriptor.displayName === 'default' && runtimeName
+      const baseLabel = descriptor.displayName === 'default' && runtimeName
         ? 'default · ' + runtimeName
         : descriptor.displayName;
+      const inferredValueCount = Array.isArray(descriptor.inferredProps)
+        ? descriptor.inferredProps.length
+        : 0;
+      const label = inferredValueCount > 0
+        ? baseLabel + ' · ' + String(inferredValueCount) + ' auto value(s)'
+        : baseLabel;
       const exportStoryContext = {
         ...storyContext,
         id: 'react-file-preview-' + index.toString(),
@@ -637,6 +673,8 @@ async function mountPreview() {
   enterRuntimePhase('load automatic runtime bridges');
   const apolloBridge = await import(${encodedApolloSpecifier});
   registerPreviewRuntimeCapability('Apollo', apolloBridge);
+  const contextBridge = await import(${encodedContextSpecifier});
+  registerPreviewRuntimeCapability('Context', contextBridge);
   const formikBridge = await import(${encodedFormikSpecifier});
   registerPreviewRuntimeCapability('Formik', formikBridge);
   const reduxBridge = await import(${encodedReduxSpecifier});
@@ -690,6 +728,9 @@ async function mountPreview() {
     enterRuntimePhase('compose project PreviewProviders');
     previewElement = React.createElement(PreviewProviders, setupContext, previewElement);
   }
+
+  enterRuntimePhase('compose static application Context boundaries');
+  previewElement = contextBridge.createContextPreviewElement(previewElement);
 
   enterRuntimePhase('resolve target-reachable theme');
   const discoveredTheme = await themeBridge.resolvePreviewTheme({

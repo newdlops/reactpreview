@@ -25,6 +25,9 @@ export const PREVIEW_INSPECTOR_TARGET_NAMESPACE = 'react-preview-inspector-targe
 /** Namespace used by the small browser runtime imported only from Inspector target facades. */
 export const PREVIEW_INSPECTOR_RUNTIME_NAMESPACE = 'react-preview-page-inspector-runtime';
 
+/** Namespace used by lexical inject modules that expose statically proven project globals. */
+export const PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE = 'react-preview-global-package-bridge';
+
 /** Stable virtual import specifier emitted by the runtime entry for the target bridge. */
 export const PREVIEW_TARGET_SPECIFIER = 'react-preview:target';
 
@@ -51,6 +54,12 @@ export const PREVIEW_FORMIK_BRIDGE_NAMESPACE = 'react-preview-formik-bridge';
 
 /** Stable virtual import specifier used to load the inert static Formik boundary. */
 export const PREVIEW_FORMIK_SPECIFIER = 'react-preview:formik';
+
+/** Namespace used by the exact-identity application React Context runtime bridge. */
+export const PREVIEW_CONTEXT_BRIDGE_NAMESPACE = 'react-preview-context-bridge';
+
+/** Stable virtual specifier used by reached Context identity and requirement registrations. */
+export const PREVIEW_CONTEXT_SPECIFIER = 'react-preview:context';
 
 /** Namespace used by the optional, project-owned styled-components theme bridge. */
 export const PREVIEW_THEME_BRIDGE_NAMESPACE = 'react-preview-theme-bridge';
@@ -88,6 +97,7 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_REDUX_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_FORMIK_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_CONTEXT_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_ROUTER_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_THEME_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_THEME_CANDIDATE_NAMESPACE ||

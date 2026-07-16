@@ -5,6 +5,7 @@
  */
 import * as vscode from 'vscode';
 import type { BuildPreview } from '../application/buildPreview';
+import type { PreviewRenderMode } from '../domain/preview';
 import {
   resolveActivePreviewTarget,
   resolvePinnedPreviewTarget,
@@ -12,6 +13,7 @@ import {
   type ResolvedPreviewTarget,
 } from './activePreviewTarget';
 import { PreviewPanelSession } from './previewPanelSession';
+import { createPreviewPanelTitle } from './previewPanelTitle';
 
 /** Extension-scoped manager for any number of file-pinned React preview tabs. */
 export class PreviewController implements vscode.Disposable {
@@ -44,7 +46,7 @@ export class PreviewController implements vscode.Disposable {
    *
    * @returns Promise resolved after validation and initial build scheduling.
    */
-  public async open(): Promise<void> {
+  public async open(renderMode: PreviewRenderMode = 'component'): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -55,7 +57,7 @@ export class PreviewController implements vscode.Disposable {
       return;
     }
 
-    this.openTarget(target);
+    this.openTarget(target, renderMode);
   }
 
   /**
@@ -79,7 +81,7 @@ export class PreviewController implements vscode.Disposable {
     if (!('title' in target)) {
       const matchingSession = this.findNewestSessionForTarget(target.request.documentPath);
       if (matchingSession === undefined) {
-        this.openTarget(target);
+        this.openTarget(target, 'component');
       } else {
         matchingSession.refresh();
       }
@@ -117,10 +119,10 @@ export class PreviewController implements vscode.Disposable {
    *
    * @param target Target captured at the command boundary before webview focus can change editors.
    */
-  private openTarget(target: ResolvedPreviewTarget): void {
+  private openTarget(target: ResolvedPreviewTarget, renderMode: PreviewRenderMode): void {
     const panel = vscode.window.createWebviewPanel(
       'reactPreview.currentFile',
-      `React Preview: ${target.documentName}`,
+      createPreviewPanelTitle(target.request.documentPath),
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
@@ -137,6 +139,7 @@ export class PreviewController implements vscode.Disposable {
       initialTarget: target,
       log: this.log,
       panel,
+      renderMode,
       resolveTarget: resolvePinnedPreviewTarget,
     });
     this.sessions.add(session);

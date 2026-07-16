@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1006",
+  "version": "0.1.1017",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -45,6 +45,7 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onCommand:reactPreview.open",
+    "onCommand:reactPreview.openPageInspector",
     "onCommand:reactPreview.refresh"
   ],
   "capabilities": {
@@ -64,11 +65,30 @@
         "category": "React Preview"
       },
       {
+        "command": "reactPreview.openPageInspector",
+        "title": "Inspect Current React File in Page Context",
+        "category": "React Preview"
+      },
+      {
         "command": "reactPreview.refresh",
         "title": "Refresh Focused Preview",
         "category": "React Preview"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "reactPreview.open",
+          "when": "isWorkspaceTrusted && (resourceScheme == file || resourceScheme == vscode-remote) && (editorLangId == javascript || editorLangId == javascriptreact || editorLangId == typescript || editorLangId == typescriptreact)",
+          "group": "navigation@10"
+        },
+        {
+          "command": "reactPreview.openPageInspector",
+          "when": "isWorkspaceTrusted && (resourceScheme == file || resourceScheme == vscode-remote) && (editorLangId == javascript || editorLangId == javascriptreact || editorLangId == typescript || editorLangId == typescriptreact)",
+          "group": "navigation@11"
+        }
+      ]
+    },
     "configuration": {
       "title": "React Preview",
       "properties": {

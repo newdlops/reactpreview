@@ -22,7 +22,7 @@ interface ActiveExtensionResources {
 let activeResources: ActiveExtensionResources | undefined;
 
 /**
- * Activates the extension by composing dependencies and registering its two public commands.
+ * Activates the extension by composing dependencies and registering its public commands.
  *
  * @param context VS Code-managed lifecycle context and global storage location.
  */
@@ -39,6 +39,11 @@ export function activate(context: vscode.ExtensionContext): void {
     await controller.open();
   }
 
+  /** Opens the actual-parent page inspector while pinning the selected source file as its target. */
+  async function openPageInspector(): Promise<void> {
+    await controller.open('page-inspector');
+  }
+
   /** Immediately rebuilds the focused or source-matched preview, opening one when necessary. */
   async function refreshPreview(): Promise<void> {
     await controller.refresh();
@@ -50,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     artifactStore,
     controller,
     vscode.commands.registerCommand('reactPreview.open', openPreview),
+    vscode.commands.registerCommand('reactPreview.openPageInspector', openPageInspector),
     vscode.commands.registerCommand('reactPreview.refresh', refreshPreview),
   );
 

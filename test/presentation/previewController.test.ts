@@ -131,8 +131,12 @@ vi.mock('vscode', () => {
     public title: string;
     /** Creation options inspected by multi-panel assertions. */
     public readonly options: Record<string, unknown>;
+    /** Extension-to-webview messages retained for hot-reload assertions. */
+    public readonly hotReloadMessages: unknown[] = [];
     /** Minimal webview surface used by secure HTML rendering. */
+    private automaticallyAcknowledgesHotReloads = true;
     private failNextUriConversion = false;
+    private readonly messageListeners: ((message: unknown) => void)[] = [];
     public readonly webview = {
       asWebviewUri: (uri: FakeUri): FakeUri => {
         if (this.failNextUriConversion) {
@@ -143,6 +147,18 @@ vi.mock('vscode', () => {
       },
       cspSource: 'vscode-webview://preview-test',
       html: '',
+      onDidReceiveMessage: (listener: (message: unknown) => void): { dispose: () => void } =>
+        registerListener(this.messageListeners, listener),
+      postMessage: (message: unknown): Promise<boolean> => {
+        this.hotReloadMessages.push(message);
+        const token = readMessageToken(message);
+        if (token !== undefined && this.automaticallyAcknowledgesHotReloads) {
+          queueMicrotask(() => {
+            this.emitHotReloadAcknowledgement(token, 'react-preview-hot-reload-ready');
+          });
+        }
+        return Promise.resolve(true);
+      },
     };
     private readonly disposeListeners: (() => void)[] = [];
     private readonly viewStateListeners: ((event: { readonly webviewPanel: FakePanel }) => void)[] =
@@ -188,6 +204,31 @@ vi.mock('vscode', () => {
     /** Makes the next ready-state URI conversion fail before the session accepts the new lease. */
     public failNextCommit(): void {
       this.failNextUriConversion = true;
+    }
+
+    /** Keeps a posted revision pending until the test explicitly emits its browser acknowledgement. */
+    public holdHotReloadAcknowledgements(): void {
+      this.automaticallyAcknowledgesHotReloads = false;
+    }
+
+    /** Emits an acknowledgement for one retained extension-to-webview revision message. */
+    public acknowledgeHotReload(
+      messageIndex: number,
+      type:
+        | 'react-preview-hot-reload-failed'
+        | 'react-preview-hot-reload-ready' = 'react-preview-hot-reload-ready',
+    ): void {
+      const token = readMessageToken(this.hotReloadMessages[messageIndex]);
+      if (token !== undefined) {
+        this.emitHotReloadAcknowledgement(token, type);
+      }
+    }
+
+    /** Delivers one webview-to-extension message to the listeners owned by this panel only. */
+    private emitHotReloadAcknowledgement(token: string, type: string): void {
+      for (const listener of [...this.messageListeners]) {
+        listener({ token, type });
+      }
     }
   }
 
@@ -265,6 +306,50 @@ afterEach(() => {
 });
 
 describe('PreviewController', () => {
+  /** Keeps the selected composition mode immutable for independent tabs and later refreshes. */
+  it('pins component and page-inspector modes independently for the same source file', async () => {
+    const target = createTarget('/workspace/src/SharedTarget.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    let artifactSequence = 0;
+    const execute = vi.fn((request: PreviewBuildRequest): Promise<PreparedPreview> => {
+      artifactSequence += 1;
+      return Promise.resolve({
+        artifact: {
+          contentHash: `${request.renderMode ?? 'component'}-${artifactSequence.toString()}`,
+          scriptLocation: `file:///artifacts/${artifactSequence.toString()}/entry.js`,
+        },
+        dependencies: [request.documentPath],
+        diagnostics: [],
+        watchDirectories: [],
+      });
+    });
+    const controller = new PreviewController(
+      { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open('component');
+    await controller.open('page-inspector');
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+    expect(execute.mock.calls.map(([request]) => request.renderMode)).toEqual([
+      'component',
+      'page-inspector',
+    ]);
+    execute.mockClear();
+    const inspectorPanel = (vscodeState.panels as TestPanel[])[1];
+    inspectorPanel?.focus();
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    expect(execute.mock.calls[0]?.[0].renderMode).toBe('page-inspector');
+    controller.dispose();
+  });
+
   /** Keeps A and B independent across focus, edits, explicit refresh, and one panel disposal. */
   it('creates multiple pinned sessions without rebuilding on panel focus', async () => {
     vi.useFakeTimers();
@@ -309,8 +394,12 @@ describe('PreviewController', () => {
     const [panelA, panelB] = vscodeState.panels as TestPanel[];
 
     expect(vscodeState.panels).toHaveLength(2);
+    expect(panelA?.title).toBe('A.tsx');
+    expect(panelB?.title).toBe('B.tsx');
     expect(panelA?.options.retainContextWhenHidden).toBe(true);
     expect(panelB?.options.retainContextWhenHidden).toBe(true);
+    const initialHtmlA = panelA?.webview.html;
+    const initialHtmlB = panelB?.webview.html;
     expect(execute.mock.calls.map(([request]) => request.documentPath)).toEqual([
       targetA.request.documentPath,
       targetB.request.documentPath,
@@ -325,6 +414,13 @@ describe('PreviewController', () => {
     expect(execute.mock.calls.map(([request]) => request.documentPath).sort()).toEqual(
       [targetA.request.documentPath, targetB.request.documentPath].sort(),
     );
+    await vi.waitFor(() => {
+      expect(panelA?.hotReloadMessages).toHaveLength(1);
+      expect(panelB?.hotReloadMessages).toHaveLength(1);
+    });
+    expect(panelA?.webview.html).toBe(initialHtmlA);
+    expect(panelB?.webview.html).toBe(initialHtmlB);
+    await flushMicrotasks();
 
     execute.mockClear();
     vscodeState.changeListeners[0]?.({ document: { fileName: '/workspace/src/Unrelated.tsx' } });
@@ -361,6 +457,7 @@ describe('PreviewController', () => {
     });
     expect(execute.mock.calls[0]?.[0].documentPath).toBe(targetA.request.documentPath);
 
+    await flushMicrotasks();
     execute.mockClear();
     releaseArtifact.mockClear();
     const currentArtifactA = latestHashByDocument.get(targetA.request.documentPath);
@@ -376,6 +473,229 @@ describe('PreviewController', () => {
     expect(watcherA?.disposed).toBe(true);
 
     controller.dispose();
+  });
+
+  /** Keeps the old revision leased until the retained webview confirms the new ESM and CSS load. */
+  it('transfers an artifact lease only after a hot-reload acknowledgement', async () => {
+    const target = createTarget('/workspace/src/HotLease.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    let buildSequence = 0;
+    const execute = vi.fn(() => {
+      buildSequence += 1;
+      const hash = buildSequence === 1 ? 'hot-old' : 'hot-new';
+      return Promise.resolve({
+        ...createPreparedPreview(target, hash),
+        artifact: {
+          contentHash: hash,
+          scriptLocation: `file:///artifacts/${hash}/entry.js`,
+          stylesheetLocation: `file:///artifacts/${hash}/entry.css`,
+        },
+      } satisfies PreparedPreview);
+    });
+    const releaseArtifact = vi.fn<(contentHash: string) => Promise<void>>(() => Promise.resolve());
+    const controller = new PreviewController(
+      { execute, releaseArtifact } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    const [panel] = vscodeState.panels as TestPanel[];
+    const initialHtml = panel?.webview.html;
+    panel?.holdHotReloadAcknowledgements();
+
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(panel?.hotReloadMessages).toHaveLength(1);
+    });
+
+    expect(panel?.webview.html).toBe(initialHtml);
+    expect(panel?.hotReloadMessages[0]).toMatchObject({
+      scriptUri: 'file:///artifacts/hot-new/entry.js',
+      stylesheetUri: 'file:///artifacts/hot-new/entry.css',
+      type: 'react-preview-hot-reload',
+    });
+    expect(releaseArtifact).not.toHaveBeenCalled();
+
+    panel?.acknowledgeHotReload(0);
+    await vi.waitFor(() => {
+      expect(releaseArtifact).toHaveBeenCalledWith('hot-old');
+    });
+    expect(releaseArtifact).not.toHaveBeenCalledWith('hot-new');
+    expect(panel?.webview.html).toBe(initialHtml);
+
+    controller.dispose();
+    expect(releaseArtifact).toHaveBeenCalledWith('hot-new');
+  });
+
+  /** Falls back to a complete latest document when a live webview never acknowledges the swap. */
+  it('releases the old lease and loads the latest document after the hot timeout', async () => {
+    vi.useFakeTimers();
+    const target = createTarget('/workspace/src/HotTimeout.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    let buildSequence = 0;
+    const execute = vi.fn(() => {
+      buildSequence += 1;
+      return Promise.resolve(
+        createPreparedPreview(target, buildSequence === 1 ? 'timeout-old' : 'timeout-new'),
+      );
+    });
+    const releaseArtifact = vi.fn(() => Promise.resolve());
+    const controller = new PreviewController(
+      { execute, releaseArtifact } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    const [panel] = vscodeState.panels as TestPanel[];
+    const initialHtml = panel?.webview.html;
+    panel?.holdHotReloadAcknowledgements();
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(panel?.hotReloadMessages).toHaveLength(1);
+    });
+
+    expect(panel?.webview.html).toBe(initialHtml);
+    expect(releaseArtifact).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(panel?.webview.html).not.toBe(initialHtml);
+    expect(panel?.webview.html).toContain('/artifacts/timeout-new/entry.js');
+    expect(releaseArtifact).toHaveBeenCalledWith('timeout-old');
+    expect(releaseArtifact).not.toHaveBeenCalledWith('timeout-new');
+
+    controller.dispose();
+    expect(releaseArtifact).toHaveBeenCalledWith('timeout-new');
+  });
+
+  /** Prevents an older timeout from replacing a newer revision that already acknowledged. */
+  it('ignores stale hot-reload fallbacks after a newer revision becomes current', async () => {
+    vi.useFakeTimers();
+    const target = createTarget('/workspace/src/HotRace.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    let buildSequence = 0;
+    const execute = vi.fn(() => {
+      buildSequence += 1;
+      return Promise.resolve(createPreparedPreview(target, `race-${buildSequence.toString()}`));
+    });
+    const releaseArtifact = vi.fn<(contentHash: string) => Promise<void>>(() => Promise.resolve());
+    const controller = new PreviewController(
+      { execute, releaseArtifact } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    const [panel] = vscodeState.panels as TestPanel[];
+    const initialHtml = panel?.webview.html;
+    panel?.holdHotReloadAcknowledgements();
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(panel?.hotReloadMessages).toHaveLength(1);
+    });
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(panel?.hotReloadMessages).toHaveLength(2);
+    });
+
+    panel?.acknowledgeHotReload(1);
+    await vi.waitFor(() => {
+      expect(releaseArtifact).toHaveBeenCalledWith('race-2');
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(panel?.webview.html).toBe(initialHtml);
+    expect(releaseArtifact).toHaveBeenCalledWith('race-1');
+    controller.dispose();
+    expect(releaseArtifact).toHaveBeenCalledWith('race-3');
+  });
+
+  /** Releases both sides of a pending transfer once when its panel closes before acknowledgement. */
+  it('cancels a pending hot reload safely when its panel is disposed', async () => {
+    vi.useFakeTimers();
+    const target = createTarget('/workspace/src/HotDispose.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    let buildSequence = 0;
+    const execute = vi.fn(() => {
+      buildSequence += 1;
+      return Promise.resolve(
+        createPreparedPreview(target, buildSequence === 1 ? 'dispose-old' : 'dispose-new'),
+      );
+    });
+    const releaseArtifact = vi.fn<(contentHash: string) => Promise<void>>(() => Promise.resolve());
+    const controller = new PreviewController(
+      { execute, releaseArtifact } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    const [panel] = vscodeState.panels as TestPanel[];
+    panel?.holdHotReloadAcknowledgements();
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(panel?.hotReloadMessages).toHaveLength(1);
+    });
+
+    panel?.dispose();
+    expect(releaseArtifact.mock.calls.map(([hash]) => hash).sort()).toEqual([
+      'dispose-new',
+      'dispose-old',
+    ]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(releaseArtifact).toHaveBeenCalledTimes(2);
+
+    controller.dispose();
+  });
+
+  /** Releases a duplicate publication lease without unmounting an already identical ESM revision. */
+  it('keeps the current webview when a rebuild publishes the same content hash', async () => {
+    const target = createTarget('/workspace/src/HotUnchanged.tsx');
+    targetResolvers.active.mockReturnValue(target);
+    targetResolvers.pinned.mockResolvedValue(target);
+    const execute = vi.fn(() => Promise.resolve(createPreparedPreview(target, 'same-hash')));
+    const releaseArtifact = vi.fn<(contentHash: string) => Promise<void>>(() => Promise.resolve());
+    const controller = new PreviewController(
+      { execute, releaseArtifact } as unknown as BuildPreview,
+      vscode.Uri.file('/artifacts'),
+      { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    );
+
+    await controller.open();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    const [panel] = vscodeState.panels as TestPanel[];
+    const initialHtml = panel?.webview.html;
+
+    await controller.refresh();
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(releaseArtifact).toHaveBeenCalledTimes(1);
+    });
+
+    expect(panel?.hotReloadMessages).toHaveLength(0);
+    expect(panel?.webview.html).toBe(initialHtml);
+    expect(releaseArtifact).toHaveBeenLastCalledWith('same-hash');
+    controller.dispose();
+    expect(releaseArtifact).toHaveBeenCalledTimes(2);
   });
 
   /** Rebuilds a pinned panel when either project runtime setup setting changes for its resource. */
@@ -564,12 +884,35 @@ describe('PreviewController', () => {
 interface TestPanel {
   /** Creation options supplied by the controller. */
   readonly options: Record<string, unknown>;
+  /** Compact basename-only editor tab label. */
+  readonly title: string;
+  /** Hot module messages sent without replacing the complete webview document. */
+  readonly hotReloadMessages: readonly unknown[];
+  /** Minimal HTML surface used to prove a hot update retained the document. */
+  readonly webview: { readonly html: string };
   /** Emits a disposal event. */
   dispose(): void;
   /** Makes the next ready-state conversion throw. */
   failNextCommit(): void;
   /** Emits a focus-only view-state event. */
   focus(): void;
+  /** Pauses automatic browser acknowledgements for deterministic lease tests. */
+  holdHotReloadAcknowledgements(): void;
+  /** Emits a retained hot-reload acknowledgement by message index. */
+  acknowledgeHotReload(
+    messageIndex: number,
+    type?: 'react-preview-hot-reload-failed' | 'react-preview-hot-reload-ready',
+  ): void;
+}
+
+/** Reads the opaque acknowledgement token from a fake hot-reload message. */
+function readMessageToken(message: unknown): string | undefined {
+  return typeof message === 'object' &&
+    message !== null &&
+    'token' in message &&
+    typeof message.token === 'string'
+    ? message.token
+    : undefined;
 }
 
 /** Test-only subset exposed by each fake filesystem watcher. */
@@ -648,4 +991,10 @@ function createDeferred<Value>(): Deferred<Value> {
       resolvePromise?.(value);
     },
   };
+}
+
+/** Flushes queued fake webview acknowledgements before resetting release assertions. */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
 }

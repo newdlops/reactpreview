@@ -6,10 +6,15 @@
 import path from 'node:path';
 import * as vscode from 'vscode';
 import type { BuildPreview } from '../application/buildPreview';
-import { PreviewCompilationError, type PreparedPreview } from '../domain/preview';
+import {
+  PreviewCompilationError,
+  type PreparedPreview,
+  type PreviewRenderMode,
+} from '../domain/preview';
 import { canonicalizeExistingPath } from '../shared/pathIdentity';
 import type { PreviewTargetIssue, ResolvedPreviewTarget } from './activePreviewTarget';
 import { describeBuildFailure, formatDiagnostic } from './previewFailure';
+import { createPreviewPanelTitle } from './previewPanelTitle';
 import { createPreviewHtml } from './webview/previewHtml';
 
 /** Application operations required by an independently testable panel session. */
@@ -40,8 +45,20 @@ export interface PreviewPanelSessionOptions {
   readonly log: vscode.LogOutputChannel;
   /** Dedicated webview panel owned exclusively by this session. */
   readonly panel: vscode.WebviewPanel;
+  /** Immutable rendering policy retained by every manual and automatic rebuild. */
+  readonly renderMode: PreviewRenderMode;
   /** Pinned resolver that never consults the active editor. */
   readonly resolveTarget: PinnedPreviewTargetResolver;
+}
+
+/** Artifact lease retained until the webview confirms a cache-busted hot module was imported. */
+interface PendingHotReload {
+  /** New artifact whose complete HTML may replace the document if this is still the latest build. */
+  readonly nextArtifactHash: string;
+  /** Previous artifact still needed while the browser imports the replacement entry. */
+  readonly previousArtifactHash: string;
+  /** Safety timer that falls back to a full document load if no browser acknowledgement arrives. */
+  readonly timeout: ReturnType<typeof setTimeout>;
 }
 
 /** A single React preview tab pinned to one file for its complete lifetime. */
@@ -56,8 +73,10 @@ export class PreviewPanelSession implements vscode.Disposable {
   private disposed = false;
   private disposalNotified = false;
   private readonly panelDisposables: vscode.Disposable[] = [];
+  private readonly pendingHotReloads = new Map<string, PendingHotReload>();
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private revision = 0;
+  private hotReloadSequence = 0;
 
   /**
    * Captures the immutable target and subscribes only to events emitted by this panel.
@@ -70,6 +89,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     this.panelDisposables.push(
       options.panel.onDidDispose(this.handlePanelDisposed.bind(this)),
       options.panel.onDidChangeViewState(this.handleViewStateChanged.bind(this)),
+      options.panel.webview.onDidReceiveMessage(this.handleWebviewMessage.bind(this)),
     );
   }
 
@@ -211,14 +231,19 @@ export class PreviewPanelSession implements vscode.Disposable {
       return;
     }
 
-    this.options.panel.title = `React Preview: ${target.documentName}`;
-    this.options.panel.webview.html = createPreviewHtml(this.options.panel.webview.cspSource, {
-      documentName: target.documentName,
-      kind: 'loading',
-    });
+    this.options.panel.title = createPreviewPanelTitle(target.request.documentPath);
+    if (this.artifactHash === undefined) {
+      this.options.panel.webview.html = createPreviewHtml(this.options.panel.webview.cspSource, {
+        documentName: target.documentName,
+        kind: 'loading',
+      });
+    }
 
     try {
-      const preparedPreview = await this.options.buildPreview.execute(target.request);
+      const preparedPreview = await this.options.buildPreview.execute({
+        ...target.request,
+        renderMode: this.options.renderMode,
+      });
       if (!this.isCurrentRevision(requestedRevision)) {
         this.releaseArtifact(preparedPreview.artifact.contentHash);
         return;
@@ -295,6 +320,12 @@ export class PreviewPanelSession implements vscode.Disposable {
       .asWebviewUri(vscode.Uri.parse(preparedPreview.artifact.scriptLocation, true))
       .toString(true);
     const stylesheetLocation = preparedPreview.artifact.stylesheetLocation;
+    const stylesheetUri =
+      stylesheetLocation === undefined
+        ? undefined
+        : this.options.panel.webview
+            .asWebviewUri(vscode.Uri.parse(stylesheetLocation, true))
+            .toString(true);
     const baseState = {
       documentName,
       kind: 'ready' as const,
@@ -303,25 +334,136 @@ export class PreviewPanelSession implements vscode.Disposable {
 
     const nextHtml = createPreviewHtml(
       this.options.panel.webview.cspSource,
-      stylesheetLocation === undefined
+      stylesheetUri === undefined
         ? baseState
         : {
             ...baseState,
-            stylesheetUri: this.options.panel.webview
-              .asWebviewUri(vscode.Uri.parse(stylesheetLocation, true))
-              .toString(true),
+            stylesheetUri,
           },
     );
 
-    this.options.panel.webview.html = nextHtml;
     const previousArtifactHash = this.artifactHash;
+
+    if (previousArtifactHash === preparedPreview.artifact.contentHash) {
+      this.dependencies = nextDependencies;
+      this.dependencyDirectories = nextDependencyDirectories;
+      this.replaceDirectoryWatchers(nextDependencyDirectories);
+      this.releaseArtifact(preparedPreview.artifact.contentHash);
+      return;
+    }
+
+    if (previousArtifactHash === undefined) {
+      // Do not accept the incoming lease until VS Code accepts the initial complete document.
+      this.options.panel.webview.html = nextHtml;
+    }
     this.dependencies = nextDependencies;
     this.dependencyDirectories = nextDependencyDirectories;
     this.artifactHash = preparedPreview.artifact.contentHash;
     this.replaceDirectoryWatchers(nextDependencyDirectories);
     if (previousArtifactHash !== undefined) {
-      this.releaseArtifact(previousArtifactHash);
+      this.postHotReload(
+        previousArtifactHash,
+        preparedPreview.artifact.contentHash,
+        scriptUri,
+        stylesheetUri,
+        nextHtml,
+      );
     }
+  }
+
+  /**
+   * Sends a cache-busted ESM/CSS replacement while retaining the current webview document.
+   * The previous artifact lease remains valid until the browser acknowledges import completion.
+   */
+  private postHotReload(
+    previousArtifactHash: string,
+    nextArtifactHash: string,
+    scriptUri: string,
+    stylesheetUri: string | undefined,
+    fallbackHtml: string,
+  ): void {
+    this.hotReloadSequence += 1;
+    const token = `${this.hotReloadSequence.toString()}:${nextArtifactHash}`;
+    const timeout = setTimeout(() => {
+      this.finishHotReload(token, fallbackHtml, true);
+    }, 10_000);
+    this.pendingHotReloads.set(token, {
+      nextArtifactHash,
+      previousArtifactHash,
+      timeout,
+    });
+
+    let delivery: Thenable<boolean>;
+    try {
+      delivery = this.options.panel.webview.postMessage({
+        scriptUri,
+        ...(stylesheetUri === undefined ? {} : { stylesheetUri }),
+        token,
+        type: 'react-preview-hot-reload',
+      });
+    } catch (error) {
+      this.options.log.debug('Could not post a React preview hot reload message.', error);
+      this.finishHotReload(token, fallbackHtml, true);
+      return;
+    }
+    void Promise.resolve(delivery).then(
+      (delivered) => {
+        if (!delivered) {
+          this.finishHotReload(token, fallbackHtml, true);
+        }
+      },
+      (error: unknown) => {
+        this.options.log.debug('React preview hot reload delivery failed.', error);
+        this.finishHotReload(token, fallbackHtml, true);
+      },
+    );
+  }
+
+  /** Accepts only acknowledgement messages emitted by the generated preview hot runtime. */
+  private handleWebviewMessage(message: unknown): void {
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      !('type' in message) ||
+      !('token' in message) ||
+      typeof message.token !== 'string'
+    ) {
+      return;
+    }
+    if (
+      message.type !== 'react-preview-hot-reload-ready' &&
+      message.type !== 'react-preview-hot-reload-failed'
+    ) {
+      return;
+    }
+    this.finishHotReload(message.token, undefined, false);
+  }
+
+  /** Releases the previous revision after acknowledgement or a full-document fallback. */
+  private finishHotReload(
+    token: string,
+    fallbackHtml: string | undefined,
+    replaceDocument: boolean,
+  ): void {
+    const pending = this.pendingHotReloads.get(token);
+    if (pending === undefined) {
+      return;
+    }
+    this.pendingHotReloads.delete(token);
+    clearTimeout(pending.timeout);
+    const shouldReplaceDocument =
+      replaceDocument &&
+      fallbackHtml !== undefined &&
+      !this.disposed &&
+      this.artifactHash === pending.nextArtifactHash;
+    if (shouldReplaceDocument) {
+      try {
+        this.options.panel.webview.html = fallbackHtml;
+      } catch (error) {
+        this.options.log.debug('Could not fall back from React preview hot reload.', error);
+      }
+    }
+    this.releaseArtifact(pending.previousArtifactHash);
   }
 
   /**
@@ -450,13 +592,18 @@ export class PreviewPanelSession implements vscode.Disposable {
     this.options.callbacks.onDidDispose(this);
   }
 
-  /** Releases the currently displayed artifact lease and clears local ownership. */
+  /** Releases displayed and in-flight hot-reload artifact leases and clears local ownership. */
   private releaseCurrentArtifact(): void {
     const contentHash = this.artifactHash;
     this.artifactHash = undefined;
     if (contentHash !== undefined) {
       this.releaseArtifact(contentHash);
     }
+    for (const pending of this.pendingHotReloads.values()) {
+      clearTimeout(pending.timeout);
+      this.releaseArtifact(pending.previousArtifactHash);
+    }
+    this.pendingHotReloads.clear();
   }
 
   /**

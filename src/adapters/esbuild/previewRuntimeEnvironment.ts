@@ -39,26 +39,102 @@ const SETUP_MODULE_EXTENSIONS = new Set([
 ]);
 const UNSAFE_NAMESPACE_NAMES = new Set([
   '__proto__',
+  'alert',
+  'arguments',
+  'as',
+  'async',
+  'atob',
+  'await',
+  'blur',
+  'break',
+  'btoa',
+  'caches',
+  'case',
+  'catch',
+  'class',
   'closed',
+  'close',
+  'confirm',
+  'const',
+  'continue',
   'constructor',
+  'debugger',
+  'default',
+  'delete',
   'document',
+  'do',
+  'else',
+  'enum',
+  'eval',
+  'event',
+  'export',
+  'extends',
+  'external',
+  'false',
+  'finally',
+  'find',
+  'focus',
+  'for',
   'frames',
+  'from',
+  'function',
+  'get',
   'global',
   'globalThis',
   'history',
+  'if',
+  'implements',
+  'import',
+  'in',
   'Infinity',
+  'instanceof',
+  'interface',
+  'let',
   'length',
   'location',
   'NaN',
   'name',
   'navigator',
+  'new',
+  'null',
+  'of',
+  'open',
   'opener',
+  'origin',
+  'package',
   'parent',
+  'private',
+  'print',
+  'prompt',
+  'protected',
   'prototype',
+  'public',
+  'return',
+  'screen',
+  'scroll',
   'self',
+  'set',
+  'static',
+  'status',
+  'stop',
+  'super',
+  'switch',
+  'target',
+  'this',
+  'throw',
+  'toolbar',
   'top',
+  'true',
+  'try',
+  'typeof',
   'undefined',
+  'using',
+  'var',
+  'void',
+  'while',
   'window',
+  'with',
+  'yield',
 ]);
 const GLOBAL_NAMESPACE_ASSIGNMENT =
   /\b(window|globalThis)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:=\s*\1\s*\.\s*\2\s*(?:\|\||\?\?)\s*\{\s*\}|(?:=|\|\|=|\?\?=)\s*\{\s*\})/g;
@@ -414,7 +490,7 @@ function extractGlobalNamespaces(sourceText: string): readonly string[] {
   GLOBAL_NAMESPACE_ASSIGNMENT.lastIndex = 0;
   for (const match of searchableSource.matchAll(GLOBAL_NAMESPACE_ASSIGNMENT)) {
     const namespaceName = match[2];
-    if (namespaceName === undefined || UNSAFE_NAMESPACE_NAMES.has(namespaceName)) {
+    if (namespaceName === undefined || !isSafePreviewRuntimeGlobalName(namespaceName)) {
       continue;
     }
     if (hasUnsafeNamespacePrefix(searchableSource, match.index)) {
@@ -423,6 +499,20 @@ function extractGlobalNamespaces(sourceText: string): readonly string[] {
     namespaces.push(namespaceName);
   }
   return namespaces;
+}
+
+/**
+ * Reports whether an identifier may be materialized on the isolated preview global object.
+ *
+ * The shared guard keeps convention-discovered namespaces and statically proven package globals on
+ * one prototype-safety policy. It intentionally does not claim that a name should exist; callers
+ * must independently prove its source before passing this final property-name boundary.
+ *
+ * @param name Decoded JavaScript identifier proposed as a preview-only global property.
+ * @returns `true` only for ordinary identifier names that cannot replace runtime primitives.
+ */
+export function isSafePreviewRuntimeGlobalName(name: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(name) && !UNSAFE_NAMESPACE_NAMES.has(name);
 }
 
 /**

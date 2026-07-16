@@ -2,6 +2,46 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1020 - 2026-07-16
+
+- 직접 export component의 필수 prop 타입과 비옵셔널 receiver 사용 경로를 bounded하게 분석해 string,
+  number, boolean, array, object container와 no-op function의 가장 낮은 우선순위 정적 shape를 생성
+- 실제 JSX 사용, 공통/setup/export별 props와 Inspector override를 자동 shape 위에 깊이별로 병합하고,
+  optional chain은 없는 상태를 유지하며 prototype-sensitive key·깊이·node 수를 제한
+- Page Inspector toolbar와 일반 gallery label에 자동 생성값의 path/kind를 표시해 사용자가 임의 정적값을
+  확인·수정할 수 있도록 하고, 선택 target 오류는 부모·외부 sibling을 유지하는 inline placeholder로 격리
+- export 오류의 전체 보고서는 console warning으로 보존하면서 preview surface에는 작은 local placeholder만
+  표시하고, 구체적인 nullish property read를 backend 전용 문제가 아닌 missing static value로 분류
+- `styled((props) => <Target />)\`...\`` owner를 styled-components import identity로 증명해 실제 부모
+  ancestry로 승격하되 임의 tagged template은 계속 fail closed하는 Page Inspector 탐색 보강
+
+## 0.1.1019 - 2026-07-16
+
+- 필수 Context 구조분해와 optional descendant가 함께 있을 때 optional receiver를 없는 값으로 유지하면서
+  이미 증명된 object container fallback을 폐기하지 않도록 `use*Context` 분석을 보강
+- React import identity로 같은 module의 `use*Context → useContext(LocalContext)` 관계를 bounded하게
+  증명하고, 도달한 consumer shape를 정확한 raw Context Provider에 연결하는 범용 Context bridge 추가
+- 여러 hook이 같은 Context를 읽으면 구조 fallback을 병합하고 object/callable 충돌은 해당 Context만
+  제외하며, lazy chunk의 늦은 등록은 project React의 `useSyncExternalStore` 경계로 다시 합성
+- 작성된 application Provider·bootstrap·backend는 실행하지 않고 실제 내부/setup Provider를 우선하며,
+  nullish custom Context 구조분해 오류를 별도 분류하고 Context bridge 상태를 runtime 보고서에 표시
+- HOC 안의 null-default Context, nested destructuring, optional map과 `new Set` 조합을 Page Inspector 전체
+  compiler 경로에서 검증하는 회귀 테스트 추가
+
+## 0.1.1018 - 2026-07-16
+
+- app entry를 실행하지 않고 ambient `typeof import()` 전역 선언과 import-backed
+  `globalThis/window` 직접 할당을 정적으로 수집해 정확한 project wrapper export를 lexical inject로 연결
+- runtime assignment > ambient declaration > 동일 이름 package 순서를 적용하고, 충돌·미해석·분석 한도
+  초과에서는 의미가 다른 bare package로 내려가지 않는 fail-closed 전역 bridge planner 추가
+- 강한 wrapper 근거가 없을 때 실제 target-rooted graph에서 자유 식별자로 증명되고 같은 이름의 설치
+  package가 해석되는 경우에만 Router 요구와 합쳐 최대 한 번 adaptive rebuild하도록 확장
+- esbuild scope injection으로 local/import/shadow/type/property/JSX intrinsic/`typeof` probe를 보존하고 ESM
+  default·named·namespace와 CommonJS identity, 모노레포 hoist, dirty wrapper HMR dependency를 지원
+- package source evidence와 선택된 declaration/wrapper metadata를 탭과 hot rebuild 사이에서 bounded하게
+  공유하고 generated/public 역방향 인덱스를 제외해 실제 대형 프로젝트의 후속 rebuild 시간을 단축
+- `name is not defined`를 `missing-runtime-global`로 분류하고 오류 보고서에 Globals bridge 상태를 추가
+
 ## 0.1.1017 - 2026-07-16
 
 - 에디터 우클릭과 명령 팔레트에 opt-in `Inspect Current React File in Page Context`를 추가하고,

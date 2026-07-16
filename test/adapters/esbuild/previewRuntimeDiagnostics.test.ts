@@ -17,13 +17,13 @@ describe('classifyPreviewRuntimeMessage', () => {
     expect(diagnostic.title).toBe('React Redux provider required');
   });
 
-  /** Recognizes Apollo's compact invariant URL without coupling to a version-specific error code. */
-  it('classifies an Apollo compact invariant URL', () => {
+  /** Keeps Apollo's compact URL distinct from the narrower missing-provider public message. */
+  it('classifies an Apollo compact invariant without assuming its version-specific meaning', () => {
     const diagnostic = classifyPreviewRuntimeMessage(
       'An error occurred! See https://go.apollo.dev/c/err#encoded-details',
     );
 
-    expect(diagnostic.kind).toBe('apollo-context');
+    expect(diagnostic.kind).toBe('apollo-invariant');
   });
 
   /** Recognizes router-owned guidance while leaving route and parameter values project-owned. */
@@ -35,14 +35,30 @@ describe('classifyPreviewRuntimeMessage', () => {
     expect(diagnostic.kind).toBe('router-context');
   });
 
-  /** Treats ambiguous theme and arbitrary render TypeErrors as generic application runtime issues. */
-  it.each([
-    'TypeError: props.theme.spacing is not a function',
-    'Cannot read properties of undefined',
-    'Unexpected component failure',
-  ])('keeps an unbranded message generic: %s', (message) => {
-    expect(classifyPreviewRuntimeMessage(message).kind).toBe('project-runtime');
+  /** Recognizes Formik's public invariant without assuming project form values. */
+  it('classifies a Formik context failure', () => {
+    const diagnostic = classifyPreviewRuntimeMessage(
+      'Formik context is undefined, please verify you are calling useFormikContext() as child of a <Formik> component.',
+    );
+
+    expect(diagnostic.kind).toBe('formik-context');
+    expect(diagnostic.title).toBe('Formik provider required');
   });
+
+  /** Recognizes explicit theme-object language while leaving arbitrary undefined reads generic. */
+  it('classifies a branded theme-shape failure', () => {
+    expect(
+      classifyPreviewRuntimeMessage('TypeError: props.theme.spacing is not a function').kind,
+    ).toBe('theme-contract');
+  });
+
+  /** Treats ambiguous property reads and arbitrary render failures as project runtime issues. */
+  it.each(['Cannot read properties of undefined', 'Unexpected component failure'])(
+    'keeps an unbranded message generic: %s',
+    (message) => {
+      expect(classifyPreviewRuntimeMessage(message).kind).toBe('project-runtime');
+    },
+  );
 
   /** Demonstrates that stack-only package words are outside the classifier contract. */
   it('does not classify a package name supplied separately from the direct message', () => {

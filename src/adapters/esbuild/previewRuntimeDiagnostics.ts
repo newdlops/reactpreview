@@ -38,11 +38,20 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
   },
   {
     kind: 'apollo-context',
-    messageIncludes: ['go.apollo.dev/c/err#', 'could not find "client" in the context'],
+    messageIncludes: ['could not find "client" in the context'],
     recovery:
       'Refresh an older pinned tab first. If the current setup disables the automatic static Apollo boundary, enable it or provide a memory-only client.',
     summary: 'The component bundle loaded, but an Apollo Client context was not available.',
     title: 'Apollo Client provider required',
+  },
+  {
+    kind: 'apollo-invariant',
+    messageIncludes: ['go.apollo.dev/c/err#'],
+    recovery:
+      'Inspect the locally decoded invariant payload and the Apollo boundary status below; the compact URL alone does not prove that a backend connection is required.',
+    summary:
+      'Apollo Client threw a compact invariant while evaluating or rendering the static preview.',
+    title: 'Apollo Client runtime error',
   },
   {
     kind: 'router-context',
@@ -50,11 +59,46 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
       'may be used only in the context of a <router>',
       'can only be used in the context of a <router>',
       'must be used within a routerprovider',
+      'must be used within a data router',
     ],
     recovery:
       'Preview a route-aware harness or provide a MemoryRouter with explicit static entries through .react-preview/setup.tsx.',
     summary: 'The component bundle loaded, but this tree expects an application router context.',
     title: 'Router context required',
+  },
+  {
+    kind: 'formik-context',
+    messageIncludes: ['formik context is undefined'],
+    recovery:
+      'Inspect the Formik boundary status below. Refresh the pinned preview, provide bounded formikPreview.initialValues, or use a static form harness when the automatic boundary is disabled.',
+    summary: 'The component bundle loaded, but this tree has no compatible Formik context.',
+    title: 'Formik provider required',
+  },
+  {
+    kind: 'theme-contract',
+    messageIncludes: [
+      'props.theme.',
+      'theme.spacing is not a function',
+      'themeprovider: please make sure',
+    ],
+    recovery:
+      'Inspect the Theme boundary status below. The component needs the exact project theme shape when a structural fallback cannot preserve helper semantics.',
+    summary:
+      'The rendered tree received no compatible theme value or received a theme with a different runtime shape.',
+    title: 'Theme contract mismatch',
+  },
+  {
+    kind: 'custom-context',
+    messageIncludes: [
+      'must be used inside a provider',
+      'must be used within a provider',
+      'must be used within the provider',
+    ],
+    recovery:
+      'Add a small static provider in .react-preview/setup.tsx; application-owned context values cannot be inferred safely from hook names alone.',
+    summary:
+      'An application or library hook explicitly reported that its React context provider is absent.',
+    title: 'React context provider required',
   },
 ];
 

@@ -36,6 +36,12 @@ ${reactImport}
 
 const MAX_STATIC_APOLLO_DEPTH = 20;
 const MAX_STATIC_APOLLO_FIELDS = 512;
+let previewRuntimeStatus = 'available: static Apollo provider has not been composed yet';
+
+/** Returns the last automatic Apollo decision for detailed preview runtime diagnostics. */
+export function readPreviewRuntimeStatus() {
+  return previewRuntimeStatus;
+}
 
 /** Reports whether a value can safely hold setup configuration or generated response fields. */
 function isRecord(value) {
@@ -248,7 +254,12 @@ function hasSupportedApolloRuntime() {
  */
 export function createApolloPreviewElement(children, options) {
   const configuration = options?.configuration;
-  if (configuration === false || !hasSupportedApolloRuntime()) {
+  if (configuration === false) {
+    previewRuntimeStatus = 'disabled by setup (apolloPreview=false)';
+    return children;
+  }
+  if (!hasSupportedApolloRuntime()) {
+    previewRuntimeStatus = 'unavailable: installed Apollo package lacks required client APIs';
     return children;
   }
 
@@ -266,6 +277,9 @@ export function createApolloPreviewElement(children, options) {
     queryDeduplication: false,
   });
   const ApolloProvider = ApolloReact.ApolloProvider ?? ApolloCore.ApolloProvider;
+  previewRuntimeStatus = isRecord(configuration)
+    ? 'active: memory-only client with setup-owned static overrides; network disabled'
+    : 'active: memory-only client with selection-shaped static responses; network disabled';
   return React.createElement(ApolloProvider, { client }, children);
 }
 `;

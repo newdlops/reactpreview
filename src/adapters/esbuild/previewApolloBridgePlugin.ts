@@ -89,6 +89,8 @@ export function createPreviewApolloBridgePlugin(options: PreviewApolloBridgePlug
             contents: [
               '/** Leaves non-Apollo projects unchanged without importing React or a client. */',
               'export function createApolloPreviewElement(children) { return children; }',
+              '/** Describes why the automatic Apollo boundary is unavailable. */',
+              "export function readPreviewRuntimeStatus() { return 'unavailable: @apollo/client was not resolved from the target project'; }",
             ].join('\n'),
             loader: 'js',
           };

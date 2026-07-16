@@ -11,6 +11,7 @@ import {
 } from '../previewPluginProtocol';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
 import { PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER } from './previewInspectorTargetPlugin';
+import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 
@@ -20,6 +21,8 @@ export interface PreviewInspectorRootPluginOptions {
   readonly displayName?: string;
   /** Bounded real-owner plan produced from current editor-or-disk source. */
   readonly plan: PreviewInspectorAncestorPlan;
+  /** Neutral target props inferred without evaluating the selected project module. */
+  readonly targetInference?: PreviewInferredExportProps;
 }
 
 /**
@@ -45,11 +48,13 @@ export function createPreviewInspectorRootPlugin(
   /** Loads a single-descriptor bridge and associates its full ancestry with watch mode. */
   function loadInspectorRoot(): OnLoadResult {
     return {
-      contents: createPreviewInspectorRootSource(
-        options.displayName === undefined
-          ? { plan: options.plan }
-          : { displayName: options.displayName, plan: options.plan },
-      ),
+      contents: createPreviewInspectorRootSource({
+        ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
+        plan: options.plan,
+        ...(options.targetInference === undefined
+          ? {}
+          : { targetInference: options.targetInference }),
+      }),
       loader: 'js',
       resolveDir: path.dirname(options.plan.root.sourcePath),
       watchFiles: [...options.plan.dependencyPaths],
@@ -72,6 +77,7 @@ export function createPreviewInspectorRootPlugin(
 export interface PreviewInspectorRootSourceOptions {
   readonly displayName?: string;
   readonly plan: PreviewInspectorAncestorPlan;
+  readonly targetInference?: PreviewInferredExportProps;
 }
 
 /**
@@ -102,6 +108,12 @@ export function createPreviewInspectorRootSource(
     automaticProps: plan.rootAutomaticProps,
     displayName: options.displayName ?? plan.target.exportName,
     exportName: plan.target.exportName,
+    ...(rootIsTarget && options.targetInference !== undefined
+      ? {
+          inferredPropShape: options.targetInference.shape,
+          inferredProps: options.targetInference.provenance,
+        }
+      : {}),
     inspector: {
       ancestry: plan.edges,
       complete: plan.complete,
@@ -109,6 +121,7 @@ export function createPreviewInspectorRootSource(
       stopReason: plan.stopReason,
       target: plan.target,
       targetAutomaticProps: plan.targetAutomaticProps,
+      targetInferredProps: options.targetInference?.provenance ?? [],
     },
   };
 

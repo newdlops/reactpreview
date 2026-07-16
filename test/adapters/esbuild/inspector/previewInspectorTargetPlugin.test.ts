@@ -15,6 +15,12 @@ describe('createPreviewInspectorTargetFacadeSource', () => {
   it('creates explicit selected exports over the original wildcard surface', () => {
     const source = createPreviewInspectorTargetFacadeSource({
       exportNames: ['Target', 'default'],
+      inferredPropsByExport: {
+        Target: {
+          provenance: [{ kind: 'object', path: 'field', source: 'usage' }],
+          shape: { kind: 'object', properties: { field: { kind: 'object', properties: {} } } },
+        },
+      },
       originalHasDefaultExport: true,
       runtimeSpecifier: RUNTIME_SPECIFIER,
       sourcePath: TARGET_PATH,
@@ -26,6 +32,8 @@ describe('createPreviewInspectorTargetFacadeSource', () => {
       'export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal.default',
     );
     expect(source).toContain('"sourcePath":"/workspace/application/Target.tsx"');
+    expect(source).toContain('"inferredPropShape":{"kind":"object"');
+    expect(source).toContain('"inferredProps":[{"kind":"object","path":"field"');
   });
 
   /** Does not add a default binding when the authored module exposes named exports only. */

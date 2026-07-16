@@ -262,6 +262,60 @@ describe('createPreviewInspectorAncestorPlan', () => {
     expect(plan.edges).toHaveLength(1);
   });
 
+  /** Promotes an inline component wrapped by the tagged-template styled-components factory. */
+  it('accepts a styled-components tagged-template owner', async () => {
+    const sources = {
+      [TARGET_PATH]: 'export const Target = () => <span />;',
+      [PAGE_PATH]: [
+        "import styled from 'styled-components';",
+        "import { Target } from './Target';",
+        'export const Page = styled((props) => (',
+        '  <main><Target {...props} /><aside>authored sibling</aside></main>',
+        '))`min-height: 100vh;`;',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.complete).toBe(true);
+    expect(plan.stopReason).toBe('root-reached');
+    expect(plan.root).toEqual({ exportName: 'Page', sourcePath: PAGE_PATH });
+    expect(plan.edges).toHaveLength(1);
+  });
+
+  /** Keeps arbitrary tagged-template factories with inline JSX out of the React owner graph. */
+  it('rejects a non-styled tagged-template factory containing target JSX', async () => {
+    const metadataPath = '/workspace/packages/application/src/metadata.tsx';
+    const sources = {
+      [TARGET_PATH]: 'export const Target = () => <span />;',
+      [metadataPath]: [
+        "import { Target } from './Target';",
+        'const metadataFactory = (render) => (parts) => ({ parts, render });',
+        'export const Metadata = metadataFactory(() => (',
+        '  <Target tone="metadata" />',
+        '))`non-react metadata`;',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.complete).toBe(false);
+    expect(plan.stopReason).toBe('non-component-owner');
+    expect(plan.root).toEqual({ exportName: 'Target', sourcePath: TARGET_PATH });
+    expect(plan.rootAutomaticProps).toEqual({ tone: 'metadata' });
+    expect(plan.edges).toEqual([]);
+  });
+
   /** Crosses named and wildcard barrel exports while keeping them out of the React owner path. */
   it('discovers the real page through a bounded barrel re-export chain', async () => {
     const firstBarrelPath = '/workspace/packages/application/src/components/index.ts';

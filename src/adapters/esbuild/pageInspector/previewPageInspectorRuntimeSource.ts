@@ -7,6 +7,7 @@
  * A global Symbol protocol lets target facades register before or below an actual ancestor root.
  */
 import { createPreviewInspectorFiberRuntimeSource } from './previewInspectorFiberRuntimeSource';
+import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
 export const PREVIEW_PAGE_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
@@ -25,6 +26,7 @@ export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector
  */
 export function createPreviewPageInspectorRuntimeSource(): string {
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
+  const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_API_KEY = Symbol.for('newdlops.react-file-preview.page-inspector');
 const PREVIEW_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
@@ -571,28 +573,7 @@ function createPreviewInspectorPortalHost() {
   return portalHost;
 }
 
-/** No-DOM-wrapper React boundary registered for read-only host lookup after each React commit. */
-class PreviewInspectorTargetBoundary extends React.Component {
-  /** Registers the committed class instance whose subtree belongs to one target invocation. */
-  componentDidMount() {
-    this.unregisterBoundary = registerPreviewInspectorBoundary(this.props.exportName, this);
-  }
-
-  /** Refreshes outlines after target-owned state changes move or replace host children. */
-  componentDidUpdate() {
-    schedulePreviewInspectorHighlight();
-  }
-
-  /** Removes the boundary before React removes its target DOM nodes. */
-  componentWillUnmount() {
-    this.unregisterBoundary?.();
-  }
-
-  /** Returns authored children directly, adding no element or text node to the project DOM. */
-  render() {
-    return this.props.children;
-  }
-}
+${targetBoundaryRuntimeSource}
 
 /** Creates an inspected element while allowing modules to export an element instance directly. */
 function createPreviewInspectorElement(Component, props) {
@@ -605,11 +586,19 @@ function createPreviewInspectorElement(Component, props) {
 function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
+  const automaticTargetProps = React.useMemo(
+    () => createPreviewPropsFromLayers(metadata?.inferredPropShape, targetProps),
+    [metadata?.inferredPropShape, targetProps],
+  );
   React.useEffect(() => {
-    registerPreviewInspectorBaseProps(exportName, targetProps);
-  }, [exportName, targetProps]);
+    registerPreviewInspectorBaseProps(exportName, automaticTargetProps);
+  }, [exportName, automaticTargetProps]);
   const overrideProps = previewInspectorSession.overridesByExport.get(exportName) ?? {};
-  const effectiveProps = { ...targetProps, ...overrideProps };
+  const effectiveProps = createPreviewPropsFromLayers(
+    undefined,
+    automaticTargetProps,
+    overrideProps,
+  );
   if (forwardedRef !== undefined && forwardedRef !== null) {
     effectiveProps.ref = forwardedRef;
   }
@@ -625,7 +614,11 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
 function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyContext, targetProps, useStorybook }) {
   usePreviewInspectorStore();
   if (descriptor?.inspector === undefined) {
-    const metadata = { exportName: descriptor?.exportName ?? 'default' };
+    const metadata = {
+      exportName: descriptor?.exportName ?? 'default',
+      inferredPropShape: descriptor?.inferredPropShape,
+      inferredProps: descriptor?.inferredProps,
+    };
     const DirectPreviewTarget = (props) => React.createElement(PreviewInspectorTargetRenderer, {
       Component: descriptor?.value,
       forwardedRef: undefined,
@@ -747,6 +740,17 @@ function describePreviewInspectorAncestry() {
     (inspector.complete === true ? '' : '  ·  partial: ' + String(inspector.stopReason));
 }
 
+/** Reads generated-value provenance for the selected target without exposing source paths. */
+function readSelectedPreviewInspectorInferredProps(exportName) {
+  for (const descriptor of previewInspectorSession.descriptors) {
+    const targetName = descriptor?.inspector?.target?.exportName ?? descriptor?.exportName;
+    if (targetName !== exportName) continue;
+    const inferredProps = descriptor?.inspector?.targetInferredProps ?? descriptor?.inferredProps;
+    return Array.isArray(inferredProps) ? inferredProps : [];
+  }
+  return [];
+}
+
 /** Renders the export picker, highlight toggle, JSON props editor, and explicit state boundary. */
 function PreviewInspectorToolbar() {
   usePreviewInspectorStore();
@@ -754,6 +758,7 @@ function PreviewInspectorToolbar() {
   const baseProps = previewInspectorSession.basePropsByExport.get(selectedExportName) ?? {};
   const overrideProps = previewInspectorSession.overridesByExport.get(selectedExportName) ?? {};
   const effectiveProps = { ...baseProps, ...overrideProps };
+  const inferredProps = readSelectedPreviewInspectorInferredProps(selectedExportName);
   const draftKey =
     selectedExportName + ':' +
     (previewInspectorSession.basePropsFingerprintByExport.get(selectedExportName) ?? '') + ':' +
@@ -894,6 +899,15 @@ function PreviewInspectorToolbar() {
         { style: { ...labelStyle, display: 'block' } },
         previewInspectorSession.highlightStatus,
       ),
+      inferredProps.length > 0
+        ? React.createElement(
+            'small',
+            { style: { ...labelStyle, display: 'block' } },
+            'Auto-generated preview values: ' + inferredProps
+              .map((item) => String(item.path) + ' (' + String(item.kind) + ')')
+              .join(', '),
+          )
+        : null,
       React.createElement(
         'label',
         { style: labelStyle },

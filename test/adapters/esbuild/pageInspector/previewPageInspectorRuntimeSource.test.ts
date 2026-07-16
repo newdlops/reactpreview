@@ -29,9 +29,9 @@ describe('Page Inspector runtime source', () => {
       setupKind: 'none',
     });
 
-    expect(componentEntry).not.toContain('React Page Inspector');
+    expect(componentEntry).not.toContain('const PREVIEW_INSPECTOR_API_KEY');
     expect(componentEntry).not.toContain("import * as ReactDOMNamespace from 'react-dom'");
-    expect(inspectorEntry).toContain('React Page Inspector');
+    expect(inspectorEntry).toContain('const PREVIEW_INSPECTOR_API_KEY');
     expect(inspectorEntry).toContain("import * as ReactDOMNamespace from 'react-dom'");
     expect(inspectorEntry).toContain('PreviewPageInspectorRootRenderer');
   });
@@ -51,6 +51,13 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('descriptor?.inspector === undefined');
     expect(source).toContain('DirectPreviewTarget');
     expect(source).toContain('describePreviewInspectorAncestry');
+    expect(source).toContain('class PreviewInspectorTargetBoundary extends React.Component');
+    expect(source).toContain('static getDerivedStateFromError(error)');
+    expect(source).toContain('rememberCapturedReactError(error)');
+    expect(source).toContain("'react-preview-target-error'");
+    expect(source).toContain('remountPreviewInspectorExport(this.props.exportName)');
+    expect(source).toContain('createPreviewPropsFromLayers(metadata?.inferredPropShape');
+    expect(source).toContain('Auto-generated preview values:');
     expect(source).toContain('Internal hook state uses the page UI or a source edit');
     expect(source).not.toContain('__REACT_DEVTOOLS_GLOBAL_HOOK__');
   });

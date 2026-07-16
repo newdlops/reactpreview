@@ -53,10 +53,16 @@ describe('createPreviewInspectorRootSource', () => {
   it('keeps direct-root target instrumentation active', () => {
     const source = createPreviewInspectorRootSource({
       plan: createPlan({ exportName: 'Target', sourcePath: TARGET_PATH }),
+      targetInference: {
+        provenance: [{ kind: 'object', path: 'field', source: 'usage' }],
+        shape: { kind: 'object', properties: { field: { kind: 'object', properties: {} } } },
+      },
     });
 
     expect(source).toContain(
       'import { Target as __reactPreviewInspectorRoot } from "react-preview:inspector-target-facade";',
     );
+    expect(source).toContain('"inferredPropShape":{"kind":"object"');
+    expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
   });
 });

@@ -8,6 +8,7 @@ import type { OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbui
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { matchesPreviewParentSliceTargetImport } from '../parentSlice/previewParentSliceImports';
 import { PREVIEW_INSPECTOR_TARGET_NAMESPACE } from '../previewPluginProtocol';
+import type { PreviewInferredPropsByExport } from '../staticResources/reactExportPropInference';
 
 const INSPECTOR_TARGET_FACADE_PATH = 'selected-target-facade';
 const INSPECTOR_ORIGINAL_TARGET_SPECIFIER = 'react-preview:inspector-original-target';
@@ -34,6 +35,8 @@ export interface PreviewInspectorTargetPluginOptions {
   readonly exportNames: readonly string[];
   /** Whether the authored target declares a default export that the facade must preserve. */
   readonly originalHasDefaultExport: boolean;
+  /** Data-only fallback shapes associated with exact selected runtime exports. */
+  readonly inferredPropsByExport?: PreviewInferredPropsByExport;
   /** Optional private runtime specifier, primarily useful to isolated compiler tests. */
   readonly runtimeSpecifier?: string;
 }
@@ -98,6 +101,9 @@ export function createPreviewInspectorTargetPlugin(
       contents: createPreviewInspectorTargetFacadeSource({
         exportNames: selectedExportNames,
         originalHasDefaultExport: options.originalHasDefaultExport,
+        ...(options.inferredPropsByExport === undefined
+          ? {}
+          : { inferredPropsByExport: options.inferredPropsByExport }),
         runtimeSpecifier,
         sourcePath: documentPath,
       }),
@@ -183,6 +189,7 @@ function hasInspectorResolutionGuard(pluginData: unknown): boolean {
 export interface PreviewInspectorTargetFacadeSourceOptions {
   readonly exportNames: readonly string[];
   readonly originalHasDefaultExport: boolean;
+  readonly inferredPropsByExport?: PreviewInferredPropsByExport;
   readonly runtimeSpecifier?: string;
   readonly sourcePath: string;
 }
@@ -218,13 +225,13 @@ export function createPreviewInspectorTargetFacadeSource(
 
   for (const [index, exportName] of namedExports.entries()) {
     lines.push(
-      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal[${JSON.stringify(exportName)}], ${serializeMetadata(options.sourcePath, exportName)});`,
+      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal[${JSON.stringify(exportName)}], ${serializeMetadata(options.sourcePath, exportName, options.inferredPropsByExport?.[exportName])});`,
       `export { __reactPreviewSelected${index.toString()} as ${exportName} };`,
     );
   }
   if (selectedDefault) {
     lines.push(
-      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal.default, ${serializeMetadata(options.sourcePath, 'default')});`,
+      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal.default, ${serializeMetadata(options.sourcePath, 'default', options.inferredPropsByExport?.default)});`,
     );
   } else if (options.originalHasDefaultExport) {
     lines.push('export default __reactPreviewOriginal.default;');
@@ -233,8 +240,18 @@ export function createPreviewInspectorTargetFacadeSource(
 }
 
 /** Serializes immutable target identity supplied to the inspector runtime registry. */
-function serializeMetadata(sourcePath: string, exportName: string): string {
-  return JSON.stringify({ exportName, sourcePath: path.normalize(sourcePath) });
+function serializeMetadata(
+  sourcePath: string,
+  exportName: string,
+  inference: PreviewInferredPropsByExport[string] | undefined,
+): string {
+  return JSON.stringify({
+    exportName,
+    ...(inference === undefined
+      ? {}
+      : { inferredPropShape: inference.shape, inferredProps: inference.provenance }),
+    sourcePath: path.normalize(sourcePath),
+  });
 }
 
 /** Validates plugin boundaries before installing broad esbuild resolver callbacks. */

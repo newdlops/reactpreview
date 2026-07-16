@@ -9,6 +9,14 @@ import type { PreviewParentSliceOwner } from '../parentSlice';
 
 const MAX_COMPONENT_FACTORY_DEPTH = 8;
 
+/** Imported styled-components factory identities admitted by the tagged-template owner check. */
+interface StyledComponentFactoryBindings {
+  /** Default or named `styled` imports callable directly in the consumer module. */
+  readonly direct: ReadonlySet<string>;
+  /** Namespace imports whose `.default` or `.styled` member owns the factory call. */
+  readonly namespaces: ReadonlySet<string>;
+}
+
 /** Source identity and occurrence needed to recover the exact owner declaration from syntax. */
 export interface PreviewInspectorOwnerShapeOptions {
   /** JSX opening-element offset reported by the existing parent-slice analyzer. */
@@ -50,7 +58,11 @@ export function isPreviewInspectorComponentShapedOwner(
   if (declaration === undefined) {
     return false;
   }
-  return isComponentOwnerDeclaration(declaration, options.occurrenceStart);
+  return isComponentOwnerDeclaration(
+    declaration,
+    options.occurrenceStart,
+    collectStyledComponentFactoryBindings(sourceFile),
+  );
 }
 
 /** Requires a conventional component export name, while always admitting an explicit default. */
@@ -115,6 +127,7 @@ function findMatchingOwnerDeclaration(
 function isComponentOwnerDeclaration(
   declaration: InspectorOwnerDeclaration,
   occurrenceStart: number,
+  styledBindings: StyledComponentFactoryBindings,
 ): boolean {
   if (ts.isFunctionDeclaration(declaration)) {
     return true;
@@ -125,7 +138,10 @@ function isComponentOwnerDeclaration(
   const expression = ts.isExportAssignment(declaration)
     ? declaration.expression
     : declaration.initializer;
-  return expression !== undefined && isComponentValueExpression(expression, occurrenceStart, 0);
+  return (
+    expression !== undefined &&
+    isComponentValueExpression(expression, occurrenceStart, 0, styledBindings)
+  );
 }
 
 /** Requires both inheritance and an authored render member for class-component mounting. */
@@ -158,6 +174,7 @@ function isComponentValueExpression(
   expression: ts.Expression,
   occurrenceStart: number,
   depth: number,
+  styledBindings: StyledComponentFactoryBindings,
 ): boolean {
   if (depth >= MAX_COMPONENT_FACTORY_DEPTH) {
     return false;
@@ -176,6 +193,9 @@ function isComponentValueExpression(
   ) {
     return containsPosition(current, occurrenceStart);
   }
+  if (ts.isTaggedTemplateExpression(current)) {
+    return isStyledComponentTaggedOwner(current, occurrenceStart, depth, styledBindings);
+  }
   if (!ts.isCallExpression(current)) {
     return false;
   }
@@ -183,7 +203,94 @@ function isComponentValueExpression(
   return current.arguments.some(
     (argument) =>
       containsPosition(argument, occurrenceStart) &&
-      isComponentValueExpression(argument, occurrenceStart, depth + 1),
+      isComponentValueExpression(argument, occurrenceStart, depth + 1, styledBindings),
+  );
+}
+
+/**
+ * Recognizes the component-valued tagged-template form emitted by styled-components.
+ *
+ * A plain tagged template may contain arbitrary JSX interpolation while evaluating to metadata,
+ * CSS, or another non-React value. Promotion is therefore restricted to a call of a statically
+ * proven styled-components import whose inline component argument owns the selected occurrence.
+ * The source remains inert: neither the tag nor its template substitutions are evaluated.
+ */
+function isStyledComponentTaggedOwner(
+  expression: ts.TaggedTemplateExpression,
+  occurrenceStart: number,
+  depth: number,
+  styledBindings: StyledComponentFactoryBindings,
+): boolean {
+  const tag = unwrapExpression(expression.tag);
+  if (
+    !ts.isCallExpression(tag) ||
+    !isStyledComponentFactoryCallee(tag.expression, styledBindings)
+  ) {
+    return false;
+  }
+  return tag.arguments.some(
+    (argument) =>
+      containsPosition(argument, occurrenceStart) &&
+      isComponentValueExpression(argument, occurrenceStart, depth + 1, styledBindings),
+  );
+}
+
+/** Collects only runtime imports that can identify the styled-components component factory. */
+function collectStyledComponentFactoryBindings(
+  sourceFile: ts.SourceFile,
+): StyledComponentFactoryBindings {
+  const direct = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== 'styled-components'
+    ) {
+      continue;
+    }
+    const clause = statement.importClause;
+    if (clause === undefined || clause.phaseModifier !== undefined) {
+      continue;
+    }
+    if (clause.name !== undefined) {
+      direct.add(clause.name.text);
+    }
+    const bindings = clause.namedBindings;
+    if (bindings === undefined) {
+      continue;
+    }
+    if (ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+      continue;
+    }
+    for (const element of bindings.elements) {
+      const importedName = (element.propertyName ?? element.name).text;
+      if (!element.isTypeOnly && (importedName === 'styled' || importedName === 'default')) {
+        direct.add(element.name.text);
+      }
+    }
+  }
+  return { direct, namespaces };
+}
+
+/** Proves that one call expression invokes a collected direct or namespace styled factory. */
+function isStyledComponentFactoryCallee(
+  expression: ts.Expression,
+  bindings: StyledComponentFactoryBindings,
+): boolean {
+  const callee = unwrapExpression(expression);
+  if (ts.isIdentifier(callee)) {
+    return bindings.direct.has(callee.text);
+  }
+  if (!ts.isPropertyAccessExpression(callee)) {
+    return false;
+  }
+  const namespace = unwrapExpression(callee.expression);
+  return (
+    ts.isIdentifier(namespace) &&
+    bindings.namespaces.has(namespace.text) &&
+    (callee.name.text === 'default' || callee.name.text === 'styled')
   );
 }
 

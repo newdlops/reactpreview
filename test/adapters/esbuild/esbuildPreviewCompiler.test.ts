@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
-import { PreviewCompilationError } from '../../../src/domain/preview';
+import { PreviewCompilationError, type PreviewBundle } from '../../../src/domain/preview';
 import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
 
 const FIXTURE_PATH = fileURLToPath(new URL('../../fixtures/SamplePreview.tsx', import.meta.url));
@@ -28,6 +28,8 @@ describe('EsbuildPreviewCompiler', () => {
     });
 
     expect(bundle.javascript.byteLength).toBeGreaterThan(0);
+    expect(bundle.chunks.length).toBeGreaterThan(0);
+    expect(new TextDecoder().decode(bundle.javascript)).toContain('./chunks/');
     expect(bundle.stylesheet).toBeDefined();
     const stylesheet = new TextDecoder().decode(bundle.stylesheet);
     expect(stylesheet).toContain('.sample-card');
@@ -50,7 +52,7 @@ describe('EsbuildPreviewCompiler', () => {
       sourceText: unsavedSource,
       workspaceRoot: PROJECT_ROOT,
     });
-    const javascript = new TextDecoder().decode(bundle.javascript);
+    const javascript = decodeBundleJavascript(bundle);
 
     expect(javascript).toContain('Unsaved editor snapshot');
     expect(javascript).not.toContain('Saved fixture source');
@@ -74,7 +76,7 @@ describe('EsbuildPreviewCompiler', () => {
         workspaceRoot: PROJECT_ROOT,
       });
 
-      expect(new TextDecoder().decode(bundle.javascript)).toContain('Uppercase TSX source');
+      expect(decodeBundleJavascript(bundle)).toContain('Uppercase TSX source');
     } finally {
       await rm(temporaryDirectory, { force: true, recursive: true });
     }
@@ -118,7 +120,7 @@ describe('EsbuildPreviewCompiler', () => {
         sourceText: unsavedSource,
         workspaceRoot: PROJECT_ROOT,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
 
       expect(javascript).toContain('Unsaved circular module');
       expect(javascript).not.toContain('Saved circular module');
@@ -217,7 +219,7 @@ describe('EsbuildPreviewCompiler', () => {
         tsconfigPath,
         workspaceRoot: temporaryDirectory,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
       const stylesheet = new TextDecoder().decode(bundle.stylesheet);
 
       expect(javascript).toContain('Imported JS child');
@@ -285,7 +287,7 @@ describe('EsbuildPreviewCompiler', () => {
         sourceText,
         workspaceRoot: PROJECT_ROOT,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
 
       expect(javascript).toContain('Unsaved dependency snapshot');
       expect(javascript).not.toContain('Saved dependency source');
@@ -297,10 +299,115 @@ describe('EsbuildPreviewCompiler', () => {
     }
   });
 
-  /**
-   * Keeps default-render dependencies and side effects while pruning an unused named-export graph.
-   */
-  it('tree-shakes target exports that cannot affect default rendering', async () => {
+  /** Enables a project-owned MemoryRouter when only a reached child imports a router hook. */
+  it('adapts to a child-only React Router requirement from the bundled graph', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/child-router-preview-'),
+    );
+    const sourceDirectory = path.join(temporaryDirectory, 'src');
+    const documentPath = path.join(sourceDirectory, 'Preview.tsx');
+    const childPath = path.join(sourceDirectory, 'Child.tsx');
+    const sourceText = [
+      "import Child from './Child';",
+      'export default function Preview() { return <Child />; }',
+    ].join('\n');
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await installCompilerFakeRouterPackage(temporaryDirectory);
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          childPath,
+          [
+            "import { useLocation } from 'react-router-dom';",
+            'export default function Child() { return <p>{useLocation().pathname}</p>; }',
+          ].join('\n'),
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot: temporaryDirectory,
+      });
+      const javascript = decodeBundleJavascript(bundle);
+
+      expect(javascript).toContain('AUTOMATIC_ROUTER_BOUNDARY_ENABLED = true');
+      expect(javascript).toContain('active: graph-required MemoryRouter');
+      expect(javascript).not.toContain(
+        'not requested: no unowned target-reachable React Router consumer was detected',
+      );
+      expect(bundle.dependencies).toContain(childPath);
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  /** Uses graph provider evidence instead of setup presence when avoiding an outer router. */
+  it('keeps a setup-owned router without adding a second automatic boundary', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/setup-router-preview-'),
+    );
+    const sourceDirectory = path.join(temporaryDirectory, 'src');
+    const setupDirectory = path.join(temporaryDirectory, '.react-preview');
+    const documentPath = path.join(sourceDirectory, 'Preview.tsx');
+    const childPath = path.join(sourceDirectory, 'Child.tsx');
+    const setupPath = path.join(setupDirectory, 'setup.tsx');
+    const sourceText = [
+      "import Child from './Child';",
+      'export default function Preview() { return <Child />; }',
+    ].join('\n');
+
+    try {
+      await Promise.all([
+        mkdir(sourceDirectory, { recursive: true }),
+        mkdir(setupDirectory, { recursive: true }),
+      ]);
+      await installCompilerFakeRouterPackage(temporaryDirectory);
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          childPath,
+          "import { useLocation } from 'react-router-dom'; export default function Child() { return <p>{useLocation().pathname}</p>; }",
+          'utf8',
+        ),
+        writeFile(
+          setupPath,
+          [
+            "import { BrowserRouter } from 'react-router-dom';",
+            'export function PreviewProviders({ children }) {',
+            '  return <BrowserRouter>{children}</BrowserRouter>;',
+            '}',
+          ].join('\n'),
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot: temporaryDirectory,
+      });
+      const javascript = decodeBundleJavascript(bundle);
+
+      expect(javascript).toContain(
+        'not applied: an existing target-reachable Router provider was detected',
+      );
+      expect(javascript).toContain('AUTOMATIC_ROUTER_BOUNDARY_ENABLED = false');
+      expect(bundle.dependencies).toContain(setupPath);
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  /** Keeps component dependencies and side effects while pruning lowercase helper exports. */
+  it('tree-shakes exports that cannot become gallery components', async () => {
     const temporaryDirectory = await mkdtemp(
       path.join(PROJECT_ROOT, 'test/fixtures/minimal-graph-preview-'),
     );
@@ -334,7 +441,7 @@ describe('EsbuildPreviewCompiler', () => {
         sourceText,
         workspaceRoot: PROJECT_ROOT,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
 
       expect(javascript).toContain('RENDER_GRAPH_REQUIRED');
       expect(javascript).toContain('SIDE_EFFECT_RETAINED');
@@ -368,28 +475,21 @@ describe('EsbuildPreviewCompiler', () => {
     }
   });
 
-  /** Restores the target path when the default-only bridge reports a missing default export. */
-  it('hides target bridge namespaces in missing-export diagnostics', async () => {
+  /** Produces a valid empty gallery when a module has no component-shaped direct exports. */
+  it('bundles files without default or PascalCase component exports', async () => {
     const compiler = new EsbuildPreviewCompiler();
+    const bundle = await compiler.compile({
+      dependencySnapshots: [],
+      documentPath: FIXTURE_PATH,
+      language: 'tsx',
+      sourceText: 'export const namedOnly = 1;',
+      workspaceRoot: PROJECT_ROOT,
+    });
+    const javascript = decodeBundleJavascript(bundle);
 
-    try {
-      await compiler.compile({
-        dependencySnapshots: [],
-        documentPath: FIXTURE_PATH,
-        language: 'tsx',
-        sourceText: 'export const namedOnly = 1;',
-        workspaceRoot: PROJECT_ROOT,
-      });
-      throw new Error('Expected a preview without a default export to fail compilation.');
-    } catch (error) {
-      expect(error).toBeInstanceOf(PreviewCompilationError);
-      if (!(error instanceof PreviewCompilationError)) {
-        return;
-      }
-
-      expect(error.diagnostics[0]?.location?.file).toBe(FIXTURE_PATH);
-      expect(JSON.stringify(error.diagnostics)).not.toContain('react-preview-target-bridge:');
-    }
+    expect(javascript).toContain(
+      'This file has no direct default or PascalCase component exports to preview.',
+    );
   });
 
   /**
@@ -480,7 +580,7 @@ describe('EsbuildPreviewCompiler', () => {
         sourceText,
         workspaceRoot: temporaryDirectory,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
       const stylesheet = new TextDecoder().decode(bundle.stylesheet);
 
       expect(javascript).toContain('Dirty glob Page A');
@@ -569,7 +669,7 @@ describe('EsbuildPreviewCompiler', () => {
         sourceText,
         workspaceRoot,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
 
       expect(javascript).toContain('MJS_DYNAMIC_RESOURCE');
       expect(javascript).toContain('CJS_DYNAMIC_RESOURCE');
@@ -644,7 +744,7 @@ describe('EsbuildPreviewCompiler', () => {
       });
 
       expect(bundle.dependencies).toContain(publicImagePath);
-      expect(new TextDecoder().decode(bundle.javascript)).toContain('data:image/png');
+      expect(decodeBundleJavascript(bundle)).toContain('data:image/png');
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
@@ -803,7 +903,7 @@ describe('EsbuildPreviewCompiler', () => {
           sourceText: unsavedSource,
           workspaceRoot: PROJECT_ROOT,
         });
-        const javascript = new TextDecoder().decode(bundle.javascript);
+        const javascript = decodeBundleJavascript(bundle);
 
         expect(javascript).toContain('Unsaved symlink source');
         expect(javascript).not.toContain('Saved symlink source');
@@ -819,3 +919,33 @@ describe('EsbuildPreviewCompiler', () => {
     },
   );
 });
+
+/** Decodes the entry and every local lazy chunk when assertions inspect the complete render graph. */
+function decodeBundleJavascript(bundle: PreviewBundle): string {
+  const decoder = new TextDecoder();
+  return [bundle.javascript, ...bundle.chunks.map((chunk) => chunk.contents)]
+    .map((contents) => decoder.decode(contents))
+    .join('\n');
+}
+
+/** Installs the smallest project-local React Router surface required by adaptive compiler tests. */
+async function installCompilerFakeRouterPackage(projectRoot: string): Promise<void> {
+  const packageDirectory = path.join(projectRoot, 'node_modules/react-router-dom');
+  await mkdir(packageDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(packageDirectory, 'package.json'),
+      JSON.stringify({ exports: './index.js', name: 'react-router-dom', type: 'module' }),
+      'utf8',
+    ),
+    writeFile(
+      path.join(packageDirectory, 'index.js'),
+      [
+        'export function BrowserRouter({ children }) { return children; }',
+        'export function MemoryRouter({ children }) { return children; }',
+        "export function useLocation() { return { pathname: '/' }; }",
+      ].join('\n'),
+      'utf8',
+    ),
+  ]);
+}

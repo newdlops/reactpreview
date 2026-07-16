@@ -16,6 +16,7 @@ const REQUEST: PreviewBuildRequest = {
 };
 
 const BUNDLE: PreviewBundle = {
+  chunks: [],
   dependencies: ['/workspace/Component.tsx'],
   diagnostics: [],
   javascript: new TextEncoder().encode('export {};'),

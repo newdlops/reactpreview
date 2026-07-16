@@ -1,7 +1,7 @@
 /**
  * Executes the generated browser entry instead of inspecting bundle text only.
  * A deliberately small DOM client evaluates React elements into HTML, which keeps this test
- * dependency-free while proving bootstrap order, named-target loading, props, and providers.
+ * dependency-free while proving bootstrap order, export ordering, props, and providers.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -10,13 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/previewApolloBridgePlugin';
+import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
+import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
 import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { resolvePreviewRuntimeEnvironment } from '../../../src/adapters/esbuild/previewRuntimeEnvironment';
 import { createPreviewSetupBridgePlugin } from '../../../src/adapters/esbuild/previewSetupBridgePlugin';
 import { createPreviewTargetBridgePlugin } from '../../../src/adapters/esbuild/previewTargetBridgePlugin';
-import { selectPreviewTargetExport } from '../../../src/adapters/esbuild/previewTargetExports';
+import { selectPreviewTargetExports } from '../../../src/adapters/esbuild/previewTargetExports';
 import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
 import { installFakeApolloPackage } from './support/fakeApolloPackage';
 
@@ -91,14 +93,34 @@ function renderNode(node) {
   }
 
   const { type, props = {} } = node;
-  if (type === Symbol.for('react.fragment')) {
+  if (type === Symbol.for('react.fragment') || type === Symbol.for('react.suspense')) {
     return renderNode(props.children);
   }
   if (typeof type === 'function') {
-    const rendered = type.prototype !== undefined && typeof type.prototype.render === 'function'
-      ? new type(props).render()
-      : type(props);
-    return renderNode(rendered);
+    if (type.prototype !== undefined && typeof type.prototype.render === 'function') {
+      const instance = new type(props);
+      try {
+        return renderNode(instance.render());
+      } catch (error) {
+        if (typeof type.getDerivedStateFromError !== 'function') {
+          throw error;
+        }
+        instance.state = { ...instance.state, ...type.getDerivedStateFromError(error) };
+        if (typeof instance.componentDidCatch === 'function') {
+          instance.setState = (stateUpdate) => {
+            const nextState = typeof stateUpdate === 'function'
+              ? stateUpdate(instance.state, instance.props)
+              : stateUpdate;
+            instance.state = { ...instance.state, ...nextState };
+          };
+          instance.componentDidCatch(error, {
+            componentStack: '\n    at RuntimeFixtureComponent (src/RuntimeFixture.tsx:7:3)',
+          });
+        }
+        return renderNode(instance.render());
+      }
+    }
+    return renderNode(type(props));
   }
   if (typeof type !== 'string') {
     throw new TypeError('Unsupported React preview test element type.');
@@ -120,7 +142,7 @@ export function createRoot(mountNode) {
 describe('generated preview runtime execution', () => {
   /**
    * Creates missing namespaces before setup evaluation, awaits initialization before importing the
-   * named target, and finally applies setup props plus a function-bearing theme provider.
+   * named targets, and finally applies shared plus per-export props through one provider boundary.
    */
   it('executes globals, setup, target import, and provider rendering in order', async () => {
     const projectRoot = await mkdtemp(
@@ -141,6 +163,10 @@ describe('generated preview runtime execution', () => {
       "      {label + '|' + theme.spacing(2) + '|' + service}",
       '    </main>',
       '  );',
+      '}',
+      'export function SecondRuntimePreview({ label }) {',
+      "  window.__previewExecutionOrder.push('second-target-render');",
+      '  return <aside>{label}</aside>;',
       '}',
     ].join('\n');
 
@@ -170,17 +196,17 @@ describe('generated preview runtime execution', () => {
             '}',
             'export function createPreviewProps() {',
             "  window.__previewExecutionOrder.push('create-preview-props');",
-            "  return { label: 'props-ready' };",
+            '  return {',
+            "    label: 'props-ready',",
+            '    theme: { spacing: (factor) => factor * 8 + "px" },',
+            '  };',
             '}',
+            'export const previewPropsByExport = {',
+            "  SecondRuntimePreview: { label: 'second-ready' },",
+            '};',
             'export function PreviewProviders({ children }) {',
             "  window.__previewExecutionOrder.push('preview-provider');",
-            '  const theme = { spacing: (factor) => factor * 8 + "px" };',
-            '  const target = React.Children.only(children);',
-            '  return (',
-            '    <section data-provider="theme">',
-            '      {React.cloneElement(target, { theme })}',
-            '    </section>',
-            '  );',
+            '  return <section data-provider="theme">{children}</section>;',
             '}',
           ].join('\n'),
           'utf8',
@@ -192,7 +218,7 @@ describe('generated preview runtime execution', () => {
         useStorybookPreview: true,
         workspaceRoot: projectRoot,
       });
-      const targetExport = selectPreviewTargetExport(documentPath, sourceText);
+      const targetExports = selectPreviewTargetExports(documentPath, sourceText);
       const selectedSetupModulePath = runtimeEnvironment.setupModulePath;
       if (selectedSetupModulePath === undefined) {
         throw new Error('The conventional runtime execution setup was not discovered.');
@@ -210,12 +236,14 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
           createPreviewSetupBridgePlugin({ setupModulePath: selectedSetupModulePath }),
           createPreviewTargetBridgePlugin({
             documentPath,
-            exportName: targetExport.exportName,
+            exports: targetExports,
           }),
         ],
         stdin: {
@@ -255,7 +283,18 @@ describe('generated preview runtime execution', () => {
 
       expect(runtimeEnvironment.setupKind).toBe('custom');
       expect(runtimeEnvironment.globalNamespaces).toContain('ZUZU');
-      expect(targetExport.exportName).toBe('NamedRuntimePreview');
+      expect(targetExports).toEqual([
+        {
+          displayName: 'NamedRuntimePreview',
+          exportName: 'NamedRuntimePreview',
+          kind: 'explicit',
+        },
+        {
+          displayName: 'SecondRuntimePreview',
+          exportName: 'SecondRuntimePreview',
+          kind: 'explicit',
+        },
+      ]);
       expect(executionOrder).toEqual([
         'setup-module',
         'initialize-preview',
@@ -263,10 +302,15 @@ describe('generated preview runtime execution', () => {
         'target-module:staff-partner',
         'preview-provider',
         'target-render',
+        'second-target-render',
       ]);
       expect(mountNode.innerHTML).toBe(
-        '<section data-provider="theme"><main data-service="staff-partner">' +
-          'props-ready|16px|staff-partner</main></section>',
+        '<section data-provider="theme"><div class="react-preview-gallery">' +
+          '<div class="react-preview-export-label">NamedRuntimePreview</div>' +
+          '<main data-service="staff-partner">props-ready|16px|staff-partner</main>' +
+          '<div class="react-preview-export-label">SecondRuntimePreview</div>' +
+          '<aside>second-ready</aside>' +
+          '</div></section>',
       );
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
@@ -313,10 +357,15 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
           createPreviewSetupBridgePlugin({}),
-          createPreviewTargetBridgePlugin({ documentPath }),
+          createPreviewTargetBridgePlugin({
+            documentPath,
+            exports: selectPreviewTargetExports(documentPath, sourceText),
+          }),
         ],
         stdin: {
           contents: createPreviewEntry({
@@ -358,8 +407,100 @@ describe('generated preview runtime execution', () => {
 
       expect(fetchCalls).toBe(0);
       expect(mountNode.innerHTML).toBe(
-        '<main data-client="PROJECT_OWNED_APOLLO_MARKER">static Apollo preview</main>',
+        '<div class="react-preview-gallery">' +
+          '<div class="react-preview-export-label">ApolloRuntimePreview</div>' +
+          '<main data-client="PROJECT_OWNED_APOLLO_MARKER">static Apollo preview</main>' +
+          '</div>',
       );
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Keeps later exports visible when an earlier PascalCase export throws during rendering. */
+  it('isolates one failed export without removing the remaining gallery', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/runtime-export-boundary-preview-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const documentPath = path.join(sourceDirectory, 'ExportBoundaryPreview.tsx');
+    const sourceText = [
+      'export function BrokenPreview() {',
+      "  throw new Error('BROKEN_EXPORT_MARKER');",
+      '}',
+      'export function HealthyPreview() {',
+      '  return <p>HEALTHY_EXPORT_MARKER</p>;',
+      '}',
+    ].join('\n');
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(documentPath, sourceText, 'utf8'),
+      ]);
+      const bundle = await build({
+        absWorkingDir: projectRoot,
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        jsx: 'automatic',
+        legalComments: 'none',
+        loader: PREVIEW_SOURCE_LOADERS,
+        logLevel: 'silent',
+        platform: 'browser',
+        plugins: [
+          createTestDomClientPlugin(),
+          createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
+          createPreviewThemeBridgePlugin({ projectRoot }),
+          createPreviewSetupBridgePlugin({}),
+          createPreviewTargetBridgePlugin({
+            documentPath,
+            exports: selectPreviewTargetExports(documentPath, sourceText),
+          }),
+        ],
+        stdin: {
+          contents: createPreviewEntry({
+            documentName: 'src/ExportBoundaryPreview.tsx',
+            globalNamespaces: [],
+            setupKind: 'none',
+          }),
+          loader: 'tsx',
+          resolveDir: sourceDirectory,
+          sourcefile: '<runtime-export-boundary-entry>',
+        },
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = bundle.outputFiles[0]?.text;
+      if (javascript === undefined) {
+        throw new Error('The export boundary fixture did not emit a JavaScript bundle.');
+      }
+
+      const mountNode = createRuntimeMountNode();
+      const sandbox: Record<string, unknown> = {
+        addEventListener: (): undefined => undefined,
+        clearTimeout,
+        console,
+        document: createRuntimeDocument(mountNode),
+        queueMicrotask,
+        setTimeout,
+      };
+      sandbox.window = sandbox;
+      runInContext(javascript, createContext(sandbox), { timeout: 10_000 });
+      await waitForRenderedMarkup(mountNode);
+
+      expect(mountNode.innerHTML).toContain('BrokenPreview');
+      expect(mountNode.innerHTML).toContain('class="react-preview-export-error"');
+      expect(mountNode.innerHTML).toContain('Export: BrokenPreview');
+      expect(mountNode.innerHTML).toContain('React component stack:');
+      expect(mountNode.innerHTML).toContain('RuntimeFixtureComponent');
+      expect(mountNode.innerHTML).toContain('BROKEN_EXPORT_MARKER');
+      expect(mountNode.innerHTML).toContain('HealthyPreview');
+      expect(mountNode.innerHTML).toContain('<p>HEALTHY_EXPORT_MARKER</p>');
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
@@ -400,10 +541,15 @@ describe('generated preview runtime execution', () => {
         plugins: [
           createTestDomClientPlugin(),
           createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewFormikBridgePlugin({ projectRoot }),
           createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
           createPreviewThemeBridgePlugin({ projectRoot }),
           createPreviewSetupBridgePlugin({}),
-          createPreviewTargetBridgePlugin({ documentPath }),
+          createPreviewTargetBridgePlugin({
+            documentPath,
+            exports: selectPreviewTargetExports(documentPath, sourceText),
+          }),
         ],
         stdin: {
           contents: createPreviewEntry({
@@ -439,11 +585,110 @@ describe('generated preview runtime execution', () => {
       await waitForRenderedMarkup(mountNode);
 
       expect(mountNode.innerHTML).toContain('React Redux provider required');
+      expect(mountNode.innerHTML).toContain('Error: could not find react-redux context value');
       expect(mountNode.innerHTML).toContain('The component bundle loaded');
+      expect(mountNode.innerHTML).toContain('Phase: React export render or lifecycle');
       expect(mountNode.innerHTML).toContain('Preview setup: none');
+      expect(mountNode.innerHTML).toContain('Automatic runtime boundaries:');
+      expect(mountNode.innerHTML).toContain('Redux: unavailable: react-redux was not resolved');
+      expect(mountNode.innerHTML).toContain('React component stack:');
       expect(mountNode.innerHTML).toContain('Original error:');
       expect(mountNode.innerHTML).toContain('could not find react-redux context value');
       expect(mountNode.innerHTML).not.toContain('/node_modules/react-redux');
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /**
+   * Preserves a module-evaluation cause chain, decodes Apollo invariant metadata locally, and
+   * reports the exact bootstrap phase instead of reducing the failure to generic setup guidance.
+   */
+  it('reports target evaluation causes and decoded Apollo invariant metadata', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/runtime-target-cause-preview-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const documentPath = path.join(sourceDirectory, 'TargetCausePreview.tsx');
+    const apolloPayload = encodeURIComponent(
+      JSON.stringify({ args: [], message: 58, version: '3.13.9' }),
+    );
+    const sourceText = [
+      'export default function TargetCausePreview() { return null; }',
+      `const cause = new Error('Invariant failure https://go.apollo.dev/c/err#${apolloPayload}');`,
+      "const failure = new Error('Target module initialization failed', { cause });",
+      "failure.code = 'TARGET_MODULE_EVALUATION';",
+      'throw failure;',
+    ].join('\n');
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(documentPath, sourceText, 'utf8'),
+      ]);
+      const bundle = await build({
+        absWorkingDir: projectRoot,
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        jsx: 'automatic',
+        legalComments: 'none',
+        loader: PREVIEW_SOURCE_LOADERS,
+        logLevel: 'silent',
+        platform: 'browser',
+        plugins: [
+          createTestDomClientPlugin(),
+          createPreviewApolloBridgePlugin({ projectRoot }),
+          createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
+          createPreviewThemeBridgePlugin({ projectRoot }),
+          createPreviewSetupBridgePlugin({}),
+          createPreviewTargetBridgePlugin({
+            documentPath,
+            exports: selectPreviewTargetExports(documentPath, sourceText),
+          }),
+        ],
+        stdin: {
+          contents: createPreviewEntry({
+            documentName: 'src/TargetCausePreview.tsx',
+            globalNamespaces: [],
+            setupKind: 'none',
+          }),
+          loader: 'tsx',
+          resolveDir: sourceDirectory,
+          sourcefile: '<runtime-target-cause-entry>',
+        },
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = bundle.outputFiles[0]?.text;
+      if (javascript === undefined) {
+        throw new Error('The target cause diagnostic fixture did not emit JavaScript.');
+      }
+
+      const mountNode = createRuntimeMountNode();
+      const sandbox: Record<string, unknown> = {
+        addEventListener: (): undefined => undefined,
+        clearTimeout,
+        console,
+        document: createRuntimeDocument(mountNode),
+        queueMicrotask,
+        setTimeout,
+      };
+      sandbox.window = sandbox;
+      runInContext(javascript, createContext(sandbox), { timeout: 10_000 });
+      await waitForRenderedMarkup(mountNode);
+
+      expect(mountNode.innerHTML).toContain('Apollo Client runtime error');
+      expect(mountNode.innerHTML).toContain('Target module initialization failed');
+      expect(mountNode.innerHTML).toContain('Phase: load and evaluate target module graph');
+      expect(mountNode.innerHTML).toContain('Apollo invariant payload (decoded locally):');
+      expect(mountNode.innerHTML).toContain('Apollo Client version: 3.13.9');
+      expect(mountNode.innerHTML).toContain('Invariant message code: 58');
+      expect(mountNode.innerHTML).toContain('Cause 1:');
+      expect(mountNode.innerHTML).toContain('code: TARGET_MODULE_EVALUATION');
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }

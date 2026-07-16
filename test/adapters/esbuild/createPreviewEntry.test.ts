@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
 
 describe('createPreviewEntry', () => {
-  /** Uses project React and loads setup before the selected module's tree-shaken export. */
-  it('creates a browser entry for the selected component', () => {
+  /** Uses project React and loads setup before the source-ordered component gallery. */
+  it('creates a browser entry for sequential component exports', () => {
     const entry = createPreviewEntry({
       documentName: 'src/Preview.tsx',
       globalNamespaces: ['ZUZU'],
@@ -17,7 +17,9 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain("import { createRoot } from 'react-dom/client'");
     expect(entry).toContain('await import("react-preview:setup")');
     expect(entry).toContain('await import("react-preview:apollo")');
+    expect(entry).toContain('await import("react-preview:formik")');
     expect(entry).toContain('await import("react-preview:redux")');
+    expect(entry).toContain('await import("react-preview:router")');
     expect(entry).toContain('await import("react-preview:theme")');
     expect(entry).toContain('import("react-preview:target")');
     expect(entry.indexOf('await import("react-preview:setup")')).toBeLessThan(
@@ -37,13 +39,41 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('React Redux provider required');
     expect(entry).toContain('Project runtime setup required');
     expect(entry).toContain('MAX_RUNTIME_ERROR_DETAILS = 12000');
+    expect(entry).toContain('Failure context:');
+    expect(entry).toContain('Automatic runtime boundaries:');
+    expect(entry).toContain('React component stack:');
+    expect(entry).toContain('componentDidCatch(error, errorInfo)');
+    expect(entry).toContain('onUncaughtError(error, errorInfo)');
+    expect(entry).toContain('onCaughtError(error)');
+    expect(entry).toContain('onRecoverableError(error, errorInfo)');
+    expect(entry).toContain("enterRuntimePhase('load and evaluate target module graph')");
+    expect(entry).toContain('Apollo invariant payload (decoded locally):');
     expect(entry).toContain('apolloBridge.createApolloPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'apolloPreview')");
+    expect(entry).toContain('formikBridge.createFormikPreviewElement');
+    expect(entry).toContain("readSetupMember(setupModule, 'formikPreview')");
     expect(entry).toContain('themeBridge.createThemePreviewElement');
+    expect(entry).toContain('await themeBridge.resolvePreviewTheme');
     expect(entry).toContain("readSetupMember(setupModule, 'themePreview')");
+    expect(entry).toContain('discoveredTheme: previewModule.previewTheme');
     expect(entry).toContain('reduxBridge.createReduxPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'reduxPreview')");
-    expect(entry).toContain("window.addEventListener('unhandledrejection'");
+    expect(entry).toContain('routerBridge.createRouterPreviewElement');
+    expect(entry).toContain("readSetupMember(setupModule, 'routerPreview')");
+    expect(entry).toContain('PreviewExportGallery');
+    expect(entry).toContain('PreviewExportErrorBoundary');
+    expect(entry).toContain('React.createElement(React.Suspense, { fallback: null }, rendered)');
+    expect(entry).toContain("readSetupMember(setupModule, 'previewPropsByExport')");
+    expect(entry).toContain('{ ...safeAutomaticProps, ...sharedProps, ...configuredProps }');
+    expect(entry).toContain('descriptor.automaticProps');
+    expect(entry).toContain('descriptor.parentSlice');
+    expect(entry).toContain('Parent render slice: ');
+    expect(entry).toContain('react-preview-export-label');
+    expect(entry).toContain('Export: ');
+    expect(entry).toContain("replacePreviewRuntimeListener('unhandledrejection'");
+    expect(entry).toContain('await import(message.scriptUri)');
+    expect(entry).toContain('await bootstrapPromise');
+    expect(entry).toContain('previewHotRuntime.bootstrapPromise = previewBootstrapPromise');
   });
 
   /** Keeps filesystem paths out of the runtime entry behind the private target bridge. */

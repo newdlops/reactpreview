@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
+import type { PreviewBundle } from '../../../src/domain/preview';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -30,17 +31,14 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
         workspaceRoot: projectRoot,
       });
 
-      expect(new TextDecoder().decode(bundle.javascript)).toContain('COMMONJS_TARGET_MARKER');
+      expect(decodeBundleJavascript(bundle)).toContain('COMMONJS_TARGET_MARKER');
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
   });
 
-  /**
-   * Selects a filename-matched named component and applies the conventional setup hooks while
-   * retaining only the selected target export graph.
-   */
-  it('bundles named targets with project initialize, props, and provider hooks', async () => {
+  /** Bundles every named component with the conventional initialize, props, and provider hooks. */
+  it('bundles named export galleries with project runtime hooks', async () => {
     const projectRoot = await createTemporaryProject('custom-runtime-preview-');
     const sourceDirectory = path.join(projectRoot, 'src');
     const setupDirectory = path.join(projectRoot, '.react-preview');
@@ -48,7 +46,7 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
     const publicIndexPath = path.join(projectRoot, 'public', 'index.html');
     const setupModulePath = path.join(setupDirectory, 'setup.tsx');
     const sourceText = [
-      'export const UnusedPreview = () => <p>UNUSED_TARGET_MARKER</p>;',
+      'export const FirstPreview = () => <p>FIRST_TARGET_MARKER</p>;',
       'export const NamedPreview = ({ label = "missing" }) => <main>{label}</main>;',
     ].join('\n');
     const dirtySetupSourceText = [
@@ -93,14 +91,14 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
         sourceText,
         workspaceRoot: projectRoot,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
 
       expect(javascript).toContain('SETUP_PROPS_MARKER');
       expect(javascript).not.toContain('DISK_SETUP_PROPS_MARKER');
       expect(javascript).toContain('SETUP_PROVIDER_MARKER');
       expect(javascript).toContain('PROJECT_SETUP_MARKER');
       expect(javascript).toContain('PROJECT_CONFIG');
-      expect(javascript).not.toContain('UNUSED_TARGET_MARKER');
+      expect(javascript).toContain('FIRST_TARGET_MARKER');
       expect(bundle.dependencies).toEqual(
         expect.arrayContaining([documentPath, publicIndexPath, setupModulePath]),
       );
@@ -148,7 +146,7 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
         sourceText,
         workspaceRoot: projectRoot,
       });
-      const javascript = new TextDecoder().decode(bundle.javascript);
+      const javascript = decodeBundleJavascript(bundle);
 
       expect(javascript).toContain('STORYBOOK_DECORATOR_MARKER');
       expect(javascript).toContain('STORY_GLOBAL');
@@ -197,7 +195,7 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
         workspaceRoot: projectRoot,
       });
 
-      expect(new TextDecoder().decode(bundle.javascript)).toContain('FALLBACK_TARGET_MARKER');
+      expect(decodeBundleJavascript(bundle)).toContain('FALLBACK_TARGET_MARKER');
       expect(bundle.dependencies).toContain(storybookPreviewPath);
       expect(bundle.dependencies).toContain(storybookProviderPath);
       expect(bundle.watchDirectories).toContain(providerDirectory);
@@ -211,6 +209,14 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
     }
   });
 });
+
+/** Decodes the entry and lazy chunks when an assertion targets the complete runtime graph. */
+function decodeBundleJavascript(bundle: PreviewBundle): string {
+  const decoder = new TextDecoder();
+  return [bundle.javascript, ...bundle.chunks.map((chunk) => chunk.contents)]
+    .map((contents) => decoder.decode(contents))
+    .join('\n');
+}
 
 /** Creates an isolated nearest-package boundary beneath the repository's installed React modules. */
 async function createTemporaryProject(prefix: string): Promise<string> {

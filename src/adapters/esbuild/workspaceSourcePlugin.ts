@@ -5,15 +5,10 @@
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import type { OnLoadArgs, OnLoadResult, Plugin } from 'esbuild';
 import type { PreviewSourceSnapshot } from '../../domain/preview';
 import { getPreviewSourceLanguage } from '../../domain/previewTarget';
 import { canonicalizeExistingPath, normalizeLexicalPath } from '../../shared/pathIdentity';
-import {
-  isFileBackedPreviewNamespace,
-  PREVIEW_RESOLVE_GUARD,
-  PREVIEW_SNAPSHOT_NAMESPACE,
-} from './previewPluginProtocol';
 import {
   PreviewSourceTransformError,
   type PreviewSourceTransformer,
@@ -27,6 +22,8 @@ export interface WorkspaceSourcePluginOptions {
   readonly snapshots: readonly PreviewSourceSnapshot[];
   /** Per-build bounded transformer for framework resource syntax. */
   readonly transformer: PreviewSourceTransformer;
+  /** Trusted workspace whose application sources may receive preview-only transformations. */
+  readonly workspaceRoot: string;
 }
 
 /**
@@ -36,6 +33,8 @@ export interface WorkspaceSourcePluginOptions {
  * @returns Stateless resolver with immutable snapshot maps and explicit project-source loading.
  */
 export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOptions): Plugin {
+  const lexicalWorkspaceRoot = normalizeLexicalPath(options.workspaceRoot);
+  const canonicalWorkspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const snapshotByCanonicalPath = new Map<string, PreviewSourceSnapshot>();
   const snapshotByLexicalPath = new Map<string, PreviewSourceSnapshot>();
   for (const snapshot of options.snapshots) {
@@ -51,61 +50,6 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
     name: 'react-preview-workspace-source',
     setup(build): void {
       /**
-       * Delegates normal resolution, then maps a reached dirty document to its private namespace.
-       *
-       * @param arguments_ Module-resolution request emitted by esbuild.
-       * @returns Normal resolution result or a snapshot identity for current editor text.
-       */
-      async function resolveWorkspaceSource(
-        arguments_: OnResolveArgs,
-      ): Promise<OnResolveResult | undefined> {
-        if ((arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD) {
-          return undefined;
-        }
-
-        const fromVirtualModule = isFileBackedPreviewNamespace(arguments_.namespace);
-        const virtualImporter = fromVirtualModule
-          ? canonicalizeExistingPath(arguments_.importer)
-          : arguments_.importer;
-        const resolved = await build.resolve(arguments_.path, {
-          importer: virtualImporter,
-          kind: arguments_.kind,
-          namespace: fromVirtualModule ? 'file' : arguments_.namespace,
-          pluginData: PREVIEW_RESOLVE_GUARD,
-          resolveDir: fromVirtualModule ? path.dirname(virtualImporter) : arguments_.resolveDir,
-          with: arguments_.with,
-        });
-
-        if (resolved.errors.length > 0) {
-          return { errors: resolved.errors, warnings: resolved.warnings };
-        }
-
-        const snapshot =
-          !resolved.external && resolved.namespace === 'file'
-            ? snapshotByCanonicalPath.get(canonicalizeExistingPath(resolved.path))
-            : undefined;
-        if (snapshot !== undefined) {
-          return {
-            namespace: PREVIEW_SNAPSHOT_NAMESPACE,
-            path: snapshot.documentPath,
-            sideEffects: resolved.sideEffects,
-            suffix: resolved.suffix,
-            warnings: resolved.warnings,
-          };
-        }
-
-        return {
-          external: resolved.external,
-          namespace: resolved.namespace,
-          path: resolved.path,
-          pluginData: resolved.pluginData as unknown,
-          sideEffects: resolved.sideEffects,
-          suffix: resolved.suffix,
-          warnings: resolved.warnings,
-        };
-      }
-
-      /**
        * Loads project source from the editor or disk and exposes explicit imports after transformation.
        *
        * @param arguments_ File or snapshot load request emitted by esbuild.
@@ -114,9 +58,22 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
       async function loadWorkspaceSource(
         arguments_: OnLoadArgs,
       ): Promise<OnLoadResult | undefined> {
-        const snapshot =
-          snapshotByLexicalPath.get(normalizeLexicalPath(arguments_.path)) ??
-          snapshotByCanonicalPath.get(canonicalizeExistingPath(arguments_.path));
+        const lexicalSourcePath = normalizeLexicalPath(arguments_.path);
+        let snapshot = snapshotByLexicalPath.get(lexicalSourcePath);
+        if (
+          snapshot === undefined &&
+          !isTransformableWorkspaceSource(lexicalWorkspaceRoot, lexicalSourcePath)
+        ) {
+          return undefined;
+        }
+        const canonicalSourcePath = canonicalizeExistingPath(arguments_.path);
+        snapshot ??= snapshotByCanonicalPath.get(canonicalSourcePath);
+        if (
+          snapshot === undefined &&
+          !isTransformableWorkspaceSource(canonicalWorkspaceRoot, canonicalSourcePath)
+        ) {
+          return undefined;
+        }
         const language = snapshot?.language ?? getPreviewSourceLanguage(arguments_.path);
         if (language === undefined) {
           return undefined;
@@ -124,7 +81,6 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
 
         try {
           const sourceText = snapshot?.sourceText ?? (await readFile(arguments_.path, 'utf8'));
-          const canonicalSourcePath = canonicalizeExistingPath(arguments_.path);
           const transformed = await options.transformer.transform(canonicalSourcePath, sourceText);
           return {
             contents: transformed.contents,
@@ -147,12 +103,20 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         }
       }
 
-      build.onResolve({ filter: /.*/ }, resolveWorkspaceSource);
-      build.onLoad(
-        { filter: PROJECT_SOURCE_FILTER, namespace: PREVIEW_SNAPSHOT_NAMESPACE },
-        loadWorkspaceSource,
-      );
       build.onLoad({ filter: PROJECT_SOURCE_FILTER, namespace: 'file' }, loadWorkspaceSource);
     },
   };
+}
+
+/**
+ * Keeps expensive AST compatibility transforms on application source instead of dependency code.
+ * Esbuild already parses package JavaScript efficiently; walking every file below `node_modules`
+ * through several TypeScript syntax analyzers dominated large-repository preview latency.
+ */
+function isTransformableWorkspaceSource(workspaceRoot: string, sourcePath: string): boolean {
+  const relativePath = path.relative(workspaceRoot, sourcePath);
+  if (relativePath.length === 0 || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return relativePath.length === 0;
+  }
+  return !relativePath.split(path.sep).includes('node_modules');
 }

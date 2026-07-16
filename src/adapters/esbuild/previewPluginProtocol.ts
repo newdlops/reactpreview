@@ -13,8 +13,17 @@ export const PREVIEW_ASSET_NAMESPACE = 'react-preview-asset';
 /** Namespace used for bounded binary assets emitted through esbuild's data-URL loader. */
 export const PREVIEW_DATA_URL_NAMESPACE = 'react-preview-data-url';
 
-/** Namespace used by the default-only target bridge consumed by the runtime entry. */
+/** Namespace used by the source-ordered target gallery bridge consumed by the runtime entry. */
 export const PREVIEW_TARGET_BRIDGE_NAMESPACE = 'react-preview-target-bridge';
+
+/** Namespace used by the opt-in Inspector descriptor that imports one real ancestor root. */
+export const PREVIEW_INSPECTOR_ROOT_NAMESPACE = 'react-preview-inspector-root';
+
+/** Namespace used by the facade that instruments selected exports of the original target. */
+export const PREVIEW_INSPECTOR_TARGET_NAMESPACE = 'react-preview-inspector-target';
+
+/** Namespace used by the small browser runtime imported only from Inspector target facades. */
+export const PREVIEW_INSPECTOR_RUNTIME_NAMESPACE = 'react-preview-page-inspector-runtime';
 
 /** Stable virtual import specifier emitted by the runtime entry for the target bridge. */
 export const PREVIEW_TARGET_SPECIFIER = 'react-preview:target';
@@ -37,11 +46,29 @@ export const PREVIEW_REDUX_BRIDGE_NAMESPACE = 'react-preview-redux-bridge';
 /** Stable virtual import specifier used to load the inert static Redux boundary. */
 export const PREVIEW_REDUX_SPECIFIER = 'react-preview:redux';
 
+/** Namespace used by the optional, project-owned Formik runtime bridge. */
+export const PREVIEW_FORMIK_BRIDGE_NAMESPACE = 'react-preview-formik-bridge';
+
+/** Stable virtual import specifier used to load the inert static Formik boundary. */
+export const PREVIEW_FORMIK_SPECIFIER = 'react-preview:formik';
+
 /** Namespace used by the optional, project-owned styled-components theme bridge. */
 export const PREVIEW_THEME_BRIDGE_NAMESPACE = 'react-preview-theme-bridge';
 
 /** Stable virtual import specifier used to load the structural fallback theme boundary. */
 export const PREVIEW_THEME_SPECIFIER = 'react-preview:theme';
+
+/** Namespace used to canonicalize a reached theme request without evaluating the theme module. */
+export const PREVIEW_THEME_CANDIDATE_NAMESPACE = 'react-preview-theme-candidate';
+
+/** Prefix for generated imports whose payload carries one syntax-level theme request. */
+export const PREVIEW_THEME_CANDIDATE_SPECIFIER_PREFIX = 'react-preview:theme-candidate/';
+
+/** Namespace used by the optional, project-owned React Router runtime bridge. */
+export const PREVIEW_ROUTER_BRIDGE_NAMESPACE = 'react-preview-router-bridge';
+
+/** Stable virtual import specifier used to load the static in-memory router boundary. */
+export const PREVIEW_ROUTER_SPECIFIER = 'react-preview:router';
 
 /** Shared metadata marker that prevents nested `build.resolve()` calls from recursing. */
 export const PREVIEW_RESOLVE_GUARD = Symbol('react-preview-resolve-guard');
@@ -60,7 +87,10 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_SNAPSHOT_NAMESPACE ||
     namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_REDUX_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_FORMIK_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_ROUTER_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_THEME_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_THEME_CANDIDATE_NAMESPACE ||
     namespace === PREVIEW_SETUP_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_TARGET_BRIDGE_NAMESPACE
   );

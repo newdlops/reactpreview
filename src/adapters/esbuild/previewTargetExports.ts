@@ -1,71 +1,108 @@
 /**
- * Selects the one runtime export rendered by a React preview without evaluating workspace code.
- * TypeScript's TSX-aware parser distinguishes value declarations from erased types, allowing the
- * target bridge to preserve default-only tree shaking even when a component uses a named export.
+ * Inventories previewable runtime exports and an optional imported styled-components theme.
+ * TypeScript's TSX-aware parser lets the compiler use the current editor snapshot without
+ * evaluating workspace modules, while one statement-order pass preserves the author's export
+ * order for the sequential component gallery.
  */
 import path from 'node:path';
 import ts from 'typescript';
 import { PreviewCompilationError, type PreviewDiagnostic } from '../../domain/preview';
 
-/** Immutable export choice consumed by the virtual target bridge. */
-export interface PreviewTargetExportSelection {
-  /** Runtime export name that the bridge must expose as its own default export. */
+/** One statically named runtime export that the target bridge can import directly. */
+export interface PreviewExplicitTargetExportSlot {
+  /** Discriminator used by the bridge when generating a direct import. */
+  readonly kind: 'explicit';
+  /** Name visible on the selected module's runtime namespace. */
   readonly exportName: string;
+  /** Human-readable component label shown above this gallery entry. */
+  readonly displayName: string;
 }
 
-/** Runtime named export together with the source node used for actionable diagnostics. */
-interface RuntimeNamedExport {
-  /** Identifier visible to modules importing the selected source file. */
-  readonly name: string;
-  /** Exporting syntax whose start position belongs to the selected source file. */
-  readonly node: ts.Node;
+/** Position occupied by a bare `export *` whose names are unavailable in the active-file AST. */
+export interface PreviewWildcardTargetExportSlot {
+  /** Discriminator instructing the bridge to discover eligible namespace values at runtime. */
+  readonly kind: 'wildcard';
 }
 
-/** Complete non-evaluating inventory needed by the deterministic selection policy. */
-interface RuntimeExportInventory {
-  /** First syntax node that supplies a runtime default export, when present. */
-  readonly defaultExportNode?: ts.Node;
-  /** Runtime named exports in stable source order with duplicate names removed. */
-  readonly namedExports: readonly RuntimeNamedExport[];
+/** Ordered export syntax consumed by the plural target bridge. */
+export type PreviewTargetExportSlot =
+  PreviewExplicitTargetExportSlot | PreviewWildcardTargetExportSlot;
+
+/** Exact theme export that can be imported without loading an application bootstrap module. */
+export interface PreviewThemeImportSelection {
+  /** Default or named export selected from the theme module. */
+  readonly exportName: 'default' | 'theme';
+  /** Unmodified module specifier already resolved successfully by the target source. */
+  readonly moduleSpecifier: string;
 }
+
+/** Callback used by statement collectors to append one eligible explicit export exactly once. */
+type AddExplicitExport = (exportName: string, displayName?: string) => void;
 
 /**
- * Chooses a default or unambiguous PascalCase named export for the selected preview document.
- * The caller supplies the current editor text, so unsaved export changes participate immediately.
- * Selection order is deliberately narrow: runtime default, filename-derived exact name, then the
- * only PascalCase named runtime export. Arbitrary first-export selection is never performed.
+ * Selects every statically identifiable component-shaped runtime export in source order.
+ * Runtime defaults are always retained because default exports have no naming convention. Named
+ * values must use PascalCase; erased declarations, ambient values, and lowercase helpers are
+ * excluded. Bare value `export *` declarations remain positional wildcard slots for the bridge.
  *
  * @param documentPath Absolute selected-document path used for grammar and diagnostics.
  * @param sourceText Current editor source, which may be newer than the filesystem copy.
- * @returns Export name that the target bridge should re-export as `default`.
- * @throws PreviewCompilationError when syntax is invalid or no deterministic component exists.
+ * @returns Readonly gallery slots in top-level statement and export-clause order.
+ * @throws PreviewCompilationError only when the current editor source is syntactically invalid.
  */
-export function selectPreviewTargetExport(
+export function selectPreviewTargetExports(
   documentPath: string,
   sourceText: string,
-): PreviewTargetExportSelection {
+): readonly PreviewTargetExportSlot[] {
   const sourceFile = createSourceFile(documentPath, sourceText);
   assertSyntacticallyValid(sourceFile, documentPath);
-  const inventory = collectRuntimeExports(sourceFile);
-  if (inventory.defaultExportNode !== undefined) {
-    return { exportName: 'default' };
+  const runtimeBindings = collectRuntimeBindings(sourceFile);
+  const slots: PreviewTargetExportSlot[] = [];
+  const seenExportNames = new Set<string>();
+
+  /** Adds one default or PascalCase named export while preserving its first syntax position. */
+  const addExplicitExport: AddExplicitExport = (exportName, displayName = exportName): void => {
+    if (
+      seenExportNames.has(exportName) ||
+      (exportName !== 'default' && !isPascalCaseIdentifier(exportName))
+    ) {
+      return;
+    }
+    seenExportNames.add(exportName);
+    slots.push({ displayName, exportName, kind: 'explicit' });
+  };
+
+  for (const statement of sourceFile.statements) {
+    collectStatementExportSlots(statement, runtimeBindings, slots, addExplicitExport);
+  }
+  return slots;
+}
+
+/**
+ * Finds one unambiguous theme already imported by a file that uses styled-components at runtime.
+ * The conservative contract recognizes `import { theme }` by its imported export name, including
+ * aliases, and `import theme` by its local name. It deliberately returns no choice when zero or
+ * several candidates exist instead of guessing which object is the active styled theme.
+ *
+ * @param sourceText Current TSX-compatible editor source inspected without module resolution.
+ * @returns Exact theme export and module specifier, or `undefined` when selection is unsafe.
+ */
+export function selectPreviewThemeImport(
+  sourceText: string,
+): PreviewThemeImportSelection | undefined {
+  const sourceFile = createSourceFile('react-preview-theme-import.tsx', sourceText);
+  if (!hasStyledComponentsValueImport(sourceFile)) {
+    return undefined;
   }
 
-  const pascalCaseExports = inventory.namedExports.filter((candidate) =>
-    isPascalCaseIdentifier(candidate.name),
-  );
-  const filenameExportName = createPascalCaseBasename(documentPath);
-  const filenameMatch = pascalCaseExports.find(
-    (candidate) => candidate.name === filenameExportName,
-  );
-  if (filenameMatch !== undefined) {
-    return { exportName: filenameMatch.name };
+  const candidates: PreviewThemeImportSelection[] = [];
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
+      continue;
+    }
+    collectThemeImportCandidates(statement, candidates);
   }
-  if (pascalCaseExports.length === 1) {
-    return { exportName: pascalCaseExports[0]?.name ?? 'default' };
-  }
-
-  throw createSelectionError(documentPath, sourceFile, inventory, pascalCaseExports);
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 /** Creates one TSX-aware source file without resolving modules or executing configuration. */
@@ -95,9 +132,7 @@ function getScriptKind(documentPath: string): ts.ScriptKind {
   return ts.ScriptKind.JSX;
 }
 
-/**
- * Rejects TypeScript parser recovery before an incomplete AST can produce a misleading export error.
- */
+/** Rejects parser recovery before an incomplete AST can produce misleading gallery slots. */
 function assertSyntacticallyValid(sourceFile: ts.SourceFile, documentPath: string): void {
   const diagnostics = (
     sourceFile as ts.SourceFile & {
@@ -126,30 +161,110 @@ function assertSyntacticallyValid(sourceFile: ts.SourceFile, documentPath: strin
   );
 }
 
-/** Inventories top-level ESM runtime exports while excluding erased and ambient declarations. */
-function collectRuntimeExports(sourceFile: ts.SourceFile): RuntimeExportInventory {
-  const runtimeBindings = collectRuntimeBindings(sourceFile);
-  const namedExports: RuntimeNamedExport[] = [];
-  const seenNames = new Set<string>();
-  let defaultExportNode: ts.Node | undefined;
-
-  /** Records one named runtime export once while preserving source order. */
-  function addNamedExport(name: string, node: ts.Node): void {
-    if (seenNames.has(name)) {
-      return;
-    }
-    seenNames.add(name);
-    namedExports.push({ name, node });
+/**
+ * Adds every eligible export contributed by one statement without reordering clause elements.
+ *
+ * @param statement Top-level syntax currently occupying the next source-order position.
+ * @param runtimeBindings Local value names used to reject erased local export clauses.
+ * @param slots Mutable result owned by the public selector.
+ * @param addExplicitExport Deduplicating explicit-slot collector.
+ */
+function collectStatementExportSlots(
+  statement: ts.Statement,
+  runtimeBindings: ReadonlySet<string>,
+  slots: PreviewTargetExportSlot[],
+  addExplicitExport: AddExplicitExport,
+): void {
+  if (ts.isExportAssignment(statement)) {
+    addExplicitExport('default', readExpressionDisplayName(statement.expression));
+    return;
   }
 
-  for (const statement of sourceFile.statements) {
-    if (isRuntimeDefaultExport(statement, runtimeBindings)) {
-      defaultExportNode ??= statement;
-    }
-    collectDirectNamedExports(statement, runtimeBindings, addNamedExport);
+  const commonJsExpression = readCommonJsDefaultExpression(statement);
+  if (commonJsExpression !== undefined) {
+    addExplicitExport('default', readExpressionDisplayName(commonJsExpression));
+    return;
   }
 
-  return defaultExportNode === undefined ? { namedExports } : { defaultExportNode, namedExports };
+  if (ts.isExportDeclaration(statement)) {
+    collectExportDeclarationSlots(statement, runtimeBindings, slots, addExplicitExport);
+    return;
+  }
+
+  if (hasDeclareModifier(statement) || !hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+    return;
+  }
+
+  if (
+    ts.isFunctionDeclaration(statement) ||
+    ts.isClassDeclaration(statement) ||
+    ts.isEnumDeclaration(statement)
+  ) {
+    if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+      addExplicitExport('default', statement.name?.text ?? 'default');
+    } else if (statement.name !== undefined) {
+      addExplicitExport(statement.name.text);
+    }
+    return;
+  }
+
+  if (ts.isModuleDeclaration(statement) && ts.isIdentifier(statement.name)) {
+    addExplicitExport(statement.name.text);
+    return;
+  }
+
+  if (ts.isVariableStatement(statement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      const names: string[] = [];
+      collectBindingNames(declaration.name, names);
+      for (const name of names) {
+        addExplicitExport(name);
+      }
+    }
+    return;
+  }
+
+  if (ts.isImportEqualsDeclaration(statement) && !statement.isTypeOnly) {
+    addExplicitExport(statement.name.text);
+  }
+}
+
+/** Adds an explicit clause in element order or records one unresolved bare star position. */
+function collectExportDeclarationSlots(
+  statement: ts.ExportDeclaration,
+  runtimeBindings: ReadonlySet<string>,
+  slots: PreviewTargetExportSlot[],
+  addExplicitExport: AddExplicitExport,
+): void {
+  if (statement.isTypeOnly) {
+    return;
+  }
+  const clause = statement.exportClause;
+  if (clause === undefined) {
+    slots.push({ kind: 'wildcard' });
+    return;
+  }
+  if (ts.isNamespaceExport(clause)) {
+    if (ts.isIdentifier(clause.name)) {
+      addExplicitExport(clause.name.text);
+    }
+    return;
+  }
+
+  for (const element of clause.elements) {
+    if (element.isTypeOnly || !ts.isIdentifier(element.name)) {
+      continue;
+    }
+    const localName = element.propertyName ?? element.name;
+    if (statement.moduleSpecifier === undefined && !runtimeBindings.has(localName.text)) {
+      continue;
+    }
+    if (element.name.text === 'default') {
+      addExplicitExport('default', localName.text);
+    } else {
+      addExplicitExport(element.name.text);
+    }
+  }
 }
 
 /** Collects top-level value bindings that a local export clause can reference at runtime. */
@@ -188,10 +303,14 @@ function collectRuntimeBindings(sourceFile: ts.SourceFile): ReadonlySet<string> 
   return bindings;
 }
 
-/** Recursively extracts identifiers from object and array variable binding patterns. */
-function collectBindingNames(bindingName: ts.BindingName, bindings: Set<string>): void {
+/** Recursively extracts identifiers from object and array binding patterns in lexical order. */
+function collectBindingNames(bindingName: ts.BindingName, bindings: Set<string> | string[]): void {
   if (ts.isIdentifier(bindingName)) {
-    bindings.add(bindingName.text);
+    if (Array.isArray(bindings)) {
+      bindings.push(bindingName.text);
+    } else {
+      bindings.add(bindingName.text);
+    }
     return;
   }
   for (const element of bindingName.elements) {
@@ -201,10 +320,10 @@ function collectBindingNames(bindingName: ts.BindingName, bindings: Set<string>)
   }
 }
 
-/** Adds non-type-only ES import bindings that may later be exported from the target module. */
+/** Adds non-type-only ES import bindings that may later appear in a local export clause. */
 function collectImportBindings(statement: ts.ImportDeclaration, bindings: Set<string>): void {
   const clause = statement.importClause;
-  if (clause === undefined || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) {
+  if (clause === undefined || isTypeOnlyImportClause(clause)) {
     return;
   }
   if (clause.name !== undefined) {
@@ -225,146 +344,46 @@ function collectImportBindings(statement: ts.ImportDeclaration, bindings: Set<st
   }
 }
 
-/** Reports whether one top-level statement supplies a non-erased ESM default export. */
-function isRuntimeDefaultExport(
-  statement: ts.Statement,
-  runtimeBindings: ReadonlySet<string>,
-): boolean {
-  if (ts.isExportAssignment(statement)) {
-    return true;
-  }
-  if (isCommonJsDefaultAssignment(statement)) {
-    return true;
-  }
-  if (
-    (ts.isFunctionDeclaration(statement) ||
-      ts.isClassDeclaration(statement) ||
-      ts.isEnumDeclaration(statement)) &&
-    !hasDeclareModifier(statement)
-  ) {
-    return (
-      hasModifier(statement, ts.SyntaxKind.ExportKeyword) &&
-      hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
-    );
-  }
-  if (!ts.isExportDeclaration(statement) || statement.exportClause === undefined) {
-    return false;
-  }
-  if (statement.isTypeOnly || !ts.isNamedExports(statement.exportClause)) {
-    return false;
-  }
-  return statement.exportClause.elements.some((element) => {
-    if (element.isTypeOnly || element.name.text !== 'default') {
-      return false;
-    }
-    return (
-      statement.moduleSpecifier !== undefined ||
-      runtimeBindings.has((element.propertyName ?? element.name).text)
-    );
-  });
-}
-
-/** Recognizes the conventional top-level `module.exports = value` CommonJS default boundary. */
-function isCommonJsDefaultAssignment(statement: ts.Statement): boolean {
+/** Returns the right-hand side of conventional `module.exports = value` syntax when present. */
+function readCommonJsDefaultExpression(statement: ts.Statement): ts.Expression | undefined {
   if (!ts.isExpressionStatement(statement) || !ts.isBinaryExpression(statement.expression)) {
-    return false;
+    return undefined;
   }
-
   const assignment = statement.expression;
   if (assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
-    return false;
+    return undefined;
   }
   const target = assignment.left;
   if (ts.isPropertyAccessExpression(target)) {
-    return (
-      ts.isIdentifier(target.expression) &&
+    return ts.isIdentifier(target.expression) &&
       target.expression.text === 'module' &&
       target.name.text === 'exports'
-    );
+      ? assignment.right
+      : undefined;
   }
   if (!ts.isElementAccessExpression(target) || !ts.isIdentifier(target.expression)) {
-    return false;
+    return undefined;
   }
-
   const propertyName = target.argumentExpression;
-  return (
-    target.expression.text === 'module' &&
+  return target.expression.text === 'module' &&
     ts.isStringLiteralLike(propertyName) &&
     propertyName.text === 'exports'
-  );
+    ? assignment.right
+    : undefined;
 }
 
-/**
- * Adds named value exports from declarations, clauses, and namespace re-exports.
- *
- * @param statement Top-level syntax being classified.
- * @param runtimeBindings Local value bindings used to reject `export { SomeType }`.
- * @param addNamedExport Stable collector owned by the inventory function.
- */
-function collectDirectNamedExports(
-  statement: ts.Statement,
-  runtimeBindings: ReadonlySet<string>,
-  addNamedExport: (name: string, node: ts.Node) => void,
-): void {
-  if (hasDeclareModifier(statement) || !hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
-    if (ts.isExportDeclaration(statement)) {
-      collectExportClauseNames(statement, runtimeBindings, addNamedExport);
-    }
-    return;
+/** Derives a useful default-export label from a named expression without guessing through calls. */
+function readExpressionDisplayName(expression: ts.Expression): string {
+  if (ts.isIdentifier(expression)) {
+    return expression.text;
   }
-
   if (
-    (ts.isFunctionDeclaration(statement) ||
-      ts.isClassDeclaration(statement) ||
-      ts.isEnumDeclaration(statement) ||
-      ts.isModuleDeclaration(statement)) &&
-    !hasModifier(statement, ts.SyntaxKind.DefaultKeyword) &&
-    statement.name !== undefined &&
-    ts.isIdentifier(statement.name)
+    (ts.isFunctionExpression(expression) || ts.isClassExpression(expression)) &&
+    expression.name !== undefined
   ) {
-    addNamedExport(statement.name.text, statement.name);
-    return;
+    return expression.name.text;
   }
-  if (ts.isVariableStatement(statement)) {
-    for (const declaration of statement.declarationList.declarations) {
-      const names = new Set<string>();
-      collectBindingNames(declaration.name, names);
-      for (const name of names) {
-        addNamedExport(name, declaration.name);
-      }
-    }
-    return;
-  }
-  if (ts.isImportEqualsDeclaration(statement) && !statement.isTypeOnly) {
-    addNamedExport(statement.name.text, statement.name);
-  }
-}
-
-/** Adds runtime names exposed by `export { ... }` and `export * as Name from ...` clauses. */
-function collectExportClauseNames(
-  statement: ts.ExportDeclaration,
-  runtimeBindings: ReadonlySet<string>,
-  addNamedExport: (name: string, node: ts.Node) => void,
-): void {
-  const clause = statement.exportClause;
-  if (statement.isTypeOnly || clause === undefined) {
-    return;
-  }
-  if (ts.isNamespaceExport(clause)) {
-    if (ts.isIdentifier(clause.name)) {
-      addNamedExport(clause.name.text, clause.name);
-    }
-    return;
-  }
-  for (const element of clause.elements) {
-    if (element.isTypeOnly || element.name.text === 'default' || !ts.isIdentifier(element.name)) {
-      continue;
-    }
-    const localName = element.propertyName ?? element.name;
-    if (statement.moduleSpecifier !== undefined || runtimeBindings.has(localName.text)) {
-      addNamedExport(element.name.text, element.name);
-    }
-  }
+  return 'default';
 }
 
 /** Reports whether a declaration carries TypeScript's ambient `declare` modifier. */
@@ -380,64 +399,72 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   );
 }
 
-/** Converts the selected filename stem from kebab/snake/dot form into a PascalCase identifier. */
-function createPascalCaseBasename(documentPath: string): string {
-  const filename = path.basename(documentPath);
-  const extension = path.extname(filename);
-  const stem = filename.slice(0, filename.length - extension.length);
-  return stem
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((part) => part.length > 0)
-    .map(capitalizeFirstCodePoint)
-    .join('');
-}
-
-/** Uppercases one Unicode code point while preserving the remaining identifier spelling. */
-function capitalizeFirstCodePoint(value: string): string {
-  const firstCodePointValue = value.codePointAt(0);
-  if (firstCodePointValue === undefined) {
-    return '';
-  }
-  const firstCodePoint = String.fromCodePoint(firstCodePointValue);
-  return `${firstCodePoint.toLocaleUpperCase('en-US')}${value.slice(firstCodePoint.length)}`;
-}
-
-/** Restricts implicit component candidates to identifier-shaped names beginning with an uppercase letter. */
+/** Restricts implicit component candidates to identifiers beginning with an uppercase letter. */
 function isPascalCaseIdentifier(name: string): boolean {
   return /^\p{Lu}[$_\p{L}\p{N}\u200C\u200D]*$/u.test(name);
 }
 
-/** Creates a domain failure whose diagnostic identifies the real target and ambiguous candidates. */
-function createSelectionError(
-  documentPath: string,
-  sourceFile: ts.SourceFile,
-  inventory: RuntimeExportInventory,
-  pascalCaseExports: readonly RuntimeNamedExport[],
-): PreviewCompilationError {
-  const ambiguous = pascalCaseExports.length > 1;
-  const namedExports = inventory.namedExports.map((candidate) => candidate.name);
-  const candidates = ambiguous
-    ? pascalCaseExports.map((candidate) => candidate.name)
-    : namedExports;
-  const candidateText = candidates.length === 0 ? 'none' : candidates.join(', ');
-  const message = ambiguous
-    ? `The selected module has no runtime default export and multiple PascalCase component candidates: ${candidateText}. Add a default export to select one component.`
-    : `The selected module has no runtime default export or unambiguous PascalCase component export. Named runtime exports: ${candidateText}. Export the preview component as default.`;
-  const locationNode = pascalCaseExports[0]?.node ?? inventory.namedExports[0]?.node;
-  const position = sourceFile.getLineAndCharacterOfPosition(
-    locationNode?.getStart(sourceFile) ?? 0,
-  );
-  const diagnostic: PreviewDiagnostic = {
-    location: {
-      column: position.character,
-      file: documentPath,
-      line: position.line + 1,
-    },
-    message,
-    severity: 'error',
-  };
-  return new PreviewCompilationError(
-    `React Preview could not choose a component export from ${path.basename(documentPath)}.`,
-    [diagnostic],
-  );
+/** Detects a non-erased import of the exact package whose ThemeProvider can share context. */
+function hasStyledComponentsValueImport(sourceFile: ts.SourceFile): boolean {
+  return sourceFile.statements.some((statement) => {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== 'styled-components'
+    ) {
+      return false;
+    }
+    const clause = statement.importClause;
+    if (clause === undefined) {
+      return true;
+    }
+    if (isTypeOnlyImportClause(clause) || clause.name !== undefined) {
+      return !isTypeOnlyImportClause(clause);
+    }
+    const namedBindings = clause.namedBindings;
+    if (namedBindings === undefined || ts.isNamespaceImport(namedBindings)) {
+      return namedBindings !== undefined;
+    }
+    return (
+      namedBindings.elements.length === 0 ||
+      namedBindings.elements.some((element) => !element.isTypeOnly)
+    );
+  });
+}
+
+/** Adds exact named-theme and local-default-theme candidates from one value import declaration. */
+function collectThemeImportCandidates(
+  statement: ts.ImportDeclaration,
+  candidates: PreviewThemeImportSelection[],
+): void {
+  const clause = statement.importClause;
+  if (
+    clause === undefined ||
+    isTypeOnlyImportClause(clause) ||
+    !ts.isStringLiteralLike(statement.moduleSpecifier)
+  ) {
+    return;
+  }
+  const moduleSpecifier = statement.moduleSpecifier.text;
+  if (clause.name?.text === 'theme') {
+    candidates.push({ exportName: 'default', moduleSpecifier });
+  }
+  const namedBindings = clause.namedBindings;
+  if (namedBindings === undefined || !ts.isNamedImports(namedBindings)) {
+    return;
+  }
+  for (const element of namedBindings.elements) {
+    if (element.isTypeOnly) {
+      continue;
+    }
+    const importedName = element.propertyName ?? element.name;
+    if (importedName.text === 'theme') {
+      candidates.push({ exportName: 'theme', moduleSpecifier });
+    }
+  }
+}
+
+/** Uses the non-deprecated phase marker to recognize an entire `import type` clause. */
+function isTypeOnlyImportClause(clause: ts.ImportClause): boolean {
+  return clause.phaseModifier === ts.SyntaxKind.TypeKeyword;
 }

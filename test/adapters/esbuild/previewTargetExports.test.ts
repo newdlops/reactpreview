@@ -1,179 +1,178 @@
 /**
- * Verifies deterministic target-export selection independently from esbuild module resolution.
- * Inline source represents the current editor snapshot, including exports not yet saved to disk.
+ * Verifies ordered target-export and conservative styled-theme import selection from editor text.
+ * Inline snapshots exercise the same TSX parser path used for unsaved active documents without
+ * resolving or evaluating any workspace module.
  */
 import { describe, expect, it } from 'vitest';
-import { selectPreviewTargetExport } from '../../../src/adapters/esbuild/previewTargetExports';
+import {
+  selectPreviewTargetExports,
+  selectPreviewThemeImport,
+} from '../../../src/adapters/esbuild/previewTargetExports';
 import { PreviewCompilationError } from '../../../src/domain/preview';
 
-describe('selectPreviewTargetExport', () => {
-  /** Keeps an explicit runtime default ahead of filename and single-component heuristics. */
-  it('prefers a runtime default export', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/CompanyOwnerBreadcrumb.tsx',
-      [
-        'export const CompanyOwnerBreadcrumb = () => <nav />;',
-        'export default function DifferentPreview() { return <main />; }',
-      ].join('\n'),
-    );
-
-    expect(selection).toEqual({ exportName: 'default' });
-  });
-
-  /** Recognizes a local runtime binding explicitly aliased to the module's default export. */
-  it('recognizes a runtime default export clause', () => {
-    const selection = selectPreviewTargetExport(
+describe('selectPreviewTargetExports', () => {
+  /** Preserves declaration order instead of moving a later default ahead of named components. */
+  it('returns named and default runtime exports in source order', () => {
+    const selection = selectPreviewTargetExports(
       '/workspace/src/Preview.tsx',
       [
-        'const Preview = () => <main />;',
-        'interface Properties { readonly title: string }',
-        'export { Preview as default };',
+        'export const FirstPreview = () => <nav />;',
+        'export default function MainPreview() { return <main />; }',
+        'export class LastPreview { render() { return <aside />; } }',
       ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'default' });
+    expect(selection).toEqual([
+      { displayName: 'FirstPreview', exportName: 'FirstPreview', kind: 'explicit' },
+      { displayName: 'MainPreview', exportName: 'default', kind: 'explicit' },
+      { displayName: 'LastPreview', exportName: 'LastPreview', kind: 'explicit' },
+    ]);
   });
 
-  /** Treats an external default re-export as runtime without resolving or executing that module. */
-  it('recognizes an external default re-export', () => {
-    const selection = selectPreviewTargetExport(
+  /** Keeps each eligible element at its exact position within one explicit export clause. */
+  it('preserves local export clause order and resolves a default display name', () => {
+    const selection = selectPreviewTargetExports(
       '/workspace/src/Preview.tsx',
-      "export { default } from './ActualPreview';",
-    );
-
-    expect(selection).toEqual({ exportName: 'default' });
-  });
-
-  /** Uses a kebab-case filename match when several PascalCase components are exported. */
-  it('selects the PascalCase filename match before the unique-candidate rule', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/company-owner-breadcrumb.tsx',
       [
-        'export const OtherBreadcrumb = () => <nav />;',
-        'export function CompanyOwnerBreadcrumb() { return <nav />; }',
+        'const FirstPreview = () => <main />;',
+        'const MainPreview = () => <main />;',
+        'const LastPreview = () => <main />;',
+        'export { FirstPreview, MainPreview as default, LastPreview };',
       ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'CompanyOwnerBreadcrumb' });
+    expect(selection).toEqual([
+      { displayName: 'FirstPreview', exportName: 'FirstPreview', kind: 'explicit' },
+      { displayName: 'MainPreview', exportName: 'default', kind: 'explicit' },
+      { displayName: 'LastPreview', exportName: 'LastPreview', kind: 'explicit' },
+    ]);
   });
 
-  /** Supports snake-case filenames while preserving an already camel-cased identifier suffix. */
-  it('normalizes common filename separators for exact matching', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/company_ownerBreadcrumb.jsx',
+  /** Treats explicit external aliases as runtime slots without resolving the referenced module. */
+  it('collects external re-exports in clause order', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/index.ts',
+      "export { First, default as MainPreview, helper, Last as LastPreview } from './parts';",
+    );
+
+    expect(selection).toEqual([
+      { displayName: 'First', exportName: 'First', kind: 'explicit' },
+      { displayName: 'MainPreview', exportName: 'MainPreview', kind: 'explicit' },
+      { displayName: 'LastPreview', exportName: 'LastPreview', kind: 'explicit' },
+    ]);
+  });
+
+  /** Leaves a positional placeholder for every value star while erasing a type-only star. */
+  it('retains bare runtime wildcard export positions', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/index.ts',
       [
-        'export const Alternative = () => <aside />;',
-        'export const CompanyOwnerBreadcrumb = () => <nav />;',
+        'export const Before = () => null;',
+        "export * from './middle';",
+        "export type * from './types';",
+        'export const After = () => null;',
       ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'CompanyOwnerBreadcrumb' });
+    expect(selection).toEqual([
+      { displayName: 'Before', exportName: 'Before', kind: 'explicit' },
+      { kind: 'wildcard' },
+      { displayName: 'After', exportName: 'After', kind: 'explicit' },
+    ]);
   });
 
-  /** Selects one PascalCase runtime value while excluding erased and ambient declarations. */
-  it('ignores type-only and declared exports when selecting a unique named component', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/unrelated-name.tsx',
+  /** Excludes erased, ambient, lowercase, and type-only aliases while retaining runtime values. */
+  it('filters declarations that cannot be component gallery entries', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/parts.tsx',
       [
-        'export interface InterfacePreview { readonly value: string }',
-        'export type AliasPreview = { readonly value: string };',
+        'export interface InterfacePreview { value: string }',
+        'export type AliasPreview = { value: string };',
         'export declare class AmbientPreview {}',
         'export const helper = 1;',
-        'export const OnlyRuntimePreview = () => <main />;',
+        'const RuntimePreview = () => <main />;',
+        'type TypePreview = { value: string };',
+        'export { RuntimePreview, type TypePreview };',
       ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'OnlyRuntimePreview' });
+    expect(selection).toEqual([
+      { displayName: 'RuntimePreview', exportName: 'RuntimePreview', kind: 'explicit' },
+    ]);
   });
 
-  /** Resolves aliases only when their local binding exists at runtime. */
-  it('distinguishes runtime and type-only local export clauses', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/unrelated.tsx',
+  /** Returns all PascalCase candidates instead of turning a plural component file into ambiguity. */
+  it('keeps multiple named components without filename heuristics', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/second-preview.tsx',
       [
-        'const Internal = () => <main />;',
-        'type InternalProperties = { readonly value: string };',
-        'export { Internal as AliasedPreview };',
-        'export { type InternalProperties as TypePreview };',
+        'export const FirstPreview = () => <main />;',
+        'export const SecondPreview = () => <aside />;',
       ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'AliasedPreview' });
+    expect(selection.map((slot) => (slot.kind === 'explicit' ? slot.exportName : '*'))).toEqual([
+      'FirstPreview',
+      'SecondPreview',
+    ]);
+  });
+
+  /** Produces an ordinary empty gallery when a valid helper module exports no component shape. */
+  it('returns an empty list when no runtime component candidate exists', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/helpers.ts',
+      'export type Helper = string; export const helper = () => null;',
+    );
+
+    expect(selection).toEqual([]);
   });
 
   /** Does not mistake an erased default interface for the module's runtime default. */
-  it('ignores an erased default declaration', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/unrelated.tsx',
+  it('ignores erased default declarations', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/Preview.tsx',
       [
-        'export default interface PreviewProperties { readonly value: string }',
+        'export default interface PreviewProperties { value: string }',
         'export const RuntimePreview = () => <main />;',
       ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'RuntimePreview' });
+    expect(selection).toEqual([
+      { displayName: 'RuntimePreview', exportName: 'RuntimePreview', kind: 'explicit' },
+    ]);
   });
 
-  /** Reports every ambiguous component and points at the first real export in the selected file. */
-  it('throws a located domain diagnostic for ambiguous PascalCase exports', () => {
-    const documentPath = '/workspace/src/unrelated.tsx';
-    let failure: unknown;
+  /** Preserves the conventional default bridge and its named function label for CommonJS files. */
+  it('recognizes a CommonJS module.exports component', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/common-preview.cjs',
+      'module.exports = function CommonPreview() { return <main />; };',
+    );
 
-    try {
-      selectPreviewTargetExport(
-        documentPath,
-        [
-          '// current dirty editor source',
-          'export const FirstPreview = () => <main />;',
-          'export const SecondPreview = () => <aside />;',
-        ].join('\n'),
-      );
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(failure).toBeInstanceOf(PreviewCompilationError);
-    if (!(failure instanceof PreviewCompilationError)) {
-      return;
-    }
-    expect(failure.message).toContain('unrelated.tsx');
-    expect(failure.diagnostics).toHaveLength(1);
-    expect(failure.diagnostics[0]?.location).toMatchObject({ file: documentPath, line: 2 });
-    expect(failure.diagnostics[0]?.message).toContain('FirstPreview');
-    expect(failure.diagnostics[0]?.message).toContain('SecondPreview');
+    expect(selection).toEqual([
+      { displayName: 'CommonPreview', exportName: 'default', kind: 'explicit' },
+    ]);
   });
 
-  /** Lists non-component runtime names when no PascalCase export can be selected. */
-  it('throws an actionable diagnostic when no component candidate exists', () => {
-    const documentPath = '/workspace/src/helpers.ts';
+  /** Treats TypeScript export-equals as default interop while retaining its identifier label. */
+  it('recognizes a TypeScript export-equals component', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/CommonPreview.cts',
+      'function CommonPreview() { return null; } export = CommonPreview;',
+    );
 
-    expect.assertions(4);
-    try {
-      selectPreviewTargetExport(
-        documentPath,
-        [
-          'export interface HelperProperties { readonly value: string }',
-          'export const helper = () => null;',
-        ].join('\n'),
-      );
-    } catch (error) {
-      expect(error).toBeInstanceOf(PreviewCompilationError);
-      if (!(error instanceof PreviewCompilationError)) {
-        return;
-      }
-      expect(error.diagnostics[0]?.location).toMatchObject({ file: documentPath, line: 2 });
-      expect(error.diagnostics[0]?.message).toContain('Named runtime exports: helper');
-      expect(error.diagnostics[0]?.message).toContain('Export the preview component as default');
-    }
+    expect(selection).toEqual([
+      { displayName: 'CommonPreview', exportName: 'default', kind: 'explicit' },
+    ]);
   });
 
-  /** Uses parser-owned dirty-source coordinates instead of falling through to bridge diagnostics. */
-  it('reports invalid current editor syntax at its actual source location', () => {
+  /** Keeps parser-owned dirty-source coordinates as the selector's only domain failure. */
+  it('reports invalid current editor syntax at its actual location', () => {
     const documentPath = '/workspace/src/Preview.tsx';
 
     expect.assertions(3);
     try {
-      selectPreviewTargetExport(
+      selectPreviewTargetExports(
         documentPath,
         ['export const valid = 1;', 'export function Broken( {'].join('\n'),
       );
@@ -186,34 +185,86 @@ describe('selectPreviewTargetExport', () => {
       expect(error.diagnostics[0]?.message.length).toBeGreaterThan(0);
     }
   });
+});
 
-  /** Parses JSX in ordinary `.js` snapshots because the compiler intentionally uses its JSX loader. */
-  it('supports JSX syntax in JavaScript source variants', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/preview.cjs',
-      'export const JavaScriptPreview = () => <main />;',
+describe('selectPreviewThemeImport', () => {
+  /** Finds the exact named theme export when styled-components participates at runtime. */
+  it('selects one named theme import, including a local alias', () => {
+    const selection = selectPreviewThemeImport(
+      [
+        "import styled from 'styled-components';",
+        "import { theme as applicationTheme } from './ui/theme';",
+      ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'JavaScriptPreview' });
+    expect(selection).toEqual({ exportName: 'theme', moduleSpecifier: './ui/theme' });
   });
 
-  /** Preserves the default interop bridge for conventional CommonJS component assignments. */
-  it('recognizes a CommonJS module.exports component', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/common-preview.cjs',
-      'module.exports = function CommonPreview() { return <main />; };',
+  /** Supports the common default-export theme convention only when its local name is `theme`. */
+  it('selects a default import whose local binding is theme', () => {
+    const selection = selectPreviewThemeImport(
+      ["import { css } from 'styled-components';", "import theme from '@/design/theme';"].join(
+        '\n',
+      ),
     );
 
-    expect(selection).toEqual({ exportName: 'default' });
+    expect(selection).toEqual({ exportName: 'default', moduleSpecifier: '@/design/theme' });
   });
 
-  /** Treats TypeScript export-equals syntax as the module's runtime default interop value. */
-  it('recognizes a TypeScript export-equals component', () => {
-    const selection = selectPreviewTargetExport(
-      '/workspace/src/CommonPreview.cts',
-      'function CommonPreview() { return null; } export = CommonPreview;',
+  /** Refuses to infer a project theme when styled-components is present only as erased type data. */
+  it('requires a styled-components value import', () => {
+    const selection = selectPreviewThemeImport(
+      [
+        "import type { DefaultTheme } from 'styled-components';",
+        "import { theme } from './ui/theme';",
+      ].join('\n'),
     );
 
-    expect(selection).toEqual({ exportName: 'default' });
+    expect(selection).toBeUndefined();
+  });
+
+  /** Distinguishes the imported export name from an unrelated local alias named theme. */
+  it('rejects a named import whose imported name is not exactly theme', () => {
+    const selection = selectPreviewThemeImport(
+      [
+        "import styled from 'styled-components';",
+        "import { applicationTheme as theme } from './ui/theme';",
+      ].join('\n'),
+    );
+
+    expect(selection).toBeUndefined();
+  });
+
+  /** Ignores individually erased specifiers in an otherwise runtime-capable import declaration. */
+  it('rejects a type-only theme candidate', () => {
+    const selection = selectPreviewThemeImport(
+      ["import styled from 'styled-components';", "import { type theme } from './ui/theme';"].join(
+        '\n',
+      ),
+    );
+
+    expect(selection).toBeUndefined();
+  });
+
+  /** Chooses no automatic theme when multiple exact imports make ownership ambiguous. */
+  it('returns undefined for two theme candidates', () => {
+    const selection = selectPreviewThemeImport(
+      [
+        "import styled from 'styled-components';",
+        "import theme from './legacy-theme';",
+        "import { theme as modernTheme } from './modern-theme';",
+      ].join('\n'),
+    );
+
+    expect(selection).toBeUndefined();
+  });
+
+  /** Chooses no automatic theme when the file has no exact theme import at all. */
+  it('returns undefined for zero theme candidates', () => {
+    const selection = selectPreviewThemeImport(
+      ["import styled from 'styled-components';", "import palette from './palette';"].join('\n'),
+    );
+
+    expect(selection).toBeUndefined();
   });
 });

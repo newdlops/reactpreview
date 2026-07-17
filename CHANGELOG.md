@@ -2,6 +2,63 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1024 - 2026-07-17
+
+- 번들러가 이미 Go 네이티브 esbuild임을 유지하고, 동일한 target/runtime plan은 최대 12개의
+  `context.rebuild()` 캐시에서 parsed dependency graph를 재사용하도록 변경
+- cold preview는 도달 가능한 target graph를 먼저 게시하고 browser mount 확인 뒤 전체 entry/parent/props
+  문맥을 백그라운드에서 보강하며, 보강 실패 시 빠른 프리뷰를 유지하고 warm rebuild는 full context 한 번만 실행
+- 새 revision과 dispose가 이전 target resolution·analysis·native build를 `AbortSignal`/`context.cancel()`로
+  중단하고 debounce는 최신 요청만 남기며, publish 중 취소된 artifact lease도 즉시 반환
+- source text·module/entry/import fact를 disk mtime/size 또는 dirty snapshot SHA-256 단위로 캐시하고,
+  inventory TTL 뒤에도 파일 경로 fingerprint가 같으면 positive render/usage graph를 재사용
+- 직전 reached graph의 Router와 lexical global 계획을 기억해 정상 hot rebuild를 한 번의 native pass로 줄이고,
+  plugin별 compilation-local asset budget은 매 rebuild마다 초기화
+- entry/CSS와 `chunks/[hash].js`를 session-level content-addressed 파일로 공유하고 bundle/파일 reference count,
+  portable path+digest 충돌 검증, zero-reference URL tombstone, 최대 8개 병렬 write/delete와 partial rollback을 추가
+- setup 뒤 runtime bridge·props·target graph를 병렬 준비하고, hot reload는 새 ESM·CSS와 provider element가 모두
+  준비된 뒤에만 root를 교체해 빈 화면 구간을 줄이며 preload/빌드 실패 시 마지막 정상 프리뷰를 그대로 유지
+- CSS만 바뀐 revision도 entry query로 ESM cache를 무효화하고, same-session content-addressed URI와
+  revision/applied/retained ACK를 양쪽에서 검증해 stale 교체와 artifact lease 오판을 차단
+- export별 Suspense와 local 오류 placeholder를 복원해 한 lazy/실패 component가 나머지 gallery나 commit 확인을
+  막지 않으며, 병렬 target 평가 오류도 원래 runtime phase를 보존
+- 준비 단계별 소요 시간과 completed/failed/cancelled 결과를 구조화된 debug log로 남겨 실제 병목을 측정 가능하게 함
+
+## 0.1.1023 - 2026-07-17
+
+- 프리뷰 준비 과정을 대상 확인, 프로젝트 분석, 컴포넌트 문맥 탐색, 정적 runtime 준비, 모듈 번들링,
+  local artifact 게시, React 로딩의 7개 실제 단계로 표시하고 가짜 시간 기반 퍼센트는 사용하지 않음
+- 최초 빌드는 접근 가능한 전체 loading 문서로 단계를 갱신하고, hot reload는 기존 화면을 보존한 채
+  project CSS와 분리된 declarative Shadow DOM 상태 패널에서 진행상황과 browser bootstrap phase를 표시
+- compiler/application/presentation 경계에 optional progress observer를 추가하고 session revision을
+  extension-to-webview 메시지에서도 검증해 stale build나 이전 hot import가 최신 진행상황을 지우지 않게 함
+- `role=status`, `aria-live`, `aria-busy`, indeterminate progressbar와 reduced-motion 처리를 추가하고,
+  progress message를 bounded 구조로 검증해 DOM text만 갱신하는 no-server/CSP 정책을 유지
+- React 실제 commit 전에는 완료 표시를 숨기지 않고 completed revision을 terminal로 고정하며, 초기 ESM
+  entry가 실행 전에 실패해도 token/revision handshake와 30초 watchdog으로 영구 loading을 방지
+
+## 0.1.1022 - 2026-07-16
+
+- 현재 파일의 모든 direct component export를 한 번의 module index로 분석하고 실제 application EntryPoint까지
+  export별 정적 render graph를 만들어, import identity가 증명된 `createRoot`/`hydrateRoot`/legacy ReactDOM
+  mount를 일반 미사용 export와 구분
+- named/wildcard re-export, literal `React.lazy`와 named `.then` adapter, JSX/createElement owner뿐 아니라
+  route 배열·router 객체·page/app map의 top-level value flow를 통과하고 최대 8개 후보 경로를 보존
+- route `element`의 layout·guard와 entry wrapper를 경로에 포함하고 실제 entry 도달 후보를 story/test의
+  끊긴 usage보다 우선하며, 복수 entry·orphan export·bounded graph를 Inspector toolbar에 명시
+- 발견한 entry는 실행하지 않고 기존 importable ancestor mount와 분리해 bootstrap/API side effect를
+  차단하며, target/ancestor/lazy/route/entry/wrapper source를 HMR dependency로 연결
+- filename은 후보 선택에만 쓰고 ReactDOM import/call identity로 증명한 entry에서 target까지 literal import
+  경로를 먼저 좁혀 분석하며, 실제 render 경로가 아니면 선형 reverse import index로 자동 fallback
+- fallback의 반복 workspace scan을 relative dependency 역색인과 exact alias resolver memo로 교체하고,
+  필요할 때만 bounded workspace로 넓혀 모노레포 sibling app을 지원하며 unsaved target fingerprint로 무효화
+- EntryPoint 분석을 props/ancestor 탐색보다 먼저 수행하고 소스 캐시를 공유하며, 읽기·graph·path 한도는
+  `graph-limit`으로 표시하고 non-selected export 경로까지 HMR/cache dependency로 추적
+- 실제 10,693개 source의 `zuzu` 모노레포에서 812개 source read와 약 2.1초로
+  `rtcc-public-upload-page → lazy export → publicRoutes → router → AppRouter → BUILD_TARGETS → src/index.tsx`
+  경로와 `RightToConsentOrConsultLayout`, `TwoFactorRedirectChecker`, `RootLayout` wrapper를 확인하고,
+  fallback reverse closure도 동일 fixture에서 141초에서 9.3초로 단축
+
 ## 0.1.1021 - 2026-07-16
 
 - Browserify 전제의 브라우저 package가 자유 `process`를 읽어도 target graph 평가 전에 기존 값을 보존하거나

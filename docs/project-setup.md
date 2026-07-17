@@ -68,6 +68,20 @@ import 사용과 barrel/consumer tsconfig alias를 역추적해 찾은 바깥쪽
 root가 작성한 children, sibling, 조건식, hook, effect, event handler와 CSS/import graph가 함께 실행되므로
 화면에서 보이는 문맥을 기본 gallery보다 충실하게 확인할 수 있습니다.
 
+Inspector는 별도로 import identity가 증명된 `createRoot`/`hydrateRoot`/legacy ReactDOM mount를 찾습니다.
+현재 파일의 모든 direct component export가 한 module index를 공유하며, 각 export에서 `React.lazy`,
+re-export, route `element`, page map과 router local value를 거슬러 실제 entry에 도달한 후보를 우선하고
+route layout·guard를 toolbar 경로에 포함합니다. 아직 root가 렌더하지 않은 sibling export도 Target 목록에서
+선택해 정적 경로를 확인할 수 있습니다. 이 분석은 entry 파일이나 route
+loader를 실행하지 않으며, 안전하게 실행할 root는 계속 importable component export로 분리합니다. 여러
+entry가 연결되면 후보 수를 유지하고, 연결되지 않은 export는 standalone fallback으로 명시합니다.
+
+분석 비용은 semantic entry-first source selection으로 제한합니다. `index`/`main` 같은 파일명은 검사 후보를
+고르는 데만 사용하고 실제 entry 여부는 ReactDOM import/call identity로 결정합니다. 증명된 entry에서 target에
+도달하는 literal import 경로만 먼저 파싱하며, 그 경로가 실제 React render 관계가 아니면 target consumer의
+선형 reverse import index를 자동 fallback으로 사용합니다. 따라서 filename 관례가 없는 entry도 fallback에서
+찾을 수 있고, 모노레포 alias는 두 경로 모두 프로젝트의 정확한 resolver가 판정합니다.
+
 toolbar에서는 정적으로 증명된 ancestry와 Target/Root 항목을 선택하고 다음 값을 조작할 수 있습니다.
 
 - `Highlight target`: 대상 component가 commit한 DOM 범위를 강조하거나 해제
@@ -82,10 +96,11 @@ toolbar에서는 정적으로 증명된 ancestry와 Target/Root 항목을 선택
 host 위치만 읽으며 Fiber, hook queue나 local variable slot을 수정하지 않습니다. 함수, symbol, 순환 객체
 prop도 JSON editor에 보존하지 않습니다.
 
-역추적은 project-level owner/barrel 최대 8단계와 same-file private owner 최대 12단계로 제한됩니다. 여러
-사용처가 있을 때 page/layout/App 관례를 우선하고 tests/stories/examples를 후순위로 정렬하지만 프로젝트
-route 의미는 추측하지 않습니다. non-component route config, private terminal, cycle, 깊이 한도에서는
-toolbar에 partial ancestry를 표시합니다. 원하는 scenario가 아니거나 root가 필수 auth,
+실행 root 역추적은 project-level owner/barrel 최대 8단계와 same-file private owner 최대 12단계로
+제한됩니다. 별도 render graph는 최대 32단계와 8개 후보를 유지하고 실제 entry 도달성을 우선합니다.
+route config는 구조 근거로 통과하지만 loader/action과 업무 path 의미를 실행·추측하지 않습니다. private
+terminal, cycle, 소스/그래프/깊이/경로 한도에서는 toolbar에 partial 또는 bounded 상태를 표시합니다. 원하는
+scenario가 아니거나 root가 필수 auth,
 route parameter, store leaf, dynamic Provider value 때문에 실패하면 아래 setup 또는 명시적인 preview
 harness가 여전히 올바른 해결책입니다. setup의 `PreviewProviders`, props와 자동 runtime boundary는
 Inspector가 선택한 실제 root 바깥에도 동일하게 적용됩니다.
@@ -95,10 +110,20 @@ Inspector가 선택한 실제 root 바깥에도 동일하게 적용됩니다.
 남고 `Retry`/`Remount`는 export별 revision만 증가시킵니다. target보다 먼저 ancestor나 Provider가 실패한
 경우에는 더 바깥 export/root boundary가 대신 격리합니다.
 
-highlight, 선택 항목과 JSON override는 각 Inspector 탭에 따로 저장되고 source/ancestor dependency hot
+highlight, 선택 항목과 JSON override는 각 Inspector 탭에 따로 저장되고 source/ancestor/entry-chain dependency hot
 reload 뒤 다시 적용됩니다. 다만 hot reload는 프로젝트 React root를 다시 마운트하므로 일반 hook state는
 보존하지 않습니다. Inspector는 app entry, route table, backend나 개발 서버를 추가로 실행하지 않고
 웹뷰 CSP도 모든 외부 연결을 계속 차단합니다.
+
+초기 preview와 Inspector 준비 화면은 `resolving target → analyzing project → discovering components →
+preparing runtime → bundling → publishing → loading` 순서의 실제 경계를 표시합니다. 준비가 끝난 기존 탭의
+hot reload에서는 작성된 화면을 가리지 않는 작은 Shadow DOM 상태 패널을 사용합니다. 연속 편집으로 새
+revision이 예약되면 extension host와 browser runtime이 모두 revision을 비교해 이전 분석·번들의 늦은
+진행 메시지나 완료 신호가 최신 상태를 지우지 못하게 합니다. React commit sentinel이 실제 host commit
+후에만 준비 완료를 알리고, 정적 ESM load/parse/evaluate 단계에서 entry 자체가 실행되지 않는 경우에는
+문서별 token/revision 확인과 30초 watchdog이 영구 loading 대신 오류 상태를 표시합니다. fast pass 실패 뒤
+같은 revision에서 full pass로 전환해도 이전 단계로 진행 표시를 되돌리지 않으며, 다음 빌드나 preload가
+실패하면 이미 마운트된 마지막 정상 화면을 유지합니다.
 
 ## setup 계약
 

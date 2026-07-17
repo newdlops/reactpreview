@@ -76,8 +76,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"fallbackLabel":"generated required property shape"');
   });
 
-  /** Leaves framework hooks, external package hooks, and exact Context hooks to dedicated bridges. */
-  it('does not wrap unrelated or already identity-bridged hooks', () => {
+  /** Instruments supported state reads while leaving React and exact Context hooks to their bridges. */
+  it('wraps supported state-library hooks but not React or identity-bridged Context hooks', () => {
     const source = [
       `import { useState } from 'react';`,
       `import { useQuery } from '@apollo/client';`,
@@ -90,7 +90,96 @@ describe('createPreviewRuntimeHookReplacements', () => {
       '}',
     ].join('\n');
 
-    expect(createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source)).toEqual([]);
+    const replacements = createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source);
+
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT)');
+    expect(replacements[0]?.replacement).toContain('"data": Object.freeze({})');
+  });
+
+  /** Creates Formik tuple fields that can render even when the installed hook has no Provider. */
+  it('infers semantic Formik field values and helper methods from tuple usage', () => {
+    const source = [
+      `import { useField } from 'formik';`,
+      'export function NameField() {',
+      '  const [field, meta, helpers] = useField("name");',
+      '  return <input value={field.value} aria-invalid={meta.touched} onChange={() => helpers.setValue("next")} />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/NameField.tsx', source),
+    );
+
+    expect(transformed).toContain('useField("name")');
+    expect(transformed).toContain('"value": "Preview value"');
+    expect(transformed).toContain('"touched": false');
+    expect(transformed).toContain('"setValue": Object.freeze(() => undefined)');
+  });
+
+  /** Uses local demand evidence rather than a package-name allowlist for third-party hooks. */
+  it('instruments arbitrary external hooks only when their result shape is locally proven', () => {
+    const source = [
+      `import { useRemoteThing } from '@vendor/side-effectful-sdk';`,
+      'export function View() {',
+      '  const value = useRemoteThing();',
+      '  return value.name;',
+      '}',
+    ].join('\n');
+
+    const replacements = createPreviewRuntimeHookReplacements('/workspace/View.tsx', source);
+
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0]?.replacement).toContain('useRemoteThing()');
+    expect(replacements[0]?.replacement).toContain('"name": "Preview name"');
+  });
+
+  /** Handles callable and conditional hook bindings without guessing their package semantics. */
+  it('infers direct function and boolean use for unknown hook return values', () => {
+    const source = [
+      `import { useFeatureFlag, useTranslator } from 'unknown-runtime';`,
+      'export function View() {',
+      '  const enabled = useFeatureFlag();',
+      '  const translate = useTranslator();',
+      '  return enabled ? <span>{translate("title")}</span> : null;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/View.tsx', source),
+    );
+
+    expect(transformed.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(2);
+    expect(transformed).toContain('() => (false)');
+    expect(transformed).toContain('Object.freeze(() => undefined)');
+  });
+
+  /** Completes direct raw React Context reads without admitting unrelated built-in React hooks. */
+  it('instruments only useContext from the React module', () => {
+    const source = [
+      `import React, { useContext, useMemo } from 'react';`,
+      'export function View() {',
+      '  const app = useContext(AppContext);',
+      '  const memo = useMemo(() => 1, []);',
+      '  const namespaceValue = React.useContext(CompanyContext);',
+      '  const namespaceMemo = React.useMemo(() => 2, []);',
+      '  return app.user.name + namespaceValue.company.name + memo + namespaceMemo;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/View.tsx', source),
+    );
+
+    expect(transformed.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(2);
+    expect(transformed).toContain('() => (useContext(AppContext))');
+    expect(transformed).toContain('() => (React.useContext(CompanyContext))');
+    expect(transformed).toContain('"user": Object.freeze({ "name": "Preview name" })');
+    expect(transformed).not.toContain('() => (useMemo(');
+    expect(transformed).not.toContain('() => (React.useMemo(');
   });
 
   /** Keeps one outer replacement when nested hook arguments overlap the same source range. */

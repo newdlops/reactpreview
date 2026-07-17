@@ -10,12 +10,15 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
+import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
 
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
 const MAX_METADATA_TEXT_LENGTH = 180;
 const CUSTOM_HOOK_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*$/u;
 const QUERY_PARAM_MODULE = 'use-query-params';
+const REACT_CONTEXT_HOOK = 'useContext';
+const REACT_MODULE = 'react';
 const EXCLUDED_MODULES = new Set([
   'react',
   'react-dom',
@@ -141,13 +144,21 @@ function collectRuntimeHookInventory(sourceFile: ts.SourceFile): PreviewRuntimeH
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
       const moduleSpecifier = statement.moduleSpecifier.text;
-      if (!isEligibleHookModule(moduleSpecifier)) continue;
+      const readsRawReactContext = moduleSpecifier === REACT_MODULE;
+      if (!isEligibleHookModule(moduleSpecifier) && !readsRawReactContext) continue;
       const importClause = statement.importClause;
-      if (importClause?.name !== undefined && CUSTOM_HOOK_PATTERN.test(importClause.name.text)) {
+      if (
+        !readsRawReactContext &&
+        importClause?.name !== undefined &&
+        CUSTOM_HOOK_PATTERN.test(importClause.name.text)
+      ) {
         direct.set(importClause.name.text, {
           hookName: importClause.name.text,
           moduleSpecifier,
         });
+      }
+      if (readsRawReactContext && importClause?.name !== undefined) {
+        namespaces.set(importClause.name.text, { moduleSpecifier });
       }
       const namedBindings = importClause?.namedBindings;
       if (namedBindings !== undefined && ts.isNamespaceImport(namedBindings)) {
@@ -156,6 +167,7 @@ function collectRuntimeHookInventory(sourceFile: ts.SourceFile): PreviewRuntimeH
         for (const element of namedBindings.elements) {
           const hookName = element.propertyName?.text ?? element.name.text;
           if (!CUSTOM_HOOK_PATTERN.test(hookName)) continue;
+          if (readsRawReactContext && hookName !== REACT_CONTEXT_HOOK) continue;
           direct.set(element.name.text, { hookName, moduleSpecifier });
         }
       }
@@ -205,7 +217,7 @@ function collectRuntimeHookCandidates(
       const hook = readRuntimeHookBinding(node.expression, inventory);
       if (
         hook !== undefined &&
-        !hook.hookName.endsWith('Context') &&
+        (hook.hookName === REACT_CONTEXT_HOOK || !hook.hookName.endsWith('Context')) &&
         findNearestRuntimeFunction(node) !== undefined
       ) {
         const fallback = inferRuntimeHookFallback(node, hook, sourceFile, sourceText);
@@ -233,6 +245,9 @@ function readRuntimeHookBinding(
     CUSTOM_HOOK_PATTERN.test(unwrapped.name.text)
   ) {
     const namespace = inventory.namespaces.get(unwrapped.expression.text);
+    if (namespace?.moduleSpecifier === REACT_MODULE && unwrapped.name.text !== REACT_CONTEXT_HOOK) {
+      return undefined;
+    }
     return namespace === undefined
       ? undefined
       : { hookName: unwrapped.name.text, moduleSpecifier: namespace.moduleSpecifier };
@@ -263,6 +278,23 @@ function inferRuntimeHookFallback(
   }
   const expression = unwrapParentExpression(call);
   const parent = expression.parent;
+  if (ts.isExpressionStatement(parent)) {
+    return {
+      evidence: 'hook return value is intentionally ignored',
+      expression: 'undefined',
+      label: 'generated ignored hook result',
+    };
+  }
+  if (
+    (ts.isJsxExpression(parent) && parent.expression === expression) ||
+    (ts.isReturnStatement(parent) && parent.expression === expression)
+  ) {
+    return {
+      evidence: 'hook result is rendered directly',
+      expression: 'null',
+      label: 'generated empty render value',
+    };
+  }
   if (ts.isVariableDeclaration(parent) && parent.initializer === expression) {
     const bindingFallback = createBindingFallback(parent.name, sourceFile);
     if (bindingFallback !== undefined) {
@@ -318,7 +350,11 @@ function createBindingFallback(
     if (compared !== undefined) return compared;
     const usageShape = createIdentifierUsageFallback(binding);
     if (usageShape !== undefined) return usageShape;
-    return inferSemanticFallback(binding.text);
+    const semantic = inferSemanticFallback(binding.text);
+    if (semantic !== undefined) return semantic;
+    const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
+    if (directUsage !== undefined) return directUsage;
+    return undefined;
   }
   if (ts.isArrayBindingPattern(binding)) {
     const values: string[] = [];
@@ -372,14 +408,14 @@ function inferSemanticFallback(
   const normalized = name.toLowerCase();
   if (
     /^(?:is|has|can|should|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
-    /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended)$/u.test(
+    /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended|touched|dirty|pristine|pending|matches)$/u.test(
       normalized,
     )
   ) {
     return { expression: 'false', label: 'generated boolean false' };
   }
   if (
-    /^(?:set|on|handle|toggle|open|close|submit|refetch|refresh|mutate|dispatch|reset|update|remove|add)(?=[A-Z0-9_$]|$)/u.test(
+    /^(?:set|on|handle|toggle|open|close|submit|refetch|refresh|mutate|dispatch|navigate|reset|update|remove|add)(?=[A-Z0-9_$]|$)/u.test(
       semanticName,
     ) ||
     /(?:handler|callback)$/u.test(normalized)
@@ -397,7 +433,7 @@ function inferSemanticFallback(
     return { expression: '0', label: 'generated number 0' };
   }
   if (
-    /(?:props|context|form|data|filter|params|state|values|config|settings|user|company)$/u.test(
+    /(?:props|context|form|data|filter|params|state|values|config|settings|location|router|navigation|user|company)$/u.test(
       normalized,
     )
   ) {
@@ -406,11 +442,14 @@ function inferSemanticFallback(
   if (/(?:fallback|element|component|children|content)$/u.test(normalized)) {
     return { expression: 'null', label: 'generated empty render value' };
   }
+  if (/(?:error|exception)$/u.test(normalized)) {
+    return { expression: 'null', label: 'generated empty error value' };
+  }
   if (/(?:search|query)$/u.test(normalized)) {
     return { expression: JSON.stringify('Preview search'), label: 'generated preview text' };
   }
   if (
-    /(?:id|name|title|status|type|kind|code|message|description|text|slug|url|path|email)$/u.test(
+    /(?:value|id|name|title|status|type|kind|code|message|description|text|slug|url|path|email)$/u.test(
       normalized,
     )
   ) {
@@ -697,21 +736,13 @@ function createRuntimeHookIdentity(
     .slice(0, 24);
 }
 
-/** Returns whether a module is project-like or the intentionally supported URL-state package. */
+/**
+ * Admits imported hooks independently of package names while retaining explicit React exclusions.
+ * Every admitted hook still needs bounded local fallback evidence before any rewrite is emitted.
+ */
 function isEligibleHookModule(moduleSpecifier: string): boolean {
   if (EXCLUDED_MODULES.has(moduleSpecifier)) return false;
-  if (moduleSpecifier === QUERY_PARAM_MODULE) return true;
-  if (
-    moduleSpecifier.startsWith('.') ||
-    moduleSpecifier.startsWith('/') ||
-    moduleSpecifier.startsWith('~/') ||
-    moduleSpecifier.startsWith('@/')
-  ) {
-    return true;
-  }
-  if (moduleSpecifier.startsWith('@')) return false;
-  const [root = ''] = moduleSpecifier.split('/');
-  return moduleSpecifier.includes('/') && !root.includes('-');
+  return moduleSpecifier.length > 0;
 }
 
 /** Finds the nearest render-time function while excluding module-level hook initialization. */

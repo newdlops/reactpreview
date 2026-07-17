@@ -54,6 +54,11 @@ export function createPreviewApolloBridgePlugin(options: PreviewApolloBridgePlug
     setup(build): void {
       let resolutionPromise: Promise<OptionalApolloResolution> | undefined;
 
+      /** Re-probes restored or newly installed project packages on every persistent rebuild. */
+      build.onStart(() => {
+        resolutionPromise = undefined;
+      });
+
       /** Resolves the private bridge and memoizes optional Apollo package discovery. */
       async function resolveApolloBridge(
         arguments_: OnResolveArgs,

@@ -47,6 +47,11 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
     setup(build): void {
       let resolutionPromise: Promise<string | undefined> | undefined;
 
+      /** Re-probes restored or newly installed React Router on every persistent rebuild. */
+      build.onStart(() => {
+        resolutionPromise = undefined;
+      });
+
       /** Resolves the private bridge and memoizes optional project package discovery. */
       async function resolveRouterBridge(
         arguments_: OnResolveArgs,

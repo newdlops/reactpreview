@@ -42,6 +42,11 @@ export function createPreviewFormikBridgePlugin(options: PreviewFormikBridgePlug
     setup(build): void {
       let resolutionPromise: Promise<string | undefined> | undefined;
 
+      /** Re-probes restored or newly installed project Formik on every persistent rebuild. */
+      build.onStart(() => {
+        resolutionPromise = undefined;
+      });
+
       /** Resolves the private bridge and memoizes optional project Formik discovery. */
       async function resolveFormikBridge(
         arguments_: OnResolveArgs,

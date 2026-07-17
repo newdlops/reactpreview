@@ -49,6 +49,11 @@ export function createPreviewContextBridgePlugin(
     setup(build): void {
       let resolutionPromise: Promise<string | undefined> | undefined;
 
+      /** Re-probes restored or newly installed project React on every persistent rebuild. */
+      build.onStart(() => {
+        resolutionPromise = undefined;
+      });
+
       /** Resolves only the private bridge specifier and memoizes optional project React discovery. */
       async function resolveContextBridge(
         arguments_: OnResolveArgs,

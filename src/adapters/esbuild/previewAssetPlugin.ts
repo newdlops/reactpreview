@@ -79,6 +79,12 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
   return {
     name: 'react-preview-assets',
     setup(build): void {
+      /** Resets compilation-local accounting when a persistent esbuild context starts a rebuild. */
+      build.onStart(() => {
+        assetBudget.representations.clear();
+        assetBudget.totalBytes = 0;
+      });
+
       /**
        * Resolves only imports requiring generated JavaScript instead of a normal URL loader.
        *

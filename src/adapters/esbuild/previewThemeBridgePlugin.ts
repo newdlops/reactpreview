@@ -42,6 +42,11 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
     setup(build): void {
       let resolutionPromise: Promise<string | undefined> | undefined;
 
+      /** Re-probes restored or newly installed styled-components on every persistent rebuild. */
+      build.onStart(() => {
+        resolutionPromise = undefined;
+      });
+
       /** Resolves the private bridge and memoizes optional styled-components discovery. */
       async function resolveThemeBridge(
         arguments_: OnResolveArgs,

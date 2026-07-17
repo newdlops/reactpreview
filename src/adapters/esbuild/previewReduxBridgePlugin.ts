@@ -45,6 +45,11 @@ export function createPreviewReduxBridgePlugin(options: PreviewReduxBridgePlugin
     setup(build): void {
       let resolutionPromise: Promise<string | undefined> | undefined;
 
+      /** Re-probes restored or newly installed React Redux on every persistent rebuild. */
+      build.onStart(() => {
+        resolutionPromise = undefined;
+      });
+
       /** Resolves the private bridge and memoizes optional React Redux discovery. */
       async function resolveReduxBridge(
         arguments_: OnResolveArgs,

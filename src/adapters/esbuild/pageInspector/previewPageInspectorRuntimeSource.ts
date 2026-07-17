@@ -8,6 +8,7 @@
  */
 import { createPreviewInspectorFiberRuntimeSource } from './previewInspectorFiberRuntimeSource';
 import { createPreviewInspectorChainRuntimeSource } from './previewInspectorChainRuntimeSource';
+import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
@@ -27,6 +28,7 @@ export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector
  */
 export function createPreviewPageInspectorRuntimeSource(): string {
   const chainRuntimeSource = createPreviewInspectorChainRuntimeSource();
+  const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   return String.raw`
@@ -77,6 +79,8 @@ function createPreviewInspectorSession() {
     propsRevisionByExport: new Map(),
     selectedExportName:
       typeof persisted.selectedExportName === 'string' ? persisted.selectedExportName : '',
+    selectedTreeNodeId:
+      typeof persisted.selectedTreeNodeId === 'string' ? persisted.selectedTreeNodeId : undefined,
     version: 0,
   };
 }
@@ -182,6 +186,7 @@ function persistPreviewInspectorState() {
         highlightEnabled: previewInspectorSession.highlightEnabled,
         overrides,
         selectedExportName: previewInspectorSession.selectedExportName,
+        selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,
       },
     });
   } catch {
@@ -706,250 +711,7 @@ const previewInspectorApi = {
 };
 globalThis[PREVIEW_INSPECTOR_API_KEY] = previewInspectorApi;
 
-const inspectorControlStyle = {
-  all: 'initial',
-  boxSizing: 'border-box',
-  color: 'var(--vscode-editor-foreground)',
-  font: '12px/1.4 var(--vscode-font-family)',
-};
-
-/** Creates one consistently isolated toolbar button. */
-function PreviewInspectorButton({ children, onClick }) {
-  return React.createElement(
-    'button',
-    {
-      onClick,
-      style: {
-        ...inspectorControlStyle,
-        background: 'var(--vscode-button-secondaryBackground)',
-        border: '1px solid var(--vscode-panel-border)',
-        borderRadius: 3,
-        color: 'var(--vscode-button-secondaryForeground)',
-        cursor: 'pointer',
-        padding: '4px 8px',
-      },
-      type: 'button',
-    },
-    children,
-  );
-}
-/** Reads generated-value provenance for the selected target without exposing source paths. */
-function readSelectedPreviewInspectorInferredProps(exportName) {
-  for (const descriptor of previewInspectorSession.descriptors) {
-    const targetName = descriptor?.inspector?.target?.exportName ?? descriptor?.exportName;
-    if (targetName !== exportName) continue;
-    const inferredProps = descriptor?.inspector?.targetInferredProps ?? descriptor?.inferredProps;
-    return Array.isArray(inferredProps) ? inferredProps : [];
-  }
-  return [];
-}
-
-/** Renders the export picker, highlight toggle, JSON props editor, and explicit state boundary. */
-function PreviewInspectorToolbar() {
-  usePreviewInspectorStore();
-  const selectedExportName = previewInspectorSession.selectedExportName;
-  const baseProps = previewInspectorSession.basePropsByExport.get(selectedExportName) ?? {};
-  const overrideProps = previewInspectorSession.overridesByExport.get(selectedExportName) ?? {};
-  const effectiveProps = { ...baseProps, ...overrideProps };
-  const inferredProps = readSelectedPreviewInspectorInferredProps(selectedExportName);
-  const draftKey =
-    selectedExportName + ':' +
-    (previewInspectorSession.basePropsFingerprintByExport.get(selectedExportName) ?? '') + ':' +
-    stringifyPreviewInspectorProps(overrideProps);
-  const [draftText, setDraftText] = React.useState(() =>
-    stringifyPreviewInspectorProps(effectiveProps),
-  );
-  const [draftError, setDraftError] = React.useState('');
-  React.useEffect(() => {
-    setDraftText(stringifyPreviewInspectorProps(effectiveProps));
-    setDraftError('');
-  }, [draftKey]);
-
-  /** Parses one plain JSON object and commits it as the selected target's override layer. */
-  const applyDraft = () => {
-    try {
-      const value = JSON.parse(draftText);
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-        throw new TypeError('Props JSON must be an object.');
-      }
-      setPreviewInspectorPropsOverride(selectedExportName, value);
-      setDraftError('');
-    } catch (error) {
-      setDraftError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const labelStyle = {
-    ...inspectorControlStyle,
-    color: 'var(--vscode-descriptionForeground)',
-    display: 'grid',
-    gap: 3,
-  };
-  return React.createElement(
-    'details',
-    {
-      open: true,
-      style: {
-        ...inspectorControlStyle,
-        background: 'var(--vscode-editor-background)',
-        border: '1px solid var(--vscode-panel-border)',
-        borderRadius: 5,
-        boxShadow: '0 4px 18px rgba(0, 0, 0, 0.28)',
-        display: 'block',
-        maxHeight: 'calc(100vh - 24px)',
-        overflow: 'auto',
-        position: 'fixed',
-        right: 12,
-        top: 12,
-        width: 360,
-        zIndex: 2147483647,
-      },
-    },
-    React.createElement(
-      'summary',
-      {
-        style: {
-          ...inspectorControlStyle,
-          cursor: 'pointer',
-          fontWeight: 600,
-          padding: 10,
-        },
-      },
-      'React Page Inspector',
-    ),
-    React.createElement(
-      'div',
-      {
-        style: {
-          ...inspectorControlStyle,
-          display: 'grid',
-          gap: 9,
-          padding: '0 10px 10px',
-        },
-      },
-      React.createElement(
-        'code',
-        {
-          style: {
-            ...labelStyle,
-            background: 'var(--vscode-textCodeBlock-background)',
-            display: 'block',
-            overflow: 'auto',
-            padding: 6,
-            whiteSpace: 'nowrap',
-          },
-        },
-        describePreviewInspectorAncestry(),
-      ),
-      React.createElement(
-        'label',
-        { style: labelStyle },
-        'Inspected export',
-        React.createElement(
-          'select',
-          {
-            onChange: (event) => selectPreviewInspectorExport(event.target.value),
-            style: {
-              ...inspectorControlStyle,
-              background: 'var(--vscode-dropdown-background)',
-              border: '1px solid var(--vscode-dropdown-border)',
-              color: 'var(--vscode-dropdown-foreground)',
-              padding: 4,
-            },
-            value: selectedExportName,
-          },
-          previewInspectorSession.descriptorNames.map((name) =>
-            React.createElement('option', { key: name, value: name }, formatPreviewInspectorEntryName(name)),
-          ),
-        ),
-      ),
-      React.createElement(
-        'label',
-        { style: { ...labelStyle, alignItems: 'center', display: 'flex', gap: 6 } },
-        React.createElement('input', {
-          checked: previewInspectorSession.highlightEnabled,
-          onChange: (event) => setPreviewInspectorHighlightEnabled(event.target.checked),
-          type: 'checkbox',
-        }),
-        'Highlight target',
-      ),
-      React.createElement(
-        'div',
-        { style: { ...inspectorControlStyle, display: 'flex', flexWrap: 'wrap', gap: 6 } },
-        React.createElement(
-          PreviewInspectorButton,
-          { onClick: () => setPreviewInspectorPickerEnabled(!previewInspectorSession.pickerEnabled) },
-          previewInspectorSession.pickerEnabled ? 'Cancel picker' : 'Pick element',
-        ),
-        React.createElement(
-          PreviewInspectorButton,
-          { onClick: () => remountPreviewInspectorExport(selectedExportName) },
-          'Remount',
-        ),
-      ),
-      React.createElement(
-        'small',
-        { style: { ...labelStyle, display: 'block' } },
-        previewInspectorSession.highlightStatus,
-      ),
-      inferredProps.length > 0
-        ? React.createElement(
-            'small',
-            { style: { ...labelStyle, display: 'block' } },
-            'Auto-generated preview values: ' + inferredProps
-              .map((item) => String(item.path) + ' (' + String(item.kind) + ')')
-              .join(', '),
-          )
-        : null,
-      React.createElement(
-        'label',
-        { style: labelStyle },
-        'Serializable props (JSON)',
-        React.createElement('textarea', {
-          onChange: (event) => setDraftText(event.target.value),
-          spellCheck: false,
-          style: {
-            ...inspectorControlStyle,
-            background: 'var(--vscode-input-background)',
-            border: '1px solid var(--vscode-input-border)',
-            color: 'var(--vscode-input-foreground)',
-            font: '11px/1.45 var(--vscode-editor-font-family)',
-            minHeight: 150,
-            padding: 7,
-            resize: 'vertical',
-            width: '100%',
-          },
-          value: draftText,
-        }),
-      ),
-      draftError.length > 0
-        ? React.createElement(
-            'div',
-            { style: { ...inspectorControlStyle, color: 'var(--vscode-errorForeground)' } },
-            draftError,
-          )
-        : null,
-      React.createElement(
-        'div',
-        { style: { ...inspectorControlStyle, display: 'flex', gap: 6 } },
-        React.createElement(PreviewInspectorButton, { onClick: applyDraft }, 'Apply props'),
-        React.createElement(
-          PreviewInspectorButton,
-          {
-            onClick: () => resetPreviewInspectorPropsOverride(selectedExportName),
-          },
-          'Reset props',
-        ),
-      ),
-      React.createElement(
-        'small',
-        { style: { ...labelStyle, display: 'block' } },
-        'Component props are editable here. Internal hook state uses the page UI or a source edit; ' +
-          'React has no stable public API for rewriting arbitrary hook slots.',
-      ),
-    ),
-  );
-}
+${devtoolsUiRuntimeSource}
 
 /** Mounts inspector chrome through a portal and keeps transient observers aligned with hot reload. */
 function PreviewPageInspectorShell({ descriptors, children }) {

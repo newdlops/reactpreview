@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1033 - 2026-07-17
+
+- Vite의 project-root 절대 `import.meta.glob('/src/...')` 패턴을 nearest package root 기준으로 해석하고,
+  생성 import는 importer-relative specifier로 번들링하면서 앱이 읽는 object key는 원래 `/src/...`로 보존
+- 모노레포 workspace 안의 sibling으로 빠지는 `..` 및 project root 밖을 가리키는 symlink를 거부하고,
+  기존 상대 glob은 workspace 경계를 유지해 절대 패턴 지원이 filesystem 접근 범위를 넓히지 않도록 제한
+- generated icon registry처럼 256개가 넘는 유한 Vite glob은 빌드 전체 1,024개 참조 한도까지 허용하되
+  기존 16,384개 조회·2,048개 output·32 MiB 한도는 유지
+- `rtcc-poc-page`의 Agent 문서 41개, generated icon 330개와 정확한 `ui-test-page.tsx`를 fast/full production
+  compiler로 검증하고 full build 453 chunks, 4,280 dependencies, diagnostics 0건을 확인
+
 ## 0.1.1032 - 2026-07-17
 
 - Page Inspector의 reached workspace source에서 render-critical project hook과 `use-query-params` 호출을

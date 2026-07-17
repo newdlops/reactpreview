@@ -328,20 +328,22 @@ target·ancestor path, 모든 direct export의 entry/lazy/route evidence와 forw
 transformer는 프로젝트 JavaScript/TypeScript를 실행하지 않고 TypeScript의 TSX-aware parser로
 구문만 해석합니다. JSX text, regex 리터럴, nested template과 Unicode escape 식별자를 정확히
 구분하며 syntax recovery가 필요한 파일은 esbuild native glob으로 넘기지 않고 진단합니다.
-`import.meta.glob`은 상대 문자열 또는 문자열 배열, `!` 제외 패턴과 정적인 `eager`, `import`,
-`query`/`as` 옵션을 지원합니다. `require.context`는 상대 디렉터리, boolean 재귀 플래그와 최대
-200자의 선형 안전 부분집합 정규식 리터럴만 받습니다. 상대 template과 문자열 연결식 dynamic
-import/require는 runtime expression을 한 경로 segment의 `*`로 확장하고 정규화된 finite loader
-map으로 제한합니다. `new URL`은 정적 로컬 경로와 정확한 `import.meta.url` 조합만 `?url` import로
-바꿉니다.
+`import.meta.glob`은 상대 문자열이나 nearest package root 기준 `/...` 문자열 또는 문자열 배열,
+`!` 제외 패턴과 정적인 `eager`, `import`, `query`/`as` 옵션을 지원합니다. root pattern은 탐색용
+importer-relative specifier와 앱에 노출할 `/...` object key를 분리합니다. `require.context`는 상대
+디렉터리, boolean 재귀 플래그와 최대 200자의 선형 안전 부분집합 정규식 리터럴만 받습니다. 상대
+template과 문자열 연결식 dynamic import/require는 runtime expression을 한 경로 segment의 `*`로
+확장하고 정규화된 finite loader map으로 제한합니다. `new URL`은 정적 로컬 경로와 정확한
+`import.meta.url` 조합만 `?url` import로 바꿉니다.
 
-한 번의 확장은 128개의 512자 이하 패턴, 최대 256개 match, 4,096개 조회, 20단계 깊이로
-제한됩니다. 빌드 전체에도 확장 128회, 참조 1,024개, 조회 16,384개, watch directory 128개의
-합산 한도가 있습니다. 패턴은 `./` 또는 `../`로 시작하고 정규화된 경로와 따라가는 symlink 대상이
-현재 workspace 안에 남아야 하며 `.git`, `.hg`, `.svn`과 중첩 `node_modules`는 순회하지 않습니다.
-디렉터리는 streaming iterator로 읽고 exact path 조회도 같은 budget에 포함합니다. Vite/Webpack
-설정과 `.env`는 읽거나 실행하지 않으며 `import.meta.env`에는 `BASE_URL`, `MODE`, `DEV`, `PROD`,
-`SSR` 고정값만 주입합니다.
+한 번의 확장은 128개의 512자 이하 패턴, 기본 최대 256개 match, 4,096개 조회, 20단계 깊이로
+제한되며 Vite glob만 generated registry를 위해 빌드 전체 참조 한도와 같은 최대 1,024개 match를
+허용합니다. 빌드 전체에도 확장 128회, 참조 1,024개, 조회 16,384개, watch directory 128개의 합산
+한도가 있습니다. 상대 패턴은 `./` 또는 `../`로 시작해 workspace 안에 남고 `/...` Vite 패턴은
+nearest package root 안에 남아야 하며, 따라가는 symlink에도 같은 canonical boundary를 적용합니다.
+`.git`, `.hg`, `.svn`과 중첩 `node_modules`는 순회하지 않습니다. 디렉터리는 streaming iterator로
+읽고 exact path 조회도 같은 budget에 포함합니다. Vite/Webpack 설정과 `.env`는 읽거나 실행하지 않으며
+`import.meta.env`에는 `BASE_URL`, `MODE`, `DEV`, `PROD`, `SSR` 고정값만 주입합니다.
 
 `PreviewCompiler.compile(request, context)` port는 요청 단위 계약을 유지하지만 adapter instance는 위의 inert
 package/usage cache, 최대 256개 adaptive Router/global plan과 최대 12개 native build context를 소유합니다.

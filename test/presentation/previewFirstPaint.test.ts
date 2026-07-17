@@ -60,10 +60,10 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('full');
   });
 
-  /** Never presents an isolated export before the actual-parent Page Inspector context is ready. */
-  it('builds complete page context as the first Page Inspector artifact', async () => {
+  /** Paints the direct Inspector target before package-wide actual-parent discovery completes. */
+  it('defers complete page context until after the first Page Inspector artifact', async () => {
     const execute = vi.fn<BuildPreview['execute']>(() =>
-      Promise.resolve(createPreparedPreview('page-context')),
+      Promise.resolve(createPreparedPreview('page-first-paint')),
     );
 
     const result = await preparePreviewFirstPaint({
@@ -76,11 +76,11 @@ describe('preparePreviewFirstPaint', () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
-      preparationMode: 'full',
+      preparationMode: 'fast',
       renderMode: 'page-inspector',
     });
-    expect(result.requiresContextEnrichment).toBe(false);
-    expect(result.preparedPreview.artifact.contentHash).toBe('page-context');
+    expect(result.requiresContextEnrichment).toBe(true);
+    expect(result.preparedPreview.artifact.contentHash).toBe('page-first-paint');
   });
 
   /** Reuses the complete incremental path after a session has established full context once. */

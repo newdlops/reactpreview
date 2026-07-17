@@ -109,7 +109,7 @@ export class PreviewPanelSession implements vscode.Disposable {
         isCurrent: this.isCurrentRevision.bind(this),
         reportFailure: (error, target, revision) => {
           this.options.log.warn(
-            'Full React preview context enrichment failed; fast preview retained.',
+            `Full React preview context enrichment failed; fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.`,
             error,
           );
           this.performanceTrace.finish('failed', revision);
@@ -355,7 +355,10 @@ export class PreviewPanelSession implements vscode.Disposable {
         return;
       }
 
-      this.options.log.error('React preview build failed; retaining the last good preview.', error);
+      this.options.log.error(
+        `React preview build failed; retaining the last good preview. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.`,
+        error,
+      );
       this.performanceTrace.finish('failed', requestedRevision);
       rememberPreviewFailureDependencies(this.dependencies, error, target.request.workspaceRoot);
       const failure = describeBuildFailure(error);

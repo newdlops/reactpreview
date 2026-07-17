@@ -1,7 +1,7 @@
 /**
  * Selects the preparation policy used by a pinned preview session.
- * Export Gallery may publish a graph-reachable fast bundle first; Page Inspector always waits for
- * complete application context so an isolated export is never mistaken for its authored page.
+ * Every cold surface may publish a graph-reachable fast bundle first; complete Page Inspector
+ * ancestry is then enriched only after the browser has acknowledged that useful first paint.
  */
 import type { BuildPreview } from '../application/buildPreview';
 import type { PreparedPreview, PreviewBuildRequest, PreviewRenderMode } from '../domain/preview';
@@ -36,7 +36,7 @@ export interface PreviewFirstPaintOptions {
 }
 
 /**
- * Publishes complete page context directly, or uses fast-first/fallback discovery for Export Gallery.
+ * Publishes a fast cold artifact before deferred context, or reuses full preparation once warm.
  * Cancellation is never converted into fallback work because a newer revision already owns the UI.
  *
  * @param options Build service, immutable source request, render mode, and execution context.
@@ -45,8 +45,7 @@ export interface PreviewFirstPaintOptions {
 export async function preparePreviewFirstPaint(
   options: PreviewFirstPaintOptions,
 ): Promise<PreviewFirstPaintResult> {
-  const requiresCompleteInitialContext = options.renderMode === 'page-inspector';
-  if (!options.preferFast || requiresCompleteInitialContext) {
+  if (!options.preferFast) {
     const preparedPreview = await options.buildPreview.execute(
       {
         ...options.request,

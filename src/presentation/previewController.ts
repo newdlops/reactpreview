@@ -178,6 +178,7 @@ export class PreviewController implements vscode.Disposable {
     for (const session of this.sessions) {
       const affectsSession =
         event.affectsConfiguration('reactPreview.updateDelay', session.documentUri) ||
+        event.affectsConfiguration('reactPreview.maxOutputSizeMiB', session.documentUri) ||
         event.affectsConfiguration('reactPreview.tsconfig', session.documentUri) ||
         event.affectsConfiguration('reactPreview.setupFile', session.documentUri) ||
         event.affectsConfiguration('reactPreview.useStorybookPreview', session.documentUri);

@@ -718,8 +718,8 @@ describe('PreviewController', () => {
     expect(releaseArtifact).toHaveBeenCalledWith('same-hash');
   });
 
-  /** Rebuilds a pinned panel when either project runtime setup setting changes for its resource. */
-  it('routes setup configuration changes to existing sessions', async () => {
+  /** Rebuilds a pinned panel when a project runtime or output policy setting changes. */
+  it('routes build configuration changes to existing sessions', async () => {
     vi.useFakeTimers();
     const target = createTarget('/workspace/src/Configured.tsx');
     targetResolvers.active.mockReturnValue(target);
@@ -737,7 +737,11 @@ describe('PreviewController', () => {
     });
     execute.mockClear();
 
-    for (const changedSetting of ['reactPreview.setupFile', 'reactPreview.useStorybookPreview']) {
+    for (const changedSetting of [
+      'reactPreview.maxOutputSizeMiB',
+      'reactPreview.setupFile',
+      'reactPreview.useStorybookPreview',
+    ]) {
       vscodeState.configurationListeners[0]?.({
         affectsConfiguration: (section) => section === changedSetting,
       });

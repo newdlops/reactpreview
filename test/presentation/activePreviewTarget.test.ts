@@ -13,6 +13,7 @@ import {
 
 const vscodeState = vi.hoisted(() => ({
   activeTextEditor: undefined as { document: unknown } | undefined,
+  maxOutputSizeMiB: 128,
   openTextDocument: vi.fn(),
   setupFile: '',
   textDocuments: [] as unknown[],
@@ -75,6 +76,9 @@ vi.mock('vscode', () => {
           if (key === 'setupFile') {
             return (vscodeState.setupFile || fallback) as T;
           }
+          if (key === 'maxOutputSizeMiB') {
+            return vscodeState.maxOutputSizeMiB as T;
+          }
           if (key === 'tsconfig') {
             return (vscodeState.tsconfig || fallback) as T;
           }
@@ -97,6 +101,7 @@ vi.mock('vscode', () => {
 
 afterEach(() => {
   vscodeState.activeTextEditor = undefined;
+  vscodeState.maxOutputSizeMiB = 128;
   vscodeState.openTextDocument.mockReset();
   vscodeState.setupFile = '';
   vscodeState.textDocuments = [];
@@ -113,6 +118,7 @@ describe('resolveActivePreviewTarget', () => {
     const cleanChild = createDocument('/workspace/src/Clean.tsx', false, 'clean child source');
     const unrelatedDirtyChild = createDocument('/other/Other.tsx', true, 'other workspace source');
     vscodeState.activeTextEditor = { document: activeDocument };
+    vscodeState.maxOutputSizeMiB = 256;
     vscodeState.textDocuments = [activeDocument, dirtyChild, cleanChild, unrelatedDirtyChild];
     vscodeState.setupFile = '.react-preview/setup.tsx';
     vscodeState.tsconfig = 'tsconfig.app.json';
@@ -132,6 +138,7 @@ describe('resolveActivePreviewTarget', () => {
         sourceText: 'dirty child source',
       },
     ]);
+    expect(target.request.maxOutputMebibytes).toBe(256);
     expect(target.request.tsconfigPath).toBe(path.join('/workspace', 'tsconfig.app.json'));
     expect(target.request.setupModulePath).toBe(
       path.join('/workspace', '.react-preview/setup.tsx'),

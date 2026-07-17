@@ -6,6 +6,10 @@
 import path from 'node:path';
 import * as vscode from 'vscode';
 import type { PreviewBuildRequest, PreviewSourceSnapshot } from '../domain/preview';
+import {
+  DEFAULT_PREVIEW_OUTPUT_MEBIBYTES,
+  normalizePreviewOutputMebibytes,
+} from '../domain/previewOutputPolicy';
 import { getPreviewSourceLanguage } from '../domain/previewTarget';
 
 const SUPPORTED_DOCUMENT_SCHEMES = new Set(['file', 'vscode-remote']);
@@ -102,11 +106,15 @@ export function resolvePreviewTarget(
   const previewConfiguration = vscode.workspace.getConfiguration('reactPreview', document.uri);
   const configuredSetupFile = previewConfiguration.get<string>('setupFile', '').trim();
   const configuredTsconfig = previewConfiguration.get<string>('tsconfig', '').trim();
+  const maxOutputMebibytes = normalizePreviewOutputMebibytes(
+    previewConfiguration.get<number>('maxOutputSizeMiB', DEFAULT_PREVIEW_OUTPUT_MEBIBYTES),
+  );
   const useStorybookPreview = previewConfiguration.get<boolean>('useStorybookPreview', true);
   const baseRequest = {
     dependencySnapshots: collectDirtyDependencySnapshots(document, workspaceFolder),
     documentPath: document.fileName,
     language,
+    maxOutputMebibytes,
     sourceText: document.getText(),
     useStorybookPreview,
     workspaceRoot,

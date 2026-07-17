@@ -10,6 +10,14 @@ const PAGE_PATH = '/workspace/application/Page.tsx';
 
 /** Creates the minimum immutable plan used by source-generation assertions. */
 function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspectorAncestorPlan {
+  const renderChain = {
+    dependencyPaths: [PAGE_PATH, TARGET_PATH],
+    paths: [],
+    reachability: 'entry-unreachable' as const,
+    stopReason: 'entry-unreachable' as const,
+    target: { exportName: 'Target', sourcePath: TARGET_PATH },
+    truncated: false,
+  };
   return {
     complete: true,
     dependencyPaths: [PAGE_PATH, TARGET_PATH],
@@ -23,6 +31,8 @@ function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspecto
         owner: { exportName: 'Page', sourcePath: PAGE_PATH },
       },
     ],
+    renderChain,
+    renderChainsByExport: { Target: renderChain },
     root,
     rootAutomaticProps: { route: '/preview' },
     stopReason: 'root-reached',
@@ -44,6 +54,9 @@ describe('createPreviewInspectorRootSource', () => {
     );
     expect(source).toContain('"automaticProps":{"route":"/preview"}');
     expect(source).toContain('"targetAutomaticProps":{"enabled":true}');
+    expect(source).toContain('"renderChain":{"dependencyPaths"');
+    expect(source).toContain('"renderChainsByExport":{"Target"');
+    expect(source).toContain('"reachability":"entry-unreachable"');
     expect(source).toContain('"displayName":"Target inspector"');
     expect(source).toContain('"stopReason":"root-reached"');
     expect(source).toContain('export const previewTheme = undefined;');

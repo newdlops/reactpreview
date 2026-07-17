@@ -7,6 +7,7 @@
  * A global Symbol protocol lets target facades register before or below an actual ancestor root.
  */
 import { createPreviewInspectorFiberRuntimeSource } from './previewInspectorFiberRuntimeSource';
+import { createPreviewInspectorChainRuntimeSource } from './previewInspectorChainRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
@@ -25,6 +26,7 @@ export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector
  * @returns Plain JavaScript source safe to concatenate into the esbuild stdin entry.
  */
 export function createPreviewPageInspectorRuntimeSource(): string {
+  const chainRuntimeSource = createPreviewInspectorChainRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   return String.raw`
@@ -34,6 +36,8 @@ const PREVIEW_INSPECTOR_STATE_KEY = 'reactFilePreviewPageInspector';
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 
 ${fiberRuntimeSource}
+
+${chainRuntimeSource}
 
 /** Reads the serializable inspector subset retained by VS Code across full webview reloads. */
 function readPersistedPreviewInspectorState() {
@@ -198,6 +202,9 @@ function setPreviewInspectorDescriptors(descriptors) {
         )
         .filter((name) => typeof name === 'string' && name.length > 0)
     : [];
+  const renderChainNames = previewInspectorSession.descriptors.flatMap((descriptor) =>
+    Object.keys(descriptor?.inspector?.renderChainsByExport ?? {}),
+  );
   const rootNames = previewInspectorSession.descriptors.flatMap((descriptor) => {
     const root = descriptor?.inspector?.root;
     if (root === undefined) return [];
@@ -211,7 +218,12 @@ function setPreviewInspectorDescriptors(descriptors) {
     return [rootName];
   });
   const uniqueNames = [
-    ...new Set([...names, ...rootNames, ...previewInspectorSession.boundariesByExport.keys()]),
+    ...new Set([
+      ...names,
+      ...renderChainNames,
+      ...rootNames,
+      ...previewInspectorSession.boundariesByExport.keys(),
+    ]),
   ];
   const activeNames = new Set(uniqueNames);
   for (const registry of [
@@ -721,25 +733,6 @@ function PreviewInspectorButton({ children, onClick }) {
     children,
   );
 }
-
-/** Formats the statically proven root-to-target owner path without reading React Fiber internals. */
-function describePreviewInspectorAncestry() {
-  const inspector = previewInspectorSession.descriptors[0]?.inspector;
-  if (inspector === undefined) return 'No static component ancestry was discovered.';
-  const names = [];
-  for (const edge of [...(inspector.ancestry ?? [])].reverse()) {
-    const ownerName = edge?.owner?.exportName;
-    if (typeof ownerName === 'string' && names.at(-1) !== ownerName) names.push(ownerName);
-    for (const localName of [...(edge?.localOwnerNames ?? [])].reverse()) {
-      if (typeof localName === 'string' && names.at(-1) !== localName) names.push(localName);
-    }
-  }
-  const targetName = inspector.target?.exportName ?? 'default';
-  if (names.at(-1) !== targetName) names.push(targetName);
-  return names.join('  ›  ') +
-    (inspector.complete === true ? '' : '  ·  partial: ' + String(inspector.stopReason));
-}
-
 /** Reads generated-value provenance for the selected target without exposing source paths. */
 function readSelectedPreviewInspectorInferredProps(exportName) {
   for (const descriptor of previewInspectorSession.descriptors) {

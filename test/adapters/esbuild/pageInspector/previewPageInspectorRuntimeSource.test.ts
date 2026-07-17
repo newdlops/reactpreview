@@ -51,6 +51,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('descriptor?.inspector === undefined');
     expect(source).toContain('DirectPreviewTarget');
     expect(source).toContain('describePreviewInspectorAncestry');
+    expect(source).toContain('Object.keys(descriptor?.inspector?.renderChainsByExport ?? {})');
+    expect(source).toContain('renderChainsByExport?.[selectedExportName]');
     expect(source).toContain('class PreviewInspectorTargetBoundary extends React.Component');
     expect(source).toContain('static getDerivedStateFromError(error)');
     expect(source).toContain('rememberCapturedReactError(error)');

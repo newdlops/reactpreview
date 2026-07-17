@@ -117,6 +117,8 @@ export function createPreviewInspectorRootSource(
     inspector: {
       ancestry: plan.edges,
       complete: plan.complete,
+      renderChain: plan.renderChain,
+      renderChainsByExport: plan.renderChainsByExport,
       root: plan.root,
       stopReason: plan.stopReason,
       target: plan.target,

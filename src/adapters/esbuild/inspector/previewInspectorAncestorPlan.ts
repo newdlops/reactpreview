@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
 import {
   analyzePreviewLocalParentSlices,
   analyzePreviewParentSlices,
@@ -13,6 +14,12 @@ import {
   type PreviewParentSliceStaticProps,
 } from '../parentSlice';
 import { matchesPreviewParentSliceTargetImport } from '../parentSlice/previewParentSliceImports';
+import {
+  createPreviewRenderChainPlan,
+  type PreviewRenderChainPlan,
+  type PreviewRenderChainPlansByExport,
+  type ResolvePreviewRenderGraphModule,
+} from '../renderGraph';
 import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
 
 const MAX_PROJECT_ANCESTOR_DEPTH = 8;
@@ -66,6 +73,10 @@ export interface PreviewInspectorAncestorPlan {
   readonly root: PreviewInspectorComponentReference;
   /** Props usable when a private owner prevents mounting the next outer component. */
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
+  /** Static application structure discovered independently from the conservative mount root. */
+  readonly renderChain: PreviewRenderChainPlan;
+  /** Entry-to-target plans for every explicit component export in the selected source file. */
+  readonly renderChainsByExport: PreviewRenderChainPlansByExport;
   /** Stable explanation shown when the ancestry is necessarily partial. */
   readonly stopReason: PreviewInspectorAncestorStopReason;
   /** Original selected export that nested instrumentation must intercept. */
@@ -94,6 +105,12 @@ export interface CreatePreviewInspectorAncestorPlanOptions {
   readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
   /** Current source reader; dirty editor snapshots should take precedence in the caller. */
   readonly readSource: ReadPreviewInspectorSource;
+  /** Project-aware resolver used by lazy, barrel, route-value, and entry graph discovery. */
+  readonly resolveModule?: ResolvePreviewRenderGraphModule;
+  /** Optional shared-index result for all current-file exports; avoids rebuilding the graph here. */
+  readonly renderChainsByExport?: PreviewRenderChainPlansByExport;
+  /** Cancels stale ancestor and render-chain discovery between bounded source batches. */
+  readonly signal?: AbortSignal;
   /** Bounded nearest-package or monorepo-package inventory in any order. */
   readonly sourcePaths: readonly string[];
 }
@@ -152,12 +169,24 @@ interface InspectorCandidateSource {
 export async function createPreviewInspectorAncestorPlan(
   options: CreatePreviewInspectorAncestorPlanOptions,
 ): Promise<PreviewInspectorAncestorPlan> {
+  throwIfPreviewBuildCancelled(options.signal);
   assertInspectorTarget(options.documentPath, options.exportName);
   const sourcePaths = [
     ...new Set(options.sourcePaths.map((sourcePath) => path.normalize(sourcePath))),
   ].sort();
   const target = freezeReference(options.documentPath, options.exportName);
-  const dependencies = new Set<string>([target.sourcePath]);
+  const renderChainsByExport = await readInspectorRenderChains(options, target, sourcePaths);
+  const renderChain = renderChainsByExport[target.exportName];
+  if (renderChain === undefined) {
+    throw new Error(`Missing Inspector render chain for export: ${target.exportName}`);
+  }
+  const dependencies = new Set<string>([
+    target.sourcePath,
+    ...Object.values(renderChainsByExport).flatMap((plan) => plan.dependencyPaths),
+  ]);
+  const preferredSourcePaths = new Set(
+    renderChain.paths[0]?.steps.map((step) => path.normalize(step.sourcePath)) ?? [],
+  );
   const edges: PreviewInspectorAncestorEdge[] = [];
   const visitedReferences = new Set<string>([createReferenceKey(target)]);
   let currentAliases: readonly string[] = [target.exportName];
@@ -166,15 +195,18 @@ export async function createPreviewInspectorAncestorPlan(
   let targetAutomaticProps: PreviewParentSliceStaticProps = Object.freeze({});
 
   for (let depth = 0; depth < MAX_PROJECT_ANCESTOR_DEPTH; depth += 1) {
+    throwIfPreviewBuildCancelled(options.signal);
     const candidate = await findInspectorUsage({
       acceptedImportSpecifiers: options.acceptedImportSpecifiers?.(currentRoot) ?? [],
       ...(options.matchesTargetImport === undefined
         ? {}
         : { matchesTargetImport: options.matchesTargetImport }),
       readSource: options.readSource,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       sourcePaths,
       targetExportNames: currentAliases,
       targetPath: currentRoot.sourcePath,
+      preferredSourcePaths,
     });
     if (candidate === undefined) {
       return freezePlan({
@@ -183,6 +215,8 @@ export async function createPreviewInspectorAncestorPlan(
         edges,
         root: currentRoot,
         rootAutomaticProps,
+        renderChain,
+        renderChainsByExport,
         stopReason: 'root-reached',
         target,
         targetAutomaticProps,
@@ -205,6 +239,8 @@ export async function createPreviewInspectorAncestorPlan(
         edges,
         root: currentRoot,
         rootAutomaticProps,
+        renderChain,
+        renderChainsByExport,
         stopReason: 'root-reached',
         target,
         targetAutomaticProps,
@@ -220,6 +256,8 @@ export async function createPreviewInspectorAncestorPlan(
         edges,
         root: currentRoot,
         rootAutomaticProps,
+        renderChain,
+        renderChainsByExport,
         stopReason: promotion.stopReason,
         target,
         targetAutomaticProps,
@@ -236,6 +274,8 @@ export async function createPreviewInspectorAncestorPlan(
         edges,
         root: currentRoot,
         rootAutomaticProps,
+        renderChain,
+        renderChainsByExport,
         stopReason: 'cycle',
         target,
         targetAutomaticProps,
@@ -265,17 +305,57 @@ export async function createPreviewInspectorAncestorPlan(
     edges,
     root: currentRoot,
     rootAutomaticProps,
+    renderChain,
+    renderChainsByExport,
     stopReason: 'depth-limit',
     target,
     targetAutomaticProps,
   });
 }
 
+/**
+ * Reuses a caller-provided all-export graph when available, otherwise preserves the standalone
+ * ancestor-planner API by discovering only its selected target export.
+ */
+async function readInspectorRenderChains(
+  options: CreatePreviewInspectorAncestorPlanOptions,
+  target: PreviewInspectorComponentReference,
+  sourcePaths: readonly string[],
+): Promise<PreviewRenderChainPlansByExport> {
+  if (options.renderChainsByExport !== undefined) {
+    const plans = Object.freeze({ ...options.renderChainsByExport });
+    const selectedPlan = plans[target.exportName];
+    if (
+      selectedPlan === undefined ||
+      path.normalize(selectedPlan.target.sourcePath) !== path.normalize(target.sourcePath) ||
+      selectedPlan.target.exportName !== target.exportName
+    ) {
+      throw new TypeError(
+        'Precomputed Inspector render chains do not contain the selected target.',
+      );
+    }
+    return plans;
+  }
+  const selectedPlan = await createPreviewRenderChainPlan({
+    documentPath: target.sourcePath,
+    exportName: target.exportName,
+    readSource: options.readSource,
+    resolveModule:
+      options.resolveModule ?? createLexicalInspectorModuleResolver(options.sourcePaths),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    sourcePaths,
+  });
+  return Object.freeze({ [target.exportName]: selectedPlan });
+}
+
 /** Selects the strongest page-like JSX usage across direct imports and bounded barrel chains. */
 async function findInspectorUsage(options: {
   readonly acceptedImportSpecifiers: readonly string[];
   readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
+  /** Source modules selected by the best entry-connected graph path. */
+  readonly preferredSourcePaths: ReadonlySet<string>;
   readonly readSource: ReadPreviewInspectorSource;
+  readonly signal?: AbortSignal;
   readonly sourcePaths: readonly string[];
   readonly targetExportNames: readonly string[];
   readonly targetPath: string;
@@ -288,6 +368,7 @@ async function findInspectorUsage(options: {
     batchStart < options.sourcePaths.length;
     batchStart += MAX_CONCURRENT_SOURCE_READS
   ) {
+    throwIfPreviewBuildCancelled(options.signal);
     const batchPaths = options.sourcePaths.slice(
       batchStart,
       batchStart + MAX_CONCURRENT_SOURCE_READS,
@@ -301,6 +382,7 @@ async function findInspectorUsage(options: {
             : await options.readSource(sourcePath),
       })),
     );
+    throwIfPreviewBuildCancelled(options.signal);
     for (const source of batch) {
       if (
         source.sourceText === undefined ||
@@ -346,7 +428,9 @@ async function findInspectorUsage(options: {
   }
   const rankedCandidates = candidates.map((candidate) => ({
     candidate,
-    score: scoreInspectorUsageCandidate(candidate),
+    score:
+      scoreInspectorUsageCandidate(candidate) +
+      (options.preferredSourcePaths.has(path.normalize(candidate.slice.consumerPath)) ? 2_000 : 0),
   }));
   rankedCandidates.sort(compareRankedInspectorUsageCandidates);
   return rankedCandidates[0]?.candidate;
@@ -678,6 +762,8 @@ function freezePlan(options: {
   readonly edges: readonly PreviewInspectorAncestorEdge[];
   readonly root: PreviewInspectorComponentReference;
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
+  readonly renderChain: PreviewRenderChainPlan;
+  readonly renderChainsByExport: PreviewRenderChainPlansByExport;
   readonly stopReason: PreviewInspectorAncestorStopReason;
   readonly target: PreviewInspectorComponentReference;
   readonly targetAutomaticProps: PreviewParentSliceStaticProps;
@@ -688,8 +774,47 @@ function freezePlan(options: {
     edges: Object.freeze([...options.edges]),
     root: options.root,
     rootAutomaticProps: options.rootAutomaticProps,
+    renderChain: options.renderChain,
+    renderChainsByExport: options.renderChainsByExport,
     stopReason: options.stopReason,
     target: options.target,
     targetAutomaticProps: options.targetAutomaticProps,
   });
+}
+
+/**
+ * Provides a dependency-free fallback resolver for isolated planner tests and conventional projects.
+ * Production discovery supplies TypeScript's exact resolver; this fallback only accepts relative
+ * imports that match an inventoried source path and never probes outside the supplied inventory.
+ */
+function createLexicalInspectorModuleResolver(
+  sourcePaths: readonly string[],
+): ResolvePreviewRenderGraphModule {
+  const byStem = new Map<string, string>();
+  for (const sourcePath of sourcePaths) {
+    const normalizedPath = path.normalize(sourcePath);
+    byStem.set(removeInspectorSourceExtension(normalizedPath), normalizedPath);
+    const basename = path.basename(normalizedPath).replace(/\.[^.]+$/u, '');
+    if (basename === 'index') {
+      byStem.set(path.dirname(normalizedPath), normalizedPath);
+    }
+  }
+  return (moduleSpecifier, consumerPath) => {
+    if (!moduleSpecifier.startsWith('.')) {
+      return undefined;
+    }
+    return byStem.get(
+      removeInspectorSourceExtension(
+        path.resolve(
+          path.dirname(consumerPath),
+          moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier,
+        ),
+      ),
+    );
+  };
+}
+
+/** Normalizes extensionful and extensionless relative imports to one inventory lookup key. */
+function removeInspectorSourceExtension(sourcePath: string): string {
+  return path.normalize(sourcePath).replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
 }

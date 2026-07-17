@@ -171,6 +171,12 @@ describe('createPreviewInspectorAncestorPlan', () => {
     expect(plan.stopReason).toBe('root-reached');
     expect(plan.root).toEqual({ exportName: 'App', sourcePath: TARGET_PATH });
     expect(plan.rootAutomaticProps).toEqual({ locale: 'ko' });
+    expect(plan.renderChain.reachability).toBe('entry-connected');
+    expect(plan.renderChain.paths[0]?.entryPoint).toMatchObject({
+      kind: 'create-root',
+      sourcePath: entryPath,
+    });
+    expect(plan.dependencyPaths).toContain(entryPath);
   });
 
   /** Keeps the last component root when an exported React Router configuration owns its JSX use. */

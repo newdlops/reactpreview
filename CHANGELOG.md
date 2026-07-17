@@ -2,6 +2,19 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1026 - 2026-07-17
+
+- cold fast pass에서 자동 Storybook setup과 convention watcher 수집을 실제 mount 뒤로 미루고 dynamic import를
+  단일 entry로 합쳐 최초 artifact publication의 수백 개 파일 쓰기와 깨진 선택적 setup 영향을 제거
+- route가 많은 full graph의 in-memory output/chunk 제한을 2,048개로 높이고 artifact filesystem worker를
+  16개로 확장하되 기존 32 MiB 총출력 한도와 content-addressed 경로 검증은 유지
+- 브라우저 graph가 선택적으로 노출한 `fs` 등 Node built-in을 host capability 없는 neutral CommonJS shim으로
+  바꿔 실제 Node API를 쓰지 않는 component가 module resolution 단계에서 실패하지 않도록 처리
+- 가장 가까운 monorepo package에서 `sass`를 찾아 SCSS/Sass와 CSS Modules를 컴파일하고 transitive partial을
+  hot-reload dependency로 추적하며, compiler 부재·style 오류는 component build를 막지 않는 warning으로 전환
+- 자동 Storybook graph와 target graph가 동시에 실패해도 setup-free retry를 허용해 stale preview import를
+  격리하고, target 자체 오류가 남으면 두 번째 build의 정확한 target diagnostic을 표시
+
 ## 0.1.1025 - 2026-07-17
 
 - 기존 우측 floating toolbar를 Chrome DevTools Elements와 유사한 하단 dock으로 교체하고, 실제 page는

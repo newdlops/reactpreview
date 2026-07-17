@@ -210,6 +210,57 @@ describe('expandStaticPatterns', () => {
 
     expect(expansion.matches.map(({ key }) => key)).toEqual(['./pages/fooXXbar.tsx']);
   });
+
+  /** Keeps Vite root keys distinct from the relative specifiers consumed by generated imports. */
+  it('expands project-root patterns without changing their runtime keys', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const projectRoot = path.join(workspaceRoot, 'packages', 'client');
+    const sourceDirectory = path.join(projectRoot, 'src', 'features', 'registry');
+    const iconsDirectory = path.join(projectRoot, 'src', 'common', 'icons');
+    await Promise.all([
+      mkdir(sourceDirectory, { recursive: true }),
+      mkdir(iconsDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(path.join(iconsDirectory, 'Add.tsx'), 'export default 1;'),
+      writeFile(path.join(iconsDirectory, 'Hidden.tsx'), 'export default 2;'),
+    ]);
+
+    const expansion = await expandStaticPatterns({
+      importerPath: path.join(sourceDirectory, 'entry.tsx'),
+      patterns: ['/src/common/icons/*.tsx', '!/src/common/icons/Hidden.tsx'],
+      rootRelativeBaseDirectory: projectRoot,
+      workspaceRoot,
+    });
+
+    expect(expansion.matches).toEqual([
+      { key: '/src/common/icons/Add.tsx', specifier: '../../common/icons/Add.tsx' },
+    ]);
+    expect(expansion.watchDirectories).toEqual([iconsDirectory]);
+  });
+
+  /** Applies the project boundary to symlink targets reached only through a Vite root glob. */
+  it('rejects root-relative symlink targets outside the project package', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const projectRoot = path.join(workspaceRoot, 'packages', 'client');
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const sharedDirectory = path.join(workspaceRoot, 'shared-icons');
+    await Promise.all([
+      mkdir(sourceDirectory, { recursive: true }),
+      mkdir(sharedDirectory, { recursive: true }),
+    ]);
+    await writeFile(path.join(sharedDirectory, 'Shared.tsx'), 'export default 1;');
+    await symlink(sharedDirectory, path.join(sourceDirectory, 'linked-icons'), 'dir');
+
+    await expect(
+      expandStaticPatterns({
+        importerPath: path.join(sourceDirectory, 'entry.tsx'),
+        patterns: ['/src/linked-icons/*.tsx'],
+        rootRelativeBaseDirectory: projectRoot,
+        workspaceRoot,
+      }),
+    ).rejects.toThrow('must stay inside the workspace');
+  });
 });
 
 /** Creates and records one empty operating-system temporary directory for automatic cleanup. */

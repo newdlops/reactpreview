@@ -405,6 +405,74 @@ describe('PreviewSourceTransformer', () => {
 
     expect(transformed.contents).toContain('./pages/Home.tsx');
   });
+
+  /** Resolves Vite `/src` globs from the nearest package root while preserving public map keys. */
+  it('transforms project-root import.meta.glob patterns with Vite-compatible keys', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const projectRoot = path.join(workspaceRoot, 'packages', 'client');
+    const sourceDirectory = path.join(projectRoot, 'src', 'common', 'packages', 'uitest');
+    const agentsDirectory = path.join(projectRoot, 'src', 'common', 'ui', 'agents');
+    await Promise.all([
+      mkdir(sourceDirectory, { recursive: true }),
+      mkdir(agentsDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(path.join(agentsDirectory, 'button.md'), '# Button'),
+      writeFile(path.join(agentsDirectory, 'index.md'), '# Index'),
+    ]);
+    const sourcePath = path.join(sourceDirectory, 'agent-doc-registry.ts');
+    const sourceText = [
+      'const docs = import.meta.glob("/src/common/ui/agents/*.md", { query: "?url", import: "default" });',
+      'const index = import.meta.glob("/src/common/ui/agents/index.md", { query: "?raw", import: "default", eager: true });',
+      'export { docs, index };',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({ projectRoot, workspaceRoot });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain('"/src/common/ui/agents/button.md"');
+    expect(transformed.contents).toContain('"/src/common/ui/agents/index.md"');
+    expect(transformed.contents).toContain('import("../../ui/agents/button.md?url")');
+    expect(transformed.contents).toContain('from "../../ui/agents/index.md?raw"');
+    expect(transformed.watchDirectories).toEqual([agentsDirectory]);
+  });
+
+  /** Lets a finite generated-icon registry use the build-wide cap instead of the legacy 256 cap. */
+  it('supports large Vite glob registries within the bounded build reference budget', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const projectRoot = path.join(workspaceRoot, 'client');
+    const iconsDirectory = path.join(projectRoot, 'src', 'common', 'ui', 'generated-icons');
+    const sourcePath = path.join(projectRoot, 'src', 'registry.ts');
+    await mkdir(iconsDirectory, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 330 }, (_, index) =>
+        writeFile(path.join(iconsDirectory, `Icon-${index.toString()}.tsx`), 'export default 1;'),
+      ),
+    );
+    const transformer = new PreviewSourceTransformer({ projectRoot, workspaceRoot });
+
+    const transformed = await transformer.transform(
+      sourcePath,
+      'export const icons = import.meta.glob("/src/common/ui/generated-icons/*.tsx");',
+    );
+
+    expect(transformed.contents).toContain('/src/common/ui/generated-icons/Icon-0.tsx');
+    expect(transformed.contents).toContain('/src/common/ui/generated-icons/Icon-329.tsx');
+    expect(transformed.contents.match(/:\s*\(\) => import\(/gu)).toHaveLength(330);
+  });
+
+  /** Rejects a root glob that attempts to leave its package even when the sibling is in workspace. */
+  it('confines project-root import.meta.glob patterns to the nearest package', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const projectRoot = path.join(workspaceRoot, 'packages', 'client');
+    const sourcePath = path.join(projectRoot, 'src', 'entry.tsx');
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    const transformer = new PreviewSourceTransformer({ projectRoot, workspaceRoot });
+
+    await expect(
+      transformer.transform(sourcePath, 'const files = import.meta.glob("/../shared/*.tsx");'),
+    ).rejects.toThrow('must stay inside the workspace');
+  });
 });
 
 /** Creates and records one empty workspace directory for cleanup after each test. */

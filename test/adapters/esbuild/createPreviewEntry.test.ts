@@ -16,12 +16,13 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain("import * as React from 'react'");
     expect(entry).toContain("import { createRoot } from 'react-dom/client'");
     expect(entry).toContain('await import("react-preview:setup")');
-    expect(entry).toContain('await import("react-preview:apollo")');
-    expect(entry).toContain('await import("react-preview:context")');
-    expect(entry).toContain('await import("react-preview:formik")');
-    expect(entry).toContain('await import("react-preview:redux")');
-    expect(entry).toContain('await import("react-preview:router")');
-    expect(entry).toContain('await import("react-preview:theme")');
+    expect(entry).toContain('import("react-preview:apollo")');
+    expect(entry).toContain('import("react-preview:context")');
+    expect(entry).toContain('import("react-preview:formik")');
+    expect(entry).toContain('import("react-preview:redux")');
+    expect(entry).toContain('import("react-preview:router")');
+    expect(entry).toContain('import("react-preview:theme")');
+    expect(entry).toContain('] = await Promise.all([');
     expect(entry).toContain('import("react-preview:target")');
     expect(entry).toContain(
       'const previewBrowserProcessStatus = initializePreviewBrowserProcess()',
@@ -30,7 +31,7 @@ describe('createPreviewEntry', () => {
       entry.indexOf('await import("react-preview:setup")'),
     );
     expect(entry.indexOf('await import("react-preview:setup")')).toBeLessThan(
-      entry.indexOf('await import("react-preview:target")'),
+      entry.indexOf('import("react-preview:target")'),
     );
     expect(entry).toContain('["ZUZU"]');
     expect(entry).toContain('applyStorybookDecorators');
@@ -54,7 +55,9 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('onUncaughtError(error, errorInfo)');
     expect(entry).toContain('onCaughtError(error)');
     expect(entry).toContain('onRecoverableError(error, errorInfo)');
-    expect(entry).toContain("enterRuntimePhase('load and evaluate target module graph')");
+    expect(entry).toContain(
+      "enterRuntimePhase('load automatic runtime bridges, props, and target graph')",
+    );
     expect(entry).toContain('Apollo invariant payload (decoded locally):');
     expect(entry).toContain('apolloBridge.createApolloPreviewElement');
     expect(entry).toContain('contextBridge.createContextPreviewElement');
@@ -72,7 +75,14 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain("readSetupMember(setupModule, 'routerPreview')");
     expect(entry).toContain('PreviewExportGallery');
     expect(entry).toContain('PreviewExportErrorBoundary');
-    expect(entry).toContain('React.createElement(React.Suspense, { fallback: null }, rendered)');
+    expect(entry).toContain('React.createElement(React.Suspense, { fallback: suspenseFallback }');
+    expect(entry).toContain("className: 'react-preview-suspense-placeholder'");
+    expect(entry).toContain('React.createElement(PreviewRenderedCommitSignal)');
+    expect(entry).toContain('const previewPreparationPromise = preparePreviewElement()');
+    expect(entry).toContain('React.createElement(\n    React.Fragment,');
+    expect(entry).not.toContain(
+      'React.createElement(\n    React.Suspense,\n    { fallback: null }',
+    );
     expect(entry).toContain("readSetupMember(setupModule, 'previewPropsByExport')");
     expect(entry).toContain('createPreviewPropsFromLayers(');
     expect(entry).toContain('descriptor.inferredPropShape');
@@ -82,9 +92,80 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('react-preview-export-label');
     expect(entry).toContain('Export: ');
     expect(entry).toContain("replacePreviewRuntimeListener('unhandledrejection'");
-    expect(entry).toContain('await import(message.scriptUri)');
-    expect(entry).toContain('await bootstrapPromise');
+    expect(entry).toContain('const PREVIEW_PROGRESS_MESSAGE_TYPE = "react-preview-progress"');
+    expect(entry).toContain("host.attachShadow({ mode: 'open' })");
+    expect(entry).toContain('message.revision < currentRevision');
+    expect(entry).toContain('updatePreviewProgressRuntimeDetail(phase)');
+    expect(entry).not.toContain('.innerHTML');
+    expect(entry).toContain('const importedEntryPromise = import(message.scriptUri)');
+    expect(entry).toContain('await preparedEntry.preparationPromise');
+    expect(entry).toContain('await preparedEntry.activate()');
     expect(entry).toContain('previewHotRuntime.bootstrapPromise = previewBootstrapPromise');
+  });
+
+  /** Preloads replacement resources before unmounting and admits content-addressed root entries. */
+  it('creates a low-blank-time content-addressed hot reload path', () => {
+    const entry = createPreviewEntry({
+      documentName: 'Preview.tsx',
+      globalNamespaces: [],
+      setupKind: 'none',
+    });
+
+    const preparationIndex = entry.indexOf('await preparedEntry.preparationPromise');
+    const unmountIndex = entry.indexOf('previewHotRuntime.root.unmount()', preparationIndex);
+
+    expect(preparationIndex).toBeGreaterThan(-1);
+    expect(unmountIndex).toBeGreaterThan(preparationIndex);
+    expect(entry).toContain("preloadLink.rel = 'modulepreload'");
+    expect(entry).toContain("nextLink.media = 'not all'");
+    expect(entry).toContain("nextLink.media = 'all'");
+    expect(entry).toContain('/^entry-[0-9a-f]{64}\\.js$/');
+    expect(entry).toContain('/^styles\\/[0-9a-f]{64}\\.css$/');
+    expect(entry).toContain('candidate.origin !== session.origin');
+    expect(entry).toContain("candidate.hash !== ''");
+    expect(entry).toContain('candidate.pathname.startsWith(session.directory)');
+    expect(entry).toContain("getAll('reactPreviewRevision')");
+    expect(entry).toContain("getAll('reactPreviewArtifact')");
+    expect(entry).toContain('entryIdentity.revision !== revision');
+    expect(entry).toContain('React Preview retained the previous render after preparation failed.');
+    expect(entry).toContain('retainedPrevious: !replacementStarted');
+    expect(entry).toContain('revision: message.revision');
+    expect(entry).toContain('applied: outcome.applied');
+    expect(entry).not.toContain("scriptUri.endsWith('/entry.js')");
+  });
+
+  /** Rejects stylesheet preload failures and preserves committed DOM for later global errors. */
+  it('contains style failures and post-commit runtime errors without destroying the mounted tree', () => {
+    const entry = createPreviewEntry({
+      documentName: 'Preview.tsx',
+      globalNamespaces: [],
+      setupKind: 'none',
+    });
+
+    expect(entry).toContain('could not preload the replacement stylesheet');
+    expect(entry).toContain('new Promise((resolve, reject) =>');
+    expect(entry).toContain('previewCommitCompleted ||');
+    expect(entry).toContain('React Preview retained the mounted revision after a runtime error.');
+    expect(entry).toContain("completePreviewCommit('failed')");
+    expect(entry).toContain('resolvePreviewCommit(outcome)');
+  });
+
+  /** Drops superseded preparation before it can unmount the currently displayed revision. */
+  it('guards asynchronous hot preparation with the latest revision and token', () => {
+    const entry = createPreviewEntry({
+      documentName: 'Preview.tsx',
+      globalNamespaces: [],
+      setupKind: 'none',
+    });
+
+    const finalGuard = entry.lastIndexOf('if (!isLatestHotReloadRequest(message))');
+    const unmount = entry.indexOf('previewHotRuntime.root.unmount()', finalGuard);
+    expect(finalGuard).toBeGreaterThan(-1);
+    expect(unmount).toBeGreaterThan(finalGuard);
+    expect(entry).toContain('latest.token === message.token');
+    expect(entry).toContain('latest.requestSequence === message.requestSequence');
+    expect(entry).toContain('stale: true');
+    expect(entry).toContain('reloadOutcomeByToken');
   });
 
   /** Keeps filesystem paths out of the runtime entry behind the private target bridge. */

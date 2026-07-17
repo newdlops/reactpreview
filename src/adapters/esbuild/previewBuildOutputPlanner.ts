@@ -2,7 +2,7 @@
  * Converts esbuild's multi-file in-memory result into the bounded browser artifacts understood by
  * React Preview. The planner performs no filesystem writes: it only joins metafile identities to
  * `OutputFile` objects, identifies the virtual entry and aggregate stylesheet, and exposes safe
- * auxiliary JavaScript paths that a later artifact-store change can publish below one revision.
+ * auxiliary JavaScript paths that the artifact store can publish once below its session root.
  */
 import path from 'node:path';
 import type { Metafile, OutputFile } from 'esbuild';
@@ -11,11 +11,11 @@ const MAX_PREVIEW_OUTPUT_FILES = 128;
 const JAVASCRIPT_OUTPUT_PATTERN = /\.[cm]?js$/iu;
 const STYLESHEET_OUTPUT_PATTERN = /\.css$/iu;
 
-/** One code-split JavaScript file loaded relative to the published preview entry. */
+/** One code-split JavaScript file loaded relative to a root-level published preview entry. */
 export interface PreviewAuxiliaryJavaScriptOutput {
   /** Immutable browser bytes emitted by esbuild for this chunk. */
   readonly contents: Uint8Array;
-  /** Safe POSIX path below the artifact revision's dedicated `chunks` directory. */
+  /** Stable content-hash path below the artifact session's shared `chunks` directory. */
   readonly relativePath: string;
 }
 
@@ -105,6 +105,11 @@ export function planPreviewBuildOutputs(
   if (!isJavaScriptOutput(entryOutput.relativePath)) {
     throw new PreviewBuildOutputPlannerError(
       `Preview virtual entry must emit JavaScript: ${entryOutput.relativePath}`,
+    );
+  }
+  if (path.posix.dirname(entryOutput.relativePath) !== '.') {
+    throw new PreviewBuildOutputPlannerError(
+      `Preview virtual entry must be emitted at the output root so shared chunk imports remain valid: ${entryOutput.relativePath}`,
     );
   }
 

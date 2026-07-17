@@ -40,7 +40,7 @@ describe('planPreviewBuildOutputs', () => {
       const result = await build({
         absWorkingDir: fixtureDirectory,
         bundle: true,
-        chunkNames: 'chunks/[name]-[hash]',
+        chunkNames: 'chunks/[hash]',
         entryNames: 'entry',
         format: 'esm',
         metafile: true,
@@ -64,13 +64,11 @@ describe('planPreviewBuildOutputs', () => {
       });
 
       expect(new TextDecoder().decode(plan.entryJavaScript)).toMatch(
-        /import\("\.\/chunks\/lazy-child-[A-Z0-9]+\.js"\)/u,
+        /import\("\.\/chunks\/[A-Z0-9]+\.js"\)/u,
       );
       expect(new TextDecoder().decode(plan.entryStylesheet)).toContain('.lazy-child');
       expect(plan.auxiliaryJavaScript).toHaveLength(1);
-      expect(plan.auxiliaryJavaScript[0]?.relativePath).toMatch(
-        /^chunks\/lazy-child-[A-Z0-9]+\.js$/u,
-      );
+      expect(plan.auxiliaryJavaScript[0]?.relativePath).toMatch(/^chunks\/[A-Z0-9]+\.js$/u);
       expect(
         new TextDecoder().decode(plan.auxiliaryJavaScript[0]?.contents ?? new Uint8Array()),
       ).toContain('LAZY_CHILD_MARKER');
@@ -184,6 +182,13 @@ describe('planPreviewBuildOutputs', () => {
     expect(() => planPreviewBuildOutputs(fixture)).toThrow(/below chunks/u);
   });
 
+  /** Keeps the entry at the session root because its generated `./chunks` imports are not rewritten. */
+  it('rejects a nested virtual entry output', () => {
+    const fixture = createDirectPlannerFixture(['entries/entry.js']);
+
+    expect(() => planPreviewBuildOutputs(fixture)).toThrow(/output root/u);
+  });
+
   /** Enforces a finite artifact count even for otherwise valid code-split output paths. */
   it('rejects builds above the auxiliary file budget', () => {
     const paths = [
@@ -208,7 +213,11 @@ function createDirectPlannerFixture(
   const outputs = Object.fromEntries(
     relativePaths.map((relativePath) => [
       `out/${relativePath}`,
-      createMetadataOutput(relativePath === 'entry.js' ? VIRTUAL_ENTRY_NAME : undefined),
+      createMetadataOutput(
+        relativePath === 'entry.js' || relativePath.endsWith('/entry.js')
+          ? VIRTUAL_ENTRY_NAME
+          : undefined,
+      ),
     ]),
   );
   return {

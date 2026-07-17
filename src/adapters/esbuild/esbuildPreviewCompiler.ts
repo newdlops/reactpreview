@@ -4,23 +4,19 @@
  * until the separate artifact-store adapter publishes them under VS Code global storage.
  */
 import path from 'node:path';
-import {
-  build,
-  stop,
-  type BuildFailure,
-  type BuildResult,
-  type Message,
-  type Metafile,
-  type OutputFile,
-} from 'esbuild';
+import { stop, type BuildResult } from 'esbuild';
 import type { PreviewCompiler } from '../../application/previewCompiler';
 import {
   PreviewCompilationError,
   type PreviewBuildRequest,
   type PreviewBundle,
   type PreviewDiagnostic,
-  type PreviewDiagnosticLocation,
 } from '../../domain/preview';
+import {
+  isPreviewBuildCancellation,
+  throwIfPreviewBuildCancelled,
+  type PreviewBuildExecutionContext,
+} from '../../domain/previewBuildExecution';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
@@ -32,8 +28,19 @@ import {
   type PreviewGlobalPackageBridgePlan,
 } from './globalPackageBridge';
 import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
+import { PreviewAdaptiveBuildPlanCache } from './previewAdaptiveBuildPlanCache';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
-import { planPreviewBuildOutputs } from './previewBuildOutputPlanner';
+import { createPreviewBuildPlanIdentity } from './previewBuildPlanIdentity';
+import {
+  assertOutputSize,
+  convertMessage,
+  createPreviewBundle,
+  describeUnknownError,
+  isBuildFailure,
+  PREVIEW_OUTPUT_DIRECTORY_NAME,
+  restorePrivateNamespaces,
+  VIRTUAL_ENTRY_NAME,
+} from './previewBuildResult';
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
@@ -42,25 +49,13 @@ import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import { PreviewProjectUsageCache } from './previewProjectUsageCache';
-import {
-  PREVIEW_ASSET_NAMESPACE,
-  PREVIEW_APOLLO_BRIDGE_NAMESPACE,
-  PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
-  PREVIEW_DATA_URL_NAMESPACE,
-  PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-  PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE,
-  PREVIEW_INSPECTOR_ROOT_NAMESPACE,
-  PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
-  PREVIEW_INSPECTOR_TARGET_NAMESPACE,
-  PREVIEW_REDUX_BRIDGE_NAMESPACE,
-  PREVIEW_ROUTER_BRIDGE_NAMESPACE,
-  PREVIEW_SETUP_BRIDGE_NAMESPACE,
-  PREVIEW_SNAPSHOT_NAMESPACE,
-  PREVIEW_TARGET_BRIDGE_NAMESPACE,
-  PREVIEW_THEME_BRIDGE_NAMESPACE,
-  PREVIEW_THEME_CANDIDATE_NAMESPACE,
-} from './previewPluginProtocol';
+import type { PreviewTargetUsageProps } from './previewTargetUsageProps';
 import { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
+import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
+import {
+  PreviewIncrementalBuildCache,
+  type PreviewIncrementalBuildOptions,
+} from './previewIncrementalBuildCache';
 import {
   createPreviewRuntimeWatchInputs,
   resolvePreviewRuntimeEnvironment,
@@ -75,12 +70,29 @@ import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin';
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
 import { collectReactExportPropInference } from './staticResources/reactExportPropInference';
-import { createWorkspaceSourcePlugin } from './workspaceSourcePlugin';
+import {
+  createWorkspaceSourcePlugin,
+  type MutableWorkspaceSourceState,
+  type WorkspaceSourceCompilationState,
+} from './workspaceSourcePlugin';
 
-const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
-const PREVIEW_OUTPUT_DIRECTORY_NAME = 'react-preview-output';
-const MAX_PREVIEW_OUTPUT_BYTES = 32 * 1024 * 1024;
 const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
+
+/** Direct-preview fast path omits package-wide reverse analysis until background enrichment. */
+const EMPTY_TARGET_USAGE_PROPS: PreviewTargetUsageProps = Object.freeze({
+  dependencyPaths: Object.freeze([]),
+  parentSlicesByExport: Object.freeze({}),
+  propsByExport: Object.freeze({}),
+});
+
+/** Fast builds discover exact free globals from their reached esbuild graph instead of a cold scan. */
+const EMPTY_IMPLICIT_GLOBAL_EVIDENCE: PreviewImplicitGlobalEvidenceInventory = Object.freeze({
+  ambiguousGlobalNames: Object.freeze([]),
+  dependencyPaths: Object.freeze([]),
+  evidence: Object.freeze([]),
+  truncated: false,
+  unresolvedGlobalNames: Object.freeze([]),
+});
 
 /** Router bridge selection carried into one discovery or final esbuild attempt. */
 interface PreviewRouterBuildSelection {
@@ -92,11 +104,17 @@ interface PreviewRouterBuildSelection {
 
 /** esbuild-backed compiler for browser-safe React preview bundles. */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
+  /** Compiler-owned signals let shutdown cancel analysis that has not reached esbuild yet. */
+  private readonly activeBuildControllers = new Set<AbortController>();
+  /** Graph-proven runtime requirements reused so hot rebuilds normally need one native pass. */
+  private readonly adaptiveBuildPlanCache = new PreviewAdaptiveBuildPlanCache();
   private disposed = false;
   /** Package-scoped bootstrap/ambient evidence reused across preview tabs and hot rebuilds. */
   private readonly implicitGlobalEvidenceCache = new PreviewImplicitGlobalEvidenceCache();
   /** Package-scoped inert source inventories reused by multiple tabs and hot rebuilds. */
   private readonly projectUsageCache = new PreviewProjectUsageCache();
+  /** Native build contexts retaining parsed dependency graphs across compatible revisions. */
+  private readonly incrementalBuildCache = new PreviewIncrementalBuildCache();
   private shutdownPromise: Promise<void> | undefined;
 
   /**
@@ -104,15 +122,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
    * Project build scripts and framework plugins are deliberately not loaded or executed.
    *
    * @param request Active editor snapshot and workspace module-resolution context.
+   * @param context Optional progress observer and cancellation signal for the owning revision.
    * @returns In-memory ESM JavaScript, optional CSS, warnings, and dependency paths.
    * @throws PreviewCompilationError when esbuild cannot parse or bundle the module graph.
    */
-  public async compile(request: PreviewBuildRequest): Promise<PreviewBundle> {
+  public async compile(
+    request: PreviewBuildRequest,
+    context?: PreviewBuildExecutionContext,
+  ): Promise<PreviewBundle> {
     if (this.disposed) {
       throw new PreviewCompilationError('The React preview compiler is already closed.', []);
     }
 
+    const buildController = new AbortController();
+    const detachCallerAbort = forwardPreviewAbort(context?.signal, buildController);
+    this.activeBuildControllers.add(buildController);
+    const buildSignal = buildController.signal;
     try {
+      throwIfPreviewBuildCancelled(buildSignal);
       const canonicalWorkspaceRoot = canonicalizeExistingPath(request.workspaceRoot);
       const projectRoot = await findPreviewProjectRoot(
         canonicalizeExistingPath(request.documentPath),
@@ -131,8 +158,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ? selectPreviewInspectorExport(targetExports)
           : undefined;
       const themeImport = selectPreviewThemeImport(request.sourceText);
+      const useFastPreparation = request.preparationMode === 'fast';
       const usageSearchRoot =
         request.renderMode === 'page-inspector' ? canonicalWorkspaceRoot : projectRoot;
+      context?.reportProgress?.('discovering-components');
       const [runtimeEnvironment, runtimeWatchInputs] = await Promise.all([
         resolvePreviewRuntimeEnvironment({
           ...(request.setupModulePath === undefined
@@ -145,19 +174,27 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
       ]);
       const [targetUsageProps, implicitGlobalSourcePaths] = await Promise.all([
-        this.projectUsageCache.discover({
-          climbParentSlices:
-            request.renderMode !== 'page-inspector' && runtimeEnvironment.setupKind === 'none',
-          documentPath: request.documentPath,
-          exports: targetExports,
-          ...(inspectorExportName === undefined ? {} : { inspectorExportName }),
-          projectRoot: usageSearchRoot,
-          snapshots: request.dependencySnapshots,
-          ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
-          workspaceRoot: canonicalWorkspaceRoot,
-        }),
-        this.projectUsageCache.getSourcePaths(canonicalWorkspaceRoot, projectRoot),
+        useFastPreparation
+          ? Promise.resolve(EMPTY_TARGET_USAGE_PROPS)
+          : this.projectUsageCache.discover({
+              climbParentSlices:
+                request.renderMode !== 'page-inspector' && runtimeEnvironment.setupKind === 'none',
+              documentPath: request.documentPath,
+              exports: targetExports,
+              ...(inspectorExportName === undefined ? {} : { inspectorExportName }),
+              projectRoot: usageSearchRoot,
+              signal: buildSignal,
+              snapshots: request.dependencySnapshots,
+              sourceText: request.sourceText,
+              ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
+              workspaceRoot: canonicalWorkspaceRoot,
+            }),
+        useFastPreparation
+          ? Promise.resolve(Object.freeze([]) as readonly string[])
+          : this.projectUsageCache.getSourcePaths(canonicalWorkspaceRoot, projectRoot, buildSignal),
       ]);
+      throwIfPreviewBuildCancelled(buildSignal);
+      context?.reportProgress?.('preparing-runtime');
       const staticModuleResolver = createPreviewStaticModuleResolver({
         ...(request.tsconfigPath === undefined
           ? {}
@@ -165,21 +202,19 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         workspaceRoot: canonicalWorkspaceRoot,
       });
       const snapshotSourceByPath = createPreviewSnapshotSourceMap(request);
-      const implicitGlobalEvidence = await this.implicitGlobalEvidenceCache.discover({
-        cacheKey: createImplicitGlobalEvidenceCacheKey(projectRoot, request.tsconfigPath),
-        readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
-        resolveModule: staticModuleResolver.resolve,
-        snapshotSourceByPath,
-        sourcePaths: implicitGlobalSourcePaths,
-      });
+      const implicitGlobalEvidence = useFastPreparation
+        ? EMPTY_IMPLICIT_GLOBAL_EVIDENCE
+        : await this.implicitGlobalEvidenceCache.discover({
+            cacheKey: createImplicitGlobalEvidenceCacheKey(projectRoot, request.tsconfigPath),
+            readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
+            resolveModule: staticModuleResolver.resolve,
+            signal: buildSignal,
+            snapshotSourceByPath,
+            sourcePaths: implicitGlobalSourcePaths,
+          });
+      throwIfPreviewBuildCancelled(buildSignal);
       const globalBridgeEvidencePolicy =
         createPreviewGlobalPackageBridgeEvidencePolicy(implicitGlobalEvidence);
-      const initialGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
-        ...globalBridgeEvidencePolicy,
-        projectRoot,
-        referencedGlobalNames: [],
-        workspaceRoot: canonicalWorkspaceRoot,
-      });
       /** Creates one trace boundary per esbuild attempt because its resolver inventory is stateful. */
       const createStorybookFallbackBoundary = (
         environment: PreviewRuntimeEnvironment,
@@ -218,7 +253,21 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           projectRoot,
           workspaceRoot: canonicalWorkspaceRoot,
         });
-        const result = await build({
+        const sourceCompilation: WorkspaceSourceCompilationState = {
+          snapshots: [
+            {
+              documentPath: request.documentPath,
+              language: request.language,
+              sourceText: request.sourceText,
+            },
+            ...request.dependencySnapshots,
+          ],
+          transformer: sourceTransformer,
+        };
+        /** Creates static options around either fixed or incrementally replaceable source state. */
+        const createBuildOptions = (
+          incrementalState?: MutableWorkspaceSourceState,
+        ): PreviewIncrementalBuildOptions => ({
           absWorkingDir: request.workspaceRoot,
           bundle: true,
           charset: 'utf8',
@@ -232,7 +281,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             }),
             'process.env.NODE_ENV': '"development"',
           },
-          chunkNames: 'chunks/[name]-[hash]',
+          chunkNames: 'chunks/[hash]',
           entryNames: 'entry',
           format: 'esm',
           jsx: 'automatic',
@@ -310,18 +359,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               projectRoot,
               workspaceRoot: canonicalWorkspaceRoot,
             }),
-            createWorkspaceSourcePlugin({
-              snapshots: [
-                {
-                  documentPath: request.documentPath,
-                  language: request.language,
-                  sourceText: request.sourceText,
-                },
-                ...request.dependencySnapshots,
-              ],
-              transformer: sourceTransformer,
-              workspaceRoot: canonicalWorkspaceRoot,
-            }),
+            createWorkspaceSourcePlugin(
+              incrementalState === undefined
+                ? { ...sourceCompilation, workspaceRoot: canonicalWorkspaceRoot }
+                : { incrementalState, workspaceRoot: canonicalWorkspaceRoot },
+            ),
           ],
           sourcemap: false,
           splitting: true,
@@ -342,6 +384,32 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
           write: false,
         });
+        const result =
+          fallbackBoundary === undefined
+            ? await this.incrementalBuildCache.rebuild({
+                contextKey: createPreviewBuildPlanIdentity({
+                  documentPath: request.documentPath,
+                  environment,
+                  globalPackagePlan,
+                  inferredPropsByExport,
+                  inspectorPlan,
+                  parentSlices: activeParentSlices,
+                  preparationMode: request.preparationMode,
+                  projectRoot,
+                  renderMode: request.renderMode,
+                  routerSelection,
+                  targetExports,
+                  targetUsageProps,
+                  themeImport,
+                  tsconfigPath: request.tsconfigPath,
+                  workspaceRoot: canonicalWorkspaceRoot,
+                }),
+                createOptions: createBuildOptions,
+                signal: buildSignal,
+                sourceCompilation,
+              })
+            : await this.incrementalBuildCache.buildOnce(createBuildOptions(), buildSignal);
+        throwIfPreviewBuildCancelled(buildSignal);
         assertOutputSize(result.outputFiles);
         return {
           globalPackagePlan,
@@ -363,55 +431,80 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const runAdaptiveBuild = async (
         environment: PreviewRuntimeEnvironment,
       ): ReturnType<typeof runBuild> => {
+        const adaptivePlanKey = createPreviewBuildPlanIdentity({
+          documentPath: request.documentPath,
+          environment,
+          preparationMode: request.preparationMode,
+          projectRoot,
+          renderMode: request.renderMode,
+          tsconfigPath: request.tsconfigPath,
+          workspaceRoot: canonicalWorkspaceRoot,
+        });
+        const cachedPlan = this.adaptiveBuildPlanCache.read(adaptivePlanKey);
+        const initialGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
+          ...globalBridgeEvidencePolicy,
+          projectRoot,
+          referencedGlobalNames: cachedPlan?.referencedGlobalNames ?? [],
+          workspaceRoot: canonicalWorkspaceRoot,
+        });
+        const initialRouterSelection: PreviewRouterBuildSelection =
+          cachedPlan?.routerRequirement.consumesRouter === true
+            ? {
+                automaticallyWrap: !cachedPlan.routerRequirement.ownsRouter,
+                enabled: true,
+              }
+            : { automaticallyWrap: false, enabled: false };
         let fallbackBoundary = createStorybookFallbackBoundary(environment);
         activeStorybookFallbackBoundary = fallbackBoundary;
         const initialBuild = await runBuild(
           environment,
-          { automaticallyWrap: false, enabled: false },
+          initialRouterSelection,
           initialGlobalPackagePlan,
           fallbackBoundary,
         );
-        const activeGlobalNames = new Set(
-          initialBuild.globalPackagePlan.bridges.map((bridge) => bridge.globalName),
-        );
-        const needsPackageFallback = initialBuild.referencedGlobalNames.some(
-          (globalName) => !activeGlobalNames.has(globalName),
-        );
-        const expandedGlobalPackagePlan = needsPackageFallback
-          ? await discoverPreviewGlobalPackageBridges({
-              ...globalBridgeEvidencePolicy,
-              projectRoot,
-              referencedGlobalNames: initialBuild.referencedGlobalNames,
-              workspaceRoot: canonicalWorkspaceRoot,
-            })
-          : initialBuild.globalPackagePlan;
-        const needsRouterBoundary = initialBuild.routerRequirement.consumesRouter;
-        if (
-          !needsRouterBoundary &&
+        const exactGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
+          ...globalBridgeEvidencePolicy,
+          projectRoot,
+          referencedGlobalNames: initialBuild.referencedGlobalNames,
+          workspaceRoot: canonicalWorkspaceRoot,
+        });
+        const exactRouterSelection: PreviewRouterBuildSelection = initialBuild.routerRequirement
+          .consumesRouter
+          ? {
+              automaticallyWrap: !initialBuild.routerRequirement.ownsRouter,
+              enabled: true,
+            }
+          : { automaticallyWrap: false, enabled: false };
+        const planIsExact =
+          haveEquivalentRouterSelections(initialRouterSelection, exactRouterSelection) &&
           haveEquivalentGlobalPackageBridges(
             initialBuild.globalPackagePlan,
-            expandedGlobalPackagePlan,
-          )
-        ) {
-          return initialBuild;
+            exactGlobalPackagePlan,
+          );
+        let finalBuild = initialBuild;
+        if (!planIsExact) {
+          fallbackBoundary = createStorybookFallbackBoundary(environment);
+          activeStorybookFallbackBoundary = fallbackBoundary;
+          finalBuild = await runBuild(
+            environment,
+            exactRouterSelection,
+            exactGlobalPackagePlan,
+            fallbackBoundary,
+          );
         }
-        fallbackBoundary = createStorybookFallbackBoundary(environment);
-        activeStorybookFallbackBoundary = fallbackBoundary;
-        return runBuild(
-          environment,
-          {
-            automaticallyWrap: !initialBuild.routerRequirement.ownsRouter,
-            enabled: needsRouterBoundary,
-          },
-          expandedGlobalPackagePlan,
-          fallbackBoundary,
-        );
+        this.adaptiveBuildPlanCache.write(adaptivePlanKey, {
+          referencedGlobalNames: finalBuild.referencedGlobalNames,
+          routerRequirement: finalBuild.routerRequirement,
+        });
+        return finalBuild;
       };
 
       let buildExecution: Awaited<ReturnType<typeof runBuild>>;
       let fallbackDependencies: readonly string[] = [];
       let fallbackWatchDirectories: readonly string[] = [];
       let fallbackDiagnostics: readonly PreviewDiagnostic[] = [];
+      throwIfPreviewBuildCancelled(buildSignal);
+      context?.reportProgress?.('bundling-modules');
       try {
         buildExecution = await runAdaptiveBuild(runtimeEnvironment);
       } catch (error) {
@@ -428,6 +521,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           error.errors,
           request.workspaceRoot,
         );
+        throwIfPreviewBuildCancelled(buildSignal);
         fallbackDependencies = fallbackWatchInputs.dependencyPaths;
         fallbackWatchDirectories = fallbackWatchInputs.watchDirectories;
         fallbackDiagnostics = [
@@ -459,6 +553,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               },
             ]
           : [];
+      throwIfPreviewBuildCancelled(buildSignal);
       return createPreviewBundle(
         request,
         buildExecution.result,
@@ -472,6 +567,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ],
       );
     } catch (error) {
+      if (isPreviewBuildCancellation(error, buildSignal)) {
+        throw error;
+      }
       if (error instanceof PreviewCompilationError) {
         throw error;
       }
@@ -483,6 +581,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const summary = firstDiagnostic?.message ?? 'The React module could not be bundled.';
 
       throw new PreviewCompilationError(`Preview build failed: ${summary}`, diagnostics, error);
+    } finally {
+      detachCallerAbort();
+      this.activeBuildControllers.delete(buildController);
     }
   }
 
@@ -506,9 +607,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     }
 
     this.disposed = true;
+    for (const controller of this.activeBuildControllers) {
+      controller.abort();
+    }
+    this.adaptiveBuildPlanCache.clear();
     this.implicitGlobalEvidenceCache.clear();
     this.projectUsageCache.clear();
-    this.shutdownPromise = stop();
+    this.shutdownPromise = this.incrementalBuildCache.shutdown().then(async () => {
+      await stop();
+    });
     return this.shutdownPromise;
   }
 }
@@ -559,6 +666,14 @@ function describeGlobalPackageBridgeStatus(plan: PreviewGlobalPackageBridgePlan)
     (bridge) => bridge.evidence === 'dependency-name',
   ).length;
   return `active: ${plan.bridges.length.toString()} lexical module bridge(s); ${projectEvidenceCount.toString()} from project bootstrap/ambient evidence, ${packageFallbackCount.toString()} from exact installed-package fallback`;
+}
+
+/** Reports whether a cached router boundary exactly matches the newly reached source graph. */
+function haveEquivalentRouterSelections(
+  left: PreviewRouterBuildSelection,
+  right: PreviewRouterBuildSelection,
+): boolean {
+  return left.enabled === right.enabled && left.automaticallyWrap === right.automaticallyWrap;
 }
 
 /** Reports whether adaptive discovery selected the same generated module bindings. */
@@ -631,275 +746,26 @@ function mergePreviewWatchDirectories(
 }
 
 /**
- * Converts an esbuild result into the infrastructure-independent bundle model.
- *
- * @param request Original request used to restore the custom document namespace to its file path.
- * @param result Successful esbuild result with output files and metadata enabled.
- * @param watchDirectories Static resource roots whose future additions can affect this build.
- * @param additionalDiagnostics Adapter warnings produced outside esbuild's successful result.
- * @param additionalDependencies Setup files retained after an automatic environment fallback.
- * @returns Validated preview bundle containing an entry, local lazy chunks, and optional CSS.
+ * Forwards one caller-owned revision signal into a compiler-owned controller.
+ * The returned cleanup prevents completed compiles from retaining session signals indefinitely.
  */
-function createPreviewBundle(
-  request: PreviewBuildRequest,
-  result: BuildResult<{ metafile: true; write: false }>,
-  watchDirectories: readonly string[],
-  additionalDiagnostics: readonly PreviewDiagnostic[] = [],
-  additionalDependencies: readonly string[] = [],
-): PreviewBundle {
-  assertOutputSize(result.outputFiles);
-  const outputPlan = planPreviewBuildOutputs({
-    absoluteOutputDirectory: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
-    absoluteWorkingDirectory: request.workspaceRoot,
-    metafile: result.metafile,
-    outputFiles: result.outputFiles,
-    virtualEntryName: VIRTUAL_ENTRY_NAME,
-  });
-  const baseBundle = {
-    chunks: outputPlan.auxiliaryJavaScript,
-    dependencies: [
-      ...new Set([
-        ...collectDependencies(request, result.metafile),
-        ...additionalDependencies.map((dependency) => path.normalize(dependency)),
-      ]),
-    ].sort(),
-    diagnostics: [
-      ...additionalDiagnostics,
-      ...result.warnings.map((message) => convertMessage(message, 'warning')),
-    ],
-    javascript: outputPlan.entryJavaScript,
-    watchDirectories,
+function forwardPreviewAbort(source: AbortSignal | undefined, target: AbortController): () => void {
+  if (source === undefined) {
+    return () => {
+      // No caller listener was registered.
+    };
+  }
+  const abortTarget = (): void => {
+    target.abort(source.reason);
   };
-
-  return outputPlan.entryStylesheet === undefined
-    ? baseBundle
-    : { ...baseBundle, stylesheet: outputPlan.entryStylesheet };
-}
-
-/**
- * Rejects an unexpectedly large in-memory result before it reaches global storage or the webview.
- * The asset plugin applies earlier per-file and aggregate limits; this final boundary also covers
- * generated JavaScript, CSS, and base64 expansion.
- *
- * @param outputFiles Complete in-memory output returned by esbuild.
- * @throws PreviewCompilationError when combined output exceeds the lightweight preview budget.
- */
-function assertOutputSize(outputFiles: readonly OutputFile[]): void {
-  const outputBytes = outputFiles.reduce(
-    (totalBytes, outputFile) => totalBytes + outputFile.contents.byteLength,
-    0,
-  );
-  if (outputBytes > MAX_PREVIEW_OUTPUT_BYTES) {
-    throw new PreviewCompilationError(
-      `Preview output exceeds the ${formatMebibytes(MAX_PREVIEW_OUTPUT_BYTES)} MiB safety limit.`,
-      [],
-    );
+  if (source.aborted) {
+    abortTarget();
+    return () => {
+      // The already-aborted caller did not require a listener.
+    };
   }
-}
-
-/**
- * Formats a byte count as a stable mebibyte number for compiler diagnostics.
- *
- * @param bytes Integer byte limit used by an in-memory compiler boundary.
- * @returns Human-readable base-two mebibyte count without a unit suffix.
- */
-function formatMebibytes(bytes: number): string {
-  return (bytes / (1024 * 1024)).toString();
-}
-
-/**
- * Maps compiler metadata inputs to normalized absolute paths and removes virtual entries.
- *
- * @param request Original request containing the active path and working directory.
- * @param metafile esbuild metadata containing every bundled input module.
- * @returns Sorted unique absolute input paths.
- */
-function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): readonly string[] {
-  const dependencies = Object.keys(metafile.inputs)
-    .filter(
-      (inputPath) =>
-        !inputPath.startsWith('<') &&
-        !inputPath.endsWith(VIRTUAL_ENTRY_NAME) &&
-        !inputPath.startsWith(`${PREVIEW_APOLLO_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_CONTEXT_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_FORMIK_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_ROOT_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_RUNTIME_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_TARGET_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_REDUX_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_ROUTER_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_THEME_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_THEME_CANDIDATE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_SETUP_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_TARGET_BRIDGE_NAMESPACE}:`),
-    )
-    .map((inputPath) => {
-      const namespacelessInput = removeFileBackedPreviewNamespace(inputPath);
-      const filesystemInput = stripAssetSuffix(namespacelessInput);
-      return path.normalize(
-        path.isAbsolute(filesystemInput)
-          ? filesystemInput
-          : path.resolve(request.workspaceRoot, filesystemInput),
-      );
-    });
-
-  // Preserve the editor's lexical target identity even when esbuild resolves a symlink to its real
-  // path. Panel change routing listens to the URI VS Code opened, while both identities may still
-  // appear for reachable imports and are harmless after set deduplication.
-  return [...new Set([path.normalize(request.documentPath), ...dependencies])].sort();
-}
-
-/**
- * Removes a private file-backed namespace from an esbuild metadata input identity.
- *
- * @param inputPath Metafile key that may represent a snapshot or generated asset module.
- * @returns Underlying filesystem path with any query or fragment still attached.
- */
-function removeFileBackedPreviewNamespace(inputPath: string): string {
-  for (const namespace of [
-    PREVIEW_ASSET_NAMESPACE,
-    PREVIEW_APOLLO_BRIDGE_NAMESPACE,
-    PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
-    PREVIEW_DATA_URL_NAMESPACE,
-    PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-    PREVIEW_REDUX_BRIDGE_NAMESPACE,
-    PREVIEW_ROUTER_BRIDGE_NAMESPACE,
-    PREVIEW_SETUP_BRIDGE_NAMESPACE,
-    PREVIEW_SNAPSHOT_NAMESPACE,
-    PREVIEW_THEME_BRIDGE_NAMESPACE,
-  ]) {
-    const prefix = `${namespace}:`;
-    if (inputPath.startsWith(prefix)) {
-      return inputPath.slice(prefix.length);
-    }
-  }
-
-  return inputPath;
-}
-
-/**
- * Removes a query or fragment used to distinguish generated asset-module representations.
- *
- * @param assetPath Filesystem path followed by an optional import suffix.
- * @returns Filesystem path suitable for dependency watching.
- */
-function stripAssetSuffix(assetPath: string): string {
-  const queryIndex = assetPath.indexOf('?');
-  const fragmentIndex = assetPath.indexOf('#');
-  const suffixIndex = [queryIndex, fragmentIndex]
-    .filter((index) => index >= 0)
-    .reduce((lowest, index) => Math.min(lowest, index), assetPath.length);
-  return assetPath.slice(0, suffixIndex);
-}
-
-/**
- * Converts an esbuild message into a stable domain diagnostic.
- *
- * @param message esbuild warning or error message.
- * @param severity Domain severity associated with the source collection.
- * @returns Serializable diagnostic suitable for logging or safe HTML rendering.
- */
-function convertMessage(message: Message, severity: 'error' | 'warning'): PreviewDiagnostic {
-  const location = convertLocation(message);
-  const notes = message.notes.map(formatMessageNote);
-  const baseDiagnostic = {
-    message: restorePrivateNamespaces(message.text),
-    severity,
-  } as const;
-  const diagnosticWithNotes = notes.length === 0 ? baseDiagnostic : { ...baseDiagnostic, notes };
-
-  return location === undefined ? diagnosticWithNotes : { ...diagnosticWithNotes, location };
-}
-
-/**
- * Formats one esbuild note with its optional source location for actionable import diagnostics.
- *
- * @param note Resolver or parser context attached to a compiler message.
- * @returns Compact note text safe for the domain diagnostic model.
- */
-function formatMessageNote(note: Message['notes'][number]): string {
-  const location = note.location;
-  if (location === null) {
-    return restorePrivateNamespaces(note.text);
-  }
-
-  return `${restorePreviewFilePath(location.file)}:${location.line.toString()}:${location.column.toString()} ${restorePrivateNamespaces(note.text)}`;
-}
-
-/**
- * Extracts source coordinates from an esbuild message when they are available.
- *
- * @param message Compiler message that may contain a source location.
- * @returns Domain location or `undefined` for resolution and global errors.
- */
-function convertLocation(message: Message): PreviewDiagnosticLocation | undefined {
-  if (message.location === null) {
-    return undefined;
-  }
-
-  return {
-    column: message.location.column,
-    file: restorePreviewFilePath(message.location.file),
-    line: message.location.line,
+  source.addEventListener('abort', abortTarget, { once: true });
+  return () => {
+    source.removeEventListener('abort', abortTarget);
   };
-}
-
-/**
- * Restores a diagnostic file identity from an internal esbuild namespace to its filesystem path.
- *
- * @param file Compiler location that may begin with a private preview namespace.
- * @returns User-facing path suitable for display and dependency change tracking.
- */
-function restorePreviewFilePath(file: string): string {
-  const restoredPath = restorePrivateNamespaces(file);
-  return stripAssetSuffix(restoredPath);
-}
-
-/**
- * Removes private plugin namespace prefixes from compiler text without changing ordinary content.
- *
- * @param text Diagnostic message, note, or location produced by esbuild.
- * @returns Text containing only the underlying filesystem identities.
- */
-function restorePrivateNamespaces(text: string): string {
-  return [
-    PREVIEW_ASSET_NAMESPACE,
-    PREVIEW_APOLLO_BRIDGE_NAMESPACE,
-    PREVIEW_DATA_URL_NAMESPACE,
-    PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-    PREVIEW_INSPECTOR_ROOT_NAMESPACE,
-    PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
-    PREVIEW_INSPECTOR_TARGET_NAMESPACE,
-    PREVIEW_REDUX_BRIDGE_NAMESPACE,
-    PREVIEW_ROUTER_BRIDGE_NAMESPACE,
-    PREVIEW_SETUP_BRIDGE_NAMESPACE,
-    PREVIEW_SNAPSHOT_NAMESPACE,
-    PREVIEW_TARGET_BRIDGE_NAMESPACE,
-    PREVIEW_THEME_BRIDGE_NAMESPACE,
-  ].reduce((restoredText, namespace) => restoredText.replaceAll(`${namespace}:`, ''), text);
-}
-
-/**
- * Narrows unknown failures to esbuild's documented build-failure shape.
- *
- * @param error Unknown value caught from the build API.
- * @returns `true` when the value exposes esbuild error and warning arrays.
- */
-function isBuildFailure(error: unknown): error is BuildFailure {
-  if (typeof error !== 'object' || error === null) {
-    return false;
-  }
-
-  return 'errors' in error && Array.isArray(error.errors) && 'warnings' in error;
-}
-
-/**
- * Converts an arbitrary thrown value into a concise diagnostic message.
- *
- * @param error Unknown value thrown by the build API or local validation.
- * @returns Existing Error message or a safe string representation.
- */
-function describeUnknownError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

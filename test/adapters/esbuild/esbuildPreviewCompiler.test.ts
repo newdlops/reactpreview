@@ -7,7 +7,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
-import { PreviewCompilationError, type PreviewBundle } from '../../../src/domain/preview';
+import {
+  PreviewCompilationError,
+  type PreviewBuildRequest,
+  type PreviewBundle,
+} from '../../../src/domain/preview';
 import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
 
 const FIXTURE_PATH = fileURLToPath(new URL('../../fixtures/SamplePreview.tsx', import.meta.url));
@@ -18,14 +22,18 @@ describe('EsbuildPreviewCompiler', () => {
   /** Bundles a default React export and emits imported CSS without writing into the project. */
   it('creates browser JavaScript and stylesheet artifacts', async () => {
     const compiler = new EsbuildPreviewCompiler();
+    const reportedStages: string[] = [];
 
-    const bundle = await compiler.compile({
-      dependencySnapshots: [],
-      documentPath: FIXTURE_PATH,
-      language: 'tsx',
-      sourceText: SAVED_SOURCE,
-      workspaceRoot: PROJECT_ROOT,
-    });
+    const bundle = await compiler.compile(
+      {
+        dependencySnapshots: [],
+        documentPath: FIXTURE_PATH,
+        language: 'tsx',
+        sourceText: SAVED_SOURCE,
+        workspaceRoot: PROJECT_ROOT,
+      },
+      { reportProgress: (stage) => reportedStages.push(stage) },
+    );
 
     expect(bundle.javascript.byteLength).toBeGreaterThan(0);
     expect(bundle.chunks.length).toBeGreaterThan(0);
@@ -38,6 +46,11 @@ describe('EsbuildPreviewCompiler', () => {
     expect(
       bundle.dependencies.filter((dependency) => dependency.includes('react-preview-entry')),
     ).toEqual([]);
+    expect(reportedStages).toEqual([
+      'discovering-components',
+      'preparing-runtime',
+      'bundling-modules',
+    ]);
   });
 
   /** Gives the active editor snapshot precedence over the fixture's saved filesystem contents. */
@@ -56,6 +69,32 @@ describe('EsbuildPreviewCompiler', () => {
 
     expect(javascript).toContain('Unsaved editor snapshot');
     expect(javascript).not.toContain('Saved fixture source');
+  });
+
+  /** Replaces editor text inside one compatible native context instead of reusing stale output. */
+  it('updates mutable snapshots across persistent context rebuilds', async () => {
+    const compiler = new EsbuildPreviewCompiler();
+    const firstSource = SAVED_SOURCE.replace('Saved fixture source', 'First incremental snapshot');
+    const secondSource = SAVED_SOURCE.replace(
+      'Saved fixture source',
+      'Second incremental snapshot',
+    );
+    const createRequest = (sourceText: string): PreviewBuildRequest => ({
+      dependencySnapshots: [],
+      documentPath: FIXTURE_PATH,
+      language: 'tsx' as const,
+      preparationMode: 'fast' as const,
+      sourceText,
+      workspaceRoot: PROJECT_ROOT,
+    });
+
+    await compiler.compile(createRequest(firstSource));
+    const rebuilt = await compiler.compile(createRequest(secondSource));
+    const javascript = decodeBundleJavascript(rebuilt);
+
+    expect(javascript).toContain('Second incremental snapshot');
+    expect(javascript).not.toContain('First incremental snapshot');
+    await compiler.shutdown();
   });
 
   /** Applies project-source transforms to uppercase extensions accepted by the domain policy. */

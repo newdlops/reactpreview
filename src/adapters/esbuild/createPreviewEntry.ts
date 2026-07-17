@@ -7,6 +7,8 @@ import type { PreviewRenderMode } from '../../domain/preview';
 import { createPreviewAutomaticPropsRuntimeSource } from './previewAutomaticPropsRuntimeSource';
 import { createPreviewBrowserProcessRuntimeSource } from './previewBrowserProcessRuntimeSource';
 import { createPreviewPageInspectorRuntimeSource } from './pageInspector/previewPageInspectorRuntimeSource';
+import { createPreviewHotReloadRuntimeSource } from './previewHotReloadRuntimeSource';
+import { createPreviewProgressRuntimeSource } from './previewProgressRuntimeSource';
 import {
   PREVIEW_APOLLO_SPECIFIER,
   PREVIEW_CONTEXT_SPECIFIER,
@@ -66,6 +68,8 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
   const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource();
+  const progressRuntimeSource = createPreviewProgressRuntimeSource();
+  const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
   const inspectorImportSource =
     renderMode === 'page-inspector' ? "import * as ReactDOMNamespace from 'react-dom';" : '';
   const inspectorRuntimeSource =
@@ -93,134 +97,32 @@ registerPreviewRuntimeCapability('Globals', {
     ${encodedGlobalPackageBridgeStatus} + '; ' + previewBrowserProcessStatus,
 });
 
-const PREVIEW_HOT_RUNTIME_KEY = Symbol.for('newdlops.react-file-preview.hot-runtime');
-
-/** Creates the one webview-owned runtime that survives cache-busted entry-module imports. */
-function createPreviewHotRuntime() {
-  let vscodeApi;
-  try {
-    vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
-  } catch {
-    vscodeApi = undefined;
-  }
-  return {
-    bootstrapPromise: undefined,
-    eventListeners: new Map(),
-    reloadQueue: Promise.resolve(),
-    root: undefined,
-    vscodeApi,
-  };
-}
-
-const previewHotRuntime =
-  globalThis[PREVIEW_HOT_RUNTIME_KEY] ?? createPreviewHotRuntime();
-globalThis[PREVIEW_HOT_RUNTIME_KEY] = previewHotRuntime;
+${hotReloadRuntimeSource}
 
 ${inspectorRuntimeSource}
 
-/** Replaces one module-owned global listener so hot imports cannot accumulate stale closures. */
-function replacePreviewRuntimeListener(type, listener) {
-  const previousListener = previewHotRuntime.eventListeners.get(type);
-  if (typeof previousListener === 'function') {
-    window.removeEventListener(type, previousListener);
-  }
-  window.addEventListener(type, listener);
-  previewHotRuntime.eventListeners.set(type, listener);
-}
-
-/** Applies an optional generated stylesheet before the replacement component module mounts. */
-function replacePreviewStylesheet(stylesheetUri) {
-  const currentLink = document.getElementById('react-preview-stylesheet');
-  if (typeof stylesheetUri !== 'string' || stylesheetUri.length === 0) {
-    currentLink?.remove();
-    return Promise.resolve();
-  }
-  if (currentLink instanceof HTMLLinkElement && currentLink.href === stylesheetUri) {
-    return Promise.resolve();
-  }
-  const nextLink = document.createElement('link');
-  nextLink.id = 'react-preview-stylesheet';
-  nextLink.rel = 'stylesheet';
-  nextLink.href = stylesheetUri;
-  const loaded = new Promise((resolve) => {
-    nextLink.addEventListener('load', resolve, { once: true });
-    nextLink.addEventListener('error', resolve, { once: true });
-  });
-  if (currentLink === null) {
-    document.head.append(nextLink);
-  } else {
-    currentLink.replaceWith(nextLink);
-  }
-  return loaded;
-}
-
-/** Validates an extension-owned hot revision message before importing another local ESM entry. */
-function readHotReloadMessage(value) {
-  if (value === null || typeof value !== 'object') {
-    return undefined;
-  }
-  const { scriptUri, stylesheetUri, token, type } = value;
-  if (
-    type !== 'react-preview-hot-reload' ||
-    typeof scriptUri !== 'string' ||
-    !scriptUri.endsWith('/entry.js') ||
-    typeof token !== 'string' ||
-    token.length === 0 ||
-    token.length > 256 ||
-    (stylesheetUri !== undefined && typeof stylesheetUri !== 'string')
-  ) {
-    return undefined;
-  }
-  return { scriptUri, stylesheetUri, token };
-}
-
-/** Serializes cache-busted module swaps while retaining the surrounding VS Code webview document. */
-async function applyHotReloadMessage(message) {
-  try {
-    if (previewHotRuntime.root !== undefined) {
-      previewHotRuntime.root.unmount();
-      previewHotRuntime.root = undefined;
-    }
-    mountNode.replaceChildren();
-    await replacePreviewStylesheet(message.stylesheetUri);
-    await import(message.scriptUri);
-    const bootstrapPromise = previewHotRuntime.bootstrapPromise;
-    if (bootstrapPromise !== undefined && typeof bootstrapPromise.then === 'function') {
-      await bootstrapPromise;
-    }
-    previewHotRuntime.vscodeApi?.postMessage({
-      token: message.token,
-      type: 'react-preview-hot-reload-ready',
-    });
-  } catch (error) {
-    showRuntimeError(error, { phase: 'hot reload module replacement' });
-    previewHotRuntime.vscodeApi?.postMessage({
-      token: message.token,
-      type: 'react-preview-hot-reload-failed',
-    });
-  }
-}
-
-if (!previewHotRuntime.messageListenerInstalled) {
-  window.addEventListener('message', (event) => {
-    const message = readHotReloadMessage(event.data);
-    if (message === undefined) {
-      return;
-    }
-    previewHotRuntime.reloadQueue = previewHotRuntime.reloadQueue.then(
-      () => applyHotReloadMessage(message),
-      () => applyHotReloadMessage(message),
-    );
-  });
-  previewHotRuntime.messageListenerInstalled = true;
-}
-
 let activeRuntimePhase = 'preview bootstrap';
 const capturedReactErrors = new WeakSet();
+const runtimePhaseByFailure = new Map();
+let resolvePreviewCommit;
+const previewCommitPromise = new Promise((resolve) => {
+  resolvePreviewCommit = resolve;
+});
+let previewCommitCompleted = false;
+let previewActivationStarted = false;
 
 /** Records the next deterministic bootstrap stage without wrapping or replacing the real error. */
 function enterRuntimePhase(phase) {
   activeRuntimePhase = phase;
+  updatePreviewProgressRuntimeDetail(phase);
+}
+
+/** Preserves the exact concurrent preparation phase without wrapping or replacing its failure. */
+function tagPreviewRuntimePhase(promise, phase) {
+  return Promise.resolve(promise).catch((error) => {
+    runtimePhaseByFailure.set(error, phase);
+    throw error;
+  });
 }
 
 /** Marks an object failure already rendered by a React boundary so a global event cannot erase it. */
@@ -237,15 +139,30 @@ function isCapturedReactError(error) {
     capturedReactErrors.has(error);
 }
 
-/** Replaces the preview root with inert text for module and unhandled runtime failures. */
+/** Shows a fatal startup diagnostic without destroying an already committed or retained React tree. */
 function showRuntimeError(error, runtimeContext = {}) {
+  const { forceReplace = false, ...diagnosticContext } = runtimeContext;
+  const description = describeRuntimeError(error, {
+    phase: runtimePhaseByFailure.get(error) ?? activeRuntimePhase,
+    ...diagnosticContext,
+  });
+  const retainsMountedRevision =
+    !forceReplace &&
+    (previewCommitCompleted ||
+      (previewEntryRevision > 0 &&
+        !previewActivationStarted &&
+        previewHotRuntime.root !== undefined));
+  if (retainsMountedRevision) {
+    console.error(
+      'React Preview retained the mounted revision after a runtime error.\\n' + description,
+    );
+    return;
+  }
   const errorElement = document.createElement('pre');
   errorElement.className = 'react-preview-runtime-error';
-  errorElement.textContent = describeRuntimeError(error, {
-    phase: activeRuntimePhase,
-    ...runtimeContext,
-  });
+  errorElement.textContent = description;
   mountNode.replaceChildren(errorElement);
+  completePreviewCommit('failed');
 }
 
 replacePreviewRuntimeListener('error', (event) => {
@@ -281,6 +198,7 @@ class PreviewErrorBoundary extends React.Component {
   /** Retains React's logical owner stack, which is more useful than generated bundle offsets. */
   componentDidCatch(error, errorInfo) {
     rememberCapturedReactError(error);
+    completePreviewCommit('failed');
     const componentStack = errorInfo?.componentStack;
     if (typeof componentStack === 'string' && componentStack !== this.state.componentStack) {
       this.setState({ componentStack });
@@ -301,6 +219,19 @@ class PreviewErrorBoundary extends React.Component {
     }
 
     return this.props.children;
+  }
+}
+
+/** Completes preparation only after React has committed the provider-wrapped preview tree. */
+class PreviewRenderedCommitSignal extends React.Component {
+  /** Resolves the revision-local readiness gate from React's synchronous commit lifecycle. */
+  componentDidMount() {
+    completePreviewCommit();
+  }
+
+  /** Adds no wrapper or marker to the inspected project's host DOM. */
+  render() {
+    return null;
   }
 }
 
@@ -518,7 +449,7 @@ function StorybookPreviewRoot({ PreviewTarget, previewConfig, storyContext, targ
   return applyStorybookDecorators(createElement, previewConfig, storyContext);
 }
 
-/** Renders one descriptor only after its export-specific error boundary has mounted. */
+/** Renders one descriptor behind a local Suspense fallback so siblings remain independently visible. */
 function PreviewExportRenderer({ descriptor, previewConfig, setupModule, sharedProps, storyContext }) {
   if (!isReactLikePreviewValue(descriptor.value)) {
     throw new TypeError(
@@ -548,7 +479,12 @@ function PreviewExportRenderer({ descriptor, previewConfig, setupModule, sharedP
           targetProps,
         })
       : createTargetElement(descriptor.value, targetProps);
-  return React.createElement(React.Suspense, { fallback: null }, rendered);
+  const suspenseFallback = React.createElement(
+    'div',
+    { className: 'react-preview-suspense-placeholder', role: 'status' },
+    'Loading ' + String(descriptor.displayName ?? descriptor.exportName) + '…',
+  );
+  return React.createElement(React.Suspense, { fallback: suspenseFallback }, rendered);
 }
 
 /** Displays every selected export in bridge order with labels that never wrap target DOM. */
@@ -658,8 +594,8 @@ function applyStorybookParameterProviders(previewElement, parameters) {
   );
 }
 
-/** Runs project bootstrap, imports target descriptors, composes providers, and commits one root. */
-async function mountPreview() {
+/** Runs project bootstrap and prepares a provider-wrapped element without replacing the visible root. */
+async function preparePreviewElement() {
   enterRuntimePhase('initialize safe browser globals');
   initializeGlobalNamespaces();
 
@@ -677,23 +613,35 @@ async function mountPreview() {
     await initializePreview(setupContext);
   }
 
-  enterRuntimePhase('load automatic runtime bridges');
-  const apolloBridge = await import(${encodedApolloSpecifier});
+  enterRuntimePhase('load automatic runtime bridges, props, and target graph');
+  const [
+    apolloBridge,
+    contextBridge,
+    formikBridge,
+    reduxBridge,
+    routerBridge,
+    themeBridge,
+    targetProps,
+    previewModule,
+  ] = await Promise.all([
+    tagPreviewRuntimePhase(import(${encodedApolloSpecifier}), 'load automatic Apollo bridge'),
+    tagPreviewRuntimePhase(import(${encodedContextSpecifier}), 'load automatic Context bridge'),
+    tagPreviewRuntimePhase(import(${encodedFormikSpecifier}), 'load automatic Formik bridge'),
+    tagPreviewRuntimePhase(import(${encodedReduxSpecifier}), 'load automatic Redux bridge'),
+    tagPreviewRuntimePhase(import(${encodedRouterSpecifier}), 'load automatic Router bridge'),
+    tagPreviewRuntimePhase(import(${encodedThemeSpecifier}), 'load automatic Theme bridge'),
+    tagPreviewRuntimePhase(createTargetProps(setupModule, setupContext), 'create static preview props'),
+    tagPreviewRuntimePhase(
+      import(${encodedTargetSpecifier}),
+      'load and evaluate target module graph',
+    ),
+  ]);
   registerPreviewRuntimeCapability('Apollo', apolloBridge);
-  const contextBridge = await import(${encodedContextSpecifier});
   registerPreviewRuntimeCapability('Context', contextBridge);
-  const formikBridge = await import(${encodedFormikSpecifier});
   registerPreviewRuntimeCapability('Formik', formikBridge);
-  const reduxBridge = await import(${encodedReduxSpecifier});
   registerPreviewRuntimeCapability('Redux', reduxBridge);
-  const routerBridge = await import(${encodedRouterSpecifier});
   registerPreviewRuntimeCapability('Router', routerBridge);
-  const themeBridge = await import(${encodedThemeSpecifier});
   registerPreviewRuntimeCapability('Theme', themeBridge);
-  enterRuntimePhase('create static preview props');
-  const targetProps = await createTargetProps(setupModule, setupContext);
-  enterRuntimePhase('load and evaluate target module graph');
-  const previewModule = await import(${encodedTargetSpecifier});
   const previewTargets = previewModule.default;
   const previewConfig = {
     decorators: readSetupMember(setupModule, 'decorators') ?? [],
@@ -776,6 +724,12 @@ async function mountPreview() {
     ...setupContext,
   });
 
+  return previewElement;
+}
+
+/** Atomically mounts one fully prepared element and resolves only after React's commit sentinel. */
+async function activatePreparedPreview(previewElement) {
+  previewActivationStarted = true;
   enterRuntimePhase('commit React root');
   const previewRoot = createRoot(mountNode, {
     /** Preserves the last component stack when even the root diagnostic boundary cannot recover. */
@@ -795,16 +749,65 @@ async function mountPreview() {
     },
   });
   previewHotRuntime.root = previewRoot;
+  const commitAwarePreviewElement = React.createElement(
+    React.Fragment,
+    undefined,
+    previewElement,
+    React.createElement(PreviewRenderedCommitSignal),
+  );
   previewRoot.render(
-    React.createElement(PreviewErrorBoundary, undefined, previewElement),
+    React.createElement(PreviewErrorBoundary, undefined, commitAwarePreviewElement),
   );
   enterRuntimePhase('React render, lifecycle, or asynchronous effect');
+  return previewCommitPromise;
 }
 
-const previewBootstrapPromise = mountPreview();
+/** Resolves one entry revision exactly once and terminally hides its preparation indicator. */
+function completePreviewCommit(outcome = 'ready') {
+  if (previewCommitCompleted) {
+    return;
+  }
+  previewCommitCompleted = true;
+  completePreviewProgress(previewEntryRevision);
+  resolvePreviewCommit(outcome);
+  if (previewEntryRevision > 0) {
+    return;
+  }
+  try {
+    previewHotRuntime.vscodeApi?.postMessage({
+      revision: previewRuntimeRevision,
+      ...(typeof previewRuntimeToken === 'string' && previewRuntimeToken.length > 0
+        ? { token: previewRuntimeToken }
+        : {}),
+      type: outcome === 'failed'
+        ? 'react-preview-runtime-failed'
+        : 'react-preview-runtime-ready',
+    });
+  } catch (error) {
+    console.warn('React Preview could not report browser runtime readiness.', error);
+  }
+}
+
+const previewPreparationPromise = preparePreviewElement();
+let previewActivationPromise;
+const preparedPreviewEntry = {
+  /** Activates this entry at most once even if a duplicated host message repeats its token. */
+  activate() {
+    previewActivationPromise ??= previewPreparationPromise.then(activatePreparedPreview);
+    return previewActivationPromise;
+  },
+  preparationPromise: previewPreparationPromise,
+  revision: previewEntryRevision,
+};
+previewHotRuntime.preparedEntry = preparedPreviewEntry;
+const previewBootstrapPromise = previewEntryRevision === 0
+  ? preparedPreviewEntry.activate()
+  : previewPreparationPromise;
 previewHotRuntime.bootstrapPromise = previewBootstrapPromise;
 void previewBootstrapPromise.catch((error) => {
-  showRuntimeError(error);
+  if (previewEntryRevision === 0) {
+    showRuntimeError(error);
+  }
 });
 `;
 }

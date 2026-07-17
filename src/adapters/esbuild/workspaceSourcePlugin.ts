@@ -16,14 +16,77 @@ import {
 
 const PROJECT_SOURCE_FILTER = /\.[cCmM]?[jJtT][sS][xX]?$/;
 
-/** Immutable editor state and transformation policy supplied to one compilation request. */
-export interface WorkspaceSourcePluginOptions {
+/** Editor snapshots and transformation policy that may advance between incremental rebuilds. */
+export interface WorkspaceSourceCompilationState {
   /** Active document followed by any dirty dependency candidates. */
   readonly snapshots: readonly PreviewSourceSnapshot[];
   /** Per-build bounded transformer for framework resource syntax. */
   readonly transformer: PreviewSourceTransformer;
+}
+
+/** Immutable workspace boundary plus either fixed or incrementally replaceable compilation state. */
+export type WorkspaceSourcePluginOptions = {
   /** Trusted workspace whose application sources may receive preview-only transformations. */
   readonly workspaceRoot: string;
+} & (
+  | {
+      /** Mutable state retained by one persistent esbuild context. */
+      readonly incrementalState: MutableWorkspaceSourceState;
+    }
+  | WorkspaceSourceCompilationState
+);
+
+/**
+ * Holds only the current editor overlays and transformer for one serialized esbuild context.
+ * Persistent contexts retain this object while each rebuild atomically replaces its lookup maps;
+ * no source text is shared across different context keys or concurrent rebuild operations.
+ */
+export class MutableWorkspaceSourceState {
+  private snapshotByCanonicalPath = new Map<string, PreviewSourceSnapshot>();
+  private snapshotByLexicalPath = new Map<string, PreviewSourceSnapshot>();
+  private currentTransformer: PreviewSourceTransformer;
+
+  /** Creates state initialized for the first context rebuild. */
+  public constructor(compilation: WorkspaceSourceCompilationState) {
+    this.currentTransformer = compilation.transformer;
+    this.update(compilation);
+  }
+
+  /** Transformer associated with the currently serialized rebuild. */
+  public get transformer(): PreviewSourceTransformer {
+    return this.currentTransformer;
+  }
+
+  /**
+   * Replaces every dirty snapshot and the transformer before `BuildContext.rebuild()` starts.
+   * Maps are rebuilt off to the side and swapped together so an aborted previous rebuild cannot
+   * observe a partially updated editor overlay inventory.
+   */
+  public update(compilation: WorkspaceSourceCompilationState): void {
+    const nextCanonical = new Map<string, PreviewSourceSnapshot>();
+    const nextLexical = new Map<string, PreviewSourceSnapshot>();
+    for (const snapshot of compilation.snapshots) {
+      const canonicalPath = canonicalizeExistingPath(snapshot.documentPath);
+      const lexicalPath = normalizeLexicalPath(snapshot.documentPath);
+      if (!nextCanonical.has(canonicalPath)) {
+        nextCanonical.set(canonicalPath, snapshot);
+      }
+      nextLexical.set(lexicalPath, snapshot);
+    }
+    this.snapshotByCanonicalPath = nextCanonical;
+    this.snapshotByLexicalPath = nextLexical;
+    this.currentTransformer = compilation.transformer;
+  }
+
+  /** Returns the latest lexical editor overlay without following filesystem symlinks. */
+  public readLexicalSnapshot(sourcePath: string): PreviewSourceSnapshot | undefined {
+    return this.snapshotByLexicalPath.get(sourcePath);
+  }
+
+  /** Returns the latest canonical editor overlay after project resolution follows symlinks. */
+  public readCanonicalSnapshot(sourcePath: string): PreviewSourceSnapshot | undefined {
+    return this.snapshotByCanonicalPath.get(sourcePath);
+  }
 }
 
 /**
@@ -35,16 +98,10 @@ export interface WorkspaceSourcePluginOptions {
 export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOptions): Plugin {
   const lexicalWorkspaceRoot = normalizeLexicalPath(options.workspaceRoot);
   const canonicalWorkspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
-  const snapshotByCanonicalPath = new Map<string, PreviewSourceSnapshot>();
-  const snapshotByLexicalPath = new Map<string, PreviewSourceSnapshot>();
-  for (const snapshot of options.snapshots) {
-    const canonicalPath = canonicalizeExistingPath(snapshot.documentPath);
-    const lexicalPath = normalizeLexicalPath(snapshot.documentPath);
-    if (!snapshotByCanonicalPath.has(canonicalPath)) {
-      snapshotByCanonicalPath.set(canonicalPath, snapshot);
-    }
-    snapshotByLexicalPath.set(lexicalPath, snapshot);
-  }
+  const sourceState =
+    'incrementalState' in options
+      ? options.incrementalState
+      : new MutableWorkspaceSourceState(options);
 
   return {
     name: 'react-preview-workspace-source',
@@ -59,7 +116,7 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         arguments_: OnLoadArgs,
       ): Promise<OnLoadResult | undefined> {
         const lexicalSourcePath = normalizeLexicalPath(arguments_.path);
-        let snapshot = snapshotByLexicalPath.get(lexicalSourcePath);
+        let snapshot = sourceState.readLexicalSnapshot(lexicalSourcePath);
         if (
           snapshot === undefined &&
           !isTransformableWorkspaceSource(lexicalWorkspaceRoot, lexicalSourcePath)
@@ -67,7 +124,7 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
           return undefined;
         }
         const canonicalSourcePath = canonicalizeExistingPath(arguments_.path);
-        snapshot ??= snapshotByCanonicalPath.get(canonicalSourcePath);
+        snapshot ??= sourceState.readCanonicalSnapshot(canonicalSourcePath);
         if (
           snapshot === undefined &&
           !isTransformableWorkspaceSource(canonicalWorkspaceRoot, canonicalSourcePath)
@@ -81,7 +138,10 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
 
         try {
           const sourceText = snapshot?.sourceText ?? (await readFile(arguments_.path, 'utf8'));
-          const transformed = await options.transformer.transform(canonicalSourcePath, sourceText);
+          const transformed = await sourceState.transformer.transform(
+            canonicalSourcePath,
+            sourceText,
+          );
           return {
             contents: transformed.contents,
             loader: language,

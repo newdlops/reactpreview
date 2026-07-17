@@ -2,6 +2,14 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1035 - 2026-07-17
+
+- 초기 경량 프리뷰 기준의 고정 32 MiB output 제한을 모노레포 page graph에 맞는 기본 128 MiB로 상향
+- resource-scoped `reactPreview.maxOutputSizeMiB` 설정을 추가해 프로젝트별 32–512 MiB 범위에서 조절하고,
+  설정 변경 시 고정된 preview session이 같은 대상 파일을 자동 rebuild하도록 연결
+- compiler API에서 잘못된 숫자가 들어와도 기본값 또는 512 MiB 절대 상한으로 정규화해 extension host의
+  메모리·global storage 보호를 유지하고, 실패 메시지에 실제 출력 크기와 변경할 설정을 함께 표시
+
 ## 0.1.1033 - 2026-07-17
 
 - Vite의 project-root 절대 `import.meta.glob('/src/...')` 패턴을 nearest package root 기준으로 해석하고,

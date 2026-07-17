@@ -34,6 +34,8 @@ export interface PreviewBuildRequest {
   readonly documentPath: string;
   /** esbuild loader selected from the document filename. */
   readonly language: PreviewSourceLanguage;
+  /** Resource-scoped maximum combined generated output, expressed in whole mebibytes. */
+  readonly maxOutputMebibytes?: number;
   /** Direct reachable graph for first paint, or complete application-context discovery. */
   readonly preparationMode?: PreviewPreparationMode;
   /** Component gallery by default, or an opt-in actual-parent page inspector. */

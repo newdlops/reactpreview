@@ -5,6 +5,7 @@
  */
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
 import {
   collectPreviewImplicitGlobalEvidence,
   type PreviewImplicitGlobalEvidenceInventory,
@@ -34,6 +35,8 @@ interface ResolvedEvidenceCacheValue {
 /** One shared in-flight or resolved package evidence scan. */
 interface EvidenceCacheEntry {
   readonly createdAt: number;
+  /** Signal that owns an unfinished scan; cleared once the value can safely serve later revisions. */
+  ownerSignal: AbortSignal | undefined;
   readonly value: Promise<ResolvedEvidenceCacheValue>;
 }
 
@@ -62,13 +65,18 @@ export class PreviewImplicitGlobalEvidenceCache {
   public async discover(
     options: PreviewImplicitGlobalEvidenceCacheOptions,
   ): Promise<PreviewImplicitGlobalEvidenceInventory> {
+    throwIfPreviewBuildCancelled(options.signal);
     const currentTime = Date.now();
     const cached = this.entries.get(options.cacheKey);
-    if (cached !== undefined) {
+    if (
+      cached !== undefined &&
+      (cached.ownerSignal === undefined || cached.ownerSignal === options.signal)
+    ) {
       const resolved = await cached.value;
+      throwIfPreviewBuildCancelled(options.signal);
       if (
         currentTime - cached.createdAt <= EVIDENCE_CACHE_TTL_MILLISECONDS &&
-        (await isEvidenceValueCurrent(resolved, options.snapshotSourceByPath))
+        (await isEvidenceValueCurrent(resolved, options.snapshotSourceByPath, options.signal))
       ) {
         refreshEntry(this.entries, options.cacheKey, cached);
         return resolved.inventory;
@@ -78,8 +86,15 @@ export class PreviewImplicitGlobalEvidenceCache {
 
     const entry: EvidenceCacheEntry = {
       createdAt: currentTime,
+      ownerSignal: options.signal,
       value: discoverStampedEvidence(options),
     };
+    void entry.value.then(
+      () => {
+        entry.ownerSignal = undefined;
+      },
+      () => undefined,
+    );
     this.entries.set(options.cacheKey, entry);
     trimOldestEntries(this.entries, MAX_CACHED_EVIDENCE_PROJECTS);
     try {
@@ -103,7 +118,8 @@ async function discoverStampedEvidence(
   options: PreviewImplicitGlobalEvidenceCacheOptions,
 ): Promise<ResolvedEvidenceCacheValue> {
   const inventory = await collectPreviewImplicitGlobalEvidence(options);
-  const dependencyStamps = await readDependencyStamps(inventory.dependencyPaths);
+  throwIfPreviewBuildCancelled(options.signal);
+  const dependencyStamps = await readDependencyStamps(inventory.dependencyPaths, options.signal);
   const snapshotTextByPath = new Map<string, string>();
   for (const dependencyPath of inventory.dependencyPaths) {
     const normalizedPath = path.normalize(dependencyPath);
@@ -119,8 +135,10 @@ async function discoverStampedEvidence(
 async function isEvidenceValueCurrent(
   value: ResolvedEvidenceCacheValue,
   snapshotSourceByPath: ReadonlyMap<string, string>,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   for (const dependencyPath of value.inventory.dependencyPaths) {
+    throwIfPreviewBuildCancelled(signal);
     const normalizedPath = path.normalize(dependencyPath);
     if (value.snapshotTextByPath.get(normalizedPath) !== snapshotSourceByPath.get(normalizedPath)) {
       return false;
@@ -128,6 +146,7 @@ async function isEvidenceValueCurrent(
   }
   const currentStamps = await readDependencyStamps(
     value.dependencyStamps.map((stamp) => stamp.sourcePath),
+    signal,
   );
   return haveEqualDependencyStamps(value.dependencyStamps, currentStamps);
 }
@@ -135,7 +154,9 @@ async function isEvidenceValueCurrent(
 /** Reads regular-file metadata and omits inaccessible paths so removal invalidates the cache. */
 async function readDependencyStamps(
   dependencyPaths: readonly string[],
+  signal?: AbortSignal,
 ): Promise<readonly EvidenceDependencyStamp[]> {
+  throwIfPreviewBuildCancelled(signal);
   const stamps = await Promise.all(
     dependencyPaths.map(async (sourcePath): Promise<EvidenceDependencyStamp | undefined> => {
       try {
@@ -152,6 +173,7 @@ async function readDependencyStamps(
       }
     }),
   );
+  throwIfPreviewBuildCancelled(signal);
   return stamps.filter((stamp): stamp is EvidenceDependencyStamp => stamp !== undefined);
 }
 

@@ -454,6 +454,23 @@ describe('collectPreviewImplicitGlobalEvidence', () => {
     expect(result.evidence).toEqual([]);
     expect(result.unresolvedGlobalNames).toEqual(['value']);
   });
+
+  /** Stops a superseded evidence pass instead of converting cancellation into truncation. */
+  it('propagates revision cancellation from a bounded source batch', async () => {
+    const controller = new AbortController();
+
+    const operation = collectPreviewImplicitGlobalEvidence({
+      readSource: () => {
+        controller.abort();
+        return 'export {};';
+      },
+      resolveModule: () => undefined,
+      signal: controller.signal,
+      sourcePaths: ['/workspace/a.ts'],
+    });
+
+    await expect(operation).rejects.toMatchObject({ name: 'PreviewBuildCancelledError' });
+  });
 });
 
 /** Creates and tracks one real directory used to exercise the default bounded filesystem reader. */

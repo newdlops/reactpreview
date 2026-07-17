@@ -169,7 +169,14 @@ describe('discoverPreviewTargetUsageProps', () => {
     try {
       await mkdir(path.dirname(targetPath), { recursive: true });
       await Promise.all([
-        writeFile(targetPath, 'export const Target = () => <button>target</button>;', 'utf8'),
+        writeFile(
+          targetPath,
+          [
+            'export const Target = () => <button>target</button>;',
+            'export const Secondary = () => <button>secondary</button>;',
+          ].join('\n'),
+          'utf8',
+        ),
         writeFile(
           sectionPath,
           [
@@ -190,7 +197,10 @@ describe('discoverPreviewTargetUsageProps', () => {
 
       const result = await discoverPreviewTargetUsageProps({
         documentPath: targetPath,
-        exports: [{ displayName: 'Target', exportName: 'Target', kind: 'explicit' }],
+        exports: [
+          { displayName: 'Target', exportName: 'Target', kind: 'explicit' },
+          { displayName: 'Secondary', exportName: 'Secondary', kind: 'explicit' },
+        ],
         inspectorExportName: 'Target',
         projectRoot,
         snapshots: [],
@@ -205,6 +215,11 @@ describe('discoverPreviewTargetUsageProps', () => {
         targetAutomaticProps: { enabled: true },
       });
       expect(result.inspectorPlan?.edges).toHaveLength(2);
+      expect(Object.keys(result.renderChainsByExport ?? {})).toEqual(['Target', 'Secondary']);
+      expect(Object.keys(result.inspectorPlan?.renderChainsByExport ?? {})).toEqual([
+        'Target',
+        'Secondary',
+      ]);
       expect(result.dependencyPaths).toEqual([pagePath, sectionPath, targetPath].sort());
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
@@ -327,6 +342,24 @@ describe('discoverPreviewTargetUsageProps', () => {
         rm(workspaceRoot, { force: true, recursive: true }),
         rm(outsideRoot, { force: true, recursive: true }),
       ]);
+    }
+  });
+
+  /** Rejects a superseded inventory before entering another potentially large directory tree. */
+  it('cancels package source enumeration through its revision signal', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-usage-cancel-'));
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(
+        collectPreviewTargetUsageSourcePaths({
+          projectRoot: workspaceRoot,
+          signal: controller.signal,
+          workspaceRoot,
+        }),
+      ).rejects.toMatchObject({ name: 'PreviewBuildCancelledError' });
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
     }
   });
 });

@@ -4,8 +4,11 @@
  * the security boundary. The cache stores inert paths, primitive props, wrapper recipes, and file
  * metadata only; application modules are never imported or executed by this host-side layer.
  */
+import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
+import { PreviewProjectFileAnalysisCache } from './previewProjectFileAnalysisCache';
 import {
   collectPreviewTargetUsageSourcePaths,
   discoverPreviewTargetUsageProps,
@@ -17,8 +20,12 @@ const MAX_CACHED_PACKAGES = 16;
 const MAX_CACHED_TARGETS = 256;
 const SOURCE_INVENTORY_TTL_MILLISECONDS = 5_000;
 const NEGATIVE_USAGE_TTL_MILLISECONDS = 5_000;
-/** A target-only Inspector root is provisional because a new authored parent may appear later. */
-const ZERO_EDGE_INSPECTOR_TTL_MILLISECONDS = 5_000;
+
+/** Public discovery input with compiler-owned inventory and file caches deliberately hidden. */
+type PreviewProjectUsageDiscoveryOptions = Omit<
+  PreviewTargetUsagePropsOptions,
+  'analysisCache' | 'sourcePaths'
+>;
 
 /** Filesystem identity used to invalidate a positive usage result after its consumer changes. */
 interface DependencyStamp {
@@ -30,12 +37,22 @@ interface DependencyStamp {
   readonly size: number;
 }
 
+/** Immutable package source inventory plus a stable path-set fingerprint for precise invalidation. */
+interface SourceInventorySnapshot {
+  /** Hash of ordered normalized source paths; unchanged refreshes preserve positive evidence. */
+  readonly fingerprint: string;
+  /** Stable, bounded package-local source paths shared by concurrent preview requests. */
+  readonly sourcePaths: readonly string[];
+}
+
 /** Reusable package inventory promise and the time at which directory enumeration began. */
 interface SourceInventoryCacheEntry {
-  /** Creation time used to admit newly created source files after a short hot-reload window. */
-  readonly createdAt: number;
-  /** Stable, bounded package-local source paths shared by concurrent preview requests. */
-  readonly sourcePaths: Promise<readonly string[]>;
+  /** Check time used to admit newly created source files after a short hot-reload window. */
+  readonly checkedAt: number;
+  /** Signal owning an unfinished enumeration; cleared when later revisions may reuse the result. */
+  ownerSignal: AbortSignal | undefined;
+  /** Paths and fingerprint shared by concurrent preview requests. */
+  readonly snapshot: Promise<SourceInventorySnapshot>;
 }
 
 /** Cached target evidence together with the consumer metadata that proves it remains current. */
@@ -44,12 +61,18 @@ interface UsageResultCacheEntry {
   readonly createdAt: number;
   /** Consumer file metadata captured after static usage discovery completed. */
   readonly dependencyStamps: readonly DependencyStamp[];
+  /** Source inventory identity used to invalidate only when files are created or removed. */
+  readonly inventoryFingerprint: string;
   /** Primitive JSX props, parent slices, and exact dependency paths returned to the compiler. */
   readonly result: PreviewTargetUsageProps;
+  /** Exact current editor target identity kept outside the stable target cache key. */
+  readonly targetSourceFingerprint?: string;
 }
 
 /** Optional clock injection keeps expiry behavior deterministic without exposing mutable internals. */
 export interface PreviewProjectUsageCacheOptions {
+  /** Optional file cache injection used by deterministic cache identity tests. */
+  readonly fileAnalysisCache?: PreviewProjectFileAnalysisCache;
   /** Returns a monotonically comparable millisecond value; defaults to `Date.now`. */
   readonly now?: () => number;
 }
@@ -63,12 +86,14 @@ export interface PreviewProjectUsageCacheOptions {
  * consumer and are always passed to the syntax-only discovery implementation.
  */
 export class PreviewProjectUsageCache {
+  private readonly fileAnalysisCache: PreviewProjectFileAnalysisCache;
   private readonly now: () => number;
   private readonly sourceInventories = new Map<string, SourceInventoryCacheEntry>();
   private readonly usageResults = new Map<string, UsageResultCacheEntry>();
 
   /** Creates an empty cache owned by one compiler instance. */
   public constructor(options: PreviewProjectUsageCacheOptions = {}) {
+    this.fileAnalysisCache = options.fileAnalysisCache ?? new PreviewProjectFileAnalysisCache();
     this.now = options.now ?? Date.now;
   }
 
@@ -79,23 +104,49 @@ export class PreviewProjectUsageCache {
    * @returns Static props, parent render slices, and consumer paths used for hot reload routing.
    */
   public async discover(
-    options: Omit<PreviewTargetUsagePropsOptions, 'sourcePaths'>,
+    options: PreviewProjectUsageDiscoveryOptions,
   ): Promise<PreviewTargetUsageProps> {
+    throwIfPreviewBuildCancelled(options.signal);
+    const inventory = await this.getSourceInventory(
+      options.workspaceRoot,
+      options.projectRoot,
+      options.signal,
+    );
     const usageKey = createUsageResultKey(options);
     const cachedResult = this.usageResults.get(usageKey);
-    if (cachedResult !== undefined && (await this.isUsageResultCurrent(cachedResult, options))) {
+    if (
+      cachedResult !== undefined &&
+      (await this.isUsageResultCurrent(cachedResult, options, inventory.fingerprint))
+    ) {
       refreshMapEntry(this.usageResults, usageKey, cachedResult);
       return cachedResult.result;
     }
     this.usageResults.delete(usageKey);
 
-    const sourcePaths = await this.getSourcePaths(options.workspaceRoot, options.projectRoot);
-    const result = await discoverPreviewTargetUsageProps({ ...options, sourcePaths });
-    const dependencyStamps = await readDependencyStamps(result.dependencyPaths);
+    const result = await discoverPreviewTargetUsageProps({
+      ...options,
+      analysisCache: this.fileAnalysisCache,
+      sourcePaths: inventory.sourcePaths,
+    });
+    throwIfPreviewBuildCancelled(options.signal);
+    const dependencyStamps = await readDependencyStamps(
+      [
+        ...new Set([
+          ...result.dependencyPaths,
+          options.documentPath,
+          ...(options.tsconfigPath === undefined ? [] : [options.tsconfigPath]),
+        ]),
+      ],
+      options.signal,
+    );
     const cacheEntry = {
       createdAt: this.now(),
       dependencyStamps,
+      inventoryFingerprint: inventory.fingerprint,
       result,
+      ...(options.sourceText === undefined
+        ? {}
+        : { targetSourceFingerprint: createSourceTextFingerprint(options.sourceText) }),
     } satisfies UsageResultCacheEntry;
     this.usageResults.set(usageKey, cacheEntry);
     trimOldestEntries(this.usageResults, MAX_CACHED_TARGETS);
@@ -104,6 +155,7 @@ export class PreviewProjectUsageCache {
 
   /** Removes retained inventories and evidence during extension/compiler shutdown. */
   public clear(): void {
+    this.fileAnalysisCache.clear();
     this.sourceInventories.clear();
     this.usageResults.clear();
   }
@@ -122,24 +174,59 @@ export class PreviewProjectUsageCache {
   public async getSourcePaths(
     workspaceRoot: string,
     projectRoot: string,
+    signal?: AbortSignal,
   ): Promise<readonly string[]> {
+    return (await this.getSourceInventory(workspaceRoot, projectRoot, signal)).sourcePaths;
+  }
+
+  /**
+   * Refreshes package paths after the short discovery window while preserving a stable fingerprint.
+   * An unchanged directory listing therefore does not evict valid props or render chains merely
+   * because five seconds elapsed; creation/removal changes the fingerprint and invalidates them.
+   */
+  private async getSourceInventory(
+    workspaceRoot: string,
+    projectRoot: string,
+    signal?: AbortSignal,
+  ): Promise<SourceInventorySnapshot> {
+    throwIfPreviewBuildCancelled(signal);
     const inventoryKey = createPackageCacheKey(workspaceRoot, projectRoot);
     const currentTime = this.now();
     const cachedInventory = this.sourceInventories.get(inventoryKey);
     if (
       cachedInventory !== undefined &&
-      currentTime - cachedInventory.createdAt <= SOURCE_INVENTORY_TTL_MILLISECONDS
+      (cachedInventory.ownerSignal === undefined || cachedInventory.ownerSignal === signal) &&
+      currentTime - cachedInventory.checkedAt <= SOURCE_INVENTORY_TTL_MILLISECONDS
     ) {
       refreshMapEntry(this.sourceInventories, inventoryKey, cachedInventory);
-      return cachedInventory.sourcePaths;
+      return cachedInventory.snapshot;
     }
 
-    const sourcePaths = collectPreviewTargetUsageSourcePaths({ projectRoot, workspaceRoot });
-    const nextInventory = { createdAt: currentTime, sourcePaths };
+    const snapshot = collectPreviewTargetUsageSourcePaths({
+      projectRoot,
+      ...(signal === undefined ? {} : { signal }),
+      workspaceRoot,
+    }).then((sourcePaths) =>
+      Object.freeze({
+        fingerprint: createSourceInventoryFingerprint(sourcePaths),
+        sourcePaths: Object.freeze([...sourcePaths]),
+      }),
+    );
+    const nextInventory: SourceInventoryCacheEntry = {
+      checkedAt: currentTime,
+      ownerSignal: signal,
+      snapshot,
+    };
+    void snapshot.then(
+      () => {
+        nextInventory.ownerSignal = undefined;
+      },
+      () => undefined,
+    );
     this.sourceInventories.set(inventoryKey, nextInventory);
     trimOldestEntries(this.sourceInventories, MAX_CACHED_PACKAGES);
     try {
-      return await sourcePaths;
+      return await snapshot;
     } catch (error) {
       if (this.sourceInventories.get(inventoryKey) === nextInventory) {
         this.sourceInventories.delete(inventoryKey);
@@ -151,20 +238,33 @@ export class PreviewProjectUsageCache {
   /** Checks expiry, dirty snapshots, and filesystem metadata for one target usage result. */
   private async isUsageResultCurrent(
     cached: UsageResultCacheEntry,
-    options: Omit<PreviewTargetUsagePropsOptions, 'sourcePaths'>,
+    options: PreviewProjectUsageDiscoveryOptions,
+    inventoryFingerprint: string,
   ): Promise<boolean> {
-    const zeroEdgeInspectorPlan = cached.result.inspectorPlan?.edges.length === 0;
+    throwIfPreviewBuildCancelled(options.signal);
+    if (cached.inventoryFingerprint !== inventoryFingerprint) {
+      return false;
+    }
     if (
-      zeroEdgeInspectorPlan &&
-      (this.now() - cached.createdAt > ZERO_EDGE_INSPECTOR_TTL_MILLISECONDS ||
-        options.snapshots.some((snapshot) =>
-          isPathInside(options.projectRoot, snapshot.documentPath),
-        ))
+      cached.targetSourceFingerprint !==
+      (options.sourceText === undefined
+        ? undefined
+        : createSourceTextFingerprint(options.sourceText))
+    ) {
+      return false;
+    }
+    const zeroEdgeInspectorPlan = cached.result.inspectorPlan?.edges.length === 0;
+    const provisionalRenderChain = Object.values(cached.result.renderChainsByExport ?? {}).some(
+      (plan) => plan.reachability === 'entry-unreachable' || plan.truncated,
+    );
+    if (
+      (zeroEdgeInspectorPlan || provisionalRenderChain) &&
+      options.snapshots.some((snapshot) => isPathInside(options.projectRoot, snapshot.documentPath))
     ) {
       return false;
     }
 
-    if (cached.dependencyStamps.length === 0) {
+    if (cached.result.dependencyPaths.length === 0) {
       return this.now() - cached.createdAt <= NEGATIVE_USAGE_TTL_MILLISECONDS;
     }
 
@@ -176,6 +276,7 @@ export class PreviewProjectUsageCache {
     }
     const currentStamps = await readDependencyStamps(
       cached.dependencyStamps.map((stamp) => stamp.sourcePath),
+      options.signal,
     );
     return haveEqualDependencyStamps(cached.dependencyStamps, currentStamps);
   }
@@ -197,10 +298,18 @@ function createPackageCacheKey(workspaceRoot: string, projectRoot: string): stri
   return `${path.normalize(workspaceRoot)}\0${path.normalize(projectRoot)}`;
 }
 
-/** Includes target and ordered explicit export identity so source edits cannot reuse wrong props. */
-function createUsageResultKey(
-  options: Omit<PreviewTargetUsagePropsOptions, 'sourcePaths'>,
-): string {
+/** Hashes the ordered normalized package path set without reading any source contents. */
+function createSourceInventoryFingerprint(sourcePaths: readonly string[]): string {
+  const hash = createHash('sha256');
+  for (const sourcePath of sourcePaths) {
+    hash.update(path.normalize(sourcePath));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+/** Uses stable target/configuration identity while source fingerprints invalidate values in place. */
+function createUsageResultKey(options: PreviewProjectUsageDiscoveryOptions): string {
   const exportKey = options.exports
     .map((slot) =>
       slot.kind === 'explicit' ? `explicit:${slot.exportName}:${slot.displayName}` : 'wildcard',
@@ -213,10 +322,17 @@ function createUsageResultKey(
   return `${createPackageCacheKey(options.workspaceRoot, options.projectRoot)}\0${path.normalize(options.documentPath)}\0${exportKey}\0${climbKey}\0${inspectorKey}\0${tsconfigKey}`;
 }
 
+/** Hashes current editor text without embedding every hot revision into the bounded map key. */
+function createSourceTextFingerprint(sourceText: string): string {
+  return createHash('sha256').update(sourceText).digest('hex');
+}
+
 /** Reads stable metadata for selected consumers; an inaccessible dependency invalidates the cache. */
 async function readDependencyStamps(
   dependencyPaths: readonly string[],
+  signal?: AbortSignal,
 ): Promise<readonly DependencyStamp[]> {
+  throwIfPreviewBuildCancelled(signal);
   const stamps = await Promise.all(
     dependencyPaths.map(async (sourcePath): Promise<DependencyStamp | undefined> => {
       try {
@@ -233,6 +349,7 @@ async function readDependencyStamps(
       }
     }),
   );
+  throwIfPreviewBuildCancelled(signal);
   return stamps.filter((stamp): stamp is DependencyStamp => stamp !== undefined);
 }
 

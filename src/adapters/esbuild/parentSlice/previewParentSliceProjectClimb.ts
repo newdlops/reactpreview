@@ -4,6 +4,7 @@
  * sibling JSX, hooks, effects, route gates, and modal state in that owner remain outside the bundle.
  */
 import path from 'node:path';
+import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
 import {
   analyzePreviewParentSlices,
   type MatchesPreviewParentSliceTargetImport,
@@ -32,6 +33,8 @@ export interface ClimbPreviewParentSliceProjectOptions {
   readonly sourcePaths: readonly string[];
   /** Lazy source reader that applies dirty snapshot precedence and aggregate byte limits. */
   readonly readSource: ReadPreviewParentSliceSource;
+  /** Cancels stale cross-module owner traversal between bounded source batches. */
+  readonly signal?: AbortSignal;
 }
 
 /** Candidate occurrence and its already-expanded same-module wrapper recipe. */
@@ -54,6 +57,7 @@ interface ProjectParentCandidate {
 export async function climbPreviewParentSliceProject(
   options: ClimbPreviewParentSliceProjectOptions,
 ): Promise<PreviewParentSlicePlan> {
+  throwIfPreviewBuildCancelled(options.signal);
   let currentPlan = options.initialPlan;
   let projectOwnerDepth = currentPlan.projectOwnerDepth;
   let localOwnerDepth = currentPlan.localOwnerDepth;
@@ -67,6 +71,7 @@ export async function climbPreviewParentSliceProject(
     projectOwnerDepth < MAX_PROJECT_OWNER_DEPTH &&
     frames.length < MAX_COMPOSED_FRAME_COUNT
   ) {
+    throwIfPreviewBuildCancelled(options.signal);
     const frontierKey = createFrontierKey(currentPlan.sourcePath, currentPlan.ownerExportNames);
     if (visitedFrontiers.has(frontierKey)) {
       return createCombinedPlan(
@@ -86,6 +91,7 @@ export async function climbPreviewParentSliceProject(
         ? {}
         : { matchesTargetImport: options.matchesTargetImport }),
       readSource: options.readSource,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       sourcePaths: options.sourcePaths,
       targetPath: currentPlan.sourcePath,
     });
@@ -132,6 +138,7 @@ async function findProjectParentCandidate(options: {
   readonly exportNames: readonly string[];
   readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
   readonly readSource: ReadPreviewParentSliceSource;
+  readonly signal?: AbortSignal;
   readonly sourcePaths: readonly string[];
   readonly targetPath: string;
 }): Promise<ProjectParentCandidate | undefined> {
@@ -141,6 +148,7 @@ async function findProjectParentCandidate(options: {
     batchStart < options.sourcePaths.length;
     batchStart += MAX_CONCURRENT_SOURCE_READS
   ) {
+    throwIfPreviewBuildCancelled(options.signal);
     const pathBatch = options.sourcePaths.slice(
       batchStart,
       batchStart + MAX_CONCURRENT_SOURCE_READS,
@@ -154,6 +162,7 @@ async function findProjectParentCandidate(options: {
             : await options.readSource(sourcePath),
       })),
     );
+    throwIfPreviewBuildCancelled(options.signal);
     for (const source of sourceBatch) {
       if (
         source.sourceText === undefined ||

@@ -6,6 +6,7 @@
 import { open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { PreviewSourceSnapshot } from '../../domain/preview';
+import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
 import { createPreviewInspectorAncestorPlan, type PreviewInspectorAncestorPlan } from './inspector';
 import {
   analyzePreviewParentSlices,
@@ -16,6 +17,11 @@ import {
 } from './parentSlice';
 import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver';
 import type { PreviewTargetExportSlot } from './previewTargetExports';
+import { createPreviewRenderChainPlans, type PreviewRenderChainPlansByExport } from './renderGraph';
+import {
+  PreviewProjectFileAnalysisCache,
+  type PreviewProjectSourceRecord,
+} from './previewProjectFileAnalysisCache';
 
 const MAX_SCANNED_SOURCE_FILES = 16_384;
 const MAX_CONCURRENT_SOURCE_READS = 16;
@@ -54,6 +60,8 @@ export interface PreviewTargetUsageProps {
   readonly inspectorPlan?: PreviewInspectorAncestorPlan;
   /** Config-aware aliases proven to resolve to the original Inspector target during discovery. */
   readonly inspectorTargetImportSpecifiers?: readonly string[];
+  /** Static entry-to-target structure for every explicit export, populated in Inspector mode. */
+  readonly renderChainsByExport?: PreviewRenderChainPlansByExport;
   /** Pinpoint wrapper recipes selected from real JSX branches for each explicit target export. */
   readonly parentSlicesByExport: PreviewParentSlicePlansByExport;
   /** First deterministic literal-prop example for each explicit target export. */
@@ -62,6 +70,8 @@ export interface PreviewTargetUsageProps {
 
 /** Inputs required to search one trusted project without consulting framework configuration. */
 export interface PreviewTargetUsagePropsOptions {
+  /** Optional compiler-lifetime file cache; direct callers remain stateless when omitted. */
+  readonly analysisCache?: PreviewProjectFileAnalysisCache;
   /** Whether exported owners may be followed across package source files; defaults to `true`. */
   readonly climbParentSlices?: boolean;
   /** Selected source module whose direct exports are being previewed. */
@@ -72,6 +82,10 @@ export interface PreviewTargetUsagePropsOptions {
   readonly inspectorExportName?: string;
   /** Nearest package root bounding reverse usage discovery inside a larger workspace. */
   readonly projectRoot: string;
+  /** Cancels stale package scans at directory, source-batch, and graph-traversal boundaries. */
+  readonly signal?: AbortSignal;
+  /** Current target editor text used by Inspector render-graph identity and cache invalidation. */
+  readonly sourceText?: string;
   /** Unsaved editor documents that take precedence over their filesystem contents. */
   readonly snapshots: readonly PreviewSourceSnapshot[];
   /** Optional configured tsconfig/jsconfig; nearest trusted configs are discovered when omitted. */
@@ -86,17 +100,14 @@ export interface PreviewTargetUsagePropsOptions {
 export interface PreviewTargetUsageSourceInventoryOptions {
   /** Nearest package root whose authored source files should be enumerated. */
   readonly projectRoot: string;
+  /** Cancels a stale monorepo directory enumeration before another directory is entered. */
+  readonly signal?: AbortSignal;
   /** Trusted workspace root that must contain the selected package root. */
   readonly workspaceRoot: string;
 }
 
 /** One source file and its current editor-or-disk text. */
-interface UsageSource {
-  /** UTF-8 byte count charged against the aggregate reverse-search budget. */
-  readonly byteLength: number;
-  readonly filePath: string;
-  readonly sourceText: string;
-}
+type UsageSource = PreviewProjectSourceRecord;
 
 /** Validated lexical roots used to prevent a package search from escaping its workspace. */
 interface UsageSearchBoundary {
@@ -116,6 +127,7 @@ interface UsageSearchBoundary {
 export async function discoverPreviewTargetUsageProps(
   options: PreviewTargetUsagePropsOptions,
 ): Promise<PreviewTargetUsageProps> {
+  throwIfPreviewBuildCancelled(options.signal);
   const explicitExportNames = options.exports.flatMap((slot) =>
     slot.kind === 'explicit' ? [slot.exportName] : [],
   );
@@ -132,11 +144,23 @@ export async function discoverPreviewTargetUsageProps(
     options.sourcePaths ??
     (await collectPreviewTargetUsageSourcePaths({
       projectRoot: boundary.packageRoot,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       workspaceRoot: boundary.workspaceRoot,
     }));
   const sourcePaths = selectUsageSourcePaths(inventoryPaths, options.snapshots, boundary);
   const snapshotByPath = new Map(
-    options.snapshots
+    [
+      ...options.snapshots,
+      ...(options.sourceText === undefined
+        ? []
+        : [
+            {
+              documentPath: boundary.documentPath,
+              language: readUsageSourceLanguage(boundary.documentPath),
+              sourceText: options.sourceText,
+            } satisfies PreviewSourceSnapshot,
+          ]),
+    ]
       .filter((snapshot) => isPathInside(boundary.packageRoot, snapshot.documentPath))
       .map((snapshot) => [path.normalize(snapshot.documentPath), snapshot] as const),
   );
@@ -145,26 +169,56 @@ export async function discoverPreviewTargetUsageProps(
   const parentSliceByExport = new Map<string, PreviewParentSlicePlan>();
   const expectedExportNames = new Set(explicitExportNames);
   const usageSourceByPath = new Map<string, UsageSource>();
+  const unavailableUsageSourcePaths = new Set<string>();
   let consumedBytes = 0;
+  const shouldDiscoverInspector =
+    options.inspectorExportName !== undefined &&
+    explicitExportNames.includes(options.inspectorExportName);
+  const analysisCache = options.analysisCache;
+
+  /*
+   * Entry discovery is the primary Inspector operation. Running it before literal-prop and parent
+   * slice scans prevents those optional passes from consuming the shared source-byte budget first.
+   * The target is seeded explicitly so a large alphabetical inventory cannot omit dirty editor text.
+   */
+  if (shouldDiscoverInspector) {
+    await readCachedUsageSource(boundary.documentPath);
+  }
+  const renderChainsByExport = shouldDiscoverInspector
+    ? await createPreviewRenderChainPlans({
+        ...(analysisCache === undefined
+          ? {}
+          : {
+              analyzeSource: (sourcePath: string, sourceText: string) =>
+                analysisCache.analyzeRenderSource(sourcePath, sourceText),
+              collectModuleSpecifiers: (sourcePath: string, sourceText: string) =>
+                analysisCache.collectModuleSpecifiers(sourcePath, sourceText),
+            }),
+        documentPath: boundary.documentPath,
+        exportNames: explicitExportNames,
+        readSource: readCachedUsageSource,
+        resolveModule: moduleResolver.resolve,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        sourcePaths: [...sourcePaths, boundary.documentPath],
+      })
+    : undefined;
 
   scanBatches: for (
     let batchStart = 0;
     batchStart < sourcePaths.length;
     batchStart += MAX_CONCURRENT_SOURCE_READS
   ) {
-    const sourceBatch = await readUsageSourceBatch(
-      sourcePaths.slice(batchStart, batchStart + MAX_CONCURRENT_SOURCE_READS),
-      snapshotByPath,
+    throwIfPreviewBuildCancelled(options.signal);
+    const sourceBatch = await Promise.all(
+      sourcePaths
+        .slice(batchStart, batchStart + MAX_CONCURRENT_SOURCE_READS)
+        .map(readCachedUsageSourceRecord),
     );
+    throwIfPreviewBuildCancelled(options.signal);
     for (const usageSource of sourceBatch) {
       if (usageSource === undefined) {
         continue;
       }
-      if (consumedBytes + usageSource.byteLength > MAX_TOTAL_SOURCE_BYTES) {
-        break scanBatches;
-      }
-      consumedBytes += usageSource.byteLength;
-      usageSourceByPath.set(path.normalize(usageSource.filePath), usageSource);
       if (!mayContainUsage(usageSource.sourceText, boundary.documentPath)) {
         continue;
       }
@@ -214,10 +268,12 @@ export async function discoverPreviewTargetUsageProps(
 
   if (options.climbParentSlices !== false) {
     for (const [exportName, initialPlan] of parentSliceByExport) {
+      throwIfPreviewBuildCancelled(options.signal);
       const climbedPlan = await climbPreviewParentSliceProject({
         initialPlan,
         matchesTargetImport: moduleResolver.matchesTarget,
         readSource: readCachedUsageSource,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         sourcePaths,
       });
       parentSliceByExport.set(exportName, climbedPlan);
@@ -225,15 +281,17 @@ export async function discoverPreviewTargetUsageProps(
   }
 
   const inspectorPlan =
-    options.inspectorExportName === undefined ||
-    !explicitExportNames.includes(options.inspectorExportName)
+    !shouldDiscoverInspector || renderChainsByExport === undefined
       ? undefined
       : await createPreviewInspectorAncestorPlan({
           documentPath: boundary.documentPath,
           exportName: options.inspectorExportName,
           matchesTargetImport: moduleResolver.matchesTarget,
           readSource: readCachedUsageSource,
-          sourcePaths,
+          resolveModule: moduleResolver.resolve,
+          renderChainsByExport,
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          sourcePaths: [...sourcePaths, boundary.documentPath],
         });
 
   const dependencies = new Set<string>([
@@ -251,23 +309,51 @@ export async function discoverPreviewTargetUsageProps(
     ...(inspectorTargetImportSpecifiers.length === 0 ? {} : { inspectorTargetImportSpecifiers }),
     parentSlicesByExport: Object.fromEntries(parentSliceByExport),
     propsByExport: Object.fromEntries(propsByExport),
+    ...(renderChainsByExport === undefined ? {} : { renderChainsByExport }),
   };
 
-  /** Reuses bounded snapshot-or-disk text across slice and Inspector reverse traversals. */
-  async function readCachedUsageSource(sourcePath: string): Promise<string | undefined> {
+  /** Reuses one bounded source record across entry, prop, slice, and ancestor analysis passes. */
+  async function readCachedUsageSourceRecord(sourcePath: string): Promise<UsageSource | undefined> {
+    throwIfPreviewBuildCancelled(options.signal);
     const normalizedPath = path.normalize(sourcePath);
     const cachedSource = usageSourceByPath.get(normalizedPath);
     if (cachedSource !== undefined) {
-      return cachedSource.sourceText;
+      return cachedSource;
     }
-    const source = await readUsageSource(sourcePath, snapshotByPath.get(normalizedPath));
+    if (unavailableUsageSourcePaths.has(normalizedPath)) {
+      return undefined;
+    }
+    const source = await readUsageSource(
+      sourcePath,
+      snapshotByPath.get(normalizedPath),
+      analysisCache,
+    );
+    throwIfPreviewBuildCancelled(options.signal);
     if (source === undefined || consumedBytes + source.byteLength > MAX_TOTAL_SOURCE_BYTES) {
+      unavailableUsageSourcePaths.add(normalizedPath);
       return undefined;
     }
     consumedBytes += source.byteLength;
     usageSourceByPath.set(normalizedPath, source);
-    return source.sourceText;
+    return source;
   }
+
+  /** Adapts the shared source-record cache to graph and ancestor readers that need only text. */
+  async function readCachedUsageSource(sourcePath: string): Promise<string | undefined> {
+    return (await readCachedUsageSourceRecord(sourcePath))?.sourceText;
+  }
+}
+
+/** Maps a selected target suffix to the snapshot loader identity used by disk/editor readers. */
+function readUsageSourceLanguage(sourcePath: string): PreviewSourceSnapshot['language'] {
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (extension === '.tsx') {
+    return 'tsx';
+  }
+  if (extension === '.ts' || extension === '.mts' || extension === '.cts') {
+    return 'ts';
+  }
+  return extension === '.jsx' ? 'jsx' : 'js';
 }
 
 /**
@@ -280,8 +366,9 @@ export async function discoverPreviewTargetUsageProps(
 export async function collectPreviewTargetUsageSourcePaths(
   options: PreviewTargetUsageSourceInventoryOptions,
 ): Promise<readonly string[]> {
+  throwIfPreviewBuildCancelled(options.signal);
   const boundary = createUsagePackageBoundary(options.workspaceRoot, options.projectRoot);
-  return collectProjectSourcePaths(boundary.packageRoot);
+  return collectProjectSourcePaths(boundary.packageRoot, options.signal);
 }
 
 /**
@@ -331,11 +418,15 @@ function isPathInside(rootPath: string, candidatePath: string): boolean {
 }
 
 /** Enumerates application source paths in stable order without traversing package or build output. */
-async function collectProjectSourcePaths(packageRoot: string): Promise<readonly string[]> {
+async function collectProjectSourcePaths(
+  packageRoot: string,
+  signal?: AbortSignal,
+): Promise<readonly string[]> {
   const pendingDirectories = [packageRoot];
   const sourcePaths: string[] = [];
 
   while (pendingDirectories.length > 0 && sourcePaths.length < MAX_SCANNED_SOURCE_FILES) {
+    throwIfPreviewBuildCancelled(signal);
     const directoryPath = pendingDirectories.shift();
     if (directoryPath === undefined) {
       break;
@@ -346,6 +437,7 @@ async function collectProjectSourcePaths(packageRoot: string): Promise<readonly 
     } catch {
       continue;
     }
+    throwIfPreviewBuildCancelled(signal);
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       if (entry.isSymbolicLink()) {
@@ -379,10 +471,8 @@ function selectUsageSourcePaths(
   boundary: UsageSearchBoundary,
 ): readonly string[] {
   const selectedPaths = new Set<string>();
-  for (const candidatePath of [
-    ...inventoryPaths,
-    ...snapshots.map((snapshot) => snapshot.documentPath),
-  ]) {
+  const dirtyPaths = snapshots.map((snapshot) => snapshot.documentPath);
+  for (const candidatePath of [...dirtyPaths, ...inventoryPaths]) {
     if (!path.isAbsolute(candidatePath)) {
       continue;
     }
@@ -396,8 +486,11 @@ function selectUsageSourcePaths(
       continue;
     }
     selectedPaths.add(normalizedPath);
+    if (selectedPaths.size >= MAX_SCANNED_SOURCE_FILES) {
+      break;
+    }
   }
-  return [...selectedPaths].sort().slice(0, MAX_SCANNED_SOURCE_FILES);
+  return [...selectedPaths].sort();
 }
 
 /** Rejects cached inventory entries that cross a directory excluded by fresh enumeration. */
@@ -409,33 +502,28 @@ function containsIgnoredPathSegment(packageRoot: string, sourcePath: string): bo
     .some((segment) => IGNORED_DIRECTORY_NAMES.has(segment));
 }
 
-/**
- * Reads one stable path batch with a hard concurrency ceiling.
- *
- * `Promise.all` is deliberately scoped to at most `MAX_CONCURRENT_SOURCE_READS` paths by the
- * caller. Results preserve path order even when storage completes out of order, so the selected
- * first authored usage remains deterministic across SSDs, remote workspaces, and CI filesystems.
- */
-async function readUsageSourceBatch(
-  sourcePaths: readonly string[],
-  snapshotByPath: ReadonlyMap<string, PreviewSourceSnapshot>,
-): Promise<readonly (UsageSource | undefined)[]> {
-  return Promise.all(
-    sourcePaths.map((sourcePath) =>
-      readUsageSource(sourcePath, snapshotByPath.get(path.normalize(sourcePath))),
-    ),
-  );
-}
-
 /** Reads one editor snapshot or bounded disk file without allowing a single giant source blob. */
 async function readUsageSource(
   sourcePath: string,
   snapshot: PreviewSourceSnapshot | undefined,
+  analysisCache?: PreviewProjectFileAnalysisCache,
 ): Promise<UsageSource | undefined> {
+  if (analysisCache !== undefined) {
+    return analysisCache.readSource({
+      maximumBytes: MAX_INDIVIDUAL_SOURCE_BYTES,
+      ...(snapshot === undefined ? {} : { snapshotText: snapshot.sourceText }),
+      sourcePath,
+    });
+  }
   if (snapshot !== undefined) {
     const byteLength = Buffer.byteLength(snapshot.sourceText, 'utf8');
     return byteLength <= MAX_INDIVIDUAL_SOURCE_BYTES
-      ? { byteLength, filePath: sourcePath, sourceText: snapshot.sourceText }
+      ? {
+          byteLength,
+          filePath: sourcePath,
+          fingerprint: `uncached-snapshot:${byteLength.toString()}`,
+          sourceText: snapshot.sourceText,
+        }
       : undefined;
   }
 
@@ -449,7 +537,12 @@ async function readUsageSource(
       const sourceText = await sourceHandle.readFile({ encoding: 'utf8' });
       const byteLength = Buffer.byteLength(sourceText, 'utf8');
       return byteLength <= MAX_INDIVIDUAL_SOURCE_BYTES
-        ? { byteLength, filePath: sourcePath, sourceText }
+        ? {
+            byteLength,
+            filePath: sourcePath,
+            fingerprint: `uncached-disk:${sourceStats.mtimeMs.toString()}:${sourceStats.size.toString()}`,
+            sourceText,
+          }
         : undefined;
     } finally {
       await sourceHandle.close();

@@ -12,6 +12,7 @@
 import { open } from 'node:fs/promises';
 import path from 'node:path';
 import ts from 'typescript';
+import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
 
 /** Hard ceiling aligned with the reusable package inventory consumed by this analyzer. */
 export const MAX_IMPLICIT_GLOBAL_EVIDENCE_FILES = 16_384;
@@ -151,6 +152,8 @@ export interface PreviewImplicitGlobalEvidenceOptions {
   readonly resolveModule: PreviewImplicitGlobalModuleResolver;
   /** Optional snapshot/cache overlay; `undefined` falls back to current filesystem contents. */
   readonly readSource?: PreviewImplicitGlobalSourceReader;
+  /** Cancels stale inventory, source reads, and module-resolution selection between bounded steps. */
+  readonly signal?: AbortSignal;
   /** Caller-approved absolute source paths; duplicates and unsupported suffixes are ignored. */
   readonly sourcePaths: readonly string[];
 }
@@ -201,6 +204,7 @@ interface GlobalEvidenceSelection {
 export async function collectPreviewImplicitGlobalEvidence(
   options: PreviewImplicitGlobalEvidenceOptions,
 ): Promise<PreviewImplicitGlobalEvidenceInventory> {
+  throwIfPreviewBuildCancelled(options.signal);
   const limits = readEvidenceLimits(options);
   const sourcePaths = normalizeSourcePaths(options.sourcePaths);
   if (sourcePaths.length > limits.maximumFiles) {
@@ -216,15 +220,17 @@ export async function collectPreviewImplicitGlobalEvidence(
     batchStart < sourcePaths.length;
     batchStart += MAX_CONCURRENT_IMPLICIT_GLOBAL_READS
   ) {
+    throwIfPreviewBuildCancelled(options.signal);
     const sourceBatchPaths = sourcePaths.slice(
       batchStart,
       batchStart + MAX_CONCURRENT_IMPLICIT_GLOBAL_READS,
     );
     const sourceBatch = await Promise.all(
       sourceBatchPaths.map((sourcePath) =>
-        readBoundedSource(sourcePath, limits.maximumFileBytes, options.readSource),
+        readBoundedSource(sourcePath, limits.maximumFileBytes, options.readSource, options.signal),
       ),
     );
+    throwIfPreviewBuildCancelled(options.signal);
     for (const [batchIndex, source] of sourceBatch.entries()) {
       if (source.truncated) {
         truncated = true;
@@ -255,7 +261,7 @@ export async function collectPreviewImplicitGlobalEvidence(
   if (truncated) {
     return createEvidenceInventory({ truncated: true });
   }
-  return resolveAndSelectEvidence(candidates, options.resolveModule);
+  return resolveAndSelectEvidence(candidates, options.resolveModule, options.signal);
 }
 
 /** Reads hard-capped lower overrides while rejecting zero, fractional, and oversized budgets. */
@@ -304,16 +310,20 @@ async function readBoundedSource(
   sourcePath: string,
   maximumBytes: number,
   reader: PreviewImplicitGlobalSourceReader | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<BoundedSourceRead> {
+  throwIfPreviewBuildCancelled(signal);
   if (reader !== undefined) {
     try {
       const sourceText = await reader(sourcePath);
+      throwIfPreviewBuildCancelled(signal);
       if (sourceText !== undefined) {
         return Buffer.byteLength(sourceText, 'utf8') <= maximumBytes
           ? { sourceText, truncated: false }
           : { truncated: true };
       }
     } catch {
+      throwIfPreviewBuildCancelled(signal);
       return { truncated: true };
     }
   }
@@ -321,6 +331,7 @@ async function readBoundedSource(
   let fileHandle;
   try {
     fileHandle = await open(sourcePath, 'r');
+    throwIfPreviewBuildCancelled(signal);
     const fileStats = await fileHandle.stat();
     if (!fileStats.isFile()) {
       return { truncated: false };
@@ -332,6 +343,7 @@ async function readBoundedSource(
     const sourceBuffer = Buffer.alloc(bufferLength);
     let totalBytesRead = 0;
     while (totalBytesRead < sourceBuffer.byteLength) {
+      throwIfPreviewBuildCancelled(signal);
       const { bytesRead } = await fileHandle.read(
         sourceBuffer,
         totalBytesRead,
@@ -351,6 +363,7 @@ async function readBoundedSource(
       truncated: false,
     };
   } catch (error) {
+    throwIfPreviewBuildCancelled(signal);
     return { truncated: !isMissingPathError(error) };
   } finally {
     await fileHandle?.close();
@@ -656,6 +669,7 @@ function readAmbientImportType(typeNode: ts.TypeNode | undefined): ImportedBindi
 async function resolveAndSelectEvidence(
   candidates: readonly EvidenceCandidate[],
   resolver: PreviewImplicitGlobalModuleResolver,
+  signal: AbortSignal | undefined,
 ): Promise<PreviewImplicitGlobalEvidenceInventory> {
   const candidatesByGlobal = new Map<string, EvidenceCandidate[]>();
   for (const candidate of candidates) {
@@ -669,9 +683,11 @@ async function resolveAndSelectEvidence(
   const ambiguousGlobalNames: string[] = [];
   const unresolvedGlobalNames: string[] = [];
   for (const globalName of [...candidatesByGlobal.keys()].sort()) {
+    throwIfPreviewBuildCancelled(signal);
     const selection = await selectGlobalEvidence(
       candidatesByGlobal.get(globalName) ?? [],
       resolver,
+      signal,
     );
     if (selection.state === 'ambiguous') {
       ambiguousGlobalNames.push(globalName);
@@ -699,6 +715,7 @@ async function resolveAndSelectEvidence(
 async function selectGlobalEvidence(
   candidates: readonly EvidenceCandidate[],
   resolver: PreviewImplicitGlobalModuleResolver,
+  signal: AbortSignal | undefined,
 ): Promise<GlobalEvidenceSelection> {
   const runtimeCandidates = candidates.filter(
     (candidate) => candidate.evidenceKind === 'runtime-assignment',
@@ -707,7 +724,8 @@ async function selectGlobalEvidence(
   const resolvedCandidates: ResolvedEvidenceCandidate[] = [];
   let hasUnresolvedCandidate = false;
   for (const candidate of winningCandidates) {
-    const modulePath = await resolveCandidateModule(candidate, resolver);
+    throwIfPreviewBuildCancelled(signal);
+    const modulePath = await resolveCandidateModule(candidate, resolver, signal);
     if (modulePath === undefined) {
       hasUnresolvedCandidate = true;
       continue;
@@ -743,13 +761,16 @@ async function selectGlobalEvidence(
 async function resolveCandidateModule(
   candidate: EvidenceCandidate,
   resolver: PreviewImplicitGlobalModuleResolver,
+  signal: AbortSignal | undefined,
 ): Promise<string | undefined> {
   try {
     const modulePath = await resolver(candidate.moduleSpecifier, candidate.sourcePath);
+    throwIfPreviewBuildCancelled(signal);
     return modulePath !== undefined && path.isAbsolute(modulePath)
       ? path.normalize(modulePath)
       : undefined;
   } catch {
+    throwIfPreviewBuildCancelled(signal);
     return undefined;
   }
 }

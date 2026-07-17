@@ -12,6 +12,7 @@ import {
 } from '../parentSlice';
 import type { PreviewRenderChainCandidate } from '../renderGraph';
 import { collectPreviewRenderModuleFacts } from '../renderGraph/previewRenderModuleFacts';
+import { collectPreviewRouterRequirement } from '../previewRouterRequirement';
 import {
   collectReactExportPropInference,
   type PreviewInferredExportProps,
@@ -54,6 +55,16 @@ export interface ReadPreviewInspectorRenderPathRootPropsOptions {
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   readonly renderPath: PreviewRenderChainCandidate;
   readonly root: PreviewInspectorRenderPathRoot;
+  readonly sourceCache: PreviewInspectorSourcePromiseCache;
+}
+
+/** Inputs for deciding whether one independently mounted page root already contains a Router. */
+export interface ReadPreviewInspectorRootRouterOwnershipOptions {
+  readonly ownershipCache: Map<string, Promise<boolean>>;
+  readonly readSource: (sourcePath: string) => Promise<string | undefined>;
+  readonly reference: PreviewInspectorRenderPathReference;
+  readonly renderPath: PreviewRenderChainCandidate | undefined;
+  readonly rootStepIndex: number | undefined;
   readonly sourceCache: PreviewInspectorSourcePromiseCache;
 }
 
@@ -115,6 +126,39 @@ export async function readPreviewInspectorRootInference(
 }
 
 /**
+ * Reports whether the selected mount root's target-facing render branch creates its own Router.
+ * Graph-wide ownership is intentionally insufficient here: Page Inspector can mount a component
+ * that normally lives below an application Router without mounting that Router itself. Only
+ * modules at or below this exact root checkpoint participate in the decision.
+ */
+export async function readPreviewInspectorRootOwnsRouter(
+  options: ReadPreviewInspectorRootRouterOwnershipOptions,
+): Promise<boolean> {
+  const inferredRootStepIndex =
+    options.rootStepIndex ?? findReferenceStepIndex(options.reference, options.renderPath);
+  const sourcePaths = new Set<string>([path.normalize(options.reference.sourcePath)]);
+  if (inferredRootStepIndex !== undefined) {
+    for (const step of options.renderPath?.steps.slice(0, inferredRootStepIndex + 1) ?? []) {
+      sourcePaths.add(path.normalize(step.sourcePath));
+    }
+  }
+  for (const sourcePath of sourcePaths) {
+    let ownership = options.ownershipCache.get(sourcePath);
+    if (ownership === undefined) {
+      ownership = readCachedSource(sourcePath, options.readSource, options.sourceCache).then(
+        (sourceText) =>
+          sourceText === undefined
+            ? false
+            : collectPreviewRouterRequirement(sourcePath, sourceText).ownsRouter,
+      );
+      options.ownershipCache.set(sourcePath, ownership);
+    }
+    if (await ownership) return true;
+  }
+  return false;
+}
+
+/**
  * Reads primitive props from the nearest exact caller on the selected render path.
  * Only path modules are inspected, avoiding another workspace-wide reverse scan for each offered
  * root. Dynamic expressions remain the responsibility of root-local type/usage inference.
@@ -166,6 +210,20 @@ function selectNearestOccurrence<T extends { readonly occurrenceStart: number }>
       Math.abs(left.occurrenceStart - expectedOccurrence) -
       Math.abs(right.occurrenceStart - expectedOccurrence),
   )[0];
+}
+
+/** Finds the outermost path step supplied by the same module as a non-checkpoint candidate root. */
+function findReferenceStepIndex(
+  reference: PreviewInspectorRenderPathReference,
+  renderPath: PreviewRenderChainCandidate | undefined,
+): number | undefined {
+  const normalizedReferencePath = path.normalize(reference.sourcePath);
+  for (let index = (renderPath?.steps.length ?? 0) - 1; index >= 0; index -= 1) {
+    if (path.normalize(renderPath?.steps[index]?.sourcePath ?? '') === normalizedReferencePath) {
+      return index;
+    }
+  }
+  return undefined;
 }
 
 /** Maps a render node label back to a public export supplied by the same top-level value. */

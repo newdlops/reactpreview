@@ -253,6 +253,48 @@ describe('createPreviewInspectorAncestorPlan', () => {
     });
   });
 
+  /** Keeps Router ownership local to each independently mountable page checkpoint. */
+  it('distinguishes a detached routed page from the application root that owns its Router', async () => {
+    const routerRootPath = '/workspace/packages/application/src/AppRouter.tsx';
+    const entryPath = '/workspace/packages/application/src/main.tsx';
+    const sources = {
+      [TARGET_PATH]: [
+        "import { useRoutes } from 'react-router-dom';",
+        'export function Target() { useRoutes([]); return <button />; }',
+      ].join('\n'),
+      [PAGE_PATH]: [
+        "import { Target } from './Target';",
+        'export function Page() { return <main><Target /></main>; }',
+      ].join('\n'),
+      [routerRootPath]: [
+        "import { MemoryRouter } from 'react-router-dom';",
+        "import { Page } from './Page';",
+        'export function AppRouter() { return <MemoryRouter><Page /></MemoryRouter>; }',
+      ].join('\n'),
+      [entryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { AppRouter } from './AppRouter';",
+        "createRoot(document.getElementById('root')).render(<AppRouter />);",
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    const routedPage = plan.pageCandidates.find(
+      (candidate) => candidate.root.sourcePath === PAGE_PATH,
+    );
+    const applicationRoot = plan.pageCandidates.find(
+      (candidate) => candidate.root.sourcePath === routerRootPath,
+    );
+    expect(routedPage?.rootOwnsRouter).toBe(false);
+    expect(applicationRoot?.rootOwnsRouter).toBe(true);
+  });
+
   /** Prefers an application page branch over an earlier lexical story/test usage. */
   it('ranks page ancestry ahead of tests, stories, and examples deterministically', async () => {
     const testPath = '/workspace/packages/application/src/__tests__/Target.test.tsx';

@@ -61,6 +61,8 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('function PreviewInspectorPageCandidateLoader');
     expect(source).toContain('.then(() => definition.load())');
     expect(source).toContain('Loading authored page context…');
+    expect(source).toContain('createPreviewCandidateRouterElement(rootElement');
+    expect(source).toContain('ownsRouter: candidate?.rootOwnsRouter === true');
     expect(source).toContain('previewInspectorSession.selectedPageCandidateId = candidateId');
   });
 });

@@ -33,6 +33,8 @@ describe('Page Inspector runtime source', () => {
     expect(componentEntry).not.toContain("import * as ReactDOMNamespace from 'react-dom'");
     expect(inspectorEntry).toContain('const PREVIEW_INSPECTOR_API_KEY');
     expect(inspectorEntry).toContain("import * as ReactDOMNamespace from 'react-dom'");
+    expect(inspectorEntry).toContain('activePreviewRouterBridge?.createNestedRouterPreviewElement');
+    expect(inspectorEntry).toContain('function createPreviewCandidateRouterElement');
     expect(inspectorEntry).toContain('PreviewPageInspectorRootRenderer');
   });
 

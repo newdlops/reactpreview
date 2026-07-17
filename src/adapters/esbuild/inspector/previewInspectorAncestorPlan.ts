@@ -30,6 +30,7 @@ import {
   collectPreviewInspectorRenderPathRoots,
   readPreviewInspectorRenderPathRootAutomaticProps,
   readPreviewInspectorRootInference,
+  readPreviewInspectorRootOwnsRouter,
   type PreviewInspectorRenderPathRoot,
   type PreviewInspectorSourcePromiseCache,
 } from './previewInspectorRenderPathRoots';
@@ -101,6 +102,8 @@ export interface PreviewInspectorPageCandidate {
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
   /** Neutral root props inferred from the root component's own local type and usage evidence. */
   readonly rootInference?: PreviewInferredExportProps;
+  /** Whether this independently mounted root's target-facing branch creates its own Router. */
+  readonly rootOwnsRouter: boolean;
   /** Render-step index used to explain path-derived roots in the browser selector. */
   readonly rootStepIndex?: number;
   /** Honest reason an incomplete candidate could not be promoted farther. */
@@ -204,6 +207,7 @@ interface InspectorCandidateSource {
 /** Reused source and candidate indexes prevent each alternative caller path from reparsing a repo. */
 interface InspectorUsagePlanningContext {
   readonly inferenceByReference: Map<string, Promise<PreviewInferredExportProps | undefined>>;
+  readonly routerOwnershipBySource: Map<string, Promise<boolean>>;
   readonly rankedCandidatesByFrontier: Map<
     string,
     Promise<readonly RankedInspectorUsageCandidate[]>
@@ -251,6 +255,7 @@ export async function createPreviewInspectorAncestorPlan(
   const planningContext: InspectorUsagePlanningContext = {
     inferenceByReference: new Map(),
     rankedCandidatesByFrontier: new Map(),
+    routerOwnershipBySource: new Map(),
     sourceFileByPath: new Map(),
     sourceTextByPath: new Map(),
   };
@@ -369,6 +374,14 @@ async function createInspectorPageCandidate(arguments_: {
       planningContext.sourceTextByPath,
       planningContext.inferenceByReference,
     );
+    const rootOwnsRouter = await readPreviewInspectorRootOwnsRouter({
+      ownershipCache: planningContext.routerOwnershipBySource,
+      readSource: options.readSource,
+      reference: currentRoot,
+      renderPath,
+      rootStepIndex: undefined,
+      sourceCache: planningContext.sourceTextByPath,
+    });
     return freezePageCandidate({
       complete,
       dependencies,
@@ -378,6 +391,7 @@ async function createInspectorPageCandidate(arguments_: {
       root: currentRoot,
       rootAutomaticProps,
       ...(rootInference === undefined ? {} : { rootInference }),
+      rootOwnsRouter,
       stopReason,
       targetAutomaticProps,
     });
@@ -473,6 +487,14 @@ async function createRenderPathPageCandidate(arguments_: {
     planningContext.sourceTextByPath,
     planningContext.inferenceByReference,
   );
+  const rootOwnsRouter = await readPreviewInspectorRootOwnsRouter({
+    ownershipCache: planningContext.routerOwnershipBySource,
+    readSource: options.readSource,
+    reference: root,
+    renderPath,
+    rootStepIndex: renderPathRoot.stepIndex,
+    sourceCache: planningContext.sourceTextByPath,
+  });
   const rootAutomaticProps = await readPreviewInspectorRenderPathRootAutomaticProps({
     acceptedImportSpecifiers: options.acceptedImportSpecifiers?.(root) ?? [],
     ...(options.matchesTargetImport === undefined
@@ -495,6 +517,7 @@ async function createRenderPathPageCandidate(arguments_: {
     root,
     rootAutomaticProps,
     ...(rootInference === undefined ? {} : { rootInference }),
+    rootOwnsRouter,
     rootStepIndex: renderPathRoot.stepIndex,
     stopReason: complete ? 'root-reached' : 'render-path-checkpoint',
     targetAutomaticProps: base.targetAutomaticProps,
@@ -875,6 +898,7 @@ function freezePageCandidate(options: {
   readonly root: PreviewInspectorComponentReference;
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
   readonly rootInference?: PreviewInferredExportProps;
+  readonly rootOwnsRouter: boolean;
   readonly rootStepIndex?: number;
   readonly stopReason: PreviewInspectorAncestorStopReason;
   readonly targetAutomaticProps: PreviewParentSliceStaticProps;
@@ -888,6 +912,7 @@ function freezePageCandidate(options: {
     root: options.root,
     rootAutomaticProps: options.rootAutomaticProps,
     ...(options.rootInference === undefined ? {} : { rootInference: options.rootInference }),
+    rootOwnsRouter: options.rootOwnsRouter,
     ...(options.rootStepIndex === undefined ? {} : { rootStepIndex: options.rootStepIndex }),
     stopReason: options.stopReason,
     targetAutomaticProps: options.targetAutomaticProps,

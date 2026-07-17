@@ -29,6 +29,7 @@ function readPreviewInspectorPageCandidates(descriptor) {
     renderPath: inspector.renderChain?.paths?.[0],
     root: inspector.root,
     rootAutomaticProps: descriptor?.automaticProps ?? {},
+    rootOwnsRouter: false,
     stopReason: inspector.stopReason,
     targetAutomaticProps: inspector.targetAutomaticProps ?? {},
   }];
@@ -152,7 +153,10 @@ function PreviewInspectorPageCandidateLoader({ definitions, targetProps }) {
     );
   }
   if (loadState.status === 'failed') throw loadState.error;
-  return createPreviewInspectorElement(loadState.value, targetProps);
+  const rootElement = createPreviewInspectorElement(loadState.value, targetProps);
+  return createPreviewCandidateRouterElement(rootElement, {
+    ownsRouter: candidate?.rootOwnsRouter === true,
+  });
 }
 
 /** Creates a React element from generated lazy-loader definitions without exposing React globally. */

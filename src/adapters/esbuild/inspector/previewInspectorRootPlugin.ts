@@ -110,6 +110,7 @@ export function createPreviewInspectorRootSource(
           rootInferredPropShape: candidate.rootInference.shape,
           rootInferredProps: candidate.rootInference.provenance,
         }),
+    rootOwnsRouter: candidate.rootOwnsRouter,
     ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
     stopReason: candidate.stopReason,
     targetAutomaticProps: candidate.targetAutomaticProps,

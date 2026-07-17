@@ -89,10 +89,85 @@ function readMemoryRouter() {
   return ReactRouterDOM.MemoryRouter ?? ReactRouterDOM.default?.MemoryRouter;
 }
 
+/** Selects the modern context-presence hook without assuming one module interop shape. */
+function readUseInRouterContext() {
+  return ReactRouterDOM.useInRouterContext ?? ReactRouterDOM.default?.useInRouterContext;
+}
+
+/** Selects the legacy v5 context export when the modern presence hook is unavailable. */
+function readLegacyRouterContext() {
+  return ReactRouterDOM.__RouterContext ?? ReactRouterDOM.default?.__RouterContext;
+}
+
+/** Builds an isolated, bounded history property object shared by both wrapper entry points. */
+function createMemoryRouterProperties(configuration) {
+  const initialEntries = readInitialEntries(configuration);
+  const initialIndex = readInitialIndex(configuration, initialEntries.length);
+  const routerProperties = { initialEntries };
+  if (initialIndex !== undefined) {
+    routerProperties.initialIndex = initialIndex;
+  }
+  return routerProperties;
+}
+
+/**
+ * Adds context only when the selected Page Inspector root is not already beneath a Router.
+ * This component must perform the context check during render, after setup and graph-level
+ * providers have composed around it; checking while the entry element is constructed is too early.
+ */
+function PreviewCandidateRouterBoundary({ children, configuration }) {
+  const useInRouterContext = readUseInRouterContext();
+  const legacyRouterContext = readLegacyRouterContext();
+  const inheritsRouter = typeof useInRouterContext === 'function'
+    ? useInRouterContext()
+    : legacyRouterContext !== undefined && typeof React.useContext === 'function'
+      ? React.useContext(legacyRouterContext) !== null
+      : false;
+  if (inheritsRouter) {
+    previewRuntimeStatus = 'active: selected page candidate inherited an existing Router context';
+    return children;
+  }
+  const MemoryRouter = readMemoryRouter();
+  if (typeof MemoryRouter !== 'function') {
+    previewRuntimeStatus = 'unavailable: installed react-router-dom has no MemoryRouter export';
+    return children;
+  }
+  previewRuntimeStatus = configuration === undefined
+    ? 'active: candidate-local MemoryRouter at the root location /'
+    : 'active: candidate-local MemoryRouter with setup-owned static history';
+  return React.createElement(
+    MemoryRouter,
+    createMemoryRouterProperties(configuration),
+    children,
+  );
+}
+
+/**
+ * Wraps one independently mounted authored page candidate without creating nested Routers.
+ * Candidate-specific ownership is derived from only the target-facing branch below that root;
+ * graph-wide providers above a detached candidate therefore cannot suppress its required context.
+ */
+export function createNestedRouterPreviewElement(children, options) {
+  const configuration = options?.configuration;
+  if (configuration === false) {
+    previewRuntimeStatus = 'disabled by setup (routerPreview=false)';
+    return children;
+  }
+  if (options?.ownsRouter === true) {
+    previewRuntimeStatus = 'not applied: selected page candidate owns a Router boundary';
+    return children;
+  }
+  if (typeof readMemoryRouter() !== 'function') {
+    previewRuntimeStatus = 'unavailable: installed react-router-dom has no MemoryRouter export';
+    return children;
+  }
+  return React.createElement(PreviewCandidateRouterBoundary, { configuration }, children);
+}
+
 /**
  * Wraps a composed preview tree in the target project's MemoryRouter when that API is available.
  * An application-owned inner router keeps normal nearest-context precedence. Setup can export
- * routerPreview=false to opt out or provide bounded initialEntries and initialIndex values. An
+ * routerPreview=false to opt out or provide bounded initialEntries and initialIndex values.
  * Setup-owned router providers are detected across the actual source graph before this runtime is
  * enabled, so an unrelated custom or Storybook setup does not suppress a child component's hook.
  */
@@ -113,16 +188,10 @@ export function createRouterPreviewElement(children, options) {
     return children;
   }
 
-  const initialEntries = readInitialEntries(configuration);
-  const initialIndex = readInitialIndex(configuration, initialEntries.length);
-  const routerProperties = { initialEntries };
-  if (initialIndex !== undefined) {
-    routerProperties.initialIndex = initialIndex;
-  }
   previewRuntimeStatus = configuration === undefined
     ? 'active: graph-required MemoryRouter at the root location /'
     : 'active: explicitly configured MemoryRouter with setup-owned static history';
-  return React.createElement(MemoryRouter, routerProperties, children);
+  return React.createElement(MemoryRouter, createMemoryRouterProperties(configuration), children);
 }
 `;
 }

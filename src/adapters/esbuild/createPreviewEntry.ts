@@ -103,6 +103,24 @@ registerPreviewRuntimeCapability('Globals', {
 
 ${hotReloadRuntimeSource}
 
+let activePreviewRouterBridge;
+let activePreviewRouterConfiguration;
+
+/**
+ * Delegates one independently mounted Inspector candidate to the exact project Router bridge.
+ * The bridge performs its context check during React render, after setup and automatic providers
+ * have composed, so this adapter cannot accidentally create a second Router.
+ */
+function createPreviewCandidateRouterElement(children, options) {
+  const createCandidateBoundary = activePreviewRouterBridge?.createNestedRouterPreviewElement;
+  return typeof createCandidateBoundary === 'function'
+    ? createCandidateBoundary(children, {
+        configuration: activePreviewRouterConfiguration,
+        ownsRouter: options?.ownsRouter === true,
+      })
+    : children;
+}
+
 ${inspectorRuntimeSource}
 
 let activeRuntimePhase = 'preview bootstrap';
@@ -677,6 +695,8 @@ async function preparePreviewElement() {
       'load and evaluate target module graph',
     ),
   ]);
+  activePreviewRouterBridge = routerBridge;
+  activePreviewRouterConfiguration = readSetupMember(setupModule, 'routerPreview');
   registerPreviewRuntimeCapability('Apollo', apolloBridge);
   registerPreviewRuntimeCapability('Context', contextBridge);
   registerPreviewRuntimeCapability('Formik', formikBridge);
@@ -743,7 +763,7 @@ async function preparePreviewElement() {
 
   enterRuntimePhase('compose React Router boundary');
   previewElement = routerBridge.createRouterPreviewElement(previewElement, {
-    configuration: readSetupMember(setupModule, 'routerPreview'),
+    configuration: activePreviewRouterConfiguration,
     ...setupContext,
   });
 

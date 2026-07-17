@@ -86,6 +86,8 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
             contents: [
               '/** Leaves previews without an enabled project router unchanged. */',
               'export function createRouterPreviewElement(children) { return children; }',
+              '/** Leaves independently mounted page candidates unchanged without a project router. */',
+              'export function createNestedRouterPreviewElement(children) { return children; }',
               '/** Describes the graph-level automatic router decision. */',
               `export function readPreviewRuntimeStatus() { return ${JSON.stringify(identityStatus)}; }`,
             ].join('\n'),

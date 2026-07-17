@@ -25,14 +25,16 @@ describe('createPreviewRouterBridgePlugin', () => {
         projectRoot,
         false,
         [
-          "import { createRouterPreviewElement } from 'react-preview:router';",
+          "import { createNestedRouterPreviewElement, createRouterPreviewElement } from 'react-preview:router';",
           "const child = { marker: 'DISABLED_ROUTER_CHILD' };",
-          'globalThis.__routerBridgeResult =',
-          '  createRouterPreviewElement(child, { configuration: undefined }) === child;',
+          'globalThis.__routerBridgeResult = {',
+          '  candidate: createNestedRouterPreviewElement(child) === child,',
+          '  root: createRouterPreviewElement(child, { configuration: undefined }) === child,',
+          '};',
         ].join('\n'),
       );
 
-      expect(context.__routerBridgeResult).toBe(true);
+      expect(context.__routerBridgeResult).toEqual({ candidate: true, root: true });
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
@@ -304,6 +306,45 @@ describe('createPreviewRouterBridgePlugin', () => {
     }
   });
 
+  /** Supplies detached page candidates while inheriting setup or graph Router context exactly once. */
+  it('adds a non-nesting candidate-local MemoryRouter during React render', async () => {
+    const projectRoot = await createTemporaryProject('router-candidate-boundary-preview-');
+
+    try {
+      await installFakeReactRouterDomPackage(projectRoot, true);
+      const context = await executeRouterBridgeFixture(
+        projectRoot,
+        true,
+        [
+          "import * as React from 'react';",
+          "import { renderToStaticMarkup } from 'react-dom/server';",
+          "import { createNestedRouterPreviewElement } from 'react-preview:router';",
+          "import { MemoryRouter, RouterDepthProbe } from 'react-router-dom';",
+          'function Candidate() {',
+          '  return createNestedRouterPreviewElement(React.createElement(RouterDepthProbe), {});',
+          '}',
+          'const detached = renderToStaticMarkup(React.createElement(Candidate));',
+          'const inherited = renderToStaticMarkup(',
+          '  React.createElement(MemoryRouter, null, React.createElement(Candidate)),',
+          ');',
+          'const owned = renderToStaticMarkup(createNestedRouterPreviewElement(',
+          '  React.createElement(MemoryRouter, null, React.createElement(RouterDepthProbe)),',
+          '  { ownsRouter: true },',
+          '));',
+          'globalThis.__routerBridgeResult = { detached, inherited, owned };',
+        ].join('\n'),
+      );
+
+      expect(context.__routerBridgeResult).toEqual({
+        detached: '<span>1</span>',
+        inherited: '<span>1</span>',
+        owned: '<span>1</span>',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps generated imports restricted to React and the already-resolved router package entry. */
   it('does not import application routes or browser-history bootstrap modules', () => {
     const modulePath = '/workspace/app/node_modules/react-router-dom/index.js';
@@ -344,8 +385,23 @@ async function installFakeReactRouterDomPackage(
   );
   const source = includeMemoryRouter
     ? [
+        "import * as React from 'react';",
         `export const projectMarker = '${PROJECT_ROUTER_MARKER}';`,
-        'export function MemoryRouter(properties) { return properties.children; }',
+        'const RouterDepthContext = React.createContext(0);',
+        'export function MemoryRouter(properties) {',
+        '  const depth = React.useContext(RouterDepthContext);',
+        '  return React.createElement(',
+        '    RouterDepthContext.Provider,',
+        '    { value: depth + 1 },',
+        '    properties.children,',
+        '  );',
+        '}',
+        'export function useInRouterContext() {',
+        '  return React.useContext(RouterDepthContext) > 0;',
+        '}',
+        'export function RouterDepthProbe() {',
+        "  return React.createElement('span', null, String(React.useContext(RouterDepthContext)));",
+        '}',
         'MemoryRouter.projectMarker = projectMarker;',
       ].join('\n')
     : "export const projectMarker = 'ROUTER_WITHOUT_MEMORY_API';";
@@ -393,8 +449,12 @@ async function executeRouterBridgeFixture(
   const sandbox: Record<string, unknown> = {
     clearTimeout,
     console,
+    MessageChannel,
     queueMicrotask,
+    ReadableStream,
     setTimeout,
+    TextDecoder,
+    TextEncoder,
   };
   sandbox.globalThis = sandbox;
   const context = createContext(sandbox);

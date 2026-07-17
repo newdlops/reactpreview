@@ -26,6 +26,8 @@ export {
   PREVIEW_INSPECTOR_TREE_NODE_LIMIT,
 } from './previewInspectorFiberRuntimeSource';
 export { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLayoutRuntimeSource';
+export { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
+export { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 export {
   createPreviewPageInspectorRuntimeSource,
   PREVIEW_PAGE_INSPECTOR_API_SYMBOL,

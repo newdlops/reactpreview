@@ -141,7 +141,14 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       'const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName)',
     );
-    expect(source).toContain("String(rootRevision) + ':data:' + String(dataRevision)");
+    expect(source).toContain("String(rootRevision) + ':candidate:'");
+    expect(source).toContain("':data:' + String(dataRevision)");
+    expect(source).toContain(
+      'createPageCandidateElement: createPreviewInspectorPageCandidateElement',
+    );
+    expect(source).toContain(
+      'selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId',
+    );
   });
 
   /** Connects the independent tree adapter to selection, source navigation, and commit refresh. */

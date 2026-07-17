@@ -41,6 +41,8 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('No API or GraphQL payload has been observed yet.');
     expect(source).toContain("'aria-label': 'Rendered page component context'");
     expect(source).toContain("className: 'rpi-context-badge'");
+    expect(source).toContain("'aria-label': 'Authored page caller path'");
+    expect(source).toContain('selectPreviewInspectorPageCandidate(event.target.value)');
     expect(source).toContain("'aria-label': 'Resize React Page Inspector'");
     expect(source).toContain("'aria-label': 'Move floating React Page Inspector'");
     expect(source).toContain(

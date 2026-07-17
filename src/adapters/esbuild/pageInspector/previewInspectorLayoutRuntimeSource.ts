@@ -48,6 +48,8 @@ const previewInspectorDevtoolsCss = [
   'font-size:9px;font-weight:700;grid-row:1/3;line-height:17px;padding:0 6px;white-space:nowrap}',
   '.rpi-context-path{font-family:var(--vscode-editor-font-family,monospace);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.rpi-context-detail{color:var(--rpi-muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-candidate-select{align-items:center;display:flex;gap:7px;grid-column:1/-1;min-width:0}',
+  '.rpi-candidate-select .rpi-context-badge{flex:0 0 auto;grid-row:auto}.rpi-candidate-select .rpi-select{flex:1 1 auto;max-width:360px}',
   '.rpi-workbench{display:grid;grid-template-columns:minmax(230px,.9fr) minmax(320px,1.35fr);min-height:0}',
   '.rpi-shell:is([data-dock="left"],[data-dock="right"]) .rpi-workbench{grid-template-columns:1fr;',
   'grid-template-rows:minmax(180px,.9fr) minmax(240px,1.2fr)}',

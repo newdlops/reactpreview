@@ -346,6 +346,21 @@ function readPreviewInspectorSelectedRenderChain(inspector, options) {
   return selectedChain ?? readPreviewInspectorOwnData(inspector, 'renderChain');
 }
 
+/** Returns candidate-specific mount evidence selected by the browser session, when available. */
+function readPreviewInspectorSelectedPageCandidate(options) {
+  return readPreviewInspectorOwnData(options, 'pageCandidate');
+}
+
+/** Selects the exact candidate path before falling back to the first path of the export plan. */
+function readPreviewInspectorSelectedRenderPath(inspector, options) {
+  const candidate = readPreviewInspectorSelectedPageCandidate(options);
+  const candidatePath = readPreviewInspectorOwnData(candidate, 'renderPath');
+  if (candidatePath !== undefined) return candidatePath;
+  const renderChain = readPreviewInspectorSelectedRenderChain(inspector, options);
+  const paths = readPreviewInspectorOwnData(renderChain, 'paths');
+  return Array.isArray(paths) ? paths[0] : undefined;
+}
+
 /** Finds a matching static source from a name map, ancestry edge, or render-chain step. */
 function readPreviewInspectorStaticSource(name, options) {
   const sourceByName = readPreviewInspectorOwnData(options, 'sourceByName');
@@ -361,20 +376,24 @@ function readPreviewInspectorStaticSource(name, options) {
   }
   const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
   const inspector = readPreviewInspectorOwnData(descriptor, 'inspector') ?? descriptor;
+  const pageCandidate = readPreviewInspectorSelectedPageCandidate(options);
   const selectedRenderChain = readPreviewInspectorSelectedRenderChain(inspector, options);
   const renderChainTarget = readPreviewInspectorOwnData(selectedRenderChain, 'target');
   if (readPreviewInspectorOwnData(renderChainTarget, 'exportName') === name) {
     const source = normalizePreviewInspectorSource(renderChainTarget, 'render-chain');
     if (source !== undefined) return source;
   }
-  for (const referenceName of ['target', 'root']) {
-    const reference = readPreviewInspectorOwnData(inspector, referenceName);
+  for (const reference of [
+    readPreviewInspectorOwnData(inspector, 'target'),
+    readPreviewInspectorOwnData(pageCandidate, 'root') ?? readPreviewInspectorOwnData(inspector, 'root'),
+  ]) {
     if (readPreviewInspectorOwnData(reference, 'exportName') === name) {
       const source = normalizePreviewInspectorSource(reference, 'descriptor');
       if (source !== undefined) return source;
     }
   }
-  const ancestry = readPreviewInspectorOwnData(inspector, 'ancestry');
+  const ancestry = readPreviewInspectorOwnData(pageCandidate, 'edges') ??
+    readPreviewInspectorOwnData(inspector, 'ancestry');
   if (Array.isArray(ancestry)) {
     for (const edge of ancestry.slice(0, 32)) {
       for (const referenceName of ['child', 'owner']) {
@@ -392,8 +411,10 @@ function readPreviewInspectorStaticSource(name, options) {
       }
     }
   }
-  const paths = readPreviewInspectorOwnData(selectedRenderChain, 'paths');
-  const steps = Array.isArray(paths) ? readPreviewInspectorOwnData(paths[0], 'steps') : undefined;
+  const steps = readPreviewInspectorOwnData(
+    readPreviewInspectorSelectedRenderPath(inspector, options),
+    'steps',
+  );
   if (Array.isArray(steps)) {
     for (const step of steps.slice(0, 64)) {
       const wrapperNames = readPreviewInspectorOwnData(step, 'wrapperNames');
@@ -423,8 +444,10 @@ function readPreviewInspectorFiberSource(fiber, name, options, ancestorSource) {
 function readPreviewInspectorEditableExportIdentities(options) {
   const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
   const inspector = readPreviewInspectorOwnData(descriptor, 'inspector') ?? descriptor;
+  const pageCandidate = readPreviewInspectorSelectedPageCandidate(options);
   const target = readPreviewInspectorOwnData(inspector, 'target');
-  const root = readPreviewInspectorOwnData(inspector, 'root');
+  const root = readPreviewInspectorOwnData(pageCandidate, 'root') ??
+    readPreviewInspectorOwnData(inspector, 'root');
   const configuredTargetName = readPreviewInspectorOwnData(options, 'targetExportName');
   const targetName = typeof configuredTargetName === 'string'
     ? configuredTargetName
@@ -449,7 +472,9 @@ function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostN
   const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
   const inspector = readPreviewInspectorOwnData(descriptor, 'inspector');
   if (inspector === undefined) return { roots: [], selectedId: undefined, truncated: false };
-  const rootReference = readPreviewInspectorOwnData(inspector, 'root');
+  const pageCandidate = readPreviewInspectorSelectedPageCandidate(options);
+  const rootReference = readPreviewInspectorOwnData(pageCandidate, 'root') ??
+    readPreviewInspectorOwnData(inspector, 'root');
   const targetReference = readPreviewInspectorOwnData(inspector, 'target');
   const rootName = readPreviewInspectorOwnData(rootReference, 'exportName');
   const targetName =
@@ -468,9 +493,10 @@ function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostN
   const appendName = (value) => {
     if (typeof value === 'string' && value.length > 0 && names.at(-1) !== value) names.push(value);
   };
-  const renderChain = readPreviewInspectorSelectedRenderChain(inspector, options);
-  const paths = readPreviewInspectorOwnData(renderChain, 'paths');
-  const steps = Array.isArray(paths) ? readPreviewInspectorOwnData(paths[0], 'steps') : undefined;
+  const steps = readPreviewInspectorOwnData(
+    readPreviewInspectorSelectedRenderPath(inspector, options),
+    'steps',
+  );
   const hasRenderChainSteps = Array.isArray(steps) && steps.length > 0;
   if (hasRenderChainSteps) {
     for (const step of steps.slice(0, 64).reverse()) {
@@ -481,7 +507,8 @@ function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostN
       }
     }
   } else {
-    const ancestry = readPreviewInspectorOwnData(inspector, 'ancestry');
+    const ancestry = readPreviewInspectorOwnData(pageCandidate, 'edges') ??
+      readPreviewInspectorOwnData(inspector, 'ancestry');
     if (Array.isArray(ancestry)) {
       for (const edge of ancestry.slice(0, 32).reverse()) {
         const owner = readPreviewInspectorOwnData(edge, 'owner');
@@ -539,9 +566,11 @@ function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostN
           ? editable.rootName
           : undefined;
     const rawProps = isTarget
-      ? readPreviewInspectorOwnData(inspector, 'targetAutomaticProps')
+      ? readPreviewInspectorOwnData(pageCandidate, 'targetAutomaticProps') ??
+        readPreviewInspectorOwnData(inspector, 'targetAutomaticProps')
       : isEditableRoot
-        ? readPreviewInspectorOwnData(descriptor, 'automaticProps')
+        ? readPreviewInspectorOwnData(pageCandidate, 'rootAutomaticProps') ??
+          readPreviewInspectorOwnData(descriptor, 'automaticProps')
         : undefined;
     const source = readPreviewInspectorStaticSource(name, options);
     const node = {
@@ -577,7 +606,8 @@ function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostN
       kind: 'root',
       name: rootName,
       props: snapshotPreviewInspectorValue(
-        readPreviewInspectorOwnData(descriptor, 'automaticProps'),
+        readPreviewInspectorOwnData(pageCandidate, 'rootAutomaticProps') ??
+          readPreviewInspectorOwnData(descriptor, 'automaticProps'),
       ),
       state: null,
       ...(source === undefined ? {} : { source }),

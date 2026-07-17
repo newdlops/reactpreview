@@ -12,6 +12,7 @@ import { createPreviewInspectorConditionRuntimeSource } from './previewInspector
 import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
+import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
@@ -38,6 +39,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const dataRuntimeSource = createPreviewInspectorDataRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
+  const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
@@ -102,6 +104,8 @@ ${fiberRuntimeSource}
 
 ${chainRuntimeSource}
 
+${pageCandidateRuntimeSource}
+
 ${stateRuntimeSource}
 
 ${dataRuntimeSource}
@@ -143,6 +147,8 @@ function createPreviewInspectorSession() {
     propsRevisionByExport: new Map(),
     selectedExportName:
       typeof persisted.selectedExportName === 'string' ? persisted.selectedExportName : '',
+    selectedPageCandidateId:
+      typeof persisted.selectedPageCandidateId === 'string' ? persisted.selectedPageCandidateId : '',
     selectedTreeNodeId:
       typeof persisted.selectedTreeNodeId === 'string' ? persisted.selectedTreeNodeId : undefined,
     treeListeners: new Set(),
@@ -200,18 +206,23 @@ function setPreviewInspectorDescriptors(descriptors) {
   const renderChainNames = previewInspectorSession.descriptors.flatMap((descriptor) =>
     Object.keys(descriptor?.inspector?.renderChainsByExport ?? {}),
   );
-  const rootNames = previewInspectorSession.descriptors.flatMap((descriptor) => {
-    const root = descriptor?.inspector?.root;
-    if (root === undefined) return [];
-    const rootName = createPreviewInspectorRootName(root);
-    const rootProps = normalizePreviewInspectorProps(descriptor.automaticProps ?? {});
-    previewInspectorSession.basePropsByExport.set(rootName, rootProps);
-    previewInspectorSession.basePropsFingerprintByExport.set(
-      rootName,
-      stringifyPreviewInspectorProps(rootProps),
-    );
-    return [rootName];
-  });
+  const rootNames = previewInspectorSession.descriptors.flatMap((descriptor) =>
+    readPreviewInspectorPageCandidates(descriptor).map((candidate) => {
+      const rootName = createPreviewInspectorRootName(candidate.root);
+      const rootProps = normalizePreviewInspectorProps(candidate.rootAutomaticProps ?? {});
+      previewInspectorSession.basePropsByExport.set(rootName, rootProps);
+      previewInspectorSession.basePropsFingerprintByExport.set(
+        rootName,
+        stringifyPreviewInspectorProps(rootProps),
+      );
+      return rootName;
+    }),
+  );
+  const candidateIds = previewInspectorSession.descriptors.flatMap((descriptor) =>
+    readPreviewInspectorPageCandidates(descriptor).map((candidate) => candidate.id),
+  );
+  const candidateChanged = !candidateIds.includes(previewInspectorSession.selectedPageCandidateId);
+  if (candidateChanged) previewInspectorSession.selectedPageCandidateId = candidateIds[0] ?? '';
   const uniqueNames = [
     ...new Set([
       ...names,
@@ -238,7 +249,7 @@ function setPreviewInspectorDescriptors(descriptors) {
   ) {
     previewInspectorSession.selectedExportName = uniqueNames[0] ?? '';
   }
-  if (namesChanged) {
+  if (namesChanged || candidateChanged) {
     persistPreviewInspectorState();
     notifyPreviewInspector();
   }
@@ -261,10 +272,9 @@ function findSelectedPreviewInspectorDescriptor() {
   return previewInspectorSession.descriptors.find((descriptor) => {
     const inspector = descriptor?.inspector;
     const targetName = inspector?.target?.exportName ?? descriptor?.exportName;
-    const rootName = inspector?.root === undefined
-      ? undefined
-      : createPreviewInspectorRootName(inspector.root);
-    return selectedName === targetName || selectedName === rootName ||
+    const rootNames = readPreviewInspectorPageCandidates(descriptor)
+      .map((candidate) => createPreviewInspectorRootName(candidate.root));
+    return selectedName === targetName || rootNames.includes(selectedName) ||
       Object.hasOwn(inspector?.renderChainsByExport ?? {}, selectedName);
   }) ?? previewInspectorSession.descriptors[0];
 }
@@ -275,9 +285,11 @@ function collectPreviewInspectorTreeSnapshot() {
   const selectedName = previewInspectorSession.selectedExportName;
   const instrumentedTargetName =
     descriptor?.inspector?.target?.exportName ?? descriptor?.exportName ?? selectedName;
-  const rootName = descriptor?.inspector?.root === undefined
+  const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  const selectedRoot = selectedCandidate?.root ?? descriptor?.inspector?.root;
+  const rootName = selectedRoot === undefined
     ? undefined
-    : createPreviewInspectorRootName(descriptor.inspector.root);
+    : createPreviewInspectorRootName(selectedRoot);
   const selectedIsStaticSibling =
     selectedName !== instrumentedTargetName &&
     selectedName !== rootName &&
@@ -291,6 +303,8 @@ function collectPreviewInspectorTreeSnapshot() {
     previewInspectorSession.selectedTreeNodeId,
     {
       descriptor,
+      pageCandidate: selectedCandidate,
+      rootExportName: rootName,
       selectedExportName: previewInspectorSession.selectedExportName,
       targetExportName: targetName,
     },
@@ -847,25 +861,32 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
         })
       : React.createElement(DirectPreviewTarget, targetProps);
   }
-  const rootName = createPreviewInspectorRootName(descriptor?.inspector?.root);
+  const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  const selectedRoot = selectedCandidate?.root ?? descriptor?.inspector?.root;
+  const rootName = createPreviewInspectorRootName(selectedRoot);
+  const automaticRootProps = normalizePreviewInspectorProps(
+    selectedCandidate?.rootAutomaticProps ?? descriptor?.automaticProps ?? {},
+  );
+  const baseRootProps = { ...automaticRootProps, ...targetProps };
   React.useEffect(() => {
-    registerPreviewInspectorBaseProps(rootName, targetProps);
-  }, [rootName, targetProps]);
+    registerPreviewInspectorBaseProps(rootName, baseRootProps);
+  }, [rootName, stringifyPreviewInspectorProps(baseRootProps)]);
   const overrideProps = previewInspectorSession.overridesByExport.get(rootName) ?? {};
-  const effectiveProps = { ...targetProps, ...overrideProps };
+  const effectiveProps = { ...baseRootProps, ...overrideProps };
   const revision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
   const conditionRevision = readPreviewInspectorRenderConditionRevision();
+  const candidateKey = selectedCandidate?.id ?? 'nearest-authored-owner';
   return useStorybook
     ? React.createElement(StorybookPreviewRoot, {
         PreviewTarget: descriptor.value,
-        key: String(revision) + ':' + String(conditionRevision),
+        key: candidateKey + ':' + String(revision) + ':' + String(conditionRevision),
         previewConfig,
         storyContext: { ...storyContext, args: effectiveProps },
         targetProps: effectiveProps,
       })
     : createPreviewInspectorElement(descriptor.value, {
         ...effectiveProps,
-        key: String(revision) + ':' + String(conditionRevision),
+        key: candidateKey + ':' + String(revision) + ':' + String(conditionRevision),
       });
 }
 
@@ -876,7 +897,10 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
     descriptor?.inspector?.target?.exportName ?? descriptor?.exportName ?? 'default';
   const targetRevision =
     previewInspectorSession.propsRevisionByExport.get(inspectedExportName) ?? 0;
-  const rootName = createPreviewInspectorRootName(descriptor?.inspector?.root);
+  const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  const rootName = createPreviewInspectorRootName(
+    selectedCandidate?.root ?? descriptor?.inspector?.root,
+  );
   const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
   const dataRevision = previewInspectorSession.dataRevision ?? 0;
   return React.createElement(
@@ -884,7 +908,8 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
     {
       exportName: descriptor?.exportName ?? inspectedExportName,
       key: inspectedExportName + ':' + String(targetRevision) + ':' + rootName + ':' +
-        String(rootRevision) + ':data:' + String(dataRevision),
+        String(rootRevision) + ':candidate:' + String(selectedCandidate?.id ?? '') +
+        ':data:' + String(dataRevision),
       parentSlice: descriptor?.parentSlice,
     },
     children,
@@ -900,6 +925,7 @@ const previewInspectorSourceNavigation = Object.freeze({
 const previewInspectorApi = {
   TargetRenderer: PreviewInspectorTargetRenderer,
   collectTree: collectPreviewInspectorTreeSnapshot,
+  createPageCandidateElement: createPreviewInspectorPageCandidateElement,
   getSnapshot() {
     return {
       highlightEnabled: previewInspectorSession.highlightEnabled,

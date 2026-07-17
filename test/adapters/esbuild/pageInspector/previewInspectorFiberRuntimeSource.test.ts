@@ -368,6 +368,61 @@ describe('preview Inspector Fiber runtime source', () => {
     });
   });
 
+  /** Uses the active caller candidate rather than the descriptor's compatibility-first root. */
+  it('rebuilds the static component tree from the selected page candidate', () => {
+    const runtime = evaluateFiberRuntime();
+    const staffRootIdentity = '@root:/workspace/StaffPage.tsx:StaffPage';
+    const pageCandidate = {
+      id: 'staff-path',
+      renderPath: {
+        entryPoint: { sourcePath: '/workspace/staff-main.tsx' },
+        steps: [
+          {
+            label: 'SelectedCard',
+            sourcePath: '/workspace/SelectedCard.tsx',
+            wrapperNames: [],
+          },
+          {
+            label: 'StaffPage',
+            sourcePath: '/workspace/StaffPage.tsx',
+            wrapperNames: [],
+          },
+          {
+            label: 'StaffEntry',
+            sourcePath: '/workspace/staff-main.tsx',
+            wrapperNames: [],
+          },
+        ],
+      },
+      root: { exportName: 'StaffPage', sourcePath: '/workspace/StaffPage.tsx' },
+      rootAutomaticProps: { audience: 'staff' },
+      targetAutomaticProps: { title: 'staff card' },
+    };
+    const snapshot = runtime.collect([], undefined, {
+      descriptor: {
+        automaticProps: { audience: 'public' },
+        inspector: {
+          renderChain: { paths: [] },
+          root: { exportName: 'PublicPage', sourcePath: '/workspace/PublicPage.tsx' },
+          target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
+        },
+      },
+      pageCandidate,
+      rootExportName: staffRootIdentity,
+      selectedExportName: 'SelectedCard',
+      targetExportName: 'SelectedCard',
+    });
+
+    expect(flattenTreeNames(snapshot.roots)).toEqual(['StaffEntry', 'StaffPage', 'SelectedCard']);
+    expect(findTreeNode(snapshot.roots, 'StaffPage')).toMatchObject({
+      exportName: staffRootIdentity,
+      props: { audience: 'staff' },
+    });
+    expect(findTreeNode(snapshot.roots, 'SelectedCard')).toMatchObject({
+      props: { title: 'staff card' },
+    });
+  });
+
   /** Selects a sibling export's own chain instead of reusing the instrumented target boundary. */
   it('uses export-specific static evidence for a render-chain sibling', () => {
     const runtime = evaluateFiberRuntime();

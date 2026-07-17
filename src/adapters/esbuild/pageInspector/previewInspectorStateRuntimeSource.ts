@@ -104,6 +104,7 @@ function persistPreviewInspectorState() {
         highlightEnabled: previewInspectorSession.highlightEnabled,
         overrides,
         selectedExportName: previewInspectorSession.selectedExportName,
+        selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId,
         selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,
       },
     });

@@ -10,8 +10,8 @@ import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLay
 import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspectorConditionUiRuntimeSource';
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
+import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
-
 /** Source location exposed to the UI without prescribing an extension-host transport. */
 export interface PreviewInspectorUiSourceLocation {
   /** Optional one-based source column. */
@@ -27,7 +27,6 @@ export interface PreviewInspectorUiSourceLocation {
   /** Compatibility spelling emitted by static/Fiber source evidence before UI normalization. */
   readonly sourcePath?: string;
 }
-
 /** One read-only React component node accepted by the inspector UI. */
 export interface PreviewInspectorUiTreeNode {
   /** Nested React component children; HTML host nodes should be omitted or marked as `host`. */
@@ -51,7 +50,6 @@ export interface PreviewInspectorUiTreeNode {
   /** Read-only class, hook, or collector-defined state snapshot. */
   readonly state?: unknown;
 }
-
 /** Bounded component-tree snapshot returned by the optional live collector. */
 export interface PreviewInspectorUiTreeSnapshot {
   /** React component roots currently mounted below the preview root. */
@@ -63,7 +61,6 @@ export interface PreviewInspectorUiTreeSnapshot {
   /** Whether a collector visit bound omitted deeper or later component nodes. */
   readonly truncated?: boolean;
 }
-
 /**
  * Small browser contract between the UI shell and independently implemented collector/host adapters.
  * Every method except `collectTree` is optional so static export fallback remains fully functional.
@@ -91,6 +88,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const consoleUiRuntimeSource = createPreviewInspectorConsoleUiRuntimeSource();
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
+  const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
@@ -98,8 +96,8 @@ ${layoutRuntimeSource}
 ${conditionUiRuntimeSource}
 ${consoleUiRuntimeSource}
 ${dataUiRuntimeSource}
+${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
-
 /**
  * Collector kinds that identify authored or declarative React component boundaries.
  *
@@ -958,6 +956,9 @@ function PreviewInspectorToolbar() {
         React.createElement('span', { className: 'rpi-context-badge' }, pageContext.badge),
         React.createElement('span', { className: 'rpi-context-path' }, pageContext.breadcrumb),
         React.createElement('span', { className: 'rpi-context-detail' }, pageContext.detail),
+        React.createElement(PreviewInspectorPageCandidateSelect, {
+          descriptor: findSelectedPreviewInspectorDescriptor(),
+        }),
       ),
       React.createElement(
         'div',

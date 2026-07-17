@@ -22,6 +22,28 @@ afterEach(async () => {
 });
 
 describe('PreviewSourceTransformer', () => {
+  /** Instruments JSX conditions only for Page Inspector compilation, never for Export Gallery. */
+  it('gates conditional branch controls behind the inspector transformer option', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Page.tsx');
+    const sourceText = [
+      'export function Page({ loaded, visible }) {',
+      '  return <main>{visible && <Panel />}{loaded ? <Content /> : <Loading />}</main>;',
+      '}',
+    ].join('\n');
+
+    const galleryResult = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+    const inspectorResult = await createTransformer(workspaceRoot, true).transform(
+      sourcePath,
+      sourceText,
+    );
+
+    expect(galleryResult.contents).toBe(sourceText);
+    expect(inspectorResult.contents.match(/\.resolveRenderCondition\(/gu)).toHaveLength(2);
+    expect(inspectorResult.contents).toContain('"truthyLabel":"<Panel>"');
+    expect(inspectorResult.contents).toContain('"falsyLabel":"<Loading>"');
+  });
+
   /** Registers only Redux object containers proven by one reached selector module. */
   it('appends selector container registration to workspace-owned source', async () => {
     const workspaceRoot = await createTemporaryWorkspace();
@@ -393,6 +415,13 @@ async function createTemporaryWorkspace(): Promise<string> {
 }
 
 /** Creates a per-build transformer confined to one temporary workspace. */
-function createTransformer(workspaceRoot: string): PreviewSourceTransformer {
-  return new PreviewSourceTransformer({ projectRoot: workspaceRoot, workspaceRoot });
+function createTransformer(
+  workspaceRoot: string,
+  instrumentRenderConditions = false,
+): PreviewSourceTransformer {
+  return new PreviewSourceTransformer({
+    instrumentRenderConditions,
+    projectRoot: workspaceRoot,
+    workspaceRoot,
+  });
 }

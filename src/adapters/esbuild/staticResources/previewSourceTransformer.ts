@@ -34,6 +34,16 @@ import {
 } from './staticPattern';
 import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPaths';
 import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
+import { instrumentReactConditionalRendering } from './reactConditionalRendering';
+import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
+import {
+  appendPreviewSourceImports,
+  applyPreviewSourceReplacements,
+  PreviewSourceTransformError,
+  type PreviewSourceReplacement,
+} from './previewSourceReplacement';
+
+export { PreviewSourceTransformError } from './previewSourceReplacement';
 
 const MAX_BUILD_EXPANSIONS = 128;
 const MAX_BUILD_MATCH_REFERENCES = 1024;
@@ -55,20 +65,14 @@ export interface PreviewSourceTransformerOptions {
   readonly implicitPackageGlobalCandidateNames?: readonly string[];
   /** Project-aware resolver proving a free name maps to its exact installed package. */
   readonly implicitPackageGlobalResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
+  /** Whether reached JSX conditions should expose authored/forced branch controls to Page Inspector. */
+  readonly instrumentRenderConditions?: boolean;
+  /** Whether proven browser backend calls should use editable no-network preview payloads. */
+  readonly instrumentDataRequests?: boolean;
   /** Nearest package root used for the conventional public asset directory. */
   readonly projectRoot: string;
   /** Trusted workspace boundary used for every static filesystem expansion. */
   readonly workspaceRoot: string;
-}
-
-/** One source replacement computed against the original, unmodified module text. */
-interface SourceReplacement {
-  /** Exclusive source offset after the replaced expression. */
-  readonly end: number;
-  /** Generated expression with equivalent bounded runtime semantics. */
-  readonly replacement: string;
-  /** Inclusive source offset of the replaced expression. */
-  readonly start: number;
 }
 
 /** Parsed Vite glob behavior accepted by the safe compatibility layer. */
@@ -101,15 +105,6 @@ interface DynamicTemplatePlan {
   readonly suffix: string;
 }
 
-/** Error surfaced as an esbuild diagnostic when a macro cannot be expanded safely. */
-export class PreviewSourceTransformError extends Error {
-  /** Creates a source-specific compatibility failure. */
-  public constructor(message: string) {
-    super(message);
-    this.name = 'PreviewSourceTransformError';
-  }
-}
-
 /** Stateful per-build transformer that also accumulates watched glob directories. */
 export class PreviewSourceTransformer {
   private expansionCount = 0;
@@ -139,7 +134,7 @@ export class PreviewSourceTransformer {
     sourceText: string,
   ): Promise<PreviewSourceTransformResult> {
     const initialWatchDirectories = new Set(this.watchDirectories);
-    const replacements: SourceReplacement[] = [];
+    const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
     const bindings = new SourceBindingAllocator(analysis);
@@ -198,7 +193,8 @@ export class PreviewSourceTransformer {
       }
       if (
         this.options.documentPath !== undefined &&
-        path.normalize(sourcePath) === path.normalize(this.options.documentPath)
+        path.normalize(sourcePath) === path.normalize(this.options.documentPath) &&
+        this.options.instrumentRenderConditions !== true
       ) {
         replacements.push(...createReactExportPropFallbackReplacements(sourcePath, sourceText));
       }
@@ -266,9 +262,17 @@ export class PreviewSourceTransformer {
       }
     }
 
-    const rewrittenSource = applyReplacements(sourceText, replacements);
+    const compatibilitySource = applyPreviewSourceReplacements(sourceText, replacements);
+    const dataBoundarySource =
+      this.options.instrumentDataRequests === true
+        ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)
+        : compatibilitySource;
+    const rewrittenSource =
+      this.options.instrumentRenderConditions === true
+        ? instrumentReactConditionalRendering(sourcePath, dataBoundarySource)
+        : dataBoundarySource;
     return {
-      contents: appendImports(rewrittenSource, generatedImports),
+      contents: appendPreviewSourceImports(rewrittenSource, generatedImports),
       watchDirectories: [...this.watchDirectories]
         .filter((directoryPath) => !initialWatchDirectories.has(directoryPath))
         .sort(),
@@ -966,32 +970,4 @@ function isPathInside(directoryPath: string, candidatePath: string): boolean {
   return (
     relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
   );
-}
-
-/** Applies non-overlapping source replacements from right to left to preserve original offsets. */
-function applyReplacements(source: string, replacements: readonly SourceReplacement[]): string {
-  let result = source;
-  let lastStart = source.length;
-  for (const replacement of [...replacements].sort((left, right) => right.start - left.start)) {
-    if (replacement.end > lastStart) {
-      throw new PreviewSourceTransformError(
-        'Overlapping static resource expressions are unsupported.',
-      );
-    }
-    result = `${result.slice(0, replacement.start)}${replacement.replacement}${result.slice(replacement.end)}`;
-    lastStart = replacement.start;
-  }
-  return result;
-}
-
-/**
- * Appends generated ESM imports so directive prologues and original diagnostic line numbers remain
- * unchanged. Static imports are module-scoped and hoisted regardless of their top-level position.
- */
-function appendImports(source: string, imports: readonly string[]): string {
-  if (imports.length === 0) {
-    return source;
-  }
-  const separator = source.endsWith('\n') ? '' : '\n';
-  return `${source}${separator}${imports.join('\n')}\n`;
 }

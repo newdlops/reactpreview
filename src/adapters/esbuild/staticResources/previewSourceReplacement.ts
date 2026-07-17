@@ -26,6 +26,41 @@ export interface PreviewSourceReplacement {
 }
 
 /**
+ * Selects a deterministic compatible subset when independent analyzers target nested syntax.
+ *
+ * A smaller range represents the more specific expression and therefore wins over an enclosing
+ * general-purpose transform, such as a dynamic import inside a hook argument. Exact duplicate or
+ * exact conflicting ranges keep the first analyzer's result; the transformer registers dedicated
+ * Context/default compatibility before general hook fallbacks. Disjoint edits are all retained.
+ * This reconciliation is intentionally separate from the strict apply function so analyzer unit
+ * tests can still detect accidental overlaps when no explicit policy has been requested.
+ *
+ * @param replacements Source edits independently derived against the same original module text.
+ * @returns Non-overlapping edits preserving deterministic source-order tie breaking.
+ */
+export function selectCompatiblePreviewSourceReplacements(
+  replacements: readonly PreviewSourceReplacement[],
+): readonly PreviewSourceReplacement[] {
+  const ranked = replacements
+    .map((replacement, discoveryIndex) => ({ discoveryIndex, replacement }))
+    .sort((left, right) => {
+      const leftLength = left.replacement.end - left.replacement.start;
+      const rightLength = right.replacement.end - right.replacement.start;
+      return leftLength - rightLength || left.discoveryIndex - right.discoveryIndex;
+    });
+  const selected: PreviewSourceReplacement[] = [];
+  for (const { replacement } of ranked) {
+    if (
+      selected.some((current) => replacement.start < current.end && replacement.end > current.start)
+    ) {
+      continue;
+    }
+    selected.push(replacement);
+  }
+  return selected.sort((left, right) => left.start - right.start);
+}
+
+/**
  * Applies non-overlapping source replacements from right to left to preserve original offsets.
  *
  * @param source Original module text used during every syntax analysis pass.

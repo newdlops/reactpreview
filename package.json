@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1035",
+  "version": "0.1.1037",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -99,6 +99,15 @@
           "minimum": 100,
           "maximum": 2000,
           "description": "Milliseconds to wait after a pinned target or dependency document change before rebuilding its preview."
+        },
+        "reactPreview.maxOutputSizeMiB": {
+          "type": "number",
+          "default": 128,
+          "minimum": 32,
+          "maximum": 512,
+          "multipleOf": 1,
+          "scope": "resource",
+          "description": "Maximum combined generated JavaScript, CSS, and encoded asset output for one local preview, in MiB. Larger limits use more extension-host memory and global storage."
         },
         "reactPreview.tsconfig": {
           "type": "string",

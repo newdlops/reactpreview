@@ -40,6 +40,8 @@ re-export, route 배열·router 객체와 조건부 app map의 값 흐름을 따
 서로 다른 page root로 이어지는 호출 경로가 여러 개이면 Inspector의 `PAGE PATH` 선택기에 후보를 보존합니다.
 후보를 바꾸면 선택한 authored root와 그 children/sibling graph만 브라우저에서 지연 로드해 같은 대상이
 각 final page 안에서 차지하는 위치를 비교할 수 있습니다.
+직접 JSX owner가 route 배열이나 component factory에서 끊겨도 render graph가 증명한 lazy wrapper,
+form/page/App export를 마운트 체크포인트로 승격하므로 가까운 fallback과 최종 페이지 후보를 함께 비교합니다.
 
 ## 설치
 
@@ -106,6 +108,9 @@ page root가 모두 유효하면 mount 결과가 다른 후보를 최대 6개까
 importable root를 지연 로드합니다. 사용처가 없는 export는 `entry-unreachable`인 standalone fallback으로
 구분합니다. Inspector의 Target 목록에서 아직 현재 root에 렌더되지 않은 sibling export도 선택해 이 경로를
 확인할 수 있습니다. application entry 자체는 실행하지 않으므로 entry side effect는 계속 차단됩니다.
+각 render-path root는 다음 caller에 작성된 primitive literal props와 root-local required type/사용 경로를
+함께 가져옵니다. identifier props, local intersection, `React.FC<Props>`와 styled-components inline
+component도 지원하며 작성자가 parameter default를 둔 prop은 생성값보다 그 default를 우선합니다.
 
 대형 저장소에서는 `index`/`main`/`entry` 계열 파일을 이름만으로 entry라고 가정하지 않고, 해당 후보에서
 ReactDOM mount import와 호출 identity를 먼저 AST로 증명합니다. 증명된 entry의 literal import를 target까지

@@ -197,8 +197,10 @@ wrapper module은 일반 workspace source plugin을 거쳐 HMR dependency가 되
 
 target/export별 reverse usage 결과는 보수적으로 해석 가능한 import와 JSX의 boolean·number·string·null
 literal만 자동 props로 사용합니다. 별도의 `reactExportPropInference`는 직접 export function parameter의
-same-file required type과 비옵셔널 receiver/call/iteration 경로만 bounded shape IR로 만듭니다. unknown leaf와
-optional receiver는 만들지 않고 prototype key, depth 10, node 192, export 32 한도로 닫습니다. generated
+same-file required type과 비옵셔널 receiver/call/iteration 경로만 bounded shape IR로 만듭니다. identifier
+parameter, local intersection/heritage, React FC annotation과 styled inline function을 해석하되 parameter
+default는 materialize하지 않습니다. unknown leaf와 optional receiver는 만들지 않고 prototype key, depth 10,
+node 192, export 32 한도로 닫습니다. generated
 entry의 `previewAutomaticPropsRuntimeSource`가 이를 neutral value로 materialize하고 실제 usage/setup/Inspector
 값을 깊이별로 overlay합니다. `parentSlice/previewParentSlice`는 target occurrence에서 owner boundary까지
 JSX ancestor를 안쪽부터 수집하고 `previewParentSlicePlan`은 같은 파일의 private owner 사용을 최대 8단계
@@ -269,6 +271,12 @@ entry까지 최대 32단계·8개 후보를 탐색합니다. route/layout/guard 
 연결합니다. browser session의 `selectedPageCandidateId`가 선택한 loader만 실행하고, 다른 후보 module은 사용자가
 `PAGE PATH`를 바꾸기 전까지 평가하지 않습니다. esbuild는 build-time에 유한 후보 graph를 모두 검증하므로
 선택 시 별도 서버나 두 번째 compiler process가 필요하지 않습니다.
+`previewInspectorModuleFrontiers`는 ESM barrel뿐 아니라 literal `React.lazy` default/named 재노출을 투명
+frontier로 확장합니다. `previewInspectorRenderPathRoots`는 render graph의 helper/route/value 노드 중 실제
+component-shaped public export만 Page/Form/Layout/App 체크포인트로 바꾸고, 다음 path caller의 literal props와
+root-local inference를 후보 descriptor에 결합합니다. 대형 inventory에서는 direct JSX ancestry를 두 owner로
+제한한 뒤 이 graph 체크포인트를 사용하며, unrelated lazy registry는 lexical prefilter와 file-fact cache로
+재분석하지 않습니다.
 `previewInspectorTargetPlugin`은 그 root의 forward graph에서 원래 target module로 향하는 exact import만
 facade로 바꾸고, 선택된 component export를 public props를 전달하는 wrapper로 계측합니다. 원본 module의
 나머지 export 의미를 보존하며 extension host에서 component를 import하거나 실행하지 않습니다. 실제 root가

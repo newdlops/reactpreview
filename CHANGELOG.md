@@ -2,6 +2,19 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1042 - 2026-07-17
+
+- direct JSX parent 탐색이 private factory/route value에서 끊겨도 이미 증명된 target→entry render graph의
+  public component export를 page/form/app 체크포인트로 승격하고, 실제 page 후보와 가까운 fallback을 함께 보존
+- `React.lazy(() => import(...))`로 재노출된 default/named export를 reverse frontier로 취급해 lazy index를
+  거친 JSX caller를 찾고 각 `PAGE PATH` root만 선택 시 dynamic import하도록 유지
+- 후보 root의 다음 render-path caller에서 literal props를 수집하고 identifier parameter, local intersection,
+  `React.FC<Props>`, styled-components inline component 타입을 neutral props로 추론해 root에도 Auto values 적용
+- 작성된 parameter default는 생성값으로 덮지 않고, 필수 truthiness leaf와 callable path만 provenance가 표시된
+  정적값으로 채워 값 부재로 인한 target-local 렌더 실패를 감소
+- 대형 프로젝트의 direct JSX 역추적은 두 단계 뒤 render graph 체크포인트로 전환하고 unrelated lazy registry의
+  render facts를 분석하지 않으며 파일별 lazy facts를 캐시해 CPU·메모리 전수 재분석을 방지
+
 ## 0.1.1041 - 2026-07-17
 
 - Page Inspector가 application의 모든 attribute/text mutation, scroll, resize와 1초 polling마다 React Fiber를

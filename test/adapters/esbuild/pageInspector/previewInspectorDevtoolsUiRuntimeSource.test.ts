@@ -145,9 +145,14 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('onDoubleClick: toggle');
     expect(source).toContain('event.stopPropagation();');
     expect(source).toContain("'selected'");
-    expect(source).toContain("'target'");
+    expect(source).toContain("'current file export'");
+    expect(source).toContain("'Reveal'");
+    expect(source).toContain('revealPreviewInspectorCurrentFileExport(node)');
     expect(source).toContain('attachPreviewInspectorConditionsToSnapshot');
-    expect(source).toContain('togglePreviewInspectorRenderCondition(node.conditionId)');
+    expect(source).toContain('attachPreviewInspectorBlockersToSnapshot');
+    expect(source).toContain('enrichPreviewInspectorRenderTreeSnapshot');
+    expect(source).toContain("'Apply pass value'");
+    expect(source).toContain("'Auto pass'");
     expect(source).toContain("node?.kind === 'condition'");
     expect(source).toContain('isPreviewInspectorOverlayNode(node)');
     expect(source).toContain("' rpi-overlay-row'");

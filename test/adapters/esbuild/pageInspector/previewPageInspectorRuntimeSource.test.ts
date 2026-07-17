@@ -175,8 +175,10 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('gestureNonce, gestureToken');
     expect(source).toContain('findPreviewInspectorFiberTreeNodeByHost(snapshot, candidate)');
     expect(source).toContain('selectPreviewInspectorFiberTreeNode(snapshot, nodeId)');
-    expect(source).toContain('const selectedIsStaticSibling =');
-    expect(source).toContain('const boundaries = selectedIsStaticSibling');
+    expect(source).toContain('const currentFileExportNames = [');
+    expect(source).toContain('const orderedExportNames = [');
+    expect(source).toContain('targetExportNames: currentFileExportNames');
+    expect(source).toContain('.map((boundary) => ({\n      boundary,\n      exportName,');
     expect(source).toContain('notifyPreviewInspectorTreeSubscribers()');
     expect(source).toContain('new MutationObserver(handlePreviewInspectorMutations)');
     expect(source).toContain('schedulePreviewInspectorCommitRefresh()');

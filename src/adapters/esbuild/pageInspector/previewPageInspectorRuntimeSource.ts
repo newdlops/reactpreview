@@ -302,14 +302,26 @@ function collectPreviewInspectorTreeSnapshot() {
   const rootName = selectedRoot === undefined
     ? undefined
     : createPreviewInspectorRootName(selectedRoot);
-  const selectedIsStaticSibling =
-    selectedName !== instrumentedTargetName &&
-    selectedName !== rootName &&
-    Object.hasOwn(descriptor?.inspector?.renderChainsByExport ?? {}, selectedName);
-  const targetName = selectedIsStaticSibling ? selectedName : instrumentedTargetName;
-  const boundaries = selectedIsStaticSibling
-    ? []
-    : previewInspectorSession.boundariesByExport.get(instrumentedTargetName) ?? [];
+  const currentFileExportNames = [
+    ...new Set([
+      instrumentedTargetName,
+      ...Object.keys(descriptor?.inspector?.renderChainsByExport ?? {}),
+    ]),
+  ];
+  const targetName =
+    selectedName !== rootName && currentFileExportNames.includes(selectedName)
+      ? selectedName
+      : instrumentedTargetName;
+  const orderedExportNames = [
+    targetName,
+    ...currentFileExportNames.filter((exportName) => exportName !== targetName),
+  ];
+  const boundaries = orderedExportNames.flatMap((exportName) =>
+    [...(previewInspectorSession.boundariesByExport.get(exportName) ?? [])].map((boundary) => ({
+      boundary,
+      exportName,
+    })),
+  );
   const snapshot = collectPreviewInspectorFiberTree(
     boundaries,
     previewInspectorSession.selectedTreeNodeId,
@@ -319,6 +331,7 @@ function collectPreviewInspectorTreeSnapshot() {
       rootExportName: rootName,
       selectedExportName: previewInspectorSession.selectedExportName,
       targetExportName: targetName,
+      targetExportNames: currentFileExportNames,
     },
   );
   previewInspectorSession.lastTreeSnapshot = snapshot;

@@ -45,6 +45,10 @@ function isPreviewInspectorTransparentWrapperNode(node) {
 
 /** Produces a semantic tree icon while keeping the row label available to screen readers. */
 function readPreviewInspectorStructureIcon(node, isCondition) {
+  if (node?.kind === 'blocker') return '!';
+  if (node?.edgeKind === 'workspace-render-root') return '⌂';
+  if (node?.kind === 'route' && node?.contextOnly === true) return '↳';
+  if (node?.kind === 'entry' && node?.contextOnly === true) return '◆';
   if (isPreviewInspectorOverlayNode(node)) return '▱';
   if (isPreviewInspectorTransparentWrapperNode(node)) return '⬚';
   return isCondition ? '◐' : '◇';

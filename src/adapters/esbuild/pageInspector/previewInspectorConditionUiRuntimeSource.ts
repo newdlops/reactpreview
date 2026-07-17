@@ -73,7 +73,12 @@ function createPreviewInspectorConditionTreeNode(condition) {
 function collectPreviewInspectorConditionOwners(nodes, owners = []) {
   for (const node of nodes) {
     const sourcePath = normalizePreviewInspectorConditionSourcePath(node.source?.path);
-    if (sourcePath.length > 0 && node.kind !== 'condition') {
+    if (
+      sourcePath.length > 0 &&
+      node.contextOnly !== true &&
+      node.kind !== 'blocker' &&
+      node.kind !== 'condition'
+    ) {
       owners.push({
         id: node.id,
         line: Number.isSafeInteger(node.source?.line) ? node.source.line : 0,
@@ -232,7 +237,7 @@ function PreviewInspectorConditionDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-note' },
-      'Clicking this condition in the component tree flips its effective branch and remounts the page context.',
+      'Selecting this blocker keeps authored output unchanged until you choose a branch, then remounts the surrounding page context.',
     ),
   );
 }

@@ -43,6 +43,7 @@ interface FiberSourceSnapshot {
 /** UI-facing component or host record emitted by the generated adapter. */
 interface FiberTreeNode {
   readonly children: FiberTreeNode[];
+  readonly currentFileExport?: boolean;
   readonly exportName?: string;
   readonly hostElementCount: number;
   readonly id: string;
@@ -164,6 +165,52 @@ describe('preview Inspector Fiber runtime source', () => {
     });
     expect(snapshot.roots[0]?.hostElementCount).toBe(3);
     expect(snapshot.roots[0]?.exportName).toBe('@root:/workspace/DashboardPage.tsx:DashboardPage');
+  });
+
+  /** Marks every mounted export from the current file and selects the requested live boundary. */
+  it('collects multiple current-file export boundaries in one authored page tree', () => {
+    const runtime = evaluateFiberRuntime();
+    const first = createFiber(0, namedComponent('FirstCard'));
+    connectChildren(first, [createFiber(5, 'section', createHostElement())]);
+    const firstBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    connectChildren(firstBoundary, [first]);
+    const second = createFiber(0, namedComponent('SecondCard'));
+    connectChildren(second, [createFiber(5, 'aside', createHostElement())]);
+    const secondBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    connectChildren(secondBoundary, [second]);
+    const page = createFiber(0, namedComponent('DashboardPage'));
+    connectChildren(page, [firstBoundary, secondBoundary]);
+    const exportBoundary = createFiber(1, namedComponent('PreviewPageInspectorExportBoundary'));
+    connectChildren(exportBoundary, [page]);
+
+    const snapshot = runtime.collect(
+      [
+        { boundary: { _reactInternals: secondBoundary }, exportName: 'SecondCard' },
+        { boundary: { _reactInternals: firstBoundary }, exportName: 'FirstCard' },
+      ],
+      undefined,
+      {
+        descriptor: {
+          inspector: {
+            root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+            target: { exportName: 'FirstCard', sourcePath: '/workspace/Cards.tsx' },
+          },
+        },
+        selectedExportName: 'SecondCard',
+        targetExportName: 'SecondCard',
+        targetExportNames: ['FirstCard', 'SecondCard'],
+      },
+    );
+
+    expect(findTreeNode(snapshot.roots, 'FirstCard')).toMatchObject({
+      currentFileExport: true,
+      exportName: 'FirstCard',
+    });
+    expect(findTreeNode(snapshot.roots, 'SecondCard')).toMatchObject({
+      currentFileExport: true,
+      exportName: 'SecondCard',
+    });
+    expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.node.name).toBe('SecondCard');
   });
 
   /** Reads accessor descriptors as labels instead of executing project getters while snapshotting. */

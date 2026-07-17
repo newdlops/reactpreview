@@ -70,6 +70,9 @@ const previewInspectorDevtoolsCss = [
   '.rpi-tree-row[aria-selected="true"]{background:var(--vscode-list-activeSelectionBackground,#094771);color:var(--vscode-list-activeSelectionForeground,#fff)}',
   '.rpi-condition-row{border-left:2px solid var(--vscode-charts-yellow,#cca700);cursor:pointer;padding-left:4px}',
   '.rpi-condition-row .rpi-component-icon{color:var(--vscode-charts-yellow,#cca700)}',
+  '.rpi-blocker-row{border-left:2px solid var(--vscode-errorForeground,#f48771);padding-left:4px}',
+  '.rpi-blocker-row .rpi-component-icon,.rpi-blocker-badge{color:var(--vscode-errorForeground,#f48771)}',
+  '.rpi-export-badge{color:var(--vscode-charts-yellow,#cca700);font-weight:700}',
   '.rpi-overlay-row{border-left:2px solid var(--vscode-charts-purple,#b180d7);padding-left:4px}',
   '.rpi-overlay-row .rpi-component-icon{color:var(--vscode-charts-purple,#b180d7)}',
   '.rpi-wrapper-row .rpi-component-icon{color:var(--vscode-symbolIcon-interfaceForeground,#75beff)}',
@@ -78,6 +81,8 @@ const previewInspectorDevtoolsCss = [
   '.rpi-component-icon{color:var(--vscode-symbolIcon-classForeground,#ee9d28);font-weight:700}',
   '.rpi-node-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.rpi-badge{border:1px solid currentColor;border-radius:8px;font-size:9px;line-height:14px;margin-left:3px;opacity:.78;padding:0 5px}',
+  '.rpi-row-action{background:transparent;border:1px solid currentColor;border-radius:3px;color:inherit;cursor:pointer;',
+  'font-size:9px;margin-left:auto;min-height:18px;padding:0 5px}.rpi-row-action:hover{background:rgba(127,127,127,.2)}',
   '.rpi-empty{color:var(--rpi-muted);padding:18px;text-align:center}',
   '.rpi-tabs{display:flex;gap:1px;min-width:0;overflow-x:auto}',
   '.rpi-tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--rpi-muted);cursor:pointer;padding:4px 9px;white-space:nowrap}',
@@ -138,7 +143,7 @@ const previewInspectorDevtoolsSessionState =
     : {};
 previewInspectorSession.devtoolsState = previewInspectorDevtoolsSessionState;
 previewInspectorDevtoolsSessionState.activeTab =
-  ['console', 'fallbacks', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
+  ['blocker', 'console', 'fallbacks', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
     ? previewInspectorDevtoolsSessionState.activeTab
     : 'props';
 previewInspectorDevtoolsSessionState.collapsed =

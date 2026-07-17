@@ -413,7 +413,7 @@ function readPreviewInspectorFiberSource(fiber, name, options, ancestorSource) {
   return { ...ancestorSource, approximate: true, origin: 'ancestry' };
 }
 
-/** Derives only the two instrumented export identities that the UI may edit or remount. */
+/** Derives the editable root plus every current-file export instrumented by the target facade. */
 function readPreviewInspectorEditableExportIdentities(options) {
   const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
   const inspector = readPreviewInspectorOwnData(descriptor, 'inspector') ?? descriptor;
@@ -433,10 +433,20 @@ function readPreviewInspectorEditableExportIdentities(options) {
     : typeof rootSourcePath === 'string' && typeof rootExportName === 'string'
       ? '@root:' + rootSourcePath + ':' + rootExportName
       : undefined;
+  const configuredTargetNames = readPreviewInspectorOwnData(options, 'targetExportNames');
+  const targetNames = Array.isArray(configuredTargetNames)
+    ? configuredTargetNames.filter(
+        (name, index) =>
+          typeof name === 'string' && name.length > 0 && configuredTargetNames.indexOf(name) === index,
+      ).slice(0, 64)
+    : typeof targetName === 'string'
+      ? [targetName]
+      : [];
   return {
     rootName,
     selectedName: readPreviewInspectorOwnData(options, 'selectedExportName'),
     targetName: typeof targetName === 'string' ? targetName : undefined,
+    targetNames,
   };
 }
 
@@ -548,6 +558,7 @@ function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostN
     const source = readPreviewInspectorStaticSource(name, options);
     const node = {
       children: [],
+      ...(isTarget ? { currentFileExport: true } : {}),
       hostElementCount: 0,
       id,
       kind,
@@ -644,11 +655,23 @@ function findPreviewInspectorApplicationSliceFiber(boundaryFiber) {
   return readPreviewInspectorFiberLink(boundaryFiber, 'child');
 }
 
-/** Normalizes one boundary, array, or Set without invoking arbitrary iterators. */
-function normalizePreviewInspectorBoundaries(boundaries) {
-  if (Array.isArray(boundaries)) return boundaries.slice(0, 64);
-  if (boundaries instanceof Set) return [...boundaries].slice(0, 64);
-  return boundaries === undefined || boundaries === null ? [] : [boundaries];
+/** Normalizes legacy boundaries and export-aware boundary records without invoking project iterators. */
+function normalizePreviewInspectorBoundaryEntries(boundaries) {
+  const values = Array.isArray(boundaries)
+    ? boundaries.slice(0, 64)
+    : boundaries instanceof Set
+      ? [...boundaries].slice(0, 64)
+      : boundaries === undefined || boundaries === null
+        ? []
+        : [boundaries];
+  return values.map((value) => {
+    const nestedBoundary = readPreviewInspectorOwnData(value, 'boundary');
+    const exportName = readPreviewInspectorOwnData(value, 'exportName');
+    return {
+      boundary: nestedBoundary ?? value,
+      exportName: typeof exportName === 'string' && exportName.length > 0 ? exportName : undefined,
+    };
+  });
 }
 
 /** Returns unique connected host roots suitable for overlay outlines. */
@@ -767,10 +790,10 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
   }
 
   const seenSlices = new Set();
-  for (const boundary of normalizePreviewInspectorBoundaries(boundaries)) {
-    const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
+  for (const entry of normalizePreviewInspectorBoundaryEntries(boundaries)) {
+    const boundaryFiber = readPreviewInspectorBoundaryFiber(entry.boundary);
     if (boundaryFiber === undefined) continue;
-    boundaryFibers.push(boundaryFiber);
+    boundaryFibers.push({ exportName: entry.exportName, fiber: boundaryFiber });
     const sliceFiber = findPreviewInspectorApplicationSliceFiber(boundaryFiber);
     if (sliceFiber === undefined || seenSlices.has(sliceFiber)) continue;
     seenSlices.add(sliceFiber);
@@ -811,19 +834,30 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
     return undefined;
   }
 
-  const defaultSelectedId = boundaryFibers.map(findTargetNodeId).find((id) => id !== undefined);
   const editableIdentities = readPreviewInspectorEditableExportIdentities(options);
+  const targetNodeIds = boundaryFibers.map((entry, index) => ({
+    exportName: entry.exportName ?? editableIdentities.targetNames[index] ?? editableIdentities.targetName,
+    id: findTargetNodeId(entry.fiber),
+  }));
+  const defaultSelectedId = targetNodeIds.find((entry) => entry.id !== undefined)?.id;
   const rootNode = roots[0];
-  const targetNode = defaultSelectedId === undefined ? undefined : nodeById.get(defaultSelectedId);
   if (!staticFallback && rootNode !== undefined && editableIdentities.rootName !== undefined) {
     rootNode.exportName = editableIdentities.rootName;
   }
-  if (!staticFallback && targetNode !== undefined && editableIdentities.targetName !== undefined) {
-    const preferredIdentity =
-      targetNode === rootNode && editableIdentities.selectedName === editableIdentities.rootName
-        ? editableIdentities.rootName
-        : editableIdentities.targetName;
-    targetNode.exportName = preferredIdentity;
+  if (!staticFallback) {
+    for (const target of targetNodeIds) {
+      const targetNode = target.id === undefined ? undefined : nodeById.get(target.id);
+      if (targetNode === undefined || target.exportName === undefined) continue;
+      targetNode.currentFileExport = true;
+      targetNode.exportName =
+        targetNode === rootNode && editableIdentities.selectedName === editableIdentities.rootName
+          ? editableIdentities.rootName
+          : target.exportName;
+      if (targetNode.kind === 'host' || targetNode.kind === 'text') {
+        targetNode.kind = 'target';
+        targetNode.name = target.exportName;
+      }
+    }
   }
   const requestedNode = typeof selectedId === 'string' ? nodeById.get(selectedId) : undefined;
   const selectedExportName = readPreviewInspectorOwnData(options, 'selectedExportName');

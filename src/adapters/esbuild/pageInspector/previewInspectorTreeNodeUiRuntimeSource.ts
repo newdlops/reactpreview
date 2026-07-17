@@ -1,0 +1,176 @@
+/**
+ * Generates one accessible React component-tree row for Page Inspector.
+ *
+ * Row presentation is isolated from snapshot collection so target-export highlighting, render-path
+ * badges, blocker status, and Reveal actions can evolve without coupling Fiber compatibility code to
+ * the DevTools shell layout.
+ */
+
+/**
+ * Creates browser source for recursive component-tree rows and current-file export reveal controls.
+ *
+ * Expected lexical bindings include React plus selection, structure, condition, and blocker helpers
+ * declared by the surrounding generated UI runtime.
+ *
+ * @returns Plain JavaScript source concatenated before the Components pane renders.
+ */
+export function createPreviewInspectorTreeNodeUiRuntimeSource(): string {
+  return String.raw`
+/** Selects one export row, admits its host outline, and lets the pane expand/scroll it into view. */
+function revealPreviewInspectorCurrentFileExport(node) {
+  selectPreviewInspectorUiNode(node);
+  if (previewInspectorSession.highlightEnabled !== true) {
+    setPreviewInspectorHighlightEnabled(true);
+  } else {
+    schedulePreviewInspectorHighlight();
+  }
+}
+
+/** Labels inert entry/route evidence without presenting it as a mounted application component. */
+function formatPreviewInspectorRenderContextBadge(node) {
+  if (node?.edgeKind === 'workspace-render-root') return 'render root';
+  if (node?.kind === 'route') return node.certainty === 'conditional' ? 'route · conditional' : 'route';
+  if (node?.kind === 'entry' && node.contextOnly === true) return 'entry';
+  if (node?.kind === 'lazy' && node.contextOnly === true) return 'lazy path';
+  if (node?.contextOnly === true && node.edgeKind === 'wrapper') return 'wrapper path';
+  return undefined;
+}
+
+/** Renders one React-centered branch with export, route, overlay, condition, and blocker badges. */
+function PreviewInspectorComponentTreeNode({
+  expandedIds,
+  focusableId,
+  node,
+  selectedId,
+  setExpandedIds,
+}) {
+  const hasChildren = node.children.length > 0;
+  const expanded = hasChildren && expandedIds.has(node.id);
+  const selected = node.id === selectedId;
+  const isCondition = isPreviewInspectorConditionNode(node);
+  const isBlocker = isPreviewInspectorBlockerNode(node);
+  const isOverlay = isPreviewInspectorOverlayNode(node);
+  const isWrapper = isPreviewInspectorTransparentWrapperNode(node);
+  const isCurrentFileExport = node.currentFileExport === true;
+  const isActiveExport = node.exportName === previewInspectorSession.selectedExportName;
+  const contextBadge = formatPreviewInspectorRenderContextBadge(node);
+  const toggle = () => {
+    if (!hasChildren) return;
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
+      return next;
+    });
+  };
+  return React.createElement(
+    'li',
+    { role: 'none' },
+    React.createElement('button', {
+      'aria-label': (expanded ? 'Collapse ' : 'Expand ') + node.name,
+      'data-react-preview-tree-toggle': node.id,
+      hidden: true,
+      onClick: toggle,
+      tabIndex: -1,
+      type: 'button',
+    }),
+    React.createElement(
+      'div',
+      {
+        'aria-expanded': hasChildren ? expanded : undefined,
+        'aria-selected': selected,
+        className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : '') +
+          (isBlocker ? ' rpi-blocker-row' : '') + readPreviewInspectorStructureRowClass(node),
+        'data-render-blocker': isBlocker ? 'true' : undefined,
+        'data-render-condition': isCondition ? 'true' : undefined,
+        'data-react-preview-tree-row': node.id,
+        onClick: () => selectPreviewInspectorUiNode(node),
+        onDoubleClick: toggle,
+        role: 'treeitem',
+        tabIndex: node.id === focusableId ? 0 : -1,
+        title: isBlocker ? node.name + ' · select to edit the pass value' : node.name,
+      },
+      React.createElement(
+        'span',
+        {
+          'aria-hidden': true,
+          className: 'rpi-twisty',
+          'data-expandable': hasChildren,
+          onClick: (event) => {
+            if (!hasChildren) return;
+            event.preventDefault();
+            event.stopPropagation();
+            toggle();
+          },
+          title: hasChildren ? (expanded ? 'Collapse component' : 'Expand component') : undefined,
+        },
+        hasChildren ? (expanded ? '▾' : '▸') : '',
+      ),
+      React.createElement(
+        'span',
+        { 'aria-hidden': true, className: 'rpi-component-icon' },
+        readPreviewInspectorStructureIcon(node, isCondition),
+      ),
+      React.createElement('span', { className: 'rpi-node-name' }, node.name),
+      selected ? React.createElement('span', { className: 'rpi-badge' }, 'selected') : undefined,
+      isCurrentFileExport
+        ? React.createElement('span', { className: 'rpi-badge rpi-export-badge' }, 'current file export')
+        : undefined,
+      isActiveExport
+        ? React.createElement('span', { className: 'rpi-badge' }, 'active')
+        : undefined,
+      node.mounted === false
+        ? React.createElement('span', { className: 'rpi-badge' }, 'not mounted')
+        : undefined,
+      contextBadge
+        ? React.createElement('span', { className: 'rpi-badge' }, contextBadge)
+        : undefined,
+      isOverlay
+        ? React.createElement(
+            'span',
+            { className: 'rpi-badge' },
+            'overlay' + (node.overlayState ? ' · ' + node.overlayState : ''),
+          )
+        : undefined,
+      isWrapper ? React.createElement('span', { className: 'rpi-badge' }, 'wrapper') : undefined,
+      isBlocker
+        ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
+            formatPreviewInspectorBlockerBadge(node))
+        : undefined,
+      isCurrentFileExport
+        ? React.createElement(
+            'button',
+            {
+              'aria-label': 'Reveal ' + node.name + ' in the rendered page',
+              className: 'rpi-row-action',
+              onClick: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                revealPreviewInspectorCurrentFileExport(node);
+              },
+              title: node.mounted === false
+                ? 'Reveal this export row; choose a page path that mounts it to highlight DOM output'
+                : 'Reveal and highlight this current-file export in the rendered page',
+              type: 'button',
+            },
+            'Reveal',
+          )
+        : undefined,
+    ),
+    expanded
+      ? React.createElement(
+          'ul',
+          { className: 'rpi-tree-group', role: 'group' },
+          node.children.map((child) => React.createElement(PreviewInspectorComponentTreeNode, {
+            expandedIds,
+            focusableId,
+            key: child.id,
+            node: child,
+            selectedId,
+            setExpandedIds,
+          })),
+        )
+      : undefined,
+  );
+}
+`;
+}

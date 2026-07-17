@@ -11,8 +11,11 @@ import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspect
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
+import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
+import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
+import { createPreviewInspectorTreeNodeUiRuntimeSource } from './previewInspectorTreeNodeUiRuntimeSource';
 /** Source location exposed to the UI without prescribing an extension-host transport. */
 export interface PreviewInspectorUiSourceLocation {
   /** Optional one-based source column. */
@@ -32,10 +35,18 @@ export interface PreviewInspectorUiSourceLocation {
 export interface PreviewInspectorUiTreeNode {
   /** Nested React component children; HTML host nodes should be omitted or marked as `host`. */
   readonly children: readonly PreviewInspectorUiTreeNode[];
+  /** Render-graph certainty retained only on inert entry, route, lazy, or wrapper context nodes. */
+  readonly certainty?: 'conditional' | 'confirmed';
   /** Compiler-issued condition metadata present only on editable conditional-render pseudo nodes. */
   readonly condition?: unknown;
   /** Stable compiler-issued identity present only on conditional-render pseudo nodes. */
   readonly conditionId?: string;
+  /** True for data-only route/entry/group nodes that do not claim a mounted Fiber identity. */
+  readonly contextOnly?: boolean;
+  /** Marks a component export declared by the source file whose preview tab is pinned. */
+  readonly currentFileExport?: boolean;
+  /** Static render-graph relationship represented by a context-only node. */
+  readonly edgeKind?: string;
   /** Export identity when the node is an instrumented editable target or ancestor root. */
   readonly exportName?: string;
   /** Stable identity for selection across collector refreshes. */
@@ -44,6 +55,8 @@ export interface PreviewInspectorUiTreeNode {
   readonly kind: string;
   /** Component display name shown in the tree. */
   readonly name: string;
+  /** Distinguishes a live export from one retained only in the current-file inventory. */
+  readonly mounted?: boolean;
   /** Mounted/dormant state supplied only for overlay components and portals. */
   readonly overlayState?: 'dormant' | 'mounted';
   /** Read-only props snapshot; only instrumented target/root props are editable. */
@@ -94,8 +107,11 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
+  const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
+  const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
+  const treeNodeUiRuntimeSource = createPreviewInspectorTreeNodeUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
 
@@ -105,6 +121,8 @@ ${consoleUiRuntimeSource}
 ${dataUiRuntimeSource}
 ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
+${renderTreeUiRuntimeSource}
+${blockerUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
   if (source === null || typeof source !== 'object') return undefined;
@@ -142,11 +160,16 @@ function normalizePreviewInspectorUiNodes(values, depth, counter) {
         : 'Anonymous';
     normalized.push({
       children,
+      certainty: value.certainty === 'conditional' ? 'conditional' : value.certainty === 'confirmed' ? 'confirmed' : undefined,
+      contextOnly: value.contextOnly === true,
+      currentFileExport: value.currentFileExport === true,
+      edgeKind: typeof value.edgeKind === 'string' ? value.edgeKind : undefined,
       exportName: typeof value.exportName === 'string' ? value.exportName : undefined,
       id: typeof value.id === 'string' && value.id.length > 0
         ? value.id
         : 'collector:' + String(counter.count),
       kind: typeof value.kind === 'string' ? value.kind : 'component',
+      mounted: value.mounted === false ? false : value.mounted === true ? true : undefined,
       name,
       overlayState: value.overlayState === 'dormant' ? 'dormant' : value.overlayState === 'mounted' ? 'mounted' : undefined,
       props: value.props,
@@ -182,7 +205,9 @@ function createFallbackPreviewInspectorTreeSnapshot() {
 function collectPreviewInspectorUiTreeSnapshot() {
   const collectTree = previewInspectorApi.collectTree;
   if (typeof collectTree !== 'function') {
-    return attachPreviewInspectorConditionsToSnapshot(createFallbackPreviewInspectorTreeSnapshot());
+    return attachPreviewInspectorBlockersToSnapshot(
+      enrichPreviewInspectorRenderTreeSnapshot(createFallbackPreviewInspectorTreeSnapshot()),
+    );
   }
   try {
     const collectorSnapshot = collectTree();
@@ -199,10 +224,14 @@ function collectPreviewInspectorUiTreeSnapshot() {
             typeof collectorSnapshot?.status === 'string' ? collectorSnapshot.status : undefined,
           truncated: collectorSnapshot?.truncated === true,
         };
-    return attachPreviewInspectorConditionsToSnapshot(baseSnapshot);
+    return attachPreviewInspectorBlockersToSnapshot(
+      enrichPreviewInspectorRenderTreeSnapshot(baseSnapshot),
+    );
   } catch (error) {
     console.warn('[React Preview] Component tree collector failed.', error);
-    return attachPreviewInspectorConditionsToSnapshot(createFallbackPreviewInspectorTreeSnapshot());
+    return attachPreviewInspectorBlockersToSnapshot(
+      enrichPreviewInspectorRenderTreeSnapshot(createFallbackPreviewInspectorTreeSnapshot()),
+    );
   }
 }
 
@@ -211,6 +240,16 @@ function findPreviewInspectorUiNode(nodes, nodeId) {
   for (const node of nodes) {
     if (node.id === nodeId) return node;
     const descendant = findPreviewInspectorUiNode(node.children, nodeId);
+    if (descendant !== undefined) return descendant;
+  }
+  return undefined;
+}
+
+/** Locates the first live or retained current-file row carrying one editable export identity. */
+function findPreviewInspectorUiNodeByExport(nodes, exportName) {
+  for (const node of nodes) {
+    if (node.exportName === exportName) return node;
+    const descendant = findPreviewInspectorUiNodeByExport(node.children, exportName);
     if (descendant !== undefined) return descendant;
   }
   return undefined;
@@ -295,6 +334,9 @@ function isPreviewInspectorUiNodeEditable(node) {
 /** Commits tree selection locally, synchronizes editable exports, and informs an optional collector. */
 function selectPreviewInspectorUiNode(node) {
   previewInspectorSession.selectedTreeNodeId = node.id;
+  if (node?.blockerKind === 'data-request') {
+    previewInspectorDevtoolsSessionState.selectedDataRequestId = node.blockerId;
+  }
   if (
     typeof node.exportName === 'string' &&
     previewInspectorSession.descriptorNames.includes(node.exportName)
@@ -304,7 +346,17 @@ function selectPreviewInspectorUiNode(node) {
     persistPreviewInspectorState();
     schedulePreviewInspectorTreeRefresh();
   }
-  if (isPreviewInspectorConditionNode(node)) return;
+  if (
+    isPreviewInspectorBlockerNode(node) ||
+    node.contextOnly === true ||
+    node.mounted === false
+  ) {
+    previewInspectorSession.selectedTreeNodeId = node.id;
+    persistPreviewInspectorState();
+    schedulePreviewInspectorTreeRefresh();
+    schedulePreviewInspectorHighlight();
+    return;
+  }
   try {
     previewInspectorApi.selectNode?.(node.id);
   } catch (error) {
@@ -352,6 +404,7 @@ function PreviewInspectorDevtoolsButton({ children, disabled, onClick, pressed, 
 function handlePreviewInspectorTreeKeyDown(event) {
   const row = event.target?.closest?.('[data-react-preview-tree-row]');
   if (row === null || row === undefined) return;
+  if (event.target !== row) return;
   const rows = [...event.currentTarget.querySelectorAll('[data-react-preview-tree-row]')];
   const rowIndex = rows.indexOf(row);
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -393,110 +446,7 @@ function handlePreviewInspectorTreeKeyDown(event) {
   }
 }
 
-/** Renders one component-only tree branch with target and selection badges. */
-function PreviewInspectorComponentTreeNode({
-  expandedIds,
-  focusableId,
-  node,
-  selectedId,
-  setExpandedIds,
-}) {
-  const hasChildren = node.children.length > 0;
-  const expanded = hasChildren && expandedIds.has(node.id);
-  const selected = node.id === selectedId;
-  const isCondition = isPreviewInspectorConditionNode(node);
-  const conditionEnabled = node.condition?.effectiveEnabled === true;
-  const conditionForced = typeof node.condition?.override === 'boolean';
-  const isOverlay = isPreviewInspectorOverlayNode(node);
-  const isWrapper = isPreviewInspectorTransparentWrapperNode(node);
-  const isTarget = node.kind === 'target' || node.exportName === previewInspectorSession.selectedExportName;
-  const toggle = () => {
-    if (!hasChildren) return;
-    setExpandedIds((current) => {
-      const next = new Set(current);
-      if (next.has(node.id)) next.delete(node.id); else next.add(node.id);
-      return next;
-    });
-  };
-  return React.createElement(
-    'li',
-    { role: 'none' },
-    React.createElement('button', {
-      'aria-label': (expanded ? 'Collapse ' : 'Expand ') + node.name,
-      'data-react-preview-tree-toggle': node.id,
-      hidden: true,
-      onClick: toggle,
-      tabIndex: -1,
-      type: 'button',
-    }),
-    React.createElement(
-      'button',
-      {
-        'aria-expanded': hasChildren ? expanded : undefined,
-        'aria-selected': selected,
-        className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : '') + readPreviewInspectorStructureRowClass(node),
-        'data-render-condition': isCondition ? 'true' : undefined,
-        'data-react-preview-tree-row': node.id,
-        onClick: () => {
-          selectPreviewInspectorUiNode(node);
-          if (isCondition) togglePreviewInspectorRenderCondition(node.conditionId);
-        },
-        onDoubleClick: toggle,
-        role: 'treeitem',
-        tabIndex: node.id === focusableId ? 0 : -1,
-        title: isCondition ? node.name + ' · click to toggle branch' : node.name,
-        type: 'button',
-      },
-      React.createElement(
-        'span',
-        {
-          'aria-hidden': true,
-          className: 'rpi-twisty',
-          'data-expandable': hasChildren,
-          onClick: (event) => {
-            if (!hasChildren) return;
-            event.preventDefault();
-            event.stopPropagation();
-            toggle();
-          },
-          title: hasChildren ? (expanded ? 'Collapse component' : 'Expand component') : undefined,
-        },
-        hasChildren ? (expanded ? '▾' : '▸') : '',
-      ),
-      React.createElement(
-        'span',
-        { 'aria-hidden': true, className: 'rpi-component-icon' },
-        readPreviewInspectorStructureIcon(node, isCondition),
-      ),
-      React.createElement('span', { className: 'rpi-node-name' }, node.name),
-      selected ? React.createElement('span', { className: 'rpi-badge' }, 'selected') : null,
-      isTarget ? React.createElement('span', { className: 'rpi-badge' }, 'target') : null,
-      isOverlay ? React.createElement('span', { className: 'rpi-badge' }, 'overlay' + (node.overlayState ? ' · ' + node.overlayState : '')) : null,
-      isWrapper ? React.createElement('span', { className: 'rpi-badge' }, 'wrapper') : null,
-      isCondition
-        ? React.createElement(
-            'span',
-            { className: 'rpi-badge' },
-            (conditionEnabled ? 'on' : 'off') + (conditionForced ? ' · forced' : ''),
-          )
-        : null,
-    ),
-    expanded
-      ? React.createElement(
-          'ul',
-          { className: 'rpi-tree-group', role: 'group' },
-          node.children.map((child) => React.createElement(PreviewInspectorComponentTreeNode, {
-            expandedIds,
-            focusableId,
-            key: child.id,
-            node: child,
-            selectedId,
-            setExpandedIds,
-          })),
-        )
-      : null,
-  );
-}
+${treeNodeUiRuntimeSource}
 
 /** Renders the searchable React Components pane and owns only visual expansion state. */
 function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }) {
@@ -710,7 +660,19 @@ function PreviewInspectorDetailsPane({ node }) {
   const [activeTab, setActiveTab] = React.useState(
     () => previewInspectorDevtoolsSessionState.activeTab,
   );
+  const blockerSelected = isPreviewInspectorBlockerNode(node);
+  React.useEffect(() => {
+    const nextTab = blockerSelected
+      ? 'blocker'
+      : previewInspectorDevtoolsSessionState.activeTab === 'blocker'
+        ? 'props'
+        : previewInspectorDevtoolsSessionState.activeTab;
+    previewInspectorDevtoolsSessionState.activeTab = nextTab;
+    setActiveTab(nextTab);
+    persistPreviewInspectorState();
+  }, [node?.id, blockerSelected]);
   const tabs = [
+    ...(blockerSelected ? [['blocker', 'Blocker']] : []),
     ['props', 'Props'],
     ['state', 'State'],
     ['source', 'Source'],
@@ -756,7 +718,9 @@ function PreviewInspectorDetailsPane({ node }) {
         id: 'react-preview-inspector-' + activeTab + '-panel',
         role: 'tabpanel',
       },
-      activeTab === 'payloads'
+      activeTab === 'blocker' && blockerSelected
+        ? React.createElement(PreviewInspectorBlockerDetail, { node })
+        : activeTab === 'payloads'
         ? React.createElement(PreviewInspectorDataDetail)
         : activeTab === 'fallbacks'
           ? React.createElement(PreviewInspectorRuntimeFallbackDetail)
@@ -787,9 +751,9 @@ function PreviewInspectorToolbar() {
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
   const selectedNode = findPreviewInspectorUiNode(snapshot.roots, selectedTreeNodeId) ??
-    findPreviewInspectorUiNode(
+    findPreviewInspectorUiNodeByExport(
       snapshot.roots,
-      snapshot.roots.find((node) => node.exportName === previewInspectorSession.selectedExportName)?.id,
+      previewInspectorSession.selectedExportName,
     ) ?? snapshot.roots[0];
   const selectedId = selectedNode?.id;
   const editable = isPreviewInspectorUiNodeEditable(selectedNode);

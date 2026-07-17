@@ -82,8 +82,27 @@ export interface PreviewBundleChunk {
   readonly relativePath: string;
 }
 
+/** Worker-computed byte identities that let publication avoid hashing large output on the host. */
+export interface PreviewBundleArtifactMetadata {
+  /** Stable digest over entry, stylesheet presence/bytes, and ordered chunk paths/bytes. */
+  readonly contentHash: string;
+  /** Full entry JavaScript byte digest used in its content-addressed filename. */
+  readonly entryDigest: string;
+  /** Full byte digest paired with each exact auxiliary chunk path. */
+  readonly chunkDigests: readonly {
+    /** Full JavaScript byte digest. */
+    readonly contentDigest: string;
+    /** Exact safe relative chunk path emitted by the compiler. */
+    readonly relativePath: string;
+  }[];
+  /** Full aggregate stylesheet byte digest when CSS output exists. */
+  readonly stylesheetDigest?: string;
+}
+
 /** In-memory browser artifacts produced by a preview compiler. */
 export interface PreviewBundle {
+  /** Optional trusted worker-computed identities used to keep large hashing off the host thread. */
+  readonly artifactMetadata?: PreviewBundleArtifactMetadata;
   /** Auxiliary ESM files retained separately so browser dynamic imports remain genuinely lazy. */
   readonly chunks: readonly PreviewBundleChunk[];
   /** Absolute graph inputs and bounded convention candidates used for future targeted rebuilds. */

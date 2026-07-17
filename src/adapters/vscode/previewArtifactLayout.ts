@@ -7,7 +7,11 @@
  * This module performs no I/O; the storage adapter owns reference counts and atomic publication.
  */
 import { createHash } from 'node:crypto';
-import type { PreviewBundle, PreviewBundleChunk } from '../../domain/preview';
+import type {
+  PreviewBundle,
+  PreviewBundleArtifactMetadata,
+  PreviewBundleChunk,
+} from '../../domain/preview';
 
 /** Allows large route graphs while aggregate compiler bytes still enforce the lightweight budget. */
 export const MAX_PREVIEW_CHUNKS = 2_048;
@@ -51,12 +55,18 @@ export interface PreviewArtifactLayout {
  */
 export function planPreviewArtifactLayout(bundle: PreviewBundle): PreviewArtifactLayout {
   const chunks = validateAndSortChunks(bundle.chunks);
-  const contentHash = createBundleHash(bundle, chunks);
-  const entryDigest = createByteDigest(bundle.javascript);
+  const metadata = validateArtifactMetadata(bundle.artifactMetadata, bundle, chunks);
+  const contentHash = metadata?.contentHash ?? createBundleHash(bundle, chunks);
+  const entryDigest = metadata?.entryDigest ?? createByteDigest(bundle.javascript);
   const entryPath = `entry-${entryDigest}.js`;
   const entryFile = createPlannedFile(entryPath, bundle.javascript, entryDigest);
-  const chunkFiles = chunks.map((chunk) => createPlannedFileFromChunk(chunk));
-  const stylesheetFile = createStylesheetFile(bundle.stylesheet);
+  const chunkDigestByPath = new Map(
+    metadata?.chunkDigests.map((chunk) => [chunk.relativePath, chunk.contentDigest]),
+  );
+  const chunkFiles = chunks.map((chunk) =>
+    createPlannedFileFromChunk(chunk, chunkDigestByPath.get(chunk.relativePath)),
+  );
+  const stylesheetFile = createStylesheetFile(bundle.stylesheet, metadata?.stylesheetDigest);
   const files =
     stylesheetFile === undefined
       ? [entryFile, ...chunkFiles]
@@ -66,6 +76,31 @@ export function planPreviewArtifactLayout(bundle: PreviewBundle): PreviewArtifac
   return stylesheetFile === undefined
     ? baseLayout
     : { ...baseLayout, stylesheetPath: stylesheetFile.relativePath };
+}
+
+/**
+ * Adds publication identities while bytes still live in the background compiler worker.
+ *
+ * @param bundle Completed compiler output without or with replaceable metadata.
+ * @returns Equivalent bundle carrying immutable byte identities for host-side publication.
+ */
+export function attachPreviewArtifactMetadata(bundle: PreviewBundle): PreviewBundle {
+  const { artifactMetadata: ignoredMetadata, ...metadataFreeBundle } = bundle;
+  void ignoredMetadata;
+  const layout = planPreviewArtifactLayout(metadataFreeBundle);
+  const digestByPath = new Map(layout.files.map((file) => [file.relativePath, file.contentDigest]));
+  const stylesheetDigest =
+    layout.stylesheetPath === undefined ? undefined : digestByPath.get(layout.stylesheetPath);
+  const artifactMetadata: PreviewBundleArtifactMetadata = {
+    chunkDigests: bundle.chunks.map((chunk) => ({
+      contentDigest: requireArtifactDigest(digestByPath, chunk.relativePath),
+      relativePath: chunk.relativePath,
+    })),
+    contentHash: layout.contentHash,
+    entryDigest: requireArtifactDigest(digestByPath, layout.entryPath),
+    ...(stylesheetDigest === undefined ? {} : { stylesheetDigest }),
+  };
+  return { ...bundle, artifactMetadata };
 }
 
 /** Creates a transient shared-file descriptor over the compiler-owned typed-array view. */
@@ -79,19 +114,67 @@ function createPlannedFile(
 }
 
 /** Converts one validated lazy chunk into the common shared-file representation. */
-function createPlannedFileFromChunk(chunk: PreviewBundleChunk): PlannedPreviewArtifactFile {
-  return createPlannedFile(chunk.relativePath, chunk.contents);
+function createPlannedFileFromChunk(
+  chunk: PreviewBundleChunk,
+  contentDigest?: string,
+): PlannedPreviewArtifactFile {
+  return createPlannedFile(chunk.relativePath, chunk.contents, contentDigest);
 }
 
 /** Creates a digest-named CSS file when the compiler emitted aggregate entry styles. */
 function createStylesheetFile(
   stylesheet: Uint8Array | undefined,
+  contentDigest?: string,
 ): PlannedPreviewArtifactFile | undefined {
   if (stylesheet === undefined) {
     return undefined;
   }
-  const contentDigest = createByteDigest(stylesheet);
-  return createPlannedFile(`styles/${contentDigest}.css`, stylesheet, contentDigest);
+  const resolvedDigest = contentDigest ?? createByteDigest(stylesheet);
+  return createPlannedFile(`styles/${resolvedDigest}.css`, stylesheet, resolvedDigest);
+}
+
+/** Validates worker metadata shape and exact output-path alignment before trusting its digests. */
+function validateArtifactMetadata(
+  metadata: PreviewBundleArtifactMetadata | undefined,
+  bundle: PreviewBundle,
+  chunks: readonly PreviewBundleChunk[],
+): PreviewBundleArtifactMetadata | undefined {
+  if (metadata === undefined) {
+    return undefined;
+  }
+  const validContentHash = /^[a-f0-9]{16}$/u.test(metadata.contentHash);
+  const validEntryDigest = /^[a-f0-9]{64}$/u.test(metadata.entryDigest);
+  const validStylesheetDigest =
+    bundle.stylesheet === undefined
+      ? metadata.stylesheetDigest === undefined
+      : metadata.stylesheetDigest !== undefined &&
+        /^[a-f0-9]{64}$/u.test(metadata.stylesheetDigest);
+  const sortedMetadataChunks = [...metadata.chunkDigests].sort((left, right) =>
+    left.relativePath.localeCompare(right.relativePath),
+  );
+  const validChunks =
+    sortedMetadataChunks.length === chunks.length &&
+    sortedMetadataChunks.every(
+      (candidate, index) =>
+        candidate.relativePath === chunks[index]?.relativePath &&
+        /^[a-f0-9]{64}$/u.test(candidate.contentDigest),
+    );
+  if (!validContentHash || !validEntryDigest || !validStylesheetDigest || !validChunks) {
+    throw new TypeError('Invalid background preview artifact metadata.');
+  }
+  return metadata;
+}
+
+/** Returns one planner-produced digest or raises an internal metadata construction error. */
+function requireArtifactDigest(
+  digestByPath: ReadonlyMap<string, string>,
+  relativePath: string,
+): string {
+  const digest = digestByPath.get(relativePath);
+  if (digest === undefined) {
+    throw new Error(`Missing planned React preview artifact digest: ${relativePath}`);
+  }
+  return digest;
 }
 
 /**

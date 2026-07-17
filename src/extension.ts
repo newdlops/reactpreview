@@ -4,8 +4,9 @@
  * and registers commands; all preview behavior belongs to the imported architectural layers.
  */
 import * as vscode from 'vscode';
+import path from 'node:path';
 import { GlobalStoragePreviewArtifactStore } from './adapters/vscode/globalStoragePreviewArtifactStore';
-import { EsbuildPreviewCompiler } from './adapters/esbuild/esbuildPreviewCompiler';
+import { PreviewCompilerWorkerClient } from './adapters/worker/previewCompilerWorkerClient';
 import { BuildPreview } from './application/buildPreview';
 import { PreviewController } from './presentation/previewController';
 
@@ -16,7 +17,7 @@ interface ActiveExtensionResources {
   /** Controller disposed first to invalidate builds and stop editor-triggered work. */
   readonly controller: PreviewController;
   /** Runtime compiler whose native esbuild service should stop before cache shutdown. */
-  readonly compiler: EsbuildPreviewCompiler;
+  readonly compiler: PreviewCompilerWorkerClient;
 }
 
 let activeResources: ActiveExtensionResources | undefined;
@@ -28,7 +29,9 @@ let activeResources: ActiveExtensionResources | undefined;
  */
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('React Preview', { log: true });
-  const compiler = new EsbuildPreviewCompiler();
+  const compiler = new PreviewCompilerWorkerClient(
+    path.join(__dirname, 'previewCompilerWorker.js'),
+  );
   const artifactStore = new GlobalStoragePreviewArtifactStore(context.globalStorageUri, log);
   const buildPreview = new BuildPreview(compiler, artifactStore);
   const controller = new PreviewController(buildPreview, artifactStore.resourceRoot, log);

@@ -1,0 +1,197 @@
+/**
+ * Owns serialized background compilation independently from the worker entry point.
+ * Keeping scheduling here makes priority, cancellation, transfer, and shutdown behavior testable
+ * without importing VS Code or creating a real thread.
+ */
+import type { PreviewCompiler } from '../../application/previewCompiler';
+import { PreviewBuildCancelledError } from '../../domain/previewBuildExecution';
+import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
+import { attachPreviewArtifactMetadata } from '../vscode/previewArtifactLayout';
+import {
+  collectPreviewBundleTransferList,
+  serializePreviewCompilerWorkerError,
+  type PreviewCompilerWorkerCompileRequest,
+  type PreviewCompilerWorkerRequest,
+  type PreviewCompilerWorkerResponse,
+} from './previewCompilerWorkerProtocol';
+
+/** Minimal parent-port boundary used by the worker scheduler. */
+export interface PreviewCompilerWorkerPort {
+  /** Stops accepting messages once compiler shutdown is complete. */
+  readonly close: () => void;
+  /** Subscribes to structured requests from the extension host. */
+  readonly onMessage: (listener: (message: PreviewCompilerWorkerRequest) => void) => void;
+  /** Returns a response and optionally transfers bundle buffers without copying. */
+  readonly postMessage: (
+    message: PreviewCompilerWorkerResponse,
+    transferList?: readonly ArrayBuffer[],
+  ) => void;
+}
+
+/** Compiler operations required by the worker scheduler. */
+export interface PreviewCompilerWorkerBackend extends PreviewCompiler {
+  /** Stops native compiler state after active work has observed cancellation. */
+  readonly shutdown: () => Promise<void>;
+}
+
+/** One queued compilation that has not yet allocated a compiler AbortController. */
+interface QueuedPreviewCompilation {
+  /** Immutable request received from the host. */
+  readonly message: PreviewCompilerWorkerCompileRequest;
+  /** Lower values run first; cold fast passes precede queued full enrichment. */
+  readonly priority: number;
+}
+
+/** Serial worker scheduler that owns all compiler caches and native esbuild lifecycle. */
+export class PreviewCompilerWorkerServer {
+  private activeController: AbortController | undefined;
+  private activeRequestId: number | undefined;
+  private finalizing = false;
+  private readonly queue: QueuedPreviewCompilation[] = [];
+  private running = false;
+  private shuttingDown = false;
+
+  /**
+   * Creates a worker server around one trusted parent transport and compiler backend.
+   *
+   * @param port Parent worker-thread port or deterministic test transport.
+   * @param compiler Background compiler owning native graph caches.
+   */
+  public constructor(
+    private readonly port: PreviewCompilerWorkerPort,
+    private readonly compiler: PreviewCompilerWorkerBackend = new EsbuildPreviewCompiler(),
+  ) {}
+
+  /** Starts request routing; the compiler itself remains lazy until the first compile message. */
+  public start(): void {
+    this.port.onMessage((message) => {
+      this.handleRequest(message);
+    });
+  }
+
+  /** Routes compile, cancellation, and ordered shutdown requests. */
+  private handleRequest(message: PreviewCompilerWorkerRequest): void {
+    if (message.type === 'cancel') {
+      this.cancel(message.id);
+      return;
+    }
+    if (message.type === 'shutdown') {
+      this.requestShutdown();
+      return;
+    }
+    if (this.shuttingDown) {
+      this.postFailure(message.id, new PreviewBuildCancelledError());
+      return;
+    }
+    this.enqueue(message);
+  }
+
+  /** Inserts fast work ahead of queued enrichment while preserving FIFO order per priority. */
+  private enqueue(message: PreviewCompilerWorkerCompileRequest): void {
+    const queued = {
+      message,
+      priority: message.request.preparationMode === 'fast' ? 0 : 1,
+    };
+    const laterIndex = this.queue.findIndex((candidate) => candidate.priority > queued.priority);
+    if (laterIndex < 0) {
+      this.queue.push(queued);
+    } else {
+      this.queue.splice(laterIndex, 0, queued);
+    }
+    void this.drain();
+  }
+
+  /** Aborts active work or removes a queued revision before it consumes analysis resources. */
+  private cancel(requestId: number): void {
+    if (this.activeRequestId === requestId) {
+      this.activeController?.abort();
+      return;
+    }
+    const queuedIndex = this.queue.findIndex((entry) => entry.message.id === requestId);
+    if (queuedIndex < 0) {
+      return;
+    }
+    this.queue.splice(queuedIndex, 1);
+    this.postFailure(requestId, new PreviewBuildCancelledError());
+  }
+
+  /** Cancels all work and waits for active compiler cleanup before acknowledging shutdown. */
+  private requestShutdown(): void {
+    if (this.shuttingDown) {
+      return;
+    }
+    this.shuttingDown = true;
+    this.activeController?.abort();
+    const queued = this.queue.splice(0);
+    for (const entry of queued) {
+      this.postFailure(entry.message.id, new PreviewBuildCancelledError());
+    }
+    if (!this.running) {
+      void this.finalize();
+    }
+  }
+
+  /** Executes at most one compile so large tabs cannot multiply peak graph memory. */
+  private async drain(): Promise<void> {
+    if (this.running || this.shuttingDown) {
+      return;
+    }
+    const queued = this.queue.shift();
+    if (queued === undefined) {
+      return;
+    }
+    this.running = true;
+    const controller = new AbortController();
+    this.activeController = controller;
+    this.activeRequestId = queued.message.id;
+    try {
+      const compiledBundle = await this.compiler.compile(queued.message.request, {
+        reportProgress: (stage) => {
+          this.port.postMessage({ id: queued.message.id, stage, type: 'progress' });
+        },
+        signal: controller.signal,
+      });
+      const bundle = attachPreviewArtifactMetadata(compiledBundle);
+      this.port.postMessage(
+        { bundle, id: queued.message.id, type: 'success' },
+        collectPreviewBundleTransferList(bundle),
+      );
+    } catch (error) {
+      this.postFailure(queued.message.id, error, controller.signal);
+    } finally {
+      this.activeController = undefined;
+      this.activeRequestId = undefined;
+      this.running = false;
+      if (this.shouldFinalizeAfterRun()) {
+        await this.finalize();
+      } else {
+        void this.drain();
+      }
+    }
+  }
+
+  /** Reads mutable shutdown state after an awaited compiler operation. */
+  private shouldFinalizeAfterRun(): boolean {
+    return this.shuttingDown;
+  }
+
+  /** Serializes one request failure without allowing port errors to corrupt queue state. */
+  private postFailure(requestId: number, error: unknown, signal?: AbortSignal): void {
+    this.port.postMessage({
+      error: serializePreviewCompilerWorkerError(error, signal),
+      id: requestId,
+      type: 'failure',
+    });
+  }
+
+  /** Stops native esbuild exactly once, acknowledges the host, and closes the parent port. */
+  private async finalize(): Promise<void> {
+    if (this.finalizing) {
+      return;
+    }
+    this.finalizing = true;
+    await this.compiler.shutdown();
+    this.port.postMessage({ type: 'shutdown-complete' });
+    this.port.close();
+  }
+}

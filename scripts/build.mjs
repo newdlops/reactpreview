@@ -1,8 +1,7 @@
 /**
- * Bundles the VS Code extension host entry point into one CommonJS file.
- * The `vscode` API and runtime `esbuild` package remain external because VS Code supplies the
- * former and the packaged extension must retain the latter's platform-specific native binary.
- * TypeScript's parser is bundled so AST resource classification never depends on a user's project.
+ * Bundles the VS Code extension host and background compiler into separate CommonJS entry files.
+ * The host stays responsive because TypeScript parsing and compiler plugins live only in the worker;
+ * runtime `esbuild` remains external so the package retains its platform-specific native binary.
  */
 import * as esbuild from 'esbuild';
 
@@ -11,13 +10,16 @@ const shouldWatch = process.argv.includes('--watch');
 
 const buildOptions = {
   bundle: true,
-  entryPoints: ['src/extension.ts'],
+  entryPoints: {
+    extension: 'src/extension.ts',
+    previewCompilerWorker: 'src/previewCompilerWorker.ts',
+  },
   external: ['esbuild', 'vscode'],
   format: 'cjs',
   legalComments: 'none',
   logLevel: 'info',
   minify: isProduction,
-  outfile: 'dist/extension.js',
+  outdir: 'dist',
   platform: 'node',
   sourcemap: isProduction ? false : 'external',
   target: 'node20',

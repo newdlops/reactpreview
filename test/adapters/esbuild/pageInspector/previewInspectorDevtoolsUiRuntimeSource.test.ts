@@ -149,6 +149,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('attachPreviewInspectorConditionsToSnapshot');
     expect(source).toContain('togglePreviewInspectorRenderCondition(node.conditionId)');
     expect(source).toContain("node?.kind === 'condition'");
+    expect(source).toContain('isPreviewInspectorOverlayNode(node)');
+    expect(source).toContain("' rpi-overlay-row'");
+    expect(source).toContain("'transparent-wrapper'");
+    expect(source).toContain("'overlay' + (node.overlayState");
     expect(source).toContain("'Use authored value'");
   });
 
@@ -163,7 +167,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
       ]),
       treeNode('react-root', 'root', 'ReactRoot', [treeNode('target', 'target', 'Target')]),
       treeNode('fragment', 'fragment', 'Fragment', [treeNode('memo', 'memo', 'MemoCard')]),
-      treeNode('portal', 'portal', 'Portal', [treeNode('lazy', 'lazy', 'LazyDialog')]),
+      {
+        ...treeNode('portal', 'portal', 'OverlayPortal', [treeNode('lazy', 'lazy', 'LazyDialog')]),
+        role: 'overlay',
+      },
       treeNode('text', 'text', '#text'),
       {
         ...treeNode('authored-root', 'root', 'DashboardPage'),
@@ -177,15 +184,18 @@ describe('Page Inspector DevTools UI runtime source', () => {
       'App',
       'Target',
       'MemoCard',
-      'LazyDialog',
+      'OverlayPortal',
       'DashboardPage',
       'StaticWrapper',
       'ApplicationEntry',
     ]);
     expect(normalized[0]?.children.map((node) => node.name)).toEqual(['Panel']);
     expect(normalized.map((node) => node.name)).not.toEqual(
-      expect.arrayContaining(['StrictMode', 'ReactRoot', 'Fragment', 'Portal', 'main', '#text']),
+      expect.arrayContaining(['StrictMode', 'ReactRoot', 'Fragment', 'main', '#text']),
     );
+    expect(normalized.find((node) => node.name === 'OverlayPortal')).toMatchObject({
+      role: 'overlay',
+    });
   });
 
   /** Keeps one visible row tabbable and resolves ArrowLeft through the role=group owner container. */
@@ -285,6 +295,8 @@ interface DevtoolsUiTestNode {
   readonly id: string;
   readonly kind: string;
   readonly name: string;
+  readonly overlayState?: string;
+  readonly role?: string;
 }
 
 /** Small generated helper surface exposed only inside the isolated VM test realm. */

@@ -69,6 +69,26 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.readFallbackValuesEnabled()).toBe(true);
     expect(harness.getRevision()).toBe(1);
   });
+
+  /** Preserves compiler-proven overlay role metadata for the component-tree presentation layer. */
+  it('retains bounded overlay visibility metadata', async () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+
+    harness.resolveCondition('overlay-condition', false, {
+      expression: '<DeleteModal>.open: open',
+      falsyLabel: 'hidden <DeleteModal> overlay',
+      kind: 'overlay-visibility',
+      role: 'overlay',
+      sourcePath: '/workspace/Page.tsx',
+      truthyLabel: 'visible <DeleteModal> overlay',
+    });
+    await Promise.resolve();
+
+    expect(harness.readConditions()[0]).toMatchObject({
+      kind: 'overlay-visibility',
+      role: 'overlay',
+    });
+  });
 });
 
 /** Evaluates the generated lexical runtime against inert persistence and notification adapters. */

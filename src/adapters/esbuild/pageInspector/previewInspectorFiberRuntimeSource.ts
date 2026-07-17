@@ -7,6 +7,7 @@
  * the adapter separate from the toolbar lets the UI consume a stable snapshot contract without
  * depending on React's private objects.
  */
+import { createPreviewInspectorFiberStructureRuntimeSource } from './previewInspectorFiberStructureRuntimeSource';
 
 /** Maximum private Fiber records inspected during one component-tree snapshot. */
 export const PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT = 4096;
@@ -29,6 +30,7 @@ export const PREVIEW_INSPECTOR_TREE_NODE_LIMIT = 512;
  * @returns Plain JavaScript source with no React DevTools dependency and no Fiber mutation.
  */
 export function createPreviewInspectorFiberRuntimeSource(): string {
+  const structureRuntimeSource = createPreviewInspectorFiberStructureRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT = ${PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT};
 const PREVIEW_INSPECTOR_TREE_NODE_LIMIT = ${PREVIEW_INSPECTOR_TREE_NODE_LIMIT};
@@ -55,6 +57,8 @@ const previewInspectorOwnedComponentNames = new Set([
   'PreviewRenderedCommitSignal',
   'PreviewSetupFallbackBoundary',
 ]);
+
+${structureRuntimeSource}
 
 /** Reads only an own data descriptor and deliberately declines accessors and inherited getters. */
 function readPreviewInspectorOwnData(value, propertyName) {
@@ -155,6 +159,7 @@ function namePreviewInspectorFiber(fiber, kind) {
   if (kind === 'fragment') return 'Fragment';
   if (kind === 'suspense') return 'Suspense';
   if (kind === 'context') return 'Context';
+  if (kind === 'portal') return 'OverlayPortal';
   if (kind === 'text') return '#text';
   return kind === 'other' ? 'Anonymous' : kind;
 }
@@ -169,41 +174,9 @@ function createPreviewInspectorTreeNodeId(namespace, path, kind, name) {
 
 /** Reports preview-owned wrappers that should be transparent in the project component tree. */
 function isPreviewInspectorOwnedFiber(fiber, name, kind) {
-  if (kind === 'root' || kind === 'fragment' || kind === 'portal') return true;
+  if (kind === 'root' || kind === 'fragment') return true;
   if (previewInspectorOwnedComponentNames.has(name)) return true;
   return name.startsWith('ReactPreviewInspector(') || name.startsWith('ReactPreviewInspectorTarget(');
-}
-
-/** Detects the isolated Inspector host or shadow root without excluding authored application portals. */
-function isPreviewInspectorUiContainer(value) {
-  let current = value;
-  const visited = new Set();
-  for (let depth = 0; current !== null && current !== undefined && depth < 16; depth += 1) {
-    if ((typeof current !== 'object' && typeof current !== 'function') || visited.has(current)) {
-      return false;
-    }
-    visited.add(current);
-    try {
-      if (
-        typeof current.getAttribute === 'function' &&
-        current.getAttribute('data-react-preview-inspector-ui') !== null
-      ) {
-        return true;
-      }
-      current = current.host ?? current.parentElement ?? current.parentNode;
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-/** Prunes only the Inspector toolbar portal; project-owned modal and overlay portals remain visible. */
-function isPreviewInspectorOwnedPortalFiber(fiber) {
-  if (readPreviewInspectorOwnData(fiber, 'tag') !== 4) return false;
-  const stateNode = readPreviewInspectorOwnData(fiber, 'stateNode');
-  const containerInfo = readPreviewInspectorOwnData(stateNode, 'containerInfo') ?? stateNode;
-  return isPreviewInspectorUiContainer(containerInfo);
 }
 
 /** Produces a short diagnostic token for a function without retaining executable project values. */
@@ -749,6 +722,8 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
             const id = createPreviewInspectorTreeNodeId('fiber', path, kind, name);
             const stateNode = readPreviewInspectorOwnData(fiber, 'stateNode');
             const directHost = normalizePreviewInspectorHostElement(stateNode);
+            const role = readPreviewInspectorFiberStructureRole(fiber, kind, name);
+            const overlayState = readPreviewInspectorOverlayState(fiber, role);
             const node = {
               children: [],
               hostElementCount: 0,
@@ -756,7 +731,9 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
               kind,
               name,
               props: snapshotPreviewInspectorValue(readPreviewInspectorOwnData(fiber, 'memoizedProps')),
+              ...(role === undefined ? {} : { role }),
               state: snapshotPreviewInspectorFiberState(fiber, kind),
+              ...(overlayState === undefined ? {} : { overlayState }),
               ...(source === undefined ? {} : { source }),
             };
             nodeCount += 1;

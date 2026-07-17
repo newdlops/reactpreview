@@ -48,7 +48,9 @@ interface FiberTreeNode {
   readonly id: string;
   readonly kind: string;
   readonly name: string;
+  readonly overlayState?: string;
   readonly props: unknown;
+  readonly role?: string;
   readonly source?: FiberSourceSnapshot;
   readonly state: unknown;
 }
@@ -133,6 +135,7 @@ describe('preview Inspector Fiber runtime source', () => {
       'span',
       'SidePanel',
       'aside',
+      'OverlayPortal',
       'ModalContents',
       'dialog',
     ]);
@@ -155,6 +158,10 @@ describe('preview Inspector Fiber runtime source', () => {
       sourcePath: '/workspace/SidePanel.tsx',
     });
     expect(flattenTreeNames(snapshot.roots)).not.toContain('PreviewInspectorToolbar');
+    expect(findTreeNode(snapshot.roots, 'OverlayPortal')).toMatchObject({
+      overlayState: 'mounted',
+      role: 'overlay',
+    });
     expect(snapshot.roots[0]?.hostElementCount).toBe(3);
     expect(snapshot.roots[0]?.exportName).toBe('@root:/workspace/DashboardPage.tsx:DashboardPage');
   });
@@ -174,6 +181,29 @@ describe('preview Inspector Fiber runtime source', () => {
     expect(String(props.longText).endsWith('…')).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('_reactInternals');
     expect(JSON.stringify(snapshot)).not.toContain('queue');
+  });
+
+  /** Distinguishes child-only provider wrappers and currently dormant modal components. */
+  it('classifies transparent wrappers and hidden overlay fibers without requiring host nodes', () => {
+    const runtime = evaluateFiberRuntime();
+    const childType = namedComponent('WrappedPage');
+    const child = createFiber(0, childType);
+    const modal = createFiber(0, namedComponent('DeleteModal'));
+    const wrapper = createFiber(0, namedComponent('ApplicationProviders'));
+    wrapper.memoizedProps = { children: { type: childType } };
+    connectChildren(wrapper, [child, modal]);
+    const boundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    connectChildren(boundary, [wrapper]);
+
+    const snapshot = runtime.collect({ _reactInternals: boundary });
+
+    expect(findTreeNode(snapshot.roots, 'ApplicationProviders')).toMatchObject({
+      role: 'transparent-wrapper',
+    });
+    expect(findTreeNode(snapshot.roots, 'DeleteModal')).toMatchObject({
+      overlayState: 'dormant',
+      role: 'overlay',
+    });
   });
 
   /** Connects a picked nested DOM host to its nearest authored component and filters disconnects. */

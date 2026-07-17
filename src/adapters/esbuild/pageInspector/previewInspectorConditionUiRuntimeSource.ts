@@ -38,6 +38,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
   const activeLabel = enabled ? condition.truthyLabel : condition.falsyLabel;
   const forced = typeof condition.override === 'boolean';
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
+  const overlay = condition.role === 'overlay';
   return {
     children: [],
     condition,
@@ -45,13 +46,15 @@ function createPreviewInspectorConditionTreeNode(condition) {
     exportName: undefined,
     id: 'render-condition:' + condition.id,
     kind: 'condition',
-    name: condition.expression + ' · ' + activeLabel,
+    name: (overlay ? 'Overlay · ' : '') + condition.expression + ' · ' + activeLabel,
+    overlayState: overlay ? (enabled ? 'mounted' : 'dormant') : undefined,
     props: {
       authored: condition.authoredEnabled,
       effective: enabled,
       fallbackActive,
       mode: forced ? 'forced' : 'authored',
     },
+    role: overlay ? 'overlay' : undefined,
     source: normalizePreviewInspectorUiSource({
       column: condition.column,
       displayName: condition.sourcePath,
@@ -178,13 +181,15 @@ function PreviewInspectorConditionDetail({ node }) {
   const forced = typeof condition.override === 'boolean';
   const activeBranch = enabled ? condition.truthyLabel : condition.falsyLabel;
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
+  const overlay = condition.role === 'overlay';
   return React.createElement(
     'div',
     { className: 'rpi-detail-content' },
     React.createElement(
       'div',
       { className: 'rpi-meta' },
-      (forced ? 'Forced branch' : 'Authored runtime branch') + ' · ' +
+      (overlay ? 'Overlay visibility' : forced ? 'Forced branch' : 'Authored runtime branch') + ' · ' +
+        (overlay && forced ? 'forced · ' : '') +
         (enabled ? 'true' : 'false'),
     ),
     React.createElement('pre', { className: 'rpi-json' }, condition.expression),

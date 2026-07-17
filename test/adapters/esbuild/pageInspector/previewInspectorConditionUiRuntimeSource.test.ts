@@ -14,6 +14,8 @@ interface ConditionTreeNode {
   readonly id: string;
   readonly kind: string;
   readonly name: string;
+  readonly overlayState?: string;
+  readonly role?: string;
   readonly source?: { readonly line: number; readonly path: string };
 }
 
@@ -68,6 +70,34 @@ describe('Preview Inspector condition UI runtime source', () => {
 
     expect(session.selectedTreeNodeId).toBeUndefined();
     expect(selectExport).toHaveBeenCalledWith('CurrentFileMain');
+  });
+
+  /** Keeps a hidden controlled modal visible in the tree as a dormant overlay toggle. */
+  it('labels overlay visibility controls independently from ordinary JSX branches', () => {
+    const runtime = createConditionUiRuntime([
+      {
+        authoredEnabled: false,
+        effectiveEnabled: false,
+        expression: '<DeleteModal>.open: open',
+        falsyLabel: 'hidden <DeleteModal> overlay',
+        id: 'overlay-a',
+        kind: 'overlay-visibility',
+        line: 12,
+        role: 'overlay',
+        sourcePath: '/workspace/Page.tsx',
+        truthyLabel: 'visible <DeleteModal> overlay',
+      },
+    ]);
+    const snapshot = runtime.attachConditions({
+      roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)],
+    });
+
+    const overlay = snapshot.roots[0]?.children[0];
+    expect(overlay?.name).toContain('Overlay · <DeleteModal>.open');
+    expect(overlay).toMatchObject({
+      overlayState: 'dormant',
+      role: 'overlay',
+    });
   });
 });
 

@@ -59,14 +59,18 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
   const fallbackBranch = source.fallbackBranch === 'truthy' || source.fallbackBranch === 'falsy'
     ? source.fallbackBranch
     : undefined;
+  const kind = ['logical-and', 'overlay-visibility', 'ternary'].includes(source.kind)
+    ? source.kind
+    : 'logical-and';
   return {
     column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
     expression: readText('expression', 'conditional render'),
     ...(fallbackBranch === undefined ? {} : { fallbackBranch }),
     falsyLabel: readText('falsyLabel', 'hidden'),
-    kind: source.kind === 'ternary' ? 'ternary' : 'logical-and',
+    kind,
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     sourcePath: readText('sourcePath'),
+    ...(source.role === 'overlay' ? { role: 'overlay' } : {}),
     truthyLabel: readText('truthyLabel', 'visible'),
   };
 }
@@ -83,6 +87,7 @@ function didPreviewInspectorConditionChange(previous, next) {
     'falsyLabel',
     'kind',
     'line',
+    'role',
     'sourcePath',
     'truthyLabel',
   ]) {

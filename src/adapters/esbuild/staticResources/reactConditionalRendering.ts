@@ -13,6 +13,32 @@ import ts from 'typescript';
 const MAX_CONDITIONS_PER_MODULE = 128;
 const MAX_METADATA_TEXT_LENGTH = 180;
 const PREVIEW_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
+const OVERLAY_COMPONENT_NAME_PATTERN =
+  /(?:modal|dialog|drawer|popover|popper|overlay|portal|sheet|lightbox|tooltip|toast|dropdown|menu)$/iu;
+const POSITIVE_OVERLAY_VISIBILITY_PROPS = new Set([
+  'active',
+  'defaultopen',
+  'defaultvisible',
+  'expanded',
+  'isopen',
+  'isvisible',
+  'open',
+  'present',
+  'show',
+  'shown',
+  'visible',
+]);
+const NEGATIVE_OVERLAY_VISIBILITY_PROPS = new Set(['hidden', 'ishidden']);
+
+/** Imported ReactDOM identities that statically prove a createPortal render expression. */
+interface ReactDomPortalBindings {
+  readonly direct: ReadonlySet<string>;
+  readonly namespaces: ReadonlySet<string>;
+}
+
+/** Function scopes whose own overlay guard may safely become a visibility control. */
+type OverlayRuntimeFunction =
+  ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
 
 /** One non-overlapping condition expression replacement computed against the parsed source text. */
 interface ReactConditionalRenderReplacement {
@@ -35,11 +61,13 @@ interface ReactConditionalRenderMetadata {
   /** Label rendered when the condition resolves false. */
   readonly falsyLabel: string;
   /** Supported syntax family. */
-  readonly kind: 'logical-and' | 'ternary';
+  readonly kind: 'logical-and' | 'overlay-visibility' | 'ternary';
   /** One-based source line of the condition expression. */
   readonly line: number;
   /** Absolute source identity retained inside the local webview. */
   readonly sourcePath: string;
+  /** Optional visual-layer classification used for dormant overlay controls. */
+  readonly role?: 'overlay';
   /** Label rendered when the condition resolves true. */
   readonly truthyLabel: string;
 }
@@ -48,11 +76,15 @@ interface ReactConditionalRenderMetadata {
 interface ReactConditionalRenderCandidate {
   /** Authored expression whose truthiness selects the JSX branch. */
   readonly condition: ts.Expression;
+  /** Readable JSX attribute label used instead of repeating only its value expression. */
+  readonly expressionLabel?: string;
   /** Static labels and source data exposed in the Inspector. */
   readonly metadata: Omit<
     ReactConditionalRenderMetadata,
     'column' | 'expression' | 'line' | 'sourcePath'
   >;
+  /** Whether a negative prop such as `hidden` must invert the visible-state resolver result. */
+  readonly negateRuntimeResult?: boolean;
 }
 
 /**
@@ -83,10 +115,10 @@ export function instrumentReactConditionalRendering(
     return sourceText;
   }
 
-  const candidates = collectConditionalRenderCandidates(sourceFile).slice(
-    0,
-    MAX_CONDITIONS_PER_MODULE,
-  );
+  const candidates = collectConditionalRenderCandidates(
+    sourceFile,
+    collectReactDomPortalBindings(sourceFile),
+  ).slice(0, MAX_CONDITIONS_PER_MODULE);
   const replacements = selectNonOverlappingConditionalReplacements(
     candidates.map((candidate, index) =>
       createConditionalRenderReplacement(sourceFile, sourcePath, candidate, index),
@@ -98,29 +130,38 @@ export function instrumentReactConditionalRendering(
 /** Collects only boolean expressions whose selected branch directly renders JSX. */
 function collectConditionalRenderCandidates(
   sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
 ): readonly ReactConditionalRenderCandidate[] {
   const candidates: ReactConditionalRenderCandidate[] = [];
   /** Visits syntax in source order while retaining nested independent branch controls. */
   function visit(node: ts.Node): void {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      candidates.push(...collectOverlayVisibilityCandidates(node, sourceFile));
+    }
+    if (ts.isIfStatement(node)) {
+      const overlayGuard = collectOverlayNullGuardCandidate(node, sourceFile, portalBindings);
+      if (overlayGuard !== undefined) candidates.push(overlayGuard);
+    }
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
-      isDirectJsxRenderExpression(node.right)
+      isDirectReactRenderExpression(node.right, portalBindings)
     ) {
       candidates.push({
         condition: node.left,
         metadata: {
           falsyLabel: 'hidden',
           kind: 'logical-and',
-          truthyLabel: describeJsxRenderExpression(node.right, sourceFile),
+          truthyLabel: describeRenderBranch(node.right, sourceFile, portalBindings),
         },
       });
     } else if (
       ts.isConditionalExpression(node) &&
-      (isDirectJsxRenderExpression(node.whenTrue) || isDirectJsxRenderExpression(node.whenFalse))
+      (isDirectReactRenderExpression(node.whenTrue, portalBindings) ||
+        isDirectReactRenderExpression(node.whenFalse, portalBindings))
     ) {
-      const truthyLabel = describeRenderBranch(node.whenTrue, sourceFile);
-      const falsyLabel = describeRenderBranch(node.whenFalse, sourceFile);
+      const truthyLabel = describeRenderBranch(node.whenTrue, sourceFile, portalBindings);
+      const falsyLabel = describeRenderBranch(node.whenFalse, sourceFile, portalBindings);
       candidates.push({
         condition: node.condition,
         metadata: {
@@ -137,6 +178,168 @@ function collectConditionalRenderCandidates(
   return candidates;
 }
 
+/**
+ * Converts an overlay component's early `return null` guard into visible-state semantics.
+ * A true hidden guard is inverted around the resolver, so an absent override still follows the
+ * authored branch while the Inspector consistently exposes true=visible and false=dormant.
+ */
+function collectOverlayNullGuardCandidate(
+  statement: ts.IfStatement,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): ReactConditionalRenderCandidate | undefined {
+  const thenHidden = statementReturnsNull(statement.thenStatement);
+  const elseHidden =
+    statement.elseStatement !== undefined && statementReturnsNull(statement.elseStatement);
+  if (thenHidden === elseHidden) return undefined;
+  const owner = findNearestOverlayRuntimeFunction(statement);
+  if (owner === undefined || !isOverlayRuntimeFunction(owner, sourceFile, portalBindings)) {
+    return undefined;
+  }
+  const ownerName = readOverlayRuntimeFunctionName(owner, sourceFile) ?? 'Overlay';
+  return {
+    condition: statement.expression,
+    expressionLabel: `<${ownerName}> visibility: ${statement.expression.getText(sourceFile)}`,
+    metadata: {
+      falsyLabel: `hidden <${ownerName}> overlay`,
+      kind: 'overlay-visibility',
+      role: 'overlay',
+      truthyLabel: `visible <${ownerName}> overlay`,
+    },
+    ...(thenHidden ? { negateRuntimeResult: true } : {}),
+  };
+}
+
+/** Recognizes a direct or single-block null return without interpreting control flow. */
+function statementReturnsNull(statement: ts.Statement): boolean {
+  if (ts.isReturnStatement(statement))
+    return statement.expression?.kind === ts.SyntaxKind.NullKeyword;
+  if (!ts.isBlock(statement) || statement.statements.length !== 1) return false;
+  const onlyStatement = statement.statements[0];
+  return onlyStatement !== undefined && statementReturnsNull(onlyStatement);
+}
+
+/** Finds the render-time owner of an early-return guard without crossing another function. */
+function findNearestOverlayRuntimeFunction(node: ts.Node): OverlayRuntimeFunction | undefined {
+  let current = node.parent;
+  while (!ts.isSourceFile(current)) {
+    if (
+      ts.isArrowFunction(current) ||
+      ts.isFunctionDeclaration(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isMethodDeclaration(current)
+    ) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/** Requires an overlay-shaped function name or an exact createPortal call in its own body. */
+function isOverlayRuntimeFunction(
+  owner: OverlayRuntimeFunction,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): boolean {
+  const ownerName = readOverlayRuntimeFunctionName(owner, sourceFile);
+  if (ownerName !== undefined && OVERLAY_COMPONENT_NAME_PATTERN.test(ownerName)) return true;
+  if (owner.body === undefined) return false;
+  let portalFound = false;
+  const visit = (node: ts.Node): void => {
+    if (portalFound || (node !== owner && ts.isFunctionLike(node))) return;
+    if (ts.isCallExpression(node) && isReactDomPortalCall(node, portalBindings)) {
+      portalFound = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner.body);
+  return portalFound;
+}
+
+/** Reads a declaration, variable, assignment, or method name without resolving project values. */
+function readOverlayRuntimeFunctionName(
+  owner: OverlayRuntimeFunction,
+  sourceFile: ts.SourceFile,
+): string | undefined {
+  if (owner.name !== undefined) return owner.name.getText(sourceFile);
+  const parent = owner.parent;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+  if (ts.isPropertyAssignment(parent)) return parent.name.getText(sourceFile);
+  return undefined;
+}
+
+/** Collects explicit controlled visibility props from conventionally named overlay JSX tags. */
+function collectOverlayVisibilityCandidates(
+  element: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+  sourceFile: ts.SourceFile,
+): readonly ReactConditionalRenderCandidate[] {
+  const tagName = element.tagName.getText(sourceFile);
+  if (!tagName.split('.').some((segment) => OVERLAY_COMPONENT_NAME_PATTERN.test(segment))) {
+    return [];
+  }
+  const candidates: ReactConditionalRenderCandidate[] = [];
+  for (const property of element.attributes.properties) {
+    if (!ts.isJsxAttribute(property)) continue;
+    const propName = property.name.getText(sourceFile);
+    const normalizedPropName = propName.replace(/[-_]/gu, '').toLowerCase();
+    const positive = POSITIVE_OVERLAY_VISIBILITY_PROPS.has(normalizedPropName);
+    const negative = NEGATIVE_OVERLAY_VISIBILITY_PROPS.has(normalizedPropName);
+    const initializer = property.initializer;
+    if (
+      (!positive && !negative) ||
+      initializer === undefined ||
+      !ts.isJsxExpression(initializer) ||
+      initializer.expression === undefined
+    ) {
+      continue;
+    }
+    const authoredExpression = initializer.expression.getText(sourceFile);
+    candidates.push({
+      condition: initializer.expression,
+      expressionLabel: `<${tagName}>.${propName}: ${authoredExpression}`,
+      metadata: {
+        falsyLabel: `hidden <${tagName}> overlay`,
+        kind: 'overlay-visibility',
+        role: 'overlay',
+        truthyLabel: `visible <${tagName}> overlay`,
+      },
+      ...(negative ? { negateRuntimeResult: true } : {}),
+    });
+  }
+  return candidates;
+}
+
+/** Collects direct and namespace createPortal imports from the browser ReactDOM package. */
+function collectReactDomPortalBindings(sourceFile: ts.SourceFile): ReactDomPortalBindings {
+  const direct = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== 'react-dom' ||
+      statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
+    ) {
+      continue;
+    }
+    const clause = statement.importClause;
+    if (clause?.name !== undefined) namespaces.add(clause.name.text);
+    const bindings = clause?.namedBindings;
+    if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+    } else if (bindings !== undefined) {
+      for (const element of bindings.elements) {
+        if (!element.isTypeOnly && (element.propertyName ?? element.name).text === 'createPortal') {
+          direct.add(element.name.text);
+        }
+      }
+    }
+  }
+  return { direct, namespaces };
+}
+
 /** Creates a stable resolver call without evaluating or duplicating the authored expression. */
 function createConditionalRenderReplacement(
   sourceFile: ts.SourceFile,
@@ -150,16 +353,23 @@ function createConditionalRenderReplacement(
   const location = sourceFile.getLineAndCharacterOfPosition(start);
   const metadata: ReactConditionalRenderMetadata = {
     column: location.character + 1,
-    expression: boundMetadataText(authoredExpression.replace(/\s+/gu, ' ')),
+    expression: boundMetadataText(
+      (candidate.expressionLabel ?? authoredExpression).replace(/\s+/gu, ' '),
+    ),
     line: location.line + 1,
     sourcePath: path.normalize(sourcePath),
     ...candidate.metadata,
   };
   const conditionId = createConditionalRenderIdentity(sourcePath, metadata, occurrence);
   const apiExpression = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
+  const authoredValueExpression =
+    candidate.negateRuntimeResult === true
+      ? `(!(${authoredExpression}))`
+      : `(${authoredExpression})`;
+  const resolverCall = `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, ${authoredValueExpression}, ${JSON.stringify(metadata)})`;
   return {
     end,
-    replacement: `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, (${authoredExpression}), ${JSON.stringify(metadata)})`,
+    replacement: candidate.negateRuntimeResult === true ? `!(${resolverCall})` : resolverCall,
     start,
   };
 }
@@ -207,11 +417,50 @@ function isDirectJsxRenderExpression(expression: ts.Expression): boolean {
   );
 }
 
+/** Recognizes direct JSX and exact ReactDOM createPortal calls as render-bearing branches. */
+function isDirectReactRenderExpression(
+  expression: ts.Expression,
+  portalBindings: ReactDomPortalBindings,
+): boolean {
+  return (
+    isDirectJsxRenderExpression(expression) ||
+    isReactDomPortalCall(unwrapConditionalExpression(expression), portalBindings)
+  );
+}
+
+/** Proves createPortal through a named import or ReactDOM namespace/default binding. */
+function isReactDomPortalCall(
+  expression: ts.Expression,
+  bindings: ReactDomPortalBindings,
+): expression is ts.CallExpression {
+  if (!ts.isCallExpression(expression)) return false;
+  const callee = unwrapConditionalExpression(expression.expression);
+  if (ts.isIdentifier(callee)) return bindings.direct.has(callee.text);
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    callee.name.text === 'createPortal' &&
+    ts.isIdentifier(callee.expression) &&
+    bindings.namespaces.has(callee.expression.text)
+  );
+}
+
 /** Produces a concise JSX tag label while keeping arbitrary branch expressions bounded. */
-function describeRenderBranch(expression: ts.Expression, sourceFile: ts.SourceFile): string {
-  return isDirectJsxRenderExpression(expression)
-    ? describeJsxRenderExpression(expression, sourceFile)
-    : boundMetadataText(unwrapConditionalExpression(expression).getText(sourceFile));
+function describeRenderBranch(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): string {
+  if (isDirectJsxRenderExpression(expression)) {
+    return describeJsxRenderExpression(expression, sourceFile);
+  }
+  const unwrapped = unwrapConditionalExpression(expression);
+  if (isReactDomPortalCall(unwrapped, portalBindings)) {
+    const portalChild = unwrapped.arguments[0];
+    return portalChild !== undefined && isDirectJsxRenderExpression(portalChild)
+      ? `${describeJsxRenderExpression(portalChild, sourceFile)} portal overlay`
+      : '<Portal> overlay';
+  }
+  return boundMetadataText(unwrapped.getText(sourceFile));
 }
 
 /** Reads the authored component/tag name from a direct JSX branch. */
@@ -306,7 +555,19 @@ function isJavaScriptLikeSource(sourcePath: string): boolean {
 
 /** Avoids a TypeScript parse for modules with no plausible supported conditional JSX syntax. */
 function mayContainConditionalJsx(sourceText: string): boolean {
-  return sourceText.includes('<') && (sourceText.includes('&&') || sourceText.includes('?'));
+  return (
+    sourceText.includes('<') &&
+    (sourceText.includes('&&') ||
+      sourceText.includes('?') ||
+      sourceText.includes('createPortal') ||
+      (sourceText.includes('return null') &&
+        /\b[A-Za-z_$][\w$]*(?:Modal|Dialog|Drawer|Popover|Overlay|Portal|Sheet|Lightbox|Tooltip|Toast|Dropdown|Menu)\b/u.test(
+          sourceText,
+        )) ||
+      /\b(?:active|defaultOpen|defaultVisible|expanded|hidden|isHidden|isOpen|isVisible|open|present|show|shown|visible)\s*=/u.test(
+        sourceText,
+      ))
+  );
 }
 
 /** Rejects parser recovery so replacements never address an incomplete or ambiguous syntax tree. */

@@ -12,6 +12,7 @@ import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspector
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
+import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 /** Source location exposed to the UI without prescribing an extension-host transport. */
 export interface PreviewInspectorUiSourceLocation {
   /** Optional one-based source column. */
@@ -43,8 +44,12 @@ export interface PreviewInspectorUiTreeNode {
   readonly kind: string;
   /** Component display name shown in the tree. */
   readonly name: string;
+  /** Mounted/dormant state supplied only for overlay components and portals. */
+  readonly overlayState?: 'dormant' | 'mounted';
   /** Read-only props snapshot; only instrumented target/root props are editable. */
   readonly props?: unknown;
+  /** Structural presentation role proven by the collector. */
+  readonly role?: 'overlay' | 'transparent-wrapper';
   /** Source location suitable for the optional source-opening adapter. */
   readonly source?: PreviewInspectorUiSourceLocation;
   /** Read-only class, hook, or collector-defined state snapshot. */
@@ -90,44 +95,16 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
+  const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
 
+${structureUiRuntimeSource}
 ${conditionUiRuntimeSource}
 ${consoleUiRuntimeSource}
 ${dataUiRuntimeSource}
 ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
-/**
- * Collector kinds that identify authored or declarative React component boundaries.
- *
- * Component and entry kinds retain static render-chain evidence whose syntax analysis cannot safely
- * distinguish functions from classes. A root kind is handled separately because React's private host
- * root Fiber uses the same broad label as the Inspector's explicitly instrumented authored root.
- */
-const previewInspectorComponentKinds = new Set([
-  'class',
-  'component',
-  'context',
-  'entry',
-  'forward-ref',
-  'function',
-  'lazy',
-  'memo',
-  'suspense',
-  'target',
-]);
-
-/** Returns whether a collector node is an authored React component rather than an internal Fiber. */
-function isPreviewInspectorComponentNode(node) {
-  const kind = typeof node?.kind === 'string' ? node.kind.toLowerCase() : 'component';
-  if (node?.isHost === true) return false;
-  if (kind === 'root') {
-    return typeof node?.exportName === 'string' && node.exportName.length > 0;
-  }
-  return previewInspectorComponentKinds.has(kind);
-}
-
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
   if (source === null || typeof source !== 'object') return undefined;
@@ -171,7 +148,9 @@ function normalizePreviewInspectorUiNodes(values, depth, counter) {
         : 'collector:' + String(counter.count),
       kind: typeof value.kind === 'string' ? value.kind : 'component',
       name,
+      overlayState: value.overlayState === 'dormant' ? 'dormant' : value.overlayState === 'mounted' ? 'mounted' : undefined,
       props: value.props,
+      role: value.role === 'overlay' || value.role === 'transparent-wrapper' ? value.role : undefined,
       source: normalizePreviewInspectorUiSource(value.source),
       state: value.state,
     });
@@ -428,6 +407,8 @@ function PreviewInspectorComponentTreeNode({
   const isCondition = isPreviewInspectorConditionNode(node);
   const conditionEnabled = node.condition?.effectiveEnabled === true;
   const conditionForced = typeof node.condition?.override === 'boolean';
+  const isOverlay = isPreviewInspectorOverlayNode(node);
+  const isWrapper = isPreviewInspectorTransparentWrapperNode(node);
   const isTarget = node.kind === 'target' || node.exportName === previewInspectorSession.selectedExportName;
   const toggle = () => {
     if (!hasChildren) return;
@@ -453,7 +434,7 @@ function PreviewInspectorComponentTreeNode({
       {
         'aria-expanded': hasChildren ? expanded : undefined,
         'aria-selected': selected,
-        className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : ''),
+        className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : '') + readPreviewInspectorStructureRowClass(node),
         'data-render-condition': isCondition ? 'true' : undefined,
         'data-react-preview-tree-row': node.id,
         onClick: () => {
@@ -485,11 +466,13 @@ function PreviewInspectorComponentTreeNode({
       React.createElement(
         'span',
         { 'aria-hidden': true, className: 'rpi-component-icon' },
-        isCondition ? '◐' : '◇',
+        readPreviewInspectorStructureIcon(node, isCondition),
       ),
       React.createElement('span', { className: 'rpi-node-name' }, node.name),
       selected ? React.createElement('span', { className: 'rpi-badge' }, 'selected') : null,
       isTarget ? React.createElement('span', { className: 'rpi-badge' }, 'target') : null,
+      isOverlay ? React.createElement('span', { className: 'rpi-badge' }, 'overlay' + (node.overlayState ? ' · ' + node.overlayState : '')) : null,
+      isWrapper ? React.createElement('span', { className: 'rpi-badge' }, 'wrapper') : null,
       isCondition
         ? React.createElement(
             'span',

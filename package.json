@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1027",
+  "version": "0.1.1032",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -46,6 +46,7 @@
   "activationEvents": [
     "onCommand:reactPreview.open",
     "onCommand:reactPreview.openPageInspector",
+    "onCommand:reactPreview.openComponentGallery",
     "onCommand:reactPreview.refresh"
   ],
   "capabilities": {
@@ -61,12 +62,12 @@
     "commands": [
       {
         "command": "reactPreview.open",
-        "title": "Open Current React File in New Preview",
+        "title": "Open Current React File in Page Context",
         "category": "React Preview"
       },
       {
-        "command": "reactPreview.openPageInspector",
-        "title": "Inspect Current React File in Page Context",
+        "command": "reactPreview.openComponentGallery",
+        "title": "Open Current File Export Gallery",
         "category": "React Preview"
       },
       {
@@ -83,7 +84,7 @@
           "group": "navigation@10"
         },
         {
-          "command": "reactPreview.openPageInspector",
+          "command": "reactPreview.openComponentGallery",
           "when": "isWorkspaceTrusted && (resourceScheme == file || resourceScheme == vscode-remote) && (editorLangId == javascript || editorLangId == javascriptreact || editorLangId == typescript || editorLangId == typescriptreact)",
           "group": "navigation@11"
         }

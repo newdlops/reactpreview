@@ -2,6 +2,62 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1031 - 2026-07-17
+
+- Page Inspector 오른쪽에 `Console` 탭을 추가해 `console.log/info/warn/error/debug`, React render/lifecycle
+  boundary, 전역 runtime 및 unhandled promise 오류를 VS Code 개발자 도구 없이 확인하도록 구현
+- `useQueryParams must be used within a QueryParamProvider` 같은 hook/provider 실패에 export, phase,
+  React component stack과 JavaScript stack을 보존하고 실패 target의 inline placeholder 및 나머지 page는 유지
+- 원래 browser console 호출은 그대로 전달하고 동일 연속 로그는 횟수로 병합하며, 탭별 최신 250건만 메모리에
+  유지하고 level/text 필터·상세 stack 펼치기·Clear를 제공
+- console capture registry와 UI를 독립 runtime source로 분리하고 getter를 실행하지 않는 bounded argument
+  formatter, hot-reload-safe native console capture와 동작 테스트를 추가
+
+## 0.1.1030 - 2026-07-17
+
+- Inspector에 `Payloads` 탭을 추가해 관찰된 API/GraphQL 요청, source/type 근거와 실제 전달되는 JSON을 표시
+- GraphQL selection·alias·fragment·list, REST TypeScript generic/interface/type alias와 필드명 의미를 합쳐
+  backend 없는 결정적 Auto payload를 만들고 모든 생성값을 `GENERATED` provenance로 구분
+- `Generate Lorem`, `Use Auto`, `Apply JSON`, `Reset override`를 추가하고 payload/Auto 설정을 탭별 저장하며,
+  변경 시 page export를 remount해 Apollo/REST hook cache가 새 값을 다시 읽도록 구현
+- global `fetch`, fetch 기반 HTTP(S)/`/api`/`/graphql` client와 정확한 `axios` import의 HTTP method를
+  no-network Response/AxiosResponse로 종료하고 imported Axios instance의 XMLHttpRequest도 같은 registry에
+  연결하되 상대 JSON/TXT/CSV fetch fixture와 임의 project method는 보존
+- source instrumentation, data registry/generator와 Payload UI를 독립 모듈로 분리하고 request·shape
+  depth/field/count, URL metadata와 prototype key를 bounded하게 처리
+
+## 0.1.1029 - 2026-07-17
+
+- Inspector toolbar에 `Main component` 버튼을 추가해 sibling, descendant 또는 조건 행을 살펴본 뒤에도 현재
+  파일의 대표 default/첫 PascalCase export와 실제 mounted target으로 즉시 복귀하도록 구현
+- reached TSX/JSX graph의 `condition && <Component />`와 JSX 삼항식을 구문으로 계측하고, 원래 truthiness를
+  기본값으로 보존하면서 component tree에서 각 조건의 visible/hidden 또는 양쪽 branch를 직접 토글하도록 추가
+- 조건 행을 JSX source가 같은 가장 가까운 React component 아래에 배치하고 source 근거가 부족하면 별도
+  `Render conditions` 그룹에 유지하며, authored/forced 상태와 fallback branch 여부를 표시
+- `Auto values` 토글로 타입·사용처에서 추론한 preview-only prop 값을 켜고 끌 수 있게 하고, 조건/자동값 선택을
+  탭별 webview state에 저장해 hot reload 뒤에도 유지
+- condition AST transform, condition registry/UI, Inspector persistence와 source replacement 적용을 각각 독립
+  모듈로 분리해 모든 유지보수 파일의 1000줄 제한을 계속 준수
+
+## 0.1.1028 - 2026-07-17
+
+- 접힌 Inspector의 Shadow DOM portal host를 viewport 전체에 고정하고 pointer input을 shell로 한정하며, 접힌
+  shell의 left/width를 숫자로 다시 계산해 이전 drawer/floating 좌표가 우측 화면 밖으로 밀어내지 못하게 수정
+- Page Inspector 첫 화면에서 독립 export fast pass를 제거하고 처음부터 실제 ancestor page root, sibling,
+  styles와 application render-chain을 포함한 full context만 커밋
+- Inspector 상단에 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE` 상태와 `App › Page › Target` 경로를 표시해
+  선택 파일이 현재 작성된 page 안에서 어떤 의미를 갖는지 명시
+- 기본 React Preview 명령과 새 패널이 필요한 Refresh를 Page Inspector로 전환하고, 기존 독립 export 렌더링은
+  `Open Current File Export Gallery` 보조 명령으로 유지
+
+## 0.1.1027 - 2026-07-17
+
+- React Page Inspector를 크기 조절식 하단·좌측·우측 drawer와 이동/크기 조절 가능한 floating 패널로 확장
+- pointer drag와 키보드 방향키를 모두 지원하고, 복원된 크기·좌표를 현재 webview viewport 안으로 제한
+- Inspector 배치·크기·위치·접힘 상태를 탭별 hot session과 VS Code webview state에 저장해 hot reload 및
+  전체 webview 복원 뒤에도 유지
+- layout/CSS 책임을 별도 runtime source로 분리해 Inspector component tree 및 host navigation 경계와 격리
+
 ## 0.1.1026 - 2026-07-17
 
 - cold fast pass에서 자동 Storybook setup과 convention watcher 수집을 실제 mount 뒤로 미루고 dynamic import를

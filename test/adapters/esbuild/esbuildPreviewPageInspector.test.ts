@@ -221,6 +221,20 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
         diagnostic.message.includes('direct export fallback remains interactive'),
       );
       expect(fallbackDiagnostic?.severity).toBe('warning');
+      const repeatedBundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: barrelPath,
+        language: 'ts',
+        renderMode: 'page-inspector',
+        sourceText: barrelSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      expect(
+        repeatedBundle.diagnostics.some((diagnostic) =>
+          diagnostic.message.includes('direct export fallback remains interactive'),
+        ),
+      ).toBe(false);
     } finally {
       await compiler.shutdown();
       await rm(projectRoot, { force: true, recursive: true });

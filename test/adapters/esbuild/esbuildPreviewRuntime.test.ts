@@ -178,8 +178,10 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
     const documentPath = path.join(projectRoot, 'Preview.tsx');
     const storybookPreviewPath = path.join(storybookDirectory, 'preview.tsx');
     const storybookProviderPath = path.join(storybookDirectory, 'preview-provider.ts');
+    const recoveredProviderPath = path.join(providerDirectory, 'missing-provider.tsx');
     const sourceText =
       'export default function Preview() { return <main>FALLBACK_TARGET_MARKER</main>; }';
+    const compiler = new EsbuildPreviewCompiler();
 
     try {
       await Promise.all([
@@ -200,7 +202,7 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
         ),
       ]);
 
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const bundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
@@ -217,7 +219,30 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
       expect(bundle.diagnostics[0]?.message).toContain(
         'Automatic Storybook preview setup was skipped',
       );
+      const cachedFallbackBundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot: projectRoot,
+      });
+      expect(cachedFallbackBundle.diagnostics).toEqual([]);
+
+      await writeFile(
+        recoveredProviderPath,
+        'export default (Story) => <section>RECOVERED_STORYBOOK_PROVIDER<Story /></section>;',
+        'utf8',
+      );
+      const recoveredBundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        sourceText,
+        workspaceRoot: projectRoot,
+      });
+      expect(decodeBundleJavascript(recoveredBundle)).toContain('RECOVERED_STORYBOOK_PROVIDER');
     } finally {
+      await compiler.shutdown();
       await rm(projectRoot, { force: true, recursive: true });
     }
   });

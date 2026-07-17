@@ -76,6 +76,8 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
             contents: [
               '/** Leaves projects without styled-components unchanged. */',
               'export function registerPreviewThemeCandidate() {}',
+              '/** Returns an inert callable when no project theme runtime is installed. */',
+              "export function resolvePreviewThemeHelper() { return () => ''; }",
               'export async function resolvePreviewTheme(options) { return options?.discoveredTheme; }',
               'export function createThemePreviewElement(children) { return children; }',
               '/** Describes why the automatic theme boundary is unavailable. */',

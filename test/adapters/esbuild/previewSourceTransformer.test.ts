@@ -159,6 +159,84 @@ describe('PreviewSourceTransformer', () => {
     );
   });
 
+  /** Guards callable theme tokens only inside a tagged template owned by styled-components. */
+  it('isolates malformed nested theme helpers with exact styled-template usage evidence', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Card.tsx');
+    const sourceText = [
+      "import styled, { css } from 'styled-components';",
+      'const shared = css`gap: ${(props) => props.theme.layout.gap(1)};`;',
+      'export const Card = styled.div`margin: ${(props) => props.theme.spacing(2)}; ${shared}`;',
+      'const domain = { theme: { spacing: (value) => value } };',
+      'export const untouched = domain.theme.spacing(3);',
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain(
+      'import { resolvePreviewThemeHelper as __reactPreview_themeHelper_0 } from "react-preview:theme";',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_themeHelper_0((props.theme), ["layout","gap"])(1)',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_themeHelper_0((props.theme), ["spacing"])(2)',
+    );
+    expect(transformed.contents).toContain('domain.theme.spacing(3)');
+  });
+
+  /** Reconciles the dedicated Context fallback with general useContext instrumentation. */
+  it('keeps one Context hook rewrite when independent analyzers target the same call', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Page.tsx');
+    const sourceText = [
+      `import { useContext } from 'react';`,
+      `import { AppContext } from './app-context';`,
+      'export function Page() {',
+      '  const app = useContext(AppContext);',
+      '  return app.user.name;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
+    expect(transformed.contents).toContain('(useContext(AppContext) ??');
+    expect(transformed.contents).toContain('"user": Object.freeze({})');
+  });
+
+  /** Preserves a bounded resource macro when it is nested inside a general hook call. */
+  it('prefers a nested dynamic import rewrite over its enclosing hook fallback', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const pagesDirectory = path.join(workspaceRoot, 'pages');
+    await mkdir(pagesDirectory, { recursive: true });
+    await writeFile(path.join(pagesDirectory, 'Home.tsx'), 'export default 1;');
+    const sourcePath = path.join(workspaceRoot, 'Page.tsx');
+    const sourceText = [
+      `import { useLazyModule } from 'unknown-runtime';`,
+      `const name = 'Home';`,
+      'export function Page() {',
+      '  const result = useLazyModule(() => import(`./pages/${name}.tsx`));',
+      '  return result.title;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain('React Preview could not resolve dynamic import');
+    expect(transformed.contents).not.toContain('.resolveRuntimeHook(');
+  });
+
   /** Leaves human-readable JSX examples and a similarly named property chain byte-for-byte intact. */
   it('does not treat JSX text or another object property as a resource macro', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

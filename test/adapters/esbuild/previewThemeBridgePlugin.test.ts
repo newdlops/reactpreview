@@ -195,6 +195,72 @@ describe('createPreviewThemeBridgePlugin', () => {
     }
   });
 
+  /** Repairs only a callable token hidden by an incomplete nested provider. */
+  it('falls back to the exact root helper for an incompatible nested theme token', async () => {
+    const projectRoot = await createTemporaryProject('theme-nested-helper-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement, readPreviewRuntimeStatus, resolvePreviewThemeHelper } from 'react-preview:theme';",
+          'const discoveredTheme = {',
+          "  layout: { gap: (factor) => factor * 3 + 'px' },",
+          "  spacing: (factor) => factor * 8 + 'px',",
+          '};',
+          "createThemePreviewElement('target', { discoveredTheme });",
+          'const localTheme = { layout: {}, spacing: { unit: 0.5 } };',
+          "const firstSpacing = resolvePreviewThemeHelper(localTheme, ['spacing']);",
+          "const secondSpacing = resolvePreviewThemeHelper(localTheme, ['spacing']);",
+          'globalThis.__themeBridgeResult = {',
+          "  nestedRootHelper: resolvePreviewThemeHelper(localTheme, ['layout', 'gap'])(2),",
+          '  rootHelper: firstSpacing(2),',
+          '  stableResolver: firstSpacing === secondSpacing,',
+          "  statusMentionsRepair: readPreviewRuntimeStatus().includes('repaired 2 incompatible'),",
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        nestedRootHelper: '6px',
+        rootHelper: '16px',
+        stableResolver: true,
+        statusMentionsRepair: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Preserves a valid nested override instead of forcing the automatically discovered root token. */
+  it('keeps a valid nested theme helper authoritative', async () => {
+    const projectRoot = await createTemporaryProject('theme-valid-nested-helper-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement, readPreviewRuntimeStatus, resolvePreviewThemeHelper } from 'react-preview:theme';",
+          "createThemePreviewElement('target', { discoveredTheme: { spacing: () => 'ROOT' } });",
+          "const localTheme = { spacing: () => 'LOCAL' };",
+          'globalThis.__themeBridgeResult = {',
+          "  result: resolvePreviewThemeHelper(localTheme, ['spacing'])(2),",
+          "  statusHasNoRepair: !readPreviewRuntimeStatus().includes('repaired'),",
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        result: 'LOCAL',
+        statusHasNoRepair: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Recovers a throwing numeric helper only when its own finite unit proves a rem conversion. */
   it('uses a discovered helper unit to recover numeric and array spacing arguments', async () => {
     const projectRoot = await createTemporaryProject('theme-helper-unit-preview-');

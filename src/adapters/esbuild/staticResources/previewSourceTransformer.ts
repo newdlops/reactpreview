@@ -26,6 +26,7 @@ import {
 import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
 import { PREVIEW_FORMIK_SPECIFIER, PREVIEW_REDUX_SPECIFIER } from '../previewPluginProtocol';
 import { createPreviewThemeRegistrationStatements } from '../previewThemeRegistration';
+import { createPreviewThemeHelperTransform } from './previewThemeHelperInstrumentation';
 import {
   expandStaticPatterns,
   StaticPatternError,
@@ -41,11 +42,11 @@ import {
   appendPreviewSourceImports,
   applyPreviewSourceReplacements,
   PreviewSourceTransformError,
+  selectCompatiblePreviewSourceReplacements,
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
 
 export { PreviewSourceTransformError } from './previewSourceReplacement';
-
 const MAX_BUILD_EXPANSIONS = 128;
 const MAX_BUILD_MATCH_REFERENCES = 1024;
 const MAX_BUILD_SCANNED_ENTRIES = 16_384;
@@ -121,7 +122,6 @@ export class PreviewSourceTransformer {
     visited: 0,
   };
   private readonly watchDirectories = new Set<string>();
-
   /** Creates a transformer without reading or executing project build configuration. */
   public constructor(private readonly options: PreviewSourceTransformerOptions) {}
 
@@ -141,6 +141,7 @@ export class PreviewSourceTransformer {
     const generatedImports: string[] = [];
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
     const bindings = new SourceBindingAllocator(analysis);
+    const allocate = (kind: string): string => bindings.next(kind);
 
     if (isPathInside(this.options.workspaceRoot, sourcePath)) {
       if (
@@ -186,7 +187,7 @@ export class PreviewSourceTransformer {
         const contextRegistrations = createContextRegistrationStatements(
           contextIdentityInventory.pairs,
           contextHookFallback,
-          (kind) => bindings.next(kind),
+          allocate,
         );
         generatedImports.push(
           ...contextRegistrations.imports,
@@ -205,10 +206,15 @@ export class PreviewSourceTransformer {
         replacements.push(...createReactExportPropFallbackReplacements(sourcePath, sourceText));
       }
       if (sourceText.includes('styled-components')) {
+        const themeHelperTransform = createPreviewThemeHelperTransform(
+          sourcePath,
+          sourceText,
+          allocate,
+        );
+        replacements.push(...themeHelperTransform.replacements);
         generatedImports.push(
-          ...createPreviewThemeRegistrationStatements(sourcePath, sourceText, (kind) =>
-            bindings.next(kind),
-          ),
+          ...themeHelperTransform.imports,
+          ...createPreviewThemeRegistrationStatements(sourcePath, sourceText, allocate),
         );
       }
       const reduxStateContainerPaths = collectPreviewReduxStateContainerPaths(
@@ -268,7 +274,10 @@ export class PreviewSourceTransformer {
       }
     }
 
-    const compatibilitySource = applyPreviewSourceReplacements(sourceText, replacements);
+    const compatibilitySource = applyPreviewSourceReplacements(
+      sourceText,
+      selectCompatiblePreviewSourceReplacements(replacements),
+    );
     const dataBoundarySource =
       this.options.instrumentDataRequests === true
         ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)

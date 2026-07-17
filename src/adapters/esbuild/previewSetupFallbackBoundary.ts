@@ -110,19 +110,19 @@ export class PreviewSetupFallbackBoundary {
   }
 
   /**
-   * Allows retry only when every esbuild error has a location inside the traced setup graph.
-   * Requiring complete attribution prevents a simultaneous target failure from being hidden behind
-   * a successful setup-free retry and avoids doubling work for ordinary target build errors.
+   * Allows retry when at least one esbuild error belongs to the traced optional setup graph.
+   * A simultaneous target failure remains safe: the setup-free retry still fails with that target
+   * diagnostic, while valid targets are no longer blocked by unrelated stale Storybook imports.
    *
    * @param errors Errors returned by the first automatic-setup build.
    * @param workingDirectory esbuild working directory used to resolve relative diagnostic paths.
-   * @returns `true` only for a nonempty, fully setup-owned error collection within trace limits.
+   * @returns `true` when a bounded nonempty collection contains a setup-owned failure.
    */
   public shouldRetry(errors: readonly Message[], workingDirectory: string): boolean {
     return (
       !this.traceLimitReached &&
       errors.length > 0 &&
-      errors.every((message) => {
+      errors.some((message) => {
         const locationPath = restoreDiagnosticPath(message.location?.file, workingDirectory);
         return locationPath !== undefined && this.hasSetupPath(locationPath);
       })

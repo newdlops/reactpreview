@@ -94,6 +94,42 @@ describe('PreviewSetupFallbackBoundary', () => {
     expect(boundary.shouldRetry(failure.errors, workspaceRoot)).toBe(false);
   });
 
+  /** Retries mixed failures so stale optional setup imports cannot hide a separately retried target. */
+  it('retries when setup and target graphs fail together', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const storybookDirectory = path.join(workspaceRoot, '.storybook');
+    const setupModulePath = path.join(storybookDirectory, 'preview.ts');
+    const targetModulePath = path.join(workspaceRoot, 'Target.ts');
+    await mkdir(storybookDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(
+        setupModulePath,
+        "import './missing-storybook-provider'; export default {};",
+        'utf8',
+      ),
+      writeFile(targetModulePath, "import './missing-target'; export default 1;", 'utf8'),
+    ]);
+    const boundary = new PreviewSetupFallbackBoundary(
+      setupModulePath,
+      workspaceRoot,
+      workspaceRoot,
+    );
+
+    const failure = await captureBuildFailure({
+      boundary,
+      setupModulePath,
+      sourceText: [
+        "import setup from 'react-preview:setup';",
+        "import target from './Target';",
+        'console.log(setup, target);',
+      ].join('\n'),
+      workspaceRoot,
+    });
+
+    expect(failure.errors).toHaveLength(2);
+    expect(boundary.shouldRetry(failure.errors, workspaceRoot)).toBe(true);
+  });
+
   /** Keeps a missing deep source tree from installing a recursive watcher over the whole package. */
   it('omits broad package-root recovery watchers in a monorepo', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

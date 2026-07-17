@@ -8,7 +8,11 @@
  */
 import { createPreviewInspectorFiberRuntimeSource } from './previewInspectorFiberRuntimeSource';
 import { createPreviewInspectorChainRuntimeSource } from './previewInspectorChainRuntimeSource';
+import { createPreviewInspectorConditionRuntimeSource } from './previewInspectorConditionRuntimeSource';
+import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
+import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
+import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
@@ -28,8 +32,12 @@ export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector
  */
 export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: string): string {
   const chainRuntimeSource = createPreviewInspectorChainRuntimeSource();
+  const conditionRuntimeSource = createPreviewInspectorConditionRuntimeSource();
+  const consoleRuntimeSource = createPreviewInspectorConsoleRuntimeSource();
+  const dataRuntimeSource = createPreviewInspectorDataRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
+  const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
@@ -92,18 +100,13 @@ ${fiberRuntimeSource}
 
 ${chainRuntimeSource}
 
-/** Reads the serializable inspector subset retained by VS Code across full webview reloads. */
-function readPersistedPreviewInspectorState() {
-  try {
-    const webviewState = previewHotRuntime.vscodeApi?.getState?.();
-    const inspectorState = webviewState?.[PREVIEW_INSPECTOR_STATE_KEY];
-    return inspectorState !== null && typeof inspectorState === 'object'
-      ? inspectorState
-      : {};
-  } catch {
-    return {};
-  }
-}
+${stateRuntimeSource}
+
+${dataRuntimeSource}
+
+${conditionRuntimeSource}
+
+${consoleRuntimeSource}
 
 /** Creates mutable session data once per pinned webview, not once per emitted bundle revision. */
 function createPreviewInspectorSession() {
@@ -118,6 +121,12 @@ function createPreviewInspectorSession() {
     boundariesByExport: new Map(),
     descriptors: [],
     descriptorNames: [],
+    devtoolsState:
+      persisted.devtoolsState !== null &&
+      typeof persisted.devtoolsState === 'object' &&
+      !Array.isArray(persisted.devtoolsState)
+        ? { ...persisted.devtoolsState }
+        : {},
     highlightEnabled: persisted.highlightEnabled !== false,
     highlightStatus: 'Waiting for the inspected component to render.',
     listeners: new Set(),
@@ -170,82 +179,6 @@ function notifyPreviewInspector() {
   }
 }
 
-/** Copies only safe own properties so JSON input cannot mutate an object's prototype. */
-function normalizePreviewInspectorProps(value) {
-  const normalized = Object.create(null);
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return normalized;
-  }
-  for (const [name, propertyValue] of Object.entries(value)) {
-    if (!blockedInspectorPropNames.has(name)) {
-      normalized[name] = propertyValue;
-    }
-  }
-  return normalized;
-}
-
-/** Produces bounded JSON for the editor while skipping functions, symbols, cycles, and prototypes. */
-function stringifyPreviewInspectorProps(value) {
-  const seen = new WeakSet();
-  try {
-    return JSON.stringify(
-      value,
-      (name, propertyValue) => {
-        if (blockedInspectorPropNames.has(name)) {
-          return undefined;
-        }
-        if (typeof propertyValue === 'bigint') {
-          return propertyValue.toString();
-        }
-        if (
-          propertyValue === undefined ||
-          typeof propertyValue === 'function' ||
-          typeof propertyValue === 'symbol'
-        ) {
-          return undefined;
-        }
-        if (propertyValue !== null && typeof propertyValue === 'object') {
-          if (seen.has(propertyValue)) {
-            return '[Circular]';
-          }
-          seen.add(propertyValue);
-        }
-        return propertyValue;
-      },
-      2,
-    ) ?? '{}';
-  } catch {
-    return '{}';
-  }
-}
-
-/** Persists user-authored controls without retaining DOM nodes or project function values. */
-function persistPreviewInspectorState() {
-  const vscodeApi = previewHotRuntime.vscodeApi;
-  if (typeof vscodeApi?.setState !== 'function') {
-    return;
-  }
-  const overrides = Object.fromEntries(
-    [...previewInspectorSession.overridesByExport].map(([name, value]) => [
-      name,
-      JSON.parse(stringifyPreviewInspectorProps(value)),
-    ]),
-  );
-  try {
-    const currentState = vscodeApi.getState?.();
-    vscodeApi.setState({
-      ...(currentState !== null && typeof currentState === 'object' ? currentState : {}),
-      [PREVIEW_INSPECTOR_STATE_KEY]: {
-        highlightEnabled: previewInspectorSession.highlightEnabled,
-        overrides,
-        selectedExportName: previewInspectorSession.selectedExportName,
-        selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,
-      },
-    });
-  } catch {
-    // A host may reject values that became non-cloneable between normalization and persistence.
-  }
-}
 
 /** Updates the export inventory while retaining a valid user selection across hot reloads. */
 function setPreviewInspectorDescriptors(descriptors) {
@@ -832,6 +765,8 @@ function createPreviewInspectorPortalHost() {
   portalHost.setAttribute(PREVIEW_INSPECTOR_UI_ATTRIBUTE, 'toolbar');
   portalHost.style.setProperty('all', 'initial', 'important');
   portalHost.style.setProperty('display', 'block', 'important');
+  portalHost.style.setProperty('inset', '0', 'important');
+  portalHost.style.setProperty('pointer-events', 'none', 'important');
   portalHost.style.setProperty('position', 'fixed', 'important');
   portalHost.style.setProperty('z-index', '2147483647', 'important');
   portalHost.__reactPreviewInspectorPortalRoot =
@@ -855,9 +790,13 @@ function createPreviewInspectorElement(Component, props) {
 function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
+  const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
   const automaticTargetProps = React.useMemo(
-    () => createPreviewPropsFromLayers(metadata?.inferredPropShape, targetProps),
-    [metadata?.inferredPropShape, targetProps],
+    () => createPreviewPropsFromLayers(
+      fallbackValuesEnabled ? metadata?.inferredPropShape : undefined,
+      targetProps,
+    ),
+    [fallbackValuesEnabled, metadata?.inferredPropShape, targetProps],
   );
   React.useEffect(() => {
     registerPreviewInspectorBaseProps(exportName, automaticTargetProps);
@@ -872,9 +811,10 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
     effectiveProps.ref = forwardedRef;
   }
   const revision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
+  const conditionRevision = readPreviewInspectorRenderConditionRevision();
   return React.createElement(
     PreviewInspectorTargetBoundary,
-    { exportName, key: exportName + ':' + String(revision) },
+    { exportName, key: exportName + ':' + String(revision) + ':' + String(conditionRevision) },
     createPreviewInspectorElement(Component, effectiveProps),
   );
 }
@@ -910,17 +850,18 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
   const overrideProps = previewInspectorSession.overridesByExport.get(rootName) ?? {};
   const effectiveProps = { ...targetProps, ...overrideProps };
   const revision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
+  const conditionRevision = readPreviewInspectorRenderConditionRevision();
   return useStorybook
     ? React.createElement(StorybookPreviewRoot, {
         PreviewTarget: descriptor.value,
-        key: revision,
+        key: String(revision) + ':' + String(conditionRevision),
         previewConfig,
         storyContext: { ...storyContext, args: effectiveProps },
         targetProps: effectiveProps,
       })
     : createPreviewInspectorElement(descriptor.value, {
         ...effectiveProps,
-        key: revision,
+        key: String(revision) + ':' + String(conditionRevision),
       });
 }
 
@@ -933,11 +874,13 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
     previewInspectorSession.propsRevisionByExport.get(inspectedExportName) ?? 0;
   const rootName = createPreviewInspectorRootName(descriptor?.inspector?.root);
   const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
+  const dataRevision = previewInspectorSession.dataRevision ?? 0;
   return React.createElement(
     PreviewExportErrorBoundary,
     {
       exportName: descriptor?.exportName ?? inspectedExportName,
-      key: inspectedExportName + ':' + String(targetRevision) + ':' + rootName + ':' + String(rootRevision),
+      key: inspectedExportName + ':' + String(targetRevision) + ':' + rootName + ':' +
+        String(rootRevision) + ':data:' + String(dataRevision),
       parentSlice: descriptor?.parentSlice,
     },
     children,
@@ -961,6 +904,11 @@ const previewInspectorApi = {
     };
   },
   registerTargetElement: registerPreviewInspectorTargetElement,
+  previewAxiosRequest: previewInspectorAxiosRequest,
+  previewFetch: previewInspectorFetch,
+  recordConsoleEntry: recordPreviewInspectorConsoleEntry,
+  resolveDataPayload: resolvePreviewInspectorDataPayload,
+  resolveRenderCondition: resolvePreviewInspectorRenderCondition,
   remount: remountPreviewInspectorExport,
   resetPropsOverride: resetPreviewInspectorPropsOverride,
   selectExport: selectPreviewInspectorExport,
@@ -970,28 +918,12 @@ const previewInspectorApi = {
   subscribeTree: subscribePreviewInspectorTree,
 };
 globalThis[PREVIEW_INSPECTOR_API_KEY] = previewInspectorApi;
+installPreviewInspectorConsoleCapture();
+installPreviewInspectorNetworkBoundary();
+registerPreviewRuntimeCapability('Data', {
+  readPreviewRuntimeStatus: readPreviewInspectorDataRuntimeStatus,
+});
 
 ${devtoolsUiRuntimeSource}
-
-/** Mounts inspector chrome through a portal and keeps transient observers aligned with hot reload. */
-function PreviewPageInspectorShell({ descriptors, children }) {
-  const [portalHost] = React.useState(createPreviewInspectorPortalHost);
-  React.useEffect(() => {
-    setPreviewInspectorDescriptors(descriptors);
-    const removeObservers = installPreviewInspectorDomObservers();
-    return () => {
-      removeObservers();
-      portalHost.remove();
-    };
-  }, [descriptors, portalHost]);
-  const toolbar = React.createElement(PreviewInspectorToolbar);
-  const portal = typeof ReactDOMNamespace.createPortal === 'function'
-    ? ReactDOMNamespace.createPortal(
-        toolbar,
-        portalHost.__reactPreviewInspectorPortalRoot ?? portalHost,
-      )
-    : null;
-  return React.createElement(React.Fragment, undefined, children, portal);
-}
 `;
 }

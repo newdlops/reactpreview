@@ -45,6 +45,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("readPreviewInspectorOwnData(boundary, '_reactInternalFiber')");
     expect(source).toContain("document.createElement('react-preview-inspector-host')");
     expect(source).toContain("attachShadow({ mode: 'open' })");
+    expect(source).toContain("setProperty('inset', '0', 'important')");
+    expect(source).toContain("setProperty('pointer-events', 'none', 'important')");
     expect(source).toContain('setPropsOverride');
     expect(source).toContain('React.cloneElement(Component, props)');
     expect(source).toContain('createPreviewInspectorRootName');
@@ -58,8 +60,21 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('rememberCapturedReactError(error)');
     expect(source).toContain("'react-preview-target-error'");
     expect(source).toContain('remountPreviewInspectorExport(this.props.exportName)');
-    expect(source).toContain('createPreviewPropsFromLayers(metadata?.inferredPropShape');
+    expect(source).toContain('fallbackValuesEnabled ? metadata?.inferredPropShape : undefined');
     expect(source).toContain('Auto-generated preview values:');
+    expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
+    expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
+    expect(source).toContain('previewAxiosRequest: previewInspectorAxiosRequest');
+    expect(source).toContain('previewFetch: previewInspectorFetch');
+    expect(source).toContain('recordConsoleEntry: recordPreviewInspectorConsoleEntry');
+    expect(source).toContain('installPreviewInspectorConsoleCapture()');
+    expect(source).toContain('reportPreviewInspectorTargetFailure(error');
+    expect(source).toContain("['console', 'Console ('");
+    expect(source).toContain('Auto payloads');
+    expect(source).toContain('Generated values are local preview fixtures.');
+    expect(source).toContain("registerPreviewRuntimeCapability('Data'");
+    expect(source).toContain('no-network API/GraphQL payload registry');
+    expect(source).toContain('setPreviewInspectorFallbackValuesEnabled');
     expect(source).toContain('Internal hook state uses the page UI or a source edit');
     expect(source).not.toContain('__REACT_DEVTOOLS_GLOBAL_HOOK__');
   });
@@ -122,9 +137,7 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       'const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName)',
     );
-    expect(source).toContain(
-      "String(targetRevision) + ':' + rootName + ':' + String(rootRevision)",
-    );
+    expect(source).toContain("String(rootRevision) + ':data:' + String(dataRevision)");
   });
 
   /** Connects the independent tree adapter to selection, source navigation, and commit refresh. */

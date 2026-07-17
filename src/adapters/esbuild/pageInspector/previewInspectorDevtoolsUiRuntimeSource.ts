@@ -6,6 +6,10 @@
  * useful while either adapter is unavailable and prevents UI code from depending on React internals
  * or the VS Code message protocol.
  */
+import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLayoutRuntimeSource';
+import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspectorConditionUiRuntimeSource';
+import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
+import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 
 /** Source location exposed to the UI without prescribing an extension-host transport. */
 export interface PreviewInspectorUiSourceLocation {
@@ -27,6 +31,10 @@ export interface PreviewInspectorUiSourceLocation {
 export interface PreviewInspectorUiTreeNode {
   /** Nested React component children; HTML host nodes should be omitted or marked as `host`. */
   readonly children: readonly PreviewInspectorUiTreeNode[];
+  /** Compiler-issued condition metadata present only on editable conditional-render pseudo nodes. */
+  readonly condition?: unknown;
+  /** Stable compiler-issued identity present only on conditional-render pseudo nodes. */
+  readonly conditionId?: string;
   /** Export identity when the node is an instrumented editable target or ancestor root. */
   readonly exportName?: string;
   /** Stable identity for selection across collector refreshes. */
@@ -78,95 +86,18 @@ export interface PreviewInspectorUiAdapter {
  * @returns Plain JavaScript source concatenated after the Page Inspector public API is installed.
  */
 export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
+  const conditionUiRuntimeSource = createPreviewInspectorConditionUiRuntimeSource();
+  const consoleUiRuntimeSource = createPreviewInspectorConsoleUiRuntimeSource();
+  const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
+  const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   return String.raw`
-/** CSS is scoped by the inspector Shadow Root and cannot alter the rendered application page. */
-const previewInspectorDevtoolsCss = [
-  ':host{all:initial!important;color-scheme:light dark!important}',
-  '*,*::before,*::after{box-sizing:border-box}',
-  'button,input,select,textarea{font:inherit}',
-  '.rpi-shell{--rpi-border:var(--vscode-panel-border,#454545);--rpi-muted:var(--vscode-descriptionForeground,#999);',
-  'background:var(--vscode-editor-background,#1e1e1e);border:1px solid var(--rpi-border);',
-  'box-shadow:0 8px 28px rgba(0,0,0,.38);color:var(--vscode-editor-foreground,#ddd);',
-  'display:grid;font:12px/1.4 var(--vscode-font-family,sans-serif);overflow:hidden;position:fixed;z-index:2147483647}',
-  '.rpi-shell[data-dock="bottom"]{bottom:8px;height:min(420px,55vh);left:8px;right:8px}',
-  '.rpi-shell[data-dock="right"]{bottom:8px;right:8px;top:8px;width:min(540px,48vw)}',
-  '.rpi-shell[data-collapsed="true"]{bottom:8px;height:auto;left:auto;right:8px;top:auto;width:min(520px,calc(100vw - 16px))}',
-  '.rpi-toolbar{align-items:center;background:var(--vscode-sideBar-background,#252526);border-bottom:1px solid var(--rpi-border);',
-  'display:flex;gap:6px;min-height:36px;overflow-x:auto;overflow-y:hidden;padding:5px 7px}',
-  '.rpi-title{font-weight:650;margin-right:3px;white-space:nowrap}',
-  '.rpi-spacer{flex:1 1 auto}',
-  '.rpi-button,.rpi-select,.rpi-search{background:var(--vscode-input-background,#3c3c3c);border:1px solid var(--rpi-border);',
-  'border-radius:3px;color:inherit;min-height:25px;outline:none}',
-  '.rpi-button{cursor:pointer;padding:2px 7px}',
-  '.rpi-toolbar>.rpi-button,.rpi-toolbar>.rpi-select,.rpi-toolbar>.rpi-title{flex:0 0 auto}',
-  '.rpi-button:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
-  '.rpi-button:focus-visible,.rpi-select:focus-visible,.rpi-search:focus-visible,.rpi-tree-row:focus-visible,.rpi-tab:focus-visible{',
-  'outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
-  '.rpi-button[aria-pressed="true"]{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}',
-  '.rpi-button:disabled{cursor:default;opacity:.45}',
-  '.rpi-select{max-width:210px;padding:2px 5px}',
-  '.rpi-workbench{display:grid;grid-template-columns:minmax(230px,.9fr) minmax(320px,1.35fr);min-height:0}',
-  '.rpi-shell[data-dock="right"] .rpi-workbench{grid-template-columns:1fr;grid-template-rows:minmax(180px,.9fr) minmax(240px,1.2fr)}',
-  '.rpi-pane{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0}',
-  '.rpi-pane+.rpi-pane{border-left:1px solid var(--rpi-border)}',
-  '.rpi-shell[data-dock="right"] .rpi-pane+.rpi-pane{border-left:0;border-top:1px solid var(--rpi-border)}',
-  '.rpi-pane-heading{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
-  'border-bottom:1px solid var(--rpi-border);display:flex;gap:7px;min-height:31px;padding:4px 7px}',
-  '.rpi-pane-title{font-size:11px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}',
-  '.rpi-search{min-width:80px;padding:2px 6px;width:100%}',
-  '.rpi-tree-scroll,.rpi-detail-scroll{min-height:0;overflow:auto}',
-  '.rpi-tree,.rpi-tree-group{list-style:none;margin:0;padding:0}',
-  '.rpi-tree{padding:4px 0}',
-  '.rpi-tree-group{padding-left:15px}',
-  '.rpi-tree-row{align-items:center;background:transparent;border:0;color:inherit;cursor:default;display:flex;gap:4px;',
-  'height:23px;padding:0 6px;text-align:left;width:100%}',
-  '.rpi-tree-row:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
-  '.rpi-tree-row[aria-selected="true"]{background:var(--vscode-list-activeSelectionBackground,#094771);color:var(--vscode-list-activeSelectionForeground,#fff)}',
-  '.rpi-twisty{display:inline-block;font-size:10px;text-align:center;width:12px}',
-  '.rpi-twisty[data-expandable="true"]{cursor:pointer}',
-  '.rpi-component-icon{color:var(--vscode-symbolIcon-classForeground,#ee9d28);font-weight:700}',
-  '.rpi-node-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-  '.rpi-badge{border:1px solid currentColor;border-radius:8px;font-size:9px;line-height:14px;margin-left:3px;opacity:.78;padding:0 5px}',
-  '.rpi-empty{color:var(--rpi-muted);padding:18px;text-align:center}',
-  '.rpi-tabs{display:flex;gap:1px}',
-  '.rpi-tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--rpi-muted);cursor:pointer;padding:4px 9px}',
-  '.rpi-tab[aria-selected="true"]{border-bottom-color:var(--vscode-focusBorder,#007fd4);color:inherit}',
-  '.rpi-detail-content{display:grid;gap:9px;padding:9px}',
-  '.rpi-meta{color:var(--rpi-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-  '.rpi-json{background:var(--vscode-textCodeBlock-background,#2d2d2d);border:1px solid var(--rpi-border);border-radius:3px;',
-  'color:inherit;font:11px/1.5 var(--vscode-editor-font-family,monospace);margin:0;min-height:110px;overflow:auto;padding:7px;white-space:pre-wrap}',
-  'textarea.rpi-json{resize:vertical;width:100%}',
-  '.rpi-actions{display:flex;flex-wrap:wrap;gap:6px}',
-  '.rpi-error{color:var(--vscode-errorForeground,#f48771)}',
-  '.rpi-note{color:var(--rpi-muted);font-size:11px}',
-  '.rpi-source-card{border:1px solid var(--rpi-border);border-radius:3px;display:grid;gap:5px;padding:8px}',
-  '.rpi-shell[data-collapsed="true"] .rpi-workbench{display:none}',
-  '@media(max-width:720px){.rpi-workbench{grid-template-columns:1fr;grid-template-rows:minmax(160px,.8fr) minmax(220px,1fr)}',
-  '.rpi-pane+.rpi-pane{border-left:0;border-top:1px solid var(--rpi-border)}.rpi-title{display:none}.rpi-select{max-width:150px}}',
-].join('');
+${layoutRuntimeSource}
 
-/**
- * Retains view-only Inspector controls across cache-busted hot-module replacements.
- * These values intentionally remain browser-session state and never enter editable project props.
- */
-const previewInspectorDevtoolsSessionState =
-  previewInspectorSession.devtoolsState !== null &&
-  typeof previewInspectorSession.devtoolsState === 'object'
-    ? previewInspectorSession.devtoolsState
-    : {};
-previewInspectorSession.devtoolsState = previewInspectorDevtoolsSessionState;
-previewInspectorDevtoolsSessionState.activeTab =
-  ['props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
-    ? previewInspectorDevtoolsSessionState.activeTab
-    : 'props';
-previewInspectorDevtoolsSessionState.collapsed =
-  previewInspectorDevtoolsSessionState.collapsed === true;
-previewInspectorDevtoolsSessionState.dock =
-  previewInspectorDevtoolsSessionState.dock === 'right' ? 'right' : 'bottom';
-previewInspectorDevtoolsSessionState.query =
-  typeof previewInspectorDevtoolsSessionState.query === 'string'
-    ? previewInspectorDevtoolsSessionState.query
-    : '';
+${conditionUiRuntimeSource}
+
+${consoleUiRuntimeSource}
+
+${dataUiRuntimeSource}
 
 /**
  * Collector kinds that identify authored or declarative React component boundaries.
@@ -272,21 +203,28 @@ function createFallbackPreviewInspectorTreeSnapshot() {
 /** Reads the optional live collector and safely falls back to the static export inventory. */
 function collectPreviewInspectorUiTreeSnapshot() {
   const collectTree = previewInspectorApi.collectTree;
-  if (typeof collectTree !== 'function') return createFallbackPreviewInspectorTreeSnapshot();
+  if (typeof collectTree !== 'function') {
+    return attachPreviewInspectorConditionsToSnapshot(createFallbackPreviewInspectorTreeSnapshot());
+  }
   try {
-    const snapshot = collectTree();
-    const roots = normalizePreviewInspectorUiNodes(snapshot?.roots, 0, { count: 0 });
-    return roots.length === 0
+    const collectorSnapshot = collectTree();
+    const roots = normalizePreviewInspectorUiNodes(collectorSnapshot?.roots, 0, { count: 0 });
+    const baseSnapshot = roots.length === 0
       ? createFallbackPreviewInspectorTreeSnapshot()
       : {
           roots,
-          selectedId: typeof snapshot?.selectedId === 'string' ? snapshot.selectedId : undefined,
-          status: typeof snapshot?.status === 'string' ? snapshot.status : undefined,
-          truncated: snapshot?.truncated === true,
+          selectedId:
+            typeof collectorSnapshot?.selectedId === 'string'
+              ? collectorSnapshot.selectedId
+              : undefined,
+          status:
+            typeof collectorSnapshot?.status === 'string' ? collectorSnapshot.status : undefined,
+          truncated: collectorSnapshot?.truncated === true,
         };
+    return attachPreviewInspectorConditionsToSnapshot(baseSnapshot);
   } catch (error) {
     console.warn('[React Preview] Component tree collector failed.', error);
-    return createFallbackPreviewInspectorTreeSnapshot();
+    return attachPreviewInspectorConditionsToSnapshot(createFallbackPreviewInspectorTreeSnapshot());
   }
 }
 
@@ -388,6 +326,7 @@ function selectPreviewInspectorUiNode(node) {
     persistPreviewInspectorState();
     notifyPreviewInspector();
   }
+  if (isPreviewInspectorConditionNode(node)) return;
   try {
     previewInspectorApi.selectNode?.(node.id);
   } catch (error) {
@@ -486,6 +425,9 @@ function PreviewInspectorComponentTreeNode({
   const hasChildren = node.children.length > 0;
   const expanded = hasChildren && expandedIds.has(node.id);
   const selected = node.id === selectedId;
+  const isCondition = isPreviewInspectorConditionNode(node);
+  const conditionEnabled = node.condition?.effectiveEnabled === true;
+  const conditionForced = typeof node.condition?.override === 'boolean';
   const isTarget = node.kind === 'target' || node.exportName === previewInspectorSession.selectedExportName;
   const toggle = () => {
     if (!hasChildren) return;
@@ -511,13 +453,17 @@ function PreviewInspectorComponentTreeNode({
       {
         'aria-expanded': hasChildren ? expanded : undefined,
         'aria-selected': selected,
-        className: 'rpi-tree-row',
+        className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : ''),
+        'data-render-condition': isCondition ? 'true' : undefined,
         'data-react-preview-tree-row': node.id,
-        onClick: () => selectPreviewInspectorUiNode(node),
+        onClick: () => {
+          selectPreviewInspectorUiNode(node);
+          if (isCondition) togglePreviewInspectorRenderCondition(node.conditionId);
+        },
         onDoubleClick: toggle,
         role: 'treeitem',
         tabIndex: node.id === focusableId ? 0 : -1,
-        title: node.name,
+        title: isCondition ? node.name + ' · click to toggle branch' : node.name,
         type: 'button',
       },
       React.createElement(
@@ -536,10 +482,21 @@ function PreviewInspectorComponentTreeNode({
         },
         hasChildren ? (expanded ? '▾' : '▸') : '',
       ),
-      React.createElement('span', { 'aria-hidden': true, className: 'rpi-component-icon' }, '◇'),
+      React.createElement(
+        'span',
+        { 'aria-hidden': true, className: 'rpi-component-icon' },
+        isCondition ? '◐' : '◇',
+      ),
       React.createElement('span', { className: 'rpi-node-name' }, node.name),
       selected ? React.createElement('span', { className: 'rpi-badge' }, 'selected') : null,
       isTarget ? React.createElement('span', { className: 'rpi-badge' }, 'target') : null,
+      isCondition
+        ? React.createElement(
+            'span',
+            { className: 'rpi-badge' },
+            (conditionEnabled ? 'on' : 'off') + (conditionForced ? ' · forced' : ''),
+          )
+        : null,
     ),
     expanded
       ? React.createElement(
@@ -562,6 +519,7 @@ function PreviewInspectorComponentTreeNode({
 function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }) {
   const [query, setQuery] = React.useState(() => previewInspectorDevtoolsSessionState.query);
   const [expandedIds, setExpandedIds] = React.useState(() => new Set(roots.map((node) => node.id)));
+  const treeScrollRef = React.useRef(null);
   const filteredRoots = filterPreviewInspectorUiNodes(roots, query);
   const focusableId = resolvePreviewInspectorTreeFocusableId(
     filteredRoots,
@@ -570,6 +528,14 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
   );
   React.useEffect(() => {
     setExpandedIds((current) => expandPreviewInspectorUiSelection(roots, selectedId, current));
+    const frame = requestAnimationFrame(() => {
+      const rows = treeScrollRef.current?.querySelectorAll?.('[data-react-preview-tree-row]') ?? [];
+      const selectedRow = [...rows].find(
+        (row) => row.getAttribute('data-react-preview-tree-row') === selectedId,
+      );
+      selectedRow?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [selectedId]);
   React.useEffect(() => {
     if (query.trim().length === 0) return;
@@ -609,7 +575,11 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
     ),
     React.createElement(
       'div',
-      { className: 'rpi-tree-scroll', onKeyDown: handlePreviewInspectorTreeKeyDown },
+      {
+        className: 'rpi-tree-scroll',
+        onKeyDown: handlePreviewInspectorTreeKeyDown,
+        ref: treeScrollRef,
+      },
       filteredRoots.length === 0
         ? React.createElement('div', { className: 'rpi-empty' }, 'No matching React components.')
         : React.createElement(
@@ -763,7 +733,7 @@ function PreviewInspectorSourceDetail({ node }) {
   );
 }
 
-/** Renders Props, State, and Source tabs for the current component selection. */
+/** Renders component details and the page-wide editable backend payload inventory. */
 function PreviewInspectorDetailsPane({ node }) {
   const [activeTab, setActiveTab] = React.useState(
     () => previewInspectorDevtoolsSessionState.activeTab,
@@ -772,6 +742,8 @@ function PreviewInspectorDetailsPane({ node }) {
     ['props', 'Props'],
     ['state', 'State'],
     ['source', 'Source'],
+    ['payloads', 'Payloads'],
+    ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
   ];
   return React.createElement(
     'section',
@@ -794,6 +766,7 @@ function PreviewInspectorDetailsPane({ node }) {
             onClick: () => {
               previewInspectorDevtoolsSessionState.activeTab = id;
               setActiveTab(id);
+              persistPreviewInspectorState();
             },
             role: 'tab',
             type: 'button',
@@ -810,25 +783,31 @@ function PreviewInspectorDetailsPane({ node }) {
         id: 'react-preview-inspector-' + activeTab + '-panel',
         role: 'tabpanel',
       },
-      node === undefined
-        ? React.createElement('div', { className: 'rpi-empty' }, 'Select a React component to inspect it.')
-        : activeTab === 'state'
-          ? React.createElement(PreviewInspectorStateDetail, { node })
-          : activeTab === 'source'
-            ? React.createElement(PreviewInspectorSourceDetail, { node })
-            : React.createElement(PreviewInspectorPropsDetail, { node }),
+      activeTab === 'payloads'
+        ? React.createElement(PreviewInspectorDataDetail)
+        : activeTab === 'console'
+          ? React.createElement(PreviewInspectorConsoleDetail)
+          : node === undefined
+            ? React.createElement('div', { className: 'rpi-empty' }, 'Select a React component to inspect it.')
+            : activeTab === 'state'
+              ? React.createElement(PreviewInspectorStateDetail, { node })
+              : activeTab === 'source'
+                ? React.createElement(PreviewInspectorSourceDetail, { node })
+                : isPreviewInspectorConditionNode(node)
+                  ? React.createElement(PreviewInspectorConditionDetail, { node })
+                  : React.createElement(PreviewInspectorPropsDetail, { node }),
     ),
   );
 }
 
-/** Renders the top picker/highlight toolbar and the docked two-pane inspector workbench. */
+/** Renders the picker/highlight toolbar inside a resizable drawer or movable floating shell. */
 function PreviewInspectorToolbar() {
   usePreviewInspectorStore();
   usePreviewInspectorTreeRefresh();
   const [collapsed, setCollapsed] = React.useState(
     () => previewInspectorDevtoolsSessionState.collapsed,
   );
-  const [dock, setDock] = React.useState(() => previewInspectorDevtoolsSessionState.dock);
+  const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
@@ -839,6 +818,10 @@ function PreviewInspectorToolbar() {
     ) ?? snapshot.roots[0];
   const selectedId = selectedNode?.id;
   const editable = isPreviewInspectorUiNodeEditable(selectedNode);
+  const mainComponentName = readPreviewInspectorMainComponentName();
+  const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
+  const dataAutoEnabled = readPreviewInspectorDataAutoEnabled();
+  const pageContext = readPreviewInspectorPageContext();
   return React.createElement(
     React.Fragment,
     undefined,
@@ -849,12 +832,33 @@ function PreviewInspectorToolbar() {
         'aria-label': 'React Page Inspector',
         className: 'rpi-shell',
         'data-collapsed': collapsed,
-        'data-dock': dock,
+        'data-dock': layout.dock,
+        style: createPreviewInspectorShellStyle(layout, collapsed),
       },
+      React.createElement(PreviewInspectorResizeHandle, {
+        collapsed,
+        layout,
+        persistLayout,
+        updateLayout,
+      }),
       React.createElement(
         'div',
         { 'aria-label': 'React Page Inspector tools', className: 'rpi-toolbar', role: 'toolbar' },
+        React.createElement(PreviewInspectorMoveHandle, {
+          layout,
+          persistLayout,
+          updateLayout,
+        }),
         React.createElement('span', { className: 'rpi-title' }, 'React Page Inspector'),
+        React.createElement(
+          PreviewInspectorDevtoolsButton,
+          {
+            disabled: mainComponentName === undefined,
+            onClick: selectPreviewInspectorMainComponent,
+            title: "Go to the current file's main component",
+          },
+          'Main component',
+        ),
         React.createElement(
           PreviewInspectorDevtoolsButton,
           {
@@ -872,6 +876,24 @@ function PreviewInspectorToolbar() {
             title: 'Toggle selected target highlight',
           },
           'Highlight',
+        ),
+        React.createElement(
+          PreviewInspectorDevtoolsButton,
+          {
+            onClick: () => setPreviewInspectorFallbackValuesEnabled(!fallbackValuesEnabled),
+            pressed: fallbackValuesEnabled,
+            title: 'Toggle preview-generated fallback prop values',
+          },
+          'Auto values',
+        ),
+        React.createElement(
+          PreviewInspectorDevtoolsButton,
+          {
+            onClick: () => setPreviewInspectorDataAutoEnabled(!dataAutoEnabled),
+            pressed: dataAutoEnabled,
+            title: 'Toggle inferred no-network API and GraphQL payloads',
+          },
+          'Auto payloads',
         ),
         React.createElement('select', {
           'aria-label': 'Instrumented target export',
@@ -894,30 +916,36 @@ function PreviewInspectorToolbar() {
         ),
         React.createElement('span', { className: 'rpi-meta', title: previewInspectorSession.highlightStatus }, previewInspectorSession.highlightStatus),
         React.createElement('span', { className: 'rpi-spacer' }),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => setDock((current) => {
-              const next = current === 'bottom' ? 'right' : 'bottom';
-              previewInspectorDevtoolsSessionState.dock = next;
-              return next;
-            }),
-            title: dock === 'bottom' ? 'Dock inspector to the right' : 'Dock inspector to the bottom',
-          },
-          dock === 'bottom' ? 'Dock right' : 'Dock bottom',
-        ),
+        React.createElement(PreviewInspectorLayoutSelect, {
+          layout,
+          persistLayout,
+          updateLayout,
+        }),
         React.createElement(
           PreviewInspectorDevtoolsButton,
           {
             onClick: () => setCollapsed((current) => {
               const next = !current;
               previewInspectorDevtoolsSessionState.collapsed = next;
+              persistPreviewInspectorState();
               return next;
             }),
             title: collapsed ? 'Expand inspector' : 'Collapse inspector',
           },
           collapsed ? 'Expand' : 'Collapse',
         ),
+      ),
+      React.createElement(
+        'div',
+        {
+          'aria-label': 'Rendered page component context',
+          className: 'rpi-page-context',
+          'data-context-kind': pageContext.kind,
+          title: pageContext.breadcrumb + ' · ' + pageContext.detail,
+        },
+        React.createElement('span', { className: 'rpi-context-badge' }, pageContext.badge),
+        React.createElement('span', { className: 'rpi-context-path' }, pageContext.breadcrumb),
+        React.createElement('span', { className: 'rpi-context-detail' }, pageContext.detail),
       ),
       React.createElement(
         'div',
@@ -932,6 +960,27 @@ function PreviewInspectorToolbar() {
       ),
     ),
   );
+}
+
+/** Mounts Inspector chrome through a portal and keeps transient observers aligned with hot reload. */
+function PreviewPageInspectorShell({ descriptors, children }) {
+  const [portalHost] = React.useState(createPreviewInspectorPortalHost);
+  React.useEffect(() => {
+    setPreviewInspectorDescriptors(descriptors);
+    const removeObservers = installPreviewInspectorDomObservers();
+    return () => {
+      removeObservers();
+      portalHost.remove();
+    };
+  }, [descriptors, portalHost]);
+  const toolbar = React.createElement(PreviewInspectorToolbar);
+  const portal = typeof ReactDOMNamespace.createPortal === 'function'
+    ? ReactDOMNamespace.createPortal(
+        toolbar,
+        portalHost.__reactPreviewInspectorPortalRoot ?? portalHost,
+      )
+    : null;
+  return React.createElement(React.Fragment, undefined, children, portal);
 }
 `;
 }

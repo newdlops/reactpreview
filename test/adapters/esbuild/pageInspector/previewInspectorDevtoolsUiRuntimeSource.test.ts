@@ -5,24 +5,99 @@ import { createPreviewInspectorDevtoolsUiRuntimeSource } from '../../../../src/a
 import { createPreviewPageInspectorRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewPageInspectorRuntimeSource';
 
 describe('Page Inspector DevTools UI runtime source', () => {
-  /** Provides the requested docked Elements layout without inserting a wrapper into the app tree. */
-  it('renders a collapsible two-pane inspector through the existing portal', () => {
+  /** Provides movable/resizable drawer and floating layouts without wrapping the application tree. */
+  it('renders a collapsible adjustable inspector through the existing portal', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
 
-    expect(source).toContain('\'.rpi-shell[data-dock="bottom"]');
-    expect(source).toContain('\'.rpi-shell[data-dock="right"]');
+    expect(source).toContain("new Set(['bottom', 'left', 'right', 'floating'])");
+    expect(source).toContain('\'.rpi-shell[data-dock="floating"]');
+    expect(source).toContain("value: 'bottom' }, 'Bottom drawer'");
+    expect(source).toContain("value: 'right' }, 'Right drawer'");
+    expect(source).toContain("value: 'left' }, 'Left drawer'");
+    expect(source).toContain("value: 'floating' }, 'Floating'");
     expect(source).toContain("'.rpi-workbench{display:grid");
     expect(source).toContain('overflow-x:auto;overflow-y:hidden');
     expect(source).toContain("'data-collapsed': collapsed");
-    expect(source).toContain("dock === 'bottom' ? 'Dock right' : 'Dock bottom'");
+    expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
+    expect(source).toContain('function PreviewInspectorResizeHandle');
+    expect(source).toContain('function PreviewInspectorMoveHandle');
+    expect(source).toContain('beginPreviewInspectorLayoutPointerGesture');
+    expect(source).toContain('const pageContext = readPreviewInspectorPageContext()');
+    expect(source).toContain('title: "Go to the current file\'s main component"');
+    expect(source).toContain("'Main component'");
+    expect(source).toContain("'Auto values'");
+    expect(source).toContain("['payloads', 'Payloads']");
+    expect(source).toContain("['console', 'Console ('");
+    expect(source).toContain('function PreviewInspectorConsoleDetail');
+    expect(source).toContain("'Filter console messages by level'");
+    expect(source).toContain("'Filter console message text'");
+    expect(source).toContain("'Stack and failure context'");
+    expect(source).toContain("'No console messages captured yet.'");
+    expect(source).toContain('clearPreviewInspectorConsoleEntries');
+    expect(source).toContain("'Auto payloads'");
+    expect(source).toContain("'Generate Lorem'");
+    expect(source).toContain("'Apply JSON'");
+    expect(source).toContain('GENERATED · AUTO');
+    expect(source).toContain('No API or GraphQL payload has been observed yet.');
+    expect(source).toContain("'aria-label': 'Rendered page component context'");
+    expect(source).toContain("className: 'rpi-context-badge'");
+    expect(source).toContain("'aria-label': 'Resize React Page Inspector'");
+    expect(source).toContain("'aria-label': 'Move floating React Page Inspector'");
     expect(source).toContain(
       "React.createElement('style', undefined, previewInspectorDevtoolsCss)",
     );
     expect(source).not.toContain("React.createElement('div', undefined, children");
     expect(source).toContain('previewInspectorSession.devtoolsState');
-    expect(source).toContain('() => previewInspectorDevtoolsSessionState.dock');
     expect(source).toContain('() => previewInspectorDevtoolsSessionState.activeTab');
     expect(source).toContain('() => previewInspectorDevtoolsSessionState.query');
+  });
+
+  /** Clamps restored geometry and applies edge-specific pointer deltas deterministically. */
+  it('keeps drawer and floating geometry inside the current viewport', () => {
+    const runtime = evaluateDevtoolsUiHelpers();
+    const floating = runtime.normalizeLayout(
+      {
+        dock: 'floating',
+        floatingHeight: 400,
+        floatingWidth: 500,
+        floatingX: 9_999,
+        floatingY: -200,
+      },
+      { height: 600, width: 800 },
+    );
+
+    expect(floating).toMatchObject({
+      dock: 'floating',
+      floatingHeight: 400,
+      floatingWidth: 500,
+      floatingX: 292,
+      floatingY: 8,
+    });
+    expect(runtime.shellStyle(floating, false)).toMatchObject({
+      height: 400,
+      left: 292,
+      top: 8,
+      width: 500,
+    });
+    expect(runtime.shellStyle(floating, true, { height: 640, width: 360 })).toMatchObject({
+      bottom: 8,
+      left: 8,
+      maxWidth: 'none',
+      right: 'auto',
+      transform: 'none',
+      width: 344,
+    });
+
+    const bottom = runtime.normalizeLayout(
+      { bottomHeight: 300, dock: 'bottom' },
+      { height: 800, width: 1280 },
+    );
+    expect(runtime.resizeLayout(bottom, 'resize', 0, -40).bottomHeight).toBe(340);
+    const right = runtime.normalizeLayout(
+      { dock: 'right', sideWidth: 400 },
+      { height: 800, width: 1280 },
+    );
+    expect(runtime.resizeLayout(right, 'resize', -32, 0).sideWidth).toBe(432);
   });
 
   /** Proves the composed Page Inspector entry uses this shell instead of the legacy floating form. */
@@ -32,6 +107,18 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('const previewInspectorDevtoolsCss');
     expect(source).toContain('function PreviewInspectorComponentsPane');
     expect(source).toContain('function PreviewInspectorDetailsPane');
+    expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
+    expect(source).toContain(
+      'renderConditionOverrides: serializePreviewInspectorRenderConditionOverrides()',
+    );
+    expect(source).toContain('dataPayloadOverrides: serializePreviewInspectorDataOverrides()');
+    expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
+    expect(source).toContain('installPreviewInspectorNetworkBoundary()');
+    expect(source).toContain('installPreviewInspectorConsoleCapture()');
+    expect(source).toContain('recordConsoleEntry: recordPreviewInspectorConsoleEntry');
+    expect(source).toContain(
+      'stringifyPreviewInspectorProps(previewInspectorSession.devtoolsState ?? {})',
+    );
     expect(source).not.toContain('const inspectorControlStyle');
   });
 
@@ -56,6 +143,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('event.stopPropagation();');
     expect(source).toContain("'selected'");
     expect(source).toContain("'target'");
+    expect(source).toContain('attachPreviewInspectorConditionsToSnapshot');
+    expect(source).toContain('togglePreviewInspectorRenderCondition(node.conditionId)');
+    expect(source).toContain("node?.kind === 'condition'");
+    expect(source).toContain("'Use authored value'");
   });
 
   /** Promotes internal Fiber/host records while retaining every supported authored component kind. */
@@ -174,8 +265,8 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('depth > 64');
     expect(source).toContain('normalized.occurrenceStart = source.occurrenceStart');
     expect(source).toContain("typeof source.path === 'string' ? source.path : source.sourcePath");
-    expect(source).toContain("status: typeof snapshot?.status === 'string'");
-    expect(source).toContain('truncated: snapshot?.truncated === true');
+    expect(source).toContain("typeof collectorSnapshot?.status === 'string'");
+    expect(source).toContain('truncated: collectorSnapshot?.truncated === true');
     expect(source).toContain("truncated ? 'bounded tree' : status ?? 'live tree'");
     expect(source).toContain("typeof previewInspectorApi.subscribeTree === 'function'");
     expect(source).toContain('setInterval(refresh, 750)');
@@ -206,7 +297,33 @@ interface DevtoolsUiTestRuntime {
     expandedIds: readonly string[],
   ) => string | undefined;
   readonly handleTreeKeyDown: (event: unknown) => void;
+  readonly normalizeLayout: (
+    value: Partial<PreviewInspectorTestLayout>,
+    viewport: { readonly height: number; readonly width: number },
+  ) => PreviewInspectorTestLayout;
   readonly normalize: (nodes: readonly DevtoolsUiTestNode[]) => DevtoolsUiTestNode[];
+  readonly resizeLayout: (
+    layout: PreviewInspectorTestLayout,
+    action: 'move' | 'resize',
+    deltaX: number,
+    deltaY: number,
+  ) => PreviewInspectorTestLayout;
+  readonly shellStyle: (
+    layout: PreviewInspectorTestLayout,
+    collapsed: boolean,
+    viewport?: { readonly height: number; readonly width: number },
+  ) => Record<string, unknown>;
+}
+
+/** Serializable generated layout shape used only by the isolated runtime test realm. */
+interface PreviewInspectorTestLayout {
+  readonly bottomHeight: number;
+  readonly dock: 'bottom' | 'floating' | 'left' | 'right';
+  readonly floatingHeight: number;
+  readonly floatingWidth: number;
+  readonly floatingX: number;
+  readonly floatingY: number;
+  readonly sideWidth: number;
 }
 
 /** Creates one immutable component/internal-node fixture with optional nested collector children. */
@@ -234,9 +351,12 @@ globalThis.__devtoolsUiRuntime = {
     return resolvePreviewInspectorTreeFocusableId(nodes, selectedId, new Set(expandedIds));
   },
   handleTreeKeyDown: handlePreviewInspectorTreeKeyDown,
+  normalizeLayout: normalizePreviewInspectorLayout,
   normalize(nodes) {
     return normalizePreviewInspectorUiNodes(nodes, 0, { count: 0 });
   },
+  resizeLayout: resizePreviewInspectorLayout,
+  shellStyle: createPreviewInspectorShellStyle,
 };`;
   vm.runInNewContext(source, context);
   if (context.__devtoolsUiRuntime === undefined) {

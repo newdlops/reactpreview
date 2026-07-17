@@ -11,44 +11,88 @@
  */
 export function createPreviewInspectorChainRuntimeSource(): string {
   return String.raw`
-/** Formats the best static application-entry path, with legacy JSX-owner ancestry as a fallback. */
-function describePreviewInspectorAncestry() {
-  const inspector = previewInspectorSession.descriptors[0]?.inspector;
-  if (inspector === undefined) return 'No static component ancestry was discovered.';
+/** Adds one nonempty component label without repeating an adjacent render-chain identity. */
+function appendPreviewInspectorPageContextName(names, value) {
+  if (typeof value === 'string' && value.length > 0 && names.at(-1) !== value) names.push(value);
+}
+
+/** Reads the mounted root and best static application path as one user-facing page identity. */
+function readPreviewInspectorPageContext() {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const inspector = descriptor?.inspector;
+  if (inspector === undefined) {
+    return {
+      badge: 'STANDALONE',
+      breadcrumb: 'No authored page context was proven',
+      detail: 'Rendering the selected export as an isolated fallback.',
+      kind: 'standalone',
+    };
+  }
   const selectedExportName = previewInspectorSession.selectedExportName;
   const renderChain = inspector.renderChainsByExport?.[selectedExportName] ?? inspector.renderChain;
   const selectedPath = renderChain?.paths?.[0];
+  const names = [];
   if (selectedPath !== undefined) {
-    const names = [];
     for (const step of [...(selectedPath.steps ?? [])].reverse()) {
-      const label = step?.label;
-      if (typeof label === 'string' && names.at(-1) !== label) names.push(label);
+      appendPreviewInspectorPageContextName(names, step?.label);
       for (const wrapperName of [...(step?.wrapperNames ?? [])].reverse()) {
-        if (typeof wrapperName === 'string' && names.at(-1) !== wrapperName) names.push(wrapperName);
+        appendPreviewInspectorPageContextName(names, wrapperName);
       }
     }
-    const alternatives = Math.max(0, (renderChain.paths?.length ?? 1) - 1);
-    const status = renderChain.reachability === 'entry-connected'
-      ? 'entry connected'
-      : renderChain.reachability === 'ambiguous'
-        ? 'multiple entries'
-        : 'standalone fallback';
-    return names.join('  ›  ') + '  ·  ' + status +
-      (alternatives > 0 ? '  ·  +' + String(alternatives) + ' path(s)' : '') +
-      (renderChain.truncated === true ? '  ·  bounded graph' : '');
-  }
-  const names = [];
-  for (const edge of [...(inspector.ancestry ?? [])].reverse()) {
-    const ownerName = edge?.owner?.exportName;
-    if (typeof ownerName === 'string' && names.at(-1) !== ownerName) names.push(ownerName);
-    for (const localName of [...(edge?.localOwnerNames ?? [])].reverse()) {
-      if (typeof localName === 'string' && names.at(-1) !== localName) names.push(localName);
+  } else {
+    for (const edge of [...(inspector.ancestry ?? [])].reverse()) {
+      appendPreviewInspectorPageContextName(names, edge?.owner?.exportName);
+      for (const localName of [...(edge?.localOwnerNames ?? [])].reverse()) {
+        appendPreviewInspectorPageContextName(names, localName);
+      }
     }
   }
-  const targetName = inspector.target?.exportName ?? 'default';
-  if (names.at(-1) !== targetName) names.push(targetName);
-  return names.join('  ›  ') +
-    (inspector.complete === true ? '' : '  ·  partial: ' + String(inspector.stopReason));
+  const rootName = inspector.root?.exportName;
+  const targetName = renderChain?.target?.exportName ?? inspector.target?.exportName ?? 'default';
+  if (typeof rootName === 'string' && !names.includes(rootName)) names.unshift(rootName);
+  appendPreviewInspectorPageContextName(names, targetName);
+  const rootIsTarget = inspector.root?.sourcePath === inspector.target?.sourcePath &&
+    inspector.root?.exportName === inspector.target?.exportName;
+  const hasAuthoredParent = !rootIsTarget || (inspector.ancestry?.length ?? 0) > 0;
+  const entryConnected = renderChain?.reachability === 'entry-connected';
+  const entryAmbiguous = renderChain?.reachability === 'ambiguous';
+  const hasApplicationEntry = entryConnected || entryAmbiguous;
+  const entryStatus = entryAmbiguous
+    ? 'multiple application entries'
+    : 'application entry connected';
+  const alternatives = Math.max(0, (renderChain?.paths?.length ?? 1) - 1);
+  const suffix =
+    (alternatives > 0 ? ' · +' + String(alternatives) + ' page path(s)' : '') +
+    (renderChain?.truncated === true ? ' · bounded graph' : '');
+  if (hasAuthoredParent) {
+    return {
+      badge: 'PAGE COMPONENT',
+      breadcrumb: names.join('  ›  '),
+      detail: 'Mounted inside authored page root ' + String(rootName ?? 'unknown') +
+        (hasApplicationEntry ? ' · ' + entryStatus : ' · nearest safe page context') + suffix,
+      kind: 'page-component',
+    };
+  }
+  if (hasApplicationEntry) {
+    return {
+      badge: 'PAGE ROOT',
+      breadcrumb: names.join('  ›  '),
+      detail: 'The selected component is the authored page root · ' + entryStatus + suffix,
+      kind: 'page-root',
+    };
+  }
+  return {
+    badge: 'STANDALONE',
+    breadcrumb: names.join('  ›  '),
+    detail: 'No safe outer page component was proven · ' + String(inspector.stopReason ?? 'entry unreachable'),
+    kind: 'standalone',
+  };
+}
+
+/** Formats the structured page identity for diagnostics and compatibility consumers. */
+function describePreviewInspectorAncestry() {
+  const context = readPreviewInspectorPageContext();
+  return context.breadcrumb + '  ·  ' + context.detail;
 }
 `;
 }

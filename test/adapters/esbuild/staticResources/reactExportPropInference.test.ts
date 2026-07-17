@@ -28,7 +28,12 @@ describe('collectReactExportPropInference', () => {
           properties: {
             value: {
               kind: 'object',
-              properties: { addressInput: { kind: 'object', properties: {} } },
+              properties: {
+                addressInput: {
+                  kind: 'object',
+                  properties: { daumPostcodeJson: { kind: 'boolean', value: false } },
+                },
+              },
             },
           },
         },
@@ -44,6 +49,80 @@ describe('collectReactExportPropInference', () => {
         { kind: 'function', path: 'helpers.setValue', source: 'usage' },
       ]),
     );
+  });
+
+  /** Reads required props when the component keeps a typed identifier instead of destructuring it. */
+  it('infers required local members from identifier props and inherited intersections', () => {
+    const source = [
+      'interface CommonProps { title: string; }',
+      'type CardProps = CommonProps & { count: number; enabled?: boolean };',
+      'export function Card(props: CardProps) {',
+      '  return <article>{props.title}{props.count}</article>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Card.tsx', source);
+
+    expect(result.Card?.shape).toEqual({
+      kind: 'object',
+      properties: {
+        count: { kind: 'number' },
+        title: { kind: 'string' },
+      },
+    });
+  });
+
+  /** Uses a React component variable annotation when its arrow parameter omits an inline type. */
+  it('infers props from React FC annotations', () => {
+    const source = [
+      "import type { FC } from 'react';",
+      'interface BannerProps { message: string; visible: boolean; }',
+      'export const Banner: FC<BannerProps> = (props) => (',
+      '  props.visible ? <strong>{props.message}</strong> : null',
+      ');',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Banner.tsx', source);
+
+    expect(result.Banner?.shape.properties).toMatchObject({
+      message: { kind: 'string' },
+      visible: { kind: 'boolean' },
+    });
+  });
+
+  /** Reads the inline component argument from the common styled-components tagged form. */
+  it('infers typed props from styled component factories', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      'type FormProps = { variant: "create" | "edit"; name: string; optional?: number };',
+      'export const Form = styled(({ variant, name }: FormProps) => (',
+      '  <form data-variant={variant}>{name}</form>',
+      '))`display: block;`;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Form.tsx', source);
+
+    expect(result.Form?.shape.properties).toMatchObject({
+      name: { kind: 'string' },
+      variant: { kind: 'string', value: 'create' },
+    });
+    expect(result.Form?.shape.properties).not.toHaveProperty('optional');
+  });
+
+  /** Leaves defaulted destructured props absent so the component's authored fixture wins. */
+  it('does not replace authored parameter defaults with generated values', () => {
+    const source = [
+      'const DEFAULT_ITEMS = ["authored"];',
+      'type PanelProps = { title: string; items: string[] };',
+      'export function Panel({ title, items = DEFAULT_ITEMS }: PanelProps) {',
+      '  return <section>{title}{items.map(String)}</section>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Panel.tsx', source);
+
+    expect(result.Panel?.shape.properties).toMatchObject({ title: { kind: 'string' } });
+    expect(result.Panel?.shape.properties).not.toHaveProperty('items');
   });
 
   /** Uses required local types for primitives while leaving optional and imported values absent. */

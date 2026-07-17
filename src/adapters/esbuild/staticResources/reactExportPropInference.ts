@@ -98,7 +98,15 @@ interface PropPathBinding {
 
 /** Export name paired with the function body that React will invoke for that export. */
 interface ExportedComponentFunction {
+  /** Props type supplied by a variable annotation such as `React.FC<CardProps>`. */
+  readonly contextualPropsType?: ts.TypeNode;
   readonly exportName: string;
+  readonly functionLike: ExportedFunctionLike;
+}
+
+/** Function body plus the optional variable-level React component props contract. */
+interface ComponentFunctionCandidate {
+  readonly contextualPropsType?: ts.TypeNode;
   readonly functionLike: ExportedFunctionLike;
 }
 
@@ -141,7 +149,7 @@ export function collectReactExportPropInference(
     0,
     MAX_COMPONENT_EXPORTS,
   )) {
-    const inference = inferComponentProps(component.functionLike, localTypes, sourceFile);
+    const inference = inferComponentProps(component, localTypes, sourceFile);
     if (inference !== undefined && inference.provenance.length > 0) {
       results[component.exportName] = inference;
     }
@@ -151,10 +159,11 @@ export function collectReactExportPropInference(
 
 /** Infers local type and direct-use requirements for one component function. */
 function inferComponentProps(
-  functionLike: ExportedFunctionLike,
+  component: ExportedComponentFunction,
   localTypes: ReadonlyMap<string, LocalObjectType>,
   sourceFile: ts.SourceFile,
 ): PreviewInferredExportProps | undefined {
+  const { functionLike } = component;
   const parameter = functionLike.parameters[0];
   if (parameter === undefined) {
     return undefined;
@@ -167,7 +176,13 @@ function inferComponentProps(
     root,
   };
   collectParameterBindings(parameter.name, [], state.aliases);
-  addTypedParameterRequirements(parameter, localTypes, state, sourceFile);
+  addTypedParameterRequirements(
+    parameter,
+    component.contextualPropsType,
+    localTypes,
+    state,
+    sourceFile,
+  );
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
   if (state.root.children.size === 0) {
@@ -187,7 +202,7 @@ function collectParameterBindings(
     return;
   }
   for (const element of bindingName.elements) {
-    if (ts.isOmittedExpression(element)) continue;
+    if (ts.isOmittedExpression(element) || element.initializer !== undefined) continue;
     const propertyName = readBindingPropertyName(element);
     if (propertyName === undefined || BLOCKED_PROPERTY_NAMES.has(propertyName)) continue;
     collectParameterBindings(element.name, [...parentPath, propertyName], aliases);
@@ -197,12 +212,14 @@ function collectParameterBindings(
 /** Adds syntax-resolvable required prop types while imported/any contracts remain usage-driven. */
 function addTypedParameterRequirements(
   parameter: ts.ParameterDeclaration,
+  contextualPropsType: ts.TypeNode | undefined,
   localTypes: ReadonlyMap<string, LocalObjectType>,
   state: InferenceState,
   sourceFile: ts.SourceFile,
 ): void {
-  if (!ts.isObjectBindingPattern(parameter.name) || parameter.type === undefined) return;
-  const members = readObjectTypeMembers(parameter.type, localTypes, new Set());
+  const propsType = parameter.type ?? contextualPropsType;
+  if (propsType === undefined) return;
+  const members = readObjectTypeMembers(propsType, localTypes, new Set());
   if (members === undefined) return;
   const typeByProperty = new Map<string, ts.TypeNode>();
   for (const member of members) {
@@ -216,6 +233,13 @@ function addTypedParameterRequirements(
     const name = readPropertyName(member.name);
     if (name !== undefined && !typeByProperty.has(name)) typeByProperty.set(name, member.type);
   }
+  if (ts.isIdentifier(parameter.name)) {
+    for (const [propertyName, typeNode] of typeByProperty) {
+      addTypeRequirement([propertyName], typeNode, localTypes, state, sourceFile, new Set());
+    }
+    return;
+  }
+  if (!ts.isObjectBindingPattern(parameter.name)) return;
   for (const element of parameter.name.elements) {
     if (ts.isOmittedExpression(element) || element.initializer !== undefined) continue;
     const propertyName = readBindingPropertyName(element);
@@ -230,16 +254,35 @@ function readObjectTypeMembers(
   typeNode: ts.TypeNode,
   localTypes: ReadonlyMap<string, LocalObjectType>,
   activeNames: Set<string>,
-): ts.NodeArray<ts.TypeElement> | undefined {
+): readonly ts.TypeElement[] | undefined {
   const unwrapped = ts.isParenthesizedTypeNode(typeNode) ? typeNode.type : typeNode;
   if (ts.isTypeLiteralNode(unwrapped)) return unwrapped.members;
+  if (ts.isIntersectionTypeNode(unwrapped)) {
+    const members = unwrapped.types.flatMap(
+      (member) => readObjectTypeMembers(member, localTypes, activeNames) ?? [],
+    );
+    return members.length > 0 ? members : undefined;
+  }
   if (!ts.isTypeReferenceNode(unwrapped) || !ts.isIdentifier(unwrapped.typeName)) return undefined;
   const name = unwrapped.typeName.text;
+  if (
+    (name === 'PropsWithChildren' || name === 'Readonly' || name === 'Required') &&
+    unwrapped.typeArguments?.[0] !== undefined
+  ) {
+    return readObjectTypeMembers(unwrapped.typeArguments[0], localTypes, activeNames);
+  }
   const declaration = localTypes.get(name);
   if (declaration === undefined || activeNames.has(name)) return undefined;
   activeNames.add(name);
   const members = ts.isInterfaceDeclaration(declaration)
-    ? declaration.members
+    ? [
+        ...declaration.members,
+        ...(declaration.heritageClauses ?? []).flatMap((clause) =>
+          clause.types.flatMap(
+            (heritageType) => readObjectTypeMembers(heritageType, localTypes, activeNames) ?? [],
+          ),
+        ),
+      ]
     : readObjectTypeMembers(declaration.type, localTypes, activeNames);
   activeNames.delete(name);
   return members;
@@ -408,6 +451,14 @@ function addOperationRequirement(
     parent.expression === node &&
     parent.questionDotToken !== undefined
   ) {
+    return;
+  }
+  if (
+    ts.isPrefixUnaryExpression(parent) &&
+    parent.operator === ts.SyntaxKind.ExclamationToken &&
+    parent.operand === node
+  ) {
+    requirePath(state, path_, 'boolean', 'usage', false);
     return;
   }
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node) {
@@ -586,39 +637,45 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
 function collectExportedComponentFunctions(
   sourceFile: ts.SourceFile,
 ): readonly ExportedComponentFunction[] {
-  const functionsByName = new Map<string, ExportedFunctionLike>();
+  const functionsByName = new Map<string, ComponentFunctionCandidate>();
   const selected: ExportedComponentFunction[] = [];
   const seenNames = new Set<string>();
-  const add = (exportName: string, functionLike: ExportedFunctionLike | undefined): void => {
+  const add = (exportName: string, candidate: ComponentFunctionCandidate | undefined): void => {
     if (
-      functionLike === undefined ||
+      candidate === undefined ||
       seenNames.has(exportName) ||
       (exportName !== 'default' && !/^\p{Lu}/u.test(exportName))
     )
       return;
     seenNames.add(exportName);
-    selected.push({ exportName, functionLike });
+    selected.push({ exportName, ...candidate });
   };
   for (const statement of sourceFile.statements) {
     if (ts.isFunctionDeclaration(statement)) {
-      if (statement.name !== undefined) functionsByName.set(statement.name.text, statement);
+      const candidate = { functionLike: statement };
+      if (statement.name !== undefined) functionsByName.set(statement.name.text, candidate);
       if (hasExportModifier(statement)) {
-        add(hasDefaultModifier(statement) ? 'default' : (statement.name?.text ?? ''), statement);
+        add(hasDefaultModifier(statement) ? 'default' : (statement.name?.text ?? ''), candidate);
       }
     } else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name)) continue;
         const functionLike = readFunctionExpression(declaration.initializer);
         if (functionLike === undefined) continue;
-        functionsByName.set(declaration.name.text, functionLike);
-        if (hasExportModifier(statement)) add(declaration.name.text, functionLike);
+        const contextualPropsType = readReactComponentPropsType(declaration.type);
+        const candidate: ComponentFunctionCandidate = {
+          functionLike,
+          ...(contextualPropsType === undefined ? {} : { contextualPropsType }),
+        };
+        functionsByName.set(declaration.name.text, candidate);
+        if (hasExportModifier(statement)) add(declaration.name.text, candidate);
       }
     } else if (ts.isExportAssignment(statement)) {
       add(
         'default',
         ts.isIdentifier(statement.expression)
           ? functionsByName.get(statement.expression.text)
-          : readFunctionExpression(statement.expression),
+          : createFunctionCandidate(readFunctionExpression(statement.expression)),
       );
     } else if (
       ts.isExportDeclaration(statement) &&
@@ -636,6 +693,24 @@ function collectExportedComponentFunctions(
   return selected;
 }
 
+/** Wraps one optional function body for export-assignment collection without unsafe assertions. */
+function createFunctionCandidate(
+  functionLike: ExportedFunctionLike | undefined,
+): ComponentFunctionCandidate | undefined {
+  return functionLike === undefined ? undefined : { functionLike };
+}
+
+/** Extracts the props argument from common `FC<Props>` variable annotations. */
+function readReactComponentPropsType(typeNode: ts.TypeNode | undefined): ts.TypeNode | undefined {
+  if (typeNode === undefined || !ts.isTypeReferenceNode(typeNode)) return undefined;
+  const typeName = ts.isIdentifier(typeNode.typeName)
+    ? typeNode.typeName.text
+    : typeNode.typeName.right.text;
+  return /^(?:FC|FunctionComponent|VFC|VoidFunctionComponent)$/u.test(typeName)
+    ? typeNode.typeArguments?.[0]
+    : undefined;
+}
+
 /** Reads a direct function or a bounded common React HOC argument containing that function. */
 function readFunctionExpression(
   expression: ts.Expression | undefined,
@@ -643,13 +718,13 @@ function readFunctionExpression(
   if (expression === undefined) return undefined;
   const current = unwrapExpression(expression);
   if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return current;
-  if (!ts.isCallExpression(current) || current.arguments.length === 0) return undefined;
-  const firstArgument = current.arguments[0];
-  if (firstArgument === undefined) return undefined;
-  const candidate = unwrapExpression(firstArgument);
-  return ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate)
-    ? candidate
-    : undefined;
+  const call = ts.isTaggedTemplateExpression(current) ? unwrapExpression(current.tag) : current;
+  if (!ts.isCallExpression(call) || call.arguments.length === 0) return undefined;
+  for (const argument of call.arguments) {
+    const candidate = unwrapExpression(argument);
+    if (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 /** Indexes unique non-generic same-file type/interface declarations. */

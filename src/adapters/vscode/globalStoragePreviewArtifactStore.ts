@@ -1,27 +1,79 @@
 /**
- * Publishes preview bundles under a session-specific VS Code global-storage directory.
- * The adapter exposes only serialized URI strings through the application port, while its public
- * `resourceRoot` lets the composition root grant the webview the narrowest local-resource scope.
+ * Publishes preview bundles into a session-specific, content-addressed VS Code storage tree.
+ *
+ * Entry modules live at the session root so esbuild's `./chunks/...` imports keep resolving after
+ * publication. Unchanged entry, chunk, and stylesheet files retain stable URIs across revisions;
+ * independent bundle leases hold shared-file references until hot reload or panel cleanup releases
+ * the final owner. Filesystem work is bounded rather than serialized one file at a time.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { PreviewArtifactStore } from '../../application/previewArtifactStore';
-import type {
-  PreviewBundle,
-  PreviewBundleChunk,
-  StoredPreviewArtifact,
-} from '../../domain/preview';
+import type { PreviewBundle, StoredPreviewArtifact } from '../../domain/preview';
+import {
+  createPreviewArtifactPathIdentity,
+  planPreviewArtifactLayout,
+  type PlannedPreviewArtifactFile,
+  type PreviewArtifactLayout,
+} from './previewArtifactLayout';
 
-const MAX_PREVIEW_CHUNKS = 128;
+const MAX_PARALLEL_ARTIFACT_IO = 8;
 
-/** VS Code filesystem-backed store for cache-busted browser preview artifacts. */
+/** One portable path identity retained as a live file record or session-long URL tombstone. */
+interface SharedArtifactFileRecord {
+  /** Byte digest permanently associated with this browser URL for the complete session. */
+  readonly contentDigest: string;
+  /** Exact portable path retained to reject case aliases even when their digest is equal. */
+  readonly relativePath: string;
+  /** Number of distinct live artifact identities requiring the file; zero is a URL tombstone. */
+  readonly references: number;
+}
+
+/** Byte-free file identity retained after publication so leases do not pin esbuild output buffers. */
+interface PublishedArtifactFileIdentity {
+  /** Full digest used to verify a later same-bundle or same-path publication. */
+  readonly contentDigest: string;
+  /** Session-relative file path used for reference release and deletion. */
+  readonly relativePath: string;
+}
+
+/** Minimal immutable layout retained for URI reconstruction and shared-file release. */
+interface PublishedArtifactLayout {
+  /** Bundle identity used by the application lease contract. */
+  readonly contentHash: string;
+  /** Root-level content-addressed browser entry path. */
+  readonly entryPath: string;
+  /** Byte-free identities of every file required by this bundle. */
+  readonly files: readonly PublishedArtifactFileIdentity[];
+  /** Optional content-addressed stylesheet path. */
+  readonly stylesheetPath?: string;
+}
+
+/** One application-level artifact lease and the shared layout it keeps reachable. */
+interface PublishedArtifactRecord {
+  /** Immutable files and browser entry locations associated with this bundle identity. */
+  readonly layout: PublishedArtifactLayout;
+  /** Number of panels or in-flight revisions that independently acquired this exact bundle. */
+  readonly references: number;
+}
+
+/** Result of a bounded write batch, including files safe to remove after partial failure. */
+interface SharedFileWriteResult {
+  /** First write failure after every started worker has settled. */
+  readonly error?: Error;
+  /** Files whose required writes completed and are safe to remove after publication failure. */
+  readonly writtenFiles: readonly PlannedPreviewArtifactFile[];
+}
+
+/** VS Code filesystem-backed store for cache-busted, reference-counted preview artifacts. */
 export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, vscode.Disposable {
   /** Directory that should be used as the webview's sole generated local-resource root. */
   public readonly resourceRoot: vscode.Uri;
 
+  private readonly artifactByHash = new Map<string, PublishedArtifactRecord>();
   private disposed = false;
   private operationQueue: Promise<void> = Promise.resolve();
-  private readonly referenceCountByHash = new Map<string, number>();
+  private readonly sharedFileByIdentity = new Map<string, SharedArtifactFileRecord>();
   private shutdownPromise: Promise<void> | undefined;
 
   /**
@@ -38,133 +90,175 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   }
 
   /**
-   * Writes a complete hashed revision and acquires one ownership reference after the write succeeds.
+   * Publishes missing shared files and acquires one application-level artifact lease atomically.
    *
-   * @param bundle In-memory entry, auxiliary JavaScript chunks, and optional stylesheet.
-   * @returns Serialized local locations suitable for later `webview.asWebviewUri` conversion.
+   * Planning and validation happen before entering the mutation queue. The queue protects reference
+   * counts and path collision checks, while the actual independent directory and file operations run
+   * with a small concurrency bound to reduce publication latency on code-split applications.
+   *
+   * @param bundle In-memory entry, lazy JavaScript chunks, and optional aggregate stylesheet.
+   * @returns Stable serialized locations suitable for `webview.asWebviewUri` conversion.
    */
   public publish(bundle: PreviewBundle): Promise<StoredPreviewArtifact> {
     if (this.disposed) {
       return Promise.reject(new Error('The React preview artifact session is already closed.'));
     }
 
-    let chunks: readonly PreviewBundleChunk[];
+    let layout: PreviewArtifactLayout;
     try {
-      chunks = validateAndSortChunks(bundle.chunks);
+      layout = planPreviewArtifactLayout(bundle);
     } catch (error) {
       return Promise.reject(
         error instanceof Error
           ? error
-          : new TypeError('Invalid React preview auxiliary chunk metadata.', { cause: error }),
+          : new TypeError('Invalid React preview artifact layout.', { cause: error }),
       );
     }
 
-    const contentHash = createContentHash(bundle, chunks);
     return this.enqueueOperation(async () => {
-      const currentReferences = this.referenceCountByHash.get(contentHash) ?? 0;
-      if (currentReferences > 0) {
-        this.referenceCountByHash.set(contentHash, currentReferences + 1);
-        return this.describeBundle(contentHash, bundle.stylesheet !== undefined);
+      const publishedArtifact = this.artifactByHash.get(layout.contentHash);
+      if (publishedArtifact !== undefined) {
+        assertEquivalentLayouts(publishedArtifact.layout, layout);
+        this.artifactByHash.set(layout.contentHash, {
+          layout: publishedArtifact.layout,
+          references: publishedArtifact.references + 1,
+        });
+        return this.describeLayout(publishedArtifact.layout);
       }
 
-      let artifact: StoredPreviewArtifact;
-      try {
-        artifact = await this.writeBundle(contentHash, bundle, chunks);
-      } catch (error) {
-        await this.deleteDirectory(vscode.Uri.joinPath(this.resourceRoot, contentHash));
-        throw error;
+      this.assertSharedPathsAreCompatible(layout.files);
+      const missingFiles = layout.files.filter((file) => this.requiresFileWrite(file));
+      const writeResult = await this.writeMissingFiles(missingFiles);
+      if (writeResult.error !== undefined) {
+        await this.deleteFiles(writeResult.writtenFiles);
+        throw writeResult.error;
       }
-      this.referenceCountByHash.set(contentHash, currentReferences + 1);
-      return artifact;
+
+      this.acquireSharedFiles(layout.files);
+      this.artifactByHash.set(layout.contentHash, {
+        layout: createPublishedArtifactLayout(layout),
+        references: 1,
+      });
+      return this.describeLayout(layout);
     });
   }
 
   /**
-   * Writes one complete bundle while the store's mutation queue excludes release and shutdown work.
-   *
-   * @param contentHash Deterministic directory name calculated before the operation was queued.
-   * @param bundle In-memory entry, auxiliary JavaScript chunks, and optional CSS to publish.
-   * @param chunks Validated auxiliary modules in deterministic path order.
-   * @returns Serialized locations for the completed artifact set.
+   * Rejects a browser URL ever associated with different bytes during this extension session.
+   * Tombstones remain after file deletion because a retained webview's ESM module map is URL-keyed;
+   * rewriting the same URL with new bytes could otherwise resurrect an obsolete lazy module.
    */
-  private async writeBundle(
-    contentHash: string,
-    bundle: PreviewBundle,
-    chunks: readonly PreviewBundleChunk[],
-  ): Promise<StoredPreviewArtifact> {
-    const revisionDirectory = vscode.Uri.joinPath(this.resourceRoot, contentHash);
-
-    await vscode.workspace.fs.createDirectory(revisionDirectory);
-    await vscode.workspace.fs.writeFile(
-      vscode.Uri.joinPath(revisionDirectory, 'entry.js'),
-      bundle.javascript,
-    );
-
-    const stylesheetUri = await this.writeStylesheet(revisionDirectory, bundle.stylesheet);
-    await this.writeChunks(revisionDirectory, chunks);
-    return this.describeBundle(contentHash, stylesheetUri !== undefined);
-  }
-
-  /**
-   * Writes validated auxiliary modules below their revision without flattening relative imports.
-   * Parent directories are created once in lexical order, and files follow the already sorted input
-   * so equivalent bundles produce deterministic filesystem operations as well as deterministic hashes.
-   *
-   * @param revisionDirectory Hash-specific root that already owns the entry bundle.
-   * @param chunks Safe `chunks/.../*.js` outputs validated before publication was queued.
-   */
-  private async writeChunks(
-    revisionDirectory: vscode.Uri,
-    chunks: readonly PreviewBundleChunk[],
-  ): Promise<void> {
-    const createdParentPaths = new Set<string>();
-    for (const chunk of chunks) {
-      const pathSegments = chunk.relativePath.split('/');
-      const fileName = pathSegments.pop();
-      if (fileName === undefined) {
-        throw new TypeError(`Invalid React preview chunk path: ${chunk.relativePath}`);
-      }
-
-      const parentPath = pathSegments.join('/');
-      if (!createdParentPaths.has(parentPath)) {
-        await vscode.workspace.fs.createDirectory(
-          vscode.Uri.joinPath(revisionDirectory, ...pathSegments),
+  private assertSharedPathsAreCompatible(files: readonly PlannedPreviewArtifactFile[]): void {
+    for (const file of files) {
+      const identity = createPreviewArtifactPathIdentity(file.relativePath);
+      const sharedFile = this.sharedFileByIdentity.get(identity);
+      if (sharedFile !== undefined && sharedFile.relativePath !== file.relativePath) {
+        throw new TypeError(
+          `React preview shared artifact paths collide on a portable filesystem: ${sharedFile.relativePath} and ${file.relativePath}`,
         );
-        createdParentPaths.add(parentPath);
       }
-      await vscode.workspace.fs.writeFile(
-        vscode.Uri.joinPath(revisionDirectory, ...pathSegments, fileName),
-        chunk.contents,
-      );
+      if (sharedFile !== undefined && sharedFile.contentDigest !== file.contentDigest) {
+        throw new TypeError(
+          `React preview shared artifact path changed contents: ${file.relativePath}`,
+        );
+      }
     }
   }
 
   /**
-   * Recreates stable artifact locations for a newly written or already shared content hash.
+   * Reports whether a new file or zero-reference tombstone requires a durable write before lease
+   * acquisition. Live records already guarantee compatible bytes through the preceding assertion.
    *
-   * @param contentHash Deterministic hash-directory name.
-   * @param hasStylesheet Whether this content identity includes a CSS output.
-   * @returns Opaque local locations without touching the filesystem.
+   * @param file Validated file considered for the current bundle publication.
+   * @returns `true` when no live shared filesystem file currently owns the portable identity.
    */
-  private describeBundle(contentHash: string, hasStylesheet: boolean): StoredPreviewArtifact {
-    const revisionDirectory = vscode.Uri.joinPath(this.resourceRoot, contentHash);
-    const baseArtifact = {
-      contentHash,
-      scriptLocation: vscode.Uri.joinPath(revisionDirectory, 'entry.js').toString(true),
-    };
-    return hasStylesheet
-      ? {
-          ...baseArtifact,
-          stylesheetLocation: vscode.Uri.joinPath(revisionDirectory, 'entry.css').toString(true),
-        }
-      : baseArtifact;
+  private requiresFileWrite(file: PlannedPreviewArtifactFile): boolean {
+    const identity = createPreviewArtifactPathIdentity(file.relativePath);
+    return (this.sharedFileByIdentity.get(identity)?.references ?? 0) === 0;
   }
 
   /**
-   * Releases one published ownership reference and deletes the directory after its final owner.
-   * All mutations share the store queue, so a concurrent publish cannot race a zero-count deletion.
+   * Creates required parent directories and writes only files absent from the session cache.
+   * The batch waits for every worker before reporting failure so rollback never races a late write.
+   */
+  private async writeMissingFiles(
+    files: readonly PlannedPreviewArtifactFile[],
+  ): Promise<SharedFileWriteResult> {
+    if (files.length === 0) {
+      return { writtenFiles: [] };
+    }
+
+    const directories = collectParentDirectories(files);
+    const directoryResult = await runBoundedOperations(
+      directories,
+      MAX_PARALLEL_ARTIFACT_IO,
+      async (pathSegments) => {
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.joinPath(this.resourceRoot, ...pathSegments),
+        );
+      },
+    );
+    if (directoryResult.error !== undefined) {
+      return { error: directoryResult.error, writtenFiles: [] };
+    }
+
+    const writtenFiles: PlannedPreviewArtifactFile[] = [];
+    const writeResult = await runBoundedOperations(
+      files,
+      MAX_PARALLEL_ARTIFACT_IO,
+      async (file) => {
+        await vscode.workspace.fs.writeFile(this.createFileUri(file.relativePath), file.contents);
+        writtenFiles.push(file);
+      },
+    );
+    return writeResult.error === undefined
+      ? { writtenFiles }
+      : { error: writeResult.error, writtenFiles };
+  }
+
+  /** Increments shared-file ownership after the complete missing-file batch succeeds. */
+  private acquireSharedFiles(files: readonly PlannedPreviewArtifactFile[]): void {
+    for (const file of files) {
+      const identity = createPreviewArtifactPathIdentity(file.relativePath);
+      const current = this.sharedFileByIdentity.get(identity);
+      this.sharedFileByIdentity.set(identity, {
+        contentDigest: file.contentDigest,
+        relativePath: current?.relativePath ?? file.relativePath,
+        references: (current?.references ?? 0) + 1,
+      });
+    }
+  }
+
+  /**
+   * Recreates stable artifact locations for a newly written or already shared content identity.
+   * No filesystem lookup is required because the immutable layout is retained with its lease.
+   */
+  private describeLayout(
+    layout: Pick<PublishedArtifactLayout, 'contentHash' | 'entryPath' | 'stylesheetPath'>,
+  ): StoredPreviewArtifact {
+    const baseArtifact = {
+      contentHash: layout.contentHash,
+      scriptLocation: this.createFileUri(layout.entryPath).toString(true),
+    };
+    return layout.stylesheetPath === undefined
+      ? baseArtifact
+      : {
+          ...baseArtifact,
+          stylesheetLocation: this.createFileUri(layout.stylesheetPath).toString(true),
+        };
+  }
+
+  /** Converts one already validated POSIX relative path into a session-local file URI. */
+  private createFileUri(relativePath: string): vscode.Uri {
+    return vscode.Uri.joinPath(this.resourceRoot, ...relativePath.split('/'));
+  }
+
+  /**
+   * Returns one bundle lease and removes each shared file only after its final distinct artifact.
+   * The old artifact remains leased until browser hot-reload acknowledgement, so dynamic imports
+   * already in flight cannot lose chunks during a revision transition.
    *
-   * @param contentHash Hash-directory name no longer needed by one preview revision.
+   * @param contentHash Bundle identity returned by an earlier successful publication.
    */
   public async release(contentHash: string): Promise<void> {
     if (this.disposed) {
@@ -172,35 +266,55 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     }
 
     await this.enqueueOperation(async () => {
-      const currentReferences = this.referenceCountByHash.get(contentHash);
-      if (currentReferences === undefined) {
+      const artifact = this.artifactByHash.get(contentHash);
+      if (artifact === undefined) {
         this.log.debug(`Cannot release unknown React preview artifact ${contentHash}.`);
         return;
       }
-
-      if (currentReferences > 1) {
-        this.referenceCountByHash.set(contentHash, currentReferences - 1);
+      if (artifact.references > 1) {
+        this.artifactByHash.set(contentHash, {
+          layout: artifact.layout,
+          references: artifact.references - 1,
+        });
         return;
       }
 
-      this.referenceCountByHash.delete(contentHash);
-      await this.deleteDirectory(vscode.Uri.joinPath(this.resourceRoot, contentHash));
+      this.artifactByHash.delete(contentHash);
+      const orphanedFiles: PublishedArtifactFileIdentity[] = [];
+      for (const file of artifact.layout.files) {
+        const identity = createPreviewArtifactPathIdentity(file.relativePath);
+        const sharedFile = this.sharedFileByIdentity.get(identity);
+        if (sharedFile === undefined) {
+          this.log.debug(`Cannot release unknown React preview file ${file.relativePath}.`);
+          continue;
+        }
+        if (sharedFile.references > 1) {
+          this.sharedFileByIdentity.set(identity, {
+            contentDigest: sharedFile.contentDigest,
+            relativePath: sharedFile.relativePath,
+            references: sharedFile.references - 1,
+          });
+        } else {
+          this.sharedFileByIdentity.set(identity, {
+            contentDigest: sharedFile.contentDigest,
+            relativePath: sharedFile.relativePath,
+            references: 0,
+          });
+          orphanedFiles.push(file);
+        }
+      }
+      await this.deleteFiles(orphanedFiles);
     });
   }
 
-  /**
-   * Schedules ordered removal of all files created by this extension-window session.
-   * Callers that control extension deactivation should await `shutdown()` for guaranteed completion.
-   */
+  /** Schedules ordered cleanup; deactivation callers should await `shutdown()` when possible. */
   public dispose(): void {
     void this.shutdown();
   }
 
   /**
-   * Rejects future publications, waits for already queued mutations, and removes the session cache.
-   * Repeated calls share one promise so context disposal and explicit deactivation remain idempotent.
-   *
-   * @returns Promise resolved after the session directory has been removed or cleanup was logged.
+   * Rejects future publications, drains queued mutations, and removes the entire private session.
+   * Repeated calls share one promise so context disposal and explicit deactivation are idempotent.
    */
   public shutdown(): Promise<void> {
     if (this.shutdownPromise !== undefined) {
@@ -210,37 +324,25 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     this.disposed = true;
     this.shutdownPromise = this.enqueueOperation(async () => {
       await this.deleteDirectory(this.resourceRoot);
-      this.referenceCountByHash.clear();
+      this.artifactByHash.clear();
+      this.sharedFileByIdentity.clear();
     });
     return this.shutdownPromise;
   }
 
-  /**
-   * Writes a stylesheet only when esbuild emitted one for the current component graph.
-   *
-   * @param revisionDirectory Hash-specific output directory.
-   * @param stylesheet Optional stylesheet bytes.
-   * @returns Written stylesheet URI or `undefined` when the bundle contains no CSS.
-   */
-  private async writeStylesheet(
-    revisionDirectory: vscode.Uri,
-    stylesheet: Uint8Array | undefined,
-  ): Promise<vscode.Uri | undefined> {
-    if (stylesheet === undefined) {
-      return undefined;
-    }
-
-    const stylesheetUri = vscode.Uri.joinPath(revisionDirectory, 'entry.css');
-    await vscode.workspace.fs.writeFile(stylesheetUri, stylesheet);
-    return stylesheetUri;
+  /** Deletes shared files concurrently while converting cleanup failures into diagnostics. */
+  private async deleteFiles(files: readonly PublishedArtifactFileIdentity[]): Promise<void> {
+    await runBoundedOperations(files, MAX_PARALLEL_ARTIFACT_IO, async (file) => {
+      const fileUri = this.createFileUri(file.relativePath);
+      try {
+        await vscode.workspace.fs.delete(fileUri, { recursive: false, useTrash: false });
+      } catch (error) {
+        this.log.debug(`Could not remove preview cache file ${fileUri.toString(true)}.`, error);
+      }
+    });
   }
 
-  /**
-   * Removes one generated directory without surfacing cleanup failures to preview users.
-   *
-   * @param directoryUri Generated directory to remove recursively.
-   * @returns A promise that always resolves after deletion succeeds or is logged.
-   */
+  /** Removes the private session directory without surfacing best-effort cleanup failures. */
   private async deleteDirectory(directoryUri: vscode.Uri): Promise<void> {
     try {
       await vscode.workspace.fs.delete(directoryUri, { recursive: true, useTrash: false });
@@ -250,11 +352,8 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   }
 
   /**
-   * Serializes every filesystem mutation and keeps the queue usable after an operation rejects.
-   * Reference counts are updated inside the same queue so publish and release stay atomic.
-   *
-   * @param operation Asynchronous filesystem mutation that must not overlap another store mutation.
-   * @returns Promise carrying the operation's original result or rejection.
+   * Serializes reference-count mutations and keeps the queue usable after one operation rejects.
+   * Independent I/O inside a publication remains bounded and parallel beneath this atomic boundary.
    */
   private enqueueOperation<Result>(operation: () => Promise<Result>): Promise<Result> {
     const result = this.operationQueue.then(operation, operation);
@@ -266,101 +365,105 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
   }
 }
 
-/**
- * Computes a short deterministic revision digest over every published browser artifact.
- *
- * @param bundle Compiled bytes whose identity should be stable across equivalent rebuilds.
- * @param chunks Validated chunks sorted by their safe relative output path.
- * @returns Sixteen hexadecimal characters used as a cache-busting directory name.
- */
-function createContentHash(bundle: PreviewBundle, chunks: readonly PreviewBundleChunk[]): string {
-  const hash = createHash('sha256');
-  hash.update(bundle.javascript);
-  hash.update('\0react-preview-stylesheet\0');
-  if (bundle.stylesheet !== undefined) {
-    hash.update(bundle.stylesheet);
-  }
-  hash.update('\0react-preview-chunks\0');
-  for (const chunk of chunks) {
-    updateLengthPrefixedHash(hash, chunk.relativePath);
-    updateLengthPrefixedHash(hash, chunk.contents);
-  }
-
-  return hash.digest('hex').slice(0, 16);
-}
-
-/**
- * Rejects compiler output paths that could escape, collide, or create non-JavaScript artifacts.
- * Validation remains inside the storage adapter even when the compiler applies the same policy:
- * artifact stores are a separate trust boundary and must never depend on a caller's path checks.
- *
- * @param chunks Untrusted auxiliary output descriptors supplied through the application port.
- * @returns A copied array sorted lexically by relative POSIX path.
- * @throws TypeError when a path violates the private `chunks/…/file.js` contract.
- * @throws RangeError when one preview exceeds the bounded auxiliary-file count.
- */
-function validateAndSortChunks(
-  chunks: readonly PreviewBundleChunk[],
-): readonly PreviewBundleChunk[] {
-  if (chunks.length > MAX_PREVIEW_CHUNKS) {
-    throw new RangeError(
-      `React preview bundles may contain at most ${MAX_PREVIEW_CHUNKS.toString()} auxiliary chunks.`,
-    );
-  }
-
-  const seenPaths = new Set<string>();
-  for (const chunk of chunks) {
-    assertSafeChunkPath(chunk.relativePath);
-    if (seenPaths.has(chunk.relativePath)) {
-      throw new TypeError(`Duplicate React preview chunk path: ${chunk.relativePath}`);
+/** Collects unique parent directories in lexical order; the root is included for root-level entry. */
+function collectParentDirectories(
+  files: readonly PlannedPreviewArtifactFile[],
+): readonly (readonly string[])[] {
+  const directoryByPath = new Map<string, readonly string[]>();
+  directoryByPath.set('', []);
+  for (const file of files) {
+    const segments = file.relativePath.split('/');
+    segments.pop();
+    if (segments.length > 0) {
+      directoryByPath.set(segments.join('/'), segments);
     }
-    seenPaths.add(chunk.relativePath);
   }
+  return [...directoryByPath.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, segments]) => segments);
+}
 
-  return [...chunks].sort((left, right) =>
-    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
-  );
+/** Result shared by bounded directory, write, and delete worker batches. */
+interface BoundedOperationResult {
+  /** First failure observed after all workers have settled. */
+  readonly error?: Error;
 }
 
 /**
- * Enforces an exact portable path form before any segment reaches `vscode.Uri.joinPath`.
- * Empty, current-directory, and parent-directory segments are rejected instead of normalized so
- * the hash identity and the eventual filesystem identity can never disagree.
- *
- * @param relativePath Candidate output path supplied by the preview compiler.
- * @throws TypeError when the value is not a relative POSIX JavaScript path below `chunks/`.
+ * Runs independent asynchronous work with a fixed upper concurrency bound and waits for all workers.
+ * Workers continue after an individual rejection so callers can safely roll back every completed
+ * write without a later promise mutating the filesystem after rollback begins.
  */
-function assertSafeChunkPath(relativePath: string): void {
-  const pathSegments = relativePath.split('/');
-  const hasUnsafeSegment = pathSegments.some(
-    (segment) => segment.length === 0 || segment === '.' || segment === '..',
-  );
-  if (
-    relativePath.includes('\0') ||
-    relativePath.includes('\\') ||
-    relativePath.startsWith('/') ||
-    pathSegments[0] !== 'chunks' ||
-    pathSegments.length < 2 ||
-    hasUnsafeSegment ||
-    !relativePath.endsWith('.js')
-  ) {
-    throw new TypeError(`Invalid React preview chunk path: ${relativePath}`);
-  }
+async function runBoundedOperations<Item>(
+  items: readonly Item[],
+  maximumConcurrency: number,
+  operation: (item: Item) => Promise<void>,
+): Promise<BoundedOperationResult> {
+  let nextIndex = 0;
+  let firstError: Error | undefined;
+  const workerCount = Math.min(maximumConcurrency, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      if (item === undefined) {
+        continue;
+      }
+      try {
+        await operation(item);
+      } catch (error) {
+        firstError ??= normalizeOperationError(error);
+      }
+    }
+  });
+  await Promise.all(workers);
+  return firstError === undefined ? {} : { error: firstError };
+}
+
+/** Converts arbitrary promise rejections into values legal and useful at a TypeScript throw site. */
+function normalizeOperationError(error: unknown): Error {
+  return error instanceof Error
+    ? error
+    : new Error('React preview artifact filesystem operation failed.', { cause: error });
 }
 
 /**
- * Adds an explicit byte length before one hash field so arbitrary chunk bytes cannot blur field
- * boundaries. Text is encoded as UTF-8 by Node's hash API while typed arrays retain exact bytes.
- *
- * @param hash Mutable SHA-256 digest owned by one content-identity calculation.
- * @param value Portable path text or complete JavaScript chunk bytes.
+ * Defends the shortened application lease identity against an otherwise theoretical hash collision.
+ * The full per-file digests remain the authoritative byte identities for shared storage paths.
  */
-function updateLengthPrefixedHash(
-  hash: ReturnType<typeof createHash>,
-  value: string | Uint8Array,
+function assertEquivalentLayouts(
+  published: PublishedArtifactLayout,
+  candidate: PreviewArtifactLayout,
 ): void {
-  const byteLength =
-    typeof value === 'string' ? Buffer.byteLength(value, 'utf8') : value.byteLength;
-  hash.update(`${byteLength.toString()}:`);
-  hash.update(value);
+  const filesMatch =
+    published.files.length === candidate.files.length &&
+    published.files.every((file, index) => {
+      const candidateFile = candidate.files[index];
+      return (
+        candidateFile?.relativePath === file.relativePath &&
+        candidateFile.contentDigest === file.contentDigest
+      );
+    });
+  if (
+    published.entryPath !== candidate.entryPath ||
+    published.stylesheetPath !== candidate.stylesheetPath ||
+    !filesMatch
+  ) {
+    throw new TypeError(`React preview artifact identity collision: ${candidate.contentHash}`);
+  }
+}
+
+/** Drops file contents after durable publication while preserving exact collision identities. */
+function createPublishedArtifactLayout(layout: PreviewArtifactLayout): PublishedArtifactLayout {
+  const baseLayout = {
+    contentHash: layout.contentHash,
+    entryPath: layout.entryPath,
+    files: layout.files.map((file) => ({
+      contentDigest: file.contentDigest,
+      relativePath: file.relativePath,
+    })),
+  };
+  return layout.stylesheetPath === undefined
+    ? baseLayout
+    : { ...baseLayout, stylesheetPath: layout.stylesheetPath };
 }

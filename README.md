@@ -147,8 +147,8 @@ Inspector dock에서는 다음 작업을 할 수 있습니다.
 - highlight를 켜거나 끄고, element picker로 DOM을 고른 뒤 가장 가까운 React component를 tree에서 선택
 - 직렬화 가능한 boolean·number·string·array·plain object props를 JSON으로 적용하거나 초기화
 - `Auto values`로 타입과 실제 receiver 경로에서 자동 생성된 preview-only 값을 켜거나 끄고 path/kind 확인
-- `Fallbacks`에서 Provider 예외나 필수 nullish 값 때문에 우회된 project hook, 원본 오류, source와
-  타입/사용처 추론 근거 및 `GENERATED RENDER VALUE`를 확인하고 `Auto values`로 원래 동작과 비교
+- `Fallbacks`에서 Provider 예외, 필수 nullish 값 또는 실제 object의 누락 leaf 때문에 보완된 hook, 원본 오류,
+  source·생성 path·타입/사용처 추론 근거 및 `GENERATED RENDER VALUE`를 확인하고 `Auto values`로 원래 동작과 비교
 - `Payloads`에서 관찰된 GraphQL/REST 요청, 타입 추론 근거와 실제 전달할 JSON을 확인하고 `Generate Lorem`,
   `Use Auto`, `Apply JSON`, `Reset override`로 backend 없는 응답을 변경
 - `Console`에서 hook/Provider, React lifecycle, promise와 project `console.*` 로그를 level/text로 필터링하고
@@ -169,12 +169,14 @@ snapshot입니다. React tree adapter는 Fiber나 hook queue를 수정하지 않
 조건 계측도 기본 상태에서는 authored 값을 그대로 반환합니다. 사용자가 강제한 경우에만 boolean 분기를
 바꾸고 실제 page root를 remount합니다. 그 branch가 API/GraphQL 값을 요청하면 no-network data boundary가
 타입 근거로 생성한 payload를 공급하며, 생성값은 `GENERATED · AUTO` 또는 `GENERATED · LOREM`으로 표시됩니다.
-reached project hook 또는 `use-query-params`가 Provider 예외를 던지거나 렌더에 필요한 nullish 값을 반환하면
-Page Inspector는 작성된 default, destructuring, required property path와 semantic name을 근거로 bounded
-static 값을 만들 수 있는 호출만 우회합니다. 실제 값은 identity까지 그대로 유지하고 Suspense thenable은
-React에 다시 전달합니다. 우회값은 `Fallbacks`와 Console warning에 표시되며 `Auto values`를 끄면 원래
-예외/값이 복원됩니다. 자동 근거로 표현할 수 없는 app context나 업무 invariant는 기존 component-local 오류
-경계가 해당 위치에 진단을 유지합니다.
+reached source의 imported/local `useX` hook 또는 직접 `useContext`가 Provider 예외를 던지거나 렌더에 필요한
+값을 비워 두면 Page Inspector는 패키지 이름이 아니라 작성된 default, destructuring, tuple, required property,
+call/조건 사용과 semantic name을 근거로 bounded static 값을 만들 수 있는 호출만 우회합니다. 실제 hook은 항상
+먼저 실행하며 완전한 실제 값은 identity까지 그대로 유지합니다. 일부 field만 없으면 getter를 실행하지 않는
+plain object/array copy에 해당 leaf만 채우고 실제 sibling, callback, class instance와 React element는 보존합니다.
+생성 path는 `Fallbacks`와 Console warning에 표시되고 `Auto values`를 끄면 원래 예외/값이 복원되며, Suspense
+thenable은 항상 React에 전달됩니다. 자동 근거로 표현할 수 없는 app invariant는 component-local 오류 경계가
+해당 위치에 진단을 유지합니다.
 React는 임의의 hook/local state slot을 수정하는 공개 API를 제공하지 않으므로 Inspector도 이를 추측하거나
 덮어쓰지 않습니다.
 `Open source` 요청은 webview의 임의 경로를 신뢰하지 않으며, 해당 panel의 마지막 정상 bundle dependency로

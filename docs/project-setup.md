@@ -103,7 +103,8 @@ HTML element tag 대신 부모·형제·자식 function/class/memo/forwardRef co
 - `Main component`: 현재 파일의 대표 default/첫 PascalCase export와 mounted target으로 tree 선택 복귀
 - `Pick element`: 실제 DOM을 골라 가장 가까운 React component를 tree에서 선택
 - `Serializable props (JSON)`: 선택한 target 또는 ancestor root의 plain data props를 적용·초기화
-- `Auto values`: 확장이 만든 prop path와 object/string/function 값을 모두 허용하거나 제외
+- `Auto values`: 확장이 만든 prop/data/hook path와 object/string/function 값을 모두 허용하거나 제외. 실제
+  hook object가 일부 값을 제공하면 그 값은 유지하고 정적으로 필요한 nullish leaf만 preview 값으로 보완
 - `Payloads`: 관찰된 API/GraphQL 요청과 타입 근거를 선택하고 Auto/Lorem payload를 생성하거나 JSON 직접 적용
 - `Console`: hook/Provider와 React lifecycle, project `console.*`, unhandled promise/runtime 오류를 level/text로
   필터링하고 component/JavaScript stack과 failure phase 확인

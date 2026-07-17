@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1045 - 2026-07-17
+
+- hook이 완전히 `null`인 경우뿐 아니라 `{ data: {}, field: undefined }`처럼 일부 경로만 비어 있는 경우도
+  실제 own data-property를 보존하면서 정적 추론값으로 누락 leaf만 보완하고, hook 위치별 stable identity를 유지
+- imported `useX` hook을 특정 프로젝트/패키지 이름 대신 실제 destructuring·property·tuple·call·조건 사용 증거로
+  분석하고 Apollo, Formik, Redux, 번역/상태 라이브러리 및 직접 `useContext` 실패를 동일한 경계에서 처리
+- imported `use*Context` 호출도 Page Inspector resolver를 통과시켜 Provider exception, nullish root와 partial
+  Context value를 복구하되 일반 Gallery에서는 기존 `hookCall ?? fallback` 동작을 그대로 보존
+- 생성한 경로를 `Fallbacks`와 Console warning에 표시하고 getter, class instance, React element, callback 및
+  prototype-sensitive key는 병합하지 않는 회귀 테스트 추가
+
 ## 0.1.1044 - 2026-07-17
 
 - React Fiber의 project-owned Portal을 더 이상 내부 노드로 접지 않고 `OverlayPortal` layer로 보존해 Modal,

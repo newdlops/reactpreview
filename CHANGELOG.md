@@ -13,7 +13,8 @@
 - 함수 hook/class state와 runtime props는 getter나 update queue를 실행하지 않는 read-only snapshot으로 보여주고,
   계측된 target/root의 직렬화 가능한 props override와 remount만 기존 안전 계약으로 편집
 - JSX development source 또는 정적 render/ancestor graph가 증명한 source를 Inspector에서 열 수 있게 하고,
-  extension host는 현재 panel의 committed dependency allowlist 안 파일만 검증해 editor 위치로 이동
+  실제 source-button 클릭을 target별 HMAC과 일회성 nonce로 인증한 뒤 extension host가 현재 panel의
+  committed dependency allowlist 안 파일만 검증해 editor 위치로 이동
 
 ## 0.1.1024 - 2026-07-17
 

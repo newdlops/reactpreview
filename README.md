@@ -133,7 +133,8 @@ snapshot입니다. React tree adapter는 Fiber나 hook queue를 수정하지 않
 React는 임의의 hook/local state slot을 수정하는 공개 API를 제공하지 않으므로 Inspector도 이를 추측하거나
 덮어쓰지 않습니다.
 `Open source` 요청은 webview의 임의 경로를 신뢰하지 않으며, 해당 panel의 마지막 정상 bundle dependency로
-확인된 JS/TS source만 현재 local/remote workspace URI를 유지해 엽니다.
+확인된 JS/TS source만 현재 local/remote workspace URI를 유지해 엽니다. 실제 Inspector 버튼 클릭은
+target별 HMAC과 일회성 nonce로 인증되므로 렌더링된 project code가 같은 host message를 위조할 수 없습니다.
 
 선택 target의 render/lifecycle이 정적값 부족으로 실패하면 해당 target 위치만 작은 placeholder로 바뀌고
 실제 ancestor와 바깥 sibling, Inspector toolbar는 유지됩니다. 전체 stack과 자동 runtime 경계 상태는

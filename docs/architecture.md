@@ -263,7 +263,10 @@ custom host와 Shadow DOM portal 안의 하단 dock은 왼쪽 React component tr
 JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference를 편집 계약에서 제외합니다. boolean
 조건 prop은 override로 바꾸고 event-driven state는 실제 page UI로 조작하지만 임의 hook/local state slot은
 수정하지 않습니다. source-open browser message는 extension host의 committed dependency allowlist를 통과한
-JS/TS 파일만 현재 local/remote workspace editor에서 열 수 있습니다.
+JS/TS 파일만 현재 local/remote workspace editor에서 열 수 있습니다. 이 bridge는 public Inspector API와
+분리되어 있으며 실제 source-button click의 경로·좌표·nonce를 target별 HMAC으로 서명합니다. host는 proof를
+검증하고 nonce를 한 번만 소비한 뒤 lexical dependency identity를 먼저 확인하므로 임의 path의 realpath조차
+수행하지 않습니다.
 
 `previewInspectorTargetBoundaryRuntimeSource`는 facade가 감싼 정확한 target invocation 아래의 render/lifecycle
 오류를 잡습니다. 정상 경로에는 host DOM을 추가하지 않고 실패 경로에만 compact custom-element와 Retry를

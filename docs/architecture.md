@@ -245,17 +245,25 @@ import한 children, sibling, dynamic branch, hook/effect, CSS와 library는 ordi
 사용하지 않은 target sibling export는 tree-shake됩니다. setup, 자동 Provider, CSP와 asset policy는 일반
 preview와 같은 바깥 경계를 계속 사용합니다.
 
-`pageInspector/previewInspectorFiberRuntimeSource`는 boundary class의 React 16-19 Fiber 포인터를 버전
-격리된 adapter에서 읽기만 하고, 각 branch의 첫 connected host DOM을 bounded하게 찾습니다. Fiber, hook,
-update queue나 project props는 수정하지 않습니다. 따라서 application DOM에 marker/wrapper가 추가되지 않아
-`:first-child`/`:nth-child`, table, SVG 의미를 보존하며 lookup 실패나 portal은 ReactDOM fallback 또는
-element picker로 지정할 수 있습니다. toolbar는 격리 style의 custom host와 Shadow DOM portal에 마운트하고
-정적으로 증명된 export별 entry-to-target render chain(없으면 legacy ancestry), target/root 선택, highlight,
-picker,
-remount와 plain JSON props override만
-노출합니다. JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference를 편집 계약에서
-제외합니다. boolean 조건 prop은 override로 바꾸고 event-driven state는 실제 page UI로 조작하지만 임의의
-hook/local state slot은 수정하지 않습니다.
+`pageInspector/previewInspectorFiberRuntimeSource`와 component-tree adapter는 boundary class의 React 16-19
+Fiber 포인터를 버전 격리된 경계에서 읽기만 합니다. boundary에서 HostRoot까지 올라간 뒤 최대 4,096 Fiber와
+512개의 표시 component만 순회해 실제 부모·형제·자식 관계를 만들고, host DOM tag와 Inspector 자체 portal
+branch는 기본 tree에서 제외합니다. 선택 component별 top-level connected host DOM을 별도 비열거 인덱스로
+보관해 tree highlight와 element-picker 역매핑에 사용합니다. Fiber, hook, update queue나 project props는
+수정하지 않습니다.
+
+props와 hook/class state는 own data descriptor만 제한된 깊이·key·array/string budget으로 복사하므로 getter나
+project code를 실행하지 않습니다. JSX development `_debugSource`가 있으면 authored line/column을 쓰고,
+없으면 inspector ancestry/render-chain의 source path와 occurrence를 사용합니다. Fiber를 읽지 못하는 초기 또는
+오류 상태에서도 정적 EntryPoint→target 경로는 fallback component tree로 남습니다.
+
+DevTools UI source는 main runtime과 분리된 `previewInspectorDevtoolsUiRuntimeSource`에서 생성합니다. 격리된
+custom host와 Shadow DOM portal 안의 하단 dock은 왼쪽 React component tree와 오른쪽 props/state/source
+상세로 나뉘며, target/root 선택, highlight, picker, remount와 plain JSON props override를 노출합니다.
+JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference를 편집 계약에서 제외합니다. boolean
+조건 prop은 override로 바꾸고 event-driven state는 실제 page UI로 조작하지만 임의 hook/local state slot은
+수정하지 않습니다. source-open browser message는 extension host의 committed dependency allowlist를 통과한
+JS/TS 파일만 현재 local/remote workspace editor에서 열 수 있습니다.
 
 `previewInspectorTargetBoundaryRuntimeSource`는 facade가 감싼 정확한 target invocation 아래의 render/lifecycle
 오류를 잡습니다. 정상 경로에는 host DOM을 추가하지 않고 실패 경로에만 compact custom-element와 Retry를

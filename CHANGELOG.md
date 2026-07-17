@@ -2,6 +2,19 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1025 - 2026-07-17
+
+- 기존 우측 floating toolbar를 Chrome DevTools Elements와 유사한 하단 dock으로 교체하고, 실제 page는
+  그대로 유지한 채 왼쪽 React component tree와 오른쪽 props/state/source 상세를 분리해 표시
+- 선택 target boundary에서 React 16-19 Fiber를 root까지 읽기 전용으로 추적해 부모·형제·자식 component를
+  수집하고 DOM host tag는 기본 tree에서 제외하며, Fiber가 없으면 정적 entry-to-target 경로를 fallback으로 표시
+- element picker가 고른 host DOM을 가장 가까운 React component로 역매핑하고 tree 선택 component의 실제
+  top-level host node를 강조하며, traversal·snapshot depth·key 수를 제한해 대형 page에서도 bounded하게 동작
+- 함수 hook/class state와 runtime props는 getter나 update queue를 실행하지 않는 read-only snapshot으로 보여주고,
+  계측된 target/root의 직렬화 가능한 props override와 remount만 기존 안전 계약으로 편집
+- JSX development source 또는 정적 render/ancestor graph가 증명한 source를 Inspector에서 열 수 있게 하고,
+  extension host는 현재 panel의 committed dependency allowlist 안 파일만 검증해 editor 위치로 이동
+
 ## 0.1.1024 - 2026-07-17
 
 - 번들러가 이미 Go 네이티브 esbuild임을 유지하고, 동일한 target/runtime plan은 최대 12개의

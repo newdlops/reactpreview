@@ -71,7 +71,7 @@ root가 작성한 children, sibling, 조건식, hook, effect, event handler와 C
 Inspector는 별도로 import identity가 증명된 `createRoot`/`hydrateRoot`/legacy ReactDOM mount를 찾습니다.
 현재 파일의 모든 direct component export가 한 module index를 공유하며, 각 export에서 `React.lazy`,
 re-export, route `element`, page map과 router local value를 거슬러 실제 entry에 도달한 후보를 우선하고
-route layout·guard를 toolbar 경로에 포함합니다. 아직 root가 렌더하지 않은 sibling export도 Target 목록에서
+route layout·guard를 정적 component 경로에 포함합니다. 아직 root가 렌더하지 않은 sibling export도 목록에서
 선택해 정적 경로를 확인할 수 있습니다. 이 분석은 entry 파일이나 route
 loader를 실행하지 않으며, 안전하게 실행할 root는 계속 importable component export로 분리합니다. 여러
 entry가 연결되면 후보 수를 유지하고, 연결되지 않은 export는 standalone fallback으로 명시합니다.
@@ -82,24 +82,30 @@ entry가 연결되면 후보 수를 유지하고, 연결되지 않은 export는 
 선형 reverse import index를 자동 fallback으로 사용합니다. 따라서 filename 관례가 없는 entry도 fallback에서
 찾을 수 있고, 모노레포 alias는 두 경로 모두 프로젝트의 정확한 resolver가 판정합니다.
 
-toolbar에서는 정적으로 증명된 ancestry와 Target/Root 항목을 선택하고 다음 값을 조작할 수 있습니다.
+Inspector는 하단 dock의 왼쪽에 runtime React Components tree를, 오른쪽에 선택 component의 상세를 표시합니다.
+HTML element tag 대신 부모·형제·자식 function/class/memo/forwardRef component가 중심이며, runtime Fiber를
+얻기 전에는 정적으로 증명한 EntryPoint→target 경로가 fallback tree가 됩니다. 다음 값을 확인·조작할 수
+있습니다.
 
-- `Highlight target`: 대상 component가 commit한 DOM 범위를 강조하거나 해제
-- `Pick element`: portal이나 자동 host lookup 범위 밖의 DOM을 직접 강조 대상으로 지정
+- `Highlight`: 선택 component가 commit한 top-level DOM 범위를 강조하거나 해제
+- `Pick element`: 실제 DOM을 골라 가장 가까운 React component를 tree에서 선택
 - `Serializable props (JSON)`: 선택한 target 또는 ancestor root의 plain data props를 적용·초기화
 - `Auto-generated preview values`: 확장이 만든 prop path와 object/string/function 같은 kind 확인
 - `Remount`: 선택한 component error/local state를 새 instance로 초기화
+- `Open source`: JSX metadata나 정적 graph가 가리키는 component 위치를 VS Code editor에서 열기
 
 예를 들어 root의 `{ "show": false }` 또는 target의 `{ "enabled": true }`를 적용하면 그 prop을 읽는
 삼항식이나 boolean branch가 실제 React render를 거쳐 바뀝니다. component 내부 `useState`는 페이지의
-실제 button/input 같은 UI로 조작할 수 있습니다. Inspector의 버전 격리 adapter는 target boundary 아래
-host 위치만 읽으며 Fiber, hook queue나 local variable slot을 수정하지 않습니다. 함수, symbol, 순환 객체
-prop도 JSON editor에 보존하지 않습니다.
+실제 button/input 같은 UI로 조작할 수 있습니다. 오른쪽에 보이는 runtime props와 hook/class state는 own data
+descriptor만 제한된 크기로 복사한 read-only snapshot입니다. Inspector의 버전 격리 adapter는 Fiber root를
+읽기 전용으로 순회하며 Fiber, hook queue나 local variable slot을 수정하지 않습니다. 함수, symbol, 순환
+객체 prop도 JSON editor에 보존하지 않습니다. source 이동은 현재 panel의 마지막 정상 bundle dependency로
+증명된 파일만 허용하므로 project code가 webview message로 임의 host 파일을 열 수 없습니다.
 
 실행 root 역추적은 project-level owner/barrel 최대 8단계와 same-file private owner 최대 12단계로
 제한됩니다. 별도 render graph는 최대 32단계와 8개 후보를 유지하고 실제 entry 도달성을 우선합니다.
 route config는 구조 근거로 통과하지만 loader/action과 업무 path 의미를 실행·추측하지 않습니다. private
-terminal, cycle, 소스/그래프/깊이/경로 한도에서는 toolbar에 partial 또는 bounded 상태를 표시합니다. 원하는
+terminal, cycle, 소스/그래프/깊이/경로 한도에서는 dock에 partial 또는 bounded 상태를 표시합니다. 원하는
 scenario가 아니거나 root가 필수 auth,
 route parameter, store leaf, dynamic Provider value 때문에 실패하면 아래 setup 또는 명시적인 preview
 harness가 여전히 올바른 해결책입니다. setup의 `PreviewProviders`, props와 자동 runtime boundary는

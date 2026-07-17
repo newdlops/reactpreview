@@ -108,22 +108,32 @@ bare wildcard만 있어 export identity를 정적으로 증명할 수 없는 파
 fallback으로 열립니다. 이 경우에도 export 선택, 자동 highlight, JSON props와 picker는 동작하며 Output에
 ancestor 문맥이 없다는 warning을 남깁니다.
 
-Inspector toolbar에서는 다음 작업을 할 수 있습니다.
+Inspector는 실제 page 위에 작은 toolbar를 띄우는 대신 Chrome DevTools처럼 하단에 분리된 dock을 엽니다.
+왼쪽 `Components` 영역은 HTML tag가 아니라 runtime React component를 부모·형제·자식 계층으로 보여주고,
+오른쪽 상세 영역은 선택 component의 props, hook/class state snapshot과 authored source를 보여줍니다.
+runtime Fiber를 아직 읽을 수 없는 초기·실패 상태에서는 정적으로 증명한 EntryPoint→target component 경로를
+같은 tree에 fallback으로 표시합니다.
+
+Inspector dock에서는 다음 작업을 할 수 있습니다.
 
 - 정적으로 증명된 application entry-to-target 경로와 대안 수를 확인하고 target/ancestor root를 선택
-- `Highlight target`을 켜거나 끄고, `Pick element`로 포털처럼 자동 범위 밖의 DOM을 직접 선택
+- highlight를 켜거나 끄고, element picker로 DOM을 고른 뒤 가장 가까운 React component를 tree에서 선택
 - 직렬화 가능한 boolean·number·string·array·plain object props를 JSON으로 적용하거나 초기화
 - 타입과 실제 receiver 경로에서 자동 생성된 정적값의 path/kind를 확인하고 JSON 값으로 덮어쓰기
 - 선택 component를 명시적으로 remount해 local state를 초기 상태로 되돌리기
+- JSX development metadata 또는 정적 graph가 증명한 component source를 VS Code editor에서 열기
 
-target highlight는 application DOM에 marker나 wrapper를 삽입하지 않습니다. 버전별 React boundary tree를
-읽기 전용으로 따라가 host DOM을 찾고, 실패하면 지원되는 ReactDOM lookup 또는 `Pick element`로 폴백한 뒤
-기존 DOM element outline만 사용합니다. toolbar host와 내용은 inline 격리·Shadow DOM으로 프로젝트
+component highlight는 application DOM에 marker나 wrapper를 삽입하지 않습니다. 버전별 React boundary tree를
+읽기 전용으로 따라가 선택 component 아래의 top-level host DOM을 찾고, 실패하면 지원되는 ReactDOM lookup
+또는 picker로 폴백한 뒤 기존 DOM element outline만 사용합니다. dock host와 내용은 Shadow DOM으로 프로젝트
 스타일에서 분리됩니다. boolean prop이나 root의 조건 prop은 JSON에서
 바꾸면 동적 children/sibling 분기가 다시 렌더링되고, 일반 event-driven state는 실제 페이지 UI로
-조작할 수 있습니다. React tree adapter는 host 위치만 읽고 Fiber나 hook queue를 수정하지 않습니다.
+조작할 수 있습니다. 상세 패널의 runtime props와 hook/class state는 getter를 실행하지 않는 bounded read-only
+snapshot입니다. React tree adapter는 Fiber나 hook queue를 수정하지 않습니다.
 React는 임의의 hook/local state slot을 수정하는 공개 API를 제공하지 않으므로 Inspector도 이를 추측하거나
 덮어쓰지 않습니다.
+`Open source` 요청은 webview의 임의 경로를 신뢰하지 않으며, 해당 panel의 마지막 정상 bundle dependency로
+확인된 JS/TS source만 현재 local/remote workspace URI를 유지해 엽니다.
 
 선택 target의 render/lifecycle이 정적값 부족으로 실패하면 해당 target 위치만 작은 placeholder로 바뀌고
 실제 ancestor와 바깥 sibling, Inspector toolbar는 유지됩니다. 전체 stack과 자동 runtime 경계 상태는

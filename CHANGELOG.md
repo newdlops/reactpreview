@@ -2,6 +2,26 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1044 - 2026-07-17
+
+- React Fiber의 project-owned Portal을 더 이상 내부 노드로 접지 않고 `OverlayPortal` layer로 보존해 Modal,
+  Drawer 등 portal child와 실제 owner context를 Components tree에서 함께 표시하고 선택/highlight 가능하게 변경
+- hostless Context/Provider를 통해 authored `children` identity를 그대로 전달하는 component를 bounded Fiber
+  비교로 판정해 `wrapper` badge로 표시하고, Modal/Dialog 계열 component는 mounted/dormant overlay로 구분
+- `open`/`isOpen`/`visible`/`show`/`hidden` 같은 overlay visibility prop, 정확한 ReactDOM `createPortal`
+  logical/ternary branch와 overlay-local `if (...) return null` guard를 preview condition으로 계측
+- 닫힌 overlay도 Components tree에 `overlay · dormant` 조건 행으로 남기고 클릭 또는 상세 버튼으로 열고 닫되,
+  override가 없으면 authored value와 branch를 그대로 유지하도록 회귀 테스트 추가
+
+## 0.1.1043 - 2026-07-17
+
+- Page Inspector가 선택한 page 후보마다 target-facing render path의 Router 소유 여부를 별도로 기록해,
+  애플리케이션 graph 어딘가의 Router가 실제로 분리 마운트된 후보의 자동 경계를 잘못 끄지 않도록 수정
+- 선택 후보가 Router 밖에서 렌더될 때 대상 프로젝트의 `MemoryRouter`를 후보 지역 경계로 보충하고,
+  setup/상위 Router context는 render 시점에 상속하며 Router를 직접 소유한 후보에는 중첩하지 않도록 보장
+- detached 후보·기존 Router 내부 후보·Router 소유 후보가 모두 정확히 한 Router depth에서 렌더되는 회귀
+  테스트와 후보 metadata 직렬화 테스트 추가
+
 ## 0.1.1042 - 2026-07-17
 
 - direct JSX parent 탐색이 private factory/route value에서 끊겨도 이미 증명된 target→entry render graph의

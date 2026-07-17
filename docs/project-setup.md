@@ -120,8 +120,12 @@ descriptor만 제한된 크기로 복사한 read-only snapshot입니다. Inspect
 객체 prop도 JSON editor에 보존하지 않습니다. source 이동은 현재 panel의 마지막 정상 bundle dependency로
 증명된 파일만 허용하므로 project code가 webview message로 임의 host 파일을 열 수 없습니다.
 
-Page Inspector build는 reached JS/JSX/TS/TSX module에서 오른쪽이 직접 JSX인 논리곱과 한쪽 이상이 직접 JSX인
-삼항식만 계측합니다. override가 없으면 object를 포함한 원래 condition 값을 그대로 반환해 JavaScript
+Page Inspector build는 reached JS/JSX/TS/TSX module에서 오른쪽이 직접 JSX 또는 exact ReactDOM Portal인
+논리곱과 한쪽 이상이 같은 render branch인 삼항식을 계측합니다. Modal/Dialog/Drawer/Popover/Overlay 계열
+JSX tag의 `open`, `isOpen`, `visible`, `isVisible`, `show`, `active`, `expanded`, `present`, `hidden` prop과,
+overlay component 내부의 단일 early `return null` guard도 가시성 조건으로 표시합니다. project-owned Portal은
+Components tree에서 `OverlayPortal`로, hostless child pass-through는 `wrapper`로 표시됩니다.
+override가 없으면 object를 포함한 원래 condition 값을 그대로 반환해 JavaScript
 truthiness와 `&&` 결과를 보존합니다. tree 조건 행을 클릭하거나 상세 branch 버튼을 누르면 해당 page context를
 remount해 memoized owner도 새 결정을 읽습니다. 강제로 연 branch가 API/GraphQL 응답을 요구하면 아래의
 no-network payload registry가 먼저 타입 근거로 값을 공급합니다. 프로젝트 Context나 업무 invariant처럼
@@ -391,6 +395,12 @@ route module, browser history, loader/action이나 서버를 불러오지 않습
 custom setup이나 Storybook preview가 존재한다는 이유만으로 자동 Router를 끄지는 않습니다. 실제 setup
 graph의 Provider/decorator import가 확인되면 nested Router를 피하고, provider 근거 없이 정적 location만
 조정하려면 다음처럼 `routerPreview`를 지정합니다.
+
+Page Inspector에서 애플리케이션 Router보다 안쪽의 page/component 후보를 선택하면 전체 graph에 Router
+근거가 있더라도 그 후보는 독립적인 React root branch로 마운트될 수 있습니다. 확장은 후보 아래의 실제
+target-facing render path를 별도로 검사하고, render 시점에 상위 Router context가 없을 때만 후보 지역
+`MemoryRouter`를 보충합니다. `AppRouter`나 `RouterProvider`를 포함한 후보 및 `PreviewProviders`가 이미
+제공한 Router에는 추가 경계를 중첩하지 않습니다.
 
 ```tsx
 export const routerPreview = {

@@ -289,6 +289,11 @@ module만 TypeScript syntax tree로 읽습니다. 오른쪽 operand가 직접 JS
 conditional expression의 condition operand만 전역 Inspector API resolver로 감싸며 expression을 한 번만
 평가합니다. override가 없으면 원래 primitive/object를 그대로 돌려주고 forced false/true에서만 boolean을
 반환합니다. module당 128개, session당 512개로 제한하고 parser recovery나 겹치는 range는 fail closed합니다.
+같은 transform은 exact `react-dom` import의 `createPortal` branch, Modal/Dialog/Drawer/Popover 등 overlay-shaped
+JSX tag의 bounded visibility prop과 overlay-named 또는 portal-owning 함수의 단일 early `return null` guard도
+수집합니다. `hidden`과 null guard는 resolver 바깥에서 반전해 UI의 true가 항상 visible을 뜻하게 하면서
+override가 없을 때 authored branch 의미를 유지합니다. 일반 component의 같은 이름 prop과 임의 함수의 null
+guard는 계측하지 않습니다.
 `previewInspectorConditionRuntimeSource`는 compiler-issued hash ID의 authored/effective/override 상태와 자동 prop
 값 허용 여부를 pinned hot session에 유지합니다. 변경 시 shared revision key로 authored root를 remount합니다.
 `previewInspectorConditionUiRuntimeSource`는 JSX-dev source path/line이 같은 가장 가까운 component에 condition
@@ -296,8 +301,10 @@ pseudo node를 붙이고, 소유자를 증명하지 못하면 `Render conditions
 
 `pageInspector/previewInspectorFiberRuntimeSource`와 component-tree adapter는 boundary class의 React 16-19
 Fiber 포인터를 버전 격리된 경계에서 읽기만 합니다. boundary에서 HostRoot까지 올라간 뒤 최대 4,096 Fiber와
-512개의 표시 component만 순회해 실제 부모·형제·자식 관계를 만들고, host DOM tag와 Inspector 자체 portal
-branch는 기본 tree에서 제외합니다. 선택 component별 top-level connected host DOM을 별도 비열거 인덱스로
+512개의 표시 component만 순회해 실제 부모·형제·자식 관계를 만듭니다. host DOM tag와 Inspector 자체 portal
+branch는 제외하지만 project Portal은 `OverlayPortal`로 보존합니다. `props.children` React element identity가
+hostless Context/Fragment 경로의 실제 child Fiber와 일치하면 transparent wrapper로, portal 또는 overlay-shaped
+component 이름은 mounted/dormant overlay로 data-only 분류합니다. 선택 component별 top-level connected host DOM을 별도 비열거 인덱스로
 보관해 tree highlight와 element-picker 역매핑에 사용합니다. Fiber, hook, update queue나 project props는
 수정하지 않습니다.
 
@@ -463,6 +470,13 @@ optional resolve합니다. 기본 `['/']` history를 제공하며 앱 route modu
 import하지 않습니다. custom/Storybook setup이 있다는 사실만으로 자동 계층을 억제하지 않고 실제 setup
 graph의 provider 근거가 있으면 nested Router를 만들지 않습니다. setup은 bounded string entries·index를
 지정하거나 `false`로 명시적으로 끌 수 있습니다.
+
+Page Inspector의 selectable root는 전체 target graph와 같은 Provider 계층을 반드시 포함하지 않습니다.
+따라서 ancestor planner는 후보 root 아래의 target-facing render-path module만 다시 검사해
+`rootOwnsRouter`를 descriptor에 기록합니다. 브라우저의 후보 loader는 실제 React render 시점에
+`useInRouterContext`(v5는 legacy context)를 확인하고, 상위 context가 없으며 후보도 Router를 소유하지
+않을 때만 대상 프로젝트 package 인스턴스의 후보 지역 `MemoryRouter`를 합성합니다. 이 경계는 setup
+Provider를 그대로 상속하고 AppRouter/RouterProvider 후보 안에는 중첩되지 않습니다.
 
 `reactContextFallback`은 workspace 안의 TypeScript에만 적용되며 React import identity와 explicit missing
 default를 확인합니다. inline structural type뿐 아니라 같은 module의 유일한 non-generic·acyclic

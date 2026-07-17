@@ -37,6 +37,9 @@ event handler가 일반 페이지처럼 실행됩니다.
 re-export, route 배열·router 객체와 조건부 app map의 값 흐름을 따라 target까지의 후보 경로를 비교합니다.
 발견한 entry는 구조와 HMR 근거일 뿐 실행하지 않으므로 인증 bootstrap, API client와 전체 route table은
 웹뷰에 들어오지 않습니다. 독립 export gallery는 이 실제 page composition과 분리된 보조 모드입니다.
+서로 다른 page root로 이어지는 호출 경로가 여러 개이면 Inspector의 `PAGE PATH` 선택기에 후보를 보존합니다.
+후보를 바꾸면 선택한 authored root와 그 children/sibling graph만 브라우저에서 지연 로드해 같은 대상이
+각 final page 안에서 차지하는 위치를 비교할 수 있습니다.
 
 ## 설치
 
@@ -98,11 +101,11 @@ cycle 또는 깊이 한도에서는 마지막으로 확인된 React root와 part
 별도의 inert render graph는 현재 파일의 모든 direct component export를 한 번 인덱싱하고 각 export에서
 실제 ReactDOM mount까지 여러 후보를 탐색합니다. literal
 dynamic import와 named/wildcard re-export, route `element`의 layout·guard, local page map/router 값 흐름을
-통과하고 실제 entry에 도달한 경로를 story/test의 끊긴 사용처보다 먼저 선택합니다. 서로 다른 app entry가
-모두 유효하면 후보를 보존하며, 사용처가 없는 export는 `entry-unreachable`인 standalone fallback으로
+통과하고 실제 entry에 도달한 경로를 story/test의 끊긴 사용처보다 먼저 선택합니다. 서로 다른 app entry나
+page root가 모두 유효하면 mount 결과가 다른 후보를 최대 6개까지 보존하고, `PAGE PATH` 선택 시 해당
+importable root를 지연 로드합니다. 사용처가 없는 export는 `entry-unreachable`인 standalone fallback으로
 구분합니다. Inspector의 Target 목록에서 아직 현재 root에 렌더되지 않은 sibling export도 선택해 이 경로를
-확인할 수 있습니다. 실제로 번들링하는 root는 계속 검증된 importable component export이므로 entry side
-effect는 실행되지 않습니다.
+확인할 수 있습니다. application entry 자체는 실행하지 않으므로 entry side effect는 계속 차단됩니다.
 
 대형 저장소에서는 `index`/`main`/`entry` 계열 파일을 이름만으로 entry라고 가정하지 않고, 해당 후보에서
 ReactDOM mount import와 호출 identity를 먼저 AST로 증명합니다. 증명된 entry의 literal import를 target까지
@@ -125,7 +128,7 @@ Inspector dock에서는 다음 작업을 할 수 있습니다.
 
 - 하단·좌측·우측 drawer와 floating 배치를 선택하고 크기·위치를 pointer 또는 방향키로 조절하거나 접기
 - `Main component`로 tree 선택을 현재 파일의 대표 export와 실제 mounted target으로 즉시 되돌리기
-- 정적으로 증명된 application entry-to-target 경로와 대안 수를 확인하고 target/ancestor root를 선택
+- `PAGE PATH`에서 정적으로 증명된 caller→page root 후보를 선택해 각 final page 문맥을 지연 로드
 - highlight를 켜거나 끄고, element picker로 DOM을 고른 뒤 가장 가까운 React component를 tree에서 선택
 - 직렬화 가능한 boolean·number·string·array·plain object props를 JSON으로 적용하거나 초기화
 - `Auto values`로 타입과 실제 receiver 경로에서 자동 생성된 preview-only 값을 켜거나 끄고 path/kind 확인
@@ -174,13 +177,14 @@ export가 다시 마운트되고, 일반 오류는 `Retry` 또는 toolbar의 `Re
 webview state에 영구 저장되지 않습니다. 따라서 hot reload 중에는 진단을 유지하지만 전체 탭 reload나 `Clear`로
 초기화됩니다.
 
-선택 export, highlight 상태, props/payload override, Auto payload 설정과 Inspector 배치·크기·위치는 해당
+선택 export와 page path, highlight 상태, props/payload override, Auto payload 설정과 Inspector 배치·크기·위치는 해당
 웹뷰 탭에만 저장됩니다. 소스,
 선택된 ancestor 또는 entry/lazy/route 경로 근거가 바뀌면 같은 패널이 서버 없는 ESM/CSS hot reload를
 수행하고 설정과 override를 다시 적용합니다.
-프로젝트 React root 자체는 다시 마운트되므로 임의의 hook state는 보존되지 않습니다. 여러 실제 사용처가
-있으면 page/layout/App 관례와 테스트 경로 감점을 적용한 결정적 후보를 고르지만 업무 route 의미까지
-추측하지는 않습니다. 다른 scenario나 Provider state가 필요하면
+프로젝트 React root 자체는 다시 마운트되므로 임의의 hook state는 보존되지 않습니다. 여러 실제 사용처는
+page/layout/App 관례와 테스트 경로 감점을 적용해 정렬하며, 같은 authored owner chain으로 귀결되는 후보는
+중복 제거합니다. 하나의 root 안에서 route state만 달라지는 업무 scenario까지 추측하지는 않습니다. 다른
+scenario나 Provider state가 필요하면
 [프로젝트 setup 가이드](docs/project-setup.md)의 setup 또는 harness를 사용하세요.
 
 ## 요구사항

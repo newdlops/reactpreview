@@ -237,7 +237,11 @@ source path, export, occurrence와 literal prop 근거만 보존합니다.
 module resolution cache로 alias identity만 증명합니다. facade build 단계는 guarded `build.resolve`로 같은
 canonical target을 다시 확인하므로 정적 계획과 실제 esbuild graph가 다른 모듈을 계측하지 않습니다.
 더 바깥쪽 사용이 없으면 complete root이고, private terminal·cycle·depth limit에서는 이미 증명된 root와
-명시적 stop reason을 가진 partial plan으로 닫힙니다. JSX를 포함한 route 배열/router 객체는 mount root로
+명시적 stop reason을 가진 partial plan으로 닫힙니다. render graph의 ranked path별로 같은 reverse traversal을
+수행해 mount 결과가 다른 `pageCandidates`를 최대 6개 보존하며, source inventory와 frontier별 JSX 후보 점수는
+한 planner call에서 공유해 대안 수만큼 저장소를 다시 읽거나 AST를 다시 만들지 않습니다. 기존 `root`와
+`edges` 필드는 첫 후보를 가리키는 호환 view이고 hot-reload dependency는 모든 후보의 합집합입니다.
+JSX를 포함한 route 배열/router 객체는 mount root로
 승격하지 않으며 page/layout/route/App 관례, 테스트·story 경로 감점과 local owner 깊이로 후보를 결정적으로
 정렬합니다. 업무 route 의미는 추론하지 않고 workspace 밖 app shell은 검색하지 않습니다.
 styled-components import identity가 증명된 `styled(component)\`...\`` tagged template은 inline component가
@@ -261,7 +265,10 @@ entry까지 최대 32단계·8개 후보를 탐색합니다. route/layout/guard 
 복수 app entry는 `ambiguous`, 사용처가 없는 export는 `entry-unreachable`, 한도 초과는 `truncated`로
 분리합니다. 이 계획은 entry 실행 권한을 주지 않고 실제 ancestor 후보 점수와 toolbar 설명만 보강합니다.
 
-`previewInspectorRootPlugin`은 선택한 실제 root export 하나를 기존 target descriptor 계약에 연결합니다.
+`previewInspectorRootPlugin`은 후보 메타데이터와 후보별 dynamic import loader를 기존 target descriptor 계약에
+연결합니다. browser session의 `selectedPageCandidateId`가 선택한 loader만 실행하고, 다른 후보 module은 사용자가
+`PAGE PATH`를 바꾸기 전까지 평가하지 않습니다. esbuild는 build-time에 유한 후보 graph를 모두 검증하므로
+선택 시 별도 서버나 두 번째 compiler process가 필요하지 않습니다.
 `previewInspectorTargetPlugin`은 그 root의 forward graph에서 원래 target module로 향하는 exact import만
 facade로 바꾸고, 선택된 component export를 public props를 전달하는 wrapper로 계측합니다. 원본 module의
 나머지 export 의미를 보존하며 extension host에서 component를 import하거나 실행하지 않습니다. 실제 root가
@@ -298,6 +305,8 @@ floating 배치만 소유합니다. drawer 경계와 floating 모서리는 point
 props/state/source 상세로 나뉘며, target/root 선택, highlight, picker, remount와 plain JSON props override를
 노출합니다. page-context 행은 실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE`을 구분하며 filesystem 경로는 노출하지 않습니다.
+같은 행의 `PAGE PATH` 선택기는 mount-distinct caller 후보를 entry→root→target breadcrumb로 표시하고, 변경 시
+선택 root의 props/error boundary/component tree key를 함께 교체합니다.
 JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference를 편집 계약에서 제외합니다. boolean
 조건 prop은 override로 바꾸고, 계측된 JSX condition은 authored/forced branch를 tree에서 선택하며,
 `Auto values`는 inference/usage-derived prop layer만 제외하고 실제 parent/setup props는 보존합니다.
@@ -326,7 +335,7 @@ argument로 계속 실행됩니다. `previewInspectorConsoleUiRuntimeSource`는 
 `DirectPreviewTarget` 경계로 렌더링합니다. 이 fallback도 highlight/props는 동작하지만 ancestor plan이 없음을
 warning으로 명시하고 parent/sibling 문맥을 주장하지 않습니다.
 
-Inspector session은 선택 항목, highlight, serializable override와 정규화된 layout 좌표·크기를
+Inspector session은 선택 항목과 page candidate id, highlight, serializable override와 정규화된 layout 좌표·크기를
 `previewHotRuntime` 및 VS Code webview state에 패널별로 보관합니다. cache-busted module 교체와 전체 HTML
 fallback 뒤에도 이를 복원하지만 기존
 hot reload가 React root를 unmount하므로 프로젝트 hook state 자체는 유지하지 않습니다. reverse plan의

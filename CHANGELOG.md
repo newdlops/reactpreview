@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1039 - 2026-07-17
+
+- 한 target을 호출하는 정적 render-chain 후보별로 importable ancestor를 독립 탐색하고, 실제 mount owner가
+  다른 page context를 최대 6개까지 `pageCandidates`로 보존
+- Page Inspector context 행에 `PAGE PATH` 선택기를 추가해 entry→page root→target 흐름을 비교하고, 선택한
+  authored root의 children/sibling/component tree와 props/error boundary를 함께 재구성
+- 후보 root를 dynamic import loader 뒤에 두어 선택하지 않은 page module의 browser 평가를 미루고, 선택 id를
+  패널 webview state에 저장해 hot reload 뒤에도 같은 caller page를 유지
+- 대안 탐색이 source inventory와 frontier별 JSX/owner 분석 cache를 공유하고 같은 mount chain은 중복 제거해
+  여러 후보 지원이 저장소 재분석과 불필요한 UI 선택지를 늘리지 않도록 제한
+
 ## 0.1.1038 - 2026-07-17
 
 - full ESM build가 2,048개를 넘는 lazy chunk를 만들면 실패시키는 대신 같은 graph를 자동으로 coalesced

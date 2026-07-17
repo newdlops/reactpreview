@@ -106,6 +106,15 @@ function createNeutralScalar(fieldName) {
   return null;
 }
 
+/** Converts a neutral scalar into the shared Inspector payload-generator shape contract. */
+function createStaticApolloScalarShape(fieldName) {
+  const neutralValue = createNeutralScalar(fieldName);
+  if (typeof neutralValue === 'boolean') return { kind: 'boolean' };
+  if (typeof neutralValue === 'number') return { kind: 'number' };
+  if (typeof neutralValue === 'string') return { kind: 'string' };
+  return { kind: 'unknown' };
+}
+
 /** Adds selections to one response object while enforcing field, depth, and fragment-cycle limits. */
 function appendSelections(target, selectionSet, fragments, budget, depth, activeFragments) {
   if (depth > MAX_STATIC_APOLLO_DEPTH || !Array.isArray(selectionSet?.selections)) {
@@ -172,6 +181,86 @@ function createStaticApolloData(document, operationName) {
   return data;
 }
 
+/** Adds GraphQL selections to a JSON-safe type tree used by the editable payload generator. */
+function appendSelectionShapes(target, selectionSet, fragments, budget, depth, activeFragments) {
+  if (depth > MAX_STATIC_APOLLO_DEPTH || !Array.isArray(selectionSet?.selections)) return;
+  for (const selection of selectionSet.selections) {
+    if (selection?.kind === 'Field') {
+      if (budget.fields >= MAX_STATIC_APOLLO_FIELDS) return;
+      budget.fields += 1;
+      const fieldName = selection.name?.value;
+      if (typeof fieldName !== 'string') continue;
+      const responseName = selection.alias?.value ?? fieldName;
+      if (looksLikeCollection(fieldName)) {
+        const items = selection.selectionSet === undefined ? { kind: 'unknown' } : { fields: {}, kind: 'object' };
+        if (selection.selectionSet !== undefined) {
+          appendSelectionShapes(
+            items.fields,
+            selection.selectionSet,
+            fragments,
+            budget,
+            depth + 1,
+            activeFragments,
+          );
+        }
+        target[responseName] = { items, kind: 'array' };
+      } else if (selection.selectionSet !== undefined) {
+        const fields = {};
+        appendSelectionShapes(fields, selection.selectionSet, fragments, budget, depth + 1, activeFragments);
+        target[responseName] = { fields, kind: 'object' };
+      } else {
+        target[responseName] = createStaticApolloScalarShape(fieldName);
+      }
+      continue;
+    }
+    if (selection?.kind === 'InlineFragment') {
+      appendSelectionShapes(target, selection.selectionSet, fragments, budget, depth + 1, activeFragments);
+      continue;
+    }
+    if (selection?.kind !== 'FragmentSpread') continue;
+    const fragmentName = selection.name?.value;
+    if (typeof fragmentName !== 'string' || activeFragments.has(fragmentName)) continue;
+    const fragment = fragments.get(fragmentName);
+    if (fragment === undefined) continue;
+    activeFragments.add(fragmentName);
+    appendSelectionShapes(target, fragment.selectionSet, fragments, budget, depth + 1, activeFragments);
+    activeFragments.delete(fragmentName);
+  }
+}
+
+/** Creates an operation-local shape preserving aliases, nested objects, lists, and fragments. */
+function createStaticApolloShape(document, operationName) {
+  const operation = selectOperation(document, operationName);
+  const fields = {};
+  appendSelectionShapes(
+    fields,
+    operation?.selectionSet,
+    collectFragments(document),
+    { fields: 0 },
+    0,
+    new Set(),
+  );
+  return { fields, kind: 'object' };
+}
+
+/** Lets Page Inspector own the fallback while keeping Export Gallery's legacy neutral result. */
+function resolveInspectorApolloData(operation, setupContext) {
+  const seedData = createStaticApolloData(operation.query, operation.operationName);
+  const inspectorApi = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];
+  if (typeof inspectorApi?.resolveDataPayload !== 'function') return seedData;
+  const selectedOperation = selectOperation(operation.query, operation.operationName);
+  const operationKind = String(selectedOperation?.operation ?? 'query').toUpperCase();
+  return inspectorApi.resolveDataPayload({
+    evidence: 'GraphQL selection, aliases, fragments, and field-name inference',
+    kind: 'graphql',
+    label: (setupContext.documentName || 'GraphQL') + ' · ' + (operation.operationName || 'Anonymous operation'),
+    method: operationKind,
+    operationName: operation.operationName ?? '',
+    shape: createStaticApolloShape(operation.query, operation.operationName),
+    sourcePath: setupContext.documentName,
+  }, seedData);
+}
+
 /** Preserves explicit Apollo FetchResult objects and wraps plain setup data consistently. */
 function normalizeFetchResult(configuredResult, operation) {
   if (configuredResult === undefined) {
@@ -190,7 +279,7 @@ function normalizeFetchResult(configuredResult, operation) {
 async function resolveStaticOperation(operation, configuration, setupContext) {
   const resolveOperation = isRecord(configuration) ? configuration.resolveOperation : undefined;
   if (typeof resolveOperation !== 'function') {
-    return normalizeFetchResult(undefined, operation);
+    return { data: resolveInspectorApolloData(operation, setupContext) };
   }
   const configuredResult = await resolveOperation({
     documentName: setupContext.documentName,
@@ -277,8 +366,13 @@ export function createApolloPreviewElement(children, options) {
     queryDeduplication: false,
   });
   const ApolloProvider = ApolloReact.ApolloProvider ?? ApolloCore.ApolloProvider;
+  const inspectorDataActive = typeof globalThis[
+    Symbol.for('newdlops.react-file-preview.page-inspector')
+  ]?.resolveDataPayload === 'function';
   previewRuntimeStatus = isRecord(configuration)
     ? 'active: memory-only client with setup-owned static overrides; network disabled'
+    : inspectorDataActive
+      ? 'active: memory-only client with editable selection-inferred preview payloads; network disabled'
     : 'active: memory-only client with selection-shaped static responses; network disabled';
   return React.createElement(ApolloProvider, { client }, children);
 }

@@ -131,6 +131,65 @@ describe('createPreviewApolloBridgePlugin', () => {
     }
   });
 
+  /** Delegates inferred GraphQL fallback data to the editable Page Inspector payload registry. */
+  it('registers operation selection shapes when the Page Inspector data API is active', async () => {
+    const projectRoot = await createTemporaryProject('apollo-inspector-payload-preview-');
+
+    try {
+      await installFakeApolloPackage(projectRoot);
+      const result = await build({
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        globalName: 'ApolloPreviewFixture',
+        logLevel: 'silent',
+        plugins: [createPreviewApolloBridgePlugin({ projectRoot })],
+        stdin: {
+          contents: createStaticResultFixtureSource(),
+          loader: 'js',
+          resolveDir: projectRoot,
+        },
+        platform: 'browser',
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = result.outputFiles[0]?.text;
+      if (javascript === undefined)
+        throw new Error('The Apollo bridge fixture emitted no JavaScript.');
+
+      let observedMetadata: unknown;
+      const sandbox: Record<PropertyKey, unknown> = { setTimeout };
+      sandbox[Symbol.for('newdlops.react-file-preview.page-inspector')] = {
+        resolveDataPayload(metadata: unknown, seed: unknown) {
+          observedMetadata = metadata;
+          return { ...(seed as object), recentItems: [{ id: 'generated-item' }] };
+        },
+      };
+      sandbox.globalThis = sandbox;
+      const context = createContext(sandbox);
+      runInContext(javascript, context, { timeout: 10_000 });
+
+      await expect(readContextPromise(context, '__apolloStaticResult')).resolves.toMatchObject({
+        data: { recentItems: [{ id: 'generated-item' }] },
+      });
+      expect(JSON.parse(JSON.stringify(observedMetadata))).toMatchObject({
+        kind: 'graphql',
+        label: 'src/Company.tsx · StaticCompany',
+        method: 'QUERY',
+        operationName: 'StaticCompany',
+        shape: {
+          fields: {
+            company: { kind: 'object' },
+            recentItems: { items: { kind: 'object' }, kind: 'array' },
+          },
+          kind: 'object',
+        },
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Allows a setup resolver to provide exact static page data while retaining no-network transport. */
   it('uses an explicit operation result supplied by preview setup', async () => {
     const projectRoot = await createTemporaryProject('apollo-override-preview-');

@@ -1,0 +1,693 @@
+/**
+ * Generates the no-network data registry used by React Page Inspector.
+ *
+ * GraphQL bridges and compiler-instrumented REST calls share this runtime so payload generation,
+ * provenance, persistence, and remount behavior have one policy. The browser never forwards a
+ * registered backend request; local static-resource fetches may still use the captured native API.
+ */
+import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspectorGraphqlShapeRuntimeSource';
+
+/**
+ * Creates browser source for inferred, lorem, and user-authored preview payloads.
+ *
+ * Expected lexical bindings include `previewHotRuntime`, `previewInspectorSession`, state helpers,
+ * and the Inspector notification functions declared by the composed Page Inspector runtime.
+ *
+ * @returns Plain JavaScript source evaluated before project setup and target modules are imported.
+ */
+export function createPreviewInspectorDataRuntimeSource(): string {
+  const graphqlShapeRuntimeSource = createPreviewInspectorGraphqlShapeRuntimeSource();
+  return String.raw`
+${graphqlShapeRuntimeSource}
+
+const PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT = 256;
+const PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT = 10;
+const PREVIEW_INSPECTOR_DATA_FIELD_LIMIT = 512;
+const previewInspectorDataScheduleMicrotask = typeof globalThis.queueMicrotask === 'function'
+  ? globalThis.queueMicrotask.bind(globalThis)
+  : (callback) => Promise.resolve().then(callback);
+
+/** Captures the original fetch once so hot replacements never wrap an older preview boundary. */
+const previewInspectorNativeFetch = previewHotRuntime.inspectorNativeFetch ??
+  (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined);
+previewHotRuntime.inspectorNativeFetch ??= previewInspectorNativeFetch;
+
+/** Lazily restores editable payload state while retaining observed requests across hot reloads. */
+function initializePreviewInspectorDataState() {
+  if (!(previewInspectorSession.dataRequests instanceof Map)) {
+    previewInspectorSession.dataRequests = new Map();
+  }
+  if (!(previewInspectorSession.dataPayloadOverrides instanceof Map)) {
+    const persisted = readPersistedPreviewInspectorState();
+    const rawOverrides = persisted.dataPayloadOverrides;
+    const entries = rawOverrides !== null && typeof rawOverrides === 'object'
+      ? Object.entries(rawOverrides)
+          .filter(([id, value]) =>
+            typeof id === 'string' &&
+            id.length > 0 &&
+            id.length <= 160 &&
+            value !== null &&
+            typeof value === 'object' &&
+            (value.mode === 'custom' || value.mode === 'lorem') &&
+            Object.hasOwn(value, 'payload'),
+          )
+          .slice(0, PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT)
+      : [];
+    previewInspectorSession.dataPayloadOverrides = new Map(entries);
+  }
+  if (typeof previewInspectorSession.dataAutoEnabled !== 'boolean') {
+    previewInspectorSession.dataAutoEnabled =
+      readPersistedPreviewInspectorState().dataAutoEnabled !== false;
+  }
+  if (!Number.isSafeInteger(previewInspectorSession.dataRevision)) {
+    previewInspectorSession.dataRevision = 0;
+  }
+}
+
+/** Serializes bounded user overrides for the shared VS Code webview-state writer. */
+function serializePreviewInspectorDataOverrides() {
+  initializePreviewInspectorDataState();
+  return Object.fromEntries(
+    [...previewInspectorSession.dataPayloadOverrides]
+      .slice(0, PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT)
+      .map(([id, value]) => [id, JSON.parse(stringifyPreviewInspectorProps(value))]),
+  );
+}
+
+/** Reads whether newly observed requests receive inferred data automatically. */
+function readPreviewInspectorDataAutoEnabled() {
+  initializePreviewInspectorDataState();
+  return previewInspectorSession.dataAutoEnabled;
+}
+
+/** Summarizes local request generation for detailed render-error diagnostics. */
+function readPreviewInspectorDataRuntimeStatus() {
+  initializePreviewInspectorDataState();
+  const requestCount = previewInspectorSession.dataRequests.size;
+  const overrideCount = previewInspectorSession.dataPayloadOverrides.size;
+  return (previewInspectorSession.dataAutoEnabled ? 'active' : 'inactive') +
+    ': no-network API/GraphQL payload registry; ' + String(requestCount) +
+    ' observed request(s), ' + String(overrideCount) + ' user/Lorem override(s)';
+}
+
+/** Converts arbitrary seed values into a finite generator shape without retaining prototypes. */
+function inferPreviewInspectorDataShape(value, fieldName = '', depth = 0, budget = { fields: 0 }) {
+  if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT || budget.fields >= PREVIEW_INSPECTOR_DATA_FIELD_LIMIT) {
+    return { kind: 'unknown' };
+  }
+  if (Array.isArray(value)) {
+    return {
+      items: value.length === 0
+        ? { kind: 'unknown' }
+        : inferPreviewInspectorDataShape(value[0], fieldName, depth + 1, budget),
+      kind: 'array',
+    };
+  }
+  if (value !== null && typeof value === 'object') {
+    const fields = Object.create(null);
+    for (const [name, child] of Object.entries(value)) {
+      if (blockedInspectorPropNames.has(name) || budget.fields >= PREVIEW_INSPECTOR_DATA_FIELD_LIMIT) {
+        continue;
+      }
+      budget.fields += 1;
+      fields[name] = inferPreviewInspectorDataShape(child, name, depth + 1, budget);
+    }
+    return { fields, kind: 'object' };
+  }
+  if (typeof value === 'boolean') return { kind: 'boolean' };
+  if (typeof value === 'number' || typeof value === 'bigint') return { kind: 'number' };
+  if (typeof value === 'string') return { kind: 'string' };
+  if (value === null) return { kind: 'unknown' };
+  return { kind: inferPreviewInspectorSemanticKind(fieldName) };
+}
+
+/** Bounds compiler/bridge type descriptors before keeping them in the live request registry. */
+function normalizePreviewInspectorDataShape(shape, depth = 0, budget = { fields: 0 }) {
+  if (
+    shape === null ||
+    typeof shape !== 'object' ||
+    depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT ||
+    budget.fields >= PREVIEW_INSPECTOR_DATA_FIELD_LIMIT
+  ) {
+    return { kind: 'unknown' };
+  }
+  const kind = ['array', 'boolean', 'null', 'number', 'object', 'string', 'unknown'].includes(shape.kind)
+    ? shape.kind
+    : 'unknown';
+  if (kind === 'array') {
+    return { items: normalizePreviewInspectorDataShape(shape.items, depth + 1, budget), kind };
+  }
+  if (kind !== 'object') return { kind };
+  const fields = Object.create(null);
+  const rawFields = shape.fields !== null && typeof shape.fields === 'object' ? shape.fields : {};
+  for (const [name, child] of Object.entries(rawFields)) {
+    if (blockedInspectorPropNames.has(name) || budget.fields >= PREVIEW_INSPECTOR_DATA_FIELD_LIMIT) {
+      continue;
+    }
+    budget.fields += 1;
+    fields[name.slice(0, 160)] = normalizePreviewInspectorDataShape(child, depth + 1, budget);
+  }
+  return { fields, kind };
+}
+
+/** Infers a scalar family from common API/GraphQL field naming conventions. */
+function inferPreviewInspectorSemanticKind(fieldName) {
+  const name = String(fieldName).replaceAll('_', '').toLowerCase();
+  if (/^(is|has|can|should|allow|enable|disable|visible|active|selected|checked)/u.test(name)) {
+    return 'boolean';
+  }
+  if (/(count|total|length|size|index|page|limit|offset|amount|price|cost|fee|rate|ratio|percent|salary|wage)$/u.test(name)) {
+    return 'number';
+  }
+  return 'string';
+}
+
+/** Recognizes field names that conventionally represent collections without a formal schema. */
+function looksLikePreviewInspectorCollection(fieldName) {
+  const name = String(fieldName).toLowerCase();
+  if (/(status|address|business|success|access|process|progress|news|series|analysis)$/u.test(name)) {
+    return false;
+  }
+  return /(?:items|nodes|edges|list|collection|connections|results|entries|records)$/u.test(name) ||
+    name.startsWith('all') || name.endsWith('ies') || name.endsWith('s');
+}
+
+/** Produces deterministic type-correct text rather than random data that changes on every remount. */
+function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
+  const name = String(fieldName).replaceAll('_', '').toLowerCase();
+  const suffix = String(itemIndex + 1);
+  if (name === '__typename') return 'PreviewRecord';
+  if (name === 'id' || name.endsWith('id') || name === 'uuid') return 'preview-' + suffix;
+  if (name.includes('email')) return 'preview' + suffix + '@example.com';
+  if (name.includes('phone') || name.includes('tel')) return '010-0000-000' + itemIndex;
+  if (/(date|time|timestamp|createdat|updatedat|deletedat)$/u.test(name)) {
+    return '2026-01-' + String(15 + Math.min(itemIndex, 9)).padStart(2, '0') + 'T09:00:00.000Z';
+  }
+  if (/(url|uri|href|link)$/u.test(name)) return 'https://example.com/preview/' + suffix;
+  if (/(name|owner|author|assignee)$/u.test(name)) return mode === 'lorem' ? 'Lorem Ipsum' : 'Preview User ' + suffix;
+  if (/(title|subject|headline)$/u.test(name)) return 'Lorem ipsum preview ' + suffix;
+  if (/(description|message|content|summary|text|body)$/u.test(name)) {
+    return 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.';
+  }
+  if (/(status|state)$/u.test(name)) return 'ACTIVE';
+  if (/(type|kind|code)$/u.test(name)) return 'PREVIEW';
+  return mode === 'lorem' ? 'Lorem ipsum dolor sit amet.' : 'Preview value ' + suffix;
+}
+
+/** Materializes one payload from an already-normalized shape without repeating tree validation. */
+function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex, depth) {
+  if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT) return null;
+  if (shape.kind === 'array') {
+    return [0, 1].map((index) =>
+      materializePreviewInspectorDataValue(shape.items, fieldName, mode, index, depth + 1),
+    );
+  }
+  if (shape.kind === 'object') {
+    return Object.fromEntries(
+      Object.entries(shape.fields).map(([name, child]) => [
+        name,
+        materializePreviewInspectorDataValue(child, name, mode, itemIndex, depth + 1),
+      ]),
+    );
+  }
+  if (shape.kind === 'boolean') return true;
+  if (shape.kind === 'number') return itemIndex + 1;
+  if (shape.kind === 'null') return null;
+  if (shape.kind === 'unknown' && looksLikePreviewInspectorCollection(fieldName)) {
+    return [0, 1].map((index) => ({
+      id: 'preview-' + String(index + 1),
+      name: createPreviewInspectorStringValue('name', mode, index),
+    }));
+  }
+  return createPreviewInspectorStringValue(fieldName, mode, itemIndex);
+}
+
+/** Validates one external shape once before deterministic payload materialization. */
+function generatePreviewInspectorDataValue(shape, fieldName = '', mode = 'auto') {
+  return materializePreviewInspectorDataValue(
+    normalizePreviewInspectorDataShape(shape),
+    fieldName,
+    mode,
+    0,
+    0,
+  );
+}
+
+/** Creates a useful root shape when an untyped REST endpoint is the only available evidence. */
+function inferPreviewInspectorEndpointShape(metadata) {
+  const endpoint = String(metadata?.url ?? metadata?.label ?? '').split('?')[0] ?? '';
+  const lastSegment = endpoint.split('/').filter(Boolean).at(-1) ?? 'response';
+  const itemShape = {
+    fields: {
+      active: { kind: 'boolean' },
+      description: { kind: 'string' },
+      id: { kind: 'string' },
+      name: { kind: 'string' },
+    },
+    kind: 'object',
+  };
+  return looksLikePreviewInspectorCollection(lastSegment)
+    ? { items: itemShape, kind: 'array' }
+    : itemShape;
+}
+
+/** Normalizes request identity and source metadata while stripping URL query values. */
+function normalizePreviewInspectorDataRequest(metadata, seedPayload) {
+  const source = metadata !== null && typeof metadata === 'object' ? metadata : {};
+  const kind = source.kind === 'graphql' ? 'graphql' : 'rest';
+  const method = typeof source.method === 'string' ? source.method.toUpperCase().slice(0, 16) : 'GET';
+  const safeUrl = sanitizePreviewInspectorRequestUrl(source.url);
+  const label = typeof source.label === 'string'
+    ? source.label.slice(0, 240)
+    : kind === 'graphql'
+      ? String(source.operationName || 'Anonymous operation').slice(0, 240)
+      : method + ' ' + (safeUrl || 'dynamic endpoint');
+  const id = typeof source.id === 'string' && source.id.length > 0
+    ? source.id.slice(0, 160)
+    : createPreviewInspectorRuntimeRequestId(kind, method, safeUrl || label);
+  const suppliedShape = source.shape !== undefined
+    ? normalizePreviewInspectorDataShape(source.shape)
+    : inferPreviewInspectorDataShape(seedPayload);
+  const emptySeedObject = seedPayload !== null && typeof seedPayload === 'object' &&
+    !Array.isArray(seedPayload) && Object.keys(seedPayload).length === 0;
+  const shape = suppliedShape.kind === 'unknown' ||
+    (kind === 'rest' && source.shape === undefined && emptySeedObject)
+    ? inferPreviewInspectorEndpointShape({ label, url: safeUrl })
+    : suppliedShape;
+  return {
+    column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
+    evidence: typeof source.evidence === 'string'
+      ? source.evidence.slice(0, 240)
+      : kind === 'graphql'
+        ? 'GraphQL selection and field-name inference'
+        : 'endpoint and field-name inference',
+    id,
+    kind,
+    label,
+    line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
+    method,
+    operationName: typeof source.operationName === 'string' ? source.operationName.slice(0, 160) : undefined,
+    shape,
+    sourcePath: typeof source.sourcePath === 'string' ? source.sourcePath.slice(0, 1024) : undefined,
+    url: safeUrl || undefined,
+  };
+}
+
+/** Removes credentials and query values before an endpoint is retained or displayed. */
+function sanitizePreviewInspectorRequestUrl(value) {
+  if (typeof value !== 'string' || value.length === 0) return '';
+  const bounded = value.slice(0, 2048);
+  const [rawPath = '', rawQuery = ''] = bounded.split('?', 2);
+  const queryNames = [...new Set(new URLSearchParams(rawQuery).keys())].sort();
+  const safeQuery = queryNames.length === 0 ? '' : '?' + queryNames.map(encodeURIComponent).join('&');
+  if (rawPath.startsWith('/') || rawPath.startsWith('./') || rawPath.startsWith('../')) {
+    return rawPath + safeQuery;
+  }
+  try {
+    const parsed = new URL(bounded, globalThis.location?.href ?? 'https://preview.invalid/');
+    const parsedQueryNames = [...new Set([...parsed.searchParams.keys()])].sort();
+    const parsedQuery = parsedQueryNames.length === 0
+      ? ''
+      : '?' + parsedQueryNames.map(encodeURIComponent).join('&');
+    return (parsed.origin === 'https://preview.invalid' ? '' : parsed.origin) + parsed.pathname + parsedQuery;
+  } catch {
+    return bounded.split('?')[0] ?? '';
+  }
+}
+
+/** Creates a compact deterministic runtime identity without relying on asynchronous crypto. */
+function createPreviewInspectorRuntimeRequestId(kind, method, identity) {
+  const input = kind + ':' + method + ':' + identity;
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return 'request:' + (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Coalesces request discovery notifications so React is never updated during project render. */
+function schedulePreviewInspectorDataRegistryRefresh() {
+  if (previewInspectorSession.dataRefreshScheduled === true) return;
+  previewInspectorSession.dataRefreshScheduled = true;
+  previewInspectorDataScheduleMicrotask(() => {
+    previewInspectorSession.dataRefreshScheduled = false;
+    notifyPreviewInspector();
+  });
+}
+
+/** Registers one request and returns the payload selected by custom, lorem, auto, or seed policy. */
+function resolvePreviewInspectorDataPayload(metadata, seedPayload) {
+  initializePreviewInspectorDataState();
+  const normalized = normalizePreviewInspectorDataRequest(metadata, seedPayload);
+  const previous = previewInspectorSession.dataRequests.get(normalized.id);
+  const shapeFingerprint = stringifyPreviewInspectorProps(normalized.shape);
+  const autoPayload = previous?.shapeFingerprint === shapeFingerprint
+    ? previous.autoPayload
+    : generatePreviewInspectorDataValue(normalized.shape, '', 'auto');
+  const next = {
+    ...normalized,
+    autoPayload,
+    observedCount: (previous?.observedCount ?? 0) + 1,
+    seedPayload,
+    shapeFingerprint,
+  };
+  if (
+    previous === undefined ||
+    previous.label !== next.label ||
+    previous.evidence !== next.evidence ||
+    previous.shapeFingerprint !== shapeFingerprint
+  ) {
+    if (
+      previewInspectorSession.dataRequests.has(normalized.id) ||
+      previewInspectorSession.dataRequests.size < PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT
+    ) {
+      previewInspectorSession.dataRequests.set(normalized.id, next);
+      schedulePreviewInspectorDataRegistryRefresh();
+    }
+  } else {
+    previewInspectorSession.dataRequests.set(normalized.id, next);
+  }
+  const override = previewInspectorSession.dataPayloadOverrides.get(normalized.id);
+  if (override !== undefined) return override.payload;
+  if (previewInspectorSession.dataAutoEnabled) return autoPayload;
+  return seedPayload ?? (normalized.kind === 'graphql' ? {} : {});
+}
+
+/** Returns serializable request rows with their current payload and generation provenance. */
+function readPreviewInspectorDataRequests() {
+  initializePreviewInspectorDataState();
+  return [...previewInspectorSession.dataRequests.values()]
+    .map((record) => {
+      const override = previewInspectorSession.dataPayloadOverrides.get(record.id);
+      const mode = override?.mode ?? (previewInspectorSession.dataAutoEnabled ? 'auto' : 'seed');
+      const payload = override?.payload ?? (previewInspectorSession.dataAutoEnabled
+        ? record.autoPayload
+        : record.seedPayload ?? {});
+      return { ...record, mode, payload };
+    })
+    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+}
+
+/** Remounts every export so cached hooks consume a newly selected payload. */
+function commitPreviewInspectorDataChange() {
+  previewInspectorSession.dataRevision += 1;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  notifyPreviewInspectorTreeSubscribers();
+}
+
+/** Enables or disables automatic payload generation without allowing a real backend transport. */
+function setPreviewInspectorDataAutoEnabled(enabled) {
+  initializePreviewInspectorDataState();
+  if (typeof enabled !== 'boolean' || enabled === previewInspectorSession.dataAutoEnabled) return;
+  previewInspectorSession.dataAutoEnabled = enabled;
+  commitPreviewInspectorDataChange();
+}
+
+/** Stores an explicitly generated or user-authored payload for one observed request. */
+function setPreviewInspectorDataPayload(requestId, payload, mode = 'custom') {
+  initializePreviewInspectorDataState();
+  if (!previewInspectorSession.dataRequests.has(requestId)) return;
+  if (mode !== 'custom' && mode !== 'lorem') return;
+  previewInspectorSession.dataPayloadOverrides.set(requestId, {
+    mode,
+    payload: JSON.parse(stringifyPreviewInspectorProps(payload)),
+  });
+  commitPreviewInspectorDataChange();
+}
+
+/** Generates and applies a lorem payload using the same inferred type tree as Auto mode. */
+function generatePreviewInspectorLoremPayload(requestId) {
+  initializePreviewInspectorDataState();
+  const record = previewInspectorSession.dataRequests.get(requestId);
+  if (record === undefined) return;
+  setPreviewInspectorDataPayload(
+    requestId,
+    generatePreviewInspectorDataValue(record.shape, '', 'lorem'),
+    'lorem',
+  );
+}
+
+/** Removes one manual override so the global Auto/seed policy becomes effective again. */
+function resetPreviewInspectorDataPayload(requestId) {
+  initializePreviewInspectorDataState();
+  if (!previewInspectorSession.dataPayloadOverrides.delete(requestId)) return;
+  commitPreviewInspectorDataChange();
+}
+
+/** Reads a fetch/Request URL without invoking user-defined coercion more than once. */
+function readPreviewInspectorFetchUrl(input) {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return typeof input?.url === 'string' ? input.url : String(input ?? '');
+}
+
+/** Reports whether a request is a backend candidate rather than a bundled local static asset. */
+function shouldInterceptPreviewInspectorFetch(url, hasCompilerMetadata) {
+  if (hasCompilerMetadata) {
+    return !/^\.\.?\/.+\.(?:json|txt|csv)$/iu.test(url.split('?')[0] ?? '');
+  }
+  return /^https?:\/\//iu.test(url) || /^\/(?:api|graphql)(?:\/|$)/iu.test(url);
+}
+
+/** Extracts GraphQL-over-HTTP metadata without retaining variables or authorization values. */
+function readPreviewInspectorGraphqlFetchMetadata(init) {
+  if (typeof init?.body !== 'string' || init.body.length > 1_000_000) return undefined;
+  try {
+    const body = JSON.parse(init.body);
+    if (body === null || typeof body !== 'object' || typeof body.query !== 'string') return undefined;
+    const operationName = typeof body.operationName === 'string' ? body.operationName : '';
+    const anonymousIdentity = body.query.slice(0, 256) + ':' + body.query.slice(-256);
+    return {
+      kind: 'graphql',
+      label: operationName || 'GraphQL request',
+      operationName: operationName || undefined,
+      requestIdentity: operationName || anonymousIdentity,
+      shape: inferPreviewInspectorGraphqlQueryShape(body.query, operationName),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Creates a standards-shaped in-memory fetch response with no transport side effects. */
+function createPreviewInspectorFetchResponse(payload, method) {
+  const body = method === 'HEAD' ? null : JSON.stringify(payload);
+  if (typeof globalThis.Response === 'function') {
+    return new globalThis.Response(body, {
+      headers: { 'content-type': 'application/json; charset=utf-8', 'x-react-preview': 'generated' },
+      status: 200,
+      statusText: 'OK',
+    });
+  }
+  return {
+    clone() { return createPreviewInspectorFetchResponse(payload, method); },
+    headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+    json: async () => payload,
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    text: async () => body ?? '',
+  };
+}
+
+/** Handles compiler-instrumented and third-party fetch calls through the editable data registry. */
+async function previewInspectorFetch(input, init, compilerMetadata) {
+  const url = readPreviewInspectorFetchUrl(input);
+  if (!shouldInterceptPreviewInspectorFetch(url, compilerMetadata !== undefined)) {
+    if (typeof previewInspectorNativeFetch === 'function') return previewInspectorNativeFetch(input, init);
+  }
+  const method = String(init?.method ?? input?.method ?? compilerMetadata?.method ?? 'GET').toUpperCase();
+  const graphqlMetadata = readPreviewInspectorGraphqlFetchMetadata(init);
+  const metadata = {
+    ...(compilerMetadata !== null && typeof compilerMetadata === 'object' ? compilerMetadata : {}),
+    ...(graphqlMetadata ?? {}),
+    ...(graphqlMetadata === undefined
+      ? {}
+      : {
+          id: createPreviewInspectorRuntimeRequestId(
+            'graphql',
+            method,
+            url + ':' + graphqlMetadata.requestIdentity,
+          ),
+        }),
+    method,
+    url,
+  };
+  const payload = resolvePreviewInspectorDataPayload(metadata, {});
+  const wirePayload = metadata.kind === 'graphql' ? { data: payload } : payload;
+  return createPreviewInspectorFetchResponse(wirePayload, method);
+}
+
+/** Returns the subset of AxiosResponse commonly consumed by React application code. */
+async function previewInspectorAxiosRequest(method, url, extraArguments, compilerMetadata) {
+  const metadata = {
+    ...(compilerMetadata !== null && typeof compilerMetadata === 'object' ? compilerMetadata : {}),
+    method,
+    url: readPreviewInspectorFetchUrl(url),
+  };
+  const payload = resolvePreviewInspectorDataPayload(metadata, {});
+  return {
+    config: Array.isArray(extraArguments) ? extraArguments.at(-1) ?? {} : {},
+    data: payload,
+    headers: { 'content-type': 'application/json', 'x-react-preview': 'generated' },
+    request: { preview: true },
+    status: 200,
+    statusText: 'OK',
+  };
+}
+
+/** Minimal event dispatch shared by the local XMLHttpRequest compatibility boundary. */
+function dispatchPreviewInspectorXmlHttpRequestEvent(request, eventName) {
+  const event = { currentTarget: request, target: request, type: eventName };
+  const handler = request['on' + eventName];
+  if (typeof handler === 'function') handler.call(request, event);
+  for (const listener of request.eventListeners.get(eventName) ?? []) listener.call(request, event);
+}
+
+/** Implements the browser XHR surface used by Axios instances without opening a transport. */
+class PreviewInspectorXmlHttpRequest {
+  /** Initializes public response fields before a client configures the request. */
+  constructor() {
+    this.DONE = 4;
+    this.HEADERS_RECEIVED = 2;
+    this.LOADING = 3;
+    this.OPENED = 1;
+    this.UNSENT = 0;
+    this.eventListeners = new Map();
+    this.onload = null;
+    this.onloadend = null;
+    this.onerror = null;
+    this.onabort = null;
+    this.onreadystatechange = null;
+    this.ontimeout = null;
+    this.readyState = 0;
+    this.requestHeaders = Object.create(null);
+    this.response = null;
+    this.responseText = '';
+    this.responseType = '';
+    this.responseURL = '';
+    this.status = 0;
+    this.statusText = '';
+    this.timeout = 0;
+    /** Accepts Axios upload-progress registration without fabricating progress events. */
+    this.upload = {
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    this.withCredentials = false;
+  }
+
+  /** Registers one client event callback without exposing a native network object. */
+  addEventListener(eventName, listener) {
+    if (typeof listener !== 'function') return;
+    const listeners = this.eventListeners.get(eventName) ?? new Set();
+    listeners.add(listener);
+    this.eventListeners.set(eventName, listeners);
+  }
+
+  /** Removes a previously registered callback using normal EventTarget identity semantics. */
+  removeEventListener(eventName, listener) {
+    this.eventListeners.get(eventName)?.delete(listener);
+  }
+
+  /** Stores method/URL metadata and announces the OPENED state synchronously. */
+  open(method, url, async = true) {
+    this.async = async !== false;
+    this.method = String(method || 'GET').toUpperCase();
+    this.url = readPreviewInspectorFetchUrl(url);
+    this.responseURL = sanitizePreviewInspectorRequestUrl(this.url);
+    this.readyState = 1;
+    dispatchPreviewInspectorXmlHttpRequestEvent(this, 'readystatechange');
+  }
+
+  /** Retains inert request headers only for client compatibility; values are never transmitted. */
+  setRequestHeader(name, value) {
+    this.requestHeaders[String(name).toLowerCase()] = String(value);
+  }
+
+  /** Returns the generated JSON response headers expected by Axios header parsing. */
+  getAllResponseHeaders() {
+    return 'content-type: application/json; charset=utf-8\r\nx-react-preview: generated\r\n';
+  }
+
+  /** Reads one generated response header case-insensitively. */
+  getResponseHeader(name) {
+    const normalized = String(name).toLowerCase();
+    if (normalized === 'content-type') return 'application/json; charset=utf-8';
+    if (normalized === 'x-react-preview') return 'generated';
+    return null;
+  }
+
+  /** Accepts the browser API without changing the fixed JSON response representation. */
+  overrideMimeType() {}
+
+  /** Completes one request from the shared payload registry on the next microtask. */
+  send(body) {
+    const graphqlMetadata = readPreviewInspectorGraphqlFetchMetadata({ body });
+    const metadata = {
+      ...(graphqlMetadata ?? {}),
+      ...(graphqlMetadata === undefined
+        ? {}
+        : {
+            id: createPreviewInspectorRuntimeRequestId(
+              'graphql',
+              this.method ?? 'POST',
+              (this.url ?? '') + ':' + graphqlMetadata.requestIdentity,
+            ),
+          }),
+      method: this.method ?? 'GET',
+      url: this.url ?? '',
+    };
+    const payload = resolvePreviewInspectorDataPayload(metadata, {});
+    const wirePayload = metadata.kind === 'graphql' ? { data: payload } : payload;
+    const complete = () => {
+      if (this.readyState === 0) return;
+      this.status = 200;
+      this.statusText = 'OK';
+      this.responseText = JSON.stringify(wirePayload);
+      this.response = this.responseType === 'json' ? wirePayload : this.responseText;
+      this.readyState = 2;
+      dispatchPreviewInspectorXmlHttpRequestEvent(this, 'readystatechange');
+      this.readyState = 4;
+      dispatchPreviewInspectorXmlHttpRequestEvent(this, 'readystatechange');
+      dispatchPreviewInspectorXmlHttpRequestEvent(this, 'load');
+      dispatchPreviewInspectorXmlHttpRequestEvent(this, 'loadend');
+    };
+    if (this.async) previewInspectorDataScheduleMicrotask(complete);
+    else complete();
+  }
+
+  /** Cancels only this local fixture response and emits the standard terminal events. */
+  abort() {
+    this.readyState = 0;
+    dispatchPreviewInspectorXmlHttpRequestEvent(this, 'abort');
+    dispatchPreviewInspectorXmlHttpRequestEvent(this, 'loadend');
+  }
+}
+Object.assign(PreviewInspectorXmlHttpRequest, {
+  DONE: 4,
+  HEADERS_RECEIVED: 2,
+  LOADING: 3,
+  OPENED: 1,
+  UNSENT: 0,
+});
+
+/** Replaces ambient fetch for uninstrumented fetch-based clients while preserving local assets. */
+function installPreviewInspectorNetworkBoundary() {
+  initializePreviewInspectorDataState();
+  const boundary = (input, init) => previewInspectorFetch(input, init, undefined);
+  try {
+    globalThis.fetch = boundary;
+  } catch {
+    // A hardened host can expose a non-writable fetch; compiler-instrumented calls still work.
+  }
+  try {
+    globalThis.XMLHttpRequest = PreviewInspectorXmlHttpRequest;
+  } catch {
+    // Direct fetch/Axios instrumentation remains active when a host reserves XMLHttpRequest.
+  }
+}
+`;
+}

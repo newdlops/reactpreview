@@ -61,6 +61,10 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("'react-preview-target-error'");
     expect(source).toContain('remountPreviewInspectorExport(this.props.exportName)');
     expect(source).toContain('fallbackValuesEnabled ? metadata?.inferredPropShape : undefined');
+    expect(source).toContain(
+      'fallbackValuesEnabled ? selectedCandidate?.rootInferredPropShape : undefined',
+    );
+    expect(source).toContain('selectedCandidate?.rootInferredProps');
     expect(source).toContain('Auto-generated preview values:');
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');

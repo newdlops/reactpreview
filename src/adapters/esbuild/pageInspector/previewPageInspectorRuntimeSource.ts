@@ -821,7 +821,12 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
   const automaticRootProps = normalizePreviewInspectorProps(
     selectedCandidate?.rootAutomaticProps ?? descriptor?.automaticProps ?? {},
   );
-  const baseRootProps = { ...automaticRootProps, ...targetProps };
+  const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
+  const baseRootProps = createPreviewPropsFromLayers(
+    fallbackValuesEnabled ? selectedCandidate?.rootInferredPropShape : undefined,
+    automaticRootProps,
+    targetProps,
+  );
   React.useEffect(() => {
     registerPreviewInspectorBaseProps(rootName, baseRootProps);
   }, [rootName, stringifyPreviewInspectorProps(baseRootProps)]);

@@ -41,21 +41,55 @@ function readSelectedPreviewInspectorPageCandidate(descriptor) {
     candidates[0];
 }
 
+/** Reads generated-value provenance for the selected editable target or page root. */
+function readSelectedPreviewInspectorInferredProps(exportName) {
+  for (const descriptor of previewInspectorSession.descriptors) {
+    const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+    const selectedRootName = descriptor?.inspector === undefined
+      ? undefined
+      : createPreviewInspectorRootName(selectedCandidate?.root ?? descriptor.inspector.root);
+    if (selectedRootName !== undefined && selectedRootName === exportName) {
+      const rootInferredProps = selectedCandidate?.rootInferredProps;
+      return Array.isArray(rootInferredProps) ? rootInferredProps : [];
+    }
+    const targetName = descriptor?.inspector?.target?.exportName ?? descriptor?.exportName;
+    if (targetName !== exportName) continue;
+    const inferredProps = descriptor?.inspector?.targetInferredProps ?? descriptor?.inferredProps;
+    return Array.isArray(inferredProps) ? inferredProps : [];
+  }
+  return [];
+}
+
 /** Produces a concise candidate label without exposing absolute local filesystem paths. */
 function formatPreviewInspectorPageCandidate(candidate, index) {
   const rootName = candidate?.root?.exportName ?? 'default';
   const names = [];
-  for (const step of [...(candidate?.renderPath?.steps ?? [])].reverse()) {
+  const steps = candidate?.renderPath?.steps ?? [];
+  const rootStepIndex = Number.isInteger(candidate?.rootStepIndex)
+    ? candidate.rootStepIndex
+    : undefined;
+  const rootStep = rootStepIndex === undefined ? undefined : steps[rootStepIndex];
+  if (typeof rootStep?.label === 'string' && rootStep.label.length > 0) {
+    names.push(rootStep.label);
+  } else {
+    names.push(rootName);
+  }
+  const visibleSteps = rootStepIndex === undefined
+    ? [...steps].reverse()
+    : steps.slice(rootStepIndex + 1);
+  for (const step of visibleSteps) {
     for (const name of [step?.label, ...[...(step?.wrapperNames ?? [])].reverse()]) {
       if (typeof name === 'string' && name.length > 0 && names.at(-1) !== name) names.push(name);
     }
   }
-  if (!names.includes(rootName)) names.unshift(rootName);
+  if (rootStepIndex === undefined && !names.includes(rootName)) names.unshift(rootName);
   const visibleNames = names.slice(0, 5);
   const pathLabel = visibleNames.join(' › ') + (names.length > visibleNames.length ? ' › …' : '');
   const entryConnected = candidate?.renderPath?.entryPoint !== undefined;
   return String(index + 1) + '. ' + pathLabel +
-    (entryConnected ? ' · application page' : ' · partial context');
+    (candidate?.complete === true && entryConnected
+      ? ' · application root'
+      : entryConnected ? ' · application path' : ' · partial context');
 }
 
 /** Selects one authored caller path and asks the root, tree, and highlight layers to reconcile. */

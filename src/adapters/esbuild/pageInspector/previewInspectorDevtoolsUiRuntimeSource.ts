@@ -598,17 +598,6 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
   );
 }
 
-/** Reads generated-value provenance for one editable selected target. */
-function readSelectedPreviewInspectorInferredProps(exportName) {
-  for (const descriptor of previewInspectorSession.descriptors) {
-    const targetName = descriptor?.inspector?.target?.exportName ?? descriptor?.exportName;
-    if (targetName !== exportName) continue;
-    const inferredProps = descriptor?.inspector?.targetInferredProps ?? descriptor?.inferredProps;
-    return Array.isArray(inferredProps) ? inferredProps : [];
-  }
-  return [];
-}
-
 /** Renders editable target/root props or a clearly read-only arbitrary Fiber snapshot. */
 function PreviewInspectorPropsDetail({ node }) {
   const editable = isPreviewInspectorUiNodeEditable(node);

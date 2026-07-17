@@ -5,9 +5,17 @@ import { createPreviewInspectorPageCandidateRuntimeSource } from '../../../../sr
 
 /** Minimal serializable candidate shape used by the generated runtime's pure selection helpers. */
 interface CandidateFixture {
+  readonly complete?: boolean;
   readonly id: string;
-  readonly renderPath?: { readonly entryPoint?: { readonly sourcePath: string } };
+  readonly renderPath?: {
+    readonly entryPoint?: { readonly sourcePath: string };
+    readonly steps?: readonly {
+      readonly label: string;
+      readonly wrapperNames?: readonly string[];
+    }[];
+  };
   readonly root: { readonly exportName: string; readonly sourcePath: string };
+  readonly rootStepIndex?: number;
 }
 
 describe('Preview Inspector page-candidate runtime source', () => {
@@ -15,9 +23,17 @@ describe('Preview Inspector page-candidate runtime source', () => {
   it('switches only among descriptor-owned page candidates', () => {
     const candidates: readonly CandidateFixture[] = [
       {
+        complete: true,
         id: 'public-path',
-        renderPath: { entryPoint: { sourcePath: '/workspace/public-main.tsx' } },
+        renderPath: {
+          entryPoint: { sourcePath: '/workspace/public-main.tsx' },
+          steps: [
+            { label: 'PublicPage' },
+            { label: 'AppRouter', wrapperNames: ['ApplicationShell'] },
+          ],
+        },
         root: { exportName: 'PublicPage', sourcePath: '/workspace/PublicPage.tsx' },
+        rootStepIndex: 0,
       },
       {
         id: 'staff-path',
@@ -33,7 +49,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(result.persisted).toBe(1);
     expect(result.scheduled).toBe(1);
     expect(result.labels).toEqual([
-      '1. PublicPage · application page',
+      '1. PublicPage › AppRouter › ApplicationShell · application root',
       '2. StaffPage · partial context',
     ]);
   });

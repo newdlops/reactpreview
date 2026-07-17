@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { GlobalStoragePreviewArtifactStore } from '../../../src/adapters/vscode/globalStoragePreviewArtifactStore';
+import { MAX_PREVIEW_CHUNKS } from '../../../src/adapters/vscode/previewArtifactLayout';
 import type { PreviewBundle } from '../../../src/domain/preview';
 
 const vscodeFileSystem = vi.hoisted(() => ({
@@ -232,7 +233,7 @@ describe('GlobalStoragePreviewArtifactStore', () => {
   });
 
   /** Prevents colliding output identities and bounds filesystem fan-out per preview revision. */
-  it('rejects duplicate paths and more than 128 chunks', async () => {
+  it('rejects duplicate paths and chunks above the large-route budget', async () => {
     const store = createStore();
     const duplicateBundle: PreviewBundle = {
       ...FIRST_BUNDLE,
@@ -243,7 +244,7 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     };
     const oversizedBundle: PreviewBundle = {
       ...FIRST_BUNDLE,
-      chunks: Array.from({ length: 129 }, (_, index) => ({
+      chunks: Array.from({ length: MAX_PREVIEW_CHUNKS + 1 }, (_, index) => ({
         contents: new Uint8Array(),
         relativePath: `chunks/${index.toString()}.js`,
       })),
@@ -252,7 +253,9 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     await expect(store.publish(duplicateBundle)).rejects.toThrow(
       'Duplicate React preview chunk path',
     );
-    await expect(store.publish(oversizedBundle)).rejects.toThrow('at most 128 auxiliary chunks');
+    await expect(store.publish(oversizedBundle)).rejects.toThrow(
+      `at most ${MAX_PREVIEW_CHUNKS.toString()} auxiliary chunks`,
+    );
     expect(vscodeFileSystem.writeFile).not.toHaveBeenCalled();
   });
 
@@ -377,7 +380,7 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     );
   });
 
-  /** Starts more than one write while never exceeding the adapter's eight-worker I/O budget. */
+  /** Starts more than one write while never exceeding the adapter's sixteen-worker I/O budget. */
   it('publishes independent files with bounded parallel writes', async () => {
     let activeWrites = 0;
     let maximumActiveWrites = 0;
@@ -396,7 +399,7 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     await store.publish({ ...FIRST_BUNDLE, chunks });
 
     expect(maximumActiveWrites).toBeGreaterThan(1);
-    expect(maximumActiveWrites).toBeLessThanOrEqual(8);
+    expect(maximumActiveWrites).toBeLessThanOrEqual(16);
   });
 
   /** Waits for root deletion and rejects later writes that could recreate private source caches. */

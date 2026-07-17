@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { build, type Metafile, type OutputFile } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_PREVIEW_OUTPUT_FILES,
   planPreviewBuildOutputs,
   PreviewBuildOutputPlannerError,
   type PreviewBuildOutputPlannerOptions,
@@ -193,11 +194,16 @@ describe('planPreviewBuildOutputs', () => {
   it('rejects builds above the auxiliary file budget', () => {
     const paths = [
       'entry.js',
-      ...Array.from({ length: 128 }, (_, index) => `chunks/chunk-${index.toString()}.js`),
+      ...Array.from(
+        { length: MAX_PREVIEW_OUTPUT_FILES },
+        (_, index) => `chunks/chunk-${index.toString()}.js`,
+      ),
     ];
     const fixture = createDirectPlannerFixture(paths);
 
-    expect(() => planPreviewBuildOutputs(fixture)).toThrow(/more than 128/u);
+    expect(() => planPreviewBuildOutputs(fixture)).toThrow(
+      new RegExp(`more than ${MAX_PREVIEW_OUTPUT_FILES.toString()}`, 'u'),
+    );
   });
 });
 

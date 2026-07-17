@@ -17,7 +17,8 @@ import {
   type PreviewArtifactLayout,
 } from './previewArtifactLayout';
 
-const MAX_PARALLEL_ARTIFACT_IO = 8;
+/** Reduces local and remote publication round trips without opening unbounded filesystem work. */
+const MAX_PARALLEL_ARTIFACT_IO = 16;
 
 /** One portable path identity retained as a live file record or session-long URL tombstone. */
 interface SharedArtifactFileRecord {

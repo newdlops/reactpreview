@@ -9,7 +9,8 @@
 import { createHash } from 'node:crypto';
 import type { PreviewBundle, PreviewBundleChunk } from '../../domain/preview';
 
-const MAX_PREVIEW_CHUNKS = 128;
+/** Allows large route graphs while aggregate compiler bytes still enforce the lightweight budget. */
+export const MAX_PREVIEW_CHUNKS = 2_048;
 const PORTABLE_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/u;
 const WINDOWS_RESERVED_PATH_STEM_PATTERN = /^(?:AUX|CLOCK\$|COM[1-9]|CON|LPT[1-9]|NUL|PRN)$/iu;
 

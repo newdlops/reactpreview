@@ -5,6 +5,11 @@
  */
 import { context, type BuildContext, type BuildOptions, type BuildResult } from 'esbuild';
 import {
+  createPreviewSassPlugin,
+  type PreviewSassBoundary,
+  type PreviewSassPluginOptions,
+} from './previewSassPlugin';
+import {
   MutableWorkspaceSourceState,
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
@@ -31,7 +36,15 @@ export interface PreviewIncrementalBuildRequest {
   /** Creates fixed context options around the supplied mutable source-state object. */
   readonly createOptions: (
     sourceState: MutableWorkspaceSourceState,
+    sassBoundary: PreviewSassBoundary | undefined,
   ) => PreviewIncrementalBuildOptions;
+  /** Receives an immutable style graph snapshot before the next serialized rebuild can clear it. */
+  readonly captureSassState?: (
+    dependencyPaths: readonly string[],
+    watchDirectories: readonly string[],
+  ) => void;
+  /** Fixed package roots used to create a Sass boundary owned by the persistent context. */
+  readonly sassOptions?: PreviewSassPluginOptions;
 }
 
 /** Persistent native context plus a queue preventing mutable source state from overlapping. */
@@ -40,6 +53,8 @@ interface CachedBuildContext {
   readonly buildContext: BuildContext<PreviewIncrementalBuildOptions>;
   /** Resolves after the latest queued rebuild, regardless of its result. */
   queue: Promise<void>;
+  /** Style compiler/cache that must live exactly as long as its native context plugins. */
+  readonly sassBoundary?: PreviewSassBoundary;
   /** Mutable source boundary read by the persistent workspace plugin. */
   readonly sourceState: MutableWorkspaceSourceState;
 }
@@ -82,6 +97,10 @@ export class PreviewIncrementalBuildCache {
       try {
         const result = await entry.buildContext.rebuild();
         throwIfPreviewBuildAborted(request.signal);
+        request.captureSassState?.(
+          entry.sassBoundary?.getDependencyPaths() ?? [],
+          entry.sassBoundary?.getWatchDirectories() ?? [],
+        );
         return result;
       } catch (error) {
         throwIfPreviewBuildAborted(request.signal);
@@ -151,10 +170,13 @@ export class PreviewIncrementalBuildCache {
     }
 
     const sourceState = new MutableWorkspaceSourceState(request.sourceCompilation);
-    const created = context(request.createOptions(sourceState)).then(
+    const sassBoundary =
+      request.sassOptions === undefined ? undefined : createPreviewSassPlugin(request.sassOptions);
+    const created = context(request.createOptions(sourceState, sassBoundary)).then(
       (buildContext): CachedBuildContext => ({
         buildContext,
         queue: Promise.resolve(),
+        ...(sassBoundary === undefined ? {} : { sassBoundary }),
         sourceState,
       }),
     );

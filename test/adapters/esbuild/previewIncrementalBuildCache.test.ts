@@ -5,6 +5,7 @@ import {
   PreviewIncrementalBuildCache,
   type PreviewIncrementalBuildOptions,
 } from '../../../src/adapters/esbuild/previewIncrementalBuildCache';
+import type { PreviewSassBoundary } from '../../../src/adapters/esbuild/previewSassPlugin';
 import { PreviewSourceTransformer } from '../../../src/adapters/esbuild/staticResources/previewSourceTransformer';
 import type {
   MutableWorkspaceSourceState,
@@ -53,6 +54,43 @@ describe('PreviewIncrementalBuildCache', () => {
     );
     await cache.shutdown();
     expect(native.dispose).toHaveBeenCalledOnce();
+  });
+
+  /** Keeps the project Sass compiler and its dependency snapshot attached to the reused context. */
+  it('reuses one Sass boundary and captures its state after every serialized rebuild', async () => {
+    const native = createNativeContext();
+    esbuildMocks.context.mockResolvedValue(native.context);
+    const cache = new PreviewIncrementalBuildCache();
+    const sassBoundaries: PreviewSassBoundary[] = [];
+    const captureSassState = vi.fn();
+    const createOptions = vi.fn(
+      (_state: MutableWorkspaceSourceState, sassBoundary: PreviewSassBoundary | undefined) => {
+        if (sassBoundary !== undefined) {
+          sassBoundaries.push(sassBoundary);
+        }
+        return createBuildOptions();
+      },
+    );
+
+    for (const sourceText of ['first', 'second']) {
+      await cache.rebuild({
+        captureSassState,
+        contextKey: 'sass-plan',
+        createOptions,
+        sassOptions: {
+          projectRoot: '/workspace',
+          workspaceRoot: '/workspace',
+        },
+        sourceCompilation: createCompilation(sourceText),
+      });
+    }
+
+    expect(createOptions).toHaveBeenCalledOnce();
+    expect(sassBoundaries).toHaveLength(1);
+    expect(captureSassState).toHaveBeenCalledTimes(2);
+    expect(captureSassState).toHaveBeenNthCalledWith(1, [], []);
+    expect(captureSassState).toHaveBeenNthCalledWith(2, [], []);
+    await cache.shutdown();
   });
 
   /** Requests native cancellation and surfaces a standard AbortError for a superseded revision. */

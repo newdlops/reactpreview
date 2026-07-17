@@ -7,7 +7,7 @@
 import path from 'node:path';
 import type { Metafile, OutputFile } from 'esbuild';
 
-/** File-count guard; the stricter 32 MiB aggregate byte budget remains the primary memory bound. */
+/** File-count guard used alongside the separately configurable aggregate byte budget. */
 export const MAX_PREVIEW_OUTPUT_FILES = 2_048;
 const JAVASCRIPT_OUTPUT_PATTERN = /\.[cm]?js$/iu;
 const STYLESHEET_OUTPUT_PATTERN = /\.css$/iu;

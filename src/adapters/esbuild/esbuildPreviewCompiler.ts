@@ -464,7 +464,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           styleWatchDirectories = oneShotSassBoundary.getWatchDirectories();
         }
         throwIfPreviewBuildCancelled(buildSignal);
-        assertOutputSize(result.outputFiles);
+        assertOutputSize(result.outputFiles, request.maxOutputMebibytes);
         return {
           globalPackagePlan,
           referencedGlobalNames: sourceTransformer.getReferencedImplicitPackageGlobalNames(),

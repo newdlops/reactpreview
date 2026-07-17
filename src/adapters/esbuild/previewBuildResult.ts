@@ -12,6 +12,11 @@ import {
   type PreviewDiagnostic,
   type PreviewDiagnosticLocation,
 } from '../../domain/preview';
+import {
+  MAX_PREVIEW_OUTPUT_MEBIBYTES,
+  normalizePreviewOutputMebibytes,
+  resolvePreviewOutputLimitBytes,
+} from '../../domain/previewOutputPolicy';
 import { planPreviewBuildOutputs } from './previewBuildOutputPlanner';
 import {
   PREVIEW_ASSET_NAMESPACE,
@@ -39,9 +44,6 @@ export const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
 /** Stable synthetic output root shared by esbuild options and output-plan validation. */
 export const PREVIEW_OUTPUT_DIRECTORY_NAME = 'react-preview-output';
 
-/** Maximum combined JavaScript, CSS, and encoded asset output retained in memory per build. */
-const MAX_PREVIEW_OUTPUT_BYTES = 32 * 1024 * 1024;
-
 /**
  * Converts an esbuild result into the infrastructure-independent bundle model.
  *
@@ -59,7 +61,7 @@ export function createPreviewBundle(
   additionalDiagnostics: readonly PreviewDiagnostic[] = [],
   additionalDependencies: readonly string[] = [],
 ): PreviewBundle {
-  assertOutputSize(result.outputFiles);
+  assertOutputSize(result.outputFiles, request.maxOutputMebibytes);
   const outputPlan = planPreviewBuildOutputs({
     absoluteOutputDirectory: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
     absoluteWorkingDirectory: request.workspaceRoot,
@@ -94,16 +96,22 @@ export function createPreviewBundle(
  * generated JavaScript, CSS, and base64 expansion.
  *
  * @param outputFiles Complete in-memory output returned by esbuild.
- * @throws PreviewCompilationError when combined output exceeds the lightweight preview budget.
+ * @param configuredMebibytes Optional resource-scoped user limit, normalized to the safe range.
+ * @throws PreviewCompilationError when combined output exceeds the configured local budget.
  */
-export function assertOutputSize(outputFiles: readonly OutputFile[]): void {
+export function assertOutputSize(
+  outputFiles: readonly OutputFile[],
+  configuredMebibytes?: number,
+): void {
   const outputBytes = outputFiles.reduce(
     (totalBytes, outputFile) => totalBytes + outputFile.contents.byteLength,
     0,
   );
-  if (outputBytes > MAX_PREVIEW_OUTPUT_BYTES) {
+  const outputLimitMebibytes = normalizePreviewOutputMebibytes(configuredMebibytes);
+  const outputLimitBytes = resolvePreviewOutputLimitBytes(outputLimitMebibytes);
+  if (outputBytes > outputLimitBytes) {
     throw new PreviewCompilationError(
-      `Preview output exceeds the ${formatMebibytes(MAX_PREVIEW_OUTPUT_BYTES)} MiB safety limit.`,
+      `Preview output is ${formatMebibytes(outputBytes)} MiB and exceeds the configured ${outputLimitMebibytes.toString()} MiB limit. Increase reactPreview.maxOutputSizeMiB up to ${MAX_PREVIEW_OUTPUT_MEBIBYTES.toString()} MiB, or narrow the rendered page graph.`,
       [],
     );
   }
@@ -116,7 +124,11 @@ export function assertOutputSize(outputFiles: readonly OutputFile[]): void {
  * @returns Human-readable base-two mebibyte count without a unit suffix.
  */
 function formatMebibytes(bytes: number): string {
-  return (bytes / (1024 * 1024)).toString();
+  const mebibytes = bytes / (1024 * 1024);
+  const roundedUpMebibytes = Math.ceil(mebibytes * 10) / 10;
+  return Number.isInteger(roundedUpMebibytes)
+    ? roundedUpMebibytes.toString()
+    : roundedUpMebibytes.toFixed(1);
 }
 
 /**

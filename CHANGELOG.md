@@ -2,7 +2,18 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
-## 0.1.1039 - 2026-07-17
+## 0.1.1041 - 2026-07-17
+
+- Page Inspector가 application의 모든 attribute/text mutation, scroll, resize와 1초 polling마다 React Fiber를
+  재수집하던 경로를 제거하고 실제 child-list/React commit만 component tree invalidation으로 처리
+- highlight는 animation frame의 저비용 DOM reconciliation으로 분리하고 Fiber snapshot은 cache한 뒤 최대
+  초당 4회, browser idle 구간에서만 갱신해 `Code Helper (Renderer)` CPU 폭증과 GUI starvation을 방지
+- Console/API·GraphQL request/condition/runtime fallback registry 갱신을 application-wide React store에서
+  Inspector 전용 lane으로 분리하고, 패널을 접거나 webview가 숨겨지면 tree subscription과 timer를 중단
+- burst commit 100회가 highlight frame 하나와 tree refresh 하나로 합쳐지는 scheduler 동작 및 attribute/text,
+  scroll/resize polling 회귀 방지 테스트 추가
+
+## 0.1.1040 - 2026-07-17
 
 - 한 target을 호출하는 정적 render-chain 후보별로 importable ancestor를 독립 탐색하고, 실제 mount owner가
   다른 page context를 최대 6개까지 `pageCandidates`로 보존

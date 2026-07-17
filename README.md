@@ -124,6 +124,13 @@ snapshot과 authored source를 보여줍니다.
 runtime Fiber를 아직 읽을 수 없는 초기·실패 상태에서는 정적으로 증명한 EntryPoint→target component 경로를
 같은 tree에 fallback으로 표시합니다.
 
+Inspector highlight는 application DOM에 붙은 CSS outline만 animation frame에서 조정하며 scroll·resize나
+attribute/text animation마다 React tree를 다시 읽지 않습니다. 실제 React commit 또는 child-list 변화가
+있을 때만 cached Fiber snapshot을 무효화하고, component tree는 browser idle 구간에서 최대 초당 4회
+갱신합니다. Inspector를 접거나 preview tab이 숨겨지면 이 tree 구독과 timer도 중지됩니다. Console, Payload,
+조건 및 fallback 기록은 Inspector 전용 update lane을 사용하므로 로그가 많은 페이지도 application root를
+반복 재렌더링하지 않습니다.
+
 Inspector dock에서는 다음 작업을 할 수 있습니다.
 
 - 하단·좌측·우측 drawer와 floating 배치를 선택하고 크기·위치를 pointer 또는 방향키로 조절하거나 접기

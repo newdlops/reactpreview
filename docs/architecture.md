@@ -293,6 +293,14 @@ branch는 기본 tree에서 제외합니다. 선택 component별 top-level conne
 보관해 tree highlight와 element-picker 역매핑에 사용합니다. Fiber, hook, update queue나 project props는
 수정하지 않습니다.
 
+`previewInspectorRefreshRuntimeSource`는 highlight와 component-tree 갱신을 서로 다른 scheduling lane으로
+분리합니다. outline reconciliation은 animation frame당 한 번 수행하되 마지막 host index를 재사용하고,
+React commit 또는 mount subtree의 `childList` mutation만 Fiber snapshot을 dirty로 표시합니다. attribute,
+character data, scroll, resize는 DOM outline이 자체적으로 따라가므로 관찰하지 않습니다. dirty tree는 250ms
+간격과 `requestIdleCallback`으로 coalesce하고 hidden document에서는 timer를 만들지 않으며, Inspector가
+collapsed이면 UI subscription 자체를 해제합니다. Console·data request discovery·condition·runtime fallback
+registry는 같은 Inspector-only lane을 사용해 project target이 구독하는 semantic store를 갱신하지 않습니다.
+
 props와 hook/class state는 own data descriptor만 제한된 깊이·key·array/string budget으로 복사하므로 getter나
 project code를 실행하지 않습니다. JSX development `_debugSource`가 있으면 authored line/column을 쓰고,
 없으면 inspector ancestry/render-chain의 source path와 occurrence를 사용합니다. Fiber를 읽지 못하는 초기 또는

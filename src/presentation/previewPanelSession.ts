@@ -16,6 +16,7 @@ import {
   readPreviewHotReloadAcknowledgement,
   type PendingPreviewHotReload,
 } from './previewHotReloadProtocol';
+import { handlePreviewInspectorSourceNavigationMessage } from './previewInspectorSourceNavigation';
 import { createPreviewProgressMessage } from './previewProgress';
 import { PreviewProgressGate } from './previewProgressGate';
 import type {
@@ -30,16 +31,13 @@ import {
   rememberPreviewFailureDependencies,
 } from './previewPanelSessionUtilities';
 import { createPreviewHtml } from './webview/previewHtml';
-
 /** Application operations required by an independently testable panel session. */
 export type PreviewBuildService = Pick<BuildPreview, 'execute' | 'releaseArtifact'>;
-
 /** Resolves the latest snapshot for one immutable target URI. */
 export type PinnedPreviewTargetResolver = (
   documentUri: vscode.Uri,
   signal?: AbortSignal,
 ) => Promise<PreviewTargetIssue | ResolvedPreviewTarget>;
-
 /** Manager callbacks that contain no session implementation details. */
 export interface PreviewPanelSessionCallbacks {
   /** Records that the user focused this panel without requesting a rebuild. */
@@ -47,7 +45,6 @@ export interface PreviewPanelSessionCallbacks {
   /** Removes the independently disposed panel from the manager. */
   readonly onDidDispose: (session: PreviewPanelSession) => void;
 }
-
 /** Construction dependencies and initial immutable target for one panel. */
 export interface PreviewPanelSessionOptions {
   /** Application use case that publishes and releases reference-counted artifacts. */
@@ -65,12 +62,10 @@ export interface PreviewPanelSessionOptions {
   /** Pinned resolver that never consults the active editor. */
   readonly resolveTarget: PinnedPreviewTargetResolver;
 }
-
 /** A single React preview tab pinned to one file for its complete lifetime. */
 export class PreviewPanelSession implements vscode.Disposable {
   /** Canonical target identity used to route editor changes from the manager. */
   public readonly targetPath: string;
-
   private artifactHash: string | undefined;
   private activeBuildExecution: ActivePreviewBuildExecution | undefined;
   private readonly contextEnrichment: PreviewContextEnrichmentCoordinator;
@@ -89,7 +84,6 @@ export class PreviewPanelSession implements vscode.Disposable {
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private revision = 0;
   private hotReloadSequence = 0;
-
   /**
    * Captures the immutable target and subscribes only to events emitted by this panel.
    *
@@ -608,6 +602,17 @@ export class PreviewPanelSession implements vscode.Disposable {
 
   /** Accepts only acknowledgement messages emitted by the generated preview hot runtime. */
   private handleWebviewMessage(message: unknown): void {
+    if (
+      handlePreviewInspectorSourceNavigationMessage(message, {
+        dependencyPaths: this.dependencies,
+        enabled: this.options.renderMode === 'page-inspector',
+        log: this.options.log,
+        panelViewColumn: this.options.panel.viewColumn,
+        pinnedDocumentUri: this.documentUri,
+      })
+    ) {
+      return;
+    }
     if (
       typeof message === 'object' &&
       message !== null &&

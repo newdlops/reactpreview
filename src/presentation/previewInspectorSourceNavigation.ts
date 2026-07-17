@@ -4,7 +4,8 @@
  * bundle graph of the requesting panel. This keeps arbitrary host files outside the webview's reach.
  */
 import * as vscode from 'vscode';
-import { canonicalizeExistingPath } from '../shared/pathIdentity';
+import { canonicalizeExistingPath, normalizeLexicalPath } from '../shared/pathIdentity';
+import type { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewSiblingResourceUri } from './previewPanelSessionUtilities';
 import {
   readPreviewInspectorOpenSourceRequest,
@@ -17,6 +18,8 @@ export interface PreviewInspectorSourceNavigationContext {
   readonly dependencyPaths: ReadonlySet<string>;
   /** Restricts the command to the explicit Page Inspector rendering mode. */
   readonly enabled: boolean;
+  /** Panel-owned proof verifier that authenticates and consumes one trusted UI gesture. */
+  readonly gestureGate: PreviewInspectorGestureGate;
   /** Diagnostics sink for denied or failed navigation without showing disruptive notifications. */
   readonly log: Pick<vscode.LogOutputChannel, 'debug'>;
   /** Column occupied by the webview, used to keep its component tree visible when possible. */
@@ -47,15 +50,24 @@ export function handlePreviewInspectorSourceNavigationMessage(
     return true;
   }
 
-  const sourceIdentity = canonicalizeExistingPath(request.sourcePath);
-  if (!context.dependencyPaths.has(sourceIdentity)) {
+  const sourceIdentity = resolveAuthorizedPreviewInspectorSourceIdentity(
+    request.sourcePath,
+    context.dependencyPaths,
+  );
+  if (sourceIdentity === undefined) {
     context.log.debug(
       `Ignored React Inspector source outside the committed bundle graph: ${request.sourcePath}`,
     );
     return true;
   }
+  if (!context.gestureGate.consume(request)) {
+    context.log.debug(
+      'Ignored React Inspector source navigation without a fresh UI gesture proof.',
+    );
+    return true;
+  }
 
-  void openPreviewInspectorSource(request, context).catch((error: unknown) => {
+  void openPreviewInspectorSource(request, sourceIdentity, context).catch((error: unknown) => {
     context.log.debug(`Could not open React Inspector source ${request.sourcePath}.`, error);
   });
   return true;
@@ -64,15 +76,17 @@ export function handlePreviewInspectorSourceNavigationMessage(
 /** Opens one authorized source and reveals its clamped authored location in a text editor. */
 async function openPreviewInspectorSource(
   request: PreviewInspectorOpenSourceRequest,
+  sourceIdentity: string,
   context: PreviewInspectorSourceNavigationContext,
 ): Promise<void> {
-  const sourceUri = resolvePreviewInspectorSourceUri(request.sourcePath, context.pinnedDocumentUri);
+  const sourceUri = resolvePreviewInspectorSourceUri(
+    request.sourcePath,
+    sourceIdentity,
+    context.pinnedDocumentUri,
+  );
   const document = await vscode.workspace.openTextDocument(sourceUri);
   const selection = createPreviewInspectorSourceSelection(document, request);
-  const viewColumn = selectPreviewInspectorSourceColumn(
-    request.sourcePath,
-    context.panelViewColumn,
-  );
+  const viewColumn = selectPreviewInspectorSourceColumn(document, context.panelViewColumn);
   await vscode.window.showTextDocument(document, {
     preserveFocus: false,
     preview: true,
@@ -85,12 +99,35 @@ async function openPreviewInspectorSource(
  * Reuses an already open document URI when available, otherwise retaining the pinned target's remote
  * scheme and authority while substituting the selected dependency filesystem path.
  */
-function resolvePreviewInspectorSourceUri(sourcePath: string, pinnedUri: vscode.Uri): vscode.Uri {
-  const sourceIdentity = canonicalizeExistingPath(sourcePath);
+function resolvePreviewInspectorSourceUri(
+  sourcePath: string,
+  sourceIdentity: string,
+  pinnedUri: vscode.Uri,
+): vscode.Uri {
   const openDocument = vscode.workspace.textDocuments.find(
-    (document) => canonicalizeExistingPath(document.fileName) === sourceIdentity,
+    (document) =>
+      document.uri.scheme === pinnedUri.scheme &&
+      document.uri.authority === pinnedUri.authority &&
+      canonicalizeExistingPath(document.fileName) === sourceIdentity,
   );
   return openDocument?.uri ?? createPreviewSiblingResourceUri(pinnedUri, sourcePath);
+}
+
+/**
+ * Requires an I/O-free lexical dependency match before following any symlink or filesystem path.
+ * Runtime metadata is emitted from exact esbuild inputs, so an unrelated alias has no reason to be
+ * canonicalized. The injectable canonicalizer exists only to prove this ordering in a unit test.
+ */
+export function resolveAuthorizedPreviewInspectorSourceIdentity(
+  sourcePath: string,
+  dependencyPaths: ReadonlySet<string>,
+  canonicalize: (candidatePath: string) => string = canonicalizeExistingPath,
+): string | undefined {
+  if (!dependencyPaths.has(normalizeLexicalPath(sourcePath))) {
+    return undefined;
+  }
+  const canonicalIdentity = canonicalize(sourcePath);
+  return dependencyPaths.has(canonicalIdentity) ? canonicalIdentity : undefined;
 }
 
 /** Converts one-based browser coordinates or a zero-based graph offset into a bounded editor range. */
@@ -115,13 +152,16 @@ function createPreviewInspectorSourceSelection(
  * a column that does not replace the Inspector webview whenever the current layout makes that known.
  */
 function selectPreviewInspectorSourceColumn(
-  sourcePath: string,
+  document: vscode.TextDocument,
   panelViewColumn: vscode.ViewColumn | undefined,
 ): vscode.ViewColumn {
-  const sourceIdentity = canonicalizeExistingPath(sourcePath);
+  const sourceIdentity = canonicalizeExistingPath(document.fileName);
   const visibleEditors = vscode.window.visibleTextEditors;
   const matchingEditor = visibleEditors.find(
-    (editor) => canonicalizeExistingPath(editor.document.fileName) === sourceIdentity,
+    (editor) =>
+      editor.document.uri.scheme === document.uri.scheme &&
+      editor.document.uri.authority === document.uri.authority &&
+      canonicalizeExistingPath(editor.document.fileName) === sourceIdentity,
   );
   if (matchingEditor?.viewColumn !== undefined) {
     return matchingEditor.viewColumn;

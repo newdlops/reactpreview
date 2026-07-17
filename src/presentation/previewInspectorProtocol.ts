@@ -8,16 +8,22 @@ import { isPreviewSourcePath } from '../domain/previewTarget';
 
 const MAX_INSPECTOR_SOURCE_PATH_LENGTH = 16_384;
 const MAX_INSPECTOR_SOURCE_COORDINATE = 10_000_000;
+const INSPECTOR_GESTURE_NONCE_PATTERN = /^[a-f0-9]{32}$/u;
+const INSPECTOR_GESTURE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 /** Validated request emitted when the user opens one component from the Inspector tree. */
 export interface PreviewInspectorOpenSourceRequest {
   /** Optional one-based source column; it is meaningful only when `line` is present. */
   readonly column?: number;
+  /** Random 128-bit hex nonce consumed once by the extension-host gesture gate. */
+  readonly gestureNonce: string;
+  /** Base64url HMAC binding this nonce to the exact path and coordinates. */
+  readonly gestureToken: string;
   /** Optional one-based source line reported by JSX development metadata or static analysis. */
   readonly line?: number;
   /** Optional zero-based source offset retained by the static render graph. */
   readonly occurrenceStart?: number;
-  /** Normalized absolute JS or TS module path selected in the rendered React component tree. */
+  /** Exact absolute JS or TS path signed by the rendered React component tree. */
   readonly sourcePath: string;
   /** Exact protocol discriminator owned by React Page Inspector. */
   readonly type: 'react-preview-inspector-open-source';
@@ -55,17 +61,25 @@ export function readPreviewInspectorOpenSourceRequest(
   const line = message.line;
   const column = message.column;
   const occurrenceStart = message.occurrenceStart;
+  const gestureNonce = message.gestureNonce;
+  const gestureToken = message.gestureToken;
   if (
     !isOptionalInspectorSourceCoordinate(line) ||
     !isOptionalInspectorSourceCoordinate(column) ||
     !isOptionalInspectorSourceOffset(occurrenceStart) ||
+    typeof gestureNonce !== 'string' ||
+    !INSPECTOR_GESTURE_NONCE_PATTERN.test(gestureNonce) ||
+    typeof gestureToken !== 'string' ||
+    !INSPECTOR_GESTURE_TOKEN_PATTERN.test(gestureToken) ||
     (column !== undefined && line === undefined)
   ) {
     return undefined;
   }
 
   const baseRequest = {
-    sourcePath: path.normalize(sourcePath),
+    gestureNonce,
+    gestureToken,
+    sourcePath,
     type: 'react-preview-inspector-open-source' as const,
   };
   return Object.freeze({

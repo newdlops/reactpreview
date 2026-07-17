@@ -4,7 +4,7 @@ import type { BuildPreview } from '../application/buildPreview';
 import type { PreparedPreview, PreviewRenderMode } from '../domain/preview';
 import { isPreviewBuildCancellation } from '../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../domain/previewProgress';
-import { canonicalizeExistingPath } from '../shared/pathIdentity';
+import { canonicalizeExistingPath, createExistingPathIdentitySet } from '../shared/pathIdentity';
 import type { PreviewTargetIssue, ResolvedPreviewTarget } from './activePreviewTarget';
 import { describeBuildFailure, formatDiagnostic } from './previewFailure';
 import { PreviewContextEnrichmentCoordinator } from './previewContextEnrichment';
@@ -17,6 +17,7 @@ import {
   type PendingPreviewHotReload,
 } from './previewHotReloadProtocol';
 import { handlePreviewInspectorSourceNavigationMessage } from './previewInspectorSourceNavigation';
+import { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewProgressMessage } from './previewProgress';
 import { PreviewProgressGate } from './previewProgressGate';
 import type {
@@ -75,6 +76,7 @@ export class PreviewPanelSession implements vscode.Disposable {
   private disposed = false;
   private disposalNotified = false;
   private hasCompleteContext = false;
+  private readonly inspectorSourceGesture = new PreviewInspectorGestureGate();
   private readonly panelDisposables: vscode.Disposable[] = [];
   private readonly pendingHotReloads = new Map<string, PendingPreviewHotReload>();
   private readonly performanceTrace: PreviewPerformanceTrace;
@@ -91,7 +93,7 @@ export class PreviewPanelSession implements vscode.Disposable {
    */
   public constructor(private readonly options: PreviewPanelSessionOptions) {
     this.targetPath = canonicalizeExistingPath(options.initialTarget.request.documentPath);
-    this.dependencies = new Set([this.targetPath]);
+    this.dependencies = createExistingPathIdentitySet([options.initialTarget.request.documentPath]);
     this.performanceTrace = new PreviewPerformanceTrace((trace) => {
       this.options.log.debug(`React preview performance ${JSON.stringify(trace)}`);
     });
@@ -299,9 +301,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.clearBuildExecution(requestedRevision);
       return;
     }
-
     this.options.panel.title = createPreviewPanelTitle(target.request.documentPath);
-
     let contextEnrichmentPending = false;
     try {
       const firstPaint = await preparePreviewFirstPaint({
@@ -391,10 +391,11 @@ export class PreviewPanelSession implements vscode.Disposable {
     preparedPreview: PreparedPreview,
     requestedRevision: number,
   ): void {
-    const nextDependencies = new Set([
+    const nextDependencies = createExistingPathIdentitySet([
       this.targetPath,
-      ...preparedPreview.dependencies.map(canonicalizeExistingPath),
+      ...preparedPreview.dependencies,
     ]);
+    this.inspectorSourceGesture.configure(preparedPreview.inspectorSourceGestureSecret);
     const nextDependencyDirectories = new Set(
       preparedPreview.watchDirectories.map(canonicalizeExistingPath),
     );
@@ -419,7 +420,6 @@ export class PreviewPanelSession implements vscode.Disposable {
       runtimeToken: `${requestedRevision.toString()}:${preparedPreview.artifact.contentHash}`,
       scriptUri,
     };
-
     const nextHtml = createPreviewHtml(
       this.options.panel.webview.cspSource,
       stylesheetUri === undefined
@@ -429,9 +429,7 @@ export class PreviewPanelSession implements vscode.Disposable {
             stylesheetUri,
           },
     );
-
     const previousArtifactHash = this.artifactHash;
-
     if (previousArtifactHash === preparedPreview.artifact.contentHash) {
       this.dependencies = nextDependencies;
       this.dependencyDirectories = nextDependencyDirectories;
@@ -606,6 +604,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       handlePreviewInspectorSourceNavigationMessage(message, {
         dependencyPaths: this.dependencies,
         enabled: this.options.renderMode === 'page-inspector',
+        gestureGate: this.inspectorSourceGesture,
         log: this.options.log,
         panelViewColumn: this.options.panel.viewColumn,
         pinnedDocumentUri: this.documentUri,

@@ -31,3 +31,20 @@ export function canonicalizeExistingPath(filePath: string): string {
     return normalizeLexicalPath(filePath);
   }
 }
+
+/**
+ * Builds a comparison set containing both authored lexical paths and their current canonical targets.
+ * Callers must supply extension-owned build/editor paths rather than values received from a webview;
+ * retaining both identities lets later security checks reject unknown lexical aliases before realpath.
+ *
+ * @param filePaths Trusted editor or compiler dependency paths.
+ * @returns Deduplicated lexical and canonical identities for exact membership checks.
+ */
+export function createExistingPathIdentitySet(filePaths: readonly string[]): Set<string> {
+  const identities = new Set<string>();
+  for (const filePath of filePaths) {
+    identities.add(normalizeLexicalPath(filePath));
+    identities.add(canonicalizeExistingPath(filePath));
+  }
+  return identities;
+}

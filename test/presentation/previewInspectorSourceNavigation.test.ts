@@ -6,9 +6,17 @@
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { readPreviewInspectorOpenSourceRequest } from '../../src/presentation/previewInspectorProtocol';
+import {
+  createPreviewInspectorGestureToken,
+  PreviewInspectorGestureGate,
+} from '../../src/presentation/previewInspectorGestureGate';
+import {
+  readPreviewInspectorOpenSourceRequest,
+  type PreviewInspectorOpenSourceRequest,
+} from '../../src/presentation/previewInspectorProtocol';
 import {
   handlePreviewInspectorSourceNavigationMessage,
+  resolveAuthorizedPreviewInspectorSourceIdentity,
   type PreviewInspectorSourceNavigationContext,
 } from '../../src/presentation/previewInspectorSourceNavigation';
 
@@ -97,45 +105,83 @@ vi.mock('vscode', () => {
 
 const SOURCE_PATH = path.normalize('/workspace/src/Card.tsx');
 const OUTSIDE_PATH = path.normalize('/workspace/secrets/Outside.tsx');
+const GESTURE_SECRET = Buffer.alloc(32, 7).toString('base64url');
+const SYNTACTIC_GESTURE_PROOF = {
+  gestureNonce: '0'.repeat(32),
+  gestureToken: 'A'.repeat(43),
+} as const;
+let gestureSequence = 0;
 
 afterEach(() => {
   vi.clearAllMocks();
   vscodeState.textDocuments.length = 0;
   vscodeState.visibleTextEditors.length = 0;
+  gestureSequence = 0;
 });
 
 describe('readPreviewInspectorOpenSourceRequest', () => {
   /** Preserves each supported source-location representation with explicit index semantics. */
   it('accepts absolute source paths with line, column, and graph offsets', () => {
-    expect(
-      readPreviewInspectorOpenSourceRequest({
-        column: 7,
-        line: 3,
-        occurrenceStart: 42,
-        sourcePath: SOURCE_PATH,
-        type: 'react-preview-inspector-open-source',
-      }),
-    ).toEqual({
+    const message = createSignedSourceMessage({
       column: 7,
       line: 3,
       occurrenceStart: 42,
       sourcePath: SOURCE_PATH,
-      type: 'react-preview-inspector-open-source',
     });
+
+    expect(readPreviewInspectorOpenSourceRequest(message)).toEqual(message);
   });
 
   /** Rejects values that could escape host path policy or produce ambiguous editor coordinates. */
   it.each([
     null,
     [],
-    { sourcePath: 'relative/Card.tsx', type: 'react-preview-inspector-open-source' },
-    { sourcePath: '/workspace/Card.css', type: 'react-preview-inspector-open-source' },
-    { sourcePath: '/workspace/nul\0Card.tsx', type: 'react-preview-inspector-open-source' },
-    { line: 0, sourcePath: SOURCE_PATH, type: 'react-preview-inspector-open-source' },
-    { line: 1.5, sourcePath: SOURCE_PATH, type: 'react-preview-inspector-open-source' },
-    { column: 2, sourcePath: SOURCE_PATH, type: 'react-preview-inspector-open-source' },
-    { occurrenceStart: -1, sourcePath: SOURCE_PATH, type: 'react-preview-inspector-open-source' },
-    { occurrenceStart: 1.5, sourcePath: SOURCE_PATH, type: 'react-preview-inspector-open-source' },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      sourcePath: 'relative/Card.tsx',
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      sourcePath: '/workspace/Card.css',
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      sourcePath: '/workspace/nul\0Card.tsx',
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      line: 0,
+      sourcePath: SOURCE_PATH,
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      line: 1.5,
+      sourcePath: SOURCE_PATH,
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      column: 2,
+      sourcePath: SOURCE_PATH,
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      occurrenceStart: -1,
+      sourcePath: SOURCE_PATH,
+      type: 'react-preview-inspector-open-source',
+    },
+    {
+      ...SYNTACTIC_GESTURE_PROOF,
+      occurrenceStart: 1.5,
+      sourcePath: SOURCE_PATH,
+      type: 'react-preview-inspector-open-source',
+    },
+    { sourcePath: SOURCE_PATH, type: 'react-preview-inspector-open-source' },
   ])('rejects malformed source navigation %#', (message) => {
     expect(readPreviewInspectorOpenSourceRequest(message)).toBeUndefined();
   });
@@ -149,12 +195,11 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
     const context = createContext([SOURCE_PATH]);
 
     const handled = handlePreviewInspectorSourceNavigationMessage(
-      {
+      createSignedSourceMessage({
         column: 99,
         line: 99,
         sourcePath: SOURCE_PATH,
-        type: 'react-preview-inspector-open-source',
-      },
+      }),
       context,
     );
 
@@ -184,11 +229,10 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
 
     expect(
       handlePreviewInspectorSourceNavigationMessage(
-        {
+        createSignedSourceMessage({
           occurrenceStart: 8,
           sourcePath: SOURCE_PATH,
-          type: 'react-preview-inspector-open-source',
-        },
+        }),
         createContext([SOURCE_PATH]),
       ),
     ).toBe(true);
@@ -209,11 +253,10 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
 
     expect(
       handlePreviewInspectorSourceNavigationMessage(
-        {
+        createSignedSourceMessage({
           line: 1,
           sourcePath: OUTSIDE_PATH,
-          type: 'react-preview-inspector-open-source',
-        },
+        }),
         context,
       ),
     ).toBe(true);
@@ -235,10 +278,9 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
     ).toBe(false);
     expect(
       handlePreviewInspectorSourceNavigationMessage(
-        {
+        createSignedSourceMessage({
           sourcePath: 'relative.tsx',
-          type: 'react-preview-inspector-open-source',
-        },
+        }),
         context,
       ),
     ).toBe(false);
@@ -246,15 +288,20 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
 
   /** Preserves the pinned target's remote scheme and authority for unopened dependency sources. */
   it('opens remote sibling sources through the pinned document provider', async () => {
-    const document = createDocument(SOURCE_PATH, ['remote']);
+    const remoteUri = vscode.Uri.file(SOURCE_PATH).with({
+      authority: 'ssh-test',
+      scheme: 'vscode-remote',
+    });
+    const document = createDocument(SOURCE_PATH, ['remote'], remoteUri);
+    const localDocument = createDocument(SOURCE_PATH, ['local']);
+    vscodeState.textDocuments.push(localDocument);
     vscodeState.openTextDocument.mockResolvedValue(document);
     const context = createContext([SOURCE_PATH], true);
 
     handlePreviewInspectorSourceNavigationMessage(
-      {
+      createSignedSourceMessage({
         sourcePath: SOURCE_PATH,
-        type: 'react-preview-inspector-open-source',
-      },
+      }),
       context,
     );
 
@@ -268,12 +315,49 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
         scheme: 'vscode-remote',
       }),
     );
+    expect(vscodeState.openTextDocument).not.toHaveBeenCalledWith(localDocument.uri);
+  });
+
+  /** Rejects a replayed or payload-tampered gesture proof before opening another editor. */
+  it('consumes a signed UI gesture once and binds it to exact coordinates', async () => {
+    const document = createDocument(SOURCE_PATH, ['first', 'second']);
+    vscodeState.openTextDocument.mockResolvedValue(document);
+    const context = createContext([SOURCE_PATH]);
+    const message = createSignedSourceMessage({ line: 1, sourcePath: SOURCE_PATH });
+
+    expect(handlePreviewInspectorSourceNavigationMessage(message, context)).toBe(true);
+    expect(handlePreviewInspectorSourceNavigationMessage(message, context)).toBe(true);
+    expect(handlePreviewInspectorSourceNavigationMessage({ ...message, line: 2 }, context)).toBe(
+      true,
+    );
+    await vi.waitFor(() => {
+      expect(vscodeState.openTextDocument).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /** Proves an unknown lexical path returns before the injectable canonical filesystem operation. */
+  it('does not canonicalize a path outside the lexical dependency allowlist', () => {
+    const canonicalize = vi.fn(() => {
+      throw new Error('canonical filesystem access must not run');
+    });
+
+    expect(
+      resolveAuthorizedPreviewInspectorSourceIdentity(
+        OUTSIDE_PATH,
+        new Set([SOURCE_PATH]),
+        canonicalize,
+      ),
+    ).toBeUndefined();
+    expect(canonicalize).not.toHaveBeenCalled();
   });
 });
 
 /** Creates the minimal current text document needed for URI and position calculations. */
-function createDocument(fileName: string, lines: readonly string[]): vscode.TextDocument {
-  const uri = vscode.Uri.file(fileName);
+function createDocument(
+  fileName: string,
+  lines: readonly string[],
+  uri: vscode.Uri = vscode.Uri.file(fileName),
+): vscode.TextDocument {
   return {
     fileName,
     lineAt: (line: number) => ({ text: lines[line] ?? '' }),
@@ -303,11 +387,30 @@ function createContext(
   const pinnedDocumentUri = remote
     ? pinnedFileUri.with({ authority: 'ssh-test', scheme: 'vscode-remote' })
     : pinnedFileUri;
+  const gestureGate = new PreviewInspectorGestureGate();
+  gestureGate.configure(GESTURE_SECRET);
   return {
     dependencyPaths: new Set(dependencyPaths.map((sourcePath) => path.normalize(sourcePath))),
     enabled: true,
+    gestureGate,
     log: { debug: vi.fn<(message: string, ...args: unknown[]) => void>() },
     panelViewColumn: vscode.ViewColumn.Two,
     pinnedDocumentUri,
+  };
+}
+
+/** Creates the exact browser-shaped request and signs every field with the test entry key. */
+function createSignedSourceMessage(
+  fields: Omit<PreviewInspectorOpenSourceRequest, 'gestureNonce' | 'gestureToken' | 'type'>,
+): PreviewInspectorOpenSourceRequest {
+  gestureSequence += 1;
+  const unsignedRequest = {
+    ...fields,
+    gestureNonce: gestureSequence.toString(16).padStart(32, '0'),
+    type: 'react-preview-inspector-open-source' as const,
+  };
+  return {
+    ...unsignedRequest,
+    gestureToken: createPreviewInspectorGestureToken(GESTURE_SECRET, unsignedRequest),
   };
 }

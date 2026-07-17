@@ -10,6 +10,7 @@ import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLay
 import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspectorConditionUiRuntimeSource';
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
+import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 
 /** Source location exposed to the UI without prescribing an extension-host transport. */
 export interface PreviewInspectorUiSourceLocation {
@@ -90,14 +91,14 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const consoleUiRuntimeSource = createPreviewInspectorConsoleUiRuntimeSource();
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
+  const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
 
 ${conditionUiRuntimeSource}
-
 ${consoleUiRuntimeSource}
-
 ${dataUiRuntimeSource}
+${runtimeFallbackUiRuntimeSource}
 
 /**
  * Collector kinds that identify authored or declarative React component boundaries.
@@ -743,6 +744,7 @@ function PreviewInspectorDetailsPane({ node }) {
     ['state', 'State'],
     ['source', 'Source'],
     ['payloads', 'Payloads'],
+    ['fallbacks', 'Fallbacks (' + String(readPreviewInspectorRuntimeFallbacks().length) + ')'],
     ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
   ];
   return React.createElement(
@@ -785,6 +787,8 @@ function PreviewInspectorDetailsPane({ node }) {
       },
       activeTab === 'payloads'
         ? React.createElement(PreviewInspectorDataDetail)
+        : activeTab === 'fallbacks'
+          ? React.createElement(PreviewInspectorRuntimeFallbackDetail)
         : activeTab === 'console'
           ? React.createElement(PreviewInspectorConsoleDetail)
           : node === undefined
@@ -821,6 +825,7 @@ function PreviewInspectorToolbar() {
   const mainComponentName = readPreviewInspectorMainComponentName();
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
   const dataAutoEnabled = readPreviewInspectorDataAutoEnabled();
+  const runtimeFallbackCount = readPreviewInspectorRuntimeFallbacks().length;
   const pageContext = readPreviewInspectorPageContext();
   return React.createElement(
     React.Fragment,
@@ -886,6 +891,13 @@ function PreviewInspectorToolbar() {
           },
           'Auto values',
         ),
+        runtimeFallbackCount > 0
+          ? React.createElement(
+              'span',
+              { className: 'rpi-meta', title: 'Render-blocking hook edges replaced by generated static values' },
+              'Fallbacks: ' + String(runtimeFallbackCount),
+            )
+          : undefined,
         React.createElement(
           PreviewInspectorDevtoolsButton,
           {

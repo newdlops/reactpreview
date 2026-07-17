@@ -133,7 +133,7 @@ const previewInspectorDevtoolsSessionState =
     : {};
 previewInspectorSession.devtoolsState = previewInspectorDevtoolsSessionState;
 previewInspectorDevtoolsSessionState.activeTab =
-  ['console', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
+  ['console', 'fallbacks', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
     ? previewInspectorDevtoolsSessionState.activeTab
     : 'props';
 previewInspectorDevtoolsSessionState.collapsed =

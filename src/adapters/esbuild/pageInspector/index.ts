@@ -14,6 +14,11 @@ export {
   PREVIEW_INSPECTOR_CONSOLE_ENTRY_LIMIT,
 } from './previewInspectorConsoleRuntimeSource';
 export { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
+export {
+  createPreviewInspectorRuntimeFallbackRuntimeSource,
+  PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT,
+} from './previewInspectorRuntimeFallbackRuntimeSource';
+export { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 export { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspectorGraphqlShapeRuntimeSource';
 export {
   createPreviewInspectorFiberRuntimeSource,

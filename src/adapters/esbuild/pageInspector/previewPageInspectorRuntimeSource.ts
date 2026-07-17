@@ -14,6 +14,7 @@ import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataR
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
+import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
 export const PREVIEW_PAGE_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
@@ -39,6 +40,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
+  const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
   const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
 const PREVIEW_INSPECTOR_API_KEY = Symbol.for('newdlops.react-file-preview.page-inspector');
@@ -107,6 +109,8 @@ ${dataRuntimeSource}
 ${conditionRuntimeSource}
 
 ${consoleRuntimeSource}
+
+${runtimeFallbackRuntimeSource}
 
 /** Creates mutable session data once per pinned webview, not once per emitted bundle revision. */
 function createPreviewInspectorSession() {
@@ -909,6 +913,7 @@ const previewInspectorApi = {
   recordConsoleEntry: recordPreviewInspectorConsoleEntry,
   resolveDataPayload: resolvePreviewInspectorDataPayload,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
+  resolveRuntimeHook: resolvePreviewInspectorRuntimeHook,
   remount: remountPreviewInspectorExport,
   resetPropsOverride: resetPreviewInspectorPropsOverride,
   selectExport: selectPreviewInspectorExport,
@@ -922,6 +927,9 @@ installPreviewInspectorConsoleCapture();
 installPreviewInspectorNetworkBoundary();
 registerPreviewRuntimeCapability('Data', {
   readPreviewRuntimeStatus: readPreviewInspectorDataRuntimeStatus,
+});
+registerPreviewRuntimeCapability('Render isolation', {
+  readPreviewRuntimeStatus: readPreviewInspectorRuntimeFallbackStatus,
 });
 
 ${devtoolsUiRuntimeSource}

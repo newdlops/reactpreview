@@ -329,7 +329,13 @@ export class PreviewSourceTransformer {
     }
 
     const globOptions = parseGlobOptions(arguments_[1], eagerByCallee, sourcePath);
-    const expansion = await this.expand(sourcePath, patterns);
+    const expansion = await this.expand(
+      sourcePath,
+      patterns,
+      undefined,
+      this.options.projectRoot,
+      MAX_BUILD_MATCH_REFERENCES,
+    );
     const imports: string[] = [];
     const properties: string[] = [];
     for (const match of expansion.matches) {
@@ -492,6 +498,8 @@ export class PreviewSourceTransformer {
     sourcePath: string,
     patterns: readonly string[],
     matchFilter?: (relativeKey: string) => boolean,
+    rootRelativeBaseDirectory?: string,
+    maxMatches?: number,
   ): Promise<StaticPatternExpansion> {
     try {
       this.expansionCount += 1;
@@ -502,14 +510,18 @@ export class PreviewSourceTransformer {
       }
 
       const cacheKey =
-        matchFilter === undefined ? `${sourcePath}\0${JSON.stringify(patterns)}` : undefined;
+        matchFilter === undefined
+          ? `${sourcePath}\0${rootRelativeBaseDirectory ?? ''}\0${maxMatches?.toString() ?? ''}\0${JSON.stringify(patterns)}`
+          : undefined;
       let expansionPromise = cacheKey === undefined ? undefined : this.expansionCache.get(cacheKey);
       if (expansionPromise === undefined) {
         expansionPromise = expandStaticPatterns({
           aggregateScanBudget: this.scanBudget,
           importerPath: sourcePath,
           ...(matchFilter === undefined ? {} : { matchFilter }),
+          ...(maxMatches === undefined ? {} : { maxMatches }),
           patterns,
+          ...(rootRelativeBaseDirectory === undefined ? {} : { rootRelativeBaseDirectory }),
           workspaceRoot: this.options.workspaceRoot,
         });
         if (cacheKey !== undefined) {

@@ -51,8 +51,20 @@ export interface StaticPatternOptions {
   readonly maxScannedEntries?: number;
   /** Positive patterns and optional `!`-prefixed exclusions. */
   readonly patterns: readonly string[];
+  /** Optional Vite project root used to resolve and key `/src/...`-style patterns. */
+  readonly rootRelativeBaseDirectory?: string;
   /** Trusted workspace boundary that every discovered path must remain inside. */
   readonly workspaceRoot: string;
+}
+
+/** Validated pattern translated into the importer's relative filesystem coordinate space. */
+interface PreparedStaticPattern {
+  /** Original literal without a leading exclusion marker, retained for diagnostics. */
+  readonly authoredPattern: string;
+  /** Pattern used for filesystem traversal and matching against relative import specifiers. */
+  readonly relativePattern: string;
+  /** Whether runtime keys must remain project-root-relative, as required by Vite. */
+  readonly rootRelative: boolean;
 }
 
 /** Error raised when a static expression is unsafe or exceeds a discovery boundary. */
@@ -66,6 +78,8 @@ export class StaticPatternError extends Error {
 
 /**
  * Expands relative glob literals without evaluating project configuration or arbitrary JavaScript.
+ * Callers may explicitly provide a project root to enable Vite's `/...` glob coordinate space;
+ * those patterns remain confined to that project root even inside a larger monorepo workspace.
  *
  * @param options Importer, patterns, and hard resource limits.
  * @returns Sorted matches and the finite directories traversed during discovery.
@@ -86,28 +100,65 @@ export async function expandStaticPatterns(
     );
   }
 
-  const positivePatterns = options.patterns.filter((pattern) => !pattern.startsWith('!'));
-  const negativePatterns = options.patterns
+  const authoredPositivePatterns = options.patterns.filter((pattern) => !pattern.startsWith('!'));
+  const authoredNegativePatterns = options.patterns
     .filter((pattern) => pattern.startsWith('!'))
     .map((pattern) => pattern.slice(1));
-  if (positivePatterns.length === 0) {
+  if (authoredPositivePatterns.length === 0) {
     throw new StaticPatternError(
       'Static resource discovery requires at least one positive pattern.',
     );
   }
 
-  for (const pattern of [...positivePatterns, ...negativePatterns]) {
-    assertRelativePattern(pattern);
-  }
-
   const importerDirectory = path.dirname(options.importerPath);
   const lexicalWorkspaceRoot = path.resolve(options.workspaceRoot);
   const canonicalWorkspaceRoot = await resolveCanonicalPath(lexicalWorkspaceRoot);
+  const lexicalRootRelativeBase =
+    options.rootRelativeBaseDirectory === undefined
+      ? undefined
+      : path.resolve(options.rootRelativeBaseDirectory);
+  const canonicalRootRelativeBase =
+    lexicalRootRelativeBase === undefined
+      ? undefined
+      : await resolveCanonicalPath(lexicalRootRelativeBase);
+  if (lexicalRootRelativeBase !== undefined && canonicalRootRelativeBase !== undefined) {
+    assertInsideWorkspace(lexicalWorkspaceRoot, lexicalRootRelativeBase, '/');
+    assertInsideWorkspace(canonicalWorkspaceRoot, canonicalRootRelativeBase, '/');
+  }
+
+  const positivePatterns = authoredPositivePatterns.map((pattern) =>
+    prepareStaticPattern(pattern, importerDirectory, lexicalRootRelativeBase),
+  );
+  const negativePatterns = authoredNegativePatterns.map((pattern) =>
+    prepareStaticPattern(pattern, importerDirectory, lexicalRootRelativeBase),
+  );
+  for (const pattern of [...positivePatterns, ...negativePatterns]) {
+    const searchRoot = resolveSearchRoot(importerDirectory, pattern.relativePattern);
+    const lexicalBoundary = selectPatternBoundary(
+      pattern,
+      lexicalWorkspaceRoot,
+      lexicalRootRelativeBase,
+    );
+    const canonicalBoundary = selectPatternBoundary(
+      pattern,
+      canonicalWorkspaceRoot,
+      canonicalRootRelativeBase,
+    );
+    assertInsideWorkspace(lexicalBoundary, searchRoot, pattern.authoredPattern);
+    const canonicalSearchRoot = await resolveCanonicalPath(searchRoot);
+    assertInsideWorkspace(canonicalBoundary, canonicalSearchRoot, pattern.authoredPattern);
+  }
+
   const candidateFiles = new Set<string>();
   const watchDirectories = new Set<string>();
   const traversalBySearchRoot = new Map<
     string,
-    { maximumDepth: number; reportDepthOverflow: boolean }
+    {
+      canonicalBoundary: string;
+      maximumDepth: number;
+      reportDepthOverflow: boolean;
+      searchRoot: string;
+    }
   >();
   const scanBudget = {
     maximum: options.maxScannedEntries ?? DEFAULT_MAX_SCANNED_ENTRIES,
@@ -115,68 +166,105 @@ export async function expandStaticPatterns(
   };
 
   for (const pattern of positivePatterns) {
-    const searchRoot = resolveSearchRoot(importerDirectory, pattern);
-    assertInsideWorkspace(lexicalWorkspaceRoot, searchRoot, pattern);
+    const searchRoot = resolveSearchRoot(importerDirectory, pattern.relativePattern);
+    const lexicalBoundary = selectPatternBoundary(
+      pattern,
+      lexicalWorkspaceRoot,
+      lexicalRootRelativeBase,
+    );
+    const canonicalBoundary = selectPatternBoundary(
+      pattern,
+      canonicalWorkspaceRoot,
+      canonicalRootRelativeBase,
+    );
+    assertInsideWorkspace(lexicalBoundary, searchRoot, pattern.authoredPattern);
     const canonicalSearchRoot = await resolveCanonicalPath(searchRoot);
-    assertInsideWorkspace(canonicalWorkspaceRoot, canonicalSearchRoot, pattern);
+    assertInsideWorkspace(canonicalBoundary, canonicalSearchRoot, pattern.authoredPattern);
     watchDirectories.add(searchRoot);
-    if (!containsGlobSyntax(pattern)) {
+    if (!containsGlobSyntax(pattern.relativePattern)) {
       consumeScanBudget(scanBudget, options.aggregateScanBudget);
-      const candidatePath = path.resolve(importerDirectory, pattern);
+      const candidatePath = path.resolve(importerDirectory, pattern.relativePattern);
       if (await isRegularFile(candidatePath)) {
         const canonicalCandidatePath = await resolveCanonicalPath(candidatePath);
-        assertInsideWorkspace(canonicalWorkspaceRoot, canonicalCandidatePath, pattern);
+        assertInsideWorkspace(canonicalBoundary, canonicalCandidatePath, pattern.authoredPattern);
         candidateFiles.add(candidatePath);
       }
       continue;
     }
-    const traversal = resolveTraversalPolicy(pattern);
-    const previousTraversal = traversalBySearchRoot.get(searchRoot);
-    traversalBySearchRoot.set(searchRoot, {
+    const traversal = resolveTraversalPolicy(pattern.relativePattern);
+    const traversalKey = `${canonicalBoundary}\0${searchRoot}`;
+    const previousTraversal = traversalBySearchRoot.get(traversalKey);
+    traversalBySearchRoot.set(traversalKey, {
+      canonicalBoundary,
       maximumDepth: Math.max(previousTraversal?.maximumDepth ?? 0, traversal.maximumDepth),
       reportDepthOverflow:
         (previousTraversal?.reportDepthOverflow ?? false) || traversal.reportDepthOverflow,
+      searchRoot,
     });
   }
 
-  for (const [searchRoot, traversal] of traversalBySearchRoot) {
+  for (const traversal of traversalBySearchRoot.values()) {
     await collectFiles(
-      searchRoot,
+      traversal.searchRoot,
       0,
       traversal.maximumDepth,
       traversal.reportDepthOverflow,
       candidateFiles,
       scanBudget,
       options.aggregateScanBudget,
-      canonicalWorkspaceRoot,
+      traversal.canonicalBoundary,
       new Set<string>(),
     );
   }
 
-  const positiveMatchers = positivePatterns.map(globToRegExp);
-  const negativeMatchers = negativePatterns.map(globToRegExp);
-  const matchedFiles = [...candidateFiles]
-    .map((filePath) => ({
-      filePath,
-      key: createRelativeSpecifier(importerDirectory, filePath),
-    }))
-    .filter(
-      ({ key }) =>
-        positiveMatchers.some((matcher) => matcher.test(key)) &&
-        !negativeMatchers.some((matcher) => matcher.test(key)),
-    )
-    .filter(({ key }) => options.matchFilter?.(key) ?? true)
-    .sort((left, right) => left.key.localeCompare(right.key));
+  const positiveMatchers = positivePatterns.map((pattern) => ({
+    matcher: globToRegExp(pattern.relativePattern),
+    pattern,
+  }));
+  const negativeMatchers = negativePatterns.map((pattern) => globToRegExp(pattern.relativePattern));
+  const matchedFiles = new Map<string, StaticPatternMatch>();
+  for (const filePath of candidateFiles) {
+    const relativeKey = createRelativeSpecifier(importerDirectory, filePath);
+    if (
+      negativeMatchers.some((matcher) => matcher.test(relativeKey)) ||
+      !(options.matchFilter?.(relativeKey) ?? true)
+    ) {
+      continue;
+    }
+    for (const { matcher, pattern } of positiveMatchers) {
+      if (!matcher.test(relativeKey)) {
+        continue;
+      }
+      if (pattern.rootRelative && canonicalRootRelativeBase !== undefined) {
+        const canonicalCandidatePath = await resolveCanonicalPath(filePath);
+        assertInsideWorkspace(
+          canonicalRootRelativeBase,
+          canonicalCandidatePath,
+          pattern.authoredPattern,
+        );
+      }
+      const key = pattern.rootRelative
+        ? createRootRelativeSpecifier(
+            requireRootRelativeBase(pattern, lexicalRootRelativeBase),
+            filePath,
+          )
+        : relativeKey;
+      matchedFiles.set(`${key}\0${relativeKey}`, { key, specifier: relativeKey });
+    }
+  }
+  const sortedMatches = [...matchedFiles.values()].sort((left, right) =>
+    left.key.localeCompare(right.key),
+  );
 
   const maximumMatches = options.maxMatches ?? DEFAULT_MAX_MATCHES;
-  if (matchedFiles.length > maximumMatches) {
+  if (sortedMatches.length > maximumMatches) {
     throw new StaticPatternError(
-      `Static resource pattern matched ${matchedFiles.length.toString()} files; the preview limit is ${maximumMatches.toString()}.`,
+      `Static resource pattern matched ${sortedMatches.length.toString()} files; the preview limit is ${maximumMatches.toString()}.`,
     );
   }
 
   return {
-    matches: matchedFiles.map(({ key }) => ({ key, specifier: key })),
+    matches: sortedMatches,
     watchDirectories: [...watchDirectories].sort(),
   };
 }
@@ -371,7 +459,63 @@ function createRelativeSpecifier(importerDirectory: string, filePath: string): s
   return relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
 }
 
-/** Rejects absolute, alias, and bare patterns that do not prove a finite local search root. */
+/** Produces the Vite object key for a file addressed from the configured project root. */
+function createRootRelativeSpecifier(rootDirectory: string, filePath: string): string {
+  const relativePath = path.relative(rootDirectory, filePath).replaceAll(path.sep, '/');
+  return `/${relativePath}`;
+}
+
+/** Chooses the workspace or stricter project boundary attached to one prepared pattern. */
+function selectPatternBoundary(
+  pattern: PreparedStaticPattern,
+  workspaceBoundary: string,
+  rootRelativeBoundary: string | undefined,
+): string {
+  return pattern.rootRelative
+    ? requireRootRelativeBase(pattern, rootRelativeBoundary)
+    : workspaceBoundary;
+}
+
+/** Returns the project-root boundary proven during preparation or reports an internal invariant. */
+function requireRootRelativeBase(
+  pattern: PreparedStaticPattern,
+  rootRelativeBaseDirectory: string | undefined,
+): string {
+  if (rootRelativeBaseDirectory === undefined) {
+    throw new StaticPatternError(
+      `Static resource pattern has no configured project root: ${pattern.authoredPattern}`,
+    );
+  }
+  return rootRelativeBaseDirectory;
+}
+
+/**
+ * Translates one optional Vite root pattern into the importer's matching coordinate space.
+ * The original root-relative shape is retained separately so generated object keys stay compatible.
+ */
+function prepareStaticPattern(
+  pattern: string,
+  importerDirectory: string,
+  rootRelativeBaseDirectory: string | undefined,
+): PreparedStaticPattern {
+  if (!pattern.startsWith('/')) {
+    assertRelativePattern(pattern);
+    return { authoredPattern: pattern, relativePattern: pattern, rootRelative: false };
+  }
+  if (rootRelativeBaseDirectory === undefined || pattern.startsWith('//')) {
+    throw new StaticPatternError(
+      `Static resource pattern must start with "./" or "../": ${pattern}`,
+    );
+  }
+  const absolutePattern = path.resolve(rootRelativeBaseDirectory, `.${pattern}`);
+  return {
+    authoredPattern: pattern,
+    relativePattern: createRelativeSpecifier(importerDirectory, absolutePattern),
+    rootRelative: true,
+  };
+}
+
+/** Rejects aliases and bare patterns that do not prove a finite local search root. */
 function assertRelativePattern(pattern: string): void {
   if (!pattern.startsWith('./') && !pattern.startsWith('../')) {
     throw new StaticPatternError(

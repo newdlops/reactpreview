@@ -132,6 +132,19 @@ Modal/Dialog/Drawer 계열은 `overlay · mounted/dormant` badge로 구분합니
 runtime Fiber를 아직 읽을 수 없는 초기·실패 상태에서는 정적으로 증명한 EntryPoint→target component 경로를
 같은 tree에 fallback으로 표시합니다.
 
+Components tree의 최상단은 항상 `Workspace React render root`이며, 실제 application entry를 실행하지 않은 채
+정적으로 증명한 entry/lazy/route/wrapper 경로를 선택된 authored page Fiber 위에 이어 붙입니다. 현재 파일에서
+export한 component는 실제 페이지 안의 위치에서 `current file export` badge와 `Reveal` 버튼을 가지며, 선택한
+페이지 경로가 마운트하지 않은 export도 별도 `not mounted` branch에 남아 다른 `PAGE PATH` 후보를 찾을 수
+있습니다. 따라서 target의 children뿐 아니라 실제 page root가 만든 parent, sibling, Portal/overlay 문맥을 한
+트리에서 비교할 수 있습니다.
+
+JSX boolean/ternary condition, 실패하거나 필수 leaf가 비어 보완된 hook, no-network API/GraphQL payload와 target
+local error boundary는 가장 가까운 source-backed component 아래에 blocker node로 표시됩니다. blocker를
+선택하면 authored true/false branch, 사용자 JSON pass value, 타입/사용처 기반 `Auto pass`, payload JSON/Lorem,
+retry 또는 target props를 바로 조정할 수 있습니다. 생성값과 사용자 값은 각각 `auto`/`manual` badge로 표시되고
+preview session에만 저장됩니다.
+
 Inspector highlight는 application DOM에 붙은 CSS outline만 animation frame에서 조정하며 scroll·resize나
 attribute/text animation마다 React tree를 다시 읽지 않습니다. 실제 React commit 또는 child-list 변화가
 있을 때만 cached Fiber snapshot을 무효화하고, component tree는 browser idle 구간에서 최대 초당 4회
@@ -143,12 +156,14 @@ Inspector dock에서는 다음 작업을 할 수 있습니다.
 
 - 하단·좌측·우측 drawer와 floating 배치를 선택하고 크기·위치를 pointer 또는 방향키로 조절하거나 접기
 - `Main component`로 tree 선택을 현재 파일의 대표 export와 실제 mounted target으로 즉시 되돌리기
+- `Workspace React render root`에서 entry→route→page→target 경로를 펼치고 각 현재 파일 export를 `Reveal`
 - `PAGE PATH`에서 정적으로 증명된 caller→page root 후보를 선택해 각 final page 문맥을 지연 로드
 - highlight를 켜거나 끄고, element picker로 DOM을 고른 뒤 가장 가까운 React component를 tree에서 선택
 - 직렬화 가능한 boolean·number·string·array·plain object props를 JSON으로 적용하거나 초기화
 - `Auto values`로 타입과 실제 receiver 경로에서 자동 생성된 preview-only 값을 켜거나 끄고 path/kind 확인
 - `Fallbacks`에서 Provider 예외, 필수 nullish 값 또는 실제 object의 누락 leaf 때문에 보완된 hook, 원본 오류,
-  source·생성 path·타입/사용처 추론 근거 및 `GENERATED RENDER VALUE`를 확인하고 `Auto values`로 원래 동작과 비교
+  source·생성 path·타입/사용처 추론 근거 및 `GENERATED RENDER VALUE`를 확인하고 tree blocker에서 사용자 JSON
+  pass value 또는 `Auto pass`를 적용
 - `Payloads`에서 관찰된 GraphQL/REST 요청, 타입 추론 근거와 실제 전달할 JSON을 확인하고 `Generate Lorem`,
   `Use Auto`, `Apply JSON`, `Reset override`로 backend 없는 응답을 변경
 - `Console`에서 hook/Provider, React lifecycle, promise와 project `console.*` 로그를 level/text로 필터링하고

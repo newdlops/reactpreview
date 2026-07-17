@@ -2,6 +2,40 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1048 - 2026-07-17
+
+- Page Inspector tree를 `Workspace React render root`에서 시작하고 실행하지 않은 application
+  entry/lazy/route/wrapper 근거를 실제 mounted authored page Fiber 위에 연결해 page→target→children/sibling 및
+  overlay 문맥을 한 트리로 표시
+- 같은 현재 파일의 모든 mounted export boundary를 한 Fiber snapshot에 합쳐 `current file export` badge와
+  `Reveal` 버튼으로 선택·ancestor expansion·scroll·DOM highlight를 제공하고, 현재 PAGE PATH에서 마운트되지
+  않은 component export도 명시적인 `not mounted` branch로 보존
+- JSX condition, render-critical hook fallback, no-network API/GraphQL payload와 target-local contained error를
+  가장 가까운 source-backed component 아래 blocker node로 표시하고 선택 시 별도 Blocker detail을 열도록 변경
+- hook blocker마다 compiler inference 기반 `Auto pass` 또는 prototype-safe 64 KiB 이하 사용자 JSON pass value를
+  적용·초기화하고 `auto`/`manual` provenance를 표시하며, override와 선택을 hot reload/webview state에 유지
+- route/context pseudo node를 blocker owner 후보에서 제외하고 target failure가 host fallback만 남긴 경우에도
+  target pseudo component와 retry/Auto values/props 편집 UI가 유지되도록 회귀 테스트 추가
+
+## 0.1.1047 - 2026-07-17
+
+- styled-components template에서 실제로 호출되는 `theme.<helper>(...)` 경로를 정적으로 수집하고 callee만
+  계측해, 중첩 ThemeProvider가 helper를 `{}` 같은 불완전한 값으로 덮어도 export 전체가 중단되지 않도록 변경
+- 현재 provider의 정상 helper를 최우선 보존하고, 비호출 값/실패 helper만 탐색된 정확한 root theme의 동일
+  경로로 복구하며 마지막에는 `.unit` 기반 CSS 값 또는 빈 token으로 해당 style edge만 격리
+- helper 이름을 `spacing`으로 하드코딩하지 않고 nested path까지 지원하며, 복구된 경로 수를 Theme runtime
+  status에 표시하고 실제 `rtcc-poc-page` styled source 변환 및 정상/불완전 provider 회귀 테스트 추가
+
+## 0.1.1046 - 2026-07-17
+
+- direct `useContext`를 Context 전용 fallback과 일반 hook fallback이 동시에 수정해 발생한
+  `Overlapping static resource expressions are unsupported` 빌드 실패를 중앙 replacement 조정으로 해결
+- 동일 range는 먼저 등록된 전용 Context/default 변환을 유지하고, 포함 range는 dynamic import 같은 더 좁고
+  구체적인 resource macro를 우선해 일반 hook 계측만 해당 호출에서 생략하도록 변경
+- strict replacement 적용기는 analyzer 자체 회귀를 계속 검출하도록 유지하면서 production transformer만 명시적
+  reconciliation을 사용하고, exact/nested/disjoint 충돌 정책 회귀 테스트 추가
+- `rtcc-poc-page`의 대표 실패 파일과 직접 `useContext` 소비 파일 227개를 실제 source transformer로 검증
+
 ## 0.1.1045 - 2026-07-17
 
 - hook이 완전히 `null`인 경우뿐 아니라 `{ data: {}, field: undefined }`처럼 일부 경로만 비어 있는 경우도

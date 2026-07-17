@@ -173,7 +173,15 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('const boundaries = selectedIsStaticSibling');
     expect(source).toContain('notifyPreviewInspectorTreeSubscribers()');
     expect(source).toContain('new MutationObserver(handlePreviewInspectorMutations)');
-    expect(source).toContain('setInterval(schedulePreviewInspectorHighlight, 1000)');
+    expect(source).toContain('schedulePreviewInspectorCommitRefresh()');
+    expect(source).toContain('previewInspectorSession.treeDirty !== true');
+    expect(source).toContain(
+      'previewInspectorSession.lastTreeSnapshot ?? collectPreviewInspectorTreeSnapshot()',
+    );
+    expect(source).toContain('{ childList: true, subtree: true }');
+    expect(source).not.toContain('setInterval(schedulePreviewInspectorHighlight, 1000)');
+    expect(source).not.toContain('attributes: true');
+    expect(source).not.toContain('characterData: true');
     expect(source).toContain("createPreviewInspectorTreeNodeId('fiber', path, kind, name)");
     expect(source).toContain("status: roots.length === 0\n      ? 'unavailable'");
     expect(source).toContain('selected component host node(s)');

@@ -13,6 +13,7 @@ import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorCo
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
+import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
@@ -40,6 +41,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
+  const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
@@ -116,6 +118,8 @@ ${consoleRuntimeSource}
 
 ${runtimeFallbackRuntimeSource}
 
+${refreshRuntimeSource}
+
 /** Creates mutable session data once per pinned webview, not once per emitted bundle revision. */
 function createPreviewInspectorSession() {
   const persisted = readPersistedPreviewInspectorState();
@@ -152,6 +156,7 @@ function createPreviewInspectorSession() {
     selectedTreeNodeId:
       typeof persisted.selectedTreeNodeId === 'string' ? persisted.selectedTreeNodeId : undefined,
     treeListeners: new Set(),
+    treeDirty: true,
     version: 0,
   };
 }
@@ -160,6 +165,7 @@ const previewInspectorSession =
   previewHotRuntime.inspectorSession ?? createPreviewInspectorSession();
 previewHotRuntime.inspectorSession = previewInspectorSession;
 previewInspectorSession.treeListeners ??= new Set();
+previewInspectorSession.treeDirty ??= true;
 
 /** Returns a stable numeric snapshot for React.useSyncExternalStore. */
 function getPreviewInspectorVersion() {
@@ -253,7 +259,7 @@ function setPreviewInspectorDescriptors(descriptors) {
     persistPreviewInspectorState();
     notifyPreviewInspector();
   }
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Creates a collision-resistant toolbar identity for editable actual-parent root props. */
@@ -281,6 +287,12 @@ function findSelectedPreviewInspectorDescriptor() {
 
 /** Collects the current bounded live tree while retaining host indexes only inside the webview. */
 function collectPreviewInspectorTreeSnapshot() {
+  if (
+    previewInspectorSession.treeDirty !== true &&
+    previewInspectorSession.lastTreeSnapshot !== undefined
+  ) {
+    return previewInspectorSession.lastTreeSnapshot;
+  }
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const selectedName = previewInspectorSession.selectedExportName;
   const instrumentedTargetName =
@@ -310,10 +322,11 @@ function collectPreviewInspectorTreeSnapshot() {
     },
   );
   previewInspectorSession.lastTreeSnapshot = snapshot;
+  previewInspectorSession.treeDirty = false;
   return snapshot;
 }
 
-/** Notifies tree subscribers after the shared animation-frame reconciliation has committed. */
+/** Notifies tree subscribers only from the rate-limited Inspector refresh lane. */
 function notifyPreviewInspectorTreeSubscribers() {
   for (const listener of [...previewInspectorSession.treeListeners]) {
     try {
@@ -328,9 +341,7 @@ function notifyPreviewInspectorTreeSubscribers() {
 function subscribePreviewInspectorTree(listener) {
   if (typeof listener !== 'function') return () => undefined;
   previewInspectorSession.treeListeners.add(listener);
-  const pollTimer = setInterval(schedulePreviewInspectorHighlight, 1000);
   return () => {
-    clearInterval(pollTimer);
     previewInspectorSession.treeListeners.delete(listener);
   };
 }
@@ -344,7 +355,7 @@ function selectPreviewInspectorTreeNode(nodeId) {
   previewInspectorSession.selectedTreeNodeId = nodeId;
   previewInspectorSession.lastTreeSnapshot = snapshot;
   persistPreviewInspectorState();
-  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
 }
 
@@ -443,7 +454,7 @@ function registerPreviewInspectorBaseProps(exportName, props) {
   if (previewInspectorSession.selectedExportName.length === 0) {
     previewInspectorSession.selectedExportName = exportName;
   }
-  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
 }
 
 /** Selects which wrapped target the toolbar edits and highlights. */
@@ -458,8 +469,8 @@ function selectPreviewInspectorExport(exportName) {
   previewInspectorSession.selectedTreeNodeId = undefined;
   previewInspectorSession.selectedExportName = exportName;
   persistPreviewInspectorState();
-  notifyPreviewInspector();
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Replaces an export's prop override and remounts its wrapped target instances. */
@@ -490,14 +501,14 @@ function remountPreviewInspectorExport(exportName, persist = true) {
     persistPreviewInspectorState();
   }
   notifyPreviewInspector();
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Enables or disables target highlighting and restores every prior inline outline when disabled. */
 function setPreviewInspectorHighlightEnabled(enabled) {
   previewInspectorSession.highlightEnabled = enabled === true;
   persistPreviewInspectorState();
-  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
 }
 
@@ -506,13 +517,13 @@ function registerPreviewInspectorBoundary(exportName, boundary) {
   const boundaries = previewInspectorSession.boundariesByExport.get(exportName) ?? new Set();
   boundaries.add(boundary);
   previewInspectorSession.boundariesByExport.set(exportName, boundaries);
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorCommitRefresh();
   return () => {
     boundaries.delete(boundary);
     if (boundaries.size === 0) {
       previewInspectorSession.boundariesByExport.delete(exportName);
     }
-    schedulePreviewInspectorHighlight();
+    schedulePreviewInspectorCommitRefresh();
   };
 }
 
@@ -570,7 +581,7 @@ function collectPreviewInspectorBoundaryElements(boundary) {
 function collectSelectedPreviewInspectorTreeElements() {
   const nodeId = previewInspectorSession.selectedTreeNodeId;
   if (typeof nodeId !== 'string') return undefined;
-  const snapshot = collectPreviewInspectorTreeSnapshot();
+  const snapshot = previewInspectorSession.lastTreeSnapshot ?? collectPreviewInspectorTreeSnapshot();
   const selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
   return selection === undefined ? undefined : [selection.hostNodes, snapshot.status === 'static'];
 }
@@ -658,28 +669,15 @@ function refreshPreviewInspectorHighlight() {
       : 'No selected component host node yet. Render it or use Pick element.';
   if (nextStatus !== previewInspectorSession.highlightStatus) {
     previewInspectorSession.highlightStatus = nextStatus;
-    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
   }
-}
-
-/** Coalesces React commits, scroll events, and mutation batches into one highlight reconciliation. */
-function schedulePreviewInspectorHighlight() {
-  if (previewInspectorSession.highlightFrame !== undefined) {
-    return;
-  }
-  const schedule = globalThis.requestAnimationFrame ?? ((callback) => setTimeout(callback, 0));
-  previewInspectorSession.highlightFrame = schedule(() => {
-    previewInspectorSession.highlightFrame = undefined;
-    refreshPreviewInspectorHighlight();
-    notifyPreviewInspectorTreeSubscribers();
-  });
 }
 
 /** Enables one-shot DOM selection while leaving normal application interaction untouched otherwise. */
 function setPreviewInspectorPickerEnabled(enabled) {
   previewInspectorSession.pickerEnabled = enabled === true;
   previewInspectorSession.pickerCandidate = undefined;
-  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
 }
 
@@ -729,52 +727,8 @@ function handlePreviewInspectorPick(event) {
     previewInspectorSession.lastTreeSnapshot = snapshot;
     persistPreviewInspectorState();
   }
-  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
-}
-
-/** Coalesces authored DOM commits while ignoring style records caused by the yellow outline itself. */
-function handlePreviewInspectorMutations(records) {
-  const hasAuthoredMutation = records.some(
-    (record) =>
-      record.type !== 'attributes' ||
-      record.attributeName !== 'style' ||
-      record.target?.__reactPreviewInspectorOutline === undefined,
-  );
-  if (hasAuthoredMutation) schedulePreviewInspectorHighlight();
-}
-
-/** Installs transient DOM observers that are removed before the next hot-module revision mounts. */
-function installPreviewInspectorDomObservers() {
-  window.addEventListener('pointermove', handlePreviewInspectorPointerMove, true);
-  window.addEventListener('click', handlePreviewInspectorPick, true);
-  window.addEventListener('resize', schedulePreviewInspectorHighlight);
-  window.addEventListener('scroll', schedulePreviewInspectorHighlight, true);
-  const mutationObserver = typeof MutationObserver === 'function'
-    ? new MutationObserver(handlePreviewInspectorMutations)
-    : undefined;
-  mutationObserver?.observe(mountNode, {
-    attributes: true,
-    characterData: true,
-    childList: true,
-    subtree: true,
-  });
-  return () => {
-    window.removeEventListener('pointermove', handlePreviewInspectorPointerMove, true);
-    window.removeEventListener('click', handlePreviewInspectorPick, true);
-    window.removeEventListener('resize', schedulePreviewInspectorHighlight);
-    window.removeEventListener('scroll', schedulePreviewInspectorHighlight, true);
-    mutationObserver?.disconnect();
-    for (const element of previewInspectorSession.highlightedElements ?? []) {
-      restorePreviewInspectorOutline(element);
-    }
-    previewInspectorSession.highlightedElements = new Set();
-    previewInspectorSession.boundariesByExport.clear();
-    previewInspectorSession.manualElementsByExport.clear();
-    previewInspectorSession.lastTreeSnapshot = undefined;
-    previewInspectorSession.pickerCandidate = undefined;
-    previewInspectorSession.pickerEnabled = false;
-  };
 }
 
 /** Creates an isolated portal host whose fixed toolbar never wraps or sizes the application page. */

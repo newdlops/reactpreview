@@ -29,7 +29,7 @@ describe('createReactContextHookFallbackTransform', () => {
 
     expect(transform.replacements).toHaveLength(1);
     expect(transform.replacements[0]?.replacement).toContain(
-      'useFormContext<FormValue>() ?? __reactPreviewContextHookFallback0',
+      'resolveRuntimeHook(() => (useFormContext<FormValue>())',
     );
     expect(transform.declarations).toEqual([
       'const __reactPreviewContextHookFallback0 = Object.freeze({ "formikProps": Object.freeze({ "setValues": Object.freeze(() => undefined), "values": Object.freeze({}) }) });',
@@ -43,6 +43,42 @@ describe('createReactContextHookFallbackTransform', () => {
     expect(applyTransform(source, transform)).toContain(
       '(useFormContext<FormValue>() ?? __reactPreviewContextHookFallback0)',
     );
+  });
+
+  /** Routes Context-hook exceptions through Inspector while preserving gallery nullish behavior. */
+  it('executes the authored Context hook once through the optional Inspector resolver', () => {
+    const source = [
+      `import { useAppContext } from './app-context';`,
+      'export function View() {',
+      '  const value = useAppContext();',
+      '  return value.profile.name;',
+      '}',
+    ].join('\n');
+    const transform = createReactContextHookFallbackTransform('/workspace/view.tsx', source);
+    const replacement = transform.replacements[0];
+    const declaration = transform.declarations[0];
+    if (replacement === undefined || declaration === undefined) {
+      throw new Error('Expected one generated Context-hook runtime replacement.');
+    }
+    const sandbox: { hookCalls?: number; read?: () => unknown } = {};
+    const context = createContext(sandbox);
+    runInContext(
+      [
+        declaration,
+        'globalThis.hookCalls = 0;',
+        'function useAppContext() { globalThis.hookCalls += 1; throw new Error("missing provider"); }',
+        `globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')] = {`,
+        '  resolveRuntimeHook(readHook, createFallback) {',
+        '    try { return readHook(); } catch { return createFallback(); }',
+        '  },',
+        '};',
+        `globalThis.read = () => ${replacement.replacement};`,
+      ].join('\n'),
+      context,
+    );
+
+    expect(sandbox.read?.()).toEqual({ profile: {} });
+    expect(sandbox.hookCalls).toBe(1);
   });
 
   /** Covers aliased named imports, namespace imports, direct aliases, and called identifiers. */

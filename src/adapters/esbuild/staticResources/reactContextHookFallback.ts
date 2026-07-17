@@ -15,6 +15,7 @@ import {
   readLocalFunctionSummary,
   type LocalFunctionSummary,
 } from './reactContextLocalFunctionSummary';
+import { createReactContextHookRuntimeReplacement } from './reactContextHookRuntimeReplacement';
 
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 const CONTEXT_HOOK_NAME_PATTERN = /^use[A-Za-z0-9_$]*Context$/u;
@@ -196,16 +197,26 @@ export function createReactContextHookFallbackTransform(
     const start = candidate.call.getStart(sourceFile);
     const end = candidate.call.end;
     const originalCall = sourceText.slice(start, end);
+    const location = sourceFile.getLineAndCharacterOfPosition(start);
+    const calleeStart = candidate.call.expression.getStart(sourceFile);
+    const hookExpression = sourceText.slice(calleeStart, candidate.call.expression.end);
     replacements.push({
       end,
       fallbackBinding: declaration.binding,
-      replacement: `(${originalCall} ?? ${declaration.binding})`,
+      replacement: createReactContextHookRuntimeReplacement({
+        column: location.character + 1,
+        fallbackBinding: declaration.binding,
+        hookName: hookExpression,
+        line: location.line + 1,
+        originalCall,
+        sourcePath,
+        start,
+      }),
       start,
     });
-    const calleeStart = candidate.call.expression.getStart(sourceFile);
     registrations.push({
       fallbackBinding: declaration.binding,
-      hookExpression: sourceText.slice(calleeStart, candidate.call.expression.end),
+      hookExpression,
     });
   }
 

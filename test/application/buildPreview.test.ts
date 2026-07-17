@@ -6,6 +6,8 @@ import { BuildPreview } from '../../src/application/buildPreview';
 import type { PreviewArtifactStore } from '../../src/application/previewArtifactStore';
 import type { PreviewCompiler } from '../../src/application/previewCompiler';
 import type { PreviewBuildRequest, PreviewBundle } from '../../src/domain/preview';
+import { PreviewBuildCancelledError } from '../../src/domain/previewBuildExecution';
+import type { PreviewProgressStage } from '../../src/domain/previewProgress';
 
 const REQUEST: PreviewBuildRequest = {
   dependencySnapshots: [],
@@ -26,8 +28,12 @@ const BUNDLE: PreviewBundle = {
 describe('BuildPreview', () => {
   /** Publishes exactly the bundle produced for the immutable request and returns combined metadata. */
   it('compiles before publishing and exposes a prepared preview', async () => {
-    const compile = vi.fn<(request: PreviewBuildRequest) => Promise<PreviewBundle>>();
-    compile.mockResolvedValue(BUNDLE);
+    const reportedStages: PreviewProgressStage[] = [];
+    const compile = vi.fn<PreviewCompiler['compile']>();
+    compile.mockImplementation((_request, context) => {
+      context?.reportProgress?.('discovering-components');
+      return Promise.resolve(BUNDLE);
+    });
     const publish = vi.fn<PreviewArtifactStore['publish']>();
     publish.mockResolvedValue({
       contentHash: 'abc123',
@@ -39,10 +45,16 @@ describe('BuildPreview', () => {
     const artifactStore: PreviewArtifactStore = { publish, release };
     const useCase = new BuildPreview(compiler, artifactStore);
 
-    const result = await useCase.execute(REQUEST);
+    const context = { reportProgress: (stage: PreviewProgressStage) => reportedStages.push(stage) };
+    const result = await useCase.execute(REQUEST, context);
 
-    expect(compile).toHaveBeenCalledWith(REQUEST);
+    expect(compile).toHaveBeenCalledWith(REQUEST, context);
     expect(publish).toHaveBeenCalledWith(BUNDLE);
+    expect(reportedStages).toEqual([
+      'analyzing-project',
+      'discovering-components',
+      'publishing-artifacts',
+    ]);
     expect(result).toEqual({
       artifact: {
         contentHash: 'abc123',
@@ -69,5 +81,43 @@ describe('BuildPreview', () => {
 
     await expect(useCase.execute(REQUEST)).rejects.toBe(failure);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  /** Prevents already-cancelled revisions from entering compiler or artifact side effects. */
+  it('stops before compilation when the execution was already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const compile = vi.fn<PreviewCompiler['compile']>();
+    const publish = vi.fn<PreviewArtifactStore['publish']>();
+    const release = vi.fn<PreviewArtifactStore['release']>();
+    const useCase = new BuildPreview({ compile }, { publish, release });
+
+    await expect(useCase.execute(REQUEST, { signal: controller.signal })).rejects.toBeInstanceOf(
+      PreviewBuildCancelledError,
+    );
+    expect(compile).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  /** Releases publication's acquired lease when cancellation races with asynchronous disk IO. */
+  it('releases an artifact published after its revision was cancelled', async () => {
+    const controller = new AbortController();
+    const compile = vi.fn<PreviewCompiler['compile']>().mockResolvedValue(BUNDLE);
+    const publish = vi.fn<PreviewArtifactStore['publish']>().mockImplementation(() => {
+      controller.abort();
+      return Promise.resolve({
+        contentHash: 'cancelled-after-publish',
+        scriptLocation: 'file:///preview/cancelled/entry.js',
+      });
+    });
+    const release = vi.fn<PreviewArtifactStore['release']>().mockResolvedValue();
+    const useCase = new BuildPreview({ compile }, { publish, release });
+
+    await expect(useCase.execute(REQUEST, { signal: controller.signal })).rejects.toBeInstanceOf(
+      PreviewBuildCancelledError,
+    );
+    expect(release).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledWith('cancelled-after-publish');
   });
 });

@@ -3,6 +3,10 @@
  * The use case depends only on ports, so orchestration remains testable without VS Code or disk IO.
  */
 import type { PreparedPreview, PreviewBuildRequest, PreviewBundle } from '../domain/preview';
+import {
+  throwIfPreviewBuildCancelled,
+  type PreviewBuildExecutionContext,
+} from '../domain/previewBuildExecution';
 import type { PreviewArtifactStore } from './previewArtifactStore';
 import type { PreviewCompiler } from './previewCompiler';
 
@@ -23,11 +27,27 @@ export class BuildPreview {
    * Compiles and then publishes one request; failed compilation never changes published artifacts.
    *
    * @param request Immutable active-document snapshot.
+   * @param context Optional lifecycle observer and cancellation signal owned by the session.
    * @returns Published locations plus compiler diagnostics and dependency paths.
    */
-  public async execute(request: PreviewBuildRequest): Promise<PreparedPreview> {
-    const bundle: PreviewBundle = await this.compiler.compile(request);
+  public async execute(
+    request: PreviewBuildRequest,
+    context?: PreviewBuildExecutionContext,
+  ): Promise<PreparedPreview> {
+    throwIfPreviewBuildCancelled(context?.signal);
+    context?.reportProgress?.('analyzing-project');
+    const bundle: PreviewBundle = await this.compiler.compile(request, context);
+    throwIfPreviewBuildCancelled(context?.signal);
+    context?.reportProgress?.('publishing-artifacts');
+    throwIfPreviewBuildCancelled(context?.signal);
     const artifact = await this.artifactStore.publish(bundle);
+
+    try {
+      throwIfPreviewBuildCancelled(context?.signal);
+    } catch (error) {
+      await this.artifactStore.release(artifact.contentHash);
+      throw error;
+    }
 
     return {
       artifact,

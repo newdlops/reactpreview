@@ -12,6 +12,8 @@ describe('createPreviewHtml', () => {
     const html = createPreviewHtml(CSP_SOURCE, {
       documentName: 'Card.tsx',
       kind: 'ready',
+      runtimeRevision: 7,
+      runtimeToken: '7:hash<',
       scriptUri: 'vscode-webview://unit-test/entry.js?x=1&y=2',
       stylesheetUri: 'vscode-webview://unit-test/entry.css',
     });
@@ -23,8 +25,30 @@ describe('createPreviewHtml', () => {
     expect(html).not.toContain("script-src 'unsafe-inline'");
     expect(html).toContain('type="module"');
     expect(html).toContain('entry.js?x=1&amp;y=2');
-    expect(html).toContain('<div id="react-preview-root"></div>');
+    expect(html).toContain('data-react-preview-runtime-revision="7"');
+    expect(html).toContain('data-react-preview-runtime-token="7:hash&lt;"');
+    expect(html).toContain('id="react-preview-progress-host"');
+    expect(html).toContain('shadowrootmode="open"');
     expect(html).not.toContain('<main id="react-preview-root">');
+  });
+
+  /** Explains real preparation milestones without claiming a time-based completion percentage. */
+  it('renders an accessible staged loading document', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      documentName: 'Dashboard.tsx',
+      kind: 'loading',
+      stage: 'discovering-components',
+    });
+
+    expect(html).toContain('Preparing React Preview');
+    expect(html).toContain('Step 3 of 7 · Discovering component context');
+    expect(html).toContain('Finding component usage, styles, props, and application render paths.');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('aria-current="step"');
+    expect(html).not.toContain('aria-valuenow');
   });
 
   /** Keeps gallery chrome identifiable without imposing presentation rules on target descendants. */

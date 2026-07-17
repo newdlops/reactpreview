@@ -2,6 +2,27 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1038 - 2026-07-17
+
+- full ESM build가 2,048개를 넘는 lazy chunk를 만들면 실패시키는 대신 같은 graph를 자동으로 coalesced
+  local artifact로 재빌드하는 adaptive output strategy 추가
+- 일반 graph는 기존 file-level dynamic import splitting을 유지하고, oversized graph만 dynamic module의
+  실행 시점 lazy initializer를 보존한 채 per-module 파일 분할을 비활성화해 수천 번의 게시·로드 I/O를 제거
+- split output 개수를 포함한 warning diagnostic을 남기고 target/runtime별 결정을 compiler session에 bounded
+  cache하여 같은 탭의 hot reload가 실패할 split build를 반복하지 않도록 개선
+- TypeScript 정적 분석, reverse component 탐색, source transform과 esbuild orchestration을 전용 Node worker
+  thread로 이동하고 탭 전체에서 compile을 하나씩 실행하며 queued cold fast pass를 full enrichment보다 우선
+- Page Inspector도 cold direct graph를 먼저 게시하고 실제 page ancestor 문맥은 React commit 뒤 보강하도록 바꿔
+  큰 프로젝트에서 editor를 막거나 빈 화면으로 full build를 기다리지 않도록 개선
+- ancestor 탐색은 nearest package index를 먼저 사용하고 실제 sibling workspace 가능성이 있을 때만 workspace로
+  확장해 단일-app 모노레포의 중복 전체 scan을 제거
+- 깨진 자동 Storybook setup은 누락 후보/setup/config 증거가 바뀔 때까지 setup-free 결정을 재사용하고,
+  oversized-output 및 ancestor advisory도 같은 compiler session에서 한 번만 기록
+- bundle content/chunk digest를 worker에서 계산하고 `ArrayBuffer` ownership을 host로 transfer해 대형 결과의
+  복사와 extension-host 동기 hashing을 제거
+- `rtcc-public-upload-page.tsx` production probe에서 cold fast 1.56초, 최초 full 15.33초, 동일 full rebuild
+  0.72초와 full output 54개를 확인하고 반복 Storybook warning 0건을 검증
+
 ## 0.1.1035 - 2026-07-17
 
 - 초기 경량 프리뷰 기준의 고정 32 MiB output 제한을 모노레포 page graph에 맞는 기본 128 MiB로 상향

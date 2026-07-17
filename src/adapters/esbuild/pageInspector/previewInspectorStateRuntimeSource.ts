@@ -98,6 +98,7 @@ function persistPreviewInspectorState() {
         dataPayloadOverrides: serializePreviewInspectorDataOverrides(),
         fallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled(),
         renderConditionOverrides: serializePreviewInspectorRenderConditionOverrides(),
+        runtimeFallbackOverrides: serializePreviewInspectorRuntimeFallbackOverrides(),
         devtoolsState: JSON.parse(
           stringifyPreviewInspectorProps(previewInspectorSession.devtoolsState ?? {}),
         ),

@@ -36,6 +36,18 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeFallbackValues instanceof Map)) {
     previewInspectorSession.runtimeFallbackValues = new Map();
   }
+  if (!(previewInspectorSession.runtimeFallbackOverrides instanceof Map)) {
+    const persisted = readPersistedPreviewInspectorState();
+    const persistedOverrides = persisted.runtimeFallbackOverrides;
+    const entries = persistedOverrides !== null && typeof persistedOverrides === 'object'
+      ? Object.entries(persistedOverrides).filter(
+          ([fallbackId]) => typeof fallbackId === 'string' && fallbackId.length > 0,
+        )
+      : [];
+    previewInspectorSession.runtimeFallbackOverrides = new Map(
+      entries.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT),
+    );
+  }
   if (!(previewInspectorSession.runtimeFallbackCompletions instanceof WeakMap)) {
     previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
   }
@@ -107,6 +119,21 @@ function readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback) {
   return fallback;
 }
 
+/** Returns whether a user supplied an explicit JSON result for one render-blocking hook edge. */
+function hasPreviewInspectorRuntimeFallbackOverride(fallbackId) {
+  initializePreviewInspectorRuntimeFallbackState();
+  return previewInspectorSession.runtimeFallbackOverrides.has(fallbackId);
+}
+
+/** Selects the user value before compiler-inferred Auto data for one isolated hook edge. */
+function readPreviewInspectorRuntimeFallbackValue(metadata, createFallback) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (previewInspectorSession.runtimeFallbackOverrides.has(metadata.id)) {
+    return previewInspectorSession.runtimeFallbackOverrides.get(metadata.id);
+  }
+  return readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback);
+}
+
 /** Registers a bypassed hook failure once and mirrors it as a warning, never a fatal error. */
 function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error, generatedPaths = []) {
   initializePreviewInspectorRuntimeFallbackState();
@@ -128,6 +155,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     error: errorHeadline,
     fallbackPreview: describePreviewInspectorRuntimeFallbackValue(fallback),
     generatedPaths: [...generatedPaths],
+    mode: hasPreviewInspectorRuntimeFallbackOverride(metadata.id) ? 'manual' : 'auto',
     reason,
   };
   previewInspectorSession.runtimeFallbacks.set(metadata.id, next);
@@ -212,17 +240,25 @@ function resolvePreviewInspectorRuntimeHook(readHook, createFallback, rawMetadat
   }
   let value;
   let failure;
+  const manualOverride = hasPreviewInspectorRuntimeFallbackOverride(metadata.id);
   try {
     value = readHook();
   } catch (error) {
-    if (isPreviewInspectorRuntimeThenable(error) || !readPreviewInspectorFallbackValuesEnabled()) {
+    if (
+      isPreviewInspectorRuntimeThenable(error) ||
+      (!manualOverride && !readPreviewInspectorFallbackValuesEnabled())
+    ) {
       throw error;
     }
     failure = error;
   }
-  if (failure === undefined && !readPreviewInspectorFallbackValuesEnabled()) return value;
-  if (failure !== undefined && !readPreviewInspectorFallbackValuesEnabled()) throw failure;
-  const fallback = readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback);
+  if (failure === undefined && !manualOverride && !readPreviewInspectorFallbackValuesEnabled()) {
+    return value;
+  }
+  if (failure !== undefined && !manualOverride && !readPreviewInspectorFallbackValuesEnabled()) {
+    throw failure;
+  }
+  const fallback = readPreviewInspectorRuntimeFallbackValue(metadata, createFallback);
   if (failure === undefined && value !== null && value !== undefined) {
     const completion = readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback);
     if (!completion.changed) {
@@ -260,12 +296,83 @@ function readPreviewInspectorRuntimeFallbacks() {
     );
 }
 
+/** Returns the editable generated/manual value currently associated with one blocker row. */
+function readPreviewInspectorRuntimeFallbackDraft(fallbackId) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (previewInspectorSession.runtimeFallbackOverrides.has(fallbackId)) {
+    return previewInspectorSession.runtimeFallbackOverrides.get(fallbackId);
+  }
+  return previewInspectorSession.runtimeFallbackValues.get(fallbackId);
+}
+
+/** Copies bounded JSON while dropping prototype keys before it can enter project hook code. */
+function normalizePreviewInspectorRuntimeFallbackOverride(value) {
+  const encoded = JSON.stringify(value, (propertyName, propertyValue) =>
+    blockedInspectorPropNames.has(propertyName) ? undefined : propertyValue,
+  );
+  if (typeof encoded !== 'string' || encoded.length > 64 * 1024) {
+    throw new TypeError('Fallback JSON must be serializable and no larger than 64 KiB.');
+  }
+  return JSON.parse(encoded);
+}
+
+/** Remounts the selected authored page after one blocker value policy changes. */
+function commitPreviewInspectorRuntimeFallbackChange() {
+  previewInspectorSession.renderConditionRevision =
+    (previewInspectorSession.renderConditionRevision ?? 0) + 1;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
+}
+
+/** Stores user-authored JSON for one known blocker and gives it precedence over Auto inference. */
+function setPreviewInspectorRuntimeFallbackOverride(fallbackId, value) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
+  previewInspectorSession.runtimeFallbackOverrides.set(
+    fallbackId,
+    normalizePreviewInspectorRuntimeFallbackOverride(value),
+  );
+  commitPreviewInspectorRuntimeFallbackChange();
+}
+
+/** Restores compiler-inferred generation for one blocker and ensures Auto values is enabled. */
+function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
+  previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId);
+  previewInspectorSession.fallbackValuesEnabled = true;
+  commitPreviewInspectorRuntimeFallbackChange();
+}
+
+/** Removes a manual blocker value while retaining the caller's current global Auto policy. */
+function resetPreviewInspectorRuntimeFallbackOverride(fallbackId) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (!previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId)) return;
+  commitPreviewInspectorRuntimeFallbackChange();
+}
+
+/** Serializes only the bounded JSON values explicitly authored in the blocker editor. */
+function serializePreviewInspectorRuntimeFallbackOverrides() {
+  initializePreviewInspectorRuntimeFallbackState();
+  return Object.fromEntries(
+    [...previewInspectorSession.runtimeFallbackOverrides].slice(
+      0,
+      PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT,
+    ),
+  );
+}
+
 /** Describes the visual-only isolation status in detailed runtime diagnostics. */
 function readPreviewInspectorRuntimeFallbackStatus() {
-  const count = readPreviewInspectorRuntimeFallbacks().length;
+  const fallbacks = readPreviewInspectorRuntimeFallbacks();
+  const count = fallbacks.length;
+  const manualCount = fallbacks.filter((fallback) => fallback.mode === 'manual').length;
   return readPreviewInspectorFallbackValuesEnabled()
     ? 'active: ' + String(count) + ' render-blocking hook edge(s) currently use generated static values'
-    : 'disabled by user: authored hook failures, nullish values, and missing fields are preserved';
+    : manualCount > 0
+      ? 'manual only: ' + String(manualCount) + ' hook edge(s) use explicit user pass values'
+      : 'disabled by user: authored hook failures, nullish values, and missing fields are preserved';
 }
 `;
 }

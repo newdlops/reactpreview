@@ -9,13 +9,18 @@ interface TestRuntimeFallbackRecord {
   readonly fallbackPreview: string;
   readonly generatedPaths: readonly string[];
   readonly hookName: string;
+  readonly mode: string;
   readonly reason: string;
 }
 
 /** Functions exported from the isolated VM solely for behavior assertions. */
 interface TestRuntimeFallbackApi {
+  auto(fallbackId: string): void;
+  draft(fallbackId: string): unknown;
   read(): TestRuntimeFallbackRecord[];
+  reset(fallbackId: string): void;
   resolve(readHook: () => unknown, createFallback: () => unknown, metadata: object): unknown;
+  set(fallbackId: string, value: unknown): void;
   status(): string;
 }
 
@@ -228,6 +233,42 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fallbackReads).toBe(0);
     expect(fixture.api.read()).toEqual([]);
   });
+
+  /** Gives explicit user JSON precedence and restores compiler-inferred Auto data on demand. */
+  it('edits one blocker pass value without changing unrelated hook sites', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = createMetadata();
+    const autoValue = { page: 1, rows: [] };
+
+    expect(
+      fixture.api.resolve(
+        () => null,
+        () => autoValue,
+        metadata,
+      ),
+    ).toBe(autoValue);
+    fixture.api.set('hook-1', { page: 7, rows: ['manual'] });
+    expect(
+      fixture.api.resolve(
+        () => null,
+        () => autoValue,
+        metadata,
+      ),
+    ).toEqual({
+      page: 7,
+      rows: ['manual'],
+    });
+    expect(fixture.api.read()[0]?.mode).toBe('manual');
+    fixture.api.auto('hook-1');
+    expect(
+      fixture.api.resolve(
+        () => null,
+        () => autoValue,
+        metadata,
+      ),
+    ).toBe(autoValue);
+    expect(fixture.api.read()[0]?.mode).toBe('auto');
+  });
 });
 
 /** Complete observations exposed by one generated-runtime VM fixture. */
@@ -251,6 +292,19 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
     formatPreviewInspectorConsoleValue(value: unknown): string {
       return JSON.stringify(value);
     },
+    blockedInspectorPropNames: new Set(['__proto__', 'constructor', 'prototype']),
+    notifyPreviewInspector(): undefined {
+      return undefined;
+    },
+    persistPreviewInspectorState(): undefined {
+      return undefined;
+    },
+    readPersistedPreviewInspectorState(): object {
+      return {};
+    },
+    schedulePreviewInspectorCommitRefresh(): undefined {
+      return undefined;
+    },
     schedulePreviewInspectorTreeRefresh(): undefined {
       return undefined;
     },
@@ -273,8 +327,12 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
   runInContext(
     `${createPreviewInspectorRuntimeFallbackRuntimeSource()}\n` +
       'globalThis.__runtimeFallbackApi = {' +
+      ' auto: autoPassPreviewInspectorRuntimeFallback,' +
+      ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
       ' read: readPreviewInspectorRuntimeFallbacks,' +
+      ' reset: resetPreviewInspectorRuntimeFallbackOverride,' +
       ' resolve: resolvePreviewInspectorRuntimeHook,' +
+      ' set: setPreviewInspectorRuntimeFallbackOverride,' +
       ' status: readPreviewInspectorRuntimeFallbackStatus' +
       '};',
     context,

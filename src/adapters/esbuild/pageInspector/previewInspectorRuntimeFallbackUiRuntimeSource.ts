@@ -49,7 +49,8 @@ function PreviewInspectorRuntimeFallbackDetail() {
           React.createElement(
             'strong',
             undefined,
-            fallback.hookName + ' · GENERATED RENDER VALUE',
+            fallback.hookName + ' · ' +
+              (fallback.mode === 'manual' ? 'USER PASS VALUE' : 'GENERATED RENDER VALUE'),
           ),
           React.createElement(
             'div',
@@ -63,7 +64,11 @@ function PreviewInspectorRuntimeFallbackDetail() {
           fallback.error
             ? React.createElement('div', { className: 'rpi-error' }, fallback.error)
             : undefined,
-          React.createElement('div', { className: 'rpi-note' }, 'Generated: ' + fallback.fallbackPreview),
+          React.createElement(
+            'div',
+            { className: 'rpi-note' },
+            (fallback.mode === 'manual' ? 'Manual value: ' : 'Generated: ') + fallback.fallbackPreview,
+          ),
           fallback.generatedPaths?.length > 0
             ? React.createElement(
                 'div',

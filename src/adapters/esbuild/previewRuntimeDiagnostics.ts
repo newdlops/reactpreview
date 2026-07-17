@@ -123,11 +123,12 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
   {
     kind: 'missing-preview-value',
     messageIncludes: [
+      'cannot destructure property',
       'cannot read properties of null (reading',
       'cannot read properties of undefined (reading',
     ],
     recovery:
-      'React Preview isolates the failed export and supplies only bounded values inferred from required prop types and direct usage paths. Edit the generated values in React Page Inspector when the neutral choice is not sufficient.',
+      'React Preview isolates the failed export and supplies bounded props plus no-network API/GraphQL payloads. Open React Page Inspector → Payloads to inspect type evidence, generate Lorem/Auto data, or apply exact JSON when the inferred value is not sufficient.',
     summary:
       'The component reached a property whose application, form, route, or backend value is absent from the static preview.',
     title: 'Static preview value unavailable',
@@ -138,7 +139,7 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
 export const PREVIEW_RUNTIME_DIAGNOSTIC_FALLBACK: PreviewRuntimeDiagnostic = {
   kind: 'project-runtime',
   recovery:
-    'Use a self-contained preview harness or .react-preview/setup.tsx for required providers, static state, routes, themes, and props.',
+    'For backend-shaped data, inspect React Page Inspector → Payloads and generate or edit a local JSON response. Use a self-contained preview harness or .react-preview/setup.tsx for providers, semantic state, routes, themes, and props that cannot be inferred safely.',
   summary:
     'The component bundle loaded successfully, but rendering failed inside its application runtime.',
   title: 'Project runtime setup required',

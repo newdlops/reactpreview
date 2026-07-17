@@ -1,5 +1,5 @@
 /**
- * Discovers an importable ancestor component for the opt-in Page Inspector preview mode.
+ * Discovers an importable ancestor component for the Page Inspector preview mode.
  * Unlike a pinpoint parent slice, this plan intentionally mounts an authored owner export so its
  * real descendants, siblings, hooks, and event-driven UI are present in the browser React tree.
  */

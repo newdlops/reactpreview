@@ -143,12 +143,31 @@ function isCapturedReactError(error) {
     capturedReactErrors.has(error);
 }
 
+/** Mirrors one runtime failure into Page Inspector when that optional mode owns this webview. */
+function recordPreviewInspectorRuntimeConsoleEntry(error, runtimeContext = {}) {
+  try {
+    globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')]?.recordConsoleEntry?.({
+      error,
+      level: 'error',
+      source: 'preview-runtime',
+      ...runtimeContext,
+    });
+  } catch {
+    // Diagnostics are observational and must never replace the original runtime behavior.
+  }
+}
+
 /** Shows a fatal startup diagnostic without destroying an already committed or retained React tree. */
 function showRuntimeError(error, runtimeContext = {}) {
   const { forceReplace = false, ...diagnosticContext } = runtimeContext;
   const description = describeRuntimeError(error, {
     phase: runtimePhaseByFailure.get(error) ?? activeRuntimePhase,
     ...diagnosticContext,
+  });
+  recordPreviewInspectorRuntimeConsoleEntry(error, {
+    ...diagnosticContext,
+    details: description,
+    phase: diagnosticContext.phase ?? runtimePhaseByFailure.get(error) ?? activeRuntimePhase,
   });
   const retainsMountedRevision =
     !forceReplace &&
@@ -204,6 +223,11 @@ class PreviewErrorBoundary extends React.Component {
     rememberCapturedReactError(error);
     completePreviewCommit('failed');
     const componentStack = errorInfo?.componentStack;
+    recordPreviewInspectorRuntimeConsoleEntry(error, {
+      componentStack,
+      phase: 'React provider composition or root render',
+      source: 'react-boundary',
+    });
     if (typeof componentStack === 'string' && componentStack !== this.state.componentStack) {
       this.setState({ componentStack });
     }
@@ -259,14 +283,22 @@ class PreviewExportErrorBoundary extends React.Component {
     if (typeof componentStack === 'string' && componentStack !== this.state.componentStack) {
       this.setState({ componentStack });
     }
+    const details = describeRuntimeError(error, {
+      componentStack,
+      exportName: this.props.exportName,
+      parentSlice: this.props.parentSlice,
+      phase: 'React export render or lifecycle',
+    });
+    recordPreviewInspectorRuntimeConsoleEntry(error, {
+      componentStack,
+      details,
+      exportName: this.props.exportName,
+      phase: 'React export render or lifecycle',
+      source: 'react-boundary',
+    });
     console.warn(
       'React Preview isolated one failed export and kept the remaining preview mounted.\\n' +
-        describeRuntimeError(error, {
-          componentStack,
-          exportName: this.props.exportName,
-          parentSlice: this.props.parentSlice,
-          phase: 'React export render or lifecycle',
-        }),
+        details,
     );
   }
 
@@ -455,17 +487,22 @@ function StorybookPreviewRoot({ PreviewTarget, previewConfig, storyContext, targ
 
 /** Renders one descriptor behind a local Suspense fallback so siblings remain independently visible. */
 function PreviewExportRenderer({ descriptor, previewConfig, setupModule, sharedProps, storyContext }) {
+  if (${encodedRenderMode} === 'page-inspector') {
+    usePreviewInspectorStore();
+  }
   if (!isReactLikePreviewValue(descriptor.value)) {
     throw new TypeError(
       'Export "' + descriptor.exportName + '" is not a renderable React component or element.',
     );
   }
+  const fallbackValuesEnabled = ${encodedRenderMode} !== 'page-inspector' ||
+    readPreviewInspectorFallbackValuesEnabled();
   const targetProps = createExportProps(
     setupModule,
     descriptor.exportName,
     sharedProps,
-    descriptor.automaticProps,
-    descriptor.inferredPropShape,
+    fallbackValuesEnabled ? descriptor.automaticProps : undefined,
+    fallbackValuesEnabled ? descriptor.inferredPropShape : undefined,
   );
   const rendered = ${encodedRenderMode} === 'page-inspector'
     ? React.createElement(PreviewPageInspectorRootRenderer, {

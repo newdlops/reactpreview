@@ -53,12 +53,11 @@ class PreviewInspectorTargetBoundary extends React.Component {
     rememberCapturedReactError(error);
     const componentStack =
       typeof errorInfo?.componentStack === 'string' ? errorInfo.componentStack : '';
-    const details = describeRuntimeError(error, {
+    reportPreviewInspectorTargetFailure(error, {
       componentStack,
       exportName: this.props.exportName,
       phase: 'React Page Inspector selected target render or lifecycle',
     });
-    console.warn('[React Preview] Selected target failed.\n' + details);
     if (componentStack !== this.state.componentStack) {
       this.setState({ componentStack });
     }

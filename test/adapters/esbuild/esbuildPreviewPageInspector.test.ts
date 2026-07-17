@@ -1,4 +1,4 @@
-/** Proves the compiler mounts a real parent page graph only in the opt-in Inspector mode. */
+/** Proves the compiler mounts a real parent page graph only in Page Inspector mode. */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,8 +31,8 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
           sectionPath,
           [
             "import { Target } from './Target';",
-            'export function Section() {',
-            '  return <section><h2>SECTION_SIBLING</h2><Target enabled label="live" /></section>;',
+            'export function Section({ visible = true }) {',
+            '  return <section><h2>SECTION_SIBLING</h2>{visible && <Target enabled label="live" />}</section>;',
             '}',
           ].join('\n'),
           'utf8',
@@ -42,8 +42,11 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
           [
             "import './page.css';",
             "import { Section } from './Section';",
+            'interface PageData { id: string; title: string; published: boolean }',
+            "async function loadPageData() { const response = await fetch('/api/page');",
+            '  return (await response.json()) as PageData; }',
             'export function Page({ show = true }) {',
-            '  return <main>{show ? <Section /> : <p>hidden</p>}<aside>PAGE_SIBLING</aside></main>;',
+            '  return <main>{show ? <Section /> : <p>hidden</p>}<aside onClick={loadPageData}>PAGE_SIBLING</aside></main>;',
             '}',
           ].join('\n'),
           'utf8',
@@ -68,7 +71,16 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(javascript).toContain('SECTION_SIBLING');
       expect(javascript).toContain('PAGE_SIBLING');
       expect(javascript).toContain('React Page Inspector');
+      expect(javascript).toContain('PAGE COMPONENT');
+      expect(javascript).toContain('Mounted inside authored page root');
       expect(javascript).toContain('wrapPreviewInspectorTarget');
+      expect(javascript).toContain('resolveRenderCondition');
+      expect(javascript).toContain('previewFetch');
+      expect(javascript).toContain('/api/page');
+      expect(javascript).toContain('TypeScript: PageData');
+      expect(javascript).toContain('Auto payloads');
+      expect(javascript).toContain('logical-and');
+      expect(javascript).toContain('<Target>');
       expect(javascript).not.toContain('UNUSED_TARGET_MARKER');
       expect(Buffer.from(bundle.stylesheet ?? []).toString('utf8')).toContain('min-height: 100vh');
       expect(bundle.dependencies).toEqual(

@@ -16,7 +16,7 @@ export const PREVIEW_DATA_URL_NAMESPACE = 'react-preview-data-url';
 /** Namespace used by the source-ordered target gallery bridge consumed by the runtime entry. */
 export const PREVIEW_TARGET_BRIDGE_NAMESPACE = 'react-preview-target-bridge';
 
-/** Namespace used by the opt-in Inspector descriptor that imports one real ancestor root. */
+/** Namespace used by the page-context Inspector descriptor that imports one real ancestor root. */
 export const PREVIEW_INSPECTOR_ROOT_NAMESPACE = 'react-preview-inspector-root';
 
 /** Namespace used by the facade that instruments selected exports of the original target. */

@@ -81,7 +81,7 @@ export class PreviewController implements vscode.Disposable {
     if (!('title' in target)) {
       const matchingSession = this.findNewestSessionForTarget(target.request.documentPath);
       if (matchingSession === undefined) {
-        this.openTarget(target, 'component');
+        this.openTarget(target, 'page-inspector');
       } else {
         matchingSession.refresh();
       }

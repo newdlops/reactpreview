@@ -1,4 +1,4 @@
-/** Verifies bounded real-owner discovery for the opt-in Page Inspector mount mode. */
+/** Verifies bounded real-owner discovery for the Page Inspector mount mode. */
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorAncestorPlan } from '../../../../src/adapters/esbuild/inspector';
 

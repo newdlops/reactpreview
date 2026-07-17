@@ -37,7 +37,7 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('fast');
   });
 
-  /** Converts a genuine fast-build failure into one complete initial build. */
+  /** Converts a genuine component-gallery fast-build failure into one complete initial build. */
   it('falls back to full preparation when the direct graph cannot compile', async () => {
     const execute = vi
       .fn<BuildPreview['execute']>()
@@ -48,7 +48,7 @@ describe('preparePreviewFirstPaint', () => {
       buildPreview: createBuildService(execute),
       context: {},
       preferFast: true,
-      renderMode: 'page-inspector',
+      renderMode: 'component',
       request: REQUEST,
     });
 
@@ -58,6 +58,29 @@ describe('preparePreviewFirstPaint', () => {
     ]);
     expect(result.requiresContextEnrichment).toBe(false);
     expect(result.preparedPreview.artifact.contentHash).toBe('full');
+  });
+
+  /** Never presents an isolated export before the actual-parent Page Inspector context is ready. */
+  it('builds complete page context as the first Page Inspector artifact', async () => {
+    const execute = vi.fn<BuildPreview['execute']>(() =>
+      Promise.resolve(createPreparedPreview('page-context')),
+    );
+
+    const result = await preparePreviewFirstPaint({
+      buildPreview: createBuildService(execute),
+      context: {},
+      preferFast: true,
+      renderMode: 'page-inspector',
+      request: REQUEST,
+    });
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      preparationMode: 'full',
+      renderMode: 'page-inspector',
+    });
+    expect(result.requiresContextEnrichment).toBe(false);
+    expect(result.preparedPreview.artifact.contentHash).toBe('page-context');
   });
 
   /** Reuses the complete incremental path after a session has established full context once. */

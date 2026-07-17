@@ -97,6 +97,12 @@ describe('classifyPreviewRuntimeMessage', () => {
 
     expect(diagnostic.kind).toBe('missing-preview-value');
     expect(diagnostic.recovery).toContain('React Page Inspector');
+    expect(diagnostic.recovery).toContain('Payloads');
+    expect(
+      classifyPreviewRuntimeMessage(
+        "Cannot destructure property 'data' of 'result' as it is undefined.",
+      ).kind,
+    ).toBe('missing-preview-value');
   });
 
   /** Demonstrates that stack-only package words are outside the classifier contract. */

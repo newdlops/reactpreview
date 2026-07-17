@@ -1,7 +1,7 @@
 /**
- * Selects the two-phase preparation policy used by a pinned preview session.
- * A graph-reachable fast bundle minimizes first paint; if that conservative pass cannot compile,
- * the complete application-context pass becomes the initial result instead of exposing a failure.
+ * Selects the preparation policy used by a pinned preview session.
+ * Export Gallery may publish a graph-reachable fast bundle first; Page Inspector always waits for
+ * complete application context so an isolated export is never mistaken for its authored page.
  */
 import type { BuildPreview } from '../application/buildPreview';
 import type { PreparedPreview, PreviewBuildRequest, PreviewRenderMode } from '../domain/preview';
@@ -36,7 +36,7 @@ export interface PreviewFirstPaintOptions {
 }
 
 /**
- * Publishes the reachable graph first and falls back to full discovery only on a genuine failure.
+ * Publishes complete page context directly, or uses fast-first/fallback discovery for Export Gallery.
  * Cancellation is never converted into fallback work because a newer revision already owns the UI.
  *
  * @param options Build service, immutable source request, render mode, and execution context.
@@ -45,7 +45,8 @@ export interface PreviewFirstPaintOptions {
 export async function preparePreviewFirstPaint(
   options: PreviewFirstPaintOptions,
 ): Promise<PreviewFirstPaintResult> {
-  if (!options.preferFast) {
+  const requiresCompleteInitialContext = options.renderMode === 'page-inspector';
+  if (!options.preferFast || requiresCompleteInitialContext) {
     const preparedPreview = await options.buildPreview.execute(
       {
         ...options.request,

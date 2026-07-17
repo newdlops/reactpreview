@@ -16,7 +16,7 @@ export interface PreviewInspectorRuntimePluginOptions {
   readonly projectRoot: string;
 }
 
-/** Creates one stateless virtual runtime module for an opt-in Page Inspector build. */
+/** Creates one stateless virtual runtime module for a Page Inspector build. */
 export function createPreviewInspectorRuntimePlugin(
   options: PreviewInspectorRuntimePluginOptions,
 ): Plugin {

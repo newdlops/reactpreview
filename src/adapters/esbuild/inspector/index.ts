@@ -1,4 +1,4 @@
-/** Public build-time boundary for the opt-in Page Inspector ancestor and target facade modules. */
+/** Public build-time boundary for Page Inspector ancestor and target facade modules. */
 export {
   createPreviewInspectorAncestorPlan,
   type CreatePreviewInspectorAncestorPlanOptions,

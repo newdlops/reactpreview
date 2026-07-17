@@ -121,10 +121,15 @@ function createTargetBoundarySandbox(
         };
       },
     },
-    console: { warn: (message: string): number => observations.warnings.push(message) },
     createRuntimeErrorHeadline: (error: Error): string => error.message,
     describeRuntimeError(error: Error, context: { readonly componentStack?: string }) {
       return error.message + (context.componentStack ?? '');
+    },
+    reportPreviewInspectorTargetFailure(
+      error: Error,
+      context: { readonly componentStack?: string },
+    ) {
+      return observations.warnings.push(error.message + (context.componentStack ?? ''));
     },
     registerPreviewInspectorBoundary: vi.fn(() => vi.fn()),
     rememberCapturedReactError: (error: Error): number => observations.rememberedErrors.push(error),

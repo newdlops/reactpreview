@@ -56,7 +56,7 @@ export type PreviewStaticPropsByExport = Readonly<
 export interface PreviewTargetUsageProps {
   /** Consumer source paths whose selected props or wrapper branch must trigger hot reload. */
   readonly dependencyPaths: readonly string[];
-  /** Actual exported owner selected only for the opt-in Page Inspector mode. */
+  /** Actual exported owner selected only for Page Inspector composition. */
   readonly inspectorPlan?: PreviewInspectorAncestorPlan;
   /** Config-aware aliases proven to resolve to the original Inspector target during discovery. */
   readonly inspectorTargetImportSpecifiers?: readonly string[];

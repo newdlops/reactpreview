@@ -273,6 +273,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           documentPath: canonicalizeExistingPath(request.documentPath),
           implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
           implicitPackageGlobalResolver: staticModuleResolver,
+          instrumentDataRequests: request.renderMode === 'page-inspector',
+          instrumentRenderConditions: request.renderMode === 'page-inspector',
           projectRoot,
           workspaceRoot: canonicalWorkspaceRoot,
         });

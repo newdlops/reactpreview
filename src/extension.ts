@@ -34,14 +34,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const controller = new PreviewController(buildPreview, artifactStore.resourceRoot, log);
   activeResources = { artifactStore, compiler, controller };
 
-  /** Opens a new file-pinned preview panel for the current source editor. */
+  /** Opens the primary actual-page context while pinning the selected source as its component. */
   async function openPreview(): Promise<void> {
-    await controller.open();
+    await controller.open('page-inspector');
   }
 
-  /** Opens the actual-parent page inspector while pinning the selected source file as its target. */
+  /** Retains the original explicit Page Inspector command as a stable compatibility alias. */
   async function openPageInspector(): Promise<void> {
     await controller.open('page-inspector');
+  }
+
+  /** Opens the secondary direct-export gallery when page ancestry is intentionally unnecessary. */
+  async function openComponentGallery(): Promise<void> {
+    await controller.open('component');
   }
 
   /** Immediately rebuilds the focused or source-matched preview, opening one when necessary. */
@@ -56,6 +61,7 @@ export function activate(context: vscode.ExtensionContext): void {
     controller,
     vscode.commands.registerCommand('reactPreview.open', openPreview),
     vscode.commands.registerCommand('reactPreview.openPageInspector', openPageInspector),
+    vscode.commands.registerCommand('reactPreview.openComponentGallery', openComponentGallery),
     vscode.commands.registerCommand('reactPreview.refresh', refreshPreview),
   );
 

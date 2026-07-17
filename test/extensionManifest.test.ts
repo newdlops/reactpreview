@@ -20,7 +20,7 @@ interface ExtensionManifest {
   /** VS Code contribution points relevant to these manifest integration tests. */
   readonly contributes?: {
     /** Commands made available to contribution points and command discovery. */
-    readonly commands?: readonly { readonly command: string }[];
+    readonly commands?: readonly { readonly command: string; readonly title?: string }[];
     /** Menu items keyed by their VS Code menu contribution identifier. */
     readonly menus?: {
       /** Commands visible in a text editor's context menu. */
@@ -40,14 +40,18 @@ async function readExtensionManifest(): Promise<ExtensionManifest> {
 }
 
 describe('extension manifest', () => {
-  it('exposes the existing open command in supported trusted source-editor context menus', async () => {
+  it('exposes actual page context as the primary trusted source-editor action', async () => {
     const manifest = await readExtensionManifest();
     const registeredCommands = manifest.contributes?.commands?.map(({ command }) => command);
+    const primaryCommand = manifest.contributes?.commands?.find(
+      ({ command }) => command === 'reactPreview.open',
+    );
     const contextContribution = manifest.contributes?.menus?.['editor/context']?.find(
       ({ command }) => command === 'reactPreview.open',
     );
 
     expect(registeredCommands).toContain('reactPreview.open');
+    expect(primaryCommand?.title).toBe('Open Current React File in Page Context');
     expect(contextContribution).toEqual({
       command: 'reactPreview.open',
       group: 'navigation@10',
@@ -55,17 +59,21 @@ describe('extension manifest', () => {
     });
   });
 
-  /** Exposes the opt-in actual-parent inspector beside the safe component preview action. */
-  it('exposes the page inspector in the same supported source-editor contexts', async () => {
+  /** Keeps the direct export gallery as a secondary source-editor action. */
+  it('exposes the component gallery beside the primary page-context action', async () => {
     const manifest = await readExtensionManifest();
     const registeredCommands = manifest.contributes?.commands?.map(({ command }) => command);
+    const galleryCommand = manifest.contributes?.commands?.find(
+      ({ command }) => command === 'reactPreview.openComponentGallery',
+    );
     const contextContribution = manifest.contributes?.menus?.['editor/context']?.find(
-      ({ command }) => command === 'reactPreview.openPageInspector',
+      ({ command }) => command === 'reactPreview.openComponentGallery',
     );
 
-    expect(registeredCommands).toContain('reactPreview.openPageInspector');
+    expect(registeredCommands).toContain('reactPreview.openComponentGallery');
+    expect(galleryCommand?.title).toBe('Open Current File Export Gallery');
     expect(contextContribution).toEqual({
-      command: 'reactPreview.openPageInspector',
+      command: 'reactPreview.openComponentGallery',
       group: 'navigation@11',
       when: 'isWorkspaceTrusted && (resourceScheme == file || resourceScheme == vscode-remote) && (editorLangId == javascript || editorLangId == javascriptreact || editorLangId == typescript || editorLangId == typescriptreact)',
     });

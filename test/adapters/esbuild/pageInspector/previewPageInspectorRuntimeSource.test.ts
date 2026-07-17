@@ -41,8 +41,8 @@ describe('Page Inspector runtime source', () => {
     const source = createPreviewPageInspectorRuntimeSource();
 
     expect(source).not.toContain("React.createElement('template'");
-    expect(source).toContain('boundary._reactInternals');
-    expect(source).toContain('boundary._reactInternalFiber');
+    expect(source).toContain("readPreviewInspectorOwnData(boundary, '_reactInternals')");
+    expect(source).toContain("readPreviewInspectorOwnData(boundary, '_reactInternalFiber')");
     expect(source).toContain("document.createElement('react-preview-inspector-host')");
     expect(source).toContain("attachShadow({ mode: 'open' })");
     expect(source).toContain('setPropsOverride');
@@ -125,6 +125,37 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       "String(targetRevision) + ':' + rootName + ':' + String(rootRevision)",
     );
+  });
+
+  /** Connects the independent tree adapter to selection, source navigation, and commit refresh. */
+  it('exposes the live component-tree API and maps picker hosts back to Fiber nodes', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const publicApiStart = source.indexOf('const previewInspectorApi = {');
+    const publicApiEnd = source.indexOf('globalThis[PREVIEW_INSPECTOR_API_KEY]', publicApiStart);
+    const publicApiSource = source.slice(publicApiStart, publicApiEnd);
+
+    expect(source).toContain('collectTree: collectPreviewInspectorTreeSnapshot');
+    expect(source).toContain('selectNode: selectPreviewInspectorTreeNode');
+    expect(source).toContain('subscribeTree: subscribePreviewInspectorTree');
+    expect(source).toContain('openSource: openPreviewInspectorTreeSource');
+    expect(publicApiSource).not.toContain('openSource:');
+    expect(source).toContain('nativeEvent.isTrusted !== true');
+    expect(source).toContain('previewInspectorConsumedSourceEvents.has(nativeEvent)');
+    expect(source).toContain("{ hash: 'SHA-256', name: 'HMAC' }");
+    expect(source).toContain('gestureNonce, gestureToken');
+    expect(source).toContain('findPreviewInspectorFiberTreeNodeByHost(snapshot, candidate)');
+    expect(source).toContain('selectPreviewInspectorFiberTreeNode(snapshot, nodeId)');
+    expect(source).toContain('const selectedIsStaticSibling =');
+    expect(source).toContain('const boundaries = selectedIsStaticSibling');
+    expect(source).toContain('notifyPreviewInspectorTreeSubscribers()');
+    expect(source).toContain('new MutationObserver(handlePreviewInspectorMutations)');
+    expect(source).toContain('setInterval(schedulePreviewInspectorHighlight, 1000)');
+    expect(source).toContain("createPreviewInspectorTreeNodeId('fiber', path, kind, name)");
+    expect(source).toContain("status: roots.length === 0\n      ? 'unavailable'");
+    expect(source).toContain('selected component host node(s)');
+    expect(source).toContain("[selection.hostNodes, snapshot.status === 'static']");
+    expect(source).toContain('treeSelection[0].length > 0 || !treeSelection[1]');
+    expect(source).toContain("type: 'react-preview-inspector-open-source'");
   });
 });
 

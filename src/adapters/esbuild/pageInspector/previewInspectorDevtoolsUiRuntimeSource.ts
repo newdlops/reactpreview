@@ -62,8 +62,6 @@ export interface PreviewInspectorUiTreeSnapshot {
 export interface PreviewInspectorUiAdapter {
   /** Returns a current read-only React component tree. */
   collectTree(): PreviewInspectorUiTreeSnapshot;
-  /** Opens a collector-owned source identity in the editor without exposing transport details. */
-  openSource?(source: PreviewInspectorUiSourceLocation): void;
   /** Mirrors a tree-row selection back into the live collector. */
   selectNode?(id: string): void;
   /** Subscribes to React commits; returning cleanup follows React effect conventions. */
@@ -73,9 +71,9 @@ export interface PreviewInspectorUiAdapter {
 /**
  * Creates the browser source for a bottom-docked, Elements-like React component inspector.
  *
- * Expected generated-entry bindings are `React`, `previewInspectorApi`, `previewInspectorSession`,
- * and the existing inspector mutation helpers. The source renders through the pre-existing Shadow
- * DOM portal, so it introduces no wrapper or sizing element into the application DOM.
+ * Expected generated-entry bindings include `React`, the non-privileged `previewInspectorApi`, and
+ * the lexical-only `previewInspectorSourceNavigation` bridge. The source renders through the
+ * pre-existing Shadow DOM portal, so it introduces no wrapper into the application DOM.
  *
  * @returns Plain JavaScript source concatenated after the Page Inspector public API is installed.
  */
@@ -94,12 +92,13 @@ const previewInspectorDevtoolsCss = [
   '.rpi-shell[data-dock="right"]{bottom:8px;right:8px;top:8px;width:min(540px,48vw)}',
   '.rpi-shell[data-collapsed="true"]{bottom:8px;height:auto;left:auto;right:8px;top:auto;width:min(520px,calc(100vw - 16px))}',
   '.rpi-toolbar{align-items:center;background:var(--vscode-sideBar-background,#252526);border-bottom:1px solid var(--rpi-border);',
-  'display:flex;gap:6px;min-height:36px;padding:5px 7px}',
+  'display:flex;gap:6px;min-height:36px;overflow-x:auto;overflow-y:hidden;padding:5px 7px}',
   '.rpi-title{font-weight:650;margin-right:3px;white-space:nowrap}',
   '.rpi-spacer{flex:1 1 auto}',
   '.rpi-button,.rpi-select,.rpi-search{background:var(--vscode-input-background,#3c3c3c);border:1px solid var(--rpi-border);',
   'border-radius:3px;color:inherit;min-height:25px;outline:none}',
   '.rpi-button{cursor:pointer;padding:2px 7px}',
+  '.rpi-toolbar>.rpi-button,.rpi-toolbar>.rpi-select,.rpi-toolbar>.rpi-title{flex:0 0 auto}',
   '.rpi-button:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
   '.rpi-button:focus-visible,.rpi-select:focus-visible,.rpi-search:focus-visible,.rpi-tree-row:focus-visible,.rpi-tab:focus-visible{',
   'outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
@@ -146,10 +145,57 @@ const previewInspectorDevtoolsCss = [
   '.rpi-pane+.rpi-pane{border-left:0;border-top:1px solid var(--rpi-border)}.rpi-title{display:none}.rpi-select{max-width:150px}}',
 ].join('');
 
-/** Returns whether a collector node is a React component rather than an HTML/text host record. */
+/**
+ * Retains view-only Inspector controls across cache-busted hot-module replacements.
+ * These values intentionally remain browser-session state and never enter editable project props.
+ */
+const previewInspectorDevtoolsSessionState =
+  previewInspectorSession.devtoolsState !== null &&
+  typeof previewInspectorSession.devtoolsState === 'object'
+    ? previewInspectorSession.devtoolsState
+    : {};
+previewInspectorSession.devtoolsState = previewInspectorDevtoolsSessionState;
+previewInspectorDevtoolsSessionState.activeTab =
+  ['props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
+    ? previewInspectorDevtoolsSessionState.activeTab
+    : 'props';
+previewInspectorDevtoolsSessionState.collapsed =
+  previewInspectorDevtoolsSessionState.collapsed === true;
+previewInspectorDevtoolsSessionState.dock =
+  previewInspectorDevtoolsSessionState.dock === 'right' ? 'right' : 'bottom';
+previewInspectorDevtoolsSessionState.query =
+  typeof previewInspectorDevtoolsSessionState.query === 'string'
+    ? previewInspectorDevtoolsSessionState.query
+    : '';
+
+/**
+ * Collector kinds that identify authored or declarative React component boundaries.
+ *
+ * Component and entry kinds retain static render-chain evidence whose syntax analysis cannot safely
+ * distinguish functions from classes. A root kind is handled separately because React's private host
+ * root Fiber uses the same broad label as the Inspector's explicitly instrumented authored root.
+ */
+const previewInspectorComponentKinds = new Set([
+  'class',
+  'component',
+  'context',
+  'entry',
+  'forward-ref',
+  'function',
+  'lazy',
+  'memo',
+  'suspense',
+  'target',
+]);
+
+/** Returns whether a collector node is an authored React component rather than an internal Fiber. */
 function isPreviewInspectorComponentNode(node) {
   const kind = typeof node?.kind === 'string' ? node.kind.toLowerCase() : 'component';
-  return node?.isHost !== true && kind !== 'host' && kind !== 'html' && kind !== 'dom' && kind !== 'text';
+  if (node?.isHost === true) return false;
+  if (kind === 'root') {
+    return typeof node?.exportName === 'string' && node.exportName.length > 0;
+  }
+  return previewInspectorComponentKinds.has(kind);
 }
 
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
@@ -254,6 +300,51 @@ function findPreviewInspectorUiNode(nodes, nodeId) {
   return undefined;
 }
 
+/**
+ * Chooses the roving-tab-stop row from nodes that are actually rendered under expanded ancestors.
+ * A hidden selection must not leave the ARIA tree with every row removed from the tab sequence.
+ */
+function resolvePreviewInspectorTreeFocusableId(nodes, selectedId, expandedIds) {
+  let firstVisibleId;
+  let selectedIsVisible = false;
+  const visit = (visibleNodes) => {
+    for (const node of visibleNodes) {
+      firstVisibleId ??= node.id;
+      if (node.id === selectedId) selectedIsVisible = true;
+      if (expandedIds.has(node.id)) visit(node.children);
+    }
+  };
+  visit(nodes);
+  return selectedIsVisible ? selectedId : firstVisibleId;
+}
+
+/** Finds the authored ancestor IDs required to reveal one selected component row. */
+function findPreviewInspectorUiNodeAncestorIds(nodes, selectedId, ancestors = []) {
+  for (const node of nodes) {
+    if (node.id === selectedId) return ancestors;
+    const descendantAncestors = findPreviewInspectorUiNodeAncestorIds(
+      node.children,
+      selectedId,
+      [...ancestors, node.id],
+    );
+    if (descendantAncestors !== undefined) return descendantAncestors;
+  }
+  return undefined;
+}
+
+/** Expands only missing ancestors so picker and export selection reveal their exact tree row. */
+function expandPreviewInspectorUiSelection(nodes, selectedId, expandedIds) {
+  const ancestorIds = findPreviewInspectorUiNodeAncestorIds(nodes, selectedId);
+  if (ancestorIds === undefined) return expandedIds;
+  let next = expandedIds;
+  for (const ancestorId of ancestorIds) {
+    if (next.has(ancestorId)) continue;
+    if (next === expandedIds) next = new Set(expandedIds);
+    next.add(ancestorId);
+  }
+  return next;
+}
+
 /** Keeps matching components and their ancestor path while filtering the visible tree. */
 function filterPreviewInspectorUiNodes(nodes, query) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -323,12 +414,13 @@ function usePreviewInspectorTreeRefresh() {
 }
 
 /** Creates one reusable toolbar button with native disabled and pressed semantics. */
-function PreviewInspectorDevtoolsButton({ children, disabled, onClick, pressed, title }) {
+function PreviewInspectorDevtoolsButton({ children, disabled, onClick, pressed, sourceOpen, title }) {
   return React.createElement(
     'button',
     {
       'aria-pressed': pressed,
       className: 'rpi-button',
+      'data-react-preview-source-open': sourceOpen === true ? 'true' : undefined,
       disabled: disabled === true,
       onClick,
       title,
@@ -372,8 +464,10 @@ function handlePreviewInspectorTreeKeyDown(event) {
       row.parentElement?.querySelector?.(':scope > [data-react-preview-tree-toggle]')?.click();
       return;
     }
-    const parentItem = row.parentElement?.parentElement?.closest?.('[role="treeitem"]');
-    const parentRow = parentItem?.querySelector?.(':scope > [data-react-preview-tree-row]');
+    const parentGroup = row.parentElement?.closest?.('[role="group"]');
+    const parentRow = parentGroup?.parentElement?.querySelector?.(
+      ':scope > [data-react-preview-tree-row]',
+    );
     if (parentRow !== undefined && parentRow !== null) {
       event.preventDefault();
       parentRow.focus();
@@ -382,7 +476,13 @@ function handlePreviewInspectorTreeKeyDown(event) {
 }
 
 /** Renders one component-only tree branch with target and selection badges. */
-function PreviewInspectorComponentTreeNode({ expandedIds, node, selectedId, setExpandedIds }) {
+function PreviewInspectorComponentTreeNode({
+  expandedIds,
+  focusableId,
+  node,
+  selectedId,
+  setExpandedIds,
+}) {
   const hasChildren = node.children.length > 0;
   const expanded = hasChildren && expandedIds.has(node.id);
   const selected = node.id === selectedId;
@@ -397,7 +497,7 @@ function PreviewInspectorComponentTreeNode({ expandedIds, node, selectedId, setE
   };
   return React.createElement(
     'li',
-    { 'aria-expanded': hasChildren ? expanded : undefined, role: 'treeitem' },
+    { role: 'none' },
     React.createElement('button', {
       'aria-label': (expanded ? 'Collapse ' : 'Expand ') + node.name,
       'data-react-preview-tree-toggle': node.id,
@@ -415,7 +515,8 @@ function PreviewInspectorComponentTreeNode({ expandedIds, node, selectedId, setE
         'data-react-preview-tree-row': node.id,
         onClick: () => selectPreviewInspectorUiNode(node),
         onDoubleClick: toggle,
-        tabIndex: selected ? 0 : -1,
+        role: 'treeitem',
+        tabIndex: node.id === focusableId ? 0 : -1,
         title: node.name,
         type: 'button',
       },
@@ -446,6 +547,7 @@ function PreviewInspectorComponentTreeNode({ expandedIds, node, selectedId, setE
           { className: 'rpi-tree-group', role: 'group' },
           node.children.map((child) => React.createElement(PreviewInspectorComponentTreeNode, {
             expandedIds,
+            focusableId,
             key: child.id,
             node: child,
             selectedId,
@@ -458,9 +560,17 @@ function PreviewInspectorComponentTreeNode({ expandedIds, node, selectedId, setE
 
 /** Renders the searchable React Components pane and owns only visual expansion state. */
 function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }) {
-  const [query, setQuery] = React.useState('');
+  const [query, setQuery] = React.useState(() => previewInspectorDevtoolsSessionState.query);
   const [expandedIds, setExpandedIds] = React.useState(() => new Set(roots.map((node) => node.id)));
   const filteredRoots = filterPreviewInspectorUiNodes(roots, query);
+  const focusableId = resolvePreviewInspectorTreeFocusableId(
+    filteredRoots,
+    selectedId,
+    expandedIds,
+  );
+  React.useEffect(() => {
+    setExpandedIds((current) => expandPreviewInspectorUiSelection(roots, selectedId, current));
+  }, [selectedId]);
   React.useEffect(() => {
     if (query.trim().length === 0) return;
     const expanded = new Set();
@@ -488,7 +598,10 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
       React.createElement('input', {
         'aria-label': 'Filter React components',
         className: 'rpi-search',
-        onChange: (event) => setQuery(event.target.value),
+        onChange: (event) => {
+          previewInspectorDevtoolsSessionState.query = event.target.value;
+          setQuery(event.target.value);
+        },
         placeholder: 'Filter components',
         type: 'search',
         value: query,
@@ -504,6 +617,7 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
             { 'aria-label': 'Mounted React component tree', className: 'rpi-tree', role: 'tree' },
             filteredRoots.map((node) => React.createElement(PreviewInspectorComponentTreeNode, {
               expandedIds,
+              focusableId,
               key: node.id,
               node,
               selectedId,
@@ -609,14 +723,15 @@ function PreviewInspectorStateDetail({ node }) {
   );
 }
 
-/** Delegates source navigation only through the optional public adapter contract. */
+/** Delegates a real source-button click through the lexical-only privileged navigation bridge. */
 function PreviewInspectorSourceDetail({ node }) {
   const source = node?.source;
-  const canOpen = source !== undefined && typeof previewInspectorApi.openSource === 'function';
-  const openSource = () => {
+  const canOpen =
+    source !== undefined && typeof previewInspectorSourceNavigation.openSource === 'function';
+  const openSource = (event) => {
     if (!canOpen) return;
     try {
-      previewInspectorApi.openSource(source);
+      previewInspectorSourceNavigation.openSource(source, event.nativeEvent, event.currentTarget);
     } catch (error) {
       console.warn('[React Preview] Source opening adapter failed.', error);
     }
@@ -636,7 +751,11 @@ function PreviewInspectorSourceDetail({ node }) {
         { className: 'rpi-actions' },
         React.createElement(
           PreviewInspectorDevtoolsButton,
-          { disabled: !canOpen, onClick: openSource },
+          {
+            disabled: !canOpen,
+            onClick: openSource,
+            sourceOpen: true,
+          },
           canOpen ? 'Open source' : 'Source unavailable',
         ),
       ),
@@ -646,7 +765,9 @@ function PreviewInspectorSourceDetail({ node }) {
 
 /** Renders Props, State, and Source tabs for the current component selection. */
 function PreviewInspectorDetailsPane({ node }) {
-  const [activeTab, setActiveTab] = React.useState('props');
+  const [activeTab, setActiveTab] = React.useState(
+    () => previewInspectorDevtoolsSessionState.activeTab,
+  );
   const tabs = [
     ['props', 'Props'],
     ['state', 'State'],
@@ -670,7 +791,10 @@ function PreviewInspectorDetailsPane({ node }) {
             className: 'rpi-tab',
             id: 'react-preview-inspector-' + id + '-tab',
             key: id,
-            onClick: () => setActiveTab(id),
+            onClick: () => {
+              previewInspectorDevtoolsSessionState.activeTab = id;
+              setActiveTab(id);
+            },
             role: 'tab',
             type: 'button',
           },
@@ -701,8 +825,10 @@ function PreviewInspectorDetailsPane({ node }) {
 function PreviewInspectorToolbar() {
   usePreviewInspectorStore();
   usePreviewInspectorTreeRefresh();
-  const [collapsed, setCollapsed] = React.useState(false);
-  const [dock, setDock] = React.useState('bottom');
+  const [collapsed, setCollapsed] = React.useState(
+    () => previewInspectorDevtoolsSessionState.collapsed,
+  );
+  const [dock, setDock] = React.useState(() => previewInspectorDevtoolsSessionState.dock);
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
@@ -771,14 +897,25 @@ function PreviewInspectorToolbar() {
         React.createElement(
           PreviewInspectorDevtoolsButton,
           {
-            onClick: () => setDock((current) => current === 'bottom' ? 'right' : 'bottom'),
+            onClick: () => setDock((current) => {
+              const next = current === 'bottom' ? 'right' : 'bottom';
+              previewInspectorDevtoolsSessionState.dock = next;
+              return next;
+            }),
             title: dock === 'bottom' ? 'Dock inspector to the right' : 'Dock inspector to the bottom',
           },
           dock === 'bottom' ? 'Dock right' : 'Dock bottom',
         ),
         React.createElement(
           PreviewInspectorDevtoolsButton,
-          { onClick: () => setCollapsed((current) => !current), title: collapsed ? 'Expand inspector' : 'Collapse inspector' },
+          {
+            onClick: () => setCollapsed((current) => {
+              const next = !current;
+              previewInspectorDevtoolsSessionState.collapsed = next;
+              return next;
+            }),
+            title: collapsed ? 'Expand inspector' : 'Collapse inspector',
+          },
           collapsed ? 'Expand' : 'Collapse',
         ),
       ),

@@ -43,6 +43,7 @@ interface FiberSourceSnapshot {
 /** UI-facing component or host record emitted by the generated adapter. */
 interface FiberTreeNode {
   readonly children: FiberTreeNode[];
+  readonly exportName?: string;
   readonly hostElementCount: number;
   readonly id: string;
   readonly kind: string;
@@ -56,7 +57,7 @@ interface FiberTreeNode {
 interface FiberTreeSnapshot {
   readonly roots: FiberTreeNode[];
   readonly selectedId?: string;
-  readonly status: 'available' | 'partial' | 'unavailable';
+  readonly status: 'available' | 'partial' | 'static' | 'unavailable';
   readonly truncated: boolean;
   readonly visitedCount: number;
 }
@@ -79,10 +80,7 @@ interface FiberRuntimeApi {
     snapshot: FiberTreeSnapshot,
     host: FakeHostElement,
   ) => FiberTreeSelection | undefined;
-  readonly select: (
-    snapshot: FiberTreeSnapshot,
-    id: string,
-  ) => FiberTreeSelection | undefined;
+  readonly select: (snapshot: FiberTreeSnapshot, id: string) => FiberTreeSelection | undefined;
 }
 
 /** Complete authored page slice plus its selected boundary and DOM host identities. */
@@ -118,6 +116,7 @@ describe('preview Inspector Fiber runtime source', () => {
             ],
           },
           root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+          target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
         },
       },
     });
@@ -139,6 +138,7 @@ describe('preview Inspector Fiber runtime source', () => {
     ]);
     const selected = runtime.select(snapshot, snapshot.selectedId ?? '');
     expect(selected?.node.name).toBe('SelectedCard');
+    expect(selected?.node.exportName).toBe('SelectedCard');
     expect(selected?.hostNodes).toEqual([fixture.targetHost]);
     expect(selected?.node.state).toEqual([{ enabled: true }]);
     expect(selected?.node.source).toMatchObject({
@@ -156,6 +156,7 @@ describe('preview Inspector Fiber runtime source', () => {
     });
     expect(flattenTreeNames(snapshot.roots)).not.toContain('PreviewInspectorToolbar');
     expect(snapshot.roots[0]?.hostElementCount).toBe(3);
+    expect(snapshot.roots[0]?.exportName).toBe('@root:/workspace/DashboardPage.tsx:DashboardPage');
   });
 
   /** Reads accessor descriptors as labels instead of executing project getters while snapshotting. */
@@ -196,6 +197,7 @@ describe('preview Inspector Fiber runtime source', () => {
     const exportBoundary = createFiber(1, namedComponent('PreviewPageInspectorExportBoundary'));
     connectChildren(exportBoundary, createSiblingFibers(PREVIEW_INSPECTOR_TREE_NODE_LIMIT + 4));
     boundaryFiber.return = exportBoundary;
+    if (exportBoundary.child === undefined) throw new Error('Wide Fiber fixture has no child.');
     boundaryFiber.child = exportBoundary.child;
     const snapshot = runtime.collect({ _reactInternalFiber: boundaryFiber });
 
@@ -205,12 +207,228 @@ describe('preview Inspector Fiber runtime source', () => {
     expect(snapshot.visitedCount).toBeLessThanOrEqual(PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT);
   });
 
+  /** Uses inert entry-to-target evidence when a production React build exposes no boundary Fiber. */
+  it('returns a component-only static render chain when the live tree is unavailable', () => {
+    const runtime = evaluateFiberRuntime();
+    const snapshot = runtime.collect([], undefined, {
+      descriptor: {
+        automaticProps: { route: '/dashboard' },
+        inspector: {
+          renderChain: {
+            paths: [
+              {
+                steps: [
+                  {
+                    label: 'SelectedCard',
+                    occurrenceStart: 14,
+                    sourcePath: '/workspace/SelectedCard.tsx',
+                    wrapperNames: [],
+                  },
+                  {
+                    label: 'RouteFrame',
+                    occurrenceStart: 32,
+                    sourcePath: '/workspace/routes.tsx',
+                    wrapperNames: ['AppProviders'],
+                  },
+                ],
+              },
+            ],
+          },
+          root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+          target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
+          targetAutomaticProps: { title: 'static' },
+        },
+      },
+      selectedExportName: 'SelectedCard',
+      targetExportName: 'SelectedCard',
+    });
+
+    expect(snapshot.status).toBe('static');
+    expect(flattenTreeNames(snapshot.roots)).toEqual([
+      'RouteFrame',
+      'AppProviders',
+      'SelectedCard',
+      'DashboardPage',
+    ]);
+    const selected = runtime.select(snapshot, snapshot.selectedId ?? '');
+    expect(selected?.node).toMatchObject({
+      exportName: 'SelectedCard',
+      kind: 'target',
+      props: { title: 'static' },
+    });
+    expect(selected?.hostNodes).toEqual([]);
+    expect(snapshot.roots[0]?.kind).toBe('entry');
+    expect(snapshot.roots[0]?.exportName).toBeUndefined();
+    expect(snapshot.roots[1]).toMatchObject({
+      exportName: '@root:/workspace/DashboardPage.tsx:DashboardPage',
+      kind: 'root',
+      props: { route: '/dashboard' },
+    });
+
+    const selectedRootSnapshot = runtime.collect([], snapshot.selectedId, {
+      descriptor: {
+        automaticProps: { route: '/dashboard' },
+        inspector: {
+          renderChain: {
+            paths: [
+              {
+                steps: [
+                  {
+                    label: 'SelectedCard',
+                    sourcePath: '/workspace/SelectedCard.tsx',
+                    wrapperNames: [],
+                  },
+                  {
+                    label: 'RouteFrame',
+                    sourcePath: '/workspace/routes.tsx',
+                    wrapperNames: [],
+                  },
+                ],
+              },
+            ],
+          },
+          root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+          target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
+          targetAutomaticProps: { title: 'target' },
+        },
+      },
+      selectedExportName: '@root:/workspace/DashboardPage.tsx:DashboardPage',
+      targetExportName: 'SelectedCard',
+    });
+    const selectedRoot = runtime.select(
+      selectedRootSnapshot,
+      selectedRootSnapshot.selectedId ?? '',
+    );
+    expect(selectedRoot?.node).toMatchObject({
+      exportName: '@root:/workspace/DashboardPage.tsx:DashboardPage',
+      kind: 'root',
+      props: { route: '/dashboard' },
+    });
+    expect(findTreeNode(selectedRootSnapshot.roots, 'SelectedCard')).toMatchObject({
+      exportName: 'SelectedCard',
+      props: { title: 'target' },
+    });
+  });
+
+  /** Promotes an exact render-chain root node instead of adding a duplicate branch. */
+  it('attaches editable root identity to the matching static component', () => {
+    const runtime = evaluateFiberRuntime();
+    const rootIdentity = '@root:/workspace/DashboardPage.tsx:DashboardPage';
+    const snapshot = runtime.collect([], undefined, {
+      descriptor: {
+        automaticProps: { section: 'root' },
+        inspector: {
+          renderChain: {
+            paths: [
+              {
+                steps: [
+                  {
+                    label: 'SelectedCard',
+                    sourcePath: '/workspace/SelectedCard.tsx',
+                    wrapperNames: [],
+                  },
+                  {
+                    label: 'DashboardPage',
+                    sourcePath: '/workspace/DashboardPage.tsx',
+                    wrapperNames: [],
+                  },
+                  {
+                    label: 'ApplicationEntry',
+                    sourcePath: '/workspace/main.tsx',
+                    wrapperNames: [],
+                  },
+                ],
+              },
+            ],
+          },
+          root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+          target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
+          targetAutomaticProps: { title: 'target' },
+        },
+      },
+      selectedExportName: rootIdentity,
+      targetExportName: 'SelectedCard',
+    });
+
+    expect(snapshot.roots).toHaveLength(1);
+    expect(flattenTreeNames(snapshot.roots)).toEqual([
+      'ApplicationEntry',
+      'DashboardPage',
+      'SelectedCard',
+    ]);
+    expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.node).toMatchObject({
+      exportName: rootIdentity,
+      kind: 'root',
+      props: { section: 'root' },
+    });
+    expect(findTreeNode(snapshot.roots, 'SelectedCard')).toMatchObject({
+      exportName: 'SelectedCard',
+      kind: 'target',
+      props: { title: 'target' },
+    });
+  });
+
+  /** Selects a sibling export's own chain instead of reusing the instrumented target boundary. */
+  it('uses export-specific static evidence for a render-chain sibling', () => {
+    const runtime = evaluateFiberRuntime();
+    const snapshot = runtime.collect([], undefined, {
+      descriptor: {
+        inspector: {
+          renderChainsByExport: {
+            SiblingPanel: {
+              paths: [
+                {
+                  steps: [
+                    {
+                      label: 'SiblingPanel',
+                      occurrenceStart: 91,
+                      sourcePath: '/workspace/SiblingPanel.tsx',
+                      wrapperNames: [],
+                    },
+                    {
+                      label: 'ApplicationShell',
+                      occurrenceStart: 12,
+                      sourcePath: '/workspace/main.tsx',
+                      wrapperNames: [],
+                    },
+                  ],
+                },
+              ],
+              target: { exportName: 'SiblingPanel', sourcePath: '/workspace/SiblingPanel.tsx' },
+            },
+          },
+          root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+          target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
+        },
+      },
+      selectedExportName: 'SiblingPanel',
+      targetExportName: 'SiblingPanel',
+    });
+
+    expect(flattenTreeNames(snapshot.roots)).toEqual([
+      'ApplicationShell',
+      'SiblingPanel',
+      'DashboardPage',
+    ]);
+    expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.node).toMatchObject({
+      exportName: 'SiblingPanel',
+      source: {
+        origin: 'render-chain',
+        sourcePath: '/workspace/SiblingPanel.tsx',
+      },
+    });
+  });
+
   /** Keeps the compatibility adapter independent of React DevTools and private-field writes. */
   it('emits explicit limits and no Fiber mutation or DevTools hook dependency', () => {
     const source = createPreviewInspectorFiberRuntimeSource();
 
-    expect(source).toContain(`PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT = ${PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT.toString()}`);
-    expect(source).toContain(`PREVIEW_INSPECTOR_TREE_NODE_LIMIT = ${PREVIEW_INSPECTOR_TREE_NODE_LIMIT.toString()}`);
+    expect(source).toContain(
+      `PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT = ${PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT.toString()}`,
+    );
+    expect(source).toContain(
+      `PREVIEW_INSPECTOR_TREE_NODE_LIMIT = ${PREVIEW_INSPECTOR_TREE_NODE_LIMIT.toString()}`,
+    );
     expect(source).toContain('Object.getOwnPropertyDescriptor');
     expect(source).not.toContain('__REACT_DEVTOOLS_GLOBAL_HOOK__');
     expect(source).not.toMatch(/\.(?:child|return|sibling|memoizedProps|memoizedState)\s*=/u);
@@ -318,12 +536,21 @@ function namedComponent(displayName: string): () => undefined {
 
 /** Connects parent, child, sibling, and return links exactly as React's child list is shaped. */
 function connectChildren(parent: FakeFiber, children: FakeFiber[]): void {
-  parent.child = children[0];
+  if (children[0] === undefined) {
+    Reflect.deleteProperty(parent, 'child');
+  } else {
+    parent.child = children[0];
+  }
   for (let index = 0; index < children.length; index += 1) {
     const child = children[index];
     if (child === undefined) continue;
     child.return = parent;
-    child.sibling = children[index + 1];
+    const sibling = children[index + 1];
+    if (sibling === undefined) {
+      Reflect.deleteProperty(child, 'sibling');
+    } else {
+      child.sibling = sibling;
+    }
   }
 }
 
@@ -346,7 +573,7 @@ function createHostElement(
     getBoundingClientRect: () => ({}),
     isConnected: true,
     nodeType: 1,
-    parentElement,
+    ...(parentElement === undefined ? {} : { parentElement }),
   };
 }
 
@@ -356,10 +583,7 @@ function flattenTreeNames(nodes: readonly FiberTreeNode[]): string[] {
 }
 
 /** Finds one uniquely named fixture node without coupling tests to generated structural IDs. */
-function findTreeNode(
-  nodes: readonly FiberTreeNode[],
-  name: string,
-): FiberTreeNode | undefined {
+function findTreeNode(nodes: readonly FiberTreeNode[], name: string): FiberTreeNode | undefined {
   for (const node of nodes) {
     if (node.name === name) return node;
     const child = findTreeNode(node.children, name);

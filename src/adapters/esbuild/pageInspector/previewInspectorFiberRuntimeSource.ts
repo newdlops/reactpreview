@@ -159,6 +159,14 @@ function namePreviewInspectorFiber(fiber, kind) {
   return kind === 'other' ? 'Anonymous' : kind;
 }
 
+/** Adds a readable kind/name token so a reordered path cannot silently select another component. */
+function createPreviewInspectorTreeNodeId(namespace, path, kind, name) {
+  const typeToken = (kind + '-' + name)
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+    .slice(0, 72);
+  return namespace + ':' + path + ':' + (typeToken.length > 0 ? typeToken : 'anonymous');
+}
+
 /** Reports preview-owned wrappers that should be transparent in the project component tree. */
 function isPreviewInspectorOwnedFiber(fiber, name, kind) {
   if (kind === 'root' || kind === 'fragment' || kind === 'portal') return true;
@@ -328,6 +336,16 @@ function readPreviewInspectorRuntimeSource(fiber) {
   return undefined;
 }
 
+/** Selects export-specific render-chain evidence before falling back to the descriptor default. */
+function readPreviewInspectorSelectedRenderChain(inspector, options) {
+  const selectedName = readPreviewInspectorOwnData(options, 'selectedExportName');
+  const chainsByExport = readPreviewInspectorOwnData(inspector, 'renderChainsByExport');
+  const selectedChain = typeof selectedName === 'string'
+    ? readPreviewInspectorOwnData(chainsByExport, selectedName)
+    : undefined;
+  return selectedChain ?? readPreviewInspectorOwnData(inspector, 'renderChain');
+}
+
 /** Finds a matching static source from a name map, ancestry edge, or render-chain step. */
 function readPreviewInspectorStaticSource(name, options) {
   const sourceByName = readPreviewInspectorOwnData(options, 'sourceByName');
@@ -343,6 +361,12 @@ function readPreviewInspectorStaticSource(name, options) {
   }
   const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
   const inspector = readPreviewInspectorOwnData(descriptor, 'inspector') ?? descriptor;
+  const selectedRenderChain = readPreviewInspectorSelectedRenderChain(inspector, options);
+  const renderChainTarget = readPreviewInspectorOwnData(selectedRenderChain, 'target');
+  if (readPreviewInspectorOwnData(renderChainTarget, 'exportName') === name) {
+    const source = normalizePreviewInspectorSource(renderChainTarget, 'render-chain');
+    if (source !== undefined) return source;
+  }
   for (const referenceName of ['target', 'root']) {
     const reference = readPreviewInspectorOwnData(inspector, referenceName);
     if (readPreviewInspectorOwnData(reference, 'exportName') === name) {
@@ -368,8 +392,7 @@ function readPreviewInspectorStaticSource(name, options) {
       }
     }
   }
-  const renderChain = readPreviewInspectorOwnData(inspector, 'renderChain');
-  const paths = readPreviewInspectorOwnData(renderChain, 'paths');
+  const paths = readPreviewInspectorOwnData(selectedRenderChain, 'paths');
   const steps = Array.isArray(paths) ? readPreviewInspectorOwnData(paths[0], 'steps') : undefined;
   if (Array.isArray(steps)) {
     for (const step of steps.slice(0, 64)) {
@@ -418,6 +441,159 @@ function readPreviewInspectorEditableExportIdentities(options) {
     rootName,
     selectedName: readPreviewInspectorOwnData(options, 'selectedExportName'),
     targetName: typeof targetName === 'string' ? targetName : undefined,
+  };
+}
+
+/** Builds a component-only chain from inert render-graph or ancestry evidence when Fiber is absent. */
+function createPreviewInspectorStaticTree(options, nodeById, parentIdById, hostNodesById) {
+  const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
+  const inspector = readPreviewInspectorOwnData(descriptor, 'inspector');
+  if (inspector === undefined) return { roots: [], selectedId: undefined, truncated: false };
+  const rootReference = readPreviewInspectorOwnData(inspector, 'root');
+  const targetReference = readPreviewInspectorOwnData(inspector, 'target');
+  const rootName = readPreviewInspectorOwnData(rootReference, 'exportName');
+  const targetName =
+    readPreviewInspectorOwnData(options, 'targetExportName') ??
+    readPreviewInspectorOwnData(
+      readPreviewInspectorOwnData(
+        readPreviewInspectorSelectedRenderChain(inspector, options),
+        'target',
+      ),
+      'exportName',
+    ) ??
+    readPreviewInspectorOwnData(targetReference, 'exportName') ??
+    readPreviewInspectorOwnData(descriptor, 'displayName') ??
+    readPreviewInspectorOwnData(descriptor, 'exportName');
+  const names = [];
+  const appendName = (value) => {
+    if (typeof value === 'string' && value.length > 0 && names.at(-1) !== value) names.push(value);
+  };
+  const renderChain = readPreviewInspectorSelectedRenderChain(inspector, options);
+  const paths = readPreviewInspectorOwnData(renderChain, 'paths');
+  const steps = Array.isArray(paths) ? readPreviewInspectorOwnData(paths[0], 'steps') : undefined;
+  const hasRenderChainSteps = Array.isArray(steps) && steps.length > 0;
+  if (hasRenderChainSteps) {
+    for (const step of steps.slice(0, 64).reverse()) {
+      appendName(readPreviewInspectorOwnData(step, 'label'));
+      const wrappers = readPreviewInspectorOwnData(step, 'wrapperNames');
+      if (Array.isArray(wrappers)) {
+        for (const wrapperName of wrappers.slice(0, 16).reverse()) appendName(wrapperName);
+      }
+    }
+  } else {
+    const ancestry = readPreviewInspectorOwnData(inspector, 'ancestry');
+    if (Array.isArray(ancestry)) {
+      for (const edge of ancestry.slice(0, 32).reverse()) {
+        const owner = readPreviewInspectorOwnData(edge, 'owner');
+        appendName(readPreviewInspectorOwnData(owner, 'exportName'));
+        const localNames = readPreviewInspectorOwnData(edge, 'localOwnerNames');
+        if (Array.isArray(localNames)) {
+          for (const localName of localNames.slice(0, 16).reverse()) appendName(localName);
+        }
+      }
+    }
+  }
+  if (!hasRenderChainSteps && typeof rootName === 'string' && names[0] !== rootName) {
+    names.unshift(rootName);
+  }
+  if (typeof targetName === 'string' && names.at(-1) !== targetName) names.push(targetName);
+  if (names.length === 0) return { roots: [], selectedId: undefined, truncated: false };
+  const editable = readPreviewInspectorEditableExportIdentities(options);
+  const targetIndex = names.length - 1;
+  const matchingRootIndex = typeof rootName === 'string' ? names.indexOf(rootName) : -1;
+  const rootCanShareChainNode =
+    editable.rootName !== undefined && matchingRootIndex >= 0 && matchingRootIndex !== targetIndex;
+  const needsSeparateRoot = editable.rootName !== undefined && !rootCanShareChainNode;
+  const chainLimit = PREVIEW_INSPECTOR_TREE_NODE_LIMIT - (needsSeparateRoot ? 1 : 0);
+  let displayedNames = names;
+  if (names.length > chainLimit) {
+    const prefix = names.slice(0, Math.max(0, chainLimit - 1));
+    if (
+      rootCanShareChainNode &&
+      typeof rootName === 'string' &&
+      !prefix.includes(rootName) &&
+      prefix.length > 0
+    ) {
+      prefix[prefix.length - 1] = rootName;
+    }
+    displayedNames = [...prefix, names.at(-1)];
+  }
+  const displayedRootIndex =
+    rootCanShareChainNode && typeof rootName === 'string'
+      ? displayedNames.indexOf(rootName)
+      : -1;
+  const nodes = displayedNames.map((name, index) => {
+    const isTarget = index === displayedNames.length - 1;
+    const isEditableRoot = index === displayedRootIndex && !isTarget;
+    const kind = isTarget
+      ? 'target'
+      : isEditableRoot
+        ? 'root'
+        : index === 0
+          ? 'entry'
+          : 'component';
+    const id = createPreviewInspectorTreeNodeId('static', String(index), kind, name);
+    const exportName = isTarget
+        ? editable.targetName
+        : isEditableRoot
+          ? editable.rootName
+          : undefined;
+    const rawProps = isTarget
+      ? readPreviewInspectorOwnData(inspector, 'targetAutomaticProps')
+      : isEditableRoot
+        ? readPreviewInspectorOwnData(descriptor, 'automaticProps')
+        : undefined;
+    const source = readPreviewInspectorStaticSource(name, options);
+    const node = {
+      children: [],
+      hostElementCount: 0,
+      id,
+      kind,
+      name,
+      props: snapshotPreviewInspectorValue(rawProps),
+      state: null,
+      ...(exportName === undefined ? {} : { exportName }),
+      ...(source === undefined ? {} : { source }),
+    };
+    nodeById.set(id, node);
+    hostNodesById.set(id, []);
+    return node;
+  });
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    const parent = nodes[index];
+    const child = nodes[index + 1];
+    parent.children = [child];
+    parentIdById.set(child.id, parent.id);
+  }
+  const roots = nodes.length === 0 ? [] : [nodes[0]];
+  if (needsSeparateRoot && typeof rootName === 'string') {
+    const id = createPreviewInspectorTreeNodeId('static-root', '0', 'root', rootName);
+    const source = normalizePreviewInspectorSource(rootReference, 'descriptor');
+    const rootNode = {
+      children: [],
+      exportName: editable.rootName,
+      hostElementCount: 0,
+      id,
+      kind: 'root',
+      name: rootName,
+      props: snapshotPreviewInspectorValue(
+        readPreviewInspectorOwnData(descriptor, 'automaticProps'),
+      ),
+      state: null,
+      ...(source === undefined ? {} : { source }),
+    };
+    roots.push(rootNode);
+    nodeById.set(id, rootNode);
+    hostNodesById.set(id, []);
+  }
+  const preferredExportName = readPreviewInspectorOwnData(options, 'selectedExportName');
+  const selectedNode = [...nodes, ...roots.slice(1)].find(
+    (node) => node.exportName === preferredExportName,
+  ) ?? nodes.at(-1) ?? roots[0];
+  return {
+    roots,
+    selectedId: selectedNode?.id,
+    truncated: names.length > chainLimit,
   };
 }
 
@@ -500,6 +676,8 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
   const sliceFibers = [];
   let visitCount = 0;
   let nodeCount = 0;
+  let staticFallback = false;
+  let staticSelectedId;
   let truncated = false;
 
   /** Builds a promoted forest so private wrapper and fragment nodes never pollute the UI tree. */
@@ -538,7 +716,7 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
             nodes.push(...promoted.nodes);
             promotedHostRoots.push(...promoted.hostRoots);
           } else {
-            const id = 'fiber:' + path;
+            const id = createPreviewInspectorTreeNodeId('fiber', path, kind, name);
             const stateNode = readPreviewInspectorOwnData(fiber, 'stateNode');
             const directHost = normalizePreviewInspectorHostElement(stateNode);
             const node = {
@@ -567,10 +745,7 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
             const normalizedHosts = normalizePreviewInspectorHostRoots(hostRoots);
             node.hostElementCount = normalizedHosts.length;
             hostNodesById.set(id, normalizedHosts);
-            if (
-              directHost !== undefined &&
-              readPreviewInspectorOwnData(stateNode, 'nodeType') === 1
-            ) {
+            if (directHost !== undefined && kind === 'host') {
               nodeIdByHost.set(directHost, id);
             }
             nodes.push(node);
@@ -598,6 +773,18 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
     const result = buildForest(sliceFibers[rootIndex], undefined, String(rootIndex), 0, undefined);
     roots.push(...result.nodes);
   }
+  if (roots.length === 0) {
+    const staticTree = createPreviewInspectorStaticTree(
+      options,
+      nodeById,
+      parentIdById,
+      hostNodesById,
+    );
+    roots.push(...staticTree.roots);
+    staticFallback = staticTree.roots.length > 0;
+    staticSelectedId = staticTree.selectedId;
+    truncated ||= staticTree.truncated;
+  }
 
   /** Finds the first displayed descendant below one target boundary for initial selection. */
   function findTargetNodeId(boundaryFiber) {
@@ -618,27 +805,42 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
   }
 
   const defaultSelectedId = boundaryFibers.map(findTargetNodeId).find((id) => id !== undefined);
-  const resolvedSelectedId =
-    typeof selectedId === 'string' && nodeById.has(selectedId)
-      ? selectedId
-      : defaultSelectedId ?? roots[0]?.id;
   const editableIdentities = readPreviewInspectorEditableExportIdentities(options);
   const rootNode = roots[0];
   const targetNode = defaultSelectedId === undefined ? undefined : nodeById.get(defaultSelectedId);
-  if (rootNode !== undefined && editableIdentities.rootName !== undefined) {
+  if (!staticFallback && rootNode !== undefined && editableIdentities.rootName !== undefined) {
     rootNode.exportName = editableIdentities.rootName;
   }
-  if (targetNode !== undefined && editableIdentities.targetName !== undefined) {
+  if (!staticFallback && targetNode !== undefined && editableIdentities.targetName !== undefined) {
     const preferredIdentity =
       targetNode === rootNode && editableIdentities.selectedName === editableIdentities.rootName
         ? editableIdentities.rootName
         : editableIdentities.targetName;
     targetNode.exportName = preferredIdentity;
   }
+  const requestedNode = typeof selectedId === 'string' ? nodeById.get(selectedId) : undefined;
+  const selectedExportName = readPreviewInspectorOwnData(options, 'selectedExportName');
+  const selectedExportNodeId = typeof selectedExportName === 'string'
+    ? [...nodeById].find(([, node]) => node.exportName === selectedExportName)?.[0]
+    : undefined;
+  const requestedIdentityConflicts =
+    typeof requestedNode?.exportName === 'string' &&
+    typeof selectedExportName === 'string' &&
+    requestedNode.exportName !== selectedExportName;
+  const resolvedSelectedId =
+    requestedNode !== undefined && !requestedIdentityConflicts
+      ? selectedId
+      : selectedExportNodeId ?? defaultSelectedId ?? staticSelectedId ?? roots[0]?.id;
   const snapshot = {
     roots,
     selectedId: resolvedSelectedId,
-    status: roots.length === 0 ? 'unavailable' : truncated ? 'partial' : 'available',
+    status: roots.length === 0
+      ? 'unavailable'
+      : staticFallback
+        ? 'static'
+        : truncated
+          ? 'partial'
+          : 'available',
     truncated,
     visitedCount: visitCount,
   };

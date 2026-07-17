@@ -7,6 +7,7 @@ import {
 
 const TARGET_PATH = '/workspace/application/Target.tsx';
 const PAGE_PATH = '/workspace/application/Page.tsx';
+const ALTERNATE_PAGE_PATH = '/workspace/application/AlternatePage.tsx';
 
 /** Creates the minimum immutable plan used by source-generation assertions. */
 function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspectorAncestorPlan {
@@ -18,26 +19,32 @@ function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspecto
     target: { exportName: 'Target', sourcePath: TARGET_PATH },
     truncated: false,
   };
-  return {
+  const edges = [
+    {
+      child: { exportName: 'Target', sourcePath: TARGET_PATH },
+      childAutomaticProps: { enabled: true },
+      localOwnerDepth: 0,
+      localOwnerNames: [],
+      occurrenceStart: 42,
+      owner: { exportName: 'Page', sourcePath: PAGE_PATH },
+    },
+  ];
+  const pageCandidate = {
     complete: true,
     dependencyPaths: [PAGE_PATH, TARGET_PATH],
-    edges: [
-      {
-        child: { exportName: 'Target', sourcePath: TARGET_PATH },
-        childAutomaticProps: { enabled: true },
-        localOwnerDepth: 0,
-        localOwnerNames: [],
-        occurrenceStart: 42,
-        owner: { exportName: 'Page', sourcePath: PAGE_PATH },
-      },
-    ],
-    renderChain,
-    renderChainsByExport: { Target: renderChain },
+    edges,
+    id: 'candidate-page',
     root,
     rootAutomaticProps: { route: '/preview' },
-    stopReason: 'root-reached',
-    target: { exportName: 'Target', sourcePath: TARGET_PATH },
+    stopReason: 'root-reached' as const,
     targetAutomaticProps: { enabled: true },
+  };
+  return {
+    ...pageCandidate,
+    renderChain,
+    renderChainsByExport: { Target: renderChain },
+    pageCandidates: [pageCandidate],
+    target: { exportName: 'Target', sourcePath: TARGET_PATH },
   };
 }
 
@@ -50,9 +57,10 @@ describe('createPreviewInspectorRootSource', () => {
     });
 
     expect(source).toContain(
-      'import { Page as __reactPreviewInspectorRoot } from "/workspace/application/Page.tsx";',
+      'load: () => import("/workspace/application/Page.tsx").then((module) => module["Page"])',
     );
-    expect(source).toContain('"automaticProps":{"route":"/preview"}');
+    expect(source).toContain('"rootAutomaticProps":{"route":"/preview"}');
+    expect(source).toContain('"pageCandidates":[{"complete":true');
     expect(source).toContain('"targetAutomaticProps":{"enabled":true}');
     expect(source).toContain('"renderChain":{"dependencyPaths"');
     expect(source).toContain('"renderChainsByExport":{"Target"');
@@ -73,9 +81,41 @@ describe('createPreviewInspectorRootSource', () => {
     });
 
     expect(source).toContain(
-      'import { Target as __reactPreviewInspectorRoot } from "react-preview:inspector-target-facade";',
+      'load: () => import("react-preview:inspector-target-facade").then((module) => module["Target"])',
     );
     expect(source).toContain('"inferredPropShape":{"kind":"object"');
     expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
+  });
+
+  /** Emits every alternative behind its own dynamic import and keeps the first path as metadata. */
+  it('keeps alternative authored page roots lazy and independently selectable', () => {
+    const primaryPlan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const primaryCandidate = primaryPlan.pageCandidates[0];
+    if (primaryCandidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const alternateCandidate = {
+      ...primaryCandidate,
+      id: 'candidate-alternate',
+      root: { exportName: 'AlternatePage', sourcePath: ALTERNATE_PAGE_PATH },
+      rootAutomaticProps: { route: '/alternate' },
+    };
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...primaryPlan,
+        dependencyPaths: [...primaryPlan.dependencyPaths, ALTERNATE_PAGE_PATH],
+        pageCandidates: [...primaryPlan.pageCandidates, alternateCandidate],
+      },
+    });
+
+    expect(source).toContain(
+      'import("/workspace/application/Page.tsx").then((module) => module["Page"])',
+    );
+    expect(source).toContain(
+      'import("/workspace/application/AlternatePage.tsx").then((module) => module["AlternatePage"])',
+    );
+    expect(source).not.toContain('import __reactPreviewInspectorRoot');
+    expect(source).toContain(
+      'api.createPageCandidateElement(__reactPreviewInspectorCandidates, props)',
+    );
+    expect(source).toContain('"id":"candidate-alternate"');
   });
 });

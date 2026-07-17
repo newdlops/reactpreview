@@ -179,6 +179,75 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
     }
   });
 
+  /** Bundles alternative application callers as lazy page roots instead of one eager merged page. */
+  it('keeps mount-distinct caller pages selectable behind dynamic chunks', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-candidates-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const targetPath = path.join(sourceDirectory, 'Target.tsx');
+    const publicPagePath = path.join(sourceDirectory, 'PublicPage.tsx');
+    const staffPagePath = path.join(sourceDirectory, 'StaffPage.tsx');
+    const targetSource = 'export function Target() { return <button>SHARED_TARGET</button>; }';
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(targetPath, targetSource, 'utf8'),
+        writeFile(
+          publicPagePath,
+          "import { Target } from './Target'; export function PublicPage() { return <main>PUBLIC_PAGE_CONTEXT<Target /></main>; }",
+          'utf8',
+        ),
+        writeFile(
+          staffPagePath,
+          "import { Target } from './Target'; export function StaffPage() { return <main>STAFF_PAGE_CONTEXT<Target /></main>; }",
+          'utf8',
+        ),
+        writeFile(
+          path.join(sourceDirectory, 'public-main.tsx'),
+          "import { createRoot } from 'react-dom/client'; import { PublicPage } from './PublicPage'; createRoot(document.body).render(<PublicPage />);",
+          'utf8',
+        ),
+        writeFile(
+          path.join(sourceDirectory, 'staff-main.tsx'),
+          "import { createRoot } from 'react-dom/client'; import { StaffPage } from './StaffPage'; createRoot(document.body).render(<StaffPage />);",
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const entryJavascript = Buffer.from(bundle.javascript).toString('utf8');
+      const allJavascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(entryJavascript).not.toContain('PUBLIC_PAGE_CONTEXT');
+      expect(entryJavascript).not.toContain('STAFF_PAGE_CONTEXT');
+      expect(allJavascript).toContain('PUBLIC_PAGE_CONTEXT');
+      expect(allJavascript).toContain('STAFF_PAGE_CONTEXT');
+      expect(allJavascript).toContain('Authored page caller path');
+      expect(allJavascript).toContain('PublicPage');
+      expect(allJavascript).toContain('StaffPage');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([targetPath, publicPagePath, staffPagePath]),
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps wildcard-only barrels interactive while clearly reporting missing ancestor evidence. */
   it('uses an actionable direct-root fallback when static export identity is unavailable', async () => {
     const projectRoot = await mkdtemp(

@@ -6,6 +6,7 @@ export {
   type PreviewInspectorAncestorPlan,
   type PreviewInspectorAncestorStopReason,
   type PreviewInspectorComponentReference,
+  type PreviewInspectorPageCandidate,
   type ReadPreviewInspectorAcceptedSpecifiers,
   type ReadPreviewInspectorSource,
 } from './previewInspectorAncestorPlan';

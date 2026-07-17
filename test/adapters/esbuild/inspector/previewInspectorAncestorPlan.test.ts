@@ -350,4 +350,50 @@ describe('createPreviewInspectorAncestorPlan', () => {
     );
     expect(plan.edges).toHaveLength(1);
   });
+
+  /** Retains distinct entry-connected callers so the browser can mount either completed page. */
+  it('returns independently selectable page roots for alternative application entries', async () => {
+    const publicPagePath = '/workspace/packages/application/src/PublicPage.tsx';
+    const staffPagePath = '/workspace/packages/application/src/StaffPage.tsx';
+    const publicEntryPath = '/workspace/packages/application/src/public-main.tsx';
+    const staffEntryPath = '/workspace/packages/application/src/staff-main.tsx';
+    const sources = {
+      [TARGET_PATH]: 'export function Target() { return <button>Shared action</button>; }',
+      [publicPagePath]: [
+        "import { Target } from './Target';",
+        'export function PublicPage() { return <main><Target audience="public" /></main>; }',
+      ].join('\n'),
+      [staffPagePath]: [
+        "import { Target } from './Target';",
+        'export function StaffPage() { return <main><Target audience="staff" /></main>; }',
+      ].join('\n'),
+      [publicEntryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { PublicPage } from './PublicPage';",
+        "createRoot(document.getElementById('root')).render(<PublicPage />);",
+      ].join('\n'),
+      [staffEntryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { StaffPage } from './StaffPage';",
+        "createRoot(document.getElementById('root')).render(<StaffPage />);",
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates.map((candidate) => candidate.root)).toEqual([
+      { exportName: 'PublicPage', sourcePath: publicPagePath },
+      { exportName: 'StaffPage', sourcePath: staffPagePath },
+    ]);
+    expect(plan.pageCandidates.every((candidate) => candidate.renderPath?.entryPoint)).toBe(true);
+    expect(plan.pageCandidates.map((candidate) => candidate.targetAutomaticProps)).toEqual([
+      { audience: 'public' },
+      { audience: 'staff' },
+    ]);
+  });
 });

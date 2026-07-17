@@ -1,7 +1,6 @@
 /**
- * Exposes one actual authored ancestor through the existing preview target descriptor contract.
- * Page Inspector builds use this bridge instead of the ordinary export gallery bridge, allowing
- * the browser entry to stay unchanged while the mounted value includes real siblings/dynamics.
+ * Exposes selectable authored ancestors through the existing preview target descriptor contract.
+ * Candidate roots remain dynamic imports so only the chosen page branch loads in the webview.
  */
 import path from 'node:path';
 import type { OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
@@ -45,7 +44,7 @@ export function createPreviewInspectorRootPlugin(
       : undefined;
   }
 
-  /** Loads a single-descriptor bridge and associates its full ancestry with watch mode. */
+  /** Loads a single descriptor whose candidate roots are independently lazy and hot-reloadable. */
   function loadInspectorRoot(): OnLoadResult {
     return {
       contents: createPreviewInspectorRootSource({
@@ -81,7 +80,7 @@ export interface PreviewInspectorRootSourceOptions {
 }
 
 /**
- * Generates the target descriptor for an authored inspector root without loading its value.
+ * Generates a descriptor and lazy loaders for every statically proven authored page candidate.
  *
  * When root and target share a module, the import intentionally points at the instrumentation
  * facade. Otherwise the real ancestor imports its descendant normally and the target interceptor
@@ -94,21 +93,43 @@ export function createPreviewInspectorRootSource(
   options: PreviewInspectorRootSourceOptions,
 ): string {
   const { plan } = options;
-  assertExportName(plan.root.exportName);
-  const rootIsTarget =
+  const pageCandidates = plan.pageCandidates;
+  for (const candidate of pageCandidates) {
+    assertExportName(candidate.root.exportName);
+  }
+  const browserCandidates = pageCandidates.map((candidate) => ({
+    complete: candidate.complete,
+    edges: candidate.edges,
+    id: candidate.id,
+    ...(candidate.renderPath === undefined ? {} : { renderPath: candidate.renderPath }),
+    root: candidate.root,
+    rootAutomaticProps: candidate.rootAutomaticProps,
+    stopReason: candidate.stopReason,
+    targetAutomaticProps: candidate.targetAutomaticProps,
+  }));
+  const candidateDefinitions = pageCandidates.map((candidate) => {
+    const rootIsTarget =
+      path.normalize(candidate.root.sourcePath) === path.normalize(plan.target.sourcePath);
+    const rootSpecifier = rootIsTarget
+      ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
+      : candidate.root.sourcePath.replaceAll('\\', '/');
+    return [
+      '{ id: ',
+      JSON.stringify(candidate.id),
+      ', load: () => import(',
+      JSON.stringify(rootSpecifier),
+      ').then((module) => module[',
+      JSON.stringify(candidate.root.exportName),
+      ']) }',
+    ].join('');
+  });
+  const primaryRootIsTarget =
     path.normalize(plan.root.sourcePath) === path.normalize(plan.target.sourcePath);
-  const rootSpecifier = rootIsTarget
-    ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-    : plan.root.sourcePath.replaceAll('\\', '/');
-  const importLine =
-    plan.root.exportName === 'default'
-      ? `import __reactPreviewInspectorRoot from ${JSON.stringify(rootSpecifier)};`
-      : `import { ${plan.root.exportName} as __reactPreviewInspectorRoot } from ${JSON.stringify(rootSpecifier)};`;
   const descriptor = {
-    automaticProps: plan.rootAutomaticProps,
+    automaticProps: {},
     displayName: options.displayName ?? plan.target.exportName,
     exportName: plan.target.exportName,
-    ...(rootIsTarget && options.targetInference !== undefined
+    ...(primaryRootIsTarget && options.targetInference !== undefined
       ? {
           inferredPropShape: options.targetInference.shape,
           inferredProps: options.targetInference.provenance,
@@ -117,6 +138,7 @@ export function createPreviewInspectorRootSource(
     inspector: {
       ancestry: plan.edges,
       complete: plan.complete,
+      pageCandidates: browserCandidates,
       renderChain: plan.renderChain,
       renderChainsByExport: plan.renderChainsByExport,
       root: plan.root,
@@ -128,8 +150,16 @@ export function createPreviewInspectorRootSource(
   };
 
   return [
-    importLine,
+    `const __reactPreviewInspectorCandidates = Object.freeze([${candidateDefinitions.join(',')}]);`,
     `const __reactPreviewInspectorDescriptor = ${JSON.stringify(descriptor)};`,
+    '/** Delegates candidate selection and Suspense loading to the entry-owned Inspector runtime. */',
+    'function __reactPreviewInspectorRoot(props) {',
+    "  const api = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];",
+    "  if (typeof api?.createPageCandidateElement !== 'function') {",
+    "    throw new Error('React Page Inspector candidate runtime is unavailable.');",
+    '  }',
+    '  return api.createPageCandidateElement(__reactPreviewInspectorCandidates, props);',
+    '}',
     '__reactPreviewInspectorDescriptor.value = __reactPreviewInspectorRoot;',
     'export const previewTheme = undefined;',
     'export default Object.freeze([Object.freeze(__reactPreviewInspectorDescriptor)]);',

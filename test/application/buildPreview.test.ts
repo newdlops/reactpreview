@@ -83,6 +83,25 @@ describe('BuildPreview', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  /** Carries the compiler-only Inspector gesture key to its panel without persisting it as an asset. */
+  it('preserves a Page Inspector source gesture key across publication', async () => {
+    const securedBundle = {
+      ...BUNDLE,
+      inspectorSourceGestureSecret: Buffer.alloc(32, 9).toString('base64url'),
+    };
+    const compile = vi.fn<PreviewCompiler['compile']>().mockResolvedValue(securedBundle);
+    const publish = vi.fn<PreviewArtifactStore['publish']>().mockResolvedValue({
+      contentHash: 'secured',
+      scriptLocation: 'file:///preview/secured/entry.js',
+    });
+    const useCase = new BuildPreview({ compile }, { publish, release: vi.fn() });
+
+    const result = await useCase.execute(REQUEST);
+
+    expect(result.inspectorSourceGestureSecret).toBe(securedBundle.inspectorSourceGestureSecret);
+    expect(publish).toHaveBeenCalledWith(securedBundle);
+  });
+
   /** Prevents already-cancelled revisions from entering compiler or artifact side effects. */
   it('stops before compilation when the execution was already cancelled', async () => {
     const controller = new AbortController();

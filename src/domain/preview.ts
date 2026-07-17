@@ -88,6 +88,8 @@ export interface PreviewBundle {
   readonly dependencies: readonly string[];
   /** Non-fatal diagnostics returned by a successful build. */
   readonly diagnostics: readonly PreviewDiagnostic[];
+  /** Optional private HMAC key embedded only in a Page Inspector entry and returned to its host. */
+  readonly inspectorSourceGestureSecret?: string;
   /** Complete browser JavaScript entry bundle. */
   readonly javascript: Uint8Array;
   /** Optional stylesheet emitted when the component imports CSS. */
@@ -114,6 +116,8 @@ export interface PreparedPreview {
   readonly dependencies: readonly string[];
   /** Non-fatal diagnostics produced by the compiler. */
   readonly diagnostics: readonly PreviewDiagnostic[];
+  /** Optional HMAC key used by the panel to authenticate Inspector source-button gestures. */
+  readonly inspectorSourceGestureSecret?: string;
   /** Glob roots used to route newly created matching files to the owning panel. */
   readonly watchDirectories: readonly string[];
 }

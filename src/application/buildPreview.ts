@@ -49,12 +49,18 @@ export class BuildPreview {
       throw error;
     }
 
-    return {
+    const preparedPreview = {
       artifact,
       dependencies: bundle.dependencies,
       diagnostics: bundle.diagnostics,
       watchDirectories: bundle.watchDirectories,
     };
+    return bundle.inspectorSourceGestureSecret === undefined
+      ? preparedPreview
+      : {
+          ...preparedPreview,
+          inspectorSourceGestureSecret: bundle.inspectorSourceGestureSecret,
+        };
   }
 
   /**

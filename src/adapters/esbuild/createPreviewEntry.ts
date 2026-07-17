@@ -32,6 +32,8 @@ export interface PreviewEntryOptions {
   readonly globalNamespaces: readonly string[];
   /** Static status for lexical project-global module bridges selected by the compiler. */
   readonly globalPackageBridgeStatus?: string;
+  /** Entry-private HMAC key used only by the Page Inspector trusted source-button bridge. */
+  readonly inspectorSourceGestureSecret?: string;
   /** Component gallery by default, or the opt-in authored-page inspector runtime. */
   readonly renderMode?: PreviewRenderMode;
   /** Determines whether standard Storybook decorators and parameters should be applied. */
@@ -73,7 +75,9 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const inspectorImportSource =
     renderMode === 'page-inspector' ? "import * as ReactDOMNamespace from 'react-dom';" : '';
   const inspectorRuntimeSource =
-    renderMode === 'page-inspector' ? createPreviewPageInspectorRuntimeSource() : '';
+    renderMode === 'page-inspector'
+      ? createPreviewPageInspectorRuntimeSource(options.inspectorSourceGestureSecret)
+      : '';
   return `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';

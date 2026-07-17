@@ -3,6 +3,7 @@
  * It never starts `serve()` or writes into the user's project: browser artifacts remain in memory
  * until the separate artifact-store adapter publishes them under VS Code global storage.
  */
+import { createHmac, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { stop, type BuildResult } from 'esbuild';
 import type { PreviewCompiler } from '../../application/previewCompiler';
@@ -17,7 +18,7 @@ import {
   throwIfPreviewBuildCancelled,
   type PreviewBuildExecutionContext,
 } from '../../domain/previewBuildExecution';
-import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { canonicalizeExistingPath, normalizeLexicalPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
@@ -115,6 +116,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly projectUsageCache = new PreviewProjectUsageCache();
   /** Native build contexts retaining parsed dependency graphs across compatible revisions. */
   private readonly incrementalBuildCache = new PreviewIncrementalBuildCache();
+  /** Host-lifetime entropy derives entry-private source gesture keys without invalidating rebuilds. */
+  private readonly inspectorGestureSeed = randomBytes(32);
   private shutdownPromise: Promise<void> | undefined;
 
   /**
@@ -141,6 +144,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     try {
       throwIfPreviewBuildCancelled(buildSignal);
       const canonicalWorkspaceRoot = canonicalizeExistingPath(request.workspaceRoot);
+      const inspectorSourceGestureSecret =
+        request.renderMode === 'page-inspector'
+          ? createInspectorSourceGestureSecret(this.inspectorGestureSeed, request.documentPath)
+          : undefined;
       const projectRoot = await findPreviewProjectRoot(
         canonicalizeExistingPath(request.documentPath),
         canonicalWorkspaceRoot,
@@ -372,6 +379,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               documentName: createPreviewDocumentName(request),
               globalNamespaces: environment.globalNamespaces,
               globalPackageBridgeStatus: describeGlobalPackageBridgeStatus(globalPackagePlan),
+              ...(inspectorSourceGestureSecret === undefined
+                ? {}
+                : { inspectorSourceGestureSecret }),
               renderMode: request.renderMode ?? 'component',
               setupKind: environment.setupKind,
             }),
@@ -554,7 +564,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ]
           : [];
       throwIfPreviewBuildCancelled(buildSignal);
-      return createPreviewBundle(
+      const previewBundle = createPreviewBundle(
         request,
         buildExecution.result,
         buildExecution.watchDirectories,
@@ -566,6 +576,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ...targetUsageProps.dependencyPaths,
         ],
       );
+      return inspectorSourceGestureSecret === undefined
+        ? previewBundle
+        : { ...previewBundle, inspectorSourceGestureSecret };
     } catch (error) {
       if (isPreviewBuildCancellation(error, buildSignal)) {
         throw error;
@@ -618,6 +631,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     });
     return this.shutdownPromise;
   }
+}
+
+/** Derives one stable target-scoped browser HMAC key from compiler-private process entropy. */
+function createInspectorSourceGestureSecret(seed: Buffer, documentPath: string): string {
+  return createHmac('sha256', seed)
+    .update('react-preview-inspector-source\0')
+    .update(normalizeLexicalPath(documentPath))
+    .digest('base64url');
 }
 
 /** Separates nearest-config and explicitly configured evidence resolution policies per package. */

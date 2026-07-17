@@ -26,16 +26,67 @@ export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector
  *
  * @returns Plain JavaScript source safe to concatenate into the esbuild stdin entry.
  */
-export function createPreviewPageInspectorRuntimeSource(): string {
+export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: string): string {
   const chainRuntimeSource = createPreviewInspectorChainRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
+  const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
 const PREVIEW_INSPECTOR_API_KEY = Symbol.for('newdlops.react-file-preview.page-inspector');
 const PREVIEW_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
 const PREVIEW_INSPECTOR_STATE_KEY = 'reactFilePreviewPageInspector';
+const PREVIEW_INSPECTOR_SOURCE_GESTURE_SECRET = ${encodedSourceGestureSecret};
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** Captures browser primitives before dynamically imported project modules can replace them. */
+const previewInspectorSourceCrypto = (() => {
+  const cryptoObject = globalThis.crypto;
+  const subtle = cryptoObject?.subtle;
+  const importKey = subtle?.importKey?.bind(subtle);
+  const sign = subtle?.sign?.bind(subtle);
+  const getRandomValues = cryptoObject?.getRandomValues?.bind(cryptoObject);
+  const decodeBase64 = globalThis.atob?.bind(globalThis);
+  const encodeBase64 = globalThis.btoa?.bind(globalThis);
+  if (
+    PREVIEW_INSPECTOR_SOURCE_GESTURE_SECRET.length === 0 ||
+    typeof importKey !== 'function' ||
+    typeof sign !== 'function' ||
+    typeof getRandomValues !== 'function' ||
+    typeof decodeBase64 !== 'function' ||
+    typeof encodeBase64 !== 'function' ||
+    typeof TextEncoder !== 'function'
+  ) {
+    return undefined;
+  }
+  try {
+    const paddedSecret = PREVIEW_INSPECTOR_SOURCE_GESTURE_SECRET
+      .replaceAll('-', '+')
+      .replaceAll('_', '/') + '='.repeat((4 - PREVIEW_INSPECTOR_SOURCE_GESTURE_SECRET.length % 4) % 4);
+    const binarySecret = decodeBase64(paddedSecret);
+    const secretBytes = Uint8Array.from(binarySecret, (character) => character.charCodeAt(0));
+    const keyPromise = importKey(
+      'raw',
+      secretBytes,
+      { hash: 'SHA-256', name: 'HMAC' },
+      false,
+      ['sign'],
+    ).catch(() => undefined);
+    return {
+      encodeBase64,
+      getRandomValues,
+      keyPromise,
+      sign,
+      textEncoder: new TextEncoder(),
+    };
+  } catch {
+    return undefined;
+  }
+})();
+const previewInspectorSourceEventConstructor = globalThis.Event;
+const previewInspectorConsumedSourceEvents = new WeakSet();
+const previewInspectorPostHostMessage =
+  previewHotRuntime.vscodeApi?.postMessage?.bind(previewHotRuntime.vscodeApi);
 
 ${fiberRuntimeSource}
 
@@ -81,6 +132,7 @@ function createPreviewInspectorSession() {
       typeof persisted.selectedExportName === 'string' ? persisted.selectedExportName : '',
     selectedTreeNodeId:
       typeof persisted.selectedTreeNodeId === 'string' ? persisted.selectedTreeNodeId : undefined,
+    treeListeners: new Set(),
     version: 0,
   };
 }
@@ -88,6 +140,7 @@ function createPreviewInspectorSession() {
 const previewInspectorSession =
   previewHotRuntime.inspectorSession ?? createPreviewInspectorSession();
 previewHotRuntime.inspectorSession = previewInspectorSession;
+previewInspectorSession.treeListeners ??= new Set();
 
 /** Returns a stable numeric snapshot for React.useSyncExternalStore. */
 function getPreviewInspectorVersion() {
@@ -265,6 +318,158 @@ function formatPreviewInspectorEntryName(name) {
   return name.startsWith('@root:') ? 'Root · ' + (name.split(':').at(-1) || 'default') : 'Target · ' + name;
 }
 
+/** Finds descriptor metadata for a selected target, actual root, or render-chain export identity. */
+function findSelectedPreviewInspectorDescriptor() {
+  const selectedName = previewInspectorSession.selectedExportName;
+  return previewInspectorSession.descriptors.find((descriptor) => {
+    const inspector = descriptor?.inspector;
+    const targetName = inspector?.target?.exportName ?? descriptor?.exportName;
+    const rootName = inspector?.root === undefined
+      ? undefined
+      : createPreviewInspectorRootName(inspector.root);
+    return selectedName === targetName || selectedName === rootName ||
+      Object.hasOwn(inspector?.renderChainsByExport ?? {}, selectedName);
+  }) ?? previewInspectorSession.descriptors[0];
+}
+
+/** Collects the current bounded live tree while retaining host indexes only inside the webview. */
+function collectPreviewInspectorTreeSnapshot() {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const selectedName = previewInspectorSession.selectedExportName;
+  const instrumentedTargetName =
+    descriptor?.inspector?.target?.exportName ?? descriptor?.exportName ?? selectedName;
+  const rootName = descriptor?.inspector?.root === undefined
+    ? undefined
+    : createPreviewInspectorRootName(descriptor.inspector.root);
+  const selectedIsStaticSibling =
+    selectedName !== instrumentedTargetName &&
+    selectedName !== rootName &&
+    Object.hasOwn(descriptor?.inspector?.renderChainsByExport ?? {}, selectedName);
+  const targetName = selectedIsStaticSibling ? selectedName : instrumentedTargetName;
+  const boundaries = selectedIsStaticSibling
+    ? []
+    : previewInspectorSession.boundariesByExport.get(instrumentedTargetName) ?? [];
+  const snapshot = collectPreviewInspectorFiberTree(
+    boundaries,
+    previewInspectorSession.selectedTreeNodeId,
+    {
+      descriptor,
+      selectedExportName: previewInspectorSession.selectedExportName,
+      targetExportName: targetName,
+    },
+  );
+  previewInspectorSession.lastTreeSnapshot = snapshot;
+  return snapshot;
+}
+
+/** Notifies tree subscribers after the shared animation-frame reconciliation has committed. */
+function notifyPreviewInspectorTreeSubscribers() {
+  for (const listener of [...previewInspectorSession.treeListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      console.warn('[React Preview] Component tree subscriber failed.', error);
+    }
+  }
+}
+
+/** Subscribes the DevTools tree to coalesced React commit and DOM mutation refreshes. */
+function subscribePreviewInspectorTree(listener) {
+  if (typeof listener !== 'function') return () => undefined;
+  previewInspectorSession.treeListeners.add(listener);
+  const pollTimer = setInterval(schedulePreviewInspectorHighlight, 1000);
+  return () => {
+    clearInterval(pollTimer);
+    previewInspectorSession.treeListeners.delete(listener);
+  };
+}
+
+/** Selects a collected node without granting edit access to an arbitrary Fiber component. */
+function selectPreviewInspectorTreeNode(nodeId) {
+  if (typeof nodeId !== 'string' || nodeId.length === 0) return;
+  const snapshot = collectPreviewInspectorTreeSnapshot();
+  const selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
+  if (selection === undefined) return;
+  previewInspectorSession.selectedTreeNodeId = nodeId;
+  previewInspectorSession.lastTreeSnapshot = snapshot;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorHighlight();
+}
+
+/** Encodes bytes as unpadded base64url without exposing the private HMAC key. */
+function encodePreviewInspectorSourceToken(bytes) {
+  const cryptoBridge = previewInspectorSourceCrypto;
+  if (cryptoBridge === undefined) return undefined;
+  let binary = '';
+  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
+  return cryptoBridge.encodeBase64(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
+}
+
+/** Signs the exact path, coordinates, and one-shot nonce selected by a trusted source-button click. */
+async function signPreviewInspectorSourceMessage(message, gestureNonce) {
+  const cryptoBridge = previewInspectorSourceCrypto;
+  if (cryptoBridge === undefined) return undefined;
+  const key = await cryptoBridge.keyPromise;
+  if (key === undefined) return undefined;
+  const payload = JSON.stringify([
+    message.type,
+    message.sourcePath,
+    message.line ?? null,
+    message.column ?? null,
+    message.occurrenceStart ?? null,
+    gestureNonce,
+  ]);
+  try {
+    const signature = await cryptoBridge.sign(
+      'HMAC',
+      key,
+      cryptoBridge.textEncoder.encode(payload),
+    );
+    return encodePreviewInspectorSourceToken(signature);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Creates one cryptographically random nonce that the host will consume only once. */
+function createPreviewInspectorSourceNonce() {
+  const cryptoBridge = previewInspectorSourceCrypto;
+  if (cryptoBridge === undefined) return undefined;
+  const bytes = new Uint8Array(16);
+  cryptoBridge.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Sends source coordinates only after consuming an actual click on the bound Inspector UI button. */
+async function openPreviewInspectorTreeSource(source, nativeEvent, sourceButton) {
+  if (
+    typeof previewInspectorSourceEventConstructor !== 'function' ||
+    !(nativeEvent instanceof previewInspectorSourceEventConstructor) ||
+    nativeEvent.isTrusted !== true ||
+    nativeEvent.type !== 'click' ||
+    typeof nativeEvent.composedPath !== 'function' ||
+    !nativeEvent.composedPath().includes(sourceButton) ||
+    sourceButton?.getAttribute?.('data-react-preview-source-open') !== 'true' ||
+    previewInspectorConsumedSourceEvents.has(nativeEvent)
+  ) return;
+  previewInspectorConsumedSourceEvents.add(nativeEvent);
+  if (source === null || typeof source !== 'object') return;
+  const sourcePath = typeof source.sourcePath === 'string' ? source.sourcePath : source.path;
+  if (typeof sourcePath !== 'string' || sourcePath.length === 0) return;
+  const message = { sourcePath, type: 'react-preview-inspector-open-source' };
+  if (Number.isSafeInteger(source.line) && source.line > 0) message.line = source.line;
+  if (Number.isSafeInteger(source.column) && source.column > 0) message.column = source.column;
+  if (Number.isSafeInteger(source.occurrenceStart) && source.occurrenceStart >= 0) {
+    message.occurrenceStart = source.occurrenceStart;
+  }
+  const gestureNonce = createPreviewInspectorSourceNonce();
+  if (gestureNonce === undefined) return;
+  const gestureToken = await signPreviewInspectorSourceMessage(message, gestureNonce);
+  if (gestureToken === undefined) return;
+  previewInspectorPostHostMessage?.({ ...message, gestureNonce, gestureToken });
+}
+
 /** Registers the latest real props observed at one wrapped target invocation. */
 function registerPreviewInspectorBaseProps(exportName, props) {
   if (typeof exportName !== 'string' || exportName.length === 0) {
@@ -299,6 +504,7 @@ function selectPreviewInspectorExport(exportName) {
   ) {
     return;
   }
+  previewInspectorSession.selectedTreeNodeId = undefined;
   previewInspectorSession.selectedExportName = exportName;
   persistPreviewInspectorState();
   notifyPreviewInspector();
@@ -409,12 +615,23 @@ function collectPreviewInspectorBoundaryElements(boundary) {
   }
 }
 
+/** Resolves a DevTools row selection back to its connected top-level host roots. */
+function collectSelectedPreviewInspectorTreeElements() {
+  const nodeId = previewInspectorSession.selectedTreeNodeId;
+  if (typeof nodeId !== 'string') return undefined;
+  const snapshot = collectPreviewInspectorTreeSnapshot();
+  const selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
+  return selection === undefined ? undefined : [selection.hostNodes, snapshot.status === 'static'];
+}
+
 /** Collects connected target elements for the selected export without traversing React internals. */
 function collectSelectedPreviewInspectorElements() {
   const exportName = previewInspectorSession.selectedExportName;
   if (previewInspectorSession.pickerCandidate !== undefined) {
     return [previewInspectorSession.pickerCandidate];
   }
+  const treeSelection = collectSelectedPreviewInspectorTreeElements();
+  if (treeSelection !== undefined && (treeSelection[0].length > 0 || !treeSelection[1])) return treeSelection[0];
   const collected = [];
   for (const boundary of previewInspectorSession.boundariesByExport.get(exportName) ?? []) {
     collected.push(...collectPreviewInspectorBoundaryElements(boundary));
@@ -484,10 +701,10 @@ function refreshPreviewInspectorHighlight() {
   }
   previewInspectorSession.highlightedElements = nextElementSet;
   const nextStatus = !previewInspectorSession.highlightEnabled
-    ? 'Target highlight is off.'
+    ? 'Component highlight is off.'
     : nextElementSet.size > 0
-      ? 'Highlighting ' + String(nextElementSet.size) + ' top-level target node(s).'
-      : 'No host node yet. Render the target or use Pick element.';
+      ? 'Highlighting ' + String(nextElementSet.size) + ' selected component host node(s).'
+      : 'No selected component host node yet. Render it or use Pick element.';
   if (nextStatus !== previewInspectorSession.highlightStatus) {
     previewInspectorSession.highlightStatus = nextStatus;
     notifyPreviewInspector();
@@ -503,6 +720,7 @@ function schedulePreviewInspectorHighlight() {
   previewInspectorSession.highlightFrame = schedule(() => {
     previewInspectorSession.highlightFrame = undefined;
     refreshPreviewInspectorHighlight();
+    notifyPreviewInspectorTreeSubscribers();
   });
 }
 
@@ -527,7 +745,7 @@ function handlePreviewInspectorPointerMove(event) {
   schedulePreviewInspectorHighlight();
 }
 
-/** Commits the current picker candidate to the selected export and consumes only that click. */
+/** Maps a picked DOM host to its nearest component, with legacy manual-host fallback. */
 function handlePreviewInspectorPick(event) {
   if (!previewInspectorSession.pickerEnabled) {
     return;
@@ -540,11 +758,39 @@ function handlePreviewInspectorPick(event) {
   event.stopImmediatePropagation();
   previewInspectorSession.pickerCandidate = undefined;
   previewInspectorSession.pickerEnabled = false;
-  registerPreviewInspectorTargetElement(
-    previewInspectorSession.selectedExportName,
-    candidate,
-  );
+  const snapshot = collectPreviewInspectorTreeSnapshot();
+  const selection = findPreviewInspectorFiberTreeNodeByHost(snapshot, candidate);
+  if (selection === undefined) {
+    previewInspectorSession.selectedTreeNodeId = undefined;
+    registerPreviewInspectorTargetElement(
+      previewInspectorSession.selectedExportName,
+      candidate,
+    );
+  } else {
+    previewInspectorSession.selectedTreeNodeId = selection.node.id;
+    const exportName = selection.node.exportName;
+    if (
+      typeof exportName === 'string' &&
+      previewInspectorSession.descriptorNames.includes(exportName)
+    ) {
+      previewInspectorSession.selectedExportName = exportName;
+    }
+    previewInspectorSession.lastTreeSnapshot = snapshot;
+    persistPreviewInspectorState();
+  }
   notifyPreviewInspector();
+  schedulePreviewInspectorHighlight();
+}
+
+/** Coalesces authored DOM commits while ignoring style records caused by the yellow outline itself. */
+function handlePreviewInspectorMutations(records) {
+  const hasAuthoredMutation = records.some(
+    (record) =>
+      record.type !== 'attributes' ||
+      record.attributeName !== 'style' ||
+      record.target?.__reactPreviewInspectorOutline === undefined,
+  );
+  if (hasAuthoredMutation) schedulePreviewInspectorHighlight();
 }
 
 /** Installs transient DOM observers that are removed before the next hot-module revision mounts. */
@@ -554,9 +800,14 @@ function installPreviewInspectorDomObservers() {
   window.addEventListener('resize', schedulePreviewInspectorHighlight);
   window.addEventListener('scroll', schedulePreviewInspectorHighlight, true);
   const mutationObserver = typeof MutationObserver === 'function'
-    ? new MutationObserver(schedulePreviewInspectorHighlight)
+    ? new MutationObserver(handlePreviewInspectorMutations)
     : undefined;
-  mutationObserver?.observe(mountNode, { childList: true, subtree: true });
+  mutationObserver?.observe(mountNode, {
+    attributes: true,
+    characterData: true,
+    childList: true,
+    subtree: true,
+  });
   return () => {
     window.removeEventListener('pointermove', handlePreviewInspectorPointerMove, true);
     window.removeEventListener('click', handlePreviewInspectorPick, true);
@@ -569,6 +820,7 @@ function installPreviewInspectorDomObservers() {
     previewInspectorSession.highlightedElements = new Set();
     previewInspectorSession.boundariesByExport.clear();
     previewInspectorSession.manualElementsByExport.clear();
+    previewInspectorSession.lastTreeSnapshot = undefined;
     previewInspectorSession.pickerCandidate = undefined;
     previewInspectorSession.pickerEnabled = false;
   };
@@ -692,9 +944,15 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
   );
 }
 
-/** Exposes only stable, documented inspector operations to generated target facade modules. */
+/** Keeps privileged editor navigation lexical to extension-owned UI code, outside the facade API. */
+const previewInspectorSourceNavigation = Object.freeze({
+  openSource: openPreviewInspectorTreeSource,
+});
+
+/** Exposes only stable, non-host-privileged operations to generated target facade modules. */
 const previewInspectorApi = {
   TargetRenderer: PreviewInspectorTargetRenderer,
+  collectTree: collectPreviewInspectorTreeSnapshot,
   getSnapshot() {
     return {
       highlightEnabled: previewInspectorSession.highlightEnabled,
@@ -706,8 +964,10 @@ const previewInspectorApi = {
   remount: remountPreviewInspectorExport,
   resetPropsOverride: resetPreviewInspectorPropsOverride,
   selectExport: selectPreviewInspectorExport,
+  selectNode: selectPreviewInspectorTreeNode,
   setHighlightEnabled: setPreviewInspectorHighlightEnabled,
   setPropsOverride: setPreviewInspectorPropsOverride,
+  subscribeTree: subscribePreviewInspectorTree,
 };
 globalThis[PREVIEW_INSPECTOR_API_KEY] = previewInspectorApi;
 

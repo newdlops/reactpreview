@@ -36,6 +36,7 @@ import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPat
 import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
+import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
 import {
   appendPreviewSourceImports,
   applyPreviewSourceReplacements,
@@ -69,6 +70,8 @@ export interface PreviewSourceTransformerOptions {
   readonly instrumentRenderConditions?: boolean;
   /** Whether proven browser backend calls should use editable no-network preview payloads. */
   readonly instrumentDataRequests?: boolean;
+  /** Whether render-critical custom hooks may receive visible, user-toggleable static fallbacks. */
+  readonly instrumentRuntimeHookFallbacks?: boolean;
   /** Nearest package root used for the conventional public asset directory. */
   readonly projectRoot: string;
   /** Trusted workspace boundary used for every static filesystem expansion. */
@@ -190,6 +193,9 @@ export class PreviewSourceTransformer {
           ...contextHookFallback.declarations,
           ...contextRegistrations.statements,
         );
+      }
+      if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('use')) {
+        replacements.push(...createPreviewRuntimeHookReplacements(sourcePath, sourceText));
       }
       if (
         this.options.documentPath !== undefined &&

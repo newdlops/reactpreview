@@ -275,6 +275,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           implicitPackageGlobalResolver: staticModuleResolver,
           instrumentDataRequests: request.renderMode === 'page-inspector',
           instrumentRenderConditions: request.renderMode === 'page-inspector',
+          instrumentRuntimeHookFallbacks: request.renderMode === 'page-inspector',
           projectRoot,
           workspaceRoot: canonicalWorkspaceRoot,
         });

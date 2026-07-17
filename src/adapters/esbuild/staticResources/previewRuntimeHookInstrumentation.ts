@@ -1,0 +1,802 @@
+/**
+ * Instruments render-critical project hooks with a visual-only runtime circuit breaker.
+ *
+ * The analyzer never executes a hook or imports application code in the extension host. It admits
+ * only project-like module imports, local custom hooks, and the explicitly state-only
+ * `use-query-params` surface. Calls are rewritten only when local syntax can synthesize a bounded
+ * fallback from destructuring, a compared literal, a required property, or a semantic name.
+ */
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+import ts from 'typescript';
+import type { PreviewSourceReplacement } from './previewSourceReplacement';
+
+const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
+const MAX_HOOKS_PER_MODULE = 96;
+const MAX_METADATA_TEXT_LENGTH = 180;
+const CUSTOM_HOOK_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*$/u;
+const QUERY_PARAM_MODULE = 'use-query-params';
+const EXCLUDED_MODULES = new Set([
+  'react',
+  'react-dom',
+  'react-dom/client',
+  'react/jsx-dev-runtime',
+  'react/jsx-runtime',
+]);
+const ARRAY_USAGE_PROPERTIES = new Set([
+  'at',
+  'every',
+  'filter',
+  'find',
+  'findIndex',
+  'flatMap',
+  'forEach',
+  'length',
+  'map',
+  'reduce',
+  'some',
+]);
+
+/** Import or local-declaration evidence for one callable custom hook binding. */
+interface PreviewRuntimeHookBinding {
+  /** Authored hook name shown in Inspector diagnostics. */
+  readonly hookName: string;
+  /** Static module specifier, or `local` for a same-module hook declaration. */
+  readonly moduleSpecifier: string;
+}
+
+/** Namespace import whose property calls may expose eligible custom hooks. */
+interface PreviewRuntimeHookNamespace {
+  /** Static module specifier used to decide whether hook failures may be isolated. */
+  readonly moduleSpecifier: string;
+}
+
+/** Direct and namespace hook bindings proven by one parsed source module. */
+interface PreviewRuntimeHookInventory {
+  /** Local call identifiers mapped to their authored hook identities. */
+  readonly direct: ReadonlyMap<string, PreviewRuntimeHookBinding>;
+  /** Namespace import identifiers mapped to their source modules. */
+  readonly namespaces: ReadonlyMap<string, PreviewRuntimeHookNamespace>;
+}
+
+/** Bounded static fallback emitted beside one hook call. */
+interface PreviewRuntimeHookFallback {
+  /** Human-readable inference description exposed to the user. */
+  readonly evidence: string;
+  /** TypeScript expression evaluated lazily only after a nullish value or failure. */
+  readonly expression: string;
+  /** Concise generated-value description that does not execute the expression. */
+  readonly label: string;
+}
+
+/** Mutable property tree used only while serializing one identifier's required local usage. */
+interface PreviewRuntimeHookUsageNode {
+  /** Nested required properties for an object container. */
+  readonly children: Map<string, PreviewRuntimeHookUsageNode>;
+  /** Static leaf expression, omitted while the node remains an object container. */
+  expression?: string;
+}
+
+/** Parsed hook call and inferred fallback before a stable identity is serialized. */
+interface PreviewRuntimeHookCandidate {
+  /** Exact call expression replaced without changing its arguments. */
+  readonly call: ts.CallExpression;
+  /** Proven binding metadata for diagnostics and package policy. */
+  readonly hook: PreviewRuntimeHookBinding;
+  /** Static fallback selected from local syntax. */
+  readonly fallback: PreviewRuntimeHookFallback;
+}
+
+/** Function-like scope in which a React hook call can execute during render. */
+type RuntimeFunction =
+  ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
+
+/**
+ * Creates Page Inspector replacements for render-critical project and query-parameter hooks.
+ *
+ * Replacements call the Inspector API through a global Symbol installed before project modules are
+ * evaluated. Normal non-nullish values retain exact identity. A caught non-thenable exception or
+ * required nullish value is replaced only while the user-controlled Auto values boundary is on.
+ *
+ * @param sourcePath Absolute workspace source identity retained in local Inspector diagnostics.
+ * @param sourceText Original module source used for parser offsets and generated expressions.
+ * @returns Non-overlapping source replacements ordered by their original offsets.
+ */
+export function createPreviewRuntimeHookReplacements(
+  sourcePath: string,
+  sourceText: string,
+): readonly PreviewSourceReplacement[] {
+  if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) {
+    return [];
+  }
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    selectScriptKind(sourcePath),
+  );
+  if (hasParseDiagnostics(sourceFile)) {
+    return [];
+  }
+  const inventory = collectRuntimeHookInventory(sourceFile);
+  if (inventory.direct.size === 0 && inventory.namespaces.size === 0) {
+    return [];
+  }
+  const candidates = collectRuntimeHookCandidates(sourceFile, sourceText, inventory).slice(
+    0,
+    MAX_HOOKS_PER_MODULE,
+  );
+  return selectNonOverlappingHookReplacements(
+    candidates.map((candidate, occurrence) =>
+      createRuntimeHookReplacement(sourceFile, sourcePath, sourceText, candidate, occurrence),
+    ),
+  );
+}
+
+/** Collects eligible imported bindings, namespace bindings, and top-level local custom hooks. */
+function collectRuntimeHookInventory(sourceFile: ts.SourceFile): PreviewRuntimeHookInventory {
+  const direct = new Map<string, PreviewRuntimeHookBinding>();
+  const namespaces = new Map<string, PreviewRuntimeHookNamespace>();
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const moduleSpecifier = statement.moduleSpecifier.text;
+      if (!isEligibleHookModule(moduleSpecifier)) continue;
+      const importClause = statement.importClause;
+      if (importClause?.name !== undefined && CUSTOM_HOOK_PATTERN.test(importClause.name.text)) {
+        direct.set(importClause.name.text, {
+          hookName: importClause.name.text,
+          moduleSpecifier,
+        });
+      }
+      const namedBindings = importClause?.namedBindings;
+      if (namedBindings !== undefined && ts.isNamespaceImport(namedBindings)) {
+        namespaces.set(namedBindings.name.text, { moduleSpecifier });
+      } else if (namedBindings !== undefined) {
+        for (const element of namedBindings.elements) {
+          const hookName = element.propertyName?.text ?? element.name.text;
+          if (!CUSTOM_HOOK_PATTERN.test(hookName)) continue;
+          direct.set(element.name.text, { hookName, moduleSpecifier });
+        }
+      }
+      continue;
+    }
+    const localName = readTopLevelHookDeclarationName(statement);
+    if (localName !== undefined) {
+      direct.set(localName, { hookName: localName, moduleSpecifier: 'local' });
+    }
+  }
+  return { direct, namespaces };
+}
+
+/** Reads a conventional top-level local hook declaration without following assigned expressions. */
+function readTopLevelHookDeclarationName(statement: ts.Statement): string | undefined {
+  if (
+    ts.isFunctionDeclaration(statement) &&
+    statement.name !== undefined &&
+    CUSTOM_HOOK_PATTERN.test(statement.name.text)
+  ) {
+    return statement.name.text;
+  }
+  if (!ts.isVariableStatement(statement)) return undefined;
+  for (const declaration of statement.declarationList.declarations) {
+    if (
+      ts.isIdentifier(declaration.name) &&
+      CUSTOM_HOOK_PATTERN.test(declaration.name.text) &&
+      declaration.initializer !== undefined &&
+      (ts.isArrowFunction(declaration.initializer) ||
+        ts.isFunctionExpression(declaration.initializer))
+    ) {
+      return declaration.name.text;
+    }
+  }
+  return undefined;
+}
+
+/** Visits hook calls in source order and retains only calls with a bounded inferred fallback. */
+function collectRuntimeHookCandidates(
+  sourceFile: ts.SourceFile,
+  sourceText: string,
+  inventory: PreviewRuntimeHookInventory,
+): readonly PreviewRuntimeHookCandidate[] {
+  const candidates: PreviewRuntimeHookCandidate[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.questionDotToken === undefined) {
+      const hook = readRuntimeHookBinding(node.expression, inventory);
+      if (
+        hook !== undefined &&
+        !hook.hookName.endsWith('Context') &&
+        findNearestRuntimeFunction(node) !== undefined
+      ) {
+        const fallback = inferRuntimeHookFallback(node, hook, sourceFile, sourceText);
+        if (fallback !== undefined) candidates.push({ call: node, fallback, hook });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return candidates;
+}
+
+/** Resolves a direct or namespace hook call back to its statically eligible binding. */
+function readRuntimeHookBinding(
+  expression: ts.LeftHandSideExpression,
+  inventory: PreviewRuntimeHookInventory,
+): PreviewRuntimeHookBinding | undefined {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isIdentifier(unwrapped)) {
+    return inventory.direct.get(unwrapped.text);
+  }
+  if (
+    ts.isPropertyAccessExpression(unwrapped) &&
+    ts.isIdentifier(unwrapped.expression) &&
+    CUSTOM_HOOK_PATTERN.test(unwrapped.name.text)
+  ) {
+    const namespace = inventory.namespaces.get(unwrapped.expression.text);
+    return namespace === undefined
+      ? undefined
+      : { hookName: unwrapped.name.text, moduleSpecifier: namespace.moduleSpecifier };
+  }
+  return undefined;
+}
+
+/** Selects a specialized tuple fallback before applying general local-use inference. */
+function inferRuntimeHookFallback(
+  call: ts.CallExpression,
+  hook: PreviewRuntimeHookBinding,
+  sourceFile: ts.SourceFile,
+  sourceText: string,
+): PreviewRuntimeHookFallback | undefined {
+  if (
+    hook.moduleSpecifier === QUERY_PARAM_MODULE &&
+    (hook.hookName === 'useQueryParam' || hook.hookName === 'useQueryParams')
+  ) {
+    const defaultExpression =
+      hook.hookName === 'useQueryParam'
+        ? readQueryParamDefaultExpression(call, sourceFile, sourceText)
+        : 'Object.freeze({})';
+    return {
+      evidence: 'query parameter default plus an inert local setter',
+      expression: `Object.freeze([${defaultExpression}, Object.freeze(() => undefined)])`,
+      label: 'static query value + no-op setter',
+    };
+  }
+  const expression = unwrapParentExpression(call);
+  const parent = expression.parent;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === expression) {
+    const bindingFallback = createBindingFallback(parent.name, sourceFile);
+    if (bindingFallback !== undefined) {
+      return {
+        evidence: 'hook result binding and semantic field names',
+        expression: bindingFallback.expression,
+        label: bindingFallback.label,
+      };
+    }
+  }
+  const propertyFallback = createDirectPropertyFallback(expression);
+  if (propertyFallback !== undefined) {
+    return propertyFallback;
+  }
+  const semanticFallback = inferSemanticFallback(hook.hookName);
+  return semanticFallback === undefined
+    ? undefined
+    : {
+        evidence: 'custom hook name semantics',
+        expression: semanticFallback.expression,
+        label: semanticFallback.label,
+      };
+}
+
+/** Reads `withDefault(codec, value)` from a query-param hook or uses a neutral object. */
+function readQueryParamDefaultExpression(
+  call: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+  sourceText: string,
+): string {
+  const codec = call.arguments[1];
+  if (codec !== undefined) {
+    const unwrapped = unwrapExpression(codec);
+    if (
+      ts.isCallExpression(unwrapped) &&
+      readCalleePropertyName(unwrapped.expression) === 'withDefault' &&
+      unwrapped.arguments[1] !== undefined
+    ) {
+      const fallback = unwrapped.arguments[1];
+      return sourceText.slice(fallback.getStart(sourceFile), fallback.end);
+    }
+  }
+  return 'Object.freeze({})';
+}
+
+/** Creates an array, object, or semantic scalar from one destructuring/identifier binding. */
+function createBindingFallback(
+  binding: ts.BindingName,
+  sourceFile: ts.SourceFile,
+): { readonly expression: string; readonly label: string } | undefined {
+  if (ts.isIdentifier(binding)) {
+    const compared = findComparedLiteralFallback(binding, sourceFile);
+    if (compared !== undefined) return compared;
+    const usageShape = createIdentifierUsageFallback(binding);
+    if (usageShape !== undefined) return usageShape;
+    return inferSemanticFallback(binding.text);
+  }
+  if (ts.isArrayBindingPattern(binding)) {
+    const values: string[] = [];
+    for (const element of binding.elements) {
+      if (ts.isOmittedExpression(element)) {
+        values.push('undefined');
+        continue;
+      }
+      if (element.dotDotDotToken !== undefined) return undefined;
+      const child = createBindingFallback(element.name, sourceFile);
+      values.push(child?.expression ?? 'undefined');
+    }
+    return { expression: `Object.freeze([${values.join(', ')}])`, label: 'generated tuple' };
+  }
+  const properties: string[] = [];
+  for (const element of binding.elements) {
+    if (element.dotDotDotToken !== undefined) return undefined;
+    const propertyName = readBindingPropertyName(element);
+    if (propertyName === undefined) return undefined;
+    const child = createBindingFallback(element.name, sourceFile) ?? {
+      expression: 'Object.freeze({})',
+      label: 'static object',
+    };
+    properties.push(`${JSON.stringify(propertyName)}: ${child.expression}`);
+  }
+  return {
+    expression: `Object.freeze({${properties.length === 0 ? '' : ` ${properties.join(', ')} `}})`,
+    label: 'generated object fields',
+  };
+}
+
+/** Reads a safe static key from one object-binding element. */
+function readBindingPropertyName(element: ts.BindingElement): string | undefined {
+  const propertyName = element.propertyName;
+  if (propertyName === undefined && ts.isIdentifier(element.name)) return element.name.text;
+  if (
+    propertyName !== undefined &&
+    (ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName))
+  ) {
+    return propertyName.text;
+  }
+  return undefined;
+}
+
+/** Infers a static scalar, collection, object, or no-op function from a semantic local name. */
+function inferSemanticFallback(
+  rawName: string,
+): { readonly expression: string; readonly label: string } | undefined {
+  const name = rawName.replace(/^use/u, '');
+  const semanticName = name.length === 0 ? name : name.charAt(0).toLowerCase() + name.slice(1);
+  const normalized = name.toLowerCase();
+  if (
+    /^(?:is|has|can|should|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
+    /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended)$/u.test(
+      normalized,
+    )
+  ) {
+    return { expression: 'false', label: 'generated boolean false' };
+  }
+  if (
+    /^(?:set|on|handle|toggle|open|close|submit|refetch|refresh|mutate|dispatch|reset|update|remove|add)(?=[A-Z0-9_$]|$)/u.test(
+      semanticName,
+    ) ||
+    /(?:handler|callback)$/u.test(normalized)
+  ) {
+    return { expression: 'Object.freeze(() => undefined)', label: 'generated no-op function' };
+  }
+  if (
+    /(?:items|rows|list|options|results|nodes|edges|records|files|users|companies)$/u.test(
+      normalized,
+    )
+  ) {
+    return { expression: 'Object.freeze([])', label: 'generated empty list' };
+  }
+  if (/(?:count|total|index|length|size|page|amount|rate|percent|number)$/u.test(normalized)) {
+    return { expression: '0', label: 'generated number 0' };
+  }
+  if (
+    /(?:props|context|form|data|filter|params|state|values|config|settings|user|company)$/u.test(
+      normalized,
+    )
+  ) {
+    return { expression: 'Object.freeze({})', label: 'generated object' };
+  }
+  if (/(?:fallback|element|component|children|content)$/u.test(normalized)) {
+    return { expression: 'null', label: 'generated empty render value' };
+  }
+  if (/(?:search|query)$/u.test(normalized)) {
+    return { expression: JSON.stringify('Preview search'), label: 'generated preview text' };
+  }
+  if (
+    /(?:id|name|title|status|type|kind|code|message|description|text|slug|url|path|email)$/u.test(
+      normalized,
+    )
+  ) {
+    return {
+      expression: JSON.stringify(createSemanticString(normalized)),
+      label: 'generated preview text',
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Builds a deep object from required property reads rooted at one bound hook result.
+ * Array operations collapse the whole root to an empty list, while called leaves become inert
+ * functions and semantic scalar leaves reuse the deterministic naming policy above.
+ */
+function createIdentifierUsageFallback(
+  identifier: ts.Identifier,
+): { readonly expression: string; readonly label: string } | undefined {
+  const owner = findNearestRuntimeFunction(identifier);
+  if (owner === undefined) return undefined;
+  const paths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
+  const arrayRootEvidence: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isRuntimeFunction(node) && functionShadowsName(node, identifier.text)) {
+      return;
+    }
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      !ts.isPropertyAccessExpression(node.parent) &&
+      node.questionDotToken === undefined
+    ) {
+      const names = readIdentifierPropertyPath(node, identifier.text);
+      if (names !== undefined && names.length > 0) {
+        if (isArrayUsageProperty(names[0])) {
+          arrayRootEvidence.push(names[0] ?? 'array operation');
+        } else if (paths.length < 64 && names.length <= 12) {
+          paths.push({
+            called: ts.isCallExpression(node.parent) && node.parent.expression === node,
+            names,
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  if (arrayRootEvidence.length > 0) {
+    return { expression: 'Object.freeze([])', label: 'generated empty list from local usage' };
+  }
+  if (paths.length === 0) return undefined;
+  const root: PreviewRuntimeHookUsageNode = { children: new Map() };
+  for (const path_ of paths) addUsagePath(root, path_);
+  return {
+    expression: serializeUsageNode(root),
+    label: 'generated required property shape',
+  };
+}
+
+/** Adds one property path into a bounded shape while preserving existing deeper evidence. */
+function addUsagePath(
+  root: PreviewRuntimeHookUsageNode,
+  path_: { readonly called: boolean; readonly names: readonly string[] },
+): void {
+  let current = root;
+  for (const [index, propertyName] of path_.names.entries()) {
+    let child = current.children.get(propertyName);
+    if (child === undefined) {
+      child = { children: new Map() };
+      current.children.set(propertyName, child);
+    }
+    current = child;
+    if (index === path_.names.length - 1) {
+      current.expression = path_.called
+        ? 'Object.freeze(() => undefined)'
+        : (inferSemanticFallback(propertyName)?.expression ?? 'Object.freeze({})');
+    }
+  }
+}
+
+/** Serializes one usage tree into deeply frozen plain containers and inferred leaves. */
+function serializeUsageNode(node: PreviewRuntimeHookUsageNode): string {
+  if (node.children.size === 0) return node.expression ?? 'Object.freeze({})';
+  const properties = [...node.children]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([propertyName, child]) => `${JSON.stringify(propertyName)}: ${serializeUsageNode(child)}`,
+    );
+  return `Object.freeze({ ${properties.join(', ')} })`;
+}
+
+/** Reads a non-optional property path whose leftmost expression is the requested identifier. */
+function readIdentifierPropertyPath(
+  expression: ts.PropertyAccessExpression,
+  identifierName: string,
+): readonly string[] | undefined {
+  const names: string[] = [];
+  let current: ts.Expression = expression;
+  while (ts.isPropertyAccessExpression(current)) {
+    if (current.questionDotToken !== undefined) return undefined;
+    names.unshift(current.name.text);
+    current = unwrapExpression(current.expression);
+  }
+  return ts.isIdentifier(current) && current.text === identifierName ? names : undefined;
+}
+
+/** Recognizes array-oriented operations whose safest visual fallback is an empty collection. */
+function isArrayUsageProperty(propertyName: string | undefined): boolean {
+  return propertyName !== undefined && ARRAY_USAGE_PROPERTIES.has(propertyName);
+}
+
+/** Detects a nested function parameter that would shadow the analyzed hook-result identifier. */
+function functionShadowsName(scope: RuntimeFunction, identifierName: string): boolean {
+  return scope.parameters.some((parameter) => bindingContainsName(parameter.name, identifierName));
+}
+
+/** Recursively checks one parameter binding without inspecting default-value expressions. */
+function bindingContainsName(binding: ts.BindingName, identifierName: string): boolean {
+  if (ts.isIdentifier(binding)) return binding.text === identifierName;
+  return binding.elements.some(
+    (element) =>
+      !ts.isOmittedExpression(element) && bindingContainsName(element.name, identifierName),
+  );
+}
+
+/** Produces recognizable preview text without impersonating application or backend truth. */
+function createSemanticString(normalizedName: string): string {
+  if (normalizedName.endsWith('id')) return 'preview-id';
+  if (normalizedName.endsWith('name')) return 'Preview name';
+  if (normalizedName.endsWith('title')) return 'Preview title';
+  if (normalizedName.endsWith('status')) return 'PREVIEW';
+  if (normalizedName.endsWith('email')) return 'preview@example.invalid';
+  return 'Preview value';
+}
+
+/** Uses a literal comparison near one identifier when semantic naming alone is inconclusive. */
+function findComparedLiteralFallback(
+  identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+): { readonly expression: string; readonly label: string } | undefined {
+  const owner = findNearestRuntimeFunction(identifier);
+  if (owner === undefined) return undefined;
+  let result: { readonly expression: string; readonly label: string } | undefined;
+  const visit = (node: ts.Node): void => {
+    if (result !== undefined || (node !== owner && isRuntimeFunction(node))) return;
+    if (ts.isBinaryExpression(node) && isEqualityOperator(node.operatorToken.kind)) {
+      const other = readComparedExpression(node, identifier.text);
+      if (other !== undefined && isStaticComparableExpression(other)) {
+        result = {
+          expression: other.getText(sourceFile),
+          label: 'generated compared value',
+        };
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  return result;
+}
+
+/** Returns the opposite side of an equality when one side is the requested local identifier. */
+function readComparedExpression(
+  expression: ts.BinaryExpression,
+  identifierName: string,
+): ts.Expression | undefined {
+  const left = unwrapExpression(expression.left);
+  const right = unwrapExpression(expression.right);
+  if (ts.isIdentifier(left) && left.text === identifierName) return right;
+  if (ts.isIdentifier(right) && right.text === identifierName) return left;
+  return undefined;
+}
+
+/** Admits only literals and enum-like property accesses that cannot call project code. */
+function isStaticComparableExpression(expression: ts.Expression): boolean {
+  return (
+    ts.isStringLiteral(expression) ||
+    ts.isNumericLiteral(expression) ||
+    expression.kind === ts.SyntaxKind.TrueKeyword ||
+    expression.kind === ts.SyntaxKind.FalseKeyword ||
+    (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression))
+  );
+}
+
+/** Recognizes equality operators suitable for a deterministic compared-value fallback. */
+function isEqualityOperator(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    kind === ts.SyntaxKind.EqualsEqualsToken ||
+    kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+    kind === ts.SyntaxKind.ExclamationEqualsToken
+  );
+}
+
+/** Builds one nested object for a direct non-optional `useHook().field` access. */
+function createDirectPropertyFallback(
+  expression: ts.Expression,
+): PreviewRuntimeHookFallback | undefined {
+  const properties: string[] = [];
+  let current: ts.Node = expression;
+  while (ts.isPropertyAccessExpression(current.parent) && current.parent.expression === current) {
+    if (current.parent.questionDotToken !== undefined) return undefined;
+    properties.push(current.parent.name.text);
+    current = current.parent;
+  }
+  if (properties.length === 0) return undefined;
+  const called = ts.isCallExpression(current.parent) && current.parent.expression === current;
+  let child = called
+    ? 'Object.freeze(() => undefined)'
+    : (inferSemanticFallback(properties.at(-1) ?? '')?.expression ?? 'Object.freeze({})');
+  for (const propertyName of [...properties].reverse()) {
+    child = `Object.freeze({ ${JSON.stringify(propertyName)}: ${child} })`;
+  }
+  return {
+    evidence: `required property access ${properties.map((item) => `.${item}`).join('')}`,
+    expression: child,
+    label: called ? 'generated callable property' : 'generated property shape',
+  };
+}
+
+/** Creates one stable global resolver call while preserving the original hook invocation once. */
+function createRuntimeHookReplacement(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+  sourceText: string,
+  candidate: PreviewRuntimeHookCandidate,
+  occurrence: number,
+): PreviewSourceReplacement {
+  const start = candidate.call.getStart(sourceFile);
+  const end = candidate.call.end;
+  const location = sourceFile.getLineAndCharacterOfPosition(start);
+  const originalCall = sourceText.slice(start, end);
+  const metadata = {
+    column: location.character + 1,
+    evidence: boundMetadataText(candidate.fallback.evidence),
+    fallbackLabel: candidate.fallback.label,
+    hookName: candidate.hook.hookName,
+    id: createRuntimeHookIdentity(sourcePath, candidate, occurrence),
+    line: location.line + 1,
+    moduleSpecifier: candidate.hook.moduleSpecifier,
+    sourcePath: path.normalize(sourcePath),
+  };
+  const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
+  return {
+    end,
+    replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${JSON.stringify(metadata)})`,
+    start,
+  };
+}
+
+/** Keeps outer hook calls when nested hook arguments would otherwise create overlapping edits. */
+function selectNonOverlappingHookReplacements(
+  replacements: readonly PreviewSourceReplacement[],
+): readonly PreviewSourceReplacement[] {
+  const selected: PreviewSourceReplacement[] = [];
+  for (const replacement of [...replacements].sort(
+    (left, right) => right.end - right.start - (left.end - left.start),
+  )) {
+    if (selected.some((item) => replacement.start < item.end && replacement.end > item.start)) {
+      continue;
+    }
+    selected.push(replacement);
+  }
+  return selected.sort((left, right) => left.start - right.start);
+}
+
+/** Creates a hot-reload-stable identity from source semantics and bounded occurrence order. */
+function createRuntimeHookIdentity(
+  sourcePath: string,
+  candidate: PreviewRuntimeHookCandidate,
+  occurrence: number,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        path.normalize(sourcePath),
+        candidate.hook.moduleSpecifier,
+        candidate.hook.hookName,
+        candidate.fallback.evidence,
+        occurrence,
+      ]),
+    )
+    .digest('hex')
+    .slice(0, 24);
+}
+
+/** Returns whether a module is project-like or the intentionally supported URL-state package. */
+function isEligibleHookModule(moduleSpecifier: string): boolean {
+  if (EXCLUDED_MODULES.has(moduleSpecifier)) return false;
+  if (moduleSpecifier === QUERY_PARAM_MODULE) return true;
+  if (
+    moduleSpecifier.startsWith('.') ||
+    moduleSpecifier.startsWith('/') ||
+    moduleSpecifier.startsWith('~/') ||
+    moduleSpecifier.startsWith('@/')
+  ) {
+    return true;
+  }
+  if (moduleSpecifier.startsWith('@')) return false;
+  const [root = ''] = moduleSpecifier.split('/');
+  return moduleSpecifier.includes('/') && !root.includes('-');
+}
+
+/** Finds the nearest render-time function while excluding module-level hook initialization. */
+function findNearestRuntimeFunction(node: ts.Node): RuntimeFunction | undefined {
+  let current = node.parent;
+  while (!ts.isSourceFile(current)) {
+    if (isRuntimeFunction(current)) return current;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/** Narrows TypeScript function-like nodes to hook-capable runtime scopes. */
+function isRuntimeFunction(node: ts.Node): node is RuntimeFunction {
+  return (
+    ts.isArrowFunction(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isMethodDeclaration(node)
+  );
+}
+
+/** Walks through syntax-only wrappers while retaining the original runtime expression. */
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isTypeAssertionExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+/** Walks from an expression through parent syntax-only wrappers for binding analysis. */
+function unwrapParentExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    (ts.isParenthesizedExpression(current.parent) ||
+      ts.isAsExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent) ||
+      ts.isTypeAssertionExpression(current.parent)) &&
+    current.parent.expression === current
+  ) {
+    current = current.parent;
+  }
+  return current;
+}
+
+/** Reads an identifier/property callee name without evaluating computed expressions. */
+function readCalleePropertyName(expression: ts.LeftHandSideExpression): string | undefined {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isIdentifier(unwrapped)) return unwrapped.text;
+  return ts.isPropertyAccessExpression(unwrapped) ? unwrapped.name.text : undefined;
+}
+
+/** Bounds diagnostics retained inside one pinned local webview. */
+function boundMetadataText(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, ' ');
+  return normalized.length <= MAX_METADATA_TEXT_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_METADATA_TEXT_LENGTH - 1)}…`;
+}
+
+/** Selects JSX-capable TypeScript parser grammar from the source extension. */
+function selectScriptKind(sourcePath: string): ts.ScriptKind {
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (extension === '.tsx') return ts.ScriptKind.TSX;
+  if (extension === '.ts' || extension === '.mts' || extension === '.cts') return ts.ScriptKind.TS;
+  return ts.ScriptKind.JSX;
+}
+
+/** Restricts instrumentation to source formats already handled by the preview compiler. */
+function isJavaScriptLikeSource(sourcePath: string): boolean {
+  return /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/iu.test(sourcePath);
+}
+
+/** Rejects parser recovery so generated offsets never target ambiguous or incomplete syntax. */
+function hasParseDiagnostics(sourceFile: ts.SourceFile): boolean {
+  const diagnostics = (
+    sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] }
+  ).parseDiagnostics;
+  return diagnostics !== undefined && diagnostics.length > 0;
+}

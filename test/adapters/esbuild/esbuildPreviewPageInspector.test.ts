@@ -45,8 +45,10 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
             'interface PageData { id: string; title: string; published: boolean }',
             "async function loadPageData() { const response = await fetch('/api/page');",
             '  return (await response.json()) as PageData; }',
+            "function useIsPageReady() { throw new Error('runtime provider unavailable'); }",
             'export function Page({ show = true }) {',
-            '  return <main>{show ? <Section /> : <p>hidden</p>}<aside onClick={loadPageData}>PAGE_SIBLING</aside></main>;',
+            '  const isPageReady = useIsPageReady();',
+            '  return <main data-ready={isPageReady}>{show ? <Section /> : <p>hidden</p>}<aside onClick={loadPageData}>PAGE_SIBLING</aside></main>;',
             '}',
           ].join('\n'),
           'utf8',
@@ -75,6 +77,9 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(javascript).toContain('Mounted inside authored page root');
       expect(javascript).toContain('wrapPreviewInspectorTarget');
       expect(javascript).toContain('resolveRenderCondition');
+      expect(javascript).toContain('resolveRuntimeHook');
+      expect(javascript).toContain('"hookName": "useIsPageReady"');
+      expect(javascript).toContain('"fallbackLabel": "generated boolean false"');
       expect(javascript).toContain('previewFetch');
       expect(javascript).toContain('/api/page');
       expect(javascript).toContain('TypeScript: PageData');

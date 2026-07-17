@@ -97,8 +97,7 @@ function schedulePreviewInspectorConditionRegistryRefresh() {
   previewInspectorSession.renderConditionRefreshScheduled = true;
   previewInspectorScheduleConditionMicrotask(() => {
     previewInspectorSession.renderConditionRefreshScheduled = false;
-    notifyPreviewInspector();
-    notifyPreviewInspectorTreeSubscribers();
+    schedulePreviewInspectorTreeRefresh();
   });
 }
 
@@ -177,8 +176,7 @@ function setPreviewInspectorRenderConditionOverride(conditionId, enabled) {
   previewInspectorSession.renderConditionRevision += 1;
   persistPreviewInspectorState();
   notifyPreviewInspector();
-  notifyPreviewInspectorTreeSubscribers();
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Flips the currently effective branch directly from its component-tree row. */
@@ -202,8 +200,7 @@ function resetPreviewInspectorRenderConditionOverride(conditionId) {
   previewInspectorSession.renderConditionRevision += 1;
   persistPreviewInspectorState();
   notifyPreviewInspector();
-  notifyPreviewInspectorTreeSubscribers();
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Reports whether inferred props and usage-derived automatic values are currently admitted. */

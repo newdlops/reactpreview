@@ -135,6 +135,6 @@ function createTargetBoundarySandbox(
     rememberCapturedReactError: (error: Error): number => observations.rememberedErrors.push(error),
     remountPreviewInspectorExport: (exportName: string): number =>
       observations.remountedExports.push(exportName),
-    schedulePreviewInspectorHighlight: vi.fn(),
+    schedulePreviewInspectorCommitRefresh: vi.fn(),
   };
 }

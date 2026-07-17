@@ -18,6 +18,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'.rpi-workbench{display:grid");
     expect(source).toContain('overflow-x:auto;overflow-y:hidden');
     expect(source).toContain("'data-collapsed': collapsed");
+    expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed)');
     expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
     expect(source).toContain('function PreviewInspectorResizeHandle');
     expect(source).toContain('function PreviewInspectorMoveHandle');

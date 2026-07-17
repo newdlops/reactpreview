@@ -14,7 +14,7 @@ export const PREVIEW_INSPECTOR_CONSOLE_ENTRY_LIMIT = 250;
  * Creates browser source for console interception, React-boundary diagnostics, and bounded reads.
  *
  * Expected lexical bindings are `previewHotRuntime`, `previewInspectorSession`,
- * `notifyPreviewInspector`, `createRuntimeErrorHeadline`, and `describeRuntimeError`. Original
+ * `schedulePreviewInspectorTreeRefresh`, `createRuntimeErrorHeadline`, and `describeRuntimeError`. Original
  * console methods are captured once on the hot runtime so bundle replacements never wrap wrappers.
  *
  * @returns Plain JavaScript source concatenated before project modules are dynamically imported.
@@ -148,13 +148,15 @@ function readPreviewInspectorConsolePrimitives() {
   return previewHotRuntime.inspectorConsolePrimitives;
 }
 
-/** Schedules one store notification outside an application render or error-boundary lifecycle. */
+/** Schedules one Inspector-only notification without rerendering the inspected application. */
 function schedulePreviewInspectorConsoleNotification() {
   if (previewInspectorSession.consoleNotifyQueued === true) return;
   previewInspectorSession.consoleNotifyQueued = true;
   const notify = () => {
     previewInspectorSession.consoleNotifyQueued = false;
-    try { notifyPreviewInspector(); } catch { /* Console capture must never affect project code. */ }
+    try { schedulePreviewInspectorTreeRefresh(); } catch {
+      /* Console capture must never affect project code. */
+    }
   };
   if (typeof globalThis.queueMicrotask === 'function') {
     globalThis.queueMicrotask(notify);

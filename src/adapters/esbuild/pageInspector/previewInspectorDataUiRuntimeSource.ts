@@ -49,7 +49,7 @@ function PreviewInspectorDataDetail() {
   const selectRequest = (requestId) => {
     previewInspectorDevtoolsSessionState.selectedDataRequestId = requestId;
     persistPreviewInspectorState();
-    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
   };
 
   /** Parses arbitrary JSON because API roots may legitimately be objects, arrays, or scalars. */

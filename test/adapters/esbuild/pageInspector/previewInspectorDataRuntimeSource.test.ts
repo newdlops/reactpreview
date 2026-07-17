@@ -168,7 +168,7 @@ function readPersistedPreviewInspectorState() { return persistedState; }
 function stringifyPreviewInspectorProps(value) { return JSON.stringify(value, null, 2) ?? '{}'; }
 function persistPreviewInspectorState() {}
 function notifyPreviewInspector() {}
-function notifyPreviewInspectorTreeSubscribers() {}
+function schedulePreviewInspectorTreeRefresh() {}
 ${createPreviewInspectorDataRuntimeSource()}
 globalThis.__dataRuntime = {
   createXhr: () => new PreviewInspectorXmlHttpRequest(),

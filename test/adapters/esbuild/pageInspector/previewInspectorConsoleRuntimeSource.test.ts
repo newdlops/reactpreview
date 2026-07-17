@@ -28,6 +28,14 @@ interface TestConsoleRuntime {
 }
 
 describe('Preview Inspector Console runtime', () => {
+  /** Routes chatty project logs to Inspector chrome without rerendering the application tree. */
+  it('uses the bounded Inspector refresh lane instead of the semantic application store', () => {
+    const source = createPreviewInspectorConsoleRuntimeSource();
+
+    expect(source).toContain('schedulePreviewInspectorTreeRefresh()');
+    expect(source).not.toContain('notifyPreviewInspector()');
+  });
+
   /** Preserves exact hook/provider diagnostics and coalesces an immediate repeated failure. */
   it('records structured React boundary failures without retaining Error objects', () => {
     const fixture = createConsoleRuntimeFixture();
@@ -142,7 +150,7 @@ function createConsoleRuntimeFixture(): ConsoleRuntimeFixture {
     ) {
       return [error.message, context.exportName, context.componentStack].filter(Boolean).join('\n');
     },
-    notifyPreviewInspector: vi.fn(),
+    schedulePreviewInspectorTreeRefresh: vi.fn(),
     previewHotRuntime: {},
     previewInspectorSession: {},
     queueMicrotask(callback: () => void) {

@@ -63,9 +63,9 @@ class PreviewInspectorTargetBoundary extends React.Component {
     }
   }
 
-  /** Refreshes outlines after target-owned state changes or the error placeholder commits. */
+  /** Marks the Fiber snapshot stale after target-owned state or its failure marker commits. */
   componentDidUpdate() {
-    schedulePreviewInspectorHighlight();
+    schedulePreviewInspectorCommitRefresh();
   }
 
   /** Removes the boundary before React removes its target or placeholder DOM nodes. */

@@ -167,7 +167,7 @@ function selectPreviewInspectorMainComponent() {
     return;
   }
   persistPreviewInspectorState();
-  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
 }
 

@@ -323,7 +323,7 @@ function selectPreviewInspectorUiNode(node) {
     selectPreviewInspectorExport(node.exportName);
   } else {
     persistPreviewInspectorState();
-    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
   }
   if (isPreviewInspectorConditionNode(node)) return;
   try {
@@ -333,10 +333,11 @@ function selectPreviewInspectorUiNode(node) {
   }
 }
 
-/** Subscribes to collector commits or uses a low-frequency fallback refresh for read-only snapshots. */
-function usePreviewInspectorTreeRefresh() {
+/** Subscribes only while expanded, with a low-frequency fallback for older collector contracts. */
+function usePreviewInspectorTreeRefresh(enabled) {
   const [, setTreeRevision] = React.useState(0);
   React.useEffect(() => {
+    if (!enabled) return undefined;
     const refresh = () => setTreeRevision((revision) => revision + 1);
     if (typeof previewInspectorApi.subscribeTree === 'function') {
       try {
@@ -348,7 +349,7 @@ function usePreviewInspectorTreeRefresh() {
     }
     const timer = setInterval(refresh, 750);
     return () => clearInterval(timer);
-  }, []);
+  }, [enabled]);
 }
 
 /** Creates one reusable toolbar button with native disabled and pressed semantics. */
@@ -805,10 +806,10 @@ function PreviewInspectorDetailsPane({ node }) {
 /** Renders the picker/highlight toolbar inside a resizable drawer or movable floating shell. */
 function PreviewInspectorToolbar() {
   usePreviewInspectorStore();
-  usePreviewInspectorTreeRefresh();
   const [collapsed, setCollapsed] = React.useState(
     () => previewInspectorDevtoolsSessionState.collapsed,
   );
+  usePreviewInspectorTreeRefresh(!collapsed);
   const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
   const collectorSelectedId = snapshot.selectedId;

@@ -107,6 +107,7 @@ function createConditionUiRuntime(
       const persistPreviewInspectorState = () => undefined;
       const notifyPreviewInspector = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
+      const schedulePreviewInspectorTreeRefresh = () => undefined;
       ${createPreviewInspectorConditionUiRuntimeSource()}
       globalThis.__conditionUiRuntime = {
         attachConditions: attachPreviewInspectorConditionsToSnapshot,

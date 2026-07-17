@@ -70,7 +70,7 @@ function selectPreviewInspectorPageCandidate(candidateId) {
   previewInspectorSession.selectedTreeNodeId = undefined;
   persistPreviewInspectorState();
   notifyPreviewInspector();
-  schedulePreviewInspectorHighlight();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Loads only the selected candidate module and discards late results after a selection change. */

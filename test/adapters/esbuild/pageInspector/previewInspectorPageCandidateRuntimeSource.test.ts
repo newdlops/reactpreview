@@ -76,7 +76,7 @@ let scheduled = 0;
 function findSelectedPreviewInspectorDescriptor() { return descriptor; }
 function notifyPreviewInspector() { notifications += 1; }
 function persistPreviewInspectorState() { persisted += 1; }
-function schedulePreviewInspectorHighlight() { scheduled += 1; }
+function schedulePreviewInspectorCommitRefresh() { scheduled += 1; }
 const initial = readSelectedPreviewInspectorPageCandidate(descriptor);
 previewInspectorSession.selectedPageCandidateId = initial.id;
 selectPreviewInspectorPageCandidate('staff-path');

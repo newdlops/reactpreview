@@ -71,8 +71,7 @@ function schedulePreviewInspectorRuntimeFallbackRefresh() {
   previewInspectorSession.runtimeFallbackRefreshScheduled = true;
   previewInspectorScheduleRuntimeFallbackMicrotask(() => {
     previewInspectorSession.runtimeFallbackRefreshScheduled = false;
-    notifyPreviewInspector();
-    notifyPreviewInspectorTreeSubscribers();
+    schedulePreviewInspectorTreeRefresh();
   });
 }
 

@@ -326,13 +326,13 @@ function createPreviewInspectorRuntimeRequestId(kind, method, identity) {
   return 'request:' + (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-/** Coalesces request discovery notifications so React is never updated during project render. */
+/** Coalesces request discovery into the Inspector lane without rerendering project components. */
 function schedulePreviewInspectorDataRegistryRefresh() {
   if (previewInspectorSession.dataRefreshScheduled === true) return;
   previewInspectorSession.dataRefreshScheduled = true;
   previewInspectorDataScheduleMicrotask(() => {
     previewInspectorSession.dataRefreshScheduled = false;
-    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
   });
 }
 
@@ -394,7 +394,7 @@ function commitPreviewInspectorDataChange() {
   previewInspectorSession.dataRevision += 1;
   persistPreviewInspectorState();
   notifyPreviewInspector();
-  notifyPreviewInspectorTreeSubscribers();
+  schedulePreviewInspectorTreeRefresh();
 }
 
 /** Enables or disables automatic payload generation without allowing a real backend transport. */

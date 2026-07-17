@@ -87,8 +87,9 @@ function createConditionRuntimeHarness(
       const previewInspectorSession = {};
       const readPersistedPreviewInspectorState = () => persistedState;
       const notifyPreviewInspector = () => undefined;
-      const notifyPreviewInspectorTreeSubscribers = () => undefined;
+      const schedulePreviewInspectorCommitRefresh = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
+      const schedulePreviewInspectorTreeRefresh = () => undefined;
       ${source}
       globalThis.__conditionRuntime = {
         getRevision: readPreviewInspectorRenderConditionRevision,

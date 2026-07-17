@@ -129,10 +129,7 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
     formatPreviewInspectorConsoleValue(value: unknown): string {
       return JSON.stringify(value);
     },
-    notifyPreviewInspector(): undefined {
-      return undefined;
-    },
-    notifyPreviewInspectorTreeSubscribers(): undefined {
+    schedulePreviewInspectorTreeRefresh(): undefined {
       return undefined;
     },
     previewInspectorSession: {},

@@ -10,7 +10,7 @@
  */
 export function createPreviewInspectorRuntimeFallbackUiRuntimeSource(): string {
   return String.raw`
-/** Renders all hook failures/nullish edges currently replaced by compiler-generated static values. */
+/** Renders hook failures, nullish roots, and missing leaves using generated static values. */
 function PreviewInspectorRuntimeFallbackDetail() {
   const fallbacks = readPreviewInspectorRuntimeFallbacks();
   const enabled = readPreviewInspectorFallbackValuesEnabled();
@@ -25,7 +25,7 @@ function PreviewInspectorRuntimeFallbackDetail() {
         {
           onClick: () => setPreviewInspectorFallbackValuesEnabled(!enabled),
           pressed: enabled,
-          title: 'Use generated values only when a render-critical hook fails or is nullish',
+          title: 'Use generated values when a render-critical hook fails or lacks required fields',
         },
         'Render-only fallbacks',
       ),
@@ -54,12 +54,23 @@ function PreviewInspectorRuntimeFallbackDetail() {
           React.createElement(
             'div',
             { className: 'rpi-meta' },
-            fallback.reason === 'threw' ? 'Runtime exception bypassed' : 'Required nullish value replaced',
+            fallback.reason === 'threw'
+              ? 'Runtime exception bypassed'
+              : fallback.reason === 'partial'
+                ? 'Missing fields supplemented; authored fields preserved'
+                : 'Required nullish value replaced',
           ),
           fallback.error
             ? React.createElement('div', { className: 'rpi-error' }, fallback.error)
             : undefined,
           React.createElement('div', { className: 'rpi-note' }, 'Generated: ' + fallback.fallbackPreview),
+          fallback.generatedPaths?.length > 0
+            ? React.createElement(
+                'div',
+                { className: 'rpi-note' },
+                'Generated paths: ' + fallback.generatedPaths.join(', '),
+              )
+            : undefined,
           React.createElement('div', { className: 'rpi-note' }, 'Evidence: ' + fallback.evidence),
           React.createElement(
             'div',

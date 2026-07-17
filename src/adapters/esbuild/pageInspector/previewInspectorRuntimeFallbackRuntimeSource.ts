@@ -2,9 +2,10 @@
  * Generates the Page Inspector registry that bypasses render-critical hook failures.
  *
  * Compiler-issued hook wrappers call this runtime only in Page Inspector mode. The runtime keeps
- * successful values untouched, rethrows Suspense thenables, and substitutes a bounded static value
- * only when Auto values is enabled and the hook either throws or returns a required nullish value.
+ * successful complete values untouched, rethrows Suspense thenables, and substitutes or overlays a
+ * bounded static value only when Auto values is enabled and a required runtime path is unavailable.
  */
+import { createPreviewInspectorGeneratedValueRuntimeSource } from './previewInspectorGeneratedValueRuntimeSource';
 
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
 export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
@@ -18,6 +19,7 @@ export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
  * @returns Plain JavaScript source evaluated before project modules are dynamically imported.
  */
 export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
+  const generatedValueRuntimeSource = createPreviewInspectorGeneratedValueRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
@@ -34,7 +36,12 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeFallbackValues instanceof Map)) {
     previewInspectorSession.runtimeFallbackValues = new Map();
   }
+  if (!(previewInspectorSession.runtimeFallbackCompletions instanceof WeakMap)) {
+    previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
+  }
 }
+
+${generatedValueRuntimeSource}
 
 /** Reports whether a thrown value is a Suspense thenable that React must continue to own. */
 function isPreviewInspectorRuntimeThenable(value) {
@@ -101,7 +108,7 @@ function readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback) {
 }
 
 /** Registers a bypassed hook failure once and mirrors it as a warning, never a fatal error. */
-function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error) {
+function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error, generatedPaths = []) {
   initializePreviewInspectorRuntimeFallbackState();
   if (
     metadata.id.length === 0 ||
@@ -120,6 +127,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     count: (previous?.count ?? 0) + 1,
     error: errorHeadline,
     fallbackPreview: describePreviewInspectorRuntimeFallbackValue(fallback),
+    generatedPaths: [...generatedPaths],
     reason,
   };
   previewInspectorSession.runtimeFallbacks.set(metadata.id, next);
@@ -131,13 +139,18 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   ) {
     const message =
       '[Render-only fallback] ' + metadata.hookName + ' ' +
-      (reason === 'threw' ? 'threw; using ' : 'returned no required value; using ') +
+      (reason === 'threw'
+        ? 'threw; using '
+        : reason === 'partial'
+          ? 'was missing required fields; supplementing with '
+          : 'returned no required value; using ') +
       metadata.fallbackLabel;
     const details = [
       message,
       errorHeadline.length > 0 ? 'Original: ' + errorHeadline : '',
       'Evidence: ' + metadata.evidence,
       metadata.sourcePath + (metadata.line ? ':' + String(metadata.line) : ''),
+      generatedPaths.length > 0 ? 'Generated paths: ' + generatedPaths.join(', ') : '',
       'Generated: ' + next.fallbackPreview,
     ].filter(Boolean).join('\n');
     recordPreviewInspectorConsoleEntry({
@@ -154,6 +167,28 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   schedulePreviewInspectorRuntimeFallbackRefresh();
 }
 
+/** Returns one stable completed identity per authored object and compiler-issued hook site. */
+function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return completePreviewInspectorGeneratedValue(value, fallback);
+  }
+  let completions = previewInspectorSession.runtimeFallbackCompletions.get(value);
+  const cached = completions?.get(metadata.id);
+  if (cached !== undefined && cached.fallback === fallback) return cached.completion;
+  const completion = completePreviewInspectorGeneratedValue(value, fallback);
+  if (completion.changed) {
+    if (completions === undefined) {
+      completions = new Map();
+      previewInspectorSession.runtimeFallbackCompletions.set(value, completions);
+    }
+    if (completions.size < PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT) {
+      completions.set(metadata.id, { completion, fallback });
+    }
+  }
+  return completion;
+}
+
 /** Removes a stale fallback record once the real hook starts producing a usable value. */
 function clearPreviewInspectorRuntimeFallback(metadata) {
   initializePreviewInspectorRuntimeFallbackState();
@@ -163,7 +198,7 @@ function clearPreviewInspectorRuntimeFallback(metadata) {
 }
 
 /**
- * Executes one compiler-proven hook call and cuts only a render-blocking failure/nullish edge.
+ * Executes one compiler-proven hook call and cuts a failure, nullish root, or missing-leaf edge.
  * Auto values off restores the authored hook result and exception behavior exactly.
  */
 function resolvePreviewInspectorRuntimeHook(readHook, createFallback, rawMetadata) {
@@ -185,19 +220,30 @@ function resolvePreviewInspectorRuntimeHook(readHook, createFallback, rawMetadat
     }
     failure = error;
   }
-  if (failure === undefined && value !== null && value !== undefined) {
-    clearPreviewInspectorRuntimeFallback(metadata);
-    return value;
-  }
-  if (!readPreviewInspectorFallbackValuesEnabled()) {
-    return value;
-  }
+  if (failure === undefined && !readPreviewInspectorFallbackValuesEnabled()) return value;
+  if (failure !== undefined && !readPreviewInspectorFallbackValuesEnabled()) throw failure;
   const fallback = readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback);
+  if (failure === undefined && value !== null && value !== undefined) {
+    const completion = readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback);
+    if (!completion.changed) {
+      clearPreviewInspectorRuntimeFallback(metadata);
+      return value;
+    }
+    recordPreviewInspectorRuntimeFallback(
+      metadata,
+      fallback,
+      'partial',
+      undefined,
+      completion.paths,
+    );
+    return completion.value;
+  }
   recordPreviewInspectorRuntimeFallback(
     metadata,
     fallback,
     failure === undefined ? 'nullish' : 'threw',
     failure,
+    ['<root>'],
   );
   return fallback;
 }
@@ -219,7 +265,7 @@ function readPreviewInspectorRuntimeFallbackStatus() {
   const count = readPreviewInspectorRuntimeFallbacks().length;
   return readPreviewInspectorFallbackValuesEnabled()
     ? 'active: ' + String(count) + ' render-blocking hook edge(s) currently use generated static values'
-    : 'disabled by user: authored hook failures and nullish values are preserved';
+    : 'disabled by user: authored hook failures, nullish values, and missing fields are preserved';
 }
 `;
 }

@@ -7,6 +7,7 @@ import { createPreviewInspectorRuntimeFallbackRuntimeSource } from '../../../../
 interface TestRuntimeFallbackRecord {
   readonly error: string;
   readonly fallbackPreview: string;
+  readonly generatedPaths: readonly string[];
   readonly hookName: string;
   readonly reason: string;
 }
@@ -77,6 +78,107 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.read()).toEqual([]);
   });
 
+  /** Supplements only missing nested leaves and keeps one stable completed identity per hook site. */
+  it('completes partial plain values without replacing authored sibling fields', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = createMetadata();
+    const realValue = {
+      filters: { status: 'AUTHORED' },
+      rows: undefined,
+    };
+    const fallback = Object.freeze({
+      filters: Object.freeze({ query: 'Preview search', status: 'PREVIEW' }),
+      rows: Object.freeze([]),
+    });
+
+    const first = fixture.api.resolve(
+      () => realValue,
+      () => fallback,
+      metadata,
+    ) as { filters: { query: string; status: string }; rows: unknown[] };
+    const second = fixture.api.resolve(
+      () => realValue,
+      () => ({ ignored: true }),
+      metadata,
+    );
+
+    expect(first).not.toBe(realValue);
+    expect(second).toBe(first);
+    expect(first.filters).toEqual({ query: 'Preview search', status: 'AUTHORED' });
+    expect(first.rows).toEqual([]);
+    expect(realValue).toEqual({ filters: { status: 'AUTHORED' }, rows: undefined });
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['filters.query', 'rows'],
+      reason: 'partial',
+    });
+    expect(fixture.warnings[0]).toContain('missing required fields');
+  });
+
+  /** Leaves accessors, class instances, complete arrays, and authored callbacks untouched. */
+  it('fails closed around executable or non-plain authored values', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    let getterCalls = 0;
+    const authoredCallback = (): string => 'authored';
+    /** Represents a project-owned non-plain hook result that completion must preserve. */
+    class ServiceState {
+      public readonly ready = true;
+    }
+    const value = Object.defineProperty(
+      {
+        callback: authoredCallback,
+        service: new ServiceState(),
+        tuple: ['authored', authoredCallback],
+      },
+      'profile',
+      {
+        enumerable: true,
+        get(): object {
+          getterCalls += 1;
+          return {};
+        },
+      },
+    );
+    const fallback = Object.freeze({
+      callback: Object.freeze(() => undefined),
+      profile: Object.freeze({ name: 'Preview name' }),
+      service: Object.freeze({ missing: 'Preview value' }),
+      tuple: Object.freeze(['preview', Object.freeze(() => undefined)]),
+    });
+
+    const resolved = fixture.api.resolve(
+      () => value,
+      () => fallback,
+      createMetadata(),
+    ) as typeof value;
+
+    expect(resolved).toBe(value);
+    expect(resolved.callback).toBe(authoredCallback);
+    expect(resolved.service).toBeInstanceOf(ServiceState);
+    expect(resolved.tuple).toBe(value.tuple);
+    expect(getterCalls).toBe(0);
+    expect(fixture.api.read()).toEqual([]);
+  });
+
+  /** Fills only undefined tuple slots while preserving the application's callable slot. */
+  it('completes bounded arrays without replacing present indexes', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const setter = (): string => 'authored setter';
+    const tuple = [undefined, setter];
+    const fallback = Object.freeze([Object.freeze({ page: 0 }), Object.freeze(() => undefined)]);
+
+    const resolved = fixture.api.resolve(
+      () => tuple,
+      () => fallback,
+      createMetadata(),
+    ) as unknown[];
+
+    expect(resolved).not.toBe(tuple);
+    expect(resolved[0]).toEqual({ page: 0 });
+    expect(resolved[1]).toBe(setter);
+    expect(tuple[0]).toBeUndefined();
+    expect(fixture.api.read()[0]?.generatedPaths).toEqual(['0']);
+  });
+
   /** Restores authored exceptions when disabled and never consumes React Suspense thenables. */
   it('rethrows disabled failures and Suspense thenables', () => {
     const disabled = createRuntimeFallbackFixture(false);
@@ -105,6 +207,26 @@ describe('Preview Inspector runtime fallback source', () => {
       ),
     ).toThrow(thenable);
     expect(enabled.api.read()).toEqual([]);
+  });
+
+  /** Does not allocate or evaluate a generated fallback while Auto values is disabled. */
+  it('preserves partial authored identities when Auto values is disabled', () => {
+    const fixture = createRuntimeFallbackFixture(false);
+    const partial = { nested: {} };
+    let fallbackReads = 0;
+
+    expect(
+      fixture.api.resolve(
+        () => partial,
+        () => {
+          fallbackReads += 1;
+          return { nested: { value: 'Preview value' } };
+        },
+        createMetadata(),
+      ),
+    ).toBe(partial);
+    expect(fallbackReads).toBe(0);
+    expect(fixture.api.read()).toEqual([]);
   });
 });
 

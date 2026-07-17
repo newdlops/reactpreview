@@ -28,6 +28,9 @@ export const PREVIEW_INSPECTOR_RUNTIME_NAMESPACE = 'react-preview-page-inspector
 /** Namespace used by lexical inject modules that expose statically proven project globals. */
 export const PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE = 'react-preview-global-package-bridge';
 
+/** Namespace used by inert browser replacements for Node-only built-in modules. */
+export const PREVIEW_NODE_BUILTIN_NAMESPACE = 'react-preview-node-builtin';
+
 /** Stable virtual import specifier emitted by the runtime entry for the target bridge. */
 export const PREVIEW_TARGET_SPECIFIER = 'react-preview:target';
 

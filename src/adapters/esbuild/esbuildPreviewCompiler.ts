@@ -44,6 +44,7 @@ import {
 } from './previewBuildResult';
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
+import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
@@ -61,7 +62,13 @@ import {
   createPreviewRuntimeWatchInputs,
   resolvePreviewRuntimeEnvironment,
   type PreviewRuntimeEnvironment,
+  type PreviewRuntimeWatchInputs,
 } from './previewRuntimeEnvironment';
+import {
+  createPreviewSassPlugin,
+  type PreviewSassBoundary,
+  type PreviewSassPluginOptions,
+} from './previewSassPlugin';
 import { createPreviewSetupBridgePlugin } from './previewSetupBridgePlugin';
 import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver';
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
@@ -93,6 +100,12 @@ const EMPTY_IMPLICIT_GLOBAL_EVIDENCE: PreviewImplicitGlobalEvidenceInventory = O
   evidence: Object.freeze([]),
   truncated: false,
   unresolvedGlobalNames: Object.freeze([]),
+});
+
+/** Fast first paint observes only reached esbuild inputs; convention candidates join enrichment. */
+const EMPTY_RUNTIME_WATCH_INPUTS: PreviewRuntimeWatchInputs = Object.freeze({
+  dependencyPaths: Object.freeze([]),
+  watchDirectories: Object.freeze([]),
 });
 
 /** Router bridge selection carried into one discovery or final esbuild attempt. */
@@ -175,10 +188,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ? {}
             : { configuredSetupPath: request.setupModulePath }),
           projectRoot,
-          useStorybookPreview: request.useStorybookPreview ?? true,
+          useStorybookPreview: !useFastPreparation && (request.useStorybookPreview ?? true),
           workspaceRoot: canonicalWorkspaceRoot,
         }),
-        createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
+        useFastPreparation
+          ? Promise.resolve(EMPTY_RUNTIME_WATCH_INPUTS)
+          : createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
       ]);
       const [targetUsageProps, implicitGlobalSourcePaths] = await Promise.all([
         useFastPreparation
@@ -245,6 +260,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         readonly referencedGlobalNames: readonly string[];
         readonly result: BuildResult<{ metafile: true; write: false }>;
         readonly routerRequirement: ReturnType<PreviewSourceTransformer['getRouterRequirement']>;
+        readonly styleDependencyPaths: readonly string[];
         readonly watchDirectories: readonly string[];
       }> => {
         const inspectorPlan =
@@ -271,9 +287,18 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ],
           transformer: sourceTransformer,
         };
+        const sassOptions: PreviewSassPluginOptions = {
+          projectRoot,
+          workspaceRoot: canonicalWorkspaceRoot,
+        };
+        const oneShotSassBoundary =
+          fallbackBoundary === undefined ? undefined : createPreviewSassPlugin(sassOptions);
+        let styleDependencyPaths: readonly string[] = [];
+        let styleWatchDirectories: readonly string[] = [];
         /** Creates static options around either fixed or incrementally replaceable source state. */
         const createBuildOptions = (
-          incrementalState?: MutableWorkspaceSourceState,
+          incrementalState: MutableWorkspaceSourceState | undefined,
+          sassBoundary: PreviewSassBoundary,
         ): PreviewIncrementalBuildOptions => ({
           absWorkingDir: request.workspaceRoot,
           bundle: true,
@@ -300,6 +325,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           outdir: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
           platform: 'browser',
           plugins: [
+            createPreviewNodeBuiltinPlugin(),
             createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
             ...(inspectorPlan === undefined
               ? []
@@ -366,6 +392,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               projectRoot,
               workspaceRoot: canonicalWorkspaceRoot,
             }),
+            sassBoundary.plugin,
             createWorkspaceSourcePlugin(
               incrementalState === undefined
                 ? { ...sourceCompilation, workspaceRoot: canonicalWorkspaceRoot }
@@ -373,7 +400,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ),
           ],
           sourcemap: false,
-          splitting: true,
+          splitting: !useFastPreparation,
           stdin: {
             contents: createPreviewEntry({
               documentName: createPreviewDocumentName(request),
@@ -394,31 +421,45 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
           write: false,
         });
+        const buildPlanIdentity = createPreviewBuildPlanIdentity({
+          documentPath: request.documentPath,
+          environment,
+          globalPackagePlan,
+          inferredPropsByExport,
+          inspectorPlan,
+          parentSlices: activeParentSlices,
+          preparationMode: request.preparationMode,
+          projectRoot,
+          renderMode: request.renderMode,
+          routerSelection,
+          targetExports,
+          targetUsageProps,
+          themeImport,
+          tsconfigPath: request.tsconfigPath,
+          workspaceRoot: canonicalWorkspaceRoot,
+        });
         const result =
           fallbackBoundary === undefined
             ? await this.incrementalBuildCache.rebuild({
-                contextKey: createPreviewBuildPlanIdentity({
-                  documentPath: request.documentPath,
-                  environment,
-                  globalPackagePlan,
-                  inferredPropsByExport,
-                  inspectorPlan,
-                  parentSlices: activeParentSlices,
-                  preparationMode: request.preparationMode,
-                  projectRoot,
-                  renderMode: request.renderMode,
-                  routerSelection,
-                  targetExports,
-                  targetUsageProps,
-                  themeImport,
-                  tsconfigPath: request.tsconfigPath,
-                  workspaceRoot: canonicalWorkspaceRoot,
-                }),
-                createOptions: createBuildOptions,
+                captureSassState: (dependencyPaths, watchDirectories) => {
+                  styleDependencyPaths = dependencyPaths;
+                  styleWatchDirectories = watchDirectories;
+                },
+                contextKey: buildPlanIdentity,
+                createOptions: (sourceState, sassBoundary) =>
+                  createBuildOptions(sourceState, requirePreviewSassBoundary(sassBoundary)),
+                sassOptions,
                 signal: buildSignal,
                 sourceCompilation,
               })
-            : await this.incrementalBuildCache.buildOnce(createBuildOptions(), buildSignal);
+            : await this.incrementalBuildCache.buildOnce(
+                createBuildOptions(undefined, requirePreviewSassBoundary(oneShotSassBoundary)),
+                buildSignal,
+              );
+        if (oneShotSassBoundary !== undefined) {
+          styleDependencyPaths = oneShotSassBoundary.getDependencyPaths();
+          styleWatchDirectories = oneShotSassBoundary.getWatchDirectories();
+        }
         throwIfPreviewBuildCancelled(buildSignal);
         assertOutputSize(result.outputFiles);
         return {
@@ -426,9 +467,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           referencedGlobalNames: sourceTransformer.getReferencedImplicitPackageGlobalNames(),
           result,
           routerRequirement: sourceTransformer.getRouterRequirement(),
+          styleDependencyPaths,
           watchDirectories: mergePreviewWatchDirectories(
             sourceTransformer.getWatchDirectories(),
             runtimeWatchInputs.watchDirectories,
+            styleWatchDirectories,
           ),
         };
       };
@@ -573,6 +616,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ...buildExecution.globalPackagePlan.dependencyPaths,
           ...runtimeWatchInputs.dependencyPaths,
           ...fallbackDependencies,
+          ...buildExecution.styleDependencyPaths,
           ...targetUsageProps.dependencyPaths,
         ],
       );
@@ -745,18 +789,29 @@ function createPreviewDocumentName(request: PreviewBuildRequest): string {
 }
 
 /**
- * Merges resource-macro and runtime-convention watch roots under one documented build limit.
+ * Narrows the Sass resource injected by either the persistent-context cache or one-shot build.
+ * A missing boundary indicates an internal build-plan wiring error rather than a project error.
+ */
+function requirePreviewSassBoundary(
+  boundary: PreviewSassBoundary | undefined,
+): PreviewSassBoundary {
+  if (boundary === undefined) {
+    throw new Error('React Preview could not initialize its project-scoped Sass boundary.');
+  }
+  return boundary;
+}
+
+/**
+ * Merges resource, runtime-convention, and recoverable style roots under one build limit.
  *
- * @param resourceDirectories Directories produced by bounded static resource expansion.
- * @param runtimeDirectories Fixed project setup, Storybook, and public convention directories.
+ * @param directoryGroups Independent bounded directory collections produced by build adapters.
  * @returns Sorted unique watch directories for one pinned preview session.
  * @throws PreviewCompilationError when the combined graph exceeds the lightweight watcher budget.
  */
 function mergePreviewWatchDirectories(
-  resourceDirectories: readonly string[],
-  runtimeDirectories: readonly string[],
+  ...directoryGroups: readonly (readonly string[])[]
 ): readonly string[] {
-  const directories = [...new Set([...resourceDirectories, ...runtimeDirectories])].sort();
+  const directories = [...new Set(directoryGroups.flat())].sort();
   if (directories.length > MAX_PREVIEW_WATCH_DIRECTORIES) {
     throw new PreviewCompilationError(
       `Preview build exceeds the ${MAX_PREVIEW_WATCH_DIRECTORIES.toString()} watch directory safety limit.`,

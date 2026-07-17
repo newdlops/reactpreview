@@ -139,7 +139,16 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
         ),
       ]);
 
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const compiler = new EsbuildPreviewCompiler();
+      const fastBundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        preparationMode: 'fast',
+        sourceText,
+        workspaceRoot: projectRoot,
+      });
+      const bundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
@@ -148,10 +157,14 @@ describe('EsbuildPreviewCompiler runtime setup', () => {
       });
       const javascript = decodeBundleJavascript(bundle);
 
+      expect(decodeBundleJavascript(fastBundle)).not.toContain('STORYBOOK_DECORATOR_MARKER');
+      expect(fastBundle.dependencies).not.toContain(storybookPreviewPath);
+      expect(fastBundle.chunks).toEqual([]);
       expect(javascript).toContain('STORYBOOK_DECORATOR_MARKER');
       expect(javascript).toContain('STORY_GLOBAL');
       expect(bundle.dependencies).toContain(storybookPreviewPath);
       expect(bundle.diagnostics).toEqual([]);
+      await compiler.shutdown();
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }

@@ -56,6 +56,16 @@ describe('classifyPreviewRuntimeMessage', () => {
     expect(diagnostic.recovery).toContain('automatic demand-shaped Context boundary');
   });
 
+  /** Recognizes a URL-state provider failure before it falls back to a generic runtime category. */
+  it('classifies the use-query-params provider failure as a context dependency', () => {
+    const diagnostic = classifyPreviewRuntimeMessage(
+      'Error: useQueryParams must be used within a QueryParamProvider',
+    );
+
+    expect(diagnostic.kind).toBe('custom-context');
+    expect(diagnostic.title).toBe('React context value unavailable');
+  });
+
   /** Recognizes explicit theme-object language while leaving arbitrary undefined reads generic. */
   it('classifies a branded theme-shape failure', () => {
     expect(

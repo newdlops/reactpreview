@@ -92,6 +92,7 @@ export const PREVIEW_RUNTIME_DIAGNOSTIC_RULES: readonly PreviewRuntimeDiagnostic
     messageIncludes: [
       "context(...)' as it is null",
       "context(...)' as it is undefined",
+      'usequeryparams must be used within a queryparamprovider',
       'must be used inside a provider',
       'must be used within a provider',
       'must be used within the provider',

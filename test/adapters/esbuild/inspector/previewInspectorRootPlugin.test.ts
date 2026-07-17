@@ -36,6 +36,14 @@ function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspecto
     id: 'candidate-page',
     root,
     rootAutomaticProps: { route: '/preview' },
+    rootInference: {
+      provenance: [{ kind: 'string' as const, path: 'companyId', source: 'type' as const }],
+      shape: {
+        kind: 'object' as const,
+        properties: { companyId: { kind: 'string' as const } },
+      },
+    },
+    rootStepIndex: 3,
     stopReason: 'root-reached' as const,
     targetAutomaticProps: { enabled: true },
   };
@@ -60,6 +68,9 @@ describe('createPreviewInspectorRootSource', () => {
       'load: () => import("/workspace/application/Page.tsx").then((module) => module["Page"])',
     );
     expect(source).toContain('"rootAutomaticProps":{"route":"/preview"}');
+    expect(source).toContain('"rootInferredPropShape":{"kind":"object"');
+    expect(source).toContain('"rootInferredProps":[{"kind":"string","path":"companyId"');
+    expect(source).toContain('"rootStepIndex":3');
     expect(source).toContain('"pageCandidates":[{"complete":true');
     expect(source).toContain('"targetAutomaticProps":{"enabled":true}');
     expect(source).toContain('"renderChain":{"dependencyPaths"');

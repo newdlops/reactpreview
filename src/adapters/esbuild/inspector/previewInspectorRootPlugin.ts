@@ -104,6 +104,13 @@ export function createPreviewInspectorRootSource(
     ...(candidate.renderPath === undefined ? {} : { renderPath: candidate.renderPath }),
     root: candidate.root,
     rootAutomaticProps: candidate.rootAutomaticProps,
+    ...(candidate.rootInference === undefined
+      ? {}
+      : {
+          rootInferredPropShape: candidate.rootInference.shape,
+          rootInferredProps: candidate.rootInference.provenance,
+        }),
+    ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
     stopReason: candidate.stopReason,
     targetAutomaticProps: candidate.targetAutomaticProps,
   }));

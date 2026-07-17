@@ -209,6 +209,50 @@ describe('createPreviewInspectorAncestorPlan', () => {
     expect(plan.dependencyPaths).toEqual([PAGE_PATH, TARGET_PATH, routesPath].sort());
   });
 
+  /** Uses the full value-flow graph to resume after direct JSX ancestry stops at route data. */
+  it('offers and selects a typed page checkpoint beyond a non-component owner', async () => {
+    const routesPath = '/workspace/packages/application/src/meeting-routes.tsx';
+    const entryPath = '/workspace/packages/application/src/main.tsx';
+    const sources = {
+      [TARGET_PATH]: 'export function Target() { return <button />; }',
+      [PAGE_PATH]: [
+        "import { Target } from './Target';",
+        'export function AgendaField() { return <section><Target /></section>; }',
+      ].join('\n'),
+      [routesPath]: [
+        "import { AgendaField } from './Page';",
+        'const pageRoutes = [{ element: <AgendaField /> }];',
+        'interface MeetingPageProps { companyId: string; }',
+        'export function MeetingPage(props: MeetingPageProps) {',
+        '  return <main data-company={props.companyId}>{pageRoutes[0]?.element}</main>;',
+        '}',
+      ].join('\n'),
+      [entryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { MeetingPage } from './meeting-routes';",
+        'createRoot(document.getElementById(\'root\')).render(<MeetingPage companyId="real" />);',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.root).toEqual({ exportName: 'MeetingPage', sourcePath: routesPath });
+    expect(plan.pageCandidates.map((candidate) => candidate.root)).toContainEqual({
+      exportName: 'AgendaField',
+      sourcePath: PAGE_PATH,
+    });
+    expect(plan.pageCandidates[0]?.rootStepIndex).toBeTypeOf('number');
+    expect(plan.pageCandidates[0]?.rootAutomaticProps).toEqual({ companyId: 'real' });
+    expect(plan.pageCandidates[0]?.rootInference?.shape.properties).toMatchObject({
+      companyId: { kind: 'string' },
+    });
+  });
+
   /** Prefers an application page branch over an earlier lexical story/test usage. */
   it('ranks page ancestry ahead of tests, stories, and examples deterministically', async () => {
     const testPath = '/workspace/packages/application/src/__tests__/Target.test.tsx';
@@ -349,6 +393,34 @@ describe('createPreviewInspectorAncestorPlan', () => {
       [firstBarrelPath, PAGE_PATH, secondBarrelPath, TARGET_PATH].sort(),
     );
     expect(plan.edges).toHaveLength(1);
+  });
+
+  /** Treats a public React.lazy wrapper as a transparent reverse-import frontier. */
+  it('traces JSX callers through a lazy re-export module', async () => {
+    const lazyPath = '/workspace/packages/application/src/LazyTarget.tsx';
+    const sources = {
+      [TARGET_PATH]: 'export default function Target() { return <button />; }',
+      [lazyPath]: [
+        "import { lazy } from 'react';",
+        "export const LazyTarget = lazy(() => import('./Target'));",
+      ].join('\n'),
+      [APP_PATH]: [
+        "import { LazyTarget } from './LazyTarget';",
+        'export function App() { return <main><LazyTarget audience="lazy" /></main>; }',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'default',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.root).toEqual({ exportName: 'App', sourcePath: APP_PATH });
+    expect(plan.targetAutomaticProps).toEqual({ audience: 'lazy' });
+    expect(plan.dependencyPaths).toEqual([APP_PATH, lazyPath, TARGET_PATH].sort());
+    expect(plan.edges[0]?.child).toEqual({ exportName: 'LazyTarget', sourcePath: lazyPath });
   });
 
   /** Retains distinct entry-connected callers so the browser can mount either completed page. */

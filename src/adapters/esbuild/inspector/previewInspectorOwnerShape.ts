@@ -29,6 +29,18 @@ export interface PreviewInspectorOwnerShapeOptions {
   readonly sourceText: string;
 }
 
+/** Public export identity used when render-graph evidence has no direct JSX occurrence metadata. */
+export interface PreviewInspectorComponentExportShapeOptions {
+  /** Public runtime spelling selected as a candidate page root. */
+  readonly exportName: string;
+  /** Top-level value supplying the export, when render facts resolved it. */
+  readonly localName?: string;
+  /** Absolute authored path used to select TSX parser grammar. */
+  readonly sourcePath: string;
+  /** Current inert source snapshot. */
+  readonly sourceText: string;
+}
+
 /**
  * Reports whether the occurrence owner is an importable component or React element export.
  *
@@ -62,6 +74,105 @@ export function isPreviewInspectorComponentShapedOwner(
     declaration,
     options.occurrenceStart,
     collectStyledComponentFactoryBindings(sourceFile),
+  );
+}
+
+/**
+ * Reports whether one render-path export is structurally mountable as a React value.
+ * This export-oriented variant recovers an evidence position inside the declaration itself, then
+ * delegates to the same HOC/styled/factory classifier used by direct JSX ancestry. It therefore
+ * admits lazy and component-factory callbacks while continuing to reject arbitrary tagged metadata.
+ */
+export function isPreviewInspectorComponentShapedExport(
+  options: PreviewInspectorComponentExportShapeOptions,
+): boolean {
+  if (options.exportName !== 'default' && !/^\p{Lu}/u.test(options.exportName)) return false;
+  const sourceFile = ts.createSourceFile(
+    options.sourcePath,
+    options.sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    readScriptKind(options.sourcePath),
+  );
+  const declaration = findExportValueDeclaration(sourceFile, options);
+  if (declaration === undefined) return false;
+  if (ts.isFunctionDeclaration(declaration)) return true;
+  if (ts.isClassDeclaration(declaration)) return isReactStyleClass(declaration);
+  const expression = ts.isExportAssignment(declaration)
+    ? declaration.expression
+    : declaration.initializer;
+  if (expression === undefined) return false;
+  const evidencePosition = findComponentEvidencePosition(expression);
+  return (
+    evidencePosition !== undefined &&
+    isComponentValueExpression(
+      expression,
+      evidencePosition,
+      0,
+      collectStyledComponentFactoryBindings(sourceFile),
+    )
+  );
+}
+
+/** Finds the top-level declaration supplying a resolved local/default export. */
+function findExportValueDeclaration(
+  sourceFile: ts.SourceFile,
+  options: PreviewInspectorComponentExportShapeOptions,
+): InspectorOwnerDeclaration | undefined {
+  const localName = options.localName;
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) {
+      if (
+        statement.name?.text === localName ||
+        (options.exportName === 'default' && hasDefaultExportModifier(statement))
+      ) {
+        return statement;
+      }
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      const declaration = statement.declarationList.declarations.find(
+        (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === localName,
+      );
+      if (declaration !== undefined) return declaration;
+      continue;
+    }
+    if (ts.isExportAssignment(statement) && options.exportName === 'default') return statement;
+  }
+  return undefined;
+}
+
+/** Chooses an inert point inside the active expression so the shared recursive classifier can run. */
+function findComponentEvidencePosition(expression: ts.Expression): number | undefined {
+  const current = unwrapExpression(expression);
+  if (
+    ts.isArrowFunction(current) ||
+    ts.isFunctionExpression(current) ||
+    ts.isClassExpression(current) ||
+    ts.isJsxElement(current) ||
+    ts.isJsxSelfClosingElement(current) ||
+    ts.isJsxFragment(current)
+  ) {
+    return current.getStart() + 1;
+  }
+  if (ts.isTaggedTemplateExpression(current)) {
+    return findComponentEvidencePosition(current.tag);
+  }
+  if (ts.isCallExpression(current)) {
+    for (const argument of current.arguments) {
+      const position = findComponentEvidencePosition(argument);
+      if (position !== undefined) return position;
+    }
+  }
+  return undefined;
+}
+
+/** Detects `export default` without retaining modifier-array representation details. */
+function hasDefaultExportModifier(node: ts.Node): boolean {
+  return (
+    ts.canHaveModifiers(node) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ===
+      true
   );
 }
 

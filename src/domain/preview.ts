@@ -10,6 +10,9 @@ export type PreviewSourceLanguage = 'js' | 'jsx' | 'ts' | 'tsx';
 /** Immutable composition policy selected when a preview panel is opened. */
 export type PreviewRenderMode = 'component' | 'page-inspector';
 
+/** Two-phase preparation policy used to minimize time to the first rendered component. */
+export type PreviewPreparationMode = 'fast' | 'full';
+
 /** Immutable editor contents for a file-backed source module that may be imported by the target. */
 export interface PreviewSourceSnapshot {
   /** Absolute filesystem path used to match esbuild's resolved module identity. */
@@ -31,6 +34,8 @@ export interface PreviewBuildRequest {
   readonly documentPath: string;
   /** esbuild loader selected from the document filename. */
   readonly language: PreviewSourceLanguage;
+  /** Direct reachable graph for first paint, or complete application-context discovery. */
+  readonly preparationMode?: PreviewPreparationMode;
   /** Component gallery by default, or an opt-in actual-parent page inspector. */
   readonly renderMode?: PreviewRenderMode;
   /** Complete current editor contents, including unsaved changes. */
@@ -71,7 +76,7 @@ export interface PreviewDiagnostic {
 export interface PreviewBundleChunk {
   /** Complete JavaScript bytes referenced relatively by the entry bundle or another chunk. */
   readonly contents: Uint8Array;
-  /** Safe POSIX path below the artifact revision's private `chunks/` directory. */
+  /** Stable content-hash POSIX path below the artifact session's shared `chunks/` directory. */
   readonly relativePath: string;
 }
 

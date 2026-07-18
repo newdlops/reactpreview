@@ -241,6 +241,14 @@ Page Inspector는 기본 명령의 composition 정책이며 component gallery의
 candidate render에서 살아 있을 때만 성립합니다. bounded gate DFS가 소진되어도 candidate root는 유지되며,
 target-only module은 명시적 진단 선택에만 지연 로드되고 blocker resolution에는 포함되지 않습니다.
 
+렌더 관점은 project 의미를 추측하지 않는 두 개의 명시적 scenario로 나뉩니다. 기본 `authored-page`는 선택한
+candidate가 만든 fallback/error/empty UI까지 변경 없이 유지하고, 화면 문자열이나 component 이름을 분류 근거로
+사용하지 않습니다. `file-components`는 `renderChainsByExport`로 증명된 현재 파일 export마다 tree-shakeable direct
+specifier를 등록하되 사용자가 view를 선택하기 전에는 평가하지 않습니다. 선택 뒤에도 export별 dynamic import,
+Suspense와 error boundary를 사용해 한 module/render 실패가 sibling export overview를 제거하지 않습니다.
+page root만 commit되고 target이 없는 상태는 application error가 아니라 `TARGET ABSENT` flow outcome으로 표시하며,
+실제 exception/value blocker 판정과 분리합니다.
+
 Inspector presentation은 pseudo-node의 존재와 실제 blocking 상태를 분리합니다. condition은 항상 branch control,
 manual/Auto hook fallback과 유효 payload는 assisted preview value, unresolved seed·contained render error·소진된
 target reachability만 active blocker입니다. 상단 status와 tree role label은 같은 판정 함수를 사용하므로 범례,

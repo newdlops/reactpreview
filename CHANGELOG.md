@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1058 - 2026-07-18
+
+- Inspector에 `VIEW` 선택기를 추가해 기본 `Page flow (as authored)`와 명시적
+  `File components (all exports)`를 전환하고 선택을 preview tab별로 유지
+- Page flow는 화면의 문구·status code·component 이름으로 정상/오류를 추측하지 않고 로그인, 빈 화면, fallback,
+  오류 화면까지 작성된 경로의 실제 결과로 그대로 보존
+- 현재 파일의 모든 정적으로 증명된 component export를 export별 dynamic import, Suspense, error boundary로 격리해
+  하나가 load/render에 실패해도 나머지 component를 순서대로 확인할 수 있는 중립 overview 추가
+- page root는 정상 commit됐지만 현재 파일이 mount되지 않은 경우를 `TARGET ABSENT` 흐름 결과로 구분하고,
+  실제 runtime/value blocker와 혼동하지 않도록 다른 Page path 또는 File components 비교 행동을 안내
+
 ## 0.1.1057 - 2026-07-18
 
 - 별도 Inspector shell을 CSS inline-size container로 만들고 toolbar/status/page selector/tree row/tab/action을

@@ -254,12 +254,13 @@ export class PreviewProjectUsageCache {
       return false;
     }
     const zeroEdgeInspectorPlan = cached.result.inspectorPlan?.edges.length === 0;
-    const provisionalRenderChain = Object.values(cached.result.renderChainsByExport ?? {}).some(
-      (plan) => plan.reachability === 'entry-unreachable' || plan.truncated,
-    );
+    const provisionalRenderChain =
+      cached.result.inspectorPlan?.renderChain.reachability === 'entry-unreachable';
     if (
       (zeroEdgeInspectorPlan || provisionalRenderChain) &&
-      options.snapshots.some((snapshot) => isPathInside(options.projectRoot, snapshot.documentPath))
+      options.snapshots.some((snapshot) =>
+        snapshotMayChangeProvisionalUsage(snapshot, cached, options),
+      )
     ) {
       return false;
     }
@@ -280,6 +281,45 @@ export class PreviewProjectUsageCache {
     );
     return haveEqualDependencyStamps(cached.dependencyStamps, currentStamps);
   }
+}
+
+/**
+ * Rejects unrelated dirty editor tabs as a reason to rebuild an incomplete page graph.
+ * A snapshot remains relevant when it directly changes known evidence, names the target/known
+ * owner in JSX or imports, or introduces a ReactDOM entry that could connect the existing chain.
+ */
+function snapshotMayChangeProvisionalUsage(
+  snapshot: PreviewProjectUsageDiscoveryOptions['snapshots'][number],
+  cached: UsageResultCacheEntry,
+  options: PreviewProjectUsageDiscoveryOptions,
+): boolean {
+  if (!isPathInside(options.projectRoot, snapshot.documentPath)) {
+    return false;
+  }
+  const snapshotPath = path.normalize(snapshot.documentPath);
+  if (
+    snapshotPath === path.normalize(options.documentPath) ||
+    cached.dependencyStamps.some((stamp) => stamp.sourcePath === snapshotPath)
+  ) {
+    return true;
+  }
+  const sourceText = snapshot.sourceText;
+  if (
+    sourceText.includes('react-dom') &&
+    /(?:createRoot|hydrateRoot|\.render\s*\()/u.test(sourceText)
+  ) {
+    return true;
+  }
+  if (
+    !sourceText.includes('import') &&
+    !sourceText.includes('export') &&
+    !sourceText.includes('<')
+  ) {
+    return false;
+  }
+  return [options.documentPath, ...cached.result.dependencyPaths]
+    .map((sourcePath) => path.basename(sourcePath).replace(/\.[cm]?[jt]sx?$/iu, ''))
+    .some((sourceStem) => sourceStem.length > 0 && sourceText.includes(sourceStem));
 }
 
 /** Reports whether a source snapshot remains inside the nearest package cache boundary. */

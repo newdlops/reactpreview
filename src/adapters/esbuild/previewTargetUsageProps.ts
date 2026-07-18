@@ -24,7 +24,7 @@ import {
 } from './previewProjectFileAnalysisCache';
 
 const MAX_SCANNED_SOURCE_FILES = 16_384;
-const MAX_CONCURRENT_SOURCE_READS = 16;
+const MAX_CONCURRENT_SOURCE_READS = 64;
 const MAX_INDIVIDUAL_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_SOURCE_BYTES = 128 * 1024 * 1024;
 const SOURCE_EXTENSION_PATTERN = /\.(?:[cm]?[jt]sx?)$/iu;
@@ -196,21 +196,35 @@ export async function discoverPreviewTargetUsageProps(
             }),
         documentPath: boundary.documentPath,
         exportNames: explicitExportNames,
+        primaryExportName: options.inspectorExportName,
         readSource: readCachedUsageSource,
         resolveModule: moduleResolver.resolve,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         sourcePaths: [...sourcePaths, boundary.documentPath],
       })
     : undefined;
+  const requiredUsageExportNames = new Set(
+    shouldDiscoverInspector ? [options.inspectorExportName] : explicitExportNames,
+  );
+  const usageScanSourcePaths = [
+    ...new Set([
+      ...(options.inspectorExportName === undefined
+        ? []
+        : (renderChainsByExport?.[options.inspectorExportName]?.paths.flatMap((candidate) =>
+            candidate.steps.map((step) => step.sourcePath),
+          ) ?? [])),
+      ...sourcePaths,
+    ]),
+  ].filter((sourcePath) => path.normalize(sourcePath) !== boundary.documentPath);
 
   scanBatches: for (
     let batchStart = 0;
-    batchStart < sourcePaths.length;
+    batchStart < usageScanSourcePaths.length;
     batchStart += MAX_CONCURRENT_SOURCE_READS
   ) {
     throwIfPreviewBuildCancelled(options.signal);
     const sourceBatch = await Promise.all(
-      sourcePaths
+      usageScanSourcePaths
         .slice(batchStart, batchStart + MAX_CONCURRENT_SOURCE_READS)
         .map(readCachedUsageSourceRecord),
     );
@@ -256,7 +270,7 @@ export async function discoverPreviewTargetUsageProps(
         }
       }
       if (
-        [...expectedExportNames].every((exportName) => {
+        [...requiredUsageExportNames].every((exportName) => {
           const plan = parentSliceByExport.get(exportName);
           return propsByExport.has(exportName) || (plan !== undefined && plan.frames.length > 0);
         })

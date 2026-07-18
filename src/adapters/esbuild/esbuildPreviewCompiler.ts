@@ -238,9 +238,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           : this.projectUsageCache.getSourcePaths(canonicalWorkspaceRoot, projectRoot, buildSignal),
       ]);
       let targetUsageProps = packageTargetUsageProps;
+      const packageHasEntryConnectedPage =
+        inspectorExportName !== undefined &&
+        packageTargetUsageProps.renderChainsByExport?.[inspectorExportName]?.paths.some(
+          (candidate) => candidate.entryPoint !== undefined,
+        ) === true;
       const requiresWorkspaceAncestorEscalation =
         !useFastPreparation &&
         request.renderMode === 'page-inspector' &&
+        !packageHasEntryConnectedPage &&
         (packageTargetUsageProps.inspectorPlan === undefined ||
           packageTargetUsageProps.inspectorPlan.edges.length === 0) &&
         (await shouldEscalatePreviewAncestorSearch(projectRoot, canonicalWorkspaceRoot));

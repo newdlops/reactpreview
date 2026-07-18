@@ -223,6 +223,38 @@ describe('PreviewProjectUsageCache', () => {
     }
   });
 
+  /** Keeps an incomplete target graph cached when another open editor cannot reference it. */
+  it('ignores unrelated dirty snapshots while validating provisional inspector evidence', async () => {
+    const projectRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-inspector-cache-'));
+    const targetPath = path.join(projectRoot, 'src', 'Breadcrumb.tsx');
+    const unrelatedPath = path.join(projectRoot, 'src', 'UnrelatedEditor.tsx');
+    try {
+      await mkdir(path.dirname(targetPath), { recursive: true });
+      await Promise.all([
+        writeFile(targetPath, 'export const Breadcrumb = () => null;', 'utf8'),
+        writeFile(unrelatedPath, 'export const Saved = () => <p>saved</p>;', 'utf8'),
+      ]);
+      const cache = new PreviewProjectUsageCache();
+      const first = await cache.discover(createInspectorOptions(projectRoot, targetPath));
+
+      const retained = await cache.discover({
+        ...createInspectorOptions(projectRoot, targetPath),
+        snapshots: [
+          {
+            documentPath: unrelatedPath,
+            language: 'tsx',
+            sourceText: 'export const UnrelatedEditor = () => <section>dirty</section>;',
+          },
+        ],
+      });
+
+      expect(retained).toBe(first);
+      expect(retained.inspectorPlan?.edges).toEqual([]);
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Uses the current target editor text and its fingerprint instead of reusing a saved graph seed. */
   it('invalidates Inspector entry chains when the unsaved target source changes', async () => {
     const projectRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-inspector-cache-'));

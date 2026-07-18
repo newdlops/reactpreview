@@ -88,6 +88,31 @@ export class PreviewProjectFileAnalysisCache {
       return this.readSnapshot(normalizedPath, options.snapshotText, options.maximumBytes);
     }
 
+    const cached = this.sourceByPath.get(normalizedPath);
+    if (cached?.origin !== 'disk') {
+      const pendingKey = `${normalizedPath}\0first-read`;
+      const pending = this.pendingDiskReads.get(pendingKey);
+      if (pending !== undefined) {
+        return pending;
+      }
+      /*
+       * A cold entry has no metadata identity to validate. Opening it directly removes one `stat`
+       * syscall per source from the first package graph while `loadDiskSource` still performs an
+       * fstat before reading, preserving the exact file and byte ceilings.
+       */
+      const readPromise = this.loadDiskSource(normalizedPath, options.maximumBytes);
+      this.pendingDiskReads.set(pendingKey, readPromise);
+      try {
+        const record = await readPromise;
+        if (record !== undefined) {
+          this.storeSource(normalizedPath, { origin: 'disk', record });
+        }
+        return record;
+      } finally {
+        this.pendingDiskReads.delete(pendingKey);
+      }
+    }
+
     let metadata;
     try {
       metadata = await stat(normalizedPath);
@@ -100,9 +125,7 @@ export class PreviewProjectFileAnalysisCache {
       return undefined;
     }
     const fingerprint = createDiskFingerprint(metadata.mtimeMs, metadata.size);
-    const cached = this.sourceByPath.get(normalizedPath);
     if (
-      cached?.origin === 'disk' &&
       cached.record.fingerprint === fingerprint &&
       cached.record.byteLength <= options.maximumBytes
     ) {

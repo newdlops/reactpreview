@@ -109,6 +109,44 @@ function selectPreviewInspectorPageCandidate(candidateId) {
   schedulePreviewInspectorCommitRefresh();
 }
 
+/**
+ * Marks a successful commit of the authored page subtree without inserting a host DOM wrapper.
+ * If a descendant throws before commit, React never calls this boundary's mount lifecycle and the
+ * corridor correctly remains blocked. Target-only diagnostics deliberately bypass this boundary.
+ */
+class PreviewInspectorPageRootCommitBoundary extends React.Component {
+  componentDidMount() {
+    this.markCommitted();
+  }
+
+  componentDidUpdate() {
+    this.markCommitted();
+  }
+
+  componentWillUnmount() {
+    const state = this.props.reachability;
+    if (state?.pageCommitBoundary !== this) return;
+    state.pageCommitBoundary = undefined;
+    state.pageRootCommitted = false;
+    schedulePreviewInspectorTreeRefresh();
+  }
+
+  /** Records only the selected authored root associated with this exact mounted boundary. */
+  markCommitted() {
+    const state = this.props.reachability;
+    if (state === undefined || state.directTarget === true) return;
+    const changed = state.pageRootCommitted !== true || state.pageCommitBoundary !== this;
+    state.pageCommitBoundary = this;
+    state.pageRootCommitted = true;
+    state.rootName = this.props.rootName ?? state.rootName;
+    if (changed) schedulePreviewInspectorTreeRefresh();
+  }
+
+  render() {
+    return this.props.children;
+  }
+}
+
 /** Loads only the selected candidate module and discards late results after a selection change. */
 function PreviewInspectorPageCandidateLoader({ definitions, targetProps }) {
   usePreviewInspectorStore();
@@ -171,10 +209,20 @@ function PreviewInspectorPageCandidateLoader({ definitions, targetProps }) {
   const routedElement = createPreviewCandidateRouterElement(rootElement, {
     ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true,
   });
+  const pageCorridorElement = directTarget
+    ? routedElement
+    : React.createElement(
+        PreviewInspectorPageRootCommitBoundary,
+        {
+          reachability,
+          rootName: candidate?.root?.exportName ?? reachability.rootName,
+        },
+        routedElement,
+      );
   return React.createElement(
     PreviewInspectorTargetReachabilityProbe,
     { candidate, descriptor, directTarget, directTargetAvailable: directDefinition !== undefined },
-    routedElement,
+    pageCorridorElement,
   );
 }
 

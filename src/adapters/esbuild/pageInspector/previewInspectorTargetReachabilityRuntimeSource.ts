@@ -3,13 +3,14 @@
  *
  * A page can render a perfectly valid login, permission, loading, or empty branch while never
  * invoking the component selected in the editor. Error boundaries cannot classify that as failure.
- * This runtime therefore treats the wrapped target export as a reachability assertion, advances one
- * statically instrumented gate per committed pass, and finally mounts the selected export directly
- * when the authored application path has no further safe evidence to traverse.
+ * This runtime therefore treats the wrapped target export as a reachability assertion and advances
+ * one statically instrumented gate per committed pass. A preview is successful only when both the
+ * authored page root and the selected target commit in the same render corridor. Direct target
+ * rendering remains an explicit diagnostic mode and never masquerades as page success.
  */
 
 /**
- * Creates browser source for bounded DFS gate traversal and direct-target fallback selection.
+ * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
  *
  * Expected lexical bindings include React, the shared Inspector session/store, condition, data, and
  * runtime-fallback registries, plus notification and console helpers from the composed entry.
@@ -82,8 +83,10 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     candidateId: candidate?.id ?? 'nearest-authored-owner',
     directTarget: false,
     directTargetAvailable: false,
+    exhausted: false,
     idlePasses: 0,
     key: createPreviewInspectorTargetReachabilityKey(descriptor, candidate),
+    pageRootCommitted: false,
     probeRevision: 0,
     rootName: candidate?.root?.exportName ?? descriptor?.inspector?.root?.exportName ?? 'Application',
     status: 'probing',
@@ -213,7 +216,39 @@ function hasMountedPreviewInspectorTarget(state) {
   return boundaries instanceof Set && boundaries.size > 0;
 }
 
-/** Emits one visible warning when target context is replaced by direct-target fallback. */
+/** Reports success only when the authored page root and exact target share one live render. */
+function hasReachedPreviewInspectorPageCorridor(state) {
+  return state.directTarget !== true &&
+    state.pageRootCommitted === true &&
+    state.targetMounted === true;
+}
+
+/** Emits one warning when bounded static traversal cannot prove another page-local continuation. */
+function reportPreviewInspectorPageCorridorBlocked(state) {
+  if (state.blockedWarningReported === true) return;
+  state.blockedWarningReported = true;
+  const message = 'Page context rendered, but did not reach ' + state.targetExportName + '.';
+  const details = [
+    message,
+    'Page root: ' + state.rootName,
+    'Path: ' + state.applicationPath.join(' > '),
+    state.appliedConditions.length > 0
+      ? 'Auto-passed gates: ' + state.appliedConditions.map((gate) => gate.expression).join(', ')
+      : 'No additional statically proven gate was available.',
+    'The page remains mounted. Resolve its next blocker or choose target-only diagnostic mode explicitly.',
+  ].join('\n');
+  recordPreviewInspectorConsoleEntry({
+    details,
+    level: 'warn',
+    location: '',
+    message,
+    phase: 'page render corridor',
+    source: 'target-reachability',
+  });
+  readPreviewInspectorConsolePrimitives().warn('[React Preview] ' + details);
+}
+
+/** Emits one visible warning when the user explicitly leaves authored page context. */
 function reportPreviewInspectorTargetReachabilityFallback(state) {
   if (state.warningReported === true) return;
   state.warningReported = true;
@@ -224,7 +259,7 @@ function reportPreviewInspectorTargetReachabilityFallback(state) {
     state.appliedConditions.length > 0
       ? 'Auto-passed gates: ' + state.appliedConditions.map((gate) => gate.expression).join(', ')
       : 'No additional statically proven gate was available.',
-    'React Preview is rendering the selected file directly while preserving generated providers and payloads.',
+    'Target-only diagnostic mode preserves generated providers and payloads, but is not a successful page preview.',
   ].join('\n');
   recordPreviewInspectorConsoleEntry({
     details,
@@ -237,7 +272,7 @@ function reportPreviewInspectorTargetReachabilityFallback(state) {
   readPreviewInspectorConsolePrimitives().warn('[React Preview] ' + details);
 }
 
-/** Switches the candidate loader to the facade export after static DFS can make no more progress. */
+/** Switches to target-only diagnostic mode only after an explicit user action. */
 function activatePreviewInspectorDirectTarget(state) {
   if (state.directTargetAvailable !== true) {
     state.exhausted = true;
@@ -248,7 +283,8 @@ function activatePreviewInspectorDirectTarget(state) {
     return;
   }
   state.directTarget = true;
-  state.status = 'direct';
+  state.pageRootCommitted = false;
+  state.status = 'target-only';
   state.probeRevision += 1;
   reportPreviewInspectorTargetReachabilityFallback(state);
   notifyPreviewInspector();
@@ -257,15 +293,24 @@ function activatePreviewInspectorDirectTarget(state) {
 
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
-  if (hasMountedPreviewInspectorTarget(state)) {
-    state.targetMounted = true;
-    state.status = state.directTarget ? 'direct' : 'reached';
+  state.targetMounted = hasMountedPreviewInspectorTarget(state);
+  if (hasReachedPreviewInspectorPageCorridor(state)) {
+    state.status = 'reached';
     state.idlePasses = 0;
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  state.targetMounted = false;
-  if (state.directTarget || state.exhausted === true) return;
+  if (state.directTarget) {
+    state.status = state.targetMounted ? 'target-only' : 'target-only-loading';
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
+  if (state.targetMounted && state.pageRootCommitted !== true) {
+    state.status = 'page-root-pending';
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
+  if (state.exhausted === true) return;
   const nextGate = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
   if (nextGate !== undefined && state.attempt < PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT) {
     state.appliedConditions.push({
@@ -293,7 +338,11 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.attempt >= PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT ||
     state.idlePasses >= PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT
   ) {
-    activatePreviewInspectorDirectTarget(state);
+    state.exhausted = true;
+    state.status = 'page-blocked';
+    reportPreviewInspectorPageCorridorBlocked(state);
+    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
     return;
   }
   notifyPreviewInspector();
@@ -384,6 +433,23 @@ function showPreviewInspectorTargetDirectly() {
   activatePreviewInspectorDirectTarget(
     readPreviewInspectorTargetReachabilityState(descriptor, candidate),
   );
+}
+
+/** Leaves target-only diagnostics and resumes the same authored page corridor and DFS choices. */
+function returnPreviewInspectorToPageContext() {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  if (descriptor === undefined || candidate === undefined) return;
+  const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+  state.directTarget = false;
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.pageRootCommitted = false;
+  state.status = 'probing';
+  state.targetMounted = false;
+  state.probeRevision += 1;
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
 }
 
 /** Clears obsolete traversal state after a candidate, export, or hot descriptor replacement. */

@@ -104,4 +104,86 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('readPreviewInspectorTargetReachabilityRequiredPaths');
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
   });
+
+  /** Requires a real page commit and never auto-promotes target-only diagnostics to success. */
+  it('marks success only when page root and target commit in the same corridor', () => {
+    const context: {
+      __result?: {
+        readonly blockedDirectTarget: boolean;
+        readonly blockedStatus: string;
+        readonly pagePendingStatus: string;
+        readonly reachedStatus: string;
+        readonly targetOnlyStatus: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'DashboardPanel',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
+        const clearPreviewInspectorTargetGuidedConditionOverrides = () => false;
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { DashboardPanel: { paths: [] } },
+          target: { exportName: 'DashboardPanel' },
+        } };
+        const candidate = {
+          edges: [],
+          id: 'dashboard-page',
+          renderPath: { id: 'path', steps: [
+            { label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] },
+            { label: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'DashboardPage' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        previewInspectorSession.boundariesByExport.set('DashboardPanel', new Set([{}]));
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        const pagePendingStatus = state.status;
+        state.pageRootCommitted = true;
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        const reachedStatus = state.status;
+        state.directTarget = true;
+        state.pageRootCommitted = false;
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        const targetOnlyStatus = state.status;
+
+        previewInspectorSession.boundariesByExport.clear();
+        const blockedCandidate = { ...candidate, id: 'blocked-page' };
+        const blocked = readPreviewInspectorTargetReachabilityState(descriptor, blockedCandidate);
+        blocked.pageRootCommitted = true;
+        evaluatePreviewInspectorTargetReachability(descriptor, blockedCandidate, blocked);
+        evaluatePreviewInspectorTargetReachability(descriptor, blockedCandidate, blocked);
+        globalThis.__result = {
+          blockedDirectTarget: blocked.directTarget,
+          blockedStatus: blocked.status,
+          pagePendingStatus,
+          reachedStatus,
+          targetOnlyStatus,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      blockedDirectTarget: false,
+      blockedStatus: 'page-blocked',
+      pagePendingStatus: 'page-root-pending',
+      reachedStatus: 'reached',
+      targetOnlyStatus: 'target-only',
+    });
+  });
 });

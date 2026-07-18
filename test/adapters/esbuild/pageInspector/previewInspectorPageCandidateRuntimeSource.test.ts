@@ -66,6 +66,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
       'ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true',
     );
     expect(source).toContain('PreviewInspectorTargetReachabilityProbe');
+    expect(source).toContain('class PreviewInspectorPageRootCommitBoundary');
+    expect(source).toContain('state.pageRootCommitted = true');
+    expect(source).toContain('pageCorridorElement');
     expect(source).toContain('previewInspectorSession.selectedPageCandidateId = candidateId');
   });
 });
@@ -85,7 +88,8 @@ function evaluateCandidateSelection(candidates: readonly CandidateFixture[]): {
     candidates: readonly CandidateFixture[];
   } = { candidates };
   vm.runInNewContext(
-    `${createPreviewInspectorPageCandidateRuntimeSource()}
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
 const descriptor = { inspector: { pageCandidates: globalThis.candidates } };
 const previewInspectorSession = {
   selectedPageCandidateId: '',

@@ -5,6 +5,7 @@
  * focused and the main generated-source module remains below the project file-size limit. Runtime
  * names referenced here are deliberately provided by the surrounding generated preview entry.
  */
+import { createPreviewInspectorFailureEvidenceRuntimeSource } from './previewInspectorFailureEvidenceRuntimeSource';
 
 /**
  * Creates browser source that contains failures at the selected component invocation.
@@ -16,7 +17,10 @@
  * @returns Plain JavaScript source concatenated into the Page Inspector browser runtime.
  */
 export function createPreviewInspectorTargetBoundaryRuntimeSource(): string {
+  const failureEvidenceRuntimeSource = createPreviewInspectorFailureEvidenceRuntimeSource();
   return String.raw`
+${failureEvidenceRuntimeSource}
+
 /** Returns one bounded message suitable for the selected target's inline failure placeholder. */
 function describePreviewInspectorTargetError(error) {
   const headline = createRuntimeErrorHeadline(error);
@@ -83,9 +87,15 @@ class PreviewInspectorTargetBoundary extends React.Component {
     if (this.state.error === undefined) {
       return this.props.children;
     }
+    const blockedComponent = readPreviewInspectorBlockedComponentName(
+      this.state.componentStack,
+      this.props.exportName,
+    );
+    const requiredPaths = readPreviewInspectorErrorPropertyPaths(this.state.error);
     return React.createElement(
       'react-preview-target-error',
       {
+        'data-react-preview-blocked-component': blockedComponent,
         'data-react-preview-target-error': this.props.exportName,
         role: 'alert',
         style: {
@@ -96,6 +106,7 @@ class PreviewInspectorTargetBoundary extends React.Component {
           boxSizing: 'border-box',
           color: 'var(--vscode-inputValidation-errorForeground, #ffffff)',
           display: 'inline-flex',
+          flexWrap: 'wrap',
           font: '12px/1.35 var(--vscode-font-family, sans-serif)',
           gap: '8px',
           maxWidth: 'min(100%, 640px)',
@@ -103,8 +114,11 @@ class PreviewInspectorTargetBoundary extends React.Component {
           verticalAlign: 'middle',
         },
       },
-      React.createElement('strong', undefined, this.props.exportName + ' failed'),
+      React.createElement('strong', undefined, blockedComponent + ' blocked'),
       React.createElement('span', undefined, describePreviewInspectorTargetError(this.state.error)),
+      requiredPaths.length === 0
+        ? undefined
+        : React.createElement('span', undefined, 'Missing: ' + requiredPaths.join(', ')),
       React.createElement(
         'button',
         {

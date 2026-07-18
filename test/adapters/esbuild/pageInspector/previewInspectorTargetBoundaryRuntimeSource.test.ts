@@ -52,23 +52,27 @@ describe('Preview Inspector selected-target boundary runtime', () => {
 
     expect(boundary.render()).toBe(child);
 
-    const error = new Error('SELECTED_TARGET_FAILURE');
+    const error = new TypeError("Cannot read properties of undefined (reading 'value')");
     boundary.state = { ...boundary.state, ...Boundary.getDerivedStateFromError(error) };
     boundary.componentDidCatch(error, { componentStack: '\n    at BrokenChild' });
     const fallback = boundary.render();
 
     expect(rememberedErrors).toEqual([error]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('SELECTED_TARGET_FAILURE');
+    expect(warnings[0]).toContain("Cannot read properties of undefined (reading 'value')");
     expect(warnings[0]).toContain('BrokenChild');
     expect(fallback.type).toBe('react-preview-target-error');
     expect(fallback.props.role).toBe('alert');
     expect(fallback.props['data-react-preview-target-error']).toBe('SelectedCard');
+    expect(fallback.props['data-react-preview-blocked-component']).toBe('BrokenChild');
 
     const children = fallback.props.children as readonly TestElement[];
-    expect(children[0]?.props.children).toBe('SelectedCard failed');
-    expect(children[1]?.props.children).toBe('SELECTED_TARGET_FAILURE');
-    expect(children[2]?.props.children).toBe('Retry');
+    expect(children[0]?.props.children).toBe('BrokenChild blocked');
+    expect(children[1]?.props.children).toBe(
+      "Cannot read properties of undefined (reading 'value')",
+    );
+    expect(children[2]?.props.children).toBe('Missing: value');
+    expect(children[3]?.props.children).toBe('Retry');
     boundary.retry();
     expect(remountedExports).toEqual(['SelectedCard']);
   });

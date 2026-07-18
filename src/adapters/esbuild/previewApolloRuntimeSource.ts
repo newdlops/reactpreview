@@ -243,22 +243,50 @@ function createStaticApolloShape(document, operationName) {
   return { fields, kind: 'object' };
 }
 
-/** Lets Page Inspector own the fallback while keeping Export Gallery's legacy neutral result. */
-function resolveInspectorApolloData(operation, setupContext) {
+/** Builds shared request metadata for editable Page Inspector GraphQL payloads. */
+function createInspectorApolloRequestMetadata(operation, setupContext) {
   const seedData = createStaticApolloData(operation.query, operation.operationName);
-  const inspectorApi = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];
-  if (typeof inspectorApi?.resolveDataPayload !== 'function') return seedData;
   const selectedOperation = selectOperation(operation.query, operation.operationName);
   const operationKind = String(selectedOperation?.operation ?? 'query').toUpperCase();
-  return inspectorApi.resolveDataPayload({
-    evidence: 'GraphQL selection, aliases, fragments, and field-name inference',
-    kind: 'graphql',
-    label: (setupContext.documentName || 'GraphQL') + ' · ' + (operation.operationName || 'Anonymous operation'),
-    method: operationKind,
-    operationName: operation.operationName ?? '',
-    shape: createStaticApolloShape(operation.query, operation.operationName),
-    sourcePath: setupContext.documentName,
-  }, seedData);
+  return {
+    metadata: {
+      evidence: 'GraphQL selection, aliases, fragments, and field-name inference',
+      kind: 'graphql',
+      label: (setupContext.documentName || 'GraphQL') + ' · ' + (operation.operationName || 'Anonymous operation'),
+      method: operationKind,
+      operationName: operation.operationName ?? '',
+      shape: createStaticApolloShape(operation.query, operation.operationName),
+      sourcePath: setupContext.documentName,
+    },
+    seedData,
+  };
+}
+
+/** Delegates an Apollo operation to the stateful broker with payload-only API compatibility. */
+function resolveInspectorApolloBackendResult(operation, setupContext) {
+  const inspectorApi = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];
+  const { metadata, seedData } = createInspectorApolloRequestMetadata(operation, setupContext);
+  if (typeof inspectorApi?.resolveBackendRequest === 'function') {
+    return inspectorApi.resolveBackendRequest(metadata, seedData, {
+      body: operation.variables ?? {},
+      rawUrl: 'graphql://' + (operation.operationName || 'anonymous'),
+    });
+  }
+  if (typeof inspectorApi?.resolveDataPayload === 'function') {
+    return {
+      latencyMs: 0,
+      payload: inspectorApi.resolveDataPayload(metadata, seedData),
+      scenario: 'success',
+      status: 200,
+    };
+  }
+  return { latencyMs: 0, payload: seedData, scenario: 'success', status: 200 };
+}
+
+/** Waits for a virtual-backend latency before completing the terminating Apollo observable. */
+async function waitForInspectorApolloBackendLatency(latencyMs) {
+  if (!(latencyMs > 0) || typeof globalThis.setTimeout !== 'function') return;
+  await new Promise((resolve) => globalThis.setTimeout(resolve, latencyMs));
 }
 
 /** Preserves explicit Apollo FetchResult objects and wraps plain setup data consistently. */
@@ -279,7 +307,15 @@ function normalizeFetchResult(configuredResult, operation) {
 async function resolveStaticOperation(operation, configuration, setupContext) {
   const resolveOperation = isRecord(configuration) ? configuration.resolveOperation : undefined;
   if (typeof resolveOperation !== 'function') {
-    return { data: resolveInspectorApolloData(operation, setupContext) };
+    const result = resolveInspectorApolloBackendResult(operation, setupContext);
+    await waitForInspectorApolloBackendLatency(result.latencyMs);
+    if (result.scenario === 'error') {
+      return {
+        data: null,
+        errors: [{ message: 'Virtual backend returned HTTP ' + String(result.status) }],
+      };
+    }
+    return { data: result.payload };
   }
   const configuredResult = await resolveOperation({
     documentName: setupContext.documentName,
@@ -366,9 +402,9 @@ export function createApolloPreviewElement(children, options) {
     queryDeduplication: false,
   });
   const ApolloProvider = ApolloReact.ApolloProvider ?? ApolloCore.ApolloProvider;
-  const inspectorDataActive = typeof globalThis[
-    Symbol.for('newdlops.react-file-preview.page-inspector')
-  ]?.resolveDataPayload === 'function';
+  const inspectorApi = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];
+  const inspectorDataActive = typeof inspectorApi?.resolveBackendRequest === 'function' ||
+    typeof inspectorApi?.resolveDataPayload === 'function';
   previewRuntimeStatus = isRecord(configuration)
     ? 'active: memory-only client with setup-owned static overrides; network disabled'
     : inspectorDataActive

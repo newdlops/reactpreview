@@ -2,6 +2,16 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1059 - 2026-07-18
+
+- Components tree의 root/nested list를 intrinsic `max-content` 폭으로 유지하고 row를 줄바꿈하지 않게 바꿔,
+  깊은 component 경로도 옆으로 눌리지 않고 Inspector pane 안에서 가로 스크롤 가능
+- hook 결과를 구조 분해한 뒤 직접 호출하거나 JSX event/callback prop으로 전달하는 사용처를 함수 요구로 판별해
+  `showCreate()`, `renderModalForm()`, `getRootProps()` 같은 callable 최소값을 문자열·빈 객체 대신 no-op 함수로 생성
+- `Find minimum requirements`가 현재 관찰값만 한 번 채우지 않고 새 branch에서 드러난 hook/API field를 최대 8개
+  batch까지 제한적으로 수렴하며, pass 수·발견 path 수·종료 상태를 Path blocker 상세 화면에 표시
+- 이미 같은 Smart hook/API 값이 적용된 pass는 변경으로 계산하지 않아 불필요한 remount와 Inspector/renderer CPU 갱신을 방지
+
 ## 0.1.1058 - 2026-07-18
 
 - Inspector에 `VIEW` 선택기를 추가해 기본 `Page flow (as authored)`와 명시적

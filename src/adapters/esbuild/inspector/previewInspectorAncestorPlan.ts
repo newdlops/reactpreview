@@ -14,6 +14,7 @@ import {
   type PreviewParentSliceStaticProps,
 } from '../parentSlice';
 import {
+  collectPreviewRenderModuleSpecifiers,
   createPreviewRenderChainPlan,
   type PreviewRenderChainCandidate,
   type PreviewRenderChainPlan,
@@ -22,6 +23,7 @@ import {
 } from '../renderGraph';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
+import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
 import {
   collectPreviewInspectorModuleFrontiers,
   type PreviewInspectorModuleFrontier,
@@ -35,13 +37,13 @@ import {
   type PreviewInspectorSourcePromiseCache,
 } from './previewInspectorRenderPathRoots';
 import { rankPreviewInspectorPageCandidates } from './previewInspectorPageCandidateRanking';
-
 const MAX_PROJECT_ANCESTOR_DEPTH = 8;
+const MAX_LOCAL_OWNER_DEPTH = 12;
 const LARGE_PROJECT_SOURCE_THRESHOLD = 512;
 const MAX_LARGE_PROJECT_DIRECT_ANCESTOR_DEPTH = 2;
-const MAX_LOCAL_OWNER_DEPTH = 12;
-const MAX_CONCURRENT_SOURCE_READS = 16;
+const MAX_CONCURRENT_SOURCE_READS = 64;
 const MAX_INSPECTOR_PAGE_CANDIDATES = 6;
+const MAX_LARGE_PROJECT_PAGE_CANDIDATES = 2;
 
 /** Importable component identity retained without loading its module in the extension host. */
 export interface PreviewInspectorComponentReference {
@@ -259,7 +261,11 @@ export async function createPreviewInspectorAncestorPlan(
     sourceFileByPath: new Map(),
     sourceTextByPath: new Map(),
   };
-  const renderPaths = renderChain.paths.slice(0, MAX_INSPECTOR_PAGE_CANDIDATES);
+  const pageCandidateLimit =
+    sourcePaths.length > LARGE_PROJECT_SOURCE_THRESHOLD
+      ? MAX_LARGE_PROJECT_PAGE_CANDIDATES
+      : MAX_INSPECTOR_PAGE_CANDIDATES;
+  const renderPaths = renderChain.paths.slice(0, pageCandidateLimit);
   const candidatePaths: readonly (PreviewRenderChainCandidate | undefined)[] =
     renderPaths.length > 0 ? renderPaths : [undefined];
   const discoveredCandidates: PreviewInspectorPageCandidate[] = [];
@@ -312,7 +318,7 @@ export async function createPreviewInspectorAncestorPlan(
 
   const pageCandidates = rankPreviewInspectorPageCandidates(
     discoveredCandidates,
-    MAX_INSPECTOR_PAGE_CANDIDATES,
+    pageCandidateLimit,
   );
 
   const primary = pageCandidates[0];
@@ -668,12 +674,24 @@ async function collectRankedInspectorUsageCandidates(options: {
     sources,
     options.planningContext.sourceFileByPath,
   );
+  const moduleSpecifiersBySource = new Map<string, readonly string[]>();
   for (const source of sources) {
     if (!source.sourceText.includes('<')) {
       continue;
     }
     for (const frontier of frontiers) {
       if (path.normalize(source.sourcePath) === path.normalize(frontier.sourcePath)) {
+        continue;
+      }
+      let moduleSpecifiers = moduleSpecifiersBySource.get(source.sourcePath);
+      if (moduleSpecifiers === undefined) {
+        moduleSpecifiers = collectPreviewRenderModuleSpecifiers(
+          source.sourcePath,
+          source.sourceText,
+        );
+        moduleSpecifiersBySource.set(source.sourcePath, moduleSpecifiers);
+      }
+      if (!mayContainInspectorUsage(options, source, frontier, moduleSpecifiers)) {
         continue;
       }
       const initialFrontier =
@@ -707,7 +725,41 @@ async function collectRankedInspectorUsageCandidates(options: {
   rankedCandidates.sort(compareRankedInspectorUsageCandidates);
   return Object.freeze(rankedCandidates);
 }
-
+/**
+ * Proves a plausible import before the parent-slice analyzer allocates a TypeScript AST.
+ * Component/file names cover ordinary imports; configured aliases use the exact project resolver,
+ * keeping this gate conservative while avoiding thousands of irrelevant JSX parses.
+ */
+function mayContainInspectorUsage(
+  options: Parameters<typeof collectRankedInspectorUsageCandidates>[0],
+  source: InspectorCandidateSource,
+  frontier: PreviewInspectorModuleFrontier,
+  moduleSpecifiers: readonly string[],
+): boolean {
+  const basename = path.basename(frontier.sourcePath).replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
+  const directoryName = path.basename(path.dirname(frontier.sourcePath));
+  if (
+    (basename.length > 1 && source.sourceText.includes(basename)) ||
+    (basename === 'index' &&
+      directoryName.length > 1 &&
+      source.sourceText.includes(directoryName)) ||
+    frontier.exportNames.some(
+      (exportName) => exportName !== 'default' && source.sourceText.includes(exportName),
+    ) ||
+    options.acceptedImportSpecifiers.some((specifier) => source.sourceText.includes(specifier))
+  ) {
+    return true;
+  }
+  return moduleSpecifiers.some((specifier) => {
+    const resolvedPath = options.resolveModule?.(specifier, source.sourcePath);
+    return (
+      (resolvedPath !== undefined &&
+        path.normalize(resolvedPath) === path.normalize(frontier.sourcePath)) ||
+      (options.resolveModule === undefined &&
+        options.matchesTargetImport?.(specifier, source.sourcePath, frontier.sourcePath) === true)
+    );
+  });
+}
 /**
  * Climbs private same-module component usages until an importable owner export is reached.
  */
@@ -715,7 +767,6 @@ function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromoti
   const visitedLocalOwners = new Set<string>();
   const localOwnerNames: string[] = [];
   let currentSlice = candidate.slice;
-
   for (let depth = 0; depth <= MAX_LOCAL_OWNER_DEPTH; depth += 1) {
     const owner = currentSlice.owner;
     if (owner === null) {
@@ -946,41 +997,4 @@ function freezePlan(options: {
     target: options.target,
     targetAutomaticProps: options.targetAutomaticProps,
   });
-}
-
-/**
- * Provides a dependency-free fallback resolver for isolated planner tests and conventional projects.
- * Production discovery supplies TypeScript's exact resolver; this fallback only accepts relative
- * imports that match an inventoried source path and never probes outside the supplied inventory.
- */
-function createLexicalInspectorModuleResolver(
-  sourcePaths: readonly string[],
-): ResolvePreviewRenderGraphModule {
-  const byStem = new Map<string, string>();
-  for (const sourcePath of sourcePaths) {
-    const normalizedPath = path.normalize(sourcePath);
-    byStem.set(removeInspectorSourceExtension(normalizedPath), normalizedPath);
-    const basename = path.basename(normalizedPath).replace(/\.[^.]+$/u, '');
-    if (basename === 'index') {
-      byStem.set(path.dirname(normalizedPath), normalizedPath);
-    }
-  }
-  return (moduleSpecifier, consumerPath) => {
-    if (!moduleSpecifier.startsWith('.')) {
-      return undefined;
-    }
-    return byStem.get(
-      removeInspectorSourceExtension(
-        path.resolve(
-          path.dirname(consumerPath),
-          moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier,
-        ),
-      ),
-    );
-  };
-}
-
-/** Normalizes extensionful and extensionless relative imports to one inventory lookup key. */
-function removeInspectorSourceExtension(sourcePath: string): string {
-  return path.normalize(sourcePath).replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
 }

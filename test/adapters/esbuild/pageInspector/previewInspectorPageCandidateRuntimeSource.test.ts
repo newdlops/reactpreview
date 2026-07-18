@@ -62,7 +62,10 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('.then(() => definition.load())');
     expect(source).toContain('Loading authored page context…');
     expect(source).toContain('createPreviewCandidateRouterElement(rootElement');
-    expect(source).toContain('ownsRouter: candidate?.rootOwnsRouter === true');
+    expect(source).toContain(
+      'ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true',
+    );
+    expect(source).toContain('PreviewInspectorTargetReachabilityProbe');
     expect(source).toContain('previewInspectorSession.selectedPageCandidateId = candidateId');
   });
 });
@@ -95,6 +98,7 @@ function findSelectedPreviewInspectorDescriptor() { return descriptor; }
 function notifyPreviewInspector() { notifications += 1; }
 function persistPreviewInspectorState() { persisted += 1; }
 function schedulePreviewInspectorCommitRefresh() { scheduled += 1; }
+function resetPreviewInspectorTargetReachability() { /* composed runtime owns traversal reset */ }
 const initial = readSelectedPreviewInspectorPageCandidate(descriptor);
 previewInspectorSession.selectedPageCandidateId = initial.id;
 selectPreviewInspectorPageCandidate('staff-path');

@@ -14,6 +14,8 @@ import {
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 
 const MAX_FRONTIER_DEPTH = 10;
+const REEXPORTED_MODULE_SPECIFIER_PATTERN =
+  /\bexport\s+(?:\*|\{[^}]*\})\s+from\s*(["'])([^"'\r\n]+)\1/gu;
 
 /** One already-read package source accepted by the bounded ancestor planner. */
 export interface PreviewInspectorFrontierSource {
@@ -65,6 +67,9 @@ export function collectPreviewInspectorModuleFrontiers(
     const knownFrontiers = [...frontierByPath.values()];
     for (const source of sources) {
       const normalizedSourcePath = path.normalize(source.sourcePath);
+      if (!mayContainModuleFrontier(options, source, knownFrontiers)) {
+        continue;
+      }
       const sourceFile = readSourceFile(source, sourceFileByPath);
       const previous = frontierByPath.get(normalizedSourcePath);
       const discoveredNames = new Set(previous?.exportNames ?? []);
@@ -107,6 +112,38 @@ export function collectPreviewInspectorModuleFrontiers(
     if (!changed) break;
   }
   return Object.freeze([...frontierByPath.values()]);
+}
+
+/**
+ * Rejects ordinary exported components before allocating a TypeScript AST for frontier discovery.
+ * Text identity is a fast path; opaque alias re-exports receive an exact resolver check so the gate
+ * changes cost only and never weakens configured-path correctness.
+ */
+function mayContainModuleFrontier(
+  options: CollectPreviewInspectorModuleFrontiersOptions,
+  source: PreviewInspectorFrontierSource,
+  frontiers: readonly PreviewInspectorModuleFrontier[],
+): boolean {
+  const sourceText = source.sourceText;
+  if (!sourceText.includes('export') && !sourceText.includes('lazy')) {
+    return false;
+  }
+  if (mayContainFrontierTextReference(sourceText, frontiers)) {
+    return true;
+  }
+  REEXPORTED_MODULE_SPECIFIER_PATTERN.lastIndex = 0;
+  for (const match of sourceText.matchAll(REEXPORTED_MODULE_SPECIFIER_PATTERN)) {
+    const moduleSpecifier = match[2];
+    if (
+      moduleSpecifier !== undefined &&
+      frontiers.some((frontier) =>
+        doesModuleSpecifierMatch(options, moduleSpecifier, source.sourcePath, frontier),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Adds names contributed by `export { X } from` and `export * from` declarations. */
@@ -154,7 +191,7 @@ function collectLazyExportedNames(
   if (
     !sourceFile.text.includes('lazy') ||
     !sourceFile.text.includes('import(') ||
-    !mayContainLazyFrontierReference(sourceFile.text, frontiers)
+    !mayContainFrontierTextReference(sourceFile.text, frontiers)
   ) {
     return;
   }
@@ -193,7 +230,7 @@ function collectLazyExportedNames(
  * Rejects unrelated lazy registries before the richer render-fact pass. Basenames and directory
  * names are only a performance prefilter; exact resolver/import checks still own correctness.
  */
-function mayContainLazyFrontierReference(
+function mayContainFrontierTextReference(
   sourceText: string,
   frontiers: readonly PreviewInspectorModuleFrontier[],
 ): boolean {

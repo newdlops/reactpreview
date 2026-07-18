@@ -9,7 +9,10 @@ import {
   PREVIEW_TARGET_SPECIFIER,
 } from '../previewPluginProtocol';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
-import { PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER } from './previewInspectorTargetPlugin';
+import {
+  createPreviewInspectorDirectTargetSpecifier,
+  PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER,
+} from './previewInspectorTargetPlugin';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
@@ -131,6 +134,21 @@ export function createPreviewInspectorRootSource(
       ']) }',
     ].join('');
   });
+  // Only the command-selected export receives a fallback entry. Emitting every current-file export
+  // would eagerly compile otherwise unused sibling graphs and defeat the preview's lazy boundary.
+  const directTargetExportNames = [plan.target.exportName];
+  for (const exportName of directTargetExportNames) assertExportName(exportName);
+  const directTargetDefinitions = directTargetExportNames.map((exportName) =>
+    [
+      '{ directTarget: true, id: ',
+      JSON.stringify(`direct-target:${exportName}`),
+      ', targetExportName: ',
+      JSON.stringify(exportName),
+      ', load: () => import(',
+      JSON.stringify(createPreviewInspectorDirectTargetSpecifier(exportName)),
+      ').then((module) => module.default) }',
+    ].join(''),
+  );
   const primaryRootIsTarget =
     path.normalize(plan.root.sourcePath) === path.normalize(plan.target.sourcePath);
   const descriptor = {
@@ -158,7 +176,10 @@ export function createPreviewInspectorRootSource(
   };
 
   return [
-    `const __reactPreviewInspectorCandidates = Object.freeze([${candidateDefinitions.join(',')}]);`,
+    `const __reactPreviewInspectorCandidates = Object.freeze([${[
+      ...candidateDefinitions,
+      ...directTargetDefinitions,
+    ].join(',')}]);`,
     `const __reactPreviewInspectorDescriptor = ${JSON.stringify(descriptor)};`,
     '/** Delegates candidate selection and Suspense loading to the entry-owned Inspector runtime. */',
     'function __reactPreviewInspectorRoot(props) {',

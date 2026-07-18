@@ -101,6 +101,7 @@ function selectPreviewInspectorPageCandidate(candidateId) {
     return;
   }
   if (previewInspectorSession.selectedPageCandidateId === candidateId) return;
+  resetPreviewInspectorTargetReachability();
   previewInspectorSession.selectedPageCandidateId = candidateId;
   previewInspectorSession.selectedTreeNodeId = undefined;
   persistPreviewInspectorState();
@@ -113,7 +114,17 @@ function PreviewInspectorPageCandidateLoader({ definitions, targetProps }) {
   usePreviewInspectorStore();
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
-  const definition = definitions.find((item) => item?.id === candidate?.id) ?? definitions[0];
+  const reachability = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+  const pageDefinition = definitions.find((item) => item?.id === candidate?.id) ??
+    definitions.find((item) => item?.directTarget !== true);
+  const directDefinition = definitions.find((item) =>
+    item?.directTarget === true &&
+    item?.targetExportName === reachability.targetExportName,
+  );
+  const definition = reachability.directTarget && directDefinition !== undefined
+    ? directDefinition
+    : pageDefinition ?? definitions[0];
+  const directTarget = definition?.directTarget === true;
   const [loadState, setLoadState] = React.useState({ definition: undefined, status: 'loading' });
   React.useEffect(() => {
     let active = true;
@@ -149,14 +160,22 @@ function PreviewInspectorPageCandidateLoader({ definitions, targetProps }) {
     return React.createElement(
       'div',
       { className: 'react-preview-suspense-placeholder', role: 'status' },
-      'Loading authored page context…',
+      directTarget ? 'Loading selected component fallback…' : 'Loading authored page context…',
     );
   }
   if (loadState.status === 'failed') throw loadState.error;
-  const rootElement = createPreviewInspectorElement(loadState.value, targetProps);
-  return createPreviewCandidateRouterElement(rootElement, {
-    ownsRouter: candidate?.rootOwnsRouter === true,
+  const rootElement = createPreviewInspectorElement(
+    loadState.value,
+    directTarget ? (candidate?.targetAutomaticProps ?? {}) : targetProps,
+  );
+  const routedElement = createPreviewCandidateRouterElement(rootElement, {
+    ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true,
   });
+  return React.createElement(
+    PreviewInspectorTargetReachabilityProbe,
+    { candidate, descriptor, directTarget, directTargetAvailable: directDefinition !== undefined },
+    routedElement,
+  );
 }
 
 /** Creates a React element from generated lazy-loader definitions without exposing React globally. */

@@ -68,6 +68,9 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain(
       'load: () => import("/workspace/application/Page.tsx").then((module) => module["Page"])',
     );
+    expect(source).toContain(
+      'directTarget: true, id: "direct-target:Target", targetExportName: "Target", load: () => import("react-preview:inspector-direct-target/Target").then((module) => module.default)',
+    );
     expect(source).toContain('"rootAutomaticProps":{"route":"/preview"}');
     expect(source).toContain('"rootInferredPropShape":{"kind":"object"');
     expect(source).toContain('"rootInferredProps":[{"kind":"string","path":"companyId"');

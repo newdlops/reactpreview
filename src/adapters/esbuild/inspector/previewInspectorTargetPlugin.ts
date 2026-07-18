@@ -4,13 +4,14 @@
  * allowing a nested target to register DOM highlights and accept runtime prop overrides.
  */
 import path from 'node:path';
-import type { OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { matchesPreviewParentSliceTargetImport } from '../parentSlice/previewParentSliceImports';
 import { PREVIEW_INSPECTOR_TARGET_NAMESPACE } from '../previewPluginProtocol';
 import type { PreviewInferredPropsByExport } from '../staticResources/reactExportPropInference';
 
 const INSPECTOR_TARGET_FACADE_PATH = 'selected-target-facade';
+const INSPECTOR_DIRECT_TARGET_PATH_PREFIX = 'selected-direct-target:';
 const INSPECTOR_ORIGINAL_TARGET_SPECIFIER = 'react-preview:inspector-original-target';
 const INSPECTOR_RESOLUTION_GUARD = 'reactPreviewInspectorResolutionGuard';
 
@@ -18,6 +19,15 @@ const INSPECTOR_RESOLUTION_GUARD = 'reactPreviewInspectorResolutionGuard';
 export const PREVIEW_INSPECTOR_RUNTIME_SPECIFIER = 'react-preview:inspector-runtime';
 /** Direct facade import used when the selected target is itself the inspector mount root. */
 export const PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER = 'react-preview:inspector-target-facade';
+/** Prefix for tree-shakeable per-export dynamic entry modules used only after path traversal stalls. */
+export const PREVIEW_INSPECTOR_DIRECT_TARGET_SPECIFIER_PREFIX =
+  'react-preview:inspector-direct-target/';
+
+/** Creates an opaque virtual specifier without embedding an export name as source syntax. */
+export function createPreviewInspectorDirectTargetSpecifier(exportName: string): string {
+  assertExportName(exportName);
+  return PREVIEW_INSPECTOR_DIRECT_TARGET_SPECIFIER_PREFIX + encodeURIComponent(exportName);
+}
 
 /** Metadata passed to the browser-side target wrapper without evaluating project code. */
 export interface PreviewInspectorTargetMetadata {
@@ -76,6 +86,17 @@ export function createPreviewInspectorTargetPlugin(
         path: INSPECTOR_TARGET_FACADE_PATH,
       };
     }
+    if (arguments_.path.startsWith(PREVIEW_INSPECTOR_DIRECT_TARGET_SPECIFIER_PREFIX)) {
+      const encodedExportName = arguments_.path.slice(
+        PREVIEW_INSPECTOR_DIRECT_TARGET_SPECIFIER_PREFIX.length,
+      );
+      const exportName = decodePreviewInspectorDirectTargetExportName(encodedExportName);
+      if (exportName === undefined || !selectedExportNames.includes(exportName)) return undefined;
+      return {
+        namespace: PREVIEW_INSPECTOR_TARGET_NAMESPACE,
+        path: INSPECTOR_DIRECT_TARGET_PATH_PREFIX + encodeURIComponent(exportName),
+      };
+    }
     if (
       arguments_.importer.length === 0 ||
       !path.isAbsolute(arguments_.importer) ||
@@ -107,6 +128,28 @@ export function createPreviewInspectorTargetPlugin(
         runtimeSpecifier,
         sourcePath: documentPath,
       }),
+      loader: 'js',
+      resolveDir: path.dirname(documentPath),
+    };
+  }
+
+  /** Supplies one exact static facade import so an unused sibling export remains tree-shakeable. */
+  function loadDirectTarget(arguments_: OnLoadArgs): OnLoadResult {
+    const exportName = decodePreviewInspectorDirectTargetExportName(
+      arguments_.path.slice(INSPECTOR_DIRECT_TARGET_PATH_PREFIX.length),
+    );
+    if (exportName === undefined || !selectedExportNames.includes(exportName)) {
+      throw new TypeError('Invalid React Preview direct target export.');
+    }
+    const importClause =
+      exportName === 'default'
+        ? '__reactPreviewDirectTarget'
+        : `{ ${exportName} as __reactPreviewDirectTarget }`;
+    return {
+      contents: [
+        `import ${importClause} from ${JSON.stringify(PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER)};`,
+        'export default __reactPreviewDirectTarget;',
+      ].join('\n'),
       loader: 'js',
       resolveDir: path.dirname(documentPath),
     };
@@ -154,8 +197,26 @@ export function createPreviewInspectorTargetPlugin(
         { filter: /^selected-target-facade$/, namespace: PREVIEW_INSPECTOR_TARGET_NAMESPACE },
         loadTargetFacade,
       );
+      build.onLoad(
+        {
+          filter: /^selected-direct-target:/,
+          namespace: PREVIEW_INSPECTOR_TARGET_NAMESPACE,
+        },
+        loadDirectTarget,
+      );
     },
   };
+}
+
+/** Decodes a bounded virtual export identity and rejects malformed URI escape sequences. */
+function decodePreviewInspectorDirectTargetExportName(value: string): string | undefined {
+  try {
+    const decoded = decodeURIComponent(value);
+    assertExportName(decoded);
+    return decoded;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Limits guarded esbuild alias resolution to imports whose path still names the target module. */

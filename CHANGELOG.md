@@ -2,6 +2,43 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1051 - 2026-07-18
+
+- Page Inspector 렌더러에 전체 viewport page frame과 실제 Fiber host 경계 기반 React component placement
+  wireframe을 기본 표시하고, 현재 파일 export는 별도 색으로 구분하며 toolbar에서 즉시 켜고 끌 수 있게 추가
+- 렌더 실패로 host DOM을 만들지 못한 component도 가장 가까운 surviving parent 안에 `Unrendered` 점선
+  placeholder로 배치하고 condition/hook/data/path/target blocker를 그 위치의 클릭 가능한 경고 마커로 표시
+- wireframe blocker를 클릭하면 접힌 Inspector를 펼치고 기존 검색 필터를 해제한 뒤 정확한 component-tree ancestor를
+  자동 확장·스크롤하며, 같은 blocker detail에서 payload/pass/retry 값을 바로 편집하도록 연결
+- Fiber snapshot의 DOM map을 직렬화 불가능한 비열거 runtime index로 UI tree까지 보존하고, scroll/resize 좌표
+  갱신을 animation frame으로 합치며 화면당 160개 outline·768개 tree visit 한도를 적용
+
+## 0.1.1050 - 2026-07-18
+
+- 로그인·권한·로딩 화면처럼 오류 없이 정상 commit됐지만 현재 파일의 target export를 호출하지 않은 경우를
+  `target-reachability` 논리 blocker로 판정하고 root→route→target application path에 표시
+- component-local `if (...) return <Login />`/`return null` early exit와 기존 ternary/fallback condition에
+  target continuation branch·정확한 owner metadata를 추가하고, 정적 경로에 속한 gate를 바깥쪽부터 한 개씩
+  자동 통과해 다음 commit에서 새로 드러난 hook/API 소비 필드를 점진적으로 수집
+- 같은 traversal pass에서 발견된 session/context hook required path와 GraphQL/REST response shape만 경로별로
+  묶어 blocker detail에 표시하고, 사용자 condition/payload override가 자동 DFS 결정보다 항상 우선하도록 보장
+- 더 이상 안전하게 통과할 정적 gate가 없으면 선택 파일의 대표 export를 기존 Router/Theme/provider/Auto payload
+  경계 안에서 직접 렌더하며, `Retry application path`와 `Render target directly`를 Inspector에서 명시적으로 제공
+- 직접 fallback을 export별 tree-shakeable 가상 모듈로 격리하고 command-selected export만 생성해 사용하지 않은
+  sibling component와 전체 파일 graph가 번들에 추가되는 회귀를 방지
+
+## 0.1.1049 - 2026-07-17
+
+- hook/API 계측 시 source 위치뿐 아니라 직접 소유 함수·컴포넌트와 렌더에 실제 필요한 property path를 함께
+  보존해 blocker가 동명의 다른 파일이나 공용 `Unlocated` 그룹이 아닌 정확한 component branch에 연결되도록 변경
+- 실패로 Fiber가 사라진 컴포넌트는 React component stack으로 `page → blocked component → blocker` 합성 경로를
+  복원하고 `render blocked here` badge를 표시하며, 실제 렌더 영역에도 실패 컴포넌트명과 missing property를 가진
+  retry placeholder를 남기도록 개선
+- 함수/undefined가 JSON 직렬화에서 제거되어 pass-value editor가 `{}`로 보이던 문제를 해결하고, inferred callback을
+  `[Preview no-op function]`으로 표시한 뒤 적용 시에만 inert function으로 복원하며 required property tree를 자동 생성
+- Auto payload가 꺼져 빈 seed `{}`가 선택되어도 추론된 suggested payload와 flattened response property 목록을
+  Payload/Blocker detail에 제공하고 선택한 data blocker의 정확한 request editor를 열도록 수정
+
 ## 0.1.1048 - 2026-07-17
 
 - Page Inspector tree를 `Workspace React render root`에서 시작하고 실행하지 않은 application

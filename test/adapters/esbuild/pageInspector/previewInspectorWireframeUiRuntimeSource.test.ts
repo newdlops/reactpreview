@@ -9,6 +9,8 @@ import {
 
 /** Minimal tree record consumed by the generated layout collector. */
 interface WireframeNode {
+  readonly blocker?: { readonly mode?: string };
+  readonly blockerKind?: string;
   readonly blockedOwner?: boolean;
   readonly children: readonly WireframeNode[];
   readonly condition?: { readonly effectiveEnabled?: boolean };
@@ -128,8 +130,8 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     });
   });
 
-  /** Keeps disabled conditions visible as blockers while omitting already-passing conditions. */
-  it('marks only conditions that currently prevent their render branch', () => {
+  /** Keeps authored branch toggles in the Inspector without mislabeling dormant JSX as failures. */
+  it('does not mark ordinary enabled or disabled conditions as runtime blockers', () => {
     const runtime = evaluateWireframeRuntime();
     const layout = runtime.collect(
       {
@@ -162,8 +164,68 @@ describe('Preview Inspector wireframe UI runtime source', () => {
       { height: 600, width: 800 },
     );
 
-    expect(layout.blockers.map((item) => item.node.id)).toEqual(['condition:off']);
+    expect(layout.blockers).toEqual([]);
     expect(layout.context.map((item) => item.name)).toContain('Workspace React render root');
+  });
+
+  /** Does not paint successful Auto substitutions as failures or synthesize their hook owners. */
+  it('omits assisted runtime values from blocker markers and failed-owner placeholders', () => {
+    const runtime = evaluateWireframeRuntime();
+    const layout = runtime.collect(
+      {
+        roots: [
+          {
+            blockedOwner: true,
+            children: [
+              {
+                blocker: { mode: 'auto' },
+                blockerKind: 'runtime-fallback',
+                children: [],
+                id: 'fallback:query',
+                kind: 'blocker',
+                name: 'Missing hook value · useQuery',
+              },
+            ],
+            id: 'synthetic:useQuery',
+            kind: 'component',
+            mounted: false,
+            name: 'useQuery',
+          },
+        ],
+      },
+      { height: 600, width: 800 },
+    );
+
+    expect(layout.blockers).toEqual([]);
+    expect(layout.boxes).toEqual([]);
+  });
+
+  /** Coalesces identical visual ownership and keeps the current-file component as representative. */
+  it('deduplicates shared component rectangles without retaining generic styled wrappers', () => {
+    const runtime = evaluateWireframeRuntime();
+    const sharedHost = hostRect(20, 30, 500, 240);
+    const snapshot = {
+      hostNodesById: new Map<string, readonly object[]>([
+        ['layout', [sharedHost]],
+        ['target', [sharedHost]],
+        ['styled', [sharedHost]],
+      ]),
+      roots: [
+        { children: [], id: 'layout', kind: 'function', name: 'DashboardLayout' },
+        {
+          children: [],
+          currentFileExport: true,
+          id: 'target',
+          kind: 'function',
+          name: 'InvestmentAnalysisPage',
+        },
+        { children: [], id: 'styled', kind: 'forward-ref', name: 'Styled(Component)' },
+      ],
+    };
+
+    const layout = runtime.collect(snapshot, { height: 720, width: 900 });
+
+    expect(layout.boxes.map((item) => item.node.id)).toEqual(['target']);
   });
 
   /** Preserves live maps as hidden runtime-only fields through serializable tree enrichment. */
@@ -234,6 +296,9 @@ function evaluateWireframeRuntime(
       const previewInspectorPostHostMessage = (message) => hostMessages.push(message);
       const isPreviewInspectorBlockerNode = (node) =>
         node?.kind === 'blocker' || node?.kind === 'condition';
+      const isPreviewInspectorBlockingNode = (node) =>
+        node?.kind !== 'condition' &&
+        (node?.blockerKind !== 'runtime-fallback' || node?.blocker?.mode === 'disabled');
       const findSelectedPreviewInspectorDescriptor = () => undefined;
       const readSelectedPreviewInspectorPageCandidate = () => undefined;
       ${createPreviewInspectorWireframeUiRuntimeSource()}

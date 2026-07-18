@@ -144,7 +144,11 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
       status: blocker.status,
     },
     source: createPreviewInspectorBlockerSource(blocker),
-    state: { directTarget: blocker.directTarget, targetMounted: blocker.targetMounted },
+    state: {
+      directTarget: blocker.directTarget,
+      targetHasOutput: blocker.targetHasOutput,
+      targetMounted: blocker.targetMounted,
+    },
   };
 }
 

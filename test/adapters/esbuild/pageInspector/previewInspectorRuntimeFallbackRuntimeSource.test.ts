@@ -124,6 +124,48 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.warnings[0]).toContain('missing required fields');
   });
 
+  /** Keeps compiler-authored neutral leaves falsy while still replacing an absent hook field. */
+  it('preserves direct null sentinels used by fallback and error branches', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['data', 'fallback', 'refetch()', 'loading'],
+    };
+    const authored = {
+      data: undefined,
+      fallback: undefined,
+      loading: false,
+      refetch: () => undefined,
+    };
+
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ data: {}, fallback: null, loading: false, refetch: () => undefined }),
+      metadata,
+    ) as { data: object; fallback: unknown; loading: boolean; refetch: () => unknown };
+
+    expect(resolved.data).toEqual({});
+    expect(resolved.fallback).toBeNull();
+    expect(resolved.loading).toBe(false);
+    expect(resolved.refetch).toBe(authored.refetch);
+    expect(fixture.api.read()[0]?.generatedPaths).toEqual(['data', 'fallback']);
+  });
+
+  /** Does not rewrite an application's existing null guard value to a generated scalar. */
+  it('keeps authored null leaves when only scalar branch evidence is available', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const authored = { fallback: null, status: 'NONE' };
+
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ fallback: false, status: 'COMPLETED' }),
+      { ...createMetadata(), requiredPaths: ['fallback', 'status'] },
+    );
+
+    expect(resolved).toBe(authored);
+    expect(fixture.api.read()).toEqual([]);
+  });
+
   /** Leaves accessors, class instances, complete arrays, and authored callbacks untouched. */
   it('fails closed around executable or non-plain authored values', () => {
     const fixture = createRuntimeFallbackFixture(true);

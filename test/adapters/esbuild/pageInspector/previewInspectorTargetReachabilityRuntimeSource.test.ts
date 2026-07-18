@@ -8,6 +8,7 @@ interface ReachabilityResult {
   readonly blockerPath: readonly string[];
   readonly desiredValue: boolean;
   readonly expression: string;
+  readonly fallbackExpression: string;
   readonly key: string;
   readonly returnedTargetValue: boolean;
   readonly targetExportName: string;
@@ -66,12 +67,26 @@ describe('Preview Inspector target reachability runtime source', () => {
           sourcePath: '/workspace/Advertisement.tsx',
           truthyLabel: '<Advertisement>',
         });
+        previewInspectorSession.renderConditions.set('hoc-guard', {
+          effectiveEnabled: true,
+          expression: '<GuardedPage> gate: !isStaffMode',
+          id: 'hoc-guard',
+          kind: 'early-return',
+          ownerName: 'GuardedPage',
+          reachabilityDiscoveryOrder: 0,
+          reachabilityKey: state.key,
+          sourcePath: '/workspace/with-staff-page.tsx',
+          targetBranch: 'falsy',
+        });
         const next = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+        previewInspectorSession.renderConditions.delete('login');
+        const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
         const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
         globalThis.__result = {
           blockerPath: state.applicationPath,
           desiredValue: next.desiredValue,
           expression: next.condition.expression,
+          fallbackExpression: fallbackNext.condition.expression,
           key: state.key,
           returnedTargetValue: readPreviewInspectorTargetConditionValue({
             falsyLabel: 'continue <Application>',
@@ -88,6 +103,7 @@ describe('Preview Inspector target reachability runtime source', () => {
       blockerPath: ['Application', 'DashboardPanel'],
       desiredValue: false,
       expression: '<Application> gate: !session',
+      fallbackExpression: '<GuardedPage> gate: !isStaffMode',
       key: 'application-path:DashboardPanel',
       returnedTargetValue: true,
       targetExportName: 'DashboardPanel',
@@ -211,6 +227,8 @@ describe('Preview Inspector target reachability runtime source', () => {
         const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
         const recordPreviewInspectorConsoleEntry = () => undefined;
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        const collectPreviewInspectorFiberElements = (boundary) =>
+          boundary?.host === true ? [{}] : [];
         ${createPreviewInspectorTargetReachabilityRuntimeSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { Target: { paths: [] } },
@@ -250,6 +268,83 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
+  /** A mounted HOC that returns Navigate has no host output and must not terminate target DFS. */
+  it('continues through an off-graph HOC guard until the target produces host output', () => {
+    const context: {
+      __result?: {
+        readonly applied: readonly [string, boolean][];
+        readonly status: string;
+        readonly targetHasOutput: boolean;
+        readonly targetMounted: boolean;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        const applied = [];
+        const previewInspectorSession = {
+          boundariesByExport: new Map([['Target', new Set([{}])]]),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'Target',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const collectPreviewInspectorFiberElements = () => [];
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
+          applied.push([id, enabled]);
+        };
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Target: { paths: [] } },
+          target: { exportName: 'Target' },
+        } };
+        const candidate = {
+          edges: [],
+          id: 'page',
+          renderPath: { id: 'path', steps: [
+            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'Page' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        state.pageRootCommitted = true;
+        previewInspectorSession.renderConditions.set('guard', {
+          effectiveEnabled: true,
+          expression: '<GuardedPage> gate: !session',
+          id: 'guard',
+          ownerName: 'GuardedPage',
+          reachabilityDiscoveryOrder: 1,
+          reachabilityKey: state.key,
+          sourcePath: '/with-page-guard.tsx',
+          targetBranch: 'falsy',
+        });
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        globalThis.__result = {
+          applied,
+          status: state.status,
+          targetHasOutput: state.targetHasOutput,
+          targetMounted: state.targetMounted,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      applied: [['guard', false]],
+      status: 'advancing',
+      targetHasOutput: false,
+      targetMounted: true,
+    });
+  });
+
   /** Requires a real page commit and never auto-promotes target-only diagnostics to success. */
   it('marks success only when page root and target commit in the same corridor', () => {
     const context: {
@@ -280,6 +375,8 @@ describe('Preview Inspector target reachability runtime source', () => {
         const clearPreviewInspectorTargetGuidedConditionOverrides = () => false;
         const recordPreviewInspectorConsoleEntry = () => undefined;
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        const collectPreviewInspectorFiberElements = (boundary) =>
+          boundary?.host === true ? [{}] : [];
         ${createPreviewInspectorTargetReachabilityRuntimeSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { DashboardPanel: { paths: [] } },
@@ -295,7 +392,7 @@ describe('Preview Inspector target reachability runtime source', () => {
           root: { exportName: 'DashboardPage' },
         };
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
-        previewInspectorSession.boundariesByExport.set('DashboardPanel', new Set([{}]));
+        previewInspectorSession.boundariesByExport.set('DashboardPanel', new Set([{ host: true }]));
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         const pagePendingStatus = state.status;
         state.pageRootCommitted = true;

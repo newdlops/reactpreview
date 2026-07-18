@@ -152,7 +152,14 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
     if (blockedInspectorPropNames.has(propertyName)) return root;
     const atLeaf = index === path.length - 1;
     if (atLeaf) {
-      if (current[propertyName] === undefined || current[propertyName] === null) {
+      /*
+       * A direct null leaf is commonly an authored neutral sentinel such as fallback: null,
+       * error: null, or selectedItem: null. Turning it into a truthy lorem value can activate
+       * the very fallback/guard branch the preview is trying to avoid. Missing and undefined
+       * leaves remain eligible for generation; a null intermediate container is still replaced
+       * above when a deeper demanded path proves that an object or array is required.
+       */
+      if (!Object.hasOwn(current, propertyName) || current[propertyName] === undefined) {
         current[propertyName] = smartMinimum
           ? createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, smartSeed)
           : createPreviewInspectorRequiredPathLeaf(propertyName, callable);

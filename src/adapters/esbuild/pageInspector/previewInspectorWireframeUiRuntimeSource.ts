@@ -136,14 +136,38 @@ function readPreviewInspectorWireframeHostRect(snapshot, nodeId, viewport, rectB
 function isPreviewInspectorWireframeComponentNode(node) {
   if (node === null || typeof node !== 'object' || node.contextOnly === true) return false;
   if (isPreviewInspectorBlockerNode(node) || node.kind === 'condition') return false;
-  return node.kind !== 'host' && node.kind !== 'text' && node.kind !== 'condition-group';
+  if (node.role === 'transparent-wrapper') return false;
+  if (['host', 'text', 'condition-group', 'context', 'other', 'suspense'].includes(node.kind)) {
+    return false;
+  }
+  const name = typeof node.name === 'string' ? node.name : '';
+  if (
+    name.length === 0 ||
+    ['Anonymous', 'ForwardRef', 'Fragment', 'Suspense', 'function'].includes(name) ||
+    name.startsWith('Styled(') ||
+    name.startsWith('styled.')
+  ) {
+    return false;
+  }
+  return true;
 }
 
-/** A disabled condition is a layout blocker; enabled conditions remain ordinary tree controls. */
+/** Shows only unresolved render stops; dormant authored branches remain ordinary Inspector controls. */
 function isPreviewInspectorWireframeBlockingNode(node) {
-  if (!isPreviewInspectorBlockerNode(node)) return false;
-  if (node?.kind !== 'condition') return true;
-  return node.condition?.effectiveEnabled !== true;
+  return isPreviewInspectorBlockerNode(node) && isPreviewInspectorBlockingNode(node);
+}
+
+/** Reports whether a synthetic failed owner still contains a blocker that actively stops output. */
+function hasPreviewInspectorWireframeBlockingDescendant(node) {
+  const pending = [...(node?.children ?? [])];
+  let visited = 0;
+  while (pending.length > 0 && visited < PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT) {
+    const child = pending.shift();
+    visited += 1;
+    if (isPreviewInspectorWireframeBlockingNode(child)) return true;
+    pending.push(...(child?.children ?? []));
+  }
+  return false;
 }
 
 /** Creates a bounded placeholder for a failed component that has no measurable host output. */
@@ -190,6 +214,32 @@ function assignPreviewInspectorWireframeLabelOffsets(boxes) {
 }
 
 /**
+ * Collapses transparent React ownership layers that resolve to the same visual rectangle.
+ * The selected current-file export wins, followed by source-backed authored components, so dozens
+ * of styled/HOC layers cannot darken one page region or stack unreadable labels over its content.
+ */
+function coalescePreviewInspectorWireframeBoxes(boxes) {
+  const selectedByRect = new Map();
+  const score = (box) =>
+    (box.node?.currentFileExport === true ? 10_000 : 0) +
+    (box.node?.source?.approximate === false ? 1_000 : 0) +
+    (box.node?.kind === 'function' || box.node?.kind === 'class' ? 200 : 0) +
+    (/(?:Page|Layout|Section|Panel|Modal)$/u.test(box.node?.name ?? '') ? 100 : 0) +
+    Math.min(99, box.depth);
+  for (const box of boxes) {
+    const signature = [
+      Math.round(box.rect.left),
+      Math.round(box.rect.top),
+      Math.round(box.rect.width),
+      Math.round(box.rect.height),
+    ].join(':');
+    const previous = selectedByRect.get(signature);
+    if (previous === undefined || score(box) > score(previous)) selectedByRect.set(signature, box);
+  }
+  return [...selectedByRect.values()];
+}
+
+/**
  * Builds a viewport-only layout model. Tree traversal supplies ownership for blockers even when
  * their failed component never committed a Fiber host node.
  */
@@ -207,7 +257,7 @@ function collectPreviewInspectorWireframeLayout(snapshot, viewport = readPreview
     for (const node of nodes) {
       if (visitCount >= PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT) return;
       visitCount += 1;
-      if (node?.contextOnly === true && context.length < 12 && node.edgeKind !== 'current-file-export') {
+      if (node?.contextOnly === true && context.length < 6 && node.edgeKind !== 'current-file-export') {
         context.push({ depth, id: node.id, name: node.name });
       }
       if (isPreviewInspectorWireframeBlockingNode(node)) {
@@ -237,7 +287,7 @@ function collectPreviewInspectorWireframeLayout(snapshot, viewport = readPreview
           boxes.push({ depth, node, placeholder: false, rect: measured });
         }
       } else if (
-        node?.blockedOwner === true ||
+        (node?.blockedOwner === true && hasPreviewInspectorWireframeBlockingDescendant(node)) ||
         (node?.mounted === false && node?.currentFileExport === true)
       ) {
         const placeholder = createPreviewInspectorWireframePlaceholderRect(
@@ -257,7 +307,7 @@ function collectPreviewInspectorWireframeLayout(snapshot, viewport = readPreview
   return {
     blockers: blockers.slice(0, PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT),
     boxes: assignPreviewInspectorWireframeLabelOffsets(
-      boxes.slice(0, PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT),
+      coalescePreviewInspectorWireframeBoxes(boxes).slice(0, 48),
     ),
     context,
     truncated: visitCount >= PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT,
@@ -335,15 +385,6 @@ function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) 
       'div',
       { className: 'rpi-wireframe-page-frame' },
       React.createElement('span', { className: 'rpi-wireframe-page-label' }, 'Page · ' + pageName),
-    ),
-    React.createElement(
-      'div',
-      { 'aria-hidden': true, className: 'rpi-wireframe-context-rail' },
-      layout.context.map((item) => React.createElement(
-        'span',
-        { className: 'rpi-wireframe-context-chip', key: item.id },
-        item.name,
-      )),
     ),
     layout.boxes.map((item) => React.createElement(
       'div',

@@ -150,6 +150,18 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   }
   state.nodes += 1;
   if (authored === null || authored === undefined) {
+    /*
+     * Preserve matching sentinels and direct scalar replacements for an authored null. A deeper
+     * demanded object/array or callable still replaces null because its shape proves dereference or
+     * invocation; a scalar merely used by a branch must not turn a neutral fallback into content.
+     */
+    const generatedType = typeof generated;
+    if (
+      authored === generated ||
+      (authored === null && generated !== null && generatedType !== 'object' && generatedType !== 'function')
+    ) {
+      return { changed: false, value: authored };
+    }
     recordPreviewInspectorGeneratedPath(state, path);
     return { changed: true, value: generated };
   }

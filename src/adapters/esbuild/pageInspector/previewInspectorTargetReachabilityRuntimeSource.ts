@@ -95,6 +95,7 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     rootName: candidate?.root?.exportName ?? descriptor?.inspector?.root?.exportName ?? 'Application',
     status: 'probing',
     targetExportName,
+    targetHasOutput: false,
     targetMounted: false,
   };
 }
@@ -190,24 +191,30 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
   return undefined;
 }
 
-/** Chooses only the first newly revealed, path-local gate so each pass behaves like bounded DFS. */
+/**
+ * Chooses only the first newly revealed continuation gate so each pass behaves like bounded DFS.
+ * Exact caller-path evidence wins. A compiler-proven continuation from the same live reachability
+ * pass is the bounded fallback because HOC guard modules are descendants of the target import and
+ * therefore do not necessarily appear in the reverse caller graph.
+ */
 function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
   initializePreviewInspectorConditionState();
   const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
   return [...previewInspectorSession.renderConditions.values()]
     .filter((condition) =>
       condition?.reachabilityKey === state.key &&
-      !previewInspectorSession.renderConditionOverrides.has(condition.id) &&
-      isPreviewInspectorConditionOnTargetPath(condition, evidence),
+      !previewInspectorSession.renderConditionOverrides.has(condition.id),
     )
     .map((condition) => ({
       condition,
       desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
+      pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
     }))
     .filter(({ condition, desiredValue }) =>
       typeof desiredValue === 'boolean' && condition.effectiveEnabled !== desiredValue,
     )
     .sort((left, right) =>
+      Number(right.pathLocal) - Number(left.pathLocal) ||
       (left.condition.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) -
         (right.condition.reachabilityDiscoveryOrder ?? Number.MAX_SAFE_INTEGER) ||
       (left.condition.line ?? 0) - (right.condition.line ?? 0),
@@ -220,11 +227,27 @@ function hasMountedPreviewInspectorTarget(state) {
   return boundaries instanceof Set && boundaries.size > 0;
 }
 
-/** Reports success only when the authored page root and exact target share one live render. */
+/**
+ * Requires the selected boundary to own connected host output and to remain error-free.
+ * A HOC can mount the facade boundary and immediately return Navigate/null before invoking the
+ * authored visual component; treating that boundary alone as success stops DFS on a blank page.
+ */
+function hasPreviewInspectorTargetHostOutput(state) {
+  const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  if (!(boundaries instanceof Set)) return false;
+  for (const boundary of boundaries) {
+    if (boundary?.state?.error !== undefined) continue;
+    if (collectPreviewInspectorFiberElements(boundary).length > 0) return true;
+  }
+  return false;
+}
+
+/** Reports success only when the authored root and a visible selected target share one live render. */
 function hasReachedPreviewInspectorPageCorridor(state) {
   return state.directTarget !== true &&
     state.pageRootCommitted === true &&
-    state.targetMounted === true;
+    state.targetMounted === true &&
+    state.targetHasOutput === true;
 }
 
 /** Returns the user-started bounded search that follows newly revealed hook and data requirements. */
@@ -355,6 +378,7 @@ function activatePreviewInspectorDirectTarget(state) {
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
+  state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
   if (hasReachedPreviewInspectorPageCorridor(state)) {
     completePreviewInspectorMinimumRequirementSearch(state);
     state.status = 'reached';
@@ -363,7 +387,11 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     return;
   }
   if (state.directTarget) {
-    state.status = state.targetMounted ? 'target-only' : 'target-only-loading';
+    state.status = state.targetHasOutput
+      ? 'target-only'
+      : state.targetMounted
+        ? 'target-only-empty'
+        : 'target-only-loading';
     schedulePreviewInspectorTreeRefresh();
     return;
   }
@@ -543,6 +571,7 @@ function returnPreviewInspectorToPageContext() {
   state.idlePasses = 0;
   state.pageRootCommitted = false;
   state.status = 'probing';
+  state.targetHasOutput = false;
   state.targetMounted = false;
   state.probeRevision += 1;
   notifyPreviewInspector();

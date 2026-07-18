@@ -2,6 +2,21 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1060 - 2026-07-19
+
+- HOC export의 Inspector boundary만 mount되고 내부 guard가 `Navigate`/`null`을 반환한 상태를 성공으로 오판하지
+  않도록, page root와 선택 target이 실제 host output을 함께 commit해야 target 도달로 판정
+- reverse caller graph에 나타나지 않는 HOC guard도 같은 live reachability pass의 compiler-proven continuation이면
+  bounded DFS 후보로 사용해 로그인/권한 wrapper 뒤의 실제 current-file component까지 자동 진행
+- `fallback: null`/`error: null`처럼 branch를 비활성화하는 명시적 중립값을 lorem scalar로 바꾸지 않고,
+  더 깊은 object/array/callable path가 증명된 경우에만 필요한 형태를 보완
+- Auto hook/API 값처럼 이미 통과된 보조값과 단순히 꺼진 JSX condition을 wireframe의 빨간 blocker에서 제외하고,
+  실제 미해결 render stop만 `!` marker로 표시
+- 동일한 DOM 사각형을 공유하는 HOC/styled/Fiber ownership을 의미 있는 React component 하나로 합치고 generic wrapper,
+  중복 배경, 상단 route chip을 제거해 wireframe 아래 실제 페이지와 current-file highlight가 가려지지 않도록 개선
+- `rtcc-poc-page`의 `investment-contract-analysis-page.tsx`를 2,213개 의존성의 full page context로 직접 검증해
+  guard 자동 통과 후 breadcrumb, page title, status panel과 정적 payload file list가 commit되는 것을 확인
+
 ## 0.1.1059 - 2026-07-18
 
 - Components tree의 root/nested list를 intrinsic `max-content` 폭으로 유지하고 row를 줄바꿈하지 않게 바꿔,

@@ -55,6 +55,7 @@ interface WireframeRuntime {
   ) => Record<string, unknown>;
   readonly consumeReveal: (nodeId: string) => boolean;
   readonly revealBlocker: (node: WireframeNode, setCollapsed: (value: boolean) => void) => void;
+  readonly readSession: () => Record<string, unknown>;
 }
 
 /** DOM-like host sufficient for the geometry collector's defensive element checks. */
@@ -181,7 +182,8 @@ describe('Preview Inspector wireframe UI runtime source', () => {
   it('selects a blocker and records its exact tree row for reveal', () => {
     const selected: WireframeNode[] = [];
     const collapsedValues: boolean[] = [];
-    const runtime = evaluateWireframeRuntime(selected);
+    const hostMessages: unknown[] = [];
+    const runtime = evaluateWireframeRuntime(selected, hostMessages);
     const blocker: WireframeNode = {
       children: [],
       id: 'blocker:query',
@@ -193,6 +195,8 @@ describe('Preview Inspector wireframe UI runtime source', () => {
 
     expect(selected).toEqual([blocker]);
     expect(collapsedValues).toEqual([false]);
+    expect(runtime.readSession()).toMatchObject({ activeTab: 'blocker', blockerDetailRevision: 1 });
+    expect(hostMessages).toEqual([{ type: 'react-preview-inspector-companion-reveal' }]);
     expect(runtime.consumeReveal(blocker.id)).toBe(true);
     expect(runtime.consumeReveal(blocker.id)).toBe(false);
   });
@@ -206,18 +210,28 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
     expect(source).toContain('onSelectBlocker(item.node)');
+    expect(source).toContain("'!',");
+    expect(source).not.toContain("React.createElement('span', { 'aria-hidden': true }, '⚠')");
     expect(source).toContain('requestAnimationFrame');
     expect(source).not.toContain('setInterval');
   });
 });
 
 /** Evaluates only the wireframe's data helpers in a deterministic browser-neutral realm. */
-function evaluateWireframeRuntime(selected: WireframeNode[] = []): WireframeRuntime {
-  const context: { __wireframe?: WireframeRuntime; selected: WireframeNode[] } = { selected };
+function evaluateWireframeRuntime(
+  selected: WireframeNode[] = [],
+  hostMessages: unknown[] = [],
+): WireframeRuntime {
+  const context: {
+    __wireframe?: WireframeRuntime;
+    hostMessages: unknown[];
+    selected: WireframeNode[];
+  } = { hostMessages, selected };
   vm.runInNewContext(
     `
       const previewInspectorDevtoolsSessionState = { collapsed: true };
       const selectPreviewInspectorUiNode = (node) => selected.push(node);
+      const previewInspectorPostHostMessage = (message) => hostMessages.push(message);
       const isPreviewInspectorBlockerNode = (node) =>
         node?.kind === 'blocker' || node?.kind === 'condition';
       const findSelectedPreviewInspectorDescriptor = () => undefined;
@@ -227,6 +241,7 @@ function evaluateWireframeRuntime(selected: WireframeNode[] = []): WireframeRunt
         collect: collectPreviewInspectorWireframeLayout,
         consumeReveal: consumePreviewInspectorWireframeTreeReveal,
         copyIndexes: copyPreviewInspectorSnapshotRuntimeIndexes,
+        readSession: () => ({ ...previewInspectorDevtoolsSessionState }),
         revealBlocker: revealPreviewInspectorWireframeBlocker,
       };
     `,

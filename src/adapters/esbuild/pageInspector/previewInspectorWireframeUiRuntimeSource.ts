@@ -40,13 +40,17 @@ function consumePreviewInspectorWireframeTreeReveal(nodeId) {
   return true;
 }
 
-/** Expands Inspector chrome and routes one visible blocker marker into normal tree selection. */
+/** Routes one marker to its tree row, Blocker detail, and focused companion Inspector tab. */
 function revealPreviewInspectorWireframeBlocker(node, setCollapsed) {
   if (node === null || typeof node !== 'object' || typeof node.id !== 'string') return;
   previewInspectorDevtoolsSessionState.collapsed = false;
+  previewInspectorDevtoolsSessionState.activeTab = 'blocker';
+  previewInspectorDevtoolsSessionState.blockerDetailRevision =
+    (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
   requestPreviewInspectorWireframeTreeReveal(node.id);
   setCollapsed(false);
   selectPreviewInspectorUiNode(node);
+  previewInspectorPostHostMessage?.({ type: 'react-preview-inspector-companion-reveal' });
 }
 
 /**
@@ -362,17 +366,17 @@ function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) 
     )),
     layout.blockers.map((item) => {
       const markerTop = Math.min(
-        layout.viewport.height - 28,
+        layout.viewport.height - 30,
         item.anchor.top + 20 + (item.markerIndex % 5) * 27,
       );
       const markerLeft = Math.min(
-        layout.viewport.width - 36,
+        layout.viewport.width - 30,
         Math.max(4, item.anchor.left + 7),
       );
       return React.createElement(
         'button',
         {
-          'aria-label': 'Reveal render blocker ' + item.node.name + ' in component tree',
+          'aria-label': 'Open render blocker details: ' + item.node.name,
           className: 'rpi-wireframe-blocker',
           'data-react-preview-wireframe-blocker': item.node.id,
           key: item.node.id,
@@ -383,14 +387,12 @@ function PreviewInspectorWireframeLayer({ enabled, onSelectBlocker, snapshot }) 
           },
           style: {
             left: markerLeft,
-            maxWidth: Math.max(120, Math.min(320, item.anchor.width - 14)),
             top: markerTop,
           },
-          title: item.node.name + ' · click to reveal this blocker in the React tree',
+          title: item.node.name + ' · open blocker details in React Page Inspector',
           type: 'button',
         },
-        React.createElement('span', { 'aria-hidden': true }, '⚠'),
-        React.createElement('span', undefined, item.node.name),
+        '!',
       );
     }),
   );

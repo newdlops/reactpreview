@@ -11,6 +11,7 @@ import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspect
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
+import { createPreviewInspectorBlockerFlowUiRuntimeSource } from './previewInspectorBlockerFlowUiRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
@@ -108,6 +109,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
+  const blockerFlowUiRuntimeSource = createPreviewInspectorBlockerFlowUiRuntimeSource();
   const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
@@ -125,6 +127,7 @@ ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
 ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
+${blockerFlowUiRuntimeSource}
 ${wireframeUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
@@ -390,12 +393,17 @@ function usePreviewInspectorTreeRefresh(enabled) {
 }
 
 /** Creates one reusable toolbar button with native disabled and pressed semantics. */
-function PreviewInspectorDevtoolsButton({ children, disabled, onClick, pressed, sourceOpen, title }) {
+function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, onClick, pressed, sourceOpen, title }) {
+  const companionSourcePath = companionSource?.path ?? companionSource?.sourcePath;
   return React.createElement(
     'button',
     {
       'aria-pressed': pressed,
       className: 'rpi-button',
+      'data-rpi-source-column': sourceOpen === true ? companionSource?.column : undefined,
+      'data-rpi-source-line': sourceOpen === true ? companionSource?.line : undefined,
+      'data-rpi-source-offset': sourceOpen === true ? companionSource?.occurrenceStart : undefined,
+      'data-rpi-source-path': sourceOpen === true ? companionSourcePath : undefined,
       'data-react-preview-source-open': sourceOpen === true ? 'true' : undefined,
       disabled: disabled === true,
       onClick,
@@ -656,6 +664,7 @@ function PreviewInspectorSourceDetail({ node }) {
           PreviewInspectorDevtoolsButton,
           {
             disabled: !canOpen,
+            companionSource: source,
             onClick: openSource,
             sourceOpen: true,
           },
@@ -667,13 +676,13 @@ function PreviewInspectorSourceDetail({ node }) {
 }
 
 /** Renders component details and the page-wide editable backend payload inventory. */
-function PreviewInspectorDetailsPane({ node }) {
+function PreviewInspectorDetailsPane({ flow, node }) {
   const [activeTab, setActiveTab] = React.useState(
     () => previewInspectorDevtoolsSessionState.activeTab,
   );
   const blockerSelected = isPreviewInspectorBlockerNode(node);
   React.useEffect(() => {
-    const nextTab = blockerSelected
+    const nextTab = blockerSelected && previewInspectorDevtoolsSessionState.activeTab !== 'flow'
       ? 'blocker'
       : previewInspectorDevtoolsSessionState.activeTab === 'blocker'
         ? 'props'
@@ -684,6 +693,7 @@ function PreviewInspectorDetailsPane({ node }) {
   }, [node?.id, blockerSelected]);
   const tabs = [
     ...(blockerSelected ? [['blocker', 'Blocker']] : []),
+    ['flow', 'Flow (' + String(flow.unresolvedCount) + ')'],
     ['props', 'Props'],
     ['state', 'State'],
     ['source', 'Source'],
@@ -729,7 +739,9 @@ function PreviewInspectorDetailsPane({ node }) {
         id: 'react-preview-inspector-' + activeTab + '-panel',
         role: 'tabpanel',
       },
-      activeTab === 'blocker' && blockerSelected
+      activeTab === 'flow'
+        ? React.createElement(PreviewInspectorBlockerFlowDetail, { flow })
+        : activeTab === 'blocker' && blockerSelected
         ? React.createElement(PreviewInspectorBlockerDetail, { node })
         : activeTab === 'payloads'
         ? React.createElement(PreviewInspectorDataDetail)
@@ -753,6 +765,7 @@ function PreviewInspectorDetailsPane({ node }) {
 /** Renders the picker/highlight toolbar inside a resizable drawer or movable floating shell. */
 function PreviewInspectorToolbar() {
   usePreviewInspectorStore();
+  React.useEffect(schedulePreviewInspectorCompanionSnapshot);
   const [collapsed, setCollapsed] = React.useState(
     () => previewInspectorDevtoolsSessionState.collapsed,
   );
@@ -762,6 +775,7 @@ function PreviewInspectorToolbar() {
   usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible);
   const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
+  const blockerFlow = createPreviewInspectorBlockerFlow(snapshot);
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
   const selectedNode = findPreviewInspectorUiNode(snapshot.roots, selectedTreeNodeId) ??
@@ -792,6 +806,7 @@ function PreviewInspectorToolbar() {
         className: 'rpi-shell',
         'data-collapsed': collapsed,
         'data-dock': layout.dock,
+        ref: setPreviewInspectorCompanionShell,
         style: createPreviewInspectorShellStyle(layout, collapsed),
       },
       React.createElement(PreviewInspectorResizeHandle, {
@@ -939,7 +954,11 @@ function PreviewInspectorToolbar() {
           status: snapshot.status,
           truncated: snapshot.truncated,
         }),
-        React.createElement(PreviewInspectorDetailsPane, { node: selectedNode }),
+        React.createElement(PreviewInspectorDetailsPane, {
+          flow: blockerFlow,
+          key: 'details:' + String(previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0),
+          node: selectedNode,
+        }),
       ),
     ),
   );

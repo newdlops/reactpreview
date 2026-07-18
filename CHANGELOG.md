@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1057 - 2026-07-18
+
+- 별도 Inspector shell을 CSS inline-size container로 만들고 toolbar/status/page selector/tree row/tab/action을
+  폭에 따라 줄바꿈하며, 760px 이하에서는 workbench를 1열로 전환해 작은 editor group에서도 가로로 이탈하지 않게 개선
+- hook blocker에 `Smart fill minimum`을 추가해 inferred fallback 전체를 복사하지 않고 실제 required property path만
+  생성하며, 기존 사용자 JSON은 보존한 채 data descriptor로 확인한 scalar 타입·callable과 `items[]`의 한 항목만 보완
+- GraphQL/REST Payload에 `GENERATED · SMART MINIMUM` 모드를 추가해 selection/type shape의 필드와 list 한 항목만
+  생성하고, 사용자 JSON이 있으면 유지·보완한 `USER + SMART MINIMUM`으로 Lorem·기존 Auto와 provenance를 분리
+- contained target error의 Smart fill은 관찰된/사용자 props를 보존하며 오류가 증명한 누락 path만 합성하고,
+  page-path Smart fill은 같은 corridor의 hook/API blocker를 batch로 최소화한 뒤 통과한 branch gate를 유지해 재시도
+
 ## 0.1.1056 - 2026-07-18
 
 - Inspector 상단에 `Preparing page context`/`Page rendering is blocked`/`Page context is ready` 상태 카드와

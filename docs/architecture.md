@@ -245,6 +245,11 @@ Inspector presentation은 pseudo-node의 존재와 실제 blocking 상태를 분
 manual/Auto hook fallback과 유효 payload는 assisted preview value, unresolved seed·contained render error·소진된
 target reachability만 active blocker입니다. 상단 status와 tree role label은 같은 판정 함수를 사용하므로 범례,
 component tree, blocker editor가 서로 다른 성공 의미를 표시하지 않습니다.
+blocker Smart fill은 required-path evidence가 있는 hook에서는 빈 호환 root에 demanded leaf만 만들고, descriptor로
+확인한 scalar/callable 타입과 array item 한 개만 유지합니다. backend request는 normalized selection/type shape의
+필드와 list 한 항목만 생성합니다. manual hook/payload가 있으면 non-null user leaf를 우선하고 누락 shape만 합칩니다.
+page-path batch는 같은 reachability key의 hook/data record만 바꾸고 이미 증명된
+target-guided condition override를 지우지 않으며 revision과 remount를 한 번으로 합칩니다.
 
 `inspector/previewInspectorAncestorPlan`은 default export를 우선하고 없으면 첫 explicit export를 target
 frontier로 사용합니다. Inspector 전용 bounded workspace inventory에서 실제 JSX import 사용을 구문으로
@@ -411,6 +416,10 @@ page wireframe style과 companion에서 재사용할 Components/details workbenc
 왼쪽 React component tree와 오른쪽 props/state/source 상세로 나뉘며, target/root 선택, highlight, picker,
 remount와 plain JSON props override를 노출합니다. page-context 행은 실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE`을 구분하며 filesystem 경로는 노출하지 않습니다.
+workbench shell 자체가 named inline-size container이고 toolbar, status, candidate selector, tree row, tabs, JSON과
+console control은 `min-width:0`/bounded wrapping을 공유합니다. container 폭이 760px 아래면 tree/detail이 1열로,
+460px 아래면 context/action/control이 단일 행 단위로 재배치되므로 companion을 좁은 editor group으로 옮겨도
+viewport 밖 요소를 만들지 않습니다.
 같은 행의 `PAGE PATH` 선택기는 mount-distinct caller 후보를 entry→root→target breadcrumb로 표시하고, 변경 시
 선택 root의 props/error boundary/component tree key를 함께 교체합니다.
 JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference를 편집 계약에서 제외합니다. boolean

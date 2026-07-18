@@ -19,6 +19,7 @@ interface BlockerTreeNode {
 /** Generated helper surface exposed only inside the VM fixture. */
 interface BlockerRuntime {
   readonly attach: (snapshot: Record<string, unknown>) => { readonly roots: BlockerTreeNode[] };
+  readonly isBlocking: (node: BlockerTreeNode) => boolean;
 }
 
 describe('Preview Inspector blocker UI runtime source', () => {
@@ -52,7 +53,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
       expect.arrayContaining([
         expect.objectContaining({
           blockerKind: 'runtime-fallback',
-          name: 'Blocker · useFormContext',
+          name: 'Missing hook value · useFormContext',
         }),
       ]),
     );
@@ -60,7 +61,10 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(missingOwner).toMatchObject({ blockedOwner: true, name: 'UncollectedDashboardChild' });
     expect(missingOwner?.children).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ blockerKind: 'data-request', name: 'Data · Get dashboard' }),
+        expect.objectContaining({
+          blockerKind: 'data-request',
+          name: 'Backend data · Get dashboard',
+        }),
       ]),
     );
     const brokenChild = findNode(page?.children ?? [], 'BrokenChild');
@@ -70,6 +74,13 @@ describe('Preview Inspector blocker UI runtime source', () => {
       props: { requiredPaths: ['value'] },
     });
     expect(findNode(snapshot.roots, 'Unlocated render blockers')).toBeUndefined();
+    const hookNode = findNode(snapshot.roots, 'Missing hook value · useFormContext');
+    const dataNode = findNode(snapshot.roots, 'Backend data · Get dashboard');
+    expect(hookNode === undefined ? undefined : runtime.isBlocking(hookNode)).toBe(false);
+    expect(dataNode === undefined ? undefined : runtime.isBlocking(dataNode)).toBe(false);
+    const renderErrorNode = brokenChild?.children[0];
+    if (renderErrorNode === undefined) throw new Error('Expected contained render-error blocker.');
+    expect(runtime.isBlocking(renderErrorNode)).toBe(true);
   });
 
   /** Keeps both manual JSON and bounded inference actions explicit in generated UI source. */
@@ -84,6 +95,9 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain("blockerKind: 'target-error'");
     expect(source).toContain("blockerKind: 'target-reachability'");
     expect(source).toContain('Payload properties discovered downstream:');
+    expect(source).toContain('Rendering stops at this point in the component tree.');
+    expect(source).toContain('React Preview supplied a local preview value here.');
+    expect(source).toContain('readPreviewInspectorActiveBlockerSummary');
   });
 });
 
@@ -132,6 +146,7 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         sourcePath: '/workspace/Page.tsx',
       }];
       const createRuntimeErrorHeadline = (error) => error.message;
+      const readPreviewInspectorFallbackValuesEnabled = () => true;
       const readPreviewInspectorDataShapePaths = () => ['dashboard'];
       const normalizePreviewInspectorUiSource = (source) => ({
         line: source?.line,
@@ -140,7 +155,10 @@ function evaluateBlockerRuntime(): BlockerRuntime {
       ${createPreviewInspectorFailureEvidenceRuntimeSource()}
       ${createPreviewInspectorConditionUiRuntimeSource()}
       ${createPreviewInspectorBlockerUiRuntimeSource()}
-      globalThis.__blockers = { attach: attachPreviewInspectorBlockersToSnapshot };
+      globalThis.__blockers = {
+        attach: attachPreviewInspectorBlockersToSnapshot,
+        isBlocking: isPreviewInspectorBlockingNode,
+      };
     `,
     context,
   );

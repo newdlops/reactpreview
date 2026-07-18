@@ -48,13 +48,22 @@ function PreviewInspectorComponentTreeNode({
   const expanded = hasChildren && expandedIds.has(node.id);
   const selected = node.id === selectedId;
   const isCondition = isPreviewInspectorConditionNode(node);
-  const isBlocker = isPreviewInspectorBlockerNode(node);
+  const isRenderControl = isPreviewInspectorBlockerNode(node);
+  const isBlocking = isPreviewInspectorBlockingNode(node);
+  const isPathProbe = node?.blockerKind === 'target-reachability' && !isBlocking;
+  const isAssisted = isRenderControl && !isCondition && !isBlocking && !isPathProbe;
   const isOverlay = isPreviewInspectorOverlayNode(node);
   const isWrapper = isPreviewInspectorTransparentWrapperNode(node);
   const isBlockedOwner = node.blockedOwner === true;
   const isCurrentFileExport = node.currentFileExport === true;
   const isActiveExport = node.exportName === previewInspectorSession.selectedExportName;
   const contextBadge = formatPreviewInspectorRenderContextBadge(node);
+  const role = readPreviewInspectorTreeNodeRole(
+    node,
+    isCondition,
+    isBlocking,
+    isCurrentFileExport,
+  );
   const toggle = () => {
     if (!hasChildren) return;
     setExpandedIds((current) => {
@@ -80,18 +89,32 @@ function PreviewInspectorComponentTreeNode({
         'aria-expanded': hasChildren ? expanded : undefined,
         'aria-selected': selected,
         className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : '') +
-          (isBlocker ? ' rpi-blocker-row' : '') +
+          (isBlocking ? ' rpi-blocker-row' : '') +
+          (isAssisted ? ' rpi-assisted-row' : '') +
+          (isPathProbe ? ' rpi-path-probe-row' : '') +
           (isBlockedOwner ? ' rpi-blocked-owner-row' : '') +
+          (isCurrentFileExport ? ' rpi-current-export-row' : '') +
           readPreviewInspectorStructureRowClass(node),
         'data-render-blocked-owner': isBlockedOwner ? 'true' : undefined,
-        'data-render-blocker': isBlocker ? 'true' : undefined,
+        'data-render-blocker': isBlocking ? 'true' : undefined,
         'data-render-condition': isCondition ? 'true' : undefined,
+        'data-tree-role': role.key,
         'data-react-preview-tree-row': node.id,
         onClick: () => selectPreviewInspectorUiNode(node),
         onDoubleClick: toggle,
         role: 'treeitem',
         tabIndex: node.id === focusableId ? 0 : -1,
-        title: isBlocker ? node.name + ' · select to edit the pass value' : node.name,
+        title: isBlocking
+          ? 'Rendering stops here. Select this row to apply a value or retry.'
+          : isCondition
+            ? 'This condition controls which React branch is visible. Select it to toggle the branch.'
+            : isAssisted
+              ? 'React Preview supplied a local value here. Select it to inspect or edit that value.'
+              : isPathProbe
+                ? 'React Preview is following the authored page path to find the current file.'
+              : node.contextOnly === true
+                ? 'Static page path evidence; this row is not a mounted React component.'
+                : 'Mounted React component. Select it to inspect props, state, and source.',
       },
       React.createElement(
         'span',
@@ -112,7 +135,12 @@ function PreviewInspectorComponentTreeNode({
       React.createElement(
         'span',
         { 'aria-hidden': true, className: 'rpi-component-icon' },
-        readPreviewInspectorStructureIcon(node, isCondition),
+        readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurrentFileExport),
+      ),
+      React.createElement(
+        'span',
+        { className: 'rpi-node-role', 'data-role': role.key },
+        role.label,
       ),
       React.createElement('span', { className: 'rpi-node-name' }, node.name),
       selected ? React.createElement('span', { className: 'rpi-badge' }, 'selected') : undefined,
@@ -139,8 +167,18 @@ function PreviewInspectorComponentTreeNode({
           )
         : undefined,
       isWrapper ? React.createElement('span', { className: 'rpi-badge' }, 'wrapper') : undefined,
-      isBlocker
+      isBlocking
         ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
+            'BLOCKS PAGE · CLICK TO FIX')
+        : isAssisted
+          ? React.createElement('span', { className: 'rpi-badge rpi-assisted-badge' },
+              'PAGE CAN CONTINUE')
+          : isPathProbe
+            ? React.createElement('span', { className: 'rpi-badge rpi-assisted-badge' },
+                'SEARCHING PAGE')
+          : undefined,
+      isRenderControl
+        ? React.createElement('span', { className: 'rpi-badge' },
             formatPreviewInspectorBlockerBadge(node))
         : undefined,
       isCurrentFileExport

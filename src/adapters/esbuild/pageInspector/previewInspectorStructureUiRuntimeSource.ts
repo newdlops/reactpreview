@@ -43,15 +43,32 @@ function isPreviewInspectorTransparentWrapperNode(node) {
   return node?.role === 'transparent-wrapper';
 }
 
-/** Produces a semantic tree icon while keeping the row label available to screen readers. */
-function readPreviewInspectorStructureIcon(node, isCondition) {
-  if (node?.kind === 'blocker') return '!';
+/** Produces a semantic tree icon while keeping the explicit role label available beside it. */
+function readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurrentFileExport) {
+  if (isBlocking) return '!';
+  if (isCondition) return '?';
+  if (node?.blockerKind === 'target-reachability') return '↳';
+  if (node?.kind === 'blocker') return '≈';
+  if (isCurrentFileExport) return '◎';
   if (node?.edgeKind === 'workspace-render-root') return '⌂';
   if (node?.kind === 'route' && node?.contextOnly === true) return '↳';
   if (node?.kind === 'entry' && node?.contextOnly === true) return '◆';
   if (isPreviewInspectorOverlayNode(node)) return '▱';
   if (isPreviewInspectorTransparentWrapperNode(node)) return '⬚';
-  return isCondition ? '◐' : '◇';
+  return 'C';
+}
+
+/** Gives every row one plain-language role so users never infer meaning from color alone. */
+function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurrentFileExport) {
+  if (isBlocking) return { key: 'blocker', label: 'BLOCKER' };
+  if (isCondition) return { key: 'condition', label: 'CONDITION' };
+  if (node?.blockerKind === 'target-reachability') {
+    return { key: 'path', label: 'PAGE SEARCH' };
+  }
+  if (node?.kind === 'blocker') return { key: 'assisted', label: 'PREVIEW VALUE' };
+  if (isCurrentFileExport) return { key: 'target', label: 'CURRENT FILE' };
+  if (node?.contextOnly === true) return { key: 'path', label: 'PAGE PATH' };
+  return { key: 'component', label: 'COMPONENT' };
 }
 
 /** Adds narrowly scoped role classes without allowing collector-provided arbitrary class names. */

@@ -36,7 +36,7 @@ function createPreviewInspectorRuntimeFallbackTreeNode(fallback) {
     children: [],
     id: 'runtime-blocker:' + fallback.id,
     kind: 'blocker',
-    name: 'Blocker · ' + fallback.hookName,
+    name: 'Missing hook value · ' + fallback.hookName,
     props: {
       generatedPaths: fallback.generatedPaths,
       mode: fallback.mode,
@@ -57,7 +57,7 @@ function createPreviewInspectorDataBlockerTreeNode(request) {
     children: [],
     id: 'data-blocker:' + request.id,
     kind: 'blocker',
-    name: 'Data · ' + request.label,
+    name: 'Backend data · ' + request.label,
     props: {
       evidence: request.evidence,
       mode: request.mode,
@@ -115,7 +115,7 @@ function createPreviewInspectorTargetFailureTreeNode(failure) {
     children: [],
     id: failure.id,
     kind: 'blocker',
-    name: 'Blocker · ' + failure.blockedComponentName,
+    name: 'Component error · ' + failure.blockedComponentName,
     ownerExportName: failure.exportName,
     props: {
       componentPath: failure.componentNames,
@@ -136,7 +136,7 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
     children: [],
     id: blocker.id,
     kind: 'blocker',
-    name: 'Path blocker · ' + blocker.targetExportName,
+    name: 'Target not reached · ' + blocker.targetExportName,
     props: {
       applicationPath: blocker.applicationPath,
       appliedGates: blocker.appliedConditions.map((condition) => condition.expression),
@@ -349,10 +349,44 @@ function isPreviewInspectorBlockerNode(node) {
     (node?.kind === 'blocker' && typeof node.blockerKind === 'string');
 }
 
+/** Reports whether an editable pseudo-node currently stops the selected page instead of assisting it. */
+function isPreviewInspectorBlockingNode(node) {
+  if (isPreviewInspectorConditionNode(node)) return false;
+  if (node?.blockerKind === 'runtime-fallback') {
+    return node.blocker?.mode !== 'manual' && !readPreviewInspectorFallbackValuesEnabled();
+  }
+  if (node?.blockerKind === 'data-request') {
+    const payload = node.blocker?.payload;
+    const usefulPayload = Array.isArray(payload)
+      ? payload.length > 0
+      : payload !== null && typeof payload === 'object'
+        ? Object.keys(payload).length > 0
+        : payload !== undefined;
+    return node.blocker?.mode === 'seed' && !usefulPayload;
+  }
+  if (node?.blockerKind === 'target-reachability') {
+    return node.blocker?.directTarget === true || node.blocker?.exhausted === true ||
+      node.blocker?.status === 'page-blocked';
+  }
+  return node?.blockerKind === 'target-error';
+}
+
+/** Collects only active render stops for the friendly page-status summary. */
+function readPreviewInspectorActiveBlockerSummary() {
+  const nodes = [
+    ...readPreviewInspectorTargetReachabilityBlockers().map(createPreviewInspectorTargetReachabilityTreeNode),
+    ...readPreviewInspectorRuntimeFallbacks().map(createPreviewInspectorRuntimeFallbackTreeNode),
+    ...readPreviewInspectorDataRequests().map(createPreviewInspectorDataBlockerTreeNode),
+    ...readPreviewInspectorTargetFailures().map(createPreviewInspectorTargetFailureTreeNode),
+  ];
+  const active = nodes.filter(isPreviewInspectorBlockingNode);
+  return { active, count: active.length, first: active[0] };
+}
+
 /** Produces the compact status badge shown directly beside one blocker tree row. */
 function formatPreviewInspectorBlockerBadge(node) {
   if (isPreviewInspectorConditionNode(node)) {
-    return (node.condition?.effectiveEnabled === true ? 'condition · on' : 'condition · off') +
+    return (node.condition?.effectiveEnabled === true ? 'branch on' : 'branch off') +
       (typeof node.condition?.override === 'boolean'
         ? ' · forced'
         : typeof node.condition?.autoOverride === 'boolean'
@@ -360,14 +394,47 @@ function formatPreviewInspectorBlockerBadge(node) {
           : '');
   }
   if (node?.blockerKind === 'runtime-fallback') {
-    return 'hook · ' + (node.blocker?.mode === 'manual' ? 'manual' : 'auto');
+    return 'hook value · ' + (node.blocker?.mode === 'manual' ? 'user' : 'auto');
   }
-  if (node?.blockerKind === 'data-request') return 'data · ' + String(node.blocker?.mode ?? 'seed');
+  if (node?.blockerKind === 'data-request') {
+    return 'backend data · ' + String(node.blocker?.mode ?? 'seed');
+  }
   if (node?.blockerKind === 'target-reachability') {
-    return node.blocker?.directTarget === true ? 'path · direct' : 'path · auto';
+    return node.blocker?.directTarget === true ? 'target only' : 'page path';
   }
-  if (node?.blockerKind === 'target-error') return 'blocked';
+  if (node?.blockerKind === 'target-error') return 'component error';
   return 'blocker';
+}
+
+/** Explains the selected pseudo-node in user language before showing its technical editor. */
+function PreviewInspectorBlockerGuide({ node }) {
+  const condition = isPreviewInspectorConditionNode(node);
+  const blocking = isPreviewInspectorBlockingNode(node);
+  const title = condition
+    ? 'This condition chooses which React branch is visible.'
+    : blocking
+      ? 'Rendering stops at this point in the component tree.'
+      : 'React Preview supplied a local preview value here.';
+  const detail = condition
+    ? 'Choose a branch below. This changes only the pinned preview.'
+    : blocking
+      ? 'Use the recommended Auto action or enter a value below; the page remounts after applying it.'
+      : 'The page can continue, but you can inspect or replace the generated value below.';
+  return React.createElement(
+    'section',
+    {
+      className: 'rpi-blocker-help',
+      'data-help-kind': condition ? 'condition' : blocking ? 'blocking' : 'assisted',
+    },
+    React.createElement('span', { 'aria-hidden': true, className: 'rpi-blocker-help-icon' },
+      condition ? '?' : blocking ? '!' : '≈'),
+    React.createElement(
+      'span',
+      { className: 'rpi-blocker-help-copy' },
+      React.createElement('strong', undefined, title),
+      React.createElement('span', undefined, detail),
+    ),
+  );
 }
 
 /** Renders JSON editing and Auto inference controls for one bypassed hook result. */
@@ -491,16 +558,24 @@ function PreviewInspectorTargetFailureDetail({ node }) {
 function PreviewInspectorTargetReachabilityDetail({ node }) {
   const blocker = node.blocker;
   const direct = blocker.directTarget === true;
+  const pageCommitted = blocker.pageRootCommitted === true && !direct;
+  const targetMounted = blocker.targetMounted === true;
   return React.createElement(
     'div',
     { className: 'rpi-detail-content' },
     React.createElement(
       'div',
-      { className: direct ? 'rpi-meta' : 'rpi-error', role: direct ? undefined : 'alert' },
+      { className: 'rpi-error', role: 'alert' },
       direct
-        ? 'Selected target is visible through the direct render fallback.'
-        : 'The application page committed, but never mounted ' + blocker.targetExportName + '.',
+        ? 'Target-only diagnostic mode is active; authored page context is not successful.'
+        : pageCommitted
+          ? 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
+          : 'The authored page root has not committed yet.',
     ),
+    React.createElement('div', { className: 'rpi-note' },
+      'Page root: ' + blocker.rootName + ' · ' + (pageCommitted ? 'committed' : 'not committed')),
+    React.createElement('div', { className: 'rpi-note' },
+      'Selected target: ' + blocker.targetExportName + ' · ' + (targetMounted ? 'mounted' : 'not mounted')),
     React.createElement('div', { className: 'rpi-note' },
       'Application path: ' + blocker.applicationPath.join(' > ')),
     blocker.appliedConditions.length > 0
@@ -520,8 +595,12 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
       { className: 'rpi-actions' },
       React.createElement(
         PreviewInspectorDevtoolsButton,
-        { onClick: retryPreviewInspectorTargetApplicationPath },
-        'Retry application path',
+        {
+          onClick: direct
+            ? returnPreviewInspectorToPageContext
+            : retryPreviewInspectorTargetApplicationPath,
+        },
+        direct ? 'Return to page context' : 'Retry page corridor',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
@@ -529,7 +608,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
           disabled: direct || blocker.directTargetAvailable !== true,
           onClick: showPreviewInspectorTargetDirectly,
         },
-        'Render target directly',
+        'Target-only diagnostic',
       ),
     ),
     React.createElement('div', { className: 'rpi-note' },
@@ -539,22 +618,27 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
 
 /** Routes one selected tree blocker to its condition, payload, hook, or contained-error editor. */
 function PreviewInspectorBlockerDetail({ node }) {
+  let editor;
   if (isPreviewInspectorConditionNode(node)) {
-    return React.createElement(PreviewInspectorConditionDetail, { node });
+    editor = React.createElement(PreviewInspectorConditionDetail, { node });
+  } else if (node?.blockerKind === 'data-request') {
+    editor = React.createElement(PreviewInspectorDataDetail, { requestId: node.blockerId });
+  } else if (node?.blockerKind === 'runtime-fallback') {
+    editor = React.createElement(PreviewInspectorRuntimeBlockerDetail, { node });
+  } else if (node?.blockerKind === 'target-reachability') {
+    editor = React.createElement(PreviewInspectorTargetReachabilityDetail, { node });
+  } else if (node?.blockerKind === 'target-error') {
+    editor = React.createElement(PreviewInspectorTargetFailureDetail, { node });
+  } else {
+    editor = React.createElement('div', { className: 'rpi-empty' },
+      'No editable render control is available.');
   }
-  if (node?.blockerKind === 'data-request') {
-    return React.createElement(PreviewInspectorDataDetail, { requestId: node.blockerId });
-  }
-  if (node?.blockerKind === 'runtime-fallback') {
-    return React.createElement(PreviewInspectorRuntimeBlockerDetail, { node });
-  }
-  if (node?.blockerKind === 'target-reachability') {
-    return React.createElement(PreviewInspectorTargetReachabilityDetail, { node });
-  }
-  if (node?.blockerKind === 'target-error') {
-    return React.createElement(PreviewInspectorTargetFailureDetail, { node });
-  }
-  return React.createElement('div', { className: 'rpi-empty' }, 'No editable blocker value is available.');
+  return React.createElement(
+    'div',
+    { className: 'rpi-blocker-editor' },
+    React.createElement(PreviewInspectorBlockerGuide, { node }),
+    editor,
+  );
 }
 `;
 }

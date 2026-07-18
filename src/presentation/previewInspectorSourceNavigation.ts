@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { canonicalizeExistingPath, normalizeLexicalPath } from '../shared/pathIdentity';
 import type { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewSiblingResourceUri } from './previewPanelSessionUtilities';
+import type { PreviewInspectorCompanionOpenSourceRequest } from './previewInspectorCompanionProtocol';
 import {
   readPreviewInspectorOpenSourceRequest,
   type PreviewInspectorOpenSourceRequest,
@@ -73,9 +74,40 @@ export function handlePreviewInspectorSourceNavigationMessage(
   return true;
 }
 
+/**
+ * Opens a companion-tab source click after applying the same render-mode and committed-graph
+ * authorization as the preview-local HMAC path. The caller is the extension-owned companion
+ * document, so its real user click replaces the preview webview's separate gesture proof.
+ *
+ * @param request Already syntax-bounded source coordinates from the companion protocol parser.
+ * @param context Current preview graph and editor placement policy.
+ */
+export function handlePreviewInspectorCompanionSourceNavigation(
+  request: PreviewInspectorCompanionOpenSourceRequest,
+  context: PreviewInspectorSourceNavigationContext,
+): void {
+  if (!context.enabled) {
+    context.log.debug('Ignored companion source navigation outside Page Inspector mode.');
+    return;
+  }
+  const sourceIdentity = resolveAuthorizedPreviewInspectorSourceIdentity(
+    request.sourcePath,
+    context.dependencyPaths,
+  );
+  if (sourceIdentity === undefined) {
+    context.log.debug(
+      `Ignored companion source outside the committed bundle graph: ${request.sourcePath}`,
+    );
+    return;
+  }
+  void openPreviewInspectorSource(request, sourceIdentity, context).catch((error: unknown) => {
+    context.log.debug(`Could not open companion Inspector source ${request.sourcePath}.`, error);
+  });
+}
+
 /** Opens one authorized source and reveals its clamped authored location in a text editor. */
 async function openPreviewInspectorSource(
-  request: PreviewInspectorOpenSourceRequest,
+  request: PreviewInspectorOpenSourceRequest | PreviewInspectorCompanionOpenSourceRequest,
   sourceIdentity: string,
   context: PreviewInspectorSourceNavigationContext,
 ): Promise<void> {
@@ -133,7 +165,7 @@ export function resolveAuthorizedPreviewInspectorSourceIdentity(
 /** Converts one-based browser coordinates or a zero-based graph offset into a bounded editor range. */
 function createPreviewInspectorSourceSelection(
   document: vscode.TextDocument,
-  request: PreviewInspectorOpenSourceRequest,
+  request: PreviewInspectorOpenSourceRequest | PreviewInspectorCompanionOpenSourceRequest,
 ): vscode.Range | undefined {
   let position: vscode.Position | undefined;
   if (request.line !== undefined) {

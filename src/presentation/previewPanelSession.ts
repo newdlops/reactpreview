@@ -1,7 +1,6 @@
 /** Owns one pinned panel whose target, builds, leases, and focus state never leak to another tab. */
 import * as vscode from 'vscode';
-import type { BuildPreview } from '../application/buildPreview';
-import type { PreparedPreview, PreviewRenderMode } from '../domain/preview';
+import type { PreparedPreview } from '../domain/preview';
 import { isPreviewBuildCancellation } from '../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../domain/previewProgress';
 import { canonicalizeExistingPath, createExistingPathIdentitySet } from '../shared/pathIdentity';
@@ -16,7 +15,11 @@ import {
   readPreviewHotReloadAcknowledgement,
   type PendingPreviewHotReload,
 } from './previewHotReloadProtocol';
-import { handlePreviewInspectorSourceNavigationMessage } from './previewInspectorSourceNavigation';
+import type { PreviewInspectorCompanionOpenSourceRequest } from './previewInspectorCompanionProtocol';
+import {
+  handlePreviewInspectorCompanionSourceNavigation,
+  handlePreviewInspectorSourceNavigationMessage,
+} from './previewInspectorSourceNavigation';
 import { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewProgressMessage } from './previewProgress';
 import { PreviewProgressGate } from './previewProgressGate';
@@ -25,6 +28,7 @@ import type {
   PendingPreviewInitialRuntime,
   PendingSamePreviewArtifactRevision,
 } from './previewPanelSessionState';
+import type { PreviewPanelSessionOptions } from './previewPanelSessionTypes';
 import {
   createPreviewSiblingResourceUri,
   disposePreviewResources,
@@ -32,37 +36,12 @@ import {
   rememberPreviewFailureDependencies,
 } from './previewPanelSessionUtilities';
 import { createPreviewHtml } from './webview/previewHtml';
-/** Application operations required by an independently testable panel session. */
-export type PreviewBuildService = Pick<BuildPreview, 'execute' | 'releaseArtifact'>;
-/** Resolves the latest snapshot for one immutable target URI. */
-export type PinnedPreviewTargetResolver = (
-  documentUri: vscode.Uri,
-  signal?: AbortSignal,
-) => Promise<PreviewTargetIssue | ResolvedPreviewTarget>;
-/** Manager callbacks that contain no session implementation details. */
-export interface PreviewPanelSessionCallbacks {
-  /** Records that the user focused this panel without requesting a rebuild. */
-  readonly onDidFocus: (session: PreviewPanelSession) => void;
-  /** Removes the independently disposed panel from the manager. */
-  readonly onDidDispose: (session: PreviewPanelSession) => void;
-}
-/** Construction dependencies and initial immutable target for one panel. */
-export interface PreviewPanelSessionOptions {
-  /** Application use case that publishes and releases reference-counted artifacts. */
-  readonly buildPreview: PreviewBuildService;
-  /** Manager notifications for focus and disposal only. */
-  readonly callbacks: PreviewPanelSessionCallbacks;
-  /** Snapshot captured before creating the panel, preventing an open-time editor race. */
-  readonly initialTarget: ResolvedPreviewTarget;
-  /** Diagnostic channel shared by all sessions in the extension window. */
-  readonly log: vscode.LogOutputChannel;
-  /** Dedicated webview panel owned exclusively by this session. */
-  readonly panel: vscode.WebviewPanel;
-  /** Immutable rendering policy retained by every manual and automatic rebuild. */
-  readonly renderMode: PreviewRenderMode;
-  /** Pinned resolver that never consults the active editor. */
-  readonly resolveTarget: PinnedPreviewTargetResolver;
-}
+export type {
+  PinnedPreviewTargetResolver,
+  PreviewBuildService,
+  PreviewPanelSessionCallbacks,
+  PreviewPanelSessionOptions,
+} from './previewPanelSessionTypes';
 /** A single React preview tab pinned to one file for its complete lifetime. */
 export class PreviewPanelSession implements vscode.Disposable {
   /** Canonical target identity used to route editor changes from the manager. */
@@ -185,6 +164,18 @@ export class PreviewPanelSession implements vscode.Disposable {
    */
   public targetsDocument(documentPath: string): boolean {
     return this.targetPath === canonicalizeExistingPath(documentPath);
+  }
+
+  /** Opens one real companion-tab source click only inside this session's committed bundle graph. */
+  public openInspectorCompanionSource(request: PreviewInspectorCompanionOpenSourceRequest): void {
+    handlePreviewInspectorCompanionSourceNavigation(request, {
+      dependencyPaths: this.dependencies,
+      enabled: this.options.renderMode === 'page-inspector',
+      gestureGate: this.inspectorSourceGesture,
+      log: this.options.log,
+      panelViewColumn: this.options.panel.viewColumn,
+      pinnedDocumentUri: this.documentUri,
+    });
   }
 
   /**

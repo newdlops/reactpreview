@@ -27,6 +27,7 @@ const previewInspectorDevtoolsCss = [
   'box-shadow:0 8px 28px rgba(0,0,0,.38);color:var(--vscode-editor-foreground,#ddd);',
   'display:grid;font:12px/1.4 var(--vscode-font-family,sans-serif);max-width:calc(100vw - 16px);min-width:0;',
   'overflow:hidden;pointer-events:auto;position:fixed;z-index:2147483647}',
+  '.rpi-shell[data-react-preview-companion-source="true"]{display:none!important}',
   '.rpi-shell[data-dock="floating"]{border-radius:5px}',
   '.rpi-toolbar{align-items:center;background:var(--vscode-sideBar-background,#252526);border-bottom:1px solid var(--rpi-border);',
   'display:flex;gap:6px;min-height:36px;overflow-x:auto;overflow-y:hidden;padding:5px 7px}',
@@ -98,6 +99,39 @@ const previewInspectorDevtoolsCss = [
   '.rpi-actions{display:flex;flex-wrap:wrap;gap:6px}',
   '.rpi-error{color:var(--vscode-errorForeground,#f48771)}',
   '.rpi-note{color:var(--rpi-muted);font-size:11px}',
+  '.rpi-blocker-flow{display:grid;gap:12px;padding:10px}',
+  '.rpi-flow-summary{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
+  'border:1px solid var(--rpi-border);border-radius:4px;display:grid;gap:6px;grid-template-columns:minmax(0,1fr) auto;padding:9px}',
+  '.rpi-flow-summary>.rpi-meta{justify-self:end}.rpi-flow-summary>.rpi-button{justify-self:start}',
+  '.rpi-flow-progress{background:var(--vscode-progressBar-background,rgba(14,99,156,.25));border-radius:3px;',
+  'grid-column:1/-1;height:5px;overflow:hidden}.rpi-flow-progress>span{background:var(--vscode-progressBar-background,#0e70c0);',
+  'display:block;height:100%;transition:width .18s ease}',
+  '.rpi-flow-chart{display:grid;gap:18px;min-width:0}',
+  '.rpi-flow-stage{display:grid;gap:6px;padding-left:26px;position:relative}',
+  '.rpi-flow-stage::before{background:var(--vscode-focusBorder,#007fd4);border-radius:50%;content:"";height:9px;',
+  'left:4px;position:absolute;top:6px;width:9px}',
+  '.rpi-flow-stage:not(:last-child)::after{background:linear-gradient(var(--vscode-focusBorder,#007fd4),',
+  'var(--vscode-panel-border,#454545));bottom:-22px;content:"";left:8px;position:absolute;top:15px;width:1px}',
+  '.rpi-flow-stage-label{color:var(--rpi-muted);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}',
+  '.rpi-flow-stage-grid{display:grid;gap:7px;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr))}',
+  '.rpi-flow-card{align-items:flex-start;background:var(--vscode-editor-background,#1e1e1e);border:1px solid var(--rpi-border);',
+  'border-radius:4px;color:inherit;cursor:pointer;display:grid;gap:8px;grid-template-columns:25px minmax(0,1fr);padding:8px;text-align:left}',
+  '.rpi-flow-card:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
+  '.rpi-flow-card[aria-pressed="true"]{box-shadow:0 0 0 1px var(--vscode-focusBorder,#007fd4)}',
+  '.rpi-flow-card[data-flow-status="active"]{border-color:var(--vscode-errorForeground,#f48771)}',
+  '.rpi-flow-card[data-flow-status="resolved"]{border-color:var(--vscode-testing-iconPassed,#73c991);opacity:.78}',
+  '.rpi-flow-card[data-flow-status="waiting"]{opacity:.58}',
+  '.rpi-flow-node{align-items:center;background:var(--vscode-badge-background,#4d4d4d);border-radius:50%;color:var(--vscode-badge-foreground,#fff);',
+  'display:flex;font-size:10px;font-weight:750;height:23px;justify-content:center;width:23px}',
+  '.rpi-flow-card[data-flow-status="active"] .rpi-flow-node{background:var(--vscode-errorForeground,#f48771);color:#111}',
+  '.rpi-flow-card[data-flow-status="resolved"] .rpi-flow-node{background:var(--vscode-testing-iconPassed,#73c991);color:#111}',
+  '.rpi-flow-card-body{display:grid;gap:3px;min-width:0}.rpi-flow-card-heading{align-items:center;display:flex;gap:5px;min-width:0}',
+  '.rpi-flow-card-heading>strong,.rpi-flow-owner,.rpi-flow-relation{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-flow-status{font-size:10px;font-weight:700}.rpi-flow-owner,.rpi-flow-relation{color:var(--rpi-muted);font-size:10px}',
+  '.rpi-flow-editor{border:1px solid var(--rpi-border);border-radius:4px;display:grid;min-width:0;overflow:hidden}',
+  '.rpi-flow-editor[data-flow-status="active"]{border-color:var(--vscode-errorForeground,#f48771)}',
+  '.rpi-flow-editor-heading{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
+  'border-bottom:1px solid var(--rpi-border);display:flex;gap:7px;padding:8px}',
   '.rpi-wireframe-layer{color:#75beff;font:11px/1.35 var(--vscode-font-family,sans-serif);inset:0;overflow:hidden;',
   'pointer-events:none;position:fixed;z-index:2147483645}',
   '.rpi-wireframe-page-frame{border:1px solid color-mix(in srgb,#75beff 72%,transparent);inset:5px;position:absolute}',
@@ -117,9 +151,9 @@ const previewInspectorDevtoolsCss = [
   'max-width:min(260px,100%);overflow:hidden;padding:1px 5px;position:absolute;text-overflow:ellipsis;white-space:nowrap}',
   '.rpi-wireframe-box[data-current-file-export="true"] .rpi-wireframe-box-label{color:#fef08a}',
   '.rpi-wireframe-box[data-placeholder="true"] .rpi-wireframe-box-label{color:#fecaca;font-weight:700}',
-  '.rpi-wireframe-blocker{align-items:center;background:#7f1d1d;border:1px solid #fecaca;border-radius:3px;',
-  'box-shadow:0 2px 9px rgba(0,0,0,.42);color:#fff;cursor:pointer;display:flex;gap:5px;min-height:24px;',
-  'overflow:hidden;padding:2px 7px;pointer-events:auto;position:absolute;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-wireframe-blocker{align-items:center;background:#7f1d1d;border:1px solid #fecaca;border-radius:50%;',
+  'box-shadow:0 2px 9px rgba(0,0,0,.42);color:#fff;cursor:pointer;display:flex;font-size:15px;font-weight:800;',
+  'height:24px;justify-content:center;padding:0;pointer-events:auto;position:absolute;width:24px}',
   '.rpi-wireframe-blocker:hover{background:#b91c1c}.rpi-wireframe-blocker:focus-visible{outline:2px solid #fff;outline-offset:2px}',
   '.rpi-source-card{border:1px solid var(--rpi-border);border-radius:3px;display:grid;gap:5px;padding:8px}',
   '.rpi-console{grid-template-rows:auto auto minmax(0,1fr);height:100%}',
@@ -169,11 +203,10 @@ const previewInspectorDevtoolsSessionState =
     : {};
 previewInspectorSession.devtoolsState = previewInspectorDevtoolsSessionState;
 previewInspectorDevtoolsSessionState.activeTab =
-  ['blocker', 'console', 'fallbacks', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
+  ['blocker', 'console', 'fallbacks', 'flow', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
     ? previewInspectorDevtoolsSessionState.activeTab
     : 'props';
-previewInspectorDevtoolsSessionState.collapsed =
-  previewInspectorDevtoolsSessionState.collapsed === true;
+previewInspectorDevtoolsSessionState.collapsed = false;
 previewInspectorDevtoolsSessionState.query =
   typeof previewInspectorDevtoolsSessionState.query === 'string'
     ? previewInspectorDevtoolsSessionState.query
@@ -182,6 +215,7 @@ Object.assign(
   previewInspectorDevtoolsSessionState,
   normalizePreviewInspectorLayout(previewInspectorDevtoolsSessionState),
 );
+previewInspectorDevtoolsSessionState.dock = 'bottom';
 
 /** Returns a finite browser viewport even in synthetic or partially initialized webviews. */
 function readPreviewInspectorViewport() {

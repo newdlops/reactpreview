@@ -1,5 +1,9 @@
 /** Public browser-runtime boundary for the opt-in React Page Inspector. */
 export {
+  createPreviewInspectorCompanionRuntimeSource,
+  PREVIEW_INSPECTOR_COMPANION_HTML_LIMIT,
+} from './previewInspectorCompanionRuntimeSource';
+export {
   createPreviewInspectorDevtoolsUiRuntimeSource,
   type PreviewInspectorUiAdapter,
   type PreviewInspectorUiSourceLocation,
@@ -28,6 +32,11 @@ export {
 export { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLayoutRuntimeSource';
 export { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 export { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
+export {
+  createPreviewInspectorBlockerFlowUiRuntimeSource,
+  PREVIEW_INSPECTOR_BLOCKER_FLOW_SCOPE_LIMIT,
+  PREVIEW_INSPECTOR_BLOCKER_FLOW_STEP_LIMIT,
+} from './previewInspectorBlockerFlowUiRuntimeSource';
 export {
   createPreviewInspectorWireframeUiRuntimeSource,
   PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT,

@@ -12,6 +12,7 @@ import {
   type PreviewTargetIssue,
   type ResolvedPreviewTarget,
 } from './activePreviewTarget';
+import { PreviewInspectorCompanionPanel } from './previewInspectorCompanionPanel';
 import { PreviewPanelSession } from './previewPanelSession';
 import { createPreviewPanelTitle } from './previewPanelTitle';
 
@@ -144,6 +145,14 @@ export class PreviewController implements vscode.Disposable {
     });
     this.sessions.add(session);
     this.lastFocusedSession = session;
+    if (renderMode === 'page-inspector') {
+      PreviewInspectorCompanionPanel.attach({
+        documentName: panel.title,
+        log: this.log,
+        openSource: session.openInspectorCompanionSource.bind(session),
+        previewPanel: panel,
+      });
+    }
     session.start();
   }
 

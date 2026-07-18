@@ -342,6 +342,12 @@ describe('PreviewController', () => {
       'component',
       'page-inspector',
     ]);
+    expect(vscodeState.panels).toHaveLength(3);
+    const companionPanel = (vscodeState.panels as TestPanel[])[2];
+    expect(companionPanel?.title).toBe('Inspector · SharedTarget.tsx');
+    expect(companionPanel?.options.enableScripts).toBe(true);
+    expect(companionPanel?.webview.html).toContain('React Page Inspector');
+    expect(companionPanel?.webview.html).not.toContain('/artifacts/page-inspector-2/entry.js');
     execute.mockClear();
     const inspectorPanel = (vscodeState.panels as TestPanel[])[1];
     inspectorPanel?.focus();

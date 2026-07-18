@@ -5,8 +5,8 @@ import { createPreviewInspectorDevtoolsUiRuntimeSource } from '../../../../src/a
 import { createPreviewPageInspectorRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewPageInspectorRuntimeSource';
 
 describe('Page Inspector DevTools UI runtime source', () => {
-  /** Provides movable/resizable drawer and floating layouts without wrapping the application tree. */
-  it('renders a collapsible adjustable inspector through the existing portal', () => {
+  /** Keeps the authoritative controls hidden in the preview and mirrored into a companion tab. */
+  it('renders companion-ready inspector controls through the existing portal', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
 
     expect(source).toContain("new Set(['bottom', 'left', 'right', 'floating'])");
@@ -16,10 +16,15 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("value: 'left' }, 'Left drawer'");
     expect(source).toContain("value: 'floating' }, 'Floating'");
     expect(source).toContain("'.rpi-workbench{display:grid");
+    expect(source).toContain(
+      '\'.rpi-shell[data-react-preview-companion-source="true"]{display:none!important}\'',
+    );
     expect(source).toContain('overflow-x:auto;overflow-y:hidden');
     expect(source).toContain("'data-collapsed': collapsed");
     expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible)');
     expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
+    expect(source).toContain('ref: setPreviewInspectorCompanionShell');
+    expect(source).toContain('React.useEffect(schedulePreviewInspectorCompanionSnapshot)');
     expect(source).toContain('function PreviewInspectorResizeHandle');
     expect(source).toContain('function PreviewInspectorMoveHandle');
     expect(source).toContain('beginPreviewInspectorLayoutPointerGesture');
@@ -29,6 +34,12 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Auto values'");
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
+    expect(source).toContain('function PreviewInspectorBlockerFlowDetail');
+    expect(source).toContain('createPreviewInspectorBlockerFlow(snapshot)');
+    expect(source).toContain("['flow', 'Flow (' + String(flow.unresolvedCount) + ')']");
+    expect(source).toContain("activeTab === 'flow'");
+    expect(source).toContain("previewInspectorDevtoolsSessionState.activeTab !== 'flow'");
+    expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
     expect(source).toContain("'aria-label': 'React page layout wireframe'");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
     expect(source).toContain('revealPreviewInspectorWireframeBlocker(node, setCollapsed)');
@@ -274,6 +285,8 @@ describe('Page Inspector DevTools UI runtime source', () => {
       'previewInspectorSourceNavigation.openSource(source, event.nativeEvent, event.currentTarget)',
     );
     expect(source).toContain("'data-react-preview-source-open': sourceOpen === true ? 'true'");
+    expect(source).toContain("'data-rpi-source-path': sourceOpen === true ? companionSourcePath");
+    expect(source).toContain('companionSource: source');
     expect(source).toContain('sourceOpen: true');
     expect(source).not.toContain('previewInspectorApi.openSource(source)');
     expect(source).not.toContain('postMessage(');

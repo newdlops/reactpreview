@@ -15,6 +15,7 @@ import {
   type PreviewInspectorOpenSourceRequest,
 } from '../../src/presentation/previewInspectorProtocol';
 import {
+  handlePreviewInspectorCompanionSourceNavigation,
   handlePreviewInspectorSourceNavigationMessage,
   resolveAuthorizedPreviewInspectorSourceIdentity,
   type PreviewInspectorSourceNavigationContext,
@@ -349,6 +350,42 @@ describe('handlePreviewInspectorSourceNavigationMessage', () => {
       ),
     ).toBeUndefined();
     expect(canonicalize).not.toHaveBeenCalled();
+  });
+});
+
+describe('handlePreviewInspectorCompanionSourceNavigation', () => {
+  /** Treats the companion's real click as the gesture while retaining the exact graph allowlist. */
+  it('opens an authorized companion source and denies an unrelated workspace source', async () => {
+    const document = createDocument(SOURCE_PATH, ['first', 'second']);
+    vscodeState.openTextDocument.mockResolvedValue(document);
+    const context = createContext([SOURCE_PATH]);
+
+    handlePreviewInspectorCompanionSourceNavigation(
+      {
+        column: 3,
+        line: 2,
+        sourcePath: SOURCE_PATH,
+        type: 'react-preview-inspector-companion-open-source',
+      },
+      context,
+    );
+    handlePreviewInspectorCompanionSourceNavigation(
+      {
+        sourcePath: OUTSIDE_PATH,
+        type: 'react-preview-inspector-companion-open-source',
+      },
+      context,
+    );
+
+    await vi.waitFor(() => {
+      expect(vscodeState.showTextDocument).toHaveBeenCalledTimes(1);
+    });
+    expect(vscodeState.openTextDocument).toHaveBeenCalledTimes(1);
+    expect(vscodeState.showTextDocument.mock.calls[0]?.[1].selection?.start).toMatchObject({
+      character: 2,
+      line: 1,
+    });
+    expect(context.log.debug).toHaveBeenCalledWith(expect.stringContaining('outside'));
   });
 });
 

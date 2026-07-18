@@ -38,6 +38,8 @@ describe('Page Inspector runtime source', () => {
     expect(inspectorEntry).toContain('PreviewPageInspectorRootRenderer');
     expect(inspectorEntry).toContain('PreviewInspectorTargetReachabilityProbe');
     expect(inspectorEntry).toContain('Application path rendered, but did not reach');
+    expect(inspectorEntry).toContain("type: 'react-preview-inspector-companion-snapshot'");
+    expect(componentEntry).not.toContain('react-preview-inspector-companion-snapshot');
   });
 
   /** Uses a read-only tree adapter, isolated toolbar, persistent overrides, and proven ancestry. */
@@ -198,6 +200,9 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("[selection.hostNodes, snapshot.status === 'static']");
     expect(source).toContain('treeSelection[0].length > 0 || !treeSelection[1]');
     expect(source).toContain("type: 'react-preview-inspector-open-source'");
+    expect(source).toContain('function setPreviewInspectorCompanionShell(shell)');
+    expect(source).toContain('function handlePreviewInspectorCompanionAction(event)');
+    expect(source).toContain('previewInspectorCompanionState.elementById');
   });
 });
 

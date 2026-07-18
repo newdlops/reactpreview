@@ -541,12 +541,16 @@ link 또는 client를 주입할 수 없으므로 자동 경로의 no-network 보
 `pageInspector/previewInspectorDataRuntimeSource`는 Apollo fallback과 REST instrumentation이 공유하는 탭별
 request registry입니다. GraphQL selection/alias/fragment/list shape, REST TypeScript shape, seed 값과 필드명
 semantic을 하나의 JSON-safe descriptor로 정규화하고 결정적인 Auto/Lorem 값을 생성합니다. compiler가 증명한
-fetch/axios 호출, ambient HTTP(S)·`/api`·`/graphql` fetch와 imported instance가 사용하는 XMLHttpRequest는
+fetch/axios 호출, ambient HTTP(S)·상대 backend 후보 fetch와 imported instance가 사용하는 XMLHttpRequest는
 메모리 Response/AxiosResponse로 종료하며 상대 JSON/TXT/CSV fetch fixture는 captured native fetch로
-전달합니다. request discovery는 React render 중 state를
+전달합니다. `previewInspectorVirtualBackendRuntimeSource`는 이 transport 뒤에서 method·resource URL과 redacted
+body/query fingerprint를 결합하고, REST GET의 canonical resource 및 POST/PATCH/PUT/DELETE 변경을 탭 메모리에
+유지합니다. GraphQL은 operation과 variables별 fixture를 격리합니다. 요청별 success/empty/error/status/latency
+scenario만 webview state에 저장하고 canonical resource 값은 전체 reload 시 폐기합니다. request discovery는 React render 중 state를
 바꾸지 않도록 microtask로 coalesce하고, payload 변경은 data revision을 올려 page export를 remount합니다.
-UI·generation·source instrumentation은 각각 별도 파일이며 사용자 override와 Auto 설정만 webview state에
-저장합니다. endpoint query value와 credential은 registry metadata에 보존하지 않습니다.
+UI·generation·source instrumentation은 각각 별도 파일이며 사용자 override, Auto 설정과 response scenario만 webview state에
+저장합니다. endpoint query value와 credential은 registry metadata에 보존하지 않고 fingerprint 계산 중 민감한
+property 값을 redaction합니다.
 
 `previewThemeBridgePlugin`은 target package의 `styled-components`를 optional resolve하고 같은 package
 인스턴스의 ThemeProvider를 outer boundary로 사용합니다. `previewStyleInventory`는 활성 export graph에서

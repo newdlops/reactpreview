@@ -2,6 +2,19 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1061 - 2026-07-19
+
+- 실제 port나 backend process 없이 Fetch·Axios·XMLHttpRequest·Apollo 요청을 한 broker로 종료하는 탭 내부
+  Virtual Backend를 추가하고, method·정규화 resource URL·redacted body/query fingerprint로 요청 variant를 구분
+- REST GET 결과를 canonical resource로 유지하며 POST/PATCH/PUT/DELETE를 이후 GET에 반영하고, React remount나
+  StrictMode 재실행에서 같은 POST fingerprint가 중복 row를 계속 추가하지 않도록 mutation 결과를 안정적으로 재사용
+- GraphQL operation/variables별 fixture 상태를 격리하고 기존 selection/alias/fragment 및 TypeScript response shape
+  inference를 Virtual Backend의 결정적 Auto/Lorem/Smart payload seed로 재사용
+- Payloads 탭에서 요청별 Success/Empty data/HTTP error, 대표 error status와 지연 시간을 선택하고 ephemeral resource
+  state 또는 response scenario를 독립적으로 초기화하며, request field와 resource identity를 함께 표시
+- compiler가 직접 증명하지 못한 fetch client도 HTTP(S), `/v1` 같은 상대 backend 후보를 전역 경계에서 차단하되
+  `./`·`../` JSON/TXT/CSV fixture는 기존 local fetch로 유지하고 credential property는 fingerprint 전에 redaction
+
 ## 0.1.1060 - 2026-07-19
 
 - HOC export의 Inspector boundary만 mount되고 내부 guard가 `Navigate`/`null`을 반환한 상태를 성공으로 오판하지

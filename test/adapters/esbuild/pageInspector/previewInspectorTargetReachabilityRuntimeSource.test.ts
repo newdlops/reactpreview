@@ -102,7 +102,74 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('hasMountedPreviewInspectorTarget(state)');
     expect(source).toContain('activatePreviewInspectorDirectTarget(state)');
     expect(source).toContain('readPreviewInspectorTargetReachabilityRequiredPaths');
+    expect(source).toContain('smartFillPreviewInspectorTargetApplicationPath');
+    expect(source).toContain('smartFillPreviewInspectorRuntimeFallbacksForReachability');
+    expect(source).toContain('smartFillPreviewInspectorDataPayloadsForReachability');
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
+  });
+
+  /** Batches minimum hook/data fixtures and preserves already proven corridor branch choices. */
+  it('smart-fills one page path without clearing its guided gates', () => {
+    const context: {
+      __result?: {
+        readonly calls: readonly string[];
+        readonly dataRevision: number;
+        readonly fallbackValuesEnabled: boolean;
+        readonly gateRetained: boolean;
+        readonly renderConditionRevision: number;
+        readonly stateRetained: boolean;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        const calls = [];
+        const previewInspectorSession = {
+          dataAutoEnabled: false,
+          dataRevision: 2,
+          fallbackValuesEnabled: false,
+          renderConditionRevision: 4,
+          targetGuidedConditionOverrides: new Map([['login', false]]),
+          targetReachabilityByKey: new Map([['page:Target', { key: 'page:Target' }]]),
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const initializePreviewInspectorDataState = () => undefined;
+        const smartFillPreviewInspectorRuntimeFallbacksForReachability = (key) => {
+          calls.push('runtime:' + key);
+          return true;
+        };
+        const smartFillPreviewInspectorDataPayloadsForReachability = (key) => {
+          calls.push('data:' + key);
+          return true;
+        };
+        const persistPreviewInspectorState = () => calls.push('persist');
+        const notifyPreviewInspector = () => calls.push('notify');
+        const schedulePreviewInspectorTreeRefresh = () => calls.push('tree');
+        const schedulePreviewInspectorCommitRefresh = () => calls.push('commit');
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        smartFillPreviewInspectorTargetApplicationPath({ key: 'page:Target' });
+        globalThis.__result = {
+          calls,
+          dataRevision: previewInspectorSession.dataRevision,
+          fallbackValuesEnabled: previewInspectorSession.fallbackValuesEnabled,
+          gateRetained: previewInspectorSession.targetGuidedConditionOverrides.has('login'),
+          renderConditionRevision: previewInspectorSession.renderConditionRevision,
+          stateRetained: previewInspectorSession.targetReachabilityByKey.has('page:Target'),
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      calls: ['runtime:page:Target', 'data:page:Target', 'persist', 'notify', 'tree', 'commit'],
+      dataRevision: 3,
+      fallbackValuesEnabled: true,
+      gateRetained: true,
+      renderConditionRevision: 5,
+      stateRetained: false,
+    });
   });
 
   /** Requires a real page commit and never auto-promotes target-only diagnostics to success. */

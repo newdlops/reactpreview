@@ -411,6 +411,30 @@ function readPreviewInspectorTargetReachabilityBlockers() {
     }));
 }
 
+/** Smart-fills corridor-local hook/data edges and retries without discarding proven branch choices. */
+function smartFillPreviewInspectorTargetApplicationPath(blocker) {
+  const reachabilityKey = typeof blocker?.key === 'string' ? blocker.key : '';
+  if (reachabilityKey.length === 0) {
+    retryPreviewInspectorTargetApplicationPath();
+    return;
+  }
+  const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(reachabilityKey);
+  const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey);
+  initializePreviewInspectorConditionState();
+  initializePreviewInspectorDataState();
+  previewInspectorSession.fallbackValuesEnabled = true;
+  previewInspectorSession.dataAutoEnabled = true;
+  if (dataChanged) previewInspectorSession.dataRevision += 1;
+  previewInspectorSession.targetReachabilityByKey?.delete(reachabilityKey);
+  previewInspectorSession.renderConditionRevision =
+    (previewInspectorSession.renderConditionRevision ?? 0) + 1;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
+  if (!runtimeChanged && !dataChanged) return;
+}
+
 /** Restarts selected application-path traversal and discards only its automatic branch choices. */
 function retryPreviewInspectorTargetApplicationPath() {
   const descriptor = findSelectedPreviewInspectorDescriptor();

@@ -149,6 +149,12 @@ lease를 소유합니다. Open 명령은 항상
 않으며 `onDidChangeViewState`는 마지막 포커스 session만 기록합니다. 에디터 탭 제목은 고정 URI의
 basename만 사용하지만 진단과 내부 document identity는 workspace-relative path를 계속 보존합니다.
 
+`page-inspector` session은 renderer panel 옆에 `PreviewInspectorCompanionPanel`을 하나 더 만들지만 project
+bundle은 renderer에서만 평가합니다. renderer의 isolated Shadow DOM workbench는 화면에서 숨긴 채 inert
+HTML/CSS snapshot만 companion으로 전달하고, companion은 opaque control ID를 가진 click/input/change/keyboard
+action만 원래 renderer로 돌려보냅니다. renderer를 닫으면 companion도 폐기하지만 companion만 닫으면 preview,
+artifact lease와 hot reload session은 계속 유지됩니다.
+
 문서 편집·저장 이벤트는 모든 session에 전달되지만 각 session은 자신의 대상, 마지막 의존 그래프,
 정적 패턴 watch directory에 포함된 경우만 rebuild를 예약합니다. Refresh는 포커스된 프리뷰를 먼저,
 그다음 활성 source와 같은 대상의 가장 최근 session을 선택하며, 일치하는 session이 없으면 새 탭을
@@ -327,13 +333,26 @@ ancestor 아래에 data-only blocked-owner component를 합성해 blocker를 원
 설명에 잘못 매달리지 않습니다. hook blocker의
 compiler-generated 값과 사용자가 입력한 bounded JSON override는 각각 `auto`/`manual`로 구분하며, explicit
 override는 전역 Auto values가 꺼져 있어도 해당 compiler-issued hook ID에서만 우선합니다. Auto pass는 override를
-지우고 기존 inference 값을 복원합니다. override는 prototype key와 64 KiB 상한을 적용해 webview state에
+지우고 현재 required-path overlay로 compiler 값을 다시 보완합니다. override는 prototype key와 64 KiB 상한을 적용해 webview state에
 저장되며 backend나 extension host의 project runtime으로 전송하지 않습니다.
 `previewInspectorFailureEvidenceRuntimeSource`는 boundary error의 immediate missing property와 innermost-first React
 component stack을 bounded data로 바꾸고 inline placeholder와 tree가 같은 culprit를 사용하게 합니다.
 `previewInspectorBlockerValueRuntimeSource`는 compiler fallback의 function/undefined를 JSON-visible template으로
-복사하고 required path를 물질화합니다. 명시적인 no-op sentinel은 project hook에 값을 돌려주는 순간에만 inert
-function으로 변환되므로 editor payload가 빈 `{}`로 축약되지 않으면서 persisted state는 계속 JSON-only입니다.
+복사하고 dotted/index/array-item required path를 물질화합니다. property semantic으로 boolean polarity, number,
+ID/email/date/URL/status, callable과 collection을 구분하며 collection item 경로는 최소 한 개의 합성 record로
+확장합니다. 이 template은 editor 전용 복사본에 그치지 않고 `previewInspectorGeneratedValueRuntimeSource`의
+descriptor-safe overlay를 통해 실제 Auto hook value에도 적용됩니다. 따라서 실제 non-null sibling/function/class
+identity는 이기고 missing plain leaf만 추가됩니다. 명시적인 no-op sentinel은 project hook에 값을 돌려주는
+순간에만 inert function으로 변환되므로 editor payload가 빈 `{}`로 축약되지 않으면서 persisted state는 계속 JSON-only입니다.
+
+`previewInspectorBlockerFlowUiRuntimeSource`는 enriched component tree에서 blocker owner ID/name 경로를 읽어
+bounded DAG를 만듭니다. strict ancestor owner의 terminal phase는 descendant blocker의 proven predecessor가 되고,
+같은 owner에서는 target reachability→condition→runtime hook→data request→target error phase만 권장 edge로
+연결합니다. 같은 phase와 sibling owner는 dependency를 추측하지 않아 동일 level의 병렬 stage로 남습니다.
+직접 predecessor뿐 아니라 transitive predecessor가 모두 resolved일 때만 ready가 되며 첫 ready/running step 하나를
+active로 권장합니다. current tree에서 사라진 step은 해결된 것으로 표시하되 page-candidate/export scope별 96개,
+session당 8개 scope의 비영속 Map에만 남습니다. Flow UI는 기존 blocker detail을 재사용하고 resolution 변화 뒤 다음
+ready step을 선택하므로 condition/payload/fallback/retry mutation 의미를 중복 구현하지 않습니다.
 
 `pageInspector/previewInspectorFiberRuntimeSource`와 component-tree adapter는 boundary class의 React 16-19
 Fiber 포인터를 버전 격리된 경계에서 읽기만 합니다. boundary에서 HostRoot까지 올라간 뒤 최대 4,096 Fiber와
@@ -348,8 +367,10 @@ component 이름은 mounted/dormant overlay로 data-only 분류합니다. 선택
 보존하고 각 component의 connected host root를 viewport rectangle 하나로 합칩니다. mounted component는 실제
 좌표에 outline을 그리며, host를 commit하기 전에 실패한 blocked-owner와 unmounted current-file export는 가장
 가까운 측정 가능 parent 안에 bounded synthetic slot을 만듭니다. blocker는 이 slot 또는 실제 owner rectangle에
-anchor되고 marker 선택은 같은 tree node ID를 사용해 검색 해제, ancestor expansion, scroll과 Blocker detail을
-한 번에 요청합니다. DOM/Fiber reference는 React state나 webview persistence에 들어가지 않습니다. 한 refresh는
+anchor되고 wireframe에는 pointer input을 받는 원형 `!` marker만 둡니다. marker 선택은 같은 tree node ID를
+사용해 검색 해제, ancestor expansion과 scroll을 요청하고 별도 companion reveal message로 Inspector tab을
+포커스하며 detail revision을 올려 같은 blocker를 재선택해도 Blocker editor를 다시 마운트합니다. DOM/Fiber
+reference는 React state나 webview persistence에 들어가지 않습니다. 한 refresh는
 component box 160개와 tree visit 768개로 제한되고 scroll/resize는 animation frame 하나로 합칩니다.
 
 collector 입력은 legacy boundary뿐 아니라 `{ boundary, exportName }` record를 받습니다. 동일한 authored page
@@ -361,8 +382,8 @@ pseudo component로 승격해 target-local blocker와 Reveal UI가 사라지지 
 분리합니다. outline reconciliation은 animation frame당 한 번 수행하되 마지막 host index를 재사용하고,
 React commit 또는 mount subtree의 `childList` mutation만 Fiber snapshot을 dirty로 표시합니다. attribute,
 character data, scroll, resize는 DOM outline이 자체적으로 따라가므로 관찰하지 않습니다. dirty tree는 250ms
-간격과 `requestIdleCallback`으로 coalesce하고 hidden document에서는 timer를 만들지 않으며, Inspector가
-collapsed이고 Wireframe도 꺼졌으면 UI subscription 자체를 해제합니다. Console·data request discovery·condition·runtime fallback
+간격과 `requestIdleCallback`으로 coalesce하고 hidden renderer document에서는 timer를 만들지 않습니다.
+Console·data request discovery·condition·runtime fallback
 registry는 같은 Inspector-only lane을 사용해 project target이 구독하는 semantic store를 갱신하지 않습니다.
 
 props와 hook/class state는 own data descriptor만 제한된 깊이·key·array/string budget으로 복사하므로 getter나
@@ -370,12 +391,15 @@ project code를 실행하지 않습니다. JSX development `_debugSource`가 있
 없으면 inspector ancestry/render-chain의 source path와 occurrence를 사용합니다. Fiber를 읽지 못하는 초기 또는
 오류 상태에서도 정적 EntryPoint→target 경로는 fallback component tree로 남습니다.
 
-DevTools UI source는 main runtime과 분리된 `previewInspectorDevtoolsUiRuntimeSource`에서 생성합니다. 별도
-`previewInspectorLayoutRuntimeSource`는 격리된 custom host와 Shadow DOM portal의 하단·좌측·우측 drawer,
-floating 배치와 page wireframe style만 소유합니다. drawer 경계와 floating 모서리는 pointer/방향키 resize를 제공하고 floating 이동
-핸들은 좌표를 viewport 안으로 제한합니다. 내부 workbench는 왼쪽 React component tree와 오른쪽
-props/state/source 상세로 나뉘며, target/root 선택, highlight, picker, remount와 plain JSON props override를
-노출합니다. page-context 행은 실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
+DevTools UI source는 main runtime과 분리된 `previewInspectorDevtoolsUiRuntimeSource`에서 생성합니다.
+`previewInspectorCompanionRuntimeSource`는 isolated Shadow DOM workbench의 form property를 inert clone에
+동기화하고 최대 8 MiB snapshot과 interactive element별 opaque ID를 extension host로 보냅니다. host의
+`PreviewInspectorCompanionPanel`은 script/resource/event attribute를 제거하는 별도 CSP document에 snapshot을
+표시하며, 별도 project entry를 import하지 않습니다. renderer의 zero-payload reveal request는 snapshot/action과
+분리해 검증한 뒤 이미 생성된 companion panel만 focus합니다. `previewInspectorLayoutRuntimeSource`는 preview에 남는
+page wireframe style과 companion에서 재사용할 Components/details workbench CSS를 소유합니다. 내부 workbench는
+왼쪽 React component tree와 오른쪽 props/state/source 상세로 나뉘며, target/root 선택, highlight, picker,
+remount와 plain JSON props override를 노출합니다. page-context 행은 실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE`을 구분하며 filesystem 경로는 노출하지 않습니다.
 같은 행의 `PAGE PATH` 선택기는 mount-distinct caller 후보를 entry→root→target breadcrumb로 표시하고, 변경 시
 선택 root의 props/error boundary/component tree key를 함께 교체합니다.
@@ -385,14 +409,17 @@ JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference
 current-file export row는 별도 `Reveal` action으로 selection, ancestor expansion, scroll 및 host highlight를 한 번에
 요청합니다. blocker row 선택은 렌더 의미를 즉시 바꾸지 않고 `Blocker` detail을 열며 condition branch, hook JSON,
 data payload 또는 retry 값을 사용자가 명시적으로 적용할 때만 selected page revision을 remount합니다.
-같은 blocker가 page wireframe에서 선택되면 접힌 shell을 열고 transient one-shot reveal ID로 정확한 tree row를
-찾으므로, 이 상호작용 상태는 hot session이나 webview JSON에 저장되지 않습니다.
+같은 blocker가 page wireframe에서 선택되면 transient one-shot reveal ID로 정확한 tree row를 찾고 Blocker tab을
+강제한 뒤 companion을 focus하므로, 이 상호작용 상태는 hot session이나 webview JSON에 저장되지 않습니다.
+`Flow` 탭에서 chart card를 선택해도 같은 tree-node selection을 사용하되 탭은 Flow에 남고, 선택한 blocker가
+resolved/disappeared 상태로 바뀌면 다음 predecessor-ready card와 editor로 자동 전진합니다.
 event-driven state는 실제 page UI로 조작하지만 임의 hook/local state slot은 수정하지 않습니다.
-source-open browser message는 extension host의 committed dependency allowlist를 통과한
-JS/TS 파일만 현재 local/remote workspace editor에서 열 수 있습니다. 이 bridge는 public Inspector API와
-분리되어 있으며 실제 source-button click의 경로·좌표·nonce를 target별 HMAC으로 서명합니다. host는 proof를
-검증하고 nonce를 한 번만 소비한 뒤 lexical dependency identity를 먼저 확인하므로 임의 path의 realpath조차
-수행하지 않습니다.
+source-open browser message는 extension host의 committed dependency allowlist를 통과한 JS/TS 파일만 현재
+local/remote workspace editor에서 열 수 있습니다. preview-local source button은 기존처럼 실제 click의
+경로·좌표·nonce를 target별 HMAC으로 서명하고 host가 nonce를 한 번만 소비합니다. companion source button은
+project script가 없는 extension-owned document의 실제 click만 별도 protocol로 보내고, 같은 session dependency
+allowlist를 통과시킨 뒤 엽니다. 두 경로 모두 lexical dependency identity를 먼저 확인하므로 임의 path의
+realpath조차 수행하지 않습니다.
 
 `previewInspectorTargetBoundaryRuntimeSource`는 facade가 감싼 정확한 target invocation 아래의 render/lifecycle
 오류를 잡습니다. 정상 경로에는 host DOM을 추가하지 않고 실패 경로에만 compact custom-element와 Retry를
@@ -413,8 +440,8 @@ argument로 계속 실행됩니다. `previewInspectorConsoleUiRuntimeSource`는 
 `DirectPreviewTarget` 경계로 렌더링합니다. 이 fallback도 highlight/props는 동작하지만 ancestor plan이 없음을
 warning으로 명시하고 parent/sibling 문맥을 주장하지 않습니다.
 
-Inspector session은 선택 항목과 page candidate id, highlight/Wireframe 표시, serializable override와 정규화된 layout 좌표·크기를
-`previewHotRuntime` 및 VS Code webview state에 패널별로 보관합니다. cache-busted module 교체와 전체 HTML
+Inspector session은 선택 항목과 page candidate id, highlight/Wireframe 표시와 serializable override를
+`previewHotRuntime` 및 VS Code webview state에 preview/companion 쌍별로 보관합니다. cache-busted module 교체와 전체 HTML
 fallback 뒤에도 이를 복원하지만 기존
 hot reload가 React root를 unmount하므로 프로젝트 hook state 자체는 유지하지 않습니다. reverse plan의
 target·ancestor path, 모든 direct export의 entry/lazy/route evidence와 forward graph input을 dependency에
@@ -568,7 +595,9 @@ leaf 값이나 app 의미를 생성하지 않습니다.
 `previewRuntimeHookInstrumentation`은 Page Inspector full build에서 reached workspace의 same-module hook과 모든
 정적 imported `useX` hook을 package 이름과 무관하게 분석합니다. destructuring, tuple, compared literal,
 required property/call/조건 path 또는 bounded semantic name으로 fallback expression을 증명한 호출만 global
-Inspector resolver로 감쌉니다. React built-in은 직접 `useContext`만 포함하고 나머지는 제외하며, exact
+Inspector resolver로 감쌉니다. array method가 보이면 callback의 첫 parameter binding과 그 scope의 property
+read를 다시 분석해 사용 field만 가진 frozen one-item collection과 `[].field` required path를 만듭니다.
+React built-in은 직접 `useContext`만 포함하고 나머지는 제외하며, exact
 `use*Context` hook은 별도 Context transform이 같은 resolver protocol을 사용합니다. resolver는 원본 hook을
 정확히 한 번 호출하고 완전한 값은 identity까지 그대로 반환합니다. non-thenable 예외·필수 nullish root 또는
 plain object/array의 누락 nullish leaf는 `Auto values`가 켜진 경우에만 per-source stable fallback으로

@@ -92,8 +92,9 @@ provenance에서 확인하거나 끌 수 있습니다.
 선형 reverse import index를 자동 fallback으로 사용합니다. 따라서 filename 관례가 없는 entry도 fallback에서
 찾을 수 있고, 모노레포 alias는 두 경로 모두 프로젝트의 정확한 resolver가 판정합니다.
 
-Inspector는 조절 가능한 drawer/floating 패널의 왼쪽에 runtime React Components tree를, 오른쪽에 선택
-component의 상세를 표시합니다. 상단 page-context 행은 실제로 마운트한 작성자 root와 정적으로 증명한
+Inspector는 렌더러와 분리된 `Inspector · 파일명` editor tab의 왼쪽에 runtime React Components tree를,
+오른쪽에 선택 component의 상세를 표시합니다. project React runtime은 preview에서 한 번만 실행되고 별도 탭은
+extension-owned control snapshot과 bounded action만 교환합니다. 상단 page-context 행은 실제로 마운트한 작성자 root와 정적으로 증명한
 entry-to-target 경로를 `PAGE COMPONENT`, `PAGE ROOT`, `STANDALONE` 중 하나로 구분합니다.
 HTML element tag 대신 부모·형제·자식 function/class/memo/forwardRef component가 중심이며, runtime Fiber를
 얻기 전에는 정적으로 증명한 EntryPoint→target 경로가 fallback tree가 됩니다. 다음 값을 확인·조작할 수

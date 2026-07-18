@@ -121,17 +121,20 @@ bare wildcard만 있어 export identity를 정적으로 증명할 수 없는 파
 fallback으로 열립니다. 이 경우에도 export 선택, 자동 highlight, JSON props와 picker는 동작하며 Output에
 ancestor 문맥이 없다는 warning을 남깁니다.
 
-Inspector는 기본적으로 Chrome DevTools와 유사한 크기 조절식 하단 drawer를 엽니다. 위치 선택기에서 좌측·우측
-drawer 또는 floating 패널로 바꿀 수 있고, drawer 경계와 floating 모서리를 드래그해 크기를 조절하며 floating
-이동 핸들로 중요한 프리뷰 영역을 피할 수 있습니다. 왼쪽 `Components` 영역은 HTML tag가 아니라 runtime React
-component를 부모·형제·자식 계층으로 보여주고, 오른쪽 상세 영역은 선택 component의 props, hook/class state
-snapshot과 authored source를 보여줍니다.
+Inspector는 렌더러를 가리는 drawer/floating overlay가 아니라 `Inspector · 파일명` 별도 VS Code editor tab으로
+프리뷰 옆에 열립니다. project React와 page bundle은 preview webview에서 한 번만 실행하고, 별도 탭은
+extension-owned Inspector control DOM만 구독하므로 application runtime이나 bundle을 중복 평가하지 않습니다.
+왼쪽 `Components` 영역은 HTML tag가 아니라 runtime React component를 부모·형제·자식 계층으로 보여주고,
+오른쪽 상세 영역은 선택 component의 props, hook/class state snapshot과 authored source를 보여줍니다. 별도 탭을
+다른 editor group으로 이동해도 control 변경은 원래 고정 preview에 전달됩니다.
 
 렌더러에는 `Wireframe`이 기본으로 켜져 전체 viewport의 page frame과 현재 React page가 실제로 차지한 component
 영역을 함께 표시합니다. mounted component는 Fiber가 이미 수집한 top-level host DOM 경계를 얇은 점선 상자로
 표시하고, 현재 파일 export는 노란 실선으로 구분합니다. 렌더가 host DOM을 만들기 전에 끊긴 component는 가장
 가까운 surviving parent 안에 붉은 `Unrendered` placeholder로 남습니다. 그 위치의 blocker 마커를 클릭하면
-Inspector가 펼쳐지고 검색 필터가 해제되며 같은 blocker의 component-tree ancestor가 자동 확장·스크롤됩니다.
+와이어프레임에는 원형 `!` 아이콘만 표시되며, 클릭 시 별도 Inspector 탭이 앞으로 열리고 `Blocker` 상세 화면과
+같은 blocker의 component-tree ancestor가 자동 선택·확장·스크롤됩니다. 같은 아이콘을 다시 눌러도 Flow나 Props에
+머물지 않고 해당 Blocker editor를 다시 엽니다. 아이콘의 접근 가능한 이름과 tooltip에는 blocker identity가 남습니다.
 일반 wireframe 상자는 page input을 가로채지 않고 blocker 버튼만 클릭을 받으며 toolbar에서 전체 overlay를 끌 수
 있습니다.
 
@@ -158,6 +161,14 @@ preview session에만 저장됩니다.
 property를 나열하고, 함수형 leaf는 JSON에서 `[Preview no-op function]`으로 보여 `{}`로 숨지 않게 합니다. 완전히
 해결되지 않은 오류도 렌더 위치에 `ComponentName blocked` placeholder와 즉시 확인 가능한 missing property를 남깁니다.
 
+상세 영역의 `Flow (N)` 탭은 이 blocker들을 page root에서 target 방향의 단계형 flow chart로 보여줍니다.
+component ancestor에 붙은 blocker는 descendant보다 선행하고, 같은 component 안에서는 page path, JSX condition,
+hook value, backend data, contained render error 순으로 해결을 권장합니다. 서로 다른 sibling branch나 같은 phase의
+요청은 임의로 직렬화하지 않고 같은 stage의 병렬 카드로 표시합니다. 각 카드는 선행 blocker와 component breadcrumb,
+`Resolved`/`Solve now`/`Waiting` 상태를 가지며 선택하면 동일한 Components tree node와 기존 payload/pass/retry
+editor가 열립니다. 현재 단계를 해결하면 다음 predecessor-ready blocker로 자동 이동하고, 트리에서 사라진 blocker도
+해당 preview session 동안 완료 이력으로 남습니다.
+
 페이지가 로그인·권한·로딩 branch를 정상적으로 commit했지만 현재 파일의 export를 한 번도 호출하지 않은 경우도
 렌더 성공으로 오판하지 않습니다. Page Inspector는 target boundary의 실제 mount를 도달 조건으로 삼고,
 정적 entry→route→target 경로에 속한 early return과 fallback condition을 바깥쪽부터 한 단계씩 통과합니다.
@@ -169,14 +180,14 @@ tree의 `Path blocker`에서 application path 재시도 또는 직접 렌더를 
 Inspector highlight는 application DOM에 붙은 CSS outline만 animation frame에서 조정하며 scroll·resize나
 attribute/text animation마다 React tree를 다시 읽지 않습니다. 실제 React commit 또는 child-list 변화가
 있을 때만 cached Fiber snapshot을 무효화하고, component tree는 browser idle 구간에서 최대 초당 4회
-갱신합니다. Wireframe을 끈 채 Inspector를 접거나 preview tab이 숨겨지면 이 tree 구독과 timer도 중지됩니다. Console, Payload,
+갱신합니다. preview tab이 숨겨지면 이 tree 구독과 timer도 중지됩니다. Console, Payload,
 조건 및 fallback 기록은 Inspector 전용 update lane을 사용하므로 로그가 많은 페이지도 application root를
 반복 재렌더링하지 않습니다.
 
-Inspector dock에서는 다음 작업을 할 수 있습니다.
+별도 Inspector 탭에서는 다음 작업을 할 수 있습니다.
 
-- 하단·좌측·우측 drawer와 floating 배치를 선택하고 크기·위치를 pointer 또는 방향키로 조절하거나 접기
 - `Wireframe`으로 전체 page frame, 실제 component placement와 실패한 component의 blocker 위치를 켜거나 끄기
+- `Flow (N)`에서 blocker 선행·후행과 병렬 branch를 확인하고 추천된 첫 미해결 단계부터 하나씩 값 적용·재시도
 - `Main component`로 tree 선택을 현재 파일의 대표 export와 실제 mounted target으로 즉시 되돌리기
 - `Workspace React render root`에서 entry→route→page→target 경로를 펼치고 각 현재 파일 export를 `Reveal`
 - `PAGE PATH`에서 정적으로 증명된 caller→page root 후보를 선택해 각 final page 문맥을 지연 로드
@@ -213,6 +224,10 @@ reached source의 imported/local `useX` hook 또는 직접 `useContext`가 Provi
 call/조건 사용과 semantic name을 근거로 bounded static 값을 만들 수 있는 호출만 우회합니다. 실제 hook은 항상
 먼저 실행하며 완전한 실제 값은 identity까지 그대로 유지합니다. 일부 field만 없으면 getter를 실행하지 않는
 plain object/array copy에 해당 leaf만 채우고 실제 sibling, callback, class instance와 React element는 보존합니다.
+required path는 dotted property, tuple index와 `items[]` collection item까지 하나의 합성기로 처리합니다.
+collection method의 callback parameter에서 실제 읽는 field를 찾을 수 있으면 빈 배열 대신 그 field만 가진 최소
+한 항목을 생성하고, callable은 inert function, boolean/number/ID/email/date/URL/status는 이름과 사용 방식에 맞는
+명시적인 preview 값으로 만듭니다. Inspector JSON에 보이는 값과 hook에 실제 전달되는 Auto 값은 동일합니다.
 생성 path는 `Fallbacks`와 Console warning에 표시되고 `Auto values`를 끄면 원래 예외/값이 복원되며, Suspense
 thenable은 항상 React에 전달됩니다. 자동 근거로 표현할 수 없는 app invariant는 component-local 오류 경계가
 해당 위치에 진단을 유지합니다.
@@ -220,7 +235,8 @@ React는 임의의 hook/local state slot을 수정하는 공개 API를 제공하
 덮어쓰지 않습니다.
 `Open source` 요청은 webview의 임의 경로를 신뢰하지 않으며, 해당 panel의 마지막 정상 bundle dependency로
 확인된 JS/TS source만 현재 local/remote workspace URI를 유지해 엽니다. 실제 Inspector 버튼 클릭은
-target별 HMAC과 일회성 nonce로 인증되므로 렌더링된 project code가 같은 host message를 위조할 수 없습니다.
+preview-local UI에서는 target별 HMAC과 일회성 nonce로 인증됩니다. 별도 Inspector 탭에서는 project script가
+실행되지 않는 extension-owned document의 실제 클릭만 받아 같은 committed dependency allowlist를 적용합니다.
 
 render-critical hook 오류는 먼저 preview-only fallback으로 고리를 끊어 부모·형제 렌더를 계속 시도합니다.
 그래도 선택 target의 render/lifecycle이 정적값 부족으로 실패하면 해당 target 위치만 작은 placeholder로 바뀌고
@@ -234,8 +250,8 @@ export가 다시 마운트되고, 일반 오류는 `Retry` 또는 toolbar의 `Re
 webview state에 영구 저장되지 않습니다. 따라서 hot reload 중에는 진단을 유지하지만 전체 탭 reload나 `Clear`로
 초기화됩니다.
 
-선택 export와 page path, highlight/Wireframe 상태, props/payload override, Auto payload 설정과 Inspector 배치·크기·위치는 해당
-웹뷰 탭에만 저장됩니다. 소스,
+선택 export와 page path, highlight/Wireframe 상태, 선택한 blocker flow 단계, props/payload override와 Auto
+payload 설정은 해당 preview/Inspector 탭 쌍에만 저장됩니다. 소스,
 선택된 ancestor 또는 entry/lazy/route 경로 근거가 바뀌면 같은 패널이 서버 없는 ESM/CSS hot reload를
 수행하고 설정과 override를 다시 적용합니다.
 프로젝트 React root 자체는 다시 마운트되므로 임의의 hook state는 보존되지 않습니다. 여러 실제 사용처는

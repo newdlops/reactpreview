@@ -2,6 +2,45 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1054 - 2026-07-18
+
+- page wireframe의 blocker를 이름이 붙은 큰 경고 버튼 대신 24px 원형 `!` marker 하나로 축소하고,
+  접근 가능한 이름과 tooltip에는 정확한 blocker/component identity를 계속 제공
+- `!`를 클릭하면 blocker tree row를 선택·확장하는 동시에 별도 `Inspector · 파일명` tab을 포커스하고,
+  같은 blocker를 다시 클릭한 경우에도 `Blocker` 상세 editor를 강제로 다시 열도록 연결
+- hook `Auto pass` 편집기에만 required path를 보이던 불일치를 제거하고, 표시 JSON과 실제 project hook에
+  주입되는 fallback 모두 동일한 prototype-safe required-path 합성 결과를 사용하도록 변경
+- dotted/numeric/`items[]` path, callable leaf, boolean polarity, ID/email/date/URL/status/number/collection
+  semantic을 구분하고 실제 non-null sibling과 callback은 보존하면서 필요한 누락 leaf만 채우도록 개선
+- `rows.map(row => ...)` 같은 local collection 소비의 callback parameter를 정적으로 분석해 사용된 item field를
+  가진 최소 한 항목을 생성하고, empty list 때문에 target subtree가 보이지 않던 Auto preview를 개선
+
+## 0.1.1053 - 2026-07-18
+
+- Page Inspector의 component tree, Flow, Props, Payloads, Fallbacks와 Console workbench를 렌더러 위
+  drawer/floating overlay에서 별도의 `Inspector · 파일명` VS Code editor tab으로 분리
+- project React와 page bundle은 기존 preview webview에서 한 번만 실행하고, extension-owned Inspector DOM만
+  bounded snapshot으로 옆 탭에 미러링해 두 번째 application runtime과 추가 bundle 평가를 방지
+- Inspector 탭의 tree 선택, condition, props/payload JSON, Auto 값, retry/remount, picker/highlight와 Wireframe
+  조작을 opaque control ID로 원래 preview에 전달하고 hot reload/full-document fallback 뒤 snapshot을 재연결
+- companion markup은 active tag/resource/event attribute를 제거하고 CSS network construct를 차단하며, source
+  버튼은 실제 companion click과 committed dependency graph allowlist를 모두 통과한 파일만 editor에서 열도록 유지
+- preview에는 page/component wireframe과 blocker marker만 남겨 application renderer를 Inspector chrome이
+  가리지 않게 하고, preview가 닫히면 companion을 닫되 companion만 닫아도 preview session은 계속 유지
+
+## 0.1.1052 - 2026-07-18
+
+- Inspector 상세 영역에 `Flow (N)` 탭을 추가해 page root에서 target까지 발견된 condition, hook fallback,
+  backend payload, path reachability와 contained render error를 단계별 flow chart로 표시
+- component ancestor blocker를 descendant보다 앞에 두고 같은 owner에서는 path→condition→hook→data→render error
+  순서를 적용하되, 동일 phase와 sibling branch는 거짓 의존성을 만들지 않고 같은 stage의 병렬 카드로 유지
+- 각 단계를 `Resolved`, `Solve now`, `Ready in parallel`, `Waiting for predecessor`로 분류하고 선행 blocker 이름과
+  component owner breadcrumb, 전체 해결 progress를 함께 표시
+- Flow 카드에서 기존 blocker editor와 Components tree를 연결하고, 선택 blocker가 해결되거나 트리에서 사라지면
+  다음 predecessor-ready blocker로 자동 이동하며 사라진 단계도 pinned session의 완료 이력으로 보존
+- flow history를 page candidate/export별 최대 96단계·8개 scope의 비영속 Map으로 제한해 backend/Fiber 객체나
+  오래된 다른 page scenario가 webview persistence에 들어가지 않도록 유지
+
 ## 0.1.1051 - 2026-07-18
 
 - Page Inspector 렌더러에 전체 viewport page frame과 실제 Fiber host 경계 기반 React component placement

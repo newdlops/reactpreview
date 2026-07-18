@@ -60,6 +60,13 @@ function readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurr
 
 /** Gives every row one plain-language role so users never infer meaning from color alone. */
 function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurrentFileExport) {
+  if (
+    node?.blockerKind === 'target-reachability' &&
+    node?.blocker?.pageRootCommitted === true &&
+    node?.blocker?.targetMounted !== true
+  ) {
+    return { key: 'path', label: 'FLOW OUTCOME' };
+  }
   if (isBlocking) return { key: 'blocker', label: 'BLOCKER' };
   if (isCondition) return { key: 'condition', label: 'CONDITION' };
   if (node?.blockerKind === 'target-reachability') {

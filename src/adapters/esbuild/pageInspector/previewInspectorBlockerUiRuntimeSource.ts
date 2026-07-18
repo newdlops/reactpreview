@@ -419,24 +419,39 @@ function formatPreviewInspectorBlockerBadge(node) {
 function PreviewInspectorBlockerGuide({ node }) {
   const condition = isPreviewInspectorConditionNode(node);
   const blocking = isPreviewInspectorBlockingNode(node);
-  const title = condition
-    ? 'This condition chooses which React branch is visible.'
-    : blocking
-      ? 'Rendering stops at this point in the component tree.'
-      : 'React Preview supplied a local preview value here.';
-  const detail = condition
-    ? 'Choose a branch below. This changes only the pinned preview.'
-    : blocking
-      ? 'Use Smart fill to add only proven missing values, or enter a value below; the page remounts after applying it.'
-      : 'The page can continue, but you can inspect or replace the generated value below.';
+  const targetAbsent = node?.blockerKind === 'target-reachability' &&
+    node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
+  let detail = 'The page can continue, but you can inspect or replace the generated value below.';
+  let helpKind = 'assisted';
+  let icon = '≈';
+  let title = 'React Preview supplied a local preview value here.';
+  if (condition) {
+    detail = 'Choose a branch below. This changes only the pinned preview.';
+    helpKind = 'condition';
+    icon = '?';
+    title = 'This condition chooses which React branch is visible.';
+  } else if (targetAbsent) {
+    detail = 'This may be a valid application outcome. Compare another Page path, inspect File components, or provide path values when static evidence is sufficient.';
+    helpKind = 'flow-outcome';
+    icon = '↳';
+    title = 'The authored page rendered without mounting this current-file component.';
+  } else if (blocking) {
+    detail = 'Use Smart fill to add only proven missing values, or enter a value below; the page remounts after applying it.';
+    helpKind = 'blocking';
+    icon = '!';
+    title = 'Rendering stops at this point in the component tree.';
+  }
   return React.createElement(
     'section',
     {
       className: 'rpi-blocker-help',
-      'data-help-kind': condition ? 'condition' : blocking ? 'blocking' : 'assisted',
+      'data-help-kind': helpKind,
     },
-    React.createElement('span', { 'aria-hidden': true, className: 'rpi-blocker-help-icon' },
-      condition ? '?' : blocking ? '!' : '≈'),
+    React.createElement(
+      'span',
+      { 'aria-hidden': true, className: 'rpi-blocker-help-icon' },
+      icon,
+    ),
     React.createElement(
       'span',
       { className: 'rpi-blocker-help-copy' },

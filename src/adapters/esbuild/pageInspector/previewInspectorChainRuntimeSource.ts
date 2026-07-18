@@ -28,6 +28,23 @@ function readPreviewInspectorPageContext() {
       kind: 'standalone',
     };
   }
+  if (
+    typeof readPreviewInspectorRenderScenario === 'function' &&
+    readPreviewInspectorRenderScenario() === 'file-components'
+  ) {
+    const exportNames = [
+      ...new Set([
+        inspector.target?.exportName ?? descriptor?.exportName,
+        ...Object.keys(inspector.renderChainsByExport ?? {}),
+      ]),
+    ].filter((name) => typeof name === 'string' && name.length > 0);
+    return {
+      badge: 'FILE COMPONENTS',
+      breadcrumb: exportNames.join('  ·  '),
+      detail: 'Independent current-file export overview · authored page outcomes remain available in Page flow',
+      kind: 'file-components',
+    };
+  }
   const selectedExportName = previewInspectorSession.selectedExportName;
   const renderChain = inspector.renderChainsByExport?.[selectedExportName] ?? inspector.renderChain;
   const pageCandidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'

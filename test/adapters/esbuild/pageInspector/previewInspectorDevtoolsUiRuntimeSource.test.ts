@@ -73,6 +73,14 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("className: 'rpi-context-badge'");
     expect(source).toContain("'aria-label': 'Authored page caller path'");
     expect(source).toContain('selectPreviewInspectorPageCandidate(event.target.value)');
+    expect(source).toContain("'aria-label': 'Preview rendering perspective'");
+    expect(source).toContain("'Page flow (as authored)'");
+    expect(source).toContain("'File components (all exports)'");
+    expect(source).toContain("'Current-file component overview'");
+    expect(source).toContain("'FILE COMPONENTS'");
+    expect(source).toContain("'TARGET ABSENT'");
+    expect(source).toContain("'Rendered flow does not contain the current file'");
+    expect(source).toContain('React Preview does not classify this application outcome.');
     expect(source).toContain("'aria-label': 'Inspector tree legend'");
     expect(source).toContain("'Fix next blocker'");
     expect(source).toContain("'Page context is ready'");
@@ -182,6 +190,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("label: 'COMPONENT'");
     expect(source).toContain("label: 'BLOCKER'");
     expect(source).toContain("'BLOCKS PAGE · CLICK TO FIX'");
+    expect(source).toContain("'AUTHORED FLOW · TARGET ABSENT'");
+    expect(source).toContain("label: 'FLOW OUTCOME'");
+    expect(source).toContain('rpi-flow-outcome-row');
     expect(source).toContain('isPreviewInspectorBlockingNode(node)');
     expect(source).toContain('revealPreviewInspectorCurrentFileExport(node)');
     expect(source).toContain('attachPreviewInspectorConditionsToSnapshot');

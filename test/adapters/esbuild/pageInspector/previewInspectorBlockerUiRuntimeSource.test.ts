@@ -101,6 +101,10 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain("blockerKind: 'target-reachability'");
     expect(source).toContain('Payload properties discovered downstream:');
     expect(source).toContain('Rendering stops at this point in the component tree.');
+    expect(source).toContain(
+      'The authored page rendered without mounting this current-file component.',
+    );
+    expect(source).toContain("helpKind = 'flow-outcome'");
     expect(source).toContain('React Preview supplied a local preview value here.');
     expect(source).toContain('readPreviewInspectorActiveBlockerSummary');
   });

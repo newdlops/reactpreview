@@ -74,11 +74,33 @@ describe('Preview Inspector page-context runtime source', () => {
       kind: 'standalone',
     });
   });
+
+  /** Describes the all-export overview without claiming that it is an application route. */
+  it('labels the explicit current-file component perspective neutrally', () => {
+    const context = evaluatePageContext(
+      {
+        inspector: {
+          renderChainsByExport: { Primary: {}, Secondary: {} },
+          target: { exportName: 'Primary', sourcePath: '/workspace/Target.tsx' },
+        },
+      },
+      'file-components',
+    );
+
+    expect(context).toEqual({
+      badge: 'FILE COMPONENTS',
+      breadcrumb: 'Primary  ·  Secondary',
+      detail:
+        'Independent current-file export overview · authored page outcomes remain available in Page flow',
+      kind: 'file-components',
+    });
+  });
 });
 
 /** Evaluates generated source with one descriptor and returns its serializable context record. */
 function evaluatePageContext(
   descriptor: Record<string, unknown>,
+  renderScenario = 'authored-page',
 ): PreviewInspectorPageContextFixture {
   const sandbox: {
     __pageContext?: PreviewInspectorPageContextFixture;
@@ -86,17 +108,20 @@ function evaluatePageContext(
       descriptors: readonly Record<string, unknown>[];
       selectedExportName: string;
     };
+    renderScenario: string;
   } = {
     previewInspectorSession: {
       descriptors: [descriptor],
       selectedExportName: 'Target',
     },
+    renderScenario,
   };
   vm.runInNewContext(
     `${createPreviewInspectorChainRuntimeSource()}
 function findSelectedPreviewInspectorDescriptor() {
   return previewInspectorSession.descriptors[0];
 }
+function readPreviewInspectorRenderScenario() { return globalThis.renderScenario; }
 globalThis.__pageContext = readPreviewInspectorPageContext();`,
     sandbox,
   );

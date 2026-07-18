@@ -49,8 +49,11 @@ function PreviewInspectorComponentTreeNode({
   const selected = node.id === selectedId;
   const isCondition = isPreviewInspectorConditionNode(node);
   const isRenderControl = isPreviewInspectorBlockerNode(node);
-  const isBlocking = isPreviewInspectorBlockingNode(node);
-  const isPathProbe = node?.blockerKind === 'target-reachability' && !isBlocking;
+  const isFlowOutcome = node?.blockerKind === 'target-reachability' &&
+    node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
+  const isBlocking = isPreviewInspectorBlockingNode(node) && !isFlowOutcome;
+  const isPathProbe = node?.blockerKind === 'target-reachability' &&
+    !isBlocking && !isFlowOutcome;
   const isAssisted = isRenderControl && !isCondition && !isBlocking && !isPathProbe;
   const isOverlay = isPreviewInspectorOverlayNode(node);
   const isWrapper = isPreviewInspectorTransparentWrapperNode(node);
@@ -90,6 +93,7 @@ function PreviewInspectorComponentTreeNode({
         'aria-selected': selected,
         className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : '') +
           (isBlocking ? ' rpi-blocker-row' : '') +
+          (isFlowOutcome ? ' rpi-flow-outcome-row' : '') +
           (isAssisted ? ' rpi-assisted-row' : '') +
           (isPathProbe ? ' rpi-path-probe-row' : '') +
           (isBlockedOwner ? ' rpi-blocked-owner-row' : '') +
@@ -106,6 +110,8 @@ function PreviewInspectorComponentTreeNode({
         tabIndex: node.id === focusableId ? 0 : -1,
         title: isBlocking
           ? 'Rendering stops here. Select this row to apply a value or retry.'
+          : isFlowOutcome
+            ? 'This authored flow rendered without the current file. Select it to compare paths or inspect path evidence.'
           : isCondition
             ? 'This condition controls which React branch is visible. Select it to toggle the branch.'
             : isAssisted
@@ -170,6 +176,9 @@ function PreviewInspectorComponentTreeNode({
       isBlocking
         ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
             'BLOCKS PAGE · CLICK TO FIX')
+        : isFlowOutcome
+          ? React.createElement('span', { className: 'rpi-badge rpi-flow-outcome-badge' },
+              'AUTHORED FLOW · TARGET ABSENT')
         : isAssisted
           ? React.createElement('span', { className: 'rpi-badge rpi-assisted-badge' },
               'PAGE CAN CONTINUE')

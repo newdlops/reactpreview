@@ -16,10 +16,11 @@ export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
   return String.raw`
 /** Formats whether the selected authored page and current-file target share one committed render. */
 function formatPreviewInspectorPageCorridorStatus(reachability) {
+  if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
   if (reachability?.status === 'reached') return 'PAGE READY';
   if (reachability?.directTarget === true) return 'TARGET ONLY';
   if (reachability?.status === 'advancing') return 'FINDING TARGET';
-  if (reachability?.pageRootCommitted === true) return 'TARGET BLOCKED';
+  if (reachability?.pageRootCommitted === true) return 'TARGET ABSENT';
   return 'LOADING PAGE';
 }
 
@@ -34,7 +35,31 @@ function openPreviewInspectorFriendlyBlockerFlow() {
 
 /** Converts internal corridor state into one plain-language status and recommended next action. */
 function readPreviewInspectorFriendlyPageStatus(reachability) {
+  if (readPreviewInspectorRenderScenario() === 'file-components') {
+    return {
+      action: 'Return to page flow',
+      description: 'All statically proven component exports from the current file are mounted independently. This overview does not decide which application outcome is normal.',
+      icon: 'C',
+      kind: 'overview',
+      onAction: () => setPreviewInspectorRenderScenario('authored-page'),
+      title: 'Current-file component overview',
+    };
+  }
   const blockers = readPreviewInspectorActiveBlockerSummary();
+  const renderedWithoutTarget = reachability?.pageRootCommitted === true &&
+    reachability?.targetMounted !== true &&
+    blockers.count > 0 &&
+    blockers.active.every((node) => node?.blockerKind === 'target-reachability');
+  if (renderedWithoutTarget) {
+    return {
+      action: 'Show file components',
+      description: 'The chosen authored path committed its UI without mounting the current file. Compare another page path or inspect every current-file export; React Preview does not classify this application outcome.',
+      icon: '↳',
+      kind: 'flow-outcome',
+      onAction: () => setPreviewInspectorRenderScenario('file-components'),
+      title: 'Rendered flow does not contain the current file',
+    };
+  }
   if (reachability?.directTarget === true) {
     return {
       action: 'Return to page',
@@ -78,6 +103,30 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     kind: 'preparing',
     title: reachability?.status === 'advancing' ? 'Finding the target on this page' : 'Preparing page context',
   };
+}
+
+/** Lets the user choose perspective while keeping application fallback screens as authored output. */
+function PreviewInspectorRenderScenarioSelect() {
+  const scenario = readPreviewInspectorRenderScenario();
+  return React.createElement(
+    'label',
+    {
+      className: 'rpi-candidate-select',
+      title: 'Page flow preserves the chosen authored route. File components mounts each current-file export independently.',
+    },
+    React.createElement('span', { className: 'rpi-context-badge' }, 'VIEW'),
+    React.createElement(
+      'select',
+      {
+        'aria-label': 'Preview rendering perspective',
+        className: 'rpi-select',
+        onChange: (event) => setPreviewInspectorRenderScenario(event.target.value),
+        value: scenario,
+      },
+      React.createElement('option', { value: 'authored-page' }, 'Page flow (as authored)'),
+      React.createElement('option', { value: 'file-components' }, 'File components (all exports)'),
+    ),
+  );
 }
 
 /** Shows the current outcome, next action, and stable visual vocabulary before the tree. */
@@ -137,9 +186,11 @@ function PreviewInspectorPageCandidateSelect({ descriptor }) {
   const selected = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (candidates.length === 0) return undefined;
   const reachability = readPreviewInspectorTargetReachabilityState(descriptor, selected);
+  const scenario = readPreviewInspectorRenderScenario();
   return React.createElement(
     React.Fragment,
     undefined,
+    React.createElement(PreviewInspectorRenderScenarioSelect),
     React.createElement(PreviewInspectorFriendlyGuide, { reachability }),
     React.createElement(
       'label',
@@ -155,7 +206,7 @@ function PreviewInspectorPageCandidateSelect({ descriptor }) {
         {
           'aria-label': 'Authored page caller path',
           className: 'rpi-select',
-          disabled: candidates.length < 2,
+          disabled: candidates.length < 2 || scenario === 'file-components',
           onChange: (event) => selectPreviewInspectorPageCandidate(event.target.value),
           value: selected?.id ?? candidates[0]?.id ?? '',
         },

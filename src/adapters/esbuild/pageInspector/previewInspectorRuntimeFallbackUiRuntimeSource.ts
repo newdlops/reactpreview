@@ -50,7 +50,13 @@ function PreviewInspectorRuntimeFallbackDetail() {
             'strong',
             undefined,
             fallback.hookName + ' · ' +
-              (fallback.mode === 'manual' ? 'USER PASS VALUE' : 'GENERATED RENDER VALUE'),
+              (fallback.mode === 'smart-manual'
+                ? 'USER + SMART MINIMUM'
+                : fallback.mode === 'manual'
+                  ? 'USER PASS VALUE'
+                  : fallback.mode === 'smart'
+                    ? 'GENERATED · SMART MINIMUM'
+                    : 'GENERATED RENDER VALUE'),
           ),
           React.createElement(
             'div',
@@ -67,7 +73,8 @@ function PreviewInspectorRuntimeFallbackDetail() {
           React.createElement(
             'div',
             { className: 'rpi-note' },
-            (fallback.mode === 'manual' ? 'Manual value: ' : 'Generated: ') + fallback.fallbackPreview,
+            (['manual', 'smart-manual'].includes(fallback.mode) ? 'Manual value: ' : 'Generated: ') +
+              fallback.fallbackPreview,
           ),
           fallback.generatedPaths?.length > 0
             ? React.createElement(

@@ -353,7 +353,8 @@ function isPreviewInspectorBlockerNode(node) {
 function isPreviewInspectorBlockingNode(node) {
   if (isPreviewInspectorConditionNode(node)) return false;
   if (node?.blockerKind === 'runtime-fallback') {
-    return node.blocker?.mode !== 'manual' && !readPreviewInspectorFallbackValuesEnabled();
+    return !['manual', 'smart-manual'].includes(node.blocker?.mode) &&
+      !readPreviewInspectorFallbackValuesEnabled();
   }
   if (node?.blockerKind === 'data-request') {
     const payload = node.blocker?.payload;
@@ -394,7 +395,15 @@ function formatPreviewInspectorBlockerBadge(node) {
           : '');
   }
   if (node?.blockerKind === 'runtime-fallback') {
-    return 'hook value · ' + (node.blocker?.mode === 'manual' ? 'user' : 'auto');
+    return 'hook value · ' + (
+      node.blocker?.mode === 'smart-manual'
+        ? 'user + smart'
+        : node.blocker?.mode === 'manual'
+          ? 'user'
+          : node.blocker?.mode === 'smart'
+            ? 'smart'
+            : 'auto'
+    );
   }
   if (node?.blockerKind === 'data-request') {
     return 'backend data · ' + String(node.blocker?.mode ?? 'seed');
@@ -418,7 +427,7 @@ function PreviewInspectorBlockerGuide({ node }) {
   const detail = condition
     ? 'Choose a branch below. This changes only the pinned preview.'
     : blocking
-      ? 'Use the recommended Auto action or enter a value below; the page remounts after applying it.'
+      ? 'Use Smart fill to add only proven missing values, or enter a value below; the page remounts after applying it.'
       : 'The page can continue, but you can inspect or replace the generated value below.';
   return React.createElement(
     'section',
@@ -462,7 +471,15 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
     'div',
     { className: 'rpi-detail-content' },
     React.createElement('div', { className: 'rpi-meta' },
-      fallback.hookName + ' · ' + (fallback.mode === 'manual' ? 'USER VALUE' : 'GENERATED · AUTO')),
+      fallback.hookName + ' · ' + (
+        fallback.mode === 'manual'
+          ? 'USER VALUE'
+          : fallback.mode === 'smart-manual'
+            ? 'USER + SMART MINIMUM'
+          : fallback.mode === 'smart'
+            ? 'GENERATED · SMART MINIMUM'
+            : 'GENERATED · AUTO'
+      )),
     fallback.error ? React.createElement('div', { className: 'rpi-error' }, fallback.error) : undefined,
     React.createElement('div', { className: 'rpi-note' }, 'Evidence: ' + fallback.evidence),
     fallback.ownerName
@@ -474,7 +491,7 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
           'Required properties: ' + fallback.requiredPaths.join(', '))
       : undefined,
     React.createElement('div', { className: 'rpi-note' },
-      'Auto synthesis preserves real non-null values, fills demanded paths, restores inert callbacks, and creates one callback-shaped item for required lists.'),
+      'Smart fill preserves user JSON; otherwise it starts from an empty compatible root, adds only demanded paths, restores inert callbacks, and creates one item only when a demanded path enters a list.'),
     React.createElement('textarea', {
       'aria-label': 'Render blocker result JSON',
       className: 'rpi-json',
@@ -486,16 +503,25 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-actions' },
+      React.createElement(
+        PreviewInspectorDevtoolsButton,
+        {
+          onClick: () => smartFillPreviewInspectorRuntimeFallback(fallback.id),
+          pressed: fallback.mode === 'smart' || fallback.mode === 'smart-manual',
+          title: 'Generate the minimum value shape proven necessary by downstream property reads',
+        },
+        'Smart fill minimum',
+      ),
       React.createElement(PreviewInspectorDevtoolsButton, { onClick: applyDraft }, 'Apply pass value'),
       React.createElement(
         PreviewInspectorDevtoolsButton,
-        { onClick: () => autoPassPreviewInspectorRuntimeFallback(fallback.id), pressed: fallback.mode !== 'manual' },
+        { onClick: () => autoPassPreviewInspectorRuntimeFallback(fallback.id), pressed: fallback.mode === 'auto' },
         'Auto pass',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          disabled: fallback.mode !== 'manual',
+          disabled: !['manual', 'smart-manual'].includes(fallback.mode),
           onClick: () => resetPreviewInspectorRuntimeFallbackOverride(fallback.id),
         },
         'Reset manual value',
@@ -503,6 +529,26 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
     ),
     React.createElement('div', { className: 'rpi-note' },
       'This value is preview-only. Generated or user-authored data is visibly marked and never sent to a backend.'),
+  );
+}
+
+/** Adds only error-proven missing prop paths while preserving observed and user-authored props. */
+function smartFillPreviewInspectorTargetFailure(failure) {
+  setPreviewInspectorFallbackValuesEnabled(true);
+  const requiredPaths = normalizePreviewInspectorRequiredPropertyPaths(failure.requiredPaths)
+    .filter((path) => path !== '<root>');
+  if (requiredPaths.length === 0) {
+    remountPreviewInspectorExport(failure.exportName);
+    return;
+  }
+  const observed = previewInspectorSession.basePropsByExport.get(failure.exportName) ?? {};
+  const override = previewInspectorSession.overridesByExport.get(failure.exportName) ?? {};
+  const authored = { ...observed, ...override };
+  const minimum = createPreviewInspectorRuntimeFallbackSmartValue({}, requiredPaths);
+  const completion = completePreviewInspectorGeneratedValue(authored, minimum);
+  setPreviewInspectorPropsOverride(
+    failure.exportName,
+    completion.changed ? completion.value : authored,
   );
 }
 
@@ -533,12 +579,10 @@ function PreviewInspectorTargetFailureDetail({ node }) {
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          onClick: () => {
-            setPreviewInspectorFallbackValuesEnabled(true);
-            remountPreviewInspectorExport(failure.exportName);
-          },
+          onClick: () => smartFillPreviewInspectorTargetFailure(failure),
+          title: 'Preserve observed props and add only error-proven missing property paths',
         },
-        'Auto values and retry',
+        'Smart fill and retry',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
@@ -593,6 +637,14 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-actions' },
+      React.createElement(
+        PreviewInspectorDevtoolsButton,
+        {
+          onClick: () => smartFillPreviewInspectorTargetApplicationPath(blocker),
+          title: 'Minimize every hook and backend payload already observed on this page path, then retry it',
+        },
+        'Smart fill page path',
+      ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {

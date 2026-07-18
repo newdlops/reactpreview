@@ -83,15 +83,20 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(runtime.isBlocking(renderErrorNode)).toBe(true);
   });
 
-  /** Keeps both manual JSON and bounded inference actions explicit in generated UI source. */
-  it('emits manual pass-value and Auto pass controls', () => {
+  /** Keeps manual JSON, minimum Smart fill, and broader Auto inference actions explicit. */
+  it('emits manual pass-value, Smart fill, and Auto pass controls', () => {
     const source = createPreviewInspectorBlockerUiRuntimeSource();
 
     expect(source).toContain("'Apply pass value'");
+    expect(source).toContain("'Smart fill minimum'");
+    expect(source).toContain("'Smart fill and retry'");
+    expect(source).toContain("'Smart fill page path'");
     expect(source).toContain("'Auto pass'");
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
+    expect(source).toContain('smartFillPreviewInspectorRuntimeFallback');
+    expect(source).toContain('smartFillPreviewInspectorTargetFailure');
     expect(source).toContain('autoPassPreviewInspectorRuntimeFallback');
-    expect(source).toContain('creates one callback-shaped item for required lists');
+    expect(source).toContain('creates one item only when a demanded path enters a list');
     expect(source).toContain("blockerKind: 'target-error'");
     expect(source).toContain("blockerKind: 'target-reachability'");
     expect(source).toContain('Payload properties discovered downstream:');

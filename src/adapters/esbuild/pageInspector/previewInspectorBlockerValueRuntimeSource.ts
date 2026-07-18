@@ -84,6 +84,42 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   return 'Preview generated value';
 }
 
+/** Reads one compiler fallback leaf through data descriptors only, never through project getters. */
+function readPreviewInspectorRequiredPathSeed(value, path) {
+  let current = value;
+  for (const propertyName of path) {
+    if ((typeof current !== 'object' && typeof current !== 'function') || current === null) {
+      return undefined;
+    }
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(current, propertyName); } catch { return undefined; }
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return undefined;
+    current = descriptor.value;
+  }
+  return current;
+}
+
+/** Retains an inferred scalar type but strips unproven object siblings and extra list items. */
+function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, seed) {
+  if (callable || typeof seed === 'function') return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  if (typeof seed === 'boolean') return seed;
+  if (typeof seed === 'number') return Number.isFinite(seed) ? seed : 1;
+  if (typeof seed === 'bigint') return Number(seed);
+  if (typeof seed === 'string' && seed.length > 0) return seed;
+  if (Array.isArray(seed)) {
+    const item = seed[0];
+    if (typeof item === 'boolean' || typeof item === 'number' || typeof item === 'string') {
+      return [item];
+    }
+    return [{}];
+  }
+  if (seed !== null && typeof seed === 'object') return {};
+  const semantic = createPreviewInspectorRequiredPathLeaf(propertyName, callable);
+  if (Array.isArray(semantic)) return semantic.slice(0, 1).map(() => ({}));
+  if (semantic !== null && typeof semantic === 'object') return {};
+  return semantic;
+}
+
 /** Converts dotted, numeric, and array-item evidence into one bounded materialization path. */
 function parsePreviewInspectorRequiredPath(rawPath) {
   if (typeof rawPath !== 'string' || rawPath === '<root>') return undefined;
@@ -99,10 +135,14 @@ function parsePreviewInspectorRequiredPath(rawPath) {
 }
 
 /** Adds one compiler-proven path when serialization alone could not expose its missing property. */
-function materializePreviewInspectorRequiredPath(template, rawPath) {
+function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
   if (parsed === undefined) return template;
   const { callable, path } = parsed;
+  const smartSeed = arguments.length >= 3
+    ? readPreviewInspectorRequiredPathSeed(seedValue, path)
+    : undefined;
+  const smartMinimum = arguments.length >= 3;
   let root = template;
   const indexedRoot = /^\d+$/u.test(path[0]);
   if (root === null || typeof root !== 'object') root = indexedRoot ? [] : {};
@@ -113,7 +153,9 @@ function materializePreviewInspectorRequiredPath(template, rawPath) {
     const atLeaf = index === path.length - 1;
     if (atLeaf) {
       if (current[propertyName] === undefined || current[propertyName] === null) {
-        current[propertyName] = createPreviewInspectorRequiredPathLeaf(propertyName, callable);
+        current[propertyName] = smartMinimum
+          ? createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, smartSeed)
+          : createPreviewInspectorRequiredPathLeaf(propertyName, callable);
       }
       break;
     }
@@ -124,6 +166,32 @@ function materializePreviewInspectorRequiredPath(template, rawPath) {
     current = current[propertyName];
   }
   return root;
+}
+
+/** Creates the smallest JSON root compatible with the inferred hook result's observable type. */
+function createPreviewInspectorRuntimeFallbackSmartRoot(value, requiredPaths) {
+  const firstPath = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
+    .map(parsePreviewInspectorRequiredPath)
+    .find((path) => path !== undefined);
+  if (firstPath !== undefined) return /^\d+$/u.test(firstPath.path[0]) ? [] : {};
+  const copied = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
+  return copied === null || copied === undefined ? {} : copied;
+}
+
+/** Builds JSON containing only compiler-observed demanded paths and one semantic value per leaf. */
+function createPreviewInspectorRuntimeFallbackSmartDraftTemplate(value, requiredPaths) {
+  const paths = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
+    .filter((path) => path !== '<root>');
+  let template = createPreviewInspectorRuntimeFallbackSmartRoot(value, paths);
+  for (const path of paths) template = materializePreviewInspectorRequiredPath(template, path, value);
+  return copyPreviewInspectorBlockerValueForJson(template, { nodes: 0 });
+}
+
+/** Converts a minimum Smart-fill JSON template into the inert runtime value consumed by project code. */
+function createPreviewInspectorRuntimeFallbackSmartValue(value, requiredPaths) {
+  return materializePreviewInspectorRuntimeFallbackOverride(
+    createPreviewInspectorRuntimeFallbackSmartDraftTemplate(value, requiredPaths),
+  );
 }
 
 /** Builds a required-path overlay while retaining compiler values already present at a demanded leaf. */

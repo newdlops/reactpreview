@@ -24,6 +24,7 @@ interface TestRuntimeFallbackApi {
   reset(fallbackId: string): void;
   resolve(readHook: () => unknown, createFallback: () => unknown, metadata: object): unknown;
   set(fallbackId: string, value: unknown): void;
+  smart(fallbackId: string): void;
   status(): string;
 }
 
@@ -340,6 +341,83 @@ describe('Preview Inspector runtime fallback source', () => {
       refresh: '[Preview no-op function]',
     });
   });
+
+  /** Removes unrelated inferred siblings and retains exactly one semantic leaf per demanded path. */
+  it('smart-fills the minimum compiler-proven hook result shape', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['employees[].id', 'employees[].profile.email', 'refresh()'],
+    };
+
+    fixture.api.resolve(
+      () => undefined,
+      () => ({
+        employees: [],
+        featureFlags: { unrelated: true },
+        pagination: { page: 1, total: 99 },
+      }),
+      metadata,
+    );
+    fixture.api.smart('hook-1');
+    const smart = fixture.api.resolve(
+      () => undefined,
+      () => ({ ignoredAfterStableFallbackCreation: true }),
+      metadata,
+    ) as {
+      employees: { id: string; profile: { email: string } }[];
+      refresh: () => unknown;
+    };
+
+    expect(smart.employees).toEqual([
+      { id: 'preview-1', profile: { email: 'preview@example.invalid' } },
+    ]);
+    expect(typeof smart.refresh).toBe('function');
+    expect(Object.keys(smart).sort()).toEqual(['employees', 'refresh']);
+    expect(fixture.api.read()[0]?.mode).toBe('smart');
+    expect(fixture.api.draft('hook-1')).toEqual({
+      employees: [{ id: 'preview-1', profile: { email: 'preview@example.invalid' } }],
+      refresh: '[Preview no-op function]',
+    });
+  });
+
+  /** Completes explicit user JSON instead of replacing authored leaves during Smart fill. */
+  it('preserves manual pass values while smart-filling their missing demanded paths', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['formikProps.values.employeeName', 'formikProps.setFieldValue()'],
+    };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ formikProps: {} }),
+      metadata,
+    );
+    fixture.api.set('hook-1', {
+      formikProps: {
+        customFlag: 'authored',
+        values: { employeeName: 'Authored employee' },
+      },
+    });
+
+    fixture.api.smart('hook-1');
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      metadata,
+    ) as {
+      formikProps: {
+        customFlag: string;
+        setFieldValue: () => unknown;
+        values: { employeeName: string };
+      };
+    };
+
+    expect(resolved.formikProps.customFlag).toBe('authored');
+    expect(resolved.formikProps.values.employeeName).toBe('Authored employee');
+    expect(typeof resolved.formikProps.setFieldValue).toBe('function');
+    expect(fixture.api.read()[0]?.mode).toBe('smart-manual');
+  });
 });
 
 /** Complete observations exposed by one generated-runtime VM fixture. */
@@ -405,6 +483,7 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
       ' reset: resetPreviewInspectorRuntimeFallbackOverride,' +
       ' resolve: resolvePreviewInspectorRuntimeHook,' +
       ' set: setPreviewInspectorRuntimeFallbackOverride,' +
+      ' smart: smartFillPreviewInspectorRuntimeFallback,' +
       ' status: readPreviewInspectorRuntimeFallbackStatus' +
       '};',
     context,

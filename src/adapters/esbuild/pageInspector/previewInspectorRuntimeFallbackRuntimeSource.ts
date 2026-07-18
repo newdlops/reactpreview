@@ -53,6 +53,9 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeFallbackCompletions instanceof WeakMap)) {
     previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
   }
+  if (!(previewInspectorSession.runtimeFallbackSmartIds instanceof Set)) {
+    previewInspectorSession.runtimeFallbackSmartIds = new Set();
+  }
 }
 
 ${generatedValueRuntimeSource}
@@ -166,7 +169,13 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     error: errorHeadline,
     fallbackPreview: describePreviewInspectorRuntimeFallbackValue(fallback),
     generatedPaths: [...generatedPaths],
-    mode: hasPreviewInspectorRuntimeFallbackOverride(metadata.id) ? 'manual' : 'auto',
+    mode: hasPreviewInspectorRuntimeFallbackOverride(metadata.id)
+      ? previewInspectorSession.runtimeFallbackSmartIds.has(metadata.id)
+        ? 'smart-manual'
+        : 'manual'
+      : previewInspectorSession.runtimeFallbackSmartIds.has(metadata.id)
+        ? 'smart'
+        : 'auto',
     reachabilityKey:
       typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
         ? previewInspectorSession.activeTargetReachabilityKey
@@ -348,6 +357,7 @@ function commitPreviewInspectorRuntimeFallbackChange() {
 function setPreviewInspectorRuntimeFallbackOverride(fallbackId, value) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
+  previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
   previewInspectorSession.runtimeFallbackOverrides.set(
     fallbackId,
     normalizePreviewInspectorRuntimeFallbackOverride(value),
@@ -359,6 +369,7 @@ function setPreviewInspectorRuntimeFallbackOverride(fallbackId, value) {
 function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
+  previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
   previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId);
   const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
   const requiredPaths = previewInspectorSession.runtimeFallbacks.get(fallbackId)?.requiredPaths ?? [];
@@ -372,10 +383,60 @@ function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
   commitPreviewInspectorRuntimeFallbackChange();
 }
 
+/** Mutates one known hook edge to its minimum demanded shape without scheduling a remount. */
+function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
+  initializePreviewInspectorRuntimeFallbackState();
+  const record = previewInspectorSession.runtimeFallbacks.get(fallbackId);
+  if (record === undefined || !previewInspectorSession.runtimeFallbackValues.has(fallbackId)) return false;
+  const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
+  const manualValue = previewInspectorSession.runtimeFallbackOverrides.get(fallbackId);
+  if (manualValue !== undefined) {
+    const minimum = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+      fallback,
+      record.requiredPaths,
+    );
+    const completion = completePreviewInspectorGeneratedValue(manualValue, minimum);
+    if (completion.changed) {
+      previewInspectorSession.runtimeFallbackOverrides.set(
+        fallbackId,
+        normalizePreviewInspectorRuntimeFallbackOverride(completion.value),
+      );
+    }
+    previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+    return true;
+  }
+  previewInspectorSession.runtimeFallbackValues.set(
+    fallbackId,
+    createPreviewInspectorRuntimeFallbackSmartValue(fallback, record.requiredPaths),
+  );
+  previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+  return true;
+}
+
+/** Replaces one generated hook result with only the paths proven necessary by downstream reads. */
+function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
+  if (!applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId)) return;
+  previewInspectorSession.fallbackValuesEnabled = true;
+  commitPreviewInspectorRuntimeFallbackChange();
+}
+
+/** Smart-fills every hook edge observed inside one authored page corridor as one batched mutation. */
+function smartFillPreviewInspectorRuntimeFallbacksForReachability(reachabilityKey) {
+  initializePreviewInspectorRuntimeFallbackState();
+  let changed = false;
+  for (const record of previewInspectorSession.runtimeFallbacks.values()) {
+    if (record.reachabilityKey !== reachabilityKey) continue;
+    changed = applyPreviewInspectorRuntimeFallbackSmartValue(record.id) || changed;
+  }
+  if (changed) previewInspectorSession.fallbackValuesEnabled = true;
+  return changed;
+}
+
 /** Removes a manual blocker value while retaining the caller's current global Auto policy. */
 function resetPreviewInspectorRuntimeFallbackOverride(fallbackId) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId)) return;
+  previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
   commitPreviewInspectorRuntimeFallbackChange();
 }
 
@@ -394,7 +455,9 @@ function serializePreviewInspectorRuntimeFallbackOverrides() {
 function readPreviewInspectorRuntimeFallbackStatus() {
   const fallbacks = readPreviewInspectorRuntimeFallbacks();
   const count = fallbacks.length;
-  const manualCount = fallbacks.filter((fallback) => fallback.mode === 'manual').length;
+  const manualCount = fallbacks.filter((fallback) =>
+    fallback.mode === 'manual' || fallback.mode === 'smart-manual',
+  ).length;
   return readPreviewInspectorFallbackValuesEnabled()
     ? 'active: ' + String(count) + ' render-blocking hook edge(s) currently use generated static values'
     : manualCount > 0

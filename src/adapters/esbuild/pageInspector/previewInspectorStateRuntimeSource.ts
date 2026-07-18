@@ -104,6 +104,7 @@ function persistPreviewInspectorState() {
         ),
         highlightEnabled: previewInspectorSession.highlightEnabled,
         overrides,
+        renderScenario: readPreviewInspectorRenderScenario(),
         selectedExportName: previewInspectorSession.selectedExportName,
         selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId,
         selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,

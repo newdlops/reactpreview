@@ -159,6 +159,10 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       'selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId',
     );
+    expect(source).toContain(
+      "persisted.renderScenario === 'file-components' ? 'file-components' : 'authored-page'",
+    );
+    expect(source).toContain('renderScenario: readPreviewInspectorRenderScenario()');
   });
 
   /** Connects the independent tree adapter to selection, source navigation, and commit refresh. */

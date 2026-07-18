@@ -155,6 +155,8 @@ function createPreviewInspectorSession() {
     pickerCandidate: undefined,
     pickerEnabled: false,
     propsRevisionByExport: new Map(),
+    renderScenario:
+      persisted.renderScenario === 'file-components' ? 'file-components' : 'authored-page',
     selectedExportName:
       typeof persisted.selectedExportName === 'string' ? persisted.selectedExportName : '',
     selectedPageCandidateId:

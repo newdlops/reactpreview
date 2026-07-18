@@ -41,7 +41,7 @@ const MAX_RENDER_CHAIN_DEPTH = 32;
 const MAX_RENDER_CHAIN_PATHS = 8;
 const MAX_RENDER_CHAIN_VISITS = 4_096;
 const MAX_RENDER_GRAPH_EDGES = 32_768;
-const MAX_CONCURRENT_RENDER_SOURCE_READS = 16;
+const MAX_CONCURRENT_RENDER_SOURCE_READS = 64;
 
 /** Inputs for one target export's bounded application-entry search. */
 export interface CreatePreviewRenderChainPlanOptions {
@@ -70,6 +70,12 @@ export interface CreatePreviewRenderChainPlansOptions extends Omit<
 > {
   /** Exact runtime export names admitted by the target export selector. */
   readonly exportNames: readonly string[];
+  /**
+   * Export whose first visible page must retain exhaustive package/workspace fallback.
+   * Other exports still share every already-proven entry slice, but an unrelated orphan export
+   * cannot force a full inventory parse before the selected Inspector page is ready.
+   */
+  readonly primaryExportName?: string;
 }
 
 /** Internal graph node representing a declaration, re-export alias, or semantic entry. */
@@ -207,9 +213,7 @@ export async function createPreviewRenderChainPlans(
       targets,
       localSourcePaths,
     );
-    const unresolvedTargets = targets.filter(
-      (target) => localPlans[target.exportName]?.reachability === 'entry-unreachable',
-    );
+    const unresolvedTargets = selectFallbackTargets(targets, localPlans, options.primaryExportName);
     if (unresolvedTargets.length === 0) {
       return localPlans;
     }
@@ -231,9 +235,7 @@ function memoizePreviewRenderSourceReader(
   return (sourcePath) => {
     const normalizedPath = path.normalize(sourcePath);
     const cached = resultByPath.get(normalizedPath);
-    if (cached !== undefined) {
-      return cached;
-    }
+    if (cached !== undefined) return cached;
     const result = readSource(normalizedPath);
     resultByPath.set(normalizedPath, result);
     return result;
@@ -266,12 +268,8 @@ async function createRenderChainPlansForSources(
       true,
       entrySelection.truncated,
     );
-    const unresolvedTargets = targets.filter(
-      (target) => entryPlans[target.exportName]?.reachability === 'entry-unreachable',
-    );
-    if (unresolvedTargets.length === 0) {
-      return entryPlans;
-    }
+    const unresolvedTargets = selectFallbackTargets(targets, entryPlans, options.primaryExportName);
+    if (unresolvedTargets.length === 0) return entryPlans;
     const fallbackPlans = await createPlansFromSelectedSources(
       sourcePaths,
       unresolvedTargets,
@@ -318,6 +316,23 @@ async function createRenderChainPlansForSources(
       ),
     );
   }
+}
+
+/**
+ * Selects exports allowed to widen a small entry graph into a package/workspace-wide parse.
+ * Gallery callers omit `primaryExportName` and preserve exhaustive legacy behavior. Page Inspector
+ * supplies its selected export so secondary display metadata remains opportunistic and inexpensive.
+ */
+function selectFallbackTargets(
+  targets: readonly PreviewRenderExportReference[],
+  plans: PreviewRenderChainPlansByExport,
+  primaryExportName: string | undefined,
+): readonly PreviewRenderExportReference[] {
+  return targets.filter(
+    (target) =>
+      plans[target.exportName]?.reachability === 'entry-unreachable' &&
+      (primaryExportName === undefined || target.exportName === primaryExportName),
+  );
 }
 
 /** Converts one already indexed graph into the immutable result for one exact current-file export. */
@@ -928,5 +943,11 @@ function assertRenderChainOptions(options: CreatePreviewRenderChainPlansOptions)
     options.exportNames.some((exportName) => exportName.length === 0 || exportName === '*')
   ) {
     throw new TypeError('Preview render-chain target exports must be unique and explicit.');
+  }
+  if (
+    options.primaryExportName !== undefined &&
+    !uniqueExportNames.has(options.primaryExportName)
+  ) {
+    throw new TypeError('Preview render-chain primary export must be one of the selected exports.');
   }
 }

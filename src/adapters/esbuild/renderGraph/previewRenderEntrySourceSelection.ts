@@ -95,10 +95,13 @@ export async function selectPreviewRenderEntrySources(
     });
   let truncated = rankedCandidates.length > MAX_ENTRY_CANDIDATE_FILES;
   const entryCandidates = rankedCandidates.slice(0, MAX_ENTRY_CANDIDATE_FILES);
-  const semanticEntries: string[] = [];
+  const inspectedSemanticEntries = new Set<string>();
+  const connectedPaths = new Set<string>();
+  const connectedEntries: string[] = [];
 
   for (let start = 0; start < entryCandidates.length; start += MAX_CONCURRENT_ENTRY_SOURCE_READS) {
     throwIfPreviewBuildCancelled(options.signal);
+    const hadConnectedEntryBeforeBatch = connectedPaths.size > 0;
     const batch = await Promise.all(
       entryCandidates
         .slice(start, start + MAX_CONCURRENT_ENTRY_SOURCE_READS)
@@ -108,28 +111,42 @@ export async function selectPreviewRenderEntrySources(
         })),
     );
     throwIfPreviewBuildCancelled(options.signal);
+    const semanticEntries: string[] = [];
     for (const { sourcePath, sourceText } of batch) {
       if (sourceText === undefined || !mayContainSemanticReactEntry(sourceText)) {
         continue;
       }
-      if (analyzeSource(sourcePath, sourceText).entryEvidence.length > 0) {
+      if (
+        analyzeSource(sourcePath, sourceText).entryEvidence.length > 0 &&
+        !inspectedSemanticEntries.has(sourcePath)
+      ) {
+        inspectedSemanticEntries.add(sourcePath);
         semanticEntries.push(sourcePath);
       }
     }
-  }
-
-  const connectedPaths = new Set<string>();
-  const connectedEntries: string[] = [];
-  for (const entryPath of semanticEntries) {
-    throwIfPreviewBuildCancelled(options.signal);
-    const result = await findForwardEntryPath(entryPath);
-    truncated ||= result.truncated;
-    if (result.path.length === 0) {
-      continue;
+    for (const entryPath of semanticEntries) {
+      throwIfPreviewBuildCancelled(options.signal);
+      const result = await findForwardEntryPath(entryPath);
+      truncated ||= result.truncated;
+      if (result.path.length === 0) {
+        continue;
+      }
+      connectedEntries.push(entryPath);
+      for (const sourcePath of result.path) {
+        connectedPaths.add(sourcePath);
+      }
     }
-    connectedEntries.push(entryPath);
-    for (const sourcePath of result.path) {
-      connectedPaths.add(sourcePath);
+
+    /*
+     * Once a representative entry reaches the target, inspect one additional ranked batch for a
+     * sibling public/staff entry and stop. Lower-ranked `index` barrels cannot delay first paint;
+     * the result is marked truncated so diagnostics remain honest about omitted alternatives.
+     */
+    const hasUninspectedCandidates =
+      start + MAX_CONCURRENT_ENTRY_SOURCE_READS < entryCandidates.length;
+    if (hadConnectedEntryBeforeBatch && connectedPaths.size > 0 && hasUninspectedCandidates) {
+      truncated = true;
+      break;
     }
   }
 
@@ -165,7 +182,7 @@ export async function selectPreviewRenderEntrySources(
   async function findForwardEntryPath(
     entryPath: string,
   ): Promise<{ readonly path: readonly string[]; readonly truncated: boolean }> {
-    const entryIdentity = normalizeEntrySourceIdentity(entryPath);
+    const entryIdentity = normalizeKnownEntrySourceIdentity(entryPath);
     const pending: ForwardSourceCandidate[] = [
       {
         depth: 0,
@@ -214,7 +231,7 @@ export async function selectPreviewRenderEntrySources(
         if (resolvedPath === undefined) {
           continue;
         }
-        const childIdentity = normalizeEntrySourceIdentity(resolvedPath);
+        const childIdentity = normalizeKnownEntrySourceIdentity(resolvedPath);
         const childPath = authoredPathByIdentity.get(childIdentity);
         if (childPath === undefined || visited.has(childIdentity)) {
           continue;
@@ -243,9 +260,22 @@ export async function selectPreviewRenderEntrySources(
 /** Indexes normal and canonical file identities so symlink and macOS private paths converge. */
 function createAuthoredPathIndex(sourcePaths: readonly string[]): Map<string, string> {
   const authoredPathByIdentity = new Map<string, string>();
+  const canonicalDirectoryByPath = new Map<string, string>();
   for (const sourcePath of sourcePaths) {
     const normalizedPath = path.normalize(sourcePath);
-    authoredPathByIdentity.set(normalizeEntrySourceIdentity(normalizedPath), normalizedPath);
+    authoredPathByIdentity.set(normalizeKnownEntrySourceIdentity(normalizedPath), normalizedPath);
+    const sourceDirectory = path.dirname(normalizedPath);
+    let canonicalDirectory = canonicalDirectoryByPath.get(sourceDirectory);
+    if (canonicalDirectory === undefined) {
+      canonicalDirectory = canonicalizeExistingPath(sourceDirectory);
+      canonicalDirectoryByPath.set(sourceDirectory, canonicalDirectory);
+    }
+    authoredPathByIdentity.set(
+      normalizeKnownEntrySourceIdentity(
+        path.join(canonicalDirectory, path.basename(normalizedPath)),
+      ),
+      normalizedPath,
+    );
   }
   return authoredPathByIdentity;
 }
@@ -328,4 +358,9 @@ function normalizeEntrySourceIdentity(sourcePath: string): string {
   return path
     .normalize(canonicalizeExistingPath(sourcePath))
     .replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
+}
+
+/** Normalizes an authored or resolver-canonical path without repeating a filesystem realpath. */
+function normalizeKnownEntrySourceIdentity(sourcePath: string): string {
+  return path.normalize(sourcePath).replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
 }

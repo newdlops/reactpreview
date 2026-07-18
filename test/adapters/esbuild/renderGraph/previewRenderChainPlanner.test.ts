@@ -85,6 +85,43 @@ describe('createPreviewRenderChainPlan', () => {
     expect([...readCountByPath.values()]).toEqual([1, 1, 1]);
   });
 
+  /** Keeps a selected page fast when an unrelated sibling export has no application owner. */
+  it('does not widen a proven primary entry slice for an orphan secondary export', async () => {
+    const sources: Record<string, string> = {
+      [TARGET_PATH]: [
+        'export const Primary = () => <article>primary</article>;',
+        'export const Orphan = () => <article>orphan</article>;',
+      ].join('\n'),
+      [ENTRY_PATH]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { Primary } from './pages/SelectedPage';",
+        'createRoot(document.body).render(<Primary />);',
+      ].join('\n'),
+    };
+    for (let index = 0; index < 128; index += 1) {
+      sources[`${ROOT}/noise/Feature${index.toString()}.tsx`] =
+        `export const Feature${index.toString()} = () => <aside />;`;
+    }
+    const fixture = createFixture(sources);
+    const readPaths: string[] = [];
+
+    const plans = await createPreviewRenderChainPlans({
+      documentPath: TARGET_PATH,
+      exportNames: ['Primary', 'Orphan'],
+      primaryExportName: 'Primary',
+      readSource: async (sourcePath) => {
+        readPaths.push(sourcePath);
+        return fixture.readSource(sourcePath);
+      },
+      resolveModule: fixture.resolveModule,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plans.Primary?.reachability).toBe('entry-connected');
+    expect(plans.Orphan?.reachability).toBe('entry-unreachable');
+    expect(readPaths.filter((sourcePath) => sourcePath.includes('/noise/'))).toEqual([]);
+  });
+
   /** Keeps one export's depth cutoff from contaminating a short sibling export search. */
   it('isolates bounded traversal state between exports sharing the graph', async () => {
     const sources: Record<string, string> = {

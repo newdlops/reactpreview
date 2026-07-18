@@ -234,13 +234,21 @@ function createPreviewRenderReverseImportIndex(
   const aliasImportsByCandidateKey = new Map<string, IndexedRenderAliasImport[]>();
   const aliasImportsByConsumer = new Map<string, IndexedRenderAliasImport[]>();
   const authoredPathByIdentity = new Map<string, string>();
+  const canonicalDirectoryByPath = new Map<string, string>();
   const consumerOrderByIdentity = new Map<string, number>();
   const relativeConsumersByDependencyKey = new Map<string, Set<string>>();
   let consumerOrder = 0;
 
   for (const [consumerPath, sourceText] of sourceTextByPath) {
-    const consumerIdentity = normalizeRenderModuleIdentity(consumerPath);
-    const canonicalConsumerDirectory = canonicalizeExistingPath(path.dirname(consumerPath));
+    const consumerDirectory = path.dirname(path.normalize(consumerPath));
+    let canonicalConsumerDirectory = canonicalDirectoryByPath.get(consumerDirectory);
+    if (canonicalConsumerDirectory === undefined) {
+      canonicalConsumerDirectory = canonicalizeExistingPath(consumerDirectory);
+      canonicalDirectoryByPath.set(consumerDirectory, canonicalConsumerDirectory);
+    }
+    const consumerIdentity = normalizeKnownCanonicalRenderModuleIdentity(
+      path.join(canonicalConsumerDirectory, path.basename(consumerPath)),
+    );
     authoredPathByIdentity.set(consumerIdentity, consumerPath);
     consumerOrderByIdentity.set(consumerIdentity, consumerOrder);
     consumerOrder += 1;
@@ -251,7 +259,7 @@ function createPreviewRenderReverseImportIndex(
         continue;
       }
       if (cleanSpecifier.startsWith('.')) {
-        const dependencyIdentity = normalizeRenderModuleIdentity(
+        const dependencyIdentity = normalizeKnownCanonicalRenderModuleIdentity(
           path.resolve(canonicalConsumerDirectory, cleanSpecifier),
         );
         const dependencyKey = createRenderModuleEquivalenceKey(dependencyIdentity);
@@ -367,4 +375,9 @@ function normalizeRenderModuleIdentity(sourcePath: string): string {
   return path
     .normalize(canonicalizeExistingPath(sourcePath))
     .replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
+}
+
+/** Normalizes a path already derived from a canonical directory without another realpath syscall. */
+function normalizeKnownCanonicalRenderModuleIdentity(sourcePath: string): string {
+  return path.normalize(sourcePath).replace(/(?:\.d)?\.[cm]?[jt]sx?$/iu, '');
 }

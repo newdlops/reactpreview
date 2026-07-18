@@ -212,6 +212,36 @@ describe('selectPreviewRenderEntrySources', () => {
     expect(result.entrySourcePaths).toEqual([entryPath]);
     expect(result.connectedSourcePaths).toEqual(sortPaths([entryPath, TARGET_PATH]));
   });
+
+  /** Stops low-ranked index inspection after one representative entry and one sibling batch. */
+  it('bounds entry candidate reads after a target-connected application entry is proven', async () => {
+    const entryPath = `${ROOT}/main.tsx`;
+    const sources: Record<string, string> = {
+      [entryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import Target from './features/Target';",
+        'createRoot(document.body).render(<Target />);',
+      ].join('\n'),
+      [TARGET_PATH]: 'export default function Target() { return <article />; }',
+    };
+    for (let index = 0; index < 160; index += 1) {
+      sources[`${ROOT}/feature-${index.toString().padStart(3, '0')}/index.ts`] =
+        `export const feature${index.toString()} = true;`;
+    }
+    const fixture = createFixture(sources);
+
+    const result = await selectPreviewRenderEntrySources({
+      documentPath: TARGET_PATH,
+      readSource: fixture.readSource,
+      resolveModule: fixture.resolveModule,
+      sourcePaths: fixture.sourcePaths,
+    });
+
+    expect(result.entrySourcePaths).toEqual([entryPath]);
+    expect(result.connectedSourcePaths).toEqual(sortPaths([entryPath, TARGET_PATH]));
+    expect(result.truncated).toBe(true);
+    expect(fixture.readPaths.length).toBeLessThanOrEqual(65);
+  });
 });
 
 /**

@@ -42,12 +42,18 @@ function initializePreviewInspectorConditionState() {
       entries.slice(0, PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT),
     );
   }
+  if (!(previewInspectorSession.renderConditionAutoOverrides instanceof Map)) {
+    previewInspectorSession.renderConditionAutoOverrides = new Map();
+  }
   if (typeof previewInspectorSession.fallbackValuesEnabled !== 'boolean') {
     const persisted = readPersistedPreviewInspectorState();
     previewInspectorSession.fallbackValuesEnabled = persisted.fallbackValuesEnabled !== false;
   }
   if (!Number.isSafeInteger(previewInspectorSession.renderConditionRevision)) {
     previewInspectorSession.renderConditionRevision = 0;
+  }
+  if (!Number.isSafeInteger(previewInspectorSession.renderConditionDiscoverySequence)) {
+    previewInspectorSession.renderConditionDiscoverySequence = 0;
   }
 }
 
@@ -59,7 +65,10 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
   const fallbackBranch = source.fallbackBranch === 'truthy' || source.fallbackBranch === 'falsy'
     ? source.fallbackBranch
     : undefined;
-  const kind = ['logical-and', 'overlay-visibility', 'ternary'].includes(source.kind)
+  const targetBranch = source.targetBranch === 'truthy' || source.targetBranch === 'falsy'
+    ? source.targetBranch
+    : undefined;
+  const kind = ['early-return', 'logical-and', 'overlay-visibility', 'ternary'].includes(source.kind)
     ? source.kind
     : 'logical-and';
   return {
@@ -69,8 +78,10 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
     falsyLabel: readText('falsyLabel', 'hidden'),
     kind,
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
+    ownerName: readText('ownerName'),
     sourcePath: readText('sourcePath'),
     ...(source.role === 'overlay' ? { role: 'overlay' } : {}),
+    ...(targetBranch === undefined ? {} : { targetBranch }),
     truthyLabel: readText('truthyLabel', 'visible'),
   };
 }
@@ -87,8 +98,12 @@ function didPreviewInspectorConditionChange(previous, next) {
     'falsyLabel',
     'kind',
     'line',
+    'ownerName',
+    'reachabilityDiscoveryOrder',
+    'reachabilityKey',
     'role',
     'sourcePath',
+    'targetBranch',
     'truthyLabel',
   ]) {
     if (previous[name] !== next[name]) return true;
@@ -120,29 +135,41 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     return authoredValue;
   }
   const overrides = previewInspectorSession.renderConditionOverrides;
+  const autoOverrides = previewInspectorSession.renderConditionAutoOverrides;
   const override = overrides.get(conditionId);
+  const autoOverride = autoOverrides.get(conditionId);
   const authoredEnabled = Boolean(authoredValue);
-  const effectiveEnabled = override ?? authoredEnabled;
+  const effectiveEnabled = override ?? autoOverride ?? authoredEnabled;
   const normalizedMetadata = normalizePreviewInspectorConditionMetadata(metadata);
+  const records = previewInspectorSession.renderConditions;
+  const previous = records.get(conditionId);
+  const reachabilityKey =
+    typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
+      ? previewInspectorSession.activeTargetReachabilityKey
+      : undefined;
+  const reachabilityDiscoveryOrder = previous !== undefined && previous.reachabilityKey === reachabilityKey
+    ? previous.reachabilityDiscoveryOrder
+    : ++previewInspectorSession.renderConditionDiscoverySequence;
   const nextRecord = {
     ...normalizedMetadata,
     authoredEnabled,
     effectiveEnabled,
     id: conditionId,
+    reachabilityDiscoveryOrder,
+    reachabilityKey,
   };
-  const records = previewInspectorSession.renderConditions;
   if (
     records.has(conditionId) ||
     records.size < PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT
   ) {
-    const previous = records.get(conditionId);
     records.set(conditionId, nextRecord);
     if (didPreviewInspectorConditionChange(previous, nextRecord)) {
       schedulePreviewInspectorConditionRegistryRefresh();
     }
   }
-  if (override === undefined) return authoredValue;
-  if (override === false) return false;
+  const selectedOverride = override ?? autoOverride;
+  if (selectedOverride === undefined) return authoredValue;
+  if (selectedOverride === false) return false;
   return authoredEnabled ? authoredValue : true;
 }
 
@@ -150,9 +177,13 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
 function readPreviewInspectorRenderConditions() {
   initializePreviewInspectorConditionState();
   const overrides = previewInspectorSession.renderConditionOverrides;
+  const autoOverrides = previewInspectorSession.renderConditionAutoOverrides;
   return [...previewInspectorSession.renderConditions.values()]
     .map((record) => ({
       ...record,
+      autoOverride: !overrides.has(record.id) && autoOverrides.has(record.id)
+        ? autoOverrides.get(record.id)
+        : undefined,
       override: overrides.has(record.id) ? overrides.get(record.id) : undefined,
     }))
     .sort((left, right) =>
@@ -160,6 +191,57 @@ function readPreviewInspectorRenderConditions() {
       (left.line ?? 0) - (right.line ?? 0) ||
       left.id.localeCompare(right.id),
     );
+}
+
+/**
+ * Forces one statically proven continuation branch for the current target-search pass.
+ * Automatic decisions are deliberately ephemeral and always lose to an explicit user override.
+ */
+function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) {
+  initializePreviewInspectorConditionState();
+  if (!previewInspectorSession.renderConditions.has(conditionId) || typeof enabled !== 'boolean') {
+    return false;
+  }
+  if (previewInspectorSession.renderConditionAutoOverrides.get(conditionId) === enabled) {
+    return false;
+  }
+  previewInspectorSession.renderConditionAutoOverrides.set(conditionId, enabled);
+  const record = previewInspectorSession.renderConditions.get(conditionId);
+  if (record !== undefined && !previewInspectorSession.renderConditionOverrides.has(conditionId)) {
+    previewInspectorSession.renderConditions.set(conditionId, {
+      ...record,
+      effectiveEnabled: enabled,
+    });
+  }
+  previewInspectorSession.renderConditionRevision += 1;
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+
+/** Clears target-guided branches for one candidate/export search without touching user choices. */
+function clearPreviewInspectorTargetGuidedConditionOverrides(reachabilityKey) {
+  initializePreviewInspectorConditionState();
+  let changed = false;
+  for (const conditionId of [...previewInspectorSession.renderConditionAutoOverrides.keys()]) {
+    const record = previewInspectorSession.renderConditions.get(conditionId);
+    if (
+      typeof reachabilityKey === 'string' &&
+      reachabilityKey.length > 0 &&
+      record?.reachabilityKey !== reachabilityKey
+    ) {
+      continue;
+    }
+    changed = previewInspectorSession.renderConditionAutoOverrides.delete(conditionId) || changed;
+    if (record !== undefined && !previewInspectorSession.renderConditionOverrides.has(conditionId)) {
+      previewInspectorSession.renderConditions.set(conditionId, {
+        ...record,
+        effectiveEnabled: record.authoredEnabled,
+      });
+    }
+  }
+  if (changed) previewInspectorSession.renderConditionRevision += 1;
+  return changed;
 }
 
 /** Forces one branch, remounting the authored page so memoized owners also observe the decision. */
@@ -194,7 +276,9 @@ function togglePreviewInspectorRenderCondition(conditionId) {
 /** Restores one condition to its authored runtime value and remounts the page once. */
 function resetPreviewInspectorRenderConditionOverride(conditionId) {
   initializePreviewInspectorConditionState();
-  if (!previewInspectorSession.renderConditionOverrides.delete(conditionId)) return;
+  const manualChanged = previewInspectorSession.renderConditionOverrides.delete(conditionId);
+  const automaticChanged = previewInspectorSession.renderConditionAutoOverrides.delete(conditionId);
+  if (!manualChanged && !automaticChanged) return;
   const record = previewInspectorSession.renderConditions.get(conditionId);
   if (record !== undefined) {
     previewInspectorSession.renderConditions.set(conditionId, {

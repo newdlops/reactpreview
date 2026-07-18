@@ -37,6 +37,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
   const enabled = condition.effectiveEnabled === true;
   const activeLabel = enabled ? condition.truthyLabel : condition.falsyLabel;
   const forced = typeof condition.override === 'boolean';
+  const targetGuided = typeof condition.autoOverride === 'boolean';
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
   return {
@@ -52,7 +53,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
       authored: condition.authoredEnabled,
       effective: enabled,
       fallbackActive,
-      mode: forced ? 'forced' : 'authored',
+      mode: forced ? 'forced' : targetGuided ? 'target-guided' : 'authored',
     },
     role: overlay ? 'overlay' : undefined,
     source: normalizePreviewInspectorUiSource({
@@ -184,6 +185,7 @@ function PreviewInspectorConditionDetail({ node }) {
   const condition = node.condition;
   const enabled = condition.effectiveEnabled === true;
   const forced = typeof condition.override === 'boolean';
+  const targetGuided = typeof condition.autoOverride === 'boolean';
   const activeBranch = enabled ? condition.truthyLabel : condition.falsyLabel;
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
@@ -193,8 +195,16 @@ function PreviewInspectorConditionDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-meta' },
-      (overlay ? 'Overlay visibility' : forced ? 'Forced branch' : 'Authored runtime branch') + ' · ' +
-        (overlay && forced ? 'forced · ' : '') +
+      (overlay
+        ? 'Overlay visibility'
+        : forced
+          ? 'Forced branch'
+          : targetGuided
+            ? 'Target-guided DFS branch'
+            : 'Authored runtime branch') + ' · ' +
+        (overlay && (forced || targetGuided)
+          ? (targetGuided ? 'target-guided · ' : 'forced · ')
+          : '') +
         (enabled ? 'true' : 'false'),
     ),
     React.createElement('pre', { className: 'rpi-json' }, condition.expression),
@@ -227,7 +237,7 @@ function PreviewInspectorConditionDetail({ node }) {
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          disabled: !forced,
+          disabled: !forced && !targetGuided,
           onClick: () => resetPreviewInspectorRenderConditionOverride(condition.id),
           title: 'Follow the authored runtime value again',
         },

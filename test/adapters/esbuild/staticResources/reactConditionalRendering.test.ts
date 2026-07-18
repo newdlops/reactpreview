@@ -94,6 +94,29 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('if (!(');
   });
 
+  /** Records successful login/permission exits as gates whose opposite branch reaches descendants. */
+  it('instruments a component early-return gate with target continuation metadata', () => {
+    const source = [
+      'export function Application({ session }) {',
+      '  if (!session) return <LoginPage />;',
+      '  return <AuthenticatedRoutes />;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/Application.tsx',
+      source,
+    );
+
+    expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(transformed).toContain('"expression":"<Application> gate: !session"');
+    expect(transformed).toContain('"fallbackBranch":"truthy"');
+    expect(transformed).toContain('"kind":"early-return"');
+    expect(transformed).toContain('"ownerName":"Application"');
+    expect(transformed).toContain('"targetBranch":"falsy"');
+    expect(transformed).toContain('"falsyLabel":"continue <Application>"');
+  });
+
   /** Fails closed on incomplete editor syntax rather than applying parser-recovery offsets. */
   it('preserves incomplete TSX snapshots', () => {
     const source = 'export function Page() { return ready && <Panel>; }';

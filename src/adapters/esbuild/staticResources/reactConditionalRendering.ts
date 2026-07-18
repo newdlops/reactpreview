@@ -61,13 +61,17 @@ interface ReactConditionalRenderMetadata {
   /** Label rendered when the condition resolves false. */
   readonly falsyLabel: string;
   /** Supported syntax family. */
-  readonly kind: 'logical-and' | 'overlay-visibility' | 'ternary';
+  readonly kind: 'early-return' | 'logical-and' | 'overlay-visibility' | 'ternary';
   /** One-based source line of the condition expression. */
   readonly line: number;
   /** Absolute source identity retained inside the local webview. */
   readonly sourcePath: string;
+  /** Nearest statically named render owner, used to attach a blocker to its tree position. */
+  readonly ownerName?: string;
   /** Optional visual-layer classification used for dormant overlay controls. */
   readonly role?: 'overlay';
+  /** Branch that continues toward the selected descendant after an early render exit. */
+  readonly targetBranch?: 'falsy' | 'truthy';
   /** Label rendered when the condition resolves true. */
   readonly truthyLabel: string;
 }
@@ -140,7 +144,12 @@ function collectConditionalRenderCandidates(
     }
     if (ts.isIfStatement(node)) {
       const overlayGuard = collectOverlayNullGuardCandidate(node, sourceFile, portalBindings);
-      if (overlayGuard !== undefined) candidates.push(overlayGuard);
+      if (overlayGuard !== undefined) {
+        candidates.push(overlayGuard);
+      } else {
+        const earlyReturnGate = collectEarlyReturnGateCandidate(node, sourceFile, portalBindings);
+        if (earlyReturnGate !== undefined) candidates.push(earlyReturnGate);
+      }
     }
     if (
       ts.isBinaryExpression(node) &&
@@ -176,6 +185,73 @@ function collectConditionalRenderCandidates(
   }
   visit(sourceFile);
   return candidates;
+}
+
+/**
+ * Converts a component-local early render exit into a target-reachability gate.
+ *
+ * A login, permission, loading, or empty-state component can commit successfully while preventing
+ * every statement below it from mounting. Runtime error boundaries cannot observe that situation,
+ * so this bounded transform records which branch must be taken to continue the authored component.
+ * Only a single direct JSX/null return is admitted; general control flow remains untouched.
+ */
+function collectEarlyReturnGateCandidate(
+  statement: ts.IfStatement,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): ReactConditionalRenderCandidate | undefined {
+  const owner = findNearestOverlayRuntimeFunction(statement);
+  const ownerName =
+    owner === undefined ? undefined : readOverlayRuntimeFunctionName(owner, sourceFile);
+  if (ownerName === undefined || !/^[$_\p{Lu}]/u.test(ownerName)) return undefined;
+  const thenRender = readSingleReturnedRenderExpression(statement.thenStatement, portalBindings);
+  const elseRender =
+    statement.elseStatement === undefined
+      ? undefined
+      : readSingleReturnedRenderExpression(statement.elseStatement, portalBindings);
+  if ((thenRender === undefined) === (elseRender === undefined)) return undefined;
+  const returnedBranch = thenRender === undefined ? 'falsy' : 'truthy';
+  const targetBranch = returnedBranch === 'truthy' ? 'falsy' : 'truthy';
+  const returnedExpression = thenRender ?? elseRender;
+  const returnedLabel =
+    returnedExpression?.kind === ts.SyntaxKind.NullKeyword
+      ? 'empty return'
+      : returnedExpression === undefined
+        ? 'early return'
+        : describeRenderBranch(returnedExpression, sourceFile, portalBindings);
+  const continuationLabel = `continue <${ownerName}>`;
+  return {
+    condition: statement.expression,
+    expressionLabel: `<${ownerName}> gate: ${statement.expression.getText(sourceFile)}`,
+    metadata: {
+      fallbackBranch: returnedBranch,
+      falsyLabel: returnedBranch === 'falsy' ? returnedLabel : continuationLabel,
+      kind: 'early-return',
+      ownerName,
+      targetBranch,
+      truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
+    },
+  };
+}
+
+/** Reads an exact one-statement return whose value is JSX, a portal, or `null`. */
+function readSingleReturnedRenderExpression(
+  statement: ts.Statement,
+  portalBindings: ReactDomPortalBindings,
+): ts.Expression | undefined {
+  if (ts.isBlock(statement)) {
+    if (statement.statements.length !== 1) return undefined;
+    const onlyStatement = statement.statements[0];
+    return onlyStatement === undefined
+      ? undefined
+      : readSingleReturnedRenderExpression(onlyStatement, portalBindings);
+  }
+  if (!ts.isReturnStatement(statement) || statement.expression === undefined) return undefined;
+  const expression = unwrapConditionalExpression(statement.expression);
+  return expression.kind === ts.SyntaxKind.NullKeyword ||
+    isDirectReactRenderExpression(expression, portalBindings)
+    ? expression
+    : undefined;
 }
 
 /**
@@ -351,12 +427,18 @@ function createConditionalRenderReplacement(
   const end = candidate.condition.end;
   const authoredExpression = sourceFile.text.slice(start, end);
   const location = sourceFile.getLineAndCharacterOfPosition(start);
+  const runtimeOwner = findNearestOverlayRuntimeFunction(candidate.condition);
+  const ownerName =
+    runtimeOwner === undefined
+      ? undefined
+      : readOverlayRuntimeFunctionName(runtimeOwner, sourceFile);
   const metadata: ReactConditionalRenderMetadata = {
     column: location.character + 1,
     expression: boundMetadataText(
       (candidate.expressionLabel ?? authoredExpression).replace(/\s+/gu, ' '),
     ),
     line: location.line + 1,
+    ...(ownerName === undefined ? {} : { ownerName }),
     sourcePath: path.normalize(sourcePath),
     ...candidate.metadata,
   };
@@ -508,7 +590,9 @@ function inferFallbackBranch(
 
 /** Recognizes common authored fallback component names without assigning project-specific meaning. */
 function isFallbackBranchLabel(label: string): boolean {
-  return /fallback|empty|error|loading|placeholder|skeleton|spinner|no[-_ ]?data/iu.test(label);
+  return /fallback|empty|error|loading|placeholder|skeleton|spinner|no[-_ ]?data|log[-_ ]?in|sign[-_ ]?in|unauthori[sz]ed|forbidden|access[-_ ]?denied|navigate|redirect/iu.test(
+    label,
+  );
 }
 
 /** Creates an opaque, hot-reload-stable identity from source semantics and bounded occurrence order. */
@@ -559,6 +643,7 @@ function mayContainConditionalJsx(sourceText: string): boolean {
     sourceText.includes('<') &&
     (sourceText.includes('&&') ||
       sourceText.includes('?') ||
+      sourceText.includes('if') ||
       sourceText.includes('createPortal') ||
       (sourceText.includes('return null') &&
         /\b[A-Za-z_$][\w$]*(?:Modal|Dialog|Drawer|Popover|Overlay|Portal|Sheet|Lightbox|Tooltip|Toast|Dropdown|Menu)\b/u.test(

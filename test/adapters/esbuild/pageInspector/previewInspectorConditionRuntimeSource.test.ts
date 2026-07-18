@@ -14,6 +14,7 @@ interface ConditionRuntimeHarness {
     metadata: Record<string, unknown>,
   ) => unknown;
   readonly session: Record<string, unknown>;
+  readonly setAutoCondition: (conditionId: string, enabled: boolean) => boolean;
   readonly setCondition: (conditionId: string, enabled: boolean) => void;
   readonly setFallbackValuesEnabled: (enabled: boolean) => void;
 }
@@ -89,6 +90,42 @@ describe('Preview Inspector condition runtime source', () => {
       role: 'overlay',
     });
   });
+
+  /** Applies ephemeral target-guided gates while preserving explicit user precedence. */
+  it('lets manual choices override and reset target-guided DFS branches', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      expression: '<Application> gate: !session',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <Application>',
+      kind: 'early-return',
+      ownerName: 'Application',
+      sourcePath: '/workspace/Application.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<LoginPage>',
+    };
+
+    harness.session.activeTargetReachabilityKey = 'candidate:Target';
+    expect(harness.resolveCondition('login-gate', true, metadata)).toBe(true);
+    expect(harness.setAutoCondition('login-gate', false)).toBe(true);
+    expect(harness.resolveCondition('login-gate', true, metadata)).toBe(false);
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: false,
+      effectiveEnabled: false,
+      reachabilityKey: 'candidate:Target',
+      targetBranch: 'falsy',
+    });
+
+    harness.setCondition('login-gate', true);
+    expect(harness.resolveCondition('login-gate', false, metadata)).toBe(true);
+    expect(harness.readConditions()[0]).toMatchObject({ autoOverride: undefined, override: true });
+    harness.resetCondition('login-gate');
+    expect(harness.resolveCondition('login-gate', false, metadata)).toBe(false);
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: undefined,
+      override: undefined,
+    });
+  });
 });
 
 /** Evaluates the generated lexical runtime against inert persistence and notification adapters. */
@@ -118,6 +155,7 @@ function createConditionRuntimeHarness(
         resetCondition: resetPreviewInspectorRenderConditionOverride,
         resolveCondition: resolvePreviewInspectorRenderCondition,
         session: previewInspectorSession,
+        setAutoCondition: setPreviewInspectorTargetGuidedConditionOverride,
         setCondition: setPreviewInspectorRenderConditionOverride,
         setFallbackValuesEnabled: setPreviewInspectorFallbackValuesEnabled,
       };

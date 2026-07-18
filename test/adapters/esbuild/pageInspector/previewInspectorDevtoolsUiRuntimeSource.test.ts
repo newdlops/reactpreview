@@ -5,6 +5,11 @@ import { createPreviewInspectorDevtoolsUiRuntimeSource } from '../../../../src/a
 import { createPreviewPageInspectorRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewPageInspectorRuntimeSource';
 
 describe('Page Inspector DevTools UI runtime source', () => {
+  /** Parses the composed browser source so presentation-only template edits cannot ship bad JS. */
+  it('emits syntactically valid browser runtime source', () => {
+    expect(() => new vm.Script(createPreviewInspectorDevtoolsUiRuntimeSource())).not.toThrow();
+  });
+
   /** Keeps the authoritative controls hidden in the preview and mirrored into a companion tab. */
   it('renders companion-ready inspector controls through the existing portal', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
@@ -30,13 +35,13 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('beginPreviewInspectorLayoutPointerGesture');
     expect(source).toContain('const pageContext = readPreviewInspectorPageContext()');
     expect(source).toContain('title: "Go to the current file\'s main component"');
-    expect(source).toContain("'Main component'");
+    expect(source).toContain("'Current file'");
     expect(source).toContain("'Auto values'");
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain('function PreviewInspectorBlockerFlowDetail');
     expect(source).toContain('createPreviewInspectorBlockerFlow(snapshot)');
-    expect(source).toContain("['flow', 'Flow (' + String(flow.unresolvedCount) + ')']");
+    expect(source).toContain("['flow', 'Fix blockers (' + String(flow.unresolvedCount) + ')']");
     expect(source).toContain("activeTab === 'flow'");
     expect(source).toContain("previewInspectorDevtoolsSessionState.activeTab !== 'flow'");
     expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
@@ -62,6 +67,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("className: 'rpi-context-badge'");
     expect(source).toContain("'aria-label': 'Authored page caller path'");
     expect(source).toContain('selectPreviewInspectorPageCandidate(event.target.value)');
+    expect(source).toContain("'aria-label': 'Inspector tree legend'");
+    expect(source).toContain("'Fix next blocker'");
+    expect(source).toContain("'Page context is ready'");
     expect(source).toContain("'aria-label': 'Resize React Page Inspector'");
     expect(source).toContain("'aria-label': 'Move floating React Page Inspector'");
     expect(source).toContain(
@@ -165,6 +173,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'selected'");
     expect(source).toContain("'current file export'");
     expect(source).toContain("'Reveal'");
+    expect(source).toContain("label: 'COMPONENT'");
+    expect(source).toContain("label: 'BLOCKER'");
+    expect(source).toContain("'BLOCKS PAGE · CLICK TO FIX'");
+    expect(source).toContain('isPreviewInspectorBlockingNode(node)');
     expect(source).toContain('revealPreviewInspectorCurrentFileExport(node)');
     expect(source).toContain('attachPreviewInspectorConditionsToSnapshot');
     expect(source).toContain('attachPreviewInspectorBlockersToSnapshot');

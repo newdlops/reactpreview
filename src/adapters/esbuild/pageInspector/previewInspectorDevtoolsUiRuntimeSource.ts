@@ -503,11 +503,11 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
   }, [query]);
   return React.createElement(
     'section',
-    { 'aria-label': 'React Components', className: 'rpi-pane' },
+    { 'aria-label': 'Page component tree', className: 'rpi-pane' },
     React.createElement(
       'div',
       { className: 'rpi-pane-heading' },
-      React.createElement('span', { className: 'rpi-pane-title' }, 'React Components'),
+      React.createElement('span', { className: 'rpi-pane-title' }, 'Page component tree'),
       React.createElement(
         'span',
         { className: 'rpi-meta', title: status },
@@ -520,7 +520,7 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
           previewInspectorDevtoolsSessionState.query = event.target.value;
           setQuery(event.target.value);
         },
-        placeholder: 'Filter components',
+        placeholder: 'Find a component',
         type: 'search',
         value: query,
       }),
@@ -692,8 +692,8 @@ function PreviewInspectorDetailsPane({ flow, node }) {
     persistPreviewInspectorState();
   }, [node?.id, blockerSelected]);
   const tabs = [
-    ...(blockerSelected ? [['blocker', 'Blocker']] : []),
-    ['flow', 'Flow (' + String(flow.unresolvedCount) + ')'],
+    ...(blockerSelected ? [['blocker', 'Fix blocker']] : []),
+    ['flow', 'Fix blockers (' + String(flow.unresolvedCount) + ')'],
     ['props', 'Props'],
     ['state', 'State'],
     ['source', 'Source'],
@@ -831,7 +831,7 @@ function PreviewInspectorToolbar() {
             onClick: selectPreviewInspectorMainComponent,
             title: "Go to the current file's main component",
           },
-          'Main component',
+          'Current file',
         ),
         React.createElement(
           PreviewInspectorDevtoolsButton,
@@ -840,7 +840,7 @@ function PreviewInspectorToolbar() {
             pressed: previewInspectorSession.pickerEnabled,
             title: 'Pick a rendered element',
           },
-          previewInspectorSession.pickerEnabled ? 'Cancel pick' : 'Pick',
+          previewInspectorSession.pickerEnabled ? 'Cancel pick' : 'Pick on page',
         ),
         React.createElement(
           PreviewInspectorDevtoolsButton,

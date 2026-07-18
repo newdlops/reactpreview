@@ -236,6 +236,16 @@ Page Inspector는 기본 명령의 composition 정책이며 component gallery의
 수동·자동 rebuild request에 같은 값을 복사합니다. 따라서 같은 파일의 component gallery와 Inspector를
 동시에 열어도 한 패널의 refresh가 다른 패널의 root 선택이나 상태를 바꾸지 않습니다.
 
+브라우저 runtime의 page corridor는 selected candidate subtree를 host element 없는 commit boundary로 감싸고,
+별도의 target facade boundary와 함께 상태를 기록합니다. 성공은 두 boundary가 direct-target 전환 없이 같은
+candidate render에서 살아 있을 때만 성립합니다. bounded gate DFS가 소진되어도 candidate root는 유지되며,
+target-only module은 명시적 진단 선택에만 지연 로드되고 blocker resolution에는 포함되지 않습니다.
+
+Inspector presentation은 pseudo-node의 존재와 실제 blocking 상태를 분리합니다. condition은 항상 branch control,
+manual/Auto hook fallback과 유효 payload는 assisted preview value, unresolved seed·contained render error·소진된
+target reachability만 active blocker입니다. 상단 status와 tree role label은 같은 판정 함수를 사용하므로 범례,
+component tree, blocker editor가 서로 다른 성공 의미를 표시하지 않습니다.
+
 `inspector/previewInspectorAncestorPlan`은 default export를 우선하고 없으면 첫 explicit export를 target
 frontier로 사용합니다. Inspector 전용 bounded workspace inventory에서 실제 JSX import 사용을 구문으로
 찾고, named/`export *` barrel과 consumer별 tsconfig/jsconfig alias를 통과합니다. 같은 파일 private owner를

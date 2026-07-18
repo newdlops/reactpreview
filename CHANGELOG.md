@@ -2,6 +2,34 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1056 - 2026-07-18
+
+- Inspector 상단에 `Preparing page context`/`Page rendering is blocked`/`Page context is ready` 상태 카드와
+  `Fix next blocker`/`Reveal current file`/`Return to page` 다음 행동을 표시
+- tree 바로 위에 `Component`, `Current file`, `Page path`, `Condition`, `Preview value`, `Blocks rendering`
+  범례를 항상 노출하고 모든 tree row에도 `COMPONENT`/`CURRENT FILE`/`PAGE PATH`/`CONDITION`/
+  `PREVIEW VALUE`/`BLOCKER` 역할 문자를 직접 표시
+- condition, 이미 Auto/manual 값으로 통과한 hook/API, 실제 render stop을 같은 blocker로 칠하던 UX를 분리해
+  노란 condition, 파란 preview value, 붉은 active blocker로 구분하고 색상 외 icon·label·설명도 함께 제공
+- active blocker 행에는 `BLOCKS PAGE · CLICK TO FIX`를 표시하고 상세 화면 첫 부분에서 중단 이유와 Auto/JSON/
+  retry를 이용한 다음 행동을 쉬운 문장으로 설명
+- `Flow`/`Blocker` 탭과 단계 상태를 `Fix blockers`/`Fix blocker`, `Fix this first`, `Blocked by an earlier step`,
+  `Show next fix`처럼 행동 중심 용어로 변경하고 generated runtime의 구문 회귀 테스트를 추가
+
+## 0.1.1055 - 2026-07-18
+
+- Page Inspector의 성공 조건을 단순 target boundary mount에서 `authored page root commit + 같은 렌더의
+selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DFS`/`TARGET BLOCKED`/
+  `PAGE READY` 상태를 표시
+- bounded DFS가 더 진행하지 못해도 page candidate를 자동으로 direct-target module로 교체하지 않고 현재 page를
+  그대로 유지해 로그인·권한·데이터 blocker를 계속 관찰할 수 있도록 변경
+- target-only 렌더는 사용자가 선택하는 진단 모드로만 유지하고 Flow에서는 해결로 판정하지 않으며,
+  `Return to page context`로 같은 authored page corridor를 다시 시작할 수 있게 추가
+- Flow의 기본 단계는 실제 mounted target owner path와 정적 entry→route→page→target source/name 증거에 속한
+  blocker만 우선 표시하고, sibling page blocker는 Components tree에 보존하면서 별도 supporting 개수로 안내
+- page commit boundary를 host DOM wrapper 없이 구성해 table/SVG/layout 구조를 바꾸지 않으면서 descendant가
+  commit 전에 throw한 경우 page 성공이 기록되지 않도록 보장
+
 ## 0.1.1054 - 2026-07-18
 
 - page wireframe의 blocker를 이름이 붙은 큰 경고 버튼 대신 24px 원형 `!` marker 하나로 축소하고,

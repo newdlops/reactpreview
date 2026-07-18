@@ -96,6 +96,7 @@ function persistPreviewInspectorState() {
       [PREVIEW_INSPECTOR_STATE_KEY]: {
         dataAutoEnabled: readPreviewInspectorDataAutoEnabled(),
         dataPayloadOverrides: serializePreviewInspectorDataOverrides(),
+        virtualBackendScenarios: serializePreviewInspectorVirtualBackendScenarios(),
         fallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled(),
         renderConditionOverrides: serializePreviewInspectorRenderConditionOverrides(),
         runtimeFallbackOverrides: serializePreviewInspectorRuntimeFallbackOverrides(),

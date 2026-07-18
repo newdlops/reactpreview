@@ -925,6 +925,7 @@ const previewInspectorApi = {
   previewAxiosRequest: previewInspectorAxiosRequest,
   previewFetch: previewInspectorFetch,
   recordConsoleEntry: recordPreviewInspectorConsoleEntry,
+  resolveBackendRequest: resolvePreviewInspectorBackendRequest,
   resolveDataPayload: resolvePreviewInspectorDataPayload,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
   resolveRuntimeHook: resolvePreviewInspectorRuntimeHook,

@@ -6,6 +6,7 @@
  * registered backend request; local static-resource fetches may still use the captured native API.
  */
 import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspectorGraphqlShapeRuntimeSource';
+import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInspectorVirtualBackendRuntimeSource';
 
 /**
  * Creates browser source for inferred, lorem, and user-authored preview payloads.
@@ -17,12 +18,14 @@ import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspec
  */
 export function createPreviewInspectorDataRuntimeSource(): string {
   const graphqlShapeRuntimeSource = createPreviewInspectorGraphqlShapeRuntimeSource();
+  const virtualBackendRuntimeSource = createPreviewInspectorVirtualBackendRuntimeSource();
   return String.raw`
 ${graphqlShapeRuntimeSource}
 
 const PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT = 256;
 const PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT = 10;
 const PREVIEW_INSPECTOR_DATA_FIELD_LIMIT = 512;
+${virtualBackendRuntimeSource}
 const previewInspectorDataScheduleMicrotask = typeof globalThis.queueMicrotask === 'function'
   ? globalThis.queueMicrotask.bind(globalThis)
   : (callback) => Promise.resolve().then(callback);
@@ -62,6 +65,7 @@ function initializePreviewInspectorDataState() {
   if (!Number.isSafeInteger(previewInspectorSession.dataRevision)) {
     previewInspectorSession.dataRevision = 0;
   }
+  initializePreviewInspectorVirtualBackendState();
 }
 
 /** Serializes bounded user overrides for the shared VS Code webview-state writer. */
@@ -85,9 +89,13 @@ function readPreviewInspectorDataRuntimeStatus() {
   initializePreviewInspectorDataState();
   const requestCount = previewInspectorSession.dataRequests.size;
   const overrideCount = previewInspectorSession.dataPayloadOverrides.size;
+  const resourceCount = previewInspectorSession.virtualBackendResources.size;
+  const scenarioCount = previewInspectorSession.virtualBackendScenarios.size;
   return (previewInspectorSession.dataAutoEnabled ? 'active' : 'inactive') +
     ': no-network API/GraphQL payload registry; ' + String(requestCount) +
-    ' observed request(s), ' + String(overrideCount) + ' user/generated override(s)';
+    ' observed request(s), ' + String(overrideCount) + ' user/generated override(s), ' +
+    String(resourceCount) + ' virtual resource(s), ' + String(scenarioCount) +
+    ' response scenario(s)';
 }
 
 /** Converts arbitrary seed values into a finite generator shape without retaining prototypes. */
@@ -339,8 +347,8 @@ function schedulePreviewInspectorDataRegistryRefresh() {
   });
 }
 
-/** Registers one request and returns the payload selected by custom, lorem, auto, or seed policy. */
-function resolvePreviewInspectorDataPayload(metadata, seedPayload) {
+/** Registers one request and resolves its editable fixture through the stateful virtual backend. */
+function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestContext = {}) {
   initializePreviewInspectorDataState();
   const normalized = normalizePreviewInspectorDataRequest(metadata, seedPayload);
   const previous = previewInspectorSession.dataRequests.get(normalized.id);
@@ -359,26 +367,43 @@ function resolvePreviewInspectorDataPayload(metadata, seedPayload) {
     seedPayload,
     shapeFingerprint,
   };
+  const override = previewInspectorSession.dataPayloadOverrides.get(normalized.id);
+  const payloadMode = override?.mode ?? (previewInspectorSession.dataAutoEnabled ? 'auto' : 'seed');
+  const selectedPayload = override?.payload ?? (previewInspectorSession.dataAutoEnabled
+    ? autoPayload
+    : seedPayload ?? {});
+  const backendResult = resolvePreviewInspectorVirtualBackendRequest(
+    next,
+    selectedPayload,
+    requestContext,
+    payloadMode,
+  );
+  const { payload, ...virtualBackend } = backendResult;
+  const registered = { ...next, lastPayload: payload, virtualBackend };
   if (
     previous === undefined ||
-    previous.label !== next.label ||
-    previous.evidence !== next.evidence ||
-    previous.shapeFingerprint !== shapeFingerprint
+    previous.label !== registered.label ||
+    previous.evidence !== registered.evidence ||
+    previous.shapeFingerprint !== shapeFingerprint ||
+    previous.virtualBackend?.resourceKey !== virtualBackend.resourceKey ||
+    previous.virtualBackend?.variantKey !== virtualBackend.variantKey
   ) {
     if (
       previewInspectorSession.dataRequests.has(normalized.id) ||
       previewInspectorSession.dataRequests.size < PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT
     ) {
-      previewInspectorSession.dataRequests.set(normalized.id, next);
+      previewInspectorSession.dataRequests.set(normalized.id, registered);
       schedulePreviewInspectorDataRegistryRefresh();
     }
   } else {
-    previewInspectorSession.dataRequests.set(normalized.id, next);
+    previewInspectorSession.dataRequests.set(normalized.id, registered);
   }
-  const override = previewInspectorSession.dataPayloadOverrides.get(normalized.id);
-  if (override !== undefined) return override.payload;
-  if (previewInspectorSession.dataAutoEnabled) return autoPayload;
-  return seedPayload ?? (normalized.kind === 'graphql' ? {} : {});
+  return backendResult;
+}
+
+/** Preserves the original payload-only facade for bridges that do not need transport metadata. */
+function resolvePreviewInspectorDataPayload(metadata, seedPayload, requestContext) {
+  return resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestContext).payload;
 }
 
 /** Returns serializable request rows with their current payload and generation provenance. */
@@ -391,7 +416,15 @@ function readPreviewInspectorDataRequests() {
       const payload = override?.payload ?? (previewInspectorSession.dataAutoEnabled
         ? record.autoPayload
         : record.seedPayload ?? {});
-      return { ...record, mode, payload, suggestedPayload: record.autoPayload };
+      const scenario = readPreviewInspectorVirtualBackendScenario(record.id);
+      return {
+        ...record,
+        mode,
+        payload,
+        servedPayload: record.lastPayload,
+        suggestedPayload: record.autoPayload,
+        virtualBackend: { ...record.virtualBackend, ...scenario },
+      };
     })
     .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
 }
@@ -545,7 +578,9 @@ function generatePreviewInspectorLoremPayload(requestId) {
 /** Removes one manual override so the global Auto/seed policy becomes effective again. */
 function resetPreviewInspectorDataPayload(requestId) {
   initializePreviewInspectorDataState();
-  if (!previewInspectorSession.dataPayloadOverrides.delete(requestId)) return;
+  const overrideRemoved = previewInspectorSession.dataPayloadOverrides.delete(requestId);
+  const resourceRemoved = clearPreviewInspectorVirtualBackendResource(requestId);
+  if (!overrideRemoved && !resourceRemoved) return;
   commitPreviewInspectorDataChange();
 }
 
@@ -558,10 +593,14 @@ function readPreviewInspectorFetchUrl(input) {
 
 /** Reports whether a request is a backend candidate rather than a bundled local static asset. */
 function shouldInterceptPreviewInspectorFetch(url, hasCompilerMetadata) {
+  const pathWithoutQuery = url.split('?')[0] ?? '';
+  const capturedLocalFixture = /^\.\.?\/.+\.(?:json|txt|csv)$/iu.test(pathWithoutQuery);
   if (hasCompilerMetadata) {
-    return !/^\.\.?\/.+\.(?:json|txt|csv)$/iu.test(url.split('?')[0] ?? '');
+    return !capturedLocalFixture;
   }
-  return /^https?:\/\//iu.test(url) || /^\/(?:api|graphql)(?:\/|$)/iu.test(url);
+  if (capturedLocalFixture || /^(?:blob|data|vscode-webview-resource):/iu.test(url)) return false;
+  if (/^[a-z][a-z\d+.-]*:/iu.test(url)) return /^https?:\/\//iu.test(url);
+  return url.length > 0;
 }
 
 /** Extracts GraphQL-over-HTTP metadata without retaining variables or authorization values. */
@@ -584,23 +623,37 @@ function readPreviewInspectorGraphqlFetchMetadata(init) {
   }
 }
 
+/** Creates the error envelope expected by REST or GraphQL consumers for an explicit error scenario. */
+function createPreviewInspectorVirtualBackendErrorPayload(result, kind) {
+  const message = 'Virtual backend returned HTTP ' + String(result.status);
+  return kind === 'graphql'
+    ? { data: null, errors: [{ message }] }
+    : { error: message, preview: true, status: result.status };
+}
+
 /** Creates a standards-shaped in-memory fetch response with no transport side effects. */
-function createPreviewInspectorFetchResponse(payload, method) {
-  const body = method === 'HEAD' ? null : JSON.stringify(payload);
+function createPreviewInspectorFetchResponse(payload, method, status = 200) {
+  const bodyForbidden = method === 'HEAD' || [204, 205, 304].includes(status);
+  const body = bodyForbidden ? null : JSON.stringify(payload);
+  const successful = status >= 200 && status < 300;
+  const statusText = successful ? 'OK' : 'Virtual Backend Error';
   if (typeof globalThis.Response === 'function') {
     return new globalThis.Response(body, {
-      headers: { 'content-type': 'application/json; charset=utf-8', 'x-react-preview': 'generated' },
-      status: 200,
-      statusText: 'OK',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-react-preview': 'virtual-backend',
+      },
+      status,
+      statusText,
     });
   }
   return {
-    clone() { return createPreviewInspectorFetchResponse(payload, method); },
+    clone() { return createPreviewInspectorFetchResponse(payload, method, status); },
     headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null },
     json: async () => payload,
-    ok: true,
-    status: 200,
-    statusText: 'OK',
+    ok: successful,
+    status,
+    statusText,
     text: async () => body ?? '',
   };
 }
@@ -628,27 +681,49 @@ async function previewInspectorFetch(input, init, compilerMetadata) {
     method,
     url,
   };
-  const payload = resolvePreviewInspectorDataPayload(metadata, {});
-  const wirePayload = metadata.kind === 'graphql' ? { data: payload } : payload;
-  return createPreviewInspectorFetchResponse(wirePayload, method);
+  const result = resolvePreviewInspectorBackendRequest(metadata, {}, {
+    body: init?.body,
+    rawUrl: url,
+  });
+  await waitForPreviewInspectorVirtualBackendLatency(result.latencyMs);
+  const wirePayload = result.scenario === 'error'
+    ? createPreviewInspectorVirtualBackendErrorPayload(result, metadata.kind)
+    : metadata.kind === 'graphql'
+      ? { data: result.payload }
+      : result.payload;
+  return createPreviewInspectorFetchResponse(wirePayload, method, result.status);
 }
 
 /** Returns the subset of AxiosResponse commonly consumed by React application code. */
 async function previewInspectorAxiosRequest(method, url, extraArguments, compilerMetadata) {
+  const normalizedMethod = String(method ?? 'GET').toUpperCase();
   const metadata = {
     ...(compilerMetadata !== null && typeof compilerMetadata === 'object' ? compilerMetadata : {}),
-    method,
+    method: normalizedMethod,
     url: readPreviewInspectorFetchUrl(url),
   };
-  const payload = resolvePreviewInspectorDataPayload(metadata, {});
-  return {
+  const requestBody = ['PATCH', 'POST', 'PUT'].includes(normalizedMethod)
+    ? extraArguments?.[0]
+    : undefined;
+  const result = resolvePreviewInspectorBackendRequest(metadata, {}, {
+    body: requestBody,
+    rawUrl: metadata.url,
+  });
+  await waitForPreviewInspectorVirtualBackendLatency(result.latencyMs);
+  const response = {
     config: Array.isArray(extraArguments) ? extraArguments.at(-1) ?? {} : {},
-    data: payload,
-    headers: { 'content-type': 'application/json', 'x-react-preview': 'generated' },
+    data: result.scenario === 'error'
+      ? createPreviewInspectorVirtualBackendErrorPayload(result, metadata.kind)
+      : result.payload,
+    headers: { 'content-type': 'application/json', 'x-react-preview': 'virtual-backend' },
     request: { preview: true },
-    status: 200,
-    statusText: 'OK',
+    status: result.status,
+    statusText: result.scenario === 'error' ? 'Virtual Backend Error' : 'OK',
   };
+  if (result.scenario === 'error') {
+    throw createPreviewInspectorVirtualBackendAxiosError(result, response.data);
+  }
+  return response;
 }
 
 /** Minimal event dispatch shared by the local XMLHttpRequest compatibility boundary. */
@@ -753,12 +828,19 @@ class PreviewInspectorXmlHttpRequest {
       method: this.method ?? 'GET',
       url: this.url ?? '',
     };
-    const payload = resolvePreviewInspectorDataPayload(metadata, {});
-    const wirePayload = metadata.kind === 'graphql' ? { data: payload } : payload;
+    const result = resolvePreviewInspectorBackendRequest(metadata, {}, {
+      body,
+      rawUrl: this.url ?? '',
+    });
+    const wirePayload = result.scenario === 'error'
+      ? createPreviewInspectorVirtualBackendErrorPayload(result, metadata.kind)
+      : metadata.kind === 'graphql'
+        ? { data: result.payload }
+        : result.payload;
     const complete = () => {
       if (this.readyState === 0) return;
-      this.status = 200;
-      this.statusText = 'OK';
+      this.status = result.status;
+      this.statusText = result.scenario === 'error' ? 'Virtual Backend Error' : 'OK';
       this.responseText = JSON.stringify(wirePayload);
       this.response = this.responseType === 'json' ? wirePayload : this.responseText;
       this.readyState = 2;
@@ -768,7 +850,9 @@ class PreviewInspectorXmlHttpRequest {
       dispatchPreviewInspectorXmlHttpRequestEvent(this, 'load');
       dispatchPreviewInspectorXmlHttpRequestEvent(this, 'loadend');
     };
-    if (this.async) previewInspectorDataScheduleMicrotask(complete);
+    if (this.async && result.latencyMs > 0 && typeof previewInspectorBackendSetTimeout === 'function') {
+      previewInspectorBackendSetTimeout(complete, result.latencyMs);
+    } else if (this.async) previewInspectorDataScheduleMicrotask(complete);
     else complete();
   }
 

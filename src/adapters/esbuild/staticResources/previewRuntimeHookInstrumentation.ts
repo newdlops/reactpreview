@@ -367,10 +367,15 @@ function createBindingFallback(
     if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const usageShape = createIdentifierUsageFallback(binding);
     if (usageShape !== undefined) return usageShape;
+    const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
+    if (directUsage !== undefined) {
+      return {
+        ...directUsage,
+        requiredPaths: [directUsage.callable === true ? '<root>()' : '<root>'],
+      };
+    }
     const semantic = inferSemanticFallback(binding.text);
     if (semantic !== undefined) return { ...semantic, requiredPaths: ['<root>'] };
-    const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
-    if (directUsage !== undefined) return { ...directUsage, requiredPaths: ['<root>'] };
     return undefined;
   }
   if (ts.isArrayBindingPattern(binding)) {
@@ -418,7 +423,11 @@ function prefixPreviewRuntimeHookPaths(
   propertyName: string,
 ): readonly string[] {
   if (paths === undefined || paths.length === 0) return [propertyName];
-  return paths.map((path_) => (path_ === '<root>' ? propertyName : `${propertyName}.${path_}`));
+  return paths.map((path_) => {
+    if (path_ === '<root>') return propertyName;
+    if (path_ === '<root>()') return `${propertyName}()`;
+    return `${propertyName}.${path_}`;
+  });
 }
 
 /** Reads a safe static key from one object-binding element. */

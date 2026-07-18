@@ -619,6 +619,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const direct = blocker.directTarget === true;
   const pageCommitted = blocker.pageRootCommitted === true && !direct;
   const targetMounted = blocker.targetMounted === true;
+  const minimumSearch = blocker.minimumRequirementSearch;
   return React.createElement(
     'div',
     { className: 'rpi-detail-content' },
@@ -649,6 +650,13 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
           'Payload properties discovered downstream: ' + blocker.requiredPaths.join(', '))
       : React.createElement('div', { className: 'rpi-note' },
           'Downstream payload fields will appear here as each additional branch is reached.'),
+    minimumSearch === undefined
+      ? undefined
+      : React.createElement('div', { className: 'rpi-note' },
+          'Minimum requirement search: pass ' + String(minimumSearch.pass) + '/' +
+          String(PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) + ' · ' +
+          minimumSearch.status + ' · ' + String(minimumSearch.observedPathCount) +
+          ' required path(s) observed.'),
     React.createElement(
       'div',
       { className: 'rpi-actions' },
@@ -656,9 +664,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
         PreviewInspectorDevtoolsButton,
         {
           onClick: () => smartFillPreviewInspectorTargetApplicationPath(blocker),
-          title: 'Minimize every hook and backend payload already observed on this page path, then retry it',
+          title: 'Follow newly revealed hook and backend fields in bounded passes, fill their minimum shape, and retry the authored page',
         },
-        'Smart fill page path',
+        'Find minimum requirements',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,

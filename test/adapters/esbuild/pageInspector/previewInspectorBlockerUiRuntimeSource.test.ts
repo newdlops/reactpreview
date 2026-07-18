@@ -90,7 +90,9 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain("'Apply pass value'");
     expect(source).toContain("'Smart fill minimum'");
     expect(source).toContain("'Smart fill and retry'");
-    expect(source).toContain("'Smart fill page path'");
+    expect(source).toContain("'Find minimum requirements'");
+    expect(source).toContain("'Minimum requirement search: pass '");
+    expect(source).toContain('PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT');
     expect(source).toContain("'Auto pass'");
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallback');

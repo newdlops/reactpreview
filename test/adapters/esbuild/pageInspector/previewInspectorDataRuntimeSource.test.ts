@@ -80,6 +80,23 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  /** Reports only newly applied payload shapes so corridor convergence avoids stable remount loops. */
+  it('settles repeated corridor Smart fill for the same request shape', () => {
+    const runtime = evaluateDataRuntime();
+    runtime.resolve(
+      {
+        id: 'profile',
+        kind: 'rest',
+        label: 'Profile',
+        shape: { fields: { name: { kind: 'string' } }, kind: 'object' },
+      },
+      {},
+    );
+
+    expect(runtime.smartReachability('page:Target')).toBe(true);
+    expect(runtime.smartReachability('page:Target')).toBe(false);
+  });
+
   /** Returns a local Response-like object and never invokes the captured backend transport. */
   it('serves compiler-instrumented REST requests entirely in memory', async () => {
     let nativeFetchCalls = 0;
@@ -207,6 +224,7 @@ interface EvaluatedDataRuntime {
   readonly resolve: (metadata: unknown, seed: unknown) => unknown;
   readonly set: (id: string, payload: unknown, mode: string) => void;
   readonly smart: (id: string) => void;
+  readonly smartReachability: (reachabilityKey: string) => boolean;
 }
 
 /** Evaluates the generated source with only its documented lexical dependencies. */
@@ -215,7 +233,7 @@ function evaluateDataRuntime(
 ): EvaluatedDataRuntime {
   const source = `
 const previewHotRuntime = { inspectorNativeFetch: globalThis.__nativeFetch };
-const previewInspectorSession = {};
+const previewInspectorSession = { activeTargetReachabilityKey: 'page:Target' };
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 let persistedState = {};
 function readPersistedPreviewInspectorState() { return persistedState; }
@@ -234,6 +252,7 @@ globalThis.__dataRuntime = {
   resolve: resolvePreviewInspectorDataPayload,
   set: setPreviewInspectorDataPayload,
   smart: smartFillPreviewInspectorDataPayload,
+  smartReachability: smartFillPreviewInspectorDataPayloadsForReachability,
 };`;
   const context = vm.createContext({
     URL,

@@ -99,6 +99,7 @@ describe('Preview Inspector target reachability runtime source', () => {
     const source = createPreviewInspectorTargetReachabilityRuntimeSource();
 
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16');
+    expect(source).toContain('PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8');
     expect(source).toContain('hasMountedPreviewInspectorTarget(state)');
     expect(source).toContain('activatePreviewInspectorDirectTarget(state)');
     expect(source).toContain('readPreviewInspectorTargetReachabilityRequiredPaths');
@@ -168,7 +169,84 @@ describe('Preview Inspector target reachability runtime source', () => {
       fallbackValuesEnabled: true,
       gateRetained: true,
       renderConditionRevision: 5,
-      stateRetained: false,
+      stateRetained: true,
+    });
+  });
+
+  /** Continues through newly revealed batches and stops remounting after values stabilize. */
+  it('converges minimum requirements across bounded settled render passes', () => {
+    const context: {
+      __result?: {
+        readonly commitCount: number;
+        readonly pass: number;
+        readonly runtimeCalls: number;
+        readonly status: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        let commitCount = 0;
+        let runtimeCalls = 0;
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          dataRevision: 0,
+          renderConditionOverrides: new Map(),
+          renderConditionRevision: 0,
+          renderConditions: new Map(),
+          selectedExportName: 'Target',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const smartFillPreviewInspectorRuntimeFallbacksForReachability = () => {
+          runtimeCalls += 1;
+          return runtimeCalls <= 2;
+        };
+        const smartFillPreviewInspectorDataPayloadsForReachability = () => false;
+        const persistPreviewInspectorState = () => undefined;
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => { commitCount += 1; };
+        const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Target: { paths: [] } },
+          target: { exportName: 'Target' },
+        } };
+        const candidate = {
+          edges: [],
+          id: 'page',
+          renderPath: { id: 'path', steps: [
+            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'Page' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        state.pageRootCommitted = true;
+        smartFillPreviewInspectorTargetApplicationPath({ key: state.key });
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        const search = readPreviewInspectorMinimumRequirementSearch(state);
+        globalThis.__result = {
+          commitCount,
+          pass: search.pass,
+          runtimeCalls,
+          status: search.status,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      commitCount: 2,
+      pass: 2,
+      runtimeCalls: 4,
+      status: 'settled',
     });
   });
 

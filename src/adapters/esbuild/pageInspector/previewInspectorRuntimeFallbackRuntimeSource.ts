@@ -390,6 +390,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
   if (record === undefined || !previewInspectorSession.runtimeFallbackValues.has(fallbackId)) return false;
   const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
   const manualValue = previewInspectorSession.runtimeFallbackOverrides.get(fallbackId);
+  const wasSmart = previewInspectorSession.runtimeFallbackSmartIds.has(fallbackId);
   if (manualValue !== undefined) {
     const minimum = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
       fallback,
@@ -403,14 +404,14 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       );
     }
     previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
-    return true;
+    return completion.changed || !wasSmart;
   }
   previewInspectorSession.runtimeFallbackValues.set(
     fallbackId,
     createPreviewInspectorRuntimeFallbackSmartValue(fallback, record.requiredPaths),
   );
   previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
-  return true;
+  return !wasSmart;
 }
 
 /** Replaces one generated hook result with only the paths proven necessary by downstream reads. */

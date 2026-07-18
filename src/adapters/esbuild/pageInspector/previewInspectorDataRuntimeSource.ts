@@ -516,13 +516,15 @@ function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey) {
     const current = previewInspectorSession.dataPayloadOverrides.get(record.id);
     const minimum = generatePreviewInspectorDataValue(record.shape, '', 'smart');
     const retainUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
-    changed = applyPreviewInspectorDataPayloadOverride(
-      record.id,
-      retainUserPayload
-        ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
-        : minimum,
-      retainUserPayload ? 'smart-custom' : 'smart',
-    ) || changed;
+    const payload = retainUserPayload
+      ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
+      : minimum;
+    const mode = retainUserPayload ? 'smart-custom' : 'smart';
+    const payloadChanged = current?.mode !== mode ||
+      stringifyPreviewInspectorProps(current?.payload) !== stringifyPreviewInspectorProps(payload);
+    if (payloadChanged) {
+      changed = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode) || changed;
+    }
   }
   if (changed) previewInspectorSession.dataAutoEnabled = true;
   return changed;

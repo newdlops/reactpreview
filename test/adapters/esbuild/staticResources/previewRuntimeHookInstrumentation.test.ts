@@ -54,6 +54,26 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
   });
 
+  /** Preserves callable demand for destructured modal actions and JSX event callbacks. */
+  it('infers destructured direct calls and event handlers as functions', () => {
+    const source = [
+      `import { useCalendarEventModal } from './use-calendar-event-modal';`,
+      'export function Page() {',
+      '  const { showCreate, renderModalForm } = useCalendarEventModal();',
+      '  return <button onClick={showCreate}>{renderModalForm()}</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source),
+    );
+
+    expect(transformed).toContain('"showCreate": Object.freeze(() => undefined)');
+    expect(transformed).toContain('"renderModalForm": Object.freeze(() => undefined)');
+    expect(transformed).toContain('"requiredPaths":["showCreate()","renderModalForm()"]');
+  });
+
   /** Follows required property reads so a generated object does not fail at the next access. */
   it('materializes nested callable and numeric fields from local hook-result usage', () => {
     const source = [

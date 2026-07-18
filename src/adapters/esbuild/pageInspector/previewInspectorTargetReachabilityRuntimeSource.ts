@@ -21,11 +21,15 @@ export function createPreviewInspectorTargetReachabilityRuntimeSource(): string 
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT = 2;
+const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
 
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
   if (!(previewInspectorSession.targetReachabilityByKey instanceof Map)) {
     previewInspectorSession.targetReachabilityByKey = new Map();
+  }
+  if (!(previewInspectorSession.minimumRequirementSearchByKey instanceof Map)) {
+    previewInspectorSession.minimumRequirementSearchByKey = new Map();
   }
 }
 
@@ -223,6 +227,62 @@ function hasReachedPreviewInspectorPageCorridor(state) {
     state.targetMounted === true;
 }
 
+/** Returns the user-started bounded search that follows newly revealed hook and data requirements. */
+function readPreviewInspectorMinimumRequirementSearch(state) {
+  initializePreviewInspectorTargetReachabilityState();
+  return previewInspectorSession.minimumRequirementSearchByKey.get(state.key);
+}
+
+/** Marks a successful corridor as the terminal result of its explicit minimum-requirement search. */
+function completePreviewInspectorMinimumRequirementSearch(state) {
+  const search = readPreviewInspectorMinimumRequirementSearch(state);
+  if (search === undefined) return;
+  search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
+  search.status = 'reached';
+}
+
+/** Applies one newly observed hook/API batch and remounts only when that batch changed values. */
+function advancePreviewInspectorMinimumRequirementSearch(state) {
+  const search = readPreviewInspectorMinimumRequirementSearch(state);
+  if (
+    search === undefined ||
+    search.status !== 'searching' ||
+    search.pass >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT
+  ) {
+    return false;
+  }
+  const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(state.key);
+  const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(state.key);
+  if (!runtimeChanged && !dataChanged) return false;
+  search.pass += 1;
+  search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
+  if (search.pass >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) {
+    search.status = 'limit-reached';
+  }
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.status = 'filling-requirements';
+  state.probeRevision += 1;
+  previewInspectorSession.fallbackValuesEnabled = true;
+  previewInspectorSession.dataAutoEnabled = true;
+  if (dataChanged) previewInspectorSession.dataRevision += 1;
+  previewInspectorSession.renderConditionRevision =
+    (previewInspectorSession.renderConditionRevision ?? 0) + 1;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+
+/** Retains the final discovery summary when no further path-local requirement can be proven. */
+function settlePreviewInspectorMinimumRequirementSearch(state) {
+  const search = readPreviewInspectorMinimumRequirementSearch(state);
+  if (search === undefined || search.status !== 'searching') return;
+  search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
+  search.status = 'settled';
+}
+
 /** Emits one warning when bounded static traversal cannot prove another page-local continuation. */
 function reportPreviewInspectorPageCorridorBlocked(state) {
   if (state.blockedWarningReported === true) return;
@@ -282,6 +342,7 @@ function activatePreviewInspectorDirectTarget(state) {
     schedulePreviewInspectorTreeRefresh();
     return;
   }
+  previewInspectorSession.minimumRequirementSearchByKey?.delete(state.key);
   state.directTarget = true;
   state.pageRootCommitted = false;
   state.status = 'target-only';
@@ -295,6 +356,7 @@ function activatePreviewInspectorDirectTarget(state) {
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
   if (hasReachedPreviewInspectorPageCorridor(state)) {
+    completePreviewInspectorMinimumRequirementSearch(state);
     state.status = 'reached';
     state.idlePasses = 0;
     schedulePreviewInspectorTreeRefresh();
@@ -305,6 +367,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
+  if (advancePreviewInspectorMinimumRequirementSearch(state)) return;
   if (state.targetMounted && state.pageRootCommitted !== true) {
     state.status = 'page-root-pending';
     schedulePreviewInspectorTreeRefresh();
@@ -338,6 +401,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.attempt >= PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT ||
     state.idlePasses >= PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT
   ) {
+    settlePreviewInspectorMinimumRequirementSearch(state);
     state.exhausted = true;
     state.status = 'page-blocked';
     reportPreviewInspectorPageCorridorBlocked(state);
@@ -393,7 +457,7 @@ function readPreviewInspectorTargetReachabilityRequiredPaths(state) {
       append(request.label + '.' + path);
     }
   }
-  for (const gate of state.appliedConditions) append('gate.' + gate.expression);
+  for (const gate of state.appliedConditions ?? []) append('gate.' + gate.expression);
   return paths;
 }
 
@@ -405,34 +469,42 @@ function readPreviewInspectorTargetReachabilityBlockers() {
     .map((state) => ({
       ...state,
       id: 'target-reachability:' + state.key,
-      ownerName: state.appliedConditions.at(-1)?.ownerName ?? state.rootName,
+      minimumRequirementSearch: readPreviewInspectorMinimumRequirementSearch(state),
+      ownerName: state.appliedConditions?.at(-1)?.ownerName ?? state.rootName,
       requiredPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
-      sourcePath: state.appliedConditions.at(-1)?.sourcePath,
+      sourcePath: state.appliedConditions?.at(-1)?.sourcePath,
     }));
 }
 
-/** Smart-fills corridor-local hook/data edges and retries without discarding proven branch choices. */
+/** Starts bounded convergence across hook/data edges without discarding proven branch choices. */
 function smartFillPreviewInspectorTargetApplicationPath(blocker) {
   const reachabilityKey = typeof blocker?.key === 'string' ? blocker.key : '';
   if (reachabilityKey.length === 0) {
     retryPreviewInspectorTargetApplicationPath();
     return;
   }
-  const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(reachabilityKey);
-  const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey);
-  initializePreviewInspectorConditionState();
-  initializePreviewInspectorDataState();
+  initializePreviewInspectorTargetReachabilityState();
+  previewInspectorSession.minimumRequirementSearchByKey.set(reachabilityKey, {
+    observedPathCount: 0,
+    pass: 0,
+    status: 'searching',
+  });
   previewInspectorSession.fallbackValuesEnabled = true;
   previewInspectorSession.dataAutoEnabled = true;
-  if (dataChanged) previewInspectorSession.dataRevision += 1;
-  previewInspectorSession.targetReachabilityByKey?.delete(reachabilityKey);
+  const state = previewInspectorSession.targetReachabilityByKey.get(reachabilityKey);
+  if (state !== undefined) {
+    state.exhausted = false;
+    state.idlePasses = 0;
+    state.status = 'searching-requirements';
+    state.probeRevision += 1;
+    if (advancePreviewInspectorMinimumRequirementSearch(state)) return;
+  }
   previewInspectorSession.renderConditionRevision =
     (previewInspectorSession.renderConditionRevision ?? 0) + 1;
   persistPreviewInspectorState();
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
-  if (!runtimeChanged && !dataChanged) return;
 }
 
 /** Restarts selected application-path traversal and discards only its automatic branch choices. */
@@ -441,6 +513,7 @@ function retryPreviewInspectorTargetApplicationPath() {
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return;
   const key = createPreviewInspectorTargetReachabilityKey(descriptor, candidate);
+  previewInspectorSession.minimumRequirementSearchByKey?.delete(key);
   clearPreviewInspectorTargetGuidedConditionOverrides(key);
   previewInspectorSession.targetReachabilityByKey?.delete(key);
   previewInspectorSession.renderConditionRevision =
@@ -482,6 +555,7 @@ function resetPreviewInspectorTargetReachability() {
   const conditionChanged = clearPreviewInspectorTargetGuidedConditionOverrides();
   const stateChanged = previewInspectorSession.targetReachabilityByKey.size > 0;
   previewInspectorSession.targetReachabilityByKey.clear();
+  previewInspectorSession.minimumRequirementSearchByKey.clear();
   previewInspectorSession.activeTargetReachabilityKey = undefined;
   return conditionChanged || stateChanged;
 }

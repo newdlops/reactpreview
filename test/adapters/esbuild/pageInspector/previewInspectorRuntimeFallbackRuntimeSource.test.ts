@@ -25,6 +25,7 @@ interface TestRuntimeFallbackApi {
   resolve(readHook: () => unknown, createFallback: () => unknown, metadata: object): unknown;
   set(fallbackId: string, value: unknown): void;
   smart(fallbackId: string): void;
+  smartReachability(reachabilityKey: string): boolean;
   status(): string;
 }
 
@@ -381,6 +382,19 @@ describe('Preview Inspector runtime fallback source', () => {
     });
   });
 
+  /** Reports a corridor change only once so bounded discovery does not remount stable hook values. */
+  it('settles repeated corridor Smart fill for the same hook edge', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ refresh: () => undefined }),
+      { ...createMetadata(), requiredPaths: ['refresh()'] },
+    );
+
+    expect(fixture.api.smartReachability('page:Target')).toBe(true);
+    expect(fixture.api.smartReachability('page:Target')).toBe(false);
+  });
+
   /** Completes explicit user JSON instead of replacing authored leaves during Smart fill. */
   it('preserves manual pass values while smart-filling their missing demanded paths', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -457,7 +471,7 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
     schedulePreviewInspectorTreeRefresh(): undefined {
       return undefined;
     },
-    previewInspectorSession: {},
+    previewInspectorSession: { activeTargetReachabilityKey: 'page:Target' },
     readPreviewInspectorConsolePrimitives(): { warn(message: string): void } {
       return {
         warn: (message: string): void => {
@@ -484,6 +498,7 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
       ' resolve: resolvePreviewInspectorRuntimeHook,' +
       ' set: setPreviewInspectorRuntimeFallbackOverride,' +
       ' smart: smartFillPreviewInspectorRuntimeFallback,' +
+      ' smartReachability: smartFillPreviewInspectorRuntimeFallbacksForReachability,' +
       ' status: readPreviewInspectorRuntimeFallbackStatus' +
       '};',
     context,

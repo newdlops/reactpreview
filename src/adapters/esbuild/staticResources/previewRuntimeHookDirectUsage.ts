@@ -9,6 +9,8 @@ import ts from 'typescript';
 
 /** Static expression and user-facing description emitted for one proven direct use. */
 export interface PreviewRuntimeHookDirectUsageFallback {
+  /** Whether local syntax proves the fallback itself must be callable. */
+  readonly callable?: boolean;
   /** Side-effect-free JavaScript expression evaluated only by the Inspector fallback boundary. */
   readonly expression: string;
   /** Concise explanation displayed beside the generated render value. */
@@ -57,7 +59,8 @@ export function createPreviewRuntimeHookDirectUsageFallback(
       } else if (isBooleanTestPosition(node, parent)) {
         usage.conditional = true;
       } else if (ts.isJsxExpression(parent) && parent.expression === node) {
-        usage.rendered = true;
+        if (isCallableJsxAttribute(parent.parent)) usage.called = true;
+        else if (!ts.isJsxAttribute(parent.parent)) usage.rendered = true;
       }
     }
     ts.forEachChild(node, visit);
@@ -65,6 +68,7 @@ export function createPreviewRuntimeHookDirectUsageFallback(
   visit(owner);
   if (usage.called) {
     return {
+      callable: true,
       expression: 'Object.freeze(() => undefined)',
       label: 'generated no-op function from local call',
     };
@@ -78,6 +82,12 @@ export function createPreviewRuntimeHookDirectUsageFallback(
   return usage.rendered
     ? { expression: JSON.stringify('Preview value'), label: 'generated rendered preview text' }
     : undefined;
+}
+
+/** Treats JSX event/callback props as callable demand rather than rendered string content. */
+function isCallableJsxAttribute(node: ts.Node): boolean {
+  if (!ts.isJsxAttribute(node) || !ts.isIdentifier(node.name)) return false;
+  return /^(?:on[A-Z0-9_$]|render[A-Z0-9_$])/u.test(node.name.text);
 }
 
 /** Locates the closest hook-capable runtime function without entering module initialization. */

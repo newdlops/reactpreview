@@ -110,6 +110,68 @@ function collectPreviewInspectorBlockerFlowRecords(
   return records;
 }
 
+/** Finds the live selected export path, preferring a mounted node over inert inventory entries. */
+function readPreviewInspectorBlockerFlowTargetOwnerIds(nodes, ownerIds = []) {
+  let fallback;
+  for (const node of nodes ?? []) {
+    if (isPreviewInspectorBlockerNode(node)) continue;
+    const ownsPath = node?.kind !== 'condition-group';
+    const nextOwnerIds = ownsPath ? [...ownerIds, node.id] : ownerIds;
+    const selected = node?.currentFileExport === true &&
+      (node?.exportName === previewInspectorSession.selectedExportName ||
+        node?.name === previewInspectorSession.selectedExportName);
+    if (selected && node?.mounted !== false && node?.contextOnly !== true) return nextOwnerIds;
+    if (selected && fallback === undefined) fallback = nextOwnerIds;
+    const descendant = readPreviewInspectorBlockerFlowTargetOwnerIds(node?.children, nextOwnerIds);
+    if (descendant !== undefined) {
+      const descendantNode = findPreviewInspectorUiNode(nodes, descendant.at(-1));
+      if (descendantNode?.mounted !== false && descendantNode?.contextOnly !== true) return descendant;
+      if (fallback === undefined) fallback = descendant;
+    }
+  }
+  return fallback;
+}
+
+/** Reports whether one blocker owner is an ancestor or descendant of the selected export path. */
+function isPreviewInspectorBlockerFlowRelatedOwnerPath(ownerIds, targetOwnerIds) {
+  if (!Array.isArray(targetOwnerIds) || targetOwnerIds.length === 0) return false;
+  const sharedLength = Math.min(ownerIds.length, targetOwnerIds.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (ownerIds[index] !== targetOwnerIds[index]) return false;
+  }
+  return true;
+}
+
+/** Reads compiler-issued source/name evidence for the selected authored page-to-target corridor. */
+function readPreviewInspectorBlockerFlowCorridorEvidence() {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  if (descriptor?.inspector === undefined || candidate === undefined) return undefined;
+  const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+  return {
+    evidence: readPreviewInspectorTargetPathEvidence(descriptor, candidate, state),
+    state,
+  };
+}
+
+/** Keeps the primary flow focused on blockers proven to gate the selected page render corridor. */
+function isPreviewInspectorBlockerFlowCorridorRecord(record, context) {
+  const node = record.node;
+  if (node?.blockerKind === 'target-reachability') return true;
+  if (isPreviewInspectorBlockerFlowRelatedOwnerPath(record.ownerIds, context.targetOwnerIds)) {
+    return true;
+  }
+  if (
+    node?.blockerKind === 'target-error' &&
+    node?.blocker?.exportName === previewInspectorSession.selectedExportName
+  ) {
+    return true;
+  }
+  if (context.corridor?.evidence === undefined) return context.targetOwnerIds === undefined;
+  const sourceRecord = isPreviewInspectorConditionNode(node) ? node.condition : node?.blocker;
+  return isPreviewInspectorConditionOnTargetPath(sourceRecord, context.corridor.evidence);
+}
+
 /** Reports whether a data seed already contains a useful local value without reading getters. */
 function hasPreviewInspectorBlockerFlowPayload(value) {
   if (value === undefined) return false;
@@ -139,7 +201,10 @@ function readPreviewInspectorBlockerFlowResolution(record) {
       : 'pending';
   }
   if (node?.blockerKind === 'target-reachability') {
-    if (node.blocker?.targetMounted === true || node.blocker?.directTarget === true) return 'resolved';
+    const pageCorridorReached = node.blocker?.directTarget !== true &&
+      node.blocker?.pageRootCommitted === true &&
+      node.blocker?.targetMounted === true;
+    if (pageCorridorReached || node.blocker?.status === 'reached') return 'resolved';
     return node.blocker?.status === 'probing' || node.blocker?.status === 'advancing'
       ? 'running'
       : 'pending';
@@ -206,7 +271,15 @@ function findPreviewInspectorBlockerFlowAncestorRecords(record, recordsByOwner) 
  * while equal-phase and sibling blockers stay parallel at the same chart stage.
  */
 function createPreviewInspectorBlockerFlow(snapshot) {
-  const currentRecords = collectPreviewInspectorBlockerFlowRecords(snapshot?.roots);
+  const observedRecords = collectPreviewInspectorBlockerFlowRecords(snapshot?.roots);
+  const corridorContext = {
+    corridor: readPreviewInspectorBlockerFlowCorridorEvidence(),
+    targetOwnerIds: readPreviewInspectorBlockerFlowTargetOwnerIds(snapshot?.roots),
+  };
+  const currentRecords = observedRecords.filter((record) =>
+    isPreviewInspectorBlockerFlowCorridorRecord(record, corridorContext),
+  );
+  const supportingCount = observedRecords.length - currentRecords.length;
   const records = mergePreviewInspectorBlockerFlowHistory(currentRecords)
     .sort(comparePreviewInspectorBlockerFlowRecords);
   const recordsByOwner = new Map();
@@ -271,26 +344,27 @@ function createPreviewInspectorBlockerFlow(snapshot) {
     stages: Math.max(0, ...steps.map((step) => step.level)) + (steps.length > 0 ? 1 : 0),
     steps,
     stepById,
+    supportingCount,
     unresolvedCount,
   };
 }
 
 /** Produces a compact blocker category without leaking package- or project-specific semantics. */
 function formatPreviewInspectorBlockerFlowKind(node) {
-  if (isPreviewInspectorConditionNode(node)) return 'Condition';
-  if (node?.blockerKind === 'target-reachability') return 'Page path';
-  if (node?.blockerKind === 'runtime-fallback') return 'Hook value';
-  if (node?.blockerKind === 'data-request') return 'Backend data';
-  if (node?.blockerKind === 'target-error') return 'Render error';
+  if (isPreviewInspectorConditionNode(node)) return 'Branch condition';
+  if (node?.blockerKind === 'target-reachability') return 'Target not reached';
+  if (node?.blockerKind === 'runtime-fallback') return 'Hook needs value';
+  if (node?.blockerKind === 'data-request') return 'Backend data needed';
+  if (node?.blockerKind === 'target-error') return 'Component crashed';
   return 'Blocker';
 }
 
 /** Labels one flow state in action-oriented language. */
 function formatPreviewInspectorBlockerFlowStatus(status) {
   if (status === 'resolved') return 'Resolved';
-  if (status === 'active') return 'Solve now';
-  if (status === 'waiting') return 'Waiting for predecessor';
-  return 'Ready in parallel';
+  if (status === 'active') return 'Fix this first';
+  if (status === 'waiting') return 'Blocked by an earlier step';
+  return 'Can fix now';
 }
 
 /** Selects a chart step and mirrors current blockers into the ordinary Components tree. */
@@ -397,9 +471,13 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
       'div',
       { className: 'rpi-flow-summary' },
       React.createElement('strong', undefined,
-        flow.completed ? 'Blocker flow complete' : String(flow.unresolvedCount) + ' blocker(s) remaining'),
+        flow.completed ? 'Page path is clear' : String(flow.unresolvedCount) + ' required fix(es) remaining'),
       React.createElement('span', { className: 'rpi-meta' },
         String(flow.resolvedCount) + ' / ' + String(flow.steps.length) + ' resolved'),
+      flow.supportingCount > 0
+        ? React.createElement('span', { className: 'rpi-meta' },
+            String(flow.supportingCount) + ' supporting page blocker(s) remain in Components')
+        : undefined,
       React.createElement(
         'div',
         { 'aria-label': 'Blocker resolution progress', className: 'rpi-flow-progress', role: 'progressbar',
@@ -417,12 +495,12 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
               ),
               title: 'Select the first blocker whose predecessors are resolved',
             },
-            'Go to next blocker',
+            'Show next fix',
           ),
     ),
     flow.steps.length === 0
       ? React.createElement('div', { className: 'rpi-empty' },
-          'No render blockers have been observed for this page path.')
+          'No rendering blockers were found between the page and current file.')
       : React.createElement(
           'div',
           { 'aria-label': 'Blocker dependency flow chart', className: 'rpi-flow-chart' },
@@ -446,7 +524,7 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
             'div',
             { className: 'rpi-flow-editor-heading' },
             React.createElement('strong', undefined,
-              'Resolve · ' + selectedStep.node.name),
+              'Fix · ' + selectedStep.node.name),
             React.createElement('span', { className: 'rpi-badge' },
               formatPreviewInspectorBlockerFlowStatus(selectedStep.status)),
           ),

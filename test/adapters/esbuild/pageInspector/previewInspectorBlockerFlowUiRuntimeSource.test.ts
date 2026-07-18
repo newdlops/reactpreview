@@ -36,6 +36,7 @@ interface FlowModel {
   readonly resolvedCount: number;
   readonly stages: number;
   readonly steps: readonly FlowStep[];
+  readonly supportingCount: number;
   readonly unresolvedCount: number;
 }
 
@@ -174,6 +175,55 @@ describe('Preview Inspector blocker flow UI runtime source', () => {
     expect(completed.steps[0]).toMatchObject({ current: false, id: 'error', status: 'resolved' });
   });
 
+  /** Treats a directly mounted target as diagnostic until its authored page root also commits. */
+  it('keeps target-only rendering unresolved in the page blocker flow', () => {
+    const runtime = evaluateFlowRuntime();
+    const targetOnly = runtime.createFlow({
+      roots: [
+        component('page', 'DashboardPage', [
+          blocker('reachability', 'target-reachability', 'Page path · Dashboard', {
+            directTarget: true,
+            pageRootCommitted: false,
+            status: 'target-only',
+            targetMounted: true,
+          }),
+        ]),
+      ],
+    });
+
+    expect(targetOnly.completed).toBe(false);
+    expect(targetOnly.steps[0]).toMatchObject({ resolution: 'pending', status: 'active' });
+  });
+
+  /** Prioritizes the selected export corridor while retaining off-path blockers in Components. */
+  it('separates unrelated sibling blockers from the primary page corridor', () => {
+    const runtime = evaluateFlowRuntime();
+    const target = {
+      ...component('target', 'Dashboard', [
+        blocker('target-data', 'data-request', 'Data · Dashboard', { mode: 'seed', payload: {} }),
+      ]),
+      currentFileExport: true,
+      exportName: 'Dashboard',
+      mounted: true,
+    } as FlowNode;
+    const flow = runtime.createFlow({
+      roots: [
+        component('app', 'Application', [
+          component('page', 'DashboardPage', [target]),
+          component('sidebar', 'UnrelatedSidebar', [
+            blocker('sidebar-data', 'data-request', 'Data · Sidebar', {
+              mode: 'seed',
+              payload: {},
+            }),
+          ]),
+        ]),
+      ],
+    });
+
+    expect(flow.steps.map((step) => step.id)).toEqual(['target-data']);
+    expect(flow.supportingCount).toBe(1);
+  });
+
   /** Locks the bounded chart and one-at-a-time editor into the generated browser source. */
   it('emits a staged flow chart with automatic next-step advancement', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
@@ -182,7 +232,7 @@ describe('Preview Inspector blocker flow UI runtime source', () => {
     expect(PREVIEW_INSPECTOR_BLOCKER_FLOW_SCOPE_LIMIT).toBe(8);
     expect(source).toContain('function createPreviewInspectorBlockerFlow(snapshot)');
     expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
-    expect(source).toContain("'Go to next blocker'");
+    expect(source).toContain("'Show next fix'");
     expect(source).toContain('becameResolved');
     expect(source).toContain('PreviewInspectorBlockerDetail');
   });
@@ -203,6 +253,17 @@ function evaluateFlowRuntime(): FlowRuntime {
       const isPreviewInspectorBlockerNode = (node) =>
         node?.kind === 'condition' || typeof node?.blockerKind === 'string';
       const readPreviewInspectorFallbackValuesEnabled = () => true;
+      const readPreviewInspectorTargetReachabilityState = () => ({ targetExportName: 'Dashboard' });
+      const readPreviewInspectorTargetPathEvidence = () => ({ names: new Set(), paths: new Set() });
+      const isPreviewInspectorConditionOnTargetPath = () => false;
+      const findPreviewInspectorUiNode = (nodes, id) => {
+        for (const node of nodes ?? []) {
+          if (node.id === id) return node;
+          const descendant = findPreviewInspectorUiNode(node.children, id);
+          if (descendant !== undefined) return descendant;
+        }
+        return undefined;
+      };
       ${createPreviewInspectorBlockerFlowUiRuntimeSource()}
       globalThis.__flow = { createFlow: createPreviewInspectorBlockerFlow };
     `,

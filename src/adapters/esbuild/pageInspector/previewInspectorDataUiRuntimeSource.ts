@@ -43,12 +43,28 @@ function formatPreviewInspectorDataMode(mode) {
   return 'STATIC SEED';
 }
 
+/** Labels the selected virtual transport scenario independently from payload provenance. */
+function formatPreviewInspectorVirtualBackendScenario(mode) {
+  if (mode === 'empty') return 'EMPTY RESPONSE';
+  if (mode === 'error') return 'ERROR RESPONSE';
+  return 'SUCCESS RESPONSE';
+}
+
 /** Renders request selection, inferred evidence, JSON editing, and generation actions. */
 function PreviewInspectorDataDetail({ requestId } = {}) {
   const requests = readPreviewInspectorDataRequests();
   const selectedRequest = readSelectedPreviewInspectorDataRequest(requests, requestId);
   const selectedId = selectedRequest?.id ?? '';
+  const backend = selectedRequest?.virtualBackend ?? {
+    latencyMs: 0,
+    mode: 'success',
+    scenario: 'success',
+    status: 200,
+  };
   const editablePayload = readPreviewInspectorEditableDataPayload(selectedRequest) ?? {};
+  const servedPayload = selectedRequest?.servedPayload;
+  const resourceStateDiffers = servedPayload !== undefined &&
+    stringifyPreviewInspectorProps(servedPayload) !== stringifyPreviewInspectorProps(editablePayload);
   const draftKey = selectedId + ':' + String(selectedRequest?.mode ?? '') + ':' +
     stringifyPreviewInspectorProps(editablePayload);
   const [draftText, setDraftText] = React.useState(
@@ -82,6 +98,36 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
   const useAutoPayload = () => {
     if (selectedRequest !== undefined) resetPreviewInspectorDataPayload(selectedRequest.id);
     setPreviewInspectorDataAutoEnabled(true);
+  };
+
+  /** Switches transport outcome while retaining the user's latency choice. */
+  const setBackendScenarioMode = (mode) => {
+    if (selectedRequest === undefined) return;
+    setPreviewInspectorVirtualBackendScenario(selectedRequest.id, {
+      latencyMs: backend.latencyMs,
+      mode,
+      status: mode === 'error' ? 500 : 200,
+    });
+  };
+
+  /** Applies a bounded latency preset without retaining an in-flight native request. */
+  const setBackendLatency = (latencyMs) => {
+    if (selectedRequest === undefined) return;
+    setPreviewInspectorVirtualBackendScenario(selectedRequest.id, {
+      latencyMs,
+      mode: backend.mode ?? backend.scenario,
+      status: backend.status,
+    });
+  };
+
+  /** Selects a conventional HTTP failure while keeping the error scenario active. */
+  const setBackendErrorStatus = (status) => {
+    if (selectedRequest === undefined) return;
+    setPreviewInspectorVirtualBackendScenario(selectedRequest.id, {
+      latencyMs: backend.latencyMs,
+      mode: 'error',
+      status,
+    });
   };
 
   return React.createElement(
@@ -131,7 +177,8 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
             React.createElement(
               'strong',
               undefined,
-              formatPreviewInspectorDataMode(selectedRequest.mode),
+              formatPreviewInspectorDataMode(selectedRequest.mode) + ' · ' +
+                formatPreviewInspectorVirtualBackendScenario(backend.mode ?? backend.scenario),
             ),
             React.createElement('div', { className: 'rpi-meta' }, selectedRequest.label),
             React.createElement(
@@ -145,6 +192,19 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
               'Inferred properties: ' +
                 (readPreviewInspectorDataShapePaths(selectedRequest.shape).join(', ') || '<response>'),
             ),
+            React.createElement(
+              'div',
+              { className: 'rpi-note' },
+              'Virtual resource: ' + String(backend.resourceKey ?? 'dynamic request') +
+                (backend.stateful ? ' · stateful REST CRUD' : ' · operation fixture'),
+            ),
+            Array.isArray(backend.requestFields) && backend.requestFields.length > 0
+              ? React.createElement(
+                  'div',
+                  { className: 'rpi-note' },
+                  'Observed request fields: ' + backend.requestFields.join(', '),
+                )
+              : undefined,
             selectedRequest.sourcePath
               ? React.createElement(
                   'div',
@@ -154,6 +214,77 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
                 )
               : undefined,
           ),
+          React.createElement(
+            'div',
+            { className: 'rpi-actions' },
+            React.createElement(
+              'label',
+              { className: 'rpi-note' },
+              'Response ',
+              React.createElement(
+                'select',
+                {
+                  'aria-label': 'Virtual backend response scenario',
+                  className: 'rpi-select',
+                  onChange: (event) => setBackendScenarioMode(event.target.value),
+                  value: backend.mode ?? backend.scenario,
+                },
+                React.createElement('option', { value: 'success' }, 'Success'),
+                React.createElement('option', { value: 'empty' }, 'Empty data'),
+                React.createElement('option', { value: 'error' }, 'HTTP error'),
+              ),
+            ),
+            React.createElement(
+              'label',
+              { className: 'rpi-note' },
+              'Latency ',
+              React.createElement(
+                'select',
+                {
+                  'aria-label': 'Virtual backend latency',
+                  className: 'rpi-select',
+                  onChange: (event) => setBackendLatency(Number(event.target.value)),
+                  value: String(backend.latencyMs ?? 0),
+                },
+                [0, 100, 500, 1000, 3000].map((latencyMs) => React.createElement(
+                  'option',
+                  { key: latencyMs, value: String(latencyMs) },
+                  latencyMs === 0 ? 'Immediate' : String(latencyMs) + ' ms',
+                )),
+              ),
+            ),
+            (backend.mode ?? backend.scenario) === 'error'
+              ? React.createElement(
+                  'label',
+                  { className: 'rpi-note' },
+                  'Status ',
+                  React.createElement(
+                    'select',
+                    {
+                      'aria-label': 'Virtual backend error status',
+                      className: 'rpi-select',
+                      onChange: (event) => setBackendErrorStatus(Number(event.target.value)),
+                      value: String(backend.status ?? 500),
+                    },
+                    [400, 401, 403, 404, 409, 422, 500, 503].map((status) =>
+                      React.createElement('option', { key: status, value: String(status) }, String(status)),
+                    ),
+                  ),
+                )
+              : undefined,
+          ),
+          resourceStateDiffers
+            ? React.createElement(
+                'details',
+                { className: 'rpi-source-card', open: true },
+                React.createElement('summary', undefined, 'Current virtual resource response'),
+                React.createElement(
+                  'pre',
+                  { className: 'rpi-json' },
+                  stringifyPreviewInspectorProps(servedPayload),
+                ),
+              )
+            : undefined,
           React.createElement('textarea', {
             'aria-label': 'Preview backend payload JSON',
             className: 'rpi-json',
@@ -202,11 +333,28 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
               },
               'Reset override',
             ),
+            React.createElement(
+              PreviewInspectorDevtoolsButton,
+              {
+                onClick: () => resetPreviewInspectorVirtualBackendResource(selectedRequest.id),
+                title: 'Clear state created by GET/POST/PATCH/PUT/DELETE and regenerate this resource',
+              },
+              'Reset resource state',
+            ),
+            React.createElement(
+              PreviewInspectorDevtoolsButton,
+              {
+                disabled: (backend.mode ?? backend.scenario) === 'success' &&
+                  backend.status === 200 && backend.latencyMs === 0,
+                onClick: () => resetPreviewInspectorVirtualBackendScenario(selectedRequest.id),
+              },
+              'Reset response scenario',
+            ),
           ),
           React.createElement(
             'div',
             { className: 'rpi-note' },
-            'Smart fill preserves user JSON, then adds one deterministic item per inferred list and only fields requested by the component. Generated values are local preview fixtures. No backend transport is used.',
+            'Smart fill preserves user JSON, then adds one deterministic item per inferred list and only fields requested by the component. Successful REST mutations update the local resource store. Generated values never leave this preview.',
           ),
         ),
   );

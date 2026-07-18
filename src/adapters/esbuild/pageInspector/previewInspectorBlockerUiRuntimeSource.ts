@@ -60,11 +60,15 @@ function createPreviewInspectorDataBlockerTreeNode(request) {
     name: 'Backend data · ' + request.label,
     props: {
       evidence: request.evidence,
+      latencyMs: request.virtualBackend?.latencyMs,
       mode: request.mode,
       requiredPaths: readPreviewInspectorDataShapePaths(request.shape),
+      resource: request.virtualBackend?.resourceKey,
+      responseScenario: request.virtualBackend?.mode ?? request.virtualBackend?.scenario,
+      status: request.virtualBackend?.status,
     },
     source: createPreviewInspectorBlockerSource(request),
-    state: { payload: request.payload },
+    state: { payload: request.payload, servedPayload: request.servedPayload },
   };
 }
 

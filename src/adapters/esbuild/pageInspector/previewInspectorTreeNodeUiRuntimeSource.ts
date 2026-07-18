@@ -51,6 +51,7 @@ function PreviewInspectorComponentTreeNode({
   const isBlocker = isPreviewInspectorBlockerNode(node);
   const isOverlay = isPreviewInspectorOverlayNode(node);
   const isWrapper = isPreviewInspectorTransparentWrapperNode(node);
+  const isBlockedOwner = node.blockedOwner === true;
   const isCurrentFileExport = node.currentFileExport === true;
   const isActiveExport = node.exportName === previewInspectorSession.selectedExportName;
   const contextBadge = formatPreviewInspectorRenderContextBadge(node);
@@ -79,7 +80,10 @@ function PreviewInspectorComponentTreeNode({
         'aria-expanded': hasChildren ? expanded : undefined,
         'aria-selected': selected,
         className: 'rpi-tree-row' + (isCondition ? ' rpi-condition-row' : '') +
-          (isBlocker ? ' rpi-blocker-row' : '') + readPreviewInspectorStructureRowClass(node),
+          (isBlocker ? ' rpi-blocker-row' : '') +
+          (isBlockedOwner ? ' rpi-blocked-owner-row' : '') +
+          readPreviewInspectorStructureRowClass(node),
+        'data-render-blocked-owner': isBlockedOwner ? 'true' : undefined,
         'data-render-blocker': isBlocker ? 'true' : undefined,
         'data-render-condition': isCondition ? 'true' : undefined,
         'data-react-preview-tree-row': node.id,
@@ -120,6 +124,9 @@ function PreviewInspectorComponentTreeNode({
         : undefined,
       node.mounted === false
         ? React.createElement('span', { className: 'rpi-badge' }, 'not mounted')
+        : undefined,
+      isBlockedOwner
+        ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' }, 'render blocked here')
         : undefined,
       contextBadge
         ? React.createElement('span', { className: 'rpi-badge' }, contextBadge)

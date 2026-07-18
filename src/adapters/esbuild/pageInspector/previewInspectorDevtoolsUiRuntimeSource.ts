@@ -16,6 +16,7 @@ import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspec
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 import { createPreviewInspectorTreeNodeUiRuntimeSource } from './previewInspectorTreeNodeUiRuntimeSource';
+import { createPreviewInspectorWireframeUiRuntimeSource } from './previewInspectorWireframeUiRuntimeSource';
 /** Source location exposed to the UI without prescribing an extension-host transport. */
 export interface PreviewInspectorUiSourceLocation {
   /** Optional one-based source column. */
@@ -112,6 +113,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   const treeNodeUiRuntimeSource = createPreviewInspectorTreeNodeUiRuntimeSource();
+  const wireframeUiRuntimeSource = createPreviewInspectorWireframeUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
 
@@ -123,6 +125,7 @@ ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
 ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
+${wireframeUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
   if (source === null || typeof source !== 'object') return undefined;
@@ -224,8 +227,11 @@ function collectPreviewInspectorUiTreeSnapshot() {
             typeof collectorSnapshot?.status === 'string' ? collectorSnapshot.status : undefined,
           truncated: collectorSnapshot?.truncated === true,
         };
-    return attachPreviewInspectorBlockersToSnapshot(
-      enrichPreviewInspectorRenderTreeSnapshot(baseSnapshot),
+    return copyPreviewInspectorSnapshotRuntimeIndexes(
+      collectorSnapshot,
+      attachPreviewInspectorBlockersToSnapshot(
+        enrichPreviewInspectorRenderTreeSnapshot(baseSnapshot),
+      ),
     );
   } catch (error) {
     console.warn('[React Preview] Component tree collector failed.', error);
@@ -460,6 +466,11 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
     expandedIds,
   );
   React.useEffect(() => {
+    if (consumePreviewInspectorWireframeTreeReveal(selectedId)) {
+      previewInspectorDevtoolsSessionState.query = '';
+      setQuery('');
+      persistPreviewInspectorState();
+    }
     setExpandedIds((current) => expandPreviewInspectorUiSelection(roots, selectedId, current));
     const frame = requestAnimationFrame(() => {
       const rows = treeScrollRef.current?.querySelectorAll?.('[data-react-preview-tree-row]') ?? [];
@@ -469,7 +480,7 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
       selectedRow?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     });
     return () => cancelAnimationFrame(frame);
-  }, [selectedId]);
+  }, [query, selectedId]);
   React.useEffect(() => {
     if (query.trim().length === 0) return;
     const expanded = new Set();
@@ -745,7 +756,10 @@ function PreviewInspectorToolbar() {
   const [collapsed, setCollapsed] = React.useState(
     () => previewInspectorDevtoolsSessionState.collapsed,
   );
-  usePreviewInspectorTreeRefresh(!collapsed);
+  const [wireframeVisible, setWireframeVisible] = React.useState(
+    () => previewInspectorDevtoolsSessionState.wireframeVisible !== false,
+  );
+  usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible);
   const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
   const collectorSelectedId = snapshot.selectedId;
@@ -766,6 +780,11 @@ function PreviewInspectorToolbar() {
     React.Fragment,
     undefined,
     React.createElement('style', undefined, previewInspectorDevtoolsCss),
+    React.createElement(PreviewInspectorWireframeLayer, {
+      enabled: wireframeVisible,
+      onSelectBlocker: (node) => revealPreviewInspectorWireframeBlocker(node, setCollapsed),
+      snapshot,
+    }),
     React.createElement(
       'aside',
       {
@@ -816,6 +835,20 @@ function PreviewInspectorToolbar() {
             title: 'Toggle selected target highlight',
           },
           'Highlight',
+        ),
+        React.createElement(
+          PreviewInspectorDevtoolsButton,
+          {
+            onClick: () => {
+              const next = !wireframeVisible;
+              previewInspectorDevtoolsSessionState.wireframeVisible = next;
+              setWireframeVisible(next);
+              persistPreviewInspectorState();
+            },
+            pressed: wireframeVisible,
+            title: 'Toggle the full-page React component placement wireframe',
+          },
+          'Wireframe',
         ),
         React.createElement(
           PreviewInspectorDevtoolsButton,

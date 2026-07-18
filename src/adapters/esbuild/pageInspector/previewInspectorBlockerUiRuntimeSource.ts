@@ -41,6 +41,7 @@ function createPreviewInspectorRuntimeFallbackTreeNode(fallback) {
       generatedPaths: fallback.generatedPaths,
       mode: fallback.mode,
       reason: fallback.reason,
+      requiredPaths: fallback.requiredPaths,
     },
     source: createPreviewInspectorBlockerSource(fallback),
     state: { error: fallback.error, generated: fallback.fallbackPreview },
@@ -57,7 +58,11 @@ function createPreviewInspectorDataBlockerTreeNode(request) {
     id: 'data-blocker:' + request.id,
     kind: 'blocker',
     name: 'Data · ' + request.label,
-    props: { evidence: request.evidence, mode: request.mode },
+    props: {
+      evidence: request.evidence,
+      mode: request.mode,
+      requiredPaths: readPreviewInspectorDataShapePaths(request.shape),
+    },
     source: createPreviewInspectorBlockerSource(request),
     state: { payload: request.payload },
   };
@@ -72,7 +77,10 @@ function readPreviewInspectorTargetFailures() {
       const error = boundary?.state?.error;
       if (error === undefined) continue;
       const headline = createRuntimeErrorHeadline(error).slice(0, 1_000);
-      const identity = exportName + '\0' + headline;
+      const componentStack = typeof boundary?.state?.componentStack === 'string'
+        ? boundary.state.componentStack
+        : '';
+      const identity = exportName + '\0' + headline + '\0' + componentStack;
       if (seen.has(identity) || failures.length >= 64) continue;
       seen.add(identity);
       const descriptor = previewInspectorSession.descriptors.find((item) =>
@@ -81,11 +89,16 @@ function readPreviewInspectorTargetFailures() {
       );
       const reference = descriptor?.inspector?.renderChainsByExport?.[exportName]?.target ??
         descriptor?.inspector?.target;
+      const componentNames = readPreviewInspectorComponentStackNames(componentStack, exportName);
       failures.push({
+        blockedComponentName: readPreviewInspectorBlockedComponentName(componentStack, exportName),
+        componentNames,
+        componentStack,
         error,
         exportName,
         headline,
         id: 'target-error:' + exportName + ':' + String(failures.length),
+        requiredPaths: readPreviewInspectorErrorPropertyPaths(error),
         sourcePath: reference?.sourcePath,
       });
     }
@@ -102,29 +115,55 @@ function createPreviewInspectorTargetFailureTreeNode(failure) {
     children: [],
     id: failure.id,
     kind: 'blocker',
-    name: 'Blocked render · ' + failure.exportName,
+    name: 'Blocker · ' + failure.blockedComponentName,
     ownerExportName: failure.exportName,
-    props: { error: failure.headline },
+    props: {
+      componentPath: failure.componentNames,
+      error: failure.headline,
+      requiredPaths: failure.requiredPaths,
+    },
     source: createPreviewInspectorBlockerSource(failure),
     state: undefined,
   };
 }
 
-/** Collects source-backed mounted components while excluding inert context and pseudo-node groups. */
+/** Represents a successful page commit that never invoked the selected current-file export. */
+function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
+  return {
+    blocker,
+    blockerId: blocker.id,
+    blockerKind: 'target-reachability',
+    children: [],
+    id: blocker.id,
+    kind: 'blocker',
+    name: 'Path blocker · ' + blocker.targetExportName,
+    props: {
+      applicationPath: blocker.applicationPath,
+      appliedGates: blocker.appliedConditions.map((condition) => condition.expression),
+      requiredPaths: blocker.requiredPaths,
+      status: blocker.status,
+    },
+    source: createPreviewInspectorBlockerSource(blocker),
+    state: { directTarget: blocker.directTarget, targetMounted: blocker.targetMounted },
+  };
+}
+
+/** Collects mounted/static components while excluding inert context and pseudo-node groups. */
 function collectPreviewInspectorBlockerOwners(nodes, owners = [], depth = 0) {
   for (const node of nodes) {
     const sourcePath = normalizePreviewInspectorConditionSourcePath(node.source?.path);
     if (
-      sourcePath.length > 0 &&
       node.contextOnly !== true &&
       node.kind !== 'condition' &&
       node.kind !== 'blocker'
     ) {
       owners.push({
+        currentFileExport: node.currentFileExport === true,
         depth,
         exportName: node.exportName,
         id: node.id,
         line: Number.isSafeInteger(node.source?.line) ? node.source.line : 0,
+        name: node.name,
         sourcePath,
       });
     }
@@ -133,23 +172,91 @@ function collectPreviewInspectorBlockerOwners(nodes, owners = [], depth = 0) {
   return owners;
 }
 
-/** Selects the deepest nearest same-file React owner for one blocker source location. */
+/** Scores one source-local owner without letting line distance beat an exact component name. */
+function scorePreviewInspectorBlockerOwner(owner, sourcePath, line) {
+  const sameSource = sourcePath.length > 0 &&
+    matchesPreviewInspectorConditionSourcePath(owner.sourcePath, sourcePath);
+  const precedes = owner.line <= line;
+  return (sameSource ? 0 : 10_000_000) +
+    (precedes ? 0 : 1_000_000) +
+    Math.abs(line - owner.line) - owner.depth / 1_000;
+}
+
+/** Selects an exact named owner first, then the nearest surviving source-backed ancestor. */
 function findPreviewInspectorBlockerOwner(record, owners) {
   const sourcePath = normalizePreviewInspectorConditionSourcePath(record?.sourcePath);
-  if (sourcePath.length === 0) return undefined;
   const line = Number.isSafeInteger(record?.line) ? record.line : 0;
+  const ownerName = typeof record?.ownerName === 'string' ? record.ownerName : '';
+  const namedOwners = ownerName.length === 0
+    ? []
+    : owners.filter((owner) => owner.name === ownerName || owner.exportName === ownerName);
+  const sourceNamedOwners = sourcePath.length === 0
+    ? namedOwners
+    : namedOwners.filter((owner) =>
+        matchesPreviewInspectorConditionSourcePath(owner.sourcePath, sourcePath));
+  const pool = sourceNamedOwners.length > 0
+    ? sourceNamedOwners
+    : sourcePath.length > 0
+      ? owners.filter((owner) =>
+          matchesPreviewInspectorConditionSourcePath(owner.sourcePath, sourcePath))
+        : [];
   let selected;
   let selectedScore = Number.POSITIVE_INFINITY;
-  for (const owner of owners) {
-    if (!matchesPreviewInspectorConditionSourcePath(owner.sourcePath, sourcePath)) continue;
-    const precedes = owner.line <= line;
-    const score = (precedes ? 0 : 1_000_000) + Math.abs(line - owner.line) - owner.depth / 1_000;
+  for (const owner of pool) {
+    const score = scorePreviewInspectorBlockerOwner(owner, sourcePath, line);
     if (score < selectedScore) {
       selected = owner;
       selectedScore = score;
     }
   }
-  return selected;
+  if (selected !== undefined) {
+    return { exactName: sourceNamedOwners.length > 0, owner: selected };
+  }
+  const fallback = owners.find((owner) =>
+    owner.exportName === previewInspectorSession.selectedExportName,
+  ) ?? owners.find((owner) => owner.currentFileExport === true);
+  return fallback === undefined ? undefined : { exactName: false, owner: fallback };
+}
+
+/** Creates a visible component row for a failed Fiber that disappeared before tree collection. */
+function createPreviewInspectorSyntheticBlockedOwner(record, children, identityPrefix) {
+  const ownerName = typeof record?.ownerName === 'string' && record.ownerName.length > 0
+    ? record.ownerName
+    : typeof record?.blockedComponentName === 'string' && record.blockedComponentName.length > 0
+      ? record.blockedComponentName
+      : 'Blocked component';
+  return {
+    blockedOwner: true,
+    children,
+    contextOnly: false,
+    id: identityPrefix + ':' + ownerName + ':' + String(record?.line ?? 0),
+    kind: 'component',
+    mounted: false,
+    name: ownerName,
+    props: { requiredPaths: record?.requiredPaths ?? [] },
+    source: createPreviewInspectorBlockerSource(record),
+    state: { renderBlocked: true },
+  };
+}
+
+/** Reconstructs failed descendants below an export from React's innermost-first stack. */
+function createPreviewInspectorTargetFailureBranch(failure) {
+  const blocker = createPreviewInspectorTargetFailureTreeNode(failure);
+  const exportIndex = failure.componentNames.indexOf(failure.exportName);
+  const descendants = exportIndex > 0
+    ? failure.componentNames.slice(0, exportIndex)
+    : failure.blockedComponentName === failure.exportName
+      ? []
+      : [failure.blockedComponentName];
+  let branch = blocker;
+  for (const componentName of descendants) {
+    branch = createPreviewInspectorSyntheticBlockedOwner(
+      { ...failure, ownerName: componentName },
+      [branch],
+      'target-blocked-owner:' + failure.id,
+    );
+  }
+  return branch;
 }
 
 /** Appends assigned blockers immutably so a cached Fiber snapshot remains collector-owned. */
@@ -160,7 +267,7 @@ function appendPreviewInspectorAssignedBlockers(nodes, assignments, targetFailur
       ...appendPreviewInspectorAssignedBlockers(node.children, assignments, targetFailures),
       ...(assignments.get(node.id) ?? []),
       ...(typeof node.exportName === 'string'
-        ? (targetFailures.get(node.exportName) ?? []).map(createPreviewInspectorTargetFailureTreeNode)
+        ? (targetFailures.get(node.exportName) ?? []).map(createPreviewInspectorTargetFailureBranch)
         : []),
     ],
   }));
@@ -171,8 +278,13 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
   const conditionedSnapshot = attachPreviewInspectorConditionsToSnapshot(snapshot);
   const owners = collectPreviewInspectorBlockerOwners(conditionedSnapshot.roots);
   const assignments = new Map();
-  const unowned = [];
+  const rootBlockers = [];
+  const syntheticAssignments = new Map();
   const candidates = [
+    ...readPreviewInspectorTargetReachabilityBlockers().map((record) => ({
+      node: createPreviewInspectorTargetReachabilityTreeNode(record),
+      record,
+    })),
     ...readPreviewInspectorRuntimeFallbacks().map((record) => ({
       node: createPreviewInspectorRuntimeFallbackTreeNode(record),
       record,
@@ -183,14 +295,38 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
     })),
   ];
   for (const candidate of candidates) {
-    const owner = findPreviewInspectorBlockerOwner(candidate.record, owners);
-    if (owner === undefined) {
-      unowned.push(candidate.node);
+    const match = findPreviewInspectorBlockerOwner(candidate.record, owners);
+    if (match === undefined) {
+      rootBlockers.push(createPreviewInspectorSyntheticBlockedOwner(
+        candidate.record,
+        [candidate.node],
+        'root-blocked-owner',
+      ));
       continue;
     }
-    const assigned = assignments.get(owner.id) ?? [];
+    const recordOwnerName = typeof candidate.record?.ownerName === 'string'
+      ? candidate.record.ownerName
+      : '';
+    if (recordOwnerName.length > 0 && !match.exactName) {
+      const key = match.owner.id + '\0' + recordOwnerName;
+      const synthetic = syntheticAssignments.get(key) ?? createPreviewInspectorSyntheticBlockedOwner(
+        candidate.record,
+        [],
+        'blocked-owner:' + match.owner.id,
+      );
+      synthetic.children.push(candidate.node);
+      syntheticAssignments.set(key, synthetic);
+      continue;
+    }
+    const assigned = assignments.get(match.owner.id) ?? [];
     assigned.push(candidate.node);
-    assignments.set(owner.id, assigned);
+    assignments.set(match.owner.id, assigned);
+  }
+  for (const [key, synthetic] of syntheticAssignments) {
+    const ownerId = key.split('\0', 1)[0];
+    const assigned = assignments.get(ownerId) ?? [];
+    assigned.push(synthetic);
+    assignments.set(ownerId, assigned);
   }
   const targetFailures = new Map();
   for (const failure of readPreviewInspectorTargetFailures()) {
@@ -203,18 +339,7 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
     assignments,
     targetFailures,
   );
-  if (unowned.length > 0) {
-    roots.push({
-      children: unowned,
-      contextOnly: true,
-      id: 'render-blockers:unowned',
-      kind: 'component',
-      name: 'Unlocated render blockers',
-      props: undefined,
-      source: undefined,
-      state: undefined,
-    });
-  }
+  roots.push(...rootBlockers);
   return { ...conditionedSnapshot, roots };
 }
 
@@ -228,12 +353,19 @@ function isPreviewInspectorBlockerNode(node) {
 function formatPreviewInspectorBlockerBadge(node) {
   if (isPreviewInspectorConditionNode(node)) {
     return (node.condition?.effectiveEnabled === true ? 'condition · on' : 'condition · off') +
-      (typeof node.condition?.override === 'boolean' ? ' · forced' : '');
+      (typeof node.condition?.override === 'boolean'
+        ? ' · forced'
+        : typeof node.condition?.autoOverride === 'boolean'
+          ? ' · path auto'
+          : '');
   }
   if (node?.blockerKind === 'runtime-fallback') {
     return 'hook · ' + (node.blocker?.mode === 'manual' ? 'manual' : 'auto');
   }
   if (node?.blockerKind === 'data-request') return 'data · ' + String(node.blocker?.mode ?? 'seed');
+  if (node?.blockerKind === 'target-reachability') {
+    return node.blocker?.directTarget === true ? 'path · direct' : 'path · auto';
+  }
   if (node?.blockerKind === 'target-error') return 'blocked';
   return 'blocker';
 }
@@ -266,6 +398,14 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
       fallback.hookName + ' · ' + (fallback.mode === 'manual' ? 'USER VALUE' : 'GENERATED · AUTO')),
     fallback.error ? React.createElement('div', { className: 'rpi-error' }, fallback.error) : undefined,
     React.createElement('div', { className: 'rpi-note' }, 'Evidence: ' + fallback.evidence),
+    fallback.ownerName
+      ? React.createElement('div', { className: 'rpi-note' },
+          'Blocked component: ' + fallback.ownerName)
+      : undefined,
+    fallback.requiredPaths?.length > 0
+      ? React.createElement('div', { className: 'rpi-note' },
+          'Required properties: ' + fallback.requiredPaths.join(', '))
+      : undefined,
     React.createElement('textarea', {
       'aria-label': 'Render blocker result JSON',
       className: 'rpi-json',
@@ -312,6 +452,12 @@ function PreviewInspectorTargetFailureDetail({ node }) {
     'div',
     { className: 'rpi-detail-content' },
     React.createElement('div', { className: 'rpi-error', role: 'alert' }, failure.headline),
+    React.createElement('div', { className: 'rpi-note' },
+      'Blocked component path: ' + [...failure.componentNames].reverse().join(' > ')),
+    failure.requiredPaths.length > 0
+      ? React.createElement('div', { className: 'rpi-note' },
+          'Required properties: ' + failure.requiredPaths.join(', '))
+      : undefined,
     React.createElement(
       'div',
       { className: 'rpi-actions' },
@@ -339,16 +485,69 @@ function PreviewInspectorTargetFailureDetail({ node }) {
   );
 }
 
+/** Explains a logical path blocker and exposes retry/direct-target recovery without hiding context. */
+function PreviewInspectorTargetReachabilityDetail({ node }) {
+  const blocker = node.blocker;
+  const direct = blocker.directTarget === true;
+  return React.createElement(
+    'div',
+    { className: 'rpi-detail-content' },
+    React.createElement(
+      'div',
+      { className: direct ? 'rpi-meta' : 'rpi-error', role: direct ? undefined : 'alert' },
+      direct
+        ? 'Selected target is visible through the direct render fallback.'
+        : 'The application page committed, but never mounted ' + blocker.targetExportName + '.',
+    ),
+    React.createElement('div', { className: 'rpi-note' },
+      'Application path: ' + blocker.applicationPath.join(' > ')),
+    blocker.appliedConditions.length > 0
+      ? React.createElement('div', { className: 'rpi-note' },
+          'DFS pass gates: ' + blocker.appliedConditions
+            .map((condition) => condition.expression + ' = ' + String(condition.enabled))
+            .join(', '))
+      : React.createElement('div', { className: 'rpi-note' },
+          'No statically proven login/session/permission gate has been passed yet.'),
+    blocker.requiredPaths.length > 0
+      ? React.createElement('div', { className: 'rpi-note' },
+          'Payload properties discovered downstream: ' + blocker.requiredPaths.join(', '))
+      : React.createElement('div', { className: 'rpi-note' },
+          'Downstream payload fields will appear here as each additional branch is reached.'),
+    React.createElement(
+      'div',
+      { className: 'rpi-actions' },
+      React.createElement(
+        PreviewInspectorDevtoolsButton,
+        { onClick: retryPreviewInspectorTargetApplicationPath },
+        'Retry application path',
+      ),
+      React.createElement(
+        PreviewInspectorDevtoolsButton,
+        {
+          disabled: direct || blocker.directTargetAvailable !== true,
+          onClick: showPreviewInspectorTargetDirectly,
+        },
+        'Render target directly',
+      ),
+    ),
+    React.createElement('div', { className: 'rpi-note' },
+      'Automatic values are preview-only. Explicit condition and payload edits still take precedence over DFS inference.'),
+  );
+}
+
 /** Routes one selected tree blocker to its condition, payload, hook, or contained-error editor. */
 function PreviewInspectorBlockerDetail({ node }) {
   if (isPreviewInspectorConditionNode(node)) {
     return React.createElement(PreviewInspectorConditionDetail, { node });
   }
   if (node?.blockerKind === 'data-request') {
-    return React.createElement(PreviewInspectorDataDetail);
+    return React.createElement(PreviewInspectorDataDetail, { requestId: node.blockerId });
   }
   if (node?.blockerKind === 'runtime-fallback') {
     return React.createElement(PreviewInspectorRuntimeBlockerDetail, { node });
+  }
+  if (node?.blockerKind === 'target-reachability') {
+    return React.createElement(PreviewInspectorTargetReachabilityDetail, { node });
   }
   if (node?.blockerKind === 'target-error') {
     return React.createElement(PreviewInspectorTargetFailureDetail, { node });

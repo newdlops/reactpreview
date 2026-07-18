@@ -3,14 +3,17 @@ import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorBlockerUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorConditionUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorConditionUiRuntimeSource';
+import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFailureEvidenceRuntimeSource';
 
 /** Data-only node contract needed for blocker ownership assertions. */
 interface BlockerTreeNode {
+  readonly blockedOwner?: boolean;
   readonly blockerKind?: string;
   readonly children: readonly BlockerTreeNode[];
   readonly id: string;
   readonly kind: string;
   readonly name: string;
+  readonly props?: Record<string, unknown>;
 }
 
 /** Generated helper surface exposed only inside the VM fixture. */
@@ -37,6 +40,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
           id: 'page',
           kind: 'function',
           name: 'Page',
+          exportName: 'Page',
           source: { line: 2, path: '/workspace/Page.tsx' },
         },
       ],
@@ -52,11 +56,20 @@ describe('Preview Inspector blocker UI runtime source', () => {
         }),
       ]),
     );
-    expect(page?.children).toEqual(
+    const missingOwner = findNode(page?.children ?? [], 'UncollectedDashboardChild');
+    expect(missingOwner).toMatchObject({ blockedOwner: true, name: 'UncollectedDashboardChild' });
+    expect(missingOwner?.children).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ blockerKind: 'data-request', name: 'Data · Get dashboard' }),
       ]),
     );
+    const brokenChild = findNode(page?.children ?? [], 'BrokenChild');
+    expect(brokenChild).toMatchObject({ blockedOwner: true, name: 'BrokenChild' });
+    expect(brokenChild?.children[0]).toMatchObject({
+      blockerKind: 'target-error',
+      props: { requiredPaths: ['value'] },
+    });
+    expect(findNode(snapshot.roots, 'Unlocated render blockers')).toBeUndefined();
   });
 
   /** Keeps both manual JSON and bounded inference actions explicit in generated UI source. */
@@ -68,6 +81,8 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('autoPassPreviewInspectorRuntimeFallback');
     expect(source).toContain("blockerKind: 'target-error'");
+    expect(source).toContain("blockerKind: 'target-reachability'");
+    expect(source).toContain('Payload properties discovered downstream:');
   });
 });
 
@@ -77,10 +92,19 @@ function evaluateBlockerRuntime(): BlockerRuntime {
   vm.runInNewContext(
     `
       const previewInspectorSession = {
-        boundariesByExport: new Map(),
-        descriptors: [],
+        boundariesByExport: new Map([['Page', new Set([{
+          state: {
+            componentStack: '\\n    at BrokenChild\\n    at Page',
+            error: new TypeError("Cannot read properties of undefined (reading 'value')"),
+          },
+        }])]]),
+        descriptors: [{ inspector: {
+          target: { exportName: 'Page', sourcePath: '/workspace/Page.tsx' },
+        } }],
+        selectedExportName: 'Page',
       };
       const readPreviewInspectorRenderConditions = () => [];
+      const readPreviewInspectorTargetReachabilityBlockers = () => [];
       const readPreviewInspectorRuntimeFallbacks = () => [{
         evidence: 'required form value access',
         error: 'provider missing',
@@ -90,7 +114,9 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         id: 'hook-form',
         line: 12,
         mode: 'auto',
+        ownerName: 'FormSection',
         reason: 'threw',
+        requiredPaths: ['formikProps.values.name'],
         sourcePath: '/workspace/Page.tsx',
       }];
       const readPreviewInspectorDataRequests = () => [{
@@ -99,13 +125,18 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         label: 'Get dashboard',
         line: 3,
         mode: 'auto',
+        ownerName: 'UncollectedDashboardChild',
         payload: {},
+        shape: { fields: { dashboard: { kind: 'string' } }, kind: 'object' },
         sourcePath: '/workspace/Page.tsx',
       }];
+      const createRuntimeErrorHeadline = (error) => error.message;
+      const readPreviewInspectorDataShapePaths = () => ['dashboard'];
       const normalizePreviewInspectorUiSource = (source) => ({
         line: source?.line,
         path: source?.path,
       });
+      ${createPreviewInspectorFailureEvidenceRuntimeSource()}
       ${createPreviewInspectorConditionUiRuntimeSource()}
       ${createPreviewInspectorBlockerUiRuntimeSource()}
       globalThis.__blockers = { attach: attachPreviewInspectorBlockersToSnapshot };

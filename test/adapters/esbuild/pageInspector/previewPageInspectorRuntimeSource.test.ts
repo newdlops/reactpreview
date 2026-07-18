@@ -36,6 +36,8 @@ describe('Page Inspector runtime source', () => {
     expect(inspectorEntry).toContain('activePreviewRouterBridge?.createNestedRouterPreviewElement');
     expect(inspectorEntry).toContain('function createPreviewCandidateRouterElement');
     expect(inspectorEntry).toContain('PreviewPageInspectorRootRenderer');
+    expect(inspectorEntry).toContain('PreviewInspectorTargetReachabilityProbe');
+    expect(inspectorEntry).toContain('Application path rendered, but did not reach');
   });
 
   /** Uses a read-only tree adapter, isolated toolbar, persistent overrides, and proven ancestry. */

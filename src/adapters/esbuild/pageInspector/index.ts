@@ -29,6 +29,11 @@ export { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLay
 export { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 export { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 export {
+  createPreviewInspectorWireframeUiRuntimeSource,
+  PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT,
+  PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT,
+} from './previewInspectorWireframeUiRuntimeSource';
+export {
   createPreviewPageInspectorRuntimeSource,
   PREVIEW_PAGE_INSPECTOR_API_SYMBOL,
   PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE,

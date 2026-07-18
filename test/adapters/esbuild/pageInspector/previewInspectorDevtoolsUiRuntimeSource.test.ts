@@ -18,7 +18,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'.rpi-workbench{display:grid");
     expect(source).toContain('overflow-x:auto;overflow-y:hidden');
     expect(source).toContain("'data-collapsed': collapsed");
-    expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed)');
+    expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible)');
     expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
     expect(source).toContain('function PreviewInspectorResizeHandle');
     expect(source).toContain('function PreviewInspectorMoveHandle');
@@ -27,6 +27,13 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('title: "Go to the current file\'s main component"');
     expect(source).toContain("'Main component'");
     expect(source).toContain("'Auto values'");
+    expect(source).toContain("'Wireframe'");
+    expect(source).toContain('function PreviewInspectorWireframeLayer');
+    expect(source).toContain("'aria-label': 'React page layout wireframe'");
+    expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
+    expect(source).toContain('revealPreviewInspectorWireframeBlocker(node, setCollapsed)');
+    expect(source).toContain('consumePreviewInspectorWireframeTreeReveal(selectedId)');
+    expect(source).toContain('copyPreviewInspectorSnapshotRuntimeIndexes(');
     expect(source).toContain("['payloads', 'Payloads']");
     expect(source).toContain("['console', 'Console ('");
     expect(source).toContain('function PreviewInspectorConsoleDetail');

@@ -16,6 +16,7 @@ import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspe
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
+import { createPreviewInspectorTargetReachabilityRuntimeSource } from './previewInspectorTargetReachabilityRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
@@ -44,6 +45,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
+  const targetReachabilityRuntimeSource = createPreviewInspectorTargetReachabilityRuntimeSource();
   const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
   const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
@@ -113,6 +115,8 @@ ${stateRuntimeSource}
 ${dataRuntimeSource}
 
 ${conditionRuntimeSource}
+
+${targetReachabilityRuntimeSource}
 
 ${consoleRuntimeSource}
 
@@ -198,6 +202,10 @@ function notifyPreviewInspector() {
 
 /** Updates the export inventory while retaining a valid user selection across hot reloads. */
 function setPreviewInspectorDescriptors(descriptors) {
+  const replacingExistingDescriptors =
+    Array.isArray(previewInspectorSession.descriptors) &&
+    previewInspectorSession.descriptors.length > 0 &&
+    previewInspectorSession.descriptors !== descriptors;
   previewInspectorSession.descriptors = Array.isArray(descriptors) ? descriptors : [];
   const names = Array.isArray(descriptors)
     ? descriptors
@@ -255,7 +263,10 @@ function setPreviewInspectorDescriptors(descriptors) {
   ) {
     previewInspectorSession.selectedExportName = uniqueNames[0] ?? '';
   }
-  if (namesChanged || candidateChanged) {
+  const reachabilityChanged = replacingExistingDescriptors
+    ? resetPreviewInspectorTargetReachability()
+    : false;
+  if (namesChanged || candidateChanged || reachabilityChanged) {
     persistPreviewInspectorState();
     notifyPreviewInspector();
   }
@@ -480,6 +491,7 @@ function selectPreviewInspectorExport(exportName) {
     return;
   }
   previewInspectorSession.selectedTreeNodeId = undefined;
+  resetPreviewInspectorTargetReachability();
   previewInspectorSession.selectedExportName = exportName;
   persistPreviewInspectorState();
   schedulePreviewInspectorTreeRefresh();

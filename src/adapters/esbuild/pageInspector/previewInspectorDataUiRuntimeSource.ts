@@ -36,7 +36,9 @@ function readPreviewInspectorEditableDataPayload(request) {
 /** Labels generated data provenance so a preview value cannot be mistaken for backend truth. */
 function formatPreviewInspectorDataMode(mode) {
   if (mode === 'custom') return 'USER PAYLOAD';
+  if (mode === 'smart-custom') return 'USER + SMART MINIMUM';
   if (mode === 'lorem') return 'GENERATED · LOREM';
+  if (mode === 'smart') return 'GENERATED · SMART MINIMUM';
   if (mode === 'auto') return 'GENERATED · AUTO';
   return 'STATIC SEED';
 }
@@ -167,6 +169,15 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
             { className: 'rpi-actions' },
             React.createElement(
               PreviewInspectorDevtoolsButton,
+              {
+                onClick: () => smartFillPreviewInspectorDataPayload(selectedRequest.id),
+                pressed: selectedRequest.mode === 'smart' || selectedRequest.mode === 'smart-custom',
+                title: 'Generate only inferred response fields and one item per required list',
+              },
+              'Smart fill minimum',
+            ),
+            React.createElement(
+              PreviewInspectorDevtoolsButton,
               { onClick: applyDraft },
               'Apply JSON',
             ),
@@ -195,7 +206,7 @@ function PreviewInspectorDataDetail({ requestId } = {}) {
           React.createElement(
             'div',
             { className: 'rpi-note' },
-            'Generated values are local preview fixtures. No API, GraphQL server, credentials, or backend transport was used.',
+            'Smart fill preserves user JSON, then adds one deterministic item per inferred list and only fields requested by the component. Generated values are local preview fixtures. No backend transport is used.',
           ),
         ),
   );

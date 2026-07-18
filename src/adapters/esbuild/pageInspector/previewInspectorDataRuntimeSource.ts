@@ -48,7 +48,7 @@ function initializePreviewInspectorDataState() {
             id.length <= 160 &&
             value !== null &&
             typeof value === 'object' &&
-            (value.mode === 'custom' || value.mode === 'lorem') &&
+            ['custom', 'lorem', 'smart', 'smart-custom'].includes(value.mode) &&
             Object.hasOwn(value, 'payload'),
           )
           .slice(0, PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT)
@@ -87,7 +87,7 @@ function readPreviewInspectorDataRuntimeStatus() {
   const overrideCount = previewInspectorSession.dataPayloadOverrides.size;
   return (previewInspectorSession.dataAutoEnabled ? 'active' : 'inactive') +
     ': no-network API/GraphQL payload registry; ' + String(requestCount) +
-    ' observed request(s), ' + String(overrideCount) + ' user/Lorem override(s)';
+    ' observed request(s), ' + String(overrideCount) + ' user/generated override(s)';
 }
 
 /** Converts arbitrary seed values into a finite generator shape without retaining prototypes. */
@@ -198,7 +198,8 @@ function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
 function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex, depth) {
   if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT) return null;
   if (shape.kind === 'array') {
-    return [0, 1].map((index) =>
+    const indexes = mode === 'smart' ? [0] : [0, 1];
+    return indexes.map((index) =>
       materializePreviewInspectorDataValue(shape.items, fieldName, mode, index, depth + 1),
     );
   }
@@ -214,7 +215,8 @@ function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex,
   if (shape.kind === 'number') return itemIndex + 1;
   if (shape.kind === 'null') return null;
   if (shape.kind === 'unknown' && looksLikePreviewInspectorCollection(fieldName)) {
-    return [0, 1].map((index) => ({
+    const indexes = mode === 'smart' ? [0] : [0, 1];
+    return indexes.map((index) => ({
       id: 'preview-' + String(index + 1),
       name: createPreviewInspectorStringValue('name', mode, index),
     }));
@@ -431,16 +433,99 @@ function setPreviewInspectorDataAutoEnabled(enabled) {
   commitPreviewInspectorDataChange();
 }
 
-/** Stores an explicitly generated or user-authored payload for one observed request. */
-function setPreviewInspectorDataPayload(requestId, payload, mode = 'custom') {
+/** Adds missing Smart fields recursively while retaining every non-null user-authored payload value. */
+function completePreviewInspectorDataSmartPayload(authored, generated, depth = 0) {
+  if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT || authored === null || authored === undefined) {
+    return generated;
+  }
+  if (Array.isArray(authored) && Array.isArray(generated)) {
+    if (authored.length === 0) return generated;
+    const result = [...authored];
+    for (let index = 0; index < generated.length; index += 1) {
+      result[index] = index < authored.length
+        ? completePreviewInspectorDataSmartPayload(authored[index], generated[index], depth + 1)
+        : generated[index];
+    }
+    return result;
+  }
+  if (
+    authored !== null &&
+    generated !== null &&
+    typeof authored === 'object' &&
+    typeof generated === 'object' &&
+    !Array.isArray(authored) &&
+    !Array.isArray(generated)
+  ) {
+    const result = { ...authored };
+    for (const [propertyName, generatedValue] of Object.entries(generated)) {
+      if (blockedInspectorPropNames.has(propertyName)) continue;
+      result[propertyName] = Object.hasOwn(authored, propertyName)
+        ? completePreviewInspectorDataSmartPayload(
+            authored[propertyName],
+            generatedValue,
+            depth + 1,
+          )
+        : generatedValue;
+    }
+    return result;
+  }
+  return authored;
+}
+
+/** Stores one bounded payload override without scheduling a page remount for batch callers. */
+function applyPreviewInspectorDataPayloadOverride(requestId, payload, mode) {
   initializePreviewInspectorDataState();
-  if (!previewInspectorSession.dataRequests.has(requestId)) return;
-  if (mode !== 'custom' && mode !== 'lorem') return;
+  if (!previewInspectorSession.dataRequests.has(requestId)) return false;
+  if (!['custom', 'lorem', 'smart', 'smart-custom'].includes(mode)) return false;
   previewInspectorSession.dataPayloadOverrides.set(requestId, {
     mode,
     payload: JSON.parse(stringifyPreviewInspectorProps(payload)),
   });
+  return true;
+}
+
+/** Stores an explicitly generated or user-authored payload for one observed request. */
+function setPreviewInspectorDataPayload(requestId, payload, mode = 'custom') {
+  if (!applyPreviewInspectorDataPayloadOverride(requestId, payload, mode)) return;
   commitPreviewInspectorDataChange();
+}
+
+/** Applies only inferred response fields and one item per list to cross a backend-data blocker. */
+function smartFillPreviewInspectorDataPayload(requestId) {
+  initializePreviewInspectorDataState();
+  const record = previewInspectorSession.dataRequests.get(requestId);
+  if (record === undefined) return;
+  const current = previewInspectorSession.dataPayloadOverrides.get(requestId);
+  const minimum = generatePreviewInspectorDataValue(record.shape, '', 'smart');
+  const retainUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
+  setPreviewInspectorDataPayload(
+    requestId,
+    retainUserPayload
+      ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
+      : minimum,
+    retainUserPayload ? 'smart-custom' : 'smart',
+  );
+}
+
+/** Smart-fills every backend request observed in one authored page corridor without repeated commits. */
+function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey) {
+  initializePreviewInspectorDataState();
+  let changed = false;
+  for (const record of previewInspectorSession.dataRequests.values()) {
+    if (record.reachabilityKey !== reachabilityKey) continue;
+    const current = previewInspectorSession.dataPayloadOverrides.get(record.id);
+    const minimum = generatePreviewInspectorDataValue(record.shape, '', 'smart');
+    const retainUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
+    changed = applyPreviewInspectorDataPayloadOverride(
+      record.id,
+      retainUserPayload
+        ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
+        : minimum,
+      retainUserPayload ? 'smart-custom' : 'smart',
+    ) || changed;
+  }
+  if (changed) previewInspectorSession.dataAutoEnabled = true;
+  return changed;
 }
 
 /** Generates and applies a lorem payload using the same inferred type tree as Auto mode. */

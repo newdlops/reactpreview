@@ -5,7 +5,7 @@ import { createPreviewInspectorDataRuntimeSource } from '../../../../src/adapter
 
 describe('Page Inspector data runtime source', () => {
   /** Infers deterministic scalar/list values and records explicit generated provenance. */
-  it('generates Auto, Lorem, and custom payloads from one shared type shape', () => {
+  it('generates Auto, Smart minimum, Lorem, and custom payloads from one shared type shape', () => {
     const runtime = evaluateDataRuntime();
     const metadata = {
       evidence: 'GraphQL selection',
@@ -40,6 +40,14 @@ describe('Page Inspector data runtime source', () => {
     });
     expect(cloneJson(runtime.requests())[0]).toMatchObject({ mode: 'auto' });
 
+    runtime.smart('employees');
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      mode: 'smart',
+      payload: {
+        employees: [{ active: true, id: 'preview-1', name: 'Preview User 1', salary: 1 }],
+      },
+    });
+
     runtime.lorem('employees');
     expect(cloneJson(runtime.requests())[0]).toMatchObject({
       mode: 'lorem',
@@ -54,6 +62,21 @@ describe('Page Inspector data runtime source', () => {
     runtime.set('employees', { employees: [{ name: 'Authored fixture' }] }, 'custom');
     expect(cloneJson(runtime.resolve(metadata, {}))).toEqual({
       employees: [{ name: 'Authored fixture' }],
+    });
+
+    runtime.smart('employees');
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      mode: 'smart-custom',
+      payload: {
+        employees: [
+          {
+            active: true,
+            id: 'preview-1',
+            name: 'Authored fixture',
+            salary: 1,
+          },
+        ],
+      },
     });
   });
 
@@ -183,6 +206,7 @@ interface EvaluatedDataRuntime {
   readonly requests: () => readonly unknown[];
   readonly resolve: (metadata: unknown, seed: unknown) => unknown;
   readonly set: (id: string, payload: unknown, mode: string) => void;
+  readonly smart: (id: string) => void;
 }
 
 /** Evaluates the generated source with only its documented lexical dependencies. */
@@ -209,6 +233,7 @@ globalThis.__dataRuntime = {
   requests: readPreviewInspectorDataRequests,
   resolve: resolvePreviewInspectorDataPayload,
   set: setPreviewInspectorDataPayload,
+  smart: smartFillPreviewInspectorDataPayload,
 };`;
   const context = vm.createContext({
     URL,

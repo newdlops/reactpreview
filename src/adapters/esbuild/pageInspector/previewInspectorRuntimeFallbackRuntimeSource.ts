@@ -6,6 +6,7 @@
  * bounded static value only when Auto values is enabled and a required runtime path is unavailable.
  */
 import { createPreviewInspectorGeneratedValueRuntimeSource } from './previewInspectorGeneratedValueRuntimeSource';
+import { createPreviewInspectorBlockerValueRuntimeSource } from './previewInspectorBlockerValueRuntimeSource';
 
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
 export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
@@ -20,6 +21,7 @@ export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
  */
 export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
   const generatedValueRuntimeSource = createPreviewInspectorGeneratedValueRuntimeSource();
+  const blockerValueRuntimeSource = createPreviewInspectorBlockerValueRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
@@ -55,6 +57,8 @@ function initializePreviewInspectorRuntimeFallbackState() {
 
 ${generatedValueRuntimeSource}
 
+${blockerValueRuntimeSource}
+
 /** Reports whether a thrown value is a Suspense thenable that React must continue to own. */
 function isPreviewInspectorRuntimeThenable(value) {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false;
@@ -80,6 +84,8 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     id: readText('id'),
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     moduleSpecifier: readText('moduleSpecifier'),
+    ownerName: readText('ownerName'),
+    requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
     sourcePath: readText('sourcePath'),
   };
 }
@@ -129,7 +135,9 @@ function hasPreviewInspectorRuntimeFallbackOverride(fallbackId) {
 function readPreviewInspectorRuntimeFallbackValue(metadata, createFallback) {
   initializePreviewInspectorRuntimeFallbackState();
   if (previewInspectorSession.runtimeFallbackOverrides.has(metadata.id)) {
-    return previewInspectorSession.runtimeFallbackOverrides.get(metadata.id);
+    return materializePreviewInspectorRuntimeFallbackOverride(
+      previewInspectorSession.runtimeFallbackOverrides.get(metadata.id),
+    );
   }
   return readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback);
 }
@@ -156,7 +164,12 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     fallbackPreview: describePreviewInspectorRuntimeFallbackValue(fallback),
     generatedPaths: [...generatedPaths],
     mode: hasPreviewInspectorRuntimeFallbackOverride(metadata.id) ? 'manual' : 'auto',
+    reachabilityKey:
+      typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
+        ? previewInspectorSession.activeTargetReachabilityKey
+        : undefined,
     reason,
+    requiredPaths: metadata.requiredPaths,
   };
   previewInspectorSession.runtimeFallbacks.set(metadata.id, next);
   if (
@@ -178,6 +191,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
       errorHeadline.length > 0 ? 'Original: ' + errorHeadline : '',
       'Evidence: ' + metadata.evidence,
       metadata.sourcePath + (metadata.line ? ':' + String(metadata.line) : ''),
+      metadata.requiredPaths.length > 0 ? 'Required paths: ' + metadata.requiredPaths.join(', ') : '',
       generatedPaths.length > 0 ? 'Generated paths: ' + generatedPaths.join(', ') : '',
       'Generated: ' + next.fallbackPreview,
     ].filter(Boolean).join('\n');
@@ -279,7 +293,7 @@ function resolvePreviewInspectorRuntimeHook(readHook, createFallback, rawMetadat
     fallback,
     failure === undefined ? 'nullish' : 'threw',
     failure,
-    ['<root>'],
+    metadata.requiredPaths.length > 0 ? metadata.requiredPaths : ['<root>'],
   );
   return fallback;
 }
@@ -302,7 +316,9 @@ function readPreviewInspectorRuntimeFallbackDraft(fallbackId) {
   if (previewInspectorSession.runtimeFallbackOverrides.has(fallbackId)) {
     return previewInspectorSession.runtimeFallbackOverrides.get(fallbackId);
   }
-  return previewInspectorSession.runtimeFallbackValues.get(fallbackId);
+  const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
+  const record = previewInspectorSession.runtimeFallbacks.get(fallbackId);
+  return createPreviewInspectorRuntimeFallbackDraftTemplate(fallback, record?.requiredPaths ?? []);
 }
 
 /** Copies bounded JSON while dropping prototype keys before it can enter project hook code. */

@@ -2,6 +2,7 @@
 import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackRuntimeSource';
+import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFailureEvidenceRuntimeSource';
 
 /** One record returned from the generated browser registry. */
 interface TestRuntimeFallbackRecord {
@@ -10,7 +11,9 @@ interface TestRuntimeFallbackRecord {
   readonly generatedPaths: readonly string[];
   readonly hookName: string;
   readonly mode: string;
+  readonly ownerName?: string;
   readonly reason: string;
+  readonly requiredPaths: readonly string[];
 }
 
 /** Functions exported from the isolated VM solely for behavior assertions. */
@@ -269,6 +272,44 @@ describe('Preview Inspector runtime fallback source', () => {
     ).toBe(autoValue);
     expect(fixture.api.read()[0]?.mode).toBe('auto');
   });
+
+  /** Keeps inferred callbacks and deep required fields visible instead of collapsing the editor to `{}`. */
+  it('creates a JSON-visible pass-value template and rematerializes callback sentinels', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      ownerName: 'MeetingFormField',
+      requiredPaths: ['formikProps.values.employeeName', 'formikProps.setFieldValue()'],
+    };
+
+    fixture.api.resolve(
+      () => {
+        throw new Error('Formik provider missing');
+      },
+      () => ({ formikProps: {} }),
+      metadata,
+    );
+
+    expect(JSON.parse(JSON.stringify(fixture.api.draft('hook-1')))).toEqual({
+      formikProps: {
+        setFieldValue: '[Preview no-op function]',
+        values: { employeeName: 'Preview value' },
+      },
+    });
+    expect(fixture.api.read()[0]).toMatchObject({
+      ownerName: 'MeetingFormField',
+      requiredPaths: ['formikProps.values.employeeName', 'formikProps.setFieldValue()'],
+    });
+
+    fixture.api.set('hook-1', fixture.api.draft('hook-1'));
+    const manual = fixture.api.resolve(
+      () => null,
+      () => ({}),
+      metadata,
+    ) as { formikProps: { setFieldValue: () => unknown } };
+    expect(typeof manual.formikProps.setFieldValue).toBe('function');
+    expect(manual.formikProps.setFieldValue()).toBeUndefined();
+  });
 });
 
 /** Complete observations exposed by one generated-runtime VM fixture. */
@@ -325,7 +366,8 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
   };
   const context = createContext(sandbox);
   runInContext(
-    `${createPreviewInspectorRuntimeFallbackRuntimeSource()}\n` +
+    `${createPreviewInspectorFailureEvidenceRuntimeSource()}\n` +
+      `${createPreviewInspectorRuntimeFallbackRuntimeSource()}\n` +
       'globalThis.__runtimeFallbackApi = {' +
       ' auto: autoPassPreviewInspectorRuntimeFallback,' +
       ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
@@ -352,6 +394,8 @@ function createMetadata(): object {
     id: 'hook-1',
     line: 12,
     moduleSpecifier: 'use-query-params',
+    ownerName: 'List',
+    requiredPaths: ['0', '1()'],
     sourcePath: '/workspace/List.tsx',
   };
 }

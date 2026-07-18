@@ -70,6 +70,18 @@ interface PreviewRuntimeHookFallback {
   readonly expression: string;
   /** Concise generated-value description that does not execute the expression. */
   readonly label: string;
+  /** Property paths whose absence would stop rendering at this exact hook edge. */
+  readonly requiredPaths?: readonly string[];
+}
+
+/** Shared scalar/container fallback shape used while recursively walking one binding pattern. */
+interface PreviewRuntimeHookValueFallback {
+  /** Side-effect-free expression evaluated only inside the preview runtime boundary. */
+  readonly expression: string;
+  /** Human-readable generated-value family. */
+  readonly label: string;
+  /** Paths relative to this value that local syntax proves are required. */
+  readonly requiredPaths?: readonly string[];
 }
 
 /** Mutable property tree used only while serializing one identifier's required local usage. */
@@ -274,6 +286,7 @@ function inferRuntimeHookFallback(
       evidence: 'query parameter default plus an inert local setter',
       expression: `Object.freeze([${defaultExpression}, Object.freeze(() => undefined)])`,
       label: 'static query value + no-op setter',
+      requiredPaths: ['0', '1()'],
     };
   }
   const expression = unwrapParentExpression(call);
@@ -302,6 +315,9 @@ function inferRuntimeHookFallback(
         evidence: 'hook result binding and semantic field names',
         expression: bindingFallback.expression,
         label: bindingFallback.label,
+        ...(bindingFallback.requiredPaths === undefined
+          ? {}
+          : { requiredPaths: bindingFallback.requiredPaths }),
       };
     }
   }
@@ -316,6 +332,7 @@ function inferRuntimeHookFallback(
         evidence: 'custom hook name semantics',
         expression: semanticFallback.expression,
         label: semanticFallback.label,
+        requiredPaths: ['<root>'],
       };
 }
 
@@ -344,21 +361,22 @@ function readQueryParamDefaultExpression(
 function createBindingFallback(
   binding: ts.BindingName,
   sourceFile: ts.SourceFile,
-): { readonly expression: string; readonly label: string } | undefined {
+): PreviewRuntimeHookValueFallback | undefined {
   if (ts.isIdentifier(binding)) {
     const compared = findComparedLiteralFallback(binding, sourceFile);
-    if (compared !== undefined) return compared;
+    if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const usageShape = createIdentifierUsageFallback(binding);
     if (usageShape !== undefined) return usageShape;
     const semantic = inferSemanticFallback(binding.text);
-    if (semantic !== undefined) return semantic;
+    if (semantic !== undefined) return { ...semantic, requiredPaths: ['<root>'] };
     const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
-    if (directUsage !== undefined) return directUsage;
+    if (directUsage !== undefined) return { ...directUsage, requiredPaths: ['<root>'] };
     return undefined;
   }
   if (ts.isArrayBindingPattern(binding)) {
     const values: string[] = [];
-    for (const element of binding.elements) {
+    const requiredPaths: string[] = [];
+    for (const [index, element] of binding.elements.entries()) {
       if (ts.isOmittedExpression(element)) {
         values.push('undefined');
         continue;
@@ -366,10 +384,16 @@ function createBindingFallback(
       if (element.dotDotDotToken !== undefined) return undefined;
       const child = createBindingFallback(element.name, sourceFile);
       values.push(child?.expression ?? 'undefined');
+      requiredPaths.push(...prefixPreviewRuntimeHookPaths(child?.requiredPaths, String(index)));
     }
-    return { expression: `Object.freeze([${values.join(', ')}])`, label: 'generated tuple' };
+    return {
+      expression: `Object.freeze([${values.join(', ')}])`,
+      label: 'generated tuple',
+      requiredPaths,
+    };
   }
   const properties: string[] = [];
+  const requiredPaths: string[] = [];
   for (const element of binding.elements) {
     if (element.dotDotDotToken !== undefined) return undefined;
     const propertyName = readBindingPropertyName(element);
@@ -379,11 +403,22 @@ function createBindingFallback(
       label: 'static object',
     };
     properties.push(`${JSON.stringify(propertyName)}: ${child.expression}`);
+    requiredPaths.push(...prefixPreviewRuntimeHookPaths(child.requiredPaths, propertyName));
   }
   return {
     expression: `Object.freeze({${properties.length === 0 ? '' : ` ${properties.join(', ')} `}})`,
     label: 'generated object fields',
+    requiredPaths,
   };
+}
+
+/** Prefixes child demand paths while keeping a root requirement readable in Inspector diagnostics. */
+function prefixPreviewRuntimeHookPaths(
+  paths: readonly string[] | undefined,
+  propertyName: string,
+): readonly string[] {
+  if (paths === undefined || paths.length === 0) return [propertyName];
+  return paths.map((path_) => (path_ === '<root>' ? propertyName : `${propertyName}.${path_}`));
 }
 
 /** Reads a safe static key from one object-binding element. */
@@ -468,7 +503,7 @@ function inferSemanticFallback(
  */
 function createIdentifierUsageFallback(
   identifier: ts.Identifier,
-): { readonly expression: string; readonly label: string } | undefined {
+): PreviewRuntimeHookValueFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
   const paths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
@@ -498,7 +533,11 @@ function createIdentifierUsageFallback(
   };
   visit(owner);
   if (arrayRootEvidence.length > 0) {
-    return { expression: 'Object.freeze([])', label: 'generated empty list from local usage' };
+    return {
+      expression: 'Object.freeze([])',
+      label: 'generated empty list from local usage',
+      requiredPaths: ['<root>'],
+    };
   }
   if (paths.length === 0) return undefined;
   const root: PreviewRuntimeHookUsageNode = { children: new Map() };
@@ -506,6 +545,7 @@ function createIdentifierUsageFallback(
   return {
     expression: serializeUsageNode(root),
     label: 'generated required property shape',
+    requiredPaths: paths.map((path_) => path_.names.join('.') + (path_.called ? '()' : '')),
   };
 }
 
@@ -667,6 +707,7 @@ function createDirectPropertyFallback(
     evidence: `required property access ${properties.map((item) => `.${item}`).join('')}`,
     expression: child,
     label: called ? 'generated callable property' : 'generated property shape',
+    requiredPaths: [properties.join('.') + (called ? '()' : '')],
   };
 }
 
@@ -682,6 +723,7 @@ function createRuntimeHookReplacement(
   const end = candidate.call.end;
   const location = sourceFile.getLineAndCharacterOfPosition(start);
   const originalCall = sourceText.slice(start, end);
+  const ownerName = readPreviewRuntimeFunctionName(findNearestRuntimeFunction(candidate.call));
   const metadata = {
     column: location.character + 1,
     evidence: boundMetadataText(candidate.fallback.evidence),
@@ -690,6 +732,8 @@ function createRuntimeHookReplacement(
     id: createRuntimeHookIdentity(sourcePath, candidate, occurrence),
     line: location.line + 1,
     moduleSpecifier: candidate.hook.moduleSpecifier,
+    ...(ownerName === undefined ? {} : { ownerName }),
+    requiredPaths: candidate.fallback.requiredPaths ?? ['<root>'],
     sourcePath: path.normalize(sourcePath),
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
@@ -729,6 +773,7 @@ function createRuntimeHookIdentity(
         candidate.hook.moduleSpecifier,
         candidate.hook.hookName,
         candidate.fallback.evidence,
+        candidate.fallback.requiredPaths ?? ['<root>'],
         occurrence,
       ]),
     )
@@ -751,6 +796,36 @@ function findNearestRuntimeFunction(node: ts.Node): RuntimeFunction | undefined 
   while (!ts.isSourceFile(current)) {
     if (isRuntimeFunction(current)) return current;
     current = current.parent;
+  }
+  return undefined;
+}
+
+/** Reads the authored component/function name that owns one runtime hook invocation. */
+function readPreviewRuntimeFunctionName(scope: RuntimeFunction | undefined): string | undefined {
+  if (scope === undefined) return undefined;
+  if (
+    (ts.isFunctionDeclaration(scope) || ts.isFunctionExpression(scope)) &&
+    scope.name !== undefined
+  ) {
+    return scope.name.text;
+  }
+  if (ts.isMethodDeclaration(scope)) {
+    return ts.isIdentifier(scope.name) || ts.isStringLiteral(scope.name)
+      ? scope.name.text
+      : undefined;
+  }
+  const parent = scope.parent;
+  if (
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === scope &&
+    ts.isIdentifier(parent.name)
+  ) {
+    return parent.name.text;
+  }
+  if (ts.isPropertyAssignment(parent) && parent.initializer === scope) {
+    return ts.isIdentifier(parent.name) || ts.isStringLiteral(parent.name)
+      ? parent.name.text
+      : undefined;
   }
   return undefined;
 }

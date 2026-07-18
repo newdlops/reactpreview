@@ -27,6 +27,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('Object.freeze(() => undefined)');
     expect(transformed).toContain('"hookName":"useQueryParam"');
     expect(transformed).toContain('"fallbackLabel":"static query value + no-op setter"');
+    expect(transformed).toContain('"ownerName":"List"');
+    expect(transformed).toContain('"requiredPaths":["0","1()"]');
   });
 
   /** Infers boolean and destructured object fields for project-alias custom hooks. */
@@ -74,6 +76,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"page": 0');
     expect(transformed).toContain('"perPage": 0');
     expect(transformed).toContain('"fallbackLabel":"generated required property shape"');
+    expect(transformed).toContain('"requiredPaths":["helpers.setPage()","page","perPage"]');
   });
 
   /** Instruments supported state reads while leaving React and exact Context hooks to their bridges. */

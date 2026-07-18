@@ -35,6 +35,8 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain(".replace(/@import[^;]*(?:;|$)/giu, '')");
     expect(html).toContain('data-react-preview-companion-source="true"');
     expect(html).toContain('display:grid!important');
+    expect(html).toContain('max-width:100%!important;min-width:0!important');
+    expect(html).toContain('overflow:hidden!important');
     expect(html).toContain('&lt;Unsafe&gt;.tsx');
   });
 });

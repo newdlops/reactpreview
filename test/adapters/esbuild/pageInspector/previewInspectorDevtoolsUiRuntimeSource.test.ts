@@ -24,7 +24,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain(
       '\'.rpi-shell[data-react-preview-companion-source="true"]{display:none!important}\'',
     );
-    expect(source).toContain('overflow-x:auto;overflow-y:hidden');
+    expect(source).toContain('container-name:rpi-inspector;container-type:inline-size');
+    expect(source).toContain('@container rpi-inspector (max-width:759px)');
+    expect(source).toContain('@container rpi-inspector (max-width:460px)');
+    expect(source).toContain('display:flex;flex-wrap:wrap;gap:6px;max-width:100%');
     expect(source).toContain("'data-collapsed': collapsed");
     expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible)');
     expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
@@ -60,8 +63,11 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('clearPreviewInspectorConsoleEntries');
     expect(source).toContain("'Auto payloads'");
     expect(source).toContain("'Generate Lorem'");
+    expect(source).toContain("'Smart fill minimum'");
+    expect(source).toContain('smartFillPreviewInspectorDataPayload');
     expect(source).toContain("'Apply JSON'");
     expect(source).toContain('GENERATED · AUTO');
+    expect(source).toContain('USER + SMART MINIMUM');
     expect(source).toContain('No API or GraphQL payload has been observed yet.');
     expect(source).toContain("'aria-label': 'Rendered page component context'");
     expect(source).toContain("className: 'rpi-context-badge'");

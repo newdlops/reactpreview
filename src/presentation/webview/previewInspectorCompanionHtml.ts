@@ -49,7 +49,7 @@ export function createPreviewInspectorCompanionHtml(
     #react-preview-inspector-status { display: grid; box-sizing: border-box; min-height: 100%; gap: 8px; padding: 32px; place-content: center; text-align: center; }
     #react-preview-inspector-status h1 { margin: 0; font: 600 18px/1.4 var(--vscode-font-family); }
     #react-preview-inspector-status p { max-width: 560px; margin: 0; color: var(--vscode-descriptionForeground); font: 13px/1.55 var(--vscode-font-family); }
-    #react-preview-inspector-mirror { height: 100%; min-height: 0; }
+    #react-preview-inspector-mirror { box-sizing: border-box; height: 100%; max-width: 100%; min-height: 0; min-width: 0; overflow: hidden; width: 100%; }
     #react-preview-inspector-mirror[hidden], #react-preview-inspector-status[hidden] { display: none; }
   </style>
 </head>
@@ -114,11 +114,12 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-shell[data-react-preview-companion-source="true"]{',
           'border:0!important;box-shadow:none!important;display:grid!important;',
           'grid-template-rows:auto auto minmax(0,1fr)!important;height:100%!important;',
-          'inset:auto!important;max-width:none!important;position:relative!important;',
+          'inset:auto!important;max-width:100%!important;min-width:0!important;position:relative!important;',
           'transform:none!important;width:100%!important}',
           '.rpi-shell[data-collapsed="true"] .rpi-page-context{display:grid!important}',
           '.rpi-shell[data-collapsed="true"] .rpi-workbench{display:grid!important}',
-          '.rpi-workbench{min-height:0!important}',
+          '.rpi-page-context,.rpi-workbench,.rpi-pane,.rpi-pane-heading{max-width:100%!important;min-width:0!important}',
+          '.rpi-workbench{min-height:0!important;overflow:hidden!important}',
           '.rpi-wireframe-layer,.rpi-resize-handle,.rpi-move-handle{display:none!important}',
           '.rpi-toolbar select[aria-label="Inspector position"]{display:none!important}',
           '.rpi-toolbar button[title="Collapse inspector"],',

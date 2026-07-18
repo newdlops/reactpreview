@@ -134,4 +134,27 @@ describe('createPreviewInspectorRootSource', () => {
     );
     expect(source).toContain('"id":"candidate-alternate"');
   });
+
+  /** Registers every proven current-file component without evaluating it in page-flow mode. */
+  it('emits independent lazy definitions for the complete current-file export inventory', () => {
+    const plan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const secondaryChain = {
+      ...plan.renderChain,
+      target: { exportName: 'SecondaryCard', sourcePath: TARGET_PATH },
+    };
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        renderChainsByExport: {
+          ...plan.renderChainsByExport,
+          SecondaryCard: secondaryChain,
+        },
+      },
+    });
+
+    expect(source).toContain('direct-target:Target');
+    expect(source).toContain('direct-target:SecondaryCard');
+    expect(source).toContain('react-preview:inspector-direct-target/SecondaryCard');
+    expect(source).not.toContain('direct-target:*');
+  });
 });

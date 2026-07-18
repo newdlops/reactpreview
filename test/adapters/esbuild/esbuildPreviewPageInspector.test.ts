@@ -8,7 +8,7 @@ import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPre
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('EsbuildPreviewCompiler Page Inspector', () => {
-  /** Retains authored siblings, descendant CSS, Inspector metadata, and all ancestry watch files. */
+  /** Retains page context plus lazy current-file exports, CSS, metadata, and ancestry watch files. */
   it('bundles the actual exported ancestor while instrumenting the selected target', async () => {
     const projectRoot = await mkdtemp(path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-'));
     const sourceDirectory = path.join(projectRoot, 'src');
@@ -69,6 +69,7 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
         Buffer.from(bundle.javascript),
         ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
       ]).toString('utf8');
+      const entryJavascript = Buffer.from(bundle.javascript).toString('utf8');
 
       expect(javascript).toContain('SECTION_SIBLING');
       expect(javascript).toContain('PAGE_SIBLING');
@@ -86,7 +87,9 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(javascript).toContain('Auto payloads');
       expect(javascript).toContain('logical-and');
       expect(javascript).toContain('<Target>');
-      expect(javascript).not.toContain('UNUSED_TARGET_MARKER');
+      expect(entryJavascript).not.toContain('UNUSED_TARGET_MARKER');
+      expect(javascript).toContain('UNUSED_TARGET_MARKER');
+      expect(javascript).toContain('selected-direct-target:UnusedTargetSibling');
       expect(Buffer.from(bundle.stylesheet ?? []).toString('utf8')).toContain('min-height: 100vh');
       expect(bundle.dependencies).toEqual(
         expect.arrayContaining([targetPath, sectionPath, pagePath]),

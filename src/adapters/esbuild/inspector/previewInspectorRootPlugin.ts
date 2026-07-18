@@ -134,9 +134,12 @@ export function createPreviewInspectorRootSource(
       ']) }',
     ].join('');
   });
-  // Only the command-selected export receives a fallback entry. Emitting every current-file export
-  // would eagerly compile otherwise unused sibling graphs and defeat the preview's lazy boundary.
-  const directTargetExportNames = [plan.target.exportName];
+  // Register every statically proven current-file component behind its own dynamic import. The
+  // browser invokes these loaders only for the explicit file-component overview; authored page
+  // flow still mounts one selected caller path and preserves its exact UI.
+  const directTargetExportNames = [
+    ...new Set([plan.target.exportName, ...Object.keys(plan.renderChainsByExport)]),
+  ];
   for (const exportName of directTargetExportNames) assertExportName(exportName);
   const directTargetDefinitions = directTargetExportNames.map((exportName) =>
     [

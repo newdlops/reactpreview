@@ -498,8 +498,8 @@ function inferSemanticFallback(
 
 /**
  * Builds a deep object from required property reads rooted at one bound hook result.
- * Array operations collapse the whole root to an empty list, while called leaves become inert
- * functions and semantic scalar leaves reuse the deterministic naming policy above.
+ * Array operations synthesize one callback-shaped item so list layouts become visible, while called
+ * leaves become inert functions and semantic scalar leaves reuse the deterministic naming policy.
  */
 function createIdentifierUsageFallback(
   identifier: ts.Identifier,
@@ -508,6 +508,7 @@ function createIdentifierUsageFallback(
   if (owner === undefined) return undefined;
   const paths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
   const arrayRootEvidence: string[] = [];
+  const arrayItemFallbacks: PreviewRuntimeHookValueFallback[] = [];
   const visit = (node: ts.Node): void => {
     if (node !== owner && isRuntimeFunction(node) && functionShadowsName(node, identifier.text)) {
       return;
@@ -521,6 +522,11 @@ function createIdentifierUsageFallback(
       if (names !== undefined && names.length > 0) {
         if (isArrayUsageProperty(names[0])) {
           arrayRootEvidence.push(names[0] ?? 'array operation');
+          const itemFallback = inferPreviewRuntimeArrayItemFallback(
+            node,
+            identifier.getSourceFile(),
+          );
+          if (itemFallback !== undefined) arrayItemFallbacks.push(itemFallback);
         } else if (paths.length < 64 && names.length <= 12) {
           paths.push({
             called: ts.isCallExpression(node.parent) && node.parent.expression === node,
@@ -533,10 +539,17 @@ function createIdentifierUsageFallback(
   };
   visit(owner);
   if (arrayRootEvidence.length > 0) {
+    const item = [...arrayItemFallbacks].sort(
+      (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
+    )[0] ?? {
+      expression: 'Object.freeze({ id: "preview-id", name: "Preview name" })',
+      label: 'generated generic preview item',
+      requiredPaths: ['id', 'name'],
+    };
     return {
-      expression: 'Object.freeze([])',
-      label: 'generated empty list from local usage',
-      requiredPaths: ['<root>'],
+      expression: `Object.freeze([${item.expression}])`,
+      label: 'generated one-item list from local usage',
+      requiredPaths: prefixPreviewRuntimeHookPaths(item.requiredPaths, '[]'),
     };
   }
   if (paths.length === 0) return undefined;
@@ -547,6 +560,22 @@ function createIdentifierUsageFallback(
     label: 'generated required property shape',
     requiredPaths: paths.map((path_) => path_.names.join('.') + (path_.called ? '()' : '')),
   };
+}
+
+/** Infers the first array-callback parameter from the fields actually read inside that callback. */
+function inferPreviewRuntimeArrayItemFallback(
+  propertyAccess: ts.PropertyAccessExpression,
+  sourceFile: ts.SourceFile,
+): PreviewRuntimeHookValueFallback | undefined {
+  const call = propertyAccess.parent;
+  if (!ts.isCallExpression(call) || call.expression !== propertyAccess) return undefined;
+  const callbackArgument = call.arguments[0];
+  if (callbackArgument === undefined) return undefined;
+  const callback = unwrapExpression(callbackArgument);
+  if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) return undefined;
+  const itemParameter = callback.parameters[0];
+  if (itemParameter === undefined || itemParameter.dotDotDotToken !== undefined) return undefined;
+  return createBindingFallback(itemParameter.name, sourceFile);
 }
 
 /** Adds one property path into a bounded shape while preserving existing deeper evidence. */

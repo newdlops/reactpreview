@@ -79,6 +79,28 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["helpers.setPage()","page","perPage"]');
   });
 
+  /** Shapes one list item from callback reads so Auto values renders content instead of an empty list. */
+  it('infers array callback item fields for a visible one-item preview', () => {
+    const source = [
+      `import { useEmployees } from './use-employees';`,
+      'export function EmployeeList() {',
+      '  const employees = useEmployees();',
+      '  return employees.map((employee) => <div key={employee.id}>{employee.name} · {employee.email}</div>);',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/EmployeeList.tsx', source),
+    );
+
+    expect(transformed).toContain('Object.freeze([Object.freeze({');
+    expect(transformed).toContain('"email": "preview@example.invalid"');
+    expect(transformed).toContain('"id": "preview-id"');
+    expect(transformed).toContain('"name": "Preview name"');
+    expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
+  });
+
   /** Instruments supported state reads while leaving React and exact Context hooks to their bridges. */
   it('wraps supported state-library hooks but not React or identity-bridged Context hooks', () => {
     const source = [

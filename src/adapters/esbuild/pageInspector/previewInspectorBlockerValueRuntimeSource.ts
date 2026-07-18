@@ -47,29 +47,66 @@ function copyPreviewInspectorBlockerValueForJson(value, state, depth = 0) {
   return result;
 }
 
-/** Infers a recognizable JSON leaf from the final required property name. */
+/** Creates a deterministic preview record for a collection whose item fields remain unknown. */
+function createPreviewInspectorRequiredPathCollectionItem() {
+  return { id: 'preview-1', name: 'Preview item 1' };
+}
+
+/** Infers a type-compatible, visibly synthetic leaf from property-name and call evidence. */
 function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (callable) return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
-  const name = String(propertyName).toLowerCase();
-  if (/^(?:is|has|can|should|will|did|does|was|were)/u.test(name) || /(?:enabled|visible|active|selected|checked|loading|valid|touched)$/u.test(name)) {
+  const name = String(propertyName).replaceAll('_', '').toLowerCase();
+  if (/^\d+$/u.test(name)) return createPreviewInspectorRequiredPathCollectionItem();
+  if (/^(?:set|on|handle|toggle|submit|refetch|refresh|mutate|dispatch|navigate|reset|update|remove|add)/u.test(name) || /(?:handler|callback)$/u.test(name)) {
+    return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  }
+  if (/(?:disabled|hidden|loading|pending|suspended|denied|forbidden|locked|error|invalid|touched|dirty)$/u.test(name)) {
     return false;
   }
-  if (/(?:count|total|index|length|size|page|amount|rate|number)$/u.test(name)) return 0;
-  if (/(?:items|rows|list|options|results|nodes|edges|records)$/u.test(name)) return [];
-  return 'Preview value';
+  if (/^(?:is|has|can|should|will|did|does|was|were|allow|enable)/u.test(name) || /(?:enabled|visible|active|selected|checked|ready|success|valid)$/u.test(name)) {
+    return !/(?:disabled|hidden|loading|pending|suspended|denied|forbidden|locked|error|invalid)$/u.test(name);
+  }
+  if (/(?:count|total|index|length|size|page|amount|rate|number|price|cost|limit|offset)$/u.test(name)) return 1;
+  if (/(?:items|rows|list|options|results|nodes|edges|records|entries|users|companies)$/u.test(name)) {
+    return [createPreviewInspectorRequiredPathCollectionItem()];
+  }
+  if (name === 'id' || name.endsWith('id') || name === 'uuid') return 'preview-1';
+  if (name.includes('email')) return 'preview@example.invalid';
+  if (/(?:date|time|timestamp|createdat|updatedat)$/u.test(name)) return '2026-01-15T09:00:00.000Z';
+  if (/(?:url|uri|href|link)$/u.test(name)) return 'https://example.invalid/preview/1';
+  if (/(?:status|state)$/u.test(name)) return 'ACTIVE';
+  if (/(?:name|owner|author|assignee)$/u.test(name)) return 'Preview User 1';
+  if (/(?:title|subject|headline)$/u.test(name)) return 'Preview title';
+  if (/(?:description|message|content|summary|text|body)$/u.test(name)) return 'Preview generated content';
+  if (/(?:props|context|form|data|filter|params|values|config|settings|user|company|session)$/u.test(name)) {
+    return createPreviewInspectorRequiredPathCollectionItem();
+  }
+  return 'Preview generated value';
+}
+
+/** Converts dotted, numeric, and array-item evidence into one bounded materialization path. */
+function parsePreviewInspectorRequiredPath(rawPath) {
+  if (typeof rawPath !== 'string' || rawPath === '<root>') return undefined;
+  const callable = rawPath.endsWith('()');
+  const source = callable ? rawPath.slice(0, -2) : rawPath;
+  const path = source
+    .replace(/\[(\d*)\]/gu, (_match, index) => '.' + (index.length === 0 ? '0' : index))
+    .split('.')
+    .map((part) => part.replace(/\?$/u, ''))
+    .filter((part) => part.length > 0 && part !== '<root>')
+    .slice(0, PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT);
+  return path.length === 0 ? undefined : { callable, path };
 }
 
 /** Adds one compiler-proven path when serialization alone could not expose its missing property. */
 function materializePreviewInspectorRequiredPath(template, rawPath) {
-  if (typeof rawPath !== 'string' || rawPath === '<root>') return template;
-  const callable = rawPath.endsWith('()');
-  const path = (callable ? rawPath.slice(0, -2) : rawPath)
-    .split('.')
-    .filter((part) => part.length > 0 && part !== '<root>')
-    .slice(0, PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT);
-  if (path.length === 0) return template;
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (parsed === undefined) return template;
+  const { callable, path } = parsed;
   let root = template;
-  if (root === null || typeof root !== 'object') root = /^\d+$/u.test(path[0]) ? [] : {};
+  const indexedRoot = /^\d+$/u.test(path[0]);
+  if (root === null || typeof root !== 'object') root = indexedRoot ? [] : {};
+  if (Array.isArray(root) !== indexedRoot) return root;
   let current = root;
   for (const [index, propertyName] of path.entries()) {
     if (blockedInspectorPropNames.has(propertyName)) return root;
@@ -89,13 +126,30 @@ function materializePreviewInspectorRequiredPath(template, rawPath) {
   return root;
 }
 
-/** Produces the non-empty, editable JSON template displayed for one isolated hook edge. */
-function createPreviewInspectorRuntimeFallbackDraftTemplate(value, requiredPaths) {
+/** Builds a required-path overlay while retaining compiler values already present at a demanded leaf. */
+function createPreviewInspectorRuntimeFallbackRequirementTemplate(value, requiredPaths) {
   let template = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
   for (const path of normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)) {
     template = materializePreviewInspectorRequiredPath(template, path);
   }
-  return template;
+  return materializePreviewInspectorRuntimeFallbackOverride(template);
+}
+
+/** Adds missing required leaves to a compiler value without replacing authored non-nullish data. */
+function createPreviewInspectorRuntimeFallbackAutoValue(value, requiredPaths) {
+  const materializedPaths = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
+    .filter((path) => path !== '<root>');
+  if (materializedPaths.length === 0) return value;
+  const requirement = createPreviewInspectorRuntimeFallbackRequirementTemplate(value, materializedPaths);
+  if (requirement === undefined) return value;
+  const completion = completePreviewInspectorGeneratedValue(value, requirement);
+  return completion.changed ? completion.value : value;
+}
+
+/** Produces the non-empty, editable JSON template displayed for one isolated hook edge. */
+function createPreviewInspectorRuntimeFallbackDraftTemplate(value, requiredPaths) {
+  const autoValue = createPreviewInspectorRuntimeFallbackAutoValue(value, requiredPaths);
+  return copyPreviewInspectorBlockerValueForJson(autoValue, { nodes: 0 });
 }
 
 /** Restores no-op callbacks only at the boundary where editable JSON enters project hook code. */

@@ -80,6 +80,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain("'Auto pass'");
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('autoPassPreviewInspectorRuntimeFallback');
+    expect(source).toContain('creates one callback-shaped item for required lists');
     expect(source).toContain("blockerKind: 'target-error'");
     expect(source).toContain("blockerKind: 'target-reachability'");
     expect(source).toContain('Payload properties discovered downstream:');

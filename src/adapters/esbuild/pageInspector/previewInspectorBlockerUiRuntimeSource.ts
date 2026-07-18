@@ -406,6 +406,8 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
       ? React.createElement('div', { className: 'rpi-note' },
           'Required properties: ' + fallback.requiredPaths.join(', '))
       : undefined,
+    React.createElement('div', { className: 'rpi-note' },
+      'Auto synthesis preserves real non-null values, fills demanded paths, restores inert callbacks, and creates one callback-shaped item for required lists.'),
     React.createElement('textarea', {
       'aria-label': 'Render blocker result JSON',
       className: 'rpi-json',

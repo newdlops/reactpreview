@@ -282,18 +282,21 @@ describe('Preview Inspector runtime fallback source', () => {
       requiredPaths: ['formikProps.values.employeeName', 'formikProps.setFieldValue()'],
     };
 
-    fixture.api.resolve(
+    const automatic = fixture.api.resolve(
       () => {
         throw new Error('Formik provider missing');
       },
       () => ({ formikProps: {} }),
       metadata,
-    );
+    ) as { formikProps: { setFieldValue: () => unknown; values: { employeeName: string } } };
+
+    expect(automatic.formikProps.values.employeeName).toBe('Preview User 1');
+    expect(typeof automatic.formikProps.setFieldValue).toBe('function');
 
     expect(JSON.parse(JSON.stringify(fixture.api.draft('hook-1')))).toEqual({
       formikProps: {
         setFieldValue: '[Preview no-op function]',
-        values: { employeeName: 'Preview value' },
+        values: { employeeName: 'Preview User 1' },
       },
     });
     expect(fixture.api.read()[0]).toMatchObject({
@@ -309,6 +312,33 @@ describe('Preview Inspector runtime fallback source', () => {
     ) as { formikProps: { setFieldValue: () => unknown } };
     expect(typeof manual.formikProps.setFieldValue).toBe('function');
     expect(manual.formikProps.setFieldValue()).toBeUndefined();
+  });
+
+  /** Expands array-item paths into one shaped record so list rendering reaches deeper fields. */
+  it('materializes array-item evidence into the actual automatic hook value', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['employees[].id', 'employees[].profile.email', 'refresh()'],
+    };
+
+    const automatic = fixture.api.resolve(
+      () => undefined,
+      () => ({ employees: [] }),
+      metadata,
+    ) as {
+      employees: { id: string; profile: { email: string } }[];
+      refresh: () => unknown;
+    };
+
+    expect(automatic.employees).toEqual([
+      { id: 'preview-1', profile: { email: 'preview@example.invalid' } },
+    ]);
+    expect(typeof automatic.refresh).toBe('function');
+    expect(fixture.api.draft('hook-1')).toEqual({
+      employees: [{ id: 'preview-1', profile: { email: 'preview@example.invalid' } }],
+      refresh: '[Preview no-op function]',
+    });
   });
 });
 

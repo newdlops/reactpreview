@@ -118,7 +118,10 @@ function readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback) {
   if (previewInspectorSession.runtimeFallbackValues.has(metadata.id)) {
     return previewInspectorSession.runtimeFallbackValues.get(metadata.id);
   }
-  const fallback = createFallback();
+  const fallback = createPreviewInspectorRuntimeFallbackAutoValue(
+    createFallback(),
+    metadata.requiredPaths,
+  );
   if (previewInspectorSession.runtimeFallbackValues.size < PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT) {
     previewInspectorSession.runtimeFallbackValues.set(metadata.id, fallback);
   }
@@ -357,6 +360,14 @@ function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
   previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId);
+  const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
+  const requiredPaths = previewInspectorSession.runtimeFallbacks.get(fallbackId)?.requiredPaths ?? [];
+  if (previewInspectorSession.runtimeFallbackValues.has(fallbackId)) {
+    previewInspectorSession.runtimeFallbackValues.set(
+      fallbackId,
+      createPreviewInspectorRuntimeFallbackAutoValue(fallback, requiredPaths),
+    );
+  }
   previewInspectorSession.fallbackValuesEnabled = true;
   commitPreviewInspectorRuntimeFallbackChange();
 }

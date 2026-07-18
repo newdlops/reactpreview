@@ -190,6 +190,54 @@ describe('createPreviewApolloBridgePlugin', () => {
     }
   });
 
+  /** Routes Apollo variables and error scenarios through the stateful Inspector backend broker. */
+  it('uses the virtual backend broker for Apollo response scenarios', async () => {
+    const projectRoot = await createTemporaryProject('apollo-virtual-backend-preview-');
+
+    try {
+      await installFakeApolloPackage(projectRoot);
+      const result = await build({
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        globalName: 'ApolloPreviewFixture',
+        logLevel: 'silent',
+        plugins: [createPreviewApolloBridgePlugin({ projectRoot })],
+        stdin: {
+          contents: createStaticResultFixtureSource(),
+          loader: 'js',
+          resolveDir: projectRoot,
+        },
+        platform: 'browser',
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = result.outputFiles[0]?.text;
+      if (javascript === undefined)
+        throw new Error('The Apollo bridge fixture emitted no JavaScript.');
+
+      let observedContext: unknown;
+      const sandbox: Record<PropertyKey, unknown> = { setTimeout };
+      sandbox[Symbol.for('newdlops.react-file-preview.page-inspector')] = {
+        resolveBackendRequest(_metadata: unknown, _seed: unknown, context: unknown) {
+          observedContext = context;
+          return { latencyMs: 0, payload: null, scenario: 'error', status: 503 };
+        },
+      };
+      sandbox.globalThis = sandbox;
+      const context = createContext(sandbox);
+      runInContext(javascript, context, { timeout: 10_000 });
+
+      await expect(readContextPromise(context, '__apolloStaticResult')).resolves.toEqual({
+        data: null,
+        errors: [{ message: 'Virtual backend returned HTTP 503' }],
+      });
+      expect(observedContext).toEqual({ body: {}, rawUrl: 'graphql://StaticCompany' });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Allows a setup resolver to provide exact static page data while retaining no-network transport. */
   it('uses an explicit operation result supplied by preview setup', async () => {
     const projectRoot = await createTemporaryProject('apollo-override-preview-');

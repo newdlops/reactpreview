@@ -66,6 +66,11 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Smart fill minimum'");
     expect(source).toContain('smartFillPreviewInspectorDataPayload');
     expect(source).toContain("'Apply JSON'");
+    expect(source).toContain("'aria-label': 'Virtual backend response scenario'");
+    expect(source).toContain("'aria-label': 'Virtual backend latency'");
+    expect(source).toContain("'Reset resource state'");
+    expect(source).toContain("'Current virtual resource response'");
+    expect(source).toContain('setPreviewInspectorVirtualBackendScenario');
     expect(source).toContain('GENERATED · AUTO');
     expect(source).toContain('USER + SMART MINIMUM');
     expect(source).toContain('No API or GraphQL payload has been observed yet.');
@@ -155,6 +160,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
       'renderConditionOverrides: serializePreviewInspectorRenderConditionOverrides()',
     );
     expect(source).toContain('dataPayloadOverrides: serializePreviewInspectorDataOverrides()');
+    expect(source).toContain(
+      'virtualBackendScenarios: serializePreviewInspectorVirtualBackendScenarios()',
+    );
+    expect(source).toContain('resolveBackendRequest: resolvePreviewInspectorBackendRequest');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain('installPreviewInspectorNetworkBoundary()');
     expect(source).toContain('installPreviewInspectorConsoleCapture()');

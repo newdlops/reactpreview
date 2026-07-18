@@ -121,6 +121,23 @@ describe('Page Inspector data runtime source', () => {
     expect(nativeFetchCalls).toBe(0);
   });
 
+  /** Catches custom fetch clients on non-/api relative routes while retaining local fixture reads. */
+  it('treats arbitrary relative runtime fetch routes as virtual backend requests', async () => {
+    let nativeFetchCalls = 0;
+    const runtime = evaluateDataRuntime(() => {
+      nativeFetchCalls += 1;
+      return { json: () => Promise.resolve({ fixture: true }) };
+    });
+
+    const backendResponse = await runtime.fetch('/v1/employees');
+    await expect(backendResponse.json()).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'preview-1' })]),
+    );
+    const fixtureResponse = await runtime.fetch('./fixtures/employees.json');
+    await expect(fixtureResponse.json()).resolves.toEqual({ fixture: true });
+    expect(nativeFetchCalls).toBe(1);
+  });
+
   /** Infers serialized GraphQL selections for non-Apollo fetch-based clients. */
   it('builds GraphQL-over-HTTP data from aliases, lists, and fragments', async () => {
     const runtime = evaluateDataRuntime();
@@ -173,6 +190,141 @@ describe('Page Inspector data runtime source', () => {
     ]);
   });
 
+  /** Retains REST resources and applies POST, PATCH, and DELETE changes to later GET requests. */
+  it('acts as a stateful in-memory CRUD backend for one REST resource', async () => {
+    const runtime = evaluateDataRuntime();
+    const collectionMetadata = {
+      evidence: 'TypeScript: Employee[]',
+      id: 'get-employees',
+      kind: 'rest',
+      method: 'GET',
+      shape: {
+        items: {
+          fields: {
+            active: { kind: 'boolean' },
+            id: { kind: 'string' },
+            name: { kind: 'string' },
+          },
+          kind: 'object',
+        },
+        kind: 'array',
+      },
+      url: '/api/employees',
+    };
+    await runtime.fetch('/api/employees', undefined, collectionMetadata);
+    const mutationShape = {
+      fields: {
+        active: { kind: 'boolean' },
+        id: { kind: 'string' },
+        name: { kind: 'string' },
+      },
+      kind: 'object',
+    };
+
+    const createdResponse = await runtime.fetch(
+      '/api/employees',
+      { body: JSON.stringify({ name: 'Created employee' }), method: 'POST' },
+      { ...collectionMetadata, id: 'create-employee', method: 'POST', shape: mutationShape },
+    );
+    await expect(createdResponse.json()).resolves.toMatchObject({
+      id: 'preview-3',
+      name: 'Created employee',
+    });
+    await runtime.fetch(
+      '/api/employees',
+      { body: JSON.stringify({ name: 'Created employee' }), method: 'POST' },
+      { ...collectionMetadata, id: 'create-employee', method: 'POST', shape: mutationShape },
+    );
+    const replayedCollection = await (
+      await runtime.fetch('/api/employees', undefined, collectionMetadata)
+    ).json();
+    expect(replayedCollection).toHaveLength(3);
+
+    await runtime.fetch(
+      '/api/employees/preview-3',
+      { body: JSON.stringify({ name: 'Edited employee' }), method: 'PATCH' },
+      {
+        ...collectionMetadata,
+        id: 'edit-employee',
+        method: 'PATCH',
+        shape: mutationShape,
+        url: '/api/employees/preview-3',
+      },
+    );
+    const editedCollection = await (
+      await runtime.fetch('/api/employees', undefined, collectionMetadata)
+    ).json();
+    expect(editedCollection).toEqual(
+      expect.arrayContaining([{ active: true, id: 'preview-3', name: 'Edited employee' }]),
+    );
+
+    await runtime.fetch(
+      '/api/employees/preview-3',
+      { method: 'DELETE' },
+      {
+        ...collectionMetadata,
+        id: 'delete-employee',
+        method: 'DELETE',
+        shape: mutationShape,
+        url: '/api/employees/preview-3',
+      },
+    );
+    const deletedCollection = await (
+      await runtime.fetch('/api/employees', undefined, collectionMetadata)
+    ).json();
+    expect(deletedCollection).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'preview-3' })]),
+    );
+  });
+
+  /** Lets the Inspector select empty and HTTP-error outcomes without enabling real transport. */
+  it('serves editable response scenarios from the same request registry', async () => {
+    let nativeFetchCalls = 0;
+    const runtime = evaluateDataRuntime(() => {
+      nativeFetchCalls += 1;
+      throw new Error('backend transport must remain disabled');
+    });
+    const metadata = {
+      id: 'scenario-employees',
+      kind: 'rest',
+      method: 'GET',
+      shape: { items: { kind: 'string' }, kind: 'array' },
+      url: '/api/employees',
+    };
+    await runtime.fetch('/api/employees', undefined, metadata);
+
+    runtime.scenario('scenario-employees', { latencyMs: 0, mode: 'empty', status: 200 });
+    await expect(
+      (await runtime.fetch('/api/employees', undefined, metadata)).json(),
+    ).resolves.toEqual([]);
+
+    runtime.scenario('scenario-employees', { latencyMs: 0, mode: 'error', status: 503 });
+    const failed = await runtime.fetch('/api/employees', undefined, metadata);
+    expect(failed.ok).toBe(false);
+    expect(failed.status).toBe(503);
+    await expect(failed.json()).resolves.toMatchObject({ preview: true, status: 503 });
+    expect(nativeFetchCalls).toBe(0);
+  });
+
+  /** Rejects direct Axios instrumentation with a familiar local error object for error scenarios. */
+  it('maps virtual backend failures to Axios-compatible rejections', async () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'axios-profile',
+      kind: 'rest',
+      method: 'GET',
+      shape: { fields: { id: { kind: 'string' } }, kind: 'object' },
+      url: '/api/profile',
+    };
+    await runtime.axios('GET', '/api/profile', [], metadata);
+    runtime.scenario('axios-profile', { latencyMs: 0, mode: 'error', status: 401 });
+
+    await expect(runtime.axios('GET', '/api/profile', [], metadata)).rejects.toMatchObject({
+      isAxiosError: true,
+      response: { status: 401 },
+    });
+  });
+
   /** Retains the inferred field template even when global Auto mode exposes an empty authored seed. */
   it('keeps a suggested payload and flattened property paths beside an empty seed', () => {
     const runtime = evaluateDataRuntime();
@@ -205,6 +357,12 @@ describe('Page Inspector data runtime source', () => {
 /** Callable subset exposed from one generated-runtime VM fixture. */
 interface EvaluatedDataRuntime {
   readonly auto: (enabled: boolean) => void;
+  readonly axios: (
+    method: string,
+    url: string,
+    extraArguments: readonly unknown[],
+    metadata: unknown,
+  ) => Promise<unknown>;
   readonly createXhr: () => {
     onloadend: (() => void) | null;
     open(method: string, url: string): void;
@@ -217,11 +375,12 @@ interface EvaluatedDataRuntime {
     input: string,
     init?: unknown,
     metadata?: unknown,
-  ) => Promise<{ json(): Promise<unknown> }>;
+  ) => Promise<{ readonly ok: boolean; readonly status: number; json(): Promise<unknown> }>;
   readonly lorem: (id: string) => void;
   readonly paths: (shape: unknown) => readonly string[];
   readonly requests: () => readonly unknown[];
   readonly resolve: (metadata: unknown, seed: unknown) => unknown;
+  readonly scenario: (id: string, scenario: unknown) => void;
   readonly set: (id: string, payload: unknown, mode: string) => void;
   readonly smart: (id: string) => void;
   readonly smartReachability: (reachabilityKey: string) => boolean;
@@ -244,12 +403,14 @@ function schedulePreviewInspectorTreeRefresh() {}
 ${createPreviewInspectorDataRuntimeSource()}
 globalThis.__dataRuntime = {
   auto: setPreviewInspectorDataAutoEnabled,
+  axios: previewInspectorAxiosRequest,
   createXhr: () => new PreviewInspectorXmlHttpRequest(),
   fetch: previewInspectorFetch,
   lorem: generatePreviewInspectorLoremPayload,
   paths: readPreviewInspectorDataShapePaths,
   requests: readPreviewInspectorDataRequests,
   resolve: resolvePreviewInspectorDataPayload,
+  scenario: setPreviewInspectorVirtualBackendScenario,
   set: setPreviewInspectorDataPayload,
   smart: smartFillPreviewInspectorDataPayload,
   smartReachability: smartFillPreviewInspectorDataPayloadsForReachability,
@@ -260,6 +421,7 @@ globalThis.__dataRuntime = {
     __nativeFetch: nativeFetch,
     location: { href: 'https://preview.invalid/' },
     queueMicrotask,
+    setTimeout,
   });
   vm.runInContext(source, context);
   return context.__dataRuntime as EvaluatedDataRuntime;

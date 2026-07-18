@@ -74,6 +74,7 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('Auto-generated preview values:');
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
+    expect(source).toContain('resolveBackendRequest: resolvePreviewInspectorBackendRequest');
     expect(source).toContain('resolveRuntimeHook: resolvePreviewInspectorRuntimeHook');
     expect(source).toContain('previewAxiosRequest: previewInspectorAxiosRequest');
     expect(source).toContain('previewFetch: previewInspectorFetch');
@@ -85,7 +86,7 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("['fallbacks', 'Fallbacks ('");
     expect(source).toContain('GENERATED RENDER VALUE');
     expect(source).toContain("registerPreviewRuntimeCapability('Render isolation'");
-    expect(source).toContain('Generated values are local preview fixtures.');
+    expect(source).toContain('Generated values never leave this preview.');
     expect(source).toContain("registerPreviewRuntimeCapability('Data'");
     expect(source).toContain('no-network API/GraphQL payload registry');
     expect(source).toContain('setPreviewInspectorFallbackValuesEnabled');

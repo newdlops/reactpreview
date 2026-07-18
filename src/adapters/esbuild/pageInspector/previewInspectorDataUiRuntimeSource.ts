@@ -16,9 +16,21 @@
 export function createPreviewInspectorDataUiRuntimeSource(): string {
   return String.raw`
 /** Returns the persisted request selection, falling back to the first currently observed request. */
-function readSelectedPreviewInspectorDataRequest(requests) {
+function readSelectedPreviewInspectorDataRequest(requests, preferredRequestId) {
+  if (typeof preferredRequestId === 'string' && preferredRequestId.length > 0) {
+    const preferred = requests.find((request) => request.id === preferredRequestId);
+    if (preferred !== undefined) return preferred;
+  }
   const selectedId = previewInspectorDevtoolsSessionState.selectedDataRequestId;
   return requests.find((request) => request.id === selectedId) ?? requests[0];
+}
+
+/** Uses the inferred payload as an editable starting point when the authored seed is empty. */
+function readPreviewInspectorEditableDataPayload(request) {
+  const payload = request?.payload;
+  const emptyObject = payload !== null && typeof payload === 'object' &&
+    !Array.isArray(payload) && Object.keys(payload).length === 0;
+  return request?.mode === 'seed' && emptyObject ? request.suggestedPayload : payload;
 }
 
 /** Labels generated data provenance so a preview value cannot be mistaken for backend truth. */
@@ -30,18 +42,19 @@ function formatPreviewInspectorDataMode(mode) {
 }
 
 /** Renders request selection, inferred evidence, JSON editing, and generation actions. */
-function PreviewInspectorDataDetail() {
+function PreviewInspectorDataDetail({ requestId } = {}) {
   const requests = readPreviewInspectorDataRequests();
-  const selectedRequest = readSelectedPreviewInspectorDataRequest(requests);
+  const selectedRequest = readSelectedPreviewInspectorDataRequest(requests, requestId);
   const selectedId = selectedRequest?.id ?? '';
+  const editablePayload = readPreviewInspectorEditableDataPayload(selectedRequest) ?? {};
   const draftKey = selectedId + ':' + String(selectedRequest?.mode ?? '') + ':' +
-    stringifyPreviewInspectorProps(selectedRequest?.payload ?? {});
+    stringifyPreviewInspectorProps(editablePayload);
   const [draftText, setDraftText] = React.useState(
-    () => stringifyPreviewInspectorProps(selectedRequest?.payload ?? {}),
+    () => stringifyPreviewInspectorProps(editablePayload),
   );
   const [draftError, setDraftError] = React.useState('');
   React.useEffect(() => {
-    setDraftText(stringifyPreviewInspectorProps(selectedRequest?.payload ?? {}));
+    setDraftText(stringifyPreviewInspectorProps(editablePayload));
     setDraftError('');
   }, [draftKey]);
 
@@ -123,6 +136,12 @@ function PreviewInspectorDataDetail() {
               'div',
               { className: 'rpi-note' },
               'Type evidence: ' + selectedRequest.evidence,
+            ),
+            React.createElement(
+              'div',
+              { className: 'rpi-note' },
+              'Inferred properties: ' +
+                (readPreviewInspectorDataShapePaths(selectedRequest.shape).join(', ') || '<response>'),
             ),
             selectedRequest.sourcePath
               ? React.createElement(

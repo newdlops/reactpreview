@@ -132,10 +132,39 @@ describe('Page Inspector data runtime source', () => {
       },
     ]);
   });
+
+  /** Retains the inferred field template even when global Auto mode exposes an empty authored seed. */
+  it('keeps a suggested payload and flattened property paths beside an empty seed', () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'profile',
+      kind: 'rest',
+      label: 'Profile',
+      shape: {
+        fields: {
+          profile: {
+            fields: { active: { kind: 'boolean' }, name: { kind: 'string' } },
+            kind: 'object',
+          },
+        },
+        kind: 'object',
+      },
+    };
+    runtime.resolve(metadata, {});
+    runtime.auto(false);
+
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      mode: 'seed',
+      payload: {},
+      suggestedPayload: { profile: { active: true, name: 'Preview User 1' } },
+    });
+    expect(cloneJson(runtime.paths(metadata.shape))).toEqual(['profile.active', 'profile.name']);
+  });
 });
 
 /** Callable subset exposed from one generated-runtime VM fixture. */
 interface EvaluatedDataRuntime {
+  readonly auto: (enabled: boolean) => void;
   readonly createXhr: () => {
     onloadend: (() => void) | null;
     open(method: string, url: string): void;
@@ -150,6 +179,7 @@ interface EvaluatedDataRuntime {
     metadata?: unknown,
   ) => Promise<{ json(): Promise<unknown> }>;
   readonly lorem: (id: string) => void;
+  readonly paths: (shape: unknown) => readonly string[];
   readonly requests: () => readonly unknown[];
   readonly resolve: (metadata: unknown, seed: unknown) => unknown;
   readonly set: (id: string, payload: unknown, mode: string) => void;
@@ -171,9 +201,11 @@ function notifyPreviewInspector() {}
 function schedulePreviewInspectorTreeRefresh() {}
 ${createPreviewInspectorDataRuntimeSource()}
 globalThis.__dataRuntime = {
+  auto: setPreviewInspectorDataAutoEnabled,
   createXhr: () => new PreviewInspectorXmlHttpRequest(),
   fetch: previewInspectorFetch,
   lorem: generatePreviewInspectorLoremPayload,
+  paths: readPreviewInspectorDataShapePaths,
   requests: readPreviewInspectorDataRequests,
   resolve: resolvePreviewInspectorDataPayload,
   set: setPreviewInspectorDataPayload,

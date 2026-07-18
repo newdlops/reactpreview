@@ -287,6 +287,7 @@ function normalizePreviewInspectorDataRequest(metadata, seedPayload) {
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     method,
     operationName: typeof source.operationName === 'string' ? source.operationName.slice(0, 160) : undefined,
+    ownerName: typeof source.ownerName === 'string' ? source.ownerName.slice(0, 180) : undefined,
     shape,
     sourcePath: typeof source.sourcePath === 'string' ? source.sourcePath.slice(0, 1024) : undefined,
     url: safeUrl || undefined,
@@ -349,6 +350,10 @@ function resolvePreviewInspectorDataPayload(metadata, seedPayload) {
     ...normalized,
     autoPayload,
     observedCount: (previous?.observedCount ?? 0) + 1,
+    reachabilityKey:
+      typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
+        ? previewInspectorSession.activeTargetReachabilityKey
+        : undefined,
     seedPayload,
     shapeFingerprint,
   };
@@ -384,9 +389,30 @@ function readPreviewInspectorDataRequests() {
       const payload = override?.payload ?? (previewInspectorSession.dataAutoEnabled
         ? record.autoPayload
         : record.seedPayload ?? {});
-      return { ...record, mode, payload };
+      return { ...record, mode, payload, suggestedPayload: record.autoPayload };
     })
     .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+}
+
+/** Flattens inferred response fields into bounded property paths for blocker/tree diagnostics. */
+function readPreviewInspectorDataShapePaths(shape, prefix = '', paths = []) {
+  if (paths.length >= 64 || shape === null || typeof shape !== 'object') return paths;
+  if (shape.kind === 'array') {
+    const arrayPath = prefix.length > 0 ? prefix + '[]' : '<response>[]';
+    return readPreviewInspectorDataShapePaths(shape.items, arrayPath, paths);
+  }
+  if (shape.kind === 'object') {
+    const fields = shape.fields !== null && typeof shape.fields === 'object' ? shape.fields : {};
+    for (const [fieldName, child] of Object.entries(fields)) {
+      if (paths.length >= 64) break;
+      const childPath = prefix.length > 0 ? prefix + '.' + fieldName : fieldName;
+      readPreviewInspectorDataShapePaths(child, childPath, paths);
+    }
+    if (Object.keys(fields).length === 0 && prefix.length > 0) paths.push(prefix);
+    return paths;
+  }
+  paths.push(prefix.length > 0 ? prefix : '<response>');
+  return paths;
 }
 
 /** Remounts every export so cached hooks consume a newly selected payload. */

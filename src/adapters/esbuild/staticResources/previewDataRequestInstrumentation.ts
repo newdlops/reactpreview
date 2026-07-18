@@ -45,6 +45,8 @@ interface PreviewDataRequestMetadata {
   readonly line: number;
   /** Uppercase HTTP method. */
   readonly method: string;
+  /** Authored function or component that directly initiated the request. */
+  readonly ownerName?: string;
   /** Inferred payload type tree. */
   readonly shape: PreviewDataShape;
   /** Absolute source identity retained inside the local webview. */
@@ -285,6 +287,7 @@ function createRequestMetadata(
     responseType === undefined
       ? 'endpoint and field-name inference'
       : `TypeScript: ${boundEvidenceText(responseType.getText(sourceFile))}`;
+  const ownerName = readPreviewDataRequestOwnerName(call);
   return {
     column: location.character + 1,
     evidence,
@@ -297,9 +300,59 @@ function createRequestMetadata(
     kind: 'rest',
     line: location.line + 1,
     method,
+    ...(ownerName === undefined ? {} : { ownerName }),
     shape,
     sourcePath: path.normalize(sourcePath),
   };
+}
+
+/** Finds the nearest authored function so a request blocker can stay on its component path. */
+function readPreviewDataRequestOwnerName(node: ts.Node): string | undefined {
+  let current = node.parent;
+  while (!ts.isSourceFile(current)) {
+    if (
+      ts.isArrowFunction(current) ||
+      ts.isFunctionDeclaration(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isMethodDeclaration(current)
+    ) {
+      let candidate: string | undefined;
+      if (
+        (ts.isFunctionDeclaration(current) || ts.isFunctionExpression(current)) &&
+        current.name !== undefined
+      ) {
+        candidate = current.name.text;
+      }
+      if (candidate === undefined && ts.isMethodDeclaration(current)) {
+        candidate =
+          ts.isIdentifier(current.name) || ts.isStringLiteral(current.name)
+            ? current.name.text
+            : undefined;
+      }
+      const parent = current.parent;
+      if (
+        candidate === undefined &&
+        ts.isVariableDeclaration(parent) &&
+        parent.initializer === current &&
+        ts.isIdentifier(parent.name)
+      ) {
+        candidate = parent.name.text;
+      }
+      if (
+        candidate === undefined &&
+        ts.isPropertyAssignment(parent) &&
+        parent.initializer === current
+      ) {
+        candidate =
+          ts.isIdentifier(parent.name) || ts.isStringLiteral(parent.name)
+            ? parent.name.text
+            : undefined;
+      }
+      if (candidate !== undefined) return candidate;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }
 
 /** Reads a literal fetch `method` option; dynamic init objects defer identity to the browser. */

@@ -26,6 +26,7 @@ describe('instrumentPreviewDataRequests', () => {
     expect(transformed).toContain('"active":{"kind":"boolean"}');
     expect(transformed).toContain('"salary":{"kind":"number"}');
     expect(transformed).toContain('"evidence":"TypeScript: Employee"');
+    expect(transformed).toContain('"ownerName":"loadEmployees"');
   });
 
   /** Avoids rewriting similarly named project clients and any module that shadows global fetch. */

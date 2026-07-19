@@ -42,6 +42,58 @@ function readSelectedPreviewInspectorPageCandidate(descriptor) {
     candidates[0];
 }
 
+/** Reads an app-module base path only from a bounded own data property, never from a getter. */
+function readPreviewInspectorPageRootBasePath(rootValue) {
+  if ((typeof rootValue !== 'object' && typeof rootValue !== 'function') || rootValue === null) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(rootValue, 'basePath');
+    const value = descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      ? descriptor.value
+      : undefined;
+    if (
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      value.length > 512 ||
+      !value.startsWith('/') ||
+      /[?#]/u.test(value)
+    ) {
+      return undefined;
+    }
+    return value.length > 1 ? value.replace(/\/+$/u, '') : value;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Converts an application-absolute route to the path expected by a directly mounted app module.
+ * A component carrying basePath=/company owns routes relative to that mount point, so feeding it
+ * /company/1/credit would bind companyId to "company" and legitimately render its 404 branch.
+ */
+function createPreviewInspectorCandidateInitialEntry(candidate, rootValue, directTarget) {
+  const pathname = candidate?.routeLocation?.pathname;
+  if (
+    directTarget === true ||
+    typeof pathname !== 'string' ||
+    pathname.length === 0 ||
+    pathname.length > 2_048
+  ) {
+    return pathname;
+  }
+  const basePath = readPreviewInspectorPageRootBasePath(rootValue);
+  if (
+    basePath === undefined ||
+    basePath === '/' ||
+    (pathname !== basePath && !pathname.startsWith(basePath + '/'))
+  ) {
+    return pathname;
+  }
+  const localPathname = pathname.slice(basePath.length);
+  return localPathname.length === 0 ? '/' : localPathname;
+}
+
 /** Returns the explicit rendering perspective without inferring business meaning from page text. */
 function readPreviewInspectorRenderScenario() {
   return previewInspectorSession.renderScenario === 'file-components'
@@ -303,6 +355,11 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
     : pageDefinition ?? definitions[0];
   const directTarget = definition?.directTarget === true;
   const loadState = usePreviewInspectorLazyDefinition(definition);
+  const candidateInitialEntry = createPreviewInspectorCandidateInitialEntry(
+    candidate,
+    loadState.value,
+    directTarget,
+  );
   React.useEffect(() => {
     if (typeof recordPreviewInspectorRuntimeHealth !== 'function') return;
     const routeLocation = candidate?.routeLocation;
@@ -317,13 +374,14 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
           : {}),
         evidenceKind: routeLocation?.evidenceKind ?? 'none',
         pathname: routeLocation?.pathname ?? '/',
+        routerPathname: candidateInitialEntry ?? '/',
         rootExport: candidate?.root?.exportName,
         rootOwnsRouter: candidate?.rootOwnsRouter === true,
         routeInferred: typeof routeLocation?.pathname === 'string',
       },
       event: 'page-context-selected',
     });
-  }, [candidate?.id, definition?.id, directTarget]);
+  }, [candidate?.id, candidateInitialEntry, definition?.id, directTarget]);
   if (loadState.definition !== definition || loadState.status === 'loading') {
     return React.createElement(
       'div',
@@ -337,7 +395,7 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
     directTarget ? (candidate?.targetAutomaticProps ?? {}) : targetProps,
   );
   const routedElement = createPreviewCandidateRouterElement(rootElement, {
-    initialEntry: candidate?.routeLocation?.pathname,
+    initialEntry: candidateInitialEntry,
     ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true,
   });
   const pageCorridorElement = directTarget

@@ -68,7 +68,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain(
       'ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true',
     );
-    expect(source).toContain('initialEntry: candidate?.routeLocation?.pathname');
+    expect(source).toContain('function createPreviewInspectorCandidateInitialEntry');
+    expect(source).toContain('initialEntry: candidateInitialEntry');
+    expect(source).toContain('routerPathname: candidateInitialEntry');
     expect(source).toContain("event: 'page-context-selected'");
     expect(source).toContain("evidenceKind: routeLocation?.evidenceKind ?? 'none'");
     expect(source).toContain('PreviewInspectorTargetReachabilityProbe');
@@ -76,6 +78,16 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('state.pageRootCommitted = true');
     expect(source).toContain('pageCorridorElement');
     expect(source).toContain('previewInspectorSession.selectedPageCandidateId = candidateId');
+  });
+
+  /** Strips only a proven app-module mount prefix and leaves direct component routes untouched. */
+  it('maps an absolute route into the selected app root coordinate system', () => {
+    expect(evaluateCandidateInitialEntries()).toEqual({
+      directTarget: '/company/1/credit',
+      noBasePath: '/company/1/credit',
+      rootIndex: '/',
+      rootedModule: '/1/credit',
+    });
   });
 
   /** Exposes a neutral all-export perspective without interpreting authored fallback screens. */
@@ -200,6 +212,33 @@ globalThis.__result = {
   );
   if (context.__result === undefined) {
     throw new Error('Page candidate runtime did not expose its test result.');
+  }
+  return context.__result;
+}
+
+/** Executes the generated route-coordinate helper with inert component functions. */
+function evaluateCandidateInitialEntries(): Record<string, string> {
+  const context: { __result?: Record<string, string> } = {};
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
+const AppModule = Object.assign(() => undefined, { basePath: '/company' });
+const PlainRoot = () => undefined;
+const route = { routeLocation: { pathname: '/company/1/credit' } };
+globalThis.__result = {
+  directTarget: createPreviewInspectorCandidateInitialEntry(route, AppModule, true),
+  noBasePath: createPreviewInspectorCandidateInitialEntry(route, PlainRoot, false),
+  rootIndex: createPreviewInspectorCandidateInitialEntry(
+    { routeLocation: { pathname: '/company' } },
+    AppModule,
+    false,
+  ),
+  rootedModule: createPreviewInspectorCandidateInitialEntry(route, AppModule, false),
+};`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Page candidate route helper did not expose its test result.');
   }
   return context.__result;
 }

@@ -26,6 +26,23 @@ describe('previewArtifactLayout metadata', () => {
     expect(preparedLayout).toEqual(directLayout);
   });
 
+  /** Keeps metadata validation independent from host-locale punctuation and case ordering. */
+  it('validates several chunk paths with the artifact byte-order policy', () => {
+    const bundle: PreviewBundle = {
+      ...BUNDLE,
+      chunks: [
+        { contents: new Uint8Array([1]), relativePath: 'chunks/a-file.js' },
+        { contents: new Uint8Array([2]), relativePath: 'chunks/A_file.js' },
+        { contents: new Uint8Array([3]), relativePath: 'chunks/Z.js' },
+        { contents: new Uint8Array([4]), relativePath: 'chunks/z.css' },
+      ],
+    };
+
+    const preparedBundle = attachPreviewArtifactMetadata(bundle);
+
+    expect(planPreviewArtifactLayout(preparedBundle)).toEqual(planPreviewArtifactLayout(bundle));
+  });
+
   /** Rejects malformed worker metadata before it can enter shared artifact path state. */
   it('validates digest shape and exact chunk alignment', () => {
     const preparedBundle = attachPreviewArtifactMetadata(BUNDLE);

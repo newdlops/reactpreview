@@ -150,9 +150,7 @@ function validateArtifactMetadata(
       ? metadata.stylesheetDigest === undefined
       : metadata.stylesheetDigest !== undefined &&
         /^[a-f0-9]{64}$/u.test(metadata.stylesheetDigest);
-  const sortedMetadataChunks = [...metadata.chunkDigests].sort((left, right) =>
-    left.relativePath.localeCompare(right.relativePath),
-  );
+  const sortedMetadataChunks = [...metadata.chunkDigests].sort(compareArtifactPaths);
   const validChunks =
     sortedMetadataChunks.length === chunks.length &&
     sortedMetadataChunks.every(
@@ -294,11 +292,24 @@ function isPortableArtifactPath(relativePath: string): boolean {
 
 /** Orders chunk paths without locale-dependent collation. */
 function compareChunks(left: PreviewBundleChunk, right: PreviewBundleChunk): number {
-  return left.relativePath < right.relativePath
-    ? -1
-    : left.relativePath > right.relativePath
-      ? 1
-      : 0;
+  return comparePortablePaths(left.relativePath, right.relativePath);
+}
+
+/**
+ * Orders worker metadata with the exact locale-independent policy used for artifact chunks.
+ * `localeCompare` is intentionally avoided: punctuation and ASCII case can sort differently by
+ * host locale, which previously rejected valid large background builds before publication.
+ */
+function compareArtifactPaths(
+  left: PreviewBundleArtifactMetadata['chunkDigests'][number],
+  right: PreviewBundleArtifactMetadata['chunkDigests'][number],
+): number {
+  return comparePortablePaths(left.relativePath, right.relativePath);
+}
+
+/** Produces deterministic byte-like lexical ordering for validated portable ASCII paths. */
+function comparePortablePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** Prefixes one digest field with its byte length to make boundaries unambiguous. */

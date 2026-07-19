@@ -29,6 +29,10 @@ describe('createPreviewHtml', () => {
     expect(html).toContain('data-react-preview-runtime-token="7:hash&lt;"');
     expect(html).toContain('id="react-preview-progress-host"');
     expect(html).toContain('shadowrootmode="open"');
+    expect(html).toContain('<body data-react-preview-state="ready">');
+    expect(html).toContain(
+      ":where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }",
+    );
     expect(html).not.toContain('<main id="react-preview-root">');
   });
 

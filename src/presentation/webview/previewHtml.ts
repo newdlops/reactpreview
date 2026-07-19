@@ -83,7 +83,9 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   <style>
     :root { color-scheme: light dark; }
     html, body, #react-preview-root { box-sizing: border-box; min-height: 100%; }
-    body { margin: 0; color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); }
+    body { margin: 0; }
+    body:not([data-react-preview-state='ready']) { color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); }
+    :where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }
     .react-preview-status { display: grid; min-height: 100vh; box-sizing: border-box; padding: 32px; place-content: center; text-align: center; }
     .react-preview-progress-card { display: grid; width: min(520px, calc(100vw - 48px)); gap: 10px; }
     .react-preview-progress-kicker { margin: 0; color: var(--vscode-descriptionForeground); font: 600 11px/1.4 var(--vscode-font-family); letter-spacing: .08em; text-transform: uppercase; }
@@ -108,7 +110,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   </style>
   ${createStylesheetElement(state)}
 </head>
-<body>
+<body data-react-preview-state="${state.kind}">
   ${createBody(state)}
 </body>
 </html>`;

@@ -36,6 +36,67 @@ export async function installFakeStyledComponentsPackage(projectRoot: string): P
 }
 
 /**
+ * Writes a package whose ESM and CommonJS browser entries intentionally own different providers.
+ * Real packages such as styled-components publish both formats, so this fixture catches a bridge
+ * that resolves one format while project-authored `require()` calls resolve another Context owner.
+ *
+ * @param projectRoot Temporary project whose nearest package lookup should find the dual entries.
+ * @returns Promise resolved after both browser formats and their manifest are durable.
+ */
+export async function installDualFormatFakeStyledComponentsPackage(
+  projectRoot: string,
+): Promise<void> {
+  const packageDirectory = path.join(projectRoot, 'node_modules', 'styled-components');
+  await mkdir(packageDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(packageDirectory, 'package.json'),
+      JSON.stringify({
+        browser: {
+          './index.cjs': './browser.cjs',
+          './index.js': './browser.js',
+        },
+        main: './index.cjs',
+        module: './index.js',
+        name: 'styled-components',
+        type: 'module',
+      }),
+      'utf8',
+    ),
+    writeFile(
+      path.join(packageDirectory, 'browser.js'),
+      createDualFormatPackageSource('ESM_THEME_PROVIDER'),
+      'utf8',
+    ),
+    writeFile(
+      path.join(packageDirectory, 'browser.cjs'),
+      [
+        "const projectMarker = 'CJS_THEME_PROVIDER';",
+        'function ThemeProvider({ children }) { return children; }',
+        'ThemeProvider.projectMarker = projectMarker;',
+        'module.exports = { ThemeProvider, projectMarker };',
+      ].join('\n'),
+      'utf8',
+    ),
+    writeFile(path.join(packageDirectory, 'index.js'), "export * from './browser.js';", 'utf8'),
+    writeFile(
+      path.join(packageDirectory, 'index.cjs'),
+      "module.exports = require('./browser.cjs');",
+      'utf8',
+    ),
+  ]);
+}
+
+/** Creates one ESM provider entry with a format-specific identity marker. */
+function createDualFormatPackageSource(marker: string): string {
+  return [
+    `export const projectMarker = ${JSON.stringify(marker)};`,
+    'export function ThemeProvider({ children }) { return children; }',
+    'ThemeProvider.projectMarker = projectMarker;',
+  ].join('\n');
+}
+
+/**
  * Creates dependency-free browser source for the fake package.
  * React elements are represented by their public `{ type, props }` shape so the package does not
  * need its own React import and remains usable by the repository's lightweight DOM fixture.

@@ -27,6 +27,16 @@ interface ThemeBridgePluginData {
   readonly kind: typeof THEME_BRIDGE_DATA_KIND;
   /** Resolved package entry, omitted when the target project does not install the library. */
   readonly styledComponentsModulePath?: string;
+  /** Deterministic condition used to select the singleton entry for every project import form. */
+  readonly styledComponentsResolutionKind?: 'import-statement' | 'require-call';
+}
+
+/** Canonical package entry shared by the generated bridge and every reached project consumer. */
+interface ResolvedStyledComponentsEntry {
+  /** Browser-aware local package entry selected by esbuild. */
+  readonly modulePath: string;
+  /** Resolution condition whose result is aliased across both import and require call sites. */
+  readonly resolutionKind: 'import-statement' | 'require-call';
 }
 
 /**
@@ -40,7 +50,7 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
   return {
     name: 'react-preview-theme-bridge',
     setup(build): void {
-      let resolutionPromise: Promise<string | undefined> | undefined;
+      let resolutionPromise: Promise<ResolvedStyledComponentsEntry | undefined> | undefined;
 
       /** Re-probes restored or newly installed styled-components on every persistent rebuild. */
       build.onStart(() => {
@@ -55,17 +65,40 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
           return undefined;
         }
 
-        resolutionPromise ??= resolveOptionalStyledComponents(build, options.projectRoot);
-        const styledComponentsModulePath = await resolutionPromise;
+        resolutionPromise ??= resolveCanonicalStyledComponents(build, options.projectRoot);
+        const styledComponentsEntry = await resolutionPromise;
+        const styledComponentsModulePath = styledComponentsEntry?.modulePath;
         return {
           namespace: PREVIEW_THEME_BRIDGE_NAMESPACE,
           path:
             styledComponentsModulePath ?? path.join(options.projectRoot, 'empty-theme-preview.js'),
           pluginData: {
             kind: THEME_BRIDGE_DATA_KIND,
-            ...(styledComponentsModulePath === undefined ? {} : { styledComponentsModulePath }),
+            ...(styledComponentsEntry === undefined
+              ? {}
+              : {
+                  styledComponentsModulePath: styledComponentsEntry.modulePath,
+                  styledComponentsResolutionKind: styledComponentsEntry.resolutionKind,
+                }),
           } satisfies ThemeBridgePluginData,
         };
+      }
+
+      /** Aliases every package import form to the exact entry used by the generated provider. */
+      async function resolveStyledComponentsSingleton(
+        arguments_: OnResolveArgs,
+      ): Promise<OnResolveResult | undefined> {
+        if (
+          arguments_.path !== STYLED_COMPONENTS_SPECIFIER ||
+          (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD
+        ) {
+          return undefined;
+        }
+        resolutionPromise ??= resolveCanonicalStyledComponents(build, options.projectRoot);
+        const styledComponentsEntry = await resolutionPromise;
+        return styledComponentsEntry === undefined
+          ? undefined
+          : { namespace: 'file', path: styledComponentsEntry.modulePath };
       }
 
       /** Loads a memory-only theme runtime or the capability's identity wrapper. */
@@ -78,6 +111,8 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
               'export function registerPreviewThemeCandidate() {}',
               '/** Returns an inert callable when no project theme runtime is installed. */',
               "export function resolvePreviewThemeHelper() { return () => ''; }",
+              '/** Returns an inert token when no project theme runtime is installed. */',
+              "export function resolvePreviewThemeValue() { return ''; }",
               'export async function resolvePreviewTheme(options) { return options?.discoveredTheme; }',
               'export function createThemePreviewElement(children) { return children; }',
               '/** Describes why the automatic theme boundary is unavailable. */',
@@ -90,6 +125,8 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
         return {
           contents: createPreviewThemeRuntimeSource({
             styledComponentsModulePath: pluginData.styledComponentsModulePath,
+            styledComponentsResolutionKind:
+              pluginData.styledComponentsResolutionKind ?? 'import-statement',
           }),
           loader: 'js',
           resolveDir: path.dirname(pluginData.styledComponentsModulePath),
@@ -97,6 +134,7 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
         };
       }
 
+      build.onResolve({ filter: /^styled-components$/ }, resolveStyledComponentsSingleton);
       build.onResolve({ filter: /^react-preview:theme$/ }, resolveThemeBridge);
       build.onLoad({ filter: /.*/, namespace: PREVIEW_THEME_BRIDGE_NAMESPACE }, loadThemeBridge);
     },
@@ -104,18 +142,21 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
 }
 
 /** Resolves a local browser-aware styled-components entry without making absence an error. */
-async function resolveOptionalStyledComponents(
+async function resolveCanonicalStyledComponents(
   build: Parameters<Plugin['setup']>[0],
   projectRoot: string,
-): Promise<string | undefined> {
-  const resolution = await build.resolve(STYLED_COMPONENTS_SPECIFIER, {
-    kind: 'import-statement',
-    pluginData: PREVIEW_RESOLVE_GUARD,
-    resolveDir: projectRoot,
-  });
-  return resolution.errors.length === 0 && !resolution.external && resolution.namespace === 'file'
-    ? resolution.path
-    : undefined;
+): Promise<ResolvedStyledComponentsEntry | undefined> {
+  for (const resolutionKind of ['require-call', 'import-statement'] as const) {
+    const resolution = await build.resolve(STYLED_COMPONENTS_SPECIFIER, {
+      kind: resolutionKind,
+      pluginData: PREVIEW_RESOLVE_GUARD,
+      resolveDir: projectRoot,
+    });
+    if (resolution.errors.length === 0 && !resolution.external && resolution.namespace === 'file') {
+      return { modulePath: resolution.path, resolutionKind };
+    }
+  }
+  return undefined;
 }
 
 /** Narrows untrusted esbuild plugin metadata to this bridge's serializable contract. */

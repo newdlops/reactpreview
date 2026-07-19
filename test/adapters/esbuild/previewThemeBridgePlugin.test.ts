@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
 import {
   FAKE_STYLED_COMPONENTS_MARKER,
+  installDualFormatFakeStyledComponentsPackage,
   installFakeStyledComponentsPackage,
 } from './support/fakeStyledComponentsPackage';
 
@@ -62,6 +63,36 @@ describe('createPreviewThemeBridgePlugin', () => {
       expect(context.__themeBridgeResult).toEqual({
         marker: FAKE_STYLED_COMPONENTS_MARKER,
         sameMarker: true,
+        sameProvider: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Keeps ESM bridge imports and CommonJS project consumers on one Context-owning package entry. */
+  it('canonicalizes dual package formats to one styled-components instance', async () => {
+    const projectRoot = await createTemporaryProject('theme-dual-format-preview-');
+
+    try {
+      await installDualFormatFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement } from 'react-preview:theme';",
+          "const projectStyledComponents = require('styled-components');",
+          "const element = createThemePreviewElement('target', { configuration: undefined });",
+          'globalThis.__themeBridgeResult = {',
+          '  bridgeMarker: element.type.projectMarker,',
+          '  projectMarker: projectStyledComponents.projectMarker,',
+          '  sameProvider: element.type === projectStyledComponents.ThemeProvider,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        bridgeMarker: 'CJS_THEME_PROVIDER',
+        projectMarker: 'CJS_THEME_PROVIDER',
         sameProvider: true,
       });
     } finally {
@@ -228,6 +259,56 @@ describe('createPreviewThemeBridgePlugin', () => {
         stableResolver: true,
         statusMentionsRepair: true,
       });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Repairs scalar and CSS-fragment paths and emits one bounded health event per repaired path. */
+  it('falls back through non-callable theme values with live repair diagnostics', async () => {
+    const projectRoot = await createTemporaryProject('theme-nested-value-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement, readPreviewRuntimeStatus, resolvePreviewThemeValue } from 'react-preview:theme';",
+          'const healthEvents = [];',
+          "globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')] = {",
+          '  recordRuntimeHealth: (event) => healthEvents.push(event),',
+          '};',
+          "createThemePreviewElement('target', { discoveredTheme: { color: { black: '#222' } } });",
+          "const evidence = { sourcePath: '/workspace/ErrorStatus.tsx', line: 54, column: 31 };",
+          "const rootValue = resolvePreviewThemeValue({}, ['color', 'black'], evidence);",
+          "const structuralValue = resolvePreviewThemeValue({}, ['flex', 'rowBetween'], evidence);",
+          "const localValue = resolvePreviewThemeValue({ color: { black: '#111' } }, ['color', 'black'], evidence);",
+          'globalThis.__themeBridgeResult = {',
+          '  boundaryDetail: healthEvents[0]?.detail,',
+          '  eventNames: healthEvents.map((event) => event.event),',
+          '  localValue,',
+          '  rootValue,',
+          '  status: readPreviewRuntimeStatus(),',
+          '  structuralValue: String(structuralValue),',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toMatchObject({
+        boundaryDetail: {
+          expectedTradeoffs: ['canonical-commonjs-entry-may-reduce-tree-shaking'],
+          resolutionKind: 'require-call',
+          singletonStrategy: 'canonical-exact-bare-import',
+          strategy: 'discovered',
+        },
+        eventNames: ['theme-boundary-composed', 'theme-token-repaired', 'theme-token-repaired'],
+        localValue: '#111',
+        rootValue: '#222',
+        structuralValue: '',
+      });
+      expect((context.__themeBridgeResult as { status: string }).status).toContain(
+        'repaired 2 missing non-callable theme token(s)',
+      );
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }

@@ -9,6 +9,8 @@
 export interface PreviewThemeRuntimeSourceOptions {
   /** Absolute browser-resolved entry for the target project's styled-components package. */
   readonly styledComponentsModulePath: string;
+  /** Canonical package condition shared by generated provider and project consumers. */
+  readonly styledComponentsResolutionKind?: 'import-statement' | 'require-call';
 }
 
 /**
@@ -21,29 +23,59 @@ export interface PreviewThemeRuntimeSourceOptions {
  */
 export function createPreviewThemeRuntimeSource(options: PreviewThemeRuntimeSourceOptions): string {
   const encodedModulePath = JSON.stringify(normalizeImportPath(options.styledComponentsModulePath));
+  const encodedResolutionKind = JSON.stringify(
+    options.styledComponentsResolutionKind ?? 'import-statement',
+  );
   return `
 import * as React from 'react';
 import * as StyledComponents from ${encodedModulePath};
 
+const previewStyledComponentsModulePath = ${encodedModulePath};
+const previewStyledComponentsResolutionKind = ${encodedResolutionKind};
 const tokenCache = new Map();
 const discoveredProxyCache = new WeakMap();
 const discoveredProxyTargets = new WeakMap();
 const resolvedThemeHelperCache = new WeakMap();
 const reachableThemeCandidates = new Map();
 const repairedThemeHelperPaths = new Set();
+const repairedThemeValuePaths = new Set();
 const MAX_REACHABLE_THEME_CANDIDATES = 64;
 const MAX_REACHABLE_THEME_EVIDENCE = 256;
 const MAX_REPAIRED_THEME_HELPERS = 64;
+const MAX_REPAIRED_THEME_VALUES = 128;
 let reachableThemeEvidenceCount = 0;
 let activePreviewTheme;
 let previewRuntimeStatus = 'available: waiting for target-reachable theme evidence';
 
 /** Returns the last automatic styled-components decision for runtime error diagnostics. */
 export function readPreviewRuntimeStatus() {
-  return repairedThemeHelperPaths.size === 0
-    ? previewRuntimeStatus
-    : previewRuntimeStatus + '; repaired ' + String(repairedThemeHelperPaths.size) +
-        ' incompatible callable theme token(s) from exact usage evidence';
+  const repairs = [];
+  if (repairedThemeHelperPaths.size > 0) {
+    repairs.push(
+      'repaired ' + String(repairedThemeHelperPaths.size) +
+        ' incompatible callable theme token(s) from exact usage evidence',
+    );
+  }
+  if (repairedThemeValuePaths.size > 0) {
+    repairs.push(
+      'repaired ' + String(repairedThemeValuePaths.size) +
+        ' missing non-callable theme token(s) from exact usage evidence',
+    );
+  }
+  return repairs.length === 0 ? previewRuntimeStatus : previewRuntimeStatus + '; ' + repairs.join('; ');
+}
+
+/** Sends one bounded theme health event through the optional Page Inspector diagnostic boundary. */
+function reportPreviewThemeRuntimeHealth(event, detail = {}) {
+  try {
+    globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')]?.recordRuntimeHealth?.({
+      category: 'theme',
+      detail,
+      event,
+    });
+  } catch {
+    // Runtime health is observational and must never become a project render dependency.
+  }
 }
 
 /** Encodes a property path into a stable cache key without depending on application values. */
@@ -274,18 +306,64 @@ function readThemeHelperCandidate(theme, path) {
   }
 }
 
-/** Records one distinct repaired path for diagnostics without logging on every style evaluation. */
-function recordRepairedThemeHelper(path) {
+/** Records and reports one distinct callable repair without logging every style recomputation. */
+function recordRepairedThemeHelper(path, evidence, resolution, reason) {
   if (repairedThemeHelperPaths.size >= MAX_REPAIRED_THEME_HELPERS) {
     return;
   }
-  repairedThemeHelperPaths.add(createTokenCacheKey(path));
+  const cacheKey = createTokenCacheKey(path);
+  if (repairedThemeHelperPaths.has(cacheKey)) {
+    return;
+  }
+  repairedThemeHelperPaths.add(cacheKey);
+  reportPreviewThemeRuntimeHealth('theme-token-repaired', {
+    evidence: normalizeThemeValueEvidence(evidence),
+    kind: 'callable',
+    path: path.map(String),
+    reason,
+    resolution,
+  });
+}
+
+/** Records and reports one distinct non-callable path without logging every style recomputation. */
+function recordRepairedThemeValue(path, evidence, resolution, reason) {
+  if (repairedThemeValuePaths.size >= MAX_REPAIRED_THEME_VALUES) {
+    return;
+  }
+  const cacheKey = createTokenCacheKey(path);
+  if (repairedThemeValuePaths.has(cacheKey)) {
+    return;
+  }
+  repairedThemeValuePaths.add(cacheKey);
+  reportPreviewThemeRuntimeHealth('theme-token-repaired', {
+    evidence: normalizeThemeValueEvidence(evidence),
+    path: path.map(String),
+    reason,
+    resolution,
+  });
+}
+
+/** Copies only compiler-authored source coordinates into a small live diagnostic record. */
+function normalizeThemeValueEvidence(evidence) {
+  if (evidence === null || typeof evidence !== 'object') {
+    return undefined;
+  }
+  const sourcePath = typeof evidence.sourcePath === 'string'
+    ? evidence.sourcePath.slice(0, 16_384)
+    : undefined;
+  const line = Number.isSafeInteger(evidence.line) && evidence.line > 0 ? evidence.line : undefined;
+  const column = Number.isSafeInteger(evidence.column) && evidence.column > 0
+    ? evidence.column
+    : undefined;
+  return sourcePath === undefined
+    ? undefined
+    : { sourcePath, ...(line === undefined ? {} : { line }), ...(column === undefined ? {} : { column }) };
 }
 
 /** Invokes one exact helper and reports failure separately from a legitimate undefined result. */
 function invokeThemeHelperCandidate(candidate, arguments_) {
   if (typeof candidate.helper !== 'function') {
-    return { invoked: false, value: undefined };
+    return { invoked: false, reason: 'theme-helper-was-not-callable', value: undefined };
   }
   try {
     return {
@@ -293,7 +371,7 @@ function invokeThemeHelperCandidate(candidate, arguments_) {
       value: Reflect.apply(candidate.helper, candidate.receiver, arguments_),
     };
   } catch {
-    return { invoked: false, value: undefined };
+    return { invoked: false, reason: 'theme-helper-threw', value: undefined };
   }
 }
 
@@ -301,7 +379,7 @@ function invokeThemeHelperCandidate(candidate, arguments_) {
  * Calls the current provider helper, then the exact root-theme helper, then a numeric unit fallback.
  * This order preserves a valid nested override while cutting only an incompatible callable edge.
  */
-function invokeResolvedThemeHelper(theme, path, arguments_) {
+function invokeResolvedThemeHelper(theme, path, arguments_, evidence) {
   const localCandidate = readThemeHelperCandidate(theme, path);
   const localResult = invokeThemeHelperCandidate(localCandidate, arguments_);
   if (localResult.invoked) {
@@ -315,12 +393,12 @@ function invokeResolvedThemeHelper(theme, path, arguments_) {
   ) {
     const rootResult = invokeThemeHelperCandidate(rootCandidate, arguments_);
     if (rootResult.invoked) {
-      recordRepairedThemeHelper(path);
+      recordRepairedThemeHelper(path, evidence, 'exact-root-theme', localResult.reason);
       return rootResult.value;
     }
   }
 
-  recordRepairedThemeHelper(path);
+  recordRepairedThemeHelper(path, evidence, 'structural-or-unit-fallback', localResult.reason);
   const fallbackTarget = localCandidate.helper ?? rootCandidate.helper;
   return fallbackTarget !== null &&
     (typeof fallbackTarget === 'object' || typeof fallbackTarget === 'function')
@@ -329,8 +407,8 @@ function invokeResolvedThemeHelper(theme, path, arguments_) {
 }
 
 /** Creates one stable callable for an exact theme identity and statically proven helper path. */
-function createResolvedThemeHelper(theme, path) {
-  return (...arguments_) => invokeResolvedThemeHelper(theme, path, arguments_);
+function createResolvedThemeHelper(theme, path, evidence) {
+  return (...arguments_) => invokeResolvedThemeHelper(theme, path, arguments_, evidence);
 }
 
 /**
@@ -338,35 +416,76 @@ function createResolvedThemeHelper(theme, path) {
  * Workspace call sites use this only as an immediate callee, so the returned function can safely
  * isolate a malformed nested provider while retaining the exact project's root helper semantics.
  */
-export function resolvePreviewThemeHelper(theme, rawPath) {
+export function resolvePreviewThemeHelper(theme, rawPath, evidence) {
   const path = normalizeThemeHelperPath(rawPath);
   if (path === undefined) {
     return createStructuralToken(['invalid-callable-theme-token']);
   }
   if ((typeof theme !== 'object' && typeof theme !== 'function') || theme === null) {
-    return createResolvedThemeHelper(theme, path);
+    return createResolvedThemeHelper(theme, path, evidence);
   }
   let helpers;
   try {
     helpers = resolvedThemeHelperCache.get(theme);
   } catch {
-    return createResolvedThemeHelper(theme, path);
+    return createResolvedThemeHelper(theme, path, evidence);
   }
   if (helpers === undefined) {
     helpers = new Map();
     try {
       resolvedThemeHelperCache.set(theme, helpers);
     } catch {
-      return createResolvedThemeHelper(theme, path);
+      return createResolvedThemeHelper(theme, path, evidence);
     }
   }
   const cacheKey = createTokenCacheKey(path);
   let helper = helpers.get(cacheKey);
   if (helper === undefined) {
-    helper = createResolvedThemeHelper(theme, path);
+    helper = createResolvedThemeHelper(theme, path, evidence);
     helpers.set(cacheKey, helper);
   }
   return helper;
+}
+
+/** Reads one static theme path without invoking getters beyond the authored access itself. */
+function readThemeValueCandidate(theme, path) {
+  let current = theme;
+  for (const propertyName of path) {
+    if ((typeof current !== 'object' && typeof current !== 'function') || current === null) {
+      return { reason: 'missing-intermediate-theme-container', value: undefined };
+    }
+    try {
+      current = Reflect.get(current, propertyName, current);
+    } catch {
+      return { reason: 'theme-property-read-threw', value: undefined };
+    }
+    if (current === undefined) {
+      return { reason: 'theme-property-was-undefined', value: undefined };
+    }
+  }
+  return { reason: 'exact-theme-value', value: current };
+}
+
+/**
+ * Resolves a statically proven non-callable styled-components token through local, root, then
+ * structural theme evidence. Exact local primitives and CSS fragments remain authoritative.
+ */
+export function resolvePreviewThemeValue(theme, rawPath, evidence) {
+  const path = normalizeThemeHelperPath(rawPath);
+  if (path === undefined) {
+    return createStructuralToken(['invalid-non-callable-theme-token']);
+  }
+  const localCandidate = readThemeValueCandidate(theme, path);
+  if (localCandidate.value !== undefined) {
+    return localCandidate.value;
+  }
+  const rootCandidate = readThemeValueCandidate(activePreviewTheme, path);
+  if (rootCandidate.value !== undefined) {
+    recordRepairedThemeValue(path, evidence, 'exact-root-theme', localCandidate.reason);
+    return rootCandidate.value;
+  }
+  recordRepairedThemeValue(path, evidence, 'structural-token', localCandidate.reason);
+  return createStructuralToken(path);
 }
 
 /** Reports whether setup supplied a theme object or theme-producing function. */
@@ -640,6 +759,25 @@ export function createThemePreviewElement(children, options) {
   if (configuredTheme === undefined && discoveredTheme !== undefined) {
     applyDiscoveredDocumentStyles(previewTheme, configuration);
   }
+  const themeStrategy = configuredTheme !== undefined
+    ? 'configured'
+    : discoveredTheme === undefined
+      ? 'structural'
+      : 'discovered';
+  const expectedTradeoffs = [];
+  if (previewStyledComponentsResolutionKind === 'require-call') {
+    expectedTradeoffs.push('canonical-commonjs-entry-may-reduce-tree-shaking');
+  }
+  if (themeStrategy === 'structural') {
+    expectedTradeoffs.push('missing-theme-values-render-as-empty-css');
+  }
+  reportPreviewThemeRuntimeHealth('theme-boundary-composed', {
+    expectedTradeoffs,
+    modulePath: previewStyledComponentsModulePath,
+    resolutionKind: previewStyledComponentsResolutionKind,
+    singletonStrategy: 'canonical-exact-bare-import',
+    strategy: themeStrategy,
+  });
   return React.createElement(
     ThemeProvider,
     { theme: previewTheme },

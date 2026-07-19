@@ -193,7 +193,7 @@ function PreviewInspectorConsoleDetail() {
     React.createElement(
       'div',
       { className: 'rpi-note' },
-      'Blocker resolver timeline: VS Code Output → React Preview. Search for “React preview blocker trace” to inspect source, Auto choices, render diffs, and following errors.',
+      'Resolver timeline: search VS Code Output → React Preview for “React preview blocker trace”. Renderer health: search for “React preview runtime health” to inspect render revisions, package identity, theme repairs, and fallback error chains.',
     ),
     visibleEntries.length === 0
       ? React.createElement(

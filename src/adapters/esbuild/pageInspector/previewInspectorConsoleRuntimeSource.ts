@@ -203,6 +203,9 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
     if (typeof recordPreviewInspectorBlockerTraceError === 'function') {
       recordPreviewInspectorBlockerTraceError(previous);
     }
+    if (typeof recordPreviewInspectorRuntimeHealthError === 'function') {
+      recordPreviewInspectorRuntimeHealthError(previous);
+    }
     schedulePreviewInspectorConsoleNotification();
     return previous;
   }
@@ -227,6 +230,9 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
   }
   if (typeof recordPreviewInspectorBlockerTraceError === 'function') {
     recordPreviewInspectorBlockerTraceError(entry);
+  }
+  if (typeof recordPreviewInspectorRuntimeHealthError === 'function') {
+    recordPreviewInspectorRuntimeHealthError(entry);
   }
   schedulePreviewInspectorConsoleNotification();
   return entry;

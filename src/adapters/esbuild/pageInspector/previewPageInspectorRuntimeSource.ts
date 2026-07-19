@@ -17,6 +17,7 @@ import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspecto
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
+import { createPreviewInspectorRuntimeHealthSource } from './previewInspectorRuntimeHealthSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from './previewInspectorTargetReachabilityRuntimeSource';
@@ -50,6 +51,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
   const propsUiRuntimeSource = createPreviewInspectorPropsUiRuntimeSource();
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
+  const runtimeHealthSource = createPreviewInspectorRuntimeHealthSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const targetReachabilityRuntimeSource = createPreviewInspectorTargetReachabilityRuntimeSource();
@@ -127,6 +129,8 @@ ${conditionRuntimeSource}
 ${targetReachabilityRuntimeSource}
 
 ${blockerTraceRuntimeSource}
+
+${runtimeHealthSource}
 
 ${consoleRuntimeSource}
 
@@ -940,6 +944,7 @@ const previewInspectorApi = {
   previewAxiosRequest: previewInspectorAxiosRequest,
   previewFetch: previewInspectorFetch,
   recordConsoleEntry: recordPreviewInspectorConsoleEntry,
+  recordRuntimeHealth: recordPreviewInspectorRuntimeHealth,
   resolveBackendRequest: resolvePreviewInspectorBackendRequest,
   resolveDataPayload: resolvePreviewInspectorDataPayload,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,

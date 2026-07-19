@@ -7,6 +7,7 @@
  */
 import type * as vscode from 'vscode';
 import { handlePreviewBlockerTraceMessage } from './previewBlockerTraceLogger';
+import { handlePreviewRuntimeHealthMessage } from './previewRuntimeHealthLogger';
 import {
   handlePreviewInspectorSourceNavigationMessage,
   type PreviewInspectorSourceNavigationContext,
@@ -21,7 +22,7 @@ export interface PreviewInspectorHostMessageContext extends PreviewInspectorSour
 }
 
 /**
- * Gives structured blocker traces precedence, then delegates signed editor navigation.
+ * Routes renderer health and blocker traces before delegating signed editor navigation.
  *
  * @param value Untrusted structured-clone value emitted by the project preview webview.
  * @param context Current panel graph, gesture proof, source URI, and diagnostic channel.
@@ -31,6 +32,15 @@ export function handlePreviewInspectorHostMessage(
   value: unknown,
   context: PreviewInspectorHostMessageContext,
 ): boolean {
+  if (
+    handlePreviewRuntimeHealthMessage(value, {
+      enabled: context.enabled,
+      log: context.log,
+      targetPath: context.targetPath,
+    })
+  ) {
+    return true;
+  }
   if (
     handlePreviewBlockerTraceMessage(value, {
       dependencyPaths: context.dependencyPaths,

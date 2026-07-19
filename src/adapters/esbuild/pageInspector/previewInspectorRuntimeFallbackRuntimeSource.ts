@@ -12,6 +12,9 @@ import { createPreviewInspectorHookGraphqlRuntimeSource } from './previewInspect
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
 export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
 
+/** Repeated executions admitted for one authored effect site before render-only isolation. */
+export const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT = 24;
+
 /**
  * Creates browser source for hook-failure isolation, warning capture, and UI inventory reads.
  *
@@ -27,6 +30,8 @@ export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
+const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT};
+const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_WINDOW_MS = 1_000;
 const previewInspectorScheduleRuntimeFallbackMicrotask =
   typeof globalThis.queueMicrotask === 'function'
     ? globalThis.queueMicrotask.bind(globalThis)
@@ -52,11 +57,20 @@ function initializePreviewInspectorRuntimeFallbackState() {
       entries.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT),
     );
   }
+  if (!(previewInspectorSession.runtimeFallbackMaterializedOverrides instanceof Map)) {
+    previewInspectorSession.runtimeFallbackMaterializedOverrides = new Map();
+  }
   if (!(previewInspectorSession.runtimeFallbackCompletions instanceof WeakMap)) {
     previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
   }
   if (!(previewInspectorSession.runtimeFallbackSmartIds instanceof Set)) {
     previewInspectorSession.runtimeFallbackSmartIds = new Set();
+  }
+  if (!(previewInspectorSession.runtimeEffectIsolations instanceof Map)) {
+    previewInspectorSession.runtimeEffectIsolations = new Map();
+  }
+  if (!(previewInspectorSession.runtimeEffectExecutionWindows instanceof Map)) {
+    previewInspectorSession.runtimeEffectExecutionWindows = new Map();
   }
 }
 
@@ -144,16 +158,12 @@ function readOrCreatePreviewInspectorRuntimeFallback(
 ) {
   initializePreviewInspectorRuntimeFallbackState();
   if (previewInspectorSession.runtimeFallbackValues.has(metadata.id)) {
-    const retained = previewInspectorSession.runtimeFallbackValues.get(metadata.id);
-    const enriched = createPreviewInspectorHookGraphqlFallback(
-      retained,
-      readGraphqlDocument,
-      readGraphqlOptions,
-    );
-    if (enriched !== retained) {
-      previewInspectorSession.runtimeFallbackValues.set(metadata.id, enriched);
-    }
-    return enriched;
+    /*
+     * The metadata id already includes the GraphQL document and bounded identity variables. A
+     * second enrichment would allocate a new data object and refetch closure on every component
+     * render, retriggering application effects whose dependency arrays contain the query result.
+     */
+    return previewInspectorSession.runtimeFallbackValues.get(metadata.id);
   }
   const fallback = createPreviewInspectorRuntimeFallbackAutoValue(
     createPreviewInspectorHookGraphqlFallback(
@@ -184,9 +194,12 @@ function readPreviewInspectorRuntimeFallbackValue(
 ) {
   initializePreviewInspectorRuntimeFallbackState();
   if (previewInspectorSession.runtimeFallbackOverrides.has(metadata.id)) {
-    return materializePreviewInspectorRuntimeFallbackOverride(
-      previewInspectorSession.runtimeFallbackOverrides.get(metadata.id),
-    );
+    const source = previewInspectorSession.runtimeFallbackOverrides.get(metadata.id);
+    const cached = previewInspectorSession.runtimeFallbackMaterializedOverrides.get(metadata.id);
+    if (cached?.source === source) return cached.value;
+    const value = materializePreviewInspectorRuntimeFallbackOverride(source);
+    previewInspectorSession.runtimeFallbackMaterializedOverrides.set(metadata.id, { source, value });
+    return value;
   }
   return readOrCreatePreviewInspectorRuntimeFallback(
     metadata,
@@ -253,7 +266,10 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
         mode: next.mode,
         ownerName: metadata.ownerName,
         reason: errorHeadline || metadata.evidence,
-        selectedValue: fallback,
+        selectedValue: createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+          fallback,
+          metadata.requiredPaths,
+        ),
         sourcePath: metadata.sourcePath,
         summary: { requiredPaths: metadata.requiredPaths },
       });
@@ -416,6 +432,161 @@ function resolvePreviewInspectorRuntimeHook(
 }
 
 /**
+ * Records an effect failure as an automatically resolved render-only warning.
+ * Effects cannot accept a replacement payload, so presenting a JSON blocker editor would ask the
+ * user a question with only one meaningful answer. The Inspector console retains source, owner,
+ * missing-property evidence, and the original error while the rendered page remains mounted.
+ */
+function recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, phase) {
+  initializePreviewInspectorRuntimeFallbackState();
+  const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
+  if (
+    metadata.id.length === 0 ||
+    (!previewInspectorSession.runtimeEffectIsolations.has(metadata.id) &&
+      previewInspectorSession.runtimeEffectIsolations.size >= PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT)
+  ) {
+    return;
+  }
+  const errorHeadline = createRuntimeErrorHeadline(error);
+  const requiredPaths = readPreviewInspectorErrorPropertyPaths(error);
+  const previous = previewInspectorSession.runtimeEffectIsolations.get(metadata.id);
+  const next = {
+    ...metadata,
+    count: (previous?.count ?? 0) + 1,
+    error: errorHeadline,
+    phase,
+    requiredPaths,
+  };
+  previewInspectorSession.runtimeEffectIsolations.set(metadata.id, next);
+  if (previous?.error === next.error && previous?.phase === next.phase) return;
+  const message = '[Render-only effect isolation] ' + metadata.hookName +
+    ' failed during ' + phase + '; the authored page remains mounted';
+  const details = [
+    message,
+    'Original: ' + errorHeadline,
+    metadata.sourcePath + (metadata.line ? ':' + String(metadata.line) : ''),
+    metadata.ownerName ? 'Owner: ' + metadata.ownerName : '',
+    requiredPaths.length > 0 ? 'Observed missing paths: ' + requiredPaths.join(', ') : '',
+  ].filter(Boolean).join('\n');
+  recordPreviewInspectorConsoleEntry({
+    details,
+    error,
+    level: 'warn',
+    location: metadata.sourcePath + (metadata.line ? ':' + String(metadata.line) : ''),
+    message,
+    phase: 'render-only effect isolation',
+    source: 'runtime-effect',
+  });
+  readPreviewInspectorConsolePrimitives().warn('[React Preview] ' + details);
+  recordPreviewInspectorRuntimeHealth({
+    category: 'render-isolation',
+    detail: {
+      effect: metadata.hookName,
+      error: errorHeadline,
+      ownerName: metadata.ownerName,
+      phase,
+      requiredPaths,
+      sourcePath: metadata.sourcePath,
+    },
+    event: 'runtime-effect-isolated',
+  });
+  schedulePreviewInspectorRuntimeFallbackRefresh();
+}
+
+/** Wraps a cleanup callback so a later unmount cannot replace an otherwise valid static page. */
+function createPreviewInspectorRuntimeEffectCleanup(cleanup, metadata) {
+  return () => {
+    if (!readPreviewInspectorFallbackValuesEnabled()) return cleanup();
+    try {
+      return cleanup();
+    } catch (error) {
+      recordPreviewInspectorRuntimeEffectIsolation(metadata, error, 'cleanup');
+      return undefined;
+    }
+  };
+}
+
+/**
+ * Stops one effect site that repeatedly completes but schedules another synchronous application
+ * update. React reports this pattern only after dozens of commits, at which point the renderer can
+ * already be unresponsive. The preview boundary therefore admits a generous bounded burst and then
+ * isolates that source site; ordinary one-shot effects and modest lists remain unaffected.
+ */
+function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
+  if (!readPreviewInspectorFallbackValuesEnabled()) return false;
+  initializePreviewInspectorRuntimeFallbackState();
+  const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
+  if (metadata.id.length === 0) return false;
+  const now = Date.now();
+  const revision = typeof previewEntryRevision === 'number' ? previewEntryRevision : 0;
+  const previous = previewInspectorSession.runtimeEffectExecutionWindows.get(metadata.id);
+  if (previous?.isolated === true && previous.revision === revision) return true;
+  if (
+    previous === undefined &&
+    previewInspectorSession.runtimeEffectExecutionWindows.size >=
+      PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT
+  ) {
+    return false;
+  }
+  const withinWindow = previous?.revision === revision &&
+    now - previous.startedAt <= PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_WINDOW_MS;
+  const execution = {
+    count: withinWindow ? previous.count + 1 : 1,
+    isolated: false,
+    revision,
+    startedAt: withinWindow ? previous.startedAt : now,
+  };
+  if (execution.count <= PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT) {
+    previewInspectorSession.runtimeEffectExecutionWindows.set(metadata.id, execution);
+    return false;
+  }
+  execution.isolated = true;
+  previewInspectorSession.runtimeEffectExecutionWindows.set(metadata.id, execution);
+  recordPreviewInspectorRuntimeEffectIsolation(
+    metadata,
+    new Error(
+      'Effect executed more than ' + String(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT) +
+      ' times within ' + String(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_WINDOW_MS) +
+      ' ms; further executions were disabled for this preview session',
+    ),
+    'repeated effect execution',
+  );
+  return true;
+}
+
+/**
+ * Runs one compiler-proven React effect while Auto values controls render-only failure isolation.
+ * Successful cleanup functions remain intact. Promise-returning effects are made non-blocking and
+ * their rejection is logged because React cannot use a Promise as an effect cleanup value.
+ */
+function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata) {
+  if (typeof readEffect !== 'function') return undefined;
+  if (shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata)) return undefined;
+  let result;
+  try {
+    result = readEffect();
+  } catch (error) {
+    if (!readPreviewInspectorFallbackValuesEnabled()) throw error;
+    recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'effect');
+    return undefined;
+  }
+  if (isPreviewInspectorRuntimeThenable(result)) {
+    if (!readPreviewInspectorFallbackValuesEnabled()) return result;
+    Promise.resolve(result).catch((error) => {
+      recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'async effect');
+    });
+    return undefined;
+  }
+  if (typeof result === 'function') {
+    return createPreviewInspectorRuntimeEffectCleanup(result, rawMetadata);
+  }
+  initializePreviewInspectorRuntimeFallbackState();
+  const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
+  previewInspectorSession.runtimeEffectIsolations.delete(metadata.id);
+  return result;
+}
+
+/**
  * Completes a GraphQL Code Generator fragment carrier from its authored fragment selection.
  * The normal helper still executes first; real carrier fields win, while an empty Context/prop
  * placeholder receives only missing selected fields through the ordinary editable blocker store.
@@ -488,6 +659,7 @@ function setPreviewInspectorRuntimeFallbackOverride(fallbackId, value) {
     fallbackId,
     normalizePreviewInspectorRuntimeFallbackOverride(value),
   );
+  previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
   commitPreviewInspectorRuntimeFallbackChange();
 }
 
@@ -497,6 +669,7 @@ function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
   if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
   previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
   previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId);
+  previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
   const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
   const requiredPaths = previewInspectorSession.runtimeFallbacks.get(fallbackId)?.requiredPaths ?? [];
   if (previewInspectorSession.runtimeFallbackValues.has(fallbackId)) {
@@ -520,6 +693,7 @@ function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
       reason: record.evidence,
       selectedValue: previewInspectorSession.runtimeFallbackValues.get(fallbackId),
       sourcePath: record.sourcePath,
+      startsRenderAttempt: true,
       summary: { requiredPaths },
     });
   }
@@ -546,6 +720,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
         fallbackId,
         normalizePreviewInspectorRuntimeFallbackOverride(completion.value),
       );
+      previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
     }
     previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
     return completion.changed || !wasSmart;
@@ -582,6 +757,7 @@ function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
       reason: record.evidence,
       selectedValue: generatedSelection,
       sourcePath: record.sourcePath,
+      startsRenderAttempt: true,
       summary: {
         preservedUserValue: previewInspectorSession.runtimeFallbackOverrides.has(fallbackId),
         requiredPaths: record.requiredPaths,
@@ -617,6 +793,7 @@ function resetPreviewInspectorRuntimeFallbackOverride(fallbackId) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId)) return;
   previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
+  previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
   commitPreviewInspectorRuntimeFallbackChange();
 }
 
@@ -635,11 +812,16 @@ function serializePreviewInspectorRuntimeFallbackOverrides() {
 function readPreviewInspectorRuntimeFallbackStatus() {
   const fallbacks = readPreviewInspectorRuntimeFallbacks();
   const count = fallbacks.length;
+  initializePreviewInspectorRuntimeFallbackState();
+  const effectCount = previewInspectorSession.runtimeEffectIsolations.size;
   const manualCount = fallbacks.filter((fallback) =>
     fallback.mode === 'manual' || fallback.mode === 'smart-manual',
   ).length;
+  const effectSuffix = effectCount > 0
+    ? '; ' + String(effectCount) + ' render-only effect failure(s) isolated'
+    : '';
   return readPreviewInspectorFallbackValuesEnabled()
-    ? 'active: ' + String(count) + ' render-blocking hook edge(s) currently use generated static values'
+    ? 'active: ' + String(count) + ' render-blocking hook edge(s) currently use generated static values' + effectSuffix
     : manualCount > 0
       ? 'manual only: ' + String(manualCount) + ' hook edge(s) use explicit user pass values'
       : 'disabled by user: authored hook failures, nullish values, and missing fields are preserved';

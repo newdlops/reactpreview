@@ -291,6 +291,7 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
       reason: 'Static path analysis selected the branch leading toward the current-file export',
       selectedValue: enabled,
       sourcePath: record.sourcePath,
+      startsRenderAttempt: true,
       summary: {
         authoredEnabled: record.authoredEnabled,
         role: record.role,

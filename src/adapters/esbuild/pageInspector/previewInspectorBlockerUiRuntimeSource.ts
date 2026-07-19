@@ -580,6 +580,7 @@ function smartFillPreviewInspectorTargetFailure(failure) {
       reason: failure.headline,
       selectedValue: draft.generatedValue,
       sourcePath: failure.sourcePath,
+      startsRenderAttempt: true,
       summary: {
         preservedObservedOrUserProps:
           stringifyPreviewInspectorProps(draft.generatedValue) !==

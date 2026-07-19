@@ -17,6 +17,7 @@ const previewInspectorRuntimeHealthEvents = new Set([
   'page-context-selected',
   'render-attempt-started',
   'render-attempt-settled',
+  'runtime-effect-isolated',
   'runtime-error-cascade',
   'runtime-error-fallback',
   'runtime-error-root',
@@ -94,10 +95,22 @@ function readPreviewInspectorRuntimeHealthSeverity(event) {
     return 'error';
   }
   return event === 'graphql-interpolation-repaired' ||
+    event === 'runtime-effect-isolated' ||
     event === 'theme-token-repaired' ||
     event === 'styled-components-instance-warning'
     ? 'warn'
     : 'info';
+}
+
+/**
+ * Distinguishes React compatibility/deprecation diagnostics from failures that prevented a commit.
+ * React emits several non-fatal development warnings through console.error, so the transport level
+ * alone cannot decide whether a warning starts a runtime failure chain.
+ */
+function isPreviewInspectorNonFatalReactDiagnostic(message) {
+  return /(?:findDOMNode is deprecated|Each child in a list should have a unique|React does not recognize the|Invalid DOM property|validateDOMNesting|Received .* for a non-boolean attribute|A component is changing an? (?:un)?controlled)/u.test(
+    message,
+  );
 }
 
 /** Emits one deduplicated health event and returns its revision-local identity. */
@@ -173,6 +186,9 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
   const isStyledComponentsInstanceWarning =
     /several instances of ['"]styled-components['"]/u.test(rawMessage);
   if (entry?.level !== 'error' && !(entry?.level === 'warn' && isStyledComponentsInstanceWarning)) {
+    return;
+  }
+  if (!isStyledComponentsInstanceWarning && isPreviewInspectorNonFatalReactDiagnostic(rawMessage)) {
     return;
   }
   initializePreviewInspectorRuntimeHealthState();

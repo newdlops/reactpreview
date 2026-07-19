@@ -48,6 +48,7 @@ describe('Preview Inspector blocker trace runtime source', () => {
       reason: 'property read',
       selectedValue: { formikProps: { values: { name: 'Preview name' } } },
       sourcePath: '/workspace/ProfileForm.tsx',
+      startsRenderAttempt: true,
     });
     runtime.snapshot(createSnapshot('smart'));
     runtime.error({
@@ -110,6 +111,7 @@ describe('Preview Inspector blocker trace runtime source', () => {
       generatedPaths: ['companyId'],
       mode: 'auto',
       selectedValue: { companyId: 'preview-id' },
+      startsRenderAttempt: true,
     };
     const traceId = runtime.decide(candidate);
     expect(runtime.decide(candidate)).toBeUndefined();
@@ -139,6 +141,7 @@ describe('Preview Inspector blocker trace runtime source', () => {
       blockerKind: 'target-error',
       mode: 'smart-props',
       selectedValue: {},
+      startsRenderAttempt: true,
     });
 
     runtime.snapshot({ roots: [] });
@@ -164,6 +167,7 @@ describe('Preview Inspector blocker trace runtime source', () => {
       blockerKind: 'target-error',
       mode: 'smart-props',
       selectedValue: {},
+      startsRenderAttempt: true,
     });
 
     runtime.snapshot({ roots: [] });
@@ -174,6 +178,25 @@ describe('Preview Inspector blocker trace runtime source', () => {
       (message) => message.event.event === 'render-result',
     );
     expect(renderResults.at(-1)?.event.result?.resolvedBlockerIds).toEqual(['hook-form']);
+  });
+
+  /** Keeps fallback observations and handled warnings outside commit/error causal chains. */
+  it('does not label render-time fallback warnings as failed render attempts', () => {
+    const runtime = createTraceRuntime();
+    runtime.decide({
+      action: 'Substitute failed hook result',
+      blockerId: 'hook-query',
+      blockerKind: 'runtime-fallback',
+      mode: 'auto',
+      selectedValue: { data: {} },
+    });
+    runtime.error({
+      level: 'warn',
+      message: '[Render-only fallback] useQuery used generated data',
+      source: 'runtime-fallback',
+    });
+
+    expect(runtime.messages.map((message) => message.event.event)).toEqual(['auto-selection']);
   });
 });
 

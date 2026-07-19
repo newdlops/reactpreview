@@ -473,6 +473,7 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
       reason: 'Downstream hook and backend reads were discovered during the previous DFS pass',
       selectedValue: { backendPayloads, hookValues, nextPass: search.pass + 1 },
       sourcePath: sourceGate?.sourcePath,
+      startsRenderAttempt: true,
       summary: { applicationPath: state.applicationPath },
     });
   }

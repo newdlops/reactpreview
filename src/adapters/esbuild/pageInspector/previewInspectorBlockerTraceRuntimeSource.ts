@@ -381,7 +381,7 @@ function createPreviewInspectorBlockerTraceDecisionRecord(candidate) {
   };
 }
 
-/** Starts one correlated Auto/Smart attempt and records the exact generated selection. */
+/** Records one Auto/Smart selection and starts correlation only when it schedules a new commit. */
 function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   initializePreviewInspectorBlockerTraceState();
   const blocker = createPreviewInspectorBlockerTraceDecisionRecord(candidate);
@@ -398,6 +398,7 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
         ? candidate.reason.slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT)
         : undefined,
     selectedValue: copyPreviewInspectorBlockerTraceValue(candidate?.selectedValue),
+    startsRenderAttempt: candidate?.startsRenderAttempt === true,
   };
   const fingerprint = fingerprintPreviewInspectorBlockerTraceRecord({ auto, blocker });
   const previousAt = previewInspectorSession.blockerTraceDecisionFingerprints.get(fingerprint);
@@ -413,9 +414,11 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
     );
   }
   const traceId = createPreviewInspectorBlockerTraceId();
-  previewInspectorSession.blockerTraceActiveAttempt = { blocker, startedAt: now, traceId };
   postPreviewInspectorBlockerTraceEvent('auto-selection', traceId, { auto, blocker });
-  if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+  if (auto.startsRenderAttempt) {
+    previewInspectorSession.blockerTraceActiveAttempt = { blocker, startedAt: now, traceId };
+  }
+  if (auto.startsRenderAttempt && typeof recordPreviewInspectorRuntimeHealth === 'function') {
     recordPreviewInspectorRuntimeHealth({
       category: 'render-attempt',
       detail: {
@@ -429,10 +432,14 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   return traceId;
 }
 
-/** Correlates the next warning/error with the most recent Auto attempt or a standalone failure. */
+/** Correlates the next fatal error with the most recent commit-producing Auto attempt. */
 function recordPreviewInspectorBlockerTraceError(entry) {
   initializePreviewInspectorBlockerTraceState();
-  if (entry?.level !== 'error' && entry?.level !== 'warn') return;
+  if (entry?.level !== 'error') return;
+  if (
+    typeof isPreviewInspectorNonFatalReactDiagnostic === 'function' &&
+    isPreviewInspectorNonFatalReactDiagnostic(String(entry?.message ?? ''))
+  ) return;
   if (!['preview-runtime', 'react-boundary', 'runtime-fallback', 'target-reachability'].includes(entry.source)) {
     return;
   }
@@ -444,9 +451,6 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       activeAttempt.settledAt === undefined ||
       now - activeAttempt.settledAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS
     );
-  if (!active && entry.level !== 'error' && !['runtime-fallback', 'target-reachability'].includes(entry.source)) {
-    return;
-  }
   const fingerprint = [
     active ? activeAttempt.traceId : '',
     entry.level,

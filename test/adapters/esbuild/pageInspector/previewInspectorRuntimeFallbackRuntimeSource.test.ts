@@ -1,51 +1,76 @@
 /** Verifies render-only hook recovery without loading a project React package. */
-import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import { createPreviewInspectorRuntimeFallbackRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackRuntimeSource';
-import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFailureEvidenceRuntimeSource';
-
-/** One record returned from the generated browser registry. */
-interface TestRuntimeFallbackRecord {
-  readonly error: string;
-  readonly fallbackPreview: string;
-  readonly generatedPaths: readonly string[];
-  readonly hookName: string;
-  readonly id: string;
-  readonly mode: string;
-  readonly ownerName?: string;
-  readonly reason: string;
-  readonly requiredPaths: readonly string[];
-}
-
-/** Functions exported from the isolated VM solely for behavior assertions. */
-interface TestRuntimeFallbackApi {
-  auto(fallbackId: string): void;
-  draft(fallbackId: string): unknown;
-  read(): TestRuntimeFallbackRecord[];
-  reset(fallbackId: string): void;
-  resolve(
-    readHook: () => unknown,
-    createFallback: () => unknown,
-    metadata: object,
-    readGraphqlDocument?: () => unknown,
-    readGraphqlOptions?: () => unknown,
-  ): unknown;
-  resolveFragment(
-    readFragment: () => unknown,
-    readDocument: () => unknown,
-    createFallback: () => unknown,
-    metadata: object,
-  ): unknown;
-  set(fallbackId: string, value: unknown): void;
-  smart(fallbackId: string): void;
-  smartReachability(
-    reachabilityKey: string,
-    options?: { readonly preserveUserValues?: boolean },
-  ): boolean;
-  status(): string;
-}
+import { PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackRuntimeSource';
+import {
+  createMetadata,
+  createRuntimeFallbackFixture,
+} from './support/previewInspectorRuntimeFallbackFixture';
 
 describe('Preview Inspector runtime fallback source', () => {
+  /** Logs a side-effect failure without creating a meaningless editable payload blocker. */
+  it('isolates effect and cleanup failures while keeping hook blockers separate', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'useEffect',
+      id: 'effect-1',
+      requiredPaths: [],
+    };
+
+    expect(
+      fixture.api.effect(() => {
+        throw new TypeError("Cannot read properties of undefined (reading 'onReconnected')");
+      }, metadata),
+    ).toBeUndefined();
+    const cleanup = fixture.api.effect(
+      () => () => {
+        throw new Error('cleanup bridge unavailable');
+      },
+      { ...metadata, id: 'effect-2' },
+    );
+    expect(cleanup).toBeTypeOf('function');
+    expect(() => {
+      (cleanup as () => void)();
+    }).not.toThrow();
+
+    expect(fixture.api.read()).toEqual([]);
+    expect(fixture.consoleEntries).toHaveLength(2);
+    expect(fixture.consoleEntries[0]).toMatchObject({
+      level: 'warn',
+      phase: 'render-only effect isolation',
+      source: 'runtime-effect',
+    });
+    expect(fixture.warnings[0]).toContain('onReconnected');
+    expect(fixture.api.status()).toContain('2 render-only effect failure(s) isolated');
+  });
+
+  /** Cuts a successful-but-self-triggering effect before React reaches its update-depth failure. */
+  it('isolates a repeated effect execution burst at its exact source site', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'useEffect',
+      id: 'repeating-effect',
+      requiredPaths: [],
+    };
+    let executions = 0;
+
+    for (let index = 0; index < PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT + 3; index += 1) {
+      fixture.api.effect(() => {
+        executions += 1;
+      }, metadata);
+    }
+
+    expect(executions).toBe(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT);
+    expect(fixture.consoleEntries).toHaveLength(1);
+    expect(fixture.consoleEntries[0]).toMatchObject({
+      level: 'warn',
+      phase: 'render-only effect isolation',
+      source: 'runtime-effect',
+    });
+    expect(fixture.warnings[0]).toContain('further executions were disabled');
+  });
+
   /** Converts a provider-hook exception into a stable value and a warning record. */
   it('bypasses non-thenable hook failures while Auto values is enabled', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -258,6 +283,36 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(resolved.fallback).toBeNull();
     expect(typeof resolved.refetch).toBe('function');
     expect(fixture.api.read()[0]).toMatchObject({ reason: 'partial' });
+  });
+
+  /** Retains query data and transport callbacks so application effects see unchanged dependencies. */
+  it('keeps a selection-shaped GraphQL fallback referentially stable across renders', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const document = {
+      definitions: [{ kind: 'OperationDefinition', name: { value: 'CompanyPreview' } }],
+      loc: { source: { body: 'query CompanyPreview { company { id } }' } },
+    };
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['data.company.id', 'refetch()'],
+    };
+
+    const first = fixture.api.resolve(
+      () => ({ data: undefined, loading: true }),
+      () => ({ data: {}, refetch: () => undefined }),
+      metadata,
+      () => document,
+    ) as { data: object; refetch: () => unknown };
+    const second = fixture.api.resolve(
+      () => ({ data: undefined, loading: true }),
+      () => ({ data: {}, refetch: () => undefined }),
+      metadata,
+      () => document,
+    ) as { data: object; refetch: () => unknown };
+
+    expect(second).toBe(first);
+    expect(second.data).toBe(first.data);
+    expect(second.refetch).toBe(first.refetch);
   });
 
   /** Completes an empty Codegen fragment carrier from its exact authored fragment selection. */
@@ -550,13 +605,13 @@ describe('Preview Inspector runtime fallback source', () => {
       metadata,
     ) as { formikProps: { setFieldValue: () => unknown; values: { employeeName: string } } };
 
-    expect(automatic.formikProps.values.employeeName).toBe('Preview User 1');
+    expect(automatic.formikProps.values.employeeName).toBe('employeeName');
     expect(typeof automatic.formikProps.setFieldValue).toBe('function');
 
     expect(JSON.parse(JSON.stringify(fixture.api.draft('hook-1')))).toEqual({
       formikProps: {
         setFieldValue: '[Preview no-op function]',
-        values: { employeeName: 'Preview User 1' },
+        values: { employeeName: 'employeeName' },
       },
     });
     expect(fixture.api.read()[0]).toMatchObject({
@@ -599,6 +654,29 @@ describe('Preview Inspector runtime fallback source', () => {
       employees: [{ id: 'preview-1', profile: { email: 'preview@example.invalid' } }],
       refresh: '[Preview no-op function]',
     });
+  });
+
+  /** Converts a called Array prototype method into receiver-kind evidence, not an own callback. */
+  it('materializes collection-method evidence as an actual array', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: [
+        'data.legalPartnersForCompanyCreate.filter()',
+        'data.legalPartnersForCompanyCreate[].id',
+      ],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({ data: { legalPartnersForCompanyCreate: { filter: () => undefined } } }),
+      metadata,
+    ) as { data: { legalPartnersForCompanyCreate: { id: string }[] } };
+
+    expect(Array.isArray(resolved.data.legalPartnersForCompanyCreate)).toBe(true);
+    expect(
+      resolved.data.legalPartnersForCompanyCreate.filter((item) => item.id === 'preview-1'),
+    ).toEqual([{ id: 'preview-1', name: 'name' }]);
   });
 
   /** Removes unrelated inferred siblings and retains exactly one semantic leaf per demanded path. */
@@ -662,7 +740,7 @@ describe('Preview Inspector runtime fallback source', () => {
 
     expect(resolved.favorites).toEqual([
       {
-        label: 'Preview generated value',
+        label: 'label',
         link: 'https://example.invalid/preview/1',
       },
     ]);
@@ -788,108 +866,3 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.draft('hook-1')).toEqual({ profile: { name: 'Authored name' } });
   });
 });
-
-/** Complete observations exposed by one generated-runtime VM fixture. */
-interface RuntimeFallbackFixture {
-  readonly api: TestRuntimeFallbackApi;
-  readonly consoleEntries: Record<string, unknown>[];
-  readonly warnings: string[];
-}
-
-/** Creates the lexical browser bindings required by the generated fallback runtime. */
-function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture {
-  const consoleEntries: Record<string, unknown>[] = [];
-  const warnings: string[] = [];
-  const sandbox = {
-    boundPreviewInspectorConsoleText(value: string, limit: number): string {
-      return value.slice(0, limit);
-    },
-    createRuntimeErrorHeadline(error: unknown): string {
-      return error instanceof Error ? error.message : String(error);
-    },
-    formatPreviewInspectorConsoleValue(value: unknown): string {
-      return JSON.stringify(value);
-    },
-    generatePreviewInspectorDataValue(shape: { fields?: Record<string, unknown> }): object {
-      return Object.hasOwn(shape.fields ?? {}, 'name')
-        ? { name: 'Preview name' }
-        : { company: { id: 'preview-1' } };
-    },
-    inferPreviewInspectorGraphqlFragmentShape(): object {
-      return { fields: { name: { kind: 'string' } }, kind: 'object' };
-    },
-    inferPreviewInspectorGraphqlQueryShape(): object {
-      return {
-        fields: { company: { fields: { id: { kind: 'string' } }, kind: 'object' } },
-        kind: 'object',
-      };
-    },
-    blockedInspectorPropNames: new Set(['__proto__', 'constructor', 'prototype']),
-    notifyPreviewInspector(): undefined {
-      return undefined;
-    },
-    persistPreviewInspectorState(): undefined {
-      return undefined;
-    },
-    readPersistedPreviewInspectorState(): object {
-      return {};
-    },
-    schedulePreviewInspectorCommitRefresh(): undefined {
-      return undefined;
-    },
-    schedulePreviewInspectorTreeRefresh(): undefined {
-      return undefined;
-    },
-    previewInspectorSession: { activeTargetReachabilityKey: 'page:Target' },
-    readPreviewInspectorConsolePrimitives(): { warn(message: string): void } {
-      return {
-        warn: (message: string): void => {
-          warnings.push(message);
-        },
-      };
-    },
-    readPreviewInspectorFallbackValuesEnabled(): boolean {
-      return enabled;
-    },
-    recordPreviewInspectorConsoleEntry(candidate: Record<string, unknown>): void {
-      consoleEntries.push(candidate);
-    },
-  };
-  const context = createContext(sandbox);
-  runInContext(
-    `${createPreviewInspectorFailureEvidenceRuntimeSource()}\n` +
-      `${createPreviewInspectorRuntimeFallbackRuntimeSource()}\n` +
-      'globalThis.__runtimeFallbackApi = {' +
-      ' auto: autoPassPreviewInspectorRuntimeFallback,' +
-      ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
-      ' read: readPreviewInspectorRuntimeFallbacks,' +
-      ' reset: resetPreviewInspectorRuntimeFallbackOverride,' +
-      ' resolve: resolvePreviewInspectorRuntimeHook,' +
-      ' resolveFragment: resolvePreviewInspectorGraphqlFragmentValue,' +
-      ' set: setPreviewInspectorRuntimeFallbackOverride,' +
-      ' smart: smartFillPreviewInspectorRuntimeFallback,' +
-      ' smartReachability: smartFillPreviewInspectorRuntimeFallbacksForReachability,' +
-      ' status: readPreviewInspectorRuntimeFallbackStatus' +
-      '};',
-    context,
-  );
-  const api = (sandbox as typeof sandbox & { __runtimeFallbackApi?: TestRuntimeFallbackApi })
-    .__runtimeFallbackApi;
-  if (api === undefined) throw new Error('Generated fallback runtime did not initialize.');
-  return { api, consoleEntries, warnings };
-}
-
-/** Returns stable compiler-like metadata for one isolated hook site. */
-function createMetadata(): object {
-  return {
-    evidence: 'query parameter default plus an inert local setter',
-    fallbackLabel: 'static query value',
-    hookName: 'useQueryParam',
-    id: 'hook-1',
-    line: 12,
-    moduleSpecifier: 'use-query-params',
-    ownerName: 'List',
-    requiredPaths: ['0', '1()'],
-    sourcePath: '/workspace/List.tsx',
-  };
-}

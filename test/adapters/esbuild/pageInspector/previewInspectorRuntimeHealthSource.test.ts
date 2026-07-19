@@ -99,6 +99,18 @@ describe('Preview Inspector runtime health source', () => {
     ]);
     expect(runtime.messages[1]?.event.parentEventId).toBeUndefined();
   });
+
+  /** Ignores development-only React diagnostics even when React transports them via console.error. */
+  it('does not promote a findDOMNode deprecation to a runtime root failure', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.error({
+      level: 'error',
+      message: 'Warning: findDOMNode is deprecated and will be removed in the next major release.',
+      source: 'console',
+    });
+
+    expect(runtime.messages).toEqual([]);
+  });
 });
 
 /** Evaluates generated source with inert session, revision, and postMessage primitives. */

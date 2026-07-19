@@ -16,10 +16,8 @@ import {
   type PendingPreviewHotReload,
 } from './previewHotReloadProtocol';
 import type { PreviewInspectorCompanionOpenSourceRequest } from './previewInspectorCompanionProtocol';
-import {
-  handlePreviewInspectorCompanionSourceNavigation,
-  handlePreviewInspectorSourceNavigationMessage,
-} from './previewInspectorSourceNavigation';
+import { handlePreviewInspectorHostMessage } from './previewInspectorHostMessage';
+import { handlePreviewInspectorCompanionSourceNavigation } from './previewInspectorSourceNavigation';
 import { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewProgressMessage } from './previewProgress';
 import { PreviewProgressGate } from './previewProgressGate';
@@ -595,13 +593,14 @@ export class PreviewPanelSession implements vscode.Disposable {
   /** Accepts only acknowledgement messages emitted by the generated preview hot runtime. */
   private handleWebviewMessage(message: unknown): void {
     if (
-      handlePreviewInspectorSourceNavigationMessage(message, {
+      handlePreviewInspectorHostMessage(message, {
         dependencyPaths: this.dependencies,
         enabled: this.options.renderMode === 'page-inspector',
         gestureGate: this.inspectorSourceGesture,
         log: this.options.log,
         panelViewColumn: this.options.panel.viewColumn,
         pinnedDocumentUri: this.documentUri,
+        targetPath: this.targetPath,
       })
     ) {
       return;

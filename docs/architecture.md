@@ -431,6 +431,11 @@ page wireframe style과 companion에서 재사용할 Components/details workbenc
 왼쪽 React component tree와 오른쪽 props/state/source 상세로 나뉘며, target/root 선택, highlight, picker,
 remount와 plain JSON props override를 노출합니다. page-context 행은 실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE`을 구분하며 filesystem 경로는 노출하지 않습니다.
+`previewInspectorCompanionPaneResizeScript`는 sanitized snapshot이 교체될 때 Components/Details 사이에 local
+separator를 다시 삽입합니다. 760px breakpoint 전후의 column/row ratio를 별도 webview state로 유지하고 CSS grid
+custom property만 갱신하므로 pointer drag가 companion protocol이나 project runtime으로 전달되지 않습니다. live
+workbench 크기에서 양쪽 pane minimum을 다시 계산하고 ResizeObserver, keyboard ARIA value와 double-click reset을
+같은 bounded ratio 함수로 통합합니다.
 workbench shell 자체가 named inline-size container이고 toolbar, status, candidate selector, tree row, tabs, JSON과
 console control은 `min-width:0`/bounded wrapping을 공유합니다. container 폭이 760px 아래면 tree/detail이 1열로,
 460px 아래면 context/action/control이 단일 행 단위로 재배치되므로 companion을 좁은 editor group으로 옮겨도
@@ -442,6 +447,10 @@ JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference
 `Auto values`는 inference/usage-derived prop layer만 제외하고 실제 parent/setup props는 보존합니다.
 일반 Props 및 `Fix blocker` detail은 공통 `previewInspectorPropsUiRuntimeSource`를 사용합니다. 이 editor는 Smart
 draft의 generated path와 no-op sentinel을 명시하고 `Smart fill props` 적용 시 현재 export revision만 remount합니다.
+`previewInspectorSmartPropsRuntimeSource`는 provenance 표시 상한과 별도로 descriptor의 전체 inferred shape를
+256 node 안에서 data-descriptor로 평탄화합니다. 짧은 missing field와 `props`/`this.props` receiver를 이 경로에
+정렬하고 container match는 가장 깊은 증명 leaf로 확장합니다. 관찰된 null container/scalar가 실제 오류 경로를
+막았을 때만 `replaceNullScalars` completion을 사용하므로 일반 hook fallback의 authored null branch는 유지됩니다.
 current-file export row는 별도 `Reveal` action으로 selection, ancestor expansion, scroll 및 host highlight를 한 번에
 요청합니다. blocker row 선택은 렌더 의미를 즉시 바꾸지 않고 `Blocker` detail을 열며 condition branch, hook JSON,
 data payload 또는 retry 값을 사용자가 명시적으로 적용할 때만 selected page revision을 remount합니다.

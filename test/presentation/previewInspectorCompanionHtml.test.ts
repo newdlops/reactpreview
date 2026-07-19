@@ -1,4 +1,5 @@
 /** Verifies that the dedicated Inspector tab remains inert and forwards only bounded controls. */
+import { Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorCompanionHtml } from '../../src/presentation/webview/previewInspectorCompanionHtml';
 
@@ -20,6 +21,9 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain("message?.type === 'react-preview-inspector-companion-snapshot'");
     expect(html).not.toContain('script-src vscode-webview://inspector-test');
     expect(html).not.toContain('type="module"');
+    const embeddedScript = /<script nonce="[^"]+">([\s\S]+)<\/script>/u.exec(html)?.[1];
+    if (embeddedScript === undefined) throw new Error('Companion script was not emitted.');
+    expect(() => new Script(embeddedScript)).not.toThrow();
   });
 
   /** Removes active markup/resource attributes and forces the shell into the dedicated tab bounds. */
@@ -38,5 +42,27 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('max-width:100%!important;min-width:0!important');
     expect(html).toContain('overflow:hidden!important');
     expect(html).toContain('&lt;Unsafe&gt;.tsx');
+  });
+
+  /** Keeps pane resizing local to the inert tab with responsive and persisted proportions. */
+  it('installs an accessible responsive Components and Details splitter', () => {
+    const html = createPreviewInspectorCompanionHtml({
+      cspSource: 'vscode-webview://inspector-test',
+      documentName: 'Resizable.tsx',
+      nonce: 'resize-nonce',
+    });
+
+    expect(html).toContain(
+      "PREVIEW_INSPECTOR_COMPANION_PANE_STATE_KEY = 'reactPreviewInspectorPaneLayout'",
+    );
+    expect(html).toContain("handle.setAttribute('role', 'separator')");
+    expect(html).toContain(
+      "handle.setAttribute('aria-label', 'Resize Components and Details panes')",
+    );
+    expect(html).toContain('installPreviewInspectorCompanionPaneResize();');
+    expect(html).toContain('new ResizeObserver(refresh)');
+    expect(html).toContain('vscode.setState?.({');
+    expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="columns"]');
+    expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="rows"]');
   });
 });

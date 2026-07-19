@@ -3,6 +3,7 @@
  * The document never evaluates project JavaScript: it accepts a bounded UI mirror, removes active
  * content, applies VS Code-native styling, and forwards only explicit form/tree interactions.
  */
+import { createPreviewInspectorCompanionPaneResizeScript } from './previewInspectorCompanionPaneResizeScript';
 
 /** Complete state needed to render one independently reloadable Inspector companion document. */
 export interface PreviewInspectorCompanionHtmlOptions {
@@ -23,6 +24,7 @@ export interface PreviewInspectorCompanionHtmlOptions {
 export function createPreviewInspectorCompanionHtml(
   options: PreviewInspectorCompanionHtmlOptions,
 ): string {
+  const paneResizeScript = createPreviewInspectorCompanionPaneResizeScript();
   const csp = [
     "default-src 'none'",
     `script-src 'nonce-${options.nonce}'`,
@@ -80,6 +82,8 @@ export function createPreviewInspectorCompanionHtml(
       ]);
       let latestSequence = 0;
 
+      ${paneResizeScript}
+
       /** Removes executable or resource-loading markup before a preview mirror reaches the DOM. */
       function sanitizeInspectorMarkup(html) {
         const template = document.createElement('template');
@@ -120,6 +124,21 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-shell[data-collapsed="true"] .rpi-workbench{display:grid!important}',
           '.rpi-page-context,.rpi-workbench,.rpi-pane,.rpi-pane-heading{max-width:100%!important;min-width:0!important}',
           '.rpi-workbench{min-height:0!important;overflow:hidden!important}',
+          '.rpi-workbench[data-rpi-pane-axis="columns"]{grid-template-columns:',
+          'minmax(0,var(--rpi-pane-first-size,38%)) 9px minmax(0,1fr)!important;',
+          'grid-template-rows:minmax(0,1fr)!important}',
+          '.rpi-workbench[data-rpi-pane-axis="rows"]{grid-template-columns:minmax(0,1fr)!important;',
+          'grid-template-rows:minmax(0,var(--rpi-pane-first-size,34%)) 9px minmax(0,1fr)!important}',
+          '.rpi-pane-resize-handle{background:transparent;cursor:col-resize;min-height:0;min-width:0;',
+          'outline:none;position:relative;touch-action:none;user-select:none;z-index:3}',
+          '.rpi-pane-resize-handle::after{background:var(--rpi-muted);border-radius:2px;content:"";',
+          'height:44px;left:calc(50% - 1px);opacity:.5;position:absolute;top:calc(50% - 22px);width:2px}',
+          '.rpi-workbench[data-rpi-pane-axis="rows"] .rpi-pane-resize-handle{cursor:row-resize}',
+          '.rpi-workbench[data-rpi-pane-axis="rows"] .rpi-pane-resize-handle::after{height:2px;',
+          'left:calc(50% - 22px);top:calc(50% - 1px);width:44px}',
+          '.rpi-pane-resize-handle:hover,.rpi-pane-resize-handle[data-dragging="true"]{',
+          'background:color-mix(in srgb,var(--vscode-focusBorder,#007fd4) 18%,transparent)}',
+          '.rpi-pane-resize-handle:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
           '.rpi-wireframe-layer,.rpi-resize-handle,.rpi-move-handle{display:none!important}',
           '.rpi-toolbar select[aria-label="Inspector position"]{display:none!important}',
           '.rpi-toolbar button[title="Collapse inspector"],',
@@ -152,6 +171,7 @@ export function createPreviewInspectorCompanionHtml(
         mirror.replaceChildren(style, createCompanionOverrideStyle(), fragment);
         status.hidden = true;
         mirror.hidden = false;
+        installPreviewInspectorCompanionPaneResize();
         restoreControlFocus(activeId, selectionStart, selectionEnd);
       }
 

@@ -227,6 +227,13 @@ positive/partial-positive usage와 render graph를 유지합니다. negative 결
 compiler당 package 16개와 target 256개로 제한하고 shutdown에서 비웁니다. setup의 공통 props와 export별
 props는 자동 근거보다 항상 우선합니다.
 
+`previewInspectorSmartPropsRuntimeSource`는 이 prop shape/provenance를 selected page candidate descriptor의
+target/root metadata, 부모 JSX literal, 마지막으로 commit된 base props와 JSON override에 결합합니다. contained
+render error의 짧은 property는 provenance path의 exact suffix와 일치할 때만 full path로 확장하고, 일치하지 않는
+field는 top-level 요구로 유지해 임의의 business object 계층을 만들지 않습니다. 함수 leaf는 JSON-safe sentinel로
+보존하며 `PreviewPageInspectorRootRenderer`와 `PreviewInspectorTargetRenderer`가 project render 직전에만 no-op
+callback으로 materialize합니다. 따라서 첫 target commit 전 실패와 callback-only props도 `{}`로 축소되지 않습니다.
+
 ## Page Inspector 실제 문맥 경계
 
 Page Inspector는 기본 명령의 composition 정책이며 component gallery의 parent slice를 확장하는 flag가
@@ -433,6 +440,8 @@ viewport 밖 요소를 만들지 않습니다.
 JSON의 prototype-sensitive key를 제거하고 함수·symbol·순환 reference를 편집 계약에서 제외합니다. boolean
 조건 prop은 override로 바꾸고, 계측된 JSX condition은 authored/forced branch를 tree에서 선택하며,
 `Auto values`는 inference/usage-derived prop layer만 제외하고 실제 parent/setup props는 보존합니다.
+일반 Props 및 `Fix blocker` detail은 공통 `previewInspectorPropsUiRuntimeSource`를 사용합니다. 이 editor는 Smart
+draft의 generated path와 no-op sentinel을 명시하고 `Smart fill props` 적용 시 현재 export revision만 remount합니다.
 current-file export row는 별도 `Reveal` action으로 selection, ancestor expansion, scroll 및 host highlight를 한 번에
 요청합니다. blocker row 선택은 렌더 의미를 즉시 바꾸지 않고 `Blocker` detail을 열며 condition branch, hook JSON,
 data payload 또는 retry 값을 사용자가 명시적으로 적용할 때만 selected page revision을 remount합니다.
@@ -590,7 +599,7 @@ frozen `{}`와 no-op submit입니다. project form component, validator, app ent
 내부 Provider는 nearest-context 규칙으로 우선합니다.
 
 `previewRouterBridgePlugin`의 활성 여부는 편집 중인 한 파일이 아니라 첫 target-rooted esbuild build에서
-실제로 요청된 workspace module 전체의 `react-router-dom` value import inventory로 결정합니다. named
+실제로 요청된 workspace module 전체의 `react-router-dom`/`react-router` value import inventory로 결정합니다. named
 alias와 namespace property access에서 location consumer와 application Router provider를 별도로 기록하고,
 consumer가 있으면서 provider가 없을 때만 최대 한 번 다시 빌드해 target package의 `MemoryRouter`를
 optional resolve합니다. 기본 `['/']` history를 제공하며 앱 route module, browser history, loader/action은
@@ -600,10 +609,13 @@ graph의 provider 근거가 있으면 nested Router를 만들지 않습니다. s
 
 Page Inspector의 selectable root는 전체 target graph와 같은 Provider 계층을 반드시 포함하지 않습니다.
 따라서 ancestor planner는 후보 root 아래의 target-facing render-path module만 다시 검사해
-`rootOwnsRouter`를 descriptor에 기록합니다. 브라우저의 후보 loader는 실제 React render 시점에
+`rootOwnsRouter`를 descriptor에 기록합니다. Page Inspector 전역에는 별도 Router를 합성하지 않습니다.
+브라우저의 후보 loader는 실제 React render 시점에
 `useInRouterContext`(v5는 legacy context)를 확인하고, 상위 context가 없으며 후보도 Router를 소유하지
 않을 때만 대상 프로젝트 package 인스턴스의 후보 지역 `MemoryRouter`를 합성합니다. 이 경계는 setup
-Provider를 그대로 상속하고 AppRouter/RouterProvider 후보 안에는 중첩되지 않습니다.
+Provider를 그대로 상속하고 AppRouter/RouterProvider 후보 안에는 중첩되지 않습니다. custom wrapper나 re-export로
+ownership을 정적으로 놓친 경우 nested Router invariant만 지역 error boundary가 포착해 추론 MemoryRouter 없이
+같은 candidate를 재시도하며, 다른 application error는 기존 preview boundary로 그대로 전달합니다.
 
 `reactContextFallback`은 workspace 안의 TypeScript에만 적용되며 React import identity와 explicit missing
 default를 확인합니다. inline structural type뿐 아니라 같은 module의 유일한 non-generic·acyclic

@@ -2,6 +2,26 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1063 - 2026-07-19
+
+- `Fix blocker`의 props 편집기가 target의 첫 commit 전에 실패하면 `{}`로 시작하던 경로를 제거하고, export의
+  same-file type/receiver 사용, 부모 JSX literal, 마지막 관찰값과 사용자 override를 합친 Smart prop 초안을 제공
+- `reading 'value'`처럼 runtime 오류가 짧은 property만 알려줘도 inference provenance의 suffix와 결합해
+  `field.value` 같은 증명된 전체 prop path에 최소값을 채우고, 근거 없는 중첩 위치는 임의로 추측하지 않도록 제한
+- 함수형 prop을 JSON에서 제거하지 않고 `[Preview no-op function]`으로 표시·저장한 뒤 project render 경계에서만
+  inert callback으로 복원해, callback-only props도 빈 객체로 보이거나 reload 후 사라지지 않도록 개선
+- nested target의 inferred shape를 page descriptor에도 보존해 실제 React base-prop 등록 effect가 commit되기 전에도
+  `Smart fill props`와 `Smart fill and retry`가 같은 descriptor-backed 최소값을 사용할 수 있게 통합
+
+## 0.1.1062 - 2026-07-19
+
+- Page Inspector의 전역 graph Router와 선택 page candidate의 지역 Router가 동시에 합성될 수 있던 경로를 제거해,
+  각 candidate가 `rootOwnsRouter`와 실제 상위 context를 기준으로 정확히 한 경계만 선택하도록 수정
+- `react-router-dom`뿐 아니라 `react-router` core entry의 consumer/provider import도 graph 및 candidate-local
+  ownership 근거에 포함해 custom app Router의 정적 감지 범위를 확장
+- custom wrapper/re-export 때문에 내부 Router를 정적으로 증명하지 못한 경우에도 nested-`<Router>` invariant만
+  candidate 경계에서 포착해 추론한 MemoryRouter를 제거하고 같은 authored candidate를 즉시 다시 렌더링
+
 ## 0.1.1061 - 2026-07-19
 
 - 실제 port나 backend process 없이 Fetch·Axios·XMLHttpRequest·Apollo 요청을 한 broker로 종료하는 탭 내부

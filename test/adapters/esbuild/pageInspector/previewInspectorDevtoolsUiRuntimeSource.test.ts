@@ -310,6 +310,27 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(parentFocused).toBe(true);
   });
 
+  /** Keeps selection reveal local to the tree instead of scrolling the surrounding preview page. */
+  it('scrolls only the tree viewport when a selected row needs revealing', () => {
+    const runtime = evaluateDevtoolsUiHelpers();
+    const viewport: PreviewInspectorTreeViewportFixture = {
+      getBoundingClientRect: () => ({ bottom: 300, left: 50, right: 250, top: 100 }),
+      scrollLeft: 70,
+      scrollTop: 180,
+    };
+
+    runtime.revealTreeRow(viewport, {
+      getBoundingClientRect: () => ({ bottom: 90, left: 20, right: 40, top: 70 }),
+    });
+    expect(viewport).toMatchObject({ scrollLeft: 40, scrollTop: 150 });
+
+    runtime.revealTreeRow(viewport, {
+      getBoundingClientRect: () => ({ bottom: 340, left: 260, right: 290, top: 310 }),
+    });
+    expect(viewport).toMatchObject({ scrollLeft: 80, scrollTop: 190 });
+    expect(createPreviewInspectorDevtoolsUiRuntimeSource()).not.toContain('scrollIntoView');
+  });
+
   /** Separates editable instrumented props from observational Fiber props, state, and source. */
   it('renders guarded Props, read-only State, and adapter-owned Source details', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
@@ -392,6 +413,10 @@ interface DevtoolsUiTestRuntime {
     deltaX: number,
     deltaY: number,
   ) => PreviewInspectorTestLayout;
+  readonly revealTreeRow: (
+    viewport: PreviewInspectorTreeViewportFixture,
+    row: PreviewInspectorTreeRowFixture,
+  ) => void;
   readonly shellStyle: (
     layout: PreviewInspectorTestLayout,
     collapsed: boolean,
@@ -408,6 +433,26 @@ interface PreviewInspectorTestLayout {
   readonly floatingX: number;
   readonly floatingY: number;
   readonly sideWidth: number;
+}
+
+/** Mutable scroll container subset consumed by the generated tree reveal helper. */
+interface PreviewInspectorTreeViewportFixture {
+  readonly getBoundingClientRect: () => PreviewInspectorTreeBounds;
+  scrollLeft: number;
+  scrollTop: number;
+}
+
+/** Row geometry subset consumed by the generated tree reveal helper. */
+interface PreviewInspectorTreeRowFixture {
+  readonly getBoundingClientRect: () => PreviewInspectorTreeBounds;
+}
+
+/** Minimal DOMRect-like geometry shared by viewport and row fixtures. */
+interface PreviewInspectorTreeBounds {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
 }
 
 /** Creates one immutable component/internal-node fixture with optional nested collector children. */
@@ -439,6 +484,7 @@ globalThis.__devtoolsUiRuntime = {
   normalize(nodes) {
     return normalizePreviewInspectorUiNodes(nodes, 0, { count: 0 });
   },
+  revealTreeRow: revealPreviewInspectorTreeRow,
   resizeLayout: resizePreviewInspectorLayout,
   shellStyle: createPreviewInspectorShellStyle,
 };`;

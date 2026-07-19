@@ -463,6 +463,23 @@ function handlePreviewInspectorTreeKeyDown(event) {
 
 ${treeNodeUiRuntimeSource}
 
+/** Scrolls only the tree viewport, preventing a row selection from moving the preview document. */
+function revealPreviewInspectorTreeRow(treeViewport, row) {
+  const viewportBounds = treeViewport?.getBoundingClientRect?.();
+  const rowBounds = row?.getBoundingClientRect?.();
+  if (viewportBounds === undefined || rowBounds === undefined) return;
+  if (rowBounds.top < viewportBounds.top) {
+    treeViewport.scrollTop = Math.max(0, treeViewport.scrollTop + rowBounds.top - viewportBounds.top);
+  } else if (rowBounds.bottom > viewportBounds.bottom) {
+    treeViewport.scrollTop += rowBounds.bottom - viewportBounds.bottom;
+  }
+  if (rowBounds.left < viewportBounds.left) {
+    treeViewport.scrollLeft = Math.max(0, treeViewport.scrollLeft + rowBounds.left - viewportBounds.left);
+  } else if (rowBounds.right > viewportBounds.right) {
+    treeViewport.scrollLeft += rowBounds.right - viewportBounds.right;
+  }
+}
+
 /** Renders the searchable React Components pane and owns only visual expansion state. */
 function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }) {
   const [query, setQuery] = React.useState(() => previewInspectorDevtoolsSessionState.query);
@@ -486,7 +503,7 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
       const selectedRow = [...rows].find(
         (row) => row.getAttribute('data-react-preview-tree-row') === selectedId,
       );
-      selectedRow?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+      revealPreviewInspectorTreeRow(treeScrollRef.current, selectedRow);
     });
     return () => cancelAnimationFrame(frame);
   }, [query, selectedId]);

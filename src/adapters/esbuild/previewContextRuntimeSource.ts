@@ -40,6 +40,11 @@ const MAX_SUBSCRIBERS = 128;
 const REACT_CONTEXT_TYPE = Symbol.for('react.context');
 const REACT_PROVIDER_TYPE = Symbol.for('react.provider');
 const STATIC_NOOP = Object.freeze(() => undefined);
+const ARRAY_METHOD_NAMES = new Set([
+  'at', 'concat', 'every', 'filter', 'find', 'findIndex', 'flat', 'flatMap', 'forEach',
+  'includes', 'indexOf', 'join', 'lastIndexOf', 'map', 'reduce', 'reduceRight', 'slice',
+  'some', 'sort',
+]);
 const ambiguousHooks = new Set();
 const identityByHook = new Map();
 const requirementsByHook = new Map();
@@ -249,10 +254,29 @@ function mergeFallbackShape(destination, source) {
   return true;
 }
 
-/** Materializes a stable, deeply frozen plain value without preserving project callbacks. */
+/**
+ * Detects structural array evidence emitted when project code calls a built-in array method.
+ *
+ * The source analyzer deliberately records only receiver shape, so a requirement initially looks
+ * like an object containing a companies.map member. Returning that object makes a later reached
+ * companies.filter call fail even though both sites prove the same unique container kind. An empty
+ * frozen array implements every non-mutating method while retaining the render-only neutral value.
+ */
+function isArrayMethodShape(shape) {
+  if (shape.kind !== 'object' || shape.children.size === 0) return false;
+  for (const [propertyName, child] of shape.children) {
+    if (ARRAY_METHOD_NAMES.has(propertyName) && child.kind === 'callable') return true;
+  }
+  return false;
+}
+
+/** Materializes a stable, deeply frozen structural value without preserving project callbacks. */
 function materializeFallbackShape(shape) {
   if (shape.kind === 'callable') {
     return STATIC_NOOP;
+  }
+  if (isArrayMethodShape(shape)) {
+    return Object.freeze([]);
   }
   const value = {};
   const children = [...shape.children.entries()].sort(([left], [right]) =>

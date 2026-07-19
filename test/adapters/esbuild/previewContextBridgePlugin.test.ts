@@ -114,6 +114,49 @@ describe('createPreviewContextBridgePlugin', () => {
     }
   });
 
+  /**
+   * Treats a statically called array method as a unique container answer instead of asking the user
+   * to replace a generated `{ map() {} }` object after the next sibling calls `filter()`.
+   */
+  it('materializes array-method demand as a neutral frozen array automatically', async () => {
+    const projectRoot = await createTemporaryProject('context-array-shape-');
+    try {
+      await installFakeReactPackage(projectRoot);
+      const context = await executeContextBridgeFixture(
+        projectRoot,
+        [
+          "import { createContext } from 'react';",
+          "import { createContextPreviewElement, registerPreviewContextIdentity, registerPreviewContextRequirement } from 'react-preview:context';",
+          'const AppContext = createContext(null);',
+          'function useAppContext() {}',
+          'registerPreviewContextIdentity(useAppContext, AppContext);',
+          'registerPreviewContextRequirement(',
+          '  useAppContext,',
+          '  Object.freeze({ companies: Object.freeze({ map: Object.freeze(() => undefined) }) }),',
+          ');',
+          'const boundary = createContextPreviewElement({ marker: "TARGET" });',
+          'const providerElement = boundary.type(boundary.props);',
+          'const companies = providerElement.props.value.companies;',
+          'globalThis.__contextBridgeResult = {',
+          '  filterWorks: companies.filter(() => true).length === 0,',
+          '  frozen: Object.isFrozen(companies),',
+          '  isArray: Array.isArray(companies),',
+          '  mapWorks: companies.map(() => "never").length === 0,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__contextBridgeResult).toEqual({
+        filterWorks: true,
+        frozen: true,
+        isArray: true,
+        mapWorks: true,
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Leaves a real or type-guided non-nullish Context default closer to authored semantics. */
   it('does not shadow an existing non-nullish Context default with an outer fallback', async () => {
     const projectRoot = await createTemporaryProject('context-existing-default-');

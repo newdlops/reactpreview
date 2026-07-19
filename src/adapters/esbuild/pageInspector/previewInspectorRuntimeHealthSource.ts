@@ -13,6 +13,7 @@ const PREVIEW_INSPECTOR_HEALTH_ERROR_ROOT_LIMIT = 64;
 const PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT = 4_000;
 const PREVIEW_INSPECTOR_HEALTH_ERROR_CHAIN_MS = 5_000;
 const previewInspectorRuntimeHealthEvents = new Set([
+  'graphql-interpolation-repaired',
   'page-context-selected',
   'render-attempt-started',
   'render-attempt-settled',
@@ -92,7 +93,9 @@ function readPreviewInspectorRuntimeHealthSeverity(event) {
   if (event.startsWith('runtime-error')) {
     return 'error';
   }
-  return event === 'theme-token-repaired' || event === 'styled-components-instance-warning'
+  return event === 'graphql-interpolation-repaired' ||
+    event === 'theme-token-repaired' ||
+    event === 'styled-components-instance-warning'
     ? 'warn'
     : 'info';
 }

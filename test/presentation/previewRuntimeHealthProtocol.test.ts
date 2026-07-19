@@ -29,6 +29,32 @@ describe('Preview runtime health protocol', () => {
     });
   });
 
+  /** Accepts one source-backed circular GraphQL interpolation recovery warning. */
+  it('parses GraphQL document recovery diagnostics', () => {
+    const message = readPreviewRuntimeHealthMessage({
+      event: {
+        category: 'module-initialization',
+        detail: {
+          bindingName: 'COMPANY_REGISTER_MODAL_FRAGMENT',
+          fragmentNames: ['CompanyRegisterModal'],
+        },
+        event: 'graphql-interpolation-repaired',
+        eventId: 'runtime-health-2',
+        revision: 1,
+        sequence: 2,
+        severity: 'warn',
+        source: { column: 5, line: 17, sourcePath: '/workspace/query.ts' },
+        timestamp: '2026-07-19T13:00:01.000Z',
+      },
+      type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
+    });
+
+    expect(message?.event).toMatchObject({
+      event: 'graphql-interpolation-repaired',
+      severity: 'warn',
+    });
+  });
+
   /** Retains revision, parent error ancestry, and exact compiler-authored source evidence. */
   it('parses one complete fallback health event', () => {
     const message = readPreviewRuntimeHealthMessage({

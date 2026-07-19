@@ -31,6 +31,7 @@ import {
   type PreviewGlobalPackageBridgePlan,
 } from './globalPackageBridge';
 import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
+import { prepareAutomaticPreviewSetupFallback } from './previewAutomaticSetupFallback';
 import { forwardPreviewAbort } from './previewAbortForwarding';
 import { PreviewAdaptiveBuildPlanCache } from './previewAdaptiveBuildPlanCache';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
@@ -275,6 +276,17 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ...(request.tsconfigPath === undefined
           ? {}
           : { configuredTsconfigPath: request.tsconfigPath }),
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      const preparedSetupFallback = await prepareAutomaticPreviewSetupFallback({
+        cache: this.setupFailureCache,
+        dependencySnapshots: request.dependencySnapshots,
+        documentName: createPreviewDocumentName(request),
+        projectRoot,
+        runtimeEnvironment,
+        runtimeWatchInputs,
+        signal: buildSignal,
+        staticModuleResolver,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       const primaryRenderPath =
@@ -665,23 +677,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         tsconfigPath: request.tsconfigPath,
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      const setupFailureKey =
-        runtimeEnvironment.setupKind === 'storybook' &&
-        runtimeEnvironment.setupModulePath !== undefined
-          ? createPreviewBuildPlanIdentity({
-              projectRoot,
-              setupModulePath: runtimeEnvironment.setupModulePath,
-              workspaceRoot: canonicalWorkspaceRoot,
-            })
-          : undefined;
-      const cachedSetupFailure =
-        setupFailureKey === undefined
-          ? undefined
-          : await this.setupFailureCache.read(
-              setupFailureKey,
-              request.dependencySnapshots,
-              buildSignal,
-            );
+      const setupFailureKey = preparedSetupFallback.cacheKey;
+      const cachedSetupFailure = preparedSetupFallback.plan;
       const cachedOutputStrategy = useFastPreparation
         ? undefined
         : this.outputStrategyCache.read(outputStrategyKey);
@@ -694,7 +691,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       let buildExecution: Awaited<ReturnType<typeof runBuild>> | undefined;
       let fallbackDependencies = cachedSetupFailure?.dependencyPaths ?? [];
       let fallbackWatchDirectories = cachedSetupFailure?.watchDirectories ?? [];
-      let fallbackDiagnostics: readonly PreviewDiagnostic[] = [];
+      let fallbackDiagnostics: readonly PreviewDiagnostic[] = preparedSetupFallback.diagnostics;
       throwIfPreviewBuildCancelled(buildSignal);
       context?.reportProgress?.('bundling-modules');
       try {

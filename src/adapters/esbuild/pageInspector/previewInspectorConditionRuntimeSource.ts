@@ -213,6 +213,27 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
       effectiveEnabled: enabled,
     });
   }
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function' && record !== undefined) {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Advance target-guided JSX branch',
+      blockerId: conditionId,
+      blockerKind: 'render-condition',
+      blockerName: 'Render condition · ' + record.expression,
+      column: record.column,
+      generatedPaths: [],
+      line: record.line,
+      mode: 'target-guided-auto',
+      ownerName: record.ownerName,
+      reason: 'Static path analysis selected the branch leading toward the current-file export',
+      selectedValue: enabled,
+      sourcePath: record.sourcePath,
+      summary: {
+        authoredEnabled: record.authoredEnabled,
+        role: record.role,
+        targetBranch: record.targetBranch,
+      },
+    });
+  }
   previewInspectorSession.renderConditionRevision += 1;
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();

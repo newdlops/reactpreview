@@ -23,6 +23,7 @@ function createPreviewInspectorBlockerSource(record) {
     column: record?.column,
     displayName: record?.sourcePath,
     line: record?.line,
+    occurrenceStart: record?.occurrenceStart,
     path: record?.sourcePath,
   });
 }
@@ -102,6 +103,7 @@ function readPreviewInspectorTargetFailures() {
         exportName,
         headline,
         id: 'target-error:' + exportName + ':' + String(failures.length),
+        occurrenceStart: reference?.occurrenceStart,
         requiredPaths: readPreviewInspectorErrorPropertyPaths(error),
         sourcePath: reference?.sourcePath,
       });
@@ -348,7 +350,11 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
     targetFailures,
   );
   roots.push(...rootBlockers);
-  return { ...conditionedSnapshot, roots };
+  const enrichedSnapshot = { ...conditionedSnapshot, roots };
+  if (typeof publishPreviewInspectorBlockerTraceSnapshot === 'function') {
+    publishPreviewInspectorBlockerTraceSnapshot(enrichedSnapshot);
+  }
+  return enrichedSnapshot;
 }
 
 /** Reports whether selection should open blocker controls instead of ordinary component props. */
@@ -561,6 +567,27 @@ function smartFillPreviewInspectorTargetFailure(failure) {
     failure.exportName,
     failure.requiredPaths,
   );
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Smart fill target props and retry',
+      blockerId: failure.id,
+      blockerKind: 'target-error',
+      blockerName: 'Component error · ' + failure.blockedComponentName,
+      generatedPaths: draft.generatedPaths,
+      mode: 'smart-props',
+      occurrenceStart: failure.occurrenceStart,
+      ownerName: failure.exportName,
+      reason: failure.headline,
+      selectedValue: draft.generatedValue,
+      sourcePath: failure.sourcePath,
+      summary: {
+        preservedObservedOrUserProps:
+          stringifyPreviewInspectorProps(draft.generatedValue) !==
+          stringifyPreviewInspectorProps(draft.value),
+        requiredPaths: failure.requiredPaths,
+      },
+    });
+  }
   if (!hasPreviewInspectorSmartPropsDraft(draft)) {
     setPreviewInspectorFallbackValuesEnabled(true);
     remountPreviewInspectorExport(failure.exportName);

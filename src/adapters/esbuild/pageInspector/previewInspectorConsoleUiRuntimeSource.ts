@@ -190,6 +190,11 @@ function PreviewInspectorConsoleDetail() {
       String(visibleEntries.length) + ' of ' + String(entries.length) +
         ' messages · newest 250 retained for this preview tab',
     ),
+    React.createElement(
+      'div',
+      { className: 'rpi-note' },
+      'Blocker resolver timeline: VS Code Output → React Preview. Search for “React preview blocker trace” to inspect source, Auto choices, render diffs, and following errors.',
+    ),
     visibleEntries.length === 0
       ? React.createElement(
           'div',

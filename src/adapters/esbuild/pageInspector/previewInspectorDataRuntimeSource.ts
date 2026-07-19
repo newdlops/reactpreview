@@ -398,6 +398,27 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
   } else {
     previewInspectorSession.dataRequests.set(normalized.id, registered);
   }
+  if (
+    previous === undefined &&
+    payloadMode === 'auto' &&
+    typeof recordPreviewInspectorBlockerAutoDecision === 'function'
+  ) {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Generate virtual backend response',
+      blockerId: normalized.id,
+      blockerKind: 'data-request',
+      blockerName: 'Backend data · ' + normalized.label,
+      column: normalized.column,
+      generatedPaths: readPreviewInspectorDataShapePaths(normalized.shape),
+      line: normalized.line,
+      mode: 'auto',
+      ownerName: normalized.ownerName,
+      reason: normalized.evidence,
+      selectedValue: autoPayload,
+      sourcePath: normalized.sourcePath,
+      summary: { kind: normalized.kind, method: normalized.method, url: normalized.url },
+    });
+  }
   return backendResult;
 }
 
@@ -463,6 +484,21 @@ function setPreviewInspectorDataAutoEnabled(enabled) {
   initializePreviewInspectorDataState();
   if (typeof enabled !== 'boolean' || enabled === previewInspectorSession.dataAutoEnabled) return;
   previewInspectorSession.dataAutoEnabled = enabled;
+  if (enabled && typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    const requests = [...previewInspectorSession.dataRequests.values()].slice(0, 24);
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Enable Auto payload generation',
+      blockerId: 'data-auto-boundary',
+      blockerKind: 'data-request-policy',
+      blockerName: 'Virtual backend Auto payloads',
+      generatedPaths: requests.flatMap((record) =>
+        readPreviewInspectorDataShapePaths(record.shape).map((path) => record.label + '.' + path),
+      ).slice(0, 128),
+      mode: 'auto',
+      reason: 'Infer local response values without backend transport',
+      selectedValue: Object.fromEntries(requests.map((record) => [record.id, record.autoPayload])),
+    });
+  }
   commitPreviewInspectorDataChange();
 }
 
@@ -531,11 +567,34 @@ function smartFillPreviewInspectorDataPayload(requestId) {
   const current = previewInspectorSession.dataPayloadOverrides.get(requestId);
   const minimum = generatePreviewInspectorDataValue(record.shape, '', 'smart');
   const retainUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
+  const selectedPayload = retainUserPayload
+    ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
+    : minimum;
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Smart fill minimum backend payload',
+      blockerId: requestId,
+      blockerKind: 'data-request',
+      blockerName: 'Backend data · ' + record.label,
+      column: record.column,
+      generatedPaths: readPreviewInspectorDataShapePaths(record.shape),
+      line: record.line,
+      mode: retainUserPayload ? 'smart-custom' : 'smart',
+      ownerName: record.ownerName,
+      reason: record.evidence,
+      selectedValue: minimum,
+      sourcePath: record.sourcePath,
+      summary: {
+        kind: record.kind,
+        method: record.method,
+        preservedUserPayload: retainUserPayload,
+        url: record.url,
+      },
+    });
+  }
   setPreviewInspectorDataPayload(
     requestId,
-    retainUserPayload
-      ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
-      : minimum,
+    selectedPayload,
     retainUserPayload ? 'smart-custom' : 'smart',
   );
 }
@@ -568,19 +627,55 @@ function generatePreviewInspectorLoremPayload(requestId) {
   initializePreviewInspectorDataState();
   const record = previewInspectorSession.dataRequests.get(requestId);
   if (record === undefined) return;
-  setPreviewInspectorDataPayload(
-    requestId,
-    generatePreviewInspectorDataValue(record.shape, '', 'lorem'),
-    'lorem',
-  );
+  const payload = generatePreviewInspectorDataValue(record.shape, '', 'lorem');
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Generate typed Lorem backend payload',
+      blockerId: requestId,
+      blockerKind: 'data-request',
+      blockerName: 'Backend data · ' + record.label,
+      column: record.column,
+      generatedPaths: readPreviewInspectorDataShapePaths(record.shape),
+      line: record.line,
+      mode: 'lorem',
+      ownerName: record.ownerName,
+      reason: record.evidence,
+      selectedValue: payload,
+      sourcePath: record.sourcePath,
+      summary: { kind: record.kind, method: record.method, url: record.url },
+    });
+  }
+  setPreviewInspectorDataPayload(requestId, payload, 'lorem');
 }
 
 /** Removes one manual override so the global Auto/seed policy becomes effective again. */
 function resetPreviewInspectorDataPayload(requestId) {
   initializePreviewInspectorDataState();
+  const record = previewInspectorSession.dataRequests.get(requestId);
   const overrideRemoved = previewInspectorSession.dataPayloadOverrides.delete(requestId);
   const resourceRemoved = clearPreviewInspectorVirtualBackendResource(requestId);
   if (!overrideRemoved && !resourceRemoved) return;
+  if (
+    record !== undefined &&
+    previewInspectorSession.dataAutoEnabled &&
+    typeof recordPreviewInspectorBlockerAutoDecision === 'function'
+  ) {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Restore inferred backend payload',
+      blockerId: requestId,
+      blockerKind: 'data-request',
+      blockerName: 'Backend data · ' + record.label,
+      column: record.column,
+      generatedPaths: readPreviewInspectorDataShapePaths(record.shape),
+      line: record.line,
+      mode: 'auto',
+      ownerName: record.ownerName,
+      reason: record.evidence,
+      selectedValue: record.autoPayload,
+      sourcePath: record.sourcePath,
+      summary: { kind: record.kind, method: record.method, url: record.url },
+    });
+  }
   commitPreviewInspectorDataChange();
 }
 

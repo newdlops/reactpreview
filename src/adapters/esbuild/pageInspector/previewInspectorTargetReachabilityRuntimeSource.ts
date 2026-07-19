@@ -277,6 +277,42 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
   const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(state.key);
   const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(state.key);
   if (!runtimeChanged && !dataChanged) return false;
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    const hookValues = readPreviewInspectorRuntimeFallbacks()
+      .filter((record) => record.reachabilityKey === state.key)
+      .slice(0, 24)
+      .map((record) => ({
+        id: record.id,
+        requiredPaths: record.requiredPaths,
+        value: createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+          previewInspectorSession.runtimeFallbackValues.get(record.id),
+          record.requiredPaths,
+        ),
+      }));
+    const backendPayloads = [...previewInspectorSession.dataRequests.values()]
+      .filter((record) => record.reachabilityKey === state.key)
+      .slice(0, 24)
+      .map((record) => ({
+        id: record.id,
+        mode: 'smart',
+        payload: generatePreviewInspectorDataValue(record.shape, '', 'smart'),
+      }));
+    const sourceGate = state.appliedConditions?.at(-1);
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Fill newly discovered page-path requirements',
+      blockerId: 'target-reachability:' + state.key,
+      blockerKind: 'target-reachability',
+      blockerName: 'Target not reached · ' + state.targetExportName,
+      generatedPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
+      line: sourceGate?.line,
+      mode: 'minimum-requirement-dfs',
+      ownerName: sourceGate?.ownerName ?? state.rootName,
+      reason: 'Downstream hook and backend reads were discovered during the previous DFS pass',
+      selectedValue: { backendPayloads, hookValues, nextPass: search.pass + 1 },
+      sourcePath: sourceGate?.sourcePath,
+      summary: { applicationPath: state.applicationPath },
+    });
+  }
   search.pass += 1;
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   if (search.pass >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) {
@@ -497,6 +533,7 @@ function readPreviewInspectorTargetReachabilityBlockers() {
     .map((state) => ({
       ...state,
       id: 'target-reachability:' + state.key,
+      line: state.appliedConditions?.at(-1)?.line,
       minimumRequirementSearch: readPreviewInspectorMinimumRequirementSearch(state),
       ownerName: state.appliedConditions?.at(-1)?.ownerName ?? state.rootName,
       requiredPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
@@ -512,6 +549,26 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     return;
   }
   initializePreviewInspectorTargetReachabilityState();
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Start minimum page-path requirement search',
+      blockerId: blocker.id ?? 'target-reachability:' + reachabilityKey,
+      blockerKind: 'target-reachability',
+      blockerName: 'Target not reached · ' + String(blocker.targetExportName ?? 'selected export'),
+      generatedPaths: blocker.requiredPaths ?? [],
+      line: blocker.line,
+      mode: 'minimum-requirement-dfs',
+      ownerName: blocker.ownerName,
+      reason: 'Traverse from the authored page root and fill only values demanded downstream',
+      selectedValue: {
+        dataAutoEnabled: true,
+        fallbackValuesEnabled: true,
+        retainedGates: blocker.appliedConditions ?? [],
+      },
+      sourcePath: blocker.sourcePath,
+      summary: { applicationPath: blocker.applicationPath ?? [] },
+    });
+  }
   previewInspectorSession.minimumRequirementSearchByKey.set(reachabilityKey, {
     observedPathCount: 0,
     pass: 0,

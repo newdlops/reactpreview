@@ -200,6 +200,9 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
   if (previous?.fingerprint === fingerprint) {
     previous.count += 1;
     previous.timestamp = timestamp;
+    if (typeof recordPreviewInspectorBlockerTraceError === 'function') {
+      recordPreviewInspectorBlockerTraceError(previous);
+    }
     schedulePreviewInspectorConsoleNotification();
     return previous;
   }
@@ -221,6 +224,9 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
   entries.push(entry);
   if (entries.length > PREVIEW_INSPECTOR_CONSOLE_ENTRY_LIMIT) {
     entries.splice(0, entries.length - PREVIEW_INSPECTOR_CONSOLE_ENTRY_LIMIT);
+  }
+  if (typeof recordPreviewInspectorBlockerTraceError === 'function') {
+    recordPreviewInspectorBlockerTraceError(entry);
   }
   schedulePreviewInspectorConsoleNotification();
   return entry;

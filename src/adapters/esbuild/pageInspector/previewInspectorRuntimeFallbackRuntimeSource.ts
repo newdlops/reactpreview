@@ -190,6 +190,26 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     previous.reason !== next.reason ||
     previous.fallbackPreview !== next.fallbackPreview
   ) {
+    if (
+      typeof recordPreviewInspectorBlockerAutoDecision === 'function' &&
+      (next.mode === 'auto' || next.mode === 'smart')
+    ) {
+      recordPreviewInspectorBlockerAutoDecision({
+        action: reason === 'partial' ? 'Complete missing hook fields' : 'Substitute failed hook result',
+        blockerId: metadata.id,
+        blockerKind: 'runtime-fallback',
+        blockerName: 'Missing hook value · ' + metadata.hookName,
+        column: metadata.column,
+        generatedPaths,
+        line: metadata.line,
+        mode: next.mode,
+        ownerName: metadata.ownerName,
+        reason: errorHeadline || metadata.evidence,
+        selectedValue: fallback,
+        sourcePath: metadata.sourcePath,
+        summary: { requiredPaths: metadata.requiredPaths },
+      });
+    }
     const message =
       '[Render-only fallback] ' + metadata.hookName + ' ' +
       (reason === 'threw'
@@ -379,6 +399,24 @@ function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
       createPreviewInspectorRuntimeFallbackAutoValue(fallback, requiredPaths),
     );
   }
+  const record = previewInspectorSession.runtimeFallbacks.get(fallbackId);
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function' && record !== undefined) {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Use compiler-inferred hook value',
+      blockerId: fallbackId,
+      blockerKind: 'runtime-fallback',
+      blockerName: 'Missing hook value · ' + record.hookName,
+      column: record.column,
+      generatedPaths: requiredPaths,
+      line: record.line,
+      mode: 'auto',
+      ownerName: record.ownerName,
+      reason: record.evidence,
+      selectedValue: previewInspectorSession.runtimeFallbackValues.get(fallbackId),
+      sourcePath: record.sourcePath,
+      summary: { requiredPaths },
+    });
+  }
   previewInspectorSession.fallbackValuesEnabled = true;
   commitPreviewInspectorRuntimeFallbackChange();
 }
@@ -417,6 +455,33 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
 /** Replaces one generated hook result with only the paths proven necessary by downstream reads. */
 function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
   if (!applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId)) return;
+  const record = previewInspectorSession.runtimeFallbacks.get(fallbackId);
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function' && record !== undefined) {
+    const generatedSelection = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+      previewInspectorSession.runtimeFallbackValues.get(fallbackId),
+      record.requiredPaths,
+    );
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Smart fill minimum hook value',
+      blockerId: fallbackId,
+      blockerKind: 'runtime-fallback',
+      blockerName: 'Missing hook value · ' + record.hookName,
+      column: record.column,
+      generatedPaths: record.requiredPaths,
+      line: record.line,
+      mode: previewInspectorSession.runtimeFallbackOverrides.has(fallbackId)
+        ? 'smart-manual'
+        : 'smart',
+      ownerName: record.ownerName,
+      reason: record.evidence,
+      selectedValue: generatedSelection,
+      sourcePath: record.sourcePath,
+      summary: {
+        preservedUserValue: previewInspectorSession.runtimeFallbackOverrides.has(fallbackId),
+        requiredPaths: record.requiredPaths,
+      },
+    });
+  }
   previewInspectorSession.fallbackValuesEnabled = true;
   commitPreviewInspectorRuntimeFallbackChange();
 }

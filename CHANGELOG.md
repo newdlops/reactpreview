@@ -2,6 +2,21 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1079 - 2026-07-19
+
+- 이미 Auto 값이 적용된 hook/API 관찰 항목을 미해결 blocker 집계에서 제외하고, 같은 렌더 스택의 자동 결정과
+  tree discovery/update를 bounded batch로 기록해 대형 페이지마다 수백 번 발생하던 webview 메시지·소스 재읽기·
+  pretty JSON 출력을 줄이면서 실제 remount 결정과 후속 오류의 trace ID 인과관계는 유지
+- 자동 Storybook preview entry의 직접 runtime import를 전체 번들 전에 AST로 검사해 누락된 로컬 모듈이 명확한
+  경우 실패가 예정된 첫 esbuild를 생략하고 setup-free build를 바로 시작하며, 누락 후보와 상위 디렉터리를 감시해
+  파일 생성 또는 setup 수정 시 자동으로 원래 설정을 재시도
+- lazy root의 첫 로딩 여유는 보존하되 이후 page-path DFS probe를 260ms 고정 대기에서 48ms continuation으로 바꿔
+  16패스 최대 순수 대기 예산을 약 4.2초에서 0.9초로 줄이고, 비치명 React/AG Grid 설정 경고가 자동 해결 실패
+  chain을 시작하지 않도록 분리
+- `meetingList { objectList { ... } }`처럼 pageInfo를 생략한 GraphQL collection wrapper를 외부 배열로 오인하던
+  shape 추론을 수정하고, 한 객체 안에서 부모 데이터 명사와 연결된 비파괴적 역할 boolean이 여러 개면 첫 분기만
+  활성화해 `undefined.length`와 all-false exhaustive dispatcher의 `Error: never`를 자동 데이터 단계에서 차단
+
 ## 0.1.1078 - 2026-07-19
 
 - Auto/Smart backend payload와 hook/blocker fallback의 일반 문자열을 긴 임의 문장 대신 실제 leaf key로 생성해

@@ -14,6 +14,8 @@ import {
   PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER,
 } from './previewInspectorTargetPlugin';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
+import type { PreviewThemeImportSelection } from '../previewTargetExports';
+import type { PreviewGlobalStyleImportSelection } from '../previewGlobalStyleSelection';
 
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 
@@ -21,10 +23,14 @@ const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 export interface PreviewInspectorRootPluginOptions {
   /** User-facing name of the originally selected export. */
   readonly displayName?: string;
+  /** Exported app-level global styles recovered from wrappers above the safe mounted root. */
+  readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
   /** Bounded real-owner plan produced from current editor-or-disk source. */
   readonly plan: PreviewInspectorAncestorPlan;
   /** Neutral target props inferred without evaluating the selected project module. */
   readonly targetInference?: PreviewInferredExportProps;
+  /** Exact page-corridor theme imported before any lazy authored root begins rendering. */
+  readonly themeImport?: PreviewThemeImportSelection;
 }
 
 /**
@@ -52,10 +58,14 @@ export function createPreviewInspectorRootPlugin(
     return {
       contents: createPreviewInspectorRootSource({
         ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
+        ...(options.globalStyleImports === undefined
+          ? {}
+          : { globalStyleImports: options.globalStyleImports }),
         plan: options.plan,
         ...(options.targetInference === undefined
           ? {}
           : { targetInference: options.targetInference }),
+        ...(options.themeImport === undefined ? {} : { themeImport: options.themeImport }),
       }),
       loader: 'js',
       resolveDir: path.dirname(options.plan.root.sourcePath),
@@ -78,8 +88,10 @@ export function createPreviewInspectorRootPlugin(
 /** Pure source generator inputs used by plugin and bridge contract tests. */
 export interface PreviewInspectorRootSourceOptions {
   readonly displayName?: string;
+  readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
   readonly plan: PreviewInspectorAncestorPlan;
   readonly targetInference?: PreviewInferredExportProps;
+  readonly themeImport?: PreviewThemeImportSelection;
 }
 
 /**
@@ -181,8 +193,12 @@ export function createPreviewInspectorRootSource(
       targetInferredProps: options.targetInference?.provenance ?? [],
     },
   };
+  const themeImport = createInspectorThemeImport(options.themeImport);
+  const globalStyleImports = createInspectorGlobalStyleImports(options.globalStyleImports ?? []);
 
   return [
+    ...(themeImport.statement === undefined ? [] : [themeImport.statement]),
+    ...globalStyleImports.statements,
     `const __reactPreviewInspectorCandidates = Object.freeze([${[
       ...candidateDefinitions,
       ...directTargetDefinitions,
@@ -197,9 +213,40 @@ export function createPreviewInspectorRootSource(
     '  return api.createPageCandidateElement(__reactPreviewInspectorCandidates, props);',
     '}',
     '__reactPreviewInspectorDescriptor.value = __reactPreviewInspectorRoot;',
-    'export const previewTheme = undefined;',
+    `export const previewTheme = ${themeImport.reference};`,
+    `export const previewGlobalStyles = Object.freeze([${globalStyleImports.references.join(',')}]);`,
     'export default Object.freeze([Object.freeze(__reactPreviewInspectorDescriptor)]);',
   ].join('\n');
+}
+
+/** Creates stable eager imports for app-level global styles while page candidates remain lazy. */
+function createInspectorGlobalStyleImports(
+  globalStyleImports: readonly PreviewGlobalStyleImportSelection[],
+): { readonly references: readonly string[]; readonly statements: readonly string[] } {
+  const references: string[] = [];
+  const statements: string[] = [];
+  for (const [index, globalStyleImport] of globalStyleImports.entries()) {
+    assertExportName(globalStyleImport.exportName);
+    const reference = `__reactPreviewInspectorGlobalStyle${index.toString()}`;
+    references.push(reference);
+    statements.push(
+      `import { ${globalStyleImport.exportName} as ${reference} } from ${JSON.stringify(globalStyleImport.moduleSpecifier)};`,
+    );
+  }
+  return { references, statements };
+}
+
+/** Creates one eager exact-theme import while every authored page candidate remains lazy. */
+function createInspectorThemeImport(themeImport: PreviewThemeImportSelection | undefined): {
+  readonly reference: string;
+  readonly statement?: string;
+} {
+  if (themeImport === undefined) return { reference: 'undefined' };
+  assertExportName(themeImport.exportName);
+  return {
+    reference: '__reactPreviewInspectorTheme',
+    statement: `import { ${themeImport.exportName} as __reactPreviewInspectorTheme } from ${JSON.stringify(themeImport.moduleSpecifier)};`,
+  };
 }
 
 /** Rejects names that cannot be emitted in an ECMAScript named import clause. */

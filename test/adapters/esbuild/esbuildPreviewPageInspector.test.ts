@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
+import { installFakeStyledComponentsPackage } from './support/fakeStyledComponentsPackage';
+import { decodePreviewBundleStyles } from './support/previewBundleStyles';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -90,7 +92,7 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(entryJavascript).not.toContain('UNUSED_TARGET_MARKER');
       expect(javascript).toContain('UNUSED_TARGET_MARKER');
       expect(javascript).toContain('selected-direct-target:UnusedTargetSibling');
-      expect(Buffer.from(bundle.stylesheet ?? []).toString('utf8')).toContain('min-height: 100vh');
+      expect(decodePreviewBundleStyles(bundle)).toContain('min-height: 100vh');
       expect(bundle.dependencies).toEqual(
         expect.arrayContaining([targetPath, sectionPath, pagePath]),
       );
@@ -103,6 +105,104 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       ).toEqual([]);
       expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
         [],
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Eagerly carries exact page theme and authored HTML selector attributes across lazy roots. */
+  it('preserves the application style context before rendering a lazy page candidate', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-styles-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const targetPath = path.join(sourceDirectory, 'Target.tsx');
+    const providerPath = path.join(sourceDirectory, 'Provider.tsx');
+    const appPath = path.join(sourceDirectory, 'App.tsx');
+    const entryPath = path.join(sourceDirectory, 'index.tsx');
+    const themePath = path.join(sourceDirectory, 'theme.ts');
+    const htmlPath = path.join(projectRoot, 'public', 'index.html');
+    const targetSource = 'export function Target() { return <button>STYLED_TARGET</button>; }';
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await Promise.all([
+        mkdir(sourceDirectory, { recursive: true }),
+        mkdir(path.dirname(htmlPath), { recursive: true }),
+      ]);
+      await installFakeStyledComponentsPackage(projectRoot);
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(
+          path.join(projectRoot, 'tsconfig.json'),
+          JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@theme': ['src/theme'] } } }),
+          'utf8',
+        ),
+        writeFile(targetPath, targetSource, 'utf8'),
+        writeFile(
+          themePath,
+          "export const theme = { marker: 'EXACT_CORRIDOR_THEME', color: { primary: '#123456' } };",
+          'utf8',
+        ),
+        writeFile(
+          providerPath,
+          [
+            "import { ThemeProvider } from 'styled-components';",
+            "import { theme as defaultTheme } from './theme';",
+            'export function Provider({ children }) {',
+            '  return <ThemeProvider theme={defaultTheme}>{children}</ThemeProvider>;',
+            '}',
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          appPath,
+          [
+            "import styled from 'styled-components';",
+            "import { theme } from '@theme';",
+            "import { Provider } from './Provider';",
+            "import { Target } from './Target';",
+            'const Header = styled.header`color: ${theme.color.primary};`;',
+            'export function App() {',
+            '  return <Provider><main><Header>PAGE_HEADER</Header><Target /></main></Provider>;',
+            '}',
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          entryPath,
+          "import { createRoot } from 'react-dom/client'; import { App } from './App'; createRoot(document.getElementById('root')).render(<App />);",
+          'utf8',
+        ),
+        writeFile(
+          htmlPath,
+          '<!doctype html><html lang="ko"><body class="body normal"><div id="root" class="application-root"></div></body></html>',
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const entryJavascript = Buffer.from(bundle.javascript).toString('utf8');
+      const allJavascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(allJavascript).toContain('EXACT_CORRIDOR_THEME');
+      expect(allJavascript).toMatch(/previewTheme\s*=\s*theme/u);
+      expect(entryJavascript).toContain('body normal');
+      expect(entryJavascript).toContain('application-root');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([appPath, entryPath, htmlPath, providerPath, targetPath, themePath]),
       );
     } finally {
       await compiler.shutdown();

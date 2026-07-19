@@ -99,6 +99,7 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"displayName":"Target inspector"');
     expect(source).toContain('"stopReason":"root-reached"');
     expect(source).toContain('export const previewTheme = undefined;');
+    expect(source).toContain('export const previewGlobalStyles = Object.freeze([]);');
   });
 
   /** Uses the direct facade when the target itself is the best importable mount root. */
@@ -116,6 +117,41 @@ describe('createPreviewInspectorRootSource', () => {
     );
     expect(source).toContain('"inferredPropShape":{"kind":"object"');
     expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
+  });
+
+  /** Imports only the exact static theme eagerly while retaining every authored page root lazily. */
+  it('exposes a page-corridor theme before lazy candidate rendering begins', () => {
+    const source = createPreviewInspectorRootSource({
+      plan: createPlan({ exportName: 'Page', sourcePath: PAGE_PATH }),
+      themeImport: { exportName: 'theme', moduleSpecifier: '/workspace/theme.ts' },
+    });
+
+    expect(source).toContain(
+      'import { theme as __reactPreviewInspectorTheme } from "/workspace/theme.ts";',
+    );
+    expect(source).toContain('export const previewTheme = __reactPreviewInspectorTheme;');
+    expect(source).toContain('load: () => import("/workspace/application/Page.tsx")');
+  });
+
+  /** Eagerly exposes only proven app-wrapper global styles for composition under the exact theme. */
+  it('exports recovered app-level global style components', () => {
+    const source = createPreviewInspectorRootSource({
+      globalStyleImports: [
+        { exportName: 'GlobalStyle', moduleSpecifier: '/workspace/global-style.tsx' },
+        { exportName: 'default', moduleSpecifier: '/workspace/reset.tsx' },
+      ],
+      plan: createPlan({ exportName: 'Page', sourcePath: PAGE_PATH }),
+    });
+
+    expect(source).toContain(
+      'import { GlobalStyle as __reactPreviewInspectorGlobalStyle0 } from "/workspace/global-style.tsx";',
+    );
+    expect(source).toContain(
+      'import { default as __reactPreviewInspectorGlobalStyle1 } from "/workspace/reset.tsx";',
+    );
+    expect(source).toContain(
+      'export const previewGlobalStyles = Object.freeze([__reactPreviewInspectorGlobalStyle0,__reactPreviewInspectorGlobalStyle1]);',
+    );
   });
 
   /** Emits every alternative behind its own dynamic import and keeps the first path as metadata. */

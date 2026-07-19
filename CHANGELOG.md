@@ -2,6 +2,18 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1074 - 2026-07-19
+
+- Yarn PnP 같은 workspace 주입 CommonJS resolver가 VS Code의 conditional `require`를 거부해 확장 자체가
+  활성화되지 않던 경로를 ESM extension-host entry로 분리하고, ESM 확장을 지원하는 VS Code 1.100을 최소
+  버전으로 명시
+- public command 네 개를 compiler·cache·panel보다 먼저 등록하고 무거운 서비스는 첫 trusted command까지
+  지연해 adapter 초기화 실패가 불명확한 `command not found`로 축약되지 않도록 개선
+- Restricted Mode에서는 명령과 Workspace Trust 안내만 제공하고, 사용자가 신뢰하기 전에는 workspace 번들링과
+  실행을 시작하지 않으며 초기화 실패 시 `React Preview` Output channel로 바로 이동하는 선택지를 제공
+- VSIX에서 이전 CommonJS host artifact와 로컬 진단 `log.txt`를 제외해 잘못된 entry 혼입과 사용자 로그 배포를
+  방지
+
 ## 0.1.1066 - 2026-07-19
 
 - Page Inspector blocker를 현재 상태가 아닌 `blocker-discovered → auto-selection → render-result →

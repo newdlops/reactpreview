@@ -17,6 +17,16 @@ interface EditorContextMenuContribution {
 }
 
 interface ExtensionManifest {
+  /** Explicit activation events retained for older supported VS Code versions. */
+  readonly activationEvents?: readonly string[];
+  /** Restricted workspace policy that permits only trust guidance before code execution. */
+  readonly capabilities?: {
+    readonly untrustedWorkspaces?: {
+      readonly description?: string;
+      readonly restrictedConfigurations?: readonly string[];
+      readonly supported?: boolean | 'limited';
+    };
+  };
   /** VS Code contribution points relevant to these manifest integration tests. */
   readonly contributes?: {
     /** Commands made available to contribution points and command discovery. */
@@ -27,6 +37,12 @@ interface ExtensionManifest {
       readonly 'editor/context'?: readonly EditorContextMenuContribution[];
     };
   };
+  /** Minimum editor version required by the packaged extension-host module format. */
+  readonly engines?: {
+    readonly vscode?: string;
+  };
+  /** Packaged extension-host module loaded before `activate` can register commands. */
+  readonly main?: string;
 }
 
 /**
@@ -40,6 +56,32 @@ async function readExtensionManifest(): Promise<ExtensionManifest> {
 }
 
 describe('extension manifest', () => {
+  /** Keeps activation outside legacy workspace CommonJS hooks and permits trust-only guidance. */
+  it('loads an ESM host entry and registers commands in limited Restricted Mode', async () => {
+    const manifest = await readExtensionManifest();
+
+    expect(manifest.engines?.vscode).toBe('^1.100.0');
+    expect(manifest.main).toBe('./dist/extension.mjs');
+    expect(manifest.activationEvents).toEqual(
+      expect.arrayContaining([
+        'onCommand:reactPreview.open',
+        'onCommand:reactPreview.openPageInspector',
+        'onCommand:reactPreview.openComponentGallery',
+        'onCommand:reactPreview.refresh',
+      ]),
+    );
+    expect(manifest.capabilities?.untrustedWorkspaces).toEqual({
+      description:
+        'Preview commands explain the trust requirement, but bundling and executing workspace code remain disabled until the workspace is trusted.',
+      restrictedConfigurations: [
+        'reactPreview.tsconfig',
+        'reactPreview.setupFile',
+        'reactPreview.useStorybookPreview',
+      ],
+      supported: 'limited',
+    });
+  });
+
   it('exposes actual page context as the primary trusted source-editor action', async () => {
     const manifest = await readExtensionManifest();
     const registeredCommands = manifest.contributes?.commands?.map(({ command }) => command);

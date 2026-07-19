@@ -4,10 +4,10 @@
  * and registers commands; all preview behavior belongs to the imported architectural layers.
  */
 import * as vscode from 'vscode';
-import path from 'node:path';
 import { GlobalStoragePreviewArtifactStore } from './adapters/vscode/globalStoragePreviewArtifactStore';
 import { PreviewCompilerWorkerClient } from './adapters/worker/previewCompilerWorkerClient';
 import { BuildPreview } from './application/buildPreview';
+import { registerPreviewCommands } from './presentation/previewCommandRegistration';
 import { PreviewController } from './presentation/previewController';
 
 /** Resources that require ordered asynchronous cleanup during extension deactivation. */
@@ -20,7 +20,17 @@ interface ActiveExtensionResources {
   readonly compiler: PreviewCompilerWorkerClient;
 }
 
-let activeResources: ActiveExtensionResources | undefined;
+/** Lightweight activation state retained even when the trusted runtime has not been requested. */
+interface ActiveExtensionState {
+  /** VS Code lifecycle context used for packaged paths, storage and late disposable ownership. */
+  readonly context: vscode.ExtensionContext;
+  /** Diagnostic channel available before compiler construction and after command failures. */
+  readonly log: vscode.LogOutputChannel;
+  /** Lazily constructed trusted services, absent in Restricted Mode and command-idle windows. */
+  resources?: ActiveExtensionResources;
+}
+
+let activeState: ActiveExtensionState | undefined;
 
 /**
  * Activates the extension by composing dependencies and registering its public commands.
@@ -29,46 +39,55 @@ let activeResources: ActiveExtensionResources | undefined;
  */
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('React Preview', { log: true });
-  const compiler = new PreviewCompilerWorkerClient(
-    path.join(__dirname, 'previewCompilerWorker.js'),
-  );
-  const artifactStore = new GlobalStoragePreviewArtifactStore(context.globalStorageUri, log);
-  const buildPreview = new BuildPreview(compiler, artifactStore);
-  const controller = new PreviewController(buildPreview, artifactStore.resourceRoot, log);
-  activeResources = { artifactStore, compiler, controller };
+  const state: ActiveExtensionState = { context, log };
+  activeState = state;
 
-  /** Opens the primary actual-page context while pinning the selected source as its component. */
-  async function openPreview(): Promise<void> {
-    await controller.open('page-inspector');
-  }
-
-  /** Retains the original explicit Page Inspector command as a stable compatibility alias. */
-  async function openPageInspector(): Promise<void> {
-    await controller.open('page-inspector');
-  }
-
-  /** Opens the secondary direct-export gallery when page ancestry is intentionally unnecessary. */
-  async function openComponentGallery(): Promise<void> {
-    await controller.open('component');
-  }
-
-  /** Immediately rebuilds the focused or source-matched preview, opening one when necessary. */
-  async function refreshPreview(): Promise<void> {
-    await controller.refresh();
-  }
-
-  context.subscriptions.push(
+  const commandRegistrations = registerPreviewCommands({
+    actions: {
+      openComponentGallery: async () => {
+        await getOrCreateResources(state).controller.open('component');
+      },
+      openPageInspector: async () => {
+        await getOrCreateResources(state).controller.open('page-inspector');
+      },
+      refresh: async () => {
+        await getOrCreateResources(state).controller.refresh();
+      },
+    },
     log,
-    compiler,
-    artifactStore,
-    controller,
-    vscode.commands.registerCommand('reactPreview.open', openPreview),
-    vscode.commands.registerCommand('reactPreview.openPageInspector', openPageInspector),
-    vscode.commands.registerCommand('reactPreview.openComponentGallery', openComponentGallery),
-    vscode.commands.registerCommand('reactPreview.refresh', refreshPreview),
-  );
+  });
 
-  log.info('React File Preview activated.');
+  context.subscriptions.push(log, ...commandRegistrations);
+  log.info('React File Preview activated; commands registered and runtime services are idle.');
+}
+
+/**
+ * Creates compiler, artifact and panel services only after a trusted preview command is invoked.
+ * The extension entry is an ESM bundle, while the compiler remains a dedicated CommonJS worker;
+ * resolving the worker through the context avoids CommonJS-only `__dirname` in the host entry.
+ *
+ * @param state Current activation state that owns storage and late lifecycle subscriptions.
+ * @returns Stable resources shared by every preview tab in the extension-host window.
+ */
+function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResources {
+  if (state.resources !== undefined) {
+    return state.resources;
+  }
+
+  const compiler = new PreviewCompilerWorkerClient(
+    state.context.asAbsolutePath('dist/previewCompilerWorker.js'),
+  );
+  const artifactStore = new GlobalStoragePreviewArtifactStore(
+    state.context.globalStorageUri,
+    state.log,
+  );
+  const buildPreview = new BuildPreview(compiler, artifactStore);
+  const controller = new PreviewController(buildPreview, artifactStore.resourceRoot, state.log);
+  const resources = { artifactStore, compiler, controller };
+  state.resources = resources;
+  state.context.subscriptions.push(compiler, artifactStore, controller);
+  state.log.info('React File Preview trusted runtime services initialized.');
+  return resources;
 }
 
 /**
@@ -78,8 +97,8 @@ export function activate(context: vscode.ExtensionContext): void {
  * @returns Promise resolved after the session artifact queue and cache cleanup finish.
  */
 export async function deactivate(): Promise<void> {
-  const resources = activeResources;
-  activeResources = undefined;
+  const resources = activeState?.resources;
+  activeState = undefined;
   if (resources === undefined) {
     return;
   }

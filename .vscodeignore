@@ -23,6 +23,9 @@ eslint.config.mjs
 tsconfig.json
 vitest.config.ts
 dist/**/*.map
+dist/extension.js
 assets/*.md
 node_modules/esbuild/bin/esbuild
 .zoek-rs
+.tmp
+log.txt

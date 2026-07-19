@@ -67,6 +67,8 @@ default로 표현할 수 없는 state, 실제 route table 또는 props가 필요
 
 - React File Preview 버전
 - VS Code 버전
+- 명령이 없다는 오류라면 `Developer: Show Running Extensions`의 활성화 상태와
+  `Developer: Open Extension Logs Folder` 아래 Extension Host 로그의 최초 activation error
 - 로컬 또는 Remote 환경 여부
 - 운영체제, CPU architecture와 Linux인 경우 glibc 또는 musl 여부
 - React와 ReactDOM major version

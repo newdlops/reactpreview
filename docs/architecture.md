@@ -733,9 +733,10 @@ context state는 계속 일반적인 project runtime setup 또는 작은 harness
 
 ## 보안 경계
 
-확장 manifest와 명령 handler가 모두 Workspace Trust를 검사합니다. `localResourceRoots`는 전역
-저장소 전체가 아닌 현재 확장 창의 UUID 세션 디렉터리만 허용합니다. 생성된 스크립트는 외부
-ES module로 로드하며 inline script, nonce 우회, `eval`, `unsafe-eval`을 사용하지 않습니다.
+확장 manifest는 Restricted Mode에서 명령 등록과 신뢰 안내만 허용하고, 명령 handler는 신뢰가 확인되기
+전까지 compiler·cache·panel을 생성하지 않습니다. `localResourceRoots`는 전역 저장소 전체가 아닌 현재
+확장 창의 UUID 세션 디렉터리만 허용합니다. 생성된 스크립트는 외부 ES module로 로드하며 inline script,
+nonce 우회, `eval`, `unsafe-eval`을 사용하지 않습니다.
 
 웹뷰 CSP는 다음을 기본 차단합니다.
 
@@ -796,8 +797,9 @@ Extension Host 통합 테스트는 패널을 관찰할 안정적인 test seam을
 
 ## 배포 제약
 
-확장 자체는 Node 20 호환 CommonJS로 번들링하지만 `vscode`와 런타임 `esbuild`는 external로
-남깁니다. esbuild 네이티브 바이너리 때문에 공개 배포에서는 VS Code가 지원하는 target별 VSIX를
-생성해야 합니다. `esbuild-wasm`은 단일 패키지 대안이지만 초기 목표인 빠른 편집 피드백에는
-사용하지 않습니다. `package-vsix.mjs`는 현재 호스트의 target을 manifest에 기록하고, 설치된
-네이티브 바이너리와 다른 플랫폼으로의 교차 패키징을 거부합니다.
+확장 호스트는 VS Code 1.100 이상에서 지원하는 Node 20 호환 ESM으로 번들링해 workspace가 주입한
+CommonJS resolver와 활성화 경계를 분리합니다. compiler는 전용 CommonJS Worker에 남기며 `vscode`와
+런타임 `esbuild`는 external입니다. esbuild 네이티브 바이너리 때문에 공개 배포에서는 VS Code가 지원하는
+target별 VSIX를 생성해야 합니다. `esbuild-wasm`은 단일 패키지 대안이지만 초기 목표인 빠른 편집
+피드백에는 사용하지 않습니다. `package-vsix.mjs`는 현재 호스트의 target을 manifest에 기록하고,
+설치된 네이티브 바이너리와 다른 플랫폼으로의 교차 패키징을 거부합니다.

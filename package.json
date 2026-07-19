@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1071",
+  "version": "0.1.1074",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -25,7 +25,7 @@
   "preview": true,
   "pricing": "Free",
   "engines": {
-    "vscode": "^1.96.0"
+    "vscode": "^1.100.0"
   },
   "extensionKind": [
     "workspace"
@@ -42,7 +42,7 @@
     "jsx",
     "webview"
   ],
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.mjs",
   "activationEvents": [
     "onCommand:reactPreview.open",
     "onCommand:reactPreview.openPageInspector",
@@ -51,8 +51,13 @@
   ],
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": false,
-      "description": "React File Preview bundles and executes code from the current workspace."
+      "supported": "limited",
+      "description": "Preview commands explain the trust requirement, but bundling and executing workspace code remain disabled until the workspace is trusted.",
+      "restrictedConfigurations": [
+        "reactPreview.tsconfig",
+        "reactPreview.setupFile",
+        "reactPreview.useStorybookPreview"
+      ]
     },
     "virtualWorkspaces": {
       "supported": false

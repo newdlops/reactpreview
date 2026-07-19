@@ -109,6 +109,7 @@ function readPreviewInspectorRequiredPathSeed(value, path) {
 /** Retains an inferred scalar type but strips unproven object siblings and extra list items. */
 function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, seed) {
   if (callable || typeof seed === 'function') return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  if (seed === null) return null;
   if (typeof seed === 'boolean') return seed;
   if (typeof seed === 'number') return Number.isFinite(seed) ? seed : 1;
   if (typeof seed === 'bigint') return Number(seed);

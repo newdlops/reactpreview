@@ -72,6 +72,13 @@ function isPreviewInspectorGeneratedPlainRecord(value) {
   }
 }
 
+/** Detects the extension's neutral empty-record result without reading project-owned properties. */
+function isPreviewInspectorGeneratedEmptyPlainRecord(value) {
+  if (!isPreviewInspectorGeneratedPlainRecord(value)) return false;
+  const descriptors = readPreviewInspectorGeneratedValueDescriptors(value);
+  return descriptors !== undefined && Reflect.ownKeys(descriptors).length === 0;
+}
+
 /** Records one bounded generated path while still counting omitted paths for diagnostics. */
 function recordPreviewInspectorGeneratedPath(state, path) {
   state.additions += 1;
@@ -171,6 +178,19 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
 
   const authoredIsArray = Array.isArray(authored);
   const generatedIsArray = Array.isArray(generated);
+  if (
+    !authoredIsArray &&
+    generatedIsArray &&
+    isPreviewInspectorGeneratedEmptyPlainRecord(authored)
+  ) {
+    /*
+     * A neutral Redux/Context proxy commonly resolves an unknown selector to an empty object. A proven
+     * map/filter demand makes the collection kind unambiguous, so retaining that empty record
+     * would only postpone the same deterministic runtime failure and needlessly ask the user.
+     */
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
   const recordsAreMergeable =
     isPreviewInspectorGeneratedPlainRecord(authored) &&
     isPreviewInspectorGeneratedPlainRecord(generated);

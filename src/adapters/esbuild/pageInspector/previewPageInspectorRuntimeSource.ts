@@ -14,6 +14,7 @@ import { createPreviewInspectorCompanionRuntimeSource } from './previewInspector
 import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
+import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewInspectorGraphqlDocumentRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
@@ -48,6 +49,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const dataRuntimeSource = createPreviewInspectorDataRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
+  const graphqlDocumentRuntimeSource = createPreviewInspectorGraphqlDocumentRuntimeSource();
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
   const propsUiRuntimeSource = createPreviewInspectorPropsUiRuntimeSource();
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
@@ -135,6 +137,8 @@ ${runtimeHealthSource}
 ${consoleRuntimeSource}
 
 ${runtimeFallbackRuntimeSource}
+
+${graphqlDocumentRuntimeSource}
 
 ${smartPropsRuntimeSource}
 
@@ -947,6 +951,7 @@ const previewInspectorApi = {
   recordRuntimeHealth: recordPreviewInspectorRuntimeHealth,
   resolveBackendRequest: resolvePreviewInspectorBackendRequest,
   resolveDataPayload: resolvePreviewInspectorDataPayload,
+  resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
   resolveRuntimeHook: resolvePreviewInspectorRuntimeHook,
   remount: remountPreviewInspectorExport,
@@ -965,6 +970,9 @@ registerPreviewRuntimeCapability('Data', {
 });
 registerPreviewRuntimeCapability('Render isolation', {
   readPreviewRuntimeStatus: readPreviewInspectorRuntimeFallbackStatus,
+});
+registerPreviewRuntimeCapability('GraphQL documents', {
+  readPreviewRuntimeStatus: readPreviewInspectorGraphqlDocumentStatus,
 });
 
 ${companionRuntimeSource}

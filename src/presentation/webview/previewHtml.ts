@@ -96,12 +96,12 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
     .react-preview-progress-steps li { height: 3px; overflow: hidden; border-radius: 999px; background: var(--vscode-panel-border); text-indent: -9999px; }
     .react-preview-progress-steps li[data-state='complete'], .react-preview-progress-steps li[aria-current='step'] { background: var(--vscode-progressBar-background, var(--vscode-button-background)); }
     .react-preview-status pre { max-width: min(900px, 90vw); overflow: auto; padding: 16px; border: 1px solid var(--vscode-panel-border); text-align: left; white-space: pre-wrap; }
-    #react-preview-root .react-preview-runtime-error { all: initial !important; display: block !important; box-sizing: border-box !important; max-width: min(1100px, calc(100vw - 32px)) !important; max-height: calc(100vh - 32px) !important; margin: 16px !important; overflow: auto !important; padding: 16px !important; border: 1px solid var(--vscode-panel-border) !important; border-radius: 4px !important; color: var(--vscode-errorForeground) !important; background: var(--vscode-editor-background) !important; font: 12px/1.55 var(--vscode-editor-font-family) !important; text-align: left !important; white-space: pre-wrap !important; }
+    [data-react-preview-mount] .react-preview-runtime-error { all: initial !important; display: block !important; box-sizing: border-box !important; max-width: min(1100px, calc(100vw - 32px)) !important; max-height: calc(100vh - 32px) !important; margin: 16px !important; overflow: auto !important; padding: 16px !important; border: 1px solid var(--vscode-panel-border) !important; border-radius: 4px !important; color: var(--vscode-errorForeground) !important; background: var(--vscode-editor-background) !important; font: 12px/1.55 var(--vscode-editor-font-family) !important; text-align: left !important; white-space: pre-wrap !important; }
     .react-preview-gallery { display: grid; gap: 24px; min-width: 0; counter-reset: react-preview-export; }
     .react-preview-export-label { all: initial; display: block; box-sizing: border-box; width: max-content; max-width: 100%; margin: 8px 0 4px; padding: 2px 6px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); font: 11px/1.4 var(--vscode-font-family); counter-increment: react-preview-export; }
     .react-preview-export-label::before { content: counter(react-preview-export) ". "; color: var(--vscode-disabledForeground); }
-    #react-preview-root .react-preview-export-error { all: initial !important; display: grid !important; box-sizing: border-box !important; max-width: min(720px, 100%) !important; gap: 4px !important; overflow: auto !important; padding: 10px 12px !important; border: 1px dashed var(--vscode-editorWarning-foreground) !important; border-radius: 4px !important; color: var(--vscode-descriptionForeground) !important; background: var(--vscode-editor-background) !important; font: 12px/1.45 var(--vscode-font-family) !important; text-align: left !important; white-space: normal !important; }
-    #react-preview-root .react-preview-export-error strong { color: var(--vscode-editorWarning-foreground) !important; font-weight: 600 !important; }
+    [data-react-preview-mount] .react-preview-export-error { all: initial !important; display: grid !important; box-sizing: border-box !important; max-width: min(720px, 100%) !important; gap: 4px !important; overflow: auto !important; padding: 10px 12px !important; border: 1px dashed var(--vscode-editorWarning-foreground) !important; border-radius: 4px !important; color: var(--vscode-descriptionForeground) !important; background: var(--vscode-editor-background) !important; font: 12px/1.45 var(--vscode-font-family) !important; text-align: left !important; white-space: normal !important; }
+    [data-react-preview-mount] .react-preview-export-error strong { color: var(--vscode-editorWarning-foreground) !important; font-weight: 600 !important; }
     .react-preview-empty-gallery { display: grid; min-height: 100vh; place-content: center; text-align: center; }
     @keyframes react-preview-progress-slide { 0% { transform: translateX(0); } 50% { transform: translateX(285%); } 100% { transform: translateX(0); } }
     @media (prefers-reduced-motion: reduce) { .react-preview-progress-track > span { animation: none; inset-inline-start: 32.5%; } }
@@ -169,7 +169,7 @@ function createBody(state: PreviewHtmlState): string {
     }
     case 'ready':
       return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
-<div id="react-preview-root" aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
+<div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
 <script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
 }

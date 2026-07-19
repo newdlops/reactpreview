@@ -9,7 +9,7 @@ export interface PreviewArtifactStore {
   /**
    * Atomically publishes a bundle and returns cache-busted locations for the presentation layer.
    *
-   * @param bundle In-memory JavaScript and optional stylesheet to persist.
+   * @param bundle In-memory entry, lazy JavaScript/CSS artifacts, and optional stylesheet to persist.
    * @returns Opaque locations for the newly published artifact set.
    */
   publish(bundle: PreviewBundle): Promise<StoredPreviewArtifact>;

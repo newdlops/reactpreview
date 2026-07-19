@@ -3,7 +3,7 @@
  *
  * The browser entry remains at the session root because esbuild emits `./chunks/...` specifiers
  * relative to a root-level entry. Auxiliary chunk paths therefore stay unchanged, while entry and
- * stylesheet names use byte digests so an unchanged file keeps the same webview URI across builds.
+ * aggregate stylesheet names use byte digests so unchanged files keep stable webview URIs.
  * This module performs no I/O; the storage adapter owns reference counts and atomic publication.
  */
 import { createHash } from 'node:crypto';
@@ -43,8 +43,9 @@ export interface PreviewArtifactLayout {
 /**
  * Validates compiler output and derives stable shared-file paths without changing JavaScript bytes.
  *
- * Chunk paths are emitted by esbuild's `[hash]` naming policy and must remain byte-for-byte stable:
- * rewriting them here would invalidate relative imports between lazy chunks. The store separately
+ * JavaScript paths are emitted by esbuild's `[hash]` policy and lazy CSS paths by the compiler's
+ * full content digest. Rewriting either here would invalidate generated references. The store
+ * separately
  * records the digest associated with each path for the complete session, so a malformed caller can
  * never overwrite a live or previously loaded chunk URL with different bytes.
  *
@@ -232,14 +233,14 @@ function validateAndSortChunks(
   return [...chunks].sort(compareChunks);
 }
 
-/** Enforces the private portable `chunks/…/*.js` namespace before URI composition. */
+/** Enforces the private portable `chunks/…/*.{js,css}` namespace before URI composition. */
 function assertSafeChunkPath(relativePath: string): void {
   const pathSegments = relativePath.split('/');
   if (
     !isPortableArtifactPath(relativePath) ||
     pathSegments[0] !== 'chunks' ||
     pathSegments.length < 2 ||
-    !relativePath.endsWith('.js')
+    (!relativePath.endsWith('.js') && !relativePath.endsWith('.css'))
   ) {
     throw new TypeError(`Invalid React preview chunk path: ${relativePath}`);
   }

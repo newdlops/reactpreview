@@ -95,6 +95,21 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     expect(artifact).not.toHaveProperty('stylesheetLocation');
   });
 
+  /** Publishes generated lazy CSS under the same portable chunk tree as its owning module. */
+  it('publishes route-local stylesheet chunks', async () => {
+    const store = createStore();
+    const lazyStylesheet = {
+      contents: encode('body { margin: 0; }'),
+      relativePath: 'chunks/styles/abcdef123456.css',
+    };
+
+    await store.publish({ ...FIRST_BUNDLE, chunks: [lazyStylesheet] });
+
+    expect(vscodeFileSystem.writeFile.mock.calls.map(([uri]) => String(uri))).toContainEqual(
+      expect.stringContaining('/chunks/styles/abcdef123456.css'),
+    );
+  });
+
   /** Reuses unchanged chunks while a new entry revision receives its own stable entry digest. */
   it('writes shared chunks only once across different bundle revisions', async () => {
     const store = createStore();
@@ -208,7 +223,7 @@ describe('GlobalStoragePreviewArtifactStore', () => {
     'chunks/../escape.js',
     'chunks/./same.js',
     'chunks//empty.js',
-    'chunks/not-javascript.css',
+    'chunks/not-browser-code.txt',
     'outside/module.js',
     'chunks/nul\0byte.js',
     'chunks/query?mode.js',

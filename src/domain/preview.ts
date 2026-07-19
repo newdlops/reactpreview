@@ -74,9 +74,9 @@ export interface PreviewDiagnostic {
   readonly severity: 'error' | 'warning';
 }
 
-/** One auxiliary browser module emitted for an original dynamic-import boundary. */
+/** One auxiliary browser artifact emitted for a preserved JavaScript or stylesheet boundary. */
 export interface PreviewBundleChunk {
-  /** Complete JavaScript bytes referenced relatively by the entry bundle or another chunk. */
+  /** Complete JavaScript or CSS bytes referenced by another generated browser artifact. */
   readonly contents: Uint8Array;
   /** Stable content-hash POSIX path below the artifact session's shared `chunks/` directory. */
   readonly relativePath: string;
@@ -90,7 +90,7 @@ export interface PreviewBundleArtifactMetadata {
   readonly entryDigest: string;
   /** Full byte digest paired with each exact auxiliary chunk path. */
   readonly chunkDigests: readonly {
-    /** Full JavaScript byte digest. */
+    /** Full JavaScript or CSS byte digest. */
     readonly contentDigest: string;
     /** Exact safe relative chunk path emitted by the compiler. */
     readonly relativePath: string;
@@ -103,7 +103,7 @@ export interface PreviewBundleArtifactMetadata {
 export interface PreviewBundle {
   /** Optional trusted worker-computed identities used to keep large hashing off the host thread. */
   readonly artifactMetadata?: PreviewBundleArtifactMetadata;
-  /** Auxiliary ESM files retained separately so browser dynamic imports remain genuinely lazy. */
+  /** Auxiliary ESM/CSS files retained separately so browser module and style loading stays lazy. */
   readonly chunks: readonly PreviewBundleChunk[];
   /** Absolute graph inputs and bounded convention candidates used for future targeted rebuilds. */
   readonly dependencies: readonly string[];

@@ -1,8 +1,8 @@
 /**
  * Publishes preview bundles into a session-specific, content-addressed VS Code storage tree.
  *
- * Entry modules live at the session root so esbuild's `./chunks/...` imports keep resolving after
- * publication. Unchanged entry, chunk, and stylesheet files retain stable URIs across revisions;
+ * Entry modules live at the session root so generated `./chunks/...` references keep resolving
+ * after publication. Unchanged entry, chunk, and stylesheet files retain stable URIs across revisions;
  * independent bundle leases hold shared-file references until hot reload or panel cleanup releases
  * the final owner. Filesystem work is bounded rather than serialized one file at a time.
  */
@@ -97,7 +97,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
    * counts and path collision checks, while the actual independent directory and file operations run
    * with a small concurrency bound to reduce publication latency on code-split applications.
    *
-   * @param bundle In-memory entry, lazy JavaScript chunks, and optional aggregate stylesheet.
+   * @param bundle In-memory entry, lazy JavaScript/CSS chunks, and optional aggregate stylesheet.
    * @returns Stable serialized locations suitable for `webview.asWebviewUri` conversion.
    */
   public publish(bundle: PreviewBundle): Promise<StoredPreviewArtifact> {

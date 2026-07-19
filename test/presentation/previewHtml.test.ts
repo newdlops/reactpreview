@@ -63,9 +63,12 @@ describe('createPreviewHtml', () => {
     const labelRule = readCssRule(stylesheet, '.react-preview-export-label');
     const runtimeErrorRule = readCssRule(
       stylesheet,
-      '#react-preview-root .react-preview-runtime-error',
+      '[data-react-preview-mount] .react-preview-runtime-error',
     );
-    const errorRule = readCssRule(stylesheet, '#react-preview-root .react-preview-export-error');
+    const errorRule = readCssRule(
+      stylesheet,
+      '[data-react-preview-mount] .react-preview-export-error',
+    );
 
     expect(stylesheet).toContain('.react-preview-empty-gallery');
     expect(stylesheet).toContain('.react-preview-export-label::before');
@@ -76,9 +79,9 @@ describe('createPreviewHtml', () => {
     expect(errorRule).toContain('all: initial !important');
     expect(stylesheet).not.toMatch(/\.react-preview-gallery\s+[^,{]+\{/u);
     expect(readAllInitialSelectors(stylesheet)).toEqual([
-      '#react-preview-root .react-preview-runtime-error',
+      '[data-react-preview-mount] .react-preview-runtime-error',
       '.react-preview-export-label',
-      '#react-preview-root .react-preview-export-error',
+      '[data-react-preview-mount] .react-preview-export-error',
     ]);
     expect(galleryRule).not.toMatch(
       /\b(?:all|font|color|background|overflow|contain|transform|padding)\s*:/u,

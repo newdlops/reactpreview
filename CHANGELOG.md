@@ -2,6 +2,20 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1076 - 2026-07-19
+
+- Page Inspector의 lazy page root가 열리기 전에 전체 render corridor의 styled-components theme import를
+  canonical module identity로 합쳐 정확한 프로젝트 theme를 주입하고, 구조적 fallback token이 원본 theme를
+  덮거나 `spacing` 같은 함수형 token을 값으로 오인하던 스타일 손상을 방지
+- 프로덕션 `index.html`에서 정적으로 증명된 `html`/`body`/mount root의 class, lang, dir, id, style, data 속성을
+  webview 문서 셸에 복원해 `body.body` 같은 전역 reset과 앱의 root selector가 동일하게 동작하도록 개선
+- 안전한 page root보다 위에 있는 app wrapper의 component flow만 제한적으로 역추적해 exported
+  `createGlobalStyle`을 정확한 ThemeProvider 내부에 함께 렌더하고, 함께 import되는 Bootstrap/Sass 전역 스타일도
+  실제 앱 순서로 복원
+- esbuild의 aggregate entry CSS를 즉시 연결하지 않고 dynamic-import 경계별 static CSS ownership을 metadata로
+  복구해 unopened route, editor, modal의 전역 selector가 현재 페이지를 오염하지 않도록 변경하고, hot reload가
+  commit되면 이전 revision의 lazy stylesheet를 정리
+
 ## 0.1.1075 - 2026-07-19
 
 - Page Inspector가 파일의 PascalCase/기본 export 중 실제 React component·element만 gallery에 남기고 GraphQL

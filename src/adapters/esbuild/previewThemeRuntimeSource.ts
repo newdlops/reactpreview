@@ -1,7 +1,7 @@
 /**
  * Generates the browser-only styled-components compatibility boundary used by previews.
  * A directly discovered project theme remains authoritative for known values while a structural
- * overlay fills missing paths without inventing design tokens. Explicit setup themes bypass the
+ * overlay fills missing paths with neutral CSS-safe tokens. Explicit setup themes bypass the
  * overlay, and absent themes still receive an inert fallback instead of a runtime exception.
  */
 
@@ -466,6 +466,25 @@ function readThemeValueCandidate(theme, path) {
   return { reason: 'exact-theme-value', value: current };
 }
 
+/** Detects a statically proven color token whose consumers require a CSS color string. */
+function isThemeColorPath(path) {
+  const normalized = path.map((part) => String(part).toLowerCase());
+  const leaf = normalized[normalized.length - 1] ?? '';
+  return normalized.includes('color') ||
+    /(?:color|background|border|stroke|fill|accent|primary|danger|warning|success|white|black|gr[ae]y)$/u.test(leaf);
+}
+
+/** Returns a deterministic neutral palette entry when no project color string is available. */
+function createStructuralThemeValue(path) {
+  if (!isThemeColorPath(path)) return createStructuralToken(path);
+  const leaf = String(path[path.length - 1] ?? '').toLowerCase();
+  if (/(?:white|background)$/u.test(leaf)) return '#ffffff';
+  if (/(?:danger|error)$/u.test(leaf)) return '#c2413b';
+  if (/(?:black|text)$/u.test(leaf)) return '#1f2937';
+  if (/(?:border|stroke|gr[ae]y)$/u.test(leaf)) return '#d1d5db';
+  return '#4b8bd0';
+}
+
 /**
  * Resolves a statically proven non-callable styled-components token through local, root, then
  * structural theme evidence. Exact local primitives and CSS fragments remain authoritative.
@@ -475,17 +494,24 @@ export function resolvePreviewThemeValue(theme, rawPath, evidence) {
   if (path === undefined) {
     return createStructuralToken(['invalid-non-callable-theme-token']);
   }
+  const expectsColorString = isThemeColorPath(path);
   const localCandidate = readThemeValueCandidate(theme, path);
-  if (localCandidate.value !== undefined) {
+  if (
+    localCandidate.value !== undefined &&
+    (!expectsColorString || typeof localCandidate.value === 'string')
+  ) {
     return localCandidate.value;
   }
   const rootCandidate = readThemeValueCandidate(activePreviewTheme, path);
-  if (rootCandidate.value !== undefined) {
+  if (
+    rootCandidate.value !== undefined &&
+    (!expectsColorString || typeof rootCandidate.value === 'string')
+  ) {
     recordRepairedThemeValue(path, evidence, 'exact-root-theme', localCandidate.reason);
     return rootCandidate.value;
   }
   recordRepairedThemeValue(path, evidence, 'structural-token', localCandidate.reason);
-  return createStructuralToken(path);
+  return createStructuralThemeValue(path);
 }
 
 /** Reports whether setup supplied a theme object or theme-producing function. */

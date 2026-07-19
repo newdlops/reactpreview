@@ -282,11 +282,13 @@ describe('createPreviewThemeBridgePlugin', () => {
           "const evidence = { sourcePath: '/workspace/ErrorStatus.tsx', line: 54, column: 31 };",
           "const rootValue = resolvePreviewThemeValue({}, ['color', 'black'], evidence);",
           "const structuralValue = resolvePreviewThemeValue({}, ['flex', 'rowBetween'], evidence);",
+          "const invalidColorValue = resolvePreviewThemeValue({ color: { primary: {} } }, ['color', 'primary'], evidence);",
           "const localValue = resolvePreviewThemeValue({ color: { black: '#111' } }, ['color', 'black'], evidence);",
           'globalThis.__themeBridgeResult = {',
           '  boundaryDetail: healthEvents[0]?.detail,',
           '  eventNames: healthEvents.map((event) => event.event),',
           '  localValue,',
+          '  invalidColorValue,',
           '  rootValue,',
           '  status: readPreviewRuntimeStatus(),',
           '  structuralValue: String(structuralValue),',
@@ -301,13 +303,19 @@ describe('createPreviewThemeBridgePlugin', () => {
           singletonStrategy: 'canonical-exact-bare-import',
           strategy: 'discovered',
         },
-        eventNames: ['theme-boundary-composed', 'theme-token-repaired', 'theme-token-repaired'],
+        eventNames: [
+          'theme-boundary-composed',
+          'theme-token-repaired',
+          'theme-token-repaired',
+          'theme-token-repaired',
+        ],
+        invalidColorValue: '#4b8bd0',
         localValue: '#111',
         rootValue: '#222',
         structuralValue: '',
       });
       expect((context.__themeBridgeResult as { status: string }).status).toContain(
-        'repaired 2 missing non-callable theme token(s)',
+        'repaired 3 missing non-callable theme token(s)',
       );
     } finally {
       await rm(projectRoot, { force: true, recursive: true });

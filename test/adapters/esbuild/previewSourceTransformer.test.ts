@@ -92,6 +92,22 @@ describe('PreviewSourceTransformer', () => {
     });
   });
 
+  /** Includes react-router core imports in the graph-wide provider inventory. */
+  it('collects router ownership from the react-router core package', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const transformer = createTransformer(workspaceRoot);
+
+    await transformer.transform(
+      path.join(workspaceRoot, 'RouterRoot.tsx'),
+      "import { Router, useRoutes } from 'react-router'; export default Router;",
+    );
+
+    expect(transformer.getRouterRequirement()).toEqual({
+      consumesRouter: true,
+      ownsRouter: true,
+    });
+  });
+
   /** Synthesizes only a workspace-owned, statically typed missing React Context default. */
   it('adds bounded context defaults without rewriting external source', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

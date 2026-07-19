@@ -36,6 +36,16 @@ describe('requiresPreviewRouter', () => {
     ).toEqual({ consumesRouter: true, ownsRouter: true });
   });
 
+  /** Recognizes providers and hooks imported from the shared react-router core entry. */
+  it('collects the same context evidence from react-router imports', () => {
+    expect(
+      collectPreviewRouterRequirement(
+        '/workspace/App.tsx',
+        "import { Router, useRoutes } from 'react-router'; export default () => <Router />;",
+      ),
+    ).toEqual({ consumesRouter: true, ownsRouter: true });
+  });
+
   /** Tracks namespace property usage while rejecting a namespace-owned provider. */
   it('classifies namespace imports by the properties they use', () => {
     expect(

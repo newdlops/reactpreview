@@ -306,6 +306,39 @@ describe('createPreviewRouterBridgePlugin', () => {
     }
   });
 
+  /** Leaves Page Inspector unwrapped so its selected candidate can own exactly one Router policy. */
+  it('delegates Page Inspector routing to the candidate-local boundary', async () => {
+    const projectRoot = await createTemporaryProject('router-page-inspector-preview-');
+
+    try {
+      await installFakeReactRouterDomPackage(projectRoot, true);
+      const context = await executeRouterBridgeFixture(
+        projectRoot,
+        true,
+        [
+          "import { createRouterPreviewElement, readPreviewRuntimeStatus } from 'react-preview:router';",
+          "const child = { marker: 'PAGE_INSPECTOR_CHILD' };",
+          'const rendered = createRouterPreviewElement(child, {',
+          "  configuration: { initialEntries: ['/contracts'] },",
+          "  renderMode: 'page-inspector',",
+          '});',
+          'globalThis.__routerBridgeResult = {',
+          '  childPreserved: rendered === child,',
+          '  status: readPreviewRuntimeStatus(),',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__routerBridgeResult).toEqual({
+        childPreserved: true,
+        status:
+          'available: Page Inspector delegates Router ownership to each selected page candidate',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Supplies detached page candidates while inheriting setup or graph Router context exactly once. */
   it('adds a non-nesting candidate-local MemoryRouter during React render', async () => {
     const projectRoot = await createTemporaryProject('router-candidate-boundary-preview-');
@@ -356,6 +389,8 @@ describe('createPreviewRouterBridgePlugin', () => {
     expect(importedSpecifiers).toEqual(["'react'", JSON.stringify(modulePath)]);
     expect(source).not.toContain('window.history');
     expect(source).not.toContain('fetch(');
+    expect(source).toContain('class PreviewCandidateRouterErrorBoundary');
+    expect(source).toContain('candidate-owned Router detected at runtime');
   });
 });
 
@@ -390,6 +425,7 @@ async function installFakeReactRouterDomPackage(
         'const RouterDepthContext = React.createContext(0);',
         'export function MemoryRouter(properties) {',
         '  const depth = React.useContext(RouterDepthContext);',
+        "  if (depth > 0) throw new Error('You cannot render a <Router> inside another <Router>. You should never have more than one in your app.');",
         '  return React.createElement(',
         '    RouterDepthContext.Provider,',
         '    { value: depth + 1 },',

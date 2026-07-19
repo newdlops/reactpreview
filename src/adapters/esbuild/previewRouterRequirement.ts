@@ -5,6 +5,9 @@
  */
 import ts from 'typescript';
 
+/** Package entry points that expose the same project-owned React Router context identity. */
+const REACT_ROUTER_MODULES = new Set(['react-router', 'react-router-dom']);
+
 /** Router APIs whose first render can safely use a plain location-only MemoryRouter context. */
 const MEMORY_ROUTER_CONSUMERS = new Set([
   'Link',
@@ -103,7 +106,7 @@ export function collectPreviewRouterRequirement(
   };
 }
 
-/** Collects non-erased imports from the browser-facing React Router package. */
+/** Collects non-erased imports from React Router's core and browser-facing package entries. */
 function collectRouterImports(sourceFile: ts.SourceFile): RouterImportInventory {
   const consumers = new Set<string>();
   const namespaces = new Set<string>();
@@ -113,7 +116,7 @@ function collectRouterImports(sourceFile: ts.SourceFile): RouterImportInventory 
     if (
       !ts.isImportDeclaration(statement) ||
       !ts.isStringLiteralLike(statement.moduleSpecifier) ||
-      statement.moduleSpecifier.text !== 'react-router-dom'
+      !REACT_ROUTER_MODULES.has(statement.moduleSpecifier.text)
     ) {
       continue;
     }

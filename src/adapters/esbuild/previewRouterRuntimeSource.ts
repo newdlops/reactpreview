@@ -110,6 +110,57 @@ function createMemoryRouterProperties(configuration) {
   return routerProperties;
 }
 
+/** Recognizes only React Router's explicit nested-provider invariant for a safe retry. */
+function isNestedPreviewRouterError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /cannot render a <Router> inside another <Router>|should never have more than one in your app/iu.test(
+    message,
+  );
+}
+
+/**
+ * Retries a candidate without the inferred MemoryRouter when an unrecognized project wrapper owns
+ * one itself. All unrelated render errors are rethrown to the normal preview error boundary.
+ */
+class PreviewCandidateRouterErrorBoundary extends React.Component {
+  constructor(properties) {
+    super(properties);
+    this.state = {
+      hasUnrelatedError: false,
+      nestedRouterDetected: false,
+      unrelatedError: undefined,
+    };
+  }
+
+  /** Stores only the one recoverable Router invariant and preserves every other thrown value. */
+  static getDerivedStateFromError(error) {
+    return isNestedPreviewRouterError(error)
+      ? { hasUnrelatedError: false, nestedRouterDetected: true, unrelatedError: undefined }
+      : { hasUnrelatedError: true, nestedRouterDetected: false, unrelatedError: error };
+  }
+
+  /** Reports why the automatic boundary was removed without classifying application behavior. */
+  componentDidCatch(error) {
+    if (isNestedPreviewRouterError(error)) {
+      previewRuntimeStatus =
+        'active: candidate-owned Router detected at runtime; inferred MemoryRouter removed';
+    }
+  }
+
+  render() {
+    if (this.state.hasUnrelatedError) throw this.state.unrelatedError;
+    if (this.state.nestedRouterDetected) return this.props.children;
+    const MemoryRouter = readMemoryRouter();
+    return typeof MemoryRouter === 'function'
+      ? React.createElement(
+          MemoryRouter,
+          createMemoryRouterProperties(this.props.configuration),
+          this.props.children,
+        )
+      : this.props.children;
+  }
+}
+
 /**
  * Adds context only when the selected Page Inspector root is not already beneath a Router.
  * This component must perform the context check during render, after setup and graph-level
@@ -136,8 +187,8 @@ function PreviewCandidateRouterBoundary({ children, configuration }) {
     ? 'active: candidate-local MemoryRouter at the root location /'
     : 'active: candidate-local MemoryRouter with setup-owned static history';
   return React.createElement(
-    MemoryRouter,
-    createMemoryRouterProperties(configuration),
+    PreviewCandidateRouterErrorBoundary,
+    { configuration },
     children,
   );
 }
@@ -180,6 +231,11 @@ export function createRouterPreviewElement(children, options) {
   }
   if (typeof MemoryRouter !== 'function') {
     previewRuntimeStatus = 'unavailable: installed react-router-dom has no MemoryRouter export';
+    return children;
+  }
+  if (options?.renderMode === 'page-inspector') {
+    previewRuntimeStatus =
+      'available: Page Inspector delegates Router ownership to each selected page candidate';
     return children;
   }
   if (configuration === undefined && !AUTOMATIC_ROUTER_BOUNDARY_ENABLED) {

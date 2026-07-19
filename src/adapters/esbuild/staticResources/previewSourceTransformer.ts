@@ -159,7 +159,7 @@ export class PreviewSourceTransformer {
           this.referencedImplicitPackageGlobals.add(packageGlobal.globalName);
         }
       }
-      if (sourceText.includes('react-router-dom')) {
+      if (sourceText.includes('react-router')) {
         const routerRequirement = collectPreviewRouterRequirement(sourcePath, sourceText);
         this.routerConsumerDetected ||= routerRequirement.consumesRouter;
         this.routerProviderDetected ||= routerRequirement.ownsRouter;

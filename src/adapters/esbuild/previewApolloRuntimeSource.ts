@@ -115,6 +115,28 @@ function createStaticApolloScalarShape(fieldName) {
   return { kind: 'unknown' };
 }
 
+/**
+ * Detects a schema-less pagination wrapper whose field name resembles a collection.
+ * A field such as eventList can still return an object containing pageInfo and objectList; only the
+ * nested objectList/nodes/edges/items field is an array in that common connection shape.
+ */
+function isStaticApolloConnectionSelection(selectionSet) {
+  if (!Array.isArray(selectionSet?.selections)) return false;
+  const names = selectionSet.selections.flatMap((selection) =>
+    selection?.kind === 'Field' && typeof selection.name?.value === 'string'
+      ? [selection.name.value]
+      : [],
+  );
+  const hasPagination = names.some((name) =>
+    /^(?:pageInfo|pagination|paginator|meta)$/u.test(name),
+  );
+  const hasCollection = names.some((name) =>
+    /^(?:edges|items|nodes|objectList|records|results|rows)$/u.test(name) ||
+    looksLikeCollection(name),
+  );
+  return hasPagination && hasCollection;
+}
+
 /** Adds selections to one response object while enforcing field, depth, and fragment-cycle limits. */
 function appendSelections(target, selectionSet, fragments, budget, depth, activeFragments) {
   if (depth > MAX_STATIC_APOLLO_DEPTH || !Array.isArray(selectionSet?.selections)) {
@@ -132,7 +154,7 @@ function appendSelections(target, selectionSet, fragments, budget, depth, active
         continue;
       }
       const responseName = selection.alias?.value ?? fieldName;
-      if (looksLikeCollection(fieldName)) {
+      if (looksLikeCollection(fieldName) && !isStaticApolloConnectionSelection(selection.selectionSet)) {
         target[responseName] = [];
       } else if (selection.selectionSet !== undefined) {
         const child = {};
@@ -191,7 +213,7 @@ function appendSelectionShapes(target, selectionSet, fragments, budget, depth, a
       const fieldName = selection.name?.value;
       if (typeof fieldName !== 'string') continue;
       const responseName = selection.alias?.value ?? fieldName;
-      if (looksLikeCollection(fieldName)) {
+      if (looksLikeCollection(fieldName) && !isStaticApolloConnectionSelection(selection.selectionSet)) {
         const items = selection.selectionSet === undefined ? { kind: 'unknown' } : { fields: {}, kind: 'object' };
         if (selection.selectionSet !== undefined) {
           appendSelectionShapes(

@@ -178,15 +178,19 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
 
   const authoredIsArray = Array.isArray(authored);
   const generatedIsArray = Array.isArray(generated);
+  const authoredIsNeutralEmptyRecord =
+    !authoredIsArray && isPreviewInspectorGeneratedEmptyPlainRecord(authored);
+  const generatedType = typeof generated;
   if (
-    !authoredIsArray &&
-    generatedIsArray &&
-    isPreviewInspectorGeneratedEmptyPlainRecord(authored)
+    authoredIsNeutralEmptyRecord &&
+    generated !== null &&
+    (generatedIsArray || generatedType !== 'object')
   ) {
     /*
-     * A neutral Redux/Context proxy commonly resolves an unknown selector to an empty object. A proven
-     * map/filter demand makes the collection kind unambiguous, so retaining that empty record
-     * would only postpone the same deterministic runtime failure and needlessly ask the user.
+     * Static Redux and Context bridges represent every registered path as an empty container before
+     * the reached hook supplies its usage-derived leaf kind. A proven string/number/boolean/callable
+     * or collection fallback is therefore the only type-correct continuation for that placeholder;
+     * retaining the empty record merely moves the deterministic failure into a child component.
      */
     recordPreviewInspectorGeneratedPath(state, path);
     return { changed: true, value: generated };

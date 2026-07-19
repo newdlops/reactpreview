@@ -62,6 +62,24 @@ function mergePreviewInspectorGraphqlFields(target, source) {
   }
 }
 
+/**
+ * Detects a selected pagination/connection wrapper whose own name happens to end in List or Items.
+ * The wrapper itself is an object; only its objectList/nodes/edges/items child is the collection.
+ */
+function isPreviewInspectorGraphqlConnectionSelection(shape) {
+  const fields = shape?.fields;
+  if (fields === null || typeof fields !== 'object') return false;
+  const names = Object.keys(fields);
+  const hasPagination = names.some((name) =>
+    /^(?:pageInfo|pagination|paginator|meta)$/u.test(name),
+  );
+  const hasCollection = names.some((name) =>
+    /^(?:edges|items|nodes|objectList|records|results|rows)$/u.test(name) ||
+    looksLikePreviewInspectorCollection(name),
+  );
+  return hasPagination && hasCollection;
+}
+
 /** Parses one selection set into object fields and deferred named-fragment references. */
 function parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget) {
   if (tokens[cursor.index] !== '{') return { fields: {}, kind: 'object', spreads: [] };
@@ -97,7 +115,8 @@ function parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget) {
     budget.fields += 1;
     if (tokens[cursor.index] === '{') {
       const child = parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget);
-      fields[responseName] = looksLikePreviewInspectorCollection(fieldName)
+      fields[responseName] = looksLikePreviewInspectorCollection(fieldName) &&
+        !isPreviewInspectorGraphqlConnectionSelection(child)
         ? { items: child, kind: 'array' }
         : child;
     } else {

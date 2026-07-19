@@ -250,6 +250,35 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  /** Keeps a pagination wrapper object-shaped even when its GraphQL field name ends in `List`. */
+  it('distinguishes a paginated list wrapper from its nested object collection', async () => {
+    const runtime = evaluateDataRuntime();
+    const response = await runtime.fetch('/graphql', {
+      body: JSON.stringify({
+        operationName: 'RightToConsentOrConsultList',
+        query: `query RightToConsentOrConsultList {
+          rightToConsentOrConsultList {
+            pageInfo { count hasNext }
+            objectList { id title }
+          }
+        }`,
+      }),
+      method: 'POST',
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      data: {
+        rightToConsentOrConsultList: {
+          objectList: [
+            { id: 'preview-1', title: 'Lorem ipsum preview 1' },
+            { id: 'preview-2', title: 'Lorem ipsum preview 2' },
+          ],
+          pageInfo: { count: 1, hasNext: false },
+        },
+      },
+    });
+  });
+
   /** Supports Axios-created instances that reach the browser through XMLHttpRequest. */
   it('completes XMLHttpRequest clients with the same generated registry payload', async () => {
     const runtime = evaluateDataRuntime();

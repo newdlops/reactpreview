@@ -123,6 +123,7 @@ describe('createPreviewApolloBridgePlugin', () => {
             monthlyPrice: '0',
             profile: { displayName: '' },
           },
+          eventList: { objectList: [], pageInfo: { count: 0 } },
           recentItems: [],
         },
       });
@@ -180,6 +181,13 @@ describe('createPreviewApolloBridgePlugin', () => {
         shape: {
           fields: {
             company: { kind: 'object' },
+            eventList: {
+              fields: {
+                objectList: { items: { kind: 'object' }, kind: 'array' },
+                pageInfo: { kind: 'object' },
+              },
+              kind: 'object',
+            },
             recentItems: { items: { kind: 'object' }, kind: 'array' },
           },
           kind: 'object',
@@ -321,6 +329,12 @@ const query = {
             ],
           }),
           field('recentItems', { selections: [field('id')] }),
+          field('eventList', {
+            selections: [
+              field('pageInfo', { selections: [field('count')] }),
+              field('objectList', { selections: [field('id')] }),
+            ],
+          }),
         ],
       },
     },

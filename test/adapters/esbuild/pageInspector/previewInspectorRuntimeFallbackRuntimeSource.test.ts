@@ -175,6 +175,27 @@ describe('Preview Inspector runtime fallback source', () => {
     });
   });
 
+  /** Replaces Redux's path-container placeholder when downstream usage proves a scalar leaf. */
+  it('auto-resolves an empty neutral record to a compiler-proven string', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['company.shortName'],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => ({ company: { shortName: Object.freeze({}) } }),
+      () => ({ company: { shortName: 'Preview company' } }),
+      metadata,
+    ) as { company: { shortName: string } };
+
+    expect(resolved.company.shortName).toBe('Preview company');
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['company.shortName'],
+      reason: 'partial',
+    });
+  });
+
   /** Keeps compiler-authored neutral leaves falsy while still replacing an absent hook field. */
   it('preserves direct null sentinels used by fallback and error branches', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -550,6 +571,57 @@ describe('Preview Inspector runtime fallback source', () => {
       employees: [{ id: 'preview-1', profile: { email: 'preview@example.invalid' } }],
       refresh: '[Preview no-op function]',
     });
+  });
+
+  /** Replaces neutral proxy objects at text/link leaves before React receives them as children. */
+  it('uses scalar property semantics over object-shaped placeholder leaves', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['favorites[].label', 'favorites[].link'],
+    };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ favorites: [{ label: {}, link: {} }] }),
+      metadata,
+    );
+
+    fixture.api.smart('hook-1');
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      metadata,
+    ) as { favorites: { label: string; link: string }[] };
+
+    expect(resolved.favorites).toEqual([
+      {
+        label: 'Preview generated value',
+        link: 'https://example.invalid/preview/1',
+      },
+    ]);
+  });
+
+  /** Uses the Array intrinsic when a generated value shadows its own `map` property. */
+  it('materializes array overrides without trusting a shadowed map method', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const shadowedMap: unknown[] = [];
+    Object.defineProperty(shadowedMap, 'map', {
+      configurable: true,
+      enumerable: true,
+      value: undefined,
+      writable: true,
+    });
+
+    expect(() => {
+      fixture.api.set('hook-1', shadowedMap);
+    }).not.toThrow();
+    expect(
+      fixture.api.resolve(
+        () => undefined,
+        () => [],
+        { ...createMetadata(), requiredPaths: [] },
+      ),
+    ).toEqual([]);
   });
 
   /** Keeps a compiler-proven neutral guard value while reducing an object to demanded paths. */

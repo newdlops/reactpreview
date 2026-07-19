@@ -91,6 +91,16 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   return 'Preview generated value';
 }
 
+/** Reports whether a demanded property name proves that its value is a render-safe scalar leaf. */
+function isPreviewInspectorRequiredPathScalarLeaf(propertyName) {
+  const name = String(propertyName).replaceAll('_', '').toLowerCase();
+  return /(?:label|caption|name|owner|author|assignee|title|subject|headline|description|message|content|summary|text|body|email|date|time|timestamp|createdat|updatedat|url|uri|href|link|path|route|status|state)$/u.test(name) ||
+    name === 'id' || name.endsWith('id') || name === 'uuid' ||
+    /(?:count|total|index|length|size|page|amount|rate|number|price|cost|limit|offset)$/u.test(name) ||
+    /^(?:is|has|can|should|will|did|does|was|were|allow|enable)/u.test(name) ||
+    /(?:enabled|visible|active|selected|checked|ready|success|valid|disabled|hidden|loading|pending|suspended|denied|forbidden|locked|error|invalid|touched|dirty)$/u.test(name);
+}
+
 /** Reads one compiler fallback leaf through data descriptors only, never through project getters. */
 function readPreviewInspectorRequiredPathSeed(value, path) {
   let current = value;
@@ -120,6 +130,15 @@ function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, see
       return [item];
     }
     return [{}];
+  }
+  /*
+   * A neutral Context/Redux proxy often exposes every missing descendant as an empty object. Once
+   * compiler evidence names a textual or scalar leaf such as label, link, or isEnabled, that
+   * semantic evidence is stronger than the proxy's placeholder kind. Retaining an empty object here makes
+   * React throw "Objects are not valid as a React child" before the real page can commit.
+   */
+  if (seed !== null && typeof seed === 'object' && isPreviewInspectorRequiredPathScalarLeaf(propertyName)) {
+    return createPreviewInspectorRequiredPathLeaf(propertyName, callable);
   }
   if (seed !== null && typeof seed === 'object') return {};
   const semantic = createPreviewInspectorRequiredPathLeaf(propertyName, callable);
@@ -242,7 +261,15 @@ function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((child) => materializePreviewInspectorRuntimeFallbackOverride(child, depth + 1));
+    /*
+     * Generated completion proxies can legally shadow a property named map. Calling the value's
+     * method would then fail even though Array.isArray correctly identified the container. Invoke
+     * the intrinsic without consulting project- or proxy-owned properties.
+     */
+    return Array.prototype.map.call(
+      value,
+      (child) => materializePreviewInspectorRuntimeFallbackOverride(child, depth + 1),
+    );
   }
   const result = {};
   for (const [propertyName, child] of Object.entries(value)) {

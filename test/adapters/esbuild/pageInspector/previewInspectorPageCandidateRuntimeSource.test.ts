@@ -16,6 +16,7 @@ interface CandidateFixture {
   };
   readonly root: { readonly exportName: string; readonly sourcePath: string };
   readonly rootStepIndex?: number;
+  readonly rootOwnsRouter?: boolean;
   readonly routeLocation?: { readonly pathname: string };
 }
 
@@ -62,13 +63,15 @@ describe('Preview Inspector page-candidate runtime source', () => {
 
     expect(source).toContain('function PreviewInspectorPageCandidateLoader');
     expect(source).toContain('function PreviewInspectorAuthoredPageLoader');
-    expect(source).toContain('.then(() => definition.load())');
+    expect(source).toContain('return definition.load();');
     expect(source).toContain('Loading authored page context…');
     expect(source).toContain('createPreviewCandidateRouterElement(rootElement');
     expect(source).toContain(
       'ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true',
     );
     expect(source).toContain('function createPreviewInspectorCandidateInitialEntry');
+    expect(source).toContain('function preparePreviewInspectorOwnedRouterLocation');
+    expect(source).toContain('owned-router-location-seeded');
     expect(source).toContain('initialEntry: candidateInitialEntry');
     expect(source).toContain('routerPathname: candidateInitialEntry');
     expect(source).toContain("event: 'page-context-selected'");
@@ -87,6 +90,17 @@ describe('Preview Inspector page-candidate runtime source', () => {
       noBasePath: '/company/1/credit',
       rootIndex: '/',
       rootedModule: '/1/credit',
+    });
+  });
+
+  /** Seeds a full application BrowserRouter before its dynamically imported module evaluates. */
+  it('moves browser history only for an owned Router with a proven safe route', () => {
+    expect(evaluateOwnedRouterLocationPreparation()).toEqual({
+      accepted: true,
+      directTarget: false,
+      paths: ['/company/1/dashboard'],
+      rejectedAuthority: false,
+      unowned: false,
     });
   });
 
@@ -239,6 +253,56 @@ globalThis.__result = {
   );
   if (context.__result === undefined) {
     throw new Error('Page candidate route helper did not expose its test result.');
+  }
+  return context.__result;
+}
+
+/** Executes the owned-Router history boundary without loading a React or project module. */
+function evaluateOwnedRouterLocationPreparation(): {
+  readonly accepted: boolean;
+  readonly directTarget: boolean;
+  readonly paths: readonly string[];
+  readonly rejectedAuthority: boolean;
+  readonly unowned: boolean;
+} {
+  const context: {
+    __result?: ReturnType<typeof evaluateOwnedRouterLocationPreparation>;
+  } = {};
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
+const paths = [];
+globalThis.location = { pathname: '/preview-artifact' };
+globalThis.history = {
+  state: { retained: true },
+  replaceState(_state, _title, pathname) {
+    paths.push(pathname);
+    globalThis.location.pathname = pathname;
+  },
+};
+function recordPreviewInspectorRuntimeHealth() { /* runtime diagnostics are inert in this test */ }
+const accepted = preparePreviewInspectorOwnedRouterLocation({
+  id: 'application-root',
+  rootOwnsRouter: true,
+  routeLocation: { pathname: '/company/1/dashboard' },
+}, false);
+const directTarget = preparePreviewInspectorOwnedRouterLocation({
+  rootOwnsRouter: true,
+  routeLocation: { pathname: '/direct' },
+}, true);
+const rejectedAuthority = preparePreviewInspectorOwnedRouterLocation({
+  rootOwnsRouter: true,
+  routeLocation: { pathname: '//foreign.invalid/path' },
+}, false);
+const unowned = preparePreviewInspectorOwnedRouterLocation({
+  rootOwnsRouter: false,
+  routeLocation: { pathname: '/unowned' },
+}, false);
+globalThis.__result = { accepted, directTarget, paths, rejectedAuthority, unowned };`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Owned Router location helper did not expose its test result.');
   }
   return context.__result;
 }

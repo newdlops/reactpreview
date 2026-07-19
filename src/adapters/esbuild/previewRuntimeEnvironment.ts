@@ -26,6 +26,8 @@ const STORYBOOK_PREVIEW_EXTENSIONS = [
   'cjs',
 ] as const;
 const PROJECT_SETUP_EXTENSIONS = ['tsx', 'ts', 'jsx', 'js', 'mts', 'mjs', 'cts', 'cjs'] as const;
+const PROJECT_BOOTSTRAP_BASENAMES = ['index', 'main', 'bootstrap'] as const;
+const PROJECT_AMBIENT_DECLARATION_NAMES = ['global.d.ts', 'globals.d.ts'] as const;
 const STORYBOOK_MAIN_EXTENSIONS = ['ts', 'tsx', 'js', 'jsx', 'mts', 'mjs', 'cts', 'cjs'] as const;
 const SETUP_MODULE_EXTENSIONS = new Set([
   '.cjs',
@@ -198,6 +200,7 @@ export async function createPreviewRuntimeWatchInputs(
   const dependencyCandidates = [
     ...createProjectSetupCandidatePaths(normalizedProjectRoot),
     ...createStorybookPreviewCandidatePaths(normalizedProjectRoot),
+    ...createProjectBootstrapEvidenceCandidatePaths(normalizedProjectRoot),
     ...createRuntimeMetadataPaths(normalizedProjectRoot),
   ];
   const dependencyPaths = (
@@ -463,6 +466,25 @@ function createStorybookPreviewCandidatePaths(projectRoot: string): readonly str
   return STORYBOOK_PREVIEW_EXTENSIONS.map((extension) =>
     path.join(projectRoot, '.storybook', `preview.${extension}`),
   );
+}
+
+/**
+ * Creates a small, deterministic inventory of conventional application entry points and ambient
+ * declarations. Page Inspector deliberately avoids rescanning every source file on each build, but
+ * application bootstraps commonly install browser globals such as `Buffer`, `dayjs`, or a project
+ * utility before React mounts. Keeping only these exact conventions preserves that runtime evidence
+ * without reintroducing the repository-wide CPU and memory cost that the inspector path avoids.
+ */
+function createProjectBootstrapEvidenceCandidatePaths(projectRoot: string): readonly string[] {
+  const sourceRoots = [projectRoot, path.join(projectRoot, 'src')];
+  return sourceRoots.flatMap((sourceRoot) => [
+    ...PROJECT_BOOTSTRAP_BASENAMES.flatMap((basename) =>
+      PROJECT_SETUP_EXTENSIONS.map((extension) =>
+        path.join(sourceRoot, `${basename}.${extension}`),
+      ),
+    ),
+    ...PROJECT_AMBIENT_DECLARATION_NAMES.map((fileName) => path.join(sourceRoot, fileName)),
+  ]);
 }
 
 /** Creates fixed inert HTML and Storybook-main paths used only for namespace text discovery. */

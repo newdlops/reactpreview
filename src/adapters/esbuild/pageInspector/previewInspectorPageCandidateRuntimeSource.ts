@@ -94,6 +94,49 @@ function createPreviewInspectorCandidateInitialEntry(candidate, rootValue, direc
   return localPathname.length === 0 ? '/' : localPathname;
 }
 
+/**
+ * Seeds an application-owned BrowserRouter before its module creates browser history.
+ * The route is static compiler evidence, not user HTML; nevertheless this boundary accepts only a
+ * short same-origin pathname and never changes scheme, authority, state payload, query, or hash.
+ */
+function preparePreviewInspectorOwnedRouterLocation(candidate, directTarget) {
+  const pathname = candidate?.routeLocation?.pathname;
+  if (
+    directTarget === true ||
+    candidate?.rootOwnsRouter !== true ||
+    typeof pathname !== 'string' ||
+    pathname.length === 0 ||
+    pathname.length > 2048 ||
+    !pathname.startsWith('/') ||
+    pathname.startsWith('//') ||
+    /[\\\u0000-\u001f\u007f]/u.test(pathname) ||
+    typeof globalThis.history?.replaceState !== 'function'
+  ) {
+    return false;
+  }
+  try {
+    if (globalThis.location?.pathname === pathname) return true;
+    globalThis.history.replaceState(globalThis.history.state, '', pathname);
+    if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+      recordPreviewInspectorRuntimeHealth({
+        category: 'page-context',
+        detail: { candidateId: candidate?.id, pathname },
+        event: 'owned-router-location-seeded',
+      });
+    }
+    return true;
+  } catch (error) {
+    if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+      recordPreviewInspectorRuntimeHealth({
+        category: 'page-context',
+        detail: { candidateId: candidate?.id, error: String(error), pathname },
+        event: 'owned-router-location-rejected',
+      });
+    }
+    return false;
+  }
+}
+
 /** Returns the explicit rendering perspective without inferring business meaning from page text. */
 function readPreviewInspectorRenderScenario() {
   return previewInspectorSession.renderScenario === 'file-components'
@@ -225,8 +268,13 @@ class PreviewInspectorPageRootCommitBoundary extends React.Component {
 }
 
 /** Loads one generated definition and ignores a stale promise after selection or hot reload. */
-function usePreviewInspectorLazyDefinition(definition) {
+function usePreviewInspectorLazyDefinition(definition, loadContext) {
   const [loadState, setLoadState] = React.useState({ definition: undefined, status: 'loading' });
+  const loadPreparationKey = loadContext === undefined
+    ? ''
+    : String(loadContext.candidate?.id ?? '') + '\0' +
+      String(loadContext.candidate?.routeLocation?.pathname ?? '') + '\0' +
+      String(loadContext.directTarget === true);
   React.useEffect(() => {
     let active = true;
     if (typeof definition?.load !== 'function') {
@@ -239,7 +287,13 @@ function usePreviewInspectorLazyDefinition(definition) {
     }
     setLoadState({ definition, status: 'loading' });
     Promise.resolve()
-      .then(() => definition.load())
+      .then(() => {
+        preparePreviewInspectorOwnedRouterLocation(
+          loadContext?.candidate,
+          loadContext?.directTarget === true,
+        );
+        return definition.load();
+      })
       .then(
         (value) => {
           if (!active) return;
@@ -256,7 +310,7 @@ function usePreviewInspectorLazyDefinition(definition) {
         if (active) setLoadState({ definition, error, status: 'failed' });
       });
     return () => { active = false; };
-  }, [definition]);
+  }, [definition, loadPreparationKey]);
   return loadState;
 }
 
@@ -354,7 +408,7 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
     ? directDefinition
     : pageDefinition ?? definitions[0];
   const directTarget = definition?.directTarget === true;
-  const loadState = usePreviewInspectorLazyDefinition(definition);
+  const loadState = usePreviewInspectorLazyDefinition(definition, { candidate, directTarget });
   const candidateInitialEntry = createPreviewInspectorCandidateInitialEntry(
     candidate,
     loadState.value,

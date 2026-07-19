@@ -293,6 +293,8 @@ describe('createPreviewInspectorAncestorPlan', () => {
     );
     expect(routedPage?.rootOwnsRouter).toBe(false);
     expect(applicationRoot?.rootOwnsRouter).toBe(true);
+    expect(plan.pageCandidates[0]?.root.sourcePath).toBe(routerRootPath);
+    expect(plan.pageCandidates[0]?.complete).toBe(true);
   });
 
   /** Prefers an application page branch over an earlier lexical story/test usage. */

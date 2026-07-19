@@ -307,7 +307,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             snapshotSourceByPath,
             sourcePaths:
               request.renderMode === 'page-inspector' && targetUsageProps.dependencyPaths.length > 0
-                ? targetUsageProps.dependencyPaths
+                ? [...targetUsageProps.dependencyPaths, ...runtimeWatchInputs.dependencyPaths]
                 : implicitGlobalSourcePaths,
           });
       throwIfPreviewBuildCancelled(buildSignal);
@@ -353,6 +353,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           instrumentDataRequests: request.renderMode === 'page-inspector',
           instrumentGraphqlDocuments: request.renderMode === 'page-inspector',
           instrumentRenderConditions: request.renderMode === 'page-inspector',
+          instrumentRuntimeEffectIsolation: request.renderMode === 'page-inspector',
           instrumentRuntimeHookFallbacks: request.renderMode === 'page-inspector',
           graphqlModuleResolver: staticModuleResolver,
           projectRoot,

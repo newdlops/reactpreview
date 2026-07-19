@@ -151,6 +151,66 @@ describe('EsbuildPreviewCompiler implicit application globals', () => {
     }
   });
 
+  /** Page Inspector keeps exact app-entry globals even when the entry is outside the render chain. */
+  it('injects conventional bootstrap globals into a page-inspector graph', async () => {
+    const projectRoot = await createTemporaryProject('page-inspector-bootstrap-global-preview-');
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const documentPath = path.join(sourceDirectory, 'Target.tsx');
+    const pagePath = path.join(sourceDirectory, 'Page.tsx');
+    const bootstrapPath = path.join(sourceDirectory, 'index.tsx');
+    const wrapperPath = path.join(sourceDirectory, 'decimal.ts');
+    const sourceText = 'export function Target() { return <span>{decimal(2)}</span>; }';
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          pagePath,
+          [
+            "import { Target } from './Target';",
+            'export default function Page() { return <main><Target /></main>; }',
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          bootstrapPath,
+          [
+            "import decimalValue from './decimal';",
+            'globalThis.decimal = decimalValue;',
+            "throw new Error('PAGE_BOOTSTRAP_MUST_NOT_EXECUTE');",
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          wrapperPath,
+          "export default (value: number) => 'PAGE_DECIMAL_MARKER:' + value;",
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await new EsbuildPreviewCompiler().compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        renderMode: 'page-inspector',
+        sourceText,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = decodeBundleJavascript(bundle);
+
+      expect(javascript).toContain('PAGE_DECIMAL_MARKER');
+      expect(javascript).toContain('from project bootstrap/ambient evidence');
+      expect(javascript).not.toContain('PAGE_BOOTSTRAP_MUST_NOT_EXECUTE');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([bootstrapPath, wrapperPath, pagePath]),
+      );
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Rebuilds once only after the reached graph proves a free exact-name installed dependency. */
   it('injects an exact installed package for a reached free identifier', async () => {
     const projectRoot = await createTemporaryProject('package-global-preview-', {

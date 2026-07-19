@@ -48,7 +48,10 @@ function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
   else if (/(?:Form|Wizard)/u.test(identity)) score += 4_500;
   else if (/Router|Route/u.test(identity)) score += 2_500;
   if (candidate.renderPath?.entryPoint !== undefined && candidate.rootStepIndex !== undefined) {
-    score += candidate.complete ? 1_500 : 750;
+    // A complete checkpoint is the exported application root immediately below ReactDOM. It owns
+    // route layouts, headers, navigation, portals, and global providers that a nearer `*App`
+    // module commonly omits, so it must outrank a structurally named but partial inner shell.
+    score += candidate.complete ? 12_000 : 750;
   }
   if (candidate.rootStepIndex === undefined && candidate.complete && candidate.edges.length > 0) {
     score += 3_000;
@@ -56,8 +59,8 @@ function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
     score += 500;
   }
   if (candidate.rootStepIndex === undefined && candidate.edges.length > 0) score += 500;
-  // A detached app-owned Router cannot consume the inferred target location. Keep it selectable,
-  // but prefer an equally structural shell that can inherit the candidate-local MemoryRouter.
-  if (candidate.rootOwnsRouter) score -= 2_500;
+  // An owned BrowserRouter is useful when static route evidence lets the runtime seed its location
+  // before module evaluation. Without such evidence, retain the older conservative penalty.
+  if (candidate.rootOwnsRouter && candidate.routeLocation === undefined) score -= 2_500;
   return score;
 }

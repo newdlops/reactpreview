@@ -352,6 +352,25 @@ describe('resolvePreviewRuntimeEnvironment', () => {
     expect(inputs.watchDirectories).not.toContain(await realpath(outsidePublicDirectory));
     expect(inputs.dependencyPaths).not.toContain(path.join(projectRoot, 'public', 'index.html'));
   });
+
+  /** Watches bounded entry and ambient conventions so Page Inspector can recover app globals. */
+  it('includes conventional application bootstrap evidence in runtime watch inputs', async () => {
+    const { projectRoot, workspaceRoot } = await createWorkspaceProject();
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const entryPath = path.join(sourceDirectory, 'index.tsx');
+    const declarationPath = path.join(sourceDirectory, 'global.d.ts');
+    await mkdir(sourceDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(entryPath, 'window.Buffer = window.Buffer || Buffer;', 'utf8'),
+      writeFile(declarationPath, 'declare const decimal: unknown;', 'utf8'),
+    ]);
+
+    const inputs = await createPreviewRuntimeWatchInputs(projectRoot, workspaceRoot);
+
+    expect(inputs.dependencyPaths).toEqual(
+      expect.arrayContaining([await realpath(entryPath), await realpath(declarationPath)]),
+    );
+  });
 });
 
 /** Creates a workspace with a nested project root and registers it for test cleanup. */

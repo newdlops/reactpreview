@@ -21,6 +21,7 @@ import {
 import { canonicalizeExistingPath, normalizeLexicalPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
+import { createPreviewInspectorCorridorPlugin } from './inspector/previewInspectorCorridorPlugin';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
 import {
   createPreviewGlobalPackageBridgeEvidencePolicy,
@@ -76,7 +77,11 @@ import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { PreviewSetupFailureCache } from './previewSetupFailureCache';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
-import { selectPreviewTargetExports, selectPreviewThemeImport } from './previewTargetExports';
+import {
+  selectPreviewPrimaryTargetExport,
+  selectPreviewTargetExports,
+  selectPreviewThemeImport,
+} from './previewTargetExports';
 import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin';
 import { shouldEscalatePreviewAncestorSearch } from './previewWorkspaceAncestorPolicy';
@@ -197,7 +202,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       );
       const inspectorExportName =
         request.renderMode === 'page-inspector'
-          ? selectPreviewInspectorExport(targetExports)
+          ? selectPreviewPrimaryTargetExport(targetExports)
           : undefined;
       const themeImport = selectPreviewThemeImport(request.sourceText);
       const useFastPreparation = request.preparationMode === 'fast';
@@ -278,7 +283,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             resolveModule: staticModuleResolver.resolve,
             signal: buildSignal,
             snapshotSourceByPath,
-            sourcePaths: implicitGlobalSourcePaths,
+            sourcePaths:
+              request.renderMode === 'page-inspector' && targetUsageProps.dependencyPaths.length > 0
+                ? targetUsageProps.dependencyPaths
+                : implicitGlobalSourcePaths,
           });
       throwIfPreviewBuildCancelled(buildSignal);
       const globalBridgeEvidencePolicy =
@@ -396,6 +404,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     originalHasDefaultExport: explicitTargetExportNames.includes('default'),
                   }),
                   createPreviewInspectorRuntimePlugin({ projectRoot }),
+                  createPreviewInspectorCorridorPlugin({
+                    plan: inspectorPlan,
+                    projectRoot,
+                    resolveModule: staticModuleResolver.resolve,
+                    workspaceRoot: canonicalWorkspaceRoot,
+                  }),
                 ]),
             createPreviewApolloBridgePlugin({ projectRoot }),
             createPreviewContextBridgePlugin({ projectRoot }),
@@ -911,20 +925,6 @@ function haveEquivalentGlobalPackageBridges(
         bridge.exportName === candidate.exportName
       );
     })
-  );
-}
-
-/** Selects one stable actual-parent root while the target facade can still wrap every file export. */
-function selectPreviewInspectorExport(
-  slots: readonly ReturnType<typeof selectPreviewTargetExports>[number][],
-): string | undefined {
-  const explicitSlots = slots.filter(
-    (slot): slot is Extract<(typeof slots)[number], { readonly kind: 'explicit' }> =>
-      slot.kind === 'explicit',
-  );
-  return (
-    explicitSlots.find((slot) => slot.exportName === 'default')?.exportName ??
-    explicitSlots[0]?.exportName
   );
 }
 

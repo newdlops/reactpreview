@@ -7,6 +7,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+import { createPreviewRenderCanonicalPathMapper } from './previewRenderSourcePathIdentity';
 import type { ResolvePreviewRenderGraphModule } from './previewRenderGraphTypes';
 import {
   collectPreviewRenderModuleSpecifiers,
@@ -234,21 +235,17 @@ function createPreviewRenderReverseImportIndex(
   const aliasImportsByCandidateKey = new Map<string, IndexedRenderAliasImport[]>();
   const aliasImportsByConsumer = new Map<string, IndexedRenderAliasImport[]>();
   const authoredPathByIdentity = new Map<string, string>();
-  const canonicalDirectoryByPath = new Map<string, string>();
+  const canonicalizeInventoryPath = createPreviewRenderCanonicalPathMapper([
+    ...sourceTextByPath.keys(),
+  ]);
   const consumerOrderByIdentity = new Map<string, number>();
   const relativeConsumersByDependencyKey = new Map<string, Set<string>>();
   let consumerOrder = 0;
 
   for (const [consumerPath, sourceText] of sourceTextByPath) {
-    const consumerDirectory = path.dirname(path.normalize(consumerPath));
-    let canonicalConsumerDirectory = canonicalDirectoryByPath.get(consumerDirectory);
-    if (canonicalConsumerDirectory === undefined) {
-      canonicalConsumerDirectory = canonicalizeExistingPath(consumerDirectory);
-      canonicalDirectoryByPath.set(consumerDirectory, canonicalConsumerDirectory);
-    }
-    const consumerIdentity = normalizeKnownCanonicalRenderModuleIdentity(
-      path.join(canonicalConsumerDirectory, path.basename(consumerPath)),
-    );
+    const canonicalConsumerPath = canonicalizeInventoryPath(consumerPath);
+    const canonicalConsumerDirectory = path.dirname(canonicalConsumerPath);
+    const consumerIdentity = normalizeKnownCanonicalRenderModuleIdentity(canonicalConsumerPath);
     authoredPathByIdentity.set(consumerIdentity, consumerPath);
     consumerOrderByIdentity.set(consumerIdentity, consumerOrder);
     consumerOrder += 1;

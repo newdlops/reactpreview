@@ -1,0 +1,210 @@
+/** Verifies that Page Inspector bundles only dynamically imported branches on its proven path. */
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { build, type Plugin } from 'esbuild';
+import { describe, expect, it } from 'vitest';
+import {
+  createPreviewInspectorCorridorPlugin,
+  type PreviewInspectorAncestorPlan,
+} from '../../../../src/adapters/esbuild/inspector';
+import { createPreviewStaticModuleResolver } from '../../../../src/adapters/esbuild/previewStaticModuleResolver';
+import { PREVIEW_RESOLVE_GUARD } from '../../../../src/adapters/esbuild/previewPluginProtocol';
+
+/** Keeps a selected lazy page while replacing an unrelated sibling route with an inert module. */
+describe('createPreviewInspectorCorridorPlugin', () => {
+  it('omits only project dynamic imports outside the proven page corridor', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const selectedPath = path.join(workspaceRoot, 'src', 'Selected.ts');
+    const unrelatedPath = path.join(workspaceRoot, 'src', 'Unrelated.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          `export const selected = () => import('./Selected');`,
+          `export const unrelated = () => import('./Unrelated');`,
+        ].join('\n'),
+      ),
+      writeFile(selectedPath, `export default 'SELECTED_CORRIDOR_MARKER';`),
+      writeFile(unrelatedPath, `export default 'UNRELATED_ROUTE_MARKER';`),
+    ]);
+    const plan = createCorridorPlan(entryPath, selectedPath);
+    const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan,
+          projectRoot: workspaceRoot,
+          resolveModule: resolver.resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('SELECTED_CORRIDOR_MARKER');
+    expect(source).not.toContain('UNRELATED_ROUTE_MARKER');
+    expect(source).toContain('ReactPreviewDeferredCorridorRoute');
+    expect(result.outputFiles).toHaveLength(3);
+    await expect(readFile(unrelatedPath, 'utf8')).resolves.toContain('UNRELATED_ROUTE_MARKER');
+  });
+
+  /** Prunes a deferred route declared in a statically reached manifest outside direct path evidence. */
+  it('prunes project lazy branches even when their importer is not a render-chain step', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const manifestPath = path.join(workspaceRoot, 'src', 'routes.ts');
+    const selectedPath = path.join(workspaceRoot, 'src', 'Selected.ts');
+    const unrelatedPath = path.join(workspaceRoot, 'src', 'Unrelated.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(entryPath, `export { routes } from './routes';`),
+      writeFile(
+        manifestPath,
+        `export const routes = [() => import('./Selected'), () => import('./Unrelated')];`,
+      ),
+      writeFile(selectedPath, `export default 'SELECTED_CORRIDOR_MARKER';`),
+      writeFile(unrelatedPath, `export default 'UNRELATED_ROUTE_MARKER';`),
+    ]);
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan: createCorridorPlan(entryPath, selectedPath),
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('SELECTED_CORRIDOR_MARKER');
+    expect(source).not.toContain('UNRELATED_ROUTE_MARKER');
+    expect(source).toContain('ReactPreviewDeferredCorridorRoute');
+  });
+
+  /** Leaves nested compiler resolver probes untouched so theme/setup bridge resolution stays local. */
+  it('does not intercept guarded internal dynamic resolution', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const selectedPath = path.join(workspaceRoot, 'src', 'Selected.ts');
+    const internalPath = path.join(workspaceRoot, 'src', 'InternalTheme.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(entryPath, `import value from 'preview:guarded'; globalThis.value = value;`),
+      writeFile(selectedPath, `export default 'SELECTED_CORRIDOR_MARKER';`),
+      writeFile(internalPath, `export default 'INTERNAL_THEME_MARKER';`),
+    ]);
+    const guardedResolver: Plugin = {
+      name: 'guarded-resolver-fixture',
+      setup(buildApi): void {
+        buildApi.onResolve({ filter: /^preview:guarded$/ }, async (arguments_) => {
+          return await buildApi.resolve('./InternalTheme', {
+            importer: arguments_.importer,
+            kind: 'dynamic-import',
+            pluginData: PREVIEW_RESOLVE_GUARD,
+            resolveDir: arguments_.resolveDir,
+          });
+        });
+      },
+    };
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        guardedResolver,
+        createPreviewInspectorCorridorPlugin({
+          plan: createCorridorPlan(entryPath, selectedPath),
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      write: false,
+    });
+
+    expect(result.outputFiles.map((outputFile) => outputFile.text).join('\n')).toContain(
+      'INTERNAL_THEME_MARKER',
+    );
+  });
+});
+
+/** Creates the minimum immutable plan whose entry and selected module form the allowed corridor. */
+function createCorridorPlan(entryPath: string, selectedPath: string): PreviewInspectorAncestorPlan {
+  const target = { exportName: 'default', sourcePath: selectedPath };
+  const renderPath = {
+    entryPoint: {
+      kind: 'create-root' as const,
+      occurrenceStart: 0,
+      sourcePath: entryPath,
+      wrapperNames: [],
+    },
+    id: 'selected-path',
+    steps: [
+      {
+        certainty: 'confirmed' as const,
+        kind: 'react-lazy' as const,
+        label: 'Selected',
+        occurrenceStart: 0,
+        sourcePath: selectedPath,
+        wrapperNames: [],
+      },
+      {
+        certainty: 'confirmed' as const,
+        kind: 'entry-render' as const,
+        label: 'entry',
+        occurrenceStart: 0,
+        sourcePath: entryPath,
+        wrapperNames: [],
+      },
+    ],
+  };
+  const renderChain = {
+    dependencyPaths: [entryPath, selectedPath],
+    paths: [renderPath],
+    reachability: 'entry-connected' as const,
+    target,
+    truncated: false,
+  };
+  const pageCandidate = {
+    complete: true,
+    dependencyPaths: [entryPath, selectedPath],
+    edges: [],
+    id: 'candidate-selected',
+    renderPath,
+    root: target,
+    rootAutomaticProps: {},
+    rootOwnsRouter: false,
+    stopReason: 'root-reached' as const,
+    targetAutomaticProps: {},
+  };
+  return {
+    ...pageCandidate,
+    pageCandidates: [pageCandidate],
+    renderChain,
+    renderChainsByExport: { default: renderChain },
+    target,
+  };
+}

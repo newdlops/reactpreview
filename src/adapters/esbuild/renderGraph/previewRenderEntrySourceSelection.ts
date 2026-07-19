@@ -6,6 +6,7 @@
 import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+import { createPreviewRenderCanonicalPathMapper } from './previewRenderSourcePathIdentity';
 import type { ResolvePreviewRenderGraphModule } from './previewRenderGraphTypes';
 import {
   analyzePreviewRenderSource,
@@ -183,22 +184,21 @@ export async function selectPreviewRenderEntrySources(
     entryPath: string,
   ): Promise<{ readonly path: readonly string[]; readonly truncated: boolean }> {
     const entryIdentity = normalizeKnownEntrySourceIdentity(entryPath);
-    const pending: ForwardSourceCandidate[] = [
-      {
-        depth: 0,
-        score: scoreForwardSourcePath(entryPath, targetPath),
-        sourceIdentity: entryIdentity,
-        sourcePath: entryPath,
-      },
-    ];
+    const pending: ForwardSourceCandidate[] = [];
+    const queued = new Set<string>([entryIdentity]);
+    pushForwardSourceCandidate(pending, {
+      depth: 0,
+      score: scoreForwardSourcePath(entryPath, targetPath),
+      sourceIdentity: entryIdentity,
+      sourcePath: entryPath,
+    });
     const parentByIdentity = new Map<string, string>();
     const visited = new Set<string>();
     let traversalTruncated = false;
 
     while (pending.length > 0) {
       throwIfPreviewBuildCancelled(options.signal);
-      pending.sort(compareForwardSourceCandidates);
-      const current = pending.shift();
+      const current = shiftForwardSourceCandidate(pending);
       if (current === undefined || visited.has(current.sourceIdentity)) {
         continue;
       }
@@ -233,9 +233,10 @@ export async function selectPreviewRenderEntrySources(
         }
         const childIdentity = normalizeKnownEntrySourceIdentity(resolvedPath);
         const childPath = authoredPathByIdentity.get(childIdentity);
-        if (childPath === undefined || visited.has(childIdentity)) {
+        if (childPath === undefined || visited.has(childIdentity) || queued.has(childIdentity)) {
           continue;
         }
+        queued.add(childIdentity);
         if (!parentByIdentity.has(childIdentity)) {
           parentByIdentity.set(childIdentity, current.sourceIdentity);
         }
@@ -245,7 +246,7 @@ export async function selectPreviewRenderEntrySources(
             truncated: traversalTruncated,
           };
         }
-        pending.push({
+        pushForwardSourceCandidate(pending, {
           depth: current.depth + 1,
           score: scoreForwardSourcePath(childPath, targetPath),
           sourceIdentity: childIdentity,
@@ -260,20 +261,12 @@ export async function selectPreviewRenderEntrySources(
 /** Indexes normal and canonical file identities so symlink and macOS private paths converge. */
 function createAuthoredPathIndex(sourcePaths: readonly string[]): Map<string, string> {
   const authoredPathByIdentity = new Map<string, string>();
-  const canonicalDirectoryByPath = new Map<string, string>();
+  const canonicalizeInventoryPath = createPreviewRenderCanonicalPathMapper(sourcePaths);
   for (const sourcePath of sourcePaths) {
     const normalizedPath = path.normalize(sourcePath);
     authoredPathByIdentity.set(normalizeKnownEntrySourceIdentity(normalizedPath), normalizedPath);
-    const sourceDirectory = path.dirname(normalizedPath);
-    let canonicalDirectory = canonicalDirectoryByPath.get(sourceDirectory);
-    if (canonicalDirectory === undefined) {
-      canonicalDirectory = canonicalizeExistingPath(sourceDirectory);
-      canonicalDirectoryByPath.set(sourceDirectory, canonicalDirectory);
-    }
     authoredPathByIdentity.set(
-      normalizeKnownEntrySourceIdentity(
-        path.join(canonicalDirectory, path.basename(normalizedPath)),
-      ),
+      normalizeKnownEntrySourceIdentity(canonicalizeInventoryPath(normalizedPath)),
       normalizedPath,
     );
   }
@@ -331,6 +324,58 @@ function compareForwardSourceCandidates(
   }
   const depthDifference = left.depth - right.depth;
   return depthDifference !== 0 ? depthDifference : left.sourcePath.localeCompare(right.sourcePath);
+}
+
+/** Inserts one best-first candidate into a binary heap in logarithmic time. */
+function pushForwardSourceCandidate(
+  heap: ForwardSourceCandidate[],
+  candidate: ForwardSourceCandidate,
+): void {
+  heap.push(candidate);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parentIndex = Math.floor((index - 1) / 2);
+    const parent = heap[parentIndex];
+    if (parent === undefined || compareForwardSourceCandidates(parent, candidate) <= 0) break;
+    heap[index] = parent;
+    heap[parentIndex] = candidate;
+    index = parentIndex;
+  }
+}
+
+/** Removes the highest-priority candidate while preserving deterministic heap ordering. */
+function shiftForwardSourceCandidate(
+  heap: ForwardSourceCandidate[],
+): ForwardSourceCandidate | undefined {
+  const root = heap[0];
+  const tail = heap.pop();
+  if (root === undefined || tail === undefined || heap.length === 0) return root;
+  heap[0] = tail;
+  let index = 0;
+  for (;;) {
+    const leftIndex = index * 2 + 1;
+    const rightIndex = leftIndex + 1;
+    const left = heap[leftIndex];
+    const right = heap[rightIndex];
+    if (left === undefined) break;
+    const selectedIndex =
+      right !== undefined && compareForwardSourceCandidates(right, left) < 0
+        ? rightIndex
+        : leftIndex;
+    const selected = heap[selectedIndex];
+    const current = heap[index];
+    if (
+      selected === undefined ||
+      current === undefined ||
+      compareForwardSourceCandidates(current, selected) <= 0
+    ) {
+      break;
+    }
+    heap[index] = selected;
+    heap[selectedIndex] = current;
+    index = selectedIndex;
+  }
+  return root;
 }
 
 /** Reconstructs entry-to-target authored modules from one inert import predecessor chain. */

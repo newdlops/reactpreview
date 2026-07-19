@@ -16,6 +16,10 @@ export {
   type PreviewInspectorRouteLocation,
 } from './previewInspectorRouteLocation';
 export {
+  createPreviewInspectorCorridorPlugin,
+  type PreviewInspectorCorridorPluginOptions,
+} from './previewInspectorCorridorPlugin';
+export {
   createPreviewInspectorRootPlugin,
   createPreviewInspectorRootSource,
   type PreviewInspectorRootPluginOptions,

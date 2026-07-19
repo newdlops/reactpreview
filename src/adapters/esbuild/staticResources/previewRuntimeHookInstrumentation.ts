@@ -462,7 +462,8 @@ function readBindingPropertyName(element: ts.BindingElement): string | undefined
 function inferSemanticFallback(
   rawName: string,
 ): { readonly expression: string; readonly label: string } | undefined {
-  const name = rawName.replace(/^use/u, '');
+  // Strip a hook prefix only at an actual `useX` boundary; `userName` is a data key, not `useRName`.
+  const name = rawName.replace(/^use(?=[A-Z0-9_$]|$)/u, '');
   const semanticName = name.length === 0 ? name : name.charAt(0).toLowerCase() + name.slice(1);
   const normalized = name.toLowerCase();
   if (/^(?:is|matches)(?:large|wide|desktop)/u.test(normalized)) {
@@ -517,7 +518,10 @@ function inferSemanticFallback(
     return { expression: 'null', label: 'generated empty error value' };
   }
   if (/(?:search|query)$/u.test(normalized)) {
-    return { expression: JSON.stringify('Preview search'), label: 'generated preview text' };
+    return {
+      expression: JSON.stringify(createSemanticString(semanticName)),
+      label: 'generated key text',
+    };
   }
   if (
     /(?:value|id|name|title|status|type|kind|code|message|description|text|slug|url|path|email)$/u.test(
@@ -525,8 +529,8 @@ function inferSemanticFallback(
     )
   ) {
     return {
-      expression: JSON.stringify(createSemanticString(normalized)),
-      label: 'generated preview text',
+      expression: JSON.stringify(createSemanticString(semanticName)),
+      label: 'generated key text',
     };
   }
   return undefined;
@@ -608,7 +612,7 @@ function createIdentifierUsageFallback(
     const item = [...arrayItemFallbacks].sort(
       (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
     )[0] ?? {
-      expression: 'Object.freeze({ id: "preview-id", name: "Preview name" })',
+      expression: 'Object.freeze({ id: "preview-id", name: "name" })',
       label: 'generated generic preview item',
       requiredPaths: ['id', 'name'],
     };
@@ -740,14 +744,13 @@ function bindingContainsName(binding: ts.BindingName, identifierName: string): b
   );
 }
 
-/** Produces recognizable preview text without impersonating application or backend truth. */
-function createSemanticString(normalizedName: string): string {
+/** Produces compact key-derived text while preserving formats used by common runtime operations. */
+function createSemanticString(rawName: string): string {
+  const normalizedName = rawName.toLowerCase();
   if (normalizedName.endsWith('id')) return 'preview-id';
-  if (normalizedName.endsWith('name')) return 'Preview name';
-  if (normalizedName.endsWith('title')) return 'Preview title';
   if (normalizedName.endsWith('status')) return 'PREVIEW';
   if (normalizedName.endsWith('email')) return 'preview@example.invalid';
-  return 'Preview value';
+  return rawName.length <= 32 ? rawName : `${rawName.slice(0, 31)}…`;
 }
 
 /** Uses a literal comparison near one identifier when semantic naming alone is inconclusive. */

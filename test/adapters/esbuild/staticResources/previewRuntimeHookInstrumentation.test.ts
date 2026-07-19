@@ -50,8 +50,27 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(2);
     expect(transformed).toContain('() => (false)');
     expect(transformed).toContain('"isStaffMode": false');
-    expect(transformed).toContain('"userName": "Preview name"');
+    expect(transformed).toContain('"userName": "userName"');
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
+  });
+
+  /** Uses the local result key instead of an arbitrary sentence for directly rendered hook text. */
+  it('renders a direct generated scalar as its bounded binding key', () => {
+    const source = [
+      `import { useRemoteThing } from './use-remote-thing';`,
+      'export function Badge() {',
+      '  const badge = useRemoteThing();',
+      '  return <span>{badge}</span>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Badge.tsx', source),
+    );
+
+    expect(transformed).toContain('() => ("badge")');
+    expect(transformed).toContain('"fallbackLabel":"generated rendered key text"');
   });
 
   /** Resolves responsive hook flags from the preview viewport instead of hiding desktop shells. */
@@ -184,8 +203,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Topbar.tsx', source),
     );
 
-    expect(transformed).toContain('"shortName": "Preview name"');
-    expect(transformed).toContain('"name": "Preview name"');
+    expect(transformed).toContain('"shortName": "shortName"');
+    expect(transformed).toContain('"name": "name"');
     expect(transformed).toContain('"subscription": Object.freeze({})');
     expect(transformed).toContain('"requiredPaths":["shortName","name","subscription"]');
   });
@@ -208,7 +227,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('Object.freeze([Object.freeze({');
     expect(transformed).toContain('"email": "preview@example.invalid"');
     expect(transformed).toContain('"id": "preview-id"');
-    expect(transformed).toContain('"name": "Preview name"');
+    expect(transformed).toContain('"name": "name"');
     expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
   });
 
@@ -237,9 +256,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(replacements[0]?.replacement).toContain(', () => (DOCUMENT), () => (queryOptions))');
     expect(replacements[0]?.replacement).not.toContain('useTheme()');
     expect(replacements[1]?.replacement).toContain('useAppContext()');
-    expect(replacements[1]?.replacement).toContain(
-      '"user": Object.freeze({ "name": "Preview name" })',
-    );
+    expect(replacements[1]?.replacement).toContain('"user": Object.freeze({ "name": "name" })');
   });
 
   /** Supplies an inert fragment carrier when an unbridged project Context exposes GraphQL data. */
@@ -303,7 +320,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain('useField("name")');
-    expect(transformed).toContain('"value": "Preview value"');
+    expect(transformed).toContain('"value": "value"');
     expect(transformed).toContain('"touched": false');
     expect(transformed).toContain('"setValue": Object.freeze(() => undefined)');
   });
@@ -322,7 +339,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(replacements).toHaveLength(1);
     expect(replacements[0]?.replacement).toContain('useRemoteThing()');
-    expect(replacements[0]?.replacement).toContain('"name": "Preview name"');
+    expect(replacements[0]?.replacement).toContain('"name": "name"');
   });
 
   /** Handles callable and conditional hook bindings without guessing their package semantics. */
@@ -367,7 +384,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(2);
     expect(transformed).toContain('() => (useContext(AppContext))');
     expect(transformed).toContain('() => (React.useContext(CompanyContext))');
-    expect(transformed).toContain('"user": Object.freeze({ "name": "Preview name" })');
+    expect(transformed).toContain('"user": Object.freeze({ "name": "name" })');
     expect(transformed).not.toContain('() => (useMemo(');
     expect(transformed).not.toContain('() => (React.useMemo(');
   });

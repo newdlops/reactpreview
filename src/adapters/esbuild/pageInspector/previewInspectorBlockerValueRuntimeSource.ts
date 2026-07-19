@@ -7,6 +7,7 @@
  * inert function only when the value enters project code.
  */
 import { PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY } from '../previewAutomaticPropsRuntimeSource';
+import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 
 /** Text stored in editable JSON wherever the preview runtime inferred a no-op callback. */
 export const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = '[Preview no-op function]';
@@ -22,6 +23,9 @@ const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSP
 const PREVIEW_INSPECTOR_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_NODE_LIMIT = 256;
+const PREVIEW_INSPECTOR_COLLECTION_METHOD_NAMES = new Set(
+  ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
+);
 
 /** Copies one generated value into bounded JSON without invoking accessors or retaining prototypes. */
 function copyPreviewInspectorBlockerValueForJson(value, state, depth = 0) {
@@ -60,7 +64,13 @@ function copyPreviewInspectorBlockerValueForJson(value, state, depth = 0) {
 
 /** Creates a deterministic preview record for a collection whose item fields remain unknown. */
 function createPreviewInspectorRequiredPathCollectionItem() {
-  return { id: 'preview-1', name: 'Preview item 1' };
+  return { id: 'preview-1', name: 'name' };
+}
+
+/** Keeps a generated text leaf visibly tied to its key without expanding application layout. */
+function createPreviewInspectorRequiredPathKeyText(propertyName) {
+  const key = String(propertyName).trim() || 'value';
+  return key.length <= 32 ? key : key.slice(0, 31) + '…';
 }
 
 /** Infers a type-compatible, visibly synthetic leaf from property-name and call evidence. */
@@ -68,6 +78,7 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (callable) return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
   const rawName = String(propertyName);
   const name = rawName.replaceAll('_', '').toLowerCase();
+  const keyText = createPreviewInspectorRequiredPathKeyText(rawName);
   if (/^\d+$/u.test(name)) return createPreviewInspectorRequiredPathCollectionItem();
   /*
    * Require an actual camelCase/snake_case boundary after an action verb. Prefix-only matching
@@ -93,13 +104,10 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (/(?:date|time|timestamp|createdat|updatedat)$/u.test(name)) return '2026-01-15T09:00:00.000Z';
   if (/(?:url|uri|href|link)$/u.test(name)) return 'https://example.invalid/preview/1';
   if (/(?:status|state)$/u.test(name)) return 'ACTIVE';
-  if (/(?:name|owner|author|assignee)$/u.test(name)) return 'Preview User 1';
-  if (/(?:title|subject|headline)$/u.test(name)) return 'Preview title';
-  if (/(?:description|message|content|summary|text|body)$/u.test(name)) return 'Preview generated content';
   if (/(?:props|context|form|data|filter|params|values|config|settings|user|company|session)$/u.test(name)) {
     return createPreviewInspectorRequiredPathCollectionItem();
   }
-  return 'Preview generated value';
+  return keyText;
 }
 
 /** Reports whether a demanded property name proves that its value is a render-safe scalar leaf. */
@@ -169,20 +177,31 @@ function parsePreviewInspectorRequiredPath(rawPath) {
   if (typeof rawPath !== 'string' || rawPath === '<root>') return undefined;
   const callable = rawPath.endsWith('()');
   const source = callable ? rawPath.slice(0, -2) : rawPath;
-  const path = source
+  const parsedPath = source
     .replace(/\[(\d*)\]/gu, (_match, index) => '.' + (index.length === 0 ? '0' : index))
     .split('.')
     .map((part) => part.replace(/\?$/u, ''))
     .filter((part) => part.length > 0 && part !== '<root>')
     .slice(0, PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT);
-  return path.length === 0 ? undefined : { callable, path };
+  const collection = callable && PREVIEW_INSPECTOR_COLLECTION_METHOD_NAMES.has(parsedPath.at(-1));
+  const path = collection ? parsedPath.slice(0, -1) : parsedPath;
+  return path.length === 0 && !collection ? undefined : { callable: callable && !collection, collection, path };
 }
 
 /** Adds one compiler-proven path when serialization alone could not expose its missing property. */
 function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
   if (parsed === undefined) return template;
-  const { callable, path } = parsed;
+  const { callable, collection, path } = parsed;
+  /*
+   * A direct result.filter()/map()/find() observation proves the root itself is an array. The
+   * method belongs to Array.prototype and must never become an own no-op property on an object.
+   */
+  if (collection && path.length === 0) {
+    return Array.isArray(template)
+      ? template
+      : [createPreviewInspectorRequiredPathCollectionItem()];
+  }
   const smartSeed = arguments.length >= 3
     ? readPreviewInspectorRequiredPathSeed(seedValue, path)
     : undefined;
@@ -196,6 +215,17 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
     if (blockedInspectorPropNames.has(propertyName)) return root;
     const atLeaf = index === path.length - 1;
     if (atLeaf) {
+      if (collection) {
+        /*
+         * Exact method-call evidence is stronger than a neutral object emitted by a Context,
+         * Redux, or GraphQL fallback. One small row keeps list UI visible while every intrinsic
+         * collection method remains available through the real Array prototype.
+         */
+        if (!Array.isArray(current[propertyName])) {
+          current[propertyName] = [createPreviewInspectorRequiredPathCollectionItem()];
+        }
+        break;
+      }
       /*
        * A direct null leaf is commonly an authored neutral sentinel such as fallback: null,
        * error: null, or selectedItem: null. Turning it into a truthy lorem value can activate
@@ -224,7 +254,11 @@ function createPreviewInspectorRuntimeFallbackSmartRoot(value, requiredPaths) {
   const firstPath = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
     .map(parsePreviewInspectorRequiredPath)
     .find((path) => path !== undefined);
-  if (firstPath !== undefined) return /^\d+$/u.test(firstPath.path[0]) ? [] : {};
+  if (firstPath !== undefined) {
+    return (firstPath.collection && firstPath.path.length === 0) || /^\d+$/u.test(firstPath.path[0])
+      ? []
+      : {};
+  }
   const copied = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
   return copied === null || copied === undefined ? {} : copied;
 }

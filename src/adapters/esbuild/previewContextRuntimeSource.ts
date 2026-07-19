@@ -5,6 +5,8 @@
  * or executes an authored Provider component, store, application bootstrap, or backend client.
  */
 
+import { PREVIEW_COLLECTION_METHOD_NAMES } from './previewCollectionMethodNames';
+
 /** Exact project-owned React entry required by one generated Context runtime module. */
 export interface PreviewContextRuntimeSourceOptions {
   /** Absolute browser-resolved React entry used by the target project's own module graph. */
@@ -40,11 +42,7 @@ const MAX_SUBSCRIBERS = 128;
 const REACT_CONTEXT_TYPE = Symbol.for('react.context');
 const REACT_PROVIDER_TYPE = Symbol.for('react.provider');
 const STATIC_NOOP = Object.freeze(() => undefined);
-const ARRAY_METHOD_NAMES = new Set([
-  'at', 'concat', 'every', 'filter', 'find', 'findIndex', 'flat', 'flatMap', 'forEach',
-  'includes', 'indexOf', 'join', 'lastIndexOf', 'map', 'reduce', 'reduceRight', 'slice',
-  'some', 'sort',
-]);
+const ARRAY_METHOD_NAMES = new Set(${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)});
 const ambiguousHooks = new Set();
 const identityByHook = new Map();
 const requirementsByHook = new Map();

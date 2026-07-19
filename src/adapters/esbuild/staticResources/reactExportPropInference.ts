@@ -6,38 +6,14 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 
 const MAX_COMPONENT_EXPORTS = 32;
 const MAX_INFERRED_DEPTH = 10;
 const MAX_INFERRED_NODES = 192;
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'key', 'prototype', 'ref']);
-const ARRAY_METHOD_NAMES = new Set([
-  'at',
-  'concat',
-  'every',
-  'filter',
-  'find',
-  'findIndex',
-  'flat',
-  'flatMap',
-  'forEach',
-  'includes',
-  'indexOf',
-  'join',
-  'map',
-  'pop',
-  'push',
-  'reduce',
-  'reduceRight',
-  'reverse',
-  'shift',
-  'slice',
-  'some',
-  'sort',
-  'splice',
-  'unshift',
-]);
+const ARRAY_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
 const STRING_METHOD_NAMES = new Set([
   'charAt',
   'endsWith',

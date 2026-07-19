@@ -7,6 +7,7 @@
  * only safe plain containers and fills nullish data-property leaves from compiler-generated shape
  * evidence. It never invokes getters, mutates project objects, or traverses class instances.
  */
+import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 
 /** Maximum nested object/array depth completed during one hook read. */
 export const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = 12;
@@ -35,6 +36,9 @@ const previewInspectorGeneratedValueBlockedKeys = new Set([
   'constructor',
   'prototype',
 ]);
+const previewInspectorGeneratedValueCollectionMethods = new Set(
+  ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
+);
 
 /** Reports whether a property can be copied without prototype mutation or unbounded UI text. */
 function isPreviewInspectorGeneratedValueKey(propertyName) {
@@ -77,6 +81,28 @@ function isPreviewInspectorGeneratedEmptyPlainRecord(value) {
   if (!isPreviewInspectorGeneratedPlainRecord(value)) return false;
   const descriptors = readPreviewInspectorGeneratedValueDescriptors(value);
   return descriptors !== undefined && Reflect.ownKeys(descriptors).length === 0;
+}
+
+/**
+ * Detects a syntax-generated receiver placeholder such as an object with a filter callback. It does
+ * not represent application data: the called built-in method proves that the receiver is an Array,
+ * and keeping the placeholder merely postpones failure until project code invokes the method.
+ */
+function isPreviewInspectorGeneratedCollectionMethodRecord(value) {
+  if (!isPreviewInspectorGeneratedPlainRecord(value)) return false;
+  const descriptors = readPreviewInspectorGeneratedValueDescriptors(value);
+  if (descriptors === undefined) return false;
+  const names = Reflect.ownKeys(descriptors);
+  return names.length > 0 && names.every((propertyName) => {
+    if (
+      typeof propertyName !== 'string' ||
+      !previewInspectorGeneratedValueCollectionMethods.has(propertyName)
+    ) return false;
+    const descriptor = descriptors[propertyName];
+    return descriptor !== undefined &&
+      Object.prototype.hasOwnProperty.call(descriptor, 'value') &&
+      typeof descriptor.value === 'function';
+  });
 }
 
 /** Records one bounded generated path while still counting omitted paths for diagnostics. */
@@ -181,6 +207,14 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   const authoredIsNeutralEmptyRecord =
     !authoredIsArray && isPreviewInspectorGeneratedEmptyPlainRecord(authored);
   const generatedType = typeof generated;
+  if (
+    generatedIsArray &&
+    !authoredIsArray &&
+    isPreviewInspectorGeneratedCollectionMethodRecord(authored)
+  ) {
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
   if (
     authoredIsNeutralEmptyRecord &&
     generated !== null &&

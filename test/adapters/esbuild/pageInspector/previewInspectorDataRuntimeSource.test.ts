@@ -34,8 +34,8 @@ describe('Page Inspector data runtime source', () => {
     const automatic = cloneJson(runtime.resolve(metadata, {}));
     expect(automatic).toEqual({
       employees: [
-        { active: true, id: 'preview-1', name: 'Preview User 1', salary: 1 },
-        { active: true, id: 'preview-2', name: 'Preview User 2', salary: 2 },
+        { active: true, id: 'preview-1', name: 'name', salary: 1 },
+        { active: true, id: 'preview-2', name: 'name', salary: 2 },
       ],
     });
     expect(cloneJson(runtime.requests())[0]).toMatchObject({ mode: 'auto' });
@@ -44,7 +44,7 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(runtime.requests())[0]).toMatchObject({
       mode: 'smart',
       payload: {
-        employees: [{ active: true, id: 'preview-1', name: 'Preview User 1', salary: 1 }],
+        employees: [{ active: true, id: 'preview-1', name: 'name', salary: 1 }],
       },
     });
 
@@ -78,6 +78,60 @@ describe('Page Inspector data runtime source', () => {
         ],
       },
     });
+  });
+
+  /** Uses compact field keys for Auto text while leaving deliberate Lorem generation explicit. */
+  it('keeps generated display strings tied to their bounded response keys', () => {
+    const runtime = evaluateDataRuntime();
+    const longKey = 'thisFieldNameWouldOtherwiseExpandTheEntireCard';
+
+    const payload = cloneJson(
+      runtime.resolve(
+        {
+          id: 'compact-text',
+          kind: 'graphql',
+          label: 'CompactTextQuery',
+          shape: {
+            fields: {
+              address: { kind: 'string' },
+              description: { kind: 'string' },
+              [longKey]: { kind: 'string' },
+            },
+            kind: 'object',
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(payload).toEqual({
+      address: 'address',
+      description: 'description',
+      [longKey]: `${longKey.slice(0, 31)}…`,
+    });
+  });
+
+  /** Reuses an unchanged response object so application memo/effect dependencies can settle. */
+  it('keeps one stable payload identity for an unchanged request variant', () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'stable-company',
+      kind: 'graphql',
+      label: 'StableCompanyQuery',
+      shape: {
+        fields: { company: { fields: { id: { kind: 'string' } }, kind: 'object' } },
+        kind: 'object',
+      },
+    };
+    const requestContext = {
+      body: { companyId: '1' },
+      rawUrl: 'graphql://StableCompanyQuery',
+    };
+
+    const first = runtime.resolve(metadata, {}, requestContext);
+    const second = runtime.resolve(metadata, {}, requestContext);
+
+    expect(second).toBe(first);
   });
 
   /** Keeps disruptive lifecycle flags inactive while opening a statically selected access path. */
@@ -138,7 +192,7 @@ describe('Page Inspector data runtime source', () => {
     };
 
     expect(cloneJson(runtime.resolve(metadata, {}, requestContext))).toEqual({
-      companyWithDeletionStatus: { id: '42', name: 'Preview User 1' },
+      companyWithDeletionStatus: { id: '42', name: 'name' },
     });
     runtime.set(
       'company-shell',
@@ -243,8 +297,8 @@ describe('Page Inspector data runtime source', () => {
     await expect(response.json()).resolves.toEqual({
       data: {
         staff: [
-          { id: 'preview-1', isActive: true, name: 'Preview User 1' },
-          { id: 'preview-2', isActive: true, name: 'Preview User 2' },
+          { id: 'preview-1', isActive: true, name: 'name' },
+          { id: 'preview-2', isActive: true, name: 'name' },
         ],
       },
     });
@@ -270,8 +324,8 @@ describe('Page Inspector data runtime source', () => {
       data: {
         rightToConsentOrConsultList: {
           objectList: [
-            { id: 'preview-1', title: 'Lorem ipsum preview 1' },
-            { id: 'preview-2', title: 'Lorem ipsum preview 2' },
+            { id: 'preview-1', title: 'title' },
+            { id: 'preview-2', title: 'title' },
           ],
           pageInfo: { count: 1, hasNext: false },
         },
@@ -297,15 +351,15 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(request.response)).toEqual([
       {
         active: true,
-        description: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
+        description: 'description',
         id: 'preview-1',
-        name: 'Preview User 1',
+        name: 'name',
       },
       {
         active: true,
-        description: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
+        description: 'description',
         id: 'preview-2',
-        name: 'Preview User 2',
+        name: 'name',
       },
     ]);
   });
@@ -468,7 +522,7 @@ describe('Page Inspector data runtime source', () => {
     expect(cloneJson(runtime.requests())[0]).toMatchObject({
       mode: 'seed',
       payload: {},
-      suggestedPayload: { profile: { active: true, name: 'Preview User 1' } },
+      suggestedPayload: { profile: { active: true, name: 'name' } },
     });
     expect(cloneJson(runtime.paths(metadata.shape))).toEqual(['profile.active', 'profile.name']);
   });

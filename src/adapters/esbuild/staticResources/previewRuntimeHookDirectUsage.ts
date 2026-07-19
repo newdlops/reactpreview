@@ -80,8 +80,16 @@ export function createPreviewRuntimeHookDirectUsageFallback(
     return { expression: 'false', label: 'generated boolean from local condition' };
   }
   return usage.rendered
-    ? { expression: JSON.stringify('Preview value'), label: 'generated rendered preview text' }
+    ? {
+        expression: JSON.stringify(createCompactPreviewKey(identifier.text)),
+        label: 'generated rendered key text',
+      }
     : undefined;
+}
+
+/** Bounds a source identifier before exposing it as visible generated component text. */
+function createCompactPreviewKey(identifierName: string): string {
+  return identifierName.length <= 32 ? identifierName : `${identifierName.slice(0, 31)}…`;
 }
 
 /** Treats JSX event/callback props as callable demand rather than rendered string content. */

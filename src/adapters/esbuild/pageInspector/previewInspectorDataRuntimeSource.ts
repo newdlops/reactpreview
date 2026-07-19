@@ -7,6 +7,7 @@
  */
 import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspectorGraphqlShapeRuntimeSource';
 import { createPreviewInspectorDataBooleanRuntimeSource } from './previewInspectorDataBooleanRuntimeSource';
+import { createPreviewInspectorDataIdentityRuntimeSource } from './previewInspectorDataIdentityRuntimeSource';
 import { createPreviewInspectorDataReachabilityRuntimeSource } from './previewInspectorDataReachabilityRuntimeSource';
 import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInspectorVirtualBackendRuntimeSource';
 
@@ -21,12 +22,15 @@ import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInsp
 export function createPreviewInspectorDataRuntimeSource(): string {
   const graphqlShapeRuntimeSource = createPreviewInspectorGraphqlShapeRuntimeSource();
   const booleanRuntimeSource = createPreviewInspectorDataBooleanRuntimeSource();
+  const identityRuntimeSource = createPreviewInspectorDataIdentityRuntimeSource();
   const reachabilityRuntimeSource = createPreviewInspectorDataReachabilityRuntimeSource();
   const virtualBackendRuntimeSource = createPreviewInspectorVirtualBackendRuntimeSource();
   return String.raw`
 ${graphqlShapeRuntimeSource}
 
 ${booleanRuntimeSource}
+
+${identityRuntimeSource}
 
 const PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT = 256;
 const PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT = 10;
@@ -186,10 +190,20 @@ function looksLikePreviewInspectorCollection(fieldName) {
     name.startsWith('all') || name.endsWith('ies') || name.endsWith('s');
 }
 
+/**
+ * Produces a bounded label from the actual response key for compact Auto-generated UI text.
+ * Extremely long schema keys are truncated because their purpose is provenance, not layout stress.
+ */
+function createPreviewInspectorCompactKeyText(fieldName) {
+  const key = String(fieldName).trim() || 'value';
+  return key.length <= 32 ? key : key.slice(0, 31) + '…';
+}
+
 /** Produces deterministic type-correct text rather than random data that changes on every remount. */
 function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
   const name = String(fieldName).replaceAll('_', '').toLowerCase();
   const suffix = String(itemIndex + 1);
+  const keyText = createPreviewInspectorCompactKeyText(fieldName);
   if (name === '__typename') return 'PreviewRecord';
   if (name === 'id' || name.endsWith('id') || name === 'uuid') return 'preview-' + suffix;
   if (name.includes('email')) return 'preview' + suffix + '@example.com';
@@ -198,14 +212,17 @@ function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
     return '2026-01-' + String(15 + Math.min(itemIndex, 9)).padStart(2, '0') + 'T09:00:00.000Z';
   }
   if (/(url|uri|href|link)$/u.test(name)) return 'https://example.com/preview/' + suffix;
-  if (/(name|owner|author|assignee)$/u.test(name)) return mode === 'lorem' ? 'Lorem Ipsum' : 'Preview User ' + suffix;
-  if (/(title|subject|headline)$/u.test(name)) return 'Lorem ipsum preview ' + suffix;
-  if (/(description|message|content|summary|text|body)$/u.test(name)) {
-    return 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.';
+  if (mode === 'lorem') {
+    if (/(name|owner|author|assignee)$/u.test(name)) return 'Lorem Ipsum';
+    if (/(title|subject|headline)$/u.test(name)) return 'Lorem ipsum preview ' + suffix;
+    if (/(description|message|content|summary|text|body)$/u.test(name)) {
+      return 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.';
+    }
+    return 'Lorem ipsum dolor sit amet.';
   }
   if (/(status|state)$/u.test(name)) return 'ACTIVE';
   if (/(type|kind|code)$/u.test(name)) return 'PREVIEW';
-  return mode === 'lorem' ? 'Lorem ipsum dolor sit amet.' : 'Preview value ' + suffix;
+  return keyText;
 }
 
 /** Materializes one payload from an already-normalized shape without repeating tree validation. */
@@ -384,8 +401,11 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
     requestContext,
     payloadMode,
   );
-  const { payload, ...virtualBackend } = backendResult;
-  const registered = { ...next, lastPayload: payload, virtualBackend };
+  const { payload: resolvedPayload, ...virtualBackend } = backendResult;
+  const registered = createPreviewInspectorStableBackendRecord(
+    previous, resolvedPayload, virtualBackend, next,
+  );
+  const payload = registered.lastPayload;
   if (
     previous === undefined ||
     previous.label !== registered.label ||
@@ -429,7 +449,7 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
       summary: { kind: normalized.kind, method: normalized.method, url: normalized.url },
     });
   }
-  return backendResult;
+  return { ...backendResult, payload };
 }
 
 /** Preserves the original payload-only facade for bridges that do not need transport metadata. */
@@ -507,6 +527,7 @@ function setPreviewInspectorDataAutoEnabled(enabled) {
       mode: 'auto',
       reason: 'Infer local response values without backend transport',
       selectedValue: Object.fromEntries(requests.map((record) => [record.id, record.autoPayload])),
+      startsRenderAttempt: true,
     });
   }
   commitPreviewInspectorDataChange();
@@ -594,6 +615,7 @@ function smartFillPreviewInspectorDataPayload(requestId) {
       reason: record.evidence,
       selectedValue: minimum,
       sourcePath: record.sourcePath,
+      startsRenderAttempt: true,
       summary: {
         kind: record.kind,
         method: record.method,
@@ -631,6 +653,7 @@ function generatePreviewInspectorLoremPayload(requestId) {
       reason: record.evidence,
       selectedValue: payload,
       sourcePath: record.sourcePath,
+      startsRenderAttempt: true,
       summary: { kind: record.kind, method: record.method, url: record.url },
     });
   }
@@ -662,6 +685,7 @@ function resetPreviewInspectorDataPayload(requestId) {
       reason: record.evidence,
       selectedValue: record.autoPayload,
       sourcePath: record.sourcePath,
+      startsRenderAttempt: true,
       summary: { kind: record.kind, method: record.method, url: record.url },
     });
   }

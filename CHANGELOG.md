@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1066 - 2026-07-19
+
+- Page Inspector blocker를 현재 상태가 아닌 `blocker-discovered → auto-selection → render-result →
+subsequent-error` 시간순 trace로 기록하고, 한 Auto/Smart 시도와 그 뒤의 blocker 변화·오류에 같은 trace ID를 부여
+- hook fallback, Virtual Backend Auto/Smart/Lorem payload, target-guided JSX gate, 최소 page-path DFS와 target prop
+  Smart fill이 선택한 mode·생성 property path·bounded JSON 값을 구조화해 `React Preview` Output channel에 자동 출력
+- blocker의 source path/line/offset이 마지막 정상 bundle dependency graph에 포함될 때만 해당 줄 전후의 authored source를
+  확장 호스트에서 읽어 trace에 첨부하고, graph 밖 경로·malformed/unbounded webview payload는 소스 읽기 전에 차단
+- 동일 tree snapshot과 반복 오류를 fingerprint로 합치고 source 읽기/pretty JSON 출력을 비동기 직렬화 lane에서 처리해
+  project render와 VS Code UI thread를 막지 않으며, Inspector Console에 trace 확인 위치와 검색 marker를 안내
+
 ## 0.1.1065 - 2026-07-19
 
 - 별도 React Page Inspector 탭의 Components tree와 Details 사이에 드래그 가능한 splitter를 추가해 두 영역의

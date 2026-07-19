@@ -121,6 +121,8 @@ HTML element tag 대신 부모·형제·자식 function/class/memo/forwardRef co
 - `Payloads`: 관찰된 API/GraphQL 요청과 타입 근거를 선택하고 Auto/Lorem payload를 생성하거나 JSON 직접 적용
 - `Console`: hook/Provider와 React lifecycle, project `console.*`, unhandled promise/runtime 오류를 level/text로
   필터링하고 component/JavaScript stack과 failure phase 확인
+- `보기 → 출력 → React Preview`: `React preview blocker trace`를 검색해 blocker 종류/owner/source code,
+  Auto·Smart·Lorem·DFS가 선택한 최소값, 재렌더 blocker diff와 그 다음 warning/error를 같은 trace ID로 확인
 - `Render condition`: `boolean && JSX` 또는 JSX 삼항식의 현재 authored/forced branch를 tree에서 반전하고
   truthy/falsy/fallback branch를 상세 패널에서 선택하거나 authored runtime 값으로 복귀
 - `Remount`: 선택한 component error/local state를 새 instance로 초기화

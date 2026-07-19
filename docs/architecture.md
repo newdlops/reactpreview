@@ -384,6 +384,21 @@ active로 권장합니다. current tree에서 사라진 step은 해결된 것으
 session당 8개 scope의 비영속 Map에만 남습니다. Flow UI는 기존 blocker detail을 재사용하고 resolution 변화 뒤 다음
 ready step을 선택하므로 condition/payload/fallback/retry mutation 의미를 중복 구현하지 않습니다.
 
+`previewInspectorBlockerTraceRuntimeSource`는 enriched tree의 blocker record를 Fiber reference 없이 bounded plain
+data로 복사하고, fingerprint가 달라질 때만 discovery/update/remount diff를 발생시킵니다. hook fallback, data payload,
+target-guided condition, 최소 requirement DFS와 target Smart props의 mutation boundary는 적용 직전에
+`auto-selection`을 기록하고 active attempt를 60초 동안 유지합니다. 그 뒤 같은 tree에서 관찰한
+`render-result`와 Console/React boundary의 warning/error는 동일 trace ID를 사용하므로 어떤 자동값이 다음 blocker나
+오류를 열었는지 시간순으로 재구성할 수 있습니다. 브라우저 recorder는 source 본문을 읽지 않고
+`react-preview-blocker-trace` plain-data message만 전송합니다.
+
+확장 호스트의 `previewBlockerTraceProtocol`은 event identity, source coordinate, 문자열/list/JSON의 depth·node·64 KiB
+예산을 먼저 검증합니다. `previewBlockerTraceLogger`는 source path가 해당 panel의 마지막 committed dependency set에
+lexical/canonical identity로 모두 포함될 때만 pinned URI scheme으로 문서를 읽고 focus 줄 전후 4줄을 보완합니다.
+모든 tab의 trace 출력은 하나의 Promise lane에서 receive 순서대로 `React Preview` LogOutputChannel에 pretty JSON으로
+기록되므로 remote provider I/O가 webview callback이나 renderer main thread를 막지 않습니다. source graph 밖 요청도
+event metadata는 남기되 `outside-committed-graph`로 표시하고 파일은 열지 않습니다.
+
 `pageInspector/previewInspectorFiberRuntimeSource`와 component-tree adapter는 boundary class의 React 16-19
 Fiber 포인터를 버전 격리된 경계에서 읽기만 합니다. boundary에서 HostRoot까지 올라간 뒤 최대 4,096 Fiber와
 512개의 표시 component만 순회해 실제 부모·형제·자식 관계를 만듭니다. host DOM tag와 Inspector 자체 portal

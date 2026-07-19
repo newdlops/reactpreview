@@ -198,6 +198,14 @@ callback prop은 `[Preview no-op function]`으로 표시되며 실제 render 경
 property를 나열하고, 함수형 leaf는 JSON에서 `[Preview no-op function]`으로 보여 `{}`로 숨지 않게 합니다. 완전히
 해결되지 않은 오류도 렌더 위치에 `ComponentName blocked` placeholder와 즉시 확인 가능한 missing property를 남깁니다.
 
+Blocker resolver의 실제 진행은 VS Code의 `보기 → 출력`에서 `React Preview` 채널을 선택하고
+`React preview blocker trace`를 검색하면 확인할 수 있습니다. 각 pretty JSON 레코드는
+`blocker-discovered → auto-selection → render-result → subsequent-error` 순서와 trace ID를 가지며 blocker 종류,
+owner/source 위치, Auto/Smart/Lorem/DFS가 선택한 mode·생성 property·bounded JSON, 재렌더 뒤 새로 생김/변경/해결된
+blocker ID와 다음 warning/error를 함께 기록합니다. source가 마지막 정상 bundle graph에 포함되면 해당 줄 전후 4줄도
+`sourceCode.lines`에 첨부됩니다. 동일 snapshot과 같은 시도의 반복 오류는 fingerprint로 합쳐지며 이 trace는 진단용
+Output일 뿐 payload를 backend로 전송하거나 project 동작을 바꾸지 않습니다.
+
 상세 영역의 `Flow (N)` 탭은 이 blocker들을 page root에서 target 방향의 단계형 flow chart로 보여줍니다.
 component ancestor에 붙은 blocker는 descendant보다 선행하고, 같은 component 안에서는 page path, JSX condition,
 hook value, backend data, contained render error 순으로 해결을 권장합니다. 서로 다른 sibling branch나 같은 phase의

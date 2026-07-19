@@ -12,6 +12,7 @@
 export function createPreviewInspectorHookGraphqlRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT = 1_000_000;
+const previewInspectorHookGraphqlDocumentIdentities = new WeakMap();
 
 /** Reads bounded operation evidence without executing getters outside one guarded access chain. */
 function readPreviewInspectorHookGraphqlDocumentEvidence(readDocument) {
@@ -68,6 +69,52 @@ function readPreviewInspectorHookGraphqlIdentityVariables(readOptions) {
     }).slice(0, 16);
   } catch {
     return [];
+  }
+}
+
+/** Hashes bounded request evidence without retaining or exposing authored query variables. */
+function hashPreviewInspectorHookGraphqlRequestIdentity(value) {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ code, 0x85ebca6b) >>> 0;
+  }
+  return first.toString(16).padStart(8, '0') + second.toString(16).padStart(8, '0');
+}
+
+/** Creates one stable operation-and-ID scope for wrappers shared by many GraphQL documents. */
+function createPreviewInspectorHookGraphqlRequestIdentity(readDocument, readOptions) {
+  if (typeof readDocument !== 'function') return '';
+  try {
+    const document = readDocument();
+    if ((typeof document !== 'object' && typeof document !== 'function') || document === null) {
+      return '';
+    }
+    let documentIdentity = previewInspectorHookGraphqlDocumentIdentities.get(document);
+    if (documentIdentity === undefined) {
+      const source = document?.loc?.source?.body;
+      if (
+        typeof source !== 'string' ||
+        source.length === 0 ||
+        source.length > PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT
+      ) return '';
+      const operation = Array.isArray(document?.definitions)
+        ? document.definitions.find((definition) => definition?.kind === 'OperationDefinition')
+        : undefined;
+      const operationName = typeof operation?.name?.value === 'string' ? operation.name.value : '';
+      documentIdentity = hashPreviewInspectorHookGraphqlRequestIdentity(operationName + '\0' + source);
+      previewInspectorHookGraphqlDocumentIdentities.set(document, documentIdentity);
+    }
+    const variables = readPreviewInspectorHookGraphqlIdentityVariables(readOptions)
+      .map((identity) => identity.name + ':' + typeof identity.value + ':' + String(identity.value))
+      .join('\0');
+    return variables.length === 0
+      ? documentIdentity
+      : hashPreviewInspectorHookGraphqlRequestIdentity(documentIdentity + '\0' + variables);
+  } catch {
+    return '';
   }
 }
 
@@ -129,6 +176,38 @@ function createPreviewInspectorHookGraphqlData(readDocument, readOptions) {
     return data !== null && typeof data === 'object'
       ? alignPreviewInspectorHookGraphqlResponseIdentities(data, readOptions)
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Materializes the selected fields of a generated fragment-masking DocumentNode. */
+function createPreviewInspectorHookGraphqlFragmentData(readDocument) {
+  const evidence = readPreviewInspectorHookGraphqlDocumentEvidence(readDocument);
+  if (
+    evidence === undefined ||
+    typeof inferPreviewInspectorGraphqlFragmentShape !== 'function' ||
+    typeof generatePreviewInspectorDataValue !== 'function'
+  ) {
+    return undefined;
+  }
+  try {
+    const document = readDocument();
+    const fragment = Array.isArray(document?.definitions)
+      ? document.definitions.find((definition) => definition?.kind === 'FragmentDefinition')
+      : undefined;
+    const fragmentName = typeof fragment?.name?.value === 'string' ? fragment.name.value : '';
+    const shape = inferPreviewInspectorGraphqlFragmentShape(evidence.source, fragmentName);
+    if (
+      shape?.kind !== 'object' ||
+      shape.fields === null ||
+      typeof shape.fields !== 'object' ||
+      Object.keys(shape.fields).length === 0
+    ) {
+      return undefined;
+    }
+    const data = generatePreviewInspectorDataValue(shape, '', 'smart');
+    return data !== null && typeof data === 'object' ? data : undefined;
   } catch {
     return undefined;
   }

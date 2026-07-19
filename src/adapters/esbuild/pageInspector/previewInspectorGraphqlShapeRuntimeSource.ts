@@ -203,5 +203,35 @@ function inferPreviewInspectorGraphqlQueryShape(source, requestedOperationName) 
     ? { kind: 'unknown' }
     : resolvePreviewInspectorGraphqlFragments(selected.shape, fragments);
 }
+
+/**
+ * Infers one authored fragment selection independently of any enclosing backend operation.
+ * GraphQL Code Generator's masking helper receives exactly this DocumentNode, so selecting the
+ * named (or first) fragment reconstructs the minimum carrier object without inventing fields.
+ */
+function inferPreviewInspectorGraphqlFragmentShape(source, requestedFragmentName) {
+  const tokens = tokenizePreviewInspectorGraphql(source);
+  if (tokens.length === 0) return { kind: 'unknown' };
+  const cursor = { index: 0 };
+  const budget = { fields: 0 };
+  const fragments = new Map();
+  while (cursor.index < tokens.length && budget.fields < PREVIEW_INSPECTOR_GRAPHQL_FIELD_LIMIT) {
+    const token = tokens[cursor.index];
+    if (token !== 'fragment') {
+      cursor.index += 1;
+      continue;
+    }
+    cursor.index += 1;
+    const fragmentName = tokens[cursor.index++];
+    if (tokens[cursor.index] === 'on') cursor.index += 2;
+    skipPreviewInspectorGraphqlDirectives(tokens, cursor);
+    const shape = parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget);
+    if (typeof fragmentName === 'string') fragments.set(fragmentName, shape);
+  }
+  const selected = fragments.get(requestedFragmentName) ?? fragments.values().next().value;
+  return selected === undefined
+    ? { kind: 'unknown' }
+    : resolvePreviewInspectorGraphqlFragments(selected, fragments);
+}
 `;
 }

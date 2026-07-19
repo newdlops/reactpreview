@@ -960,6 +960,7 @@ const previewInspectorApi = {
   recordRuntimeHealth: recordPreviewInspectorRuntimeHealth,
   resolveBackendRequest: resolvePreviewInspectorBackendRequest,
   resolveDataPayload: resolvePreviewInspectorDataPayload,
+  resolveGraphqlFragment: resolvePreviewInspectorGraphqlFragmentValue,
   resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
   resolveRuntimeHook: resolvePreviewInspectorRuntimeHook,

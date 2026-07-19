@@ -8,6 +8,7 @@ interface ReachabilityResult {
   readonly blockerPath: readonly string[];
   readonly desiredValue: boolean;
   readonly expression: string;
+  readonly fallbackBeforeTargetMount: string;
   readonly fallbackExpression: string;
   readonly key: string;
   readonly returnedTargetValue: boolean;
@@ -80,12 +81,19 @@ describe('Preview Inspector target reachability runtime source', () => {
         });
         const next = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
         previewInspectorSession.renderConditions.delete('login');
+        const fallbackBeforeTargetMount = selectPreviewInspectorNextTargetGate(
+          descriptor,
+          candidate,
+          state,
+        );
+        state.targetMounted = true;
         const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
         const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
         globalThis.__result = {
           blockerPath: state.applicationPath,
           desiredValue: next.desiredValue,
           expression: next.condition.expression,
+          fallbackBeforeTargetMount: fallbackBeforeTargetMount?.condition?.expression ?? 'none',
           fallbackExpression: fallbackNext.condition.expression,
           key: state.key,
           returnedTargetValue: readPreviewInspectorTargetConditionValue({
@@ -103,6 +111,7 @@ describe('Preview Inspector target reachability runtime source', () => {
       blockerPath: ['Application', 'DashboardPanel'],
       desiredValue: false,
       expression: '<Application> gate: !session',
+      fallbackBeforeTargetMount: 'none',
       fallbackExpression: '<GuardedPage> gate: !isStaffMode',
       key: 'application-path:DashboardPanel',
       returnedTargetValue: true,
@@ -122,6 +131,7 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('smartFillPreviewInspectorTargetApplicationPath');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallbacksForReachability');
     expect(source).toContain('smartFillPreviewInspectorDataPayloadsForReachability');
+    expect(source).toContain('startPreviewInspectorDeterministicRequirementSearch');
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
   });
 
@@ -265,6 +275,100 @@ describe('Preview Inspector target reachability runtime source', () => {
       pass: 2,
       runtimeCalls: 4,
       status: 'settled',
+    });
+  });
+
+  /** Starts a one-answer compiler-shaped requirement pass without waiting for an Inspector click. */
+  it('auto-starts deterministic minimum requirements and preserves user-value policy', () => {
+    const context: {
+      __result?: {
+        readonly calls: readonly string[];
+        readonly origin: string;
+        readonly pass: number;
+        readonly status: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        const calls = [];
+        let activeKey = '';
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          dataRevision: 0,
+          renderConditionOverrides: new Map(),
+          renderConditionRevision: 0,
+          renderConditions: new Map(),
+          selectedExportName: 'Target',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [{
+          id: 'session-hook',
+          mode: 'auto',
+          reachabilityKey: activeKey,
+          requiredPaths: ['session.user.id'],
+        }];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        let filled = false;
+        const smartFillPreviewInspectorRuntimeFallbacksForReachability = (key, options) => {
+          calls.push('runtime:' + key + ':' + String(options?.preserveUserValues));
+          if (filled) return false;
+          filled = true;
+          return true;
+        };
+        const smartFillPreviewInspectorDataPayloadsForReachability = (key, options) => {
+          calls.push('data:' + key + ':' + String(options?.preserveUserValues));
+          return false;
+        };
+        const persistPreviewInspectorState = () => calls.push('persist');
+        const notifyPreviewInspector = () => calls.push('notify');
+        const schedulePreviewInspectorTreeRefresh = () => calls.push('tree');
+        const schedulePreviewInspectorCommitRefresh = () => calls.push('commit');
+        const collectPreviewInspectorFiberElements = () => [];
+        const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Target: { paths: [] } },
+          target: { exportName: 'Target' },
+        } };
+        const candidate = {
+          edges: [],
+          id: 'page',
+          renderPath: { id: 'path', steps: [
+            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'Page' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        activeKey = state.key;
+        state.pageRootCommitted = true;
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        const search = readPreviewInspectorMinimumRequirementSearch(state);
+        globalThis.__result = {
+          calls,
+          origin: search.origin,
+          pass: search.pass,
+          status: state.status,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      calls: [
+        'runtime:page:Target:true',
+        'data:page:Target:true',
+        'persist',
+        'notify',
+        'tree',
+        'commit',
+      ],
+      origin: 'deterministic-auto',
+      pass: 1,
+      status: 'filling-requirements',
     });
   });
 

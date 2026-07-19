@@ -193,9 +193,10 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
 
 /**
  * Chooses only the first newly revealed continuation gate so each pass behaves like bounded DFS.
- * Exact caller-path evidence wins. A compiler-proven continuation from the same live reachability
- * pass is the bounded fallback because HOC guard modules are descendants of the target import and
- * therefore do not necessarily appear in the reverse caller graph.
+ * Exact caller-path evidence wins. A condition outside that path is considered only after the exact
+ * target facade mounted without host output; this is the narrow signature of an off-graph HOC that
+ * returns Navigate/null. Before that point, page siblings such as topbars and formatting helpers must
+ * retain authored branches or target search can destroy the very layout it is trying to preserve.
  */
 function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
   initializePreviewInspectorConditionState();
@@ -210,8 +211,10 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
       desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
       pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
     }))
-    .filter(({ condition, desiredValue }) =>
-      typeof desiredValue === 'boolean' && condition.effectiveEnabled !== desiredValue,
+    .filter(({ condition, desiredValue, pathLocal }) =>
+      typeof desiredValue === 'boolean' &&
+      condition.effectiveEnabled !== desiredValue &&
+      (pathLocal || state.targetMounted === true),
     )
     .sort((left, right) =>
       Number(right.pathLocal) - Number(left.pathLocal) ||
@@ -256,6 +259,31 @@ function readPreviewInspectorMinimumRequirementSearch(state) {
   return previewInspectorSession.minimumRequirementSearchByKey.get(state.key);
 }
 
+/**
+ * Finds only compiler-shaped values whose continuation has one generated answer. Root-only custom
+ * hooks and non-GraphQL endpoints stay interactive because their payload structure is ambiguous.
+ */
+function readPreviewInspectorDeterministicRequirementEvidence(state) {
+  const hookIds = readPreviewInspectorRuntimeFallbacks()
+    .filter((record) =>
+      record.reachabilityKey === state.key &&
+      record.mode === 'auto' &&
+      (record.requiredPaths ?? []).some((path) => path !== '<root>'),
+    )
+    .map((record) => record.id)
+    .slice(0, 24);
+  const requestIds = readPreviewInspectorDataRequests()
+    .filter((record) =>
+      record.reachabilityKey === state.key &&
+      record.kind === 'graphql' &&
+      record.mode === 'auto' &&
+      readPreviewInspectorDataShapePaths(record.shape).length > 0,
+    )
+    .map((record) => record.id)
+    .slice(0, 24);
+  return { hookIds, requestIds };
+}
+
 /** Marks a successful corridor as the terminal result of its explicit minimum-requirement search. */
 function completePreviewInspectorMinimumRequirementSearch(state) {
   const search = readPreviewInspectorMinimumRequirementSearch(state);
@@ -274,8 +302,15 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
   ) {
     return false;
   }
-  const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(state.key);
-  const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(state.key);
+  const preserveUserValues = search.origin === 'deterministic-auto';
+  const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(
+    state.key,
+    { preserveUserValues },
+  );
+  const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(
+    state.key,
+    { preserveUserValues },
+  );
   if (!runtimeChanged && !dataChanged) return false;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     const hookValues = readPreviewInspectorRuntimeFallbacks()
@@ -299,13 +334,17 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
       }));
     const sourceGate = state.appliedConditions?.at(-1);
     recordPreviewInspectorBlockerAutoDecision({
-      action: 'Fill newly discovered page-path requirements',
+      action: search.origin === 'deterministic-auto'
+        ? 'Auto-fill deterministic page-path requirements'
+        : 'Fill newly discovered page-path requirements',
       blockerId: 'target-reachability:' + state.key,
       blockerKind: 'target-reachability',
       blockerName: 'Target not reached · ' + state.targetExportName,
       generatedPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
       line: sourceGate?.line,
-      mode: 'minimum-requirement-dfs',
+      mode: search.origin === 'deterministic-auto'
+        ? 'deterministic-minimum-auto'
+        : 'minimum-requirement-dfs',
       ownerName: sourceGate?.ownerName ?? state.rootName,
       reason: 'Downstream hook and backend reads were discovered during the previous DFS pass',
       selectedValue: { backendPayloads, hookValues, nextPass: search.pass + 1 },
@@ -332,6 +371,44 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
   return true;
+}
+
+/**
+ * Starts minimum-shape convergence without a prompt when every admitted input is compiler-proven.
+ * The pass is still bounded and records its origin so user JSON remains immutable in the background.
+ */
+function startPreviewInspectorDeterministicRequirementSearch(state) {
+  const current = readPreviewInspectorMinimumRequirementSearch(state);
+  if (current?.status === 'searching') return false;
+  const evidence = readPreviewInspectorDeterministicRequirementEvidence(state);
+  if (evidence.hookIds.length === 0 && evidence.requestIds.length === 0) return false;
+  previewInspectorSession.minimumRequirementSearchByKey.set(state.key, {
+    observedPathCount: 0,
+    origin: 'deterministic-auto',
+    pass: 0,
+    status: 'searching',
+  });
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Start deterministic minimum page-path search',
+      blockerId: 'target-reachability:' + state.key,
+      blockerKind: 'target-reachability',
+      blockerName: 'Target not reached · ' + state.targetExportName,
+      generatedPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
+      mode: 'deterministic-minimum-auto',
+      ownerName: state.appliedConditions?.at(-1)?.ownerName ?? state.rootName,
+      reason: 'Compiler-required hook paths or GraphQL selections admit one minimum static shape',
+      selectedValue: evidence,
+      sourcePath: state.appliedConditions?.at(-1)?.sourcePath,
+      summary: { applicationPath: state.applicationPath },
+    });
+  }
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.status = 'searching-deterministic-requirements';
+  if (advancePreviewInspectorMinimumRequirementSearch(state)) return true;
+  settlePreviewInspectorMinimumRequirementSearch(state);
+  return false;
 }
 
 /** Retains the final discovery summary when no further path-local requirement can be proven. */
@@ -458,6 +535,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     );
     return;
   }
+  if (startPreviewInspectorDeterministicRequirementSearch(state)) return;
   state.idlePasses += 1;
   state.status = 'blocked';
   state.probeRevision += 1;
@@ -571,6 +649,7 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
   }
   previewInspectorSession.minimumRequirementSearchByKey.set(reachabilityKey, {
     observedPathCount: 0,
+    origin: 'user',
     pass: 0,
     status: 'searching',
   });

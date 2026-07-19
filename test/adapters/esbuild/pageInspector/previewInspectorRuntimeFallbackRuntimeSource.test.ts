@@ -22,10 +22,19 @@ interface TestRuntimeFallbackApi {
   draft(fallbackId: string): unknown;
   read(): TestRuntimeFallbackRecord[];
   reset(fallbackId: string): void;
-  resolve(readHook: () => unknown, createFallback: () => unknown, metadata: object): unknown;
+  resolve(
+    readHook: () => unknown,
+    createFallback: () => unknown,
+    metadata: object,
+    readGraphqlDocument?: () => unknown,
+    readGraphqlOptions?: () => unknown,
+  ): unknown;
   set(fallbackId: string, value: unknown): void;
   smart(fallbackId: string): void;
-  smartReachability(reachabilityKey: string): boolean;
+  smartReachability(
+    reachabilityKey: string,
+    options?: { readonly preserveUserValues?: boolean },
+  ): boolean;
   status(): string;
 }
 
@@ -88,6 +97,26 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.read()).toEqual([]);
   });
 
+  /** Keeps a compiler-proven optional sentinel without exposing a meaningless user decision. */
+  it('auto-resolves optional-only nullish hook results by preserving the authored sentinel', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      preserveNullish: true,
+      requiredPaths: [],
+    };
+
+    expect(
+      fixture.api.resolve(
+        () => undefined,
+        () => ({ initialState: { search: 'Preview search' } }),
+        metadata,
+      ),
+    ).toBeUndefined();
+    expect(fixture.api.read()).toEqual([]);
+    expect(fixture.warnings).toEqual([]);
+  });
+
   /** Supplements only missing nested leaves and keeps one stable completed identity per hook site. */
   it('completes partial plain values without replacing authored sibling fields', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -124,6 +153,28 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.warnings[0]).toContain('missing required fields');
   });
 
+  /** Replaces a neutral empty selector record when local collection use admits only one valid kind. */
+  it('auto-resolves an empty neutral record to a compiler-proven collection', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['[].id', '[].title'],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => Object.freeze({}),
+      () => Object.freeze([Object.freeze({ id: 'preview-id', title: 'Preview title' })]),
+      metadata,
+    ) as { id: string; title: string }[];
+
+    expect(Array.isArray(resolved)).toBe(true);
+    expect(resolved).toEqual([{ id: 'preview-id', title: 'Preview title' }]);
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['<root>'],
+      reason: 'partial',
+    });
+  });
+
   /** Keeps compiler-authored neutral leaves falsy while still replacing an absent hook field. */
   it('preserves direct null sentinels used by fallback and error branches', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -149,6 +200,83 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(resolved.loading).toBe(false);
     expect(resolved.refetch).toBe(authored.refetch);
     expect(fixture.api.read()[0]?.generatedPaths).toEqual(['data', 'fallback']);
+  });
+
+  /** Settles a reached GraphQL hook immediately from its authored selection without an error page. */
+  it('uses selection-shaped GraphQL data for an unresolved query wrapper', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['data.company.id', 'loading', 'fallback', 'refetch()'],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => ({ data: undefined, fallback: { type: 'error-page' }, loading: true }),
+      () => ({ data: {}, fallback: null, loading: false, refetch: () => undefined }),
+      metadata,
+      () => ({
+        definitions: [{ kind: 'OperationDefinition', name: { value: 'CompanyPreview' } }],
+        loc: { source: { body: 'query CompanyPreview { company { id } }' } },
+      }),
+    ) as {
+      data: { company: { id: string } };
+      fallback: unknown;
+      loading: boolean;
+      refetch: () => unknown;
+    };
+
+    expect(resolved.data).toEqual({ company: { id: 'preview-1' } });
+    expect(resolved.loading).toBe(false);
+    expect(resolved.fallback).toBeNull();
+    expect(typeof resolved.refetch).toBe('function');
+    expect(fixture.api.read()[0]).toMatchObject({ reason: 'partial' });
+  });
+
+  /** Uses a unique query ID variable to satisfy the route/entity equality guard automatically. */
+  it('aligns generated GraphQL entity IDs with query variables without user input', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const resolved = fixture.api.resolve(
+      () => ({ data: undefined, loading: true }),
+      () => null,
+      { ...createMetadata(), requiredPaths: ['<root>'] },
+      () => ({
+        definitions: [{ kind: 'OperationDefinition', name: { value: 'CompanyPreview' } }],
+        loc: {
+          source: {
+            body: 'query CompanyPreview($companyId: ID!) { companyWithDeletionStatus(id: $companyId) { id } }',
+          },
+        },
+      }),
+      () => ({ variables: { companyId: '1' } }),
+    ) as { data: { company: { id: string } } };
+
+    expect(resolved.data).toEqual({ company: { id: '1' } });
+  });
+
+  /** Recovers direct-return query wrappers whose local syntax supplied no object fallback shape. */
+  it('creates a minimal settled QueryResult when a GraphQL hook fallback was null', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const resolved = fixture.api.resolve(
+      () => ({ data: undefined, loading: true }),
+      () => null,
+      { ...createMetadata(), requiredPaths: ['<root>'] },
+      () => ({
+        definitions: [{ kind: 'OperationDefinition', name: { value: 'CompanyPreview' } }],
+        loc: { source: { body: 'query CompanyPreview { company { id } }' } },
+      }),
+    ) as {
+      data: { company: { id: string } };
+      error: unknown;
+      fallback: unknown;
+      loading: boolean;
+      refetch: () => Promise<{ data: object }>;
+    };
+
+    expect(resolved.data).toEqual({ company: { id: 'preview-1' } });
+    expect(resolved.loading).toBe(false);
+    expect(resolved.fallback).toBeNull();
+    expect(resolved.error).toBeNull();
+    expect(typeof resolved.refetch).toBe('function');
   });
 
   /** Does not rewrite an application's existing null guard value to a generated scalar. */
@@ -424,6 +552,31 @@ describe('Preview Inspector runtime fallback source', () => {
     });
   });
 
+  /** Keeps a compiler-proven neutral guard value while reducing an object to demanded paths. */
+  it('retains null fallback sentinels during minimum-path Smart fill', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['data.company', 'fallback', 'refetch()'],
+    };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ data: { company: {} }, fallback: null, refetch: () => undefined }),
+      metadata,
+    );
+
+    fixture.api.smart('hook-1');
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      metadata,
+    ) as { data: { company: object }; fallback: unknown; refetch: () => unknown };
+
+    expect(resolved.data).toEqual({ company: {} });
+    expect(resolved.fallback).toBeNull();
+    expect(typeof resolved.refetch).toBe('function');
+  });
+
   /** Reports a corridor change only once so bounded discovery does not remount stable hook values. */
   it('settles repeated corridor Smart fill for the same hook edge', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -474,6 +627,27 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(typeof resolved.formikProps.setFieldValue).toBe('function');
     expect(fixture.api.read()[0]?.mode).toBe('smart-manual');
   });
+
+  /** Automatic page-path convergence cannot amend an explicit hook override behind the user. */
+  it('preserves manual hook values during deterministic background convergence', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = { ...createMetadata(), requiredPaths: ['profile.name'] };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ profile: { name: 'Preview name' } }),
+      metadata,
+    );
+    fixture.api.set('hook-1', { profile: { name: 'Authored name' } });
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ profile: { name: 'Ignored generated name' } }),
+      metadata,
+    );
+
+    expect(fixture.api.smartReachability('page:Target', { preserveUserValues: true })).toBe(false);
+    expect(fixture.api.read()[0]?.mode).toBe('manual');
+    expect(fixture.api.draft('hook-1')).toEqual({ profile: { name: 'Authored name' } });
+  });
 });
 
 /** Complete observations exposed by one generated-runtime VM fixture. */
@@ -496,6 +670,15 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
     },
     formatPreviewInspectorConsoleValue(value: unknown): string {
       return JSON.stringify(value);
+    },
+    generatePreviewInspectorDataValue(): object {
+      return { company: { id: 'preview-1' } };
+    },
+    inferPreviewInspectorGraphqlQueryShape(): object {
+      return {
+        fields: { company: { fields: { id: { kind: 'string' } }, kind: 'object' } },
+        kind: 'object',
+      };
     },
     blockedInspectorPropNames: new Set(['__proto__', 'constructor', 'prototype']),
     notifyPreviewInspector(): undefined {

@@ -7,6 +7,7 @@
  */
 import { createPreviewInspectorGeneratedValueRuntimeSource } from './previewInspectorGeneratedValueRuntimeSource';
 import { createPreviewInspectorBlockerValueRuntimeSource } from './previewInspectorBlockerValueRuntimeSource';
+import { createPreviewInspectorHookGraphqlRuntimeSource } from './previewInspectorHookGraphqlRuntimeSource';
 
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
 export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
@@ -22,6 +23,7 @@ export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
 export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
   const generatedValueRuntimeSource = createPreviewInspectorGeneratedValueRuntimeSource();
   const blockerValueRuntimeSource = createPreviewInspectorBlockerValueRuntimeSource();
+  const hookGraphqlRuntimeSource = createPreviewInspectorHookGraphqlRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
@@ -62,6 +64,8 @@ ${generatedValueRuntimeSource}
 
 ${blockerValueRuntimeSource}
 
+${hookGraphqlRuntimeSource}
+
 /** Reports whether a thrown value is a Suspense thenable that React must continue to own. */
 function isPreviewInspectorRuntimeThenable(value) {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false;
@@ -88,6 +92,7 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     moduleSpecifier: readText('moduleSpecifier'),
     ownerName: readText('ownerName'),
+    preserveNullish: source.preserveNullish === true,
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
     sourcePath: readText('sourcePath'),
   };
@@ -116,13 +121,31 @@ function describePreviewInspectorRuntimeFallbackValue(value) {
 }
 
 /** Creates one stable fallback value per compiler-issued hook identity. */
-function readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback) {
+function readOrCreatePreviewInspectorRuntimeFallback(
+  metadata,
+  createFallback,
+  readGraphqlDocument,
+  readGraphqlOptions,
+) {
   initializePreviewInspectorRuntimeFallbackState();
   if (previewInspectorSession.runtimeFallbackValues.has(metadata.id)) {
-    return previewInspectorSession.runtimeFallbackValues.get(metadata.id);
+    const retained = previewInspectorSession.runtimeFallbackValues.get(metadata.id);
+    const enriched = createPreviewInspectorHookGraphqlFallback(
+      retained,
+      readGraphqlDocument,
+      readGraphqlOptions,
+    );
+    if (enriched !== retained) {
+      previewInspectorSession.runtimeFallbackValues.set(metadata.id, enriched);
+    }
+    return enriched;
   }
   const fallback = createPreviewInspectorRuntimeFallbackAutoValue(
-    createFallback(),
+    createPreviewInspectorHookGraphqlFallback(
+      createFallback(),
+      readGraphqlDocument,
+      readGraphqlOptions,
+    ),
     metadata.requiredPaths,
   );
   if (previewInspectorSession.runtimeFallbackValues.size < PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT) {
@@ -138,14 +161,24 @@ function hasPreviewInspectorRuntimeFallbackOverride(fallbackId) {
 }
 
 /** Selects the user value before compiler-inferred Auto data for one isolated hook edge. */
-function readPreviewInspectorRuntimeFallbackValue(metadata, createFallback) {
+function readPreviewInspectorRuntimeFallbackValue(
+  metadata,
+  createFallback,
+  readGraphqlDocument,
+  readGraphqlOptions,
+) {
   initializePreviewInspectorRuntimeFallbackState();
   if (previewInspectorSession.runtimeFallbackOverrides.has(metadata.id)) {
     return materializePreviewInspectorRuntimeFallbackOverride(
       previewInspectorSession.runtimeFallbackOverrides.get(metadata.id),
     );
   }
-  return readOrCreatePreviewInspectorRuntimeFallback(metadata, createFallback);
+  return readOrCreatePreviewInspectorRuntimeFallback(
+    metadata,
+    createFallback,
+    readGraphqlDocument,
+    readGraphqlOptions,
+  );
 }
 
 /** Registers a bypassed hook failure once and mirrors it as a warning, never a fatal error. */
@@ -275,7 +308,13 @@ function clearPreviewInspectorRuntimeFallback(metadata) {
  * Executes one compiler-proven hook call and cuts a failure, nullish root, or missing-leaf edge.
  * Auto values off restores the authored hook result and exception behavior exactly.
  */
-function resolvePreviewInspectorRuntimeHook(readHook, createFallback, rawMetadata) {
+function resolvePreviewInspectorRuntimeHook(
+  readHook,
+  createFallback,
+  rawMetadata,
+  readGraphqlDocument,
+  readGraphqlOptions,
+) {
   const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
   if (
     metadata.id.length === 0 ||
@@ -304,7 +343,34 @@ function resolvePreviewInspectorRuntimeHook(readHook, createFallback, rawMetadat
   if (failure !== undefined && !manualOverride && !readPreviewInspectorFallbackValuesEnabled()) {
     throw failure;
   }
-  const fallback = readPreviewInspectorRuntimeFallbackValue(metadata, createFallback);
+  if (
+    failure === undefined &&
+    !manualOverride &&
+    metadata.preserveNullish === true &&
+    (value === null || value === undefined)
+  ) {
+    clearPreviewInspectorRuntimeFallback(metadata);
+    return value;
+  }
+  const fallback = readPreviewInspectorRuntimeFallbackValue(
+    metadata,
+    createFallback,
+    readGraphqlDocument,
+    readGraphqlOptions,
+  );
+  if (
+    failure === undefined &&
+    shouldUsePreviewInspectorHookGraphqlFallback(value, readGraphqlDocument)
+  ) {
+    recordPreviewInspectorRuntimeFallback(
+      metadata,
+      fallback,
+      'partial',
+      undefined,
+      metadata.requiredPaths,
+    );
+    return fallback;
+  }
   if (failure === undefined && value !== null && value !== undefined) {
     const completion = readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback);
     if (!completion.changed) {
@@ -486,12 +552,20 @@ function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
   commitPreviewInspectorRuntimeFallbackChange();
 }
 
-/** Smart-fills every hook edge observed inside one authored page corridor as one batched mutation. */
-function smartFillPreviewInspectorRuntimeFallbacksForReachability(reachabilityKey) {
+/**
+ * Smart-fills every hook edge observed inside one authored page corridor as one batched mutation.
+ * Deterministic background traversal skips explicit JSON so it cannot silently revise a scenario;
+ * the user-invoked Smart action retains its existing behavior of completing that JSON in place.
+ */
+function smartFillPreviewInspectorRuntimeFallbacksForReachability(reachabilityKey, options = {}) {
   initializePreviewInspectorRuntimeFallbackState();
+  const preserveUserValues = options?.preserveUserValues === true;
   let changed = false;
   for (const record of previewInspectorSession.runtimeFallbacks.values()) {
     if (record.reachabilityKey !== reachabilityKey) continue;
+    if (preserveUserValues && previewInspectorSession.runtimeFallbackOverrides.has(record.id)) {
+      continue;
+    }
     changed = applyPreviewInspectorRuntimeFallbackSmartValue(record.id) || changed;
   }
   if (changed) previewInspectorSession.fallbackValuesEnabled = true;

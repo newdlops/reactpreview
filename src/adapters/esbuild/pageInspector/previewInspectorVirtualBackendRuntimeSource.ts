@@ -5,6 +5,7 @@
  * port. Instead, it assigns requests to deterministic resources, retains successful REST state,
  * applies simple CRUD mutations, and exposes per-request response scenarios to the Inspector UI.
  */
+import { createPreviewInspectorBackendIdentityRuntimeSource } from './previewInspectorBackendIdentityRuntimeSource';
 
 /**
  * Creates browser source for the Page Inspector virtual backend broker.
@@ -17,6 +18,7 @@
  * @returns Plain JavaScript source concatenated into the no-network data runtime.
  */
 export function createPreviewInspectorVirtualBackendRuntimeSource(): string {
+  const identityRuntimeSource = createPreviewInspectorBackendIdentityRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_BACKEND_RESOURCE_LIMIT = 192;
 const PREVIEW_INSPECTOR_BACKEND_VALUE_DEPTH_LIMIT = 10;
@@ -27,6 +29,8 @@ const previewInspectorBackendSensitiveNamePattern =
 const previewInspectorBackendSetTimeout = typeof globalThis.setTimeout === 'function'
   ? globalThis.setTimeout.bind(globalThis)
   : undefined;
+
+${identityRuntimeSource}
 
 /** Restores bounded response scenarios and creates an ephemeral resource store for this webview. */
 function initializePreviewInspectorVirtualBackendState() {
@@ -587,13 +591,23 @@ function resolvePreviewInspectorVirtualBackendRequest(
           payloadMode,
         );
   }
+  const identityAlignment = record.kind === 'graphql' && scenario.mode === 'success'
+    ? alignPreviewInspectorBackendGraphqlIdentities(
+        payload,
+        descriptor.requestPayload,
+        payloadMode,
+      )
+    : { paths: [], payload };
+  payload = identityAlignment.payload;
   return {
     collectionKey: descriptor.collectionKey,
+    deterministicIdentityPaths: identityAlignment.paths,
     latencyMs: scenario.latencyMs,
     payload: clonePreviewInspectorVirtualBackendPayload(payload),
     requestFields: descriptor.requestFields,
     resourceKey: descriptor.resourceKey,
     mutationKey: descriptor.mutationKey,
+    payloadMode,
     scenario: scenario.mode,
     stateful: record.kind === 'rest',
     status: scenario.status,

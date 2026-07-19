@@ -5,7 +5,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { OnLoadArgs, OnLoadResult, Plugin } from 'esbuild';
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import type { PreviewSourceSnapshot } from '../../domain/preview';
 import { getPreviewSourceLanguage } from '../../domain/previewTarget';
 import { canonicalizeExistingPath, normalizeLexicalPath } from '../../shared/pathIdentity';
@@ -13,6 +13,12 @@ import {
   PreviewSourceTransformError,
   type PreviewSourceTransformer,
 } from './staticResources/previewSourceTransformer';
+import { preparePreviewGeneratedBarrelFallback } from './previewGeneratedModuleFallback';
+import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
+import {
+  createPreviewYarnVirtualSiblingPath,
+  resolvePreviewYarnVirtualPath,
+} from './previewYarnVirtualPath';
 
 const PROJECT_SOURCE_FILTER = /\.[cCmM]?[jJtT][sS][xX]?$/;
 
@@ -107,6 +113,51 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
     name: 'react-preview-workspace-source',
     setup(build): void {
       /**
+       * Resolves a relative child physically, then restores the parent's Yarn virtual package ID.
+       * Bare peer imports subsequently retain the consumer-specific PnP issuer instead of being
+       * evaluated as undeclared dependencies of the physical workspace package.
+       */
+      async function resolveVirtualWorkspaceChild(
+        arguments_: OnResolveArgs,
+      ): Promise<OnResolveResult | undefined> {
+        if (
+          arguments_.namespace !== 'file' ||
+          (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD ||
+          !path.isAbsolute(arguments_.importer)
+        ) {
+          return undefined;
+        }
+        const physicalImporter = resolvePreviewYarnVirtualPath(
+          arguments_.importer,
+          lexicalWorkspaceRoot,
+        );
+        if (
+          physicalImporter === undefined ||
+          path.normalize(physicalImporter) === path.normalize(arguments_.importer)
+        ) {
+          return undefined;
+        }
+        const resolved = await build.resolve(arguments_.path, {
+          importer: physicalImporter,
+          kind: arguments_.kind,
+          namespace: 'file',
+          pluginData: PREVIEW_RESOLVE_GUARD,
+          resolveDir: path.dirname(physicalImporter),
+          with: arguments_.with,
+        });
+        if (resolved.errors.length > 0 || resolved.namespace !== 'file' || resolved.external) {
+          return { errors: resolved.errors, warnings: resolved.warnings };
+        }
+        const virtualTarget = createPreviewYarnVirtualSiblingPath(
+          arguments_.importer,
+          physicalImporter,
+          resolved.path,
+          lexicalWorkspaceRoot,
+        );
+        return virtualTarget === undefined ? resolved : { ...resolved, path: virtualTarget };
+      }
+
+      /**
        * Loads project source from the editor or disk and exposes explicit imports after transformation.
        *
        * @param arguments_ File or snapshot load request emitted by esbuild.
@@ -115,15 +166,23 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
       async function loadWorkspaceSource(
         arguments_: OnLoadArgs,
       ): Promise<OnLoadResult | undefined> {
-        const lexicalSourcePath = normalizeLexicalPath(arguments_.path);
-        let snapshot = sourceState.readLexicalSnapshot(lexicalSourcePath);
+        const argumentLexicalPath = normalizeLexicalPath(arguments_.path);
+        let snapshot = sourceState.readLexicalSnapshot(argumentLexicalPath);
+        const physicalSourcePath =
+          resolvePreviewYarnVirtualPath(arguments_.path, lexicalWorkspaceRoot) ??
+          (snapshot === undefined ? undefined : arguments_.path);
+        if (physicalSourcePath === undefined) {
+          return undefined;
+        }
+        const lexicalSourcePath = normalizeLexicalPath(physicalSourcePath);
+        snapshot ??= sourceState.readLexicalSnapshot(lexicalSourcePath);
         if (
           snapshot === undefined &&
           !isTransformableWorkspaceSource(lexicalWorkspaceRoot, lexicalSourcePath)
         ) {
           return undefined;
         }
-        const canonicalSourcePath = canonicalizeExistingPath(arguments_.path);
+        const canonicalSourcePath = canonicalizeExistingPath(physicalSourcePath);
         snapshot ??= sourceState.readCanonicalSnapshot(canonicalSourcePath);
         if (
           snapshot === undefined &&
@@ -131,23 +190,35 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         ) {
           return undefined;
         }
-        const language = snapshot?.language ?? getPreviewSourceLanguage(arguments_.path);
+        const language = snapshot?.language ?? getPreviewSourceLanguage(physicalSourcePath);
         if (language === undefined) {
           return undefined;
         }
 
         try {
-          const sourceText = snapshot?.sourceText ?? (await readFile(arguments_.path, 'utf8'));
-          const transformed = await sourceState.transformer.transform(
+          const sourceText = snapshot?.sourceText ?? (await readFile(physicalSourcePath, 'utf8'));
+          const generatedFallback = preparePreviewGeneratedBarrelFallback(
             canonicalSourcePath,
             sourceText,
+            lexicalWorkspaceRoot,
+          );
+          if (generatedFallback !== undefined) {
+            sourceState.transformer.registerWatchDirectory(generatedFallback.watchDirectory);
+          }
+          const transformed = await sourceState.transformer.transform(
+            canonicalSourcePath,
+            generatedFallback?.contents ?? sourceText,
           );
           return {
             contents: transformed.contents,
             loader: language,
             resolveDir: path.dirname(canonicalSourcePath),
-            watchDirs: [...transformed.watchDirectories],
-            watchFiles: [arguments_.path],
+            warnings: generatedFallback === undefined ? [] : [{ text: generatedFallback.warning }],
+            watchDirs: [
+              ...transformed.watchDirectories,
+              ...(generatedFallback === undefined ? [] : [generatedFallback.watchDirectory]),
+            ],
+            watchFiles: [physicalSourcePath],
           };
         } catch (error) {
           const transformMessage =
@@ -163,6 +234,7 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         }
       }
 
+      build.onResolve({ filter: /^\.\.?\// }, resolveVirtualWorkspaceChild);
       build.onLoad({ filter: PROJECT_SOURCE_FILTER, namespace: 'file' }, loadWorkspaceSource);
     },
   };

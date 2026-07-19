@@ -8,6 +8,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 
@@ -138,9 +139,16 @@ export function createPreviewStaticModuleResolver(
         ts.sys,
         context.cache,
       ).resolvedModule;
-      return resolution === undefined
-        ? undefined
-        : canonicalizeExistingPath(resolution.resolvedFileName);
+      if (resolution === undefined) {
+        return undefined;
+      }
+      const physicalPath = resolvePreviewYarnVirtualPath(
+        resolution.resolvedFileName,
+        workspaceRoot,
+      );
+      return physicalPath !== undefined && ts.sys.fileExists(physicalPath)
+        ? canonicalizeExistingPath(physicalPath)
+        : undefined;
     } catch {
       // Invalid or transient project configuration cannot make syntax-only discovery fail a build.
       return undefined;

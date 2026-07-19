@@ -49,8 +49,10 @@ import { MAX_PREVIEW_OUTPUT_FILES } from './previewBuildOutputPlanner';
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
+import { createPreviewGeneratedModuleFallbackPlugin } from './previewGeneratedModuleFallback';
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
+import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
@@ -422,6 +424,18 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           platform: 'browser',
           plugins: [
             createPreviewNodeBuiltinPlugin(),
+            createPreviewPnpPeerDependencyPlugin({
+              projectRoot,
+              workspaceRoot: canonicalWorkspaceRoot,
+            }),
+            createPreviewGeneratedModuleFallbackPlugin({
+              registerWatchDirectory: (directoryPath) => {
+                (incrementalState?.transformer ?? sourceTransformer).registerWatchDirectory(
+                  directoryPath,
+                );
+              },
+              workspaceRoot: canonicalWorkspaceRoot,
+            }),
             createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
             ...(inspectorPlan === undefined
               ? []

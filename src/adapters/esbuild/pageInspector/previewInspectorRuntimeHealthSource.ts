@@ -108,7 +108,7 @@ function readPreviewInspectorRuntimeHealthSeverity(event) {
  * alone cannot decide whether a warning starts a runtime failure chain.
  */
 function isPreviewInspectorNonFatalReactDiagnostic(message) {
-  return /(?:findDOMNode is deprecated|Each child in a list should have a unique|React does not recognize the|Invalid DOM property|validateDOMNesting|Received .* for a non-boolean attribute|A component is changing an? (?:un)?controlled)/u.test(
+  return /(?:findDOMNode is deprecated|Each child in a list should have a unique|React does not recognize the|Invalid (?:DOM property|attribute name)|validateDOMNesting|Received .* for a non-boolean attribute|A component is changing an? (?:un)?controlled|AG Grid: error #272)/u.test(
     message,
   );
 }

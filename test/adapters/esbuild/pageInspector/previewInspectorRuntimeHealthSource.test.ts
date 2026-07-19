@@ -101,11 +101,21 @@ describe('Preview Inspector runtime health source', () => {
   });
 
   /** Ignores development-only React diagnostics even when React transports them via console.error. */
-  it('does not promote a findDOMNode deprecation to a runtime root failure', () => {
+  it('does not promote React compatibility warnings to runtime root failures', () => {
     const runtime = createRuntimeHealthFixture();
     runtime.error({
       level: 'error',
       message: 'Warning: findDOMNode is deprecated and will be removed in the next major release.',
+      source: 'console',
+    });
+    runtime.error({
+      level: 'error',
+      message: 'Warning: Invalid attribute name: %s',
+      source: 'console',
+    });
+    runtime.error({
+      level: 'error',
+      message: 'AG Grid: error #272 No AG Grid modules are registered!',
       source: 'console',
     });
 

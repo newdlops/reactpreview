@@ -6,7 +6,11 @@ import { createPreviewInspectorBlockerTraceRuntimeSource } from '../../../../src
 /** Minimal event envelope posted by the generated trace runtime. */
 interface TraceMessage {
   readonly event: {
-    readonly auto?: { readonly mode: string; readonly selectedValue?: unknown };
+    readonly auto?: {
+      readonly action?: string;
+      readonly mode: string;
+      readonly selectedValue?: unknown;
+    };
     readonly blocker?: { readonly id: string; readonly source?: { readonly sourcePath: string } };
     readonly error?: { readonly message: string };
     readonly event: string;
@@ -25,6 +29,7 @@ interface TraceRuntime {
   readonly advance: (milliseconds: number) => void;
   readonly decide: (candidate: Record<string, unknown>) => string | undefined;
   readonly error: (entry: Record<string, unknown>) => void;
+  readonly flush: () => void;
   readonly messages: TraceMessage[];
   readonly snapshot: (snapshot: Record<string, unknown>) => void;
 }
@@ -198,6 +203,38 @@ describe('Preview Inspector blocker trace runtime source', () => {
 
     expect(runtime.messages.map((message) => message.event.event)).toEqual(['auto-selection']);
   });
+
+  /** Batches fallback observations and excludes already-assisted nodes from unresolved traces. */
+  it('keeps broad automatic inference off the render and host logging hot paths', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('assisted'));
+    runtime.decide({
+      action: 'Complete missing hook fields',
+      blockerId: 'hook-one',
+      blockerKind: 'runtime-fallback',
+      blockerName: 'useQuery',
+      mode: 'auto',
+      selectedValue: { data: { id: 'id' } },
+    });
+    runtime.decide({
+      action: 'Complete missing hook fields',
+      blockerId: 'hook-two',
+      blockerKind: 'runtime-fallback',
+      blockerName: 'useQuery',
+      mode: 'auto',
+      selectedValue: { data: { name: 'name' } },
+    });
+    runtime.flush();
+
+    expect(runtime.messages).toHaveLength(1);
+    expect(runtime.messages[0]?.event).toMatchObject({
+      auto: {
+        action: 'Complete missing hook fields × 2',
+        selectedValue: { decisionCount: 2, truncatedCount: 0 },
+      },
+      event: 'auto-selection',
+    });
+  });
 });
 
 /** Creates one blocker tree snapshot whose mode change represents a post-Auto remount. */
@@ -236,13 +273,14 @@ function createTraceRuntime(): TraceRuntime {
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const messages = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
-      const isPreviewInspectorBlockingNode = () => true;
+      const isPreviewInspectorBlockingNode = (node) => node?.blocker?.mode !== 'assisted';
       const schedulePreviewInspectorTreeRefresh = () => undefined;
       ${createPreviewInspectorBlockerTraceRuntimeSource()}
       globalThis.__runtime = {
         advance: (milliseconds) => { currentTime += milliseconds; },
         decide: recordPreviewInspectorBlockerAutoDecision,
         error: recordPreviewInspectorBlockerTraceError,
+        flush: flushPreviewInspectorBlockerTraceAutoDecisions,
         messages,
         snapshot: publishPreviewInspectorBlockerTraceSnapshot,
       };

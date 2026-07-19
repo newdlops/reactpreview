@@ -22,6 +22,7 @@ const PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS = 1_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS = 30_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS = 120;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT = 4_000;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_BATCH_DETAIL_LIMIT = 24;
 
 /** Lazily initializes non-persisted chronological state for one pinned webview session. */
 function initializePreviewInspectorBlockerTraceState() {
@@ -36,6 +37,9 @@ function initializePreviewInspectorBlockerTraceState() {
   }
   if (!(previewInspectorSession.blockerTracePendingResolutions instanceof Map)) {
     previewInspectorSession.blockerTracePendingResolutions = new Map();
+  }
+  if (!(previewInspectorSession.blockerTracePendingAutoDecisions instanceof Map)) {
+    previewInspectorSession.blockerTracePendingAutoDecisions = new Map();
   }
   if (!Number.isSafeInteger(previewInspectorSession.blockerTraceEventSequence)) {
     previewInspectorSession.blockerTraceEventSequence = 0;
@@ -130,10 +134,10 @@ function readPreviewInspectorBlockerTraceOwnValue(value, propertyName) {
 function copyPreviewInspectorBlockerTraceValue(
   value,
   depth = 0,
-  state = { nodes: 0, seen: new WeakSet() },
+  state = { limit: 384, nodes: 0, seen: new WeakSet() },
 ) {
   state.nodes += 1;
-  if (state.nodes > 384) return '[Node limit]';
+  if (state.nodes > state.limit) return '[Node limit]';
   if (typeof value === 'string') return value.slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT);
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
@@ -235,16 +239,22 @@ function createPreviewInspectorBlockerTraceRecord(node) {
   };
 }
 
-/** Collects blocker pseudo-nodes without retaining Fiber/component tree references. */
+/** Collects only unresolved blocker pseudo-nodes without retaining Fiber/component references. */
 function collectPreviewInspectorBlockerTraceRecords(nodes, records = new Map(), depth = 0) {
   if (!Array.isArray(nodes) || depth > 80 || records.size >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT) {
     return records;
   }
   for (const node of nodes) {
     if (node?.kind === 'blocker' && typeof node?.blockerKind === 'string') {
-      const record = createPreviewInspectorBlockerTraceRecord(node);
-      records.set(record.id, record);
-      if (records.size >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT) break;
+      const blocking =
+        typeof isPreviewInspectorBlockingNode === 'function'
+          ? isPreviewInspectorBlockingNode(node)
+          : true;
+      if (blocking) {
+        const record = createPreviewInspectorBlockerTraceRecord(node);
+        records.set(record.id, record);
+        if (records.size >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT) break;
+      }
     }
     collectPreviewInspectorBlockerTraceRecords(node?.children, records, depth + 1);
   }
@@ -256,12 +266,46 @@ function fingerprintPreviewInspectorBlockerTraceRecord(record) {
   try { return JSON.stringify(record); } catch { return String(record?.id ?? 'blocker'); }
 }
 
+/** Reduces a group to one source-backed record while retaining bounded member identities. */
+function createPreviewInspectorBlockerTraceBatchRecord(records, label, totalCount = records.length) {
+  const first = records[0];
+  if (totalCount <= 1 || first === undefined) return first;
+  const blockers = records.slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_BATCH_DETAIL_LIMIT).map(
+    (record) => ({
+      id: record.id,
+      kind: record.kind,
+      name: record.name,
+      ownerName: record.ownerName,
+      source: record.source,
+    }),
+  );
+  return {
+    ...first,
+    id: 'batch:' + label + ':' + first.id,
+    name: label + ' · ' + String(totalCount) + ' blockers',
+    summary: {
+      batchCount: totalCount,
+      blockers,
+      truncatedCount: Math.max(0, totalCount - blockers.length),
+    },
+  };
+}
+
+/** Posts one discovery/update group so host source reads do not scale with tree breadth. */
+function postPreviewInspectorBlockerTraceRecordBatch(event, traceId, blockerIds, records) {
+  const blockers = blockerIds.map((id) => records.get(id)).filter((record) => record !== undefined);
+  const blocker = createPreviewInspectorBlockerTraceBatchRecord(blockers, event);
+  if (blocker === undefined) return;
+  postPreviewInspectorBlockerTraceEvent(event, traceId, { blocker });
+}
+
 /**
  * Emits initial discoveries and one blocker-set diff after Auto/Smart remounts.
  * Repeated records are ignored, except for the bounded observations needed to confirm resolution.
  */
 function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
   initializePreviewInspectorBlockerTraceState();
+  flushPreviewInspectorBlockerTraceAutoDecisions();
   const previous = previewInspectorSession.blockerTraceRecords;
   const next = collectPreviewInspectorBlockerTraceRecords(snapshot?.roots);
   const pendingResolutions = previewInspectorSession.blockerTracePendingResolutions;
@@ -346,20 +390,18 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
       });
     }
   }
-  for (const blockerId of discoveredBlockerIds) {
-    postPreviewInspectorBlockerTraceEvent(
-      'blocker-discovered',
-      createPreviewInspectorBlockerTraceId(),
-      { blocker: next.get(blockerId) },
-    );
-  }
-  for (const blockerId of changedBlockerIds) {
-    postPreviewInspectorBlockerTraceEvent(
-      'blocker-updated',
-      active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId(),
-      { blocker: next.get(blockerId) },
-    );
-  }
+  postPreviewInspectorBlockerTraceRecordBatch(
+    'blocker-discovered',
+    createPreviewInspectorBlockerTraceId(),
+    discoveredBlockerIds,
+    next,
+  );
+  postPreviewInspectorBlockerTraceRecordBatch(
+    'blocker-updated',
+    active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId(),
+    changedBlockerIds,
+    next,
+  );
   previewInspectorSession.blockerTraceRecords = next;
 }
 
@@ -381,10 +423,76 @@ function createPreviewInspectorBlockerTraceDecisionRecord(candidate) {
   };
 }
 
+/** Emits queued observational Auto decisions as bounded action/mode groups. */
+function flushPreviewInspectorBlockerTraceAutoDecisions() {
+  initializePreviewInspectorBlockerTraceState();
+  previewInspectorSession.blockerTraceAutoDecisionFlushScheduled = false;
+  const pending = previewInspectorSession.blockerTracePendingAutoDecisions;
+  previewInspectorSession.blockerTracePendingAutoDecisions = new Map();
+  for (const group of pending.values()) {
+    const entries = group.entries;
+    const generatedPaths = [...group.generatedPaths];
+    const blocker = createPreviewInspectorBlockerTraceBatchRecord(
+      entries.map((entry) => entry.blocker),
+      'automatic-resolver',
+      group.count,
+    );
+    postPreviewInspectorBlockerTraceEvent('auto-selection', group.traceId, {
+      auto: {
+        ...entries[0].auto,
+        action: entries[0].auto.action + ' × ' + String(group.count),
+        generatedPaths,
+        selectedValue: {
+          decisionCount: group.count,
+          decisions: entries.map((entry) => ({
+            blockerId: entry.blocker.id,
+            blockerName: entry.blocker.name,
+            ownerName: entry.blocker.ownerName,
+            selectedValue: entry.auto.selectedValue,
+          })),
+          truncatedCount: Math.max(0, group.count - entries.length),
+        },
+      },
+      blocker,
+    });
+  }
+}
+
+/** Defers non-committing fallback observations until the current render stack has completed. */
+function queuePreviewInspectorBlockerTraceAutoDecision(auto, blocker) {
+  initializePreviewInspectorBlockerTraceState();
+  const key = auto.mode + '\\0' + auto.action;
+  let group = previewInspectorSession.blockerTracePendingAutoDecisions.get(key);
+  if (group === undefined) {
+    group = {
+      count: 0,
+      entries: [],
+      generatedPaths: new Set(),
+      traceId: createPreviewInspectorBlockerTraceId(),
+    };
+    previewInspectorSession.blockerTracePendingAutoDecisions.set(key, group);
+  }
+  group.count += 1;
+  if (group.entries.length < PREVIEW_INSPECTOR_BLOCKER_TRACE_BATCH_DETAIL_LIMIT) {
+    group.entries.push({ auto, blocker });
+  }
+  for (const generatedPath of auto.generatedPaths) {
+    if (group.generatedPaths.size >= 128) break;
+    group.generatedPaths.add(generatedPath);
+  }
+  if (previewInspectorSession.blockerTraceAutoDecisionFlushScheduled !== true) {
+    previewInspectorSession.blockerTraceAutoDecisionFlushScheduled = true;
+    const schedule = globalThis.queueMicrotask ?? ((callback) => Promise.resolve().then(callback));
+    schedule(flushPreviewInspectorBlockerTraceAutoDecisions);
+  }
+  return group.traceId;
+}
+
 /** Records one Auto/Smart selection and starts correlation only when it schedules a new commit. */
 function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   initializePreviewInspectorBlockerTraceState();
   const blocker = createPreviewInspectorBlockerTraceDecisionRecord(candidate);
+  const startsRenderAttempt = candidate?.startsRenderAttempt === true;
   const generatedPaths = Array.isArray(candidate?.generatedPaths)
     ? candidate.generatedPaths.filter((value) => typeof value === 'string').slice(0, 128)
     : [];
@@ -397,8 +505,12 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
       typeof candidate?.reason === 'string'
         ? candidate.reason.slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT)
         : undefined,
-    selectedValue: copyPreviewInspectorBlockerTraceValue(candidate?.selectedValue),
-    startsRenderAttempt: candidate?.startsRenderAttempt === true,
+    selectedValue: copyPreviewInspectorBlockerTraceValue(
+      candidate?.selectedValue,
+      0,
+      { limit: startsRenderAttempt ? 384 : 64, nodes: 0, seen: new WeakSet() },
+    ),
+    startsRenderAttempt,
   };
   const fingerprint = fingerprintPreviewInspectorBlockerTraceRecord({ auto, blocker });
   const previousAt = previewInspectorSession.blockerTraceDecisionFingerprints.get(fingerprint);
@@ -412,6 +524,9 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
     previewInspectorSession.blockerTraceDecisionFingerprints.delete(
       previewInspectorSession.blockerTraceDecisionFingerprints.keys().next().value,
     );
+  }
+  if (!auto.startsRenderAttempt) {
+    return queuePreviewInspectorBlockerTraceAutoDecision(auto, blocker);
   }
   const traceId = createPreviewInspectorBlockerTraceId();
   postPreviewInspectorBlockerTraceEvent('auto-selection', traceId, { auto, blocker });
@@ -435,6 +550,7 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
 /** Correlates the next fatal error with the most recent commit-producing Auto attempt. */
 function recordPreviewInspectorBlockerTraceError(entry) {
   initializePreviewInspectorBlockerTraceState();
+  flushPreviewInspectorBlockerTraceAutoDecisions();
   if (entry?.level !== 'error') return;
   if (
     typeof isPreviewInspectorNonFatalReactDiagnostic === 'function' &&

@@ -45,6 +45,13 @@ function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspecto
     },
     rootOwnsRouter: false,
     rootStepIndex: 3,
+    routeLocation: {
+      componentName: 'Target',
+      evidenceKind: 'route-catalog' as const,
+      pathname: '/company/1/target',
+      pattern: '/company/:companyId(\\d+)/target',
+      sourcePath: '/workspace/application/pages.json',
+    },
     stopReason: 'root-reached' as const,
     targetAutomaticProps: { enabled: true },
   };
@@ -80,6 +87,8 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"rootInferredProps":[{"kind":"string","path":"companyId"');
     expect(source).toContain('"rootOwnsRouter":false');
     expect(source).toContain('"rootStepIndex":3');
+    expect(source).toContain('"pathname":"/company/1/target"');
+    expect(source).toContain('"evidenceKind":"route-catalog"');
     expect(source).toContain('"pageCandidates":[{"complete":true');
     expect(source).toContain('"targetAutomaticProps":{"enabled":true}');
     expect(source).toContain('"targetInferredPropShape":{"kind":"object"');

@@ -11,6 +11,11 @@ export {
   type ReadPreviewInspectorSource,
 } from './previewInspectorAncestorPlan';
 export {
+  collectPreviewInspectorRouteLocation,
+  type CollectPreviewInspectorRouteLocationOptions,
+  type PreviewInspectorRouteLocation,
+} from './previewInspectorRouteLocation';
+export {
   createPreviewInspectorRootPlugin,
   createPreviewInspectorRootSource,
   type PreviewInspectorRootPluginOptions,

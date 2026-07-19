@@ -107,6 +107,31 @@ let activePreviewRouterBridge;
 let activePreviewRouterConfiguration;
 
 /**
+ * Adds a statically inferred page location only when setup did not choose its own history.
+ * The returned object is fresh so a pinned preview never mutates user-owned setup configuration.
+ */
+function createPreviewCandidateRouterConfiguration(setupConfiguration, inferredEntry) {
+  if (
+    setupConfiguration === false ||
+    typeof inferredEntry !== 'string' ||
+    inferredEntry.length === 0 ||
+    inferredEntry.length > 2048
+  ) {
+    return setupConfiguration;
+  }
+  const setupRecord = setupConfiguration !== null && typeof setupConfiguration === 'object' &&
+    !Array.isArray(setupConfiguration)
+    ? setupConfiguration
+    : undefined;
+  if (setupRecord?.initialEntries !== undefined) return setupConfiguration;
+  return {
+    ...(setupRecord ?? {}),
+    initialEntries: [inferredEntry],
+    previewRouteSource: 'static-page-graph',
+  };
+}
+
+/**
  * Delegates one independently mounted Inspector candidate to the exact project Router bridge.
  * The bridge performs its context check during React render, after setup and automatic providers
  * have composed, so this adapter cannot accidentally create a second Router.
@@ -115,7 +140,10 @@ function createPreviewCandidateRouterElement(children, options) {
   const createCandidateBoundary = activePreviewRouterBridge?.createNestedRouterPreviewElement;
   return typeof createCandidateBoundary === 'function'
     ? createCandidateBoundary(children, {
-        configuration: activePreviewRouterConfiguration,
+        configuration: createPreviewCandidateRouterConfiguration(
+          activePreviewRouterConfiguration,
+          options?.initialEntry,
+        ),
         ownsRouter: options?.ownsRouter === true,
       })
     : children;

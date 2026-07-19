@@ -16,6 +16,7 @@ interface CandidateFixture {
   };
   readonly root: { readonly exportName: string; readonly sourcePath: string };
   readonly rootStepIndex?: number;
+  readonly routeLocation?: { readonly pathname: string };
 }
 
 describe('Preview Inspector page-candidate runtime source', () => {
@@ -34,6 +35,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
         },
         root: { exportName: 'PublicPage', sourcePath: '/workspace/PublicPage.tsx' },
         rootStepIndex: 0,
+        routeLocation: { pathname: '/company/1/dashboard' },
       },
       {
         id: 'staff-path',
@@ -49,7 +51,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(result.persisted).toBe(1);
     expect(result.scheduled).toBe(1);
     expect(result.labels).toEqual([
-      '1. PublicPage › AppRouter › ApplicationShell · application root',
+      '1. PublicPage › AppRouter › ApplicationShell · application root · /company/1/dashboard',
       '2. StaffPage · partial context',
     ]);
   });
@@ -66,6 +68,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain(
       'ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true',
     );
+    expect(source).toContain('initialEntry: candidate?.routeLocation?.pathname');
+    expect(source).toContain("event: 'page-context-selected'");
+    expect(source).toContain("evidenceKind: routeLocation?.evidenceKind ?? 'none'");
     expect(source).toContain('PreviewInspectorTargetReachabilityProbe');
     expect(source).toContain('class PreviewInspectorPageRootCommitBoundary');
     expect(source).toContain('state.pageRootCommitted = true');

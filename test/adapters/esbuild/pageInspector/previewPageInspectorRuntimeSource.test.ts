@@ -35,6 +35,9 @@ describe('Page Inspector runtime source', () => {
     expect(inspectorEntry).toContain("import * as ReactDOMNamespace from 'react-dom'");
     expect(inspectorEntry).toContain('activePreviewRouterBridge?.createNestedRouterPreviewElement');
     expect(inspectorEntry).toContain('function createPreviewCandidateRouterElement');
+    expect(inspectorEntry).toContain('function createPreviewCandidateRouterConfiguration');
+    expect(inspectorEntry).toContain("previewRouteSource: 'static-page-graph'");
+    expect(inspectorEntry).toContain('setupRecord?.initialEntries !== undefined');
     expect(inspectorEntry).toContain('PreviewPageInspectorRootRenderer');
     expect(inspectorEntry).toContain('PreviewInspectorTargetReachabilityProbe');
     expect(inspectorEntry).toContain('Application path rendered, but did not reach');
@@ -87,6 +90,7 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("type: 'react-preview-blocker-trace'");
     expect(source).toContain('recordPreviewInspectorBlockerAutoDecision');
     expect(source).toContain('React preview blocker trace');
+    expect(source).toContain('React preview runtime health');
     expect(source).toContain('reportPreviewInspectorTargetFailure(error');
     expect(source).toContain("['console', 'Console ('");
     expect(source).toContain('Auto payloads');

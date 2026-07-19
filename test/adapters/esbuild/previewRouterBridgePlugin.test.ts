@@ -378,6 +378,42 @@ describe('createPreviewRouterBridgePlugin', () => {
     }
   });
 
+  /** Reports and applies the compiler-inferred target location for a detached page shell. */
+  it('uses a statically inferred candidate route as MemoryRouter history', async () => {
+    const projectRoot = await createTemporaryProject('router-inferred-page-route-preview-');
+
+    try {
+      await installFakeReactRouterDomPackage(projectRoot, true);
+      const context = await executeRouterBridgeFixture(
+        projectRoot,
+        true,
+        [
+          "import * as React from 'react';",
+          "import { renderToStaticMarkup } from 'react-dom/server';",
+          "import { createNestedRouterPreviewElement, readPreviewRuntimeStatus } from 'react-preview:router';",
+          "import { RouterDepthProbe } from 'react-router-dom';",
+          'const element = createNestedRouterPreviewElement(',
+          '  React.createElement(RouterDepthProbe),',
+          '  { configuration: {',
+          "    initialEntries: ['/company/1/investment-contract-rtcc/analysis'],",
+          "    previewRouteSource: 'static-page-graph',",
+          '  } },',
+          ');',
+          'const markup = renderToStaticMarkup(element);',
+          'globalThis.__routerBridgeResult = { markup, status: readPreviewRuntimeStatus() };',
+        ].join('\n'),
+      );
+
+      expect(context.__routerBridgeResult).toEqual({
+        markup: '<span>1</span>',
+        status:
+          'active: candidate-local MemoryRouter at the statically inferred target route /company/1/investment-contract-rtcc/analysis',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps generated imports restricted to React and the already-resolved router package entry. */
   it('does not import application routes or browser-history bootstrap modules', () => {
     const modulePath = '/workspace/app/node_modules/react-router-dom/index.js';

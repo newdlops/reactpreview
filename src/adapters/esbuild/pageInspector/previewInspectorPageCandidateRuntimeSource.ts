@@ -106,10 +106,16 @@ function formatPreviewInspectorPageCandidate(candidate, index) {
   const visibleNames = names.slice(0, 5);
   const pathLabel = visibleNames.join(' › ') + (names.length > visibleNames.length ? ' › …' : '');
   const entryConnected = candidate?.renderPath?.entryPoint !== undefined;
+  const routePath = typeof candidate?.routeLocation?.pathname === 'string'
+    ? candidate.routeLocation.pathname
+    : undefined;
+  const routeLabel = routePath === undefined
+    ? ''
+    : ' · ' + (routePath.length > 64 ? '…' + routePath.slice(-63) : routePath);
   return String(index + 1) + '. ' + pathLabel +
     (candidate?.complete === true && entryConnected
       ? ' · application root'
-      : entryConnected ? ' · application path' : ' · partial context');
+      : entryConnected ? ' · application path' : ' · partial context') + routeLabel;
 }
 
 /** Selects one authored caller path and asks the root, tree, and highlight layers to reconcile. */
@@ -297,6 +303,27 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
     : pageDefinition ?? definitions[0];
   const directTarget = definition?.directTarget === true;
   const loadState = usePreviewInspectorLazyDefinition(definition);
+  React.useEffect(() => {
+    if (typeof recordPreviewInspectorRuntimeHealth !== 'function') return;
+    const routeLocation = candidate?.routeLocation;
+    recordPreviewInspectorRuntimeHealth({
+      category: 'page-context',
+      detail: {
+        candidateComplete: candidate?.complete === true,
+        candidateId: candidate?.id,
+        directTarget,
+        ...(typeof routeLocation?.sourcePath === 'string'
+          ? { evidence: { sourcePath: routeLocation.sourcePath } }
+          : {}),
+        evidenceKind: routeLocation?.evidenceKind ?? 'none',
+        pathname: routeLocation?.pathname ?? '/',
+        rootExport: candidate?.root?.exportName,
+        rootOwnsRouter: candidate?.rootOwnsRouter === true,
+        routeInferred: typeof routeLocation?.pathname === 'string',
+      },
+      event: 'page-context-selected',
+    });
+  }, [candidate?.id, definition?.id, directTarget]);
   if (loadState.definition !== definition || loadState.status === 'loading') {
     return React.createElement(
       'div',
@@ -310,6 +337,7 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
     directTarget ? (candidate?.targetAutomaticProps ?? {}) : targetProps,
   );
   const routedElement = createPreviewCandidateRouterElement(rootElement, {
+    initialEntry: candidate?.routeLocation?.pathname,
     ownsRouter: directTarget ? false : candidate?.rootOwnsRouter === true,
   });
   const pageCorridorElement = directTarget

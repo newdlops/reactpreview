@@ -21,6 +21,12 @@ interface ProviderBridgeFixture {
 type PreviewOnResolveCallback = Parameters<PluginBuild['onResolve']>[1];
 type PreviewOnStartCallback = Parameters<PluginBuild['onStart']>[0];
 
+/** Resolver registration retained with its filter so callback order is never test behavior. */
+interface PreviewOnResolveRegistration {
+  readonly callback: PreviewOnResolveCallback;
+  readonly filter: RegExp;
+}
+
 const FIXTURES: readonly ProviderBridgeFixture[] = [
   {
     createPlugin: () => createPreviewApolloBridgePlugin({ projectRoot: PROJECT_ROOT }),
@@ -59,7 +65,9 @@ describe('persistent preview provider bridges', () => {
   it.each(FIXTURES)('re-probes $label package resolution after onStart', async (fixture) => {
     const harness = createPluginHarness();
     await fixture.createPlugin().setup(harness.build);
-    const resolver = harness.resolveCallbacks[0];
+    const resolver = harness.resolveCallbacks.find(({ filter }) =>
+      filter.test(fixture.specifier),
+    )?.callback;
     const start = harness.startCallbacks[0];
     if (resolver === undefined || start === undefined) {
       throw new Error(`${fixture.label} bridge did not register its persistent callbacks.`);
@@ -81,10 +89,10 @@ describe('persistent preview provider bridges', () => {
 function createPluginHarness(): {
   readonly build: PluginBuild;
   readonly resolve: ReturnType<typeof vi.fn>;
-  readonly resolveCallbacks: PreviewOnResolveCallback[];
+  readonly resolveCallbacks: PreviewOnResolveRegistration[];
   readonly startCallbacks: PreviewOnStartCallback[];
 } {
-  const resolveCallbacks: PreviewOnResolveCallback[] = [];
+  const resolveCallbacks: PreviewOnResolveRegistration[] = [];
   const startCallbacks: PreviewOnStartCallback[] = [];
   const resolve = vi.fn((specifier: string) =>
     Promise.resolve({
@@ -101,8 +109,8 @@ function createPluginHarness(): {
     initialOptions: {},
     onLoad: vi.fn(),
     onResolve: vi.fn(
-      (_options: Parameters<PluginBuild['onResolve']>[0], callback: PreviewOnResolveCallback) => {
-        resolveCallbacks.push(callback);
+      (options: Parameters<PluginBuild['onResolve']>[0], callback: PreviewOnResolveCallback) => {
+        resolveCallbacks.push({ callback, filter: options.filter });
       },
     ),
     onStart: vi.fn((callback: PreviewOnStartCallback) => {

@@ -47,6 +47,18 @@ function isConfigurationRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Reads only the compiler-owned marker used for an inferred Page Inspector route. */
+function readInferredPreviewRoute(configuration) {
+  if (
+    !isConfigurationRecord(configuration) ||
+    configuration.previewRouteSource !== 'static-page-graph'
+  ) {
+    return undefined;
+  }
+  const entries = readInitialEntries(configuration);
+  return entries.length === 1 ? entries[0] : undefined;
+}
+
 /**
  * Copies a bounded string-only memory history or returns the immutable root-location fallback.
  * React Router also accepts location objects, but those can carry arbitrary state and are outside
@@ -183,9 +195,12 @@ function PreviewCandidateRouterBoundary({ children, configuration }) {
     previewRuntimeStatus = 'unavailable: installed react-router-dom has no MemoryRouter export';
     return children;
   }
-  previewRuntimeStatus = configuration === undefined
-    ? 'active: candidate-local MemoryRouter at the root location /'
-    : 'active: candidate-local MemoryRouter with setup-owned static history';
+  const inferredRoute = readInferredPreviewRoute(configuration);
+  previewRuntimeStatus = inferredRoute !== undefined
+    ? 'active: candidate-local MemoryRouter at the statically inferred target route ' + inferredRoute
+    : configuration === undefined
+      ? 'active: candidate-local MemoryRouter at the root location /'
+      : 'active: candidate-local MemoryRouter with setup-owned static history';
   return React.createElement(
     PreviewCandidateRouterErrorBoundary,
     { configuration },

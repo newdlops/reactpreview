@@ -34,7 +34,7 @@ function compareCandidates(
   return scoreDifference !== 0 ? scoreDifference : left.discoveryIndex - right.discoveryIndex;
 }
 
-/** Scores page/layout/form/app roles plus exact direct-ancestry completeness. */
+/** Scores production shell coverage, page roles, and exact direct-ancestry completeness. */
 function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
   const sourceStem = path.basename(candidate.root.sourcePath).replace(/\.[^.]+$/u, '');
   const renderLabel =
@@ -43,16 +43,21 @@ function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
       : (candidate.renderPath?.steps[candidate.rootStepIndex]?.label ?? '');
   const identity = `${candidate.root.exportName} ${sourceStem} ${renderLabel}`;
   let score = Math.min(candidate.rootStepIndex ?? 0, 100);
-  if (/(?:Page|Screen|View)/u.test(identity)) score += 6_000;
-  else if (identity.includes('Layout')) score += 5_000;
+  if (/(?:App(?!lication)|Application|Layout|Shell|Frame)/u.test(identity)) score += 9_000;
+  else if (/(?:Page|Screen|View)/u.test(identity)) score += 6_000;
   else if (/(?:Form|Wizard)/u.test(identity)) score += 4_500;
-  else if (/App(?!lication)/u.test(identity)) score += 3_500;
   else if (/Router|Route/u.test(identity)) score += 2_500;
+  if (candidate.renderPath?.entryPoint !== undefined && candidate.rootStepIndex !== undefined) {
+    score += candidate.complete ? 1_500 : 750;
+  }
   if (candidate.rootStepIndex === undefined && candidate.complete && candidate.edges.length > 0) {
     score += 3_000;
   } else if (candidate.complete) {
     score += 500;
   }
   if (candidate.rootStepIndex === undefined && candidate.edges.length > 0) score += 500;
+  // A detached app-owned Router cannot consume the inferred target location. Keep it selectable,
+  // but prefer an equally structural shell that can inherit the candidate-local MemoryRouter.
+  if (candidate.rootOwnsRouter) score -= 2_500;
   return score;
 }

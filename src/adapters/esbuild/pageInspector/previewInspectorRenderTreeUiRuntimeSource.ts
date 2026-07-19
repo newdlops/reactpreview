@@ -1,10 +1,10 @@
 /**
  * Generates the UI-side application-root and current-file export tree enrichment.
  *
- * The mounted Fiber tree begins at the safest authored page candidate, because executing an entire
- * application bootstrap would reintroduce authentication, network, and route-loader side effects.
- * This module prepends inert entry/route evidence above that live page and explicitly inventories
- * current-file exports that are not mounted by the selected authored page branch.
+ * The mounted Fiber tree begins at the safest route-aware application shell. Executing a complete
+ * browser bootstrap would reintroduce authentication, network, and route-loader side effects, so
+ * higher entry evidence remains inert. This module prepends that evidence above the live shell and
+ * inventories current-file exports not mounted by the selected authored route branch.
  */
 
 /**

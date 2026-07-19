@@ -115,6 +115,7 @@ export function createPreviewInspectorRootSource(
         }),
     rootOwnsRouter: candidate.rootOwnsRouter,
     ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
+    ...(candidate.routeLocation === undefined ? {} : { routeLocation: candidate.routeLocation }),
     stopReason: candidate.stopReason,
     targetAutomaticProps: candidate.targetAutomaticProps,
   }));

@@ -212,8 +212,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
   });
 
-  /** Instruments supported state reads while leaving React and exact Context hooks to their bridges. */
-  it('wraps supported state-library hooks but not React or identity-bridged Context hooks', () => {
+  /** Instruments state and Context wrapper hooks while leaving React-owned hooks to their bridges. */
+  it('wraps supported state-library and Context hooks but not React-owned hooks', () => {
     const source = [
       `import { useState } from 'react';`,
       `import { useQuery } from '@apollo/client';`,
@@ -231,11 +231,34 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     const replacements = createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source);
 
-    expect(replacements).toHaveLength(1);
+    expect(replacements).toHaveLength(2);
     expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT, queryOptions)');
     expect(replacements[0]?.replacement).toContain('"data": Object.freeze({})');
     expect(replacements[0]?.replacement).toContain(', () => (DOCUMENT), () => (queryOptions))');
     expect(replacements[0]?.replacement).not.toContain('useTheme()');
+    expect(replacements[1]?.replacement).toContain('useAppContext()');
+    expect(replacements[1]?.replacement).toContain(
+      '"user": Object.freeze({ "name": "Preview name" })',
+    );
+  });
+
+  /** Supplies an inert fragment carrier when an unbridged project Context exposes GraphQL data. */
+  it('infers aliased Context fragment values without knowing a project schema', () => {
+    const source = [
+      `import { useCompanyContext } from './company-context';`,
+      'export function Modal() {',
+      '  const { company: companyFragment, refetch } = useCompanyContext();',
+      '  const { name } = getFragmentData(FRAGMENT, companyFragment);',
+      '  return <button onClick={refetch}>{name}</button>;',
+      '}',
+    ].join('\n');
+
+    const replacements = createPreviewRuntimeHookReplacements('/workspace/Modal.tsx', source);
+
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0]?.replacement).toContain('"company": Object.freeze({})');
+    expect(replacements[0]?.replacement).toContain('"refetch": Object.freeze(() => undefined)');
+    expect(replacements[0]?.replacement).toContain('"requiredPaths":["company","refetch()"]');
   });
 
   /** Keeps semantic guard sentinels neutral and never captures a later local in a hook fallback. */

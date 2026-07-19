@@ -110,6 +110,82 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
     }
   });
 
+  /** Restricts bootstrap-global discovery to the proven page corridor in oversized applications. */
+  it('injects an entry-provided global despite unrelated evidence-budget noise', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-globals-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const targetPath = path.join(sourceDirectory, 'Target.tsx');
+    const appPath = path.join(sourceDirectory, 'App.tsx');
+    const entryPath = path.join(sourceDirectory, 'index.tsx');
+    const globalModulePath = path.join(sourceDirectory, 'preview-clock.ts');
+    const targetSource = [
+      'declare const previewClock: () => string;',
+      'export function Target() { return <strong>{previewClock()}</strong>; }',
+    ].join('\n');
+    const noiseSource = [
+      "import value from './preview-clock';",
+      ...Array.from(
+        { length: 513 },
+        (_, index) => `globalThis.unrelatedGlobal${index.toString()} = value;`,
+      ),
+    ].join('\n');
+    const compiler = new EsbuildPreviewCompiler();
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(targetPath, targetSource, 'utf8'),
+        writeFile(
+          appPath,
+          "import { Target } from './Target'; export function App() { return <main><Target /></main>; }",
+          'utf8',
+        ),
+        writeFile(
+          entryPath,
+          [
+            "import { createRoot } from 'react-dom/client';",
+            "import previewClock from './preview-clock';",
+            "import { App } from './App';",
+            'globalThis.previewClock = previewClock;',
+            'createRoot(document.body).render(<App />);',
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          globalModulePath,
+          "export default function previewClock() { return 'GLOBAL_CLOCK_VALUE'; }",
+          'utf8',
+        ),
+        writeFile(path.join(sourceDirectory, 'aaa-unrelated.ts'), noiseSource, 'utf8'),
+      ]);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(javascript).toContain('GLOBAL_CLOCK_VALUE');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([appPath, entryPath, globalModulePath, targetPath]),
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Climbs from a shared package into a sibling app through that app's nearest tsconfig alias. */
   it('finds the authored page root across a monorepo workspace package boundary', async () => {
     const workspaceRoot = await mkdtemp(

@@ -3,6 +3,7 @@
  * Keeping this adapter beside the bridge avoids coupling the evidence parser to esbuild while still
  * preserving canonical workspace module identity, export shape, and consumer resolution context.
  */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { PreviewImplicitGlobalEvidenceInventory } from '../previewImplicitGlobalEvidence';
 import type { PreviewGlobalPackageBridgeHint } from './previewGlobalPackageBridge';
@@ -35,18 +36,47 @@ export function createPreviewGlobalPackageBridgeHintsFromEvidence(
   inventory: PreviewImplicitGlobalEvidenceInventory,
 ): readonly PreviewGlobalPackageBridgeHint[] {
   return Object.freeze(
-    inventory.evidence.map((evidence) =>
-      Object.freeze({
+    inventory.evidence.map((evidence) => {
+      /*
+       * TypeScript intentionally resolves many bare packages to their declaration entry. That is
+       * correct for static identity analysis but importing an absolute `.d.ts` yields no browser
+       * value (for example the `Buffer` constructor becomes an empty object). Preserve the authored
+       * package/alias specifier in that case so esbuild selects the actual browser implementation.
+       */
+      const declarationOnlyModule = /\.d\.[cm]?ts$/iu.test(evidence.modulePath);
+      const adjacentRuntimeModule = declarationOnlyModule
+        ? selectAdjacentPreviewRuntimeModule(evidence.modulePath)
+        : undefined;
+      return Object.freeze({
         evidence: evidence.evidenceKind,
         exportKind: evidence.exportKind,
         ...(evidence.exportName === undefined ? {} : { exportName: evidence.exportName }),
         globalName: evidence.globalName,
-        moduleSpecifier: evidence.modulePath,
+        moduleSpecifier:
+          adjacentRuntimeModule ??
+          (declarationOnlyModule ? evidence.moduleSpecifier : evidence.modulePath),
         resolveDir: path.dirname(evidence.sourcePath),
-        watchPath: evidence.modulePath,
-      }),
-    ),
+        watchPath: adjacentRuntimeModule ?? evidence.modulePath,
+      });
+    }),
   );
+}
+
+/**
+ * Maps a declaration entry to an adjacent implementation without interpreting package metadata.
+ * Absolute implementation paths also bypass the Node-built-in compatibility shim when a browser
+ * polyfill package intentionally owns the same spelling, as with the `buffer` npm package.
+ */
+function selectAdjacentPreviewRuntimeModule(declarationPath: string): string | undefined {
+  const basePath = declarationPath.replace(/\.d\.[cm]?ts$/iu, '');
+  const extension = path.extname(declarationPath).toLowerCase();
+  const preferredExtension = extension === '.mts' ? '.mjs' : extension === '.cts' ? '.cjs' : '.js';
+  return [
+    `${basePath}${preferredExtension}`,
+    `${basePath}.js`,
+    `${basePath}.mjs`,
+    `${basePath}.cjs`,
+  ].find((candidate) => existsSync(candidate));
 }
 
 /**

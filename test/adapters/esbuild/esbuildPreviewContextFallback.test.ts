@@ -86,8 +86,10 @@ describe('EsbuildPreviewCompiler custom Context fallback', () => {
       ]).toString('utf8');
 
       expect(javascript).toContain('PERMISSION_PAGE_MARKER');
-      expect(javascript).toMatch(/useAppContext\(\)\s*\?\?\s*__reactPreviewContextHookFallback/u);
+      expect(javascript).toMatch(/resolveRuntimeHook\(\(\)\s*=>\s*useAppContext\(\)/u);
       expect(javascript).toContain('"user": Object.freeze');
+      expect(javascript).toContain('"isLegalPartnerStaff": false');
+      expect(javascript).toContain('"isStaffMode": false');
       expect(javascript).not.toContain('"legalPartner": Object.freeze');
       expect(javascript).not.toContain('"permissionTypes": Object.freeze');
       expect(javascript).toContain('registerPreviewContextIdentity');

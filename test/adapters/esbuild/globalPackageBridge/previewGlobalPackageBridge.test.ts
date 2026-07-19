@@ -50,6 +50,76 @@ describe('global package bridge discovery', () => {
     ]);
   });
 
+  /** Keeps the authored runtime package when TypeScript resolved its declaration-only entry. */
+  it('does not import a declaration file as an implicit browser global', () => {
+    const hints = createPreviewGlobalPackageBridgeHintsFromEvidence({
+      ambiguousGlobalNames: [],
+      dependencyPaths: ['/workspace/src/index.tsx', '/workspace/node_modules/buffer/index.d.ts'],
+      evidence: [
+        {
+          evidenceKind: 'runtime-assignment',
+          exportKind: 'named',
+          exportName: 'Buffer',
+          globalName: 'Buffer',
+          modulePath: '/workspace/node_modules/buffer/index.d.ts',
+          moduleSpecifier: 'buffer',
+          sourcePath: '/workspace/src/index.tsx',
+        },
+      ],
+      truncated: false,
+      unresolvedGlobalNames: [],
+    });
+
+    expect(hints).toEqual([
+      expect.objectContaining({
+        exportKind: 'named',
+        exportName: 'Buffer',
+        globalName: 'Buffer',
+        moduleSpecifier: 'buffer',
+        watchPath: '/workspace/node_modules/buffer/index.d.ts',
+      }),
+    ]);
+  });
+
+  /** Prefers an adjacent package implementation so browser polyfills outrank Node builtin shims. */
+  it('maps declaration evidence to an adjacent runtime implementation', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'preview-global-runtime-module-'));
+    const declarationPath = path.join(workspaceRoot, 'node_modules', 'buffer', 'index.d.ts');
+    const runtimePath = path.join(workspaceRoot, 'node_modules', 'buffer', 'index.js');
+    try {
+      await mkdir(path.dirname(declarationPath), { recursive: true });
+      await Promise.all([
+        writeFile(declarationPath, 'export declare class Buffer {}', 'utf8'),
+        writeFile(runtimePath, 'export class Buffer {}', 'utf8'),
+      ]);
+
+      const hints = createPreviewGlobalPackageBridgeHintsFromEvidence({
+        ambiguousGlobalNames: [],
+        dependencyPaths: [declarationPath],
+        evidence: [
+          {
+            evidenceKind: 'runtime-assignment',
+            exportKind: 'named',
+            exportName: 'Buffer',
+            globalName: 'Buffer',
+            modulePath: declarationPath,
+            moduleSpecifier: 'buffer',
+            sourcePath: path.join(workspaceRoot, 'src', 'index.tsx'),
+          },
+        ],
+        truncated: false,
+        unresolvedGlobalNames: [],
+      });
+
+      expect(hints[0]).toMatchObject({
+        moduleSpecifier: runtimePath,
+        watchPath: runtimePath,
+      });
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Carries ambiguity and truncation into fallback suppression instead of changing semantics. */
   it('creates fail-closed dependency fallback policy from negative strong evidence', () => {
     const ambiguousPolicy = createPreviewGlobalPackageBridgeEvidencePolicy({
@@ -338,6 +408,70 @@ describe('global package bridge discovery', () => {
 });
 
 describe('createPreviewGlobalPackageBridgePlugin', () => {
+  /** Executes a declaration-backed browser polyfill instead of injecting its erased `.d.ts`. */
+  it('injects the adjacent runtime implementation for declaration evidence', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'preview-global-buffer-runtime-'));
+    const projectRoot = path.join(workspaceRoot, 'application');
+    const packageRoot = path.join(workspaceRoot, 'node_modules', 'buffer');
+    const declarationPath = path.join(packageRoot, 'index.d.ts');
+    const runtimePath = path.join(packageRoot, 'index.js');
+    const targetPath = path.join(projectRoot, 'Target.js');
+    try {
+      await Promise.all([
+        mkdir(projectRoot, { recursive: true }),
+        mkdir(packageRoot, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(workspaceRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(
+          declarationPath,
+          'export declare class Buffer { static isBuffer(value: unknown): boolean }',
+          'utf8',
+        ),
+        writeFile(
+          runtimePath,
+          'export class Buffer { static isBuffer(value) { return value === "preview-buffer"; } }',
+          'utf8',
+        ),
+      ]);
+      const hints = createPreviewGlobalPackageBridgeHintsFromEvidence({
+        ambiguousGlobalNames: [],
+        dependencyPaths: [targetPath, declarationPath],
+        evidence: [
+          {
+            evidenceKind: 'runtime-assignment',
+            exportKind: 'named',
+            exportName: 'Buffer',
+            globalName: 'Buffer',
+            modulePath: declarationPath,
+            moduleSpecifier: 'buffer',
+            sourcePath: targetPath,
+          },
+        ],
+        truncated: false,
+        unresolvedGlobalNames: [],
+      });
+      const plan = await discoverPreviewGlobalPackageBridges({
+        hints,
+        projectRoot,
+        referencedGlobalNames: ['Buffer'],
+        workspaceRoot,
+      });
+      const result = await bundleFixture(
+        { plan, projectRoot, targetPath, workspaceRoot },
+        `globalThis.output = Buffer.isBuffer('preview-buffer');`,
+      );
+      const sandbox: Record<string, unknown> = {};
+      runInNewContext(result.outputFiles[0]?.text ?? '', sandbox);
+
+      expect(sandbox.output).toBe(true);
+      expect(result.outputFiles[0]?.text).not.toContain('declare class Buffer');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Evaluates an injected ESM dependency before a target's top-level `dayjs()` call. */
   it('injects an ESM default before target module evaluation', async () => {
     const fixture = await createBuildFixture(

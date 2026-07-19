@@ -242,11 +242,7 @@ function collectRuntimeHookCandidates(
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && node.questionDotToken === undefined) {
       const hook = readRuntimeHookBinding(node.expression, inventory);
-      if (
-        hook !== undefined &&
-        (hook.hookName === REACT_CONTEXT_HOOK || !hook.hookName.endsWith('Context')) &&
-        findNearestRuntimeFunction(node) !== undefined
-      ) {
+      if (hook !== undefined && findNearestRuntimeFunction(node) !== undefined) {
         const fallback = inferRuntimeHookFallback(node, hook, sourceFile, sourceText);
         if (fallback !== undefined) candidates.push({ call: node, fallback, hook });
       }
@@ -508,7 +504,7 @@ function inferSemanticFallback(
     return { expression: '0', label: 'generated number 0' };
   }
   if (
-    /(?:props|context|form|data|filter|params|state|values|config|settings|location|router|navigation|user|company)$/u.test(
+    /(?:props|context|form|data|filter|params|state|values|config|settings|location|router|navigation|user|company|fragment)$/u.test(
       normalized,
     )
   ) {
@@ -878,6 +874,7 @@ function createRuntimeHookReplacement(
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
   return {
     end,
+    ...(candidate.hook.hookName.endsWith('Context') ? { priority: 1 } : {}),
     replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${JSON.stringify(metadata)}${graphqlArguments === undefined ? '' : `, () => (${graphqlArguments.documentExpression})${graphqlArguments.optionsExpression === undefined ? '' : `, () => (${graphqlArguments.optionsExpression})`}`})`,
     start,
   };

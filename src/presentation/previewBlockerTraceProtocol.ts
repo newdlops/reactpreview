@@ -98,6 +98,8 @@ export interface PreviewBlockerTraceTarget {
   readonly exportName?: string;
   readonly pageCandidateId?: string;
   readonly renderScenario?: string;
+  /** Hot-entry revision that emitted this event inside the persistent pinned webview. */
+  readonly revision?: number;
 }
 
 /** Validated chronological trace event written to the React Preview Output channel. */
@@ -308,11 +310,19 @@ function readTraceTarget(value: unknown): PreviewBlockerTraceTarget | undefined 
   const exportName = readOptionalTraceText(value.exportName, TRACE_TEXT_LIMIT);
   const pageCandidateId = readOptionalTraceText(value.pageCandidateId, TRACE_TEXT_LIMIT);
   const renderScenario = readOptionalTraceText(value.renderScenario, 120);
-  if (exportName === null || pageCandidateId === null || renderScenario === null) return undefined;
+  const revision = value.revision;
+  if (
+    exportName === null ||
+    pageCandidateId === null ||
+    renderScenario === null ||
+    (revision !== undefined && (!Number.isSafeInteger(revision) || (revision as number) < 0))
+  )
+    return undefined;
   return Object.freeze({
     ...(exportName === undefined ? {} : { exportName }),
     ...(pageCandidateId === undefined ? {} : { pageCandidateId }),
     ...(renderScenario === undefined ? {} : { renderScenario }),
+    ...(revision === undefined ? {} : { revision: revision as number }),
   });
 }
 

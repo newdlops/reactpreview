@@ -17,7 +17,9 @@
 export function createPreviewInspectorBlockerTraceRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT = 256;
-const PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS = 60_000;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS = 5_000;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS = 1_000;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS = 30_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT = 4_000;
 
 /** Lazily initializes non-persisted chronological state for one pinned webview session. */
@@ -61,6 +63,10 @@ function readPreviewInspectorBlockerTraceTarget() {
       typeof previewInspectorSession.renderScenario === 'string'
         ? previewInspectorSession.renderScenario
         : undefined,
+    revision:
+      typeof previewEntryRevision === 'number' && Number.isSafeInteger(previewEntryRevision)
+        ? previewEntryRevision
+        : 0,
   };
 }
 
@@ -258,6 +264,7 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
 
   const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
   const active = activeAttempt !== undefined &&
+    activeAttempt.settledAt === undefined &&
     Date.now() - activeAttempt.startedAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS;
   if (active || resolvedBlockerIds.length > 0) {
     const traceId = active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId();
@@ -270,6 +277,22 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
         resolvedBlockerIds,
       },
     });
+  }
+  if (active) {
+    activeAttempt.settledAt = Date.now();
+    if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+      recordPreviewInspectorRuntimeHealth({
+        category: 'render-attempt',
+        detail: {
+          changedBlockerIds,
+          discoveredBlockerIds,
+          remainingBlockerIds: [...next.keys()],
+          resolvedBlockerIds,
+          traceId: activeAttempt.traceId,
+        },
+        event: 'render-attempt-settled',
+      });
+    }
   }
   for (const blockerId of discoveredBlockerIds) {
     postPreviewInspectorBlockerTraceEvent(
@@ -327,7 +350,10 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   const fingerprint = fingerprintPreviewInspectorBlockerTraceRecord({ auto, blocker });
   const previousAt = previewInspectorSession.blockerTraceDecisionFingerprints.get(fingerprint);
   const now = Date.now();
-  if (typeof previousAt === 'number' && now - previousAt < 500) return undefined;
+  if (
+    typeof previousAt === 'number' &&
+    now - previousAt < PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS
+  ) return undefined;
   previewInspectorSession.blockerTraceDecisionFingerprints.set(fingerprint, now);
   if (previewInspectorSession.blockerTraceDecisionFingerprints.size > 256) {
     previewInspectorSession.blockerTraceDecisionFingerprints.delete(
@@ -337,6 +363,17 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   const traceId = createPreviewInspectorBlockerTraceId();
   previewInspectorSession.blockerTraceActiveAttempt = { blocker, startedAt: now, traceId };
   postPreviewInspectorBlockerTraceEvent('auto-selection', traceId, { auto, blocker });
+  if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+    recordPreviewInspectorRuntimeHealth({
+      category: 'render-attempt',
+      detail: {
+        blockerId: blocker.id,
+        mode: auto.mode,
+        traceId,
+      },
+      event: 'render-attempt-started',
+    });
+  }
   return traceId;
 }
 
@@ -348,8 +385,13 @@ function recordPreviewInspectorBlockerTraceError(entry) {
     return;
   }
   const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
+  const now = Date.now();
   const active = activeAttempt !== undefined &&
-    Date.now() - activeAttempt.startedAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS;
+    now - activeAttempt.startedAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS &&
+    (
+      activeAttempt.settledAt === undefined ||
+      now - activeAttempt.settledAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS
+    );
   if (!active && entry.level !== 'error' && !['runtime-fallback', 'target-reachability'].includes(entry.source)) {
     return;
   }

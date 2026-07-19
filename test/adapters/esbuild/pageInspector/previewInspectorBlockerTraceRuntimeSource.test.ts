@@ -21,6 +21,7 @@ interface TraceMessage {
 
 /** Pure trace functions deliberately exposed only inside the VM fixture. */
 interface TraceRuntime {
+  readonly advance: (milliseconds: number) => void;
   readonly decide: (candidate: Record<string, unknown>) => string | undefined;
   readonly error: (entry: Record<string, unknown>) => void;
   readonly messages: TraceMessage[];
@@ -95,6 +96,36 @@ describe('Preview Inspector blocker trace runtime source', () => {
       event: 'subsequent-error',
     });
   });
+
+  /** Ends causal attachment after the settled grace and suppresses repeated Auto churn for 30s. */
+  it('bounds attempts to one render settlement instead of a long global time window', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('auto'));
+    const candidate = {
+      action: 'Complete route params',
+      blockerId: 'route-params',
+      blockerKind: 'runtime-fallback',
+      blockerName: 'useParams',
+      generatedPaths: ['companyId'],
+      mode: 'auto',
+      selectedValue: { companyId: 'preview-id' },
+    };
+    const traceId = runtime.decide(candidate);
+    expect(runtime.decide(candidate)).toBeUndefined();
+    runtime.snapshot(createSnapshot('settled'));
+    runtime.advance(1_001);
+    runtime.error({
+      level: 'error',
+      message: 'independent theme failure',
+      source: 'react-boundary',
+    });
+
+    const error = runtime.messages.at(-1)?.event;
+    expect(error?.event).toBe('subsequent-error');
+    expect(error?.traceId).not.toBe(traceId);
+    runtime.advance(29_000);
+    expect(runtime.decide(candidate)).not.toBeUndefined();
+  });
 });
 
 /** Creates one blocker tree snapshot whose mode change represents a post-Auto remount. */
@@ -127,12 +158,16 @@ function createTraceRuntime(): TraceRuntime {
         selectedExportName: 'ProfileForm',
         selectedPageCandidateId: 'app-path',
       };
+      const previewEntryRevision = 2;
+      let currentTime = 1_000;
+      Date.now = () => currentTime;
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const messages = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
       const isPreviewInspectorBlockingNode = () => true;
       ${createPreviewInspectorBlockerTraceRuntimeSource()}
       globalThis.__runtime = {
+        advance: (milliseconds) => { currentTime += milliseconds; },
         decide: recordPreviewInspectorBlockerAutoDecision,
         error: recordPreviewInspectorBlockerTraceError,
         messages,

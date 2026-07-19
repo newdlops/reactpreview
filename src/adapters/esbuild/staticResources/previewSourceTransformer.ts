@@ -4,7 +4,6 @@
  * `require.context`, and `new URL(..., import.meta.url)`; every filesystem expansion is bounded.
  */
 import path from 'node:path';
-import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver';
 import {
   isStaticImportMetaUrl,
   parseDynamicPathSegments,
@@ -37,6 +36,7 @@ import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGl
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
 import {
   appendPreviewSourceImports,
   applyPreviewSourceReplacements,
@@ -44,8 +44,10 @@ import {
   selectCompatiblePreviewSourceReplacements,
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
+import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 
 export { PreviewSourceTransformError } from './previewSourceReplacement';
+export type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 const MAX_BUILD_EXPANSIONS = 128;
 const MAX_BUILD_MATCH_REFERENCES = 1024;
 const MAX_BUILD_SCANNED_ENTRIES = 16_384;
@@ -56,26 +58,6 @@ export interface PreviewSourceTransformResult {
   readonly contents: string;
   /** Glob roots used to route newly created or saved files back to the preview session. */
   readonly watchDirectories: readonly string[];
-}
-
-/** Immutable transformer configuration for one compilation request. */
-export interface PreviewSourceTransformerOptions {
-  /** Active editor target whose direct component exports may receive bounded prop defaults. */
-  readonly documentPath?: string;
-  /** Exact dependency/global names worth checking in modules esbuild actually reaches. */
-  readonly implicitPackageGlobalCandidateNames?: readonly string[];
-  /** Project-aware resolver proving a free name maps to its exact installed package. */
-  readonly implicitPackageGlobalResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
-  /** Whether reached JSX conditions should expose authored/forced branch controls to Page Inspector. */
-  readonly instrumentRenderConditions?: boolean;
-  /** Whether proven browser backend calls should use editable no-network preview payloads. */
-  readonly instrumentDataRequests?: boolean;
-  /** Whether render-critical custom hooks may receive visible, user-toggleable static fallbacks. */
-  readonly instrumentRuntimeHookFallbacks?: boolean;
-  /** Nearest package root used for the conventional public asset directory. */
-  readonly projectRoot: string;
-  /** Trusted workspace boundary used for every static filesystem expansion. */
-  readonly workspaceRoot: string;
 }
 
 /** Parsed Vite glob behavior accepted by the safe compatibility layer. */
@@ -121,8 +103,20 @@ export class PreviewSourceTransformer {
     visited: 0,
   };
   private readonly watchDirectories = new Set<string>();
+  private readonly graphqlInstrumentation: PreviewGraphqlDocumentInstrumentation | undefined;
   /** Creates a transformer without reading or executing project build configuration. */
-  public constructor(private readonly options: PreviewSourceTransformerOptions) {}
+  public constructor(private readonly options: PreviewSourceTransformerOptions) {
+    this.graphqlInstrumentation =
+      options.instrumentGraphqlDocuments === true && options.graphqlModuleResolver !== undefined
+        ? new PreviewGraphqlDocumentInstrumentation({
+            ...(options.readGraphqlSource === undefined
+              ? {}
+              : { readSource: options.readGraphqlSource }),
+            resolveModule: options.graphqlModuleResolver.resolve,
+            workspaceRoot: options.workspaceRoot,
+          })
+        : undefined;
+  }
 
   /**
    * Rewrites all supported resource expressions in one project-owned source module.
@@ -196,6 +190,12 @@ export class PreviewSourceTransformer {
       }
       if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('use')) {
         replacements.push(...createPreviewRuntimeHookReplacements(sourcePath, sourceText));
+      }
+      if (sourceText.includes('gql')) {
+        replacements.push(
+          ...(this.graphqlInstrumentation?.createReplacements(sourcePath, sourceText, analysis) ??
+            []),
+        );
       }
       if (
         this.options.documentPath !== undefined &&

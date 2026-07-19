@@ -63,6 +63,10 @@ describe('createPreviewInspectorRootSource', () => {
     const source = createPreviewInspectorRootSource({
       displayName: 'Target inspector',
       plan: createPlan({ exportName: 'Page', sourcePath: PAGE_PATH }),
+      targetInference: {
+        provenance: [{ kind: 'object', path: 'field', source: 'usage' }],
+        shape: { kind: 'object', properties: { field: { kind: 'object', properties: {} } } },
+      },
     });
 
     expect(source).toContain(
@@ -78,6 +82,8 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"rootStepIndex":3');
     expect(source).toContain('"pageCandidates":[{"complete":true');
     expect(source).toContain('"targetAutomaticProps":{"enabled":true}');
+    expect(source).toContain('"targetInferredPropShape":{"kind":"object"');
+    expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
     expect(source).toContain('"renderChain":{"dependencyPaths"');
     expect(source).toContain('"renderChainsByExport":{"Target"');
     expect(source).toContain('"reachability":"entry-unreachable"');

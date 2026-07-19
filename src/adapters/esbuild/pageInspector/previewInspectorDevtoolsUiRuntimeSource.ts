@@ -336,8 +336,9 @@ function formatPreviewInspectorUiSource(source) {
 function isPreviewInspectorUiNodeEditable(node) {
   const exportName = node?.exportName;
   return typeof exportName === 'string' &&
-    previewInspectorSession.basePropsByExport.has(exportName) &&
-    previewInspectorSession.descriptorNames.includes(exportName);
+    previewInspectorSession.descriptorNames.includes(exportName) &&
+    (previewInspectorSession.basePropsByExport.has(exportName) ||
+      hasPreviewInspectorSmartPropEvidence(exportName));
 }
 
 /** Commits tree selection locally, synchronizes editable exports, and informs an optional collector. */
@@ -547,75 +548,6 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
             })),
           ),
     ),
-  );
-}
-
-/** Renders editable target/root props or a clearly read-only arbitrary Fiber snapshot. */
-function PreviewInspectorPropsDetail({ node }) {
-  const editable = isPreviewInspectorUiNodeEditable(node);
-  const exportName = editable ? node.exportName : undefined;
-  const baseProps = exportName === undefined
-    ? normalizePreviewInspectorProps(node?.props ?? {})
-    : previewInspectorSession.basePropsByExport.get(exportName) ?? {};
-  const overrideProps = exportName === undefined
-    ? {}
-    : previewInspectorSession.overridesByExport.get(exportName) ?? {};
-  const effectiveProps = editable ? { ...baseProps, ...overrideProps } : baseProps;
-  const inferredProps = exportName === undefined ? [] : readSelectedPreviewInspectorInferredProps(exportName);
-  const draftKey = (node?.id ?? '') + ':' + stringifyPreviewInspectorProps(effectiveProps);
-  const [draftText, setDraftText] = React.useState(() => stringifyPreviewInspectorProps(effectiveProps));
-  const [draftError, setDraftError] = React.useState('');
-  React.useEffect(() => {
-    setDraftText(stringifyPreviewInspectorProps(effectiveProps));
-    setDraftError('');
-  }, [draftKey]);
-  const applyDraft = () => {
-    if (!editable || exportName === undefined) return;
-    try {
-      const value = JSON.parse(draftText);
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-        throw new TypeError('Props JSON must be an object.');
-      }
-      setPreviewInspectorPropsOverride(exportName, value);
-      setDraftError('');
-    } catch (error) {
-      setDraftError(error instanceof Error ? error.message : String(error));
-    }
-  };
-  return React.createElement(
-    'div',
-    { className: 'rpi-detail-content' },
-    React.createElement('div', { className: 'rpi-meta' }, editable
-      ? 'Editable instrumented target/root props'
-      : 'Read-only Fiber props snapshot'),
-    React.createElement('textarea', {
-      'aria-label': editable ? 'Editable component props JSON' : 'Read-only component props JSON',
-      className: 'rpi-json',
-      onChange: editable ? (event) => setDraftText(event.target.value) : undefined,
-      readOnly: !editable,
-      spellCheck: false,
-      value: draftText,
-    }),
-    draftError.length > 0 ? React.createElement('div', { className: 'rpi-error' }, draftError) : null,
-    editable
-      ? React.createElement(
-          'div',
-          { className: 'rpi-actions' },
-          React.createElement(PreviewInspectorDevtoolsButton, { onClick: applyDraft }, 'Apply props'),
-          React.createElement(
-            PreviewInspectorDevtoolsButton,
-            { onClick: () => resetPreviewInspectorPropsOverride(exportName) },
-            'Reset props',
-          ),
-        )
-      : null,
-    inferredProps.length > 0
-      ? React.createElement('div', { className: 'rpi-note' }, 'Auto-generated preview values: ' + inferredProps
-          .map((item) => String(item.path) + ' (' + String(item.kind) + ')').join(', '))
-      : null,
-    React.createElement('div', { className: 'rpi-note' }, editable
-      ? 'Changes remount only the instrumented export and preserve its surrounding page.'
-      : 'Arbitrary Fiber props are observational and cannot be safely rewritten.'),
   );
 }
 

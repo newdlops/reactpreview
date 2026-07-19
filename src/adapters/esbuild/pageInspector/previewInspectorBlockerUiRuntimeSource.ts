@@ -555,30 +555,26 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
   );
 }
 
-/** Adds only error-proven missing prop paths while preserving observed and user-authored props. */
+/** Applies the minimum type-, usage-, parent-, observation-, and error-backed prop record. */
 function smartFillPreviewInspectorTargetFailure(failure) {
-  setPreviewInspectorFallbackValuesEnabled(true);
-  const requiredPaths = normalizePreviewInspectorRequiredPropertyPaths(failure.requiredPaths)
-    .filter((path) => path !== '<root>');
-  if (requiredPaths.length === 0) {
+  const draft = createPreviewInspectorSmartPropsDraft(
+    failure.exportName,
+    failure.requiredPaths,
+  );
+  if (!hasPreviewInspectorSmartPropsDraft(draft)) {
+    setPreviewInspectorFallbackValuesEnabled(true);
     remountPreviewInspectorExport(failure.exportName);
     return;
   }
-  const observed = previewInspectorSession.basePropsByExport.get(failure.exportName) ?? {};
-  const override = previewInspectorSession.overridesByExport.get(failure.exportName) ?? {};
-  const authored = { ...observed, ...override };
-  const minimum = createPreviewInspectorRuntimeFallbackSmartValue({}, requiredPaths);
-  const completion = completePreviewInspectorGeneratedValue(authored, minimum);
-  setPreviewInspectorPropsOverride(
-    failure.exportName,
-    completion.changed ? completion.value : authored,
-  );
+  applyPreviewInspectorSmartProps(failure.exportName, failure.requiredPaths);
 }
 
 /** Renders retry and inferred-value controls for a target-local contained React failure. */
 function PreviewInspectorTargetFailureDetail({ node }) {
   const failure = node.blocker;
-  const ownerNode = previewInspectorSession.basePropsByExport.has(failure.exportName)
+  const ownerNode = previewInspectorSession.descriptorNames.includes(failure.exportName) &&
+    (previewInspectorSession.basePropsByExport.has(failure.exportName) ||
+      hasPreviewInspectorSmartPropEvidence(failure.exportName))
     ? {
         exportName: failure.exportName,
         id: 'target-error-owner:' + failure.exportName,
@@ -617,7 +613,10 @@ function PreviewInspectorTargetFailureDetail({ node }) {
       'If inferred values cannot cross this edge, select the highlighted owner export and edit its props, or inspect Console for the exact stack.'),
     ownerNode === undefined
       ? undefined
-      : React.createElement(PreviewInspectorPropsDetail, { node: ownerNode }),
+      : React.createElement(PreviewInspectorPropsDetail, {
+          node: ownerNode,
+          requiredPaths: failure.requiredPaths,
+        }),
   );
 }
 

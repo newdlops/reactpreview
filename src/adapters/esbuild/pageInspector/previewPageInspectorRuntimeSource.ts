@@ -14,11 +14,13 @@ import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorCo
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
+import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from './previewInspectorTargetReachabilityRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
+import { createPreviewInspectorSmartPropsRuntimeSource } from './previewInspectorSmartPropsRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
 export const PREVIEW_PAGE_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
@@ -44,11 +46,13 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
+  const propsUiRuntimeSource = createPreviewInspectorPropsUiRuntimeSource();
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const targetReachabilityRuntimeSource = createPreviewInspectorTargetReachabilityRuntimeSource();
   const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
+  const smartPropsRuntimeSource = createPreviewInspectorSmartPropsRuntimeSource();
   const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
 const PREVIEW_INSPECTOR_API_KEY = Symbol.for('newdlops.react-file-preview.page-inspector');
@@ -123,6 +127,8 @@ ${targetReachabilityRuntimeSource}
 ${consoleRuntimeSource}
 
 ${runtimeFallbackRuntimeSource}
+
+${smartPropsRuntimeSource}
 
 ${refreshRuntimeSource}
 
@@ -502,14 +508,15 @@ function selectPreviewInspectorExport(exportName) {
   schedulePreviewInspectorCommitRefresh();
 }
 
-/** Replaces an export's prop override and remounts its wrapped target instances. */
+/** Stores a JSON-safe prop override, preserving inferred callbacks as visible no-op sentinels. */
 function setPreviewInspectorPropsOverride(exportName, value) {
   if (typeof exportName !== 'string' || exportName.length === 0) {
     return;
   }
+  const serializedValue = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
   previewInspectorSession.overridesByExport.set(
     exportName,
-    normalizePreviewInspectorProps(value),
+    normalizePreviewInspectorProps(serializedValue),
   );
   remountPreviewInspectorExport(exportName, false);
   persistPreviewInspectorState();
@@ -802,7 +809,9 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
   React.useEffect(() => {
     registerPreviewInspectorBaseProps(exportName, automaticTargetProps);
   }, [exportName, automaticTargetProps]);
-  const overrideProps = previewInspectorSession.overridesByExport.get(exportName) ?? {};
+  const overrideProps = materializePreviewInspectorRuntimeFallbackOverride(
+    previewInspectorSession.overridesByExport.get(exportName) ?? {},
+  );
   const effectiveProps = createPreviewPropsFromLayers(
     undefined,
     automaticTargetProps,
@@ -859,7 +868,9 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
   React.useEffect(() => {
     registerPreviewInspectorBaseProps(rootName, baseRootProps);
   }, [rootName, stringifyPreviewInspectorProps(baseRootProps)]);
-  const overrideProps = previewInspectorSession.overridesByExport.get(rootName) ?? {};
+  const overrideProps = materializePreviewInspectorRuntimeFallbackOverride(
+    previewInspectorSession.overridesByExport.get(rootName) ?? {},
+  );
   const effectiveProps = { ...baseRootProps, ...overrideProps };
   const revision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
   const conditionRevision = readPreviewInspectorRenderConditionRevision();
@@ -948,6 +959,8 @@ registerPreviewRuntimeCapability('Render isolation', {
 });
 
 ${companionRuntimeSource}
+
+${propsUiRuntimeSource}
 
 ${devtoolsUiRuntimeSource}
 `;

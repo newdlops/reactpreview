@@ -2,12 +2,14 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDevtoolsUiRuntimeSource';
+import { createPreviewInspectorPropsUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorPropsUiRuntimeSource';
 import { createPreviewPageInspectorRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewPageInspectorRuntimeSource';
 
 describe('Page Inspector DevTools UI runtime source', () => {
   /** Parses the composed browser source so presentation-only template edits cannot ship bad JS. */
   it('emits syntactically valid browser runtime source', () => {
     expect(() => new vm.Script(createPreviewInspectorDevtoolsUiRuntimeSource())).not.toThrow();
+    expect(() => new vm.Script(createPreviewInspectorPropsUiRuntimeSource())).not.toThrow();
   });
 
   /** Keeps the authoritative controls hidden in the preview and mirrored into a companion tab. */
@@ -311,13 +313,17 @@ describe('Page Inspector DevTools UI runtime source', () => {
   /** Separates editable instrumented props from observational Fiber props, state, and source. */
   it('renders guarded Props, read-only State, and adapter-owned Source details', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
+    const propsSource = createPreviewInspectorPropsUiRuntimeSource();
 
     expect(source).toContain("['props', 'Props']");
     expect(source).toContain("['state', 'State']");
     expect(source).toContain("['source', 'Source']");
     expect(source).toContain('isPreviewInspectorUiNodeEditable');
-    expect(source).toContain('Editable instrumented target/root props');
-    expect(source).toContain('Read-only Fiber props snapshot');
+    expect(source).not.toContain('function PreviewInspectorPropsDetail');
+    expect(propsSource).toContain('Editable instrumented target/root props');
+    expect(propsSource).toContain('Read-only Fiber props snapshot');
+    expect(propsSource).toContain("'Smart fill props'");
+    expect(propsSource).toContain('PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL');
     expect(source).toContain('Read-only component state / hooks snapshot');
     expect(source).toContain(
       'previewInspectorSourceNavigation.openSource(source, event.nativeEvent, event.currentTarget)',

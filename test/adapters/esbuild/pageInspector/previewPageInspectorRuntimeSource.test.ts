@@ -71,7 +71,11 @@ describe('Page Inspector runtime source', () => {
       'fallbackValuesEnabled ? selectedCandidate?.rootInferredPropShape : undefined',
     );
     expect(source).toContain('selectedCandidate?.rootInferredProps');
-    expect(source).toContain('Auto-generated preview values:');
+    expect(source).toContain('Smart-generated preview paths:');
+    expect(source).toContain('createPreviewInspectorSmartPropsDraft');
+    expect(source).toContain("'Smart fill props'");
+    expect(source).toContain('PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL');
+    expect(source).toContain('materializePreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain('resolveBackendRequest: resolvePreviewInspectorBackendRequest');

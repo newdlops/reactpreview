@@ -174,6 +174,9 @@ export function createPreviewInspectorRootSource(
       stopReason: plan.stopReason,
       target: plan.target,
       targetAutomaticProps: plan.targetAutomaticProps,
+      ...(options.targetInference === undefined
+        ? {}
+        : { targetInferredPropShape: options.targetInference.shape }),
       targetInferredProps: options.targetInference?.provenance ?? [],
     },
   };

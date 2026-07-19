@@ -49,7 +49,9 @@ describe('EsbuildPreviewCompiler automatic target props', () => {
       expect(javascript).toContain('field.value.addressInput');
       expect(javascript).toContain('helpers.setValue');
       expect(javascript).toContain('previewAutomaticNoop');
-      expect(javascript).toContain('Auto-generated preview values:');
+      expect(javascript).toContain('Smart-generated preview paths:');
+      expect(javascript).toContain('Smart fill props');
+      expect(javascript).toContain('[Preview no-op function]');
       expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
         [],
       );

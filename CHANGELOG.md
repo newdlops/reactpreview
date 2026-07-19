@@ -2,6 +2,36 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1078 - 2026-07-19
+
+- Auto/Smart backend payload와 hook/blocker fallback의 일반 문자열을 긴 임의 문장 대신 실제 leaf key로 생성해
+  `name`, `description`, `employeeName`처럼 출처를 바로 알 수 있는 짧은 값으로 렌더링하고, 32자를 넘는 key는
+  말줄임 처리해 콘텐츠 때문에 컴포넌트 폭이 비정상적으로 확장되지 않도록 개선
+- 명시적으로 선택한 Lorem 모드는 문장형 fixture를 유지하고, ID·이메일·전화번호·날짜·URL처럼 런타임 형식이
+  필요한 필드는 유효한 전용 값을 보존해 compact Auto 값이 프로젝트 로직의 새 오류를 만들지 않도록 구분
+- `.filter()`·`.map()` 같은 Array prototype 호출을 callback property가 아니라 collection receiver 증거로 해석해
+  `legalPartnersForCompanyCreate.filter is not a function`처럼 Auto payload가 스스로 만드는 타입 오류를 방지
+- 동일한 GraphQL/REST 응답과 수동 hook override의 객체·callback identity를 세션 동안 유지하고, 짧은 시간에 같은
+  effect가 24회 넘게 재실행되면 해당 source site만 render-only 경고로 격리해 update-depth 무한 루프를 차단
+- Page Inspector가 전체 저장소를 다시 스캔하지 않고 package root와 `src`의 `index`·`main`·`bootstrap`,
+  `global.d.ts` convention만 추가 확인해 앱 엔트리가 설치하는 `Buffer`·`decimal` 전역을 정확히 복원
+- 자동 관찰 로그와 실제 remount를 일으킨 Auto/Smart 조작을 분리하고 `findDOMNode` 같은 비치명 React 개발 경고를
+  subsequent error로 연결하지 않아 blocker trace가 실제 실패 원인만 보여주도록 정리
+
+## 0.1.1077 - 2026-07-19
+
+- 대형 background build의 artifact metadata와 실제 chunk가 운영체제 locale에 따라 서로 다르게 정렬되어
+  정상 결과를 폐기하던 문제를 수정해, 빠른 단일 컴포넌트 프리뷰 뒤에 준비된 전체 페이지·스타일 context가
+  안정적으로 교체되도록 개선
+- ReactDOM entry까지 연결된 완전한 application root를 부분 `*App` wrapper보다 우선하고, 정적으로 증명된
+  안전한 pathname을 app-owned BrowserRouter가 생성되기 전에 주입해 헤더·사이드 메뉴·페이지 layout·portal을
+  실제 route 흐름으로 복원
+- Page Inspector Auto mode에서 React의 effect/layout-effect가 websocket, analytics 같은 비시각 bootstrap
+  의존성 때문에 실패해도 완성된 DOM을 제거하지 않도록 격리하고, 원본 오류와 source 위치는 Inspector console에
+  render-only 경고로 유지
+- 프로젝트 스타일이 준비되기 전 ready canvas에는 낮은 CSS 우선순위의 흰색 fallback을 사용해 VS Code 다크
+  배경이 비치는 현상을 막되, 앱이 정의한 body/global style은 그대로 우선 적용되도록 변경
+
 ## 0.1.1076 - 2026-07-19
 
 - Page Inspector의 lazy page root가 열리기 전에 전체 render corridor의 styled-components theme import를

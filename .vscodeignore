@@ -25,3 +25,4 @@ vitest.config.ts
 dist/**/*.map
 assets/*.md
 node_modules/esbuild/bin/esbuild
+.zoek-rs

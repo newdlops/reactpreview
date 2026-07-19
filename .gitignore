@@ -6,6 +6,8 @@ coverage/
 
 # Local editor, test, and operating-system state.
 .codeidx/
+.tmp/
+.zoek-rs/
 .vscode-test/
 .DS_Store
 *.log

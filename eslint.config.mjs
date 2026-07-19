@@ -29,7 +29,7 @@ function scopeToTypeScript(config) {
 
 export default tseslint.config(
   {
-    ignores: ['.codeidx/**', 'coverage/**', 'dist/**', 'node_modules/**', '*.vsix'],
+    ignores: ['.codeidx/**', '.tmp/**', 'coverage/**', 'dist/**', 'node_modules/**', '*.vsix'],
   },
   {
     ...eslint.configs.recommended,

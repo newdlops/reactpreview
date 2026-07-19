@@ -16,6 +16,96 @@ interface ReachabilityResult {
 }
 
 describe('Preview Inspector target reachability runtime source', () => {
+  /** Recovers a nested HOC guard from the exact target Fiber without admitting a shell sibling. */
+  it('remembers the selected target single-child owner chain and settles its cold retry', () => {
+    const context: {
+      __result?: {
+        readonly firstNames: readonly string[];
+        readonly notifications: number;
+        readonly retainedNames: readonly string[];
+        readonly revision: number;
+        readonly secondNames: readonly string[];
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        let notifications = 0;
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          fallbackValuesEnabled: true,
+          renderConditionRevision: 0,
+        };
+        const readPreviewInspectorBoundaryFiber = (boundary) => boundary.fiber;
+        const readPreviewInspectorFiberLink = (fiber, propertyName) => fiber?.[propertyName];
+        const classifyPreviewInspectorFiber = (fiber) => fiber?.kind ?? 'other';
+        const namePreviewInspectorFiber = (fiber) => fiber?.name ?? 'Anonymous';
+        const isPreviewInspectorOwnedFiber = () => false;
+        const notifyPreviewInspector = () => { notifications += 1; };
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const navigate = { kind: 'function', name: 'Navigate' };
+        const guardedPage = { child: navigate, kind: 'function', name: 'GuardedPage' };
+        const pageComponent = { child: guardedPage, kind: 'function', name: 'PageComponent' };
+        const unrelatedShell = { kind: 'function', name: 'TruncatableParagraph' };
+        const boundary = { fiber: { child: pageComponent, sibling: unrelatedShell } };
+        rememberPreviewInspectorTargetRuntimeOwner('default', { name: 'PageComponent' });
+        const firstNames = rememberPreviewInspectorTargetMountedOwnerChain('default', boundary);
+        const secondNames = rememberPreviewInspectorTargetMountedOwnerChain('default', boundary);
+        globalThis.__result = {
+          firstNames,
+          notifications,
+          retainedNames: [...previewInspectorSession.directTargetRuntimeOwnerNamesByExport.get('default')],
+          revision: previewInspectorSession.renderConditionRevision,
+          secondNames,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      firstNames: ['PageComponent', 'GuardedPage', 'Navigate'],
+      notifications: 1,
+      retainedNames: ['PageComponent', 'GuardedPage', 'Navigate'],
+      revision: 1,
+      secondNames: ['PageComponent', 'GuardedPage', 'Navigate'],
+    });
+  });
+
+  /** Adds nested HOC owners to an active full-page DFS state without forcing a cold remount. */
+  it('promotes the mounted owner chain into the active page corridor', () => {
+    const context: { __result?: { readonly names: readonly string[]; readonly revision: number } } =
+      {};
+    vm.runInNewContext(
+      `
+        const state = { runtimeOwnerNames: [], targetExportName: 'Target' };
+        const previewInspectorSession = {
+          activeTargetReachabilityKey: 'page:Target',
+          fallbackValuesEnabled: true,
+          renderConditionRevision: 4,
+          targetReachabilityByKey: new Map([['page:Target', state]]),
+        };
+        const readPreviewInspectorBoundaryFiber = (boundary) => boundary.fiber;
+        const readPreviewInspectorFiberLink = (fiber, propertyName) => fiber?.[propertyName];
+        const classifyPreviewInspectorFiber = (fiber) => fiber?.kind ?? 'other';
+        const namePreviewInspectorFiber = (fiber) => fiber?.name ?? 'Anonymous';
+        const isPreviewInspectorOwnedFiber = () => false;
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const guarded = { kind: 'function', name: 'GuardedPage' };
+        const page = { child: guarded, kind: 'function', name: 'PageComponent' };
+        rememberPreviewInspectorTargetMountedOwnerChain('Target', { fiber: { child: page } });
+        globalThis.__result = { names: state.runtimeOwnerNames, revision: previewInspectorSession.renderConditionRevision };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      names: ['PageComponent', 'GuardedPage'],
+      revision: 4,
+    });
+  });
+
   /** Selects the outer login exit before downstream consumers and retains root-to-target context. */
   it('chooses one path-local continuation gate for the next DFS pass', () => {
     const context: { __result?: ReachabilityResult } = {};
@@ -86,6 +176,8 @@ describe('Preview Inspector target reachability runtime source', () => {
           candidate,
           state,
         );
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        rememberPreviewInspectorTargetRuntimeOwner('DashboardPanel', { name: 'GuardedPage' });
         state.targetMounted = true;
         const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
         const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
@@ -430,6 +522,18 @@ describe('Preview Inspector target reachability runtime source', () => {
           sourcePath: '/with-page-guard.tsx',
           targetBranch: 'falsy',
         });
+        previewInspectorSession.renderConditions.set('unrelated-shell-gate', {
+          effectiveEnabled: true,
+          expression: '<TruncatableParagraph> gate: typeof content === "string"',
+          id: 'unrelated-shell-gate',
+          ownerName: 'TruncatableParagraph',
+          reachabilityDiscoveryOrder: 0,
+          reachabilityKey: state.key,
+          sourcePath: '/shell/truncatable-paragraph.tsx',
+          targetBranch: 'falsy',
+        });
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         globalThis.__result = {
           applied,
@@ -447,6 +551,79 @@ describe('Preview Inspector target reachability runtime source', () => {
       targetHasOutput: false,
       targetMounted: true,
     });
+  });
+
+  /** Retains a short target commit after Navigate removes it before the delayed DFS observation. */
+  it('advances a latched HOC guard after its redirect unmounts the target boundary', () => {
+    const context: { __result?: { readonly applied: readonly [string, boolean][] } } = {};
+    vm.runInNewContext(
+      `
+        const applied = [];
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'Target',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const collectPreviewInspectorFiberElements = () => [];
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
+          applied.push([id, enabled]);
+        };
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Target: { paths: [] } },
+          target: { exportName: 'Target' },
+        } };
+        const candidate = {
+          edges: [],
+          id: 'page',
+          renderPath: { id: 'path', steps: [
+            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'Page' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        state.pageRootCommitted = true;
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        previewInspectorSession.renderConditions.set('guard', {
+          effectiveEnabled: true,
+          expression: '<GuardedPage> gate: !isStaffMode',
+          id: 'guard',
+          ownerName: 'GuardedPage',
+          reachabilityDiscoveryOrder: 1,
+          reachabilityKey: state.key,
+          sourcePath: '/with-staff-page.tsx',
+          targetBranch: 'falsy',
+        });
+        previewInspectorSession.renderConditions.set('unrelated-shell-gate', {
+          effectiveEnabled: true,
+          expression: '<TruncatableParagraph> gate: typeof content === "string"',
+          id: 'unrelated-shell-gate',
+          ownerName: 'TruncatableParagraph',
+          reachabilityDiscoveryOrder: 0,
+          reachabilityKey: state.key,
+          sourcePath: '/shell/truncatable-paragraph.tsx',
+          targetBranch: 'falsy',
+        });
+        rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
+        markPreviewInspectorTargetReachabilityMount('Target');
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        globalThis.__result = { applied };
+      `,
+      context,
+    );
+
+    expect(context.__result?.applied).toEqual([['guard', false]]);
   });
 
   /** Requires a real page commit and never auto-promotes target-only diagnostics to success. */

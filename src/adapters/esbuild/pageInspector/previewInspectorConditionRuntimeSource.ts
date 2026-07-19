@@ -122,6 +122,37 @@ function schedulePreviewInspectorConditionRegistryRefresh() {
 }
 
 /**
+ * Selects the sole compiler-proven continuation for a cold direct Inspector target.
+ *
+ * Full page candidates install an active reachability key and advance one path-local gate per DFS
+ * pass. Before that reverse graph exists, an early-return guard can otherwise replace the selected
+ * file with a login, redirect, loading, or permission branch. Target-branch metadata is emitted only
+ * when syntax proves that the opposite branch continues through the same component body, so this
+ * temporary decision needs neither a guessed payload nor a user prompt.
+ */
+function readPreviewInspectorDirectContinuationOverride(metadata, manualOverride, autoOverride) {
+  if (manualOverride !== undefined || autoOverride !== undefined) return undefined;
+  if (previewInspectorSession.fallbackValuesEnabled !== true) return undefined;
+  if (typeof previewInspectorSession.activeTargetReachabilityKey === 'string') return undefined;
+  const descriptors = Array.isArray(previewInspectorSession.descriptors)
+    ? previewInspectorSession.descriptors
+    : [];
+  const selectedDescriptor = descriptors.find((descriptor) =>
+    descriptor?.exportName === previewInspectorSession.selectedExportName,
+  ) ?? descriptors[0];
+  if (selectedDescriptor?.inspector !== undefined || metadata.kind !== 'early-return') {
+    return undefined;
+  }
+  const ownerNames = previewInspectorSession.directTargetRuntimeOwnerNamesByExport instanceof Map
+    ? previewInspectorSession.directTargetRuntimeOwnerNamesByExport.get(selectedDescriptor?.exportName)
+    : undefined;
+  if (!(ownerNames instanceof Set) || !ownerNames.has(metadata.ownerName)) return undefined;
+  if (metadata.targetBranch === 'truthy') return true;
+  if (metadata.targetBranch === 'falsy') return false;
+  return undefined;
+}
+
+/**
  * Resolves one compiler-issued condition without changing authored semantics unless a user forced it.
  * A truthy authored object is returned unchanged so logical-and retains its exact normal result.
  */
@@ -137,10 +168,19 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
   const overrides = previewInspectorSession.renderConditionOverrides;
   const autoOverrides = previewInspectorSession.renderConditionAutoOverrides;
   const override = overrides.get(conditionId);
-  const autoOverride = autoOverrides.get(conditionId);
+  let autoOverride = autoOverrides.get(conditionId);
   const authoredEnabled = Boolean(authoredValue);
-  const effectiveEnabled = override ?? autoOverride ?? authoredEnabled;
   const normalizedMetadata = normalizePreviewInspectorConditionMetadata(metadata);
+  const directContinuation = readPreviewInspectorDirectContinuationOverride(
+    normalizedMetadata,
+    override,
+    autoOverride,
+  );
+  if (directContinuation !== undefined) {
+    autoOverrides.set(conditionId, directContinuation);
+    autoOverride = directContinuation;
+  }
+  const effectiveEnabled = override ?? autoOverride ?? authoredEnabled;
   const records = previewInspectorSession.renderConditions;
   const previous = records.get(conditionId);
   const reachabilityKey =
@@ -166,6 +206,30 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     if (didPreviewInspectorConditionChange(previous, nextRecord)) {
       schedulePreviewInspectorConditionRegistryRefresh();
     }
+  }
+  if (
+    directContinuation !== undefined &&
+    typeof recordPreviewInspectorBlockerAutoDecision === 'function'
+  ) {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Continue through direct target guard',
+      blockerId: conditionId,
+      blockerKind: 'render-condition',
+      blockerName: 'Render condition · ' + normalizedMetadata.expression,
+      column: normalizedMetadata.column,
+      generatedPaths: [],
+      line: normalizedMetadata.line,
+      mode: 'deterministic-direct-continuation',
+      ownerName: normalizedMetadata.ownerName,
+      reason: 'Compiler-proven early-return continuation is the only branch that reaches the selected file body',
+      selectedValue: directContinuation,
+      sourcePath: normalizedMetadata.sourcePath,
+      summary: {
+        authoredEnabled,
+        fallbackBranch: normalizedMetadata.fallbackBranch,
+        targetBranch: normalizedMetadata.targetBranch,
+      },
+    });
   }
   const selectedOverride = override ?? autoOverride;
   if (selectedOverride === undefined) return authoredValue;

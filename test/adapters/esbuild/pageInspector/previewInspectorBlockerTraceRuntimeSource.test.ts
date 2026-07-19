@@ -12,6 +12,7 @@ interface TraceMessage {
     readonly event: string;
     readonly result?: {
       readonly changedBlockerIds: readonly string[];
+      readonly remainingBlockerIds: readonly string[];
       readonly resolvedBlockerIds: readonly string[];
     };
     readonly traceId: string;
@@ -126,6 +127,53 @@ describe('Preview Inspector blocker trace runtime source', () => {
     runtime.advance(29_000);
     expect(runtime.decide(candidate)).not.toBeUndefined();
   });
+
+  /** Requires a stable second observation before claiming that a remounting blocker disappeared. */
+  it('does not report a transiently absent error boundary as resolved', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('error'));
+    runtime.decide({
+      action: 'Retry target',
+      blockerId: 'hook-form',
+      blockerKind: 'target-error',
+      mode: 'smart-props',
+      selectedValue: {},
+    });
+
+    runtime.snapshot({ roots: [] });
+    expect(runtime.messages.at(-1)?.event.result?.resolvedBlockerIds).toEqual([]);
+    expect(runtime.messages.at(-1)?.event.result?.remainingBlockerIds).toEqual(['hook-form']);
+    runtime.advance(200);
+    runtime.snapshot(createSnapshot('error'));
+
+    expect(
+      runtime.messages
+        .filter((message) => message.event.event === 'render-result')
+        .flatMap((message) => message.event.result?.resolvedBlockerIds ?? []),
+    ).not.toContain('hook-form');
+  });
+
+  /** Emits resolution only after the blocker remains absent beyond the stability window. */
+  it('reports a blocker resolved after two stable absent snapshots', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('error'));
+    runtime.decide({
+      action: 'Retry target',
+      blockerId: 'hook-form',
+      blockerKind: 'target-error',
+      mode: 'smart-props',
+      selectedValue: {},
+    });
+
+    runtime.snapshot({ roots: [] });
+    runtime.advance(200);
+    runtime.snapshot({ roots: [] });
+
+    const renderResults = runtime.messages.filter(
+      (message) => message.event.event === 'render-result',
+    );
+    expect(renderResults.at(-1)?.event.result?.resolvedBlockerIds).toEqual(['hook-form']);
+  });
 });
 
 /** Creates one blocker tree snapshot whose mode change represents a post-Auto remount. */
@@ -165,6 +213,7 @@ function createTraceRuntime(): TraceRuntime {
       const messages = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
       const isPreviewInspectorBlockingNode = () => true;
+      const schedulePreviewInspectorTreeRefresh = () => undefined;
       ${createPreviewInspectorBlockerTraceRuntimeSource()}
       globalThis.__runtime = {
         advance: (milliseconds) => { currentTime += milliseconds; },

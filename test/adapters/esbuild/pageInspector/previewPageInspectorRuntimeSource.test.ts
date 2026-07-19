@@ -61,9 +61,13 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('createPreviewInspectorRootName');
     expect(source).toContain('descriptor?.inspector === undefined');
     expect(source).toContain('DirectPreviewTarget');
+    expect(source).toContain('RoutedDirectPreviewTarget');
+    expect(source).toContain('createPreviewCandidateRouterElement(');
+    expect(source).toContain('{ ownsRouter: false }');
     expect(source).toContain('describePreviewInspectorAncestry');
     expect(source).toContain('Object.keys(descriptor?.inspector?.renderChainsByExport ?? {})');
     expect(source).toContain('renderChainsByExport?.[selectedExportName]');
+    expect(source).toContain('rememberPreviewInspectorTargetRuntimeOwner(exportName, Component)');
     expect(source).toContain('class PreviewInspectorTargetBoundary extends React.Component');
     expect(source).toContain('static getDerivedStateFromError(error)');
     expect(source).toContain('rememberCapturedReactError(error)');

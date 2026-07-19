@@ -5,6 +5,7 @@ import { createPreviewInspectorConditionRuntimeSource } from '../../../../src/ad
 
 interface ConditionRuntimeHarness {
   readonly getRevision: () => number;
+  readonly rememberDirectOwner: (exportName: string, ownerName: string) => void;
   readonly readConditions: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
   readonly resetCondition: (conditionId: string) => void;
@@ -126,22 +127,73 @@ describe('Preview Inspector condition runtime source', () => {
       override: undefined,
     });
   });
+
+  /** Bypasses one proven direct-target guard before expensive reverse page discovery completes. */
+  it('automatically chooses a cold direct target early-return continuation', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      descriptors: [{ exportName: 'default' }],
+      selectedExportName: 'default',
+    });
+    const metadata = {
+      expression: '<GuardedPage> gate: !isStaffMode',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <GuardedPage>',
+      kind: 'early-return',
+      ownerName: 'GuardedPage',
+      sourcePath: '/workspace/GuardedPage.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<Navigate>',
+    };
+
+    harness.rememberDirectOwner('default', 'GuardedPage');
+    expect(harness.resolveCondition('staff-gate', true, metadata)).toBe(false);
+    expect(harness.readConditions()[0]).toMatchObject({
+      authoredEnabled: true,
+      autoOverride: false,
+      effectiveEnabled: false,
+      targetBranch: 'falsy',
+    });
+
+    const siblingHarness = createConditionRuntimeHarness({}, vi.fn(), {
+      descriptors: [{ exportName: 'default' }],
+      selectedExportName: 'default',
+    });
+    siblingHarness.rememberDirectOwner('default', 'GuardedPage');
+    expect(
+      siblingHarness.resolveCondition('text-gate', true, {
+        ...metadata,
+        expression: '<TruncatableParagraph> gate: typeof content === "string"',
+        ownerName: 'TruncatableParagraph',
+      }),
+    ).toBe(true);
+
+    // Once a full authored-page traversal owns the decision, the condition keeps authored
+    // semantics until that DFS explicitly advances the path-local gate.
+    const fullHarness = createConditionRuntimeHarness({}, vi.fn(), {
+      activeTargetReachabilityKey: 'candidate:default',
+      descriptors: [{ exportName: 'default', inspector: {} }],
+      selectedExportName: 'default',
+    });
+    expect(fullHarness.resolveCondition('staff-gate', true, metadata)).toBe(true);
+  });
 });
 
 /** Evaluates the generated lexical runtime against inert persistence and notification adapters. */
 function createConditionRuntimeHarness(
   persistedState: Record<string, unknown>,
   persistPreviewInspectorState: () => void,
+  initialSession: Record<string, unknown> = {},
 ): ConditionRuntimeHarness {
   const source = createPreviewInspectorConditionRuntimeSource();
   const context: {
     __conditionRuntime?: ConditionRuntimeHarness;
     persistedState: Record<string, unknown>;
     persistPreviewInspectorState: () => void;
-  } = { persistedState, persistPreviewInspectorState };
+    initialSession: Record<string, unknown>;
+  } = { initialSession, persistedState, persistPreviewInspectorState };
   vm.runInNewContext(
     `
-      const previewInspectorSession = {};
+      const previewInspectorSession = { ...initialSession };
       const readPersistedPreviewInspectorState = () => persistedState;
       const notifyPreviewInspector = () => undefined;
       const schedulePreviewInspectorCommitRefresh = () => undefined;
@@ -150,6 +202,11 @@ function createConditionRuntimeHarness(
       ${source}
       globalThis.__conditionRuntime = {
         getRevision: readPreviewInspectorRenderConditionRevision,
+        rememberDirectOwner: (exportName, ownerName) => {
+          previewInspectorSession.directTargetRuntimeOwnerNamesByExport = new Map([
+            [exportName, new Set([ownerName])],
+          ]);
+        },
         readConditions: readPreviewInspectorRenderConditions,
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
         resetCondition: resetPreviewInspectorRenderConditionOverride,

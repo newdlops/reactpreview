@@ -20,6 +20,7 @@ const PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT = 256;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS = 5_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS = 1_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS = 30_000;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS = 120;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT = 4_000;
 
 /** Lazily initializes non-persisted chronological state for one pinned webview session. */
@@ -33,12 +34,28 @@ function initializePreviewInspectorBlockerTraceState() {
   if (!(previewInspectorSession.blockerTraceErrorFingerprints instanceof Map)) {
     previewInspectorSession.blockerTraceErrorFingerprints = new Map();
   }
+  if (!(previewInspectorSession.blockerTracePendingResolutions instanceof Map)) {
+    previewInspectorSession.blockerTracePendingResolutions = new Map();
+  }
   if (!Number.isSafeInteger(previewInspectorSession.blockerTraceEventSequence)) {
     previewInspectorSession.blockerTraceEventSequence = 0;
   }
   if (!Number.isSafeInteger(previewInspectorSession.blockerTraceIdentitySequence)) {
     previewInspectorSession.blockerTraceIdentitySequence = 0;
   }
+}
+
+/** Requests one later tree observation so a disappearing error boundary is not called resolved. */
+function schedulePreviewInspectorBlockerTraceResolutionCheck() {
+  if (
+    previewInspectorSession.blockerTraceResolutionCheckScheduled === true ||
+    typeof globalThis.setTimeout !== 'function'
+  ) return;
+  previewInspectorSession.blockerTraceResolutionCheckScheduled = true;
+  globalThis.setTimeout(() => {
+    previewInspectorSession.blockerTraceResolutionCheckScheduled = false;
+    schedulePreviewInspectorTreeRefresh();
+  }, PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS);
 }
 
 /** Creates a monotonic attempt identity local to the immutable pinned preview target. */
@@ -241,24 +258,59 @@ function fingerprintPreviewInspectorBlockerTraceRecord(record) {
 
 /**
  * Emits initial discoveries and one blocker-set diff after Auto/Smart remounts.
- * Repeated tree refreshes with identical records are ignored completely.
+ * Repeated records are ignored, except for the bounded observations needed to confirm resolution.
  */
 function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
   initializePreviewInspectorBlockerTraceState();
   const previous = previewInspectorSession.blockerTraceRecords;
   const next = collectPreviewInspectorBlockerTraceRecords(snapshot?.roots);
-  const discoveredBlockerIds = [...next.keys()].filter((id) => !previous.has(id));
-  const resolvedBlockerIds = [...previous.keys()].filter((id) => !next.has(id));
+  const pendingResolutions = previewInspectorSession.blockerTracePendingResolutions;
+  const pendingBeforeSnapshot = new Map(pendingResolutions);
+  const newlyMissingBlockerIds = [...previous.keys()].filter((id) => !next.has(id));
+  for (const blockerId of newlyMissingBlockerIds) {
+    if (pendingResolutions.has(blockerId)) continue;
+    pendingResolutions.set(blockerId, {
+      missingAt: Date.now(),
+      missingSnapshots: 1,
+      record: previous.get(blockerId),
+    });
+  }
+  const resolvedBlockerIds = [];
+  for (const [blockerId, pending] of [...pendingResolutions]) {
+    if (next.has(blockerId)) {
+      pendingResolutions.delete(blockerId);
+      continue;
+    }
+    if (!newlyMissingBlockerIds.includes(blockerId)) pending.missingSnapshots += 1;
+    if (
+      pending.missingSnapshots >= 2 &&
+      Date.now() - pending.missingAt >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS
+    ) {
+      resolvedBlockerIds.push(blockerId);
+      pendingResolutions.delete(blockerId);
+    }
+  }
+  if (pendingResolutions.size > 0) schedulePreviewInspectorBlockerTraceResolutionCheck();
+  const remainingBlockerIds = [
+    ...new Set([...next.keys(), ...pendingResolutions.keys()]),
+  ];
+  const discoveredBlockerIds = [...next.keys()].filter(
+    (id) => !previous.has(id) && !pendingBeforeSnapshot.has(id),
+  );
   const changedBlockerIds = [...next.keys()].filter((id) =>
-    previous.has(id) &&
-    fingerprintPreviewInspectorBlockerTraceRecord(previous.get(id)) !==
+    (previous.has(id) || pendingBeforeSnapshot.has(id)) &&
+    fingerprintPreviewInspectorBlockerTraceRecord(
+      previous.get(id) ?? pendingBeforeSnapshot.get(id)?.record,
+    ) !==
       fingerprintPreviewInspectorBlockerTraceRecord(next.get(id)),
   );
   if (
     discoveredBlockerIds.length === 0 &&
     resolvedBlockerIds.length === 0 &&
-    changedBlockerIds.length === 0
+    changedBlockerIds.length === 0 &&
+    newlyMissingBlockerIds.length === 0
   ) {
+    previewInspectorSession.blockerTraceRecords = next;
     return;
   }
 
@@ -273,7 +325,7 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
       result: {
         changedBlockerIds,
         discoveredBlockerIds,
-        remainingBlockerIds: [...next.keys()],
+        remainingBlockerIds,
         resolvedBlockerIds,
       },
     });
@@ -286,7 +338,7 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
         detail: {
           changedBlockerIds,
           discoveredBlockerIds,
-          remainingBlockerIds: [...next.keys()],
+          remainingBlockerIds,
           resolvedBlockerIds,
           traceId: activeAttempt.traceId,
         },

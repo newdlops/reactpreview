@@ -12,7 +12,11 @@ const PAGE_MAP_PATH = '/workspace/application/src/pages-map.ts';
 const PAGE_CATALOG_PATH = '/workspace/application/src/pages.json';
 
 /** Creates the smallest entry-connected graph needed by the route analyzer. */
-function createRenderChain(stepSourcePath = APP_PATH): PreviewRenderChainPlan {
+function createRenderChain(
+  stepSourcePath = APP_PATH,
+  targetPath = TARGET_PATH,
+  targetLabel = 'InvestmentContractAnalysisPage',
+): PreviewRenderChainPlan {
   return {
     dependencyPaths: [TARGET_PATH, stepSourcePath],
     paths: [
@@ -28,7 +32,7 @@ function createRenderChain(stepSourcePath = APP_PATH): PreviewRenderChainPlan {
           {
             certainty: 'confirmed',
             kind: 'component-render',
-            label: 'InvestmentContractAnalysisPage',
+            label: targetLabel,
             occurrenceStart: 20,
             sourcePath: stepSourcePath,
             wrapperNames: [],
@@ -37,7 +41,7 @@ function createRenderChain(stepSourcePath = APP_PATH): PreviewRenderChainPlan {
       },
     ],
     reachability: 'entry-connected',
-    target: { exportName: 'default', sourcePath: TARGET_PATH },
+    target: { exportName: 'default', sourcePath: targetPath },
     truncated: false,
   };
 }
@@ -110,6 +114,55 @@ describe('collectPreviewInspectorRouteLocation', () => {
       pathname: '/workspace/preview/analysis',
       pattern: '/workspace/:workspaceId/analysis',
       sourcePath: routesPath,
+    });
+  });
+
+  /** Resolves a monorepo alias catalog before a broad ancestor wildcard can invent a preview URL. */
+  it('prefers a target-local alias JSON page catalog in a large monorepo', async () => {
+    const targetPath =
+      '/workspace/application/src/staff/calendar-event/calendar-event-list-page.tsx';
+    const staffPageMapPath = '/workspace/application/src/staff/pages-map.ts';
+    const staffCatalogPath = '/workspace/application/src/staff/pages.json';
+    const unrelatedRegistries = Object.fromEntries(
+      Array.from({ length: 48 }, (_value, index) => {
+        const prefix = String(index).padStart(2, '0');
+        return [
+          `/workspace/application/src/a${prefix}/pages-map.ts`,
+          `import pages from "./pages.json"; export default pages;`,
+        ];
+      }),
+    );
+    const sources: Record<string, string> = {
+      ...unrelatedRegistries,
+      [targetPath]: 'export default function CalendarEventListPage() { return <main />; }',
+      [APP_PATH]: [
+        '<Routes>',
+        '  <Route path="/preview/*" element={<CalendarEventListPage />} />',
+        '</Routes>',
+      ].join('\n'),
+      [staffPageMapPath]: 'import pages from "staff/pages.json"; export const pageMap = pages;',
+      [staffCatalogPath]: JSON.stringify({
+        'calendar-event': { index: 'CalendarEventListPage' },
+      }),
+    };
+    const renderChain = createRenderChain(APP_PATH, targetPath, 'CalendarEventListPage');
+
+    const location = await collectPreviewInspectorRouteLocation({
+      documentPath: targetPath,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain,
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === 'staff/pages.json' ? staffCatalogPath : undefined,
+      sourcePaths: Object.keys(sources).filter((sourcePath) => !sourcePath.endsWith('.json')),
+    });
+
+    expect(location).toEqual({
+      componentName: 'CalendarEventListPage',
+      evidenceKind: 'route-catalog',
+      pathname: '/calendar-event',
+      pattern: '/calendar-event',
+      sourcePath: staffCatalogPath,
     });
   });
 });

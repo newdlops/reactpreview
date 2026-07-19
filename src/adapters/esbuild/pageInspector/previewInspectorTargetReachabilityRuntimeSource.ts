@@ -93,10 +93,12 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     pageRootCommitted: false,
     probeRevision: 0,
     rootName: candidate?.root?.exportName ?? descriptor?.inspector?.root?.exportName ?? 'Application',
+    runtimeOwnerNames: [],
     status: 'probing',
     targetExportName,
     targetHasOutput: false,
     targetMounted: false,
+    targetWasMounted: false,
   };
 }
 
@@ -125,10 +127,18 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     state.targetExportName,
   );
   const paths = new Set();
-  const names = new Set([state.rootName, state.targetExportName, ...state.applicationPath]);
+  const names = new Set([
+    state.rootName,
+    state.targetExportName,
+    ...state.applicationPath,
+    ...(state.runtimeOwnerNames ?? []),
+  ]);
   const nameScores = new Map();
   state.applicationPath.forEach((name, index) => nameScores.set(name, index + 1));
   nameScores.set(state.targetExportName, 1_000);
+  for (const runtimeOwnerName of state.runtimeOwnerNames ?? []) {
+    nameScores.set(runtimeOwnerName, 900);
+  }
   for (const step of renderPath?.steps ?? []) {
     paths.add(normalizePreviewInspectorReachabilityPath(step?.sourcePath));
     if (typeof step?.label === 'string') {
@@ -194,9 +204,9 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
 /**
  * Chooses only the first newly revealed continuation gate so each pass behaves like bounded DFS.
  * Exact caller-path evidence wins. A condition outside that path is considered only after the exact
- * target facade mounted without host output; this is the narrow signature of an off-graph HOC that
- * returns Navigate/null. Before that point, page siblings such as topbars and formatting helpers must
- * retain authored branches or target search can destroy the very layout it is trying to preserve.
+ * target facade's runtime function name is admitted as exact evidence for an off-graph HOC that
+ * returns Navigate/null. Page siblings such as topbars and formatting helpers never become eligible
+ * merely because the target mounted; doing so can destroy the layout before the route outlet commits.
  */
 function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
   initializePreviewInspectorConditionState();
@@ -214,7 +224,7 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
     .filter(({ condition, desiredValue, pathLocal }) =>
       typeof desiredValue === 'boolean' &&
       condition.effectiveEnabled !== desiredValue &&
-      (pathLocal || state.targetMounted === true),
+      pathLocal,
     )
     .sort((left, right) =>
       Number(right.pathLocal) - Number(left.pathLocal) ||
@@ -228,6 +238,120 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
 function hasMountedPreviewInspectorTarget(state) {
   const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
   return boundaries instanceof Set && boundaries.size > 0;
+}
+
+/**
+ * Adds the actual selected export function name to static root-to-target path evidence.
+ * HOC factories often disappear from import/route graphs, while their returned named function owns
+ * the decisive redirect or permission gate. Only names from the exact facade component are retained;
+ * arbitrary mounted siblings are never promoted to target-path evidence.
+ */
+function rememberPreviewInspectorTargetRuntimeOwnerNames(exportName, candidateNames) {
+  initializePreviewInspectorTargetReachabilityState();
+  if (!(previewInspectorSession.directTargetRuntimeOwnerNamesByExport instanceof Map)) {
+    previewInspectorSession.directTargetRuntimeOwnerNamesByExport = new Map();
+  }
+  const names = candidateNames
+    .filter((name) => typeof name === 'string' && name.length > 0 && name.length <= 160);
+  let retainedNames = previewInspectorSession.directTargetRuntimeOwnerNamesByExport.get(exportName);
+  if (!(retainedNames instanceof Set)) {
+    retainedNames = new Set();
+    previewInspectorSession.directTargetRuntimeOwnerNamesByExport.set(exportName, retainedNames);
+  }
+  let changed = false;
+  for (const name of names) {
+    if (retainedNames.has(name)) continue;
+    retainedNames.add(name);
+    changed = true;
+  }
+  const key = previewInspectorSession.activeTargetReachabilityKey;
+  if (typeof key !== 'string') return changed;
+  const state = previewInspectorSession.targetReachabilityByKey.get(key);
+  if (state === undefined || state.targetExportName !== exportName) return changed;
+  for (const name of names) {
+    if (!state.runtimeOwnerNames.includes(name)) state.runtimeOwnerNames.push(name);
+  }
+  return changed;
+}
+
+/** Adds the exported facade's public runtime name before its selected boundary commits. */
+function rememberPreviewInspectorTargetRuntimeOwner(exportName, Component) {
+  return rememberPreviewInspectorTargetRuntimeOwnerNames(
+    exportName,
+    [Component?.displayName, Component?.name],
+  );
+}
+
+/**
+ * Reads only the single-child component chain inside the exact selected-target boundary.
+ *
+ * A composed HOC can have runtime owners PageComponent -> GuardedPage -> Navigate while static
+ * import evidence contains only PageComponent. The chain stops at the first host node or branch,
+ * never visits a sibling, and therefore cannot promote header/sidebar/formatter conditions merely
+ * because they share the surrounding application page.
+ */
+function collectPreviewInspectorTargetMountedOwnerNames(boundary) {
+  const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
+  let fiber = readPreviewInspectorFiberLink(boundaryFiber, 'child');
+  const visited = new Set();
+  const names = [];
+  for (let depth = 0; fiber !== undefined && depth < 24 && !visited.has(fiber); depth += 1) {
+    visited.add(fiber);
+    const kind = classifyPreviewInspectorFiber(fiber);
+    if (kind === 'host' || kind === 'text' || kind === 'portal') break;
+    const name = namePreviewInspectorFiber(fiber, kind);
+    if (
+      ['class', 'forward-ref', 'function', 'lazy', 'memo'].includes(kind) &&
+      !isPreviewInspectorOwnedFiber(fiber, name, kind) &&
+      typeof name === 'string' &&
+      name.length > 0 &&
+      name.length <= 160 &&
+      !names.includes(name)
+    ) {
+      names.push(name);
+    }
+    /* Multiple children are authored render output, not an unambiguous wrapper continuation. */
+    if (readPreviewInspectorFiberLink(fiber, 'sibling') !== undefined) break;
+    fiber = readPreviewInspectorFiberLink(fiber, 'child');
+  }
+  return names;
+}
+
+/**
+ * Admits exact nested HOC owners to DFS and retries one cold direct render when new evidence appears.
+ * A Set makes the retry self-settling: the second commit discovers no new owner and cannot loop.
+ */
+function rememberPreviewInspectorTargetMountedOwnerChain(exportName, boundary) {
+  const names = collectPreviewInspectorTargetMountedOwnerNames(boundary);
+  const changed = rememberPreviewInspectorTargetRuntimeOwnerNames(exportName, names);
+  if (
+    changed &&
+    typeof previewInspectorSession.activeTargetReachabilityKey !== 'string' &&
+    previewInspectorSession.fallbackValuesEnabled === true
+  ) {
+    previewInspectorSession.renderConditionRevision =
+      (Number.isSafeInteger(previewInspectorSession.renderConditionRevision)
+        ? previewInspectorSession.renderConditionRevision
+        : 0) + 1;
+    notifyPreviewInspector();
+    schedulePreviewInspectorCommitRefresh();
+  }
+  return names;
+}
+
+/**
+ * Latches a selected target commit before a redirect or navigation effect can remove its boundary.
+ * A guard commonly renders Navigate, commits, and changes the MemoryRouter location well before the
+ * delayed DFS evaluation. Remembering that short-lived commit lets the traversal examine the
+ * already registered off-graph HOC condition without mistaking unrelated pre-target gates for it.
+ */
+function markPreviewInspectorTargetReachabilityMount(exportName) {
+  initializePreviewInspectorTargetReachabilityState();
+  const key = previewInspectorSession.activeTargetReachabilityKey;
+  if (typeof key !== 'string') return;
+  const state = previewInspectorSession.targetReachabilityByKey.get(key);
+  if (state === undefined || state.targetExportName !== exportName) return;
+  state.targetWasMounted = true;
 }
 
 /**
@@ -490,7 +614,7 @@ function activatePreviewInspectorDirectTarget(state) {
 
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
-  state.targetMounted = hasMountedPreviewInspectorTarget(state);
+  state.targetMounted = state.targetWasMounted === true || hasMountedPreviewInspectorTarget(state);
   state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
   if (hasReachedPreviewInspectorPageCorridor(state)) {
     completePreviewInspectorMinimumRequirementSearch(state);
@@ -709,6 +833,7 @@ function returnPreviewInspectorToPageContext() {
   state.status = 'probing';
   state.targetHasOutput = false;
   state.targetMounted = false;
+  state.targetWasMounted = false;
   state.probeRevision += 1;
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();

@@ -810,6 +810,7 @@ function createPreviewInspectorElement(Component, props) {
 function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
+  rememberPreviewInspectorTargetRuntimeOwner(exportName, Component);
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
   const automaticTargetProps = React.useMemo(
     () => createPreviewPropsFromLayers(
@@ -856,14 +857,22 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
       metadata,
       targetProps: props,
     });
+    // Cold first paint intentionally has no reverse-usage descriptor yet, but its direct graph can
+    // still consume Router hooks or render Navigate. Keep that temporary target behind the same
+    // context-aware boundary used by full page candidates; the bridge removes itself when a setup
+    // decorator or application wrapper already owns Router context.
+    const RoutedDirectPreviewTarget = (props) => createPreviewCandidateRouterElement(
+      React.createElement(DirectPreviewTarget, props),
+      { ownsRouter: false },
+    );
     return useStorybook
       ? React.createElement(StorybookPreviewRoot, {
-          PreviewTarget: DirectPreviewTarget,
+          PreviewTarget: RoutedDirectPreviewTarget,
           previewConfig,
           storyContext,
           targetProps,
         })
-      : React.createElement(DirectPreviewTarget, targetProps);
+      : React.createElement(RoutedDirectPreviewTarget, targetProps);
   }
   const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   const selectedRoot = selectedCandidate?.root ?? descriptor?.inspector?.root;

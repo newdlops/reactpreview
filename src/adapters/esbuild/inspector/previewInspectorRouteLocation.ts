@@ -40,7 +40,7 @@ export interface CollectPreviewInspectorRouteLocationOptions {
   readonly exportName: string;
   /** Snapshot-aware, package-bounded source reader owned by the caller. */
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
-  /** Optional project-aware resolver used only for relative JSON catalog imports. */
+  /** Optional project-aware resolver used for relative and workspace-alias JSON catalog imports. */
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
   /** Exact target-to-entry evidence already computed for Page Inspector. */
   readonly renderChain: PreviewRenderChainPlan;
@@ -72,7 +72,7 @@ export async function collectPreviewInspectorRouteLocation(
   const registrySources = options.sourcePaths
     .map((sourcePath) => path.normalize(sourcePath))
     .filter((sourcePath) => ROUTE_REGISTRY_SOURCE_PATTERN.test(path.basename(sourcePath)))
-    .sort(compareRouteRegistryPaths)
+    .sort((left, right) => compareRouteRegistryPaths(left, right, options.documentPath))
     .slice(0, MAX_ROUTE_REGISTRY_SOURCES);
   const analysisSources = [...new Set([...pathSources, ...registrySources])];
   const candidates: RouteLocationCandidate[] = [];
@@ -85,7 +85,7 @@ export async function collectPreviewInspectorRouteLocation(
     if (!ROUTE_REGISTRY_SOURCE_PATTERN.test(path.basename(sourcePath))) continue;
     for (const moduleSpecifier of collectJsonCatalogSpecifiers(sourcePath, sourceText)) {
       if (catalogPaths.size >= MAX_ROUTE_CATALOGS) break;
-      const catalogPath = resolveRelativeCatalogPath(
+      const catalogPath = resolveRouteCatalogPath(
         moduleSpecifier,
         sourcePath,
         options.resolveModule,
@@ -185,42 +185,63 @@ function collectRenderPathSourcePaths(renderChain: PreviewRenderChainPlan): read
   ];
 }
 
-/** Prefers explicit maps/configs over broad route/page registries, then stable path order. */
-function compareRouteRegistryPaths(left: string, right: string): number {
-  const score = (sourcePath: string): number =>
-    /[-_.](?:map|paths?|config|registry)\./iu.test(path.basename(sourcePath)) ? 0 : 1;
-  return score(left) - score(right) || left.localeCompare(right);
+/** Counts common normalized path segments so the target's monorepo package is inspected first. */
+function scoreRouteRegistryLocality(sourcePath: string, documentPath: string): number {
+  const sourceSegments = path.normalize(sourcePath).split(path.sep).filter(Boolean);
+  const documentSegments = path.normalize(documentPath).split(path.sep).filter(Boolean);
+  let score = 0;
+  while (
+    score < sourceSegments.length &&
+    score < documentSegments.length &&
+    sourceSegments[score] === documentSegments[score]
+  ) {
+    score += 1;
+  }
+  return score;
 }
 
-/** Extracts relative JSON imports from a conventional route registry without following packages. */
+/** Prefers target-local registries, then explicit maps/configs and stable path order. */
+function compareRouteRegistryPaths(left: string, right: string, documentPath: string): number {
+  const score = (sourcePath: string): number =>
+    /[-_.](?:map|paths?|config|registry)\./iu.test(path.basename(sourcePath)) ? 0 : 1;
+  return (
+    scoreRouteRegistryLocality(right, documentPath) -
+      scoreRouteRegistryLocality(left, documentPath) ||
+    score(left) - score(right) ||
+    left.localeCompare(right)
+  );
+}
+
+/** Extracts inert JSON imports while rejecting URLs, absolute paths, and Node protocol modules. */
 function collectJsonCatalogSpecifiers(sourcePath: string, sourceText: string): readonly string[] {
   return collectPreviewRenderModuleFacts(sourcePath, sourceText)
     .imports.map((fact) => fact.moduleSpecifier)
-    .filter(
-      (specifier) =>
-        (specifier.startsWith('./') || specifier.startsWith('../')) &&
-        specifier.split(/[?#]/u, 1)[0]?.toLowerCase().endsWith('.json'),
-    );
+    .filter((specifier) => {
+      const cleanSpecifier = specifier.split(/[?#]/u, 1)[0];
+      return (
+        cleanSpecifier !== undefined &&
+        cleanSpecifier.toLowerCase().endsWith('.json') &&
+        !path.isAbsolute(cleanSpecifier) &&
+        !/^[a-z][a-z\d+.-]*:/iu.test(cleanSpecifier)
+      );
+    });
 }
 
-/** Resolves a relative JSON catalog while preserving the caller's project-aware path identity. */
-function resolveRelativeCatalogPath(
+/** Resolves relative or alias JSON catalogs through the caller's package-bounded module resolver. */
+function resolveRouteCatalogPath(
   moduleSpecifier: string,
   consumerPath: string,
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
 ): string | undefined {
   const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
-  if (
-    cleanSpecifier === undefined ||
-    !(cleanSpecifier.startsWith('./') || cleanSpecifier.startsWith('../')) ||
-    !cleanSpecifier.toLowerCase().endsWith('.json')
-  ) {
+  if (!cleanSpecifier?.toLowerCase().endsWith('.json')) {
     return undefined;
   }
-  return path.normalize(
+  const relative = cleanSpecifier.startsWith('./') || cleanSpecifier.startsWith('../');
+  const resolved =
     resolveModule?.(cleanSpecifier, consumerPath) ??
-      path.resolve(path.dirname(consumerPath), cleanSpecifier),
-  );
+    (relative ? path.resolve(path.dirname(consumerPath), cleanSpecifier) : undefined);
+  return resolved === undefined ? undefined : path.normalize(resolved);
 }
 
 /** Parses one JSON route tree and records exact string leaves matching a target identity. */

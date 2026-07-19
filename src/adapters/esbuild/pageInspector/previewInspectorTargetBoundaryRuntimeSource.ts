@@ -46,6 +46,12 @@ class PreviewInspectorTargetBoundary extends React.Component {
   /** Registers the committed class instance whose subtree belongs to one target invocation. */
   componentDidMount() {
     this.unregisterBoundary = registerPreviewInspectorBoundary(this.props.exportName, this);
+    if (typeof rememberPreviewInspectorTargetMountedOwnerChain === 'function') {
+      rememberPreviewInspectorTargetMountedOwnerChain(this.props.exportName, this);
+    }
+    if (typeof markPreviewInspectorTargetReachabilityMount === 'function') {
+      markPreviewInspectorTargetReachabilityMount(this.props.exportName);
+    }
   }
 
   /**

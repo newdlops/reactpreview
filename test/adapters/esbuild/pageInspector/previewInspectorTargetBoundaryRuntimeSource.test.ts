@@ -11,6 +11,7 @@ interface TestElement {
 
 /** Mutable class instance contract exercised as React would exercise an error boundary. */
 interface TestBoundary {
+  componentDidMount(): void;
   componentDidCatch(error: Error, info: { readonly componentStack: string }): void;
   props: { readonly children: TestElement; readonly exportName: string };
   render(): TestElement;
@@ -31,6 +32,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
    */
   it('contains a selected-target failure and keeps its scoped remount contract', () => {
     const rememberedErrors: Error[] = [];
+    const mountedOwnerExports: string[] = [];
     const remountedExports: string[] = [];
     const warnings: string[] = [];
     const source = [
@@ -39,6 +41,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     ].join('\n');
     const sandbox = createTargetBoundarySandbox({
       rememberedErrors,
+      mountedOwnerExports,
       remountedExports,
       warnings,
     });
@@ -51,6 +54,8 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     const boundary = new Boundary({ children: child, exportName: 'SelectedCard' });
 
     expect(boundary.render()).toBe(child);
+    boundary.componentDidMount();
+    expect(mountedOwnerExports).toEqual(['SelectedCard']);
 
     const error = new TypeError("Cannot read properties of undefined (reading 'value')");
     boundary.state = { ...boundary.state, ...Boundary.getDerivedStateFromError(error) };
@@ -81,6 +86,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
 /** Mutable observations supplied to the generated browser-source sandbox. */
 interface TargetBoundaryObservations {
   readonly rememberedErrors: Error[];
+  readonly mountedOwnerExports: string[];
   readonly remountedExports: string[];
   readonly warnings: string[];
 }
@@ -136,6 +142,9 @@ function createTargetBoundarySandbox(
       return observations.warnings.push(error.message + (context.componentStack ?? ''));
     },
     registerPreviewInspectorBoundary: vi.fn(() => vi.fn()),
+    rememberPreviewInspectorTargetMountedOwnerChain(exportName: string): number {
+      return observations.mountedOwnerExports.push(exportName);
+    },
     rememberCapturedReactError: (error: Error): number => observations.rememberedErrors.push(error),
     remountPreviewInspectorExport: (exportName: string): number =>
       observations.remountedExports.push(exportName),

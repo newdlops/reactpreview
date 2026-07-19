@@ -2,6 +2,23 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1081 - 2026-07-20
+
+- PnP virtual workspace source의 상대 import를 물리 파일로 읽은 뒤에도 consumer별 virtual module identity를
+  자식 경로에 유지해, 앱이 제공한 `peerDependencies`가 `UNDECLARED_DEPENDENCY`로 잘못 끊기지 않도록 수정
+- 소스 제어에서 제외되고 앱의 codegen 단계가 만드는 `generated`/`__generated__`/`*.generated.ts` 모듈이
+  아직 없으면 일반 누락 컴포넌트와 구분해 재귀적으로 안전한 render-only contract 값으로 대체하고, generated-only
+  export barrel의 임의 named DTO import까지 유지하면서 생성 디렉터리를 감시해 실제 산출물이 생기면 hot reload
+
+## 0.1.1080 - 2026-07-20
+
+- Yarn Plug'n'Play가 peer dependency별 workspace package를 `.yarn/__virtual__` 가상 경로로 반환해도
+  `.pnp.cjs`를 실행하지 않고 Yarn의 depth 규칙으로 실제 monorepo source를 복원해, 존재하지 않는 가상 파일을
+  직접 읽다가 발생하던 `ENOENT` preview build 실패를 제거하고 정적 import graph도 같은 물리 경로를 사용
+- Inspector component tree의 선택 행 reveal에서 문서 전체를 움직이는 `scrollIntoView`를 제거하고 tree viewport의
+  `scrollTop`/`scrollLeft`만 필요한 만큼 조정해, 깊은 노드를 클릭할 때 Inspector나 preview가 맨 위로 점프하지
+  않도록 수정
+
 ## 0.1.1079 - 2026-07-19
 
 - 이미 Auto 값이 적용된 hook/API 관찰 항목을 미해결 blocker 집계에서 제외하고, 같은 렌더 스택의 자동 결정과

@@ -55,9 +55,16 @@ function createPreviewInspectorRequiredPathCollectionItem() {
 /** Infers a type-compatible, visibly synthetic leaf from property-name and call evidence. */
 function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (callable) return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
-  const name = String(propertyName).replaceAll('_', '').toLowerCase();
+  const rawName = String(propertyName);
+  const name = rawName.replaceAll('_', '').toLowerCase();
   if (/^\d+$/u.test(name)) return createPreviewInspectorRequiredPathCollectionItem();
-  if (/^(?:set|on|handle|toggle|submit|refetch|refresh|mutate|dispatch|navigate|reset|update|remove|add)/u.test(name) || /(?:handler|callback)$/u.test(name)) {
+  /*
+   * Require an actual camelCase/snake_case boundary after an action verb. Prefix-only matching
+   * misclassified ordinary data such as "address" as an "add..." callback. Explicit callable
+   * evidence still wins above, so lower-case project functions remain safe when they are invoked.
+   */
+  const hasActionFunctionName = /^(?:set|on|handle|toggle|submit|refetch|refresh|mutate|dispatch|navigate|reset|update|remove|add)(?:[A-Z0-9_]|$)/u.test(rawName);
+  if (hasActionFunctionName || /(?:handler|callback)$/u.test(name)) {
     return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
   }
   if (/(?:disabled|hidden|loading|pending|suspended|denied|forbidden|locked|error|invalid|touched|dirty)$/u.test(name)) {

@@ -158,7 +158,10 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
     const generatedType = typeof generated;
     if (
       authored === generated ||
-      (authored === null && generated !== null && generatedType !== 'object' && generatedType !== 'function')
+      (
+        state.replaceNullScalars !== true && authored === null && generated !== null &&
+        generatedType !== 'object' && generatedType !== 'function'
+      )
     ) {
       return { changed: false, value: authored };
     }
@@ -225,9 +228,16 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
 /**
  * Completes one partial runtime value and returns both the stable-value candidate and evidence.
  * Callers own per-hook identity caching because that cache lives with the pinned Inspector session.
+ * Failure-proven Smart prop repair may opt into scalar-null replacement; ordinary Auto completion
+ * keeps the default false so authored null branches remain semantically neutral.
  */
-function completePreviewInspectorGeneratedValue(authored, generated) {
-  const state = { additions: 0, nodes: 0, paths: [] };
+function completePreviewInspectorGeneratedValue(authored, generated, options = {}) {
+  const state = {
+    additions: 0,
+    nodes: 0,
+    paths: [],
+    replaceNullScalars: options?.replaceNullScalars === true,
+  };
   const result = mergePreviewInspectorGeneratedValue(authored, generated, state, [], 0);
   return {
     additions: state.additions,

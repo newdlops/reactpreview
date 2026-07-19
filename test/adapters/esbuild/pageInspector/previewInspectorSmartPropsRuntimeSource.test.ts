@@ -23,13 +23,20 @@ interface SmartPropsRuntime {
   readonly storedOverride: Readonly<Record<string, unknown>>;
 }
 
+/** Optional runtime layers used to reproduce pre-commit nullish prop failures. */
+interface SmartPropsFixtureOptions {
+  readonly observedProps?: Readonly<Record<string, unknown>>;
+  readonly overrideProps?: Readonly<Record<string, unknown>>;
+  readonly requiredPaths?: readonly string[];
+}
+
 describe('Preview Inspector Smart props runtime source', () => {
   /** Produces useful props before a failed target can commit its live-prop registration effect. */
   it('joins inferred shape, parent JSX, observed props, overrides, and blocker paths', () => {
     const runtime = evaluateSmartPropsRuntime();
 
     expect(runtime.draft.evidenceFound).toBe(true);
-    expect(runtime.draft.requiredPaths).toEqual(['field.value', 'isLoading', 'onSubmit()']);
+    expect(runtime.draft.requiredPaths).toEqual(['field.value.address', 'isLoading', 'onSubmit()']);
     expect(runtime.draft.value).toEqual({
       count: 3,
       field: { value: { address: '' } },
@@ -53,10 +60,51 @@ describe('Preview Inspector Smart props runtime source', () => {
     expect(runtime.fallbackEnabled).toBe(true);
     expect(runtime.storedOverride).toEqual(runtime.applied.value);
   });
+
+  /** Recreates an inferred nested prop when a parent or backend supplied a null container. */
+  it('replaces a nullish observed container with its deepest proven minimum shape', () => {
+    const runtime = evaluateSmartPropsRuntime({
+      observedProps: { field: { value: null }, fromParent: 'observed' },
+      requiredPaths: ['value'],
+    });
+
+    expect(runtime.draft.requiredPaths).toEqual(['field.value.address']);
+    expect(runtime.draft.value.field).toEqual({
+      value: { address: 'Preview generated value' },
+    });
+    expect(runtime.draft.value.fromParent).toBe('observed');
+  });
+
+  /** Maps a browser receiver path back to a scalar prop and replaces its proven blocking null. */
+  it('uses full shape evidence for a props-prefixed method failure', () => {
+    const runtime = evaluateSmartPropsRuntime({
+      observedProps: { field: { value: { address: null } } },
+      requiredPaths: ['props.field.value.address.split()'],
+    });
+
+    expect(runtime.draft.requiredPaths).toEqual(['field.value.address']);
+    expect(runtime.draft.value.field).toEqual({
+      value: { address: 'Preview generated value' },
+    });
+  });
+
+  /** Keeps an explicit user value authoritative after the missing container has been diagnosed. */
+  it('preserves a non-null user override at a generated descendant path', () => {
+    const runtime = evaluateSmartPropsRuntime({
+      observedProps: { field: { value: null } },
+      overrideProps: { field: { value: { address: '서울특별시' } } },
+      requiredPaths: ['value'],
+    });
+
+    expect(runtime.draft.value.field).toEqual({ value: { address: '서울특별시' } });
+  });
 });
 
 /** Evaluates generated helpers with one nested target descriptor and no project React execution. */
-function evaluateSmartPropsRuntime(): SmartPropsRuntime {
+function evaluateSmartPropsRuntime(options: SmartPropsFixtureOptions = {}): SmartPropsRuntime {
+  const observedProps = options.observedProps ?? { fromParent: 'observed' };
+  const overrideProps = options.overrideProps ?? { count: 3 };
+  const requiredPaths = options.requiredPaths ?? ['value', 'isLoading', 'onSubmit()'];
   const context: { __smartProps?: SmartPropsRuntime } = {};
   vm.runInNewContext(
     `
@@ -64,7 +112,7 @@ function evaluateSmartPropsRuntime(): SmartPropsRuntime {
       let fallbackEnabled = false;
       let storedOverride = {};
       const previewInspectorSession = {
-        basePropsByExport: new Map([['CheckField', { fromParent: 'observed' }]]),
+        basePropsByExport: new Map([['CheckField', ${JSON.stringify(observedProps)}]]),
         descriptors: [{
           automaticProps: {},
           exportName: 'CheckField',
@@ -97,13 +145,12 @@ function evaluateSmartPropsRuntime(): SmartPropsRuntime {
             targetInferredProps: [
               { kind: 'object', path: 'field', source: 'usage' },
               { kind: 'object', path: 'field.value', source: 'usage' },
-              { kind: 'string', path: 'field.value.address', source: 'usage' },
               { kind: 'function', path: 'onChange', source: 'type' },
               { kind: 'string', path: 'title', source: 'type' },
             ],
           },
         }],
-        overridesByExport: new Map([['CheckField', { count: 3 }]]),
+        overridesByExport: new Map([['CheckField', ${JSON.stringify(overrideProps)}]]),
       };
       const readSelectedPreviewInspectorPageCandidate = (descriptor) =>
         descriptor.inspector.pageCandidates[0];
@@ -117,11 +164,11 @@ function evaluateSmartPropsRuntime(): SmartPropsRuntime {
       ${createPreviewInspectorSmartPropsRuntimeSource()}
       const draft = createPreviewInspectorSmartPropsDraft(
         'CheckField',
-        ['value', 'isLoading', 'onSubmit()'],
+        ${JSON.stringify(requiredPaths)},
       );
       const applied = applyPreviewInspectorSmartProps(
         'CheckField',
-        ['value', 'isLoading', 'onSubmit()'],
+        ${JSON.stringify(requiredPaths)},
       );
       globalThis.__smartProps = { applied, draft, fallbackEnabled, storedOverride };
     `,

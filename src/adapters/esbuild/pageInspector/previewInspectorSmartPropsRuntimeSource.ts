@@ -10,6 +10,9 @@
 /** Maximum generated/inferred prop paths described by one Inspector draft. */
 export const PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT = 64;
 
+/** Maximum inferred shape nodes scanned while correlating a short runtime error path. */
+export const PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT = 256;
+
 /**
  * Creates browser helpers that discover and apply the minimum descriptor-backed prop record.
  *
@@ -22,6 +25,12 @@ export const PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT = 64;
 export function createPreviewInspectorSmartPropsRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT = ${PREVIEW_INSPECTOR_SMART_PROP_PATH_LIMIT};
+const PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT = ${PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT};
+const previewInspectorSmartPropBlockedNames = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
 
 /** Adds bounded, normalized inference provenance without retaining descriptor object identity. */
 function appendPreviewInspectorSmartPropProvenance(target, records) {
@@ -101,13 +110,81 @@ function hasPreviewInspectorSmartPropEvidence(exportName) {
 }
 
 /**
+ * Flattens the descriptor's full inferred shape so a UI provenance display limit cannot hide the
+ * exact field needed for recovery. Shape nodes are extension-authored data and are still read via
+ * own descriptors under strict depth/node budgets to avoid invoking a mutated project getter.
+ */
+function readPreviewInspectorSmartPropPathRecords(evidence) {
+  const records = [];
+  const append = (record) => {
+    const path = typeof record?.path === 'string' ? record.path : '';
+    if (
+      path.length === 0 || records.some((candidate) => candidate.path === path) ||
+      records.length >= PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT
+    ) return;
+    records.push({
+      kind: typeof record?.kind === 'string' ? record.kind : 'unknown',
+      path,
+      source: record?.source === 'type' ? 'type' : 'usage',
+    });
+  };
+  for (const record of evidence.inferredProps) append(record);
+  const visit = (node, path, depth) => {
+    if (
+      node === null || typeof node !== 'object' || depth > 12 ||
+      records.length >= PREVIEW_INSPECTOR_SMART_PROP_SCAN_LIMIT
+    ) return;
+    if (path.length > 0) append({ kind: node.kind, path: path.join('.'), source: 'usage' });
+    if (node.kind !== 'object' || node.properties === null || typeof node.properties !== 'object') {
+      return;
+    }
+    let descriptors;
+    try { descriptors = Object.getOwnPropertyDescriptors(node.properties); } catch { return; }
+    for (const propertyName of Object.keys(descriptors).sort()) {
+      if (
+        previewInspectorSmartPropBlockedNames.has(propertyName) ||
+        !Object.hasOwn(descriptors[propertyName], 'value')
+      ) continue;
+      visit(descriptors[propertyName].value, [...path, propertyName], depth + 1);
+    }
+  };
+  visit(evidence.inferredPropShape, [], 0);
+  return records;
+}
+
+/** Removes JavaScript receiver labels that are not part of a component's external prop contract. */
+function readPreviewInspectorSmartPropRuntimePathCandidates(normalizedPath) {
+  const candidates = [normalizedPath];
+  for (const prefix of ['this.props.', 'props.']) {
+    if (normalizedPath.startsWith(prefix)) candidates.push(normalizedPath.slice(prefix.length));
+  }
+  return [...new Set(candidates.filter((path) => path.length > 0))];
+}
+
+/**
+ * Returns the deepest statically observed leaves below one runtime-reported container path.
+ * A browser error often exposes only the last successful read, for example "field.value", while
+ * the compiler already knows that rendering subsequently needs "field.value.addressInput.id".
+ * Expanding only to proven leaves recreates the minimum useful container without inventing peers.
+ */
+function readPreviewInspectorSmartPropLeafPaths(inferredPaths, matchedPath) {
+  const descendants = inferredPaths.filter((path) => path.startsWith(matchedPath + '.'));
+  if (descendants.length === 0) return [matchedPath];
+  return descendants.filter((candidate) => !descendants.some(
+    (other) => other !== candidate && other.startsWith(candidate + '.'),
+  ));
+}
+
+/**
  * Expands a short runtime field such as "value" to a statically proven path like "field.value".
- * Ambiguous suffix matches are all retained because each path was independently observed in the
- * target source; uncorrelated runtime fields remain top-level rather than being guessed deeper.
+ * When that match is a container, its deepest proven descendants are retained so a nullish
+ * observed value cannot erase the shape needed by the next render. Ambiguous suffix matches are
+ * all retained; uncorrelated runtime fields remain top-level rather than being guessed deeper.
  */
 function resolvePreviewInspectorSmartPropRequiredPaths(exportName, requiredPaths) {
   const evidence = readPreviewInspectorSmartPropEvidence(exportName);
-  const inferredPaths = evidence.inferredProps.map((record) => record.path);
+  const inferredRecords = readPreviewInspectorSmartPropPathRecords(evidence);
+  const inferredPaths = inferredRecords.map((record) => record.path);
   const resolved = [];
   const append = (path) => {
     if (
@@ -121,16 +198,55 @@ function resolvePreviewInspectorSmartPropRequiredPaths(exportName, requiredPaths
     const parsed = parsePreviewInspectorRequiredPath(rawPath);
     if (parsed === undefined) continue;
     const normalizedPath = parsed.path.join('.');
-    const suffixMatches = inferredPaths.filter(
-      (path) => path === normalizedPath || path.endsWith('.' + normalizedPath),
-    );
-    if (suffixMatches.length === 0) {
+    const runtimeCandidates = readPreviewInspectorSmartPropRuntimePathCandidates(normalizedPath);
+    let matchedRecords = inferredRecords.filter((record) => runtimeCandidates.some(
+      (candidate) => record.path === candidate || record.path.endsWith('.' + candidate),
+    ));
+    if (matchedRecords.length === 0) {
+      const reverseMatches = inferredRecords.filter((record) => runtimeCandidates.some(
+        (candidate) => candidate.endsWith('.' + record.path),
+      ));
+      const deepestLength = Math.max(0, ...reverseMatches.map((record) => record.path.length));
+      matchedRecords = reverseMatches.filter((record) => record.path.length === deepestLength);
+    }
+    if (matchedRecords.length === 0) {
+      const receiverKinds = new Set(['array', 'boolean', 'function', 'number', 'string']);
+      const receiverMatches = inferredRecords.filter(
+        (record) => receiverKinds.has(record.kind) && runtimeCandidates.some(
+          (candidate) => candidate.startsWith(record.path + '.'),
+        ),
+      );
+      const deepestLength = Math.max(0, ...receiverMatches.map((record) => record.path.length));
+      matchedRecords = receiverMatches.filter((record) => record.path.length === deepestLength);
+      for (const record of matchedRecords) append(record.path);
+      if (matchedRecords.length > 0) continue;
+    }
+    if (matchedRecords.length === 0) {
       append(rawPath);
       continue;
     }
-    for (const path of suffixMatches) append(path + (parsed.callable ? '()' : ''));
+    for (const { path } of matchedRecords) {
+      const demandedPaths = parsed.callable
+        ? [path + '()']
+        : readPreviewInspectorSmartPropLeafPaths(inferredPaths, path);
+      for (const demandedPath of demandedPaths) append(demandedPath);
+    }
   }
   return resolved;
+}
+
+/**
+ * Builds a generated overlay from proven paths while reading scalar kinds from inferred props.
+ * The overlay is intentionally independent of observed props: a runtime null may describe a
+ * missing backend value, but it must not erase compiler evidence that the value is dereferenced.
+ */
+function createPreviewInspectorSmartPropRequirementValue(inferredValue, requiredPaths) {
+  let requirement = {};
+  for (const path of normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)) {
+    if (path === '<root>') continue;
+    requirement = materializePreviewInspectorRequiredPath(requirement, path, inferredValue);
+  }
+  return materializePreviewInspectorRuntimeFallbackOverride(requirement);
 }
 
 /**
@@ -145,6 +261,10 @@ function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
   const observedProps = previewInspectorSession.basePropsByExport.get(exportName) ?? {};
   const overrideProps = previewInspectorSession.overridesByExport.get(exportName) ?? {};
   const materializedOverride = materializePreviewInspectorRuntimeFallbackOverride(overrideProps);
+  const inferredValue = createPreviewPropsFromLayers(
+    evidence.inferredPropShape,
+    evidence.automaticProps,
+  );
   const baseValue = createPreviewPropsFromLayers(
     evidence.inferredPropShape,
     evidence.automaticProps,
@@ -155,10 +275,15 @@ function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
     exportName,
     requiredPaths,
   );
-  const completedValue = createPreviewInspectorRuntimeFallbackAutoValue(
-    baseValue,
+  const requirementValue = createPreviewInspectorSmartPropRequirementValue(
+    inferredValue,
     resolvedRequiredPaths,
   );
+  const completion = completePreviewInspectorGeneratedValue(baseValue, requirementValue, {
+    /* A path extracted from the actual failure proves that an authored null cannot stay neutral. */
+    replaceNullScalars: true,
+  });
+  const completedValue = completion.changed ? completion.value : baseValue;
   const copiedValue = copyPreviewInspectorBlockerValueForJson(completedValue, { nodes: 0 });
   const value = copiedValue !== null && typeof copiedValue === 'object' && !Array.isArray(copiedValue)
     ? copiedValue

@@ -89,14 +89,12 @@ import {
 } from './workspaceSourcePlugin';
 
 const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
-
 /** Direct-preview fast path omits package-wide reverse analysis until background enrichment. */
 const EMPTY_TARGET_USAGE_PROPS: PreviewTargetUsageProps = Object.freeze({
   dependencyPaths: Object.freeze([]),
   parentSlicesByExport: Object.freeze({}),
   propsByExport: Object.freeze({}),
 });
-
 /** Fast builds discover exact free globals from their reached esbuild graph instead of a cold scan. */
 const EMPTY_IMPLICIT_GLOBAL_EVIDENCE: PreviewImplicitGlobalEvidenceInventory = Object.freeze({
   ambiguousGlobalNames: Object.freeze([]),
@@ -323,9 +321,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
           implicitPackageGlobalResolver: staticModuleResolver,
           instrumentDataRequests: request.renderMode === 'page-inspector',
+          instrumentGraphqlDocuments: request.renderMode === 'page-inspector',
           instrumentRenderConditions: request.renderMode === 'page-inspector',
           instrumentRuntimeHookFallbacks: request.renderMode === 'page-inspector',
+          graphqlModuleResolver: staticModuleResolver,
           projectRoot,
+          readGraphqlSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
           workspaceRoot: canonicalWorkspaceRoot,
         });
         const sourceCompilation: WorkspaceSourceCompilationState = {

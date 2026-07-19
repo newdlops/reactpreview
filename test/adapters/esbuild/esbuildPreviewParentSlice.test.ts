@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
+import { decodePreviewBundleStyles } from './support/previewBundleStyles';
 import type { PreviewBundle } from '../../../src/domain/preview';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -70,7 +71,7 @@ describe('EsbuildPreviewCompiler parent render slices', () => {
         workspaceRoot: projectRoot,
       });
       const javascript = decodeBundleJavascript(bundle);
-      const stylesheet = new TextDecoder().decode(bundle.stylesheet);
+      const stylesheet = decodePreviewBundleStyles(bundle);
 
       expect(javascript).toContain('PINPOINT_TARGET_RUNTIME');
       expect(javascript).toContain('PARENT_AUTHORED_LABEL');

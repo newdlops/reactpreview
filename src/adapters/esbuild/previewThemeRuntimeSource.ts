@@ -719,10 +719,15 @@ function readConfiguredRootFontSize(configuration) {
     : undefined;
 }
 
-/** Applies minimal document defaults derived exclusively from exact discovered-theme tokens. */
-function applyDiscoveredDocumentStyles(theme, configuration) {
+/**
+ * Applies minimal document defaults only to detached component galleries.
+ * Authored-page mode retains its own GlobalStyle/CSS cascade; inline fallback declarations would
+ * otherwise outrank the real application stylesheet and visibly corrupt its colors or typography.
+ */
+function applyDiscoveredDocumentStyles(theme, configuration, renderMode) {
   if (
     configuration?.documentStyles === false ||
+    renderMode === 'page-inspector' ||
     typeof document === 'undefined' ||
     document === null
   ) {
@@ -783,7 +788,7 @@ export function createThemePreviewElement(children, options) {
     previewRuntimeStatus = 'active: ' + previewRuntimeStatus.slice('selected: '.length);
   }
   if (configuredTheme === undefined && discoveredTheme !== undefined) {
-    applyDiscoveredDocumentStyles(previewTheme, configuration);
+    applyDiscoveredDocumentStyles(previewTheme, configuration, options?.renderMode);
   }
   const themeStrategy = configuredTheme !== undefined
     ? 'configured'

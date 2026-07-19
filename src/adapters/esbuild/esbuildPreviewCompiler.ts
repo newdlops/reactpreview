@@ -3,7 +3,7 @@
  * It never starts `serve()` or writes into the user's project: browser artifacts remain in memory
  * until the separate artifact-store adapter publishes them under VS Code global storage.
  */
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { stop, type BuildResult } from 'esbuild';
 import type { PreviewCompiler } from '../../application/previewCompiler';
@@ -18,10 +18,11 @@ import {
   throwIfPreviewBuildCancelled,
   type PreviewBuildExecutionContext,
 } from '../../domain/previewBuildExecution';
-import { canonicalizeExistingPath, normalizeLexicalPath } from '../../shared/pathIdentity';
+import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
 import { createPreviewInspectorCorridorPlugin } from './inspector/previewInspectorCorridorPlugin';
+import { createInspectorSourceGestureSecret } from './previewInspectorSourceGestureSecret';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
 import {
   createPreviewGlobalPackageBridgeEvidencePolicy,
@@ -30,6 +31,7 @@ import {
   type PreviewGlobalPackageBridgePlan,
 } from './globalPackageBridge';
 import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
+import { forwardPreviewAbort } from './previewAbortForwarding';
 import { PreviewAdaptiveBuildPlanCache } from './previewAdaptiveBuildPlanCache';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
 import { createPreviewBuildPlanIdentity } from './previewBuildPlanIdentity';
@@ -61,6 +63,7 @@ import {
   type PreviewIncrementalBuildOptions,
 } from './previewIncrementalBuildCache';
 import { PreviewOutputStrategyCache } from './previewOutputStrategyCache';
+import { preparePreviewStyleContext } from './preparePreviewStyleContext';
 import {
   createPreviewRuntimeWatchInputs,
   resolvePreviewRuntimeEnvironment,
@@ -274,7 +277,26 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           : { configuredTsconfigPath: request.tsconfigPath }),
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      const snapshotSourceByPath = createPreviewSnapshotSourceMap(request);
+      const primaryRenderPath =
+        inspectorExportName === undefined
+          ? undefined
+          : targetUsageProps.renderChainsByExport?.[inspectorExportName]?.paths[0];
+      const styleContext = await preparePreviewStyleContext({
+        ...(themeImport === undefined ? {} : { directThemeImport: themeImport }),
+        inspectorDependencyPaths: targetUsageProps.inspectorPlan?.dependencyPaths ?? [],
+        projectRoot,
+        readSource: (options) => this.projectUsageCache.readSourceText(options),
+        ...(primaryRenderPath === undefined ? {} : { renderPath: primaryRenderPath }),
+        request,
+        staticModuleResolver,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      const {
+        documentShellEvidence,
+        globalStyleImports,
+        snapshotSourceByPath,
+        themeImport: selectedThemeImport,
+      } = styleContext;
       const implicitGlobalEvidence = useFastPreparation
         ? EMPTY_IMPLICIT_GLOBAL_EVIDENCE
         : await this.implicitGlobalEvidenceCache.discover({
@@ -437,7 +459,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     documentPath: request.documentPath,
                     exports: targetExports,
                     parentSlicesByExport: activeParentSlices,
-                    ...(themeImport === undefined ? {} : { themeImport }),
+                    ...(selectedThemeImport === undefined
+                      ? {}
+                      : { themeImport: selectedThemeImport }),
                     inferredPropsByExport,
                     usagePropsByExport: targetUsageProps.propsByExport,
                   }),
@@ -445,7 +469,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               : [
                   createPreviewInspectorRootPlugin({
                     displayName: path.basename(request.documentPath),
+                    globalStyleImports,
                     plan: inspectorPlan,
+                    ...(selectedThemeImport === undefined
+                      ? {}
+                      : { themeImport: selectedThemeImport }),
                     ...(inferredPropsByExport[inspectorPlan.target.exportName] === undefined
                       ? {}
                       : {
@@ -471,6 +499,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           stdin: {
             contents: createPreviewEntry({
               documentName: createPreviewDocumentName(request),
+              ...(documentShellEvidence === undefined
+                ? {}
+                : { documentShell: documentShellEvidence.shell }),
               globalNamespaces: environment.globalNamespaces,
               globalPackageBridgeStatus: describeGlobalPackageBridgeStatus(globalPackagePlan),
               ...(inspectorSourceGestureSecret === undefined
@@ -490,8 +521,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         });
         const buildPlanIdentity = createPreviewBuildPlanIdentity({
           documentPath: request.documentPath,
+          documentShell: documentShellEvidence?.shell,
           environment,
           globalPackagePlan,
+          globalStyleImports,
           inferredPropsByExport,
           inspectorPlan,
           parentSlices: activeParentSlices,
@@ -502,7 +535,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           splitOutputs,
           targetExports,
           targetUsageProps,
-          themeImport,
+          themeImport: selectedThemeImport,
           tsconfigPath: request.tsconfigPath,
           workspaceRoot: canonicalWorkspaceRoot,
         });
@@ -761,6 +794,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ...runtimeWatchInputs.dependencyPaths,
           ...fallbackDependencies,
           ...buildExecution.styleDependencyPaths,
+          ...(documentShellEvidence === undefined ? [] : [documentShellEvidence.dependencyPath]),
+          ...globalStyleImports.map((globalStyleImport) =>
+            path.normalize(globalStyleImport.moduleSpecifier),
+          ),
           ...targetUsageProps.dependencyPaths,
         ],
       );
@@ -844,14 +881,6 @@ function createCoalescedOutputDiagnostic(
   };
 }
 
-/** Derives one stable target-scoped browser HMAC key from compiler-private process entropy. */
-function createInspectorSourceGestureSecret(seed: Buffer, documentPath: string): string {
-  return createHmac('sha256', seed)
-    .update('react-preview-inspector-source\0')
-    .update(normalizeLexicalPath(documentPath))
-    .digest('base64url');
-}
-
 /** Separates nearest-config and explicitly configured evidence resolution policies per package. */
 function createImplicitGlobalEvidenceCacheKey(
   projectRoot: string,
@@ -862,25 +891,6 @@ function createImplicitGlobalEvidenceCacheKey(
       ? 'nearest-config'
       : path.normalize(configuredTsconfigPath);
   return `${path.normalize(projectRoot)}\0${configIdentity}`;
-}
-
-/** Overlays unsaved target/dependency text on canonical and editor-visible source identities. */
-function createPreviewSnapshotSourceMap(request: PreviewBuildRequest): ReadonlyMap<string, string> {
-  const sourceByPath = new Map<string, string>();
-  for (const snapshot of [
-    {
-      documentPath: request.documentPath,
-      sourceText: request.sourceText,
-    },
-    ...request.dependencySnapshots,
-  ]) {
-    sourceByPath.set(path.normalize(snapshot.documentPath), snapshot.sourceText);
-    sourceByPath.set(
-      path.normalize(canonicalizeExistingPath(snapshot.documentPath)),
-      snapshot.sourceText,
-    );
-  }
-  return sourceByPath;
 }
 
 /** Describes static module injection without claiming that every available candidate was used. */
@@ -972,29 +982,4 @@ function mergePreviewWatchDirectories(
     );
   }
   return directories;
-}
-
-/**
- * Forwards one caller-owned revision signal into a compiler-owned controller.
- * The returned cleanup prevents completed compiles from retaining session signals indefinitely.
- */
-function forwardPreviewAbort(source: AbortSignal | undefined, target: AbortController): () => void {
-  if (source === undefined) {
-    return () => {
-      // No caller listener was registered.
-    };
-  }
-  const abortTarget = (): void => {
-    target.abort(source.reason);
-  };
-  if (source.aborted) {
-    abortTarget();
-    return () => {
-      // The already-aborted caller did not require a listener.
-    };
-  }
-  source.addEventListener('abort', abortTarget, { once: true });
-  return () => {
-    source.removeEventListener('abort', abortTarget);
-  };
 }

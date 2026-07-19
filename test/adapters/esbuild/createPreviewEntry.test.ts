@@ -27,6 +27,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain(
       'const previewBrowserProcessStatus = initializePreviewBrowserProcess()',
     );
+    expect(entry).toContain("document.querySelector?.('[data-react-preview-mount]')");
+    expect(entry).toContain('initializePreviewDocumentShell(mountNode)');
     expect(entry.indexOf('const previewBrowserProcessStatus =')).toBeLessThan(
       entry.indexOf('await import("react-preview:setup")'),
     );
@@ -69,6 +71,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('await themeBridge.resolvePreviewTheme');
     expect(entry).toContain("readSetupMember(setupModule, 'themePreview')");
     expect(entry).toContain('discoveredTheme: previewModule.previewTheme');
+    expect(entry).toContain('createPreviewGlobalStyleElement(');
+    expect(entry).toContain('previewModule.previewGlobalStyles');
     expect(entry).toContain('reduxBridge.createReduxPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'reduxPreview')");
     expect(entry).toContain('routerBridge.createRouterPreviewElement');
@@ -150,6 +154,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('React Preview retained the mounted revision after a runtime error.');
     expect(entry).toContain("completePreviewCommit('failed')");
     expect(entry).toContain('resolvePreviewCommit(outcome)');
+    expect(entry).toContain('could not retire stale lazy stylesheets');
   });
 
   /** Drops superseded preparation before it can unmount the currently displayed revision. */

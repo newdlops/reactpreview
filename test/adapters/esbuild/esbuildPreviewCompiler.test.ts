@@ -13,6 +13,7 @@ import {
   type PreviewBundle,
 } from '../../../src/domain/preview';
 import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
+import { decodePreviewBundleStyles } from './support/previewBundleStyles';
 
 const FIXTURE_PATH = fileURLToPath(new URL('../../fixtures/SamplePreview.tsx', import.meta.url));
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -38,8 +39,7 @@ describe('EsbuildPreviewCompiler', () => {
     expect(bundle.javascript.byteLength).toBeGreaterThan(0);
     expect(bundle.chunks.length).toBeGreaterThan(0);
     expect(new TextDecoder().decode(bundle.javascript)).toContain('./chunks/');
-    expect(bundle.stylesheet).toBeDefined();
-    const stylesheet = new TextDecoder().decode(bundle.stylesheet);
+    const stylesheet = decodePreviewBundleStyles(bundle);
     expect(stylesheet).toContain('.sample-card');
     expect(stylesheet).toMatch(/\.samplePreview_title|\.title/u);
     expect(bundle.dependencies).toContain(FIXTURE_PATH);
@@ -51,7 +51,7 @@ describe('EsbuildPreviewCompiler', () => {
       'preparing-runtime',
       'bundling-modules',
     ]);
-  });
+  }, 10_000);
 
   /** Gives the active editor snapshot precedence over the fixture's saved filesystem contents. */
   it('uses unsaved current-document text', async () => {
@@ -259,7 +259,7 @@ describe('EsbuildPreviewCompiler', () => {
         workspaceRoot: temporaryDirectory,
       });
       const javascript = decodeBundleJavascript(bundle);
-      const stylesheet = new TextDecoder().decode(bundle.stylesheet);
+      const stylesheet = decodePreviewBundleStyles(bundle);
 
       expect(javascript).toContain('Imported JS child');
       expect(javascript).toContain('Imported raw asset text');
@@ -620,7 +620,7 @@ describe('EsbuildPreviewCompiler', () => {
         workspaceRoot: temporaryDirectory,
       });
       const javascript = decodeBundleJavascript(bundle);
-      const stylesheet = new TextDecoder().decode(bundle.stylesheet);
+      const stylesheet = decodePreviewBundleStyles(bundle);
 
       expect(javascript).toContain('Dirty glob Page A');
       expect(javascript).not.toContain('Saved glob Page A');

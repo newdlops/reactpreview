@@ -6,6 +6,9 @@
 import type { PreviewRenderMode } from '../../domain/preview';
 import { createPreviewAutomaticPropsRuntimeSource } from './previewAutomaticPropsRuntimeSource';
 import { createPreviewBrowserProcessRuntimeSource } from './previewBrowserProcessRuntimeSource';
+import type { PreviewDocumentShell } from './previewDocumentShell';
+import { createPreviewDocumentShellRuntimeSource } from './previewDocumentShellRuntimeSource';
+import { PREVIEW_LAZY_STYLE_LOADER_SYMBOL } from './previewLazyStyleOutputs';
 import { createPreviewPageInspectorRuntimeSource } from './pageInspector/previewPageInspectorRuntimeSource';
 import { createPreviewHotReloadRuntimeSource } from './previewHotReloadRuntimeSource';
 import { createPreviewProgressRuntimeSource } from './previewProgressRuntimeSource';
@@ -28,6 +31,8 @@ export type PreviewEntrySetupKind = 'custom' | 'none' | 'storybook';
 export interface PreviewEntryOptions {
   /** Workspace-relative title exposed to setup hooks and Storybook decorators. */
   readonly documentName: string;
+  /** Static project HTML attributes needed by body/root selectors before React mounts. */
+  readonly documentShell?: PreviewDocumentShell;
   /** Safe object namespaces that must exist before any project setup or target import. */
   readonly globalNamespaces: readonly string[];
   /** Static status for lexical project-global module bridges selected by the compiler. */
@@ -70,6 +75,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
   const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource();
+  const documentShellRuntimeSource = createPreviewDocumentShellRuntimeSource(options.documentShell);
   const progressRuntimeSource = createPreviewProgressRuntimeSource();
   const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
   const inspectorImportSource =
@@ -85,9 +91,12 @@ ${inspectorImportSource}
 
 ${browserProcessRuntimeSource}
 
+${documentShellRuntimeSource}
+
 const previewBrowserProcessStatus = initializePreviewBrowserProcess();
 
-const mountNode = document.getElementById('react-preview-root');
+const mountNode = document.querySelector?.('[data-react-preview-mount]') ??
+  document.getElementById('react-preview-root');
 if (mountNode === null) {
   throw new Error('React Preview could not find its root element.');
 }
@@ -475,6 +484,19 @@ function createTargetElement(PreviewTarget, targetProps) {
     : React.createElement(PreviewTarget, targetProps);
 }
 
+/** Mounts statically proven app-level global styles beside the page under one shared theme. */
+function createPreviewGlobalStyleElement(globalStyles, previewElement) {
+  if (!Array.isArray(globalStyles) || globalStyles.length === 0) return previewElement;
+  return React.createElement(
+    React.Fragment,
+    undefined,
+    ...globalStyles.map((GlobalStyle, index) =>
+      React.createElement(GlobalStyle, { key: 'react-preview-global-style-' + index }),
+    ),
+    previewElement,
+  );
+}
+
 const supportedReactTypeSymbols = new Set([
   Symbol.for('react.forward_ref'),
   Symbol.for('react.lazy'),
@@ -692,6 +714,7 @@ function applyStorybookParameterProviders(previewElement, parameters) {
 async function preparePreviewElement() {
   enterRuntimePhase('initialize safe browser globals');
   initializeGlobalNamespaces();
+  initializePreviewDocumentShell(mountNode);
 
   enterRuntimePhase('load preview setup module');
   const setupBridge = await import(${encodedSetupSpecifier});
@@ -783,6 +806,12 @@ async function preparePreviewElement() {
   enterRuntimePhase('compose static application Context boundaries');
   previewElement = contextBridge.createContextPreviewElement(previewElement);
 
+  enterRuntimePhase('compose app-level global styles');
+  previewElement = createPreviewGlobalStyleElement(
+    previewModule.previewGlobalStyles,
+    previewElement,
+  );
+
   enterRuntimePhase('resolve target-reachable theme');
   const discoveredTheme = await themeBridge.resolvePreviewTheme({
     configuration: readSetupMember(setupModule, 'themePreview'),
@@ -865,6 +894,11 @@ function completePreviewCommit(outcome = 'ready') {
   }
   previewCommitCompleted = true;
   completePreviewProgress(previewEntryRevision);
+  try {
+    globalThis[Symbol.for(${JSON.stringify(PREVIEW_LAZY_STYLE_LOADER_SYMBOL)})]?.commit?.();
+  } catch (error) {
+    console.warn('React Preview could not retire stale lazy stylesheets.', error);
+  }
   resolvePreviewCommit(outcome);
   if (previewEntryRevision > 0) {
     return;

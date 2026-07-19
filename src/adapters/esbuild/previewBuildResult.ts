@@ -70,7 +70,9 @@ export function createPreviewBundle(
     virtualEntryName: VIRTUAL_ENTRY_NAME,
   });
   const baseBundle = {
-    chunks: outputPlan.auxiliaryJavaScript,
+    chunks: [...outputPlan.auxiliaryJavaScript, ...outputPlan.auxiliaryStylesheets].sort(
+      (left, right) => left.relativePath.localeCompare(right.relativePath),
+    ),
     dependencies: [
       ...new Set([
         ...collectDependencies(request, result.metafile),

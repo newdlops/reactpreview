@@ -1,11 +1,16 @@
 /**
  * Converts esbuild's multi-file in-memory result into the bounded browser artifacts understood by
  * React Preview. The planner performs no filesystem writes: it only joins metafile identities to
- * `OutputFile` objects, identifies the virtual entry and aggregate stylesheet, and exposes safe
- * auxiliary JavaScript paths that the artifact store can publish once below its session root.
+ * `OutputFile` objects, identifies the virtual entry, and restores JavaScript/CSS lazy boundaries
+ * before exposing safe auxiliary paths for publication below one private artifact session root.
  */
 import path from 'node:path';
 import type { Metafile, OutputFile } from 'esbuild';
+import {
+  planPreviewLazyStyleOutputs,
+  type PreviewJoinedBuildOutput,
+  type PreviewLazyStylesheetOutput,
+} from './previewLazyStyleOutputs';
 
 /** File-count guard used alongside the separately configurable aggregate byte budget. */
 export const MAX_PREVIEW_OUTPUT_FILES = 2_048;
@@ -28,6 +33,8 @@ export interface PreviewBuildOutputPlan {
   readonly entryStylesheet?: Uint8Array;
   /** Code-split JavaScript outputs sorted by their safe POSIX artifact paths. */
   readonly auxiliaryJavaScript: readonly PreviewAuxiliaryJavaScriptOutput[];
+  /** Route-local CSS outputs loaded by the owning auxiliary JavaScript boundary. */
+  readonly auxiliaryStylesheets: readonly PreviewLazyStylesheetOutput[];
 }
 
 /** Inputs required to map esbuild's working-directory-relative metadata to absolute output files. */
@@ -76,10 +83,10 @@ interface PlannedMetadataOutput {
 /**
  * Plans entry bytes and local code-split chunks from a complete esbuild result.
  *
- * Auxiliary CSS files are deliberately validated but not returned. With one browser entry,
- * esbuild's entry `cssBundle` aggregates CSS reached through both eager and dynamic imports, so the
- * presentation layer can load that stylesheet once without a runtime CSS-chunk loader. A future
- * true lazy-style implementation can extend this contract with an explicit CSS dependency map.
+ * esbuild's entry `cssBundle` aggregates CSS reached through eager and dynamic imports. Loading it
+ * directly lets unopened routes and editors leak global selectors into the active page. The lazy
+ * style planner therefore derives exclusive CSS from metafile ownership, publishes it beside the
+ * JavaScript chunks, and prepends a small browser loader that awaits the matching stylesheet.
  *
  * @param options Output files, metadata, path roots, and virtual entry identity from one build.
  * @returns Validated entry JavaScript, optional aggregate CSS, and sorted auxiliary JS chunks.
@@ -120,21 +127,45 @@ export function planPreviewBuildOutputs(
     outputByIdentity,
     entryMetadata.metadata,
   );
-  const auxiliaryJavaScript = [...outputByIdentity.values()]
+  const joinedOutputs = createJoinedOutputs(metadataByIdentity, outputByIdentity);
+  const lazyStylePlan = planPreviewLazyStyleOutputs(
+    entryMetadata.metadataPath,
+    joinedOutputs,
+    options.metafile.inputs,
+  );
+  const auxiliaryJavaScript = joinedOutputs
     .filter(
       (output) =>
-        output.absolutePath !== entryOutput.absolutePath && isJavaScriptOutput(output.relativePath),
+        output.metadataPath !== entryMetadata.metadataPath &&
+        isJavaScriptOutput(output.relativePath),
     )
-    .map(createAuxiliaryJavaScriptOutput)
+    .map((output) => createAuxiliaryJavaScriptOutput(output, lazyStylePlan?.modulePrefix))
     .sort(compareAuxiliaryOutputs);
 
   const basePlan = {
     auxiliaryJavaScript,
-    entryJavaScript: entryOutput.contents,
+    auxiliaryStylesheets: lazyStylePlan?.stylesheets ?? [],
+    entryJavaScript: prependOutputBytes(lazyStylePlan?.entryPrefix, entryOutput.contents),
   };
-  return stylesheet === undefined
-    ? basePlan
-    : { ...basePlan, entryStylesheet: stylesheet.contents };
+  const entryStylesheet =
+    lazyStylePlan === undefined ? stylesheet?.contents : lazyStylePlan.entryStylesheet;
+  return entryStylesheet === undefined ? basePlan : { ...basePlan, entryStylesheet };
+}
+
+/** Joins validated bytes and metadata into the smaller contract used by lazy-style planning. */
+function createJoinedOutputs(
+  metadataByIdentity: ReadonlyMap<string, PlannedMetadataOutput>,
+  outputByIdentity: ReadonlyMap<string, PlannedOutputFile>,
+): readonly PreviewJoinedBuildOutput[] {
+  return [...metadataByIdentity.values()].map((metadataOutput) => {
+    const output = requireJoinedOutput(outputByIdentity, metadataOutput);
+    return {
+      contents: output.contents,
+      metadata: metadataOutput.metadata,
+      metadataPath: metadataOutput.metadataPath,
+      relativePath: output.relativePath,
+    };
+  });
 }
 
 /** Validates absolute roots required for unambiguous metadata-to-file path resolution. */
@@ -343,14 +374,27 @@ function selectEntryStylesheet(
 
 /** Converts a validated non-entry JavaScript output into the public auxiliary chunk shape. */
 function createAuxiliaryJavaScriptOutput(
-  output: PlannedOutputFile,
+  output: PreviewJoinedBuildOutput,
+  modulePrefix: Uint8Array | undefined,
 ): PreviewAuxiliaryJavaScriptOutput {
   if (!output.relativePath.startsWith('chunks/') || output.relativePath === 'chunks/') {
     throw new PreviewBuildOutputPlannerError(
       `Preview auxiliary JavaScript must be emitted below chunks/: ${output.relativePath}`,
     );
   }
-  return { contents: output.contents, relativePath: output.relativePath };
+  return {
+    contents: prependOutputBytes(modulePrefix, output.contents),
+    relativePath: output.relativePath,
+  };
+}
+
+/** Prepends generated ESM bootstrap bytes without decoding or copying the larger source twice. */
+function prependOutputBytes(prefix: Uint8Array | undefined, contents: Uint8Array): Uint8Array {
+  if (prefix === undefined || prefix.byteLength === 0) return contents;
+  const joined = new Uint8Array(prefix.byteLength + contents.byteLength);
+  joined.set(prefix, 0);
+  joined.set(contents, prefix.byteLength);
+  return joined;
 }
 
 /** Orders chunk paths by Unicode code point comparison without depending on process locale. */

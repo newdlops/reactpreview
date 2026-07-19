@@ -19,8 +19,8 @@ const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const VIRTUAL_ENTRY_NAME = '<preview-output-planner-entry>';
 
 describe('planPreviewBuildOutputs', () => {
-  /** Selects entry artifacts while retaining only lazy JavaScript as publishable auxiliaries. */
-  it('plans real esbuild lazy JavaScript and aggregate entry CSS output', async () => {
+  /** Keeps one dynamically imported component's CSS behind the same browser loading boundary. */
+  it('plans real esbuild lazy JavaScript and route-local CSS output', async () => {
     const fixtureDirectory = await mkdtemp(
       path.join(PROJECT_ROOT, 'test/fixtures/output-planner-preview-'),
     );
@@ -67,15 +67,85 @@ describe('planPreviewBuildOutputs', () => {
       expect(new TextDecoder().decode(plan.entryJavaScript)).toMatch(
         /import\("\.\/chunks\/[A-Z0-9]+\.js"\)/u,
       );
-      expect(new TextDecoder().decode(plan.entryStylesheet)).toContain('.lazy-child');
+      expect(plan.entryStylesheet).toBeUndefined();
       expect(plan.auxiliaryJavaScript).toHaveLength(1);
+      expect(plan.auxiliaryStylesheets).toHaveLength(1);
       expect(plan.auxiliaryJavaScript[0]?.relativePath).toMatch(/^chunks\/[A-Z0-9]+\.js$/u);
       expect(
         new TextDecoder().decode(plan.auxiliaryJavaScript[0]?.contents ?? new Uint8Array()),
       ).toContain('LAZY_CHILD_MARKER');
+      expect(new TextDecoder().decode(plan.auxiliaryJavaScript[0]?.contents)).toContain(
+        'newdlops.react-preview.lazy-styles.v1',
+      );
+      expect(new TextDecoder().decode(plan.auxiliaryStylesheets[0]?.contents)).toContain(
+        '.lazy-child',
+      );
+      expect(new TextDecoder().decode(plan.entryJavaScript)).toContain(
+        plan.auxiliaryStylesheets[0]?.relativePath,
+      );
+    } finally {
+      await rm(fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
+  /** Prevents a nested lazy feature's global CSS from entering its parent page stylesheet. */
+  it('separates nested dynamic-import stylesheet ownership', async () => {
+    const fixtureDirectory = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/output-planner-nested-style-'),
+    );
+    const outputDirectory = path.join(fixtureDirectory, 'react-preview-output');
+    try {
+      await Promise.all([
+        writeFile(
+          path.join(fixtureDirectory, 'page.js'),
+          "import './page.css'; export const openEditor = () => import('./editor.js');",
+          'utf8',
+        ),
+        writeFile(path.join(fixtureDirectory, 'page.css'), 'body { margin: 0; }', 'utf8'),
+        writeFile(
+          path.join(fixtureDirectory, 'editor.js'),
+          "import './editor.css'; export const editor = true;",
+          'utf8',
+        ),
+        writeFile(path.join(fixtureDirectory, 'editor.css'), 'body { margin: 1rem; }', 'utf8'),
+      ]);
+      const result = await build({
+        absWorkingDir: fixtureDirectory,
+        bundle: true,
+        chunkNames: 'chunks/[hash]',
+        entryNames: 'entry',
+        format: 'esm',
+        metafile: true,
+        outdir: outputDirectory,
+        splitting: true,
+        stdin: {
+          contents: "globalThis.__previewPage = () => import('./page.js');",
+          loader: 'js',
+          resolveDir: fixtureDirectory,
+          sourcefile: VIRTUAL_ENTRY_NAME,
+        },
+        write: false,
+      });
+
+      const plan = planPreviewBuildOutputs({
+        absoluteOutputDirectory: outputDirectory,
+        absoluteWorkingDirectory: fixtureDirectory,
+        metafile: result.metafile,
+        outputFiles: result.outputFiles,
+        virtualEntryName: VIRTUAL_ENTRY_NAME,
+      });
+      const stylesheets = plan.auxiliaryStylesheets.map((output) =>
+        new TextDecoder().decode(output.contents),
+      );
+
+      expect(stylesheets).toHaveLength(2);
+      expect(stylesheets).toContainEqual(expect.stringContaining('margin: 0'));
+      expect(stylesheets).toContainEqual(expect.stringContaining('margin: 1rem'));
       expect(
-        plan.auxiliaryJavaScript.every((output) => !output.relativePath.endsWith('.css')),
-      ).toBe(true);
+        stylesheets.some(
+          (stylesheet) => stylesheet.includes('margin: 0') && stylesheet.includes('margin: 1rem'),
+        ),
+      ).toBe(false);
     } finally {
       await rm(fixtureDirectory, { force: true, recursive: true });
     }
@@ -95,6 +165,7 @@ describe('planPreviewBuildOutputs', () => {
       'chunks/a-first.js',
       'chunks/z-last.js',
     ]);
+    expect(plan.auxiliaryStylesheets).toEqual([]);
   });
 
   /** Rejects duplicate bytes for one artifact identity before a store can overwrite a chunk. */

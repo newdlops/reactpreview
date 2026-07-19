@@ -9,6 +9,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
 import { PreviewProjectFileAnalysisCache } from './previewProjectFileAnalysisCache';
+import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
 import {
   collectPreviewTargetUsageSourcePaths,
   discoverPreviewTargetUsageProps,
@@ -177,6 +178,20 @@ export class PreviewProjectUsageCache {
     signal?: AbortSignal,
   ): Promise<readonly string[]> {
     return (await this.getSourceInventory(workspaceRoot, projectRoot, signal)).sourcePaths;
+  }
+
+  /**
+   * Reuses the package analysis cache for small auxiliary syntax inspections.
+   * Theme and document-shell discovery therefore observe dirty editor text while avoiding a
+   * second filesystem read of modules already visited by reverse component analysis.
+   *
+   * @param options Trusted source identity, byte ceiling, and optional editor snapshot.
+   * @returns Current inert source text, or `undefined` when the file is absent or oversized.
+   */
+  public async readSourceText(
+    options: ReadPreviewProjectSourceOptions,
+  ): Promise<string | undefined> {
+    return (await this.fileAnalysisCache.readSource(options))?.sourceText;
   }
 
   /**

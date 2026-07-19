@@ -426,6 +426,44 @@ describe('createPreviewThemeBridgePlugin', () => {
     }
   });
 
+  /** Leaves authored-page GlobalStyle and linked CSS authoritative over extension fallbacks. */
+  it('does not apply inline document defaults in Page Inspector mode', async () => {
+    const projectRoot = await createTemporaryProject('theme-page-document-style-preview-');
+
+    try {
+      await installFakeStyledComponentsPackage(projectRoot);
+      const context = await executeThemeBridgeFixture(
+        projectRoot,
+        [
+          "import { createThemePreviewElement } from 'react-preview:theme';",
+          'globalThis.document = {',
+          "  body: { style: { backgroundColor: '', color: '', fontFamily: '' } },",
+          "  documentElement: { style: { fontSize: '' } },",
+          '};',
+          'const discoveredTheme = {',
+          "  color: { pageBackground: '#f7f7f7', bodyText: '#222222' },",
+          "  fontFamily: { default: 'Preview Sans' },",
+          "  typography: { body: 'font-size: 1.6rem;' },",
+          '};',
+          "createThemePreviewElement('target', { discoveredTheme, renderMode: 'page-inspector' });",
+          'globalThis.__themeBridgeResult = {',
+          '  ...document.body.style,',
+          '  rootFontSize: document.documentElement.style.fontSize,',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__themeBridgeResult).toEqual({
+        backgroundColor: '',
+        color: '',
+        fontFamily: '',
+        rootFontSize: '',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Gives an explicit root size priority and honors the complete document-style opt-out. */
   it('bounds discovered document mutation through themePreview configuration', async () => {
     const projectRoot = await createTemporaryProject('theme-document-options-preview-');

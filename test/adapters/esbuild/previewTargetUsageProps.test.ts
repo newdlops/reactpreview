@@ -275,6 +275,32 @@ describe('discoverPreviewTargetUsageProps', () => {
     }
   });
 
+  /** Skips local compiler artifacts so one prior large preview cannot slow every later source scan. */
+  it('excludes temporary preview output from the reusable source inventory', async () => {
+    const projectRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-usage-temporary-'));
+    const sourcePath = path.join(projectRoot, 'src/Page.tsx');
+    const generatedPath = path.join(projectRoot, '.tmp/preview-artifact/chunk.tsx');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(sourcePath), { recursive: true }),
+        mkdir(path.dirname(generatedPath), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(sourcePath, 'export const Page = () => null;', 'utf8'),
+        writeFile(generatedPath, 'export const GeneratedChunk = () => null;', 'utf8'),
+      ]);
+
+      await expect(
+        collectPreviewTargetUsageSourcePaths({
+          projectRoot,
+          workspaceRoot: projectRoot,
+        }),
+      ).resolves.toEqual([sourcePath]);
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Proves a real usage remains discoverable after the former 4,096-source ceiling. */
   it('scans a deterministic literal usage beyond 4,096 earlier source files', async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-usage-scale-'));

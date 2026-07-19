@@ -32,6 +32,7 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   '.git',
   '.next',
   '.react-preview',
+  '.tmp',
   '.turbo',
   '__generated__',
   'build',

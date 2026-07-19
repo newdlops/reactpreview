@@ -2,6 +2,24 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1075 - 2026-07-19
+
+- Page Inspector가 파일의 PascalCase/기본 export 중 실제 React component·element만 gallery에 남기고 GraphQL
+  `DocumentNode`, Fragment 상수, Context 같은 비시각 export는 렌더 대상으로 선택하지 않도록 수정
+- GraphQL Code Generator의 `getFragmentData(document, carrier)` 호출을 정적으로 식별해 실제 carrier가 비어 있어도
+  fragment selection에 필요한 최소 필드를 Auto 값으로 복구하고, 공용 `useQuery` wrapper blocker를 document와 ID
+  variable별로 분리해 서로 다른 요청 payload가 덮어쓰지 않도록 개선
+- Context 이름의 project hook도 일반 runtime circuit breaker의 정밀한 사용처 추론을 이용하며, React
+  `ComponentType`/`ElementType` prop과 JSX tag prop은 callback과 구분된 null-rendering placeholder로 보존해
+  `<Icon />` 같은 필수 시각 prop이 `undefined`로 전체 export를 중단하지 않도록 보완
+- TypeScript resolver가 `Buffer` 같은 package global을 `.d.ts`로 찾았을 때 인접한 JS/MJS/CJS 구현을 주입해
+  declaration-only 빈 namespace와 Node builtin shim 대신 실제 browser polyfill API를 사용하도록 수정
+- 대형 저장소의 entry-path 탐색을 중복 없는 우선순위 heap과 공통-root canonical identity로 바꾸고, 고정된 Page
+  Inspector 경로 밖의 project-owned lazy route만 inert module로 치환해 실제 rtcc benchmark의 결과물을
+  71.8MB/1,484 chunks에서 23.8MB/456 chunks로 줄이고 전체 준비 시간을 약 90초에서 약 41초로 단축
+- 내부 theme/setup resolver probe는 lazy-route 경계에서 제외하고, 종료된 Auto 시도에 뒤늦은 오류가 잘못
+  귀속되지 않도록 blocker trace의 causal window를 바로잡음
+
 ## 0.1.1074 - 2026-07-19
 
 - Yarn PnP 같은 workspace 주입 CommonJS resolver가 VS Code의 conditional `require`를 거부해 확장 자체가

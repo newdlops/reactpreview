@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1074",
+  "version": "0.1.1075",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",

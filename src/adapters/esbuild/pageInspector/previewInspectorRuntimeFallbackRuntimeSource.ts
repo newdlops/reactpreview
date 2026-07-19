@@ -98,6 +98,21 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
   };
 }
 
+/** Separates a shared query-wrapper callsite into one fallback record per authored request. */
+function scopePreviewInspectorRuntimeFallbackMetadata(metadata, readDocument, readOptions) {
+  if (metadata.id.length === 0) return metadata;
+  const requestIdentity = createPreviewInspectorHookGraphqlRequestIdentity(
+    readDocument,
+    readOptions,
+  );
+  if (requestIdentity.length === 0) return metadata;
+  const suffix = ':graphql:' + requestIdentity;
+  return {
+    ...metadata,
+    id: metadata.id.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT - suffix.length) + suffix,
+  };
+}
+
 /** Defers Inspector-only registry refreshes so a caught hook never updates UI during render. */
 function schedulePreviewInspectorRuntimeFallbackRefresh() {
   if (previewInspectorSession.runtimeFallbackRefreshScheduled === true) return;
@@ -315,7 +330,11 @@ function resolvePreviewInspectorRuntimeHook(
   readGraphqlDocument,
   readGraphqlOptions,
 ) {
-  const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
+  const metadata = scopePreviewInspectorRuntimeFallbackMetadata(
+    normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata),
+    readGraphqlDocument,
+    readGraphqlOptions,
+  );
   if (
     metadata.id.length === 0 ||
     typeof readHook !== 'function' ||
@@ -394,6 +413,27 @@ function resolvePreviewInspectorRuntimeHook(
     metadata.requiredPaths.length > 0 ? metadata.requiredPaths : ['<root>'],
   );
   return fallback;
+}
+
+/**
+ * Completes a GraphQL Code Generator fragment carrier from its authored fragment selection.
+ * The normal helper still executes first; real carrier fields win, while an empty Context/prop
+ * placeholder receives only missing selected fields through the ordinary editable blocker store.
+ */
+function resolvePreviewInspectorGraphqlFragmentValue(
+  readFragment,
+  readDocument,
+  createStaticFallback,
+  metadata,
+) {
+  return resolvePreviewInspectorRuntimeHook(
+    readFragment,
+    () => {
+      const selectedData = createPreviewInspectorHookGraphqlFragmentData(readDocument);
+      return selectedData ?? createStaticFallback();
+    },
+    metadata,
+  );
 }
 
 /** Returns sorted immutable-looking copies for the Inspector Fallbacks detail pane. */

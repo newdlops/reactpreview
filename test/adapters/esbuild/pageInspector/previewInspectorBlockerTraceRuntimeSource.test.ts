@@ -124,6 +124,7 @@ describe('Preview Inspector blocker trace runtime source', () => {
     const error = runtime.messages.at(-1)?.event;
     expect(error?.event).toBe('subsequent-error');
     expect(error?.traceId).not.toBe(traceId);
+    expect(error?.blocker).toBeUndefined();
     runtime.advance(29_000);
     expect(runtime.decide(candidate)).not.toBeUndefined();
   });

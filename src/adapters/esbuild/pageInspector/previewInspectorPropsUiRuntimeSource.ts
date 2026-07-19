@@ -142,6 +142,7 @@ function PreviewInspectorPropsDetail({ node, requiredPaths = [] }) {
       : null,
     React.createElement('div', { className: 'rpi-note' }, editable
       ? 'Synthetic callbacks appear as ' + PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL +
+        ', while component props appear as ' + PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL +
         ' and become inert functions only while rendering. Changes remount only this export.'
       : 'Arbitrary Fiber props are observational and cannot be safely rewritten.'),
   );

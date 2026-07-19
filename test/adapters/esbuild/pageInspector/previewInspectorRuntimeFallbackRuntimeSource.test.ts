@@ -10,6 +10,7 @@ interface TestRuntimeFallbackRecord {
   readonly fallbackPreview: string;
   readonly generatedPaths: readonly string[];
   readonly hookName: string;
+  readonly id: string;
   readonly mode: string;
   readonly ownerName?: string;
   readonly reason: string;
@@ -28,6 +29,12 @@ interface TestRuntimeFallbackApi {
     metadata: object,
     readGraphqlDocument?: () => unknown,
     readGraphqlOptions?: () => unknown,
+  ): unknown;
+  resolveFragment(
+    readFragment: () => unknown,
+    readDocument: () => unknown,
+    createFallback: () => unknown,
+    metadata: object,
   ): unknown;
   set(fallbackId: string, value: unknown): void;
   smart(fallbackId: string): void;
@@ -253,6 +260,33 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.api.read()[0]).toMatchObject({ reason: 'partial' });
   });
 
+  /** Completes an empty Codegen fragment carrier from its exact authored fragment selection. */
+  it('uses selection-shaped data for a generated fragment-unmasking helper', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'getFragmentData',
+      requiredPaths: ['name'],
+    };
+
+    const resolved = fixture.api.resolveFragment(
+      () => Object.freeze({}),
+      () => ({
+        definitions: [{ kind: 'FragmentDefinition', name: { value: 'CompanyFields' } }],
+        loc: { source: { body: 'fragment CompanyFields on Company { name }' } },
+      }),
+      () => Object.freeze({}),
+      metadata,
+    ) as { name: string };
+
+    expect(resolved).toEqual({ name: 'Preview name' });
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['name'],
+      hookName: 'getFragmentData',
+      reason: 'partial',
+    });
+  });
+
   /** Uses a unique query ID variable to satisfy the route/entity equality guard automatically. */
   it('aligns generated GraphQL entity IDs with query variables without user input', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -298,6 +332,39 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(resolved.fallback).toBeNull();
     expect(resolved.error).toBeNull();
     expect(typeof resolved.refetch).toBe('function');
+  });
+
+  /** Keeps a shared wrapper callsite from reusing another GraphQL operation's generated payload. */
+  it('scopes fallback identity by the reached GraphQL document and ID variables', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const firstDocument = {
+      definitions: [{ kind: 'OperationDefinition', name: { value: 'CompanyPreview' } }],
+      loc: { source: { body: 'query CompanyPreview { company { id } }' } },
+    };
+    const secondDocument = {
+      definitions: [{ kind: 'OperationDefinition', name: { value: 'UserPreview' } }],
+      loc: { source: { body: 'query UserPreview($userId: ID!) { user(id: $userId) { id } }' } },
+    };
+
+    fixture.api.resolve(
+      () => ({ data: undefined, loading: true }),
+      () => null,
+      createMetadata(),
+      () => firstDocument,
+    );
+    fixture.api.resolve(
+      () => ({ data: undefined, loading: true }),
+      () => null,
+      createMetadata(),
+      () => secondDocument,
+      () => ({ variables: { userId: 'user-7' } }),
+    );
+
+    const records = fixture.api.read();
+    expect(records).toHaveLength(2);
+    expect(new Set(records.map((record) => record.id)).size).toBe(2);
+    expect(records.every((record) => record.id.startsWith('hook-1:graphql:'))).toBe(true);
+    expect(fixture.warnings).toHaveLength(2);
   });
 
   /** Does not rewrite an application's existing null guard value to a generated scalar. */
@@ -743,8 +810,13 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
     formatPreviewInspectorConsoleValue(value: unknown): string {
       return JSON.stringify(value);
     },
-    generatePreviewInspectorDataValue(): object {
-      return { company: { id: 'preview-1' } };
+    generatePreviewInspectorDataValue(shape: { fields?: Record<string, unknown> }): object {
+      return Object.hasOwn(shape.fields ?? {}, 'name')
+        ? { name: 'Preview name' }
+        : { company: { id: 'preview-1' } };
+    },
+    inferPreviewInspectorGraphqlFragmentShape(): object {
+      return { fields: { name: { kind: 'string' } }, kind: 'object' };
     },
     inferPreviewInspectorGraphqlQueryShape(): object {
       return {
@@ -793,6 +865,7 @@ function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture 
       ' read: readPreviewInspectorRuntimeFallbacks,' +
       ' reset: resetPreviewInspectorRuntimeFallbackOverride,' +
       ' resolve: resolvePreviewInspectorRuntimeHook,' +
+      ' resolveFragment: resolvePreviewInspectorGraphqlFragmentValue,' +
       ' set: setPreviewInspectorRuntimeFallbackOverride,' +
       ' smart: smartFillPreviewInspectorRuntimeFallback,' +
       ' smartReachability: smartFillPreviewInspectorRuntimeFallbacksForReachability,' +

@@ -6,14 +6,20 @@
  * explicit sentinel, materializes statically required paths, and converts that sentinel back to an
  * inert function only when the value enters project code.
  */
+import { PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY } from '../previewAutomaticPropsRuntimeSource';
 
 /** Text stored in editable JSON wherever the preview runtime inferred a no-op callback. */
 export const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = '[Preview no-op function]';
+
+/** Text stored in editable JSON for a missing React component constructor prop. */
+export const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = '[Preview component placeholder]';
 
 /** Creates browser helpers for editable fallback templates and safe runtime materialization. */
 export function createPreviewInspectorBlockerValueRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL)};
+const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL)};
+const PREVIEW_INSPECTOR_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_NODE_LIMIT = 256;
 
@@ -23,7 +29,12 @@ function copyPreviewInspectorBlockerValueForJson(value, state, depth = 0) {
     return null;
   }
   state.nodes += 1;
-  if (typeof value === 'function') return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  if (typeof value === 'function') {
+    const marker = Object.getOwnPropertyDescriptor(value, PREVIEW_INSPECTOR_COMPONENT_MARKER);
+    return marker?.value === true
+      ? PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL
+      : PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  }
   if (value === undefined || typeof value === 'symbol') return null;
   if (typeof value === 'bigint') return Number(value);
   if (value === null || typeof value !== 'object') return value;
@@ -118,7 +129,13 @@ function readPreviewInspectorRequiredPathSeed(value, path) {
 
 /** Retains an inferred scalar type but strips unproven object siblings and extra list items. */
 function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, seed) {
-  if (callable || typeof seed === 'function') return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  if (typeof seed === 'function') {
+    const marker = Object.getOwnPropertyDescriptor(seed, PREVIEW_INSPECTOR_COMPONENT_MARKER);
+    return marker?.value === true
+      ? PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL
+      : PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  }
+  if (callable) return PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
   if (seed === null) return null;
   if (typeof seed === 'boolean') return seed;
   if (typeof seed === 'number') return Number.isFinite(seed) ? seed : 1;
@@ -254,9 +271,14 @@ function createPreviewInspectorRuntimeFallbackDraftTemplate(value, requiredPaths
   return copyPreviewInspectorBlockerValueForJson(autoValue, { nodes: 0 });
 }
 
-/** Restores no-op callbacks only at the boundary where editable JSON enters project hook code. */
+/** Restores synthetic callbacks/components only where editable JSON enters project code. */
 function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
   if (value === PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL) return Object.freeze(() => undefined);
+  if (value === PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL) {
+    const component = function PreviewInspectorComponentPlaceholder() { return null; };
+    Object.defineProperty(component, PREVIEW_INSPECTOR_COMPONENT_MARKER, { value: true });
+    return Object.freeze(component);
+  }
   if (depth > PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT || value === null || typeof value !== 'object') {
     return value;
   }

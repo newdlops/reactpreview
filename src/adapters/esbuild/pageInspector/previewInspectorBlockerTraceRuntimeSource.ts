@@ -448,7 +448,7 @@ function recordPreviewInspectorBlockerTraceError(entry) {
     return;
   }
   const fingerprint = [
-    activeAttempt?.traceId ?? '',
+    active ? activeAttempt.traceId : '',
     entry.level,
     entry.source,
     entry.message,
@@ -465,7 +465,7 @@ function recordPreviewInspectorBlockerTraceError(entry) {
     'subsequent-error',
     active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId(),
     {
-      ...(activeAttempt?.blocker === undefined ? {} : { blocker: activeAttempt.blocker }),
+      ...(!active || activeAttempt.blocker === undefined ? {} : { blocker: activeAttempt.blocker }),
       error: {
         details: typeof entry.details === 'string' ? entry.details : undefined,
         exportName: typeof entry.exportName === 'string' ? entry.exportName : undefined,

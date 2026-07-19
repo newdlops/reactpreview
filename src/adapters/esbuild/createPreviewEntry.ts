@@ -491,6 +491,13 @@ function isReactLikePreviewValue(value) {
     supportedReactTypeSymbols.has(value.$$typeof);
 }
 
+/** Removes GraphQL documents, enums, and other component-shaped constants before gallery setup. */
+function selectReactLikePreviewDescriptors(descriptors) {
+  return Array.isArray(descriptors)
+    ? descriptors.filter((descriptor) => isReactLikePreviewValue(descriptor?.value))
+    : [];
+}
+
 /** Merges decorator-supplied Storybook context fields while preserving nested argument objects. */
 function mergeStoryContext(baseContext, contextUpdate) {
   if (contextUpdate === null || typeof contextUpdate !== 'object') {
@@ -731,7 +738,7 @@ async function preparePreviewElement() {
   registerPreviewRuntimeCapability('Redux', reduxBridge);
   registerPreviewRuntimeCapability('Router', routerBridge);
   registerPreviewRuntimeCapability('Theme', themeBridge);
-  const previewTargets = previewModule.default;
+  const previewTargets = selectReactLikePreviewDescriptors(previewModule.default);
   const previewConfig = {
     decorators: readSetupMember(setupModule, 'decorators') ?? [],
     parameters: readSetupMember(setupModule, 'parameters') ?? {},

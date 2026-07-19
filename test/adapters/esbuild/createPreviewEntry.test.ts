@@ -74,6 +74,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('routerBridge.createRouterPreviewElement');
     expect(entry).toContain("readSetupMember(setupModule, 'routerPreview')");
     expect(entry).toContain('PreviewExportGallery');
+    expect(entry).toContain('selectReactLikePreviewDescriptors(previewModule.default)');
+    expect(entry).toContain('isReactLikePreviewValue(descriptor?.value)');
     expect(entry).toContain('PreviewExportErrorBoundary');
     expect(entry).toContain('React.createElement(React.Suspense, { fallback: suspenseFallback }');
     expect(entry).toContain("className: 'react-preview-suspense-placeholder'");

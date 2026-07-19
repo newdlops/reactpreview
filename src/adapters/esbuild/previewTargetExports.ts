@@ -28,6 +28,14 @@ export interface PreviewWildcardTargetExportSlot {
 export type PreviewTargetExportSlot =
   PreviewExplicitTargetExportSlot | PreviewWildcardTargetExportSlot;
 
+/** Suffixes that strongly identify rendered React owners without project naming configuration. */
+const PRIMARY_COMPONENT_NAME_PATTERN =
+  /(?:App|Page|Screen|View|Layout|Template|Section|Panel|Modal|Dialog|Drawer|Form|Field|Input|Select|Button|Link|Table|List|Item|Row|Card|Header|Footer|Nav|Menu|Sidebar|Content|Container|Provider|Boundary|Renderer|Preview|Target)$/u;
+
+/** Runtime values commonly exported beside components but never mounted as React element types. */
+const NON_COMPONENT_NAME_PATTERN =
+  /(?:Fragment|Query|Mutation|Subscription|Context|Config|Theme|Schema|Enum|Options|Constants?)$/u;
+
 /** Exact theme export that can be imported without loading an application bootstrap module. */
 export interface PreviewThemeImportSelection {
   /** Default or named export selected from the theme module. */
@@ -76,6 +84,34 @@ export function selectPreviewTargetExports(
     collectStatementExportSlots(statement, runtimeBindings, slots, addExplicitExport);
   }
   return slots;
+}
+
+/**
+ * Chooses the export whose callers should seed Page Inspector's application-path search.
+ * Default remains authoritative. Otherwise component-role suffixes outrank neutral PascalCase
+ * names, while GraphQL documents, Context objects, and screaming-snake constants remain last-resort
+ * candidates so unusual component naming never turns a valid file into an empty preview.
+ */
+export function selectPreviewPrimaryTargetExport(
+  slots: readonly PreviewTargetExportSlot[],
+): string | undefined {
+  const explicit = slots.filter(
+    (slot): slot is PreviewExplicitTargetExportSlot => slot.kind === 'explicit',
+  );
+  const defaultExport = explicit.find((slot) => slot.exportName === 'default');
+  if (defaultExport !== undefined) return defaultExport.exportName;
+  return [...explicit].sort(
+    (left, right) =>
+      scorePrimaryPreviewExport(right.exportName) - scorePrimaryPreviewExport(left.exportName),
+  )[0]?.exportName;
+}
+
+/** Assigns only broad React-role evidence while preserving source order for equal candidates. */
+function scorePrimaryPreviewExport(exportName: string): number {
+  if (/^[A-Z][A-Z0-9_]*$/u.test(exportName) || NON_COMPONENT_NAME_PATTERN.test(exportName)) {
+    return -1;
+  }
+  return PRIMARY_COMPONENT_NAME_PATTERN.test(exportName) ? 1 : 0;
 }
 
 /**

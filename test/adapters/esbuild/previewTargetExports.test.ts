@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  selectPreviewPrimaryTargetExport,
   selectPreviewTargetExports,
   selectPreviewThemeImport,
 } from '../../../src/adapters/esbuild/previewTargetExports';
@@ -115,6 +116,33 @@ describe('selectPreviewTargetExports', () => {
       'FirstPreview',
       'SecondPreview',
     ]);
+  });
+
+  /** Seeds parent-page discovery from the component instead of adjacent runtime constants. */
+  it('prefers a component-role export over fragment and Context constants', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/company-register-modal.tsx',
+      [
+        'export const COMPANY_REGISTER_MODAL_FRAGMENT = gql`fragment Company on Company { id }`;',
+        'export const CompanyRegisterModalContext = createContext(null);',
+        'export function CompanyRegisterModal() { return <dialog />; }',
+      ].join('\n'),
+    );
+
+    expect(selectPreviewPrimaryTargetExport(selection)).toBe('CompanyRegisterModal');
+  });
+
+  /** Keeps a default export authoritative even when a named component has stronger role wording. */
+  it('uses the default export as the primary Page Inspector target', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/Preview.tsx',
+      [
+        'export const StrongPage = () => <main />;',
+        'export default function Root() { return <StrongPage />; }',
+      ].join('\n'),
+    );
+
+    expect(selectPreviewPrimaryTargetExport(selection)).toBe('default');
   });
 
   /** Produces an ordinary empty gallery when a valid helper module exports no component shape. */

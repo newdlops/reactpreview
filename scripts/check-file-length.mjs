@@ -17,7 +17,8 @@ const EXCLUDED_DIRECTORY_NAMES = new Set([
   'dist',
   'node_modules',
 ]);
-const EXCLUDED_FILE_NAMES = new Set(['.DS_Store']);
+// `log.txt` is the ignored local runtime capture users attach for diagnosis, not maintained source.
+const EXCLUDED_FILE_NAMES = new Set(['.DS_Store', 'log.txt']);
 const BINARY_FILE_EXTENSIONS = new Set([
   '.avif',
   '.gif',

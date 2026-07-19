@@ -308,6 +308,17 @@ export class PreviewSourceTransformer {
     return [...this.watchDirectories].sort();
   }
 
+  /** Adds one trusted source directory discovered by a cooperating build-time fallback boundary. */
+  public registerWatchDirectory(directoryPath: string): void {
+    const normalizedPath = path.normalize(directoryPath);
+    if (
+      this.watchDirectories.has(normalizedPath) ||
+      this.watchDirectories.size < MAX_BUILD_WATCH_DIRECTORIES
+    ) {
+      this.watchDirectories.add(normalizedPath);
+    }
+  }
+
   /** Returns exact installed-package globals proven free in modules reached by this build. */
   public getReferencedImplicitPackageGlobalNames(): readonly string[] {
     return [...this.referencedImplicitPackageGlobals].sort();

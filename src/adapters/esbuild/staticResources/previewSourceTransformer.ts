@@ -36,6 +36,7 @@ import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGl
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { instrumentPreviewReactEffects } from './previewReactEffectInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
 import {
@@ -286,10 +287,14 @@ export class PreviewSourceTransformer {
       this.options.instrumentDataRequests === true
         ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)
         : compatibilitySource;
-    const rewrittenSource =
+    const conditionBoundarySource =
       this.options.instrumentRenderConditions === true
         ? instrumentReactConditionalRendering(sourcePath, dataBoundarySource)
         : dataBoundarySource;
+    const rewrittenSource =
+      this.options.instrumentRuntimeEffectIsolation === true
+        ? instrumentPreviewReactEffects(sourcePath, conditionBoundarySource)
+        : conditionBoundarySource;
     return {
       contents: appendPreviewSourceImports(rewrittenSource, generatedImports),
       watchDirectories: [...this.watchDirectories]

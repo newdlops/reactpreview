@@ -44,6 +44,38 @@ describe('PreviewSourceTransformer', () => {
     expect(inspectorResult.contents).toContain('"falsyLabel":"<Loading>"');
   });
 
+  /** Keeps rendered children mounted when a proven React side-effect callback fails. */
+  it('isolates only callbacks belonging to imported React effect hooks', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'AppShell.tsx');
+    const sourceText = [
+      `import React, { useEffect as useSideEffect, useLayoutEffect } from 'react';`,
+      'const lifecycle = { useEffect(callback) { callback(); } };',
+      'export function AppShell() {',
+      '  useSideEffect(() => wsClient.onReconnected(), []);',
+      '  useLayoutEffect(connectNavigation, [connectNavigation]);',
+      '  React.useEffect(() => fetch("/api/session"), []);',
+      '  lifecycle.useEffect(() => renderWidget());',
+      '  return <main />;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentDataRequests: true,
+      instrumentRuntimeEffectIsolation: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents.match(/\.resolveRuntimeEffect\(/gu)).toHaveLength(3);
+    expect(transformed.contents).toContain('wsClient.onReconnected()');
+    expect(transformed.contents).toContain('previewFetch');
+    expect(transformed.contents).toContain('lifecycle.useEffect(() => renderWidget())');
+    expect(transformed.contents).toContain('"ownerName":"AppShell"');
+    expect(transformed.contents).toContain('"hookName":"useLayoutEffect"');
+  });
+
   /** Registers only Redux object containers proven by one reached selector module. */
   it('appends selector container registration to workspace-owned source', async () => {
     const workspaceRoot = await createTemporaryWorkspace();
@@ -257,7 +289,7 @@ describe('PreviewSourceTransformer', () => {
 
     expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
     expect(transformed.contents).toContain('() => (useContext(AppContext))');
-    expect(transformed.contents).toContain('"user": Object.freeze({ "name": "Preview name" })');
+    expect(transformed.contents).toContain('"user": Object.freeze({ "name": "name" })');
     expect(transformed.contents).toContain('registerPreviewContextRequirement');
   });
 

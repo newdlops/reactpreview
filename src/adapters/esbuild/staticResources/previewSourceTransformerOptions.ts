@@ -21,6 +21,8 @@ export interface PreviewSourceTransformerOptions {
   readonly instrumentGraphqlDocuments?: boolean;
   /** Whether render-critical custom hooks may receive visible, user-toggleable static fallbacks. */
   readonly instrumentRuntimeHookFallbacks?: boolean;
+  /** Whether failing React effects may be logged and isolated from otherwise valid page output. */
+  readonly instrumentRuntimeEffectIsolation?: boolean;
   /** Resolver used only to trace an interpolated GraphQL fragment to authored workspace source. */
   readonly graphqlModuleResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
   /** Dirty-editor source lookup consulted before the GraphQL catalog reads an on-disk module. */

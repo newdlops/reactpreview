@@ -8,6 +8,7 @@
  */
 import { createPreviewInspectorFiberRuntimeSource } from './previewInspectorFiberRuntimeSource';
 import { createPreviewInspectorChainRuntimeSource } from './previewInspectorChainRuntimeSource';
+import { createPreviewInspectorBlockerTraceRuntimeSource } from './previewInspectorBlockerTraceRuntimeSource';
 import { createPreviewInspectorConditionRuntimeSource } from './previewInspectorConditionRuntimeSource';
 import { createPreviewInspectorCompanionRuntimeSource } from './previewInspectorCompanionRuntimeSource';
 import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
@@ -39,6 +40,7 @@ export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector
  */
 export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: string): string {
   const chainRuntimeSource = createPreviewInspectorChainRuntimeSource();
+  const blockerTraceRuntimeSource = createPreviewInspectorBlockerTraceRuntimeSource();
   const companionRuntimeSource = createPreviewInspectorCompanionRuntimeSource();
   const conditionRuntimeSource = createPreviewInspectorConditionRuntimeSource();
   const consoleRuntimeSource = createPreviewInspectorConsoleRuntimeSource();
@@ -123,6 +125,8 @@ ${dataRuntimeSource}
 ${conditionRuntimeSource}
 
 ${targetReachabilityRuntimeSource}
+
+${blockerTraceRuntimeSource}
 
 ${consoleRuntimeSource}
 

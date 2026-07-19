@@ -37,6 +37,7 @@ export {
   PREVIEW_INSPECTOR_BLOCKER_FLOW_SCOPE_LIMIT,
   PREVIEW_INSPECTOR_BLOCKER_FLOW_STEP_LIMIT,
 } from './previewInspectorBlockerFlowUiRuntimeSource';
+export { createPreviewInspectorBlockerTraceRuntimeSource } from './previewInspectorBlockerTraceRuntimeSource';
 export {
   createPreviewInspectorWireframeUiRuntimeSource,
   PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT,

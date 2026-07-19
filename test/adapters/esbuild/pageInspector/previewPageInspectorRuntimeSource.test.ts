@@ -84,6 +84,9 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('previewFetch: previewInspectorFetch');
     expect(source).toContain('recordConsoleEntry: recordPreviewInspectorConsoleEntry');
     expect(source).toContain('installPreviewInspectorConsoleCapture()');
+    expect(source).toContain("type: 'react-preview-blocker-trace'");
+    expect(source).toContain('recordPreviewInspectorBlockerAutoDecision');
+    expect(source).toContain('React preview blocker trace');
     expect(source).toContain('reportPreviewInspectorTargetFailure(error');
     expect(source).toContain("['console', 'Console ('");
     expect(source).toContain('Auto payloads');

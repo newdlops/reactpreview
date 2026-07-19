@@ -6,6 +6,22 @@ import {
 } from '../../../../src/adapters/esbuild/staticResources/reactExportPropFallback';
 
 describe('createReactExportPropFallbackReplacements', () => {
+  /** Gives a required React component prop an inert renderable constructor instead of `undefined`. */
+  it('creates a null-rendering fallback for React component constructor props', () => {
+    const source = [
+      'type HeaderProps = { icon: React.ComponentType<{ size?: number }>; title: string };',
+      'export const Header = ({ icon: Icon, title }: HeaderProps) => (',
+      '  <header><Icon size={20} />{title}</header>',
+      ');',
+    ].join('\n');
+
+    expect(createReactExportPropFallbackReplacements('/workspace/Header.tsx', source)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ propName: 'icon', replacement: ' = () => null' }),
+      ]),
+    );
+  });
+
   /** Uses a real record key when a required domain prop indexes that record before rendering. */
   it('defaults a required indexed prop to the first module record key', () => {
     const source = [

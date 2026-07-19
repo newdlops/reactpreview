@@ -36,6 +36,7 @@ import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGl
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
 import {
   appendPreviewSourceImports,
@@ -44,6 +45,7 @@ import {
   selectCompatiblePreviewSourceReplacements,
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
+import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 
 export { PreviewSourceTransformError } from './previewSourceReplacement';
@@ -133,7 +135,7 @@ export class PreviewSourceTransformer {
     const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
-    const bindings = new SourceBindingAllocator(analysis);
+    const bindings = new PreviewSourceBindingAllocator(analysis);
     const allocate = (kind: string): string => bindings.next(kind);
 
     if (isPathInside(this.options.workspaceRoot, sourcePath)) {
@@ -190,6 +192,12 @@ export class PreviewSourceTransformer {
       }
       if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('use')) {
         replacements.push(...createPreviewRuntimeHookReplacements(sourcePath, sourceText));
+      }
+      if (
+        this.options.instrumentRuntimeHookFallbacks === true &&
+        sourceText.includes('getFragmentData')
+      ) {
+        replacements.push(...createPreviewGraphqlFragmentValueReplacements(sourcePath, sourceText));
       }
       if (sourceText.includes('gql')) {
         replacements.push(
@@ -319,7 +327,7 @@ export class PreviewSourceTransformer {
     sourcePath: string,
     call: StaticCallExpression,
     eagerByCallee: boolean,
-    bindings: SourceBindingAllocator,
+    bindings: PreviewSourceBindingAllocator,
   ): Promise<{
     readonly expression: string;
     readonly imports: readonly string[];
@@ -463,7 +471,7 @@ export class PreviewSourceTransformer {
   /** Converts one static new-URL asset expression into an explicit bounded URL import. */
   private transformNewUrl(
     call: StaticCallExpression,
-    bindings: SourceBindingAllocator,
+    bindings: PreviewSourceBindingAllocator,
   ):
     | {
         readonly expression: string;
@@ -937,29 +945,6 @@ function splitImportSuffix(pattern: string): {
     .filter((index) => index >= 0)
     .reduce((lowest, index) => Math.min(lowest, index), pattern.length);
   return { pathPattern: pattern.slice(0, suffixIndex), suffix: pattern.slice(suffixIndex) };
-}
-
-/** Allocates generated import identifiers that cannot collide with text in the original module. */
-class SourceBindingAllocator {
-  private sequence = 0;
-
-  /** Captures AST-decoded identifiers, including Unicode escapes, types, and nested scopes. */
-  public constructor(private readonly analysis: StaticSourceAnalysis) {}
-
-  /**
-   * Returns the next generated module binding absent from the complete original source text.
-   *
-   * @param kind Readable transform category included in the generated identifier.
-   * @returns Collision-free JavaScript identifier reserved for one generated import.
-   */
-  public next(kind: string): string {
-    let binding: string;
-    do {
-      binding = `__reactPreview_${kind}_${this.sequence.toString()}`;
-      this.sequence += 1;
-    } while (this.analysis.hasIdentifier(binding));
-    return binding;
-  }
 }
 
 /** Converts an absolute match into a Webpack-style key relative to its context directory. */

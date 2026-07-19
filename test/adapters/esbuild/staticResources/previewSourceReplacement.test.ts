@@ -26,6 +26,19 @@ describe('preview source replacement policy', () => {
     expect(selectCompatiblePreviewSourceReplacements([context, runtime])).toEqual([context]);
   });
 
+  /** Lets a richer proven fallback replace a placeholder only when both own the exact call. */
+  it('uses explicit priority to break an exact-range tie', () => {
+    const placeholder = createReplacement(0, 22, 'emptyContextFallback()');
+    const demandShaped = {
+      ...createReplacement(0, 22, 'demandShapedContextFallback()'),
+      priority: 1,
+    };
+
+    expect(selectCompatiblePreviewSourceReplacements([placeholder, demandShaped])).toEqual([
+      demandShaped,
+    ]);
+  });
+
   /** Prefers a resource macro nested inside a broader optional hook fallback expression. */
   it('keeps the narrower transform and every disjoint source edit', () => {
     const hook = createReplacement(0, 40, 'hookFallback()');

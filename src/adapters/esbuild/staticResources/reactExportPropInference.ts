@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 
 const MAX_COMPONENT_EXPORTS = 32;
 const MAX_INFERRED_DEPTH = 10;
@@ -55,7 +56,7 @@ const STRING_METHOD_NAMES = new Set([
 
 /** Neutral value categories understood by the generated browser materializer. */
 export type PreviewInferredPropKind =
-  'array' | 'boolean' | 'function' | 'number' | 'object' | 'string';
+  'array' | 'boolean' | 'component' | 'function' | 'number' | 'object' | 'string';
 
 /** JSON-safe recursive shape emitted into target and Inspector bridge descriptors. */
 export interface PreviewInferredPropShape {
@@ -321,6 +322,10 @@ function addTypeRequirement(
     requirePath(state, path_, 'function', 'type');
     return;
   }
+  if (isReactComponentTypeSyntax(unwrapped)) {
+    requirePath(state, path_, 'component', 'type');
+    return;
+  }
   if (ts.isLiteralTypeNode(unwrapped)) {
     const literal = readLiteralValue(unwrapped.literal);
     if (typeof literal === 'string') requirePath(state, path_, 'string', 'type', literal);
@@ -446,6 +451,14 @@ function addOperationRequirement(
   node: ts.Expression,
 ): void {
   const parent = node.parent;
+  if (
+    ((ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent)) &&
+      parent.tagName === node) ||
+    (ts.isJsxClosingElement(parent) && parent.tagName === node)
+  ) {
+    requirePath(state, path_, 'component', 'usage');
+    return;
+  }
   if (
     ts.isCallExpression(parent) &&
     parent.expression === node &&

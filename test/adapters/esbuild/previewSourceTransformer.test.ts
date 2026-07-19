@@ -235,8 +235,8 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).toContain('domain.theme.color.black');
   });
 
-  /** Reconciles the dedicated Context fallback with general useContext instrumentation. */
-  it('keeps one Context hook rewrite when independent analyzers target the same call', async () => {
+  /** Reconciles Context registration with the richer demand-shaped runtime hook fallback. */
+  it('keeps the most specific Context hook rewrite when analyzers target the same call', async () => {
     const workspaceRoot = await createTemporaryWorkspace();
     const sourcePath = path.join(workspaceRoot, 'Page.tsx');
     const sourceText = [
@@ -256,8 +256,61 @@ describe('PreviewSourceTransformer', () => {
     const transformed = await transformer.transform(sourcePath, sourceText);
 
     expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
-    expect(transformed.contents).toContain('(useContext(AppContext) ??');
-    expect(transformed.contents).toContain('"user": Object.freeze({})');
+    expect(transformed.contents).toContain('() => (useContext(AppContext))');
+    expect(transformed.contents).toContain('"user": Object.freeze({ "name": "Preview name" })');
+    expect(transformed.contents).toContain('registerPreviewContextRequirement');
+  });
+
+  /** Falls back to the general hook analyzer when Context identity inference cannot follow a helper. */
+  it('isolates a Context fragment carrier passed through an unknown project helper', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Modal.tsx');
+    const sourceText = [
+      `import { useCompanyContext } from './company-context';`,
+      'export function Modal() {',
+      '  const { company: companyFragment, refetch } = useCompanyContext();',
+      '  const { name } = getFragmentData(FRAGMENT, companyFragment);',
+      '  return <button onClick={refetch}>{name}</button>;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents.match(/\.resolveRuntimeHook\(/gu)).toHaveLength(1);
+    expect(transformed.contents).toContain('"company": Object.freeze({})');
+    expect(transformed.contents).toContain('"refetch": Object.freeze(() => undefined)');
+  });
+
+  /** Completes Codegen fragment carriers from the authored selection before destructuring runs. */
+  it('instruments a generated GraphQL fragment-unmasking helper', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Modal.tsx');
+    const sourceText = [
+      `import { getFragmentData as readFragment } from './graphql-codegen/fragment-masking';`,
+      `import { COMPANY_FRAGMENT } from './company-fragment';`,
+      'export function Modal({ company }) {',
+      '  const { name } = readFragment(COMPANY_FRAGMENT, company);',
+      '  return <strong>{name}</strong>;',
+      '}',
+    ].join('\n');
+    const transformer = new PreviewSourceTransformer({
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain('.resolveGraphqlFragment(');
+    expect(transformed.contents).toContain('() => (readFragment(COMPANY_FRAGMENT, company))');
+    expect(transformed.contents).toContain('() => (COMPANY_FRAGMENT)');
+    expect(transformed.contents).toContain('"requiredPaths":["name"]');
+    expect(transformed.contents).toContain('"ownerName":"Modal"');
   });
 
   /** Preserves a bounded resource macro when it is nested inside a general hook call. */

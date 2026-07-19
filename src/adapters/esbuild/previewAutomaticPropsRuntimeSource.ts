@@ -4,6 +4,9 @@
  * overlays real usage, setup, and Inspector values without evaluating project factories or types.
  */
 
+/** Global symbol key carried by generated React component props through editable Inspector JSON. */
+export const PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY = 'react-file-preview.automatic-component-prop';
+
 /**
  * Creates helpers embedded once in every preview entry before gallery and Inspector runtimes.
  *
@@ -17,6 +20,7 @@ export function createPreviewAutomaticPropsRuntimeSource(): string {
   return String.raw`
 const PREVIEW_AUTOMATIC_PROP_MAX_DEPTH = 12;
 const PREVIEW_AUTOMATIC_PROP_MAX_NODES = 256;
+const PREVIEW_AUTOMATIC_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
 const blockedPreviewAutomaticPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Reports whether a value is a plain record that can be copied without invoking accessors. */
@@ -51,6 +55,11 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
   switch (node.kind) {
     case 'array': return [];
     case 'boolean': return typeof node.value === 'boolean' ? node.value : false;
+    case 'component': {
+      const component = function PreviewAutomaticComponent() { return null; };
+      Object.defineProperty(component, PREVIEW_AUTOMATIC_COMPONENT_MARKER, { value: true });
+      return Object.freeze(component);
+    }
     case 'function': return function previewAutomaticNoop() { return undefined; };
     case 'number': return typeof node.value === 'number' && Number.isFinite(node.value) ? node.value : 0;
     case 'string': return typeof node.value === 'string' ? node.value : '';

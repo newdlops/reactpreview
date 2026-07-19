@@ -90,6 +90,28 @@ describe('collectReactExportPropInference', () => {
     });
   });
 
+  /** Distinguishes a JSX component prop from callbacks so its placeholder can return `null`. */
+  it('infers required React component constructors used as JSX tags', () => {
+    const source = [
+      'type HeaderProps = { icon: React.ComponentType<{ size: number }>; title: string };',
+      'export const Header = ({ icon: Icon, title }: HeaderProps) => (',
+      '  <header><Icon size={20} />{title}</header>',
+      ');',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Header.tsx', source);
+
+    expect(result.Header?.shape.properties).toMatchObject({
+      icon: { kind: 'component' },
+      title: { kind: 'string' },
+    });
+    expect(result.Header?.provenance).toContainEqual({
+      kind: 'component',
+      path: 'icon',
+      source: 'type',
+    });
+  });
+
   /** Reads the inline component argument from the common styled-components tagged form. */
   it('infers typed props from styled component factories', () => {
     const source = [

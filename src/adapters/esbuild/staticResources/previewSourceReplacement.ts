@@ -19,6 +19,8 @@ export class PreviewSourceTransformError extends Error {
 export interface PreviewSourceReplacement {
   /** Exclusive source offset after the replaced expression. */
   readonly end: number;
+  /** Tie-breaker for exact ranges when another analyzer proves a more useful safe fallback. */
+  readonly priority?: number;
   /** Generated expression with equivalent bounded runtime semantics. */
   readonly replacement: string;
   /** Inclusive source offset of the replaced expression. */
@@ -30,8 +32,8 @@ export interface PreviewSourceReplacement {
  *
  * A smaller range represents the more specific expression and therefore wins over an enclosing
  * general-purpose transform, such as a dynamic import inside a hook argument. Exact duplicate or
- * exact conflicting ranges keep the first analyzer's result; the transformer registers dedicated
- * Context/default compatibility before general hook fallbacks. Disjoint edits are all retained.
+ * exact conflicting ranges prefer an explicit priority and otherwise keep the first analyzer's
+ * result. Disjoint edits are all retained.
  * This reconciliation is intentionally separate from the strict apply function so analyzer unit
  * tests can still detect accidental overlaps when no explicit policy has been requested.
  *
@@ -46,7 +48,11 @@ export function selectCompatiblePreviewSourceReplacements(
     .sort((left, right) => {
       const leftLength = left.replacement.end - left.replacement.start;
       const rightLength = right.replacement.end - right.replacement.start;
-      return leftLength - rightLength || left.discoveryIndex - right.discoveryIndex;
+      return (
+        leftLength - rightLength ||
+        (right.replacement.priority ?? 0) - (left.replacement.priority ?? 0) ||
+        left.discoveryIndex - right.discoveryIndex
+      );
     });
   const selected: PreviewSourceReplacement[] = [];
   for (const { replacement } of ranked) {

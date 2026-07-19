@@ -5,6 +5,7 @@
  * valid domain value and is safer than inventing a project-specific enum member.
  */
 import ts from 'typescript';
+import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 
 const MAX_FALLBACKS_PER_TARGET = 32;
 const MAX_LITERAL_LENGTH = 2_048;
@@ -486,6 +487,9 @@ function createNeutralPropExpression(
   }
   if (ts.isFunctionTypeNode(typeNode)) {
     return '() => undefined';
+  }
+  if (isReactComponentTypeSyntax(typeNode)) {
+    return '() => null';
   }
   if (ts.isLiteralTypeNode(typeNode)) {
     return readLiteralExpression(typeNode.literal);

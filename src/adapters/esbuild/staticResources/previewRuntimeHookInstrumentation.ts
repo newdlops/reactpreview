@@ -11,6 +11,20 @@ import path from 'node:path';
 import ts from 'typescript';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
+import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
+import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
+import {
+  findNearestPreviewRuntimeFunction as findNearestRuntimeFunction,
+  hasPreviewRuntimeParseDiagnostics as hasParseDiagnostics,
+  isPreviewRuntimeFunction as isRuntimeFunction,
+  isPreviewRuntimeJavaScriptLikeSource as isJavaScriptLikeSource,
+  readPreviewRuntimeCalleePropertyName as readCalleePropertyName,
+  readPreviewRuntimeFunctionName,
+  selectPreviewRuntimeScriptKind as selectScriptKind,
+  unwrapPreviewRuntimeExpression as unwrapExpression,
+  unwrapPreviewRuntimeParentExpression as unwrapParentExpression,
+} from './previewRuntimeHookSyntax';
+import type { PreviewRuntimeFunction as RuntimeFunction } from './previewRuntimeHookSyntax';
 
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
@@ -25,6 +39,7 @@ const EXCLUDED_MODULES = new Set([
   'react-dom/client',
   'react/jsx-dev-runtime',
   'react/jsx-runtime',
+  'styled-components',
 ]);
 const ARRAY_USAGE_PROPERTIES = new Set([
   'at',
@@ -70,6 +85,8 @@ interface PreviewRuntimeHookFallback {
   readonly expression: string;
   /** Concise generated-value description that does not execute the expression. */
   readonly label: string;
+  /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
+  readonly preserveNullish?: boolean;
   /** Property paths whose absence would stop rendering at this exact hook edge. */
   readonly requiredPaths?: readonly string[];
 }
@@ -80,6 +97,8 @@ interface PreviewRuntimeHookValueFallback {
   readonly expression: string;
   /** Human-readable generated-value family. */
   readonly label: string;
+  /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
+  readonly preserveNullish?: boolean;
   /** Paths relative to this value that local syntax proves are required. */
   readonly requiredPaths?: readonly string[];
 }
@@ -101,10 +120,6 @@ interface PreviewRuntimeHookCandidate {
   /** Static fallback selected from local syntax. */
   readonly fallback: PreviewRuntimeHookFallback;
 }
-
-/** Function-like scope in which a React hook call can execute during render. */
-type RuntimeFunction =
-  ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
 
 /**
  * Creates Page Inspector replacements for render-critical project and query-parameter hooks.
@@ -315,6 +330,7 @@ function inferRuntimeHookFallback(
         evidence: 'hook result binding and semantic field names',
         expression: bindingFallback.expression,
         label: bindingFallback.label,
+        ...(bindingFallback.preserveNullish === true ? { preserveNullish: true } : {}),
         ...(bindingFallback.requiredPaths === undefined
           ? {}
           : { requiredPaths: bindingFallback.requiredPaths }),
@@ -363,19 +379,22 @@ function createBindingFallback(
   sourceFile: ts.SourceFile,
 ): PreviewRuntimeHookValueFallback | undefined {
   if (ts.isIdentifier(binding)) {
-    const compared = findComparedLiteralFallback(binding, sourceFile);
-    if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const usageShape = createIdentifierUsageFallback(binding);
     if (usageShape !== undefined) return usageShape;
+    const compared = findComparedLiteralFallback(binding, sourceFile);
+    if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
-    if (directUsage !== undefined) {
-      return {
-        ...directUsage,
-        requiredPaths: [directUsage.callable === true ? '<root>()' : '<root>'],
-      };
+    if (directUsage?.callable === true) {
+      return { ...directUsage, requiredPaths: ['<root>()'] };
     }
     const semantic = inferSemanticFallback(binding.text);
     if (semantic !== undefined) return { ...semantic, requiredPaths: ['<root>'] };
+    if (directUsage !== undefined) {
+      return {
+        ...directUsage,
+        requiredPaths: ['<root>'],
+      };
+    }
     return undefined;
   }
   if (ts.isArrayBindingPattern(binding)) {
@@ -450,6 +469,18 @@ function inferSemanticFallback(
   const name = rawName.replace(/^use/u, '');
   const semanticName = name.length === 0 ? name : name.charAt(0).toLowerCase() + name.slice(1);
   const normalized = name.toLowerCase();
+  if (/^(?:is|matches)(?:large|wide|desktop)/u.test(normalized)) {
+    return {
+      expression: `(typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) >= 1024)`,
+      label: 'generated viewport match',
+    };
+  }
+  if (/^(?:is|matches)(?:small|narrow|mobile)/u.test(normalized)) {
+    return {
+      expression: `(typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) < 768)`,
+      label: 'generated viewport match',
+    };
+  }
   if (
     /^(?:is|has|can|should|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
     /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended|touched|dirty|pristine|pending|matches)$/u.test(
@@ -516,32 +547,62 @@ function createIdentifierUsageFallback(
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
   const paths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
+  const optionalPaths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
   const arrayRootEvidence: string[] = [];
   const arrayItemFallbacks: PreviewRuntimeHookValueFallback[] = [];
+  let optionalReferences = 0;
+  let unsafeReferences = 0;
   const visit = (node: ts.Node): void => {
     if (node !== owner && isRuntimeFunction(node) && functionShadowsName(node, identifier.text)) {
       return;
     }
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      !ts.isPropertyAccessExpression(node.parent) &&
-      node.questionDotToken === undefined
-    ) {
-      const names = readIdentifierPropertyPath(node, identifier.text);
-      if (names !== undefined && names.length > 0) {
-        if (isArrayUsageProperty(names[0])) {
-          arrayRootEvidence.push(names[0] ?? 'array operation');
+    if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
+      const usagePath = readIdentifierPropertyUsagePath(node, identifier.text);
+      if (usagePath !== undefined && usagePath.names.length > 0) {
+        if (!usagePath.optional && isArrayUsageProperty(usagePath.names[0])) {
+          arrayRootEvidence.push(usagePath.names[0] ?? 'array operation');
           const itemFallback = inferPreviewRuntimeArrayItemFallback(
             node,
             identifier.getSourceFile(),
           );
           if (itemFallback !== undefined) arrayItemFallbacks.push(itemFallback);
-        } else if (paths.length < 64 && names.length <= 12) {
-          paths.push({
+        } else if (paths.length + optionalPaths.length < 64 && usagePath.names.length <= 12) {
+          const target = usagePath.optional ? optionalPaths : paths;
+          target.push({
             called: ts.isCallExpression(node.parent) && node.parent.expression === node,
-            names,
+            names: usagePath.names,
           });
         }
+      }
+    }
+    if (ts.isIdentifier(node) && node.text === identifier.text && node !== identifier) {
+      const parent = node.parent;
+      const optionalPropertyRoot =
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === node &&
+        parent.questionDotToken !== undefined;
+      const optionalElementRoot =
+        ts.isElementAccessExpression(parent) &&
+        parent.expression === node &&
+        parent.questionDotToken !== undefined;
+      const optionalCallRoot =
+        ts.isCallExpression(parent) &&
+        parent.expression === node &&
+        parent.questionDotToken !== undefined;
+      const passiveDependency = ts.isArrayLiteralExpression(parent);
+      const passiveObjectProperty =
+        ts.isShorthandPropertyAssignment(parent) ||
+        (ts.isPropertyAssignment(parent) && parent.initializer === node);
+      if (optionalPropertyRoot || optionalElementRoot || optionalCallRoot) {
+        optionalReferences += 1;
+      } else if (!passiveDependency && !passiveObjectProperty) {
+        unsafeReferences += 1;
+      }
+    }
+    if (ts.isVariableDeclaration(node)) {
+      for (const names of readPreviewRuntimeHookDestructuredPaths(node, identifier.text)) {
+        if (paths.length >= 64) break;
+        paths.push({ called: false, names });
       }
     }
     ts.forEachChild(node, visit);
@@ -561,14 +622,41 @@ function createIdentifierUsageFallback(
       requiredPaths: prefixPreviewRuntimeHookPaths(item.requiredPaths, '[]'),
     };
   }
-  if (paths.length === 0) return undefined;
+  if (paths.length === 0) {
+    return optionalReferences > 0 && unsafeReferences === 0
+      ? {
+          expression: 'undefined',
+          label: 'preserved optional hook result',
+          preserveNullish: true,
+          requiredPaths: [],
+        }
+      : undefined;
+  }
+  const completedPaths = deduplicatePreviewRuntimeHookUsagePaths([...paths, ...optionalPaths]);
   const root: PreviewRuntimeHookUsageNode = { children: new Map() };
-  for (const path_ of paths) addUsagePath(root, path_);
+  for (const path_ of completedPaths) addUsagePath(root, path_);
   return {
     expression: serializeUsageNode(root),
     label: 'generated required property shape',
-    requiredPaths: paths.map((path_) => path_.names.join('.') + (path_.called ? '()' : '')),
+    requiredPaths: completedPaths.map(
+      (path_) => path_.names.join('.') + (path_.called ? '()' : ''),
+    ),
   };
+}
+
+/** Keeps one deterministic occurrence of every demanded hook-result path. */
+function deduplicatePreviewRuntimeHookUsagePaths(
+  paths: readonly { readonly called: boolean; readonly names: readonly string[] }[],
+): readonly { readonly called: boolean; readonly names: readonly string[] }[] {
+  const retained = new Map<
+    string,
+    { readonly called: boolean; readonly names: readonly string[] }
+  >();
+  for (const path_ of paths) {
+    const key = `${path_.names.join('.')}\u0000${path_.called ? 'call' : 'value'}`;
+    if (!retained.has(key)) retained.set(key, path_);
+  }
+  return [...retained.values()];
 }
 
 /** Infers the first array-callback parameter from the fields actually read inside that callback. */
@@ -619,19 +707,22 @@ function serializeUsageNode(node: PreviewRuntimeHookUsageNode): string {
   return `Object.freeze({ ${properties.join(', ')} })`;
 }
 
-/** Reads a non-optional property path whose leftmost expression is the requested identifier. */
-function readIdentifierPropertyPath(
+/** Reads one property path and remembers whether any link used nullish-safe optional access. */
+function readIdentifierPropertyUsagePath(
   expression: ts.PropertyAccessExpression,
   identifierName: string,
-): readonly string[] | undefined {
+): { readonly names: readonly string[]; readonly optional: boolean } | undefined {
   const names: string[] = [];
+  let optional = false;
   let current: ts.Expression = expression;
   while (ts.isPropertyAccessExpression(current)) {
-    if (current.questionDotToken !== undefined) return undefined;
+    optional = optional || current.questionDotToken !== undefined;
     names.unshift(current.name.text);
     current = unwrapExpression(current.expression);
   }
-  return ts.isIdentifier(current) && current.text === identifierName ? names : undefined;
+  return ts.isIdentifier(current) && current.text === identifierName
+    ? { names, optional }
+    : undefined;
 }
 
 /** Recognizes array-oriented operations whose safest visual fallback is an empty collection. */
@@ -708,7 +799,10 @@ function isStaticComparableExpression(expression: ts.Expression): boolean {
     ts.isNumericLiteral(expression) ||
     expression.kind === ts.SyntaxKind.TrueKeyword ||
     expression.kind === ts.SyntaxKind.FalseKeyword ||
-    (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression))
+    (ts.isPropertyAccessExpression(expression) &&
+      expression.questionDotToken === undefined &&
+      ts.isIdentifier(expression.expression) &&
+      /^[A-Z]/u.test(expression.expression.text))
   );
 }
 
@@ -761,6 +855,12 @@ function createRuntimeHookReplacement(
   const end = candidate.call.end;
   const location = sourceFile.getLineAndCharacterOfPosition(start);
   const originalCall = sourceText.slice(start, end);
+  const graphqlArguments = readPreviewRuntimeHookGraphqlArguments(
+    candidate.hook.hookName,
+    candidate.call,
+    sourceFile,
+    sourceText,
+  );
   const ownerName = readPreviewRuntimeFunctionName(findNearestRuntimeFunction(candidate.call));
   const metadata = {
     column: location.character + 1,
@@ -771,13 +871,14 @@ function createRuntimeHookReplacement(
     line: location.line + 1,
     moduleSpecifier: candidate.hook.moduleSpecifier,
     ...(ownerName === undefined ? {} : { ownerName }),
+    ...(candidate.fallback.preserveNullish === true ? { preserveNullish: true } : {}),
     requiredPaths: candidate.fallback.requiredPaths ?? ['<root>'],
     sourcePath: path.normalize(sourcePath),
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;
   return {
     end,
-    replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${JSON.stringify(metadata)})`,
+    replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${JSON.stringify(metadata)}${graphqlArguments === undefined ? '' : `, () => (${graphqlArguments.documentExpression})${graphqlArguments.optionsExpression === undefined ? '' : `, () => (${graphqlArguments.optionsExpression})`}`})`,
     start,
   };
 }
@@ -811,6 +912,8 @@ function createRuntimeHookIdentity(
         candidate.hook.moduleSpecifier,
         candidate.hook.hookName,
         candidate.fallback.evidence,
+        candidate.fallback.expression,
+        candidate.fallback.preserveNullish === true,
         candidate.fallback.requiredPaths ?? ['<root>'],
         occurrence,
       ]),
@@ -828,119 +931,10 @@ function isEligibleHookModule(moduleSpecifier: string): boolean {
   return moduleSpecifier.length > 0;
 }
 
-/** Finds the nearest render-time function while excluding module-level hook initialization. */
-function findNearestRuntimeFunction(node: ts.Node): RuntimeFunction | undefined {
-  let current = node.parent;
-  while (!ts.isSourceFile(current)) {
-    if (isRuntimeFunction(current)) return current;
-    current = current.parent;
-  }
-  return undefined;
-}
-
-/** Reads the authored component/function name that owns one runtime hook invocation. */
-function readPreviewRuntimeFunctionName(scope: RuntimeFunction | undefined): string | undefined {
-  if (scope === undefined) return undefined;
-  if (
-    (ts.isFunctionDeclaration(scope) || ts.isFunctionExpression(scope)) &&
-    scope.name !== undefined
-  ) {
-    return scope.name.text;
-  }
-  if (ts.isMethodDeclaration(scope)) {
-    return ts.isIdentifier(scope.name) || ts.isStringLiteral(scope.name)
-      ? scope.name.text
-      : undefined;
-  }
-  const parent = scope.parent;
-  if (
-    ts.isVariableDeclaration(parent) &&
-    parent.initializer === scope &&
-    ts.isIdentifier(parent.name)
-  ) {
-    return parent.name.text;
-  }
-  if (ts.isPropertyAssignment(parent) && parent.initializer === scope) {
-    return ts.isIdentifier(parent.name) || ts.isStringLiteral(parent.name)
-      ? parent.name.text
-      : undefined;
-  }
-  return undefined;
-}
-
-/** Narrows TypeScript function-like nodes to hook-capable runtime scopes. */
-function isRuntimeFunction(node: ts.Node): node is RuntimeFunction {
-  return (
-    ts.isArrowFunction(node) ||
-    ts.isFunctionDeclaration(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isMethodDeclaration(node)
-  );
-}
-
-/** Walks through syntax-only wrappers while retaining the original runtime expression. */
-function unwrapExpression(expression: ts.Expression): ts.Expression {
-  let current = expression;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    ts.isTypeAssertionExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
-/** Walks from an expression through parent syntax-only wrappers for binding analysis. */
-function unwrapParentExpression(expression: ts.Expression): ts.Expression {
-  let current = expression;
-  while (
-    (ts.isParenthesizedExpression(current.parent) ||
-      ts.isAsExpression(current.parent) ||
-      ts.isSatisfiesExpression(current.parent) ||
-      ts.isNonNullExpression(current.parent) ||
-      ts.isTypeAssertionExpression(current.parent)) &&
-    current.parent.expression === current
-  ) {
-    current = current.parent;
-  }
-  return current;
-}
-
-/** Reads an identifier/property callee name without evaluating computed expressions. */
-function readCalleePropertyName(expression: ts.LeftHandSideExpression): string | undefined {
-  const unwrapped = unwrapExpression(expression);
-  if (ts.isIdentifier(unwrapped)) return unwrapped.text;
-  return ts.isPropertyAccessExpression(unwrapped) ? unwrapped.name.text : undefined;
-}
-
 /** Bounds diagnostics retained inside one pinned local webview. */
 function boundMetadataText(value: string): string {
   const normalized = value.trim().replace(/\s+/gu, ' ');
   return normalized.length <= MAX_METADATA_TEXT_LENGTH
     ? normalized
     : `${normalized.slice(0, MAX_METADATA_TEXT_LENGTH - 1)}…`;
-}
-
-/** Selects JSX-capable TypeScript parser grammar from the source extension. */
-function selectScriptKind(sourcePath: string): ts.ScriptKind {
-  const extension = path.extname(sourcePath).toLowerCase();
-  if (extension === '.tsx') return ts.ScriptKind.TSX;
-  if (extension === '.ts' || extension === '.mts' || extension === '.cts') return ts.ScriptKind.TS;
-  return ts.ScriptKind.JSX;
-}
-
-/** Restricts instrumentation to source formats already handled by the preview compiler. */
-function isJavaScriptLikeSource(sourcePath: string): boolean {
-  return /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/iu.test(sourcePath);
-}
-
-/** Rejects parser recovery so generated offsets never target ambiguous or incomplete syntax. */
-function hasParseDiagnostics(sourceFile: ts.SourceFile): boolean {
-  const diagnostics = (
-    sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] }
-  ).parseDiagnostics;
-  return diagnostics !== undefined && diagnostics.length > 0;
 }

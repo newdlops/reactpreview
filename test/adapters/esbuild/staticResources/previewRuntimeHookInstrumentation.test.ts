@@ -54,6 +54,30 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
   });
 
+  /** Resolves responsive hook flags from the preview viewport instead of hiding desktop shells. */
+  it('uses the current viewport for deterministic responsive booleans', () => {
+    const source = [
+      `import { useAdaptiveDesign } from './use-adaptive-design';`,
+      'export function Layout() {',
+      '  const { isLargeScreen, isMobile } = useAdaptiveDesign();',
+      '  return isLargeScreen ? <aside /> : isMobile ? <nav /> : <main />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Layout.tsx', source),
+    );
+
+    expect(transformed).toContain(
+      `"isLargeScreen": (typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) >= 1024)`,
+    );
+    expect(transformed).toContain(
+      `"isMobile": (typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) < 768)`,
+    );
+    expect(transformed).toContain('"fallbackLabel":"generated object fields"');
+  });
+
   /** Preserves callable demand for destructured modal actions and JSX event callbacks. */
   it('infers destructured direct calls and event handlers as functions', () => {
     const source = [
@@ -99,6 +123,73 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["helpers.setPage()","page","perPage"]');
   });
 
+  /** Preserves an intentional undefined sentinel when all consumer reads are optional-chain guarded. */
+  it('marks optional-only hook bindings as nullish-safe instead of inventing a truthy value', () => {
+    const source = [
+      `import { useUrlSync } from './use-url-sync';`,
+      `import { useMemo } from 'react';`,
+      'export function Table({ namespace }) {',
+      '  const handler = useUrlSync(namespace);',
+      '  const context = useMemo(() => ({ handler }), [handler]);',
+      '  return <input data-context={String(context)} value={handler?.initialState.search ?? ""} />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Table.tsx', source),
+    );
+
+    expect(transformed).toContain('() => (undefined)');
+    expect(transformed).toContain('"fallbackLabel":"preserved optional hook result"');
+    expect(transformed).toContain('"preserveNullish":true');
+    expect(transformed).toContain('"requiredPaths":[]');
+  });
+
+  /** Completes optional descendants when another hard use proves that the fallback root must exist. */
+  it('closes the optional property shape of a deterministically materialized hook value', () => {
+    const source = [
+      `import { useUrlSync } from './use-url-sync';`,
+      'export function Table() {',
+      '  const handler = useUrlSync();',
+      '  if (handler) handler.updateUrl({ page: 1 });',
+      '  return <span>{handler?.initialState.page ?? 1}</span>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Table.tsx', source),
+    );
+
+    expect(transformed).toContain('"initialState": Object.freeze({ "page": 0 })');
+    expect(transformed).toContain('"updateUrl": Object.freeze(() => undefined)');
+    expect(transformed).toContain('"requiredPaths":["updateUrl()","initialState.page"]');
+  });
+
+  /** Follows a later object destructure so Redux-like selectors receive typed visual shell fields. */
+  it('infers fields destructured after assigning the hook result', () => {
+    const source = [
+      `import { useSelector } from './use-selector';`,
+      'export function Topbar() {',
+      '  const company = useSelector((state) => state.company);',
+      '  if (!company) return null;',
+      '  const { shortName, name, subscription } = company;',
+      '  return <header>{shortName}{name}{String(subscription)}</header>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Topbar.tsx', source),
+    );
+
+    expect(transformed).toContain('"shortName": "Preview name"');
+    expect(transformed).toContain('"name": "Preview name"');
+    expect(transformed).toContain('"subscription": Object.freeze({})');
+    expect(transformed).toContain('"requiredPaths":["shortName","name","subscription"]');
+  });
+
   /** Shapes one list item from callback reads so Auto values renders content instead of an empty list. */
   it('infers array callback item fields for a visible one-item preview', () => {
     const source = [
@@ -126,20 +217,51 @@ describe('createPreviewRuntimeHookReplacements', () => {
     const source = [
       `import { useState } from 'react';`,
       `import { useQuery } from '@apollo/client';`,
+      `import { useTheme } from 'styled-components';`,
       `import { useAppContext } from 'legal/app/app-context';`,
       'export function Page() {',
       '  const [count] = useState(0);',
-      '  const query = useQuery(DOCUMENT);',
+      '  const theme = useTheme();',
+      '  const queryOptions = { variables: { companyId: "1" } };',
+      '  const query = useQuery(DOCUMENT, queryOptions);',
       '  const { user } = useAppContext();',
-      '  return <main>{count}{query.data}{user.name}</main>;',
+      '  return <main style={{ color: theme.color.primary }}>{count}{query.data}{user.name}</main>;',
       '}',
     ].join('\n');
 
     const replacements = createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source);
 
     expect(replacements).toHaveLength(1);
-    expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT)');
+    expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT, queryOptions)');
     expect(replacements[0]?.replacement).toContain('"data": Object.freeze({})');
+    expect(replacements[0]?.replacement).toContain(', () => (DOCUMENT), () => (queryOptions))');
+    expect(replacements[0]?.replacement).not.toContain('useTheme()');
+  });
+
+  /** Keeps semantic guard sentinels neutral and never captures a later local in a hook fallback. */
+  it('uses deterministic semantic values before unsafe direct-condition evidence', () => {
+    const source = [
+      `import { useQuery } from './use-query';`,
+      `import { useParams } from 'react-router-dom';`,
+      'export function Layout() {',
+      '  const { companyId = "" } = useParams();',
+      '  const { data, loading, fallback } = useQuery(DOCUMENT);',
+      '  const companyFromSelector = { id: "authored" };',
+      '  if (!data || fallback || loading) return null;',
+      '  return companyFromSelector?.id === companyId ? <main /> : null;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Layout.tsx', source),
+    );
+
+    expect(transformed).toContain('"companyId": "preview-id"');
+    expect(transformed).toContain('"data": Object.freeze({})');
+    expect(transformed).toContain('"loading": false');
+    expect(transformed).toContain('"fallback": null');
+    expect(transformed).toContain(', () => (DOCUMENT))');
   });
 
   /** Creates Formik tuple fields that can render even when the installed hook has no Provider. */

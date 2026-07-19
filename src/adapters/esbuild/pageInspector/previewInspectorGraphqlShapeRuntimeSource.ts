@@ -63,8 +63,9 @@ function mergePreviewInspectorGraphqlFields(target, source) {
 }
 
 /**
- * Detects a selected pagination/connection wrapper whose own name happens to end in List or Items.
- * The wrapper itself is an object; only its objectList/nodes/edges/items child is the collection.
+ * Detects a selected collection wrapper whose own name happens to end in List or Items.
+ * Canonical objectList/nodes/edges/items fields prove the wrapper even when a compact query omits
+ * pageInfo; pagination plus a custom plural collection field provides the second strong shape.
  */
 function isPreviewInspectorGraphqlConnectionSelection(shape) {
   const fields = shape?.fields;
@@ -73,11 +74,13 @@ function isPreviewInspectorGraphqlConnectionSelection(shape) {
   const hasPagination = names.some((name) =>
     /^(?:pageInfo|pagination|paginator|meta)$/u.test(name),
   );
-  const hasCollection = names.some((name) =>
-    /^(?:edges|items|nodes|objectList|records|results|rows)$/u.test(name) ||
+  const hasCanonicalCollection = names.some((name) =>
+    /^(?:edges|items|nodes|objectList|records|results|rows)$/u.test(name),
+  );
+  const hasCollection = hasCanonicalCollection || names.some((name) =>
     looksLikePreviewInspectorCollection(name),
   );
-  return hasPagination && hasCollection;
+  return hasCanonicalCollection || (hasPagination && hasCollection);
 }
 
 /** Parses one selection set into object fields and deferred named-fragment references. */

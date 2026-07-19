@@ -235,12 +235,7 @@ function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex,
     );
   }
   if (shape.kind === 'object') {
-    return Object.fromEntries(
-      Object.entries(shape.fields).map(([name, child]) => [
-        name,
-        materializePreviewInspectorDataValue(child, name, mode, itemIndex, depth + 1),
-      ]),
-    );
+    return createPreviewInspectorObjectValue(shape.fields, fieldName, mode, itemIndex, depth);
   }
   if (shape.kind === 'boolean') return createPreviewInspectorBooleanValue(fieldName);
   if (shape.kind === 'number') return itemIndex + 1;

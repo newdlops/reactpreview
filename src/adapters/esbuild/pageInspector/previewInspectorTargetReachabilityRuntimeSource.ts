@@ -22,6 +22,9 @@ export function createPreviewInspectorTargetReachabilityRuntimeSource(): string 
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT = 2;
 const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
+const PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160;
+const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
+const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
 
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
@@ -697,9 +700,15 @@ function PreviewInspectorTargetReachabilityProbe({
   previewInspectorSession.activeTargetReachabilityKey = state.key;
   const probeRevision = state.probeRevision;
   React.useEffect(() => {
+    const probeDelay =
+      directTarget === true
+        ? PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS
+        : state.attempt === 0 && probeRevision === 0
+          ? PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS
+          : PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS;
     const timer = globalThis.setTimeout(
       () => evaluatePreviewInspectorTargetReachability(descriptor, candidate, state),
-      directTarget === true ? 60 : 260,
+      probeDelay,
     );
     return () => globalThis.clearTimeout(timer);
   }, [state, descriptor, candidate, probeRevision, directTarget, directTargetAvailable]);

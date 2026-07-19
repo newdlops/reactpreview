@@ -169,6 +169,49 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  /** Opens one data-discriminated role branch instead of exhausting an all-false dispatcher. */
+  it('selects one non-disruptive sibling role tied to its response container', () => {
+    const runtime = evaluateDataRuntime();
+    const payload = cloneJson(
+      runtime.resolve(
+        {
+          id: 'active-partner',
+          kind: 'graphql',
+          label: 'ActivePartnerQuery',
+          shape: {
+            fields: {
+              activeLegalPartner: {
+                fields: {
+                  isDeleted: { kind: 'boolean' },
+                  isLegalServicePartner: { kind: 'boolean' },
+                  isTaxServicePartner: { kind: 'boolean' },
+                  name: { kind: 'string' },
+                },
+                kind: 'object',
+              },
+              user: {
+                fields: { isLegalPartnerStaff: { kind: 'boolean' } },
+                kind: 'object',
+              },
+            },
+            kind: 'object',
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(payload).toEqual({
+      activeLegalPartner: {
+        isDeleted: false,
+        isLegalServicePartner: true,
+        isTaxServicePartner: false,
+        name: 'name',
+      },
+      user: { isLegalPartnerStaff: false },
+    });
+  });
+
   /** Aligns an unambiguous generated entity ID while preserving an explicit mismatch scenario. */
   it('satisfies GraphQL route identity guards without asking for a generated ID', () => {
     const runtime = evaluateDataRuntime();
@@ -328,6 +371,29 @@ describe('Page Inspector data runtime source', () => {
             { id: 'preview-2', title: 'title' },
           ],
           pageInfo: { count: 1, hasNext: false },
+        },
+      },
+    });
+  });
+
+  /** Keeps a compact list wrapper object-shaped when only its canonical collection was selected. */
+  it('does not turn an objectList wrapper into an outer array without pageInfo', async () => {
+    const runtime = evaluateDataRuntime();
+    const response = await runtime.fetch('/graphql', {
+      body: JSON.stringify({
+        operationName: 'OwnerMeetingList',
+        query: `query OwnerMeetingList { meetingList { objectList { id status } } }`,
+      }),
+      method: 'POST',
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      data: {
+        meetingList: {
+          objectList: [
+            { id: 'preview-1', status: 'ACTIVE' },
+            { id: 'preview-2', status: 'ACTIVE' },
+          ],
         },
       },
     });

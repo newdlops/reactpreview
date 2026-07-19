@@ -217,6 +217,8 @@ describe('Preview Inspector target reachability runtime source', () => {
 
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16');
     expect(source).toContain('PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8');
+    expect(source).toContain('PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160');
+    expect(source).toContain('PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48');
     expect(source).toContain('hasMountedPreviewInspectorTarget(state)');
     expect(source).toContain('activatePreviewInspectorDirectTarget(state)');
     expect(source).toContain('readPreviewInspectorTargetReachabilityRequiredPaths');

@@ -192,13 +192,47 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).toContain(
       'import { resolvePreviewThemeHelper as __reactPreview_themeHelper_0 } from "react-preview:theme";',
     );
-    expect(transformed.contents).toContain(
-      '__reactPreview_themeHelper_0((props.theme), ["layout","gap"])(1)',
+    expect(transformed.contents).toMatch(
+      /__reactPreview_themeHelper_0\(\(props\.theme\), \["layout","gap"\], \{[^}]+\}\)\(1\)/u,
     );
-    expect(transformed.contents).toContain(
-      '__reactPreview_themeHelper_0((props.theme), ["spacing"])(2)',
+    expect(transformed.contents).toMatch(
+      /__reactPreview_themeHelper_0\(\(props\.theme\), \["spacing"\], \{[^}]+\}\)\(2\)/u,
     );
+    expect(transformed.contents).toContain(`"sourcePath":"${sourcePath}"`);
     expect(transformed.contents).toContain('domain.theme.spacing(3)');
+  });
+
+  /** Guards non-callable mixins and scalar tokens while retaining their exact authored locations. */
+  it('isolates missing non-callable theme paths only inside styled templates', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Header.tsx');
+    const sourceText = [
+      "import styled, { css } from 'styled-components';",
+      'const shared = css`color: ${(props) => props.theme.color.black};`;',
+      'export const Header = styled.header`',
+      '  ${(props) => props.theme.flex.rowBetween}',
+      '  @media ${(props) => props.theme.device.sm_md} { ${shared} }',
+      '`;',
+      'const domain = { theme: { color: { black: "domain" } } };',
+      'export const untouched = domain.theme.color.black;',
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain(
+      'import { resolvePreviewThemeValue as __reactPreview_themeValue_0 } from "react-preview:theme";',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_themeValue_0((props.theme), ["flex","rowBetween"]',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_themeValue_0((props.theme), ["color","black"]',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_themeValue_0((props.theme), ["device","sm_md"]',
+    );
+    expect(transformed.contents).toContain(`"sourcePath":"${sourcePath}"`);
+    expect(transformed.contents).toContain('domain.theme.color.black');
   });
 
   /** Reconciles the dedicated Context fallback with general useContext instrumentation. */

@@ -25,8 +25,7 @@ import {
 } from '../previewRouterRequirement';
 import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
 import { PREVIEW_FORMIK_SPECIFIER, PREVIEW_REDUX_SPECIFIER } from '../previewPluginProtocol';
-import { createPreviewThemeRegistrationStatements } from '../previewThemeRegistration';
-import { createPreviewThemeHelperTransform } from './previewThemeHelperInstrumentation';
+import { createPreviewThemeSourceInstrumentation } from './previewThemeSourceInstrumentation';
 import {
   expandStaticPatterns,
   StaticPatternError,
@@ -206,16 +205,13 @@ export class PreviewSourceTransformer {
         replacements.push(...createReactExportPropFallbackReplacements(sourcePath, sourceText));
       }
       if (sourceText.includes('styled-components')) {
-        const themeHelperTransform = createPreviewThemeHelperTransform(
+        const themeInstrumentation = createPreviewThemeSourceInstrumentation(
           sourcePath,
           sourceText,
           allocate,
         );
-        replacements.push(...themeHelperTransform.replacements);
-        generatedImports.push(
-          ...themeHelperTransform.imports,
-          ...createPreviewThemeRegistrationStatements(sourcePath, sourceText, allocate),
-        );
+        replacements.push(...themeInstrumentation.replacements);
+        generatedImports.push(...themeInstrumentation.imports);
       }
       const reduxStateContainerPaths = collectPreviewReduxStateContainerPaths(
         sourcePath,

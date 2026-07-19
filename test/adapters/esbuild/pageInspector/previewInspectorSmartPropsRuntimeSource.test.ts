@@ -10,6 +10,7 @@ import { createPreviewInspectorSmartPropsRuntimeSource } from '../../../../src/a
 /** JSON-safe Smart draft exposed from the generated browser fixture. */
 interface SmartPropsDraft {
   readonly evidenceFound: boolean;
+  readonly generatedValue: Readonly<Record<string, unknown>>;
   readonly generatedPaths: readonly string[];
   readonly requiredPaths: readonly string[];
   readonly value: Readonly<Record<string, unknown>>;
@@ -57,6 +58,13 @@ describe('Preview Inspector Smart props runtime source', () => {
         'title',
       ]),
     );
+    expect(runtime.draft.generatedValue).not.toHaveProperty('count');
+    expect(runtime.draft.generatedValue).not.toHaveProperty('fromParent');
+    expect(runtime.draft.generatedValue).toMatchObject({
+      field: { value: { address: '' } },
+      isLoading: false,
+      onSubmit: '[Preview no-op function]',
+    });
     expect(runtime.fallbackEnabled).toBe(true);
     expect(runtime.storedOverride).toEqual(runtime.applied.value);
   });

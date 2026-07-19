@@ -283,11 +283,25 @@ function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
     /* A path extracted from the actual failure proves that an authored null cannot stay neutral. */
     replaceNullScalars: true,
   });
+  const generatedCompletion = completePreviewInspectorGeneratedValue(
+    inferredValue,
+    requirementValue,
+    { replaceNullScalars: true },
+  );
   const completedValue = completion.changed ? completion.value : baseValue;
   const copiedValue = copyPreviewInspectorBlockerValueForJson(completedValue, { nodes: 0 });
   const value = copiedValue !== null && typeof copiedValue === 'object' && !Array.isArray(copiedValue)
     ? copiedValue
     : {};
+  const copiedGeneratedValue = copyPreviewInspectorBlockerValueForJson(
+    generatedCompletion.changed ? generatedCompletion.value : inferredValue,
+    { nodes: 0 },
+  );
+  const generatedValue = copiedGeneratedValue !== null &&
+    typeof copiedGeneratedValue === 'object' &&
+    !Array.isArray(copiedGeneratedValue)
+      ? copiedGeneratedValue
+      : {};
   const generatedPaths = [];
   for (const path of [
     ...evidence.inferredProps.map((record) => record.path),
@@ -299,6 +313,7 @@ function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
   }
   return {
     evidenceFound: evidence.found,
+    generatedValue,
     generatedPaths,
     requiredPaths: resolvedRequiredPaths,
     value,

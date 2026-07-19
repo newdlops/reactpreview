@@ -80,6 +80,76 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  /** Keeps disruptive lifecycle flags inactive while opening a statically selected access path. */
+  it('generates least-disruptive semantic booleans for a normal page corridor', () => {
+    const runtime = evaluateDataRuntime();
+    const payload = cloneJson(
+      runtime.resolve(
+        {
+          id: 'company-shell',
+          kind: 'graphql',
+          label: 'CompanyShellQuery',
+          shape: {
+            fields: {
+              hasOwnerAccess: { kind: 'boolean' },
+              isDeletionRequested: { kind: 'boolean' },
+              isLoading: { kind: 'boolean' },
+              isOwner: { kind: 'boolean' },
+              shouldAuthenticateTwoFactor: { kind: 'boolean' },
+              unknownFlag: { kind: 'boolean' },
+            },
+            kind: 'object',
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(payload).toEqual({
+      hasOwnerAccess: true,
+      isDeletionRequested: false,
+      isLoading: false,
+      isOwner: true,
+      shouldAuthenticateTwoFactor: false,
+      unknownFlag: false,
+    });
+  });
+
+  /** Aligns an unambiguous generated entity ID while preserving an explicit mismatch scenario. */
+  it('satisfies GraphQL route identity guards without asking for a generated ID', () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'company-shell',
+      kind: 'graphql',
+      label: 'CompanyShellQuery',
+      shape: {
+        fields: {
+          companyWithDeletionStatus: {
+            fields: { id: { kind: 'string' }, name: { kind: 'string' } },
+            kind: 'object',
+          },
+        },
+        kind: 'object',
+      },
+    };
+    const requestContext = {
+      body: { companyId: '42' },
+      rawUrl: 'graphql://CompanyShellQuery',
+    };
+
+    expect(cloneJson(runtime.resolve(metadata, {}, requestContext))).toEqual({
+      companyWithDeletionStatus: { id: '42', name: 'Preview User 1' },
+    });
+    runtime.set(
+      'company-shell',
+      { companyWithDeletionStatus: { id: 'intentional-mismatch', name: 'Error scenario' } },
+      'custom',
+    );
+    expect(cloneJson(runtime.resolve(metadata, {}, requestContext))).toEqual({
+      companyWithDeletionStatus: { id: 'intentional-mismatch', name: 'Error scenario' },
+    });
+  });
+
   /** Reports only newly applied payload shapes so corridor convergence avoids stable remount loops. */
   it('settles repeated corridor Smart fill for the same request shape', () => {
     const runtime = evaluateDataRuntime();
@@ -95,6 +165,27 @@ describe('Page Inspector data runtime source', () => {
 
     expect(runtime.smartReachability('page:Target')).toBe(true);
     expect(runtime.smartReachability('page:Target')).toBe(false);
+  });
+
+  /** Deterministic background convergence never rewrites an explicit payload scenario. */
+  it('preserves user payloads during automatic page-path convergence', () => {
+    const runtime = evaluateDataRuntime();
+    runtime.resolve(
+      {
+        id: 'profile',
+        kind: 'graphql',
+        label: 'Profile',
+        shape: { fields: { name: { kind: 'string' } }, kind: 'object' },
+      },
+      {},
+    );
+    runtime.set('profile', { name: 'Authored fixture' }, 'custom');
+
+    expect(runtime.smartReachability('page:Target', { preserveUserValues: true })).toBe(false);
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      mode: 'custom',
+      payload: { name: 'Authored fixture' },
+    });
   });
 
   /** Returns a local Response-like object and never invokes the captured backend transport. */
@@ -379,11 +470,14 @@ interface EvaluatedDataRuntime {
   readonly lorem: (id: string) => void;
   readonly paths: (shape: unknown) => readonly string[];
   readonly requests: () => readonly unknown[];
-  readonly resolve: (metadata: unknown, seed: unknown) => unknown;
+  readonly resolve: (metadata: unknown, seed: unknown, requestContext?: unknown) => unknown;
   readonly scenario: (id: string, scenario: unknown) => void;
   readonly set: (id: string, payload: unknown, mode: string) => void;
   readonly smart: (id: string) => void;
-  readonly smartReachability: (reachabilityKey: string) => boolean;
+  readonly smartReachability: (
+    reachabilityKey: string,
+    options?: { readonly preserveUserValues?: boolean },
+  ) => boolean;
 }
 
 /** Evaluates the generated source with only its documented lexical dependencies. */

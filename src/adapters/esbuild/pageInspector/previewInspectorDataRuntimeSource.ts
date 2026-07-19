@@ -6,6 +6,8 @@
  * registered backend request; local static-resource fetches may still use the captured native API.
  */
 import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspectorGraphqlShapeRuntimeSource';
+import { createPreviewInspectorDataBooleanRuntimeSource } from './previewInspectorDataBooleanRuntimeSource';
+import { createPreviewInspectorDataReachabilityRuntimeSource } from './previewInspectorDataReachabilityRuntimeSource';
 import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInspectorVirtualBackendRuntimeSource';
 
 /**
@@ -18,9 +20,13 @@ import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInsp
  */
 export function createPreviewInspectorDataRuntimeSource(): string {
   const graphqlShapeRuntimeSource = createPreviewInspectorGraphqlShapeRuntimeSource();
+  const booleanRuntimeSource = createPreviewInspectorDataBooleanRuntimeSource();
+  const reachabilityRuntimeSource = createPreviewInspectorDataReachabilityRuntimeSource();
   const virtualBackendRuntimeSource = createPreviewInspectorVirtualBackendRuntimeSource();
   return String.raw`
 ${graphqlShapeRuntimeSource}
+
+${booleanRuntimeSource}
 
 const PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT = 256;
 const PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT = 10;
@@ -219,7 +225,7 @@ function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex,
       ]),
     );
   }
-  if (shape.kind === 'boolean') return true;
+  if (shape.kind === 'boolean') return createPreviewInspectorBooleanValue(fieldName);
   if (shape.kind === 'number') return itemIndex + 1;
   if (shape.kind === 'null') return null;
   if (shape.kind === 'unknown' && looksLikePreviewInspectorCollection(fieldName)) {
@@ -411,10 +417,14 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
       column: normalized.column,
       generatedPaths: readPreviewInspectorDataShapePaths(normalized.shape),
       line: normalized.line,
-      mode: 'auto',
+      mode: virtualBackend.deterministicIdentityPaths?.length > 0
+        ? 'deterministic-identity-auto'
+        : 'auto',
       ownerName: normalized.ownerName,
-      reason: normalized.evidence,
-      selectedValue: autoPayload,
+      reason: virtualBackend.deterministicIdentityPaths?.length > 0
+        ? normalized.evidence + '; direct response identity equals its unique request ID variable'
+        : normalized.evidence,
+      selectedValue: payload,
       sourcePath: normalized.sourcePath,
       summary: { kind: normalized.kind, method: normalized.method, url: normalized.url },
     });
@@ -599,28 +609,7 @@ function smartFillPreviewInspectorDataPayload(requestId) {
   );
 }
 
-/** Smart-fills every backend request observed in one authored page corridor without repeated commits. */
-function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey) {
-  initializePreviewInspectorDataState();
-  let changed = false;
-  for (const record of previewInspectorSession.dataRequests.values()) {
-    if (record.reachabilityKey !== reachabilityKey) continue;
-    const current = previewInspectorSession.dataPayloadOverrides.get(record.id);
-    const minimum = generatePreviewInspectorDataValue(record.shape, '', 'smart');
-    const retainUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
-    const payload = retainUserPayload
-      ? completePreviewInspectorDataSmartPayload(current.payload, minimum)
-      : minimum;
-    const mode = retainUserPayload ? 'smart-custom' : 'smart';
-    const payloadChanged = current?.mode !== mode ||
-      stringifyPreviewInspectorProps(current?.payload) !== stringifyPreviewInspectorProps(payload);
-    if (payloadChanged) {
-      changed = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode) || changed;
-    }
-  }
-  if (changed) previewInspectorSession.dataAutoEnabled = true;
-  return changed;
-}
+${reachabilityRuntimeSource}
 
 /** Generates and applies a lorem payload using the same inferred type tree as Auto mode. */
 function generatePreviewInspectorLoremPayload(requestId) {

@@ -105,6 +105,43 @@ function isPreviewInspectorGeneratedCollectionMethodRecord(value) {
   });
 }
 
+/**
+ * Reports whether compiler-required usage proves that the currently merged path is an Array.
+ *
+ * A generated array alone is insufficient evidence because semantic names such as options can
+ * also describe a genuine configuration object. Array-item paths such as items.[].id, numeric
+ * reads, and calls to an unambiguous Array prototype method are stronger: retaining any non-array
+ * authored value at that exact path can only move the failure to map, filter, or indexed
+ * rendering. The check stays textual and bounded because required paths are compiler-owned data.
+ */
+function hasPreviewInspectorGeneratedCollectionRequirement(state, path) {
+  if (!Array.isArray(state.requiredPaths) || state.requiredPaths.length === 0) return false;
+  const normalizeCollectionPath = (value) => String(value)
+    .replace(/(?:\.)?\[\]/gu, '.[]')
+    .replace(/(^|\.)(?:0|[1-9][0-9]*)(?=\.|$)/gu, '$1[]')
+    .replace(/^\./u, '');
+  const prefix = normalizeCollectionPath(path.join('.'));
+  return state.requiredPaths.some((rawRequiredPath) => {
+    if (typeof rawRequiredPath !== 'string' || rawRequiredPath.length === 0) return false;
+    const requiredPath = normalizeCollectionPath(rawRequiredPath);
+    const suffix = prefix.length === 0
+      ? requiredPath
+      : requiredPath === prefix
+        ? ''
+        : requiredPath.startsWith(prefix + '.')
+          ? requiredPath.slice(prefix.length + 1)
+          : undefined;
+    if (suffix === undefined || suffix.length === 0) return false;
+    if (suffix === '[]' || suffix.startsWith('[].') || /^(?:0|[1-9][0-9]*)(?:\.|$)/u.test(suffix)) {
+      return true;
+    }
+    const firstSegment = suffix.split('.')[0] ?? '';
+    const methodMatch = /^([^()]+)\(\)$/u.exec(firstSegment);
+    return methodMatch !== null &&
+      previewInspectorGeneratedValueCollectionMethods.has(methodMatch[1]);
+  });
+}
+
 /** Records one bounded generated path while still counting omitted paths for diagnostics. */
 function recordPreviewInspectorGeneratedPath(state, path) {
   state.additions += 1;
@@ -210,6 +247,20 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   if (
     generatedIsArray &&
     !authoredIsArray &&
+    isPreviewInspectorGeneratedPlainRecord(authored) &&
+    hasPreviewInspectorGeneratedCollectionRequirement(state, path)
+  ) {
+    /*
+     * Required-path evidence is stronger than a plain Context/Redux placeholder. Replace only the
+     * incompatible record at the proven collection path and leave its authored siblings untouched.
+     * Scalar values remain authoritative because at/slice/includes can also be String operations.
+     */
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
+  if (
+    generatedIsArray &&
+    !authoredIsArray &&
     isPreviewInspectorGeneratedCollectionMethodRecord(authored)
   ) {
     recordPreviewInspectorGeneratedPath(state, path);
@@ -295,6 +346,9 @@ function completePreviewInspectorGeneratedValue(authored, generated, options = {
     nodes: 0,
     paths: [],
     replaceNullScalars: options?.replaceNullScalars === true,
+    requiredPaths: Array.isArray(options?.requiredPaths)
+      ? options.requiredPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)
+      : [],
   };
   const result = mergePreviewInspectorGeneratedValue(authored, generated, state, [], 0);
   return {

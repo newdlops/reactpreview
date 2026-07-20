@@ -7,6 +7,7 @@
 import { createContext, runInContext } from 'node:vm';
 import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorFailureEvidenceRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackRuntimeSource';
+import { createPreviewInspectorRuntimeFallbackScopeRuntimeSource } from '../../../../../src/adapters/esbuild/pageInspector/previewInspectorRuntimeFallbackScopeRuntimeSource';
 
 /** One record returned from the generated browser registry. */
 export interface TestRuntimeFallbackRecord {
@@ -23,10 +24,13 @@ export interface TestRuntimeFallbackRecord {
 
 /** Functions exported from the isolated VM solely for behavior assertions. */
 export interface TestRuntimeFallbackApi {
+  activateEffectiveScope(candidateId: string): boolean;
+  activateScope(candidateId: string, directTarget: boolean): boolean;
   auto(fallbackId: string): void;
   draft(fallbackId: string): unknown;
   effect(readEffect: () => unknown, metadata: object): unknown;
   read(): TestRuntimeFallbackRecord[];
+  readEffectiveDirectTarget(candidateId: string): boolean;
   reset(fallbackId: string): void;
   resolve(
     readHook: () => unknown,
@@ -42,6 +46,10 @@ export interface TestRuntimeFallbackApi {
     metadata: object,
   ): unknown;
   set(fallbackId: string, value: unknown): void;
+  setRevision(revision: number): void;
+  setRouterOwned(owned: boolean): void;
+  setSelectedExport(exportName: string): void;
+  setTargetOnly(directTarget: boolean, available: boolean): void;
   smart(fallbackId: string): void;
   smartReachability(
     reachabilityKey: string,
@@ -61,6 +69,13 @@ export interface RuntimeFallbackFixture {
 export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture {
   const consoleEntries: Record<string, unknown>[] = [];
   const warnings: string[] = [];
+  const previewInspectorSession = {
+    activeTargetReachabilityKey: 'page:Target',
+    renderScenario: 'authored-page',
+    selectedExportName: 'Target',
+    selectedRootOwnsRouter: false,
+    testTargetReachabilityState: { directTarget: false, directTargetAvailable: true },
+  };
   const sandbox = {
     boundPreviewInspectorConsoleText(value: string, limit: number): string {
       return value.slice(0, limit);
@@ -101,7 +116,10 @@ export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackF
     schedulePreviewInspectorTreeRefresh(): undefined {
       return undefined;
     },
-    previewInspectorSession: { activeTargetReachabilityKey: 'page:Target' },
+    previewInspectorSession,
+    doesSelectedPreviewInspectorPageCandidateOwnRouter(): boolean {
+      return previewInspectorSession.selectedRootOwnsRouter;
+    },
     readPreviewInspectorConsolePrimitives(): { warn(message: string): void } {
       return {
         warn: (message: string): void => {
@@ -112,6 +130,12 @@ export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackF
     readPreviewInspectorFallbackValuesEnabled(): boolean {
       return enabled;
     },
+    readPreviewInspectorRenderScenario(): string {
+      return previewInspectorSession.renderScenario;
+    },
+    readPreviewInspectorTargetReachabilityState(): object {
+      return previewInspectorSession.testTargetReachabilityState;
+    },
     recordPreviewInspectorConsoleEntry(candidate: Record<string, unknown>): void {
       consoleEntries.push(candidate);
     },
@@ -121,17 +145,40 @@ export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackF
   };
   const context = createContext(sandbox);
   runInContext(
-    `${createPreviewInspectorFailureEvidenceRuntimeSource()}\n` +
+    'let previewEntryRevision = 0;\n' +
+      `${createPreviewInspectorFailureEvidenceRuntimeSource()}\n` +
       `${createPreviewInspectorRuntimeFallbackRuntimeSource()}\n` +
+      `${createPreviewInspectorRuntimeFallbackScopeRuntimeSource()}\n` +
       'globalThis.__runtimeFallbackApi = {' +
+      ' activateEffectiveScope: (candidateId) => {' +
+      'const candidate = { id: candidateId };' +
+      'return activatePreviewInspectorRuntimeFallbackScope(' +
+      'candidate, readPreviewInspectorRuntimeFallbackDirectTarget({}, candidate));' +
+      '},' +
+      ' activateScope: (candidateId, directTarget) => ' +
+      'activatePreviewInspectorRuntimeFallbackScope({ id: candidateId }, directTarget),' +
       ' auto: autoPassPreviewInspectorRuntimeFallback,' +
       ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
       ' effect: resolvePreviewInspectorRuntimeEffect,' +
       ' read: readPreviewInspectorRuntimeFallbacks,' +
+      ' readEffectiveDirectTarget: (candidateId) => ' +
+      'readPreviewInspectorRuntimeFallbackDirectTarget({}, { id: candidateId }),' +
       ' reset: resetPreviewInspectorRuntimeFallbackOverride,' +
-      ' resolve: resolvePreviewInspectorRuntimeHook,' +
+      ' resolve: resolvePreviewInspectorScopedRuntimeHook,' +
       ' resolveFragment: resolvePreviewInspectorGraphqlFragmentValue,' +
       ' set: setPreviewInspectorRuntimeFallbackOverride,' +
+      ' setRevision: (revision) => { previewEntryRevision = revision; },' +
+      ' setRouterOwned: (owned) => {' +
+      'previewInspectorSession.selectedRootOwnsRouter = owned;' +
+      '},' +
+      ' setSelectedExport: (exportName) => {' +
+      'previewInspectorSession.selectedExportName = exportName;' +
+      '},' +
+      ' setTargetOnly: (directTarget, available) => {' +
+      'previewInspectorSession.testTargetReachabilityState = {' +
+      'directTarget, directTargetAvailable: available' +
+      '};' +
+      '},' +
       ' smart: smartFillPreviewInspectorRuntimeFallback,' +
       ' smartReachability: smartFillPreviewInspectorRuntimeFallbacksForReachability,' +
       ' status: readPreviewInspectorRuntimeFallbackStatus' +

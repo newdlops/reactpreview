@@ -45,6 +45,15 @@ function initializePreviewInspectorConditionState() {
   if (!(previewInspectorSession.renderConditionAutoOverrides instanceof Map)) {
     previewInspectorSession.renderConditionAutoOverrides = new Map();
   }
+  if (!(previewInspectorSession.renderConditionAutoAttempts instanceof Map)) {
+    previewInspectorSession.renderConditionAutoAttempts = new Map();
+  }
+  if (!(previewInspectorSession.renderConditionRejectedAutoOverridesByKey instanceof Map)) {
+    previewInspectorSession.renderConditionRejectedAutoOverridesByKey = new Map();
+  }
+  if (!(previewInspectorSession.directTargetConditionIdsByExport instanceof Map)) {
+    previewInspectorSession.directTargetConditionIdsByExport = new Map();
+  }
   if (typeof previewInspectorSession.fallbackValuesEnabled !== 'boolean') {
     const persisted = readPersistedPreviewInspectorState();
     previewInspectorSession.fallbackValuesEnabled = persisted.fallbackValuesEnabled !== false;
@@ -157,6 +166,24 @@ function readPreviewInspectorDirectContinuationOverride(metadata, manualOverride
   return undefined;
 }
 
+/** Retains a compiler-stable condition ID proven inside the exact cold selected target facade. */
+function rememberPreviewInspectorDirectTargetCondition(conditionId) {
+  const descriptors = Array.isArray(previewInspectorSession.descriptors)
+    ? previewInspectorSession.descriptors
+    : [];
+  const descriptor = descriptors.find(
+    (item) => item?.exportName === previewInspectorSession.selectedExportName,
+  ) ?? descriptors[0];
+  const exportName = descriptor?.exportName;
+  if (typeof exportName !== 'string' || exportName.length === 0) return;
+  let conditionIds = previewInspectorSession.directTargetConditionIdsByExport.get(exportName);
+  if (!(conditionIds instanceof Set)) {
+    conditionIds = new Set();
+    previewInspectorSession.directTargetConditionIdsByExport.set(exportName, conditionIds);
+  }
+  if (conditionIds.size < 128) conditionIds.add(conditionId);
+}
+
 /**
  * Resolves one compiler-issued condition without changing authored semantics unless a user forced it.
  * A truthy authored object is returned unchanged so logical-and retains its exact normal result.
@@ -182,6 +209,7 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     autoOverride,
   );
   if (directContinuation !== undefined) {
+    rememberPreviewInspectorDirectTargetCondition(conditionId);
     autoOverrides.set(conditionId, directContinuation);
     autoOverride = directContinuation;
   }
@@ -289,7 +317,7 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
     });
   }
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function' && record !== undefined) {
-    recordPreviewInspectorBlockerAutoDecision({
+    const traceId = recordPreviewInspectorBlockerAutoDecision({
       action: 'Advance target-guided JSX branch',
       blockerId: conditionId,
       blockerKind: 'render-condition',
@@ -309,8 +337,114 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
         targetBranch: record.targetBranch,
       },
     });
+    if (typeof traceId === 'string' && traceId.length > 0) {
+      previewInspectorSession.renderConditionAutoAttempts.set(traceId, {
+        conditionId,
+        enabled,
+        reachabilityKey: record.reachabilityKey,
+      });
+      while (previewInspectorSession.renderConditionAutoAttempts.size > 64) {
+        previewInspectorSession.renderConditionAutoAttempts.delete(
+          previewInspectorSession.renderConditionAutoAttempts.keys().next().value,
+        );
+      }
+    }
   }
   previewInspectorSession.renderConditionRevision += 1;
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+
+/**
+ * Reports whether a failed automatic branch has already been rejected for this exact page search.
+ * The rejection is session-only: an explicit retry, candidate change, or hot graph reset clears it.
+ */
+function isPreviewInspectorTargetGuidedConditionRejected(conditionId, reachabilityKey) {
+  initializePreviewInspectorConditionState();
+  if (typeof conditionId !== 'string' || typeof reachabilityKey !== 'string') return false;
+  const rejected = previewInspectorSession.renderConditionRejectedAutoOverridesByKey.get(
+    reachabilityKey,
+  );
+  return rejected instanceof Set && rejected.has(conditionId);
+}
+
+/**
+ * Rolls back the one automatic JSX mutation causally linked to a new fatal render error.
+ * Explicit user choices are never touched, and the rejected gate is remembered so the bounded DFS
+ * cannot immediately recreate the same failure loop during the current candidate traversal.
+ */
+function rollbackPreviewInspectorFailedAutoDecision(traceId) {
+  initializePreviewInspectorConditionState();
+  if (typeof traceId !== 'string') return false;
+  const attempt = previewInspectorSession.renderConditionAutoAttempts.get(traceId);
+  previewInspectorSession.renderConditionAutoAttempts.delete(traceId);
+  if (attempt === undefined) return false;
+  if (previewInspectorSession.renderConditionOverrides.has(attempt.conditionId)) return false;
+  if (
+    previewInspectorSession.renderConditionAutoOverrides.get(attempt.conditionId) !== attempt.enabled
+  ) {
+    return false;
+  }
+  const currentKey = previewInspectorSession.activeTargetReachabilityKey;
+  if (
+    typeof attempt.reachabilityKey === 'string' &&
+    typeof currentKey === 'string' &&
+    attempt.reachabilityKey !== currentKey
+  ) {
+    return false;
+  }
+  previewInspectorSession.renderConditionAutoOverrides.delete(attempt.conditionId);
+  const record = previewInspectorSession.renderConditions.get(attempt.conditionId);
+  if (record !== undefined) {
+    previewInspectorSession.renderConditions.set(attempt.conditionId, {
+      ...record,
+      effectiveEnabled: record.authoredEnabled,
+    });
+  }
+  if (typeof attempt.reachabilityKey === 'string' && attempt.reachabilityKey.length > 0) {
+    let rejected = previewInspectorSession.renderConditionRejectedAutoOverridesByKey.get(
+      attempt.reachabilityKey,
+    );
+    if (!(rejected instanceof Set)) {
+      rejected = new Set();
+      previewInspectorSession.renderConditionRejectedAutoOverridesByKey.set(
+        attempt.reachabilityKey,
+        rejected,
+      );
+    }
+    if (rejected.size < PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT) {
+      rejected.add(attempt.conditionId);
+    }
+    const reachability = previewInspectorSession.targetReachabilityByKey?.get(
+      attempt.reachabilityKey,
+    );
+    if (reachability !== undefined && Array.isArray(reachability.appliedConditions)) {
+      const rejectedGate = reachability.appliedConditions.find(
+        (gate) => gate?.id === attempt.conditionId,
+      );
+      reachability.appliedConditions = reachability.appliedConditions.filter(
+        (gate) => gate?.id !== attempt.conditionId,
+      );
+      reachability.rejectedConditions ??= [];
+      if (rejectedGate !== undefined && reachability.rejectedConditions.length < 64) {
+        reachability.rejectedConditions.push({ ...rejectedGate, reason: 'runtime-error', traceId });
+      }
+      reachability.status = 'recovering-after-rejected-gate';
+    }
+  }
+  previewInspectorSession.renderConditionRevision += 1;
+  if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+    recordPreviewInspectorRuntimeHealth({
+      category: 'render-attempt',
+      detail: {
+        conditionId: attempt.conditionId,
+        reachabilityKey: attempt.reachabilityKey,
+        traceId,
+      },
+      event: 'automatic-condition-rolled-back',
+    });
+  }
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();
   return true;
@@ -337,6 +471,12 @@ function clearPreviewInspectorTargetGuidedConditionOverrides(reachabilityKey) {
       });
     }
   }
+  if (typeof reachabilityKey === 'string' && reachabilityKey.length > 0) {
+    previewInspectorSession.renderConditionRejectedAutoOverridesByKey.delete(reachabilityKey);
+  } else {
+    previewInspectorSession.renderConditionRejectedAutoOverridesByKey.clear();
+  }
+  previewInspectorSession.renderConditionAutoAttempts.clear();
   if (changed) previewInspectorSession.renderConditionRevision += 1;
   return changed;
 }

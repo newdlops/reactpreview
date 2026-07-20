@@ -8,6 +8,7 @@ interface ConditionRuntimeHarness {
   readonly rememberDirectOwner: (exportName: string, ownerName: string) => void;
   readonly readConditions: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
+  readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
   readonly resetCondition: (conditionId: string) => void;
   readonly resolveCondition: (
     conditionId: string,
@@ -18,6 +19,7 @@ interface ConditionRuntimeHarness {
   readonly setAutoCondition: (conditionId: string, enabled: boolean) => boolean;
   readonly setCondition: (conditionId: string, enabled: boolean) => void;
   readonly setFallbackValuesEnabled: (enabled: boolean) => void;
+  readonly rollbackAutoDecision: (traceId: string) => boolean;
 }
 
 describe('Preview Inspector condition runtime source', () => {
@@ -116,7 +118,6 @@ describe('Preview Inspector condition runtime source', () => {
       reachabilityKey: 'candidate:Target',
       targetBranch: 'falsy',
     });
-
     harness.setCondition('login-gate', true);
     expect(harness.resolveCondition('login-gate', false, metadata)).toBe(true);
     expect(harness.readConditions()[0]).toMatchObject({ autoOverride: undefined, override: true });
@@ -125,6 +126,53 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.readConditions()[0]).toMatchObject({
       autoOverride: undefined,
       override: undefined,
+    });
+  });
+
+  /** Reverts only the automatic gate that causally introduced a fatal page-render failure. */
+  it('rolls back and rejects a failed target-guided condition without touching user state', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      expression: '<DocumentPreviewModal>.open: open',
+      kind: 'overlay-visibility',
+      ownerName: 'Modal',
+      role: 'overlay',
+      sourcePath: '/workspace/document-preview-modal.tsx',
+    };
+    harness.session.activeTargetReachabilityKey = 'candidate:SelectedField';
+    harness.session.targetReachabilityByKey = new Map([
+      [
+        'candidate:SelectedField',
+        {
+          appliedConditions: [{ expression: metadata.expression, id: 'unrelated-modal' }],
+          status: 'advancing',
+        },
+      ],
+    ]);
+    expect(harness.resolveCondition('unrelated-modal', false, metadata)).toBe(false);
+    expect(harness.setAutoCondition('unrelated-modal', true)).toBe(true);
+    expect(harness.resolveCondition('unrelated-modal', false, metadata)).toBe(true);
+
+    expect(harness.rollbackAutoDecision('condition-trace-1')).toBe(true);
+    expect(harness.resolveCondition('unrelated-modal', false, metadata)).toBe(false);
+    expect(harness.isAutoConditionRejected('unrelated-modal', 'candidate:SelectedField')).toBe(
+      true,
+    );
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: undefined,
+      effectiveEnabled: false,
+      override: undefined,
+    });
+    expect(
+      (harness.session.targetReachabilityByKey as Map<string, Record<string, unknown>>).get(
+        'candidate:SelectedField',
+      ),
+    ).toMatchObject({
+      appliedConditions: [],
+      rejectedConditions: [
+        { id: 'unrelated-modal', reason: 'runtime-error', traceId: 'condition-trace-1' },
+      ],
+      status: 'recovering-after-rejected-gate',
     });
   });
 
@@ -153,6 +201,11 @@ describe('Preview Inspector condition runtime source', () => {
       effectiveEnabled: false,
       targetBranch: 'falsy',
     });
+    const retainedConditions = harness.session.directTargetConditionIdsByExport as Map<
+      string,
+      Set<string>
+    >;
+    expect([...(retainedConditions.get('default') ?? [])]).toEqual(['staff-gate']);
 
     const siblingHarness = createConditionRuntimeHarness({}, vi.fn(), {
       descriptors: [{ exportName: 'default' }],
@@ -225,6 +278,12 @@ function createConditionRuntimeHarness(
       const schedulePreviewInspectorCommitRefresh = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
       const schedulePreviewInspectorTreeRefresh = () => undefined;
+      let automaticTraceSequence = 0;
+      const recordPreviewInspectorBlockerAutoDecision = (candidate) => {
+        if (candidate?.startsRenderAttempt !== true) return undefined;
+        automaticTraceSequence += 1;
+        return 'condition-trace-' + String(automaticTraceSequence);
+      };
       ${source}
       globalThis.__conditionRuntime = {
         getRevision: readPreviewInspectorRenderConditionRevision,
@@ -235,8 +294,10 @@ function createConditionRuntimeHarness(
         },
         readConditions: readPreviewInspectorRenderConditions,
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
+        isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
         resetCondition: resetPreviewInspectorRenderConditionOverride,
         resolveCondition: resolvePreviewInspectorRenderCondition,
+        rollbackAutoDecision: rollbackPreviewInspectorFailedAutoDecision,
         session: previewInspectorSession,
         setAutoCondition: setPreviewInspectorTargetGuidedConditionOverride,
         setCondition: setPreviewInspectorRenderConditionOverride,

@@ -334,12 +334,16 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
 function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
   initializePreviewInspectorRuntimeFallbackState();
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-    return completePreviewInspectorGeneratedValue(value, fallback);
+    return completePreviewInspectorGeneratedValue(value, fallback, {
+      requiredPaths: metadata.requiredPaths,
+    });
   }
   let completions = previewInspectorSession.runtimeFallbackCompletions.get(value);
   const cached = completions?.get(metadata.id);
   if (cached !== undefined && cached.fallback === fallback) return cached.completion;
-  const completion = completePreviewInspectorGeneratedValue(value, fallback);
+  const completion = completePreviewInspectorGeneratedValue(value, fallback, {
+    requiredPaths: metadata.requiredPaths,
+  });
   if (completion.changed) {
     if (completions === undefined) {
       completions = new Map();
@@ -468,8 +472,9 @@ function resolvePreviewInspectorRuntimeHook(
  * user a question with only one meaningful answer. The Inspector console retains source, owner,
  * missing-property evidence, and the original error while the rendered page remains mounted.
  */
-function recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, phase) {
+function recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, phase, effectScopeKey) {
   initializePreviewInspectorRuntimeFallbackState();
+  if (previewInspectorSession.runtimeFallbackScopeKey !== effectScopeKey) return;
   const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
   if (
     metadata.id.length === 0 ||
@@ -525,13 +530,13 @@ function recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, phase)
 }
 
 /** Wraps a cleanup callback so a later unmount cannot replace an otherwise valid static page. */
-function createPreviewInspectorRuntimeEffectCleanup(cleanup, metadata) {
+function createPreviewInspectorRuntimeEffectCleanup(cleanup, metadata, effectScopeKey) {
   return () => {
     if (!readPreviewInspectorFallbackValuesEnabled()) return cleanup();
     try {
       return cleanup();
     } catch (error) {
-      recordPreviewInspectorRuntimeEffectIsolation(metadata, error, 'cleanup');
+      recordPreviewInspectorRuntimeEffectIsolation(metadata, error, 'cleanup', effectScopeKey);
       return undefined;
     }
   };
@@ -581,6 +586,7 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
       ' ms; further executions were disabled for this preview session',
     ),
     'repeated effect execution',
+    previewInspectorSession.runtimeFallbackScopeKey,
   );
   return true;
 }
@@ -592,26 +598,32 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
  */
 function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata) {
   if (typeof readEffect !== 'function') return undefined;
+  initializePreviewInspectorRuntimeFallbackState();
+  const effectScopeKey = previewInspectorSession.runtimeFallbackScopeKey;
   if (shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata)) return undefined;
   let result;
   try {
     result = readEffect();
   } catch (error) {
     if (!readPreviewInspectorFallbackValuesEnabled()) throw error;
-    recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'effect');
+    recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'effect', effectScopeKey);
     return undefined;
   }
   if (isPreviewInspectorRuntimeThenable(result)) {
     if (!readPreviewInspectorFallbackValuesEnabled()) return result;
     Promise.resolve(result).catch((error) => {
-      recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'async effect');
+      recordPreviewInspectorRuntimeEffectIsolation(
+        rawMetadata,
+        error,
+        'async effect',
+        effectScopeKey,
+      );
     });
     return undefined;
   }
   if (typeof result === 'function') {
-    return createPreviewInspectorRuntimeEffectCleanup(result, rawMetadata);
+    return createPreviewInspectorRuntimeEffectCleanup(result, rawMetadata, effectScopeKey);
   }
-  initializePreviewInspectorRuntimeFallbackState();
   const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
   previewInspectorSession.runtimeEffectIsolations.delete(metadata.id);
   return result;
@@ -750,7 +762,9 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       fallback,
       record.requiredPaths,
     );
-    const completion = completePreviewInspectorGeneratedValue(manualValue, minimum);
+    const completion = completePreviewInspectorGeneratedValue(manualValue, minimum, {
+      requiredPaths: record.requiredPaths,
+    });
     if (completion.changed) {
       previewInspectorSession.runtimeFallbackOverrides.set(
         fallbackId,

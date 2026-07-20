@@ -241,8 +241,20 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
       break;
     }
     const nextName = path[index + 1] ?? '';
-    if (current[propertyName] === null || typeof current[propertyName] !== 'object') {
-      current[propertyName] = /^\d+$/u.test(nextName) ? [] : {};
+    const expectsArray = /^\d+$/u.test(nextName);
+    if (
+      current[propertyName] === null ||
+      typeof current[propertyName] !== 'object' ||
+      (expectsArray && !Array.isArray(current[propertyName]))
+    ) {
+      /*
+       * An array-item marker is structural evidence, not an ordinary numeric object key. Repair
+       * copied object placeholders here so later completion receives a real Array shape rather
+       * than an object such as { "0": { id: ... } } whose filter/map methods are absent. An
+       * existing Array remains valid for non-index descendants such as items.length and must not
+       * be narrowed back to an object merely because the next segment is a named property.
+       */
+      current[propertyName] = expectsArray ? [] : {};
     }
     current = current[propertyName];
   }
@@ -295,7 +307,19 @@ function createPreviewInspectorRuntimeFallbackAutoValue(value, requiredPaths) {
   if (materializedPaths.length === 0) return value;
   const requirement = createPreviewInspectorRuntimeFallbackRequirementTemplate(value, materializedPaths);
   if (requirement === undefined) return value;
-  const completion = completePreviewInspectorGeneratedValue(value, requirement);
+  /*
+   * A compiler fallback's scalar kind remains authoritative: numeric reads can be valid on text,
+   * and inconsistent test/user metadata must not coerce that scalar into a collection. Plain
+   * records are the Context/Redux placeholder case where item/method evidence safely proves that
+   * the copied template must repair an incompatible container.
+   */
+  const completion = completePreviewInspectorGeneratedValue(
+    value,
+    requirement,
+    isPreviewInspectorGeneratedPlainRecord(value)
+      ? { requiredPaths: materializedPaths }
+      : undefined,
+  );
   return completion.changed ? completion.value : value;
 }
 

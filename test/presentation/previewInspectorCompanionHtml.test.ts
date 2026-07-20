@@ -35,6 +35,7 @@ describe('Preview Inspector companion HTML', () => {
     });
 
     expect(html).toContain('const allowedTags = new Set([');
+    expect(html).toContain("'checked', 'class', 'disabled', 'hidden', 'id'");
     expect(html).toContain("name.startsWith('data-rpi-')");
     expect(html).toContain(".replace(/@import[^;]*(?:;|$)/giu, '')");
     expect(html).toContain('data-react-preview-companion-source="true"');
@@ -66,8 +67,8 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="rows"]');
   });
 
-  /** Preserves ordinary tree selection scroll while allowing only explicit external reveals. */
-  it('restores document and component-tree scroll across inert snapshots', () => {
+  /** Preserves every named Inspector viewport while allowing only explicit tree reveals. */
+  it('restores document and named navigation scroll regions across inert snapshots', () => {
     const html = createPreviewInspectorCompanionHtml({
       cspSource: 'vscode-webview://inspector-test',
       documentName: 'Scrollable.tsx',
@@ -76,10 +77,19 @@ describe('Preview Inspector companion HTML', () => {
 
     expect(html).toContain('function captureCompanionScrollSnapshot()');
     expect(html).toContain('function restoreCompanionScrollSnapshot(snapshot)');
+    expect(html).toContain('function readCompanionScrollRegionKey(viewport)');
+    expect(html).toContain('function readCompanionScrollRegions()');
+    expect(html).toContain("mirror.querySelectorAll('[data-rpi-scroll-key]')");
+    expect(html).toContain("['.rpi-tree-scroll', 'components-tree']");
+    expect(html).toContain("['.rpi-blocker-navigation-scroll', 'blocker-flow']");
+    expect(html).toContain("viewport.setAttribute('data-rpi-scroll-key', key)");
+    expect(html).toContain('const retainedRegions = new Map(');
+    expect(html).toContain('.slice(0, 16)');
     expect(html).toContain('restoreControlFocus(activeId, selectionStart, selectionEnd);');
     expect(html).toContain('restoreCompanionScrollSnapshot(scrollSnapshot);');
     expect(html).toContain('revealCompanionTreeRow(message.treeReveal);');
-    expect(html).toContain("mirror.querySelector('.rpi-tree-scroll')");
+    expect(html).toContain("row?.closest?.('.rpi-tree-scroll')");
+    expect(html).not.toContain('hasTreeViewport');
     expect(html).not.toContain('scrollIntoView');
   });
 });

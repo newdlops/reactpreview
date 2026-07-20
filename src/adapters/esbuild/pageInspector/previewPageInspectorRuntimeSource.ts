@@ -22,8 +22,11 @@ import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRe
 import { createPreviewInspectorRuntimeHealthSource } from './previewInspectorRuntimeHealthSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
+import { createPreviewInspectorTargetAttemptRuntimeSource } from './previewInspectorTargetAttemptRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from './previewInspectorTargetReachabilityRuntimeSource';
+import { createPreviewInspectorTargetPathIdentityRuntimeSource } from './previewInspectorTargetPathIdentityRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
+import { createPreviewInspectorRuntimeFallbackScopeRuntimeSource } from './previewInspectorRuntimeFallbackScopeRuntimeSource';
 import { createPreviewInspectorSmartPropsRuntimeSource } from './previewInspectorSmartPropsRuntimeSource';
 
 /** Global symbol description shared with the separately bundled target-facade runtime. */
@@ -58,8 +61,12 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const runtimeHealthSource = createPreviewInspectorRuntimeHealthSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
+  const targetAttemptRuntimeSource = createPreviewInspectorTargetAttemptRuntimeSource();
+  const targetPathIdentityRuntimeSource = createPreviewInspectorTargetPathIdentityRuntimeSource();
   const targetReachabilityRuntimeSource = createPreviewInspectorTargetReachabilityRuntimeSource();
   const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
+  const runtimeFallbackScopeRuntimeSource =
+    createPreviewInspectorRuntimeFallbackScopeRuntimeSource();
   const smartPropsRuntimeSource = createPreviewInspectorSmartPropsRuntimeSource();
   const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
@@ -134,6 +141,10 @@ ${conditionRuntimeSource}
 
 ${targetReachabilityRuntimeSource}
 
+${targetPathIdentityRuntimeSource}
+
+${targetAttemptRuntimeSource}
+
 ${blockerTraceRuntimeSource}
 
 ${runtimeHealthSource}
@@ -141,6 +152,8 @@ ${runtimeHealthSource}
 ${consoleRuntimeSource}
 
 ${runtimeFallbackRuntimeSource}
+
+${runtimeFallbackScopeRuntimeSource}
 
 ${graphqlDocumentRuntimeSource}
 
@@ -396,13 +409,26 @@ function subscribePreviewInspectorTree(listener) {
   };
 }
 
-/** Selects a collected node without granting edit access to an arbitrary Fiber component. */
-function selectPreviewInspectorTreeNode(nodeId) {
+/** Selects a collected node, re-resolving an export identity when structural Fiber IDs changed. */
+function selectPreviewInspectorTreeNode(nodeId, expectedExportName) {
   if (typeof nodeId !== 'string' || nodeId.length === 0) return;
   const snapshot = collectPreviewInspectorTreeSnapshot();
-  const selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
+  let selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
+  if (
+    typeof expectedExportName === 'string' &&
+    expectedExportName.length > 0 &&
+    selection?.node?.exportName !== expectedExportName
+  ) {
+    const matchingIds = [...(snapshot.nodeById?.entries?.() ?? [])]
+      .filter(([, node]) => node?.exportName === expectedExportName)
+      .map(([id]) => id);
+    selection = matchingIds.length === 1
+      ? selectPreviewInspectorFiberTreeNode(snapshot, matchingIds[0])
+      : undefined;
+  }
   if (selection === undefined) return;
-  previewInspectorSession.selectedTreeNodeId = nodeId;
+  previewInspectorSession.selectedTreeNodeId = selection.node.id;
+  if (selection.hostNodes.length > 0) previewInspectorSession.highlightEnabled = true;
   previewInspectorSession.lastTreeSnapshot = snapshot;
   persistPreviewInspectorState();
   schedulePreviewInspectorTreeRefresh();
@@ -702,7 +728,11 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
       });
 }
 
-/** Resets an ancestor-root error boundary when edited target props request a scoped remount. */
+/**
+ * Resets an ancestor-root error boundary when props, data, candidate, or JSX conditions remount.
+ * Including the condition revision is essential for automatic rollback: changing only a child key
+ * cannot clear error state already latched by the surrounding class boundary.
+ */
 function PreviewPageInspectorExportBoundary({ descriptor, children }) {
   usePreviewInspectorStore();
   const inspectedExportName =
@@ -715,13 +745,14 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
   );
   const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
   const dataRevision = previewInspectorSession.dataRevision ?? 0;
+  const conditionRevision = readPreviewInspectorRenderConditionRevision();
   return React.createElement(
     PreviewExportErrorBoundary,
     {
       exportName: descriptor?.exportName ?? inspectedExportName,
       key: inspectedExportName + ':' + String(targetRevision) + ':' + rootName + ':' +
         String(rootRevision) + ':candidate:' + String(selectedCandidate?.id ?? '') +
-        ':data:' + String(dataRevision),
+        ':data:' + String(dataRevision) + ':condition:' + String(conditionRevision),
       parentSlice: descriptor?.parentSlice,
     },
     children,
@@ -756,7 +787,7 @@ const previewInspectorApi = {
   resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
   resolveRuntimeEffect: resolvePreviewInspectorRuntimeEffect,
-  resolveRuntimeHook: resolvePreviewInspectorRuntimeHook,
+  resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook,
   remount: remountPreviewInspectorExport,
   resetPropsOverride: resetPreviewInspectorPropsOverride,
   selectExport: selectPreviewInspectorExport,

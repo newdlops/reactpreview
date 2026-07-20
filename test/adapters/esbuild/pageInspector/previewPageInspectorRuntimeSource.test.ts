@@ -83,13 +83,17 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("'Smart fill props'");
     expect(source).toContain('PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL');
     expect(source).toContain('materializePreviewInspectorRuntimeFallbackOverride');
+    expect(source).toContain(
+      "':data:' + String(dataRevision) + ':condition:' + String(conditionRevision)",
+    );
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain(
       'resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation',
     );
     expect(source).toContain('resolveBackendRequest: resolvePreviewInspectorBackendRequest');
-    expect(source).toContain('resolveRuntimeHook: resolvePreviewInspectorRuntimeHook');
+    expect(source).toContain('resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook');
+    expect(source).toContain('function activatePreviewInspectorRuntimeFallbackScope');
     expect(source).toContain('previewAxiosRequest: previewInspectorAxiosRequest');
     expect(source).toContain('previewFetch: previewInspectorFetch');
     expect(source).toContain('recordConsoleEntry: recordPreviewInspectorConsoleEntry');
@@ -101,7 +105,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('reportPreviewInspectorTargetFailure(error');
     expect(source).toContain("['console', 'Console ('");
     expect(source).toContain('Auto payloads');
-    expect(source).toContain("['fallbacks', 'Fallbacks ('");
+    expect(source).toContain("['payload', 'Payload']");
+    expect(source).toContain('PreviewInspectorRuntimeBlockerDetail');
     expect(source).toContain('GENERATED RENDER VALUE');
     expect(source).toContain("registerPreviewRuntimeCapability('Render isolation'");
     expect(source).toContain("registerPreviewRuntimeCapability('GraphQL documents'");
@@ -209,6 +214,12 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('reconcilePreviewInspectorHiddenElements()');
     expect(source).toContain('requestPreviewInspectorTreeReveal(selection.node.id)');
     expect(source).toContain('selectPreviewInspectorFiberTreeNode(snapshot, nodeId)');
+    expect(source).toContain('function selectPreviewInspectorTreeNode(nodeId, expectedExportName)');
+    expect(source).toContain('node?.exportName === expectedExportName');
+    expect(source).toContain('previewInspectorSession.selectedTreeNodeId = selection.node.id');
+    expect(source).toContain(
+      'if (selection.hostNodes.length > 0) previewInspectorSession.highlightEnabled = true',
+    );
     expect(source).toContain('const currentFileExportNames = [');
     expect(source).toContain('const orderedExportNames = [');
     expect(source).toContain('targetExportNames: currentFileExportNames');

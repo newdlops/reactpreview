@@ -174,6 +174,8 @@ const previewCommitPromise = new Promise((resolve) => {
 });
 let previewCommitCompleted = false;
 let previewActivationStarted = false;
+/** Holds revision-local descriptors without mutating the mounted Inspector session during prepare. */
+let preparedPreviewInspectorTargets = [];
 
 /** Records the next deterministic bootstrap stage without wrapping or replacing the real error. */
 function enterRuntimePhase(phase) {
@@ -863,6 +865,16 @@ async function preparePreviewElement() {
     ...setupContext,
   });
 
+  if (${encodedRenderMode} === 'page-inspector') {
+    // Keep this boundary outside every project/automatic provider so candidate and export changes
+    // cannot retain a provider value produced by the preceding render corridor.
+    previewElement = React.createElement(
+      PreviewInspectorRuntimeFallbackScopeBoundary,
+      undefined,
+      previewElement,
+    );
+  }
+  preparedPreviewInspectorTargets = previewTargets;
   return previewElement;
 }
 
@@ -894,6 +906,11 @@ async function activatePreparedPreview(previewElement) {
     previewElement,
     React.createElement(PreviewRenderedCommitSignal),
   );
+  if (${encodedRenderMode} === 'page-inspector') {
+    // A prepared hot revision may never be selected for activation. Commit shared Inspector state
+    // only for the entry that is about to render, preserving the still-mounted revision otherwise.
+    preparePreviewInspectorRuntimeFallbackScope(preparedPreviewInspectorTargets);
+  }
   previewRoot.render(
     React.createElement(PreviewErrorBoundary, undefined, commitAwarePreviewElement),
   );

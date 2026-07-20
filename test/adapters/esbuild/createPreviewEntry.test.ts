@@ -169,6 +169,52 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain(
       'activePreviewRouterBridge?.isNestedPreviewRouterError?.(event.error ?? event.message) === true',
     );
+    expect(entry).toContain(
+      'preparePreviewInspectorRuntimeFallbackScope(preparedPreviewInspectorTargets)',
+    );
+  });
+
+  /** Commits shared fallback scope only when a fully prepared replacement is actually activated. */
+  it('keeps the mounted fallback scope intact until the selected entry renders', () => {
+    const entry = createPreviewEntry({
+      documentName: 'AtomicScope.tsx',
+      globalNamespaces: [],
+      renderMode: 'page-inspector',
+      setupKind: 'none',
+    });
+
+    const prepareStart = entry.indexOf('async function preparePreviewElement()');
+    const prepareEnd = entry.indexOf('\n}', entry.indexOf('return previewElement;', prepareStart));
+    const activationStart = entry.indexOf('async function activatePreparedPreview', prepareEnd);
+    const scopeActivation = entry.indexOf(
+      'preparePreviewInspectorRuntimeFallbackScope(previewTargets)',
+      activationStart,
+    );
+    const preparedTargetAssignment = entry.indexOf(
+      'preparedPreviewInspectorTargets = previewTargets',
+      prepareStart,
+    );
+    const apolloComposition = entry.indexOf(
+      'apolloBridge.createApolloPreviewElement(previewElement',
+      prepareStart,
+    );
+    const providerScopeBoundary = entry.indexOf(
+      'PreviewInspectorRuntimeFallbackScopeBoundary',
+      apolloComposition,
+    );
+    const activatedScope = entry.indexOf(
+      'preparePreviewInspectorRuntimeFallbackScope(preparedPreviewInspectorTargets)',
+      activationStart,
+    );
+    const rootRender = entry.indexOf('previewRoot.render(', activationStart);
+
+    expect(preparedTargetAssignment).toBeGreaterThan(prepareStart);
+    expect(preparedTargetAssignment).toBeLessThan(prepareEnd);
+    expect(providerScopeBoundary).toBeGreaterThan(apolloComposition);
+    expect(providerScopeBoundary).toBeLessThan(preparedTargetAssignment);
+    expect(scopeActivation).toBe(-1);
+    expect(activatedScope).toBeGreaterThan(activationStart);
+    expect(activatedScope).toBeLessThan(rootRender);
   });
 
   /** Drops superseded preparation before it can unmount the currently displayed revision. */

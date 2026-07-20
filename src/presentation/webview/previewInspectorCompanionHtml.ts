@@ -74,7 +74,7 @@ export function createPreviewInspectorCompanionHtml(
         'TEXTAREA', 'UL'
       ]);
       const simpleAttributes = new Set([
-        'checked', 'class', 'disabled', 'id', 'open', 'placeholder', 'readonly', 'role',
+        'checked', 'class', 'disabled', 'hidden', 'id', 'open', 'placeholder', 'readonly', 'role',
         'selected', 'spellcheck', 'tabindex', 'title', 'type', 'value'
       ]);
       const navigationKeys = new Set([
@@ -161,16 +161,47 @@ export function createPreviewInspectorCompanionHtml(
         return Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
       }
 
-      /** Captures the companion document and Components viewport before mirrored DOM replacement. */
+      /** Reads one bounded extension-issued identity for a preserved Inspector scroll viewport. */
+      function readCompanionScrollRegionKey(viewport) {
+        const key = viewport?.getAttribute?.('data-rpi-scroll-key');
+        return typeof key === 'string' && /^[a-z][a-z0-9-]{0,63}$/u.test(key)
+          ? key
+          : undefined;
+      }
+
+      /** Names legacy tree/flow viewports locally until every retained snapshot emits the key. */
+      function readCompanionScrollRegions() {
+        for (const [selector, key] of [
+          ['.rpi-tree-scroll', 'components-tree'],
+          ['.rpi-blocker-navigation-scroll', 'blocker-flow']
+        ]) {
+          const viewport = mirror.querySelector(selector);
+          if (viewport !== null && readCompanionScrollRegionKey(viewport) === undefined) {
+            viewport.setAttribute('data-rpi-scroll-key', key);
+          }
+        }
+        return [...mirror.querySelectorAll('[data-rpi-scroll-key]')].slice(0, 16);
+      }
+
+      /** Captures the document and every named Inspector viewport before mirrored DOM replacement. */
       function captureCompanionScrollSnapshot() {
         const documentViewport = document.scrollingElement;
-        const treeViewport = mirror.querySelector('.rpi-tree-scroll');
+        const regions = [];
+        const retainedKeys = new Set();
+        for (const viewport of readCompanionScrollRegions()) {
+          const key = readCompanionScrollRegionKey(viewport);
+          if (key === undefined || retainedKeys.has(key)) continue;
+          retainedKeys.add(key);
+          regions.push({
+            key,
+            left: normalizeCompanionScrollCoordinate(viewport.scrollLeft),
+            top: normalizeCompanionScrollCoordinate(viewport.scrollTop)
+          });
+        }
         return {
           documentLeft: normalizeCompanionScrollCoordinate(documentViewport?.scrollLeft),
           documentTop: normalizeCompanionScrollCoordinate(documentViewport?.scrollTop),
-          hasTreeViewport: treeViewport !== null,
-          treeLeft: normalizeCompanionScrollCoordinate(treeViewport?.scrollLeft),
-          treeTop: normalizeCompanionScrollCoordinate(treeViewport?.scrollTop)
+          regions
         };
       }
 
@@ -181,11 +212,17 @@ export function createPreviewInspectorCompanionHtml(
           documentViewport.scrollLeft = snapshot.documentLeft;
           documentViewport.scrollTop = snapshot.documentTop;
         }
-        if (!snapshot.hasTreeViewport) return;
-        const treeViewport = mirror.querySelector('.rpi-tree-scroll');
-        if (treeViewport === null) return;
-        treeViewport.scrollLeft = snapshot.treeLeft;
-        treeViewport.scrollTop = snapshot.treeTop;
+        const retainedRegions = new Map(
+          (Array.isArray(snapshot.regions) ? snapshot.regions : [])
+            .map((region) => [region.key, region]),
+        );
+        for (const viewport of readCompanionScrollRegions()) {
+          const key = readCompanionScrollRegionKey(viewport);
+          const region = key === undefined ? undefined : retainedRegions.get(key);
+          if (region === undefined) continue;
+          viewport.scrollLeft = normalizeCompanionScrollCoordinate(region.left);
+          viewport.scrollTop = normalizeCompanionScrollCoordinate(region.top);
+        }
       }
 
       /** Finds a preview-authorized external reveal without interpolating its ID into a selector. */

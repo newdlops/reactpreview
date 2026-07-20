@@ -277,7 +277,7 @@ function PreviewInspectorFlowchartToolbar({
         'button',
         {
           'aria-pressed': inspectorCollapsed !== true,
-          className: 'rpi-button',
+          className: 'rpi-button rpi-flowchart-inspector-toggle',
           onClick: onToggleInspector,
           title: inspectorCollapsed === true ? 'Show Blocker Resolver inspector' : 'Hide Blocker Resolver inspector',
           type: 'button',

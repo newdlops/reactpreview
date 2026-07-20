@@ -171,6 +171,7 @@ describe('Preview Inspector flowchart toolbar runtime source', () => {
     expect(source).toContain("'data-rpi-flowchart-command'");
     expect(source).toContain("'data-rpi-flowchart-zoom-label'");
     expect(source).toContain("'data-rpi-flowchart-camera-status'");
+    expect(source).toContain("className: 'rpi-button rpi-flowchart-inspector-toggle'");
     expect(source).toContain("'Control & render flow'");
     expect(source).toContain("'Locate current file'");
     expect(source).toContain("'solid · active/proven'");

@@ -41,4 +41,30 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('.rpi-flowchart-camera-status');
     expect(source).toContain('@container rpi-inspector (max-width:460px)');
   });
+
+  /** Keeps graph controls and Resolver editors usable when the Inspector occupies a narrow group. */
+  it('stacks, wraps, and internally scrolls the blocker debugger at compact widths', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain(
+      '@container rpi-inspector (max-width:760px){.rpi-flowchart{grid-template-rows:auto minmax(96px,1fr)}',
+    );
+    expect(source).toContain('.rpi-flowchart-viewport{min-height:96px}');
+    expect(source).toContain(
+      '.rpi-flowchart-camera{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%}',
+    );
+    expect(source).toContain('.rpi-flowchart-locate-button{grid-column:1/-1;grid-row:3}');
+    expect(source).toContain(
+      '.rpi-flowchart{grid-template-rows:auto minmax(0,1fr)}.rpi-flowchart-viewport{min-height:0}',
+    );
+    expect(source).toContain(
+      '.rpi-flow-inspector .rpi-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));min-width:0}',
+    );
+    expect(source).toContain(
+      '.rpi-flow-inspector-selected-editor,.rpi-flow-inspector-selected-editor>*{max-width:100%;min-width:0}',
+    );
+    expect(source).toContain('@container rpi-inspector (max-width:320px)');
+    expect(source).toContain('@media(max-height:520px)');
+    expect(source).toContain('@media(max-height:520px){@container rpi-inspector (max-width:460px)');
+  });
 });

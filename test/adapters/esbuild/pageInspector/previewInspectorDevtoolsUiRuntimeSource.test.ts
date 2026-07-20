@@ -45,10 +45,18 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain('function PreviewInspectorBlockerFlowDetail');
+    expect(source).toContain('function PreviewInspectorNavigationPane');
+    expect(source).toContain("['components', 'Components']");
+    expect(source).toContain("['blockers', 'Blockers (' + String(flow.unresolvedCount) + ')']");
+    expect(source).toContain('.rpi-navigation-panel[data-rpi-active="false"]{display:none}');
+    expect(source).toContain("'.rpi-blocker-navigation-scroll{overflow:auto");
+    expect(source).toContain('React.createElement(PreviewInspectorRenderFlowDetail');
     expect(source).toContain('createPreviewInspectorBlockerFlow(snapshot)');
-    expect(source).toContain("['flow', 'Fix blockers (' + String(flow.unresolvedCount) + ')']");
-    expect(source).toContain("activeTab === 'flow'");
-    expect(source).toContain("previewInspectorDevtoolsSessionState.activeTab !== 'flow'");
+    expect(source).toContain('const blockerFlow = createPreviewInspectorRenderFlow(snapshot)');
+    expect(source).not.toContain("['flow', 'Fix blockers (' + String(flow.unresolvedCount) + ')']");
+    expect(source).toContain("['blocker', 'component', 'console']");
+    expect(source).toContain('React.createElement(PreviewInspectorComponentDebuggerDetail');
+    expect(source).toContain("blockerSelected ? 'Fix selected blocker' : 'Component debugger'");
     expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
     expect(source).toContain("'aria-label': 'React page layout wireframe'");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
@@ -56,7 +64,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('consumePreviewInspectorTreeReveal(selectedId)');
     expect(source).toContain('if (!revealRequested) return undefined;');
     expect(source).toContain('copyPreviewInspectorSnapshotRuntimeIndexes(');
-    expect(source).toContain("['payloads', 'Payloads']");
+    expect(source).toContain("['payload', 'Payload']");
     expect(source).toContain("['console', 'Console ('");
     expect(source).toContain('function PreviewInspectorConsoleDetail');
     expect(source).toContain("'Filter console messages by level'");
@@ -99,7 +107,8 @@ describe('Page Inspector DevTools UI runtime source', () => {
     );
     expect(source).not.toContain("React.createElement('div', undefined, children");
     expect(source).toContain('previewInspectorSession.devtoolsState');
-    expect(source).toContain('() => previewInspectorDevtoolsSessionState.activeTab');
+    expect(source).toContain('previewInspectorDevtoolsSessionState.detailsTab');
+    expect(source).toContain('previewInspectorDevtoolsSessionState.componentDebuggerTab');
     expect(source).toContain('() => previewInspectorDevtoolsSessionState.query');
   });
 
@@ -311,6 +320,52 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(parentFocused).toBe(true);
   });
 
+  /** Cancels picker hover and enables page highlighting when a mounted tree row is selected. */
+  it('turns a mounted component-tree selection into an authoritative page highlight', () => {
+    const runtime = evaluateDevtoolsTreeSelection();
+
+    runtime.select({
+      children: [],
+      exportName: 'Panel',
+      id: 'fiber:panel',
+      kind: 'function',
+      name: 'Panel',
+    });
+
+    expect(runtime.readSession()).toMatchObject({
+      highlightEnabled: true,
+      pickerCandidate: undefined,
+      pickerEnabled: false,
+      selectedTreeNodeId: 'fiber:panel',
+    });
+    expect(runtime.readHighlightEnables()).toEqual([true]);
+    expect(runtime.readCollectorSelections()).toEqual([{ exportName: 'Panel', id: 'fiber:panel' }]);
+    expect(runtime.readHighlightSchedules()).toBeGreaterThan(0);
+  });
+
+  /** Clears stale picker emphasis without claiming that an unmounted context row has a host. */
+  it('does not force highlighting for a hostless tree context row', () => {
+    const runtime = evaluateDevtoolsTreeSelection();
+
+    runtime.select({
+      children: [],
+      contextOnly: true,
+      id: 'route:context',
+      kind: 'route',
+      name: 'Route context',
+    });
+
+    expect(runtime.readSession()).toMatchObject({
+      highlightEnabled: false,
+      pickerCandidate: undefined,
+      pickerEnabled: false,
+      selectedTreeNodeId: 'route:context',
+    });
+    expect(runtime.readHighlightEnables()).toEqual([]);
+    expect(runtime.readCollectorSelections()).toEqual([]);
+    expect(runtime.readHighlightSchedules()).toBeGreaterThan(0);
+  });
+
   /** Keeps selection reveal local to the tree instead of scrolling the surrounding preview page. */
   it('scrolls only the tree viewport when a selected row needs revealing', () => {
     const runtime = evaluateDevtoolsUiHelpers();
@@ -391,12 +446,25 @@ describe('Page Inspector DevTools UI runtime source', () => {
 /** Serializable collector fixture used by generated UI helper behavior tests. */
 interface DevtoolsUiTestNode {
   readonly children: readonly DevtoolsUiTestNode[];
+  readonly contextOnly?: boolean;
   readonly exportName?: string;
   readonly id: string;
   readonly kind: string;
   readonly name: string;
   readonly overlayState?: string;
   readonly role?: string;
+}
+
+/** Generated selection behavior isolated from React rendering and project components. */
+interface DevtoolsTreeSelectionRuntime {
+  readonly readCollectorSelections: () => readonly {
+    readonly exportName?: string;
+    readonly id: string;
+  }[];
+  readonly readHighlightEnables: () => readonly boolean[];
+  readonly readHighlightSchedules: () => number;
+  readonly readSession: () => Record<string, unknown>;
+  readonly select: (node: DevtoolsUiTestNode) => void;
 }
 
 /** Small generated helper surface exposed only inside the isolated VM test realm. */
@@ -503,4 +571,59 @@ globalThis.__devtoolsUiRuntime = {
     throw new Error('DevTools UI runtime fixture did not load.');
   }
   return context.__devtoolsUiRuntime;
+}
+
+/** Evaluates only the generated tree-selection contract with observable adapter spies. */
+function evaluateDevtoolsTreeSelection(): DevtoolsTreeSelectionRuntime {
+  const collectorSelections: { exportName?: string; id: string }[] = [];
+  const highlightEnables: boolean[] = [];
+  let highlightSchedules = 0;
+  const previewInspectorSession: Record<string, unknown> = {
+    descriptorNames: [],
+    devtoolsState: {},
+    highlightEnabled: false,
+    pickerCandidate: { id: 'stale-hover' },
+    pickerEnabled: true,
+  };
+  const context: Record<string, unknown> & {
+    __treeSelectionRuntime?: DevtoolsTreeSelectionRuntime;
+  } = {
+    collectorSelections,
+    highlightEnables,
+    persistPreviewInspectorState: () => undefined,
+    previewInspectorApi: {
+      selectNode: (id: string, exportName?: string) => {
+        collectorSelections.push({
+          ...(exportName === undefined ? {} : { exportName }),
+          id,
+        });
+      },
+    },
+    previewInspectorSession,
+    readHighlightScheduleCount: () => highlightSchedules,
+    schedulePreviewInspectorHighlight: () => {
+      highlightSchedules += 1;
+    },
+    schedulePreviewInspectorTreeRefresh: () => undefined,
+    selectPreviewInspectorExport: () => undefined,
+    setPreviewInspectorHighlightEnabled: (enabled: boolean) => {
+      previewInspectorSession.highlightEnabled = enabled;
+      highlightEnables.push(enabled);
+    },
+  };
+  vm.runInNewContext(
+    `${createPreviewInspectorDevtoolsUiRuntimeSource()}
+     globalThis.__treeSelectionRuntime = {
+       readCollectorSelections: () => collectorSelections,
+       readHighlightEnables: () => highlightEnables,
+       readHighlightSchedules: () => readHighlightScheduleCount(),
+       readSession: () => ({ ...previewInspectorSession }),
+       select: selectPreviewInspectorUiNode,
+     };`,
+    context,
+  );
+  if (context.__treeSelectionRuntime === undefined) {
+    throw new Error('DevTools tree-selection fixture did not load.');
+  }
+  return context.__treeSelectionRuntime;
 }

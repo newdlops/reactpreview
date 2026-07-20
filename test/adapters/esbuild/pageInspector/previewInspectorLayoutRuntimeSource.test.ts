@@ -16,4 +16,16 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('flex-wrap:nowrap');
     expect(source).toContain('max-width:none;min-height:27px;min-width:360px');
   });
+
+  /** Keeps current-file blockers visibly distinct without relying on color alone. */
+  it('emits current-file blocker card, border, badge, and summary emphasis', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain(
+      '.rpi-flow-node-shell[data-current-file-blocker="true"]>.rpi-flow-card',
+    );
+    expect(source).toContain('border-inline-start:4px solid var(--vscode-charts-yellow,#cca700)');
+    expect(source).toContain('.rpi-current-file-blocker-badge');
+    expect(source).toContain('.rpi-current-file-blocker-summary');
+  });
 });

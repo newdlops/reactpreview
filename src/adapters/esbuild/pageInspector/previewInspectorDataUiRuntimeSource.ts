@@ -25,6 +25,13 @@ function readSelectedPreviewInspectorDataRequest(requests, preferredRequestId) {
   return requests.find((request) => request.id === selectedId) ?? requests[0];
 }
 
+/** Restricts one embedded payload editor to compiler/tree-proven component request identities. */
+function filterPreviewInspectorDataRequests(requests, requestIds) {
+  if (!Array.isArray(requestIds)) return requests;
+  const admittedRequestIds = new Set(requestIds);
+  return requests.filter((request) => admittedRequestIds.has(request.id));
+}
+
 /** Uses the inferred payload as an editable starting point when the authored seed is empty. */
 function readPreviewInspectorEditableDataPayload(request) {
   const payload = request?.payload;
@@ -51,8 +58,11 @@ function formatPreviewInspectorVirtualBackendScenario(mode) {
 }
 
 /** Renders request selection, inferred evidence, JSON editing, and generation actions. */
-function PreviewInspectorDataDetail({ requestId } = {}) {
-  const requests = readPreviewInspectorDataRequests();
+function PreviewInspectorDataDetail({ requestId, requestIds } = {}) {
+  const requests = filterPreviewInspectorDataRequests(
+    readPreviewInspectorDataRequests(),
+    requestIds,
+  );
   const selectedRequest = readSelectedPreviewInspectorDataRequest(requests, requestId);
   const selectedId = selectedRequest?.id ?? '';
   const backend = selectedRequest?.virtualBackend ?? {

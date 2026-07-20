@@ -125,9 +125,16 @@ interface VisibilityRuntime {
   readonly canHide: () => boolean;
   readonly count: (treeNodeId: string) => number;
   readonly hide: () => boolean;
+  readonly readOutline: (element: FakeElement) => {
+    readonly offset: string;
+    readonly offsetPriority: string;
+    readonly outline: string;
+    readonly outlinePriority: string;
+  };
   readonly readPickerEnabled: () => boolean;
   readonly readStyle: () => { readonly connected: boolean; readonly text: string } | undefined;
   readonly reconcile: () => void;
+  readonly refreshHighlight: () => void;
   readonly remember: (
     element: FakeElement,
     snapshot: VisibilitySnapshot,
@@ -136,6 +143,8 @@ interface VisibilityRuntime {
   readonly restoreAll: () => number;
   readonly restoreLast: () => boolean;
   readonly setContext: (value: string) => void;
+  readonly setHighlightEnabled: (enabled: boolean) => void;
+  readonly selectTreeNode: (treeNodeId: string) => void;
   readonly setSnapshot: (snapshot: VisibilitySnapshot) => void;
   readonly summaries: () => readonly { readonly id: string; readonly label: string }[];
 }
@@ -259,6 +268,33 @@ describe('Preview Inspector picked-element visibility runtime', () => {
     expect(portalButton.getAttribute(HIDDEN_ATTRIBUTE)).toBeNull();
   });
 
+  /** Highlights the connected host selected by its component-tree ID and restores authored styles. */
+  it('outlines the exact mounted host selected from the component tree', () => {
+    const fixture = createVisibilityFixture();
+    fixture.root.style.setProperty('outline', '1px dotted blue');
+    fixture.root.style.setProperty('outline-offset', '1px', 'important');
+
+    fixture.runtime.selectTreeNode('component');
+    fixture.runtime.setHighlightEnabled(true);
+    fixture.runtime.refreshHighlight();
+
+    expect(fixture.runtime.readOutline(fixture.root)).toEqual({
+      offset: '2px',
+      offsetPriority: 'important',
+      outline: '2px solid #f2c94c',
+      outlinePriority: 'important',
+    });
+
+    fixture.runtime.setHighlightEnabled(false);
+    fixture.runtime.refreshHighlight();
+    expect(fixture.runtime.readOutline(fixture.root)).toEqual({
+      offset: '1px',
+      offsetPriority: 'important',
+      outline: '1px dotted blue',
+      outlinePriority: '',
+    });
+  });
+
   /** Keeps the generated source bounded and its limit explicit for hostile broad pages. */
   it('emits an exact-selector bounded implementation', () => {
     const source = createPreviewInspectorElementVisibilityRuntimeSource();
@@ -350,16 +386,29 @@ function evaluateVisibilityRuntime(initialSnapshot: VisibilitySnapshot): Visibil
         canHide: canHidePreviewInspectorPickedElement,
         count: countPreviewInspectorHiddenElementsForTreeNode,
         hide: hidePreviewInspectorPickedElement,
+        readOutline: (element) => ({
+          offset: element.style.getPropertyValue('outline-offset'),
+          offsetPriority: element.style.getPropertyPriority('outline-offset'),
+          outline: element.style.getPropertyValue('outline'),
+          outlinePriority: element.style.getPropertyPriority('outline'),
+        }),
         readPickerEnabled: () => previewInspectorSession.pickerEnabled === true,
         readStyle: () => {
           const style = previewHotRuntime.inspectorHiddenElementStyle;
           return style === undefined ? undefined : { connected: style.isConnected, text: style.textContent };
         },
         reconcile: reconcilePreviewInspectorHiddenElements,
+        refreshHighlight: refreshPreviewInspectorHighlight,
         remember: rememberPreviewInspectorPickedElement,
         restoreAll: restoreAllPreviewInspectorHiddenElements,
         restoreLast: restoreLastPreviewInspectorHiddenElement,
         setContext: (value) => { currentContext = value; },
+        setHighlightEnabled: (enabled) => { previewInspectorSession.highlightEnabled = enabled; },
+        selectTreeNode: (treeNodeId) => {
+          previewInspectorSession.selectedTreeNodeId = treeNodeId;
+          previewInspectorSession.lastTreeSnapshot = currentSnapshot;
+          previewInspectorSession.pickerCandidate = undefined;
+        },
         setSnapshot: (value) => { currentSnapshot = value; },
         summaries: readPreviewInspectorHiddenElementSummaries,
       };

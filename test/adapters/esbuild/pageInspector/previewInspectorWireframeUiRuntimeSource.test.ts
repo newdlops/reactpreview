@@ -241,8 +241,8 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     expect(Object.keys(target)).toEqual(['roots']);
   });
 
-  /** Converts a marker click into a one-shot tree reveal and ordinary blocker-node selection. */
-  it('selects a blocker and records its exact tree row for reveal', () => {
+  /** Opens the Blockers Render flow without replacing the last selected React component. */
+  it('routes a wireframe marker to its blocker graph node', () => {
     const selected: WireframeNode[] = [];
     const collapsedValues: boolean[] = [];
     const hostMessages: unknown[] = [];
@@ -256,15 +256,14 @@ describe('Preview Inspector wireframe UI runtime source', () => {
 
     runtime.revealBlocker(blocker, (value) => collapsedValues.push(value));
 
-    expect(selected).toEqual([blocker]);
+    expect(selected).toEqual([]);
     expect(collapsedValues).toEqual([false]);
     expect(runtime.readSession()).toMatchObject({
-      activeTab: 'blocker',
       blockerDetailRevision: 1,
+      navigationTab: 'blockers',
+      selectedBlockerFlowNodeId: blocker.id,
     });
     expect(hostMessages).toEqual([{ type: 'react-preview-inspector-companion-reveal' }]);
-    expect(runtime.consumeReveal(blocker.id)).toBe(true);
-    expect(runtime.readCompanion()).toMatchObject({ pendingTreeReveal: blocker.id });
     expect(runtime.consumeReveal(blocker.id)).toBe(false);
   });
 
@@ -298,6 +297,8 @@ function evaluateWireframeRuntime(
     `
       const previewInspectorDevtoolsSessionState = { collapsed: true };
       const previewInspectorCompanionState = {};
+      const notifyPreviewInspector = () => undefined;
+      const persistPreviewInspectorState = () => undefined;
       const selectPreviewInspectorUiNode = (node) => selected.push(node);
       const previewInspectorPostHostMessage = (message) => hostMessages.push(message);
       const isPreviewInspectorBlockerNode = (node) =>

@@ -39,7 +39,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-button{cursor:pointer;max-width:100%;overflow-wrap:anywhere;padding:2px 7px}',
   '.rpi-toolbar>.rpi-button,.rpi-toolbar>.rpi-select,.rpi-toolbar>.rpi-title{flex:0 1 auto}',
   '.rpi-button:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
-  '.rpi-button:focus-visible,.rpi-select:focus-visible,.rpi-search:focus-visible,.rpi-tree-row:focus-visible,.rpi-tab:focus-visible,',
+  '.rpi-button:focus-visible,.rpi-select:focus-visible,.rpi-search:focus-visible,.rpi-tree-row:focus-visible,.rpi-tab:focus-visible,.rpi-navigation-tab:focus-visible,',
   '.rpi-resize-handle:focus-visible,.rpi-move-handle:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
   '.rpi-button[aria-pressed="true"]{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}',
   '.rpi-button:disabled{cursor:default;opacity:.45}',
@@ -84,6 +84,21 @@ const previewInspectorDevtoolsCss = [
   '.rpi-pane{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0}',
   '.rpi-pane+.rpi-pane{border-left:1px solid var(--rpi-border)}',
   '.rpi-shell:is([data-dock="left"],[data-dock="right"]) .rpi-pane+.rpi-pane{border-left:0;border-top:1px solid var(--rpi-border)}',
+  '.rpi-navigation-pane{overflow:hidden}.rpi-navigation-tabs{display:flex;flex:1 1 180px;gap:2px;min-width:0}',
+  '.rpi-navigation-tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--rpi-muted);cursor:pointer;',
+  'flex:1 1 90px;min-height:25px;min-width:0;overflow:hidden;padding:2px 7px;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-navigation-tab[aria-selected="true"]{border-bottom-color:var(--vscode-focusBorder,#007fd4);color:inherit}',
+  '.rpi-navigation-panels,.rpi-navigation-panel{min-height:0;min-width:0;overflow:hidden}',
+  '.rpi-navigation-panel{height:100%}.rpi-navigation-panel[data-rpi-active="false"]{display:none}',
+  '.rpi-components-navigation-panel>.rpi-pane{height:100%}',
+  '.rpi-blocker-navigation-scroll{overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
+  '.rpi-blocker-navigation-scroll>.rpi-render-flow-navigation{min-width:min(520px,100%)}',
+  '.rpi-blocker-navigation-scroll .rpi-flow-chart{align-items:start;grid-auto-columns:clamp(240px,32vw,340px);grid-auto-flow:column;',
+  'grid-template-columns:none;min-width:100%;width:max-content}',
+  '.rpi-blocker-navigation-scroll .rpi-flow-stage{padding-left:0;padding-top:26px}',
+  '.rpi-blocker-navigation-scroll .rpi-flow-stage::before{left:8px;top:4px}',
+  '.rpi-blocker-navigation-scroll .rpi-flow-stage:not(:last-child)::after{background:linear-gradient(90deg,var(--vscode-focusBorder,#007fd4),',
+  'var(--vscode-panel-border,#454545));bottom:auto;height:1px;left:16px;right:-22px;top:8px;width:auto}',
   '.rpi-pane-heading{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
   'border-bottom:1px solid var(--rpi-border);display:flex;flex-wrap:wrap;gap:7px;max-width:100%;min-height:31px;min-width:0;padding:4px 7px}',
   '.rpi-pane-title{font-size:11px;font-weight:650;letter-spacing:.04em;max-width:100%;overflow:hidden;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}',
@@ -138,6 +153,9 @@ const previewInspectorDevtoolsCss = [
   '.rpi-tabs{display:flex;flex:1 1 240px;flex-wrap:wrap;gap:1px;max-width:100%;min-width:0;overflow:hidden}',
   '.rpi-tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--rpi-muted);cursor:pointer;max-width:100%;overflow:hidden;padding:4px 9px;text-overflow:ellipsis;white-space:nowrap}',
   '.rpi-tab[aria-selected="true"]{border-bottom-color:var(--vscode-focusBorder,#007fd4);color:inherit}',
+  '.rpi-component-debugger{display:grid;gap:1px;max-width:100%;min-height:0;min-width:0}',
+  '.rpi-component-debugger-panel{max-width:100%;min-height:0;min-width:0}',
+  '.rpi-component-debugger-scope{padding:7px 9px 0}',
   '.rpi-detail-content{display:grid;gap:9px;max-width:100%;min-width:0;padding:9px}',
   '.rpi-meta{color:var(--rpi-muted);min-width:0;overflow-wrap:anywhere;white-space:normal}',
   '.rpi-json{background:var(--vscode-textCodeBlock-background,#2d2d2d);border:1px solid var(--rpi-border);border-radius:3px;',
@@ -170,24 +188,38 @@ const previewInspectorDevtoolsCss = [
   'var(--vscode-panel-border,#454545));bottom:-22px;content:"";left:8px;position:absolute;top:15px;width:1px}',
   '.rpi-flow-stage-label{color:var(--rpi-muted);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}',
   '.rpi-flow-stage-grid{display:grid;gap:7px;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr))}',
+  '.rpi-flow-node-shell{display:grid;gap:6px;min-width:0}.rpi-flow-node-shell[data-flow-kind="context"] .rpi-flow-card{border-style:dashed}',
   '.rpi-flow-card{align-items:flex-start;background:var(--vscode-editor-background,#1e1e1e);border:1px solid var(--rpi-border);',
-  'border-radius:4px;color:inherit;cursor:pointer;display:grid;gap:8px;grid-template-columns:25px minmax(0,1fr);padding:8px;text-align:left}',
+  'border-radius:4px;color:inherit;cursor:pointer;display:grid;gap:8px;grid-template-columns:25px minmax(0,1fr);padding:8px;text-align:left;width:100%}',
   '.rpi-flow-card:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
   '.rpi-flow-card[aria-pressed="true"]{box-shadow:0 0 0 1px var(--vscode-focusBorder,#007fd4)}',
   '.rpi-flow-card[data-flow-status="active"]{border-color:var(--vscode-errorForeground,#f48771)}',
   '.rpi-flow-card[data-flow-status="resolved"]{border-color:var(--vscode-testing-iconPassed,#73c991);opacity:.78}',
   '.rpi-flow-card[data-flow-status="waiting"]{opacity:.58}',
+  '.rpi-flow-node-shell[data-current-file-blocker="true"]>.rpi-flow-card{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 8%,var(--vscode-editor-background,#1e1e1e));',
+  'border-inline-start:4px solid var(--vscode-charts-yellow,#cca700);opacity:1}',
+  '.rpi-flow-node-shell[data-current-file-blocker="true"]>.rpi-flow-card:hover{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 14%,var(--vscode-list-hoverBackground,#2a2d2e))}',
   '.rpi-flow-node{align-items:center;background:var(--vscode-badge-background,#4d4d4d);border-radius:50%;color:var(--vscode-badge-foreground,#fff);',
   'display:flex;font-size:10px;font-weight:750;height:23px;justify-content:center;width:23px}',
   '.rpi-flow-card[data-flow-status="active"] .rpi-flow-node{background:var(--vscode-errorForeground,#f48771);color:#111}',
   '.rpi-flow-card[data-flow-status="resolved"] .rpi-flow-node{background:var(--vscode-testing-iconPassed,#73c991);color:#111}',
   '.rpi-flow-card-body{display:grid;gap:3px;min-width:0}.rpi-flow-card-heading{align-items:center;display:flex;flex-wrap:wrap;gap:5px;min-width:0}',
-  '.rpi-flow-card-heading>strong,.rpi-flow-owner,.rpi-flow-relation{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-  '.rpi-flow-status{font-size:10px;font-weight:700}.rpi-flow-owner,.rpi-flow-relation{color:var(--rpi-muted);font-size:10px}',
+  '.rpi-flow-card-heading>strong,.rpi-flow-owner,.rpi-flow-relation,.rpi-flow-detail{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-flow-status{font-size:10px;font-weight:700}.rpi-flow-owner,.rpi-flow-relation,.rpi-flow-detail{color:var(--rpi-muted);font-size:10px}',
+  '.rpi-current-file-blocker-badge{color:var(--vscode-charts-yellow,#cca700);font-weight:800}',
+  '.rpi-current-file-blocker-summary{align-items:center;border:1px solid var(--vscode-charts-yellow,#cca700);border-radius:999px;',
+  'color:var(--vscode-charts-yellow,#cca700);display:inline-flex;font-size:10px;font-weight:800;justify-self:start;margin-top:4px;max-width:100%;overflow-wrap:anywhere;padding:2px 7px}',
+  '.rpi-flow-action{color:var(--vscode-textLink-foreground,#3794ff);font-size:10px;font-weight:650}',
+  '.rpi-flow-condition-controls{align-items:center;display:flex;flex-wrap:wrap;gap:5px;min-width:0;padding:0 3px}',
+  '.rpi-flow-condition-state{color:var(--rpi-muted);flex:1 1 170px;font:10px var(--vscode-editor-font-family,monospace);overflow-wrap:anywhere}',
+  '.rpi-flow-node-editor{border:1px solid var(--rpi-border);border-radius:4px;display:grid;min-width:0;overflow:hidden}',
+  '.rpi-flow-context-editor{gap:6px;padding:8px}.rpi-flow-context-editor .rpi-detail-content{padding:0}',
   '.rpi-flow-editor{border:1px solid var(--rpi-border);border-radius:4px;display:grid;min-width:0;overflow:hidden}',
   '.rpi-flow-editor[data-flow-status="active"]{border-color:var(--vscode-errorForeground,#f48771)}',
   '.rpi-flow-editor-heading{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
-  'border-bottom:1px solid var(--rpi-border);display:flex;gap:7px;padding:8px}',
+  'border-bottom:1px solid var(--rpi-border);display:flex;flex-wrap:wrap;gap:7px;padding:8px}',
+  '.rpi-flow-editor-heading>.rpi-button{margin-left:auto}.rpi-render-flow-navigation{display:grid;min-height:0;min-width:0}',
+  '.rpi-render-flow-guide{border-bottom:1px solid var(--rpi-border);display:grid;gap:2px;padding:8px 10px}',
   '.rpi-wireframe-layer{color:#75beff;font:11px/1.35 var(--vscode-font-family,sans-serif);inset:0;overflow:hidden;',
   'pointer-events:none;position:fixed;z-index:2147483645}',
   '.rpi-wireframe-page-frame{border:1px solid color-mix(in srgb,#75beff 72%,transparent);inset:5px;position:absolute}',
@@ -267,10 +299,10 @@ const previewInspectorDevtoolsSessionState =
     ? previewInspectorSession.devtoolsState
     : {};
 previewInspectorSession.devtoolsState = previewInspectorDevtoolsSessionState;
-previewInspectorDevtoolsSessionState.activeTab =
-  ['blocker', 'console', 'fallbacks', 'flow', 'payloads', 'props', 'state', 'source'].includes(previewInspectorDevtoolsSessionState.activeTab)
-    ? previewInspectorDevtoolsSessionState.activeTab
-    : 'props';
+previewInspectorDevtoolsSessionState.detailsTab =
+  ['blocker', 'component', 'console'].includes(previewInspectorDevtoolsSessionState.detailsTab)
+    ? previewInspectorDevtoolsSessionState.detailsTab
+    : previewInspectorDevtoolsSessionState.activeTab === 'console' ? 'console' : 'component';
 previewInspectorDevtoolsSessionState.collapsed = false;
 previewInspectorDevtoolsSessionState.query =
   typeof previewInspectorDevtoolsSessionState.query === 'string'

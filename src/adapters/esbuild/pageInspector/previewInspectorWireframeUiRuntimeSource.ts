@@ -54,16 +54,17 @@ function consumePreviewInspectorTreeReveal(nodeId) {
   return true;
 }
 
-/** Routes one marker to its tree row, Blocker detail, and focused companion Inspector tab. */
+/** Routes one marker to the Blockers Render flow without replacing component-tree selection. */
 function revealPreviewInspectorWireframeBlocker(node, setCollapsed) {
   if (node === null || typeof node !== 'object' || typeof node.id !== 'string') return;
   previewInspectorDevtoolsSessionState.collapsed = false;
-  previewInspectorDevtoolsSessionState.activeTab = 'blocker';
+  previewInspectorDevtoolsSessionState.navigationTab = 'blockers';
+  previewInspectorDevtoolsSessionState.selectedBlockerFlowNodeId = node.id;
   previewInspectorDevtoolsSessionState.blockerDetailRevision =
     (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
-  requestPreviewInspectorTreeReveal(node.id);
+  persistPreviewInspectorState();
   setCollapsed(false);
-  selectPreviewInspectorUiNode(node);
+  notifyPreviewInspector();
   previewInspectorPostHostMessage?.({ type: 'react-preview-inspector-companion-reveal' });
 }
 

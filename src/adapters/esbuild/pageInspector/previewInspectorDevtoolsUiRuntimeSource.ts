@@ -7,7 +7,9 @@
  * or the VS Code message protocol.
  */
 import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLayoutRuntimeSource';
+import { createPreviewInspectorNavigationUiRuntimeSource } from './previewInspectorNavigationUiRuntimeSource';
 import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspectorConditionUiRuntimeSource';
+import { createPreviewInspectorComponentDebuggerUiRuntimeSource } from './previewInspectorComponentDebuggerUiRuntimeSource';
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
@@ -15,6 +17,7 @@ import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewIns
 import { createPreviewInspectorBlockerFlowUiRuntimeSource } from './previewInspectorBlockerFlowUiRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
+import { createPreviewInspectorRenderFlowUiRuntimeSource } from './previewInspectorRenderFlowUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 import { createPreviewInspectorTreeScrollRuntimeSource } from './previewInspectorTreeScrollRuntimeSource';
@@ -90,8 +93,8 @@ export interface PreviewInspectorUiTreeSnapshot {
 export interface PreviewInspectorUiAdapter {
   /** Returns a current read-only React component tree. */
   collectTree(): PreviewInspectorUiTreeSnapshot;
-  /** Mirrors a tree-row selection back into the live collector. */
-  selectNode?(id: string): void;
+  /** Mirrors a tree-row selection back into the live collector with optional export identity. */
+  selectNode?(id: string, exportName?: string): void;
   /** Subscribes to React commits; returning cleanup follows React effect conventions. */
   subscribeTree?(listener: () => void): (() => void) | undefined;
 }
@@ -107,14 +110,17 @@ export interface PreviewInspectorUiAdapter {
  */
 export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const conditionUiRuntimeSource = createPreviewInspectorConditionUiRuntimeSource();
+  const componentDebuggerUiRuntimeSource = createPreviewInspectorComponentDebuggerUiRuntimeSource();
   const consoleUiRuntimeSource = createPreviewInspectorConsoleUiRuntimeSource();
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const hiddenElementsUiRuntimeSource = createPreviewInspectorHiddenElementsUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
+  const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
   const blockerFlowUiRuntimeSource = createPreviewInspectorBlockerFlowUiRuntimeSource();
   const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
+  const renderFlowUiRuntimeSource = createPreviewInspectorRenderFlowUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   const treeScrollRuntimeSource = createPreviewInspectorTreeScrollRuntimeSource();
@@ -126,6 +132,7 @@ ${treeScrollRuntimeSource}
 
 ${structureUiRuntimeSource}
 ${conditionUiRuntimeSource}
+${componentDebuggerUiRuntimeSource}
 ${consoleUiRuntimeSource}
 ${dataUiRuntimeSource}
 ${hiddenElementsUiRuntimeSource}
@@ -134,6 +141,8 @@ ${runtimeFallbackUiRuntimeSource}
 ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
 ${blockerFlowUiRuntimeSource}
+${renderFlowUiRuntimeSource}
+${navigationUiRuntimeSource}
 ${wireframeUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
@@ -347,9 +356,16 @@ function isPreviewInspectorUiNodeEditable(node) {
       hasPreviewInspectorSmartPropEvidence(exportName));
 }
 
-/** Commits tree selection locally, synchronizes editable exports, and informs an optional collector. */
+/** Commits tree selection, cancels picker hover, and makes a mounted host visible by highlight. */
 function selectPreviewInspectorUiNode(node) {
   previewInspectorSession.selectedTreeNodeId = node.id;
+  previewInspectorSession.pickerCandidate = undefined;
+  previewInspectorSession.pickerEnabled = false;
+  const canHighlight = !isPreviewInspectorBlockerNode(node) &&
+    node.contextOnly !== true && node.mounted !== false;
+  if (canHighlight && previewInspectorSession.highlightEnabled !== true) {
+    setPreviewInspectorHighlightEnabled(true);
+  }
   if (node?.blockerKind === 'data-request') {
     previewInspectorDevtoolsSessionState.selectedDataRequestId = node.blockerId;
   }
@@ -374,9 +390,11 @@ function selectPreviewInspectorUiNode(node) {
     return;
   }
   try {
-    previewInspectorApi.selectNode?.(node.id);
+    previewInspectorApi.selectNode?.(node.id, node.exportName);
   } catch (error) {
     console.warn('[React Preview] Component tree selection adapter failed.', error);
+  } finally {
+    schedulePreviewInspectorHighlight();
   }
 }
 
@@ -570,6 +588,7 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
       'div',
       {
         className: 'rpi-tree-scroll',
+        'data-rpi-scroll-key': 'components-tree',
         onKeyDown: handlePreviewInspectorTreeKeyDown,
         onPointerDownCapture: (event) => {
           const row = event.target?.closest?.('[data-react-preview-tree-row]');
@@ -653,30 +672,21 @@ function PreviewInspectorSourceDetail({ node }) {
   );
 }
 
-/** Renders component details and the page-wide editable backend payload inventory. */
-function PreviewInspectorDetailsPane({ flow, node }) {
-  const [activeTab, setActiveTab] = React.useState(
-    () => previewInspectorDevtoolsSessionState.activeTab,
-  );
+/** Renders either one explicit blocker editor or the selected-component debugger and console. */
+function PreviewInspectorDetailsPane({ node }) {
   const blockerSelected = isPreviewInspectorBlockerNode(node);
+  const initialDetailsTab = blockerSelected
+    ? 'blocker'
+    : previewInspectorDevtoolsSessionState.detailsTab === 'console' ? 'console' : 'component';
+  const [detailsTab, setDetailsTab] = React.useState(initialDetailsTab);
   React.useEffect(() => {
-    const nextTab = blockerSelected && previewInspectorDevtoolsSessionState.activeTab !== 'flow'
-      ? 'blocker'
-      : previewInspectorDevtoolsSessionState.activeTab === 'blocker'
-        ? 'props'
-        : previewInspectorDevtoolsSessionState.activeTab;
-    previewInspectorDevtoolsSessionState.activeTab = nextTab;
-    setActiveTab(nextTab);
+    const nextTab = blockerSelected ? 'blocker' : detailsTab === 'blocker' ? 'component' : detailsTab;
+    previewInspectorDevtoolsSessionState.detailsTab = nextTab;
+    setDetailsTab(nextTab);
     persistPreviewInspectorState();
   }, [node?.id, blockerSelected]);
   const tabs = [
-    ...(blockerSelected ? [['blocker', 'Fix blocker']] : []),
-    ['flow', 'Fix blockers (' + String(flow.unresolvedCount) + ')'],
-    ['props', 'Props'],
-    ['state', 'State'],
-    ['source', 'Source'],
-    ['payloads', 'Payloads'],
-    ['fallbacks', 'Fallbacks (' + String(readPreviewInspectorRuntimeFallbacks().length) + ')'],
+    [blockerSelected ? 'blocker' : 'component', blockerSelected ? 'Fix selected blocker' : 'Component debugger'],
     ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
   ];
   return React.createElement(
@@ -692,14 +702,14 @@ function PreviewInspectorDetailsPane({ flow, node }) {
         tabs.map(([id, label]) => React.createElement(
           'button',
           {
-            'aria-controls': 'react-preview-inspector-' + id + '-panel',
-            'aria-selected': activeTab === id,
+            'aria-controls': 'react-preview-details-' + id + '-panel',
+            'aria-selected': detailsTab === id,
             className: 'rpi-tab',
-            id: 'react-preview-inspector-' + id + '-tab',
+            id: 'react-preview-details-' + id + '-tab',
             key: id,
             onClick: () => {
-              previewInspectorDevtoolsSessionState.activeTab = id;
-              setActiveTab(id);
+              previewInspectorDevtoolsSessionState.detailsTab = id;
+              setDetailsTab(id);
               persistPreviewInspectorState();
             },
             role: 'tab',
@@ -712,30 +722,18 @@ function PreviewInspectorDetailsPane({ flow, node }) {
     React.createElement(
       'div',
       {
-        'aria-labelledby': 'react-preview-inspector-' + activeTab + '-tab',
+        'aria-labelledby': 'react-preview-details-' + detailsTab + '-tab',
         className: 'rpi-detail-scroll',
-        id: 'react-preview-inspector-' + activeTab + '-panel',
+        id: 'react-preview-details-' + detailsTab + '-panel',
         role: 'tabpanel',
       },
-      activeTab === 'flow'
-        ? React.createElement(PreviewInspectorBlockerFlowDetail, { flow })
-        : activeTab === 'blocker' && blockerSelected
+      detailsTab === 'blocker' && blockerSelected
         ? React.createElement(PreviewInspectorBlockerDetail, { node })
-        : activeTab === 'payloads'
-        ? React.createElement(PreviewInspectorDataDetail)
-        : activeTab === 'fallbacks'
-          ? React.createElement(PreviewInspectorRuntimeFallbackDetail)
-        : activeTab === 'console'
+        : detailsTab === 'console'
           ? React.createElement(PreviewInspectorConsoleDetail)
           : node === undefined
-            ? React.createElement('div', { className: 'rpi-empty' }, 'Select a React component to inspect it.')
-            : activeTab === 'state'
-              ? React.createElement(PreviewInspectorStateDetail, { node })
-              : activeTab === 'source'
-                ? React.createElement(PreviewInspectorSourceDetail, { node })
-                : isPreviewInspectorConditionNode(node)
-                  ? React.createElement(PreviewInspectorConditionDetail, { node })
-                  : React.createElement(PreviewInspectorPropsDetail, { node }),
+            ? React.createElement('div', { className: 'rpi-empty' }, 'Select a React component to debug it.')
+            : React.createElement(PreviewInspectorComponentDebuggerDetail, { node }),
     ),
   );
 }
@@ -753,7 +751,7 @@ function PreviewInspectorToolbar() {
   usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible);
   const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
-  const blockerFlow = createPreviewInspectorBlockerFlow(snapshot);
+  const blockerFlow = createPreviewInspectorRenderFlow(snapshot);
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
   const selectedNode = findPreviewInspectorUiNode(snapshot.roots, selectedTreeNodeId) ??
@@ -927,14 +925,14 @@ function PreviewInspectorToolbar() {
       React.createElement(
         'div',
         { className: 'rpi-workbench' },
-        React.createElement(PreviewInspectorComponentsPane, {
+        React.createElement(PreviewInspectorNavigationPane, {
+          flow: blockerFlow,
           roots: snapshot.roots,
           selectedId,
           status: snapshot.status,
           truncated: snapshot.truncated,
         }),
         React.createElement(PreviewInspectorDetailsPane, {
-          flow: blockerFlow,
           key: 'details:' + String(previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0),
           node: selectedNode,
         }),

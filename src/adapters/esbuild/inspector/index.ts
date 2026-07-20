@@ -16,6 +16,15 @@ export {
   type PreviewInspectorRouteLocation,
 } from './previewInspectorRouteLocation';
 export {
+  collectPreviewInspectorNextAppLayoutChain,
+  type CollectPreviewInspectorNextAppLayoutChainOptions,
+  type PreviewInspectorNextAppLayoutChain,
+  type PreviewInspectorNextAppLayoutReference,
+  type PreviewInspectorNextAppParamValue,
+  type PreviewInspectorNextAppRouteLocation,
+  type PreviewInspectorNextAppRouteParams,
+} from './previewInspectorNextAppLayoutChain';
+export {
   createPreviewInspectorCorridorPlugin,
   type PreviewInspectorCorridorPluginOptions,
 } from './previewInspectorCorridorPlugin';

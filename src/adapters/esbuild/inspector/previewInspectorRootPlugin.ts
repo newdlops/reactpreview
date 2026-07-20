@@ -125,9 +125,28 @@ export function createPreviewInspectorRootSource(
           rootInferredPropShape: candidate.rootInference.shape,
           rootInferredProps: candidate.rootInference.provenance,
         }),
+    ...(candidate.nextAppLayoutChain === undefined
+      ? {}
+      : { nextAppLayoutChain: candidate.nextAppLayoutChain }),
     rootOwnsRouter: candidate.rootOwnsRouter,
     ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
-    ...(candidate.routeLocation === undefined ? {} : { routeLocation: candidate.routeLocation }),
+    ...(candidate.routeLocation === undefined
+      ? {}
+      : {
+          routeLocation: {
+            componentName: candidate.routeLocation.componentName,
+            evidenceKind: candidate.routeLocation.evidenceKind,
+            pathname: candidate.routeLocation.pathname,
+            ...('params' in candidate.routeLocation
+              ? {
+                  params: candidate.routeLocation.params,
+                  searchParams: candidate.routeLocation.searchParams,
+                }
+              : {}),
+            pattern: candidate.routeLocation.pattern,
+            sourcePath: candidate.routeLocation.sourcePath,
+          },
+        }),
     stopReason: candidate.stopReason,
     targetAutomaticProps: candidate.targetAutomaticProps,
   }));
@@ -137,6 +156,33 @@ export function createPreviewInspectorRootSource(
     const rootSpecifier = rootIsTarget
       ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
       : candidate.root.sourcePath.replaceAll('\\', '/');
+    const layoutSpecifiers = candidate.nextAppLayoutChain?.map((layout) =>
+      layout.sourcePath.replaceAll('\\', '/'),
+    );
+    if (layoutSpecifiers !== undefined && layoutSpecifiers.length > 0) {
+      const nextAppRouteLocation =
+        candidate.routeLocation?.evidenceKind === 'next-app-filesystem'
+          ? candidate.routeLocation
+          : undefined;
+      const imports = [rootSpecifier, ...layoutSpecifiers].map(
+        (specifier) => `import(${JSON.stringify(specifier)})`,
+      );
+      return [
+        '{ id: ',
+        JSON.stringify(candidate.id),
+        ', load: () => Promise.all([',
+        imports.join(','),
+        ']).then((modules) => __reactPreviewComposeNextAppPage(modules, ',
+        JSON.stringify(candidate.root.exportName),
+        ', ',
+        JSON.stringify(nextAppRouteLocation?.params ?? {}),
+        ', ',
+        JSON.stringify(nextAppRouteLocation?.searchParams ?? {}),
+        ', ',
+        JSON.stringify(candidate.nextAppLayoutChain?.map((layout) => layout.params) ?? []),
+        ')) }',
+      ].join('');
+    }
     return [
       '{ id: ',
       JSON.stringify(candidate.id),
@@ -195,10 +241,63 @@ export function createPreviewInspectorRootSource(
   };
   const themeImport = createInspectorThemeImport(options.themeImport);
   const globalStyleImports = createInspectorGlobalStyleImports(options.globalStyleImports ?? []);
+  const requiresNextAppLayoutRuntime = pageCandidates.some(
+    (candidate) => (candidate.nextAppLayoutChain?.length ?? 0) > 0,
+  );
 
   return [
+    ...(requiresNextAppLayoutRuntime ? ["import * as React from 'react';"] : []),
     ...(themeImport.statement === undefined ? [] : [themeImport.statement]),
     ...globalStyleImports.statements,
+    ...(requiresNextAppLayoutRuntime
+      ? [
+          '/**',
+          ' * Creates a stable object that supports legacy direct property reads, `await`, and',
+          ' * React 19 `use()` without choosing a project-specific Next.js major version.',
+          ' */',
+          'function __reactPreviewCreateNextAppCompatRecord(source) {',
+          '  const value = Object.freeze({ ...source });',
+          '  const record = { ...value };',
+          '  Object.defineProperties(record, {',
+          "    status: { configurable: false, enumerable: false, value: 'fulfilled' },",
+          '    value: { configurable: false, enumerable: false, value },',
+          '    then: {',
+          '      configurable: false,',
+          '      enumerable: false,',
+          '      value(onFulfilled, onRejected) {',
+          '        return Promise.resolve(value).then(onFulfilled, onRejected);',
+          '      },',
+          '    },',
+          '  });',
+          '  return Object.freeze(record);',
+          '}',
+          '/** Recreates Next App Router implicit root-to-leaf layout nesting around one page. */',
+          'function __reactPreviewComposeNextAppPage(',
+          '  modules,',
+          '  rootExportName,',
+          '  pageParamValues,',
+          '  searchParamValues,',
+          '  layoutParamValues,',
+          ') {',
+          '  const Root = modules[0]?.[rootExportName];',
+          '  const layouts = modules.slice(1).map((module) => module?.default);',
+          '  const pageParams = __reactPreviewCreateNextAppCompatRecord(pageParamValues);',
+          '  const searchParams = __reactPreviewCreateNextAppCompatRecord(searchParamValues);',
+          '  const layoutParams = layoutParamValues.map(__reactPreviewCreateNextAppCompatRecord);',
+          '  return function ReactPreviewNextAppPage(props) {',
+          '    const pageProps = Object.assign({ params: pageParams, searchParams }, props);',
+          '    let child = React.createElement(Root, pageProps);',
+          '    for (let index = layouts.length - 1; index >= 0; index -= 1) {',
+          '      child = React.createElement(layouts[index], {',
+          '        children: child,',
+          '        params: layoutParams[index],',
+          '      });',
+          '    }',
+          '    return child;',
+          '  };',
+          '}',
+        ]
+      : []),
     `const __reactPreviewInspectorCandidates = Object.freeze([${[
       ...candidateDefinitions,
       ...directTargetDefinitions,

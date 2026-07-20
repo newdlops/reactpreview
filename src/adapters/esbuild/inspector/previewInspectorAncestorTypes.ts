@@ -10,6 +10,10 @@ import type {
   PreviewRenderChainPlansByExport,
 } from '../renderGraph';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
+import type {
+  PreviewInspectorNextAppLayoutReference,
+  PreviewInspectorNextAppRouteLocation,
+} from './previewInspectorNextAppLayoutChain';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
 
 /** Importable component identity retained without loading its module in the extension host. */
@@ -63,10 +67,12 @@ export interface PreviewInspectorPageCandidate {
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
   /** Neutral root props inferred from the root component's local type and usage evidence. */
   readonly rootInference?: PreviewInferredExportProps;
+  /** Implicit Next App Router wrappers, ordered exactly as root layout through leaf layout. */
+  readonly nextAppLayoutChain?: readonly PreviewInspectorNextAppLayoutReference[];
   /** Whether this independently mounted root's target-facing branch creates its own Router. */
   readonly rootOwnsRouter: boolean;
   /** Exact static route used to reproduce this detached root's authored page branch. */
-  readonly routeLocation?: PreviewInspectorRouteLocation;
+  readonly routeLocation?: PreviewInspectorRouteLocation | PreviewInspectorNextAppRouteLocation;
   /** Render-step index used to explain path-derived roots in the browser selector. */
   readonly rootStepIndex?: number;
   /** Honest reason an incomplete candidate could not be promoted farther. */

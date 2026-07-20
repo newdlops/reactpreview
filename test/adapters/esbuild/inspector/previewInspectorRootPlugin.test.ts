@@ -1,4 +1,5 @@
 /** Verifies that an ancestor plan becomes the existing browser target descriptor contract. */
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   createPreviewInspectorRootSource,
@@ -8,6 +9,13 @@ import {
 const TARGET_PATH = '/workspace/application/Target.tsx';
 const PAGE_PATH = '/workspace/application/Page.tsx';
 const ALTERNATE_PAGE_PATH = '/workspace/application/AlternatePage.tsx';
+
+/** Narrow observable surface of the generated legacy-and-Next-15 compatible route record. */
+interface NextAppCompatRecord extends PromiseLike<Readonly<Record<string, unknown>>> {
+  readonly accountId: string;
+  readonly status: 'fulfilled';
+  readonly value: Readonly<Record<string, unknown>>;
+}
 
 /** Creates the minimum immutable plan used by source-generation assertions. */
 function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspectorAncestorPlan {
@@ -47,6 +55,7 @@ function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspecto
     rootStepIndex: 3,
     routeLocation: {
       componentName: 'Target',
+      dependencyPaths: ['/workspace/application/pages.json'],
       evidenceKind: 'route-catalog' as const,
       pathname: '/company/1/target',
       pattern: '/company/:companyId(\\d+)/target',
@@ -184,6 +193,106 @@ describe('createPreviewInspectorRootSource', () => {
       'api.createPageCandidateElement(__reactPreviewInspectorCandidates, props)',
     );
     expect(source).toContain('"id":"candidate-alternate"');
+  });
+
+  /** Loads and composes implicit Next layouts root-to-leaf while preserving the page children. */
+  it('wraps a Next App Router page in its filesystem layout chain', () => {
+    const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextAppLayoutChain: [
+              {
+                exportName: 'default',
+                params: {},
+                sourcePath: '/workspace/application/layout.tsx',
+              },
+              {
+                exportName: 'default',
+                params: { accountId: 'accountId' },
+                sourcePath: '/workspace/application/account/layout.tsx',
+              },
+            ],
+            routeLocation: {
+              componentName: 'NextAppPage',
+              evidenceKind: 'next-app-filesystem',
+              pathname: '/account/accountId/profile',
+              params: { accountId: 'accountId' },
+              pattern: '/account/[accountId]/profile',
+              searchParams: {},
+              sourcePath: PAGE_PATH,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(source).toContain("import * as React from 'react';");
+    expect(source).toContain(
+      'Promise.all([import("/workspace/application/Page.tsx"),import("/workspace/application/layout.tsx"),import("/workspace/application/account/layout.tsx")])',
+    );
+    expect(source).toContain('function __reactPreviewComposeNextAppPage');
+    expect(source).toContain('function __reactPreviewCreateNextAppCompatRecord(source)');
+    expect(source).toContain(
+      "status: { configurable: false, enumerable: false, value: 'fulfilled' }",
+    );
+    expect(source).toContain(
+      'const pageProps = Object.assign({ params: pageParams, searchParams }, props);',
+    );
+    expect(source).toContain('[{},{"accountId":"accountId"}])');
+    expect(source).toContain('params: layoutParams[index]');
+    expect(source).toContain('"evidenceKind":"next-app-filesystem"');
+    expect(source).toContain('"params":{"accountId":"accountId"}');
+  });
+
+  /** Executes the emitted record helper so direct reads, await, and React `use()` metadata agree. */
+  it('emits one stable route record compatible with legacy and promised Next props', async () => {
+    const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextAppLayoutChain: [
+              { exportName: 'default', params: {}, sourcePath: '/workspace/app/layout.tsx' },
+            ],
+            routeLocation: {
+              componentName: 'NextAppPage',
+              evidenceKind: 'next-app-filesystem',
+              pathname: '/account/accountId',
+              params: { accountId: 'accountId' },
+              pattern: '/account/[accountId]',
+              searchParams: {},
+              sourcePath: PAGE_PATH,
+            },
+          },
+        ],
+      },
+    });
+    const helperStart = source.indexOf('function __reactPreviewCreateNextAppCompatRecord');
+    const helperEnd = source.indexOf('/** Recreates Next App Router', helperStart);
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    const sandbox: { record?: NextAppCompatRecord } = {};
+    runInNewContext(
+      `${source.slice(helperStart, helperEnd)}\nrecord = __reactPreviewCreateNextAppCompatRecord({ accountId: 'accountId' });`,
+      sandbox,
+    );
+    const record = sandbox.record;
+    if (record === undefined) throw new Error('Generated Next route record was not created.');
+
+    expect(record.accountId).toBe('accountId');
+    expect(record.status).toBe('fulfilled');
+    expect(record.value).toMatchObject({ accountId: 'accountId' });
+    await expect(Promise.resolve(record)).resolves.toMatchObject({ accountId: 'accountId' });
   });
 
   /** Registers every proven current-file component without evaluating it in page-flow mode. */

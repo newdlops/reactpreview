@@ -25,6 +25,11 @@ import type { PreviewInferredExportProps } from '../staticResources/reactExportP
 import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
 import {
+  collectPreviewInspectorNextAppLayoutChain,
+  type PreviewInspectorNextAppLayoutReference,
+  type PreviewInspectorNextAppRouteLocation,
+} from './previewInspectorNextAppLayoutChain';
+import {
   collectPreviewInspectorModuleFrontiers,
   type PreviewInspectorModuleFrontier,
 } from './previewInspectorModuleFrontiers';
@@ -179,7 +184,9 @@ export async function createPreviewInspectorAncestorPlan(
     renderChain,
     sourcePaths,
   });
-  if (routeLocation !== undefined) sharedDependencies.add(routeLocation.sourcePath);
+  for (const dependencyPath of routeLocation?.dependencyPaths ?? []) {
+    sharedDependencies.add(dependencyPath);
+  }
   const planningContext: InspectorUsagePlanningContext = {
     inferenceByReference: new Map(),
     rankedCandidatesByFrontier: new Map(),
@@ -317,6 +324,13 @@ async function createInspectorPageCandidate(arguments_: {
       rootStepIndex: undefined,
       sourceCache: planningContext.sourceTextByPath,
     });
+    const nextAppShell = collectPreviewInspectorNextAppLayoutChain({
+      exportName: currentRoot.exportName,
+      pagePath: currentRoot.sourcePath,
+      sourcePaths,
+    });
+    for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
+    const candidateRouteLocation = nextAppShell?.routeLocation ?? routeLocation;
     return freezePageCandidate({
       complete,
       dependencies,
@@ -326,8 +340,9 @@ async function createInspectorPageCandidate(arguments_: {
       root: currentRoot,
       rootAutomaticProps,
       ...(rootInference === undefined ? {} : { rootInference }),
+      ...(nextAppShell === undefined ? {} : { nextAppLayoutChain: nextAppShell.layouts }),
       rootOwnsRouter,
-      ...(routeLocation === undefined ? {} : { routeLocation }),
+      ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
       stopReason,
       targetAutomaticProps,
     });
@@ -444,6 +459,13 @@ async function createRenderPathPageCandidate(arguments_: {
   });
   const dependencies = new Set(base.dependencyPaths);
   dependencies.add(root.sourcePath);
+  const nextAppShell = collectPreviewInspectorNextAppLayoutChain({
+    exportName: root.exportName,
+    pagePath: root.sourcePath,
+    sourcePaths: options.sourcePaths,
+  });
+  for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
+  const candidateRouteLocation = nextAppShell?.routeLocation ?? routeLocation;
   const complete = renderPath.entryPoint !== undefined && renderPathRoot.outermost;
   return freezePageCandidate({
     complete,
@@ -454,9 +476,10 @@ async function createRenderPathPageCandidate(arguments_: {
     root,
     rootAutomaticProps,
     ...(rootInference === undefined ? {} : { rootInference }),
+    ...(nextAppShell === undefined ? {} : { nextAppLayoutChain: nextAppShell.layouts }),
     rootOwnsRouter,
     rootStepIndex: renderPathRoot.stepIndex,
-    ...(routeLocation === undefined ? {} : { routeLocation }),
+    ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
     stopReason: complete ? 'root-reached' : 'render-path-checkpoint',
     targetAutomaticProps: base.targetAutomaticProps,
   });
@@ -881,9 +904,10 @@ function freezePageCandidate(options: {
   readonly root: PreviewInspectorComponentReference;
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
   readonly rootInference?: PreviewInferredExportProps;
+  readonly nextAppLayoutChain?: readonly PreviewInspectorNextAppLayoutReference[];
   readonly rootOwnsRouter: boolean;
   readonly rootStepIndex?: number;
-  readonly routeLocation?: PreviewInspectorRouteLocation;
+  readonly routeLocation?: PreviewInspectorRouteLocation | PreviewInspectorNextAppRouteLocation;
   readonly stopReason: PreviewInspectorAncestorStopReason;
   readonly targetAutomaticProps: PreviewParentSliceStaticProps;
 }): PreviewInspectorPageCandidate {
@@ -896,6 +920,9 @@ function freezePageCandidate(options: {
     root: options.root,
     rootAutomaticProps: options.rootAutomaticProps,
     ...(options.rootInference === undefined ? {} : { rootInference: options.rootInference }),
+    ...(options.nextAppLayoutChain === undefined
+      ? {}
+      : { nextAppLayoutChain: Object.freeze([...options.nextAppLayoutChain]) }),
     rootOwnsRouter: options.rootOwnsRouter,
     ...(options.rootStepIndex === undefined ? {} : { rootStepIndex: options.rootStepIndex }),
     ...(options.routeLocation === undefined ? {} : { routeLocation: options.routeLocation }),

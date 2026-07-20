@@ -52,7 +52,7 @@ function createOptions(
   renderChain = createRenderChain(),
 ): CollectPreviewInspectorRouteLocationOptions {
   return {
-    documentPath: TARGET_PATH,
+    documentPath: renderChain.target.sourcePath,
     exportName: 'default',
     readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
     renderChain,
@@ -83,6 +83,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
 
     expect(location).toEqual({
       componentName: 'InvestmentContractAnalysisPage',
+      dependencyPaths: [PAGE_CATALOG_PATH, PAGE_MAP_PATH].sort(),
       evidenceKind: 'route-catalog',
       pathname: '/company/1/investment-contract-rtcc/analysis',
       pattern: '/company/:companyId(\\d+)/investment-contract-rtcc/analysis',
@@ -148,6 +149,89 @@ describe('collectPreviewInspectorRouteLocation', () => {
     });
   });
 
+  /**
+   * Merges an outer useRoutes splat with the selected app module's stricter factory base path.
+   * This reproduces the partner application shape that previously became `/preview/preview`.
+   */
+  it('merges same-name parameter constraints across an object route and target base path', async () => {
+    const targetPath = '/workspace/application/src/staff/partner-staff-app.tsx';
+    const sources = {
+      [targetPath]: [
+        'export const PartnerStaffApp = createAppModule(',
+        '  "/partner/:legalPartnerId(\\\\d+)",',
+        '  {}, [], ({ pageRoutes }) => <Routes>{pageRoutes}</Routes>,',
+        ');',
+      ].join('\n'),
+      [APP_PATH]: [
+        'import { useRoutes } from "react-router-dom";',
+        'const appRoutes = [',
+        '  { path: "partner/:legalPartnerId/*", element: <PartnerStaffApp /> },',
+        '  { path: "*", element: <NotFoundPage /> },',
+        '];',
+        'export default function App() { return useRoutes(appRoutes); }',
+      ].join('\n'),
+    };
+    const renderChain = createRenderChain(APP_PATH, targetPath, 'PartnerStaffApp');
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toEqual({
+      componentName: 'PartnerStaffApp',
+      dependencyPaths: [APP_PATH, targetPath].sort(),
+      evidenceKind: 'route-jsx',
+      pathname: '/partner/1',
+      pattern: '/partner/:legalPartnerId/*',
+      sourcePath: APP_PATH,
+    });
+  });
+
+  /** Uses a proven concrete child route instead of inventing a `preview` splat segment. */
+  it('materializes an outer wildcard with a compatible concrete child route', async () => {
+    const targetPath = '/workspace/application/src/workspace-shell.tsx';
+    const sources = {
+      [targetPath]: 'export function WorkspaceShell() { return <Outlet />; }',
+      [APP_PATH]: [
+        'import { useRoutes } from "react-router-dom";',
+        'const routes = [',
+        '  { path: "/workspace/:workspaceId/*", element: <WorkspaceShell /> },',
+        '  { path: "/workspace/:workspaceId/dashboard", element: <Dashboard /> },',
+        '];',
+        'export default function App() { return useRoutes(routes); }',
+      ].join('\n'),
+    };
+    const renderChain = createRenderChain(APP_PATH, targetPath, 'WorkspaceShell');
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toMatchObject({
+      pathname: '/workspace/preview/dashboard',
+      pattern: '/workspace/:workspaceId/*',
+      sourcePath: APP_PATH,
+    });
+  });
+
+  /** Ignores path-shaped component configuration that is not owned by a React Router API. */
+  it('does not treat arbitrary path and element objects as route descriptors', async () => {
+    const sources = {
+      [TARGET_PATH]: 'export function InvestmentContractAnalysisPage() { return <main />; }',
+      [APP_PATH]: [
+        'const panel = {',
+        '  path: "/misleading",',
+        '  element: <InvestmentContractAnalysisPage />,',
+        '};',
+        'export default function App() { return <Shell panel={panel} />; }',
+      ].join('\n'),
+    };
+
+    await expect(
+      collectPreviewInspectorRouteLocation(createOptions(sources)),
+    ).resolves.toBeUndefined();
+  });
+
   /** Resolves a monorepo alias catalog before a broad ancestor wildcard can invent a preview URL. */
   it('prefers a target-local alias JSON page catalog in a large monorepo', async () => {
     const targetPath =
@@ -190,6 +274,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
 
     expect(location).toEqual({
       componentName: 'CalendarEventListPage',
+      dependencyPaths: [APP_PATH, staffCatalogPath, staffPageMapPath].sort(),
       evidenceKind: 'route-catalog',
       pathname: '/calendar-event',
       pattern: '/calendar-event',

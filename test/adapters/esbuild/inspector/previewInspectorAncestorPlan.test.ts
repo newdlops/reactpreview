@@ -15,6 +15,53 @@ function createSourceReader(
 }
 
 describe('createPreviewInspectorAncestorPlan', () => {
+  /** Restores Next's implicit layout wrappers, which cannot appear in the JavaScript import graph. */
+  it('attaches the App Router layout chain and filesystem pathname to a page candidate', async () => {
+    const pagePath = '/workspace/packages/web/src/app/(account)/profile/edit/page.tsx';
+    const rootLayoutPath = '/workspace/packages/web/src/app/layout.tsx';
+    const profileLayoutPath = '/workspace/packages/web/src/app/(account)/profile/layout.tsx';
+    const unrelatedRegistryPath = '/workspace/packages/web/src/routes.tsx';
+    const sources = {
+      [pagePath]: 'export default function ProfileEditPage() { return <main />; }',
+      [rootLayoutPath]: [
+        'export default function RootLayout({ children }) {',
+        '  return <html><body><nav />{children}</body></html>;',
+        '}',
+      ].join('\n'),
+      [profileLayoutPath]: [
+        'export default function ProfileLayout({ children }) {',
+        '  return <section><header />{children}</section>;',
+        '}',
+      ].join('\n'),
+      [unrelatedRegistryPath]:
+        '<Routes><Route path="/wrong-profile" element={<ProfileEditPage />} /></Routes>',
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: pagePath,
+      exportName: 'default',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates[0]).toMatchObject({
+      nextAppLayoutChain: [
+        { exportName: 'default', sourcePath: rootLayoutPath },
+        { exportName: 'default', sourcePath: profileLayoutPath },
+      ],
+      routeLocation: {
+        evidenceKind: 'next-app-filesystem',
+        pathname: '/profile/edit',
+        pattern: '/profile/edit',
+        sourcePath: pagePath,
+      },
+      root: { exportName: 'default', sourcePath: pagePath },
+    });
+    expect(plan.dependencyPaths).toEqual(
+      [pagePath, profileLayoutPath, rootLayoutPath, unrelatedRegistryPath].sort(),
+    );
+  });
+
   /** Mounts the outer real App so its page siblings and all nested target children remain active. */
   it('crosses exported and private owners to the actual package root', async () => {
     const sources = {

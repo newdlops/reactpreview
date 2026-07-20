@@ -676,17 +676,23 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const pageCommitted = blocker.pageRootCommitted === true && !direct;
   const targetMounted = blocker.targetMounted === true;
   const minimumSearch = blocker.minimumRequirementSearch;
+  const resolving = blocker.status === 'settling-auto-attempt' || minimumSearch?.status === 'searching';
+  const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status);
   return React.createElement(
     'div',
     { className: 'rpi-detail-content' },
     React.createElement(
       'div',
       { className: 'rpi-error', role: 'alert' },
-      direct
-        ? 'Target-only diagnostic mode is active; authored page context is not successful.'
-        : pageCommitted
-          ? 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
-          : 'The authored page root has not committed yet.',
+      circuitOpen
+        ? minimumSearch.status === 'cycle-detected'
+          ? 'Automatic resolution stopped because the same generated requirement state repeated.'
+          : 'Automatic resolution stopped at its bounded pass limit.'
+        : direct
+          ? 'Target-only diagnostic mode is active; authored page context is not successful.'
+          : pageCommitted
+            ? 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
+            : 'The authored page root has not committed yet.',
     ),
     React.createElement('div', { className: 'rpi-note' },
       'Page root: ' + blocker.rootName + ' · ' + (pageCommitted ? 'committed' : 'not committed')),
@@ -712,17 +718,21 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
           'Minimum requirement search: pass ' + String(minimumSearch.pass) + '/' +
           String(PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) + ' · ' +
           minimumSearch.status + ' · ' + String(minimumSearch.observedPathCount) +
-          ' required path(s) observed.'),
+          ' required path(s) observed.' +
+          (minimumSearch.cycleLength > 0
+            ? ' Repeated cycle length: ' + String(minimumSearch.cycleLength) + '.'
+            : '')),
     React.createElement(
       'div',
       { className: 'rpi-actions' },
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
+          disabled: resolving,
           onClick: () => smartFillPreviewInspectorTargetApplicationPath(blocker),
           title: 'Follow newly revealed hook and backend fields in bounded passes, fill their minimum shape, and retry the authored page',
         },
-        'Find minimum requirements',
+        resolving ? 'Resolving…' : 'Find minimum requirements',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,

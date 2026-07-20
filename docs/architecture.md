@@ -408,6 +408,13 @@ component 이름은 mounted/dormant overlay로 data-only 분류합니다. 선택
 보관해 tree highlight와 element-picker 역매핑에 사용합니다. Fiber, hook, update queue나 project props는
 수정하지 않습니다.
 
+`previewInspectorElementVisibilityRuntimeSource`는 picker가 고른 exact host와 가장 가까운 component ID를
+hot-session 안에서만 연결합니다. 숨김은 DOM 제거나 Fiber write 대신 extension 전용 attribute와 document rule로
+layout만 바꾸며, 원래 attribute를 보존해 최근/전체 복원 시 정확히 되돌립니다. component host index와 bounded
+element-child path, tag 및 강한 authored attribute가 모두 일치할 때만 hot remount 뒤 marker를 다시 연결하고,
+모호한 locator는 다른 sibling을 추측해 숨기지 않습니다. toolbar와 tree에는 DOM reference가 아닌 bounded summary와
+component별 count만 전달됩니다.
+
 `previewInspectorWireframeUiRuntimeSource`는 이 비열거 host index를 UI용 tree copy에도 runtime-only property로
 보존하고 각 component의 connected host root를 viewport rectangle 하나로 합칩니다. mounted component는 실제
 좌표에 outline을 그리며, host를 commit하기 전에 실패한 blocked-owner와 unmounted current-file export는 가장

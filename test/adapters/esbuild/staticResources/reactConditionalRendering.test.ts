@@ -42,6 +42,30 @@ describe('React conditional rendering instrumentation', () => {
     expect(instrumentReactConditionalRendering('/workspace/src/state.ts', source)).toBe(source);
   });
 
+  /** Reveals a route object whose page element was removed by an application-mode condition. */
+  it('instruments conditional JSX route entries without touching ordinary object selection', () => {
+    const source = [
+      'export function createRoutes(user) {',
+      '  const routes = [',
+      '    user.isStaff && window.APP.service === "staff" && {',
+      '      path: "*",',
+      '      element: <StaffApplication />,',
+      '    },',
+      '  ];',
+      '  const options = user.isStaff && { cache: true };',
+      '  return { options, routes };',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/src/routes.tsx', source);
+
+    expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(transformed).toContain('resolveRenderCondition');
+    expect(transformed).toContain('(user.isStaff && window.APP.service === "staff")');
+    expect(transformed).toContain('"truthyLabel":"<StaffApplication> route"');
+    expect(transformed).toContain('const options = user.isStaff && { cache: true };');
+  });
+
   /** Exposes controlled overlay props and exact ReactDOM portal branches as visibility controls. */
   it('instruments dormant modal props and createPortal render branches', () => {
     const source = [
@@ -61,9 +85,11 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"kind":"overlay-visibility"');
     expect(transformed).toContain('"role":"overlay"');
     expect(transformed).toContain('"expression":"<DeleteModal>.open: open"');
+    expect(transformed).toContain('"ownerName":"DeleteModal"');
     expect(transformed).toContain('"truthyLabel":"visible <DeleteModal> overlay"');
-    expect(transformed).toContain('hidden={!(');
     expect(transformed).toContain('"truthyLabel":"<ConfirmDialog> portal overlay"');
+    expect(transformed).toContain('"role":"overlay"');
+    expect(transformed).toContain('hidden={!(');
   });
 
   /** Avoids assigning overlay behavior from a generic prop name on an ordinary component. */
@@ -71,6 +97,21 @@ describe('React conditional rendering instrumentation', () => {
     const source = 'export const Page = ({ open }) => <Panel open={open} />;';
 
     expect(instrumentReactConditionalRendering('/workspace/src/Page.tsx', source)).toBe(source);
+  });
+
+  /** Marks a conditionally mounted Modal as an overlay gate so target DFS can open it. */
+  it('classifies logical-and modal mounting as target-relevant overlay visibility', () => {
+    const source = [
+      'export function Page({ open }) {',
+      '  return <main>{open && <CompanyRegisterModal />}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source);
+
+    expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(transformed).toContain('"kind":"logical-and","role":"overlay"');
+    expect(transformed).toContain('"truthyLabel":"<CompanyRegisterModal>"');
   });
 
   /** Makes an overlay component's early null return visible without changing its authored default. */
@@ -91,6 +132,7 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
     expect(transformed).toContain('"expression":"<DeleteModal> visibility: !open"');
     expect(transformed).toContain('"kind":"overlay-visibility"');
+    expect(transformed).toContain('"ownerName":"DeleteModal"');
     expect(transformed).toContain('if (!(');
   });
 
@@ -115,6 +157,57 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"ownerName":"Application"');
     expect(transformed).toContain('"targetBranch":"falsy"');
     expect(transformed).toContain('"falsyLabel":"continue <Application>"');
+  });
+
+  /** Recovers the authored owner through styling/HOC factories so descendant branches stay reachable. */
+  it('instruments an early-return branch inside a styled component factory', () => {
+    const source = [
+      'const DashboardPage = styled(({ company }) => {',
+      '  if (company.registerStatus === "name_only") {',
+      '    return <BeforeRegistration />;',
+      '  }',
+      '  return <ActiveDashboard />;',
+      '})`display: block;`;',
+      'export default memo(DashboardPage);',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/DashboardPage.tsx',
+      source,
+    );
+
+    expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(transformed).toContain(
+      '"expression":"<DashboardPage> gate: company.registerStatus === \\"name_only\\""',
+    );
+    expect(transformed).toContain('"ownerName":"DashboardPage"');
+    expect(transformed).toContain('"truthyLabel":"<BeforeRegistration>"');
+  });
+
+  /** Lets target-path scoring choose between two authored component returns without guessing state. */
+  it('instruments both sides of an if-else component branch', () => {
+    const source = [
+      'export function RoutedPage({ allowed }) {',
+      '  if (allowed) {',
+      '    return <OwnerDashboard />;',
+      '  } else {',
+      '    return <PermissionFallback />;',
+      '  }',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/RoutedPage.tsx',
+      source,
+    );
+
+    expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(transformed).toContain('"expression":"<RoutedPage> branch: allowed"');
+    expect(transformed).toContain('"fallbackBranch":"falsy"');
+    expect(transformed).toContain('"falsyLabel":"<PermissionFallback>"');
+    expect(transformed).toContain('"ownerName":"RoutedPage"');
+    expect(transformed).not.toContain('"targetBranch"');
+    expect(transformed).toContain('"truthyLabel":"<OwnerDashboard>"');
   });
 
   /** Fails closed on incomplete editor syntax rather than applying parser-recovery offsets. */

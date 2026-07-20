@@ -154,14 +154,20 @@ function collectConditionalRenderCandidates(
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
-      isDirectReactRenderExpression(node.right, portalBindings)
+      (isDirectReactRenderExpression(node.right, portalBindings) ||
+        isJsxRouteEntryExpression(node.right))
     ) {
       candidates.push({
         condition: node.left,
         metadata: {
           falsyLabel: 'hidden',
           kind: 'logical-and',
-          truthyLabel: describeRenderBranch(node.right, sourceFile, portalBindings),
+          ...(isOverlayReactRenderExpression(node.right, sourceFile, portalBindings)
+            ? { role: 'overlay' as const }
+            : {}),
+          truthyLabel: isJsxRouteEntryExpression(node.right)
+            ? describeJsxRouteEntry(node.right, sourceFile)
+            : describeRenderBranch(node.right, sourceFile, portalBindings),
         },
       });
     } else if (
@@ -177,6 +183,10 @@ function collectConditionalRenderCandidates(
           ...inferFallbackBranch(truthyLabel, falsyLabel),
           falsyLabel,
           kind: 'ternary',
+          ...(isOverlayReactRenderExpression(node.whenTrue, sourceFile, portalBindings) ||
+          isOverlayReactRenderExpression(node.whenFalse, sourceFile, portalBindings)
+            ? { role: 'overlay' as const }
+            : {}),
           truthyLabel,
         },
       });
@@ -209,16 +219,29 @@ function collectEarlyReturnGateCandidate(
     statement.elseStatement === undefined
       ? undefined
       : readSingleReturnedRenderExpression(statement.elseStatement, portalBindings);
-  if ((thenRender === undefined) === (elseRender === undefined)) return undefined;
+  if (thenRender === undefined && elseRender === undefined) return undefined;
+  if (thenRender !== undefined && elseRender !== undefined) {
+    const truthyLabel = describeReturnedRenderExpression(thenRender, sourceFile, portalBindings);
+    const falsyLabel = describeReturnedRenderExpression(elseRender, sourceFile, portalBindings);
+    return {
+      condition: statement.expression,
+      expressionLabel: `<${ownerName}> branch: ${statement.expression.getText(sourceFile)}`,
+      metadata: {
+        ...inferFallbackBranch(truthyLabel, falsyLabel),
+        falsyLabel,
+        kind: 'early-return',
+        ownerName,
+        truthyLabel,
+      },
+    };
+  }
   const returnedBranch = thenRender === undefined ? 'falsy' : 'truthy';
   const targetBranch = returnedBranch === 'truthy' ? 'falsy' : 'truthy';
-  const returnedExpression = thenRender ?? elseRender;
-  const returnedLabel =
-    returnedExpression?.kind === ts.SyntaxKind.NullKeyword
-      ? 'empty return'
-      : returnedExpression === undefined
-        ? 'early return'
-        : describeRenderBranch(returnedExpression, sourceFile, portalBindings);
+  const returnedLabel = describeReturnedRenderExpression(
+    thenRender ?? elseRender,
+    sourceFile,
+    portalBindings,
+  );
   const continuationLabel = `continue <${ownerName}>`;
   return {
     condition: statement.expression,
@@ -232,6 +255,18 @@ function collectEarlyReturnGateCandidate(
       truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
     },
   };
+}
+
+/** Labels a proven returned render expression consistently for one-sided and two-sided branches. */
+function describeReturnedRenderExpression(
+  expression: ts.Expression | undefined,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): string {
+  if (expression?.kind === ts.SyntaxKind.NullKeyword) return 'empty return';
+  return expression === undefined
+    ? 'early return'
+    : describeRenderBranch(expression, sourceFile, portalBindings);
 }
 
 /** Reads an exact one-statement return whose value is JSX, a portal, or `null`. */
@@ -279,6 +314,7 @@ function collectOverlayNullGuardCandidate(
     metadata: {
       falsyLabel: `hidden <${ownerName}> overlay`,
       kind: 'overlay-visibility',
+      ownerName,
       role: 'overlay',
       truthyLabel: `visible <${ownerName}> overlay`,
     },
@@ -340,10 +376,47 @@ function readOverlayRuntimeFunctionName(
   sourceFile: ts.SourceFile,
 ): string | undefined {
   if (owner.name !== undefined) return owner.name.getText(sourceFile);
-  const parent = owner.parent;
-  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
-  if (ts.isPropertyAssignment(parent)) return parent.name.getText(sourceFile);
+  let current: ts.Node = owner;
+  for (let depth = 0; depth < 8 && !ts.isSourceFile(current.parent); depth += 1) {
+    const parent = current.parent;
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === current &&
+      ts.isIdentifier(parent.name)
+    ) {
+      return parent.name.text;
+    }
+    if (ts.isPropertyAssignment(parent) && parent.initializer === current) {
+      return parent.name.getText(sourceFile);
+    }
+    if (!isTransparentComponentFactoryWrapper(parent, current)) break;
+    current = parent;
+  }
   return undefined;
+}
+
+/**
+ * Admits syntax-only HOC/styling wrappers between a render function and its authored binding.
+ *
+ * Common components are declared as `const Page = styled(() => ...)\`...\``,
+ * `const Page = memo(() => ...)`, or nested factory calls. Walking only an argument, callee tag, or
+ * syntax wrapper cannot cross into unrelated control flow, while recovering the name required to
+ * attach an early-return condition to the root-to-target component path.
+ */
+function isTransparentComponentFactoryWrapper(parent: ts.Node, child: ts.Node): boolean {
+  if (
+    ts.isParenthesizedExpression(parent) ||
+    ts.isAsExpression(parent) ||
+    ts.isSatisfiesExpression(parent) ||
+    ts.isNonNullExpression(parent) ||
+    ts.isTypeAssertionExpression(parent)
+  ) {
+    return parent.expression === child;
+  }
+  if (ts.isCallExpression(parent)) {
+    return parent.arguments.includes(child as ts.Expression);
+  }
+  return ts.isTaggedTemplateExpression(parent) && parent.tag === child;
 }
 
 /** Collects explicit controlled visibility props from conventionally named overlay JSX tags. */
@@ -356,6 +429,7 @@ function collectOverlayVisibilityCandidates(
     return [];
   }
   const candidates: ReactConditionalRenderCandidate[] = [];
+  const ownerName = tagName.split('.').at(-1) ?? tagName;
   for (const property of element.attributes.properties) {
     if (!ts.isJsxAttribute(property)) continue;
     const propName = property.name.getText(sourceFile);
@@ -378,6 +452,7 @@ function collectOverlayVisibilityCandidates(
       metadata: {
         falsyLabel: `hidden <${tagName}> overlay`,
         kind: 'overlay-visibility',
+        ownerName,
         role: 'overlay',
         truthyLabel: `visible <${tagName}> overlay`,
       },
@@ -508,6 +583,72 @@ function isDirectReactRenderExpression(
     isDirectJsxRenderExpression(expression) ||
     isReactDomPortalCall(unwrapConditionalExpression(expression), portalBindings)
   );
+}
+
+/**
+ * Recognizes a direct overlay branch whose dormant state can hide the selected-file subtree.
+ *
+ * Component naming is used only as structural evidence and exact ReactDOM portals are always visual
+ * layers. The result annotates an existing condition; it never instruments a non-render expression.
+ */
+function isOverlayReactRenderExpression(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): boolean {
+  const unwrapped = unwrapConditionalExpression(expression);
+  if (isReactDomPortalCall(unwrapped, portalBindings)) return true;
+  const tagName = ts.isJsxElement(unwrapped)
+    ? unwrapped.openingElement.tagName.getText(sourceFile)
+    : ts.isJsxSelfClosingElement(unwrapped)
+      ? unwrapped.tagName.getText(sourceFile)
+      : undefined;
+  return (
+    tagName?.split('.').some((segment) => OVERLAY_COMPONENT_NAME_PATTERN.test(segment)) === true
+  );
+}
+
+/**
+ * Recognizes the object half of an authored React Router-style conditional route entry.
+ *
+ * The property name and a direct JSX value are both required. That narrow proof keeps ordinary
+ * `condition && object` computations unchanged while allowing the Inspector to reveal a page route
+ * that an authentication, role, feature, or application-mode condition removed from a route array.
+ */
+function isJsxRouteEntryExpression(
+  expression: ts.Expression,
+): expression is ts.ObjectLiteralExpression {
+  const unwrapped = unwrapConditionalExpression(expression);
+  if (!ts.isObjectLiteralExpression(unwrapped)) return false;
+  return unwrapped.properties.some((property) => {
+    if (!ts.isPropertyAssignment(property)) return false;
+    const propertyName = readStaticPropertyName(property.name);
+    return propertyName === 'element' && isDirectJsxRenderExpression(property.initializer);
+  });
+}
+
+/** Reads an identifier or quoted object key without evaluating computed project expressions. */
+function readStaticPropertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return undefined;
+}
+
+/** Labels a conditional route with its JSX page element so target-path scoring can select it. */
+function describeJsxRouteEntry(
+  expression: ts.ObjectLiteralExpression,
+  sourceFile: ts.SourceFile,
+): string {
+  const elementProperty = expression.properties.find(
+    (property): property is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(property) &&
+      readStaticPropertyName(property.name) === 'element' &&
+      isDirectJsxRenderExpression(property.initializer),
+  );
+  return elementProperty === undefined
+    ? '<Route> entry'
+    : `${describeJsxRenderExpression(elementProperty.initializer, sourceFile)} route`;
 }
 
 /** Proves createPortal through a named import or ReactDOM namespace/default binding. */

@@ -9,6 +9,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { collectPreviewReselectStateContainerPaths } from './previewReselectStateContainerPaths';
 
 const MAX_ANALYSIS_SCOPES = 512;
 const MAX_BINDINGS_PER_SCOPE = 256;
@@ -64,6 +65,7 @@ export function collectPreviewReduxStateContainerPaths(
   sourceText: string,
 ): readonly (readonly string[])[] {
   if (!sourceText.includes('Selector')) return [];
+  const reselectPaths = collectPreviewReselectStateContainerPaths(sourcePath, sourceText);
   const sourceFile = ts.createSourceFile(
     sourcePath,
     sourceText,
@@ -71,9 +73,11 @@ export function collectPreviewReduxStateContainerPaths(
     true,
     selectScriptKind(sourcePath),
   );
-  if (hasParseDiagnostics(sourceFile)) return [];
+  if (hasParseDiagnostics(sourceFile)) return reselectPaths;
   const selectorImports = collectSelectorImports(sourceFile);
-  if (selectorImports.direct.size === 0 && selectorImports.namespaces.size === 0) return [];
+  if (selectorImports.direct.size === 0 && selectorImports.namespaces.size === 0) {
+    return reselectPaths;
+  }
 
   const context: CollectionContext = {
     paths: new Map(),
@@ -81,6 +85,7 @@ export function collectPreviewReduxStateContainerPaths(
     selectorImports,
   };
   analyzeScope(sourceFile, new Map(), context);
+  for (const containerPath of reselectPaths) addContainerPath(containerPath, context);
   const paths = [...context.paths.values()].sort(compareContainerPaths);
   return Object.freeze(paths.map((containerPath) => Object.freeze([...containerPath])));
 }

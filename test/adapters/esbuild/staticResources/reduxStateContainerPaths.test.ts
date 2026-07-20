@@ -154,4 +154,58 @@ describe('collectPreviewReduxStateContainerPaths', () => {
       [],
     );
   });
+
+  /** Reconstructs Tada-style object roots hidden behind imported Reselect selector functions. */
+  it('collects object-valued createSelector input paths used by projectors', () => {
+    const paths = collectPreviewReduxStateContainerPaths(
+      SOURCE_PATH,
+      [
+        'import { createSelector } from "@reduxjs/toolkit";',
+        'const callBlockState = (state: RootState): State => state.callBlock.callBlock;',
+        'const fontScaleState = (state: RootState) => state.application.fontScale;',
+        'export const selectBusiness = createSelector(callBlockState, (value) => value.business);',
+        'export const selectScale = createSelector(fontScaleState, ({ fontScale }) => 10 * fontScale);',
+      ].join('\n'),
+    );
+
+    expect(paths).toEqual([
+      ['application'],
+      ['callBlock'],
+      ['application', 'fontScale'],
+      ['callBlock', 'callBlock'],
+    ]);
+  });
+
+  /** Does not turn a scalar selector result into an object merely because Reselect receives it. */
+  it('leaves scalar createSelector input leaves unmaterialized', () => {
+    const paths = collectPreviewReduxStateContainerPaths(
+      SOURCE_PATH,
+      [
+        'import { createSelector as memoSelector } from "reselect";',
+        'const statusState = (state: RootState) => state.session.status;',
+        'export const selectReady = memoSelector([statusState], (status) => status === "ready");',
+      ].join('\n'),
+    );
+
+    expect(paths).toEqual([]);
+  });
+
+  /** Supports inline input selectors while rejecting a shadowed factory parameter. */
+  it('supports inline inputs and ignores shadowed createSelector calls', () => {
+    const paths = collectPreviewReduxStateContainerPaths(
+      SOURCE_PATH,
+      [
+        'import { createSelector } from "reselect";',
+        'export const selectName = createSelector(',
+        '  (root: RootState) => root.account.profile,',
+        '  (profile) => profile.name,',
+        ');',
+        'function unrelated(createSelector) {',
+        '  return createSelector((root) => root.unsafe.branch, (branch) => branch.value);',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(paths).toEqual([['account'], ['account', 'profile']]);
+  });
 });

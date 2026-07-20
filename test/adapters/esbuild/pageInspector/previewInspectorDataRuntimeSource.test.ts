@@ -264,6 +264,124 @@ describe('Page Inspector data runtime source', () => {
     expect(runtime.smartReachability('page:Target')).toBe(false);
   });
 
+  /** Opens login and role booleans that are semantically required by the selected page path. */
+  it('guides Smart payload roles toward the selected application corridor', () => {
+    const runtime = evaluateDataRuntime();
+    runtime.resolve(
+      {
+        id: 'staff-context',
+        kind: 'graphql',
+        label: 'StaffContext',
+        shape: {
+          fields: {
+            user: {
+              fields: {
+                hasConcurrentSession: { kind: 'boolean' },
+                isAuthenticated: { kind: 'boolean' },
+                isLegalPartnerStaff: { kind: 'boolean' },
+                isStaff: { kind: 'boolean' },
+                isStaffLoading: { kind: 'boolean' },
+                isSuperstaff: { kind: 'boolean' },
+                shouldAuthenticateTwoFactor: { kind: 'boolean' },
+              },
+              kind: 'object',
+            },
+          },
+          kind: 'object',
+        },
+      },
+      {},
+    );
+
+    expect(
+      runtime.smartReachability('page:Target', {
+        applicationPath: ['StaffAppEntry', 'PartnerStaffApp', 'TargetPage'],
+      }),
+    ).toBe(true);
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      payload: {
+        user: {
+          hasConcurrentSession: false,
+          isAuthenticated: true,
+          isLegalPartnerStaff: true,
+          isStaff: true,
+          isStaffLoading: false,
+          isSuperstaff: false,
+          shouldAuthenticateTwoFactor: false,
+        },
+      },
+    });
+  });
+
+  /** Does not mistake a page's subject for the current user role while retaining shell role evidence. */
+  it('requires every compound role word from an application identity boundary', () => {
+    const runtime = evaluateDataRuntime();
+    runtime.resolve(
+      {
+        id: 'owner-context',
+        kind: 'graphql',
+        label: 'OwnerContext',
+        shape: {
+          fields: {
+            company: {
+              fields: {
+                hasOwnerAccess: { kind: 'boolean' },
+                isOwner: { kind: 'boolean' },
+              },
+              kind: 'object',
+            },
+            user: {
+              fields: {
+                isAuthenticated: { kind: 'boolean' },
+                isLegalPartnerStaff: { kind: 'boolean' },
+              },
+              kind: 'object',
+            },
+          },
+          kind: 'object',
+        },
+      },
+      {},
+    );
+
+    runtime.smartReachability('page:Target', {
+      applicationPath: [
+        'ApplicationRoot',
+        'CompanyOwnerApp',
+        'LegalPartnerSelectPage',
+        'CompanyOwnerBreadcrumb',
+      ],
+    });
+
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      payload: {
+        company: { hasOwnerAccess: true, isOwner: true },
+        user: { isAuthenticated: true, isLegalPartnerStaff: false },
+      },
+    });
+  });
+
+  /** Keeps authentication false when the inspected target is the login corridor itself. */
+  it('does not bypass an explicitly selected login route', () => {
+    const runtime = evaluateDataRuntime();
+    runtime.resolve(
+      {
+        id: 'login-context',
+        kind: 'graphql',
+        shape: {
+          fields: { user: { fields: { isAuthenticated: { kind: 'boolean' } }, kind: 'object' } },
+          kind: 'object',
+        },
+      },
+      {},
+    );
+
+    runtime.smartReachability('page:Target', { applicationPath: ['App', 'LoginPage'] });
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      payload: { user: { isAuthenticated: false } },
+    });
+  });
+
   /** Deterministic background convergence never rewrites an explicit payload scenario. */
   it('preserves user payloads during automatic page-path convergence', () => {
     const runtime = evaluateDataRuntime();
@@ -342,6 +460,29 @@ describe('Page Inspector data runtime source', () => {
         staff: [
           { id: 'preview-1', isActive: true, name: 'name' },
           { id: 'preview-2', isActive: true, name: 'name' },
+        ],
+      },
+    });
+  });
+
+  /** Recognizes a plural noun before a GraphQL qualifier such as `ForCompanyCreate`. */
+  it('generates arrays for qualified plural GraphQL field names', async () => {
+    const runtime = evaluateDataRuntime();
+    const response = await runtime.fetch('/graphql', {
+      body: JSON.stringify({
+        operationName: 'CompanyCreateContext',
+        query: `query CompanyCreateContext {
+          legalPartnersForCompanyCreate { id name isRecommendedForCompanyCreate }
+        }`,
+      }),
+      method: 'POST',
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      data: {
+        legalPartnersForCompanyCreate: [
+          { id: 'preview-1', isRecommendedForCompanyCreate: false, name: 'name' },
+          { id: 'preview-2', isRecommendedForCompanyCreate: false, name: 'name' },
         ],
       },
     });
@@ -625,7 +766,10 @@ interface EvaluatedDataRuntime {
   readonly smart: (id: string) => void;
   readonly smartReachability: (
     reachabilityKey: string,
-    options?: { readonly preserveUserValues?: boolean },
+    options?: {
+      readonly applicationPath?: readonly string[];
+      readonly preserveUserValues?: boolean;
+    },
   ) => boolean;
 }
 

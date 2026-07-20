@@ -10,6 +10,7 @@ import {
   discoverPreviewDocumentShell,
   type PreviewDocumentShellEvidence,
 } from './previewDocumentShell';
+import { discoverPreviewPortalHostIds } from './previewPortalHostDiscovery';
 import { selectPreviewGraphThemeImport } from './previewGraphThemeSelection';
 import {
   selectPreviewGlobalStyleImports,
@@ -29,6 +30,8 @@ export type ReadPreviewStyleContextSource = (
 export interface PreparePreviewStyleContextOptions {
   readonly directThemeImport?: PreviewThemeImportSelection;
   readonly inspectorDependencyPaths: readonly string[];
+  /** Reached source graph inspected for exact ReactDOM portal host requirements. */
+  readonly portalHostDependencyPaths: readonly string[];
   readonly projectRoot: string;
   readonly readSource: ReadPreviewStyleContextSource;
   readonly renderPath?: PreviewRenderChainCandidate;
@@ -41,6 +44,7 @@ export interface PreparePreviewStyleContextOptions {
 export interface PreparedPreviewStyleContext {
   readonly documentShellEvidence?: PreviewDocumentShellEvidence;
   readonly globalStyleImports: readonly PreviewGlobalStyleImportSelection[];
+  readonly portalHostIds: readonly string[];
   readonly snapshotSourceByPath: ReadonlyMap<string, string>;
   readonly themeImport?: PreviewThemeImportSelection;
 }
@@ -66,29 +70,36 @@ export async function preparePreviewStyleContext(
   };
   const readSource = (sourcePath: string, maximumBytes: number): Promise<string | undefined> =>
     readProjectSource({ maximumBytes, sourcePath });
-  const [themeImport, documentShellEvidence, globalStyleImports] = await Promise.all([
-    options.directThemeImport ??
-      (options.inspectorDependencyPaths.length === 0
-        ? undefined
-        : selectPreviewGraphThemeImport({
-            dependencyPaths: options.inspectorDependencyPaths,
-            readSource,
-            resolveModule: options.staticModuleResolver.resolve,
-          })),
-    discoverPreviewDocumentShell({
-      projectRoot: options.projectRoot,
-      readSource,
-      workspaceRoot: options.workspaceRoot,
-    }),
-    selectPreviewGlobalStyleImports({
-      readSource: readProjectSource,
-      ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
-      resolveModule: options.staticModuleResolver.resolve,
-    }),
-  ]);
+  const [themeImport, documentShellEvidence, globalStyleImports, portalHostIds] = await Promise.all(
+    [
+      options.directThemeImport ??
+        (options.inspectorDependencyPaths.length === 0
+          ? undefined
+          : selectPreviewGraphThemeImport({
+              dependencyPaths: options.inspectorDependencyPaths,
+              readSource,
+              resolveModule: options.staticModuleResolver.resolve,
+            })),
+      discoverPreviewDocumentShell({
+        projectRoot: options.projectRoot,
+        readSource,
+        workspaceRoot: options.workspaceRoot,
+      }),
+      selectPreviewGlobalStyleImports({
+        readSource: readProjectSource,
+        ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
+        resolveModule: options.staticModuleResolver.resolve,
+      }),
+      discoverPreviewPortalHostIds({
+        dependencyPaths: [options.request.documentPath, ...options.portalHostDependencyPaths],
+        readSource,
+      }),
+    ],
+  );
   return {
     ...(documentShellEvidence === undefined ? {} : { documentShellEvidence }),
     globalStyleImports,
+    portalHostIds,
     snapshotSourceByPath,
     ...(themeImport === undefined ? {} : { themeImport }),
   };

@@ -30,6 +30,25 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"truthyLabel":"<Content>"');
   });
 
+  /** Retains direct Fragment children so DFS can choose a gate leading to the selected component. */
+  it('labels logical Fragment branches with their direct component children', () => {
+    const source = [
+      'export function Page({ result }) {',
+      '  return result && <>',
+      '    <DataAggregateInfoSection />',
+      '    <CallBlockHistorySection />',
+      '  </>;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source);
+
+    expect(transformed.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(transformed).toContain(
+      '"truthyLabel":"<Fragment: DataAggregateInfoSection, CallBlockHistorySection>"',
+    );
+  });
+
   /** Leaves ordinary boolean computation, comments, strings, and non-JSX ternaries untouched. */
   it('does not instrument conditions that do not directly select JSX', () => {
     const source = [

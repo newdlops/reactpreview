@@ -686,11 +686,34 @@ function describeRenderBranch(
   return boundMetadataText(unwrapped.getText(sourceFile));
 }
 
+/**
+ * Reads bounded direct component names from a fragment branch.
+ *
+ * A logical gate commonly wraps several target descendants in a Fragment. Keeping those names in
+ * the branch label lets target-path scoring choose the gate without turning every `&&` expression
+ * on the surrounding page on. Nested expressions remain opaque so this stays a local syntax proof.
+ */
+function describeJsxFragment(fragment: ts.JsxFragment, sourceFile: ts.SourceFile): string {
+  const componentNames: string[] = [];
+  for (const child of fragment.children) {
+    const tagName = ts.isJsxElement(child)
+      ? child.openingElement.tagName.getText(sourceFile)
+      : ts.isJsxSelfClosingElement(child)
+        ? child.tagName.getText(sourceFile)
+        : undefined;
+    if (tagName === undefined || componentNames.includes(tagName) || componentNames.length >= 8) {
+      continue;
+    }
+    componentNames.push(boundMetadataText(tagName));
+  }
+  return componentNames.length === 0 ? '<Fragment>' : `<Fragment: ${componentNames.join(', ')}>`;
+}
+
 /** Reads the authored component/tag name from a direct JSX branch. */
 function describeJsxRenderExpression(expression: ts.Expression, sourceFile: ts.SourceFile): string {
   const unwrapped = unwrapConditionalExpression(expression);
   if (ts.isJsxFragment(unwrapped)) {
-    return '<Fragment>';
+    return describeJsxFragment(unwrapped, sourceFile);
   }
   if (ts.isJsxElement(unwrapped)) {
     return `<${boundMetadataText(unwrapped.openingElement.tagName.getText(sourceFile))}>`;

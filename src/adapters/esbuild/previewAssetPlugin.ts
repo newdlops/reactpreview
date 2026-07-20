@@ -20,6 +20,10 @@ const JAVASCRIPT_IMPORT_KINDS = new Set(['dynamic-import', 'import-statement', '
 const ASSET_PLUGIN_DATA = Symbol('react-preview-asset-plugin-data');
 const MAX_INLINE_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_INLINE_ASSET_BYTES = 20 * 1024 * 1024;
+const PACKAGE_MANIFEST_NAME = 'package.json';
+
+/** Conditions esbuild activates for ESM imports in a browser bundle, plus CSS's `style`. */
+const CSS_PACKAGE_EXPORT_CONDITIONS = new Set(['browser', 'default', 'import', 'module', 'style']);
 
 /** Asset transformations that produce JavaScript modules for the browser bundle. */
 type PreviewAssetMode = 'data-url' | 'raw' | 'svg-component' | 'svg-url';
@@ -50,12 +54,38 @@ interface BoundedAssetRequest {
   readonly requiredRoot?: string;
 }
 
+/** Bare npm package identity and its corresponding package-exports subpath. */
+interface ParsedPackageSpecifier {
+  /** Unscoped or scoped package name used to locate the nearest `node_modules` directory. */
+  readonly packageName: string;
+  /** Root (`.`) or explicit package subpath (`./theme`) used to select an exports entry. */
+  readonly exportSubpath: string;
+}
+
+/** Untrusted package metadata narrowed to the fields used by CSS style resolution. */
+interface PreviewStylePackageManifest {
+  /** Conditional or subpath package exports map interpreted without executing project code. */
+  readonly exports?: unknown;
+  /** Exact package identity guarding against an unrelated nested manifest. */
+  readonly name?: unknown;
+}
+
+/** One conditional target together with proof that the `style` condition selected it. */
+interface ConditionalStyleTarget {
+  /** Package-relative export target selected in authored condition order. */
+  readonly path: string;
+  /** Whether the selected condition chain crossed an active `style` key. */
+  readonly selectedByStyle: boolean;
+}
+
 /** Active path needed when an asset is imported from the target bridge namespace. */
 export interface PreviewAssetPluginOptions {
   /** Absolute active-document path used as the virtual bridge's filesystem importer. */
   readonly documentPath: string;
   /** Nearest package boundary containing the conventional public directory. */
   readonly projectRoot: string;
+  /** Registers a resolved style package so manifest-only changes can trigger preview rebuilds. */
+  readonly registerWatchDirectory?: (directoryPath: string) => void;
   /** Trusted workspace boundary applied after filesystem symlinks are resolved. */
   readonly workspaceRoot: string;
 }
@@ -75,6 +105,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
     representations: new Set<string>(),
     totalBytes: 0,
   };
+  const stylePackageResolutionCache = new Map<string, Promise<OnResolveResult | undefined>>();
 
   return {
     name: 'react-preview-assets',
@@ -83,6 +114,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
       build.onStart(() => {
         assetBudget.representations.clear();
         assetBudget.totalBytes = 0;
+        stylePackageResolutionCache.clear();
       });
 
       /**
@@ -99,6 +131,18 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
         }
 
         const parsedRequest = parseAssetRequest(arguments_.path);
+        const stylePackageResolution = await resolveCssPackageStyleImport({
+          arguments_,
+          build,
+          cache: stylePackageResolutionCache,
+          parsedRequest,
+          projectRoot: options.projectRoot,
+          registerWatchDirectory: options.registerWatchDirectory,
+          workspaceRoot: options.workspaceRoot,
+        });
+        if (stylePackageResolution !== undefined) {
+          return stylePackageResolution;
+        }
         const mode = selectAssetMode(arguments_, parsedRequest);
         const resolvesPublicStylesheet = isPublicStylesheetImport(arguments_, parsedRequest);
         if (mode === undefined && !resolvesPublicStylesheet) {
@@ -260,6 +304,282 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
       build.onLoad({ filter: /.*/, namespace: PREVIEW_DATA_URL_NAMESPACE }, loadPreviewAsset);
     },
   };
+}
+
+/** Inputs used by the CSS-only conditional package resolver. */
+interface CssPackageStyleResolutionOptions {
+  /** Original esbuild request; only `import-rule` requests are eligible. */
+  readonly arguments_: OnResolveArgs;
+  /** Active build API used only to locate PnP packages through their ordinary JS export. */
+  readonly build: Parameters<Plugin['setup']>[0];
+  /** Rebuild-local result cache keyed by importer directory and exact package request. */
+  readonly cache: Map<string, Promise<OnResolveResult | undefined>>;
+  /** Request with query and fragment separated from the package specifier. */
+  readonly parsedRequest: ParsedAssetRequest;
+  /** Nearest package root used when the importer belongs to a virtual preview module. */
+  readonly projectRoot: string;
+  /** Compiler watcher bridge used because package manifests are absent from esbuild metafile inputs. */
+  readonly registerWatchDirectory: ((directoryPath: string) => void) | undefined;
+  /** Workspace fallback used for hoisted dependency discovery. */
+  readonly workspaceRoot: string;
+}
+
+/**
+ * Resolves the `style` condition of a bare package only for a CSS `@import` rule.
+ *
+ * esbuild's build-wide `conditions` option cannot be used here: adding `style` globally would make
+ * JavaScript imports of packages such as Tailwind resolve to CSS. This resolver instead reads one
+ * package manifest as inert JSON and accepts a target only when authored conditional-export order
+ * proves that the CSS-specific `style` condition selected it.
+ *
+ * @param options Original import, package boundaries, build API, and rebuild-local cache.
+ * @returns A local CSS file result, a package diagnostic, or `undefined` for normal esbuild logic.
+ */
+async function resolveCssPackageStyleImport(
+  options: CssPackageStyleResolutionOptions,
+): Promise<OnResolveResult | undefined> {
+  if (options.arguments_.kind !== 'import-rule') return undefined;
+  const packageSpecifier = parseBarePackageSpecifier(options.parsedRequest.path);
+  if (packageSpecifier === undefined) return undefined;
+
+  const importerDirectory = selectPackageImporterDirectory(options.arguments_, options.projectRoot);
+  const cacheKey = `${canonicalizeExistingPath(importerDirectory)}\0${options.parsedRequest.path}${options.parsedRequest.suffix}`;
+  let pending = options.cache.get(cacheKey);
+  if (pending === undefined) {
+    pending = resolveCssPackageStyleImportUncached({
+      ...options,
+      importerDirectory,
+      packageSpecifier,
+    });
+    options.cache.set(cacheKey, pending);
+  }
+  return pending;
+}
+
+/** Full inputs after a bare CSS package request has been validated and normalized. */
+interface UncachedCssPackageStyleResolutionOptions extends CssPackageStyleResolutionOptions {
+  /** Filesystem directory whose Node-style package ancestry should be searched first. */
+  readonly importerDirectory: string;
+  /** Parsed npm identity and package-exports subpath. */
+  readonly packageSpecifier: ParsedPackageSpecifier;
+}
+
+/** Finds the package, selects its conditional style target, and validates the resulting CSS file. */
+async function resolveCssPackageStyleImportUncached(
+  options: UncachedCssPackageStyleResolutionOptions,
+): Promise<OnResolveResult | undefined> {
+  const packageRoot =
+    (await findInstalledPackageRoot(options.packageSpecifier.packageName, [
+      options.importerDirectory,
+      options.projectRoot,
+      options.workspaceRoot,
+    ])) ??
+    (await resolvePackageRootFromJavascriptExport(
+      options.build,
+      options.arguments_,
+      options.importerDirectory,
+      options.packageSpecifier.packageName,
+    ));
+  if (packageRoot === undefined) return undefined;
+
+  const manifestPath = path.join(packageRoot, PACKAGE_MANIFEST_NAME);
+  const manifest = await readStylePackageManifest(manifestPath);
+  if (manifest?.name !== options.packageSpecifier.packageName) return undefined;
+  options.registerWatchDirectory?.(packageRoot);
+  const target = selectPackageStyleExport(manifest.exports, options.packageSpecifier.exportSubpath);
+  if (!target?.toLowerCase().endsWith('.css')) return undefined;
+  if (!target.startsWith('./') || /[?#]/u.test(target)) return undefined;
+
+  const targetPath = path.resolve(packageRoot, target);
+  if (!isPathInside(packageRoot, targetPath)) return undefined;
+  try {
+    const metadata = await stat(targetPath);
+    if (!metadata.isFile()) return undefined;
+  } catch (error) {
+    return {
+      errors: [
+        {
+          detail: error,
+          text: `Could not read package style export for ${options.parsedRequest.path}: ${targetPath}`,
+        },
+      ],
+      watchFiles: [manifestPath],
+    };
+  }
+
+  const canonicalPackageRoot = canonicalizeExistingPath(packageRoot);
+  const canonicalTargetPath = canonicalizeExistingPath(targetPath);
+  if (!isPathInside(canonicalPackageRoot, canonicalTargetPath)) return undefined;
+  return {
+    namespace: 'file',
+    path: canonicalTargetPath,
+    sideEffects: true,
+    suffix: options.parsedRequest.suffix,
+    watchFiles: [manifestPath, canonicalTargetPath],
+  };
+}
+
+/** Selects a real importer directory for file-backed and generated preview modules. */
+function selectPackageImporterDirectory(arguments_: OnResolveArgs, projectRoot: string): string {
+  if (path.isAbsolute(arguments_.resolveDir)) return arguments_.resolveDir;
+  if (path.isAbsolute(arguments_.importer)) return path.dirname(arguments_.importer);
+  return projectRoot;
+}
+
+/** Parses a bare npm specifier without accepting relative, absolute, URL, or malformed requests. */
+function parseBarePackageSpecifier(moduleSpecifier: string): ParsedPackageSpecifier | undefined {
+  if (
+    moduleSpecifier.length === 0 ||
+    moduleSpecifier.startsWith('.') ||
+    moduleSpecifier.startsWith('/') ||
+    moduleSpecifier.includes('\\') ||
+    /^[a-z][a-z\d+.-]*:/iu.test(moduleSpecifier)
+  ) {
+    return undefined;
+  }
+
+  const segments = moduleSpecifier.split('/');
+  const packageSegmentCount = moduleSpecifier.startsWith('@') ? 2 : 1;
+  if (
+    segments.length < packageSegmentCount ||
+    segments.slice(0, packageSegmentCount).some((segment) => segment.length === 0)
+  ) {
+    return undefined;
+  }
+  const packageName = segments.slice(0, packageSegmentCount).join('/');
+  const requestedSubpath = segments.slice(packageSegmentCount).join('/');
+  return {
+    exportSubpath: requestedSubpath.length === 0 ? '.' : `./${requestedSubpath}`,
+    packageName,
+  };
+}
+
+/** Searches ordinary nearest/hoisted `node_modules` roots without leaving package names unchecked. */
+async function findInstalledPackageRoot(
+  packageName: string,
+  startDirectories: readonly string[],
+): Promise<string | undefined> {
+  const visited = new Set<string>();
+  for (const startDirectory of startDirectories) {
+    let directory = path.resolve(startDirectory);
+    while (!visited.has(directory)) {
+      visited.add(directory);
+      const packageRoot = path.join(directory, 'node_modules', packageName);
+      const manifest = await readStylePackageManifest(
+        path.join(packageRoot, PACKAGE_MANIFEST_NAME),
+      );
+      if (manifest?.name === packageName) return packageRoot;
+      const parentDirectory = path.dirname(directory);
+      if (parentDirectory === directory) break;
+      directory = parentDirectory;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Uses an ordinary JS package export only as a locator for PnP or virtual package installations.
+ * The returned JS file is never substituted into CSS; its nearest matching manifest anchors the
+ * subsequent `style` export lookup.
+ */
+async function resolvePackageRootFromJavascriptExport(
+  build: Parameters<Plugin['setup']>[0],
+  arguments_: OnResolveArgs,
+  importerDirectory: string,
+  packageName: string,
+): Promise<string | undefined> {
+  const importer = path.isAbsolute(arguments_.importer)
+    ? arguments_.importer
+    : path.join(importerDirectory, '__react_preview_css_import__.css');
+  const resolved = await build.resolve(packageName, {
+    importer,
+    kind: 'import-statement',
+    namespace: 'file',
+    pluginData: PREVIEW_RESOLVE_GUARD,
+    resolveDir: importerDirectory,
+  });
+  if (resolved.external || resolved.errors.length > 0 || !path.isAbsolute(resolved.path)) {
+    return undefined;
+  }
+
+  let directory = path.dirname(resolved.path);
+  for (;;) {
+    const manifest = await readStylePackageManifest(path.join(directory, PACKAGE_MANIFEST_NAME));
+    if (manifest?.name === packageName) return directory;
+    const parentDirectory = path.dirname(directory);
+    if (parentDirectory === directory) return undefined;
+    directory = parentDirectory;
+  }
+}
+
+/** Reads only object-shaped JSON metadata and treats malformed or unreadable manifests as absent. */
+async function readStylePackageManifest(
+  manifestPath: string,
+): Promise<PreviewStylePackageManifest | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
+    return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Selects an exact package subpath before evaluating its conditional export object. */
+function selectPackageStyleExport(
+  exportsValue: unknown,
+  exportSubpath: string,
+): string | undefined {
+  let selectedValue = exportsValue;
+  if (isUnknownRecord(exportsValue)) {
+    const keys = Object.keys(exportsValue);
+    const containsSubpathKeys = keys.some((key) => key.startsWith('.'));
+    if (containsSubpathKeys) {
+      selectedValue = Object.prototype.hasOwnProperty.call(exportsValue, exportSubpath)
+        ? exportsValue[exportSubpath]
+        : undefined;
+    } else if (exportSubpath !== '.') {
+      selectedValue = undefined;
+    }
+  } else if (exportSubpath !== '.') {
+    selectedValue = undefined;
+  }
+
+  const selectedTarget = selectConditionalStyleTarget(selectedValue, false);
+  return selectedTarget?.selectedByStyle === true ? selectedTarget.path : undefined;
+}
+
+/**
+ * Evaluates a bounded conditional target in authored property order using browser ESM conditions.
+ * A direct string remains unclaimed because normal esbuild package resolution already handles it.
+ */
+function selectConditionalStyleTarget(
+  value: unknown,
+  selectedByStyle: boolean,
+): ConditionalStyleTarget | undefined {
+  if (typeof value === 'string') return { path: value, selectedByStyle };
+  if (Array.isArray(value)) {
+    for (const candidate of value) {
+      const selected = selectConditionalStyleTarget(candidate, selectedByStyle);
+      if (selected !== undefined) return selected;
+    }
+    return undefined;
+  }
+  if (!isUnknownRecord(value)) return undefined;
+
+  for (const [condition, candidate] of Object.entries(value)) {
+    if (!CSS_PACKAGE_EXPORT_CONDITIONS.has(condition)) continue;
+    const selected = selectConditionalStyleTarget(
+      candidate,
+      selectedByStyle || condition === 'style',
+    );
+    if (selected !== undefined) return selected;
+  }
+  return undefined;
+}
+
+/** Narrows untrusted JSON values without inheriting prototype-owned package fields. */
+function isUnknownRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Reports whether a root-relative CSS `@import` needs public-directory path mapping only. */

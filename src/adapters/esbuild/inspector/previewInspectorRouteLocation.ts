@@ -320,8 +320,16 @@ function collectJsxRouteCandidates(
       const tagName = opening.tagName.getText(sourceFile).split('.').at(-1);
       if (tagName === 'Route') {
         const routePath = readStaticJsxAttribute(opening.attributes, 'path', sourceFile);
+        const inheritedSegments =
+          parentSegments.length > 0
+            ? parentSegments
+            : (readEnclosingRouteFactoryBasePath(node, sourceFile) ?? []);
         const routeSegments =
-          routePath === undefined ? parentSegments : [...parentSegments, routePath];
+          routePath === undefined
+            ? inheritedSegments
+            : routePath.startsWith('/')
+              ? [routePath]
+              : [...inheritedSegments, routePath];
         const attributeText = opening.attributes.getText(sourceFile);
         for (const [identityOrder, componentName] of identities.entries()) {
           const identityPattern = new RegExp(
@@ -350,6 +358,39 @@ function collectJsxRouteCandidates(
     });
   };
   visit(sourceFile, []);
+}
+
+/**
+ * Recovers an absolute base path from a surrounding inert app/router module factory call.
+ *
+ * Modular routers frequently declare `createAppModule('/company/:id', ..., () => <Route
+ * path="child" />)`. The JSX tree alone exposes only `/child`; climbing the syntax parents and
+ * accepting a conventionally named create/define factory with a literal absolute first argument
+ * composes the browser location without importing or executing project routing code.
+ */
+function readEnclosingRouteFactoryBasePath(
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+): readonly string[] | undefined {
+  let current = node.parent;
+  while (!ts.isSourceFile(current)) {
+    if (ts.isCallExpression(current)) {
+      const calleeName = current.expression.getText(sourceFile).split('.').at(-1) ?? '';
+      const firstArgument = current.arguments[0];
+      if (
+        /^(?:create|define)[$_\p{L}\p{N}]*(?:App|Application|Module|Router|Routes)$/u.test(
+          calleeName,
+        ) &&
+        firstArgument !== undefined &&
+        ts.isStringLiteralLike(firstArgument) &&
+        firstArgument.text.startsWith('/')
+      ) {
+        return [firstArgument.text];
+      }
+    }
+    current = current.parent;
+  }
+  return undefined;
 }
 
 /** Reads a literal JSX attribute without evaluating templates or expressions. */

@@ -117,6 +117,37 @@ describe('collectPreviewInspectorRouteLocation', () => {
     });
   });
 
+  /** Composes a relative JSX route with the absolute base authored by an app-module factory. */
+  it('prepends an enclosing application module base path to a relative Route', async () => {
+    const routesPath = '/workspace/application/src/feature-app.tsx';
+    const sources = {
+      [TARGET_PATH]:
+        'export default function InvestmentContractAnalysisPage() { return <main />; }',
+      [routesPath]: [
+        'export const FeatureApp = createAppModule(',
+        '  "/company/:companyId(\\\\d+)/contracts",',
+        '  {},',
+        '  [],',
+        '  () => <Routes>',
+        '    <Route path="analysis-preview" element={<InvestmentContractAnalysisPage />} />',
+        '  </Routes>,',
+        ');',
+      ].join('\n'),
+    };
+    const renderChain = createRenderChain(routesPath);
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toMatchObject({
+      evidenceKind: 'route-jsx',
+      pathname: '/company/1/contracts/analysis-preview',
+      pattern: '/company/:companyId(\\d+)/contracts/analysis-preview',
+      sourcePath: routesPath,
+    });
+  });
+
   /** Resolves a monorepo alias catalog before a broad ancestor wildcard can invent a preview URL. */
   it('prefers a target-local alias JSON page catalog in a large monorepo', async () => {
     const targetPath =

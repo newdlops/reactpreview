@@ -27,7 +27,6 @@ const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
 const PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160;
 const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
-
 ${requirementFrontierRuntimeSource}
 
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
@@ -135,12 +134,20 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     state.targetExportName,
   );
   const paths = new Set();
-  const names = new Set([
+  const exactTargetNames = new Set([state.targetExportName]);
+  const staticNames = new Set([
     state.rootName,
     state.targetExportName,
     ...(state.applicationPath ?? []),
-    ...(state.runtimeOwnerNames ?? []),
   ]);
+  const runtimeOwnerNames = new Set(state.runtimeOwnerNames ?? []);
+  const names = new Set([...staticNames, ...runtimeOwnerNames]);
+  const retainedConditionIds = previewInspectorSession.directTargetConditionIdsByExport?.get(
+    state.targetExportName,
+  );
+  const exactConditionIds = retainedConditionIds instanceof Set
+    ? new Set(retainedConditionIds)
+    : new Set();
   const nameScores = new Map();
   (state.applicationPath ?? []).forEach((name, index) => nameScores.set(name, index + 1));
   nameScores.set(state.targetExportName, 1_000);
@@ -161,13 +168,25 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   for (const edge of candidate?.edges ?? []) {
     paths.add(normalizePreviewInspectorReachabilityPath(edge?.child?.sourcePath));
     paths.add(normalizePreviewInspectorReachabilityPath(edge?.owner?.sourcePath));
-    if (typeof edge?.child?.exportName === 'string') names.add(edge.child.exportName);
-    if (typeof edge?.owner?.exportName === 'string') names.add(edge.owner.exportName);
-    for (const ownerName of edge?.localOwnerNames ?? []) names.add(ownerName);
+    if (typeof edge?.child?.exportName === 'string') staticNames.add(edge.child.exportName);
+    if (typeof edge?.owner?.exportName === 'string') staticNames.add(edge.owner.exportName);
+    for (const ownerName of edge?.localOwnerNames ?? []) staticNames.add(ownerName);
   }
+  for (const name of staticNames) names.add(name);
   paths.delete('');
   names.delete(undefined);
-  return { nameScores, names, paths };
+  exactTargetNames.delete(undefined);
+  const ambiguousNames = readPreviewInspectorAmbiguousTargetOwnerNames(names);
+  return {
+    ambiguousNames,
+    exactConditionIds,
+    exactTargetNames,
+    nameScores,
+    names,
+    paths,
+    runtimeOwnerNames,
+    staticNames,
+  };
 }
 
 /** Scores component names embedded in one branch label against the proven root-to-target corridor. */
@@ -176,6 +195,12 @@ function scorePreviewInspectorTargetConditionLabel(label, evidence) {
   const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
   let score = 0;
   for (const [name, nameScore] of evidence.nameScores) {
+    if (
+      evidence.ambiguousNames?.has(name) &&
+      !evidence.exactTargetNames?.has(name)
+    ) {
+      continue;
+    }
     if (normalized === String(name) || tokens.includes(String(name))) {
       score = Math.max(score, nameScore);
     }
@@ -185,8 +210,21 @@ function scorePreviewInspectorTargetConditionLabel(label, evidence) {
 
 /** Requires a gate to belong to a statically proven path source or named path component. */
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
+  if (evidence.exactConditionIds?.has(condition?.id)) return true;
   const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
-  if (ownerName.length > 0 && evidence.names.has(ownerName)) return true;
+  const runtimeOnlyOwner =
+    evidence.runtimeOwnerNames?.has(ownerName) && !evidence.staticNames?.has(ownerName);
+  if (
+    ownerName.length > 0 &&
+    evidence.names.has(ownerName) &&
+    !runtimeOnlyOwner &&
+    (
+      !evidence.ambiguousNames?.has(ownerName) ||
+      evidence.exactTargetNames?.has(ownerName)
+    )
+  ) {
+    return true;
+  }
   const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
   if (sourcePath.length === 0) return false;
   for (const path of evidence.paths) {
@@ -242,7 +280,11 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
   return [...previewInspectorSession.renderConditions.values()]
     .filter((condition) =>
       condition?.reachabilityKey === state.key &&
-      !previewInspectorSession.renderConditionOverrides.has(condition.id),
+      !previewInspectorSession.renderConditionOverrides.has(condition.id) &&
+      (
+        typeof isPreviewInspectorTargetGuidedConditionRejected !== 'function' ||
+        !isPreviewInspectorTargetGuidedConditionRejected(condition.id, state.key)
+      ),
     )
     .map((condition) => ({
       condition,
@@ -700,6 +742,11 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
       : state.targetMounted
         ? 'target-only-empty'
         : 'target-only-loading';
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
+  if (isPreviewInspectorTargetConditionAttemptPending(state)) {
+    state.status = 'settling-condition-attempt';
     schedulePreviewInspectorTreeRefresh();
     return;
   }

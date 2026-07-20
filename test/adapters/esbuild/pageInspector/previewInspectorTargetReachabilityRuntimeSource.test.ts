@@ -2,7 +2,18 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRequirementFrontierRuntimeSource';
+import { createPreviewInspectorTargetAttemptRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetAttemptRuntimeSource';
+import { createPreviewInspectorTargetPathIdentityRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetPathIdentityRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetReachabilityRuntimeSource';
+
+/** Composes the identity helper required by the standalone target runtime fixture. */
+function createTargetReachabilityFixtureSource(): string {
+  return (
+    createPreviewInspectorTargetReachabilityRuntimeSource() +
+    createPreviewInspectorTargetPathIdentityRuntimeSource() +
+    createPreviewInspectorTargetAttemptRuntimeSource()
+  );
+}
 
 /** Minimal pure helper result exposed by the generated runtime fixture. */
 interface ReachabilityResult {
@@ -15,6 +26,10 @@ interface ReachabilityResult {
   readonly overlayPathLocal: boolean;
   readonly overlayTargetValue: boolean;
   readonly returnedTargetValue: boolean;
+  readonly runtimeOwnerNameOnlyPathLocal: boolean;
+  readonly sharedModalExactSourcePathLocal: boolean;
+  readonly sharedModalNameOnlyPathLocal: boolean;
+  readonly targetNameOnlyPathLocal: boolean;
   readonly targetExportName: string;
   readonly twoSidedTargetValue: boolean;
 }
@@ -46,7 +61,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const isPreviewInspectorOwnedFiber = () => false;
         const notifyPreviewInspector = () => { notifications += 1; };
         const schedulePreviewInspectorCommitRefresh = () => undefined;
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const navigate = { kind: 'function', name: 'Navigate' };
         const guardedPage = { child: navigate, kind: 'function', name: 'GuardedPage' };
         const pageComponent = { child: guardedPage, kind: 'function', name: 'PageComponent' };
@@ -95,7 +110,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const isPreviewInspectorOwnedFiber = () => false;
         const notifyPreviewInspector = () => undefined;
         const schedulePreviewInspectorCommitRefresh = () => undefined;
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const guarded = { kind: 'function', name: 'GuardedPage' };
         const page = { child: guarded, kind: 'function', name: 'PageComponent' };
         rememberPreviewInspectorTargetMountedOwnerChain('Target', { fiber: { child: page } });
@@ -122,10 +137,12 @@ describe('Preview Inspector target reachability runtime source', () => {
           selectedExportName: 'DashboardPanel',
         };
         const initializePreviewInspectorConditionState = () => undefined;
+        const isPreviewInspectorTargetGuidedConditionRejected = (conditionId) =>
+          conditionId === 'rejected-path-gate';
         const readPreviewInspectorRuntimeFallbacks = () => [];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { DashboardPanel: { paths: [] } },
           target: { exportName: 'DashboardPanel' },
@@ -134,12 +151,23 @@ describe('Preview Inspector target reachability runtime source', () => {
           edges: [],
           id: 'application-path',
           renderPath: { id: 'path', steps: [
-            { label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] },
+            { label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: ['Modal'] },
             { label: 'Application', sourcePath: '/workspace/Application.tsx', wrapperNames: [] },
           ] },
           root: { exportName: 'Application' },
         };
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        previewInspectorSession.renderConditions.set('rejected-path-gate', {
+          effectiveEnabled: true,
+          expression: '<Application> rejected retry',
+          id: 'rejected-path-gate',
+          kind: 'early-return',
+          ownerName: 'Application',
+          reachabilityDiscoveryOrder: 0,
+          reachabilityKey: state.key,
+          sourcePath: '/workspace/Application.tsx',
+          targetBranch: 'falsy',
+        });
         previewInspectorSession.renderConditions.set('login', {
           effectiveEnabled: true,
           expression: '<Application> gate: !session',
@@ -181,9 +209,19 @@ describe('Preview Inspector target reachability runtime source', () => {
           state,
         );
         previewInspectorSession.activeTargetReachabilityKey = state.key;
+        previewInspectorSession.directTargetConditionIdsByExport = new Map([
+          ['DashboardPanel', new Set(['hoc-guard'])],
+        ]);
         rememberPreviewInspectorTargetRuntimeOwner('DashboardPanel', { name: 'GuardedPage' });
+        rememberPreviewInspectorTargetRuntimeOwnerNames('DashboardPanel', ['Modal', 'PageComponent']);
         state.targetMounted = true;
         const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+        previewInspectorSession.renderConditions.set('unrelated-page-component', {
+          id: 'unrelated-page-component',
+          ownerName: 'PageComponent',
+          reachabilityKey: state.key,
+          sourcePath: '/workspace/unrelated-page.tsx',
+        });
         const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
         const overlayCondition = {
           falsyLabel: 'hidden <DashboardPanel> overlay',
@@ -206,6 +244,25 @@ describe('Preview Inspector target reachability runtime source', () => {
             targetBranch: 'falsy',
             truthyLabel: '<DashboardPanel>',
           }, evidence),
+          runtimeOwnerNameOnlyPathLocal: isPreviewInspectorConditionOnTargetPath({
+            id: 'another-page-component-condition',
+            ownerName: 'PageComponent',
+            sourcePath: '/workspace/another-unrelated-page.tsx',
+          }, evidence),
+          sharedModalExactSourcePathLocal: isPreviewInspectorConditionOnTargetPath({
+            ownerName: 'Modal',
+            sourcePath: '/workspace/Dashboard.tsx',
+          }, evidence),
+          sharedModalNameOnlyPathLocal: isPreviewInspectorConditionOnTargetPath({
+            ownerName: 'Modal',
+            role: 'overlay',
+            sourcePath: '/workspace/unrelated-document-preview-modal.tsx',
+            truthyLabel: 'visible <Modal>',
+          }, evidence),
+          targetNameOnlyPathLocal: isPreviewInspectorConditionOnTargetPath({
+            ownerName: 'DashboardPanel',
+            sourcePath: '/workspace/generated-target-facade.tsx',
+          }, evidence),
           targetExportName: state.targetExportName,
           twoSidedTargetValue: readPreviewInspectorTargetConditionValue({
             fallbackBranch: 'truthy',
@@ -218,7 +275,7 @@ describe('Preview Inspector target reachability runtime source', () => {
     );
 
     expect(context.__result).toEqual({
-      blockerPath: ['Application', 'DashboardPanel'],
+      blockerPath: ['Application', 'Modal', 'DashboardPanel'],
       desiredValue: false,
       expression: '<Application> gate: !session',
       fallbackBeforeTargetMount: 'none',
@@ -227,6 +284,10 @@ describe('Preview Inspector target reachability runtime source', () => {
       overlayPathLocal: true,
       overlayTargetValue: true,
       returnedTargetValue: true,
+      runtimeOwnerNameOnlyPathLocal: false,
+      sharedModalExactSourcePathLocal: true,
+      sharedModalNameOnlyPathLocal: false,
+      targetNameOnlyPathLocal: true,
       targetExportName: 'DashboardPanel',
       twoSidedTargetValue: true,
     });
@@ -303,7 +364,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorRuntimeFallbacks = () => hooks;
         const readPreviewInspectorDataRequests = () => requests;
         const readPreviewInspectorDataShapePaths = () => [];
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { Target: { paths: [] } },
           target: { exportName: 'Target' },
@@ -400,7 +461,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorRuntimeFallbacks = () => [];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         smartFillPreviewInspectorTargetApplicationPath({ key: 'page:Target' });
         globalThis.__result = {
           calls,
@@ -464,7 +525,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
         const collectPreviewInspectorFiberElements = (boundary) =>
           boundary?.host === true ? [{}] : [];
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { Target: { paths: [] } },
           target: { exportName: 'Target' },
@@ -553,7 +614,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
         const recordPreviewInspectorConsoleEntry = () => undefined;
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { Target: { paths: [] } },
           target: { exportName: 'Target' },
@@ -629,7 +690,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
           applied.push([id, enabled]);
         };
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { Target: { paths: [] } },
           target: { exportName: 'Target' },
@@ -666,6 +727,9 @@ describe('Preview Inspector target reachability runtime source', () => {
           targetBranch: 'falsy',
         });
         previewInspectorSession.activeTargetReachabilityKey = state.key;
+        previewInspectorSession.directTargetConditionIdsByExport = new Map([
+          ['Target', new Set(['guard'])],
+        ]);
         rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         globalThis.__result = {
@@ -711,7 +775,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
           applied.push([id, enabled]);
         };
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { Target: { paths: [] } },
           target: { exportName: 'Target' },
@@ -748,6 +812,9 @@ describe('Preview Inspector target reachability runtime source', () => {
           sourcePath: '/shell/truncatable-paragraph.tsx',
           targetBranch: 'falsy',
         });
+        previewInspectorSession.directTargetConditionIdsByExport = new Map([
+          ['Target', new Set(['guard'])],
+        ]);
         rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
         markPreviewInspectorTargetReachabilityMount('Target');
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
@@ -791,7 +858,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
         const collectPreviewInspectorFiberElements = (boundary) =>
           boundary?.host === true ? [{}] : [];
-        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
           renderChainsByExport: { DashboardPanel: { paths: [] } },
           target: { exportName: 'DashboardPanel' },

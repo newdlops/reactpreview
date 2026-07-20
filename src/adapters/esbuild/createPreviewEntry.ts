@@ -41,6 +41,8 @@ export interface PreviewEntryOptions {
   readonly inspectorSourceGestureSecret?: string;
   /** Component gallery by default, or the opt-in authored-page inspector runtime. */
   readonly renderMode?: PreviewRenderMode;
+  /** Exact DOM IDs required by ReactDOM portals in the statically reached target graph. */
+  readonly portalHostIds?: readonly string[];
   /** Determines whether standard Storybook decorators and parameters should be applied. */
   readonly setupKind: PreviewEntrySetupKind;
 }
@@ -75,7 +77,10 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
   const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource();
-  const documentShellRuntimeSource = createPreviewDocumentShellRuntimeSource(options.documentShell);
+  const documentShellRuntimeSource = createPreviewDocumentShellRuntimeSource(
+    options.documentShell,
+    options.portalHostIds,
+  );
   const progressRuntimeSource = createPreviewProgressRuntimeSource();
   const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
   const inspectorImportSource =

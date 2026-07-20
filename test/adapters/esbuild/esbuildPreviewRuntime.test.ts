@@ -9,10 +9,72 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
 import type { PreviewBundle } from '../../../src/domain/preview';
+import { decodePreviewBundleStyles } from './support/previewBundleStyles';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('EsbuildPreviewCompiler runtime setup', () => {
+  /**
+   * Re-resolves a package's conditional stylesheet when only its manifest changes.
+   * The returned package-root watcher is what lets a preview session request this rebuild.
+   */
+  it('tracks conditional style package manifests across incremental rebuilds', async () => {
+    const projectRoot = await createTemporaryProject('style-manifest-runtime-preview-');
+    const packageRoot = path.join(projectRoot, 'node_modules', 'preview-style-runtime');
+    const documentPath = path.join(projectRoot, 'Preview.tsx');
+    const stylesheetPath = path.join(projectRoot, 'preview.css');
+    const manifestPath = path.join(packageRoot, 'package.json');
+    const sourceText = [
+      "import './preview.css';",
+      'export default function Preview() { return <main>STYLE_MANIFEST_TARGET</main>; }',
+    ].join('\n');
+    const createManifest = (target: string): string =>
+      JSON.stringify({
+        exports: { style: target, import: './index.js', default: './index.js' },
+        name: 'preview-style-runtime',
+        type: 'module',
+      });
+    const compiler = new EsbuildPreviewCompiler();
+
+    try {
+      await mkdir(packageRoot, { recursive: true });
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(stylesheetPath, "@import 'preview-style-runtime';", 'utf8'),
+        writeFile(manifestPath, createManifest('./theme-a.css'), 'utf8'),
+        writeFile(path.join(packageRoot, 'index.js'), 'export default {};', 'utf8'),
+        writeFile(path.join(packageRoot, 'theme-a.css'), '.theme-a-marker { color: red; }', 'utf8'),
+        writeFile(
+          path.join(packageRoot, 'theme-b.css'),
+          '.theme-b-marker { color: blue; }',
+          'utf8',
+        ),
+      ]);
+
+      const createBundle = (): Promise<PreviewBundle> =>
+        compiler.compile({
+          dependencySnapshots: [],
+          documentPath,
+          language: 'tsx',
+          sourceText,
+          useStorybookPreview: false,
+          workspaceRoot: projectRoot,
+        });
+      const firstBundle = await createBundle();
+      expect(decodePreviewBundleStyles(firstBundle)).toContain('.theme-a-marker');
+      expect(firstBundle.watchDirectories).toContain(packageRoot);
+
+      await writeFile(manifestPath, createManifest('./theme-b.css'), 'utf8');
+      const rebuiltBundle = await createBundle();
+      const rebuiltStyles = decodePreviewBundleStyles(rebuiltBundle);
+      expect(rebuiltStyles).toContain('.theme-b-marker');
+      expect(rebuiltStyles).not.toContain('.theme-a-marker');
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps CommonJS default interop usable for source variants accepted by the target policy. */
   it('bundles a CommonJS module.exports component target', async () => {
     const projectRoot = await createTemporaryProject('commonjs-runtime-preview-');

@@ -298,6 +298,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const styleContext = await preparePreviewStyleContext({
         ...(themeImport === undefined ? {} : { directThemeImport: themeImport }),
         inspectorDependencyPaths: targetUsageProps.inspectorPlan?.dependencyPaths ?? [],
+        portalHostDependencyPaths: targetUsageProps.dependencyPaths,
         projectRoot,
         readSource: (options) => this.projectUsageCache.readSourceText(options),
         ...(primaryRenderPath === undefined ? {} : { renderPath: primaryRenderPath }),
@@ -308,6 +309,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const {
         documentShellEvidence,
         globalStyleImports,
+        portalHostIds,
         snapshotSourceByPath,
         themeImport: selectedThemeImport,
       } = styleContext;
@@ -397,158 +399,159 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         const createBuildOptions = (
           incrementalState: MutableWorkspaceSourceState | undefined,
           sassBoundary: PreviewSassBoundary,
-        ): PreviewIncrementalBuildOptions => ({
-          absWorkingDir: request.workspaceRoot,
-          bundle: true,
-          charset: 'utf8',
-          define: {
-            'import.meta.env': JSON.stringify({
-              BASE_URL: '/',
-              DEV: true,
-              MODE: 'development',
-              PROD: false,
-              SSR: false,
-            }),
-            'process.env.NODE_ENV': '"development"',
-          },
-          chunkNames: 'chunks/[hash]',
-          entryNames: 'entry',
-          format: 'esm',
-          jsx: 'automatic',
-          jsxDev: true,
-          legalComments: 'none',
-          loader: PREVIEW_SOURCE_LOADERS,
-          logLevel: 'silent',
-          metafile: true,
-          outdir: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
-          platform: 'browser',
-          plugins: [
-            createPreviewNodeBuiltinPlugin(),
-            createPreviewPnpPeerDependencyPlugin({
-              projectRoot,
-              workspaceRoot: canonicalWorkspaceRoot,
-            }),
-            createPreviewGeneratedModuleFallbackPlugin({
-              registerWatchDirectory: (directoryPath) => {
-                (incrementalState?.transformer ?? sourceTransformer).registerWatchDirectory(
-                  directoryPath,
-                );
-              },
-              workspaceRoot: canonicalWorkspaceRoot,
-            }),
-            createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
-            ...(inspectorPlan === undefined
-              ? []
-              : [
-                  createPreviewInspectorTargetPlugin({
-                    ...(targetUsageProps.inspectorTargetImportSpecifiers === undefined
-                      ? {}
-                      : {
-                          acceptedTargetImportSpecifiers:
-                            targetUsageProps.inspectorTargetImportSpecifiers,
-                        }),
-                    documentPath: request.documentPath,
-                    exportNames: explicitTargetExportNames,
-                    inferredPropsByExport,
-                    originalHasDefaultExport: explicitTargetExportNames.includes('default'),
-                  }),
-                  createPreviewInspectorRuntimePlugin({ projectRoot }),
-                  createPreviewInspectorCorridorPlugin({
-                    plan: inspectorPlan,
-                    projectRoot,
-                    resolveModule: staticModuleResolver.resolve,
-                    workspaceRoot: canonicalWorkspaceRoot,
-                  }),
-                ]),
-            createPreviewApolloBridgePlugin({ projectRoot }),
-            createPreviewContextBridgePlugin({ projectRoot }),
-            createPreviewFormikBridgePlugin({ projectRoot }),
-            createPreviewReduxBridgePlugin({ projectRoot }),
-            createPreviewRouterBridgePlugin({
-              automaticallyWrap: routerSelection.automaticallyWrap,
-              enabled: routerSelection.enabled,
-              projectRoot,
-            }),
-            createPreviewThemeBridgePlugin({ projectRoot }),
-            createPreviewThemeCandidatePlugin(),
-            createPreviewSetupBridgePlugin({
-              ...(environment.setupModulePath === undefined
-                ? {}
-                : { setupModulePath: environment.setupModulePath }),
-            }),
-            createPreviewParentSlicePlugin({
-              documentPath: request.documentPath,
-              plansByExport: activeParentSlices,
-            }),
-            ...(inspectorPlan === undefined
-              ? [
-                  createPreviewTargetBridgePlugin({
-                    documentPath: request.documentPath,
-                    exports: targetExports,
-                    parentSlicesByExport: activeParentSlices,
-                    ...(selectedThemeImport === undefined
-                      ? {}
-                      : { themeImport: selectedThemeImport }),
-                    inferredPropsByExport,
-                    usagePropsByExport: targetUsageProps.propsByExport,
-                  }),
-                ]
-              : [
-                  createPreviewInspectorRootPlugin({
-                    displayName: path.basename(request.documentPath),
-                    globalStyleImports,
-                    plan: inspectorPlan,
-                    ...(selectedThemeImport === undefined
-                      ? {}
-                      : { themeImport: selectedThemeImport }),
-                    ...(inferredPropsByExport[inspectorPlan.target.exportName] === undefined
-                      ? {}
-                      : {
-                          targetInference: inferredPropsByExport[inspectorPlan.target.exportName],
-                        }),
-                  }),
-                ]),
-            ...(fallbackBoundary === undefined ? [] : [fallbackBoundary.plugin]),
-            createPreviewAssetPlugin({
-              documentPath: request.documentPath,
-              projectRoot,
-              workspaceRoot: canonicalWorkspaceRoot,
-            }),
-            sassBoundary.plugin,
-            createWorkspaceSourcePlugin(
-              incrementalState === undefined
-                ? { ...sourceCompilation, workspaceRoot: canonicalWorkspaceRoot }
-                : { incrementalState, workspaceRoot: canonicalWorkspaceRoot },
-            ),
-          ],
-          sourcemap: false,
-          splitting: splitOutputs && !useFastPreparation,
-          stdin: {
-            contents: createPreviewEntry({
-              documentName: createPreviewDocumentName(request),
-              ...(documentShellEvidence === undefined
-                ? {}
-                : { documentShell: documentShellEvidence.shell }),
-              globalNamespaces: environment.globalNamespaces,
-              globalPackageBridgeStatus: describeGlobalPackageBridgeStatus(globalPackagePlan),
-              ...(inspectorSourceGestureSecret === undefined
-                ? {}
-                : { inspectorSourceGestureSecret }),
-              renderMode: request.renderMode ?? 'component',
-              setupKind: environment.setupKind,
-            }),
-            loader: 'tsx',
-            resolveDir: path.dirname(request.documentPath),
-            sourcefile: path.join(request.workspaceRoot, VIRTUAL_ENTRY_NAME),
-          },
-          target: 'es2022',
-          treeShaking: true,
-          ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
-          write: false,
-        });
+        ): PreviewIncrementalBuildOptions => {
+          const transformer = incrementalState?.transformer ?? sourceTransformer;
+          return {
+            absWorkingDir: request.workspaceRoot,
+            bundle: true,
+            charset: 'utf8',
+            define: {
+              'import.meta.env': JSON.stringify({
+                BASE_URL: '/',
+                DEV: true,
+                MODE: 'development',
+                PROD: false,
+                SSR: false,
+              }),
+              'process.env.NODE_ENV': '"development"',
+            },
+            chunkNames: 'chunks/[hash]',
+            entryNames: 'entry',
+            format: 'esm',
+            jsx: 'automatic',
+            jsxDev: true,
+            legalComments: 'none',
+            loader: PREVIEW_SOURCE_LOADERS,
+            logLevel: 'silent',
+            metafile: true,
+            outdir: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
+            platform: 'browser',
+            plugins: [
+              createPreviewNodeBuiltinPlugin(),
+              createPreviewPnpPeerDependencyPlugin({
+                projectRoot,
+                workspaceRoot: canonicalWorkspaceRoot,
+              }),
+              createPreviewGeneratedModuleFallbackPlugin({
+                registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
+                workspaceRoot: canonicalWorkspaceRoot,
+              }),
+              createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
+              ...(inspectorPlan === undefined
+                ? []
+                : [
+                    createPreviewInspectorTargetPlugin({
+                      ...(targetUsageProps.inspectorTargetImportSpecifiers === undefined
+                        ? {}
+                        : {
+                            acceptedTargetImportSpecifiers:
+                              targetUsageProps.inspectorTargetImportSpecifiers,
+                          }),
+                      documentPath: request.documentPath,
+                      exportNames: explicitTargetExportNames,
+                      inferredPropsByExport,
+                      originalHasDefaultExport: explicitTargetExportNames.includes('default'),
+                    }),
+                    createPreviewInspectorRuntimePlugin({ projectRoot }),
+                    createPreviewInspectorCorridorPlugin({
+                      plan: inspectorPlan,
+                      projectRoot,
+                      resolveModule: staticModuleResolver.resolve,
+                      workspaceRoot: canonicalWorkspaceRoot,
+                    }),
+                  ]),
+              createPreviewApolloBridgePlugin({ projectRoot }),
+              createPreviewContextBridgePlugin({ projectRoot }),
+              createPreviewFormikBridgePlugin({ projectRoot }),
+              createPreviewReduxBridgePlugin({ projectRoot }),
+              createPreviewRouterBridgePlugin({
+                automaticallyWrap: routerSelection.automaticallyWrap,
+                enabled: routerSelection.enabled,
+                projectRoot,
+              }),
+              createPreviewThemeBridgePlugin({ projectRoot }),
+              createPreviewThemeCandidatePlugin(),
+              createPreviewSetupBridgePlugin({
+                ...(environment.setupModulePath === undefined
+                  ? {}
+                  : { setupModulePath: environment.setupModulePath }),
+              }),
+              createPreviewParentSlicePlugin({
+                documentPath: request.documentPath,
+                plansByExport: activeParentSlices,
+              }),
+              ...(inspectorPlan === undefined
+                ? [
+                    createPreviewTargetBridgePlugin({
+                      documentPath: request.documentPath,
+                      exports: targetExports,
+                      parentSlicesByExport: activeParentSlices,
+                      ...(selectedThemeImport === undefined
+                        ? {}
+                        : { themeImport: selectedThemeImport }),
+                      inferredPropsByExport,
+                      usagePropsByExport: targetUsageProps.propsByExport,
+                    }),
+                  ]
+                : [
+                    createPreviewInspectorRootPlugin({
+                      displayName: path.basename(request.documentPath),
+                      globalStyleImports,
+                      plan: inspectorPlan,
+                      ...(selectedThemeImport === undefined
+                        ? {}
+                        : { themeImport: selectedThemeImport }),
+                      ...(inferredPropsByExport[inspectorPlan.target.exportName] === undefined
+                        ? {}
+                        : {
+                            targetInference: inferredPropsByExport[inspectorPlan.target.exportName],
+                          }),
+                    }),
+                  ]),
+              ...(fallbackBoundary === undefined ? [] : [fallbackBoundary.plugin]),
+              createPreviewAssetPlugin({
+                documentPath: request.documentPath,
+                projectRoot,
+                registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
+                workspaceRoot: canonicalWorkspaceRoot,
+              }),
+              sassBoundary.plugin,
+              createWorkspaceSourcePlugin(
+                incrementalState === undefined
+                  ? { ...sourceCompilation, workspaceRoot: canonicalWorkspaceRoot }
+                  : { incrementalState, workspaceRoot: canonicalWorkspaceRoot },
+              ),
+            ],
+            sourcemap: false,
+            splitting: splitOutputs && !useFastPreparation,
+            stdin: {
+              contents: createPreviewEntry({
+                documentName: createPreviewDocumentName(request),
+                ...(documentShellEvidence === undefined
+                  ? {}
+                  : { documentShell: documentShellEvidence.shell }),
+                globalNamespaces: environment.globalNamespaces,
+                globalPackageBridgeStatus: describeGlobalPackageBridgeStatus(globalPackagePlan),
+                ...(inspectorSourceGestureSecret === undefined
+                  ? {}
+                  : { inspectorSourceGestureSecret }),
+                renderMode: request.renderMode ?? 'component',
+                portalHostIds,
+                setupKind: environment.setupKind,
+              }),
+              loader: 'tsx',
+              resolveDir: path.dirname(request.documentPath),
+              sourcefile: path.join(request.workspaceRoot, VIRTUAL_ENTRY_NAME),
+            },
+            target: 'es2022',
+            treeShaking: true,
+            ...(request.tsconfigPath === undefined ? {} : { tsconfig: request.tsconfigPath }),
+            write: false,
+          };
+        };
         const buildPlanIdentity = createPreviewBuildPlanIdentity({
           documentPath: request.documentPath,
-          documentShell: documentShellEvidence?.shell,
+          documentShell: { evidence: documentShellEvidence?.shell, portalHostIds },
           environment,
           globalPackagePlan,
           globalStyleImports,

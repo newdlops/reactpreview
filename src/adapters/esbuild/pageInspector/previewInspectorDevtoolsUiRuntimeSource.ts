@@ -16,6 +16,7 @@ import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspector
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
+import { createPreviewInspectorTreeScrollRuntimeSource } from './previewInspectorTreeScrollRuntimeSource';
 import { createPreviewInspectorTreeNodeUiRuntimeSource } from './previewInspectorTreeNodeUiRuntimeSource';
 import { createPreviewInspectorWireframeUiRuntimeSource } from './previewInspectorWireframeUiRuntimeSource';
 /** Source location exposed to the UI without prescribing an extension-host transport. */
@@ -114,10 +115,12 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
+  const treeScrollRuntimeSource = createPreviewInspectorTreeScrollRuntimeSource();
   const treeNodeUiRuntimeSource = createPreviewInspectorTreeNodeUiRuntimeSource();
   const wireframeUiRuntimeSource = createPreviewInspectorWireframeUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
+${treeScrollRuntimeSource}
 
 ${structureUiRuntimeSource}
 ${conditionUiRuntimeSource}
@@ -430,6 +433,7 @@ function handlePreviewInspectorTreeKeyDown(event) {
   }
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
+    capturePreviewInspectorTreeSelectionScroll(event.currentTarget);
     row.click();
     return;
   }
@@ -478,26 +482,42 @@ function revealPreviewInspectorTreeRow(treeViewport, row) {
   } else if (rowBounds.right > viewportBounds.right) {
     treeViewport.scrollLeft += rowBounds.right - viewportBounds.right;
   }
+  rememberPreviewInspectorTreeScrollPosition(treeViewport);
 }
 
 /** Renders the searchable React Components pane and owns only visual expansion state. */
 function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }) {
   const [query, setQuery] = React.useState(() => previewInspectorDevtoolsSessionState.query);
-  const [expandedIds, setExpandedIds] = React.useState(() => new Set(roots.map((node) => node.id)));
+  const [expandedIds, setExpandedIds] = React.useState(() =>
+    expandPreviewInspectorUiSelection(
+      roots,
+      selectedId,
+      new Set(roots.map((node) => node.id)),
+    ),
+  );
   const treeScrollRef = React.useRef(null);
+  const treeRevealRevision = previewInspectorDevtoolsSessionState.treeRevealRevision ?? 0;
   const filteredRoots = filterPreviewInspectorUiNodes(roots, query);
   const focusableId = resolvePreviewInspectorTreeFocusableId(
     filteredRoots,
     selectedId,
     expandedIds,
   );
+  React.useLayoutEffect(() => {
+    setExpandedIds((current) => expandPreviewInspectorUiSelection(roots, selectedId, current));
+  }, [roots, selectedId]);
+  React.useLayoutEffect(() => {
+    const frame = schedulePreviewInspectorTreeScrollRestoration(treeScrollRef.current);
+    return () => cancelAnimationFrame(frame);
+  });
   React.useEffect(() => {
-    if (consumePreviewInspectorWireframeTreeReveal(selectedId)) {
+    const revealRequested = consumePreviewInspectorTreeReveal(selectedId);
+    if (revealRequested) {
       previewInspectorDevtoolsSessionState.query = '';
       setQuery('');
       persistPreviewInspectorState();
     }
-    setExpandedIds((current) => expandPreviewInspectorUiSelection(roots, selectedId, current));
+    if (!revealRequested) return undefined;
     const frame = requestAnimationFrame(() => {
       const rows = treeScrollRef.current?.querySelectorAll?.('[data-react-preview-tree-row]') ?? [];
       const selectedRow = [...rows].find(
@@ -506,7 +526,7 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
       revealPreviewInspectorTreeRow(treeScrollRef.current, selectedRow);
     });
     return () => cancelAnimationFrame(frame);
-  }, [query, selectedId]);
+  }, [query, selectedId, treeRevealRevision]);
   React.useEffect(() => {
     if (query.trim().length === 0) return;
     const expanded = new Set();
@@ -548,6 +568,12 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
       {
         className: 'rpi-tree-scroll',
         onKeyDown: handlePreviewInspectorTreeKeyDown,
+        onPointerDownCapture: (event) => {
+          const row = event.target?.closest?.('[data-react-preview-tree-row]');
+          if (row === null || row === undefined) return;
+          capturePreviewInspectorTreeSelectionScroll(treeScrollRef.current);
+        },
+        onScroll: () => rememberPreviewInspectorTreeScrollPosition(treeScrollRef.current),
         ref: treeScrollRef,
       },
       filteredRoots.length === 0

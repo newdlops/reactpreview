@@ -53,7 +53,8 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'aria-label': 'React page layout wireframe'");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
     expect(source).toContain('revealPreviewInspectorWireframeBlocker(node, setCollapsed)');
-    expect(source).toContain('consumePreviewInspectorWireframeTreeReveal(selectedId)');
+    expect(source).toContain('consumePreviewInspectorTreeReveal(selectedId)');
+    expect(source).toContain('if (!revealRequested) return undefined;');
     expect(source).toContain('copyPreviewInspectorSnapshotRuntimeIndexes(');
     expect(source).toContain("['payloads', 'Payloads']");
     expect(source).toContain("['console', 'Console ('");
@@ -328,7 +329,16 @@ describe('Page Inspector DevTools UI runtime source', () => {
       getBoundingClientRect: () => ({ bottom: 340, left: 260, right: 290, top: 310 }),
     });
     expect(viewport).toMatchObject({ scrollLeft: 80, scrollTop: 190 });
-    expect(createPreviewInspectorDevtoolsUiRuntimeSource()).not.toContain('scrollIntoView');
+    const source = createPreviewInspectorDevtoolsUiRuntimeSource();
+    expect(source).not.toContain('scrollIntoView');
+    expect(source).toContain('capturePreviewInspectorTreeSelectionScroll(treeScrollRef.current)');
+    expect(source).toContain(
+      'schedulePreviewInspectorTreeScrollRestoration(treeScrollRef.current)',
+    );
+    expect(source).toContain(
+      'React.useLayoutEffect(() => {\n    setExpandedIds((current) => expandPreviewInspectorUiSelection',
+    );
+    expect(source).toContain('onPointerDownCapture: (event) =>');
   });
 
   /** Separates editable instrumented props from observational Fiber props, state, and source. */

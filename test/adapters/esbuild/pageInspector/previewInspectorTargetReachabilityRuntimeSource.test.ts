@@ -485,8 +485,8 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
-  /** Continues through newly revealed batches and stops remounting after values stabilize. */
-  it('converges minimum requirements across bounded settled render passes', () => {
+  /** Stops when a faulty filler reports changes without producing a new semantic frontier. */
+  it('opens the convergence circuit before an identical requirement pass remounts again', () => {
     const context: {
       __result?: {
         readonly commitCount: number;
@@ -557,10 +557,10 @@ describe('Preview Inspector target reachability runtime source', () => {
     );
 
     expect(context.__result).toEqual({
-      commitCount: 2,
-      pass: 2,
-      runtimeCalls: 4,
-      status: 'settled',
+      commitCount: 1,
+      pass: 1,
+      runtimeCalls: 1,
+      status: 'cycle-detected',
     });
   });
 

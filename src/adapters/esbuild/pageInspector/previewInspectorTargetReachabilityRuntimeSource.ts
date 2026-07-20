@@ -9,6 +9,7 @@
  * rendering remains an explicit diagnostic mode and never masquerades as page success.
  */
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
+import { createPreviewInspectorRequirementConvergenceRuntimeSource } from './previewInspectorRequirementConvergenceRuntimeSource';
 
 /**
  * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
@@ -20,6 +21,8 @@ import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previe
  */
 export function createPreviewInspectorTargetReachabilityRuntimeSource(): string {
   const requirementFrontierRuntimeSource = createPreviewInspectorRequirementFrontierRuntimeSource();
+  const requirementConvergenceRuntimeSource =
+    createPreviewInspectorRequirementConvergenceRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT = 2;
@@ -28,6 +31,7 @@ const PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160;
 const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
 ${requirementFrontierRuntimeSource}
+${requirementConvergenceRuntimeSource}
 
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
@@ -447,12 +451,6 @@ function hasReachedPreviewInspectorPageCorridor(state) {
     state.targetHasOutput === true;
 }
 
-/** Returns the user-started bounded search that follows newly revealed hook and data requirements. */
-function readPreviewInspectorMinimumRequirementSearch(state) {
-  initializePreviewInspectorTargetReachabilityState();
-  return previewInspectorSession.minimumRequirementSearchByKey.get(state.key);
-}
-
 /**
  * Finds only compiler-shaped values whose continuation has one generated answer. Root-only custom
  * hooks and non-GraphQL endpoints stay interactive because their payload structure is ambiguous.
@@ -483,14 +481,6 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
   return { hookIds, requestIds };
 }
 
-/** Marks a successful corridor as the terminal result of its explicit minimum-requirement search. */
-function completePreviewInspectorMinimumRequirementSearch(state) {
-  const search = readPreviewInspectorMinimumRequirementSearch(state);
-  if (search === undefined) return;
-  search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
-  search.status = 'reached';
-}
-
 /** Applies one newly observed hook/API batch and remounts only when that batch changed values. */
 function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state) {
   const search = readPreviewInspectorMinimumRequirementSearch(state);
@@ -502,12 +492,11 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
     return false;
   }
   const preserveUserValues = search.origin === 'deterministic-auto';
-  const batch = readPreviewInspectorRequirementBatch(
-    descriptor,
-    candidate,
-    state,
-    preserveUserValues,
-  );
+  const batch = search.origin === 'deterministic-auto'
+    ? readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state)
+    : readPreviewInspectorRequirementBatch(descriptor, candidate, state, preserveUserValues);
+  const frontier = beginPreviewInspectorRequirementFrontier(state, search, batch);
+  if (frontier === undefined) return state.exhausted === true;
   const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(
     state.key,
     {
@@ -525,7 +514,10 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
       recordIds: batch.requestIds,
     },
   );
-  if (!runtimeChanged && !dataChanged) return false;
+  if (!runtimeChanged && !dataChanged) {
+    completePreviewInspectorRequirementFrontier(search, frontier, false);
+    return false;
+  }
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     const hookIdSet = new Set(batch.hookIds);
     const requestIdSet = new Set(batch.requestIds);
@@ -570,11 +562,8 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
       summary: { applicationPath: state.applicationPath },
     });
   }
-  search.pass += 1;
+  completePreviewInspectorRequirementFrontier(search, frontier, true);
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
-  if (search.pass >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) {
-    search.status = 'limit-reached';
-  }
   state.exhausted = false;
   state.idlePasses = 0;
   state.status = 'filling-requirements';
@@ -604,12 +593,18 @@ function startPreviewInspectorDeterministicRequirementSearch(descriptor, candida
     state,
   );
   if (evidence.hookIds.length === 0 && evidence.requestIds.length === 0) return false;
-  previewInspectorSession.minimumRequirementSearchByKey.set(state.key, {
-    observedPathCount: 0,
+  if (!canStartPreviewInspectorDeterministicRequirementSearch(state, evidence)) return false;
+  const convergence = readPreviewInspectorRequirementConvergence(state);
+  const search = current?.origin === 'deterministic-auto' ? current : {};
+  Object.assign(search, {
+    observedPathCount: readPreviewInspectorTargetReachabilityRequiredPaths(state).length,
     origin: 'deterministic-auto',
-    pass: 0,
+    pass: convergence.totalPasses,
     status: 'searching',
+    totalPasses: convergence.totalPasses,
   });
+  delete search.cycleLength;
+  previewInspectorSession.minimumRequirementSearchByKey.set(state.key, search);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Start deterministic minimum page-path search',
@@ -631,14 +626,6 @@ function startPreviewInspectorDeterministicRequirementSearch(descriptor, candida
   if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return true;
   settlePreviewInspectorMinimumRequirementSearch(state);
   return false;
-}
-
-/** Retains the final discovery summary when no further path-local requirement can be proven. */
-function settlePreviewInspectorMinimumRequirementSearch(state) {
-  const search = readPreviewInspectorMinimumRequirementSearch(state);
-  if (search === undefined || search.status !== 'searching') return;
-  search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
-  search.status = 'settled';
 }
 
 /** Emits one warning when bounded static traversal cannot prove another page-local continuation. */
@@ -745,11 +732,12 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  if (isPreviewInspectorTargetConditionAttemptPending(state)) {
-    state.status = 'settling-condition-attempt';
+  if (isPreviewInspectorTargetAutoAttemptPending(state)) {
+    state.status = 'settling-auto-attempt';
     schedulePreviewInspectorTreeRefresh();
     return;
   }
+  if (stopPreviewInspectorRequirementConvergenceAtLimit(state)) return;
   if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
   if (state.targetMounted && state.pageRootCommitted !== true) {
     state.status = 'page-root-pending';
@@ -881,6 +869,8 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
   const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
     ? readSelectedPreviewInspectorPageCandidate(descriptor)
     : undefined;
+  const state = previewInspectorSession.targetReachabilityByKey.get(reachabilityKey);
+  resetPreviewInspectorRequirementConvergence(state ?? reachabilityKey);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Start minimum page-path requirement search',
@@ -909,7 +899,6 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
   });
   previewInspectorSession.fallbackValuesEnabled = true;
   previewInspectorSession.dataAutoEnabled = true;
-  const state = previewInspectorSession.targetReachabilityByKey.get(reachabilityKey);
   if (state !== undefined) {
     state.exhausted = false;
     state.idlePasses = 0;
@@ -931,6 +920,7 @@ function retryPreviewInspectorTargetApplicationPath() {
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return;
   const key = createPreviewInspectorTargetReachabilityKey(descriptor, candidate);
+  resetPreviewInspectorRequirementConvergence(key);
   previewInspectorSession.minimumRequirementSearchByKey?.delete(key);
   clearPreviewInspectorTargetGuidedConditionOverrides(key);
   previewInspectorSession.targetReachabilityByKey?.delete(key);

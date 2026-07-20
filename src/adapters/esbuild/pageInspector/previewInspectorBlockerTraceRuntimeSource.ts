@@ -115,7 +115,9 @@ function settlePreviewInspectorBlockerTraceAttempt(attempt, detail) {
       event: 'render-attempt-settled',
     });
   }
-  if (typeof resumePreviewInspectorTargetReachabilityAfterConditionAttempt === 'function') {
+  if (typeof schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt === 'function') {
+    schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attempt);
+  } else if (typeof resumePreviewInspectorTargetReachabilityAfterConditionAttempt === 'function') {
     if (
       attempt.autoMode === 'target-guided-auto' &&
       typeof globalThis.setTimeout === 'function'
@@ -784,12 +786,17 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
         previewInspectorSession.blockerTraceRecentFatalErrors.delete(errorFingerprint);
       }
     }
+    const targetReachabilityKey =
+      typeof inferPreviewInspectorTargetAutoAttemptReachabilityKey === 'function'
+        ? inferPreviewInspectorTargetAutoAttemptReachabilityKey(candidate, blocker)
+        : undefined;
     const attempt = {
       autoMode: auto.mode,
       blocker,
       knownFatalErrors,
       observedSnapshotCount: 0,
       startedAt: now,
+      ...(targetReachabilityKey === undefined ? {} : { targetReachabilityKey }),
       traceId,
     };
     previewInspectorSession.blockerTraceActiveAttempt = attempt;

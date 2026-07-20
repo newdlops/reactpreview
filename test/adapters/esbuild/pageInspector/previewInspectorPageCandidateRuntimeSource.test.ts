@@ -80,6 +80,13 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('class PreviewInspectorPageRootCommitBoundary');
     expect(source).toContain('state.pageRootCommitted = true');
     expect(source).toContain('pageCorridorElement');
+    expect(source).toContain(
+      'activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget)',
+    );
+    expect(source).toContain(
+      'readPreviewInspectorRuntimeFallbackDirectTarget(descriptor, candidate)',
+    );
+    expect(source).toContain('doesSelectedPreviewInspectorPageCandidateOwnRouter');
     expect(source).toContain('previewInspectorSession.selectedPageCandidateId = candidateId');
   });
 
@@ -114,6 +121,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('definitions.filter((item) => item?.directTarget === true)');
     expect(source).toContain('PreviewInspectorFileComponentItem');
     expect(source).toContain('PreviewExportErrorBoundary');
+    expect(source).toContain(
+      "{ exportName, key: exportName + ':condition:' + String(conditionRevision) }",
+    );
     expect(source).toContain("'data-react-preview-render-scenario': 'file-components'");
     expect(source).toContain('including any fallback UI that path legitimately renders');
     expect(source).not.toMatch(/ErrorPage|NotFound|status\s*===\s*500/u);

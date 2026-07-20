@@ -40,9 +40,24 @@ interface FlowModel {
   readonly unresolvedCount: number;
 }
 
+/** Exact artifact/page perspective dimensions shared with automatic runtime fallbacks. */
+interface FlowScope {
+  readonly candidateId: string;
+  readonly directTarget: boolean;
+  readonly exportName: string;
+  readonly revision: number;
+  readonly scenario: 'authored-page' | 'file-components';
+}
+
 /** Pure fixture API that retains the same hot-session history between model refreshes. */
 interface FlowRuntime {
   readonly createFlow: (snapshot: { readonly roots: readonly FlowNode[] }) => FlowModel;
+  readonly mergeHistory: (ids: readonly string[]) => readonly {
+    readonly current: boolean;
+    readonly id: string;
+  }[];
+  readonly readScopeKey: () => string;
+  readonly setScope: (scope: FlowScope) => void;
 }
 
 /** Creates one ordinary component owner with a deterministic tree identity. */
@@ -175,6 +190,41 @@ describe('Preview Inspector blocker flow UI runtime source', () => {
     expect(completed.steps[0]).toMatchObject({ current: false, id: 'error', status: 'resolved' });
   });
 
+  /** Prevents solved blockers from leaking across artifacts, scenarios, candidates, or exports. */
+  it('shares the exact runtime-fallback render-corridor scope dimensions', () => {
+    const runtime = evaluateFlowRuntime();
+    const baseScope: FlowScope = {
+      candidateId: 'dashboard-page',
+      directTarget: false,
+      exportName: 'Dashboard',
+      revision: 7,
+      scenario: 'authored-page',
+    };
+    runtime.setScope(baseScope);
+    const baselineKey = runtime.readScopeKey();
+
+    for (const changed of [
+      { revision: 8 },
+      { scenario: 'file-components' as const },
+      { candidateId: 'settings-page' },
+      { exportName: 'Settings' },
+      { directTarget: true },
+    ]) {
+      runtime.setScope({ ...baseScope, ...changed });
+      expect(runtime.readScopeKey()).not.toBe(baselineKey);
+    }
+
+    runtime.setScope(baseScope);
+    expect(runtime.mergeHistory(['runtime:session'])).toEqual([
+      expect.objectContaining({ current: true, id: 'runtime:session' }),
+    ]);
+    expect(runtime.mergeHistory([])).toEqual([
+      expect.objectContaining({ current: false, id: 'runtime:session' }),
+    ]);
+    runtime.setScope({ ...baseScope, revision: baseScope.revision + 1 });
+    expect(runtime.mergeHistory([])).toEqual([]);
+  });
+
   /** Treats a directly mounted target as diagnostic until its authored page root also commits. */
   it('keeps target-only rendering unresolved in the page blocker flow', () => {
     const runtime = evaluateFlowRuntime();
@@ -233,6 +283,7 @@ describe('Preview Inspector blocker flow UI runtime source', () => {
     expect(source).toContain('function createPreviewInspectorBlockerFlow(snapshot)');
     expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
     expect(source).toContain("'Show next fix'");
+    expect(source).toContain('const activeStep = flow.stepById.get(flow.activeStepId)');
     expect(source).toContain('becameResolved');
     expect(source).toContain('PreviewInspectorBlockerDetail');
   });
@@ -243,12 +294,28 @@ function evaluateFlowRuntime(): FlowRuntime {
   const context: { __flow?: FlowRuntime } = {};
   vm.runInNewContext(
     `
+      let previewEntryRevision = 7;
+      const flowScope = {
+        candidateId: 'dashboard-page',
+        directTarget: false,
+      };
       const previewInspectorSession = {
         blockerFlowHistoryByKey: new Map(),
+        renderScenario: 'authored-page',
         selectedExportName: 'Dashboard',
       };
       const findSelectedPreviewInspectorDescriptor = () => ({ exportName: 'Dashboard' });
-      const readSelectedPreviewInspectorPageCandidate = () => ({ id: 'dashboard-page' });
+      const readSelectedPreviewInspectorPageCandidate = () => ({ id: flowScope.candidateId });
+      const readPreviewInspectorRuntimeFallbackDirectTarget = () => flowScope.directTarget;
+      const createPreviewInspectorRuntimeFallbackScopeKey = (candidate, directTarget) => [
+        previewEntryRevision,
+        previewInspectorSession.renderScenario === 'file-components'
+          ? 'file-components'
+          : 'authored-page',
+        candidate?.id ?? 'direct-component',
+        previewInspectorSession.selectedExportName ?? 'default',
+        directTarget === true ? 'direct' : 'page',
+      ].join(':');
       const isPreviewInspectorConditionNode = (node) => node?.kind === 'condition';
       const isPreviewInspectorBlockerNode = (node) =>
         node?.kind === 'condition' || typeof node?.blockerKind === 'string';
@@ -265,7 +332,29 @@ function evaluateFlowRuntime(): FlowRuntime {
         return undefined;
       };
       ${createPreviewInspectorBlockerFlowUiRuntimeSource()}
-      globalThis.__flow = { createFlow: createPreviewInspectorBlockerFlow };
+      globalThis.__flow = {
+        createFlow: createPreviewInspectorBlockerFlow,
+        mergeHistory(ids) {
+          return mergePreviewInspectorBlockerFlowHistory(ids.map((id, index) => ({
+            current: true,
+            discoveryOrder: index,
+            id,
+            node: { children: [], id, kind: 'blocker', name: id },
+            ownerIds: [],
+            ownerNames: [],
+            ownerOrder: [],
+            phase: 0,
+          }))).map(({ current, id }) => ({ current, id }));
+        },
+        readScopeKey: createPreviewInspectorBlockerFlowScopeKey,
+        setScope(next) {
+          previewEntryRevision = next.revision;
+          flowScope.candidateId = next.candidateId;
+          flowScope.directTarget = next.directTarget;
+          previewInspectorSession.renderScenario = next.scenario;
+          previewInspectorSession.selectedExportName = next.exportName;
+        },
+      };
     `,
     context,
   );

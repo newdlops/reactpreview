@@ -42,6 +42,13 @@ function readSelectedPreviewInspectorPageCandidate(descriptor) {
     candidates[0];
 }
 
+/** Reports whether the selected authored application root supplies its own Router boundary. */
+function doesSelectedPreviewInspectorPageCandidateOwnRouter() {
+  if (typeof findSelectedPreviewInspectorDescriptor !== 'function') return false;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  return readSelectedPreviewInspectorPageCandidate(descriptor)?.rootOwnsRouter === true;
+}
+
 /** Reads an app-module base path only from a bounded own data property, never from a getter. */
 function readPreviewInspectorPageRootBasePath(rootValue) {
   if ((typeof rootValue !== 'object' && typeof rootValue !== 'function') || rootValue === null) {
@@ -323,6 +330,7 @@ function PreviewInspectorFileComponentLoadFailure({ error }) {
 function PreviewInspectorFileComponentItem({ definition, targetProps }) {
   const loadState = usePreviewInspectorLazyDefinition(definition);
   const exportName = definition?.targetExportName ?? 'default';
+  const conditionRevision = readPreviewInspectorRenderConditionRevision();
   let content;
   if (loadState.definition !== definition || loadState.status === 'loading') {
     content = React.createElement(
@@ -352,7 +360,7 @@ function PreviewInspectorFileComponentItem({ definition, targetProps }) {
     ),
     React.createElement(
       PreviewExportErrorBoundary,
-      { exportName },
+      { exportName, key: exportName + ':condition:' + String(conditionRevision) },
       React.createElement(React.Suspense, { fallback: suspenseFallback }, content),
     ),
   );
@@ -360,6 +368,7 @@ function PreviewInspectorFileComponentItem({ definition, targetProps }) {
 
 /** Displays every statically proven current-file component as a user-selected neutral overview. */
 function PreviewInspectorFileComponentOverview({ candidate, definitions, descriptor, targetProps }) {
+  activatePreviewInspectorRuntimeFallbackScope(candidate, true);
   const directDefinitions = definitions.filter((item) => item?.directTarget === true);
   if (directDefinitions.length === 0) {
     return React.createElement(
@@ -404,10 +413,12 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
     item?.directTarget === true &&
     item?.targetExportName === reachability.targetExportName,
   );
-  const definition = reachability.directTarget && directDefinition !== undefined
+  const directTarget = readPreviewInspectorRuntimeFallbackDirectTarget(descriptor, candidate) &&
+    directDefinition !== undefined;
+  const definition = directTarget
     ? directDefinition
     : pageDefinition ?? definitions[0];
-  const directTarget = definition?.directTarget === true;
+  activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget);
   const loadState = usePreviewInspectorLazyDefinition(definition, { candidate, directTarget });
   const candidateInitialEntry = createPreviewInspectorCandidateInitialEntry(
     candidate,

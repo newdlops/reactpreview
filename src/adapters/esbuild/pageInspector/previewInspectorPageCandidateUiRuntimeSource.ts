@@ -24,9 +24,9 @@ function formatPreviewInspectorPageCorridorStatus(reachability) {
   return 'LOADING PAGE';
 }
 
-/** Opens the ordered page-corridor repair flow and remounts the detail pane in that tab. */
+/** Opens the root-to-current-file Render flow in the primary Blockers navigation tab. */
 function openPreviewInspectorFriendlyBlockerFlow() {
-  previewInspectorDevtoolsSessionState.activeTab = 'flow';
+  previewInspectorDevtoolsSessionState.navigationTab = 'blockers';
   previewInspectorDevtoolsSessionState.blockerDetailRevision =
     (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
   persistPreviewInspectorState();

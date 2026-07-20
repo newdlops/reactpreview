@@ -2,6 +2,49 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1094 - 2026-07-20
+
+- Blockers Render flow에서 선택한 현재 파일 export가 최종 owner인 미해결 blocker만 `CURRENT FILE BLOCKER`
+  배지, 노란 시작선과 상단 개수로 강조해 ancestor·descendant·sibling blocker와 즉시 구분
+- current-file 판정은 단순 component 이름이나 target 상태를 재사용하지 않고 mounted selected export, exact owner
+  ID와 일치하는 source path를 요구해 imported child·정적 inventory·fallback owner 추정의 오탐을 차단
+- blocker의 active/waiting 상태와 기존 선후행 그래프는 그대로 유지하고 텍스트 배지와 접근 가능한 label도 함께
+  제공해 색상에 의존하지 않고 현재 파일 렌더를 직접 막는 지점을 선택·조정 가능
+
+## 0.1.1093 - 2026-07-20
+
+- Inspector의 1차 탐색을 `Components`와 `Blockers` 탭으로 분리하고, Blockers를 단순 오류 목록 대신
+  workspace/app/route에서 현재 파일까지의 `component function → render condition → selected return JSX → child`
+  흐름으로 시각화해 현재 파일 전후의 렌더 문맥과 선행·후행 blocker를 함께 확인하도록 개선
+- compiler가 계측한 `&&`, ternary, early return, overlay visibility에는 authored/effective 상태와 true/false/reset
+  스위치를 flow card에 직접 제공하고, runtime/data blocker도 같은 그래프 안에서 기존 Smart/JSON/retry 편집기를
+  펼치되 명시적인 Reveal 전에는 Components tree 선택과 스크롤을 변경하지 않도록 분리
+- 선택 component 상세를 `Props`, `State`, `Source`, `Payload` debugger로 정리하고 exact owner/source에 귀속된
+  render switch, API·GraphQL payload와 hook fallback만 노출하며 임의 React hook slot은 읽기 전용으로 유지
+- 별도 Inspector 탭 snapshot에서 Components와 Blockers의 독립 가로·세로 스크롤 및 안전한 `hidden` 속성을 보존하고,
+  blocker 완료 이력도 hot revision/view/page/export 단위로 격리해 후보 전환 뒤 오래된 flow가 섞이지 않도록 수정
+
+## 0.1.1092 - 2026-07-20
+
+- 전체 application path에 흔한 `Modal`/`Page`/`Layout` 이름만으로 무관한 overlay 조건을 열지 않고, 선택 target의
+  정확한 owner 또는 root-to-target source 근거가 있는 gate만 자동 통과하도록 target-guided DFS 범위를 제한
+- 자동 JSX gate가 새 fatal runtime 오류를 만들면 해당 preview-only 결정을 authored 값으로 rollback하고 오류 경계도
+  함께 remount해 authored branch를 복구하며, 같은 page 탐색에서 재선택하지 않고 condition/trace identity를 기록
+- `.filter()`/`.map()`/array item access가 정적으로 증명된 정확한 경로에서만 object placeholder를 실제 Array로
+  교정해 `options.filter is not a function` 연쇄를 차단하고, 실제 sibling·설정 object·기존 Array identity는 보존
+- direct artifact, 선택 export, page candidate, hot revision 사이에서 hook/effect 자동 상태를 격리하고 실제 activate된
+  hot entry만 scope를 교체하며, 후보 전환 시 바깥 Provider tree도 remount해 app Router 결과와 새 후보를 이전
+  후보의 provider 값이나 늦은 async effect가 오염하지 않도록 개선
+
+## 0.1.1091 - 2026-07-20
+
+- Page Component Tree에서 mounted component 행을 선택하면 남아 있던 Pick hover 후보를 해제하고
+  `Highlight`를 자동으로 켜, 실제 페이지에 연결된 해당 React host root를 즉시 노란 outline으로 표시
+- export 전환·hot refresh로 Fiber 구조 ID가 바뀐 경우 export identity로 최신 트리 노드를 한 번 더 찾아
+  오래된 행 ID가 다른 component를 강조하거나 선택 표시만 남기는 문제를 방지
+- `PAGE PATH`, blocker, unmounted inventory처럼 실제 host가 없는 행은 존재하지 않는 영역을 강조하지 않고
+  이전 Pick outline만 정리하며, authored inline outline과 priority가 highlight 해제 시 정확히 복원되도록 검증
+
 ## 0.1.1090 - 2026-07-20
 
 - 별도 Inspector 탭이 스냅샷마다 트리 DOM을 교체해도 문서와 Component Tree의 가로·세로 스크롤을

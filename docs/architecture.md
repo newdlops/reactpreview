@@ -333,13 +333,20 @@ guard는 계측하지 않습니다.
 `previewInspectorConditionRuntimeSource`는 compiler-issued hash ID의 authored/effective/override 상태와 자동 prop
 값 허용 여부를 pinned hot session에 유지합니다. target-guided override는 webview state에 저장하지 않는 별도
 ephemeral map에 두고 명시적인 사용자 override보다 낮은 우선순위로 적용합니다. 변경 시 shared revision key로
-authored root를 remount합니다.
+authored root를 remount합니다. commit-producing 자동 condition은 blocker trace identity와 연결된 작은 transaction으로
+등록합니다. 다음 fatal boundary/preview runtime 오류가 같은 attempt에 귀속되면 자동 override만 제거하고 해당
+reachability key의 rejected set에 넣으며 shared condition revision으로 바깥 export 오류 경계까지 remount합니다.
+따라서 authored branch가 latched placeholder 뒤에 남지 않습니다. persisted user override는 rollback 대상이 아니며
+candidate/export/hot graph reset이 rejected set을 폐기합니다.
 `previewInspectorConditionUiRuntimeSource`는 JSX-dev source path/line이 같은 가장 가까운 component에 condition
 pseudo node를 붙이고, 소유자를 증명하지 못하면 `Render conditions` root에 둡니다. Fiber 자체는 수정하지 않습니다.
 
 `previewInspectorTargetReachabilityRuntimeSource`는 선택 page candidate의 정상 commit과 target facade boundary의
 실제 mount를 별도로 비교합니다. target이 없으면 render-chain/ancestor source에 속한 condition만 대상으로
 `targetBranch`, fallback의 반대 branch, target 이름과 일치하는 logical-and를 discovery 순서대로 하나 선택합니다.
+반복되는 `Modal`/`Page`/`Layout` 같은 shared owner는 이름/label 점수나 runtime-only owner 관찰만으로 corridor에
+들어오지 않습니다. compiler가 direct target에서 발급한 condition ID, 선택 export identity 또는 정규화된
+render-path source가 일치해야 합니다.
 한 번의 commit에는 gate 하나만 바꾸고 remount 뒤 새로 도달한 hook/API consumer를 다시 관찰하므로 탐색은
 root에서 target 방향의 bounded DFS처럼 진행됩니다. 최대 16단계와 두 번의 quiet pass 뒤에도 target이 없으면
 command-selected export의 per-export virtual dynamic entry를 로드합니다. 직접 entry는 target facade의 정확한
@@ -374,22 +381,47 @@ ID/email/date/URL/status, callable과 collection을 구분하며 collection item
 descriptor-safe overlay를 통해 실제 Auto hook value에도 적용됩니다. 따라서 실제 non-null sibling/function/class
 identity는 이기고 missing plain leaf만 추가됩니다. 명시적인 no-op sentinel은 project hook에 값을 돌려주는
 순간에만 inert function으로 변환되므로 editor payload가 빈 `{}`로 축약되지 않으면서 persisted state는 계속 JSON-only입니다.
+`previewInspectorGeneratedValueRuntimeSource`는 required path의 array item, numeric item 또는 allowlisted collection
+method call을 exact container의 강한 구조 증거로 사용합니다. 이때만 non-array plain placeholder를 generated
+Array로 교체하며 authored sibling, class/React element, 단순 semantic-name object와 기존 Array는 그대로 둡니다.
+`previewInspectorRuntimeFallbackScopeRuntimeSource`는 entry revision, render scenario, candidate ID, 선택 export와
+direct/page perspective로 compiler-owned fallback/effect 상태를 분리합니다. scope 전환 시 user JSON override는
+보존하되 inferred value/completion과 effect execution/isolation을 폐기합니다. 새 artifact는 준비 시 descriptor를
+revision-local로만 보관하고 실제 activation의 root render 직전에 shared scope를 교체합니다. effect invocation도
+scope key를 캡처해 이전 후보의 늦은 Promise rejection/cleanup이 새 후보 상태를 다시 오염하지 않습니다.
+모든 project/setup/자동 Provider 바깥의 extension-owned keyed Fragment는 candidate/export/scenario identity가
+바뀔 때 provider subtree 전체를 remount하므로 이미 소비된 이전 fallback 값도 새 corridor에 남지 않습니다.
+외곽 경계와 내부 loader는 authored-page 안의 명시적 target-only 상태까지 포함한 하나의 direct/page 판정 helper를
+공유하므로 page/direct scope가 서로를 반복 덮어쓰지 않습니다.
+application root가 Router를 소유하면 성공한 `react-router(-dom)` hook 결과를 exact identity로 반환해 direct
+artifact에서 생성한 location/params가 page Router 결과를 보완하지 않게 합니다.
 
 `previewInspectorBlockerFlowUiRuntimeSource`는 enriched component tree에서 blocker owner ID/name 경로를 읽어
 bounded DAG를 만듭니다. strict ancestor owner의 terminal phase는 descendant blocker의 proven predecessor가 되고,
 같은 owner에서는 target reachability→condition→runtime hook→data request→target error phase만 권장 edge로
 연결합니다. 같은 phase와 sibling owner는 dependency를 추측하지 않아 동일 level의 병렬 stage로 남습니다.
 직접 predecessor뿐 아니라 transitive predecessor가 모두 resolved일 때만 ready가 되며 첫 ready/running step 하나를
-active로 권장합니다. current tree에서 사라진 step은 해결된 것으로 표시하되 page-candidate/export scope별 96개,
-session당 8개 scope의 비영속 Map에만 남습니다. Flow UI는 기존 blocker detail을 재사용하고 resolution 변화 뒤 다음
+active로 권장합니다. current tree에서 사라진 step은 해결된 것으로 표시하되
+entry revision/render scenario/page candidate/export/direct-page scope별 96개, session당 8개 scope의 비영속 Map에만
+남습니다. Flow UI는 기존 blocker detail을 재사용하고 resolution 변화 뒤 다음
 ready step을 선택하므로 condition/payload/fallback/retry mutation 의미를 중복 구현하지 않습니다.
+
+`previewInspectorRenderFlowUiRuntimeSource`는 이 actionable blocker DAG를 설명용 JSX render DAG와 결합합니다.
+workspace root에서 선택 current-file export까지 증명된 owner corridor의 실제 component마다 function-entry node,
+직접 소유한 condition/runtime requirement, 선택된 return-output node를 만들고 return 이후 mounted child 호출은
+depth 4·전체 128 step 안에서 병렬 확장합니다. compiler condition의 effective branch label만 return 설명에 쓰며
+project 함수를 다시 호출하거나 Virtual DOM을 추측하지 않습니다. 실행하지 않은 entry/route/wrapper와 unmounted
+inventory 같은 `contextOnly` 증거는 return을 만들지 않아 정적 경로를 실제 commit으로 오인하지 않습니다. blocker
+progress/resolution은 계속 원래 blocker DAG 하나에서만 계산하고 render context node는 완료율에 포함하지 않습니다.
 
 `previewInspectorBlockerTraceRuntimeSource`는 enriched tree의 blocker record를 Fiber reference 없이 bounded plain
 data로 복사하고, fingerprint가 달라질 때만 discovery/update/remount diff를 발생시킵니다. hook fallback, data payload,
 target-guided condition, 최소 requirement DFS와 target Smart props의 mutation boundary는 적용 직전에
-`auto-selection`을 기록하고 active attempt를 60초 동안 유지합니다. 그 뒤 같은 tree에서 관찰한
-`render-result`와 Console/React boundary의 warning/error는 동일 trace ID를 사용하므로 어떤 자동값이 다음 blocker나
-오류를 열었는지 시간순으로 재구성할 수 있습니다. 브라우저 recorder는 source 본문을 읽지 않고
+`auto-selection`을 기록하고 320ms 안정화, 최대 960ms 관찰 창으로 하나의 commit 결과를 확정합니다. target gate는
+짧은 late-error grace 동안 다음 gate를 시작하지 않으며, 새 fatal signature만 rollback합니다. 직전 committed
+target-error snapshot에 남은 기존 오류는 baseline으로 취급하고 정상 snapshot 뒤 재발한 동일 오류는 새 오류로
+판정합니다. 같은 tree의 `render-result`와 Console/React boundary 오류는 동일 trace ID를 사용하므로 어떤 자동값이
+다음 blocker나 오류를 열었는지 시간순으로 재구성할 수 있습니다. 브라우저 recorder는 source 본문을 읽지 않고
 `react-preview-blocker-trace` plain-data message만 전송합니다.
 
 확장 호스트의 `previewBlockerTraceProtocol`은 event identity, source coordinate, 문자열/list/JSON의 depth·node·64 KiB
@@ -419,9 +451,10 @@ component별 count만 전달됩니다.
 보존하고 각 component의 connected host root를 viewport rectangle 하나로 합칩니다. mounted component는 실제
 좌표에 outline을 그리며, host를 commit하기 전에 실패한 blocked-owner와 unmounted current-file export는 가장
 가까운 측정 가능 parent 안에 bounded synthetic slot을 만듭니다. blocker는 이 slot 또는 실제 owner rectangle에
-anchor되고 wireframe에는 pointer input을 받는 원형 `!` marker만 둡니다. marker 선택은 같은 tree node ID를
-사용해 검색 해제, ancestor expansion과 scroll을 요청하고 별도 companion reveal message로 Inspector tab을
-포커스하며 detail revision을 올려 같은 blocker를 재선택해도 Blocker editor를 다시 마운트합니다. DOM/Fiber
+anchor되고 wireframe에는 pointer input을 받는 원형 `!` marker만 둡니다. marker 선택은 같은 blocker ID의
+Render-flow card를 선택하고 별도 companion reveal message로 Inspector tab을 포커스하지만 Components tree의
+선택·검색·scroll은 바꾸지 않습니다. 사용자가 card의 `Reveal in Components`를 눌렀을 때만 owner row를 펼쳐
+이동합니다. detail revision은 같은 marker를 재선택해도 inline editor를 다시 동기화합니다. DOM/Fiber
 reference는 React state나 webview persistence에 들어가지 않습니다. 한 refresh는
 component box 160개와 tree visit 768개로 제한되고 scroll/resize는 animation frame 하나로 합칩니다.
 
@@ -449,10 +482,26 @@ DevTools UI source는 main runtime과 분리된 `previewInspectorDevtoolsUiRunti
 `PreviewInspectorCompanionPanel`은 script/resource/event attribute를 제거하는 별도 CSP document에 snapshot을
 표시하며, 별도 project entry를 import하지 않습니다. renderer의 zero-payload reveal request는 snapshot/action과
 분리해 검증한 뒤 이미 생성된 companion panel만 focus합니다. `previewInspectorLayoutRuntimeSource`는 preview에 남는
-page wireframe style과 companion에서 재사용할 Components/details workbench CSS를 소유합니다. 내부 workbench는
-왼쪽 React component tree와 오른쪽 props/state/source 상세로 나뉘며, target/root 선택, highlight, picker,
-remount와 plain JSON props override를 노출합니다. page-context 행은 실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
+page wireframe style과 companion에서 재사용할 navigation/details workbench CSS를 소유합니다. 내부 workbench의
+왼쪽은 mounted 상태를 유지하는 `Components`/`Blockers` 1차 탭이고 오른쪽은 선택 component debugger와 Console로
+나뉩니다. `previewInspectorNavigationUiRuntimeSource`는 inactive panel을 data attribute로만 숨겨 tree expansion과
+각 named scroll viewport를 보존합니다. `previewInspectorComponentDebuggerUiRuntimeSource`는 `Props`, `State`,
+`Source`, `Payload`를 선택 component에 귀속시키며 direct blocker assignment 또는 exact normalized owner name과
+모순되지 않는 source path가 있는 request/fallback만 편집 범위에 포함합니다. State는 compiler-proven render
+condition과 exact picked-host visibility만 바꿀 수 있고 임의 hook/class slot은 bounded read-only snapshot입니다.
+`previewInspectorRenderFlowUiRuntimeSource`는 선택 export까지의 owner corridor를 function entry, render logic,
+selected return JSX와 child call DAG로 변환합니다. 현재 파일 직접 blocker 강조는 선택 경로에서 가장 안쪽의
+mounted `currentFileExport` node가 선택 export와 일치하고 blocker step의 최종 owner ID와 source path가 정확히
+대응하며, 현재 unresolved/actionable 상태일 때만 부여합니다. 따라서 target-only 여부, 정적 inventory, component
+이름 또는 ancestor의 간접 blocker는 현재 파일 blocker로 승격되지 않습니다. `previewInspectorBlockerFlowUiRuntimeSource`는 이 표식을
+텍스트 배지, 접근 가능한 이름과 상태 색을 보존하는 inline-start accent로 렌더링합니다.
+target/root 선택, highlight, picker, remount와 plain JSON props override도 이 경계에서 노출합니다. page-context 행은
+실제 mounted ancestor root와 선택 render-chain을 이름만으로 합쳐
 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE`을 구분하며 filesystem 경로는 노출하지 않습니다.
+일반 component 행 선택은 picker candidate보다 우선하는 authoritative tree selection입니다. 선택 시 picker를
+종료하고 연결된 Fiber host root가 있으면 highlight를 자동 활성화합니다. export 선택으로 구조 ID가 바뀌었을
+때는 전달된 export identity가 최신 snapshot에서 유일한 경우에만 다시 연결하며, hostless context/blocker 행은
+outline을 만들지 않습니다. highlight 해제 시에는 덮어쓰기 전 inline outline 값과 priority를 그대로 복원합니다.
 `previewInspectorCompanionPaneResizeScript`는 sanitized snapshot이 교체될 때 Components/Details 사이에 local
 separator를 다시 삽입합니다. 760px breakpoint 전후의 column/row ratio를 별도 webview state로 유지하고 CSS grid
 custom property만 갱신하므로 pointer drag가 companion protocol이나 project runtime으로 전달되지 않습니다. live
@@ -474,12 +523,12 @@ draft의 generated path와 no-op sentinel을 명시하고 `Smart fill props` 적
 정렬하고 container match는 가장 깊은 증명 leaf로 확장합니다. 관찰된 null container/scalar가 실제 오류 경로를
 막았을 때만 `replaceNullScalars` completion을 사용하므로 일반 hook fallback의 authored null branch는 유지됩니다.
 current-file export row는 별도 `Reveal` action으로 selection, ancestor expansion, scroll 및 host highlight를 한 번에
-요청합니다. blocker row 선택은 렌더 의미를 즉시 바꾸지 않고 `Blocker` detail을 열며 condition branch, hook JSON,
+요청합니다. blocker row 선택은 렌더 의미를 즉시 바꾸지 않고 blocker detail을 열며 condition branch, hook JSON,
 data payload 또는 retry 값을 사용자가 명시적으로 적용할 때만 selected page revision을 remount합니다.
-같은 blocker가 page wireframe에서 선택되면 transient one-shot reveal ID로 정확한 tree row를 찾고 Blocker tab을
-강제한 뒤 companion을 focus하므로, 이 상호작용 상태는 hot session이나 webview JSON에 저장되지 않습니다.
-`Flow` 탭에서 chart card를 선택해도 같은 tree-node selection을 사용하되 탭은 Flow에 남고, 선택한 blocker가
-resolved/disappeared 상태로 바뀌면 다음 predecessor-ready card와 editor로 자동 전진합니다.
+같은 blocker가 page wireframe에서 선택되면 primary `Blockers` tab과 해당 flow card를 선택해 companion을 focus하고,
+graph card 선택은 component `selectedTreeNodeId`와 분리됩니다. 선택 blocker가 resolved/disappeared 상태로 바뀌면
+다음 predecessor-ready card와 editor로 자동 전진합니다. Components와 Blockers viewport는 각각 stable scroll key를
+가지며 sanitized companion snapshot 교체 전후에 가로·세로 좌표를 독립 복원합니다.
 event-driven state는 실제 page UI로 조작하지만 임의 hook/local state slot은 수정하지 않습니다.
 source-open browser message는 extension host의 committed dependency allowlist를 통과한 JS/TS 파일만 현재
 local/remote workspace editor에서 열 수 있습니다. preview-local source button은 기존처럼 실제 click의

@@ -11,6 +11,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
+import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
 import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
 import {
@@ -85,6 +86,10 @@ interface PreviewRuntimeHookFallback {
   readonly expression: string;
   /** Concise generated-value description that does not execute the expression. */
   readonly label: string;
+  /** Optional-only reads materialized after a thrown hook, never over a real nullish sentinel. */
+  readonly failurePaths?: readonly string[];
+  /** Marks an ignored result as an isolated side effect instead of a visible render blocker. */
+  readonly passive?: boolean;
   /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
   readonly preserveNullish?: boolean;
   /** Property paths whose absence would stop rendering at this exact hook edge. */
@@ -97,6 +102,8 @@ interface PreviewRuntimeHookValueFallback {
   readonly expression: string;
   /** Human-readable generated-value family. */
   readonly label: string;
+  /** Optional-only paths used to shape a caught failure without completing a real object. */
+  readonly failurePaths?: readonly string[];
   /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
   readonly preserveNullish?: boolean;
   /** Paths relative to this value that local syntax proves are required. */
@@ -307,6 +314,8 @@ function inferRuntimeHookFallback(
       evidence: 'hook return value is intentionally ignored',
       expression: 'undefined',
       label: 'generated ignored hook result',
+      passive: true,
+      requiredPaths: [],
     };
   }
   if (
@@ -326,6 +335,9 @@ function inferRuntimeHookFallback(
         evidence: 'hook result binding and semantic field names',
         expression: bindingFallback.expression,
         label: bindingFallback.label,
+        ...(bindingFallback.failurePaths === undefined
+          ? {}
+          : { failurePaths: bindingFallback.failurePaths }),
         ...(bindingFallback.preserveNullish === true ? { preserveNullish: true } : {}),
         ...(bindingFallback.requiredPaths === undefined
           ? {}
@@ -403,7 +415,7 @@ function createBindingFallback(
       }
       if (element.dotDotDotToken !== undefined) return undefined;
       const child = createBindingFallback(element.name, sourceFile);
-      values.push(child?.expression ?? 'undefined');
+      values.push(readNestedPreviewRuntimeHookExpression(child));
       requiredPaths.push(...prefixPreviewRuntimeHookPaths(child?.requiredPaths, String(index)));
     }
     return {
@@ -422,7 +434,9 @@ function createBindingFallback(
       expression: 'Object.freeze({})',
       label: 'static object',
     };
-    properties.push(`${JSON.stringify(propertyName)}: ${child.expression}`);
+    properties.push(
+      `${JSON.stringify(propertyName)}: ${readNestedPreviewRuntimeHookExpression(child)}`,
+    );
     requiredPaths.push(...prefixPreviewRuntimeHookPaths(child.requiredPaths, propertyName));
   }
   return {
@@ -430,6 +444,15 @@ function createBindingFallback(
     label: 'generated object fields',
     requiredPaths,
   };
+}
+
+/** Keeps an optional destructured child absent while a root selector may still recover on throw. */
+function readNestedPreviewRuntimeHookExpression(
+  fallback: PreviewRuntimeHookValueFallback | undefined,
+): string {
+  return fallback?.preserveNullish === true && (fallback.requiredPaths?.length ?? 0) === 0
+    ? 'undefined'
+    : (fallback?.expression ?? 'undefined');
 }
 
 /** Prefixes child demand paths while keeping a root requirement readable in Inspector diagnostics. */
@@ -501,7 +524,11 @@ function inferSemanticFallback(
   ) {
     return { expression: 'Object.freeze([])', label: 'generated empty list' };
   }
-  if (/(?:count|total|index|length|size|page|amount|rate|percent|number)$/u.test(normalized)) {
+  if (
+    /(?:count|total|index|length|size|page|amount|rate|percent|number|seconds|milliseconds|durationms|timestamp)$/u.test(
+      normalized,
+    )
+  ) {
     return { expression: '0', label: 'generated number 0' };
   }
   if (
@@ -623,14 +650,19 @@ function createIdentifierUsageFallback(
     };
   }
   if (paths.length === 0) {
-    return optionalReferences > 0 && unsafeReferences === 0
-      ? {
-          expression: 'undefined',
-          label: 'preserved optional hook result',
-          preserveNullish: true,
-          requiredPaths: [],
-        }
-      : undefined;
+    if (optionalReferences === 0 || unsafeReferences !== 0) return undefined;
+    const completedOptionalPaths = deduplicatePreviewRuntimeHookUsagePaths(optionalPaths);
+    const optionalRoot: PreviewRuntimeHookUsageNode = { children: new Map() };
+    for (const path_ of completedOptionalPaths) addUsagePath(optionalRoot, path_);
+    return {
+      expression: serializeUsageNode(optionalRoot),
+      failurePaths: completedOptionalPaths.map(
+        (path_) => path_.names.join('.') + (path_.called ? '()' : ''),
+      ),
+      label: 'generated optional failure shape',
+      preserveNullish: true,
+      requiredPaths: [],
+    };
   }
   const completedPaths = deduplicatePreviewRuntimeHookUsagePaths([...paths, ...optionalPaths]);
   const root: PreviewRuntimeHookUsageNode = { children: new Map() };
@@ -767,8 +799,13 @@ function findComparedLiteralFallback(
       const other = readComparedExpression(node, identifier.text);
       if (other !== undefined && isStaticComparableExpression(other)) {
         result = {
-          expression: other.getText(sourceFile),
-          label: 'generated compared value',
+          expression: createPreviewComparisonFalseExpression(
+            createSemanticString(identifier.text),
+            other,
+            node.operatorToken.kind,
+            sourceFile,
+          ),
+          label: 'generated comparison-safe value',
         };
         return;
       }
@@ -870,6 +907,10 @@ function createRuntimeHookReplacement(
     line: location.line + 1,
     moduleSpecifier: candidate.hook.moduleSpecifier,
     ...(ownerName === undefined ? {} : { ownerName }),
+    ...(candidate.fallback.failurePaths === undefined
+      ? {}
+      : { failurePaths: candidate.fallback.failurePaths }),
+    ...(candidate.fallback.passive === true ? { passive: true } : {}),
     ...(candidate.fallback.preserveNullish === true ? { preserveNullish: true } : {}),
     requiredPaths: candidate.fallback.requiredPaths ?? ['<root>'],
     sourcePath: path.normalize(sourcePath),

@@ -142,8 +142,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["helpers.setPage()","page","perPage"]');
   });
 
-  /** Preserves an intentional undefined sentinel when all consumer reads are optional-chain guarded. */
-  it('marks optional-only hook bindings as nullish-safe instead of inventing a truthy value', () => {
+  /** Preserves real nullish sentinels while giving a thrown hook an optional-path failure shape. */
+  it('materializes optional-only paths only for the hook failure fallback', () => {
     const source = [
       `import { useUrlSync } from './use-url-sync';`,
       `import { useMemo } from 'react';`,
@@ -159,9 +159,56 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Table.tsx', source),
     );
 
-    expect(transformed).toContain('() => (undefined)');
-    expect(transformed).toContain('"fallbackLabel":"preserved optional hook result"');
+    expect(transformed).toContain(
+      '() => (Object.freeze({ "initialState": Object.freeze({ "search": "search" }) }))',
+    );
+    expect(transformed).toContain('"failurePaths":["initialState.search"]');
+    expect(transformed).toContain('"fallbackLabel":"generated optional failure shape"');
     expect(transformed).toContain('"preserveNullish":true');
+    expect(transformed).toContain('"requiredPaths":[]');
+  });
+
+  /** Keeps failed selector state usable without triggering negative time sentinels or overlays. */
+  it('uses optional selector paths and comparison-safe scalar defaults', () => {
+    const source = [
+      `import { useSelector } from 'react-redux';`,
+      'export function Status() {',
+      '  const driveStatus = useSelector(selectDriveStatus);',
+      '  const pageLayoutState = useSelector(selectPageLayoutState);',
+      '  const indicatorType = useSelector(selectIndicatorType);',
+      '  const visible = pageLayoutState === State.Loading && indicatorType === Type.OVERLAY;',
+      '  return <main data-visible={visible}>{driveStatus?.timeSeconds}{driveStatus?.day}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Status.tsx', source),
+    );
+
+    expect(transformed).toContain('"timeSeconds": 0');
+    expect(transformed).toContain('"failurePaths":["timeSeconds","day"]');
+    expect(transformed).toContain('() => ("pageLayoutState")');
+    expect(transformed).toContain('() => ("indicatorType")');
+    expect(transformed).not.toContain('() => (State.Loading)');
+    expect(transformed).not.toContain('() => (Type.OVERLAY)');
+  });
+
+  /** Tags fire-and-forget hooks so their caught exceptions remain console warnings, not blockers. */
+  it('marks ignored hook results as passive runtime isolation', () => {
+    const source = [
+      `import { usePageAnalytics } from './analytics';`,
+      'export function Page() {',
+      '  usePageAnalytics();',
+      '  return <main />;',
+      '}',
+    ].join('\n');
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source),
+    );
+
+    expect(transformed).toContain('"passive":true');
     expect(transformed).toContain('"requiredPaths":[]');
   });
 

@@ -2,6 +2,17 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1097 - 2026-07-20
+
+- Blocker Resolver의 minimum-requirement 탐색에 revision-local semantic frontier fingerprint를 추가해 동일 상태와
+  A→B→A 진동을 다음 remount 전에 중단하고, terminal 검색을 pass 0으로 자동 재시작하던 무한 루프를 차단
+- 자동 hook/backend pass를 이전 render trace가 정착된 뒤에만 직렬 실행하며 재시작 사이에도 누적 8-pass 상한을
+  유지하고, condition registry가 사라져도 원래 page corridor를 한 번만 재개하도록 attempt identity를 보존
+- hook required-path 집합을 정렬한 signature로 비교해 발견 순서만 달라진 동일 Smart 값이 Auto로 재개방되지 않게
+  하고, Resolver에 cycle/limit 중단 사유·반복 길이·진행 상태와 명시적 retry 경로를 표시
+- 좁은 Inspector에서 graph와 Resolver를 세로 배치하고 카메라를 3열/2열로 축약하며 관계·조건·JSON 편집기를
+  내부 wrap/scroll 처리해 작은 폭과 낮은 높이에서도 컨트롤이 화면 밖으로 벗어나지 않도록 개선
+
 ## 0.1.1096 - 2026-07-20
 
 - Blockers를 왼쪽 `Control & render flow` 캔버스와 오른쪽 `Blocker Resolver`로 분리해 선택 block의

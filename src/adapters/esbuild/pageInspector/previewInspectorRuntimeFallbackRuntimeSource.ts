@@ -119,7 +119,9 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
 
 /** Creates the exact compiler/runtime requirement coverage owned by one applied Smart value. */
 function createPreviewInspectorRuntimeFallbackPathSignature(requiredPaths) {
-  return JSON.stringify(normalizePreviewInspectorRequiredPropertyPaths(requiredPaths));
+  // Property access order can vary across equivalent React branches. Treat the evidence as a set so
+  // an order-only change cannot reopen a settled Smart fallback and restart automatic resolution.
+  return JSON.stringify([...normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)].sort());
 }
 
 /** Separates a shared query-wrapper callsite into one fallback record per authored request. */

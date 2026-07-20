@@ -29,6 +29,7 @@ export interface TestRuntimeFallbackApi {
   auto(fallbackId: string): void;
   draft(fallbackId: string): unknown;
   effect(readEffect: () => unknown, metadata: object): unknown;
+  pathSignature(requiredPaths: readonly string[]): string;
   read(): TestRuntimeFallbackRecord[];
   readEffectiveDirectTarget(candidateId: string): boolean;
   reset(fallbackId: string): void;
@@ -160,6 +161,7 @@ export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackF
       ' auto: autoPassPreviewInspectorRuntimeFallback,' +
       ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
       ' effect: resolvePreviewInspectorRuntimeEffect,' +
+      ' pathSignature: createPreviewInspectorRuntimeFallbackPathSignature,' +
       ' read: readPreviewInspectorRuntimeFallbacks,' +
       ' readEffectiveDirectTarget: (candidateId) => ' +
       'readPreviewInspectorRuntimeFallbackDirectTarget({}, { id: candidateId }),' +

@@ -2,6 +2,28 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1099 - 2026-07-20
+
+- Tailwind 지시어가 있는 workspace CSS만 CSS별 nearest package의 v4 `@tailwindcss/postcss` 또는
+  configuration-free v2/v3 fallback으로 컴파일해 raw `@tailwind utilities` 때문에 utility class가 모두
+  사라지던 문제를 해결하고, dirty TSX 후보도 bounded Oxide scan으로 hot rebuild에 포함
+- PostCSS/Next/Vite/Tailwind config는 실행하지 않으며 nested CSS의 `@plugin`/`@config`, workspace 밖
+  `@source`/import source modifier와 quoted/unquoted `url(...)` import 우회는 preflight에서 차단하고 CSS Modules,
+  재사용 v4 processor 및 bounded style watch evidence를 유지; PnP zero-install은 hook 실행 대신 해결 방법 warning 제공
+- 구형 Babel regenerator bundle이 strict ESM에서 CSP로 금지된 `Function(...)` fallback을 호출하지 않도록
+  target/setup import 전에 writable global runtime slot을 준비하고, 기존 runtime binding과 `unsafe-eval` 차단은 보존
+- React 16.8·17 프로젝트에서는 `useState`/`useEffect` 기반 Context registration 구독으로 전환해 React 18의
+  `useSyncExternalStore`가 없어도 lazy Context provider가 뒤늦게 등록되는 흐름을 유지
+- 실제 `react-dom` runtime manifest와 export map을 기준으로 root API를 선택하고 최신
+  `@types/react-dom/client.d.ts`를 실행 가능한 subpath로 오인하지 않도록 해 React 16·17 프로젝트의
+  `Could not resolve "react-dom/client"` 빌드 실패를 해결
+- blocker trace와 runtime-health 로그에 웹뷰 수명 동안 유지되는 `runtimeSessionId`, content-addressed
+  `artifactId`, hot `runtimeRevision`을 공통 기록해 같은 trace 번호를 가진 다른 탭·reload와 실제 반복 루프를 구분
+- 기본 Blockers 화면을 `Current blocking path → Current blocker → Next action → Fix now` 한 열로 단순화하고,
+  전체 flow graph와 오른쪽 Resolver 및 graph layout 계산은 `Advanced`를 명시적으로 열 때만 생성
+- 좁은 Inspector에서 경로·편집기·버튼이 내부 폭에 맞춰 줄바꿈되도록 보강하고, 중복 condition 제어와 효과 없는
+  재선택 버튼을 제거하며 튜토리얼·선후 관계는 접이식 고급 정보로 이동
+
 ## 0.1.1097 - 2026-07-20
 
 - Blocker Resolver의 minimum-requirement 탐색에 revision-local semantic frontier fingerprint를 추가해 동일 상태와

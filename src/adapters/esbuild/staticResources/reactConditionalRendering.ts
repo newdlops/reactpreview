@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import { instrumentReactSwitchRendering } from './reactSwitchRendering';
 
 const MAX_CONDITIONS_PER_MODULE = 128;
 const MAX_METADATA_TEXT_LENGTH = 180;
@@ -105,18 +106,20 @@ export function instrumentReactConditionalRendering(
   sourcePath: string,
   sourceText: string,
 ): string {
-  if (!isJavaScriptLikeSource(sourcePath) || !mayContainConditionalJsx(sourceText)) {
+  if (!isJavaScriptLikeSource(sourcePath)) {
     return sourceText;
   }
+  const switchInstrumentedSource = instrumentReactSwitchRendering(sourcePath, sourceText);
+  if (!mayContainConditionalJsx(switchInstrumentedSource)) return switchInstrumentedSource;
   const sourceFile = ts.createSourceFile(
     sourcePath,
-    sourceText,
+    switchInstrumentedSource,
     ts.ScriptTarget.Latest,
     true,
     selectConditionalScriptKind(sourcePath),
   );
   if (hasParseDiagnostics(sourceFile)) {
-    return sourceText;
+    return switchInstrumentedSource;
   }
 
   const candidates = collectConditionalRenderCandidates(
@@ -128,7 +131,7 @@ export function instrumentReactConditionalRendering(
       createConditionalRenderReplacement(sourceFile, sourcePath, candidate, index),
     ),
   );
-  return applyConditionalRenderReplacements(sourceText, replacements);
+  return applyConditionalRenderReplacements(switchInstrumentedSource, replacements);
 }
 
 /** Collects only boolean expressions whose selected branch directly renders JSX. */

@@ -30,6 +30,12 @@ describe('PreviewSourceTransformer', () => {
       'export function Page({ loaded, visible }) {',
       '  return <main>{visible && <Panel />}{loaded ? <Content /> : <Loading />}</main>;',
       '}',
+      'export function ModePage({ mode }) {',
+      '  switch (mode) {',
+      "    case 'detail': return <Detail />;",
+      '    default: return <Summary />;',
+      '  }',
+      '}',
     ].join('\n');
 
     const galleryResult = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
@@ -40,6 +46,7 @@ describe('PreviewSourceTransformer', () => {
 
     expect(galleryResult.contents).toBe(sourceText);
     expect(inspectorResult.contents.match(/\.resolveRenderCondition\(/gu)).toHaveLength(2);
+    expect(inspectorResult.contents.match(/\.resolveRenderChoice\(/gu)).toHaveLength(1);
     expect(inspectorResult.contents).toContain('"truthyLabel":"<Panel>"');
     expect(inspectorResult.contents).toContain('"falsyLabel":"<Loading>"');
   });

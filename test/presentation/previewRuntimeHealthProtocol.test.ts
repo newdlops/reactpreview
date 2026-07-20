@@ -9,6 +9,7 @@ describe('Preview runtime health protocol', () => {
   /** Accepts the informational page-shell and static-route selection event. */
   it('parses page context selection diagnostics', () => {
     const message = readPreviewRuntimeHealthMessage({
+      artifactId: '0123456789abcdef',
       event: {
         category: 'page-context',
         detail: { pathname: '/company/1/analysis', rootExport: 'CompanyOwnerApp' },
@@ -20,12 +21,19 @@ describe('Preview runtime health protocol', () => {
         source: { sourcePath: '/workspace/pages.json' },
         timestamp: '2026-07-19T13:00:00.000Z',
       },
+      runtimeRevision: 1,
+      runtimeSessionId: 'rp-0123456789abcdef01234567',
       type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
     });
 
     expect(message?.event).toMatchObject({
       event: 'page-context-selected',
       source: { sourcePath: '/workspace/pages.json' },
+    });
+    expect(message).toMatchObject({
+      artifactId: '0123456789abcdef',
+      runtimeRevision: 1,
+      runtimeSessionId: 'rp-0123456789abcdef01234567',
     });
   });
 
@@ -110,5 +118,29 @@ describe('Preview runtime health protocol', () => {
         type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
       }),
     ).toBeUndefined();
+  });
+
+  /** Rejects correlation fields that omit the exact revision owning the browser event. */
+  it('rejects partial runtime correlation while accepting old complete health events', () => {
+    const event = {
+      category: 'theme',
+      detail: {},
+      event: 'theme-token-repaired',
+      eventId: 'health-1',
+      revision: 1,
+      sequence: 1,
+      severity: 'warn',
+      timestamp: 'now',
+    };
+    expect(
+      readPreviewRuntimeHealthMessage({
+        event,
+        runtimeSessionId: 'rp-0123456789abcdef01234567',
+        type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
+      }),
+    ).toBeUndefined();
+    expect(
+      readPreviewRuntimeHealthMessage({ event, type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE }),
+    ).toBeDefined();
   });
 });

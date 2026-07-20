@@ -41,6 +41,14 @@ export function handlePreviewRuntimeHealthMessage(
     const record = {
       format: 'react-preview-runtime-health/v1',
       previewTarget: context.targetPath,
+      ...(message.artifactId === undefined ? {} : { artifactId: message.artifactId }),
+      ...(message.runtimeRevision === undefined
+        ? {}
+        : { runtimeRevision: message.runtimeRevision }),
+      ...(message.runtimeSessionId === undefined
+        ? {}
+        : { runtimeSessionId: message.runtimeSessionId }),
+      ...(message.runtimeVersion === undefined ? {} : { runtimeVersion: message.runtimeVersion }),
       ...message.event,
     };
     const output = `React preview runtime health\n${JSON.stringify(record, undefined, 2)}`;

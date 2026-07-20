@@ -19,6 +19,7 @@ import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewIns
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
+import { createPreviewInspectorRuntimeCorrelationSource } from './previewInspectorRuntimeCorrelationSource';
 import { createPreviewInspectorRuntimeHealthSource } from './previewInspectorRuntimeHealthSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
@@ -58,6 +59,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
   const propsUiRuntimeSource = createPreviewInspectorPropsUiRuntimeSource();
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
+  const runtimeCorrelationSource = createPreviewInspectorRuntimeCorrelationSource();
   const runtimeHealthSource = createPreviewInspectorRuntimeHealthSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
@@ -124,6 +126,8 @@ const previewInspectorSourceEventConstructor = globalThis.Event;
 const previewInspectorConsumedSourceEvents = new WeakSet();
 const previewInspectorPostHostMessage =
   previewHotRuntime.vscodeApi?.postMessage?.bind(previewHotRuntime.vscodeApi);
+
+${runtimeCorrelationSource}
 
 ${fiberRuntimeSource}
 

@@ -5,6 +5,7 @@ import { createPreviewInspectorBlockerTraceRuntimeSource } from '../../../../src
 
 /** Minimal event envelope posted by the generated trace runtime. */
 interface TraceMessage {
+  readonly artifactId?: string;
   readonly event: {
     readonly auto?: {
       readonly action?: string;
@@ -22,6 +23,8 @@ interface TraceMessage {
     };
     readonly traceId: string;
   };
+  readonly runtimeRevision?: number;
+  readonly runtimeSessionId?: string;
   readonly type: string;
 }
 
@@ -80,6 +83,11 @@ describe('Preview Inspector blocker trace runtime source', () => {
       'subsequent-error',
       'render-result',
     ]);
+    expect(runtime.messages[0]).toMatchObject({
+      artifactId: '0123456789abcdef',
+      runtimeRevision: 2,
+      runtimeSessionId: 'rp-0123456789abcdef01234567',
+    });
     const auto = runtime.messages[1]?.event;
     const error = runtime.messages[3]?.event;
     const result = runtime.messages[4]?.event;
@@ -642,6 +650,11 @@ function createTraceRuntime(): TraceRuntime {
       const messages = [];
       const rollbacks = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
+      const readPreviewInspectorRuntimeCorrelation = () => ({
+        artifactId: '0123456789abcdef',
+        runtimeRevision: 2,
+        runtimeSessionId: 'rp-0123456789abcdef01234567',
+      });
       const rollbackPreviewInspectorFailedAutoDecision = (traceId) => {
         const selection = messages.find(
           (message) => message?.event?.event === 'auto-selection' &&

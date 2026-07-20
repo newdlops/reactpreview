@@ -150,6 +150,7 @@ function recordPreviewInspectorRuntimeHealth(candidate = {}) {
   }
   try {
     previewInspectorPostHostMessage?.({
+      ...readPreviewInspectorRuntimeCorrelation(),
       event: {
         category,
         detail,

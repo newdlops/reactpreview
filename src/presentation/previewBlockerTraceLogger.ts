@@ -11,7 +11,7 @@ import { canonicalizeExistingPath } from '../shared/pathIdentity';
 import {
   isPreviewBlockerTraceMessage,
   readPreviewBlockerTraceMessage,
-  type PreviewBlockerTraceEvent,
+  type PreviewBlockerTraceMessage,
   type PreviewBlockerTraceSource,
 } from './previewBlockerTraceProtocol';
 import { resolveAuthorizedPreviewInspectorSourceIdentity } from './previewInspectorSourceNavigation';
@@ -79,9 +79,7 @@ export function handlePreviewBlockerTraceMessage(
     return true;
   }
 
-  const task = blockerTraceOutputQueue.then(() =>
-    writePreviewBlockerTraceEvent(message.event, context),
-  );
+  const task = blockerTraceOutputQueue.then(() => writePreviewBlockerTraceEvent(message, context));
   blockerTraceOutputQueue = task.catch((error: unknown) => {
     context.log.debug('Could not write a React Preview blocker trace event.', error);
   });
@@ -90,9 +88,10 @@ export function handlePreviewBlockerTraceMessage(
 
 /** Reads optional authored source and writes one pretty JSON record with a stable grep marker. */
 async function writePreviewBlockerTraceEvent(
-  event: PreviewBlockerTraceEvent,
+  message: PreviewBlockerTraceMessage,
   context: PreviewBlockerTraceLogContext,
 ): Promise<void> {
+  const { event } = message;
   const sourceCode =
     event.blocker?.source === undefined
       ? undefined
@@ -100,6 +99,12 @@ async function writePreviewBlockerTraceEvent(
   const record = {
     format: 'react-preview-blocker-trace/v1',
     previewTarget: context.targetPath,
+    ...(message.artifactId === undefined ? {} : { artifactId: message.artifactId }),
+    ...(message.runtimeRevision === undefined ? {} : { runtimeRevision: message.runtimeRevision }),
+    ...(message.runtimeSessionId === undefined
+      ? {}
+      : { runtimeSessionId: message.runtimeSessionId }),
+    ...(message.runtimeVersion === undefined ? {} : { runtimeVersion: message.runtimeVersion }),
     ...event,
     ...(sourceCode === undefined ? {} : { sourceCode }),
   };

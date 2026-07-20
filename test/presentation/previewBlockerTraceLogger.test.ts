@@ -89,6 +89,8 @@ describe('Preview blocker trace logger', () => {
     expect(output).toContain('React preview blocker trace');
     expect(output).toContain('"format": "react-preview-blocker-trace/v1"');
     expect(output).toContain('"previewTarget": "/workspace/src/ProfilePage.tsx"');
+    expect(output).toContain('"runtimeSessionId": "rp-0123456789abcdef01234567"');
+    expect(output).toContain('"runtimeRevision": 2');
     expect(output).toContain('"status": "available"');
     expect(output).toContain('context.formikProps.values.name');
     expect(output).toContain('"focus": true');
@@ -161,6 +163,7 @@ describe('Preview blocker trace logger', () => {
 /** Creates a complete Auto event carrying one source-backed hook blocker. */
 function createTraceMessage(sourcePath: string): Record<string, unknown> {
   return {
+    artifactId: '0123456789abcdef',
     event: {
       auto: {
         action: 'Smart fill minimum hook value',
@@ -181,6 +184,8 @@ function createTraceMessage(sourcePath: string): Record<string, unknown> {
       timestamp: '2026-07-19T12:00:00.000Z',
       traceId: 'blocker-trace-2',
     },
+    runtimeRevision: 2,
+    runtimeSessionId: 'rp-0123456789abcdef01234567',
     type: 'react-preview-blocker-trace',
   };
 }

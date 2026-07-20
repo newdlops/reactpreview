@@ -8,6 +8,10 @@
  */
 import path from 'node:path';
 import { isPreviewSourcePath } from '../domain/previewTarget';
+import {
+  readPreviewRuntimeCorrelation,
+  type PreviewRuntimeCorrelationEnvelope,
+} from './previewRuntimeCorrelationProtocol';
 
 /** Exact discriminator reserved for Page Inspector blocker trace events. */
 export const PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE = 'react-preview-blocker-trace';
@@ -118,7 +122,7 @@ export interface PreviewBlockerTraceEvent {
 }
 
 /** Browser envelope containing exactly one validated blocker trace event. */
-export interface PreviewBlockerTraceMessage {
+export interface PreviewBlockerTraceMessage extends PreviewRuntimeCorrelationEnvelope {
   readonly event: PreviewBlockerTraceEvent;
   readonly type: typeof PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE;
 }
@@ -145,8 +149,13 @@ export function readPreviewBlockerTraceMessage(
   if (!isPreviewBlockerTraceMessage(value)) return undefined;
   const envelope = value as Record<string, unknown>;
   const event = readPreviewBlockerTraceEvent(envelope.event);
-  if (event === undefined) return undefined;
-  return Object.freeze({ event, type: PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE });
+  const correlation = readPreviewRuntimeCorrelation(envelope);
+  if (event === undefined || correlation === null) return undefined;
+  return Object.freeze({
+    ...(correlation ?? {}),
+    event,
+    type: PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE,
+  });
 }
 
 /** Copies the explicit event fields while rejecting contradictory or unbounded primary identity. */

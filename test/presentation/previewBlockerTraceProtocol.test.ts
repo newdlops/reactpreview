@@ -9,6 +9,7 @@ describe('Preview blocker trace protocol', () => {
   /** Retains source evidence, deterministic Auto values, and render-set differences. */
   it('parses one complete Auto-selection event into frozen plain data', () => {
     const message = readPreviewBlockerTraceMessage({
+      artifactId: '0123456789abcdef',
       event: {
         auto: {
           action: 'Smart fill minimum hook value',
@@ -40,10 +41,13 @@ describe('Preview blocker trace protocol', () => {
         timestamp: '2026-07-19T12:00:00.000Z',
         traceId: 'blocker-trace-4',
       },
+      runtimeRevision: 4,
+      runtimeSessionId: 'rp-0123456789abcdef01234567',
       type: PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE,
     });
 
     expect(message).toMatchObject({
+      artifactId: '0123456789abcdef',
       event: {
         auto: {
           generatedPaths: ['formikProps.values.name'],
@@ -58,6 +62,8 @@ describe('Preview blocker trace protocol', () => {
         sequence: 7,
         traceId: 'blocker-trace-4',
       },
+      runtimeRevision: 4,
+      runtimeSessionId: 'rp-0123456789abcdef01234567',
     });
     expect(Object.isFrozen(message)).toBe(true);
     expect(Object.isFrozen(message?.event.auto?.selectedValue)).toBe(true);
@@ -121,6 +127,26 @@ describe('Preview blocker trace protocol', () => {
     },
   ])('rejects malformed trace input %#', (message) => {
     expect(readPreviewBlockerTraceMessage(message)).toBeUndefined();
+  });
+
+  /** Rejects a claimed correlation group that cannot identify one exact webview runtime. */
+  it('rejects partial runtime correlation while retaining legacy envelopes', () => {
+    const event = {
+      event: 'blocker-discovered',
+      sequence: 1,
+      timestamp: 'now',
+      traceId: 'trace-1',
+    };
+    expect(
+      readPreviewBlockerTraceMessage({
+        event,
+        runtimeSessionId: 'rp-0123456789abcdef01234567',
+        type: PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE,
+      }),
+    ).toBeUndefined();
+    expect(
+      readPreviewBlockerTraceMessage({ event, type: PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE }),
+    ).toBeDefined();
   });
 
   /** Keeps exact result lists so a resolver attempt can explain what changed after remount. */

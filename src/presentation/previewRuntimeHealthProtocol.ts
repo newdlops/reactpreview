@@ -5,6 +5,10 @@
  */
 import path from 'node:path';
 import { isPreviewSourcePath } from '../domain/previewTarget';
+import {
+  readPreviewRuntimeCorrelation,
+  type PreviewRuntimeCorrelationEnvelope,
+} from './previewRuntimeCorrelationProtocol';
 
 /** Exact discriminator reserved for renderer health messages. */
 export const PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE = 'react-preview-runtime-health';
@@ -84,7 +88,7 @@ export interface PreviewRuntimeHealthEvent {
 }
 
 /** Browser envelope carrying exactly one live renderer-health event. */
-export interface PreviewRuntimeHealthMessage {
+export interface PreviewRuntimeHealthMessage extends PreviewRuntimeCorrelationEnvelope {
   readonly event: PreviewRuntimeHealthEvent;
   readonly type: typeof PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE;
 }
@@ -102,9 +106,14 @@ export function readPreviewRuntimeHealthMessage(
 ): PreviewRuntimeHealthMessage | undefined {
   if (!isPreviewRuntimeHealthMessage(value)) return undefined;
   const event = readPreviewRuntimeHealthEvent(value.event);
-  return event === undefined
+  const correlation = readPreviewRuntimeCorrelation(value);
+  return event === undefined || correlation === null
     ? undefined
-    : Object.freeze({ event, type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE });
+    : Object.freeze({
+        ...(correlation ?? {}),
+        event,
+        type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
+      });
 }
 
 /** Validates primary identity, revision, source, target, and bounded diagnostic detail. */

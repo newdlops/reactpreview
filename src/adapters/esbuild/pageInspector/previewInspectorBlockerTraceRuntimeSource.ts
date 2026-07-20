@@ -279,6 +279,7 @@ function postPreviewInspectorBlockerTraceEvent(event, traceId, fields = {}) {
   initializePreviewInspectorBlockerTraceState();
   previewInspectorSession.blockerTraceEventSequence += 1;
   const message = {
+    ...readPreviewInspectorRuntimeCorrelation(),
     event: {
       ...fields,
       event,

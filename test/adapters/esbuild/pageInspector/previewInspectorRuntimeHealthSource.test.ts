@@ -5,6 +5,7 @@ import { createPreviewInspectorRuntimeHealthSource } from '../../../../src/adapt
 
 /** Minimal host message surface emitted by the generated health runtime. */
 interface RuntimeHealthMessage {
+  readonly artifactId?: string;
   readonly event: {
     readonly event: string;
     readonly eventId: string;
@@ -12,6 +13,8 @@ interface RuntimeHealthMessage {
     readonly revision: number;
     readonly source?: { readonly line?: number; readonly sourcePath: string };
   };
+  readonly runtimeRevision?: number;
+  readonly runtimeSessionId?: string;
 }
 
 /** Generated functions exposed by the isolated VM fixture. */
@@ -38,6 +41,11 @@ describe('Preview Inspector runtime health source', () => {
     expect(runtime.messages[0]?.event).toMatchObject({
       event: 'page-context-selected',
       source: { sourcePath: '/workspace/pages.json' },
+    });
+    expect(runtime.messages[0]).toMatchObject({
+      artifactId: '0123456789abcdef',
+      runtimeRevision: 3,
+      runtimeSessionId: 'rp-0123456789abcdef01234567',
     });
   });
 
@@ -158,6 +166,11 @@ function createRuntimeHealthFixture(): RuntimeHealthFixture {
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const messages = [];
       const previewInspectorPostHostMessage = (message) => messages.push(message);
+      const readPreviewInspectorRuntimeCorrelation = () => ({
+        artifactId: '0123456789abcdef',
+        runtimeRevision: 3,
+        runtimeSessionId: 'rp-0123456789abcdef01234567',
+      });
       const readPreviewInspectorBlockerTraceTarget = () => ({
         exportName: 'Header',
         pageCandidateId: 'app-path',

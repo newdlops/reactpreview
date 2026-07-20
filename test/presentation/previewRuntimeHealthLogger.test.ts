@@ -23,6 +23,8 @@ describe('Preview runtime health logger', () => {
     expect(output).toContain('"format": "react-preview-runtime-health/v1"');
     expect(output).toContain('"event": "theme-token-repaired"');
     expect(output).toContain('"previewTarget": "/workspace/CreditPage.tsx"');
+    expect(output).toContain('"runtimeSessionId": "rp-0123456789abcdef01234567"');
+    expect(output).toContain('"runtimeRevision": 2');
   });
 
   /** Consumes malformed claimed messages before another host protocol can interpret them. */
@@ -45,6 +47,7 @@ describe('Preview runtime health logger', () => {
 /** Creates one complete non-callable theme repair event. */
 function createHealthMessage(): Record<string, unknown> {
   return {
+    artifactId: '0123456789abcdef',
     event: {
       category: 'theme',
       detail: { path: ['flex', 'rowBetween'], resolution: 'exact-root-theme' },
@@ -56,6 +59,8 @@ function createHealthMessage(): Record<string, unknown> {
       source: { line: 4, sourcePath: '/workspace/PageHeader.tsx' },
       timestamp: '2026-07-19T13:00:00.000Z',
     },
+    runtimeRevision: 2,
+    runtimeSessionId: 'rp-0123456789abcdef01234567',
     type: 'react-preview-runtime-health',
   };
 }

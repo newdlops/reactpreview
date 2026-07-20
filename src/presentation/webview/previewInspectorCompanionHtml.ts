@@ -4,6 +4,7 @@
  * content, applies VS Code-native styling, and forwards only explicit form/tree interactions.
  */
 import { createPreviewInspectorCompanionPaneResizeScript } from './previewInspectorCompanionPaneResizeScript';
+import { createPreviewInspectorCompanionFlowchartViewportScript } from './previewInspectorCompanionFlowchartViewportScript';
 
 /** Complete state needed to render one independently reloadable Inspector companion document. */
 export interface PreviewInspectorCompanionHtmlOptions {
@@ -24,6 +25,7 @@ export interface PreviewInspectorCompanionHtmlOptions {
 export function createPreviewInspectorCompanionHtml(
   options: PreviewInspectorCompanionHtmlOptions,
 ): string {
+  const flowchartViewportScript = createPreviewInspectorCompanionFlowchartViewportScript();
   const paneResizeScript = createPreviewInspectorCompanionPaneResizeScript();
   const csp = [
     "default-src 'none'",
@@ -78,11 +80,12 @@ export function createPreviewInspectorCompanionHtml(
         'selected', 'spellcheck', 'tabindex', 'title', 'type', 'value'
       ]);
       const navigationKeys = new Set([
-        ' ', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'Enter'
+        ' ', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'End', 'Enter', 'Home'
       ]);
       let latestSequence = 0;
 
       ${paneResizeScript}
+      ${flowchartViewportScript}
 
       /** Removes executable or resource-loading markup before a preview mirror reaches the DOM. */
       function sanitizeInspectorMarkup(html) {
@@ -129,6 +132,10 @@ export function createPreviewInspectorCompanionHtml(
           'grid-template-rows:minmax(0,1fr)!important}',
           '.rpi-workbench[data-rpi-pane-axis="rows"]{grid-template-columns:minmax(0,1fr)!important;',
           'grid-template-rows:minmax(0,var(--rpi-pane-first-size,34%)) 9px minmax(0,1fr)!important}',
+          '.rpi-workbench[data-rpi-flow-resolver-collapsed="true"][data-rpi-pane-axis="columns"]{',
+          'grid-template-columns:minmax(0,1fr) 9px minmax(72px,9%)!important}',
+          '.rpi-workbench[data-rpi-flow-resolver-collapsed="true"][data-rpi-pane-axis="rows"]{',
+          'grid-template-rows:minmax(0,1fr) 9px 58px!important}',
           '.rpi-pane-resize-handle{background:transparent;cursor:col-resize;min-height:0;min-width:0;',
           'outline:none;position:relative;touch-action:none;user-select:none;z-index:3}',
           '.rpi-pane-resize-handle::after{background:var(--rpi-muted);border-radius:2px;content:"";',
@@ -139,6 +146,7 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-pane-resize-handle:hover,.rpi-pane-resize-handle[data-dragging="true"]{',
           'background:color-mix(in srgb,var(--vscode-focusBorder,#007fd4) 18%,transparent)}',
           '.rpi-pane-resize-handle:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
+          '.rpi-flowchart-canvas{zoom:var(--rpi-companion-flowchart-zoom,1)!important}',
           '.rpi-wireframe-layer,.rpi-resize-handle,.rpi-move-handle{display:none!important}',
           '.rpi-toolbar select[aria-label="Inspector position"]{display:none!important}',
           '.rpi-toolbar button[title="Collapse inspector"],',
@@ -268,6 +276,7 @@ export function createPreviewInspectorCompanionHtml(
         if (!Number.isSafeInteger(message.sequence) || message.sequence <= latestSequence) return;
         latestSequence = message.sequence;
         const scrollSnapshot = captureCompanionScrollSnapshot();
+        const flowchartCameraSnapshot = capturePreviewInspectorCompanionFlowchartCamera();
         const active = document.activeElement?.closest?.('[data-rpi-remote-id]');
         const activeId = active?.getAttribute?.('data-rpi-remote-id') ?? undefined;
         const selectionStart = active?.selectionStart;
@@ -279,8 +288,10 @@ export function createPreviewInspectorCompanionHtml(
         status.hidden = true;
         mirror.hidden = false;
         installPreviewInspectorCompanionPaneResize();
+        installPreviewInspectorCompanionFlowchartViewport();
         restoreControlFocus(activeId, selectionStart, selectionEnd);
         restoreCompanionScrollSnapshot(scrollSnapshot);
+        restorePreviewInspectorCompanionFlowchartCamera(flowchartCameraSnapshot);
         revealCompanionTreeRow(message.treeReveal);
       }
 
@@ -336,6 +347,9 @@ export function createPreviewInspectorCompanionHtml(
         if (control === null || control instanceof HTMLSelectElement ||
           control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) return;
         event.preventDefault();
+        const flowchartDisposition =
+          handlePreviewInspectorCompanionFlowchartCommand(control);
+        if (flowchartDisposition === 'local-only') return;
         if (postSourceClick(control)) return;
         postControlEvent(control, 'click');
       });
@@ -359,6 +373,17 @@ export function createPreviewInspectorCompanionHtml(
         if (!navigationKeys.has(event.key)) return;
         const control = findRemoteControl(event);
         if (control === null || control.matches('input,textarea,select')) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          const flowchartDisposition =
+            handlePreviewInspectorCompanionFlowchartCommand(control);
+          if (flowchartDisposition !== undefined) {
+            event.preventDefault();
+            if (flowchartDisposition === 'local-and-remote') {
+              postControlEvent(control, 'click');
+            }
+            return;
+          }
+        }
         event.preventDefault();
         postControlEvent(control, 'keydown', event.key);
       });

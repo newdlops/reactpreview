@@ -83,6 +83,24 @@ describe('Preview Inspector companion protocol', () => {
         type: 'react-preview-inspector-companion-action',
       }),
     ).toMatchObject({ eventType: 'keydown', key: 'ArrowRight', remoteId: 'rpi-7' });
+    for (const key of ['Home', 'End']) {
+      expect(
+        readPreviewInspectorCompanionAction({
+          eventType: 'keydown',
+          key,
+          remoteId: 'rpi-8',
+          type: 'react-preview-inspector-companion-action',
+        }),
+      ).toMatchObject({ eventType: 'keydown', key, remoteId: 'rpi-8' });
+    }
+    expect(
+      readPreviewInspectorCompanionAction({
+        eventType: 'keydown',
+        key: 'PageDown',
+        remoteId: 'rpi-8',
+        type: 'react-preview-inspector-companion-action',
+      }),
+    ).toBeUndefined();
     expect(
       readPreviewInspectorCompanionAction({
         eventType: 'click',

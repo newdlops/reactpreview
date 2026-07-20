@@ -61,10 +61,50 @@ describe('Preview Inspector companion HTML', () => {
       "handle.setAttribute('aria-label', 'Resize Components and Details panes')",
     );
     expect(html).toContain('installPreviewInspectorCompanionPaneResize();');
+    expect(html).toContain('installPreviewInspectorCompanionFlowchartViewport();');
+    expect(html).toContain('data-rpi-flow-resolver-collapsed="true"');
     expect(html).toContain('new ResizeObserver(refresh)');
     expect(html).toContain('vscode.setState?.({');
     expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="columns"]');
     expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="rows"]');
+  });
+
+  /** Keeps zoom, fit, selection centering, and current-file location inside the visible tab. */
+  it('installs a persisted companion-local render-flow camera', () => {
+    const html = createPreviewInspectorCompanionHtml({
+      cspSource: 'vscode-webview://inspector-test',
+      documentName: 'Flowchart.tsx',
+      nonce: 'flowchart-nonce',
+    });
+
+    expect(html).toContain(
+      "PREVIEW_INSPECTOR_COMPANION_FLOWCHART_STATE_KEY =\n  'reactPreviewInspectorFlowchartCamera'",
+    );
+    expect(html).toContain('installPreviewInspectorCompanionFlowchartViewport();');
+    expect(html).toContain('capturePreviewInspectorCompanionFlowchartCamera();');
+    expect(html).toContain(
+      'restorePreviewInspectorCompanionFlowchartCamera(flowchartCameraSnapshot);',
+    );
+    expect(html).toContain("'[data-rpi-flowchart-command]'");
+    expect(html).toContain("return 'local-and-remote'");
+    expect(html).toContain("return 'local-only'");
+    expect(html).toContain(
+      '.rpi-flowchart-canvas{zoom:var(--rpi-companion-flowchart-zoom,1)!important}',
+    );
+    expect(html).toContain("'--rpi-companion-flowchart-zoom'");
+    expect(html).toContain("'End', 'Enter', 'Home'");
+    const clickBridge = html.slice(
+      html.indexOf("mirror.addEventListener('click'"),
+      html.indexOf("mirror.addEventListener('dblclick'"),
+    );
+    const keyboardBridge = html.slice(
+      html.indexOf("mirror.addEventListener('keydown'"),
+      html.indexOf("window.addEventListener('message'"),
+    );
+    expect(clickBridge).toContain('handlePreviewInspectorCompanionFlowchartCommand(control)');
+    expect(clickBridge).toContain("flowchartDisposition === 'local-only'");
+    expect(keyboardBridge).toContain('handlePreviewInspectorCompanionFlowchartCommand(control)');
+    expect(keyboardBridge).toContain("postControlEvent(control, 'click')");
   });
 
   /** Preserves every named Inspector viewport while allowing only explicit tree reveals. */
@@ -87,6 +127,9 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('.slice(0, 16)');
     expect(html).toContain('restoreControlFocus(activeId, selectionStart, selectionEnd);');
     expect(html).toContain('restoreCompanionScrollSnapshot(scrollSnapshot);');
+    expect(html).toContain(
+      'restorePreviewInspectorCompanionFlowchartCamera(flowchartCameraSnapshot);',
+    );
     expect(html).toContain('revealCompanionTreeRow(message.treeReveal);');
     expect(html).toContain("row?.closest?.('.rpi-tree-scroll')");
     expect(html).not.toContain('hasTreeViewport');

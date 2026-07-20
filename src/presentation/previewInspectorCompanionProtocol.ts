@@ -25,14 +25,16 @@ const MAX_COMPANION_TREE_NODE_ID_LENGTH = 16_384;
 /** Stable opaque identity assigned to one interactive element inside the preview Shadow DOM. */
 const COMPANION_REMOTE_ID_PATTERN = /^rpi-[1-9][0-9]{0,9}$/u;
 
-/** Keyboard values required by the component tree's accessible navigation behavior. */
+/** Keyboard values required by accessible component-tree and render-flow graph navigation. */
 const COMPANION_KEY_VALUES = new Set([
   ' ',
   'ArrowDown',
   'ArrowLeft',
   'ArrowRight',
   'ArrowUp',
+  'End',
   'Enter',
+  'Home',
 ]);
 
 /** Serializable Inspector document emitted by the authoritative preview webview. */

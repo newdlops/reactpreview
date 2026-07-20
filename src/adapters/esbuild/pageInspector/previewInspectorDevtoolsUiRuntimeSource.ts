@@ -698,7 +698,9 @@ function PreviewInspectorDetailsPane({ flow, node }) {
     persistPreviewInspectorState();
   }, [node?.id, renderControlSelected]);
   if (readPreviewInspectorNavigationTab() === 'blockers') {
-    return React.createElement(PreviewInspectorFlowchartResolverPane, { flow });
+    return previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true
+      ? React.createElement(PreviewInspectorFlowchartResolverPane, { flow })
+      : undefined;
   }
   const tabs = [
     [renderControlSelected ? 'blocker' : 'component', renderChoiceSelected
@@ -785,6 +787,8 @@ function PreviewInspectorToolbar() {
   const dataAutoEnabled = readPreviewInspectorDataAutoEnabled();
   const runtimeFallbackCount = readPreviewInspectorRuntimeFallbacks().length;
   const pageContext = readPreviewInspectorPageContext();
+  const simpleBlockerMode = readPreviewInspectorNavigationTab() === 'blockers' &&
+    previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen !== true;
   return React.createElement(
     React.Fragment,
     undefined,
@@ -945,6 +949,7 @@ function PreviewInspectorToolbar() {
         'div',
         {
           className: 'rpi-workbench',
+          'data-rpi-blocker-simple-mode': String(simpleBlockerMode),
           'data-rpi-flow-resolver-collapsed': String(
             readPreviewInspectorNavigationTab() === 'blockers' &&
               previewInspectorDevtoolsSessionState.flowchartInspectorCollapsed === true,
@@ -957,11 +962,15 @@ function PreviewInspectorToolbar() {
           status: snapshot.status,
           truncated: snapshot.truncated,
         }),
-        React.createElement(PreviewInspectorDetailsPane, {
-          flow: blockerFlow,
-          key: 'details:' + String(previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0),
-          node: selectedNode,
-        }),
+        simpleBlockerMode
+          ? undefined
+          : React.createElement(PreviewInspectorDetailsPane, {
+              flow: blockerFlow,
+              key: 'details:' + String(
+                previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0,
+              ),
+              node: selectedNode,
+            }),
       ),
     ),
   );

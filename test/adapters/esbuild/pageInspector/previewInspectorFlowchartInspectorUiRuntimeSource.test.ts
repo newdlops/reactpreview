@@ -95,7 +95,7 @@ describe('Preview Inspector flowchart Inspector UI runtime source', () => {
   it('provides a four-pass current-file guide with honest target-absence recovery', () => {
     const source = createPreviewInspectorFlowchartInspectorUiRuntimeSource();
 
-    expect(source).toContain("'HOW TO LOCATE CURRENT FILE'");
+    expect(source).toContain("'CURRENT FILE PATH'");
     for (const title of ['Locate', 'Trace', 'Resolve', 'Verify']) {
       expect(source).toContain(`['${title}',`);
     }
@@ -108,6 +108,19 @@ describe('Preview Inspector flowchart Inspector UI runtime source', () => {
       "locator.status === 'located' ? 'Select current file' : 'Select nearest blocker'",
     );
     expect(source).not.toContain('selectPreviewInspectorUiNode(');
+  });
+
+  /** Keeps the routine path/blocker/action visible while moving tutorials and relations aside. */
+  it('uses native progressive disclosure for advanced resolver details', () => {
+    const source = createPreviewInspectorFlowchartInspectorUiRuntimeSource();
+
+    expect(source).toContain("React.createElement('summary', undefined, 'How path tracing works')");
+    expect(source).toContain('function PreviewInspectorFlowchartAdvancedRelations');
+    expect(source).toContain(
+      "React.createElement('summary', undefined, 'Advanced path relationships')",
+    );
+    expect(source).toContain("'CURRENT BLOCKER'");
+    expect(source).toContain("'NEXT ACTION'");
   });
 
   /** Distinguishes mounted and static current-file evidence from a path blocker or absent target. */

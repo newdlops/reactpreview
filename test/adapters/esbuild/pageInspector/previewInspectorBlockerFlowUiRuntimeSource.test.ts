@@ -274,15 +274,16 @@ describe('Preview Inspector blocker flow UI runtime source', () => {
     expect(flow.supportingCount).toBe(1);
   });
 
-  /** Locks the bounded chart and one-at-a-time editor into the generated browser source. */
-  it('emits a staged flow chart with automatic next-step advancement', () => {
+  /** Locks the simple active editor and opt-in bounded graph into generated browser source. */
+  it('emits an immediate next-step editor with an advanced staged graph', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
 
     expect(PREVIEW_INSPECTOR_BLOCKER_FLOW_STEP_LIMIT).toBe(96);
     expect(PREVIEW_INSPECTOR_BLOCKER_FLOW_SCOPE_LIMIT).toBe(8);
     expect(source).toContain('function createPreviewInspectorBlockerFlow(snapshot)');
-    expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
-    expect(source).toContain("'Show next fix'");
+    expect(source).toContain("'aria-label': 'Advanced blocker dependency flow chart'");
+    expect(source).toContain('function PreviewInspectorBlockerFlowPrimaryEditor');
+    expect(source).toContain("'Advanced · Show flow graph'");
     expect(source).toContain('const activeStep = flow.stepById.get(flow.activeStepId)');
     expect(source).toContain('becameResolved');
     expect(source).toContain('PreviewInspectorBlockerDetail');

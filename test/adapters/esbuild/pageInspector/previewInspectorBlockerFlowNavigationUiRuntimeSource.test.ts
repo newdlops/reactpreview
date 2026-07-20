@@ -27,6 +27,46 @@ describe('Preview Inspector blocker-flow navigation UI source', () => {
     expect(source).toContain('selectedStepId');
   });
 
+  /** Leads with one actionable corridor and keeps the dense graph behind explicit disclosure. */
+  it('uses a simple current-blocker overview before the opt-in advanced graph', () => {
+    const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
+
+    expect(source).toContain('function PreviewInspectorBlockerFlowOverview');
+    expect(source).toContain("'Current blocking path'");
+    expect(source).toContain("'Current blocker'");
+    expect(source).toContain("'Next action'");
+    expect(source).toContain("advancedOpen ? 'Hide flow graph' : 'Advanced · Show flow graph'");
+    expect(source).toContain('hidden: advancedOpen !== true');
+    expect(source).toContain("'aria-controls': 'react-preview-blocker-flow-advanced'");
+    expect(source).toContain(
+      'previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true',
+    );
+  });
+
+  /** The simple view must expose the real safe editor instead of making its button a dead end. */
+  it('renders the active blocker editor without requiring the advanced graph', () => {
+    const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
+    const editorStart = source.indexOf('function PreviewInspectorBlockerFlowPrimaryEditor');
+    const overviewStart = source.indexOf('function PreviewInspectorBlockerFlowOverview');
+    const detailStart = source.indexOf('function PreviewInspectorBlockerFlowDetail');
+    const editorSource = source.slice(editorStart, overviewStart);
+    const overviewSource = source.slice(overviewStart, detailStart);
+
+    expect(source).toContain('function PreviewInspectorBlockerFlowPrimaryEditor');
+    expect(source).toContain("'aria-label': 'Current blocker actions'");
+    expect(editorSource).toContain(
+      'React.createElement(PreviewInspectorRenderFlowNodeEditor, { step })',
+    );
+    expect(editorSource).not.toContain('PreviewInspectorRenderFlowConditionSwitch');
+    expect(overviewSource).toContain(
+      'React.createElement(PreviewInspectorBlockerFlowPrimaryEditor, { step: activeStep })',
+    );
+    expect(overviewSource.indexOf('PreviewInspectorBlockerFlowPrimaryEditor')).toBeLessThan(
+      overviewSource.indexOf("'react-preview-blocker-flow-advanced'"),
+    );
+    expect(source).toContain('notifyPreviewInspector();');
+  });
+
   /** Allows direct branch changes only after the node is proven to be an instrumented condition. */
   it('shows authored/effective condition state and safe branch actions on condition nodes', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();

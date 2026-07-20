@@ -29,6 +29,21 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('.rpi-current-file-blocker-summary');
   });
 
+  /** Keeps the default resolver compact and lets every label/action wrap on narrow panes. */
+  it('styles the progressive blocker overview without requiring the graph canvas', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain('.rpi-flow-overview{');
+    expect(source).toContain('.rpi-flow-overview-path,.rpi-flow-overview-blocker');
+    expect(source).toContain('overflow-wrap:anywhere');
+    expect(source).toContain('.rpi-flowchart-advanced[hidden]{display:none}');
+    expect(source).toContain(
+      '.rpi-workbench[data-rpi-blocker-simple-mode="true"]{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}',
+    );
+    expect(source).toContain('.rpi-flow-overview-actions>.rpi-button{flex:1 1 min(180px,100%)}');
+    expect(source).toContain('.rpi-blocker-flow{gap:7px;padding:6px}');
+  });
+
   /** Keeps the debugger canvas readable in narrow companion tabs without inline geometry. */
   it('composes the responsive rank/lane flowchart stylesheet', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();
@@ -38,6 +53,7 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('.rpi-flowchart-canvas');
     expect(source).toContain('.rpi-flowchart-edge-cell[data-rpi-path=\\"start-down\\"]');
     expect(source).toContain('.rpi-flow-inspector-locate-guide');
+    expect(source).toContain('.rpi-flow-inspector-disclosure');
     expect(source).toContain('.rpi-flowchart-camera-status');
     expect(source).toContain('@container rpi-inspector (max-width:460px)');
   });

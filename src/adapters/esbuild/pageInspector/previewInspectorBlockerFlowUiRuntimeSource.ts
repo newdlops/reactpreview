@@ -594,6 +594,115 @@ function PreviewInspectorBlockerFlowStage({ flow, level, onSelect, selectedStepI
 }
 
 /**
+ * Keeps the default resolver understandable without requiring users to decode the full DAG.
+ * The labels come from source-backed owner ancestry and the existing blocker classification only;
+ * this overview never invents a project-specific route or mutates a blocker by itself.
+ */
+function readPreviewInspectorBlockerFlowOverview(flow, activeStep) {
+  if (activeStep === undefined) {
+    return {
+      action: flow.unresolvedCount === 0
+        ? 'Locate the current file and verify that the page path reaches it.'
+        : 'Select a ready blocker to continue toward the current file.',
+      blocker: flow.unresolvedCount === 0 ? 'No unresolved blocker' : 'No ready blocker',
+      path: flow.unresolvedCount === 0 ? 'Page entry › Current file' : 'Page entry › Waiting path',
+    };
+  }
+  const ownerNames = Array.isArray(activeStep.ownerNames)
+    ? activeStep.ownerNames.filter((name) => typeof name === 'string' && name.length > 0)
+    : [];
+  const boundedOwners = ownerNames.length > 4
+    ? ['…', ...ownerNames.slice(-4)]
+    : ownerNames;
+  const blockerName = readPreviewInspectorFlowchartNodeName(activeStep);
+  const path = [...boundedOwners, blockerName].filter((name, index, values) =>
+    index === 0 || name !== values[index - 1]).join(' › ');
+  const node = activeStep.node;
+  const action = isPreviewInspectorConditionNode(node)
+    ? 'Choose the branch that reaches the current file, then verify the next render.'
+    : node?.blockerKind === 'data-request'
+      ? 'Generate or enter the smallest payload required by this component.'
+      : node?.blockerKind === 'runtime-fallback'
+        ? 'Enable an inferred hook value or enter the missing value explicitly.'
+        : node?.blockerKind === 'target-reachability'
+          ? 'Find the minimum page requirements, then retry the current-file path.'
+          : node?.blockerKind === 'target-error'
+            ? 'Inspect the missing property and apply the smallest safe value.'
+            : 'Open this blocker and apply its first available safe action.';
+  return {
+    action,
+    blocker: formatPreviewInspectorBlockerFlowKind(node) + ' · ' + blockerName,
+    path: path || blockerName,
+  };
+}
+
+/**
+ * Reuses the proven blocker editor as the simple view's primary action surface. Only the active,
+ * predecessor-cleared step is exposed here, so opening the advanced graph is never required merely
+ * to switch a branch, generate a payload, or apply a safe inferred value.
+ */
+function PreviewInspectorBlockerFlowPrimaryEditor({ step }) {
+  if (step === undefined) return undefined;
+  return React.createElement(
+    'section',
+    {
+      'aria-label': 'Current blocker actions',
+      className: 'rpi-flow-overview-primary-editor',
+      id: 'react-preview-current-blocker-actions',
+    },
+    React.createElement('span', { className: 'rpi-flow-overview-label' }, 'Fix now'),
+    React.createElement(PreviewInspectorRenderFlowNodeEditor, { step }),
+  );
+}
+
+/** Renders the one path, blocker, and action needed before progressively revealing the full graph. */
+function PreviewInspectorBlockerFlowOverview({ advancedOpen, flow, onToggleAdvanced }) {
+  const activeStep = flow.stepById.get(flow.activeStepId);
+  const overview = readPreviewInspectorBlockerFlowOverview(flow, activeStep);
+  return React.createElement(
+    'section',
+    { 'aria-label': 'Current blocker summary', className: 'rpi-flow-overview' },
+    React.createElement(
+      'div',
+      { className: 'rpi-flow-overview-section' },
+      React.createElement('span', { className: 'rpi-flow-overview-label' }, 'Current blocking path'),
+      React.createElement('strong', { className: 'rpi-flow-overview-path' }, overview.path),
+    ),
+    React.createElement(
+      'div',
+      { className: 'rpi-flow-overview-section', 'data-rpi-current-blocker': 'true' },
+      React.createElement('span', { className: 'rpi-flow-overview-label' }, 'Current blocker'),
+      React.createElement('strong', { className: 'rpi-flow-overview-blocker' }, overview.blocker),
+    ),
+    React.createElement(
+      'div',
+      { className: 'rpi-flow-overview-section' },
+      React.createElement('span', { className: 'rpi-flow-overview-label' }, 'Next action'),
+      React.createElement('span', { className: 'rpi-flow-overview-action' }, overview.action),
+    ),
+    React.createElement(PreviewInspectorBlockerFlowPrimaryEditor, { step: activeStep }),
+    React.createElement(
+      'div',
+      { className: 'rpi-actions rpi-flow-overview-actions' },
+      React.createElement(
+        'button',
+        {
+          'aria-controls': 'react-preview-blocker-flow-advanced',
+          'aria-expanded': advancedOpen,
+          className: 'rpi-button',
+          onClick: onToggleAdvanced,
+          title: advancedOpen
+            ? 'Hide the complete control and value flow'
+            : 'Show the complete control and value flow',
+          type: 'button',
+        },
+        advancedOpen ? 'Hide flow graph' : 'Advanced · Show flow graph',
+      ),
+    ),
+  );
+}
+
+/**
  * Renders the staged JSX Render flow and expands the selected node's existing editor in place. When
  * the chosen blocker resolves or disappears, selection advances to the next ready step automatically.
  */
@@ -605,6 +714,9 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
       : flow.activeStepId ?? flow.steps.at(-1)?.id,
   );
   const previousSelection = React.useRef(undefined);
+  const [advancedOpen, setAdvancedOpen] = React.useState(
+    () => previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true,
+  );
   const externalSelectionRevision =
     previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0;
   React.useEffect(() => {
@@ -638,10 +750,22 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
     ? flow.actionableCount
     : flow.steps.length;
   const progress = actionableCount === 0 ? 100 : flow.resolvedCount / actionableCount * 100;
-  const activeStep = flow.stepById.get(flow.activeStepId);
+  const selectStep = (step) => selectPreviewInspectorBlockerFlowStep(step, setSelectedStepId);
+  const toggleAdvanced = () => {
+    const next = !advancedOpen;
+    previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen = next;
+    setAdvancedOpen(next);
+    persistPreviewInspectorState();
+    notifyPreviewInspector();
+  };
   return React.createElement(
     'div',
     { className: 'rpi-blocker-flow' },
+    React.createElement(PreviewInspectorBlockerFlowOverview, {
+      advancedOpen,
+      flow,
+      onToggleAdvanced: toggleAdvanced,
+    }),
     React.createElement(
       'div',
       { className: 'rpi-flow-summary' },
@@ -661,32 +785,26 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
           'aria-valuemax': 100, 'aria-valuemin': 0, 'aria-valuenow': Math.round(progress) },
         React.createElement('span', { style: { width: String(progress) + '%' } }),
       ),
-      activeStep === undefined
-        ? undefined
-        : React.createElement(
-            PreviewInspectorDevtoolsButton,
-            {
-              onClick: () => selectPreviewInspectorBlockerFlowStep(
-                activeStep,
-                setSelectedStepId,
-              ),
-              title: 'Select the first blocker whose predecessors are resolved',
-            },
-            'Show next fix',
-          ),
     ),
     flow.steps.length === 0
       ? React.createElement('div', { className: 'rpi-empty' },
           'No rendering blockers were found between the page and current file.')
       : React.createElement(
           'div',
-          { 'aria-label': 'Blocker dependency flow chart' },
-          React.createElement(PreviewInspectorFlowchart, {
-            flow,
-            onSelect: (step) => selectPreviewInspectorBlockerFlowStep(step, setSelectedStepId),
-            selectedStep,
-            selectedStepId,
-          }),
+          {
+            'aria-label': 'Advanced blocker dependency flow chart',
+            className: 'rpi-flowchart-advanced',
+            hidden: advancedOpen !== true,
+            id: 'react-preview-blocker-flow-advanced',
+          },
+          advancedOpen
+            ? React.createElement(PreviewInspectorFlowchart, {
+                flow,
+                onSelect: selectStep,
+                selectedStep,
+                selectedStepId,
+              })
+            : undefined,
         ),
   );
 }

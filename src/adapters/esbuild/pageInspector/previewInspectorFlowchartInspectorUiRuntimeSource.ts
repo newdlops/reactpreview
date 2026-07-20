@@ -192,7 +192,10 @@ function selectPreviewInspectorFlowchartLocatorResult(locator, onSelect) {
   if (step !== undefined) onSelect(step);
 }
 
-/** Explains both the successful and blocked locate workflows in four stable, actionable passes. */
+/**
+ * Leads with the current path outcome and next action. The longer four-pass tutorial is retained in
+ * native disclosure so it remains keyboard accessible without crowding the everyday resolver.
+ */
 function PreviewInspectorFlowchartCurrentFileGuide({ locator, onSelect }) {
   const targetName = locator.currentFileStep === undefined
     ? undefined
@@ -230,7 +233,7 @@ function PreviewInspectorFlowchartCurrentFileGuide({ locator, onSelect }) {
     React.createElement(
       'div',
       { className: 'rpi-flow-inspector-guide-heading' },
-      React.createElement('strong', undefined, 'HOW TO LOCATE CURRENT FILE'),
+      React.createElement('strong', undefined, 'CURRENT FILE PATH'),
       locator.currentFileStep !== undefined || locator.nearestBlockerStep !== undefined
         ? React.createElement(
             PreviewInspectorDevtoolsButton,
@@ -250,19 +253,24 @@ function PreviewInspectorFlowchartCurrentFileGuide({ locator, onSelect }) {
       : React.createElement('div', { className: 'rpi-note' }, locator.detail),
     React.createElement('div', { className: 'rpi-note' }, nextAction),
     React.createElement(
-      'ol',
-      { className: 'rpi-flow-inspector-guide-steps' },
-      steps.map(([title, detail], index) => React.createElement(
-        'li',
-        { key: title },
-        React.createElement('span', { className: 'rpi-flow-inspector-guide-index' }, String(index + 1)),
-        React.createElement(
-          'span',
-          { className: 'rpi-flow-inspector-guide-copy' },
-          React.createElement('strong', undefined, title),
-          React.createElement('span', undefined, detail),
-        ),
-      )),
+      'details',
+      { className: 'rpi-flow-inspector-disclosure' },
+      React.createElement('summary', undefined, 'How path tracing works'),
+      React.createElement(
+        'ol',
+        { className: 'rpi-flow-inspector-guide-steps' },
+        steps.map(([title, detail], index) => React.createElement(
+          'li',
+          { key: title },
+          React.createElement('span', { className: 'rpi-flow-inspector-guide-index' }, String(index + 1)),
+          React.createElement(
+            'span',
+            { className: 'rpi-flow-inspector-guide-copy' },
+            React.createElement('strong', undefined, title),
+            React.createElement('span', undefined, detail),
+          ),
+        )),
+      ),
     ),
   );
 }
@@ -388,6 +396,31 @@ function PreviewInspectorFlowchartSelectedEditor({ selectedStep }) {
   );
 }
 
+/** Keeps predecessor/successor diagnostics available without making the default task visually dense. */
+function PreviewInspectorFlowchartAdvancedRelations({ layout, onSelect, selectedStep }) {
+  return React.createElement(
+    'details',
+    { className: 'rpi-flow-inspector-disclosure rpi-flow-inspector-advanced-relations' },
+    React.createElement('summary', undefined, 'Advanced path relationships'),
+    React.createElement(
+      'div',
+      { className: 'rpi-flow-inspector-disclosure-content' },
+      React.createElement(PreviewInspectorFlowchartInspectorRelations, {
+        direction: 'predecessor',
+        layout,
+        onSelect,
+        selectedStep,
+      }),
+      React.createElement(PreviewInspectorFlowchartInspectorRelations, {
+        direction: 'successor',
+        layout,
+        onSelect,
+        selectedStep,
+      }),
+    ),
+  );
+}
+
 /**
  * Renders the independently collapsible right-hand Blocker Resolver.
  *
@@ -448,26 +481,21 @@ function PreviewInspectorFlowchartInspector({
       : React.createElement(
           'div',
           { className: 'rpi-flow-inspector-scroll' },
+          React.createElement(PreviewInspectorFlowchartCurrentFileGuide, {
+            locator: normalizedLocator,
+            onSelect: select,
+          }),
+          React.createElement('span', { className: 'rpi-flow-inspector-section-title' }, 'CURRENT BLOCKER'),
           React.createElement(PreviewInspectorFlowchartSelectedSummary, {
             layout,
             selectedStep,
           }),
-          React.createElement(PreviewInspectorFlowchartInspectorRelations, {
-            direction: 'predecessor',
-            layout,
-            onSelect: select,
-            selectedStep,
-          }),
-          React.createElement(PreviewInspectorFlowchartInspectorRelations, {
-            direction: 'successor',
-            layout,
-            onSelect: select,
-            selectedStep,
-          }),
+          React.createElement('span', { className: 'rpi-flow-inspector-section-title' }, 'NEXT ACTION'),
           React.createElement(PreviewInspectorFlowchartSelectedEditor, { selectedStep }),
-          React.createElement(PreviewInspectorFlowchartCurrentFileGuide, {
-            locator: normalizedLocator,
+          React.createElement(PreviewInspectorFlowchartAdvancedRelations, {
+            layout,
             onSelect: select,
+            selectedStep,
           }),
         ),
   );

@@ -49,7 +49,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('function PreviewInspectorFlowchart({ flow, onSelect');
     expect(source).toContain('function PreviewInspectorFlowchartToolbar({');
     expect(source).toContain('function PreviewInspectorFlowchartResolverPane({ flow })');
-    expect(source).toContain("'HOW TO LOCATE CURRENT FILE'");
+    expect(source).toContain("'CURRENT FILE PATH'");
     expect(source).toContain("'data-rpi-flow-resolver-collapsed'");
     expect(source).toContain("'data-rpi-flowchart-command': 'locate-current'");
     expect(source).toContain('function PreviewInspectorNavigationPane');
@@ -64,7 +64,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("['blocker', 'component', 'console']");
     expect(source).toContain('React.createElement(PreviewInspectorComponentDebuggerDetail');
     expect(source).toContain("blockerSelected ? 'Fix selected blocker' : 'Component debugger'");
-    expect(source).toContain("'aria-label': 'Blocker dependency flow chart'");
+    expect(source).toContain("'aria-label': 'Advanced blocker dependency flow chart'");
     expect(source).toContain("'aria-label': 'React page layout wireframe'");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
     expect(source).toContain('revealPreviewInspectorWireframeBlocker(node, setCollapsed)');
@@ -117,6 +117,30 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('previewInspectorDevtoolsSessionState.detailsTab');
     expect(source).toContain('previewInspectorDevtoolsSessionState.componentDebuggerTab');
     expect(source).toContain('() => previewInspectorDevtoolsSessionState.query');
+  });
+
+  /** Avoids graph layout and a duplicate detail pane until the user explicitly requests Advanced. */
+  it('gates the graph resolver and two-column workbench behind advanced blocker state', () => {
+    const source = createPreviewInspectorDevtoolsUiRuntimeSource();
+    const detailsStart = source.indexOf('function PreviewInspectorDetailsPane');
+    const toolbarStart = source.indexOf('function PreviewInspectorToolbar');
+    const detailsSource = source.slice(detailsStart, toolbarStart);
+
+    expect(detailsSource).toContain(
+      'previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true',
+    );
+    expect(detailsSource).toContain(
+      '? React.createElement(PreviewInspectorFlowchartResolverPane, { flow })',
+    );
+    expect(detailsSource).toContain(': undefined;');
+    expect(source).toContain(
+      "const simpleBlockerMode = readPreviewInspectorNavigationTab() === 'blockers' &&",
+    );
+    expect(source).toContain("'data-rpi-blocker-simple-mode': String(simpleBlockerMode)");
+    expect(source).toContain('simpleBlockerMode\n          ? undefined');
+    expect(source).toContain(
+      '.rpi-workbench[data-rpi-blocker-simple-mode="true"]{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}',
+    );
   });
 
   /** Clamps restored geometry and applies edge-specific pointer deltas deterministically. */

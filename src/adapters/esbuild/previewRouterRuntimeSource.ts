@@ -123,7 +123,7 @@ function createMemoryRouterProperties(configuration) {
 }
 
 /** Recognizes only React Router's explicit nested-provider invariant for a safe retry. */
-function isNestedPreviewRouterError(error) {
+export function isNestedPreviewRouterError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
   return /cannot render a <Router> inside another <Router>|should never have more than one in your app/iu.test(
     message,

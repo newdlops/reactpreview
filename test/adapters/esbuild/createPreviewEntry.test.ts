@@ -157,6 +157,20 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('could not retire stale lazy stylesheets');
   });
 
+  /** Prevents a recoverable first nested-Router attempt from becoming a failed hot revision. */
+  it('defers nested Router browser events to the Inspector candidate retry boundary', () => {
+    const entry = createPreviewEntry({
+      documentName: 'AppRouter.tsx',
+      globalNamespaces: [],
+      renderMode: 'page-inspector',
+      setupKind: 'none',
+    });
+
+    expect(entry).toContain(
+      'activePreviewRouterBridge?.isNestedPreviewRouterError?.(event.error ?? event.message) === true',
+    );
+  });
+
   /** Drops superseded preparation before it can unmount the currently displayed revision. */
   it('guards asynchronous hot preparation with the latest revision and token', () => {
     const entry = createPreviewEntry({

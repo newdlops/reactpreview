@@ -247,6 +247,15 @@ replacePreviewRuntimeListener('error', (event) => {
   if (isCapturedReactError(event.error)) {
     return;
   }
+  // A Page Inspector candidate owns a parent boundary that retries this exact invariant without
+  // the inferred MemoryRouter. React still dispatches a development ErrorEvent before that parent
+  // commits, so do not prematurely mark the recoverable first attempt as a failed revision.
+  if (
+    ${JSON.stringify(renderMode === 'page-inspector')} &&
+    activePreviewRouterBridge?.isNestedPreviewRouterError?.(event.error ?? event.message) === true
+  ) {
+    return;
+  }
   const location = typeof event.filename === 'string' && event.filename.length > 0
     ? event.filename + ':' + String(event.lineno ?? 0) + ':' + String(event.colno ?? 0)
     : undefined;

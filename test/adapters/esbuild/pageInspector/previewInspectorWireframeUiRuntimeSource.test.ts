@@ -304,7 +304,7 @@ function evaluateWireframeRuntime(
       ${createPreviewInspectorWireframeUiRuntimeSource()}
       globalThis.__wireframe = {
         collect: collectPreviewInspectorWireframeLayout,
-        consumeReveal: consumePreviewInspectorWireframeTreeReveal,
+        consumeReveal: consumePreviewInspectorTreeReveal,
         copyIndexes: copyPreviewInspectorSnapshotRuntimeIndexes,
         readSession: () => ({ ...previewInspectorDevtoolsSessionState }),
         revealBlocker: revealPreviewInspectorWireframeBlocker,

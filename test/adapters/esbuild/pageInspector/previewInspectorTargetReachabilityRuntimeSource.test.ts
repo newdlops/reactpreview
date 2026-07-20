@@ -11,8 +11,11 @@ interface ReachabilityResult {
   readonly fallbackBeforeTargetMount: string;
   readonly fallbackExpression: string;
   readonly key: string;
+  readonly overlayPathLocal: boolean;
+  readonly overlayTargetValue: boolean;
   readonly returnedTargetValue: boolean;
   readonly targetExportName: string;
+  readonly twoSidedTargetValue: boolean;
 }
 
 describe('Preview Inspector target reachability runtime source', () => {
@@ -181,6 +184,13 @@ describe('Preview Inspector target reachability runtime source', () => {
         state.targetMounted = true;
         const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
         const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+        const overlayCondition = {
+          falsyLabel: 'hidden <DashboardPanel> overlay',
+          kind: 'overlay-visibility',
+          role: 'overlay',
+          sourcePath: '/workspace/modal-factory.tsx',
+          truthyLabel: 'visible <DashboardPanel> overlay',
+        };
         globalThis.__result = {
           blockerPath: state.applicationPath,
           desiredValue: next.desiredValue,
@@ -188,12 +198,19 @@ describe('Preview Inspector target reachability runtime source', () => {
           fallbackBeforeTargetMount: fallbackBeforeTargetMount?.condition?.expression ?? 'none',
           fallbackExpression: fallbackNext.condition.expression,
           key: state.key,
+          overlayPathLocal: isPreviewInspectorConditionOnTargetPath(overlayCondition, evidence),
+          overlayTargetValue: readPreviewInspectorTargetConditionValue(overlayCondition, evidence),
           returnedTargetValue: readPreviewInspectorTargetConditionValue({
             falsyLabel: 'continue <Application>',
             targetBranch: 'falsy',
             truthyLabel: '<DashboardPanel>',
           }, evidence),
           targetExportName: state.targetExportName,
+          twoSidedTargetValue: readPreviewInspectorTargetConditionValue({
+            fallbackBranch: 'truthy',
+            falsyLabel: '<PermissionFallback>',
+            truthyLabel: '<DashboardPanel>',
+          }, evidence),
         };
       `,
       context,
@@ -206,8 +223,11 @@ describe('Preview Inspector target reachability runtime source', () => {
       fallbackBeforeTargetMount: 'none',
       fallbackExpression: '<GuardedPage> gate: !isStaffMode',
       key: 'application-path:DashboardPanel',
+      overlayPathLocal: true,
+      overlayTargetValue: true,
       returnedTargetValue: true,
       targetExportName: 'DashboardPanel',
+      twoSidedTargetValue: true,
     });
   });
 

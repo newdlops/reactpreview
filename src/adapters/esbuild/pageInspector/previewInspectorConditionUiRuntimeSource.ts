@@ -32,6 +32,34 @@ function matchesPreviewInspectorConditionSourcePath(left, right) {
   return relative.length > 0 && absolute.endsWith('/' + relative.replace(/^\.\//u, ''));
 }
 
+/**
+ * Reports a dormant overlay that lies on the proven path to the selected current-file component.
+ *
+ * This is deliberately narrower than "every hidden modal": both target-path membership and the
+ * compiler/runtime branch decision must prove that visible=true is required for this exact target.
+ */
+function doesPreviewInspectorConditionBlockCurrentTarget(condition) {
+  if (condition?.role !== 'overlay' || condition?.effectiveEnabled === true) return false;
+  if (
+    typeof readPreviewInspectorTargetPathEvidence !== 'function' ||
+    typeof isPreviewInspectorConditionOnTargetPath !== 'function' ||
+    typeof readPreviewInspectorTargetConditionValue !== 'function' ||
+    typeof findSelectedPreviewInspectorDescriptor !== 'function' ||
+    typeof readSelectedPreviewInspectorPageCandidate !== 'function' ||
+    typeof previewInspectorSession.targetReachabilityByKey?.get !== 'function'
+  ) {
+    return false;
+  }
+  const state = previewInspectorSession.targetReachabilityByKey.get(condition.reachabilityKey);
+  if (state === undefined) return false;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  if (descriptor === undefined || candidate === undefined) return false;
+  const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+  return isPreviewInspectorConditionOnTargetPath(condition, evidence) &&
+    readPreviewInspectorTargetConditionValue(condition, evidence) === true;
+}
+
 /** Creates one serializable pseudo-component node representing an authored render condition. */
 function createPreviewInspectorConditionTreeNode(condition) {
   const enabled = condition.effectiveEnabled === true;
@@ -40,7 +68,9 @@ function createPreviewInspectorConditionTreeNode(condition) {
   const targetGuided = typeof condition.autoOverride === 'boolean';
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
+  const blocksCurrentTarget = doesPreviewInspectorConditionBlockCurrentTarget(condition);
   return {
+    blocksCurrentTarget,
     children: [],
     condition,
     conditionId: condition.id,
@@ -51,6 +81,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
     overlayState: overlay ? (enabled ? 'mounted' : 'dormant') : undefined,
     props: {
       authored: condition.authoredEnabled,
+      blocksCurrentTarget,
       effective: enabled,
       fallbackActive,
       mode: forced ? 'forced' : targetGuided ? 'target-guided' : 'authored',
@@ -170,6 +201,7 @@ function readPreviewInspectorMainComponentName() {
 function selectPreviewInspectorMainComponent() {
   const exportName = readPreviewInspectorMainComponentName();
   if (exportName === undefined) return;
+  requestPreviewInspectorTreeReveal();
   previewInspectorSession.selectedTreeNodeId = undefined;
   if (previewInspectorSession.selectedExportName !== exportName) {
     selectPreviewInspectorExport(exportName);
@@ -211,7 +243,8 @@ function PreviewInspectorConditionDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-note' },
-      'Visible branch: ' + activeBranch + (fallbackActive ? ' · authored fallback' : ''),
+      'Visible branch: ' + activeBranch + (fallbackActive ? ' · authored fallback' : '') +
+        (node.blocksCurrentTarget === true ? ' · blocks current file while hidden' : ''),
     ),
     React.createElement(
       'div',

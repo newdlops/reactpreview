@@ -165,6 +165,19 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   return { nameScores, names, paths };
 }
 
+/** Scores component names embedded in one branch label against the proven root-to-target corridor. */
+function scorePreviewInspectorTargetConditionLabel(label, evidence) {
+  const normalized = String(label ?? '').replace(/[<>]/gu, '');
+  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
+  let score = 0;
+  for (const [name, nameScore] of evidence.nameScores) {
+    if (normalized === String(name) || tokens.includes(String(name))) {
+      score = Math.max(score, nameScore);
+    }
+  }
+  return score;
+}
+
 /** Requires a gate to belong to a statically proven path source or named path component. */
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
@@ -176,26 +189,33 @@ function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
       return true;
     }
   }
-  return false;
+  /* A target-named overlay may be declared in a factory/helper file absent from import edges. */
+  return condition?.role === 'overlay' && Math.max(
+    scorePreviewInspectorTargetConditionLabel(condition?.truthyLabel, evidence),
+    scorePreviewInspectorTargetConditionLabel(condition?.falsyLabel, evidence),
+  ) > 0;
 }
 
 /** Selects the branch that continues toward the target using compiler-issued gate evidence only. */
 function readPreviewInspectorTargetConditionValue(condition, evidence) {
-  const scoreLabel = (label) => {
-    const normalized = String(label ?? '').replace(/[<>]/gu, '');
-    const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
-    let score = 0;
-    for (const [name, nameScore] of evidence.nameScores) {
-      if (normalized === String(name) || tokens.includes(String(name))) {
-        score = Math.max(score, nameScore);
-      }
-    }
-    return score;
-  };
-  const truthyScore = scoreLabel(condition?.truthyLabel);
-  const falsyScore = scoreLabel(condition?.falsyLabel);
+  const truthyScore = scorePreviewInspectorTargetConditionLabel(
+    condition?.truthyLabel,
+    evidence,
+  );
+  const falsyScore = scorePreviewInspectorTargetConditionLabel(
+    condition?.falsyLabel,
+    evidence,
+  );
   if (truthyScore !== falsyScore && Math.max(truthyScore, falsyScore) > 0) {
     return truthyScore > falsyScore;
+  }
+  /* Visibility metadata defines truthy as visible even though both labels repeat the Modal name. */
+  if (
+    condition?.kind === 'overlay-visibility' &&
+    condition?.role === 'overlay' &&
+    Math.max(truthyScore, falsyScore) > 0
+  ) {
+    return true;
   }
   if (condition?.targetBranch === 'truthy') return true;
   if (condition?.targetBranch === 'falsy') return false;
@@ -436,7 +456,7 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
   );
   const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(
     state.key,
-    { preserveUserValues },
+    { applicationPath: state.applicationPath, preserveUserValues },
   );
   if (!runtimeChanged && !dataChanged) return false;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
@@ -454,11 +474,14 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
     const backendPayloads = [...previewInspectorSession.dataRequests.values()]
       .filter((record) => record.reachabilityKey === state.key)
       .slice(0, 24)
-      .map((record) => ({
-        id: record.id,
-        mode: 'smart',
-        payload: generatePreviewInspectorDataValue(record.shape, '', 'smart'),
-      }));
+      .map((record) => {
+        const override = previewInspectorSession.dataPayloadOverrides.get(record.id);
+        return {
+          id: record.id,
+          mode: override?.mode ?? 'smart',
+          payload: override?.payload ?? generatePreviewInspectorDataValue(record.shape, '', 'smart'),
+        };
+      });
     const sourceGate = state.appliedConditions?.at(-1);
     recordPreviewInspectorBlockerAutoDecision({
       action: search.origin === 'deterministic-auto'

@@ -9,6 +9,7 @@ interface ConditionUiRuntime {
 }
 
 interface ConditionTreeNode {
+  readonly blocksCurrentTarget?: boolean;
   readonly children: readonly ConditionTreeNode[];
   readonly conditionId?: string;
   readonly id: string;
@@ -99,6 +100,40 @@ describe('Preview Inspector condition UI runtime source', () => {
       role: 'overlay',
     });
   });
+
+  /** Marks only a target-path overlay as a blocker when its required visible branch is dormant. */
+  it('marks a dormant overlay that blocks the current file', () => {
+    const runtime = createConditionUiRuntime(
+      [
+        {
+          authoredEnabled: false,
+          effectiveEnabled: false,
+          expression: '<CompanyRegisterModal>.open: open',
+          falsyLabel: 'hidden <CompanyRegisterModal> overlay',
+          id: 'overlay-target',
+          kind: 'overlay-visibility',
+          reachabilityKey: 'page:modal',
+          role: 'overlay',
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: 'visible <CompanyRegisterModal> overlay',
+        },
+      ],
+      {
+        conditionOnTargetPath: true,
+        conditionTargetValue: true,
+        descriptors: [],
+        selectedCandidate: { id: 'candidate' },
+        selectedDescriptor: { exportName: 'CompanyRegisterModal' },
+        targetReachabilityByKey: new Map([['page:modal', { key: 'page:modal' }]]),
+      },
+    );
+
+    const snapshot = runtime.attachConditions({
+      roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)],
+    });
+
+    expect(snapshot.roots[0]?.children[0]).toMatchObject({ blocksCurrentTarget: true });
+  });
 });
 
 /** Creates one component node carrying JSX-dev source evidence used for condition ownership. */
@@ -135,9 +170,17 @@ function createConditionUiRuntime(
       const readPreviewInspectorRenderConditions = () => conditions;
       const normalizePreviewInspectorUiSource = (source) => source;
       const persistPreviewInspectorState = () => undefined;
+      const requestPreviewInspectorTreeReveal = () => undefined;
       const notifyPreviewInspector = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
       const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const findSelectedPreviewInspectorDescriptor = () => previewInspectorSession.selectedDescriptor;
+      const readSelectedPreviewInspectorPageCandidate = () => previewInspectorSession.selectedCandidate;
+      const readPreviewInspectorTargetPathEvidence = () => ({});
+      const isPreviewInspectorConditionOnTargetPath = () =>
+        previewInspectorSession.conditionOnTargetPath === true;
+      const readPreviewInspectorTargetConditionValue = () =>
+        previewInspectorSession.conditionTargetValue;
       ${createPreviewInspectorConditionUiRuntimeSource()}
       globalThis.__conditionUiRuntime = {
         attachConditions: attachPreviewInspectorConditionsToSnapshot,

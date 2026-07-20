@@ -295,10 +295,12 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
       node: createPreviewInspectorTargetReachabilityTreeNode(record),
       record,
     })),
-    ...readPreviewInspectorRuntimeFallbacks().map((record) => ({
-      node: createPreviewInspectorRuntimeFallbackTreeNode(record),
-      record,
-    })),
+    ...readPreviewInspectorRuntimeFallbacks()
+      .filter((record) => record.passive !== true)
+      .map((record) => ({
+        node: createPreviewInspectorRuntimeFallbackTreeNode(record),
+        record,
+      })),
     ...readPreviewInspectorDataRequests().map((record) => ({
       node: createPreviewInspectorDataBlockerTreeNode(record),
       record,
@@ -365,7 +367,7 @@ function isPreviewInspectorBlockerNode(node) {
 
 /** Reports whether an editable pseudo-node currently stops the selected page instead of assisting it. */
 function isPreviewInspectorBlockingNode(node) {
-  if (isPreviewInspectorConditionNode(node)) return false;
+  if (isPreviewInspectorConditionNode(node)) return node?.blocksCurrentTarget === true;
   if (node?.blockerKind === 'runtime-fallback') {
     return !['manual', 'smart-manual'].includes(node.blocker?.mode) &&
       !readPreviewInspectorFallbackValuesEnabled();
@@ -390,7 +392,9 @@ function isPreviewInspectorBlockingNode(node) {
 function readPreviewInspectorActiveBlockerSummary() {
   const nodes = [
     ...readPreviewInspectorTargetReachabilityBlockers().map(createPreviewInspectorTargetReachabilityTreeNode),
-    ...readPreviewInspectorRuntimeFallbacks().map(createPreviewInspectorRuntimeFallbackTreeNode),
+    ...readPreviewInspectorRuntimeFallbacks()
+      .filter((record) => record.passive !== true)
+      .map(createPreviewInspectorRuntimeFallbackTreeNode),
     ...readPreviewInspectorDataRequests().map(createPreviewInspectorDataBlockerTreeNode),
     ...readPreviewInspectorTargetFailures().map(createPreviewInspectorTargetFailureTreeNode),
   ];
@@ -439,7 +443,12 @@ function PreviewInspectorBlockerGuide({ node }) {
   let helpKind = 'assisted';
   let icon = '≈';
   let title = 'React Preview supplied a local preview value here.';
-  if (condition) {
+  if (condition && blocking) {
+    detail = 'This hidden overlay contains the selected file. React Preview will choose its visible branch automatically unless a manual branch override prevents it.';
+    helpKind = 'blocking';
+    icon = '!';
+    title = 'A dormant overlay blocks the current-file component.';
+  } else if (condition) {
     detail = 'Choose a branch below. This changes only the pinned preview.';
     helpKind = 'condition';
     icon = '?';

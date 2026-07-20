@@ -176,6 +176,32 @@ describe('Preview Inspector condition runtime source', () => {
     });
     expect(fullHarness.resolveCondition('staff-gate', true, metadata)).toBe(true);
   });
+
+  /** Opens a directly selected Modal whose authored hidden guard would otherwise return no DOM. */
+  it('automatically reveals a cold direct target overlay', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      descriptors: [{ exportName: 'CompanyRegisterModal' }],
+      selectedExportName: 'CompanyRegisterModal',
+    });
+    const metadata = {
+      expression: '<CompanyRegisterModal> visibility: !open',
+      falsyLabel: 'hidden <CompanyRegisterModal> overlay',
+      kind: 'overlay-visibility',
+      ownerName: 'CompanyRegisterModal',
+      role: 'overlay',
+      sourcePath: '/workspace/CompanyRegisterModal.tsx',
+      truthyLabel: 'visible <CompanyRegisterModal> overlay',
+    };
+
+    harness.rememberDirectOwner('CompanyRegisterModal', 'CompanyRegisterModal');
+    expect(harness.resolveCondition('modal-visibility', false, metadata)).toBe(true);
+    expect(harness.readConditions()[0]).toMatchObject({
+      authoredEnabled: false,
+      autoOverride: true,
+      effectiveEnabled: true,
+      role: 'overlay',
+    });
+  });
 });
 
 /** Evaluates the generated lexical runtime against inert persistence and notification adapters. */

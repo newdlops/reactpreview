@@ -26,17 +26,22 @@ export function createPreviewInspectorWireframeUiRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT = ${PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT};
 const PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT = ${PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT};
-let previewInspectorWireframeRevealNodeId;
+let previewInspectorTreeRevealRequest;
 
-/** Marks one blocker selection for an unfiltered, expanded Components-tree reveal. */
-function requestPreviewInspectorWireframeTreeReveal(nodeId) {
-  previewInspectorWireframeRevealNodeId = nodeId;
+/** Marks an explicit navigation action for one unfiltered, expanded Components-tree reveal. */
+function requestPreviewInspectorTreeReveal(nodeId) {
+  previewInspectorTreeRevealRequest =
+    typeof nodeId === 'string' && nodeId.length > 0 ? nodeId : true;
+  previewInspectorDevtoolsSessionState.treeRevealRevision =
+    (previewInspectorDevtoolsSessionState.treeRevealRevision ?? 0) + 1;
 }
 
-/** Consumes the one-shot tree reveal without serializing transient UI intent into webview state. */
-function consumePreviewInspectorWireframeTreeReveal(nodeId) {
-  if (previewInspectorWireframeRevealNodeId !== nodeId) return false;
-  previewInspectorWireframeRevealNodeId = undefined;
+/** Consumes a matching one-shot reveal while ordinary row selection leaves scroll untouched. */
+function consumePreviewInspectorTreeReveal(nodeId) {
+  if (previewInspectorTreeRevealRequest !== true && previewInspectorTreeRevealRequest !== nodeId) {
+    return false;
+  }
+  previewInspectorTreeRevealRequest = undefined;
   return true;
 }
 
@@ -47,7 +52,7 @@ function revealPreviewInspectorWireframeBlocker(node, setCollapsed) {
   previewInspectorDevtoolsSessionState.activeTab = 'blocker';
   previewInspectorDevtoolsSessionState.blockerDetailRevision =
     (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
-  requestPreviewInspectorWireframeTreeReveal(node.id);
+  requestPreviewInspectorTreeReveal(node.id);
   setCollapsed(false);
   selectPreviewInspectorUiNode(node);
   previewInspectorPostHostMessage?.({ type: 'react-preview-inspector-companion-reveal' });

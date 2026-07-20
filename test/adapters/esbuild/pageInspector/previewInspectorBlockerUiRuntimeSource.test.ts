@@ -7,9 +7,11 @@ import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../
 
 /** Data-only node contract needed for blocker ownership assertions. */
 interface BlockerTreeNode {
+  readonly blocksCurrentTarget?: boolean;
   readonly blockedOwner?: boolean;
   readonly blockerKind?: string;
   readonly children: readonly BlockerTreeNode[];
+  readonly conditionId?: string;
   readonly id: string;
   readonly kind: string;
   readonly name: string;
@@ -74,6 +76,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
       props: { requiredPaths: ['value'] },
     });
     expect(findNode(snapshot.roots, 'Unlocated render blockers')).toBeUndefined();
+    expect(findNode(snapshot.roots, 'Missing hook value · usePageAnalytics')).toBeUndefined();
     const hookNode = findNode(snapshot.roots, 'Missing hook value · useFormContext');
     const dataNode = findNode(snapshot.roots, 'Backend data · Get dashboard');
     expect(hookNode === undefined ? undefined : runtime.isBlocking(hookNode)).toBe(false);
@@ -81,6 +84,16 @@ describe('Preview Inspector blocker UI runtime source', () => {
     const renderErrorNode = brokenChild?.children[0];
     if (renderErrorNode === undefined) throw new Error('Expected contained render-error blocker.');
     expect(runtime.isBlocking(renderErrorNode)).toBe(true);
+    expect(
+      runtime.isBlocking({
+        blocksCurrentTarget: true,
+        children: [],
+        conditionId: 'modal',
+        id: 'condition:modal',
+        kind: 'condition',
+        name: 'Overlay visibility',
+      }),
+    ).toBe(true);
   });
 
   /** Keeps manual JSON, minimum Smart fill, and broader Auto inference actions explicit. */
@@ -145,6 +158,19 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         ownerName: 'FormSection',
         reason: 'threw',
         requiredPaths: ['formikProps.values.name'],
+        sourcePath: '/workspace/Page.tsx',
+      }, {
+        error: 'analytics unavailable',
+        fallbackPreview: 'undefined',
+        generatedPaths: [],
+        hookName: 'usePageAnalytics',
+        id: 'hook-analytics',
+        line: 4,
+        mode: 'auto',
+        ownerName: 'Page',
+        passive: true,
+        reason: 'threw',
+        requiredPaths: [],
         sourcePath: '/workspace/Page.tsx',
       }];
       const readPreviewInspectorDataRequests = () => [{

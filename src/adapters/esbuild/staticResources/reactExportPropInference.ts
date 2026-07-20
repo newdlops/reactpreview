@@ -10,6 +10,7 @@ import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 
 const MAX_COMPONENT_EXPORTS = 32;
+const MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH = 12;
 const MAX_INFERRED_DEPTH = 10;
 const MAX_INFERRED_NODES = 192;
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'key', 'prototype', 'ref']);
@@ -85,6 +86,13 @@ interface ExportedComponentFunction {
 interface ComponentFunctionCandidate {
   readonly contextualPropsType?: ts.TypeNode;
   readonly functionLike: ExportedFunctionLike;
+}
+
+/** Same-file declaration that may be a function or a bounded chain of component wrappers. */
+interface LocalComponentDeclaration {
+  readonly contextualPropsType?: ts.TypeNode;
+  readonly expression?: ts.Expression;
+  readonly functionLike?: ExportedFunctionLike;
 }
 
 /** Bounded mutable inference state for one exported function. */
@@ -622,11 +630,11 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
   });
 }
 
-/** Collects direct/default/local-clause exported function identities without evaluating HOCs. */
+/** Collects direct/default/local-clause exports while statically following same-file HOC inputs. */
 function collectExportedComponentFunctions(
   sourceFile: ts.SourceFile,
 ): readonly ExportedComponentFunction[] {
-  const functionsByName = new Map<string, ComponentFunctionCandidate>();
+  const localDeclarations = collectLocalComponentDeclarations(sourceFile);
   const selected: ExportedComponentFunction[] = [];
   const seenNames = new Set<string>();
   const add = (exportName: string, candidate: ComponentFunctionCandidate | undefined): void => {
@@ -642,30 +650,17 @@ function collectExportedComponentFunctions(
   for (const statement of sourceFile.statements) {
     if (ts.isFunctionDeclaration(statement)) {
       const candidate = { functionLike: statement };
-      if (statement.name !== undefined) functionsByName.set(statement.name.text, candidate);
       if (hasExportModifier(statement)) {
         add(hasDefaultModifier(statement) ? 'default' : (statement.name?.text ?? ''), candidate);
       }
     } else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name)) continue;
-        const functionLike = readFunctionExpression(declaration.initializer);
-        if (functionLike === undefined) continue;
-        const contextualPropsType = readReactComponentPropsType(declaration.type);
-        const candidate: ComponentFunctionCandidate = {
-          functionLike,
-          ...(contextualPropsType === undefined ? {} : { contextualPropsType }),
-        };
-        functionsByName.set(declaration.name.text, candidate);
+        const candidate = resolveLocalComponent(declaration.name.text, localDeclarations);
         if (hasExportModifier(statement)) add(declaration.name.text, candidate);
       }
     } else if (ts.isExportAssignment(statement)) {
-      add(
-        'default',
-        ts.isIdentifier(statement.expression)
-          ? functionsByName.get(statement.expression.text)
-          : createFunctionCandidate(readFunctionExpression(statement.expression)),
-      );
+      add('default', resolveComponentExpression(statement.expression, localDeclarations));
     } else if (
       ts.isExportDeclaration(statement) &&
       statement.moduleSpecifier === undefined &&
@@ -675,18 +670,41 @@ function collectExportedComponentFunctions(
       for (const element of statement.exportClause.elements) {
         if (element.isTypeOnly) continue;
         const localName = (element.propertyName ?? element.name).text;
-        add(element.name.text, functionsByName.get(localName));
+        add(element.name.text, resolveLocalComponent(localName, localDeclarations));
       }
     }
   }
   return selected;
 }
 
-/** Wraps one optional function body for export-assignment collection without unsafe assertions. */
-function createFunctionCandidate(
-  functionLike: ExportedFunctionLike | undefined,
-): ComponentFunctionCandidate | undefined {
-  return functionLike === undefined ? undefined : { functionLike };
+/** Indexes unique top-level declarations without resolving imports or evaluating initializers. */
+function collectLocalComponentDeclarations(
+  sourceFile: ts.SourceFile,
+): ReadonlyMap<string, LocalComponentDeclaration> {
+  const declarations = new Map<string, LocalComponentDeclaration>();
+  const ambiguous = new Set<string>();
+  const add = (name: string, declaration: LocalComponentDeclaration): void => {
+    if (ambiguous.has(name)) return;
+    if (declarations.has(name)) {
+      declarations.delete(name);
+      ambiguous.add(name);
+    } else declarations.set(name, declaration);
+  };
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
+      add(statement.name.text, { functionLike: statement });
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) continue;
+        const contextualPropsType = readReactComponentPropsType(declaration.type);
+        add(declaration.name.text, {
+          expression: declaration.initializer,
+          ...(contextualPropsType === undefined ? {} : { contextualPropsType }),
+        });
+      }
+    }
+  }
+  return declarations;
 }
 
 /** Extracts the props argument from common `FC<Props>` variable annotations. */
@@ -700,18 +718,57 @@ function readReactComponentPropsType(typeNode: ts.TypeNode | undefined): ts.Type
     : undefined;
 }
 
-/** Reads a direct function or a bounded common React HOC argument containing that function. */
-function readFunctionExpression(
+/** Resolves one unique same-file declaration through bounded HOC/alias chains; cycles fail closed. */
+function resolveLocalComponent(
+  name: string,
+  declarations: ReadonlyMap<string, LocalComponentDeclaration>,
+  activeNames: Set<string> = new Set<string>(),
+  depth = 0,
+): ComponentFunctionCandidate | undefined {
+  if (depth > MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH || activeNames.has(name)) return undefined;
+  const declaration = declarations.get(name);
+  if (declaration === undefined) return undefined;
+  activeNames.add(name);
+  const candidate = declaration.functionLike
+    ? { functionLike: declaration.functionLike }
+    : resolveComponentExpression(declaration.expression, declarations, activeNames, depth + 1);
+  activeNames.delete(name);
+  return candidate === undefined
+    ? undefined
+    : {
+        ...candidate,
+        ...(declaration.contextualPropsType === undefined
+          ? {}
+          : { contextualPropsType: declaration.contextualPropsType }),
+      };
+}
+
+/** Reads direct functions or local component arguments from nested common React HOC syntax. */
+function resolveComponentExpression(
   expression: ts.Expression | undefined,
-): ExportedFunctionLike | undefined {
-  if (expression === undefined) return undefined;
+  declarations: ReadonlyMap<string, LocalComponentDeclaration>,
+  activeNames: Set<string> = new Set<string>(),
+  depth = 0,
+): ComponentFunctionCandidate | undefined {
+  if (expression === undefined || depth > MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH) return undefined;
   const current = unwrapExpression(expression);
-  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return current;
+  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+    return { functionLike: current };
+  }
+  if (ts.isIdentifier(current)) {
+    return resolveLocalComponent(current.text, declarations, activeNames, depth + 1);
+  }
   const call = ts.isTaggedTemplateExpression(current) ? unwrapExpression(current.tag) : current;
   if (!ts.isCallExpression(call) || call.arguments.length === 0) return undefined;
   for (const argument of call.arguments) {
     const candidate = unwrapExpression(argument);
-    if (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate)) return candidate;
+    if (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate)) {
+      return { functionLike: candidate };
+    }
+  }
+  for (const argument of call.arguments) {
+    const candidate = resolveComponentExpression(argument, declarations, activeNames, depth + 1);
+    if (candidate !== undefined) return candidate;
   }
   return undefined;
 }

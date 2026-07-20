@@ -50,8 +50,9 @@ interface BoundExpression {
  *
  * Accepted examples include `const company = useSelector(s => s.company)` followed by
  * `company.subscription.isSuspended`, and const aliases or object destructuring derived from that
- * result. Optional chains, element access, method calls, writes, dynamic callbacks, array bindings,
- * and hooks without a statically imported selector-like name fail closed.
+ * result. Optional chains, dynamic element access, method calls, writes, dynamic callbacks, array
+ * bindings, and hooks without a statically imported selector-like name fail closed. String and
+ * numeric literal element access is equivalent to a direct JavaScript property and is accepted.
  *
  * Paths are unique, shortest-first, deterministic, and deeply frozen. Leaf properties are omitted:
  * the example above returns `company` and `company.subscription`, never `isSuspended`.
@@ -366,7 +367,10 @@ function readBoundExpression(
   };
 }
 
-/** Collects non-optional property reads rooted at state aliases while excluding method calls/writes. */
+/** A direct member access whose property name can potentially be proven without evaluation. */
+type DirectMemberAccessExpression = ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
+/** Collects non-optional member reads rooted at state aliases while excluding method calls/writes. */
 function collectScopePropertyReads(
   scope: ts.SourceFile | ts.FunctionLikeDeclaration,
   bindings: ReadonlyMap<string, readonly string[]>,
@@ -374,10 +378,10 @@ function collectScopePropertyReads(
 ): void {
   visitScopeChildren(scope, (node) => {
     if (
-      !ts.isPropertyAccessExpression(node) ||
-      isNestedPropertyAccess(node) ||
-      isCalledProperty(node) ||
-      isPropertyWrite(node)
+      !isDirectMemberAccessExpression(node) ||
+      isNestedMemberAccess(node) ||
+      isCalledMember(node) ||
+      isMemberWrite(node)
     ) {
       return;
     }
@@ -388,18 +392,57 @@ function collectScopePropertyReads(
   });
 }
 
-/** Reads only identifier-rooted property access with no optional or computed segment. */
+/** Narrows syntax nodes to dot access or bracket access before validating the member name. */
+function isDirectMemberAccessExpression(node: ts.Node): node is DirectMemberAccessExpression {
+  return ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node);
+}
+
+/**
+ * Reads only identifier-rooted member chains with statically known, non-optional segments.
+ *
+ * Bracket access is safe only for authored string and numeric literals. Identifiers, template
+ * expressions, binary expressions, and other computed keys are rejected because evaluating them
+ * would require project runtime state and could point at an unrelated or prototype-bearing key.
+ */
 function readDirectPropertyReference(
   expression: ts.Expression,
 ): { readonly members: readonly string[]; readonly rootName: string } | undefined {
   let current = unwrapExpression(expression);
   const members: string[] = [];
-  while (ts.isPropertyAccessExpression(current)) {
-    if (current.questionDotToken !== undefined) return undefined;
-    members.unshift(current.name.text);
+  while (isDirectMemberAccessExpression(current)) {
+    const member = readDirectMemberName(current);
+    if (member === undefined) return undefined;
+    members.unshift(member);
     current = unwrapExpression(current.expression);
   }
   return ts.isIdentifier(current) ? { members, rootName: current.text } : undefined;
+}
+
+/** Returns the canonical property key for one safe, non-optional direct member segment. */
+function readDirectMemberName(access: DirectMemberAccessExpression): string | undefined {
+  if (access.questionDotToken !== undefined) return undefined;
+  const member = ts.isPropertyAccessExpression(access)
+    ? access.name.text
+    : readLiteralElementAccessName(access.argumentExpression);
+  return member !== undefined && isSafePropertyName(member) ? member : undefined;
+}
+
+/** Reads an element-access key only when its runtime property name is a literal constant. */
+function readLiteralElementAccessName(argument: ts.Expression | undefined): string | undefined {
+  if (argument === undefined) return undefined;
+  const unwrapped = unwrapExpression(argument);
+  return ts.isStringLiteral(unwrapped) || ts.isNumericLiteral(unwrapped)
+    ? unwrapped.text
+    : undefined;
+}
+
+/** Applies the shared bounds and prototype-pollution guard to every direct member segment. */
+function isSafePropertyName(member: string): boolean {
+  return (
+    member.length > 0 &&
+    member.length <= MAX_PROPERTY_NAME_LENGTH &&
+    !BLOCKED_PROPERTY_NAMES.has(member)
+  );
 }
 
 /** Returns every non-empty prefix of one already-proven container path. */
@@ -448,12 +491,12 @@ function readPropertyName(name: ts.PropertyName): string | undefined {
 }
 
 /** Keeps only the outermost direct member chain so nested prefixes are not analyzed as leaves. */
-function isNestedPropertyAccess(access: ts.PropertyAccessExpression): boolean {
-  return ts.isPropertyAccessExpression(access.parent) && access.parent.expression === access;
+function isNestedMemberAccess(access: DirectMemberAccessExpression): boolean {
+  return isDirectMemberAccessExpression(access.parent) && access.parent.expression === access;
 }
 
-/** Rejects a property chain used as a function or constructor target. */
-function isCalledProperty(access: ts.PropertyAccessExpression): boolean {
+/** Rejects a member chain used as a function or constructor target. */
+function isCalledMember(access: DirectMemberAccessExpression): boolean {
   return (
     (ts.isCallExpression(access.parent) && access.parent.expression === access) ||
     (ts.isNewExpression(access.parent) && access.parent.expression === access)
@@ -461,7 +504,7 @@ function isCalledProperty(access: ts.PropertyAccessExpression): boolean {
 }
 
 /** Rejects assignment, increment, decrement, and delete targets as read evidence. */
-function isPropertyWrite(access: ts.PropertyAccessExpression): boolean {
+function isMemberWrite(access: DirectMemberAccessExpression): boolean {
   const parent = access.parent;
   if (ts.isBinaryExpression(parent) && parent.left === access) {
     return (

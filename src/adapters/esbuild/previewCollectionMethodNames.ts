@@ -2,9 +2,10 @@
  * Built-in Array prototype calls that prove their receiver must be a collection.
  *
  * Static analyzers and browser runtimes share this list so `items.filter()` cannot be interpreted as
- * an ordinary object containing a callback in one layer and as an array in another. The collection
- * fallback may remain immutable even for mutating method evidence; the method call is type evidence,
- * not permission for preview application code to mutate extension-owned fixture state.
+ * an ordinary object containing a callback in one layer and as an array in another. Ambiguous API
+ * verbs are deliberately absent: `router.push()` is substantially more common in page shells than
+ * an untyped mutation of a hook-returned array, so `push()` alone must remain a callable object
+ * property unless separate compiler evidence emits an array-item path.
  */
 export const PREVIEW_COLLECTION_METHOD_NAMES = Object.freeze([
   'at',
@@ -28,7 +29,6 @@ export const PREVIEW_COLLECTION_METHOD_NAMES = Object.freeze([
   'lastIndexOf',
   'map',
   'pop',
-  'push',
   'reduce',
   'reduceRight',
   'reverse',

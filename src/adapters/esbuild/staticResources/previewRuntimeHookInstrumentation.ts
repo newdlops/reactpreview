@@ -460,7 +460,15 @@ function prefixPreviewRuntimeHookPaths(
   paths: readonly string[] | undefined,
   propertyName: string,
 ): readonly string[] {
-  if (paths === undefined || paths.length === 0) return [propertyName];
+  /*
+   * `undefined` means the child supplied no usage analysis, so destructuring itself is the only
+   * proof that the property must exist. An empty array is different: the child was analyzed and
+   * every downstream read was optional. Reintroducing the property in that case turns safe code
+   * such as `data?.pages` into `{ data: {} }`, bypasses the authored short circuit, and lets a later
+   * collection call fail. Keep the child absent until a non-optional descendant proves demand.
+   */
+  if (paths === undefined) return [propertyName];
+  if (paths.length === 0) return [];
   return paths.map((path_) => {
     if (path_ === '<root>') return propertyName;
     if (path_ === '<root>()') return `${propertyName}()`;

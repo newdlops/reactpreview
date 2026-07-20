@@ -18,6 +18,9 @@ const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']
 
 type SelectorFunction = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
 
+/** A direct member access whose property key can be validated without executing project code. */
+type DirectMemberAccessExpression = ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
 /** One resolved input selector and the Redux path returned to its projector. */
 interface ResolvedInputSelector {
   readonly path: readonly string[];
@@ -242,7 +245,7 @@ function projectorParameterRequiresObject(
   /** Avoids nested functions, where the access may occur after projector evaluation. */
   const visit = (node: ts.Node): void => {
     if (requiresObject || (node !== projector.body && ts.isFunctionLike(node))) return;
-    if (ts.isPropertyAccessExpression(node) && node.questionDotToken === undefined) {
+    if (isDirectMemberAccessExpression(node)) {
       const reference = readDirectPropertyReference(node);
       if (reference?.rootName === parameterName && reference.members.length > 0) {
         requiresObject = true;
@@ -288,26 +291,56 @@ function readFunctionReturnExpression(body: ts.ConciseBody): ts.Expression | und
     : undefined;
 }
 
-/** Reads a non-optional identifier-rooted property chain. */
+/** Narrows syntax nodes to dot access or bracket access before validating the member name. */
+function isDirectMemberAccessExpression(node: ts.Node): node is DirectMemberAccessExpression {
+  return ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node);
+}
+
+/**
+ * Reads a non-optional identifier-rooted member chain.
+ *
+ * Literal string and numeric bracket keys are deterministic JavaScript property names. Every
+ * other computed expression is rejected because resolving it would require executing project code.
+ */
 function readDirectPropertyReference(
   expression: ts.Expression,
 ): { readonly members: readonly string[]; readonly rootName: string } | undefined {
   let current = unwrapExpression(expression);
   const members: string[] = [];
-  while (ts.isPropertyAccessExpression(current)) {
-    if (current.questionDotToken !== undefined) return undefined;
-    const member = current.name.text;
-    if (
-      member.length === 0 ||
-      member.length > MAX_PROPERTY_NAME_LENGTH ||
-      BLOCKED_PROPERTY_NAMES.has(member)
-    ) {
-      return undefined;
-    }
+  while (isDirectMemberAccessExpression(current)) {
+    const member = readDirectMemberName(current);
+    if (member === undefined) return undefined;
     members.unshift(member);
     current = unwrapExpression(current.expression);
   }
   return ts.isIdentifier(current) ? { members, rootName: current.text } : undefined;
+}
+
+/** Returns the canonical property key for one safe, non-optional direct member segment. */
+function readDirectMemberName(access: DirectMemberAccessExpression): string | undefined {
+  if (access.questionDotToken !== undefined) return undefined;
+  const member = ts.isPropertyAccessExpression(access)
+    ? access.name.text
+    : readLiteralElementAccessName(access.argumentExpression);
+  return member !== undefined && isSafePropertyName(member) ? member : undefined;
+}
+
+/** Reads only string and numeric literals from an element-access argument. */
+function readLiteralElementAccessName(argument: ts.Expression | undefined): string | undefined {
+  if (argument === undefined) return undefined;
+  const unwrapped = unwrapExpression(argument);
+  return ts.isStringLiteral(unwrapped) || ts.isNumericLiteral(unwrapped)
+    ? unwrapped.text
+    : undefined;
+}
+
+/** Rejects empty, oversized, and prototype-bearing property segments. */
+function isSafePropertyName(member: string): boolean {
+  return (
+    member.length > 0 &&
+    member.length <= MAX_PROPERTY_NAME_LENGTH &&
+    !BLOCKED_PROPERTY_NAMES.has(member)
+  );
 }
 
 /** Adds every safe parent path, including the selector's object-valued result itself. */

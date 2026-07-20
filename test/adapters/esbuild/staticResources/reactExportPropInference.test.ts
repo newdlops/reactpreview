@@ -131,6 +131,56 @@ describe('collectReactExportPropInference', () => {
     expect(result.Form?.shape.properties).not.toHaveProperty('optional');
   });
 
+  /** Carries a local component contract through nested styled/memo/forwardRef wrappers. */
+  it('infers nested object and sibling array props through local HOC chains', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      "import { forwardRef, memo } from 'react';",
+      'type PanelProps = {',
+      '  captableRequestNotification: { count: number; metadata: { label: string } };',
+      '  notificationIds: string[];',
+      '};',
+      'const UnstyledCaptableRequestNotificationPanel = (',
+      '  { captableRequestNotification, notificationIds }: PanelProps,',
+      '  ref: React.ForwardedRef<HTMLDivElement>,',
+      ') => <div ref={ref}>{captableRequestNotification.count}{notificationIds.length}</div>;',
+      'const ForwardedPanel = forwardRef(UnstyledCaptableRequestNotificationPanel);',
+      'const MemoPanel = memo(ForwardedPanel);',
+      'export const CaptableRequestNotificationPanel = styled(MemoPanel)`display: block;`;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/CaptablePanel.tsx', source);
+
+    expect(result.CaptableRequestNotificationPanel?.shape.properties).toEqual({
+      captableRequestNotification: {
+        kind: 'object',
+        properties: {
+          count: { kind: 'number' },
+          metadata: {
+            kind: 'object',
+            properties: { label: { kind: 'string' } },
+          },
+        },
+      },
+      notificationIds: { kind: 'array' },
+    });
+  });
+
+  /** Refuses imported HOC inputs and cyclic local aliases because neither proves a function body. */
+  it('fails closed for external and cyclic HOC component references', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      "import { memo } from 'react';",
+      "import { ExternalPanel } from './external';",
+      'const FirstPanel = memo(SecondPanel);',
+      'const SecondPanel = memo(FirstPanel);',
+      'export const ImportedPanel = styled(ExternalPanel)`display: block;`;',
+      'export const CyclicPanel = styled(FirstPanel)`display: block;`;',
+    ].join('\n');
+
+    expect(collectReactExportPropInference('/workspace/UnsafePanels.tsx', source)).toEqual({});
+  });
+
   /** Leaves defaulted destructured props absent so the component's authored fixture wins. */
   it('does not replace authored parameter defaults with generated values', () => {
     const source = [

@@ -85,8 +85,32 @@ describe('collectPreviewReduxStateContainerPaths', () => {
     expect(paths).not.toContainEqual(['company', 'subscription', 'isSuspended']);
   });
 
+  /** Treats literal bracket keys as direct properties, including names unavailable to dot syntax. */
+  it('collects string and numeric literal element-access container paths', () => {
+    const paths = collectPreviewReduxStateContainerPaths(
+      SOURCE_PATH,
+      [
+        'import { useSelector } from "react-redux";',
+        'function View() {',
+        '  const reward = useSelector((state) => state["@@client/rideLab"].reward);',
+        '  const firstQueue = useSelector((state) => state.queues[0]);',
+        '  return reward.summary.label + firstQueue.driver.name;',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(paths).toEqual([
+      ['@@client/rideLab'],
+      ['queues'],
+      ['@@client/rideLab', 'reward'],
+      ['queues', '0'],
+      ['@@client/rideLab', 'reward', 'summary'],
+      ['queues', '0', 'driver'],
+    ]);
+  });
+
   /** Rejects syntax whose safe runtime container type cannot be proven as a direct plain object. */
-  it('fails closed for optional, computed, array-method, and function-call access', () => {
+  it('fails closed for optional, dynamic computed, array-method, and function-call access', () => {
     const paths = collectPreviewReduxStateContainerPaths(
       SOURCE_PATH,
       [
@@ -95,6 +119,7 @@ describe('collectPreviewReduxStateContainerPaths', () => {
         '  const company = ReactRedux.useSelector((state) => state.company);',
         '  company?.subscription.plan;',
         '  company[field].name;',
+        '  company[`dynamic-${field}`].label;',
         '  company.items.map((item) => item.name);',
         '  company.factory().result;',
         '  return null;',
@@ -207,5 +232,28 @@ describe('collectPreviewReduxStateContainerPaths', () => {
     );
 
     expect(paths).toEqual([['account'], ['account', 'profile']]);
+  });
+
+  /** Resolves literal bracket segments in both Reselect inputs and projector object evidence. */
+  it('collects literal element-access paths from createSelector definitions', () => {
+    const paths = collectPreviewReduxStateContainerPaths(
+      SOURCE_PATH,
+      [
+        'import { createSelector } from "reselect";',
+        'const rewardState = (state: RootState) => state["@@client/rideLab"].reward;',
+        'const firstQueueState = (state: RootState) => state.queues[0];',
+        'const dynamicState = (state: RootState) => state[sliceName].unsafe;',
+        'export const selectReward = createSelector(rewardState, (reward) => reward["summary"]);',
+        'export const selectDriver = createSelector(firstQueueState, (queue) => queue.driver);',
+        'export const selectUnsafe = createSelector(dynamicState, (value) => value.member);',
+      ].join('\n'),
+    );
+
+    expect(paths).toEqual([
+      ['@@client/rideLab'],
+      ['queues'],
+      ['@@client/rideLab', 'reward'],
+      ['queues', '0'],
+    ]);
   });
 });

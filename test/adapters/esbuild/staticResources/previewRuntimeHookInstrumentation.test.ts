@@ -168,6 +168,27 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":[]');
   });
 
+  /** Does not turn an optional destructured query payload into a truthy empty object. */
+  it('keeps an optional destructured child absent until a descendant is required', () => {
+    const source = [
+      `import { useInfiniteFeedbacks } from './use-infinite-feedbacks';`,
+      'export function FeedbackPage() {',
+      '  const { data } = useInfiniteFeedbacks();',
+      '  const feedbacks = data?.pages.flatMap((page) => page.items) ?? [];',
+      '  return <main>{feedbacks.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/FeedbackPage.tsx', source),
+    );
+
+    expect(transformed).toContain('Object.freeze({ "data": undefined })');
+    expect(transformed).toContain('"requiredPaths":[]');
+    expect(transformed).not.toContain('"requiredPaths":["data"]');
+  });
+
   /** Keeps failed selector state usable without triggering negative time sentinels or overlays. */
   it('uses optional selector paths and comparison-safe scalar defaults', () => {
     const source = [

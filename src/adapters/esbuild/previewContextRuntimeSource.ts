@@ -55,6 +55,8 @@ let previewRuntimeStatus =
   'available: static project Context subscription boundary has not rendered yet';
 
 const createElement = ReactModule.createElement ?? ReactModule.default?.createElement;
+const useEffect = ReactModule.useEffect ?? ReactModule.default?.useEffect;
+const useState = ReactModule.useState ?? ReactModule.default?.useState;
 const useSyncExternalStore =
   ReactModule.useSyncExternalStore ?? ReactModule.default?.useSyncExternalStore;
 
@@ -132,6 +134,37 @@ function subscribeToContextRegistrations(subscriber) {
   }
   subscribers.add(subscriber);
   return () => subscribers.delete(subscriber);
+}
+
+/**
+ * Subscribes through React 18's consistency primitive or an equivalent React 16.8/17 hook pair.
+ * Hook availability is fixed for one project React module, so the selected call order cannot change
+ * between renders. The legacy branch observes only a numeric extension-owned revision and never
+ * retains project values inside React state.
+ */
+function usePreviewContextRegistrationRevision() {
+  if (typeof useSyncExternalStore === 'function') {
+    useSyncExternalStore(
+      subscribeToContextRegistrations,
+      readRegistrationRevision,
+      readRegistrationRevision,
+    );
+    return;
+  }
+  const [observedRevision, setRegistrationRevision] = useState(readRegistrationRevision);
+  useEffect(
+    () => {
+      const unsubscribe = subscribeToContextRegistrations(
+        () => setRegistrationRevision(readRegistrationRevision()),
+      );
+      const currentRevision = readRegistrationRevision();
+      if (currentRevision !== observedRevision) {
+        setRegistrationRevision(currentRevision);
+      }
+      return unsubscribe;
+    },
+    [observedRevision],
+  );
 }
 
 /** Reports whether a property name is bounded and immune to prototype mutation. */
@@ -436,11 +469,7 @@ function updatePreviewRuntimeStatus(inventory) {
  * another because this boundary supplies raw values rather than executing authored components.
  */
 function PreviewContextSubscriptionBoundary({ children }) {
-  useSyncExternalStore(
-    subscribeToContextRegistrations,
-    readRegistrationRevision,
-    readRegistrationRevision,
-  );
+  usePreviewContextRegistrationRevision();
   const inventory = readProviderInventory();
   updatePreviewRuntimeStatus(inventory);
   let previewElement = children;
@@ -457,9 +486,16 @@ function PreviewContextSubscriptionBoundary({ children }) {
  * register the first Context after the initial root has committed.
  */
 export function createContextPreviewElement(children) {
-  if (typeof createElement !== 'function' || typeof useSyncExternalStore !== 'function') {
+  if (typeof createElement !== 'function') {
+    previewRuntimeStatus = 'unavailable: project React does not expose createElement';
+    return children;
+  }
+  if (
+    typeof useSyncExternalStore !== 'function' &&
+    (typeof useState !== 'function' || typeof useEffect !== 'function')
+  ) {
     previewRuntimeStatus =
-      'unavailable: project React does not expose createElement and useSyncExternalStore';
+      'unavailable: project React does not expose Context subscription hooks';
     return children;
   }
   return createElement(PreviewContextSubscriptionBoundary, null, children);

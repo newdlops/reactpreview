@@ -12,6 +12,7 @@ import { PREVIEW_LAZY_STYLE_LOADER_SYMBOL } from './previewLazyStyleOutputs';
 import { createPreviewPageInspectorRuntimeSource } from './pageInspector/previewPageInspectorRuntimeSource';
 import { createPreviewHotReloadRuntimeSource } from './previewHotReloadRuntimeSource';
 import { createPreviewProgressRuntimeSource } from './previewProgressRuntimeSource';
+import { createPreviewRegeneratorRuntimeGlobalSource } from './previewRegeneratorRuntimeGlobalSource';
 import {
   createPreviewReactDomRootRuntimeSource,
   type PreviewReactDomRootKind,
@@ -85,6 +86,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
   const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource();
+  const regeneratorRuntimeGlobalSource = createPreviewRegeneratorRuntimeGlobalSource();
   const documentShellRuntimeSource = createPreviewDocumentShellRuntimeSource(
     options.documentShell,
     options.portalHostIds,
@@ -105,11 +107,14 @@ ${reactDomRootSource.importSource}
 
 ${browserProcessRuntimeSource}
 
+${regeneratorRuntimeGlobalSource}
+
 ${documentShellRuntimeSource}
 
 ${reactDomRootSource.runtimeSource}
 
 const previewBrowserProcessStatus = initializePreviewBrowserProcess();
+const previewRegeneratorRuntimeStatus = initializePreviewRegeneratorRuntimeGlobal();
 
 const mountNode = document.querySelector?.('[data-react-preview-mount]') ??
   document.getElementById('react-preview-root');
@@ -123,7 +128,8 @@ ${automaticPropsRuntimeSource}
 
 registerPreviewRuntimeCapability('Globals', {
   readPreviewRuntimeStatus: () =>
-    ${encodedGlobalPackageBridgeStatus} + '; ' + previewBrowserProcessStatus,
+    ${encodedGlobalPackageBridgeStatus} + '; ' + previewBrowserProcessStatus +
+      '; ' + previewRegeneratorRuntimeStatus,
 });
 
 ${hotReloadRuntimeSource}

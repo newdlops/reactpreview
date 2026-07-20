@@ -3,7 +3,22 @@
  * Keeping version-specific mounting behavior here prevents the main entry generator from knowing
  * React 16/17 lifecycle details while preserving one root contract for hot reload and React 18+.
  */
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
+
+/** Declaration packages can describe a subpath that the installed JavaScript package lacks. */
+const TYPESCRIPT_DECLARATION_PATTERN = /\.d\.[cm]?ts$/iu;
+
+/** Inert package fields used to prove the installed ReactDOM runtime's client-root capability. */
+interface ReactDomRuntimeManifest {
+  /** Conditional/subpath exports published by modern ReactDOM packages. */
+  readonly exports?: unknown;
+  /** Exact npm package identity; prevents an alias declaration package from being trusted. */
+  readonly name?: unknown;
+  /** Installed runtime version used when older packages omit an exports map. */
+  readonly version?: unknown;
+}
 
 /** ReactDOM root API proven to exist in the selected project's installed runtime. */
 export type PreviewReactDomRootKind = 'client' | 'legacy';
@@ -37,7 +52,72 @@ export function selectPreviewReactDomRootKind(
   resolver: Pick<PreviewStaticModuleResolver, 'resolve'>,
   consumerPath: string,
 ): PreviewReactDomRootKind {
-  return resolver.resolve('react-dom/client', consumerPath) === undefined ? 'legacy' : 'client';
+  const manifestPath = resolver.resolve('react-dom/package.json', consumerPath);
+  const runtimeManifest = readReactDomRuntimeManifest(manifestPath);
+  if (runtimeManifest !== undefined && manifestPath !== undefined) {
+    return manifestSupportsClientRoot(runtimeManifest, manifestPath) ? 'client' : 'legacy';
+  }
+
+  const resolvedClientPath = resolver.resolve('react-dom/client', consumerPath);
+  return resolvedClientPath !== undefined &&
+    !TYPESCRIPT_DECLARATION_PATTERN.test(resolvedClientPath)
+    ? 'client'
+    : 'legacy';
+}
+
+/**
+ * Reads only the nearest resolved runtime manifest without importing or evaluating package code.
+ * TypeScript may independently resolve `@types/react-dom/client.d.ts`; anchoring the decision to
+ * `react-dom/package.json` prevents a newer declaration package from inventing a runtime subpath.
+ */
+function readReactDomRuntimeManifest(
+  manifestPath: string | undefined,
+): ReactDomRuntimeManifest | undefined {
+  if (manifestPath === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (!isUnknownRecord(parsed) || parsed.name !== 'react-dom') return undefined;
+    return parsed;
+  } catch {
+    // Unreadable transient installs fall back to a conservative implementation-path check.
+    return undefined;
+  }
+}
+
+/**
+ * Proves client-root support from runtime-owned evidence rather than ambient type declarations.
+ * ReactDOM 18 introduced the API; modern export maps and the physical `client.js` file provide
+ * equivalent evidence for patched or nonstandard packages whose semantic version is unavailable.
+ */
+function manifestSupportsClientRoot(
+  manifest: ReactDomRuntimeManifest,
+  manifestPath: string,
+): boolean {
+  // Once a package publishes an exports map, that map is the authoritative public surface. A
+  // physical client.js file or a modern-looking version cannot override an explicitly blocked
+  // subpath because esbuild must obey the same package boundary when it creates the preview graph.
+  if (manifest.exports !== undefined) return hasClientExport(manifest.exports);
+  const majorVersion =
+    typeof manifest.version === 'string'
+      ? Number.parseInt(manifest.version.split('.', 1)[0] ?? '', 10)
+      : Number.NaN;
+  if (Number.isFinite(majorVersion) && majorVersion >= 18) return true;
+  return existsSync(path.join(path.dirname(manifestPath), 'client.js'));
+}
+
+/** Recognizes an explicit non-null `./client` package export without interpreting conditions. */
+function hasClientExport(exportsValue: unknown): boolean {
+  return (
+    isUnknownRecord(exportsValue) &&
+    Object.prototype.hasOwnProperty.call(exportsValue, './client') &&
+    exportsValue['./client'] !== null &&
+    exportsValue['./client'] !== false
+  );
+}
+
+/** Narrows inert JSON values without reading inherited package metadata. */
+function isUnknownRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

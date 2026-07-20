@@ -30,9 +30,15 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain(
       'const previewBrowserProcessStatus = initializePreviewBrowserProcess()',
     );
+    expect(entry).toContain(
+      'const previewRegeneratorRuntimeStatus = initializePreviewRegeneratorRuntimeGlobal()',
+    );
     expect(entry).toContain("document.querySelector?.('[data-react-preview-mount]')");
     expect(entry).toContain('initializePreviewDocumentShell(mountNode)');
     expect(entry.indexOf('const previewBrowserProcessStatus =')).toBeLessThan(
+      entry.indexOf('await import("react-preview:setup")'),
+    );
+    expect(entry.indexOf('const previewRegeneratorRuntimeStatus =')).toBeLessThan(
       entry.indexOf('await import("react-preview:setup")'),
     );
     expect(entry.indexOf('await import("react-preview:setup")')).toBeLessThan(

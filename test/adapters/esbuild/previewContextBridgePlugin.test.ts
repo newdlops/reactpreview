@@ -289,6 +289,49 @@ describe('createPreviewContextBridgePlugin', () => {
     }
   });
 
+  /** Keeps lazy Context discovery live when React 16/17 lacks `useSyncExternalStore`. */
+  it('uses state and effect subscription hooks supplied by legacy project React', async () => {
+    const projectRoot = await createTemporaryProject('context-legacy-subscription-');
+    try {
+      await installFakeReactPackage(projectRoot, 'legacy-hooks');
+      const context = await executeContextBridgeFixture(
+        projectRoot,
+        [
+          "import { createContext } from 'react';",
+          "import { createContextPreviewElement, registerPreviewContextIdentity, registerPreviewContextRequirement, readPreviewRuntimeStatus } from 'react-preview:context';",
+          'const LazyContext = createContext(null);',
+          'function useLazyContext() {}',
+          'registerPreviewContextRequirement(',
+          '  useLazyContext,',
+          '  Object.freeze({ lazyState: Object.freeze({}) }),',
+          ');',
+          "const child = { marker: 'TARGET' };",
+          'const boundary = createContextPreviewElement(child);',
+          'const beforeIdentity = boundary.type(boundary.props);',
+          'registerPreviewContextIdentity(useLazyContext, LazyContext);',
+          'const afterIdentity = boundary.type(boundary.props);',
+          'globalThis.__contextBridgeResult = {',
+          '  initiallyPending: beforeIdentity === child,',
+          '  lateProviderAdded: afterIdentity.type === LazyContext.Provider,',
+          '  legacyEffectUsed: globalThis.__contextPreviewLegacyEffectCount > 0,',
+          '  legacyUpdateScheduled: globalThis.__contextPreviewLegacyUpdateCount > 0,',
+          '  status: readPreviewRuntimeStatus(),',
+          '};',
+        ].join('\n'),
+      );
+
+      expect(context.__contextBridgeResult).toEqual({
+        initiallyPending: true,
+        lateProviderAdded: true,
+        legacyEffectUsed: true,
+        legacyUpdateScheduled: true,
+        status: 'active: 1 static project Context provider(s) with demand-shaped neutral values',
+      });
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Rejects malformed values and forged function Providers without evaluating their logic. */
   it('accepts only deeply frozen shapes and raw React-owned Context provider tokens', async () => {
     const projectRoot = await createTemporaryProject('context-validation-');
@@ -374,7 +417,10 @@ async function createTemporaryProject(prefix: string): Promise<string> {
 }
 
 /** Installs a dependency-free React compatibility package owned by the temporary target project. */
-async function installFakeReactPackage(projectRoot: string): Promise<void> {
+async function installFakeReactPackage(
+  projectRoot: string,
+  subscriptionKind: 'external-store' | 'legacy-hooks' = 'external-store',
+): Promise<void> {
   const packageDirectory = path.join(projectRoot, 'node_modules', 'react');
   await mkdir(packageDirectory, { recursive: true });
   await Promise.all([
@@ -388,7 +434,11 @@ async function installFakeReactPackage(projectRoot: string): Promise<void> {
       }),
       'utf8',
     ),
-    writeFile(path.join(packageDirectory, 'index.js'), createFakeReactSource(), 'utf8'),
+    writeFile(
+      path.join(packageDirectory, 'index.js'),
+      createFakeReactSource(subscriptionKind),
+      'utf8',
+    ),
   ]);
 }
 
@@ -397,7 +447,38 @@ async function installFakeReactPackage(projectRoot: string): Promise<void> {
  * Raw Providers are data objects, matching React internals closely enough to prove the bridge never
  * substitutes or calls an authored Provider function.
  */
-function createFakeReactSource(): string {
+function createFakeReactSource(subscriptionKind: 'external-store' | 'legacy-hooks'): string {
+  const subscriptionSource =
+    subscriptionKind === 'external-store'
+      ? [
+          '/** Installs an observable React 18 external-store listener. */',
+          'export function useSyncExternalStore(subscribe, getSnapshot, _getServerSnapshot) {',
+          '  globalThis.__contextPreviewSubscriptionCount =',
+          '    (globalThis.__contextPreviewSubscriptionCount ?? 0) + 1;',
+          '  subscribe(() => {',
+          '    globalThis.__contextPreviewNotificationCount =',
+          '      (globalThis.__contextPreviewNotificationCount ?? 0) + 1;',
+          '  });',
+          '  return getSnapshot();',
+          '}',
+        ]
+      : [
+          '/** Exposes the React 16.8/17 state primitive observed by the bridge fallback. */',
+          'export function useState(initializer) {',
+          '  const value = typeof initializer === "function" ? initializer() : initializer;',
+          '  return [value, () => {',
+          '    globalThis.__contextPreviewLegacyUpdateCount =',
+          '      (globalThis.__contextPreviewLegacyUpdateCount ?? 0) + 1;',
+          '  }];',
+          '}',
+          '',
+          '/** Executes an effect immediately so the fixture can observe the registered listener. */',
+          'export function useEffect(effect, _dependencies) {',
+          '  globalThis.__contextPreviewLegacyEffectCount =',
+          '    (globalThis.__contextPreviewLegacyEffectCount ?? 0) + 1;',
+          '  effect();',
+          '}',
+        ];
   return [
     `export const projectMarker = ${JSON.stringify(PROJECT_REACT_MARKER)};`,
     '',
@@ -427,16 +508,7 @@ function createFakeReactSource(): string {
     '  return context;',
     '}',
     '',
-    '/** Installs an observable external-store listener and returns the current scalar revision. */',
-    'export function useSyncExternalStore(subscribe, getSnapshot, _getServerSnapshot) {',
-    '  globalThis.__contextPreviewSubscriptionCount =',
-    '    (globalThis.__contextPreviewSubscriptionCount ?? 0) + 1;',
-    '  subscribe(() => {',
-    '    globalThis.__contextPreviewNotificationCount =',
-    '      (globalThis.__contextPreviewNotificationCount ?? 0) + 1;',
-    '  });',
-    '  return getSnapshot();',
-    '}',
+    ...subscriptionSource,
   ].join('\n');
 }
 

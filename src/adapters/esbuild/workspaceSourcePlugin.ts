@@ -48,6 +48,7 @@ export type WorkspaceSourcePluginOptions = {
  * no source text is shared across different context keys or concurrent rebuild operations.
  */
 export class MutableWorkspaceSourceState {
+  private currentSnapshots: readonly PreviewSourceSnapshot[] = [];
   private snapshotByCanonicalPath = new Map<string, PreviewSourceSnapshot>();
   private snapshotByLexicalPath = new Map<string, PreviewSourceSnapshot>();
   private currentTransformer: PreviewSourceTransformer;
@@ -61,6 +62,11 @@ export class MutableWorkspaceSourceState {
   /** Transformer associated with the currently serialized rebuild. */
   public get transformer(): PreviewSourceTransformer {
     return this.currentTransformer;
+  }
+
+  /** Current immutable dirty-source inventory used by style compilers during this rebuild. */
+  public get snapshots(): readonly PreviewSourceSnapshot[] {
+    return this.currentSnapshots;
   }
 
   /**
@@ -81,6 +87,7 @@ export class MutableWorkspaceSourceState {
     }
     this.snapshotByCanonicalPath = nextCanonical;
     this.snapshotByLexicalPath = nextLexical;
+    this.currentSnapshots = Object.freeze([...compilation.snapshots]);
     this.currentTransformer = compilation.transformer;
   }
 

@@ -87,6 +87,7 @@ import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { PreviewSetupFailureCache } from './previewSetupFailureCache';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
+import { createPreviewTailwindPlugin } from './previewTailwindPlugin';
 import {
   selectPreviewPrimaryTargetExport,
   selectPreviewTargetExports,
@@ -521,6 +522,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 documentPath: request.documentPath,
                 projectRoot,
                 registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
+                workspaceRoot: canonicalWorkspaceRoot,
+              }),
+              createPreviewTailwindPlugin({
+                projectRoot,
+                readSourceSnapshots: () =>
+                  incrementalState?.snapshots ?? sourceCompilation.snapshots,
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
               sassBoundary.plugin,

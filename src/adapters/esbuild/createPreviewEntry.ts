@@ -13,6 +13,10 @@ import { createPreviewPageInspectorRuntimeSource } from './pageInspector/preview
 import { createPreviewHotReloadRuntimeSource } from './previewHotReloadRuntimeSource';
 import { createPreviewProgressRuntimeSource } from './previewProgressRuntimeSource';
 import {
+  createPreviewReactDomRootRuntimeSource,
+  type PreviewReactDomRootKind,
+} from './previewReactDomRootRuntimeSource';
+import {
   PREVIEW_APOLLO_SPECIFIER,
   PREVIEW_CONTEXT_SPECIFIER,
   PREVIEW_FORMIK_SPECIFIER,
@@ -26,6 +30,8 @@ import { createPreviewRuntimeErrorSource } from './previewRuntimeErrorSource';
 
 /** Setup environment selected by the compiler's bounded project inspection. */
 export type PreviewEntrySetupKind = 'custom' | 'none' | 'storybook';
+
+export type { PreviewReactDomRootKind } from './previewReactDomRootRuntimeSource';
 
 /** Immutable values encoded into one generated browser entry. */
 export interface PreviewEntryOptions {
@@ -43,6 +49,8 @@ export interface PreviewEntryOptions {
   readonly renderMode?: PreviewRenderMode;
   /** Exact DOM IDs required by ReactDOM portals in the statically reached target graph. */
   readonly portalHostIds?: readonly string[];
+  /** Uses ReactDOM.render when the project predates the react-dom/client entry point. */
+  readonly reactDomRootKind?: PreviewReactDomRootKind;
   /** Determines whether standard Storybook decorators and parameters should be applied. */
   readonly setupKind: PreviewEntrySetupKind;
 }
@@ -83,20 +91,23 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   );
   const progressRuntimeSource = createPreviewProgressRuntimeSource();
   const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
-  const inspectorImportSource =
-    renderMode === 'page-inspector' ? "import * as ReactDOMNamespace from 'react-dom';" : '';
+  const reactDomRootSource = createPreviewReactDomRootRuntimeSource({
+    requiresReactDomNamespace: renderMode === 'page-inspector',
+    rootKind: options.reactDomRootKind ?? 'client',
+  });
   const inspectorRuntimeSource =
     renderMode === 'page-inspector'
       ? createPreviewPageInspectorRuntimeSource(options.inspectorSourceGestureSecret)
       : '';
   return `
 import * as React from 'react';
-import { createRoot } from 'react-dom/client';
-${inspectorImportSource}
+${reactDomRootSource.importSource}
 
 ${browserProcessRuntimeSource}
 
 ${documentShellRuntimeSource}
+
+${reactDomRootSource.runtimeSource}
 
 const previewBrowserProcessStatus = initializePreviewBrowserProcess();
 
@@ -882,7 +893,7 @@ async function preparePreviewElement() {
 async function activatePreparedPreview(previewElement) {
   previewActivationStarted = true;
   enterRuntimePhase('commit React root');
-  const previewRoot = createRoot(mountNode, {
+  const previewRoot = createPreviewRoot(mountNode, {
     /** Preserves the last component stack when even the root diagnostic boundary cannot recover. */
     onUncaughtError(error, errorInfo) {
       showRuntimeError(error, {

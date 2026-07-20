@@ -14,7 +14,10 @@ describe('createPreviewEntry', () => {
     });
 
     expect(entry).toContain("import * as React from 'react'");
-    expect(entry).toContain("import { createRoot } from 'react-dom/client'");
+    expect(entry).toContain(
+      "import { createRoot as createPreviewClientRoot } from 'react-dom/client'",
+    );
+    expect(entry).toContain('return createPreviewClientRoot(container, options)');
     expect(entry).toContain('await import("react-preview:setup")');
     expect(entry).toContain('import("react-preview:apollo")');
     expect(entry).toContain('import("react-preview:context")');
@@ -107,6 +110,24 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('await preparedEntry.preparationPromise');
     expect(entry).toContain('await preparedEntry.activate()');
     expect(entry).toContain('previewHotRuntime.bootstrapPromise = previewBootstrapPromise');
+  });
+
+  /** Uses the React 16/17 root API without leaving an unresolvable client-entry import behind. */
+  it('creates a legacy ReactDOM root adapter when react-dom/client is unavailable', () => {
+    const entry = createPreviewEntry({
+      documentName: 'src/LegacyPreview.tsx',
+      globalNamespaces: [],
+      reactDomRootKind: 'legacy',
+      renderMode: 'page-inspector',
+      setupKind: 'none',
+    });
+
+    expect(entry).toContain("import * as ReactDOMNamespace from 'react-dom'");
+    expect(entry).not.toContain("from 'react-dom/client'");
+    expect(entry).not.toContain('createPreviewClientRoot');
+    expect(entry).toContain('ReactDOMNamespace.render(element, container)');
+    expect(entry).toContain('ReactDOMNamespace.unmountComponentAtNode(container)');
+    expect(entry.match(/import \* as ReactDOMNamespace from 'react-dom'/gu)).toHaveLength(1);
   });
 
   /** Preloads replacement resources before unmounting and admits content-addressed root entries. */

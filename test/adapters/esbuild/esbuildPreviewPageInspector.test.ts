@@ -80,6 +80,7 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(javascript).toContain('Mounted inside authored page root');
       expect(javascript).toContain('wrapPreviewInspectorTarget');
       expect(javascript).toContain('resolveRenderCondition');
+      expect(javascript).toContain('resolveRenderChoice');
       expect(javascript).toContain('resolveRuntimeHook');
       expect(javascript).toContain('"hookName": "useIsPageReady"');
       expect(javascript).toContain('"fallbackLabel": "generated boolean false"');

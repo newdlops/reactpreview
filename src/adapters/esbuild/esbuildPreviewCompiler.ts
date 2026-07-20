@@ -45,7 +45,6 @@ import {
   restorePrivateNamespaces,
   VIRTUAL_ENTRY_NAME,
 } from './previewBuildResult';
-import { MAX_PREVIEW_OUTPUT_FILES } from './previewBuildOutputPlanner';
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
@@ -53,6 +52,7 @@ import { createPreviewGeneratedModuleFallbackPlugin } from './previewGeneratedMo
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
+import { selectPreviewReactDomRootKind } from './previewReactDomRootRuntimeSource';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
@@ -79,6 +79,10 @@ import {
   type PreviewSassPluginOptions,
 } from './previewSassPlugin';
 import { createPreviewSetupBridgePlugin } from './previewSetupBridgePlugin';
+import {
+  createCoalescedOutputDiagnostic,
+  normalizeMaximumSplitOutputFiles,
+} from './previewSplitOutputPolicy';
 import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver';
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { PreviewSetupFailureCache } from './previewSetupFailureCache';
@@ -280,6 +284,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           : { configuredTsconfigPath: request.tsconfigPath }),
         workspaceRoot: canonicalWorkspaceRoot,
       });
+      const reactDomRootKind = selectPreviewReactDomRootKind(
+        staticModuleResolver,
+        request.documentPath,
+      );
       const preparedSetupFallback = await prepareAutomaticPreviewSetupFallback({
         cache: this.setupFailureCache,
         dependencySnapshots: request.dependencySnapshots,
@@ -535,6 +543,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 ...(inspectorSourceGestureSecret === undefined
                   ? {}
                   : { inspectorSourceGestureSecret }),
+                reactDomRootKind,
                 renderMode: request.renderMode ?? 'component',
                 portalHostIds,
                 setupKind: environment.setupKind,
@@ -560,6 +569,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           parentSlices: activeParentSlices,
           preparationMode: request.preparationMode,
           projectRoot,
+          reactDomRootKind,
           renderMode: request.renderMode,
           routerSelection,
           splitOutputs,
@@ -874,26 +884,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     });
     return this.shutdownPromise;
   }
-}
-
-/** Clamps an internal split threshold without allowing tests to weaken the production hard limit. */
-function normalizeMaximumSplitOutputFiles(configuredMaximum: number | undefined): number {
-  if (!Number.isSafeInteger(configuredMaximum) || configuredMaximum === undefined) {
-    return MAX_PREVIEW_OUTPUT_FILES;
-  }
-  return Math.min(MAX_PREVIEW_OUTPUT_FILES, Math.max(1, configuredMaximum));
-}
-
-/** Explains why one large graph uses lazy module initializers inside fewer local artifact files. */
-function createCoalescedOutputDiagnostic(
-  splitOutputCount: number,
-  coalescedOutputCount: number,
-  targetName: string,
-): PreviewDiagnostic {
-  return {
-    message: `The split preview graph for ${targetName} produced ${splitOutputCount.toString()} local output files, so React Preview automatically coalesced it into ${coalescedOutputCount.toString()} output file(s). Dynamic-import modules still initialize only when their loader is invoked, while per-module file splitting is disabled for this oversized local graph.`,
-    severity: 'warning',
-  };
 }
 
 /** Separates nearest-config and explicitly configured evidence resolution policies per package. */

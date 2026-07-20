@@ -80,6 +80,68 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  /** Keeps sibling collections dormant until the target-path Smart frontier selects the request. */
+  it('starts authored-page corridor arrays empty and opens one item through Smart fill', () => {
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
+    const metadata = {
+      id: 'meeting-list',
+      kind: 'graphql',
+      label: 'MeetingList',
+      shape: {
+        fields: {
+          meetings: {
+            items: {
+              fields: { id: { kind: 'string' }, status: { kind: 'string' } },
+              kind: 'object',
+            },
+            kind: 'array',
+          },
+        },
+        kind: 'object',
+      },
+    };
+
+    expect(cloneJson(runtime.resolve(metadata, {}))).toEqual({ meetings: [] });
+    expect(runtime.smartReachability('page:Target')).toBe(true);
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      payload: { meetings: [{ id: 'preview-1', status: 'ACTIVE' }] },
+    });
+  });
+
+  /** Opens an unknown list conservatively only after the user/frontier selects its request. */
+  it('uses neutral unknown items for Smart and Lorem while corridor Auto remains empty', () => {
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
+    const metadata = {
+      id: 'unknown-list',
+      kind: 'graphql',
+      label: 'UnknownList',
+      shape: { items: { kind: 'unknown' }, kind: 'array' },
+    };
+
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([]);
+    runtime.smart('unknown-list');
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([{}]);
+    runtime.lorem('unknown-list');
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([{}, {}]);
+  });
+
+  /** Prevents cached gallery samples from leaking into an active root-to-target corridor. */
+  it('invalidates inferred payload cache entries when the generation profile changes', () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'profile-sensitive-list',
+      kind: 'graphql',
+      label: 'ProfileSensitiveList',
+      shape: { items: { kind: 'string' }, kind: 'array' },
+    };
+
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value']);
+    runtime.target('page:Target');
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([]);
+    runtime.target(undefined);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value']);
+  });
+
   /** Uses compact field keys for Auto text while leaving deliberate Lorem generation explicit. */
   it('keeps generated display strings tied to their bounded response keys', () => {
     const runtime = evaluateDataRuntime();
@@ -109,6 +171,72 @@ describe('Page Inspector data runtime source', () => {
       description: 'description',
       [longKey]: `${longKey.slice(0, 31)}…`,
     });
+  });
+
+  /**
+   * Keeps weak field-name evidence conservative so Smart Fill does not enter unrelated page,
+   * collection, or aggregate branches merely to make a payload look populated.
+   */
+  it('materializes weak semantic fields without inventing unsafe records or page numbers', () => {
+    const runtime = evaluateDataRuntime();
+    const payload = cloneJson(
+      runtime.resolve(
+        {
+          id: 'weak-semantics',
+          kind: 'graphql',
+          label: 'WeakSemanticsQuery',
+          shape: {
+            fields: {
+              called: { kind: 'unknown' },
+              currentPage: { kind: 'unknown' },
+              initialPage: { kind: 'unknown' },
+              metadata: { fields: {}, kind: 'object' },
+              results: { kind: 'unknown' },
+              siblingItems: { items: { kind: 'unknown' }, kind: 'array' },
+              sum: { kind: 'unknown' },
+              title: { fields: {}, kind: 'object' },
+              totalSum: { kind: 'number' },
+            },
+            kind: 'object',
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(payload).toEqual({
+      called: false,
+      currentPage: 1,
+      initialPage: 'initialPage',
+      metadata: {},
+      results: [],
+      siblingItems: [{}, {}],
+      sum: 0,
+      title: 'title',
+      totalSum: 0,
+    });
+  });
+
+  /** Verifies seed-only undefined values use the same field semantics as compiler descriptors. */
+  it('does not classify every Page-suffixed seed field as a pagination number', () => {
+    const runtime = evaluateDataRuntime();
+    const payload = cloneJson(
+      runtime.resolve(
+        {
+          id: 'seed-semantics',
+          kind: 'graphql',
+          label: 'SeedSemanticsQuery',
+        },
+        {
+          called: undefined,
+          currentPage: undefined,
+          initialPage: undefined,
+          sum: undefined,
+        },
+      ),
+    );
+
+    expect(payload).toEqual({ called: false, currentPage: 1, initialPage: 'initialPage', sum: 0 });
   });
 
   /** Reuses an unchanged response object so application memo/effect dependencies can settle. */
@@ -249,7 +377,7 @@ describe('Page Inspector data runtime source', () => {
 
   /** Reports only newly applied payload shapes so corridor convergence avoids stable remount loops. */
   it('settles repeated corridor Smart fill for the same request shape', () => {
-    const runtime = evaluateDataRuntime();
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
     runtime.resolve(
       {
         id: 'profile',
@@ -266,7 +394,7 @@ describe('Page Inspector data runtime source', () => {
 
   /** Opens login and role booleans that are semantically required by the selected page path. */
   it('guides Smart payload roles toward the selected application corridor', () => {
-    const runtime = evaluateDataRuntime();
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
     runtime.resolve(
       {
         id: 'staff-context',
@@ -315,7 +443,7 @@ describe('Page Inspector data runtime source', () => {
 
   /** Does not mistake a page's subject for the current user role while retaining shell role evidence. */
   it('requires every compound role word from an application identity boundary', () => {
-    const runtime = evaluateDataRuntime();
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
     runtime.resolve(
       {
         id: 'owner-context',
@@ -363,7 +491,7 @@ describe('Page Inspector data runtime source', () => {
 
   /** Keeps authentication false when the inspected target is the login corridor itself. */
   it('does not bypass an explicitly selected login route', () => {
-    const runtime = evaluateDataRuntime();
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
     runtime.resolve(
       {
         id: 'login-context',
@@ -384,7 +512,7 @@ describe('Page Inspector data runtime source', () => {
 
   /** Deterministic background convergence never rewrites an explicit payload scenario. */
   it('preserves user payloads during automatic page-path convergence', () => {
-    const runtime = evaluateDataRuntime();
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
     runtime.resolve(
       {
         id: 'profile',
@@ -764,6 +892,7 @@ interface EvaluatedDataRuntime {
   readonly scenario: (id: string, scenario: unknown) => void;
   readonly set: (id: string, payload: unknown, mode: string) => void;
   readonly smart: (id: string) => void;
+  readonly target: (reachabilityKey?: string) => void;
   readonly smartReachability: (
     reachabilityKey: string,
     options?: {
@@ -776,10 +905,13 @@ interface EvaluatedDataRuntime {
 /** Evaluates the generated source with only its documented lexical dependencies. */
 function evaluateDataRuntime(
   nativeFetch?: (...arguments_: unknown[]) => unknown,
+  activeTargetReachabilityKey?: string,
 ): EvaluatedDataRuntime {
   const source = `
 const previewHotRuntime = { inspectorNativeFetch: globalThis.__nativeFetch };
-const previewInspectorSession = { activeTargetReachabilityKey: 'page:Target' };
+const previewInspectorSession = {
+  activeTargetReachabilityKey: ${JSON.stringify(activeTargetReachabilityKey)},
+};
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 let persistedState = {};
 function readPersistedPreviewInspectorState() { return persistedState; }
@@ -801,6 +933,9 @@ globalThis.__dataRuntime = {
   set: setPreviewInspectorDataPayload,
   smart: smartFillPreviewInspectorDataPayload,
   smartReachability: smartFillPreviewInspectorDataPayloadsForReachability,
+  target: (reachabilityKey) => {
+    previewInspectorSession.activeTargetReachabilityKey = reachabilityKey;
+  },
 };`;
   const context = vm.createContext({
     URL,

@@ -113,7 +113,13 @@ class PreviewInspectorTargetBoundary extends React.Component {
       this.state.componentStack,
       this.props.exportName,
     );
-    const requiredPaths = readPreviewInspectorErrorPropertyPaths(this.state.error);
+    const requiredPaths = typeof readPreviewInspectorTargetPropFailurePaths === 'function'
+      ? readPreviewInspectorTargetPropFailurePaths(
+          this.props.exportName,
+          blockedComponent,
+          this.state.error,
+        )
+      : [];
     return React.createElement(
       'react-preview-target-error',
       {

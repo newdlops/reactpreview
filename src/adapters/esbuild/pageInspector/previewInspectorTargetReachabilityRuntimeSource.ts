@@ -8,6 +8,7 @@
  * authored page root and the selected target commit in the same render corridor. Direct target
  * rendering remains an explicit diagnostic mode and never masquerades as page success.
  */
+import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
 
 /**
  * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
@@ -18,6 +19,7 @@
  * @returns Plain JavaScript source concatenated into the Page Inspector browser runtime.
  */
 export function createPreviewInspectorTargetReachabilityRuntimeSource(): string {
+  const requirementFrontierRuntimeSource = createPreviewInspectorRequirementFrontierRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT = 2;
@@ -25,6 +27,8 @@ const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
 const PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160;
 const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
+
+${requirementFrontierRuntimeSource}
 
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
@@ -78,7 +82,7 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   const renderPath = readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExportName);
   const applicationPath = [...(renderPath?.steps ?? [])]
     .reverse()
-    .flatMap((step) => [step?.label, ...[...(step?.wrapperNames ?? [])].reverse()])
+    .flatMap((step) => [...[...(step?.wrapperNames ?? [])].reverse(), step?.label])
     .filter((name, index, names) =>
       typeof name === 'string' && name.length > 0 && names.indexOf(name) === index,
     );
@@ -94,6 +98,7 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     idlePasses: 0,
     key: createPreviewInspectorTargetReachabilityKey(descriptor, candidate),
     pageRootCommitted: false,
+    overlayVisibilityAttempted: false,
     probeRevision: 0,
     rootName: candidate?.root?.exportName ?? descriptor?.inspector?.root?.exportName ?? 'Application',
     runtimeOwnerNames: [],
@@ -133,11 +138,11 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   const names = new Set([
     state.rootName,
     state.targetExportName,
-    ...state.applicationPath,
+    ...(state.applicationPath ?? []),
     ...(state.runtimeOwnerNames ?? []),
   ]);
   const nameScores = new Map();
-  state.applicationPath.forEach((name, index) => nameScores.set(name, index + 1));
+  (state.applicationPath ?? []).forEach((name, index) => nameScores.set(name, index + 1));
   nameScores.set(state.targetExportName, 1_000);
   for (const runtimeOwnerName of state.runtimeOwnerNames ?? []) {
     nameScores.set(runtimeOwnerName, 900);
@@ -410,9 +415,13 @@ function readPreviewInspectorMinimumRequirementSearch(state) {
  * Finds only compiler-shaped values whose continuation has one generated answer. Root-only custom
  * hooks and non-GraphQL endpoints stay interactive because their payload structure is ambiguous.
  */
-function readPreviewInspectorDeterministicRequirementEvidence(state) {
+function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state) {
+  const batch = readPreviewInspectorRequirementBatch(descriptor, candidate, state, true);
+  const admittedHookIds = new Set(batch.hookIds);
+  const admittedRequestIds = new Set(batch.requestIds);
   const hookIds = readPreviewInspectorRuntimeFallbacks()
     .filter((record) =>
+      admittedHookIds.has(record.id) &&
       record.reachabilityKey === state.key &&
       record.mode === 'auto' &&
       (record.requiredPaths ?? []).some((path) => path !== '<root>'),
@@ -421,6 +430,7 @@ function readPreviewInspectorDeterministicRequirementEvidence(state) {
     .slice(0, 24);
   const requestIds = readPreviewInspectorDataRequests()
     .filter((record) =>
+      admittedRequestIds.has(record.id) &&
       record.reachabilityKey === state.key &&
       record.kind === 'graphql' &&
       record.mode === 'auto' &&
@@ -440,7 +450,7 @@ function completePreviewInspectorMinimumRequirementSearch(state) {
 }
 
 /** Applies one newly observed hook/API batch and remounts only when that batch changed values. */
-function advancePreviewInspectorMinimumRequirementSearch(state) {
+function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state) {
   const search = readPreviewInspectorMinimumRequirementSearch(state);
   if (
     search === undefined ||
@@ -450,19 +460,35 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
     return false;
   }
   const preserveUserValues = search.origin === 'deterministic-auto';
+  const batch = readPreviewInspectorRequirementBatch(
+    descriptor,
+    candidate,
+    state,
+    preserveUserValues,
+  );
   const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(
     state.key,
-    { preserveUserValues },
+    {
+      changeLimit: PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT,
+      preserveUserValues,
+      recordIds: batch.hookIds,
+    },
   );
   const dataChanged = smartFillPreviewInspectorDataPayloadsForReachability(
     state.key,
-    { applicationPath: state.applicationPath, preserveUserValues },
+    {
+      applicationPath: state.applicationPath,
+      changeLimit: PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT,
+      preserveUserValues,
+      recordIds: batch.requestIds,
+    },
   );
   if (!runtimeChanged && !dataChanged) return false;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    const hookIdSet = new Set(batch.hookIds);
+    const requestIdSet = new Set(batch.requestIds);
     const hookValues = readPreviewInspectorRuntimeFallbacks()
-      .filter((record) => record.reachabilityKey === state.key)
-      .slice(0, 24)
+      .filter((record) => record.reachabilityKey === state.key && hookIdSet.has(record.id))
       .map((record) => ({
         id: record.id,
         requiredPaths: record.requiredPaths,
@@ -472,8 +498,7 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
         ),
       }));
     const backendPayloads = [...previewInspectorSession.dataRequests.values()]
-      .filter((record) => record.reachabilityKey === state.key)
-      .slice(0, 24)
+      .filter((record) => record.reachabilityKey === state.key && requestIdSet.has(record.id))
       .map((record) => {
         const override = previewInspectorSession.dataPayloadOverrides.get(record.id);
         return {
@@ -490,7 +515,7 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
       blockerId: 'target-reachability:' + state.key,
       blockerKind: 'target-reachability',
       blockerName: 'Target not reached · ' + state.targetExportName,
-      generatedPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
+      generatedPaths: readPreviewInspectorRequirementBatchPaths(batch),
       line: sourceGate?.line,
       mode: search.origin === 'deterministic-auto'
         ? 'deterministic-minimum-auto'
@@ -528,10 +553,14 @@ function advancePreviewInspectorMinimumRequirementSearch(state) {
  * Starts minimum-shape convergence without a prompt when every admitted input is compiler-proven.
  * The pass is still bounded and records its origin so user JSON remains immutable in the background.
  */
-function startPreviewInspectorDeterministicRequirementSearch(state) {
+function startPreviewInspectorDeterministicRequirementSearch(descriptor, candidate, state) {
   const current = readPreviewInspectorMinimumRequirementSearch(state);
   if (current?.status === 'searching') return false;
-  const evidence = readPreviewInspectorDeterministicRequirementEvidence(state);
+  const evidence = readPreviewInspectorDeterministicRequirementEvidence(
+    descriptor,
+    candidate,
+    state,
+  );
   if (evidence.hookIds.length === 0 && evidence.requestIds.length === 0) return false;
   previewInspectorSession.minimumRequirementSearchByKey.set(state.key, {
     observedPathCount: 0,
@@ -545,7 +574,7 @@ function startPreviewInspectorDeterministicRequirementSearch(state) {
       blockerId: 'target-reachability:' + state.key,
       blockerKind: 'target-reachability',
       blockerName: 'Target not reached · ' + state.targetExportName,
-      generatedPaths: readPreviewInspectorTargetReachabilityRequiredPaths(state),
+      generatedPaths: readPreviewInspectorRequirementBatchPaths(evidence),
       mode: 'deterministic-minimum-auto',
       ownerName: state.appliedConditions?.at(-1)?.ownerName ?? state.rootName,
       reason: 'Compiler-required hook paths or GraphQL selections admit one minimum static shape',
@@ -557,7 +586,7 @@ function startPreviewInspectorDeterministicRequirementSearch(state) {
   state.exhausted = false;
   state.idlePasses = 0;
   state.status = 'searching-deterministic-requirements';
-  if (advancePreviewInspectorMinimumRequirementSearch(state)) return true;
+  if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return true;
   settlePreviewInspectorMinimumRequirementSearch(state);
   return false;
 }
@@ -650,6 +679,21 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
+  if (
+    state.targetMounted &&
+    !state.targetHasOutput &&
+    state.overlayVisibilityAttempted !== true
+  ) {
+    state.overlayVisibilityAttempted = true;
+    const visibilityPath = typeof autoRevealPreviewInspectorOverlayTarget === 'function'
+      ? autoRevealPreviewInspectorOverlayTarget(state.targetExportName)
+      : undefined;
+    if (visibilityPath !== undefined) {
+      state.status = 'revealing-overlay';
+      state.probeRevision += 1;
+      return;
+    }
+  }
   if (state.directTarget) {
     state.status = state.targetHasOutput
       ? 'target-only'
@@ -659,7 +703,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  if (advancePreviewInspectorMinimumRequirementSearch(state)) return;
+  if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
   if (state.targetMounted && state.pageRootCommitted !== true) {
     state.status = 'page-root-pending';
     schedulePreviewInspectorTreeRefresh();
@@ -686,7 +730,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     );
     return;
   }
-  if (startPreviewInspectorDeterministicRequirementSearch(state)) return;
+  if (startPreviewInspectorDeterministicRequirementSearch(descriptor, candidate, state)) return;
   state.idlePasses += 1;
   state.status = 'blocked';
   state.probeRevision += 1;
@@ -747,7 +791,7 @@ function readPreviewInspectorTargetReachabilityRequiredPaths(state) {
     }
   };
   for (const fallback of readPreviewInspectorRuntimeFallbacks()) {
-    if (fallback.reachabilityKey !== state.key) continue;
+    if (fallback.reachabilityKey !== state.key || fallback.passive === true) continue;
     for (const path of fallback.requiredPaths ?? []) append(fallback.hookName + '.' + path);
   }
   for (const request of readPreviewInspectorDataRequests()) {
@@ -784,6 +828,12 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     return;
   }
   initializePreviewInspectorTargetReachabilityState();
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
+    ? readSelectedPreviewInspectorPageCandidate(descriptor)
+    : undefined;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Start minimum page-path requirement search',
@@ -818,7 +868,7 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     state.idlePasses = 0;
     state.status = 'searching-requirements';
     state.probeRevision += 1;
-    if (advancePreviewInspectorMinimumRequirementSearch(state)) return;
+    if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
   }
   previewInspectorSession.renderConditionRevision =
     (previewInspectorSession.renderConditionRevision ?? 0) + 1;

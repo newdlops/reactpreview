@@ -34,6 +34,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     const rememberedErrors: Error[] = [];
     const mountedOwnerExports: string[] = [];
     const remountedExports: string[] = [];
+    const smartEvidenceReads: string[] = [];
     const warnings: string[] = [];
     const source = [
       createPreviewInspectorTargetBoundaryRuntimeSource(),
@@ -43,6 +44,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
       rememberedErrors,
       mountedOwnerExports,
       remountedExports,
+      smartEvidenceReads,
       warnings,
     });
     runInContext(source, createContext(sandbox));
@@ -70,13 +72,14 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     expect(fallback.props.role).toBe('alert');
     expect(fallback.props['data-react-preview-target-error']).toBe('SelectedCard');
     expect(fallback.props['data-react-preview-blocked-component']).toBe('BrokenChild');
+    expect(smartEvidenceReads).toEqual([]);
 
     const children = fallback.props.children as readonly TestElement[];
     expect(children[0]?.props.children).toBe('BrokenChild blocked');
     expect(children[1]?.props.children).toBe(
       "Cannot read properties of undefined (reading 'value')",
     );
-    expect(children[2]?.props.children).toBe('Missing: value');
+    expect(children[2]).toBeUndefined();
     expect(children[3]?.props.children).toBe('Retry');
     boundary.retry();
     expect(remountedExports).toEqual(['SelectedCard']);
@@ -92,6 +95,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
       rememberedErrors: [],
       mountedOwnerExports: [],
       remountedExports: [],
+      smartEvidenceReads: [],
       warnings: [],
     });
     runInContext(source, createContext(sandbox));
@@ -110,6 +114,7 @@ interface TargetBoundaryObservations {
   readonly rememberedErrors: Error[];
   readonly mountedOwnerExports: string[];
   readonly remountedExports: string[];
+  readonly smartEvidenceReads: string[];
   readonly warnings: string[];
 }
 
@@ -163,6 +168,13 @@ function createTargetBoundarySandbox(
     ) {
       return observations.warnings.push(error.message + (context.componentStack ?? ''));
     },
+    readPreviewInspectorSmartPropEvidence(exportName: string) {
+      observations.smartEvidenceReads.push(exportName);
+      return { found: true };
+    },
+    readPreviewInspectorSmartPropPathRecords: () => [
+      { kind: 'string', path: 'selectedValue.value', source: 'type' },
+    ],
     registerPreviewInspectorBoundary: vi.fn(() => vi.fn()),
     rememberPreviewInspectorTargetMountedOwnerChain(exportName: string): number {
       return observations.mountedOwnerExports.push(exportName);

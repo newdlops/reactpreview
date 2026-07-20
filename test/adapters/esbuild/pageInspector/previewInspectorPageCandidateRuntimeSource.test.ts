@@ -52,7 +52,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(result.persisted).toBe(1);
     expect(result.scheduled).toBe(1);
     expect(result.labels).toEqual([
-      '1. PublicPage › AppRouter › ApplicationShell · application root · /company/1/dashboard',
+      '1. PublicPage › ApplicationShell › AppRouter · application root · /company/1/dashboard',
       '2. StaffPage · partial context',
     ]);
   });

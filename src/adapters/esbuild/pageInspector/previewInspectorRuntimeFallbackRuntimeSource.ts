@@ -66,6 +66,9 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeFallbackSmartIds instanceof Set)) {
     previewInspectorSession.runtimeFallbackSmartIds = new Set();
   }
+  if (!(previewInspectorSession.runtimeFallbackSmartPathSignatures instanceof Map)) {
+    previewInspectorSession.runtimeFallbackSmartPathSignatures = new Map();
+  }
   if (!(previewInspectorSession.runtimeEffectIsolations instanceof Map)) {
     previewInspectorSession.runtimeEffectIsolations = new Map();
   }
@@ -112,6 +115,11 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
     sourcePath: readText('sourcePath'),
   };
+}
+
+/** Creates the exact compiler/runtime requirement coverage owned by one applied Smart value. */
+function createPreviewInspectorRuntimeFallbackPathSignature(requiredPaths) {
+  return JSON.stringify(normalizePreviewInspectorRequiredPropertyPaths(requiredPaths));
 }
 
 /** Separates a shared query-wrapper callsite into one fallback record per authored request. */
@@ -229,6 +237,18 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   const requiredPaths = reason === 'threw' && metadata.requiredPaths.length === 0
     ? metadata.failurePaths
     : metadata.requiredPaths;
+  const requiredPathSignature = createPreviewInspectorRuntimeFallbackPathSignature(requiredPaths);
+  if (
+    previewInspectorSession.runtimeFallbackSmartIds.has(metadata.id) &&
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.get(metadata.id) !==
+      requiredPathSignature
+  ) {
+    // A later failure or hot edit can expose paths that were absent when Smart Fill first ran.
+    // Reopen that edge as Auto so the next bounded corridor frontier can complete the new minimum
+    // instead of treating an obsolete Smart value as permanently settled.
+    previewInspectorSession.runtimeFallbackSmartIds.delete(metadata.id);
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.delete(metadata.id);
+  }
   const next = {
     ...metadata,
     count: (previous?.count ?? 0) + 1,
@@ -666,6 +686,7 @@ function setPreviewInspectorRuntimeFallbackOverride(fallbackId, value) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
   previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
+  previewInspectorSession.runtimeFallbackSmartPathSignatures.delete(fallbackId);
   previewInspectorSession.runtimeFallbackOverrides.set(
     fallbackId,
     normalizePreviewInspectorRuntimeFallbackOverride(value),
@@ -679,6 +700,7 @@ function autoPassPreviewInspectorRuntimeFallback(fallbackId) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbacks.has(fallbackId)) return;
   previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
+  previewInspectorSession.runtimeFallbackSmartPathSignatures.delete(fallbackId);
   previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId);
   previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
   const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
@@ -720,6 +742,9 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
   const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
   const manualValue = previewInspectorSession.runtimeFallbackOverrides.get(fallbackId);
   const wasSmart = previewInspectorSession.runtimeFallbackSmartIds.has(fallbackId);
+  const pathSignature = createPreviewInspectorRuntimeFallbackPathSignature(record.requiredPaths);
+  const previousPathSignature =
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.get(fallbackId);
   if (manualValue !== undefined) {
     const minimum = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
       fallback,
@@ -734,14 +759,29 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
     }
     previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
-    return completion.changed || !wasSmart;
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+    // The selected branch can disappear before the instrumented hook executes again. Reflect the
+    // Smart state in the registry now so an obsolete Auto record cannot repeatedly occupy the next
+    // target-reachability frontier while waiting for a re-registration that may never happen.
+    previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+      ...record,
+      mode: 'smart-manual',
+    });
+    return completion.changed || !wasSmart || previousPathSignature !== pathSignature;
   }
   previewInspectorSession.runtimeFallbackValues.set(
     fallbackId,
     createPreviewInspectorRuntimeFallbackSmartValue(fallback, record.requiredPaths),
   );
   previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
-  return !wasSmart;
+  previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+  // Keep frontier selection and Inspector presentation synchronized with the value mutation even
+  // when Smart Fill itself removes the component that originally registered this fallback.
+  previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+    ...record,
+    mode: 'smart',
+  });
+  return !wasSmart || previousPathSignature !== pathSignature;
 }
 
 /** Replaces one generated hook result with only the paths proven necessary by downstream reads. */
@@ -787,13 +827,28 @@ function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
 function smartFillPreviewInspectorRuntimeFallbacksForReachability(reachabilityKey, options = {}) {
   initializePreviewInspectorRuntimeFallbackState();
   const preserveUserValues = options?.preserveUserValues === true;
+  const admittedIds = Array.isArray(options?.recordIds)
+    ? new Set(options.recordIds.filter((value) => typeof value === 'string'))
+    : undefined;
+  const changeLimit = Number.isSafeInteger(options?.changeLimit)
+    ? Math.max(1, Math.min(24, options.changeLimit))
+    : 24;
   let changed = false;
+  let changeCount = 0;
   for (const record of previewInspectorSession.runtimeFallbacks.values()) {
     if (record.reachabilityKey !== reachabilityKey) continue;
+    if (record.passive === true || (admittedIds !== undefined && !admittedIds.has(record.id))) {
+      continue;
+    }
     if (preserveUserValues && previewInspectorSession.runtimeFallbackOverrides.has(record.id)) {
       continue;
     }
-    changed = applyPreviewInspectorRuntimeFallbackSmartValue(record.id) || changed;
+    const recordChanged = applyPreviewInspectorRuntimeFallbackSmartValue(record.id);
+    changed = recordChanged || changed;
+    if (recordChanged) {
+      changeCount += 1;
+      if (changeCount >= changeLimit) break;
+    }
   }
   if (changed) previewInspectorSession.fallbackValuesEnabled = true;
   return changed;
@@ -804,6 +859,7 @@ function resetPreviewInspectorRuntimeFallbackOverride(fallbackId) {
   initializePreviewInspectorRuntimeFallbackState();
   if (!previewInspectorSession.runtimeFallbackOverrides.delete(fallbackId)) return;
   previewInspectorSession.runtimeFallbackSmartIds.delete(fallbackId);
+  previewInspectorSession.runtimeFallbackSmartPathSignatures.delete(fallbackId);
   previewInspectorSession.runtimeFallbackMaterializedOverrides.delete(fallbackId);
   commitPreviewInspectorRuntimeFallbackChange();
 }

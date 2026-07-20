@@ -115,12 +115,20 @@ function guidePreviewInspectorPayloadTowardReachability(
 function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey, options = {}) {
   initializePreviewInspectorDataState();
   const preserveUserValues = options?.preserveUserValues === true;
+  const admittedIds = Array.isArray(options?.recordIds)
+    ? new Set(options.recordIds.filter((value) => typeof value === 'string'))
+    : undefined;
+  const changeLimit = Number.isSafeInteger(options?.changeLimit)
+    ? Math.max(1, Math.min(12, options.changeLimit))
+    : 12;
   const applicationPath = options?.applicationPath ?? [];
   const routeWords = readPreviewInspectorReachabilityWords(applicationPath);
   const roleRouteWords = readPreviewInspectorReachabilityRoleWords(applicationPath);
   let changed = false;
+  let changeCount = 0;
   for (const record of previewInspectorSession.dataRequests.values()) {
     if (record.reachabilityKey !== reachabilityKey) continue;
+    if (admittedIds !== undefined && !admittedIds.has(record.id)) continue;
     const current = previewInspectorSession.dataPayloadOverrides.get(record.id);
     if (preserveUserValues && current !== undefined) continue;
     const generated = generatePreviewInspectorDataValue(record.shape, '', 'smart');
@@ -137,7 +145,12 @@ function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey, o
     const payloadChanged = current?.mode !== mode ||
       stringifyPreviewInspectorProps(current?.payload) !== stringifyPreviewInspectorProps(payload);
     if (payloadChanged) {
-      changed = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode) || changed;
+      const recordChanged = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode);
+      changed = recordChanged || changed;
+      if (recordChanged) {
+        changeCount += 1;
+        if (changeCount >= changeLimit) break;
+      }
     }
   }
   if (changed) previewInspectorSession.dataAutoEnabled = true;

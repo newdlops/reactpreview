@@ -173,13 +173,36 @@ function normalizePreviewInspectorDataShape(shape, depth = 0, budget = { fields:
 /** Infers a scalar family from common API/GraphQL field naming conventions. */
 function inferPreviewInspectorSemanticKind(fieldName) {
   const name = String(fieldName).replaceAll('_', '').toLowerCase();
-  if (/^(is|has|can|should|allow|enable|disable|visible|active|selected|checked)/u.test(name)) {
+  if (
+    /^(is|has|can|should|allow|enable|disable|visible|active|selected|checked)/u.test(name) ||
+    /^(called|completed|finished|succeeded)$/u.test(name)
+  ) {
     return 'boolean';
   }
-  if (/(count|total|length|size|index|page|limit|offset|amount|price|cost|fee|rate|ratio|percent|salary|wage)$/u.test(name)) {
+  const paginationNumber = /^(page|currentpage|nextpage|previouspage|totalpages|pageindex|pagenumber)$/u.test(name);
+  const sumNumber = name === 'sum' || /Sum$/u.test(String(fieldName)) || /_sum$/iu.test(String(fieldName));
+  if (
+    paginationNumber ||
+    sumNumber ||
+    /(count|total|length|size|index|limit|offset|amount|price|cost|fee|rate|ratio|percent|salary|wage)$/u.test(name)
+  ) {
     return 'number';
   }
   return 'string';
+}
+
+/**
+ * Recognizes an empty object descriptor that is more likely a lost scalar leaf than an authored
+ * record. This deliberately accepts only strong display/primitive names; arbitrary empty objects
+ * such as metadata and variables must remain objects for downstream property access.
+ */
+function inferPreviewInspectorEmptyObjectScalarKind(fieldName) {
+  const name = String(fieldName).replaceAll('_', '').toLowerCase();
+  const semanticKind = inferPreviewInspectorSemanticKind(fieldName);
+  if (semanticKind !== 'string') return semanticKind;
+  return /(caption|description|headline|label|message|name|subject|summary|text|title)$/u.test(name)
+    ? 'string'
+    : undefined;
 }
 
 /** Recognizes field names that conventionally represent collections without a formal schema. */
@@ -246,27 +269,51 @@ function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
   return keyText;
 }
 
+/** Keeps additive aggregates neutral while retaining useful positive samples for other numbers. */
+function createPreviewInspectorNumberValue(fieldName, itemIndex) {
+  const name = String(fieldName).replaceAll('_', '').toLowerCase();
+  const isSum = name === 'sum' || /Sum$/u.test(String(fieldName)) || /_sum$/iu.test(String(fieldName));
+  return isSum ? 0 : itemIndex + 1;
+}
+
 /** Materializes one payload from an already-normalized shape without repeating tree validation. */
 function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex, depth) {
   if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT) return null;
   if (shape.kind === 'array') {
-    const indexes = mode === 'smart' ? [0] : [0, 1];
+    // An unknown item has no proven fields, so expose only neutral objects. Corridor Auto remains
+    // empty to avoid activating unrelated siblings during the initial page pass; once a request is
+    // deliberately selected by Smart/Lorem, a bounded item lets map/render traversal discover the
+    // next concrete requirement without inventing truthy flags, enum values, or backend identity.
+    if (shape.items?.kind === 'unknown') {
+      const indexes = mode === 'corridor-auto' ? [] : mode === 'smart' ? [0] : [0, 1];
+      return indexes.map(() => ({}));
+    }
+    // Initial authored-page traversal keeps lists empty so unrelated dashboard siblings cannot
+    // execute enum switches before target reachability is known. The incremental Smart frontier
+    // adds one typed item for a selected request; ordinary gallery Auto and Lorem retain samples.
+    const indexes = mode === 'corridor-auto' ? [] : mode === 'smart' ? [0] : [0, 1];
     return indexes.map((index) =>
       materializePreviewInspectorDataValue(shape.items, fieldName, mode, index, depth + 1),
     );
   }
   if (shape.kind === 'object') {
+    const fields = shape.fields !== null && typeof shape.fields === 'object' ? shape.fields : {};
+    if (Object.keys(fields).length === 0) {
+      const scalarKind = inferPreviewInspectorEmptyObjectScalarKind(fieldName);
+      if (scalarKind === 'boolean') return createPreviewInspectorBooleanValue(fieldName);
+      if (scalarKind === 'number') return createPreviewInspectorNumberValue(fieldName, itemIndex);
+      if (scalarKind === 'string') return createPreviewInspectorStringValue(fieldName, mode, itemIndex);
+    }
     return createPreviewInspectorObjectValue(shape.fields, fieldName, mode, itemIndex, depth);
   }
   if (shape.kind === 'boolean') return createPreviewInspectorBooleanValue(fieldName);
-  if (shape.kind === 'number') return itemIndex + 1;
+  if (shape.kind === 'number') return createPreviewInspectorNumberValue(fieldName, itemIndex);
   if (shape.kind === 'null') return null;
-  if (shape.kind === 'unknown' && looksLikePreviewInspectorCollection(fieldName)) {
-    const indexes = mode === 'smart' ? [0] : [0, 1];
-    return indexes.map((index) => ({
-      id: 'preview-' + String(index + 1),
-      name: createPreviewInspectorStringValue('name', mode, index),
-    }));
+  if (shape.kind === 'unknown') {
+    if (looksLikePreviewInspectorCollection(fieldName)) return [];
+    const scalarKind = inferPreviewInspectorSemanticKind(fieldName);
+    if (scalarKind === 'boolean') return createPreviewInspectorBooleanValue(fieldName);
+    if (scalarKind === 'number') return createPreviewInspectorNumberValue(fieldName, itemIndex);
   }
   return createPreviewInspectorStringValue(fieldName, mode, itemIndex);
 }
@@ -392,12 +439,22 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
   const normalized = normalizePreviewInspectorDataRequest(metadata, seedPayload);
   const previous = previewInspectorSession.dataRequests.get(normalized.id);
   const shapeFingerprint = stringifyPreviewInspectorProps(normalized.shape);
-  const autoPayload = previous?.shapeFingerprint === shapeFingerprint
+  const autoPayloadProfile =
+    typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
+      ? 'corridor-auto'
+      : 'auto';
+  // Auto and Corridor Auto intentionally materialize arrays differently. Include the profile in
+  // the cache identity so opening/closing target traversal cannot reuse a broad gallery payload in
+  // a guarded page corridor (or keep a corridor payload empty after returning to the gallery).
+  const autoPayload =
+    previous?.shapeFingerprint === shapeFingerprint &&
+    previous?.autoPayloadProfile === autoPayloadProfile
     ? previous.autoPayload
-    : generatePreviewInspectorDataValue(normalized.shape, '', 'auto');
+    : generatePreviewInspectorDataValue(normalized.shape, '', autoPayloadProfile);
   const next = {
     ...normalized,
     autoPayload,
+    autoPayloadProfile,
     observedCount: (previous?.observedCount ?? 0) + 1,
     reachabilityKey:
       typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
@@ -407,6 +464,17 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
     shapeFingerprint,
   };
   const override = previewInspectorSession.dataPayloadOverrides.get(normalized.id);
+  if (
+    previous !== undefined &&
+    previous.autoPayloadProfile !== autoPayloadProfile &&
+    override === undefined &&
+    previewInspectorSession.dataAutoEnabled
+  ) {
+    // The virtual backend retains canonical GET/GraphQL state across reads. Reset only its inferred
+    // resource when the Auto profile changes, otherwise that lower cache could mask the correctly
+    // regenerated corridor payload. Authored Smart/Lorem/custom fixtures remain untouched.
+    clearPreviewInspectorVirtualBackendResource(normalized.id);
+  }
   const payloadMode = override?.mode ?? (previewInspectorSession.dataAutoEnabled ? 'auto' : 'seed');
   const selectedPayload = override?.payload ?? (previewInspectorSession.dataAutoEnabled
     ? autoPayload
@@ -427,6 +495,7 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
     previous.label !== registered.label ||
     previous.evidence !== registered.evidence ||
     previous.shapeFingerprint !== shapeFingerprint ||
+    previous.autoPayloadProfile !== autoPayloadProfile ||
     previous.virtualBackend?.resourceKey !== virtualBackend.resourceKey ||
     previous.virtualBackend?.variantKey !== virtualBackend.variantKey
   ) {

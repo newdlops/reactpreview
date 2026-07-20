@@ -1,6 +1,7 @@
 /** Exercises target-guided DFS selection without mounting project React code. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createPreviewInspectorRequirementFrontierRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRequirementFrontierRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetReachabilityRuntimeSource';
 
 /** Minimal pure helper result exposed by the generated runtime fixture. */
@@ -245,8 +246,118 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('smartFillPreviewInspectorTargetApplicationPath');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallbacksForReachability');
     expect(source).toContain('smartFillPreviewInspectorDataPayloadsForReachability');
+    expect(source).toContain('autoRevealPreviewInspectorOverlayTarget(state.targetExportName)');
+    expect(source).not.toContain('OVERLAY_TARGET_NAME_PATTERN');
     expect(source).toContain('startPreviewInspectorDeterministicRequirementSearch');
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
+  });
+
+  /** Prioritizes a bounded target corridor frontier and excludes passive hook observations. */
+  it('selects incremental path-local hook and backend requirement batches', () => {
+    const context: {
+      __result?: { readonly hookIds: readonly string[]; readonly requestIds: readonly string[] };
+    } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'Target',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const hooks = [
+          ...Array.from({ length: 10 }, (_, index) => ({
+            hookName: 'useSibling' + index,
+            id: 'sibling-hook-' + index,
+            mode: 'auto',
+            ownerName: 'Sibling' + index,
+            reachabilityKey: 'page:Target',
+            requiredPaths: ['value'],
+            sourcePath: '/Sibling' + index + '.tsx',
+          })),
+          {
+            hookName: 'useTarget', id: 'target-hook', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', requiredPaths: ['value'], sourcePath: '/Target.tsx',
+          },
+          {
+            hookName: 'usePassive', id: 'passive-hook', mode: 'auto', ownerName: 'Target',
+            passive: true, reachabilityKey: 'page:Target', requiredPaths: ['<root>'],
+            sourcePath: '/Target.tsx',
+          },
+        ];
+        const requests = [
+          ...Array.from({ length: 6 }, (_, index) => ({
+            id: 'sibling-request-' + index,
+            label: 'Sibling request ' + index,
+            mode: 'auto',
+            ownerName: 'Sibling' + index,
+            reachabilityKey: 'page:Target',
+            sourcePath: '/Sibling' + index + '.tsx',
+          })),
+          {
+            id: 'target-request', label: 'Target request', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', sourcePath: '/Target.tsx',
+          },
+        ];
+        const readPreviewInspectorRuntimeFallbacks = () => hooks;
+        const readPreviewInspectorDataRequests = () => requests;
+        const readPreviewInspectorDataShapePaths = () => [];
+        ${createPreviewInspectorTargetReachabilityRuntimeSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { Target: { paths: [] } },
+          target: { exportName: 'Target' },
+        } };
+        const candidate = {
+          edges: [], id: 'page', root: { exportName: 'Page' },
+          renderPath: { id: 'path', steps: [
+            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
+          ] },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        globalThis.__result = readPreviewInspectorRequirementBatch(
+          descriptor, candidate, state, false,
+        );
+      `,
+      context,
+    );
+
+    expect(context.__result?.hookIds).toEqual(['target-hook']);
+    expect(context.__result?.hookIds).not.toContain('passive-hook');
+    expect(context.__result?.requestIds).toEqual(['target-request']);
+  });
+
+  /** Retains bounded progress for anonymous requirements when no path correlation exists at all. */
+  it('uses the frontier limits as a last-resort batch for entirely unscored observations', () => {
+    const context: {
+      __result?: { readonly hookIds: readonly string[]; readonly requestIds: readonly string[] };
+    } = {};
+    vm.runInNewContext(
+      `
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          nameScores: new Map(), paths: [],
+        });
+        const readPreviewInspectorRuntimeFallbacks = () =>
+          Array.from({ length: 10 }, (_, index) => ({
+            id: 'hook-' + index, mode: 'auto', reachabilityKey: 'page:Target',
+          }));
+        const readPreviewInspectorDataRequests = () =>
+          Array.from({ length: 6 }, (_, index) => ({
+            id: 'request-' + index, mode: 'auto', reachabilityKey: 'page:Target',
+          }));
+        const readPreviewInspectorDataShapePaths = () => [];
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        globalThis.__result = readPreviewInspectorRequirementBatch(
+          {}, {}, { key: 'page:Target' }, false,
+        );
+      `,
+      context,
+    );
+
+    expect(context.__result?.hookIds).toHaveLength(8);
+    expect(context.__result?.requestIds).toHaveLength(4);
   });
 
   /** Batches minimum hook/data fixtures and preserves already proven corridor branch choices. */

@@ -24,6 +24,19 @@ interface SmartPropsRuntime {
   readonly storedOverride: Readonly<Record<string, unknown>>;
 }
 
+/** Result of the deterministic hidden-overlay recovery path. */
+interface OverlayRevealRuntime {
+  readonly decisions: readonly Readonly<Record<string, unknown>>[];
+  readonly fallbackEnabled: boolean;
+  readonly path?: string;
+  readonly storedOverride: Readonly<Record<string, unknown>>;
+}
+
+/** Result of correlating one React target error to compiler-proven external props. */
+interface TargetPropFailureRuntime {
+  readonly paths: readonly string[];
+}
+
 /** Optional runtime layers used to reproduce pre-commit nullish prop failures. */
 interface SmartPropsFixtureOptions {
   readonly observedProps?: Readonly<Record<string, unknown>>;
@@ -106,7 +119,187 @@ describe('Preview Inspector Smart props runtime source', () => {
 
     expect(runtime.draft.value.field).toEqual({ value: { address: '서울특별시' } });
   });
+
+  /** Opens an overlay only when a compiler-proven boolean visibility prop has one safe answer. */
+  it('reveals a cold modal target and records the generated visibility value', () => {
+    const runtime = evaluateOverlayRevealRuntime();
+
+    expect(runtime.path).toBe('show');
+    expect(runtime.fallbackEnabled).toBe(true);
+    expect(runtime.storedOverride).toEqual({ show: true, title: '' });
+    expect(runtime.decisions).toEqual([
+      expect.objectContaining({
+        blockerId: 'target-overlay:DeleteModal',
+        generatedPaths: ['show'],
+        mode: 'target-overlay-auto',
+        selectedValue: { show: true, title: '' },
+        startsRenderAttempt: true,
+      }),
+    ]);
+  });
+
+  /** Never replaces an explicit false entered by the user merely to make a hidden target visible. */
+  it('keeps a user visibility override authoritative', () => {
+    const runtime = evaluateOverlayRevealRuntime({ show: false });
+
+    expect(runtime.path).toBeUndefined();
+    expect(runtime.fallbackEnabled).toBe(false);
+    expect(runtime.storedOverride).toEqual({});
+    expect(runtime.decisions).toEqual([]);
+  });
+
+  /** Leaves two independent visibility switches for the user because neither is uniquely proven. */
+  it('does not guess between multiple overlay visibility props', () => {
+    const runtime = evaluateOverlayRevealRuntime(undefined, ['open', 'visible']);
+
+    expect(runtime.path).toBeUndefined();
+    expect(runtime.fallbackEnabled).toBe(false);
+    expect(runtime.storedOverride).toEqual({});
+    expect(runtime.decisions).toEqual([]);
+  });
+
+  /** Maps React's authored function name back to a default export before filling its array prop. */
+  it('correlates a default export runtime owner with one compiler-proven prop path', () => {
+    const runtime = evaluateTargetPropFailureRuntime({
+      blockedComponentName: 'PageComponent',
+      errorMessage: "Cannot read properties of undefined (reading 'map')",
+      exportName: 'default',
+      inferredProps: [{ kind: 'array', path: 'filters.items', source: 'type' }],
+      runtimeOwnerNames: ['PageComponent'],
+    });
+
+    expect(runtime.paths).toEqual(['filters.items.map()']);
+  });
+
+  /** Keeps a target-owned hook/local receiver out of external props even under the same component. */
+  it('does not project a hook-local receiver path onto the selected export props', () => {
+    const runtime = evaluateTargetPropFailureRuntime({
+      blockedComponentName: 'InvestmentPage',
+      errorMessage: 'captableRequestNotification.count is not a function',
+      exportName: 'InvestmentPage',
+      inferredProps: [{ kind: 'string', path: 'title', source: 'type' }],
+      runtimeOwnerNames: ['InvestmentPage'],
+    });
+
+    expect(runtime.paths).toEqual([]);
+  });
 });
+
+/** Inputs for the selected-export owner and error-path correlation fixture. */
+interface TargetPropFailureFixtureOptions {
+  readonly blockedComponentName: string;
+  readonly errorMessage: string;
+  readonly exportName: string;
+  readonly inferredProps: readonly Readonly<Record<string, unknown>>[];
+  readonly runtimeOwnerNames: readonly string[];
+}
+
+/** Evaluates target prop correlation independently from React mounting and the blocker UI. */
+function evaluateTargetPropFailureRuntime(
+  options: TargetPropFailureFixtureOptions,
+): TargetPropFailureRuntime {
+  const context: { __targetPropFailure?: TargetPropFailureRuntime } = {};
+  vm.runInNewContext(
+    `
+      const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+      const previewInspectorSession = {
+        basePropsByExport: new Map(),
+        descriptors: [{
+          exportName: ${JSON.stringify(options.exportName)},
+          inspector: {
+            pageCandidates: [],
+            target: { exportName: ${JSON.stringify(options.exportName)} },
+            targetInferredProps: ${JSON.stringify(options.inferredProps)},
+          },
+        }],
+        directTargetRuntimeOwnerNamesByExport: new Map([[
+          ${JSON.stringify(options.exportName)},
+          new Set(${JSON.stringify(options.runtimeOwnerNames)}),
+        ]]),
+        overridesByExport: new Map(),
+      };
+      const readSelectedPreviewInspectorPageCandidate = () => undefined;
+      const createPreviewInspectorRootName = (root) => root.exportName;
+      ${createPreviewAutomaticPropsRuntimeSource()}
+      ${createPreviewInspectorFailureEvidenceRuntimeSource()}
+      ${createPreviewInspectorGeneratedValueRuntimeSource()}
+      ${createPreviewInspectorBlockerValueRuntimeSource()}
+      ${createPreviewInspectorSmartPropsRuntimeSource()}
+      const paths = readPreviewInspectorTargetPropFailurePaths(
+        ${JSON.stringify(options.exportName)},
+        ${JSON.stringify(options.blockedComponentName)},
+        new TypeError(${JSON.stringify(options.errorMessage)}),
+      );
+      globalThis.__targetPropFailure = { paths };
+    `,
+    context,
+  );
+  if (context.__targetPropFailure === undefined) {
+    throw new Error('Target prop failure runtime fixture did not initialize.');
+  }
+  return context.__targetPropFailure;
+}
+
+/** Evaluates the overlay-only recovery without mounting project React or invoking a modal portal. */
+function evaluateOverlayRevealRuntime(
+  overrideProps?: Readonly<Record<string, unknown>>,
+  visibilityNames: readonly string[] = ['show'],
+): OverlayRevealRuntime {
+  const inferredProperties: Record<string, { readonly kind: string }> = {
+    title: { kind: 'string' },
+  };
+  for (const visibilityName of visibilityNames) {
+    inferredProperties[visibilityName] = { kind: 'boolean' };
+  }
+  const inferredProps = [
+    ...visibilityNames.map((path) => ({ kind: 'boolean', path, source: 'type' })),
+    { kind: 'string', path: 'title', source: 'type' },
+  ];
+  const context: { __overlayReveal?: OverlayRevealRuntime } = {};
+  vm.runInNewContext(
+    `
+      const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+      const decisions = [];
+      let fallbackEnabled = false;
+      let storedOverride = {};
+      const previewInspectorSession = {
+        basePropsByExport: new Map(),
+        descriptors: [{
+          exportName: 'DeleteModal',
+          inspector: {
+            pageCandidates: [],
+            target: { exportName: 'DeleteModal' },
+            targetInferredPropShape: {
+              kind: 'object',
+              properties: ${JSON.stringify(inferredProperties)},
+            },
+            targetInferredProps: ${JSON.stringify(inferredProps)},
+          },
+        }],
+        overridesByExport: new Map(${JSON.stringify(
+          overrideProps === undefined ? [] : [['DeleteModal', overrideProps]],
+        )}),
+      };
+      const readSelectedPreviewInspectorPageCandidate = () => undefined;
+      const createPreviewInspectorRootName = (root) => root.exportName;
+      const setPreviewInspectorFallbackValuesEnabled = (value) => { fallbackEnabled = value; };
+      const setPreviewInspectorPropsOverride = (_exportName, value) => { storedOverride = value; };
+      const recordPreviewInspectorBlockerAutoDecision = (decision) => decisions.push(decision);
+      ${createPreviewAutomaticPropsRuntimeSource()}
+      ${createPreviewInspectorFailureEvidenceRuntimeSource()}
+      ${createPreviewInspectorGeneratedValueRuntimeSource()}
+      ${createPreviewInspectorBlockerValueRuntimeSource()}
+      ${createPreviewInspectorSmartPropsRuntimeSource()}
+      const path = autoRevealPreviewInspectorOverlayTarget('DeleteModal');
+      globalThis.__overlayReveal = { decisions, fallbackEnabled, path, storedOverride };
+    `,
+    context,
+  );
+  if (context.__overlayReveal === undefined) {
+    throw new Error('Overlay reveal runtime fixture did not initialize.');
+  }
+  return context.__overlayReveal;
+}
 
 /** Evaluates generated helpers with one nested target descriptor and no project React execution. */
 function evaluateSmartPropsRuntime(options: SmartPropsFixtureOptions = {}): SmartPropsRuntime {

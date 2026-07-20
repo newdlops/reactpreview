@@ -713,6 +713,25 @@ describe('Preview Inspector runtime fallback source', () => {
     ).toEqual([{ id: 'preview-1', name: 'name' }]);
   });
 
+  /** Preserves router-style push APIs because the verb alone does not prove an Array receiver. */
+  it('materializes an ambiguous push call as an object method', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['push()'],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      metadata,
+    ) as { push: () => unknown };
+
+    expect(Array.isArray(resolved)).toBe(false);
+    expect(typeof resolved.push).toBe('function');
+    expect(resolved.push()).toBeUndefined();
+  });
+
   /** Removes unrelated inferred siblings and retains exactly one semantic leaf per demanded path. */
   it('smart-fills the minimum compiler-proven hook result shape', () => {
     const fixture = createRuntimeFallbackFixture(true);
@@ -731,6 +750,7 @@ describe('Preview Inspector runtime fallback source', () => {
       metadata,
     );
     fixture.api.smart('hook-1');
+    expect(fixture.api.read()[0]?.mode).toBe('smart');
     const smart = fixture.api.resolve(
       () => undefined,
       () => ({ ignoredAfterStableFallbackCreation: true }),
@@ -826,6 +846,44 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(resolved.data).toEqual({ company: {} });
     expect(resolved.fallback).toBeNull();
     expect(typeof resolved.refetch).toBe('function');
+  });
+
+  /** Reopens a settled edge when a later render or hot edit proves another demanded hook path. */
+  it('smart-fills newly discovered paths on an existing hook identity', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const initial = { ...createMetadata(), requiredPaths: ['profile.name'] };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ profile: { name: 'Preview name' } }),
+      initial,
+    );
+    expect(fixture.api.smartReachability('page:Target')).toBe(true);
+
+    const expanded = {
+      ...initial,
+      requiredPaths: ['profile.name', 'profile.email'],
+    };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ ignoredAfterStableCreation: true }),
+      expanded,
+    );
+    expect(fixture.api.read()[0]).toMatchObject({
+      mode: 'auto',
+      requiredPaths: expanded.requiredPaths,
+    });
+    expect(fixture.api.smartReachability('page:Target')).toBe(true);
+
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      expanded,
+    ) as { profile: { email: string; name: string } };
+    expect(resolved.profile).toMatchObject({
+      email: 'preview@example.invalid',
+      name: 'Preview name',
+    });
+    expect(fixture.api.smartReachability('page:Target')).toBe(false);
   });
 
   /** Reports a corridor change only once so bounded discovery does not remount stable hook values. */

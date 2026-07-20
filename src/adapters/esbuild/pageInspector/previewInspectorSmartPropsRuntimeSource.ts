@@ -110,6 +110,79 @@ function hasPreviewInspectorSmartPropEvidence(exportName) {
 }
 
 /**
+ * Proves that one React stack name belongs to the exact selected export facade.
+ *
+ * Default exports are reported by React with their authored function name rather than the literal
+ * string "default". The target renderer already retains that function/display name before invoking
+ * it. Common HOC display names such as "Connect(AccountPage)" are tokenized, while arbitrary
+ * descendant stack names are never admitted merely because they occur below the target boundary.
+ */
+function isPreviewInspectorSelectedTargetOwnerName(exportName, blockedComponentName) {
+  if (
+    typeof exportName !== 'string' || typeof blockedComponentName !== 'string' ||
+    blockedComponentName.length === 0
+  ) return false;
+  if (blockedComponentName === exportName) return true;
+  const retained = previewInspectorSession.directTargetRuntimeOwnerNamesByExport?.get(exportName);
+  if (!(retained instanceof Set)) return false;
+  for (const ownerName of retained) {
+    if (ownerName === blockedComponentName) return true;
+    const componentTokens = typeof ownerName === 'string'
+      ? ownerName.match(/[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*/gu) ?? []
+      : [];
+    if (componentTokens.includes(blockedComponentName)) return true;
+  }
+  return false;
+}
+
+/** Removes call syntax and an explicit React props receiver for static path comparison. */
+function normalizePreviewInspectorTargetPropDiagnosticPath(path) {
+  if (typeof path !== 'string') return { explicitProps: false, path: '' };
+  let normalized = path.replaceAll('?.', '.').replace(/\?$/u, '').replace(/\(\)$/u, '');
+  let explicitProps = false;
+  for (const prefix of ['this.props.', 'props.']) {
+    if (!normalized.startsWith(prefix)) continue;
+    normalized = normalized.slice(prefix.length);
+    explicitProps = true;
+    break;
+  }
+  return { explicitProps, path: normalized };
+}
+
+/** Reports whether a runtime path overlaps one compiler-proven selected-export prop path. */
+function matchesPreviewInspectorTargetPropRecord(path, sourcePathRecords) {
+  if (path.length === 0 || !path.includes('.')) return false;
+  return sourcePathRecords.some((record) => {
+    const recordPath = normalizePreviewInspectorTargetPropDiagnosticPath(record?.path).path;
+    return recordPath.length > 0 && (
+      path === recordPath || path.startsWith(recordPath + '.') || recordPath.startsWith(path + '.')
+    );
+  });
+}
+
+/**
+ * Correlates a selected-target failure to external props without projecting hook/local receivers.
+ *
+ * A unique compiler correlation changes a short runtime diagnostic such as "map" into a full prop
+ * path such as "items.map()" and is therefore safe. Unchanged paths are accepted only when the
+ * engine named "props"/"this.props", or a multi-segment path overlaps compiler prop evidence. Bare
+ * "value" and project-local paths such as "queryResult.count" stay visible without mutating props.
+ */
+function readPreviewInspectorTargetPropFailurePaths(exportName, blockedComponentName, error) {
+  if (!isPreviewInspectorSelectedTargetOwnerName(exportName, blockedComponentName)) return [];
+  const evidence = readPreviewInspectorSmartPropEvidence(exportName);
+  const sourcePathRecords = readPreviewInspectorSmartPropPathRecords(evidence);
+  const directPaths = readPreviewInspectorErrorPropertyPaths(error);
+  const directPathSet = new Set(directPaths);
+  return readPreviewInspectorErrorPropertyPaths(error, sourcePathRecords).filter((candidate) => {
+    const normalized = normalizePreviewInspectorTargetPropDiagnosticPath(candidate);
+    if (normalized.explicitProps) return normalized.path.length > 0;
+    if (!directPathSet.has(candidate)) return true;
+    return matchesPreviewInspectorTargetPropRecord(normalized.path, sourcePathRecords);
+  });
+}
+
+/**
  * Flattens the descriptor's full inferred shape so a UI provenance display limit cannot hide the
  * exact field needed for recovery. Shape nodes are extension-authored data and are still read via
  * own descriptors under strict depth/node budgets to avoid invoking a mutated project getter.
@@ -332,6 +405,88 @@ function applyPreviewInspectorSmartProps(exportName, requiredPaths = []) {
   setPreviewInspectorFallbackValuesEnabled(true);
   setPreviewInspectorPropsOverride(exportName, draft.value);
   return draft;
+}
+
+/** Visibility prop spellings that can reveal an otherwise mounted-but-empty overlay export. */
+const previewInspectorOverlayVisibilityPropNames = new Set([
+  'active',
+  'expanded',
+  'isopen',
+  'isvisible',
+  'open',
+  'present',
+  'show',
+  'shown',
+  'visible',
+]);
+
+/** Writes one compiler-proven plain prop path without accepting calls, arrays, or prototype keys. */
+function setPreviewInspectorSmartBooleanProp(value, rawPath) {
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (
+    parsed === undefined || parsed.callable || parsed.collection || parsed.path.length === 0 ||
+    value === null || typeof value !== 'object' || Array.isArray(value)
+  ) return false;
+  let current = value;
+  for (const [index, propertyName] of parsed.path.entries()) {
+    if (previewInspectorSmartPropBlockedNames.has(propertyName) || /^\d+$/u.test(propertyName)) {
+      return false;
+    }
+    if (index === parsed.path.length - 1) {
+      current[propertyName] = true;
+      return true;
+    }
+    if (
+      current[propertyName] === null || typeof current[propertyName] !== 'object' ||
+      Array.isArray(current[propertyName])
+    ) {
+      current[propertyName] = {};
+    }
+    current = current[propertyName];
+  }
+  return false;
+}
+
+/**
+ * Reveals a selected modal/drawer only when its declared boolean prop gives one deterministic answer.
+ * Existing user JSON remains authoritative; this automatic path is used solely for a cold target
+ * that mounted in its real page corridor but produced no host node.
+ */
+function autoRevealPreviewInspectorOverlayTarget(exportName) {
+  const evidence = readPreviewInspectorSmartPropEvidence(exportName);
+  if (!evidence.found || previewInspectorSession.overridesByExport.has(exportName)) return undefined;
+  const visibilityPaths = readPreviewInspectorSmartPropPathRecords(evidence)
+    .filter((record) => {
+      const leaf = record.path.split('.').at(-1)?.replaceAll('_', '').toLowerCase();
+      return record.kind === 'boolean' && previewInspectorOverlayVisibilityPropNames.has(leaf);
+    })
+    .map((record) => record.path)
+    .sort((left, right) => left.split('.').length - right.split('.').length || left.localeCompare(right));
+  // Two independent visibility flags do not admit one safe answer. Leave that semantic choice in
+  // the Inspector instead of opening an arbitrary flag merely because it sorts first.
+  if (visibilityPaths.length !== 1) return undefined;
+  const visibilityPath = visibilityPaths[0];
+  if (visibilityPath === undefined) return undefined;
+  const draft = createPreviewInspectorSmartPropsDraft(exportName, [visibilityPath]);
+  const value = copyPreviewInspectorBlockerValueForJson(draft.value, { nodes: 0 });
+  if (!setPreviewInspectorSmartBooleanProp(value, visibilityPath)) return undefined;
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: 'Reveal selected overlay target',
+      blockerId: 'target-overlay:' + exportName,
+      blockerKind: 'target-reachability',
+      blockerName: 'Hidden overlay · ' + exportName,
+      generatedPaths: [visibilityPath],
+      mode: 'target-overlay-auto',
+      ownerName: exportName,
+      reason: 'The selected overlay mounted without host output and has one declared visibility prop',
+      selectedValue: value,
+      startsRenderAttempt: true,
+    });
+  }
+  setPreviewInspectorFallbackValuesEnabled(true);
+  setPreviewInspectorPropsOverride(exportName, value);
+  return visibilityPath;
 }
 `;
 }

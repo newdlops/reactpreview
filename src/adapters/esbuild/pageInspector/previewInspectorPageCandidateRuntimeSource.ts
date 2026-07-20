@@ -193,7 +193,7 @@ function formatPreviewInspectorPageCandidate(candidate, index) {
     ? [...steps].reverse()
     : steps.slice(rootStepIndex + 1);
   for (const step of visibleSteps) {
-    for (const name of [step?.label, ...[...(step?.wrapperNames ?? [])].reverse()]) {
+    for (const name of [...[...(step?.wrapperNames ?? [])].reverse(), step?.label]) {
       if (typeof name === 'string' && name.length > 0 && names.at(-1) !== name) names.push(name);
     }
   }

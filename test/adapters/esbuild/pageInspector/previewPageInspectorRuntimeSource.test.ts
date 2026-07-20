@@ -202,6 +202,12 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("{ hash: 'SHA-256', name: 'HMAC' }");
     expect(source).toContain('gestureNonce, gestureToken');
     expect(source).toContain('findPreviewInspectorFiberTreeNodeByHost(snapshot, candidate)');
+    expect(source).toContain(
+      'rememberPreviewInspectorPickedElement(candidate, snapshot, selection)',
+    );
+    expect(source).toContain('PreviewInspectorHiddenElementControls');
+    expect(source).toContain('reconcilePreviewInspectorHiddenElements()');
+    expect(source).toContain('requestPreviewInspectorTreeReveal(selection.node.id)');
     expect(source).toContain('selectPreviewInspectorFiberTreeNode(snapshot, nodeId)');
     expect(source).toContain('const currentFileExportNames = [');
     expect(source).toContain('const orderedExportNames = [');
@@ -223,6 +229,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('selected component host node(s)');
     expect(source).toContain("[selection.hostNodes, snapshot.status === 'static']");
     expect(source).toContain('treeSelection[0].length > 0 || !treeSelection[1]');
+    expect(source).toContain('capturePreviewInspectorCompanionTreeSelection(control, message)');
+    expect(source).toContain('pendingTreeReveal');
     expect(source).toContain("type: 'react-preview-inspector-open-source'");
     expect(source).toContain('function setPreviewInspectorCompanionShell(shell)');
     expect(source).toContain('function handlePreviewInspectorCompanionAction(event)');

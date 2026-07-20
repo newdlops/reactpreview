@@ -14,6 +14,7 @@ import { createPreviewInspectorCompanionRuntimeSource } from './previewInspector
 import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
+import { createPreviewInspectorElementVisibilityRuntimeSource } from './previewInspectorElementVisibilityRuntimeSource';
 import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewInspectorGraphqlDocumentRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from './previewInspectorPageCandidateRuntimeSource';
 import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPropsUiRuntimeSource';
@@ -48,6 +49,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const consoleRuntimeSource = createPreviewInspectorConsoleRuntimeSource();
   const dataRuntimeSource = createPreviewInspectorDataRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
+  const elementVisibilityRuntimeSource = createPreviewInspectorElementVisibilityRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
   const graphqlDocumentRuntimeSource = createPreviewInspectorGraphqlDocumentRuntimeSource();
   const pageCandidateRuntimeSource = createPreviewInspectorPageCandidateRuntimeSource();
@@ -117,6 +119,8 @@ const previewInspectorPostHostMessage =
   previewHotRuntime.vscodeApi?.postMessage?.bind(previewHotRuntime.vscodeApi);
 
 ${fiberRuntimeSource}
+
+${elementVisibilityRuntimeSource}
 
 ${chainRuntimeSource}
 
@@ -552,14 +556,6 @@ function remountPreviewInspectorExport(exportName, persist = true) {
   schedulePreviewInspectorCommitRefresh();
 }
 
-/** Enables or disables target highlighting and restores every prior inline outline when disabled. */
-function setPreviewInspectorHighlightEnabled(enabled) {
-  previewInspectorSession.highlightEnabled = enabled === true;
-  persistPreviewInspectorState();
-  schedulePreviewInspectorTreeRefresh();
-  schedulePreviewInspectorHighlight();
-}
-
 /** Adds a boundary instance without exposing React's private Fiber fields. */
 function registerPreviewInspectorBoundary(exportName, boundary) {
   const boundaries = previewInspectorSession.boundariesByExport.get(exportName) ?? new Set();
@@ -573,210 +569,6 @@ function registerPreviewInspectorBoundary(exportName, boundary) {
     }
     schedulePreviewInspectorCommitRefresh();
   };
-}
-
-/** Accepts an explicit host element from future source instrumentation or the manual picker. */
-function registerPreviewInspectorTargetElement(exportName, element) {
-  const normalized = normalizePreviewInspectorHostElement(element);
-  if (normalized === undefined) {
-    return () => undefined;
-  }
-  const elements = previewInspectorSession.manualElementsByExport.get(exportName) ?? new Set();
-  elements.add(normalized);
-  previewInspectorSession.manualElementsByExport.set(exportName, elements);
-  schedulePreviewInspectorHighlight();
-  return () => {
-    elements.delete(normalized);
-    schedulePreviewInspectorHighlight();
-  };
-}
-
-/** Converts an element or text node into a measurable connected host element. */
-function normalizePreviewInspectorHostElement(value) {
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    value.nodeType === 1 &&
-    typeof value.getBoundingClientRect === 'function'
-  ) {
-    return value;
-  }
-  const parentElement = value?.parentElement;
-  return parentElement?.nodeType === 1 && typeof parentElement.getBoundingClientRect === 'function'
-    ? parentElement
-    : undefined;
-}
-
-/** Uses read-only tree lookup first and admits legacy findDOMNode as a public-version fallback. */
-function collectPreviewInspectorBoundaryElements(boundary) {
-  const fiberElements = collectPreviewInspectorFiberElements(boundary);
-  if (fiberElements.length > 0) {
-    return fiberElements;
-  }
-  const findDOMNode = ReactDOMNamespace.findDOMNode;
-  if (typeof findDOMNode !== 'function') {
-    return [];
-  }
-  try {
-    const element = normalizePreviewInspectorHostElement(findDOMNode(boundary));
-    return element === undefined ? [] : [element];
-  } catch {
-    return [];
-  }
-}
-
-/** Resolves a DevTools row selection back to its connected top-level host roots. */
-function collectSelectedPreviewInspectorTreeElements() {
-  const nodeId = previewInspectorSession.selectedTreeNodeId;
-  if (typeof nodeId !== 'string') return undefined;
-  const snapshot = previewInspectorSession.lastTreeSnapshot ?? collectPreviewInspectorTreeSnapshot();
-  const selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
-  return selection === undefined ? undefined : [selection.hostNodes, snapshot.status === 'static'];
-}
-
-/** Collects connected target elements for the selected export without traversing React internals. */
-function collectSelectedPreviewInspectorElements() {
-  const exportName = previewInspectorSession.selectedExportName;
-  if (previewInspectorSession.pickerCandidate !== undefined) {
-    return [previewInspectorSession.pickerCandidate];
-  }
-  const treeSelection = collectSelectedPreviewInspectorTreeElements();
-  if (treeSelection !== undefined && (treeSelection[0].length > 0 || !treeSelection[1])) return treeSelection[0];
-  const collected = [];
-  for (const boundary of previewInspectorSession.boundariesByExport.get(exportName) ?? []) {
-    collected.push(...collectPreviewInspectorBoundaryElements(boundary));
-  }
-  for (const element of previewInspectorSession.manualElementsByExport.get(exportName) ?? []) {
-    collected.push(element);
-  }
-  return [...new Set(collected)].filter(
-    (element) => element?.isConnected !== false && !isPreviewInspectorUiElement(element),
-  );
-}
-
-/** Detects toolbar, marker, and highlight nodes so the picker never selects its own chrome. */
-function isPreviewInspectorUiElement(element) {
-  return typeof element?.closest === 'function' &&
-    element.closest('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') !== null;
-}
-
-/** Saves and applies an important outline without changing the target's box dimensions. */
-function applyPreviewInspectorOutline(element) {
-  if (element.__reactPreviewInspectorOutline !== undefined) {
-    return;
-  }
-  element.__reactPreviewInspectorOutline = {
-    offset: element.style.getPropertyValue('outline-offset'),
-    offsetPriority: element.style.getPropertyPriority('outline-offset'),
-    outline: element.style.getPropertyValue('outline'),
-    outlinePriority: element.style.getPropertyPriority('outline'),
-  };
-  element.style.setProperty('outline', '2px solid #f2c94c', 'important');
-  element.style.setProperty('outline-offset', '2px', 'important');
-}
-
-/** Restores the exact inline outline values and priorities that existed before highlighting. */
-function restorePreviewInspectorOutline(element) {
-  const previous = element.__reactPreviewInspectorOutline;
-  if (previous === undefined) {
-    return;
-  }
-  if (previous.outline.length === 0) {
-    element.style.removeProperty('outline');
-  } else {
-    element.style.setProperty('outline', previous.outline, previous.outlinePriority);
-  }
-  if (previous.offset.length === 0) {
-    element.style.removeProperty('outline-offset');
-  } else {
-    element.style.setProperty('outline-offset', previous.offset, previous.offsetPriority);
-  }
-  delete element.__reactPreviewInspectorOutline;
-}
-
-/** Reconciles the highlighted host set and exposes a concise capability status to the toolbar. */
-function refreshPreviewInspectorHighlight() {
-  const nextElements = previewInspectorSession.highlightEnabled
-    ? collectSelectedPreviewInspectorElements()
-    : [];
-  const previousElements = previewInspectorSession.highlightedElements ?? new Set();
-  const nextElementSet = new Set(nextElements);
-  for (const element of previousElements) {
-    if (!nextElementSet.has(element)) {
-      restorePreviewInspectorOutline(element);
-    }
-  }
-  for (const element of nextElementSet) {
-    applyPreviewInspectorOutline(element);
-  }
-  previewInspectorSession.highlightedElements = nextElementSet;
-  const nextStatus = !previewInspectorSession.highlightEnabled
-    ? 'Component highlight is off.'
-    : nextElementSet.size > 0
-      ? 'Highlighting ' + String(nextElementSet.size) + ' selected component host node(s).'
-      : 'No selected component host node yet. Render it or use Pick element.';
-  if (nextStatus !== previewInspectorSession.highlightStatus) {
-    previewInspectorSession.highlightStatus = nextStatus;
-    schedulePreviewInspectorTreeRefresh();
-  }
-}
-
-/** Enables one-shot DOM selection while leaving normal application interaction untouched otherwise. */
-function setPreviewInspectorPickerEnabled(enabled) {
-  previewInspectorSession.pickerEnabled = enabled === true;
-  previewInspectorSession.pickerCandidate = undefined;
-  schedulePreviewInspectorTreeRefresh();
-  schedulePreviewInspectorHighlight();
-}
-
-/** Tracks a picker candidate without changing component props or application state. */
-function handlePreviewInspectorPointerMove(event) {
-  if (!previewInspectorSession.pickerEnabled) {
-    return;
-  }
-  const candidate = normalizePreviewInspectorHostElement(event.target);
-  if (candidate === undefined || isPreviewInspectorUiElement(candidate)) {
-    return;
-  }
-  previewInspectorSession.pickerCandidate = candidate;
-  schedulePreviewInspectorHighlight();
-}
-
-/** Maps a picked DOM host to its nearest component, with legacy manual-host fallback. */
-function handlePreviewInspectorPick(event) {
-  if (!previewInspectorSession.pickerEnabled) {
-    return;
-  }
-  const candidate = normalizePreviewInspectorHostElement(event.target);
-  if (candidate === undefined || isPreviewInspectorUiElement(candidate)) {
-    return;
-  }
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  previewInspectorSession.pickerCandidate = undefined;
-  previewInspectorSession.pickerEnabled = false;
-  const snapshot = collectPreviewInspectorTreeSnapshot();
-  const selection = findPreviewInspectorFiberTreeNodeByHost(snapshot, candidate);
-  if (selection === undefined) {
-    previewInspectorSession.selectedTreeNodeId = undefined;
-    registerPreviewInspectorTargetElement(
-      previewInspectorSession.selectedExportName,
-      candidate,
-    );
-  } else {
-    previewInspectorSession.selectedTreeNodeId = selection.node.id;
-    const exportName = selection.node.exportName;
-    if (
-      typeof exportName === 'string' &&
-      previewInspectorSession.descriptorNames.includes(exportName)
-    ) {
-      previewInspectorSession.selectedExportName = exportName;
-    }
-    previewInspectorSession.lastTreeSnapshot = snapshot;
-    persistPreviewInspectorState();
-  }
-  schedulePreviewInspectorTreeRefresh();
-  schedulePreviewInspectorHighlight();
 }
 
 /** Creates an isolated portal host whose fixed toolbar never wraps or sizes the application page. */

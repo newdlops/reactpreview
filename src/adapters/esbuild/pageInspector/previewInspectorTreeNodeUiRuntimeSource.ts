@@ -60,6 +60,7 @@ function PreviewInspectorComponentTreeNode({
   const isBlockedOwner = node.blockedOwner === true;
   const isCurrentFileExport = node.currentFileExport === true;
   const isActiveExport = node.exportName === previewInspectorSession.selectedExportName;
+  const hiddenHostCount = countPreviewInspectorHiddenElementsForTreeNode(node.id);
   const contextBadge = formatPreviewInspectorRenderContextBadge(node);
   const role = readPreviewInspectorTreeNodeRole(
     node,
@@ -155,6 +156,13 @@ function PreviewInspectorComponentTreeNode({
         : undefined,
       isActiveExport
         ? React.createElement('span', { className: 'rpi-badge' }, 'active')
+        : undefined,
+      hiddenHostCount > 0
+        ? React.createElement(
+            'span',
+            { className: 'rpi-badge', title: 'Exact picked host elements removed from layout' },
+            'hidden ' + String(hiddenHostCount),
+          )
         : undefined,
       node.mounted === false
         ? React.createElement('span', { className: 'rpi-badge' }, 'not mounted')

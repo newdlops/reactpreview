@@ -70,6 +70,7 @@ function schedulePreviewInspectorTreeRefresh() {
       previewInspectorSession.treeRefreshIdle = undefined;
       if (document.visibilityState === 'hidden') return;
       previewInspectorSession.lastTreeRefreshAt = readPreviewInspectorRefreshClock();
+      reconcilePreviewInspectorHiddenElements();
       notifyPreviewInspectorTreeSubscribers();
       schedulePreviewInspectorHighlight();
     };

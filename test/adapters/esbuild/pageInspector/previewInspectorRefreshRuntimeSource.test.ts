@@ -20,6 +20,7 @@ describe('Preview Inspector refresh runtime source', () => {
     const timerCallbacks: { readonly callback: () => void; readonly delay: number }[] = [];
     const highlight = vi.fn();
     const notifyTree = vi.fn();
+    const reconcileHiddenElements = vi.fn();
     let now = 1_000;
     const context: Record<string, unknown> & { __runtime?: RefreshRuntimeHarness } = {
       Date,
@@ -35,6 +36,7 @@ describe('Preview Inspector refresh runtime source', () => {
         treeDirty: false,
         treeListeners: new Set([vi.fn()]),
       },
+      reconcilePreviewInspectorHiddenElements: reconcileHiddenElements,
       refreshPreviewInspectorHighlight: highlight,
       requestAnimationFrame: (callback: () => void) => {
         frameCallbacks.push(callback);
@@ -73,6 +75,7 @@ describe('Preview Inspector refresh runtime source', () => {
     expect(notifyTree).not.toHaveBeenCalled();
 
     timerCallbacks.shift()?.callback();
+    expect(reconcileHiddenElements).toHaveBeenCalledTimes(1);
     expect(notifyTree).toHaveBeenCalledTimes(1);
     now += 1;
     runtime.tree();

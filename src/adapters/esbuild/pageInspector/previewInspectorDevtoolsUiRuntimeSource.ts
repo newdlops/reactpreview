@@ -10,6 +10,7 @@ import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLay
 import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspectorConditionUiRuntimeSource';
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
+import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 import { createPreviewInspectorBlockerFlowUiRuntimeSource } from './previewInspectorBlockerFlowUiRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
@@ -108,6 +109,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const conditionUiRuntimeSource = createPreviewInspectorConditionUiRuntimeSource();
   const consoleUiRuntimeSource = createPreviewInspectorConsoleUiRuntimeSource();
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
+  const hiddenElementsUiRuntimeSource = createPreviewInspectorHiddenElementsUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
   const blockerFlowUiRuntimeSource = createPreviewInspectorBlockerFlowUiRuntimeSource();
@@ -126,6 +128,7 @@ ${structureUiRuntimeSource}
 ${conditionUiRuntimeSource}
 ${consoleUiRuntimeSource}
 ${dataUiRuntimeSource}
+${hiddenElementsUiRuntimeSource}
 ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
 ${renderTreeUiRuntimeSource}
@@ -817,6 +820,7 @@ function PreviewInspectorToolbar() {
           },
           previewInspectorSession.pickerEnabled ? 'Cancel pick' : 'Pick on page',
         ),
+        React.createElement(PreviewInspectorHiddenElementControls),
         React.createElement(
           PreviewInspectorDevtoolsButton,
           {

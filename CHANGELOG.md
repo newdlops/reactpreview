@@ -2,6 +2,21 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1089 - 2026-07-20
+
+- Redux 대괄호 selector, Reselect 중간 객체, 중첩 destructure·collection 오류, 같은 파일의
+  `styled`·`memo`·`forwardRef` HOC를 정적으로 연결하고 default export의 실제 함수명까지 추적해 전체 데이터 경로와
+  export props를 복구하되, hook/local receiver는 target props에 잘못 투영하지 않도록 제한
+- Next.js App Router의 root-to-leaf `layout` 체인과 파일시스템 route를 페이지 shell로 합성하고, 관련 route source를
+  hot reload 의존성에 포함하며 동적 `params`·`searchParams`를 동기/Promise 양쪽에서 읽을 수 있게 제공해 선택
+  컴포넌트뿐 아니라 헤더·사이드바를 포함한 실제 페이지 맥락을 우선 렌더링
+- 분리된 모듈의 ReactDOM portal host와 exact ID selector, 패키지 CSS `style` export를 정적으로 발견하고 Tailwind
+  package import와 overlay root를 webview 시작 전에 준비하며, hot revision에서 확장 소유의 오래된 host만 정리
+- root-to-target 경로에 속한 hook/API만 작은 frontier로 순차 자동 생성하고 Auto payload cache를 모드별로 분리해,
+  형제 컴포넌트의 과잉 데이터 생성과 반복 렌더를 줄이면서 unknown list는 Smart 단계에서 최소 항목으로 확장
+- 자동 Blocker 수정은 결과가 3개 snapshot과 320ms 동안 안정화된 뒤 원래 시도에 귀속하고 최대 960ms 내에 종료하며,
+  동일 Smart 재시도·새 시도의 대체·오류 재발까지 기록해 잘못된 성공 판정과 후속 오류 인과관계 손실을 제거
+
 ## 0.1.1088 - 2026-07-20
 
 - 실패한 selector 결과가 `?.`로만 읽히더라도 실제 nullish 반환은 그대로 보존하면서 예외가 난 경우에는

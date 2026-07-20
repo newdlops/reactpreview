@@ -36,6 +36,7 @@ import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGl
 import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { createFrameworkReplacements } from './previewFrameworkReplacements';
 import { instrumentPreviewReactEffects } from './previewReactEffectInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
@@ -173,6 +174,7 @@ export class PreviewSourceTransformer {
       if (sourceText.includes('createContext')) {
         replacements.push(...createReactContextFallbackReplacements(sourcePath, sourceText));
       }
+      replacements.push(...createFrameworkReplacements(sourcePath, sourceText));
       if (sourceText.includes('Context')) {
         const contextIdentityInventory =
           sourceText.includes('createContext') && sourceText.includes('useContext')

@@ -22,6 +22,7 @@ import type {
   PreviewRenderChainPlansByExport,
   PreviewRenderChainStep,
   PreviewRenderExportReference,
+  PreviewRenderInvocation,
   ResolvePreviewRenderGraphModule,
 } from './previewRenderGraphTypes';
 import {
@@ -93,6 +94,8 @@ interface RenderGraphEdge {
   /** Wrapper modules that participate in this evidence but are not value-flow owner nodes. */
   readonly evidenceSourcePaths: readonly string[];
   readonly kind: PreviewRenderChainEdgeKind;
+  /** React-specific call-site semantics retained beyond the coarse graph relationship. */
+  readonly invocation?: PreviewRenderInvocation;
   readonly occurrenceStart: number;
   readonly ownerId: string;
   readonly wrapperNames: readonly string[];
@@ -876,9 +879,20 @@ function freezeRenderChainCandidate(
       continue;
     }
     const edge = rawPath.edges[index];
+    const invocation = edge?.invocation;
+    const invocationSourcePath =
+      edge === undefined ? undefined : graph.nodes.get(edge.ownerId)?.sourcePath;
     steps.push(
       Object.freeze({
         certainty: edge?.certainty ?? 'confirmed',
+        ...(invocation === undefined
+          ? {}
+          : {
+              invocation: Object.freeze({
+                ...invocation,
+                ...(invocationSourcePath === undefined ? {} : { sourcePath: invocationSourcePath }),
+              }),
+            }),
         kind: edge?.kind ?? 'value-flow',
         label: index === 0 ? displayTargetName(target.exportName, node.label) : node.label,
         occurrenceStart: edge?.occurrenceStart ?? node.occurrenceStart,
@@ -917,7 +931,9 @@ function serializeRawPath(path_: RawRenderPath): string {
     path_.nodeIds.join('\u001f'),
     path_.edges
       .map(
-        (edge) => `${edge.kind}:${edge.occurrenceStart.toString()}:${edge.wrapperNames.join('>')}`,
+        (edge) =>
+          `${edge.kind}:${edge.invocation?.mode ?? ''}:${edge.invocation?.slotName ?? ''}:` +
+          `${edge.occurrenceStart.toString()}:${edge.wrapperNames.join('>')}`,
       )
       .join('\u001f'),
   ].join('\u001e');

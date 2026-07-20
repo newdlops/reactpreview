@@ -47,6 +47,36 @@ export type PreviewRenderChainEdgeKind =
 /** Confidence attached to syntax-only edges that may still be selected by a runtime condition. */
 export type PreviewRenderChainCertainty = 'confirmed' | 'conditional';
 
+/** React-specific transport through which a component value reaches its next render owner. */
+export type PreviewRenderInvocationMode =
+  | 'component-prop'
+  | 'create-element'
+  | 'forward-ref'
+  | 'hoc'
+  | 'jsx'
+  | 'memo'
+  | 'polymorphic-prop'
+  | 'render-prop'
+  | 'styled';
+
+/**
+ * Static call-site detail retained separately from the coarse graph edge kind.
+ * Keeping this evidence explicit lets the Inspector distinguish ordinary JSX, HOC factories, and
+ * component-valued props without pretending that any project function was executed.
+ */
+export interface PreviewRenderInvocation {
+  /** Nearest semantic transport recognized at the authored reference. */
+  readonly mode: PreviewRenderInvocationMode;
+  /** Outer call or JSX receiver, such as `memo`, `withAuth`, or `Slot`. */
+  readonly calleeName?: string;
+  /** Nested higher-order factories crossed from inner to outer. */
+  readonly factoryNames?: readonly string[];
+  /** Authored module containing the call/JSX prop occurrence, when it differs from the child step. */
+  readonly sourcePath?: string;
+  /** JSX prop that receives the component value, such as `component`, `as`, or `renderItem`. */
+  readonly slotName?: string;
+}
+
 /**
  * One inner-to-outer step in a candidate target-to-entry path.
  * `label` is intentionally path-free so the browser toolbar can explain the chain without exposing
@@ -57,6 +87,8 @@ export interface PreviewRenderChainStep {
   readonly certainty: PreviewRenderChainCertainty;
   /** Relationship connecting this step to the following outer step. */
   readonly kind: PreviewRenderChainEdgeKind;
+  /** React-specific invocation detail when syntax proves a component transport boundary. */
+  readonly invocation?: PreviewRenderInvocation;
   /** Human-readable local declaration, export, route value, or entry label. */
   readonly label: string;
   /** Source offset of the evidence that created this step. */

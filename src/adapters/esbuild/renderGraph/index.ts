@@ -17,6 +17,8 @@ export {
   type PreviewRenderChainStep,
   type PreviewRenderChainStopReason,
   type PreviewRenderExportReference,
+  type PreviewRenderInvocation,
+  type PreviewRenderInvocationMode,
   type ResolvePreviewRenderGraphModule,
 } from './previewRenderGraphTypes';
 export {

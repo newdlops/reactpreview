@@ -9,7 +9,9 @@ import ts from 'typescript';
 import type {
   PreviewRenderChainCertainty,
   PreviewRenderChainEdgeKind,
+  PreviewRenderInvocation,
 } from './previewRenderGraphTypes';
+import { readPreviewRenderInvocation } from './previewRenderInvocation';
 
 /** One top-level declaration that can carry a component through route/configuration value flow. */
 export interface PreviewRenderValueFact {
@@ -59,6 +61,8 @@ export interface PreviewRenderLocalEdgeFact {
   readonly childLocalName: string;
   /** Structural relationship visible at the exact occurrence. */
   readonly kind: Exclude<PreviewRenderChainEdgeKind, 'react-lazy' | 're-export' | 'entry-render'>;
+  /** React-specific HOC or component-slot transport proven around this reference. */
+  readonly invocation?: PreviewRenderInvocation;
   /** Outer top-level declaration containing the reference. */
   readonly ownerId: string;
   /** Source offset of the identifier or JSX tag reference. */
@@ -634,12 +638,14 @@ function collectLocalEdges(
       const routeEdge =
         owner.routeLike || wrapperNames.some(isRouteLabel) || routeLikeNames.has(node.text);
       const kind = classifyLocalEdge(node, routeEdge);
+      const invocation = readPreviewRenderInvocation(node, owner.analysisNode);
       const key = `${node.text}\0${kind}\0${node.getStart().toString()}`;
       if (!seen.has(key)) {
         seen.add(key);
         edges.push({
           certainty: routeEdge ? 'conditional' : 'confirmed',
           childLocalName: node.text,
+          ...(invocation === undefined ? {} : { invocation }),
           kind,
           ownerId: owner.id,
           occurrenceStart: node.getStart(),

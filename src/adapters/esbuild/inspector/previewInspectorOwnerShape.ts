@@ -6,6 +6,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import type { PreviewParentSliceOwner } from '../parentSlice';
+import { isPreviewRenderHocFactoryCall } from '../renderGraph/previewRenderInvocation';
 
 const MAX_COMPONENT_FACTORY_DEPTH = 8;
 
@@ -102,16 +103,135 @@ export function isPreviewInspectorComponentShapedExport(
     ? declaration.expression
     : declaration.initializer;
   if (expression === undefined) return false;
-  const evidencePosition = findComponentEvidencePosition(expression);
-  return (
-    evidencePosition !== undefined &&
-    isComponentValueExpression(
-      expression,
-      evidencePosition,
-      0,
-      collectStyledComponentFactoryBindings(sourceFile),
-    )
+  return isComponentExportValueExpression(
+    expression,
+    sourceFile,
+    collectStyledComponentFactoryBindings(sourceFile),
+    0,
+    new Set(),
   );
+}
+
+/**
+ * Resolves bounded same-file/imported component identifiers used by HOC exports.
+ * The occurrence-oriented owner check cannot follow `memo(LocalComponent)` because the selected JSX
+ * lives in another declaration. Export discovery can safely do so from syntax: only PascalCase
+ * runtime imports and component-shaped local declarations are admitted, with cycle/depth guards.
+ */
+function isComponentExportValueExpression(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  styledBindings: StyledComponentFactoryBindings,
+  depth: number,
+  visitedNames: Set<string>,
+): boolean {
+  if (depth >= MAX_COMPONENT_FACTORY_DEPTH) return false;
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) {
+    if (!/^\p{Lu}/u.test(current.text) || visitedNames.has(current.text)) return false;
+    const nextVisited = new Set(visitedNames).add(current.text);
+    const declaration = findTopLevelRuntimeDeclaration(sourceFile, current.text);
+    if (declaration === undefined) return isRuntimeImportedIdentifier(sourceFile, current.text);
+    if (ts.isFunctionDeclaration(declaration)) return true;
+    if (ts.isClassDeclaration(declaration)) return isReactStyleClass(declaration);
+    return (
+      declaration.initializer !== undefined &&
+      isComponentExportValueExpression(
+        declaration.initializer,
+        sourceFile,
+        styledBindings,
+        depth + 1,
+        nextVisited,
+      )
+    );
+  }
+  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return true;
+  if (ts.isClassExpression(current)) return isReactStyleClass(current);
+  if (
+    ts.isJsxElement(current) ||
+    ts.isJsxSelfClosingElement(current) ||
+    ts.isJsxFragment(current)
+  ) {
+    return true;
+  }
+  if (ts.isTaggedTemplateExpression(current)) {
+    const tag = unwrapExpression(current.tag);
+    return (
+      ts.isCallExpression(tag) &&
+      isStyledComponentFactoryCallee(tag.expression, styledBindings) &&
+      tag.arguments.some((argument) =>
+        isComponentExportValueExpression(
+          argument,
+          sourceFile,
+          styledBindings,
+          depth + 1,
+          visitedNames,
+        ),
+      )
+    );
+  }
+  if (!ts.isCallExpression(current)) return false;
+  const provenHoc = isPreviewRenderHocFactoryCall(current);
+  return current.arguments.some((argument) => {
+    const unwrappedArgument = unwrapExpression(argument);
+    if (ts.isIdentifier(unwrappedArgument) && !provenHoc) return false;
+    return isComponentExportValueExpression(
+      argument,
+      sourceFile,
+      styledBindings,
+      depth + 1,
+      visitedNames,
+    );
+  });
+}
+
+/** Finds a same-file component declaration without descending into nested runtime scopes. */
+function findTopLevelRuntimeDeclaration(
+  sourceFile: ts.SourceFile,
+  localName: string,
+): ts.ClassDeclaration | ts.FunctionDeclaration | ts.VariableDeclaration | undefined {
+  for (const statement of sourceFile.statements) {
+    if (
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+      statement.name?.text === localName
+    ) {
+      return statement;
+    }
+    if (ts.isVariableStatement(statement)) {
+      const declaration = statement.declarationList.declarations.find(
+        (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === localName,
+      );
+      if (declaration !== undefined) return declaration;
+    }
+  }
+  return undefined;
+}
+
+/** Reports a non-type runtime import whose local binding has the requested component name. */
+function isRuntimeImportedIdentifier(sourceFile: ts.SourceFile, localName: string): boolean {
+  return sourceFile.statements.some((statement) => {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      statement.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
+    ) {
+      return false;
+    }
+    const clause = statement.importClause;
+    if (clause?.name?.text === localName) return true;
+    const bindings = clause?.namedBindings;
+    return (
+      bindings !== undefined &&
+      ts.isNamedImports(bindings) &&
+      bindings.elements.some(
+        (element) => !isTypeOnlyImportSpecifier(element) && element.name.text === localName,
+      )
+    );
+  });
+}
+
+/** Reads the authored `type` token without using TypeScript's deprecated compatibility property. */
+function isTypeOnlyImportSpecifier(specifier: ts.ImportSpecifier): boolean {
+  return specifier.getChildren().some((child) => child.kind === ts.SyntaxKind.TypeKeyword);
 }
 
 /** Finds the top-level declaration supplying a resolved local/default export. */
@@ -138,31 +258,6 @@ function findExportValueDeclaration(
       continue;
     }
     if (ts.isExportAssignment(statement) && options.exportName === 'default') return statement;
-  }
-  return undefined;
-}
-
-/** Chooses an inert point inside the active expression so the shared recursive classifier can run. */
-function findComponentEvidencePosition(expression: ts.Expression): number | undefined {
-  const current = unwrapExpression(expression);
-  if (
-    ts.isArrowFunction(current) ||
-    ts.isFunctionExpression(current) ||
-    ts.isClassExpression(current) ||
-    ts.isJsxElement(current) ||
-    ts.isJsxSelfClosingElement(current) ||
-    ts.isJsxFragment(current)
-  ) {
-    return current.getStart() + 1;
-  }
-  if (ts.isTaggedTemplateExpression(current)) {
-    return findComponentEvidencePosition(current.tag);
-  }
-  if (ts.isCallExpression(current)) {
-    for (const argument of current.arguments) {
-      const position = findComponentEvidencePosition(argument);
-      if (position !== undefined) return position;
-    }
   }
   return undefined;
 }
@@ -377,7 +472,10 @@ function collectStyledComponentFactoryBindings(
     }
     for (const element of bindings.elements) {
       const importedName = (element.propertyName ?? element.name).text;
-      if (!element.isTypeOnly && (importedName === 'styled' || importedName === 'default')) {
+      if (
+        !isTypeOnlyImportSpecifier(element) &&
+        (importedName === 'styled' || importedName === 'default')
+      ) {
         direct.add(element.name.text);
       }
     }

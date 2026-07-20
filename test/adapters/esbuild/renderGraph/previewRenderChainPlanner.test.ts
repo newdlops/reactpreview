@@ -219,6 +219,84 @@ describe('createPreviewRenderChainPlan', () => {
     expect(plan.paths[0]?.steps[0]?.label).toBe('CommonJsPage (default)');
   });
 
+  /** Keeps nested HOC factories as explicit React invocation evidence on the target edge. */
+  it('preserves memo and forwardRef wrappers between a component and its page owner', async () => {
+    const ownerPath = `${ROOT}/HocPage.tsx`;
+    const sources = {
+      [TARGET_PATH]: 'export const SelectedPage = () => <article />;',
+      [ownerPath]: [
+        "import { forwardRef, memo } from 'react';",
+        "import { compose, withAuth } from './hocs';",
+        "import { SelectedPage } from './pages/SelectedPage';",
+        'export const HocPage = compose(withAuth)(memo(forwardRef(SelectedPage)));',
+      ].join('\n'),
+      [ENTRY_PATH]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { HocPage } from './HocPage';",
+        'createRoot(document.body).render(<HocPage />);',
+      ].join('\n'),
+    };
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'SelectedPage',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.reachability).toBe('entry-connected');
+    expect(plan.paths[0]?.steps[0]?.invocation).toEqual({
+      calleeName: 'compose',
+      factoryNames: ['forwardRef', 'memo', 'compose'],
+      mode: 'forward-ref',
+      sourcePath: ownerPath,
+    });
+  });
+
+  /** Distinguishes component, polymorphic, and render props instead of flattening them to values. */
+  it('preserves component-valued JSX prop slots as separate candidate edges', async () => {
+    const ownerPath = `${ROOT}/SlotPage.tsx`;
+    const sources = {
+      [TARGET_PATH]: 'export const SelectedPage = () => <article />;',
+      [ownerPath]: [
+        "import { memo } from 'react';",
+        "import { SelectedPage } from './pages/SelectedPage';",
+        'const Slot = (props) => <main />;',
+        'export const SlotPage = () => (',
+        '  <Slot component={memo(SelectedPage)} as={SelectedPage} renderItem={SelectedPage} />',
+        ');',
+      ].join('\n'),
+      [ENTRY_PATH]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { SlotPage } from './SlotPage';",
+        'createRoot(document.body).render(<SlotPage />);',
+      ].join('\n'),
+    };
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'SelectedPage',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    const invocations = plan.paths
+      .map((candidate) => candidate.steps[0]?.invocation)
+      .filter((invocation) => invocation !== undefined);
+    expect(invocations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ mode: 'component-prop', slotName: 'component' }),
+        expect.objectContaining({ mode: 'polymorphic-prop', slotName: 'as' }),
+        expect.objectContaining({ mode: 'render-prop', slotName: 'renderItem' }),
+      ]),
+    );
+    expect(invocations.find((invocation) => invocation.slotName === 'component')).toMatchObject({
+      factoryNames: ['memo'],
+    });
+  });
+
   /** Crosses the same lazy page, route array, router object, app lazy map, and entry used by large apps. */
   it('finds the application entry through lazy and route configuration value flow', async () => {
     const sources = {

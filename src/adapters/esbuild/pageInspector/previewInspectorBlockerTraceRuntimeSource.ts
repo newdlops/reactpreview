@@ -38,6 +38,9 @@ function initializePreviewInspectorBlockerTraceState() {
   if (!(previewInspectorSession.blockerTraceErrorFingerprints instanceof Map)) {
     previewInspectorSession.blockerTraceErrorFingerprints = new Map();
   }
+  if (!(previewInspectorSession.blockerTraceRecentFatalErrors instanceof Map)) {
+    previewInspectorSession.blockerTraceRecentFatalErrors = new Map();
+  }
   if (!(previewInspectorSession.blockerTracePendingResolutions instanceof Map)) {
     previewInspectorSession.blockerTracePendingResolutions = new Map();
   }
@@ -49,6 +52,29 @@ function initializePreviewInspectorBlockerTraceState() {
   }
   if (!Number.isSafeInteger(previewInspectorSession.blockerTraceIdentitySequence)) {
     previewInspectorSession.blockerTraceIdentitySequence = 0;
+  }
+}
+
+/**
+ * Retains only fatal errors that the latest committed blocker tree still represents.
+ *
+ * A timestamp-only cache incorrectly treated a recently resolved error as an active baseline. A
+ * later Auto gate could then reproduce the same message without being rolled back. Target-error
+ * nodes are the render snapshot's authoritative evidence that a fatal error remains mounted.
+ */
+function reconcilePreviewInspectorBlockerTraceFatalErrors(records) {
+  const activeTargetErrors = [...records.values()].filter(
+    (record) => record?.kind === 'target-error',
+  );
+  for (const [fingerprint, fatalError] of previewInspectorSession.blockerTraceRecentFatalErrors) {
+    const stillActive = activeTargetErrors.some((record) => {
+      const headline = record?.summary?.state?.error;
+      const sameOwner = typeof fatalError?.exportName !== 'string' ||
+        record?.ownerName === fatalError.exportName;
+      return sameOwner && typeof headline === 'string' &&
+        headline.includes(String(fatalError?.message ?? ''));
+    });
+    if (!stillActive) previewInspectorSession.blockerTraceRecentFatalErrors.delete(fingerprint);
   }
 }
 
@@ -88,6 +114,19 @@ function settlePreviewInspectorBlockerTraceAttempt(attempt, detail) {
       detail: { ...detail, traceId: attempt.traceId },
       event: 'render-attempt-settled',
     });
+  }
+  if (typeof resumePreviewInspectorTargetReachabilityAfterConditionAttempt === 'function') {
+    if (
+      attempt.autoMode === 'target-guided-auto' &&
+      typeof globalThis.setTimeout === 'function'
+    ) {
+      globalThis.setTimeout(
+        () => resumePreviewInspectorTargetReachabilityAfterConditionAttempt(attempt),
+        PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS,
+      );
+    } else {
+      resumePreviewInspectorTargetReachabilityAfterConditionAttempt(attempt);
+    }
   }
   return true;
 }
@@ -449,6 +488,7 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
   flushPreviewInspectorBlockerTraceAutoDecisions();
   const previous = previewInspectorSession.blockerTraceRecords;
   const next = collectPreviewInspectorBlockerTraceRecords(snapshot?.roots);
+  reconcilePreviewInspectorBlockerTraceFatalErrors(next);
   const pendingResolutions = previewInspectorSession.blockerTracePendingResolutions;
   const pendingBeforeSnapshot = new Map(pendingResolutions);
   const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
@@ -734,7 +774,24 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
   }
   postPreviewInspectorBlockerTraceEvent('auto-selection', traceId, { auto, blocker });
   if (auto.startsRenderAttempt) {
-    const attempt = { blocker, observedSnapshotCount: 0, startedAt: now, traceId };
+    const recentErrorCutoff = now - PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS;
+    const knownFatalErrors = new Set();
+    for (const [errorFingerprint, fatalError] of previewInspectorSession.blockerTraceRecentFatalErrors) {
+      const observedAt = fatalError?.observedAt;
+      if (typeof observedAt === 'number' && observedAt >= recentErrorCutoff) {
+        knownFatalErrors.add(errorFingerprint);
+      } else {
+        previewInspectorSession.blockerTraceRecentFatalErrors.delete(errorFingerprint);
+      }
+    }
+    const attempt = {
+      autoMode: auto.mode,
+      blocker,
+      knownFatalErrors,
+      observedSnapshotCount: 0,
+      startedAt: now,
+      traceId,
+    };
     previewInspectorSession.blockerTraceActiveAttempt = attempt;
     schedulePreviewInspectorBlockerTraceAttemptSettlement(
       attempt,
@@ -769,12 +826,42 @@ function recordPreviewInspectorBlockerTraceError(entry) {
   }
   const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
   const now = Date.now();
+  const settledErrorGrace = activeAttempt?.autoMode === 'target-guided-auto'
+    ? PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS
+    : PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS;
   const active = activeAttempt !== undefined &&
     now - activeAttempt.startedAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS &&
     (
       activeAttempt.settledAt === undefined ||
-      now - activeAttempt.settledAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS
+      now - activeAttempt.settledAt <= settledErrorGrace
     );
+  const target = readPreviewInspectorBlockerTraceTarget();
+  const fatalErrorFingerprint = [
+    target.exportName,
+    target.pageCandidateId,
+    target.renderScenario,
+    target.revision,
+    entry.level,
+    entry.source,
+    entry.exportName,
+    entry.location,
+    entry.phase,
+    entry.message,
+  ].join('\0');
+  const errorWasKnownAtAttemptStart =
+    active && activeAttempt.knownFatalErrors instanceof Set &&
+    activeAttempt.knownFatalErrors.has(fatalErrorFingerprint);
+  previewInspectorSession.blockerTraceRecentFatalErrors.set(fatalErrorFingerprint, {
+    exportName:
+      typeof entry.exportName === 'string' ? entry.exportName : target.exportName,
+    message: String(entry.message ?? '[' + entry.level + ']'),
+    observedAt: now,
+  });
+  while (previewInspectorSession.blockerTraceRecentFatalErrors.size > 256) {
+    previewInspectorSession.blockerTraceRecentFatalErrors.delete(
+      previewInspectorSession.blockerTraceRecentFatalErrors.keys().next().value,
+    );
+  }
   const fingerprint = [
     active ? activeAttempt.traceId : '',
     entry.level,
@@ -789,6 +876,14 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       previewInspectorSession.blockerTraceErrorFingerprints.keys().next().value,
     );
   }
+  // A target-guided JSX choice is a reversible preview transaction. If that exact render attempt
+  // produces a new fatal error, restore authored semantics before the DFS evaluates another gate.
+  // Runtime fallback and user-authored mutations intentionally remain outside this narrow hook.
+  const rolledBack = (
+    active &&
+    !errorWasKnownAtAttemptStart &&
+    typeof rollbackPreviewInspectorFailedAutoDecision === 'function'
+  ) ? rollbackPreviewInspectorFailedAutoDecision(activeAttempt.traceId) : false;
   postPreviewInspectorBlockerTraceEvent(
     'subsequent-error',
     active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId(),
@@ -805,6 +900,13 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       },
     },
   );
+  if (rolledBack && active) {
+    completePreviewInspectorBlockerTraceAttempt(
+      activeAttempt,
+      createPreviewInspectorBlockerTraceAttemptResult(activeAttempt, 'rolled-back'),
+      { outcome: 'rolled-back', reason: 'new fatal error' },
+    );
+  }
 }
 `;
 }

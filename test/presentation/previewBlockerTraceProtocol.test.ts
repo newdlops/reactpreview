@@ -152,4 +152,26 @@ describe('Preview blocker trace protocol', () => {
       },
     });
   });
+
+  /** Accepts the explicit terminal result used when an automatic JSX transaction is restored. */
+  it('parses a rolled-back render result', () => {
+    const message = readPreviewBlockerTraceMessage({
+      event: {
+        event: 'render-result',
+        result: {
+          changedBlockerIds: [],
+          discoveredBlockerIds: [],
+          outcome: 'rolled-back',
+          remainingBlockerIds: ['overlay-gate'],
+          resolvedBlockerIds: [],
+        },
+        sequence: 10,
+        timestamp: '2026-07-19T12:00:02.000Z',
+        traceId: 'blocker-trace-9',
+      },
+      type: PREVIEW_BLOCKER_TRACE_MESSAGE_TYPE,
+    });
+
+    expect(message?.event.result?.outcome).toBe('rolled-back');
+  });
 });

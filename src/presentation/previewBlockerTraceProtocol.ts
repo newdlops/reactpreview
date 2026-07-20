@@ -79,7 +79,7 @@ export interface PreviewBlockerTraceRenderResult {
   readonly changedBlockerIds: readonly string[];
   readonly discoveredBlockerIds: readonly string[];
   /** Whether the browser committed this attempt or coalesced it into a newer mutation. */
-  readonly outcome?: 'committed' | 'superseded';
+  readonly outcome?: 'committed' | 'rolled-back' | 'superseded';
   readonly remainingBlockerIds: readonly string[];
   readonly resolvedBlockerIds: readonly string[];
 }
@@ -259,7 +259,9 @@ function readTraceRenderResult(value: unknown): PreviewBlockerTraceRenderResult 
   const remainingBlockerIds = readTraceTextList(value.remainingBlockerIds);
   const resolvedBlockerIds = readTraceTextList(value.resolvedBlockerIds);
   const outcome =
-    value.outcome === 'committed' || value.outcome === 'superseded'
+    value.outcome === 'committed' ||
+    value.outcome === 'rolled-back' ||
+    value.outcome === 'superseded'
       ? value.outcome
       : value.outcome === undefined
         ? undefined

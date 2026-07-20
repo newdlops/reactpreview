@@ -32,6 +32,7 @@ interface TraceRuntime {
   readonly error: (entry: Record<string, unknown>) => void;
   readonly flush: () => void;
   readonly messages: TraceMessage[];
+  readonly rollbacks: string[];
   readonly snapshot: (snapshot: Record<string, unknown>) => void;
 }
 
@@ -98,6 +99,7 @@ describe('Preview Inspector blocker trace runtime source', () => {
     expect(result?.traceId).toBe(traceId);
     expect(error?.traceId).toBe(traceId);
     expect(error?.error?.message).toBe('next missing property');
+    expect(runtime.rollbacks).toEqual([]);
   });
 
   /** Emits a standalone error trace when no Auto attempt exists, while ignoring ordinary info rows. */
@@ -111,6 +113,104 @@ describe('Preview Inspector blocker trace runtime source', () => {
       error: { message: 'provider missing' },
       event: 'subsequent-error',
     });
+  });
+
+  /** Does not blame a new JSX decision for the same fatal error already active before it began. */
+  it('rolls back only errors that were absent from the attempt baseline', () => {
+    const runtime = createTraceRuntime();
+    const persistentError = {
+      details: 'TypeError: existing provider state is invalid',
+      level: 'error',
+      message: 'existing provider state is invalid',
+      source: 'react-boundary',
+    };
+    runtime.error(persistentError);
+    const traceId = runtime.decide({
+      action: 'Advance unrelated overlay',
+      blockerId: 'overlay-gate',
+      mode: 'target-guided-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error(persistentError);
+
+    expect(traceId).toBeTypeOf('string');
+    expect(runtime.rollbacks).toEqual([]);
+    expect(
+      runtime.messages.filter((message) => message.event.event === 'subsequent-error'),
+    ).toHaveLength(2);
+  });
+
+  /** Keeps a sibling gallery boundary in the baseline under its real export, not the selection. */
+  it('does not blame a selected gate for a persistent sibling export failure', () => {
+    const runtime = createTraceRuntime();
+    const siblingError = {
+      exportName: 'SiblingPanel',
+      level: 'error',
+      message: 'persistent sibling provider failure',
+      source: 'react-boundary',
+    };
+    runtime.error(siblingError);
+    runtime.snapshot(createTargetErrorSnapshot('SiblingPanel', siblingError.message));
+    const traceId = runtime.decide({
+      action: 'Advance selected target gate',
+      blockerId: 'selected-gate',
+      mode: 'target-guided-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error(siblingError);
+
+    expect(traceId).toBeTypeOf('string');
+    expect(runtime.rollbacks).toEqual([]);
+  });
+
+  /** Treats a fatal signature as new again after a healthy committed tree removed its boundary. */
+  it('rolls back a repeated error after the latest blocker snapshot resolved it', () => {
+    const runtime = createTraceRuntime();
+    const repeatedError = {
+      details: 'TypeError: options.filter is not a function',
+      level: 'error',
+      message: 'options.filter is not a function',
+      source: 'react-boundary',
+    };
+    runtime.error(repeatedError);
+    runtime.snapshot(createSnapshot('healthy'));
+    const traceId = runtime.decide({
+      action: 'Advance a collection gate',
+      blockerId: 'collection-gate',
+      mode: 'target-guided-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error(repeatedError);
+
+    expect(runtime.rollbacks).toEqual([traceId]);
+    expect(
+      runtime.messages.find(
+        (message) => message.event.event === 'render-result' && message.event.traceId === traceId,
+      )?.event.result?.outcome,
+    ).toBe('rolled-back');
+  });
+
+  /** Settles a failed target-guided transaction immediately after its automatic gate is restored. */
+  it('publishes a rolled-back result for a newly introduced condition error', () => {
+    const runtime = createTraceRuntime();
+    const traceId = runtime.decide({
+      action: 'Advance target overlay',
+      blockerId: 'overlay-gate',
+      mode: 'target-guided-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error({
+      level: 'error',
+      message: 'options.filter is not a function',
+      source: 'react-boundary',
+    });
+
+    expect(runtime.rollbacks).toEqual([traceId]);
+    expect(
+      runtime.messages.find(
+        (message) => message.event.event === 'render-result' && message.event.traceId === traceId,
+      )?.event.result?.outcome,
+    ).toBe('rolled-back');
   });
 
   /** Ends causal attachment after the bounded settlement and its short late-error grace. */
@@ -489,6 +589,24 @@ function createSnapshot(mode: string): Record<string, unknown> {
   };
 }
 
+/** Creates the committed error-boundary evidence used to keep one fatal signature active. */
+function createTargetErrorSnapshot(exportName: string, message: string): Record<string, unknown> {
+  return {
+    roots: [
+      {
+        blocker: { headline: 'TypeError: ' + message, requiredPaths: [] },
+        blockerId: 'target-error:' + exportName,
+        blockerKind: 'target-error',
+        children: [],
+        id: 'target-error:' + exportName,
+        kind: 'blocker',
+        name: 'Component error · ' + exportName,
+        ownerExportName: exportName,
+      },
+    ],
+  };
+}
+
 /** Evaluates the generated browser source against inert session and postMessage primitives. */
 function createTraceRuntime(): TraceRuntime {
   const context: { __runtime?: TraceRuntime } = {};
@@ -520,8 +638,20 @@ function createTraceRuntime(): TraceRuntime {
         currentTime = targetTime;
       };
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+      const PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS = 160;
       const messages = [];
+      const rollbacks = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
+      const rollbackPreviewInspectorFailedAutoDecision = (traceId) => {
+        const selection = messages.find(
+          (message) => message?.event?.event === 'auto-selection' &&
+            message?.event?.traceId === traceId,
+        );
+        if (selection?.event?.auto?.mode !== 'target-guided-auto') return false;
+        rollbacks.push(traceId);
+        return true;
+      };
+      const resumePreviewInspectorTargetReachabilityAfterConditionAttempt = () => false;
       const isPreviewInspectorBlockingNode = (node) => node?.blocker?.mode !== 'assisted';
       const schedulePreviewInspectorTreeRefresh = () => undefined;
       ${createPreviewInspectorBlockerTraceRuntimeSource()}
@@ -531,6 +661,7 @@ function createTraceRuntime(): TraceRuntime {
         error: recordPreviewInspectorBlockerTraceError,
         flush: flushPreviewInspectorBlockerTraceAutoDecisions,
         messages,
+        rollbacks,
         snapshot: publishPreviewInspectorBlockerTraceSnapshot,
       };
     `,

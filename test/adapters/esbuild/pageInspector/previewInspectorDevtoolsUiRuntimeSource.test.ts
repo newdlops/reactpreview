@@ -45,6 +45,13 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain('function PreviewInspectorBlockerFlowDetail');
+    expect(source).toContain('function createPreviewInspectorFlowchartLayout(flow)');
+    expect(source).toContain('function PreviewInspectorFlowchart({ flow, onSelect');
+    expect(source).toContain('function PreviewInspectorFlowchartToolbar({');
+    expect(source).toContain('function PreviewInspectorFlowchartResolverPane({ flow })');
+    expect(source).toContain("'HOW TO LOCATE CURRENT FILE'");
+    expect(source).toContain("'data-rpi-flow-resolver-collapsed'");
+    expect(source).toContain("'data-rpi-flowchart-command': 'locate-current'");
     expect(source).toContain('function PreviewInspectorNavigationPane');
     expect(source).toContain("['components', 'Components']");
     expect(source).toContain("['blockers', 'Blockers (' + String(flow.unresolvedCount) + ')']");
@@ -167,7 +174,11 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('const previewInspectorDevtoolsCss');
     expect(source).toContain('function PreviewInspectorComponentsPane');
     expect(source).toContain('function PreviewInspectorDetailsPane');
+    expect(source).toContain('resolveRenderChoice: resolvePreviewInspectorRenderChoice');
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
+    expect(source).toContain(
+      'renderChoiceOverrides: serializePreviewInspectorRenderChoiceOverrides()',
+    );
     expect(source).toContain(
       'renderConditionOverrides: serializePreviewInspectorRenderConditionOverrides()',
     );

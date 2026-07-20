@@ -57,6 +57,54 @@ function appendPreviewInspectorRenderContextEntry(entries, candidate) {
   entries.push(candidate);
 }
 
+/** Appends nested HOC factory boundaries in outer-to-inner render order. */
+function appendPreviewInspectorHocContextEntries(entries, step, invocation, sourcePath) {
+  const factories = invocation.factoryNames?.length > 0
+    ? [...invocation.factoryNames].reverse()
+    : [invocation.calleeName ?? 'HOC'];
+  for (const factoryName of factories.slice(0, 8)) {
+    const mode = factoryName === 'memo'
+      ? 'memo'
+      : factoryName === 'forwardRef' ? 'forward-ref' : factoryName === 'styled' ? 'styled' : 'hoc';
+    appendPreviewInspectorRenderContextEntry(entries, {
+      certainty: step.certainty,
+      edgeKind: 'hoc-wrapper',
+      invocation: { ...invocation, calleeName: factoryName, factoryNames: [factoryName], mode },
+      kind: 'component',
+      name: factoryName + '(…)',
+      occurrenceStart: step.occurrenceStart,
+      sourcePath,
+    });
+  }
+}
+
+/** Expands HOC factories and component-valued JSX props into explicit inert context nodes. */
+function appendPreviewInspectorInvocationContextEntries(entries, step) {
+  const invocation = step?.invocation;
+  if (invocation === undefined) return;
+  const invocationSourcePath = invocation.sourcePath ?? step.sourcePath;
+  const hocModes = ['hoc', 'memo', 'forward-ref', 'styled'];
+  if (hocModes.includes(invocation.mode)) {
+    appendPreviewInspectorHocContextEntries(entries, step, invocation, invocationSourcePath);
+    return;
+  }
+  if (['component-prop', 'polymorphic-prop', 'render-prop'].includes(invocation.mode)) {
+    const receiver = invocation.calleeName ?? 'Component';
+    appendPreviewInspectorRenderContextEntry(entries, {
+      certainty: step.certainty,
+      edgeKind: 'component-slot',
+      invocation,
+      kind: 'component',
+      name: receiver + '.' + (invocation.slotName ?? 'component'),
+      occurrenceStart: step.occurrenceStart,
+      sourcePath: invocationSourcePath,
+    });
+    if (invocation.factoryNames?.length > 0) {
+      appendPreviewInspectorHocContextEntries(entries, step, invocation, invocationSourcePath);
+    }
+  }
+}
+
 /** Reads the selected export's inert workspace-entry-to-target path in outer-to-inner order. */
 function readPreviewInspectorRenderContextEntries(descriptor) {
   const inspector = descriptor?.inspector;
@@ -70,6 +118,7 @@ function readPreviewInspectorRenderContextEntries(descriptor) {
     : selectedChain?.paths?.[0] ?? candidate?.renderPath;
   const entries = [];
   for (const step of [...(path?.steps ?? [])].slice(0, 64).reverse()) {
+    appendPreviewInspectorInvocationContextEntries(entries, step);
     appendPreviewInspectorRenderContextEntry(entries, {
       certainty: step?.certainty,
       edgeKind: step?.kind,
@@ -130,6 +179,59 @@ function findPreviewInspectorMountedContextIndex(entries, nodes) {
   return Number.isFinite(bestIndex) ? bestIndex : undefined;
 }
 
+/** Reports whether one live component represents a static render-context entry. */
+function matchesPreviewInspectorRenderContextEntry(node, entry) {
+  const nodePath = normalizePreviewInspectorConditionSourcePath(node.source?.path);
+  const sourceMatches = nodePath.length > 0 &&
+    typeof entry?.sourcePath === 'string' &&
+    matchesPreviewInspectorConditionSourcePath(nodePath, entry.sourcePath);
+  return node.name === entry?.name || sourceMatches;
+}
+
+/**
+ * Inserts HOC/slot evidence between already mounted parent and child nodes.
+ * Prefix-only enrichment would discard these boundaries as soon as any outer live component matched
+ * the static path, so each contiguous invocation group wraps its following mounted child in place.
+ */
+function insertPreviewInspectorMountedInvocationContext(nodes, entries, prefixCount) {
+  let roots = nodes;
+  let index = 0;
+  while (index < entries.length) {
+    const entry = entries[index];
+    if (!['hoc-wrapper', 'component-slot'].includes(entry?.edgeKind)) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (
+      index < entries.length &&
+      ['hoc-wrapper', 'component-slot'].includes(entries[index]?.edgeKind)
+    ) {
+      index += 1;
+    }
+    const childEntry = entries[index];
+    if (start < prefixCount || childEntry === undefined) continue;
+    let inserted = false;
+    const visit = (values) => values.map((node) => {
+      if (!inserted && matchesPreviewInspectorRenderContextEntry(node, childEntry)) {
+        inserted = true;
+        let wrapped = node;
+        for (let wrapperIndex = index - 1; wrapperIndex >= start; wrapperIndex -= 1) {
+          wrapped = createPreviewInspectorRenderContextNode(
+            entries[wrapperIndex],
+            wrapperIndex,
+            [wrapped],
+          );
+        }
+        return wrapped;
+      }
+      return { ...node, children: visit(node.children) };
+    });
+    roots = visit(roots);
+  }
+  return roots;
+}
+
 /** Creates one read-only route/entry node that explains context without claiming to be mounted. */
 function createPreviewInspectorRenderContextNode(entry, index, children) {
   return {
@@ -139,6 +241,7 @@ function createPreviewInspectorRenderContextNode(entry, index, children) {
     edgeKind: entry.edgeKind,
     id: 'render-context:' + String(index) + ':' + entry.kind + ':' + entry.name,
     kind: entry.kind,
+    invocation: entry.invocation,
     name: entry.name,
     props: { certainty: entry.certainty, edge: entry.edgeKind, mounted: false },
     source: normalizePreviewInspectorUiSource({
@@ -206,6 +309,7 @@ function enrichPreviewInspectorRenderTreeSnapshot(snapshot) {
   const context = readPreviewInspectorRenderContextEntries(descriptor);
   const mountedIndex = findPreviewInspectorMountedContextIndex(context.entries, roots);
   const prefixCount = mountedIndex ?? Math.max(0, context.entries.length - 1);
+  roots = insertPreviewInspectorMountedInvocationContext(roots, context.entries, prefixCount);
   for (let index = prefixCount - 1; index >= 0; index -= 1) {
     roots = [createPreviewInspectorRenderContextNode(context.entries[index], index, roots)];
   }

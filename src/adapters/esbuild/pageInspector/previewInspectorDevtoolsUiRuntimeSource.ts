@@ -14,6 +14,10 @@ import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspector
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
+import { createPreviewInspectorFlowchartLayoutRuntimeSource } from './previewInspectorFlowchartLayoutRuntimeSource';
+import { createPreviewInspectorFlowchartInspectorUiRuntimeSource } from './previewInspectorFlowchartInspectorUiRuntimeSource';
+import { createPreviewInspectorFlowchartToolbarUiRuntimeSource } from './previewInspectorFlowchartToolbarUiRuntimeSource';
+import { createPreviewInspectorFlowchartUiRuntimeSource } from './previewInspectorFlowchartUiRuntimeSource';
 import { createPreviewInspectorBlockerFlowUiRuntimeSource } from './previewInspectorBlockerFlowUiRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
@@ -42,6 +46,10 @@ export interface PreviewInspectorUiSourceLocation {
 export interface PreviewInspectorUiTreeNode {
   /** Nested React component children; HTML host nodes should be omitted or marked as `host`. */
   readonly children: readonly PreviewInspectorUiTreeNode[];
+  /** Compiler-issued switch metadata present only on editable multi-way render-choice rows. */
+  readonly choice?: unknown;
+  /** Stable compiler-issued identity present only on multi-way render-choice rows. */
+  readonly choiceId?: string;
   /** Render-graph certainty retained only on inert entry, route, lazy, or wrapper context nodes. */
   readonly certainty?: 'conditional' | 'confirmed';
   /** Compiler-issued condition metadata present only on editable conditional-render pseudo nodes. */
@@ -115,6 +123,11 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const hiddenElementsUiRuntimeSource = createPreviewInspectorHiddenElementsUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
+  const flowchartLayoutRuntimeSource = createPreviewInspectorFlowchartLayoutRuntimeSource();
+  const flowchartInspectorUiRuntimeSource =
+    createPreviewInspectorFlowchartInspectorUiRuntimeSource();
+  const flowchartToolbarUiRuntimeSource = createPreviewInspectorFlowchartToolbarUiRuntimeSource();
+  const flowchartUiRuntimeSource = createPreviewInspectorFlowchartUiRuntimeSource();
   const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
   const blockerFlowUiRuntimeSource = createPreviewInspectorBlockerFlowUiRuntimeSource();
@@ -142,6 +155,10 @@ ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
 ${blockerFlowUiRuntimeSource}
 ${renderFlowUiRuntimeSource}
+${flowchartLayoutRuntimeSource}
+${flowchartToolbarUiRuntimeSource}
+${flowchartUiRuntimeSource}
+${flowchartInspectorUiRuntimeSource}
 ${navigationUiRuntimeSource}
 ${wireframeUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
@@ -264,16 +281,6 @@ function findPreviewInspectorUiNode(nodes, nodeId) {
   for (const node of nodes) {
     if (node.id === nodeId) return node;
     const descendant = findPreviewInspectorUiNode(node.children, nodeId);
-    if (descendant !== undefined) return descendant;
-  }
-  return undefined;
-}
-
-/** Locates the first live or retained current-file row carrying one editable export identity. */
-function findPreviewInspectorUiNodeByExport(nodes, exportName) {
-  for (const node of nodes) {
-    if (node.exportName === exportName) return node;
-    const descendant = findPreviewInspectorUiNodeByExport(node.children, exportName);
     if (descendant !== undefined) return descendant;
   }
   return undefined;
@@ -417,12 +424,13 @@ function usePreviewInspectorTreeRefresh(enabled) {
   }, [enabled]);
 }
 
-/** Creates one reusable toolbar button with native disabled and pressed semantics. */
-function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, onClick, pressed, sourceOpen, title }) {
+/** Creates one reusable toolbar button with native disabled, expanded, and pressed semantics. */
+function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, expanded, onClick, pressed, sourceOpen, title }) {
   const companionSourcePath = companionSource?.path ?? companionSource?.sourcePath;
   return React.createElement(
     'button',
     {
+      'aria-expanded': expanded,
       'aria-pressed': pressed,
       className: 'rpi-button',
       'data-rpi-source-column': sourceOpen === true ? companionSource?.column : undefined,
@@ -673,20 +681,29 @@ function PreviewInspectorSourceDetail({ node }) {
 }
 
 /** Renders either one explicit blocker editor or the selected-component debugger and console. */
-function PreviewInspectorDetailsPane({ node }) {
+function PreviewInspectorDetailsPane({ flow, node }) {
   const blockerSelected = isPreviewInspectorBlockerNode(node);
-  const initialDetailsTab = blockerSelected
+  const renderChoiceSelected = isPreviewInspectorRenderChoiceNode(node);
+  const renderControlSelected = blockerSelected || renderChoiceSelected;
+  const initialDetailsTab = renderControlSelected
     ? 'blocker'
     : previewInspectorDevtoolsSessionState.detailsTab === 'console' ? 'console' : 'component';
   const [detailsTab, setDetailsTab] = React.useState(initialDetailsTab);
   React.useEffect(() => {
-    const nextTab = blockerSelected ? 'blocker' : detailsTab === 'blocker' ? 'component' : detailsTab;
+    const nextTab = renderControlSelected
+      ? 'blocker'
+      : detailsTab === 'blocker' ? 'component' : detailsTab;
     previewInspectorDevtoolsSessionState.detailsTab = nextTab;
     setDetailsTab(nextTab);
     persistPreviewInspectorState();
-  }, [node?.id, blockerSelected]);
+  }, [node?.id, renderControlSelected]);
+  if (readPreviewInspectorNavigationTab() === 'blockers') {
+    return React.createElement(PreviewInspectorFlowchartResolverPane, { flow });
+  }
   const tabs = [
-    [blockerSelected ? 'blocker' : 'component', blockerSelected ? 'Fix selected blocker' : 'Component debugger'],
+    [renderControlSelected ? 'blocker' : 'component', renderChoiceSelected
+      ? 'Render choice'
+      : blockerSelected ? 'Fix selected blocker' : 'Component debugger'],
     ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
   ];
   return React.createElement(
@@ -727,8 +744,10 @@ function PreviewInspectorDetailsPane({ node }) {
         id: 'react-preview-details-' + detailsTab + '-panel',
         role: 'tabpanel',
       },
-      detailsTab === 'blocker' && blockerSelected
-        ? React.createElement(PreviewInspectorBlockerDetail, { node })
+      detailsTab === 'blocker' && renderControlSelected
+        ? renderChoiceSelected
+          ? React.createElement(PreviewInspectorConditionDetail, { node })
+          : React.createElement(PreviewInspectorBlockerDetail, { node })
         : detailsTab === 'console'
           ? React.createElement(PreviewInspectorConsoleDetail)
           : node === undefined
@@ -924,7 +943,13 @@ function PreviewInspectorToolbar() {
       ),
       React.createElement(
         'div',
-        { className: 'rpi-workbench' },
+        {
+          className: 'rpi-workbench',
+          'data-rpi-flow-resolver-collapsed': String(
+            readPreviewInspectorNavigationTab() === 'blockers' &&
+              previewInspectorDevtoolsSessionState.flowchartInspectorCollapsed === true,
+          ),
+        },
         React.createElement(PreviewInspectorNavigationPane, {
           flow: blockerFlow,
           roots: snapshot.roots,
@@ -933,6 +958,7 @@ function PreviewInspectorToolbar() {
           truncated: snapshot.truncated,
         }),
         React.createElement(PreviewInspectorDetailsPane, {
+          flow: blockerFlow,
           key: 'details:' + String(previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0),
           node: selectedNode,
         }),

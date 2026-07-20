@@ -5,12 +5,14 @@ import { createPreviewInspectorConditionUiRuntimeSource } from '../../../../src/
 
 interface ConditionUiRuntime {
   readonly attachConditions: (snapshot: Record<string, unknown>) => ConditionTreeSnapshot;
+  readonly isChoice: (node: ConditionTreeNode) => boolean;
   readonly selectMainComponent: () => void;
 }
 
 interface ConditionTreeNode {
   readonly blocksCurrentTarget?: boolean;
   readonly children: readonly ConditionTreeNode[];
+  readonly choiceId?: string;
   readonly conditionId?: string;
   readonly id: string;
   readonly kind: string;
@@ -55,6 +57,48 @@ describe('Preview Inspector condition UI runtime source', () => {
       kind: 'condition',
       name: 'loaded · <Content>',
     });
+  });
+
+  /** Places a switch below its component while keeping it outside boolean blocker classification. */
+  it('attaches editable switch choices with distinct multi-way tree identity', () => {
+    const runtime = createConditionUiRuntime([
+      {
+        authoredBranchId: 'choice-a:case-0',
+        branches: [
+          {
+            id: 'choice-a:case-0',
+            label: 'case summary → <Summary>',
+            selectable: true,
+            value: 'summary',
+          },
+          {
+            id: 'choice-a:case-1',
+            label: 'case resolveMode() → <Dynamic>',
+            selectable: false,
+          },
+        ],
+        effectiveBranchId: 'choice-a:case-0',
+        expression: 'mode',
+        id: 'choice-a',
+        kind: 'switch',
+        line: 14,
+        sourcePath: '/workspace/Page.tsx',
+      },
+    ]);
+    const snapshot = runtime.attachConditions({
+      roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)],
+    });
+    const choice = snapshot.roots[0]?.children[0];
+
+    expect(choice).toMatchObject({
+      choiceId: 'choice-a',
+      kind: 'render-choice',
+      name: 'Switch · mode · case summary → <Summary>',
+    });
+    expect(choice === undefined ? false : runtime.isChoice(choice)).toBe(true);
+    const source = createPreviewInspectorConditionUiRuntimeSource();
+    expect(source).toContain('setPreviewInspectorRenderChoiceOverride(choice.id, branch.id)');
+    expect(source).toContain('Read-only dynamic case');
   });
 
   /** Selects the descriptor target even after the user inspected a sibling or conditional row. */
@@ -162,18 +206,30 @@ function createConditionUiRuntime(
   const context: {
     __conditionUiRuntime?: ConditionUiRuntime;
     conditions: readonly Record<string, unknown>[];
+    previewInspectorDevtoolsSessionState: Record<string, unknown>;
     previewInspectorSession: Record<string, unknown>;
     selectPreviewInspectorExport: (name: string) => void;
-  } = { conditions, previewInspectorSession, selectPreviewInspectorExport };
+  } = {
+    conditions,
+    previewInspectorDevtoolsSessionState: {},
+    previewInspectorSession,
+    selectPreviewInspectorExport,
+  };
   vm.runInNewContext(
     `
-      const readPreviewInspectorRenderConditions = () => conditions;
+      const readPreviewInspectorRenderConditions = () =>
+        conditions.filter((condition) => condition.kind !== 'switch');
+      const readPreviewInspectorRenderChoices = () =>
+        conditions.filter((condition) => condition.kind === 'switch');
       const normalizePreviewInspectorUiSource = (source) => source;
       const persistPreviewInspectorState = () => undefined;
       const requestPreviewInspectorTreeReveal = () => undefined;
       const notifyPreviewInspector = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
       const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const collectPreviewInspectorUiTreeSnapshot = () => ({ roots: [] });
+      const findPreviewInspectorUiNodeByExport = () => undefined;
+      const selectPreviewInspectorUiNode = () => undefined;
       const findSelectedPreviewInspectorDescriptor = () => previewInspectorSession.selectedDescriptor;
       const readSelectedPreviewInspectorPageCandidate = () => previewInspectorSession.selectedCandidate;
       const readPreviewInspectorTargetPathEvidence = () => ({});
@@ -184,6 +240,7 @@ function createConditionUiRuntime(
       ${createPreviewInspectorConditionUiRuntimeSource()}
       globalThis.__conditionUiRuntime = {
         attachConditions: attachPreviewInspectorConditionsToSnapshot,
+        isChoice: isPreviewInspectorRenderChoiceNode,
         selectMainComponent: selectPreviewInspectorMainComponent,
       };
     `,

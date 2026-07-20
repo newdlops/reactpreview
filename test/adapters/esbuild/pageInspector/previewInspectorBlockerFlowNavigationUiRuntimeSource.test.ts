@@ -23,6 +23,8 @@ describe('Preview Inspector blocker-flow navigation UI source', () => {
     expect(source).toContain("return 'Child component'");
     expect(source).toContain('flow.renderTruncated === true');
     expect(source).toContain('Bounded Render flow');
+    expect(source).toContain('React.createElement(PreviewInspectorFlowchart');
+    expect(source).toContain('selectedStepId');
   });
 
   /** Allows direct branch changes only after the node is proven to be an instrumented condition. */

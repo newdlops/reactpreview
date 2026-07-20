@@ -382,7 +382,10 @@ function selectPreviewInspectorBlockerFlowStep(step, setSelectedStepId) {
   setSelectedStepId(step.id);
   previewInspectorDevtoolsSessionState.navigationTab = 'blockers';
   previewInspectorDevtoolsSessionState.selectedBlockerFlowNodeId = step.id;
+  previewInspectorDevtoolsSessionState.blockerDetailRevision =
+    (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
   persistPreviewInspectorState();
+  notifyPreviewInspector();
 }
 
 /** Reveals a blocker only after an explicit request, preserving component selection while graphing. */
@@ -677,41 +680,51 @@ function PreviewInspectorBlockerFlowDetail({ flow }) {
           'No rendering blockers were found between the page and current file.')
       : React.createElement(
           'div',
-          { 'aria-label': 'Blocker dependency flow chart', className: 'rpi-flow-chart' },
-          Array.from({ length: flow.stages }, (_, level) => React.createElement(
-            PreviewInspectorBlockerFlowStage,
-            {
-              flow,
-              key: String(level),
-              level,
-              onSelect: (step) => selectPreviewInspectorBlockerFlowStep(step, setSelectedStepId),
-              selectedStepId,
-            },
-          )),
+          { 'aria-label': 'Blocker dependency flow chart' },
+          React.createElement(PreviewInspectorFlowchart, {
+            flow,
+            onSelect: (step) => selectPreviewInspectorBlockerFlowStep(step, setSelectedStepId),
+            selectedStep,
+            selectedStepId,
+          }),
         ),
   );
 }
 
 /**
- * Adapts the richer function-entry/condition/return/child model to the existing staged DAG viewer.
- * Runtime blocker counts remain actionable progress while read-only component context stays visible.
+ * Adapts the richer function-entry/condition/return/child model to the graph and resolver surfaces.
+ * Both panes consume this one view so a selected block never resolves against a different identity.
  */
-function PreviewInspectorRenderFlowDetail({ flow }) {
+function createPreviewInspectorRenderFlowChartView(flow) {
   const hasRenderPath = Array.isArray(flow.renderSteps) && flow.renderSteps.length > 0;
   const renderSteps = hasRenderPath ? flow.renderSteps : flow.steps;
   const renderStepById = hasRenderPath && flow.renderStepById instanceof Map
     ? flow.renderStepById
     : new Map(renderSteps.map((step) => [step.id, step]));
+  const graphNodes = Array.isArray(flow.graphNodes) && flow.graphNodes.length > 0
+    ? flow.graphNodes
+    : renderSteps;
+  const graphStepById = new Map(renderStepById);
+  for (const step of graphNodes) graphStepById.set(step.id, step);
   const renderStages = hasRenderPath && Number.isSafeInteger(flow.renderStages)
     ? flow.renderStages
     : flow.stages;
-  const chartFlow = {
+  return {
     ...flow,
     actionableCount: flow.steps.length,
+    graphNodes,
     stages: renderStages,
-    stepById: renderStepById,
-    steps: renderSteps,
+    stepById: graphStepById,
+    steps: graphNodes,
   };
+}
+
+/**
+ * Adapts the richer function-entry/condition/return/child model to the existing graph viewer.
+ * Runtime blocker counts remain actionable progress while read-only component context stays visible.
+ */
+function PreviewInspectorRenderFlowDetail({ flow }) {
+  const chartFlow = createPreviewInspectorRenderFlowChartView(flow);
   return React.createElement(
     'div',
     { className: 'rpi-render-flow-navigation' },

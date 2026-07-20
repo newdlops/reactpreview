@@ -17,6 +17,7 @@
 export function createPreviewInspectorConditionRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT = 512;
+const PREVIEW_INSPECTOR_RENDER_CHOICE_BRANCH_LIMIT = 32;
 const previewInspectorScheduleConditionMicrotask = typeof globalThis.queueMicrotask === 'function'
   ? globalThis.queueMicrotask.bind(globalThis)
   : (callback) => Promise.resolve().then(callback);
@@ -25,6 +26,9 @@ const previewInspectorScheduleConditionMicrotask = typeof globalThis.queueMicrot
 function initializePreviewInspectorConditionState() {
   if (!(previewInspectorSession.renderConditions instanceof Map)) {
     previewInspectorSession.renderConditions = new Map();
+  }
+  if (!(previewInspectorSession.renderChoices instanceof Map)) {
+    previewInspectorSession.renderChoices = new Map();
   }
   if (!(previewInspectorSession.renderConditionOverrides instanceof Map)) {
     const persisted = readPersistedPreviewInspectorState();
@@ -39,6 +43,24 @@ function initializePreviewInspectorConditionState() {
         )
       : [];
     previewInspectorSession.renderConditionOverrides = new Map(
+      entries.slice(0, PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT),
+    );
+  }
+  if (!(previewInspectorSession.renderChoiceOverrides instanceof Map)) {
+    const persisted = readPersistedPreviewInspectorState();
+    const persistedOverrides = persisted.renderChoiceOverrides;
+    const entries = persistedOverrides !== null && typeof persistedOverrides === 'object'
+      ? Object.entries(persistedOverrides).filter(
+          ([choiceId, branchId]) =>
+            typeof choiceId === 'string' &&
+            choiceId.length > 0 &&
+            choiceId.length <= 128 &&
+            typeof branchId === 'string' &&
+            branchId.length > 0 &&
+            branchId.length <= 160,
+        )
+      : [];
+    previewInspectorSession.renderChoiceOverrides = new Map(
       entries.slice(0, PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT),
     );
   }
@@ -93,6 +115,149 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
     ...(targetBranch === undefined ? {} : { targetBranch }),
     truthyLabel: readText('truthyLabel', 'visible'),
   };
+}
+
+/** Bounds compiler-issued switch metadata and independently verifies selectable primitive cases. */
+function normalizePreviewInspectorRenderChoiceMetadata(metadata) {
+  const source = metadata !== null && typeof metadata === 'object' ? metadata : {};
+  const readText = (name, fallback = '') =>
+    typeof source[name] === 'string' ? source[name].slice(0, 512) : fallback;
+  const sourceBranches = Array.isArray(source.branches)
+    ? source.branches.slice(0, PREVIEW_INSPECTOR_RENDER_CHOICE_BRANCH_LIMIT)
+    : [];
+  const seenIds = new Set();
+  const branches = [];
+  for (const rawBranch of sourceBranches) {
+    if (rawBranch === null || typeof rawBranch !== 'object') continue;
+    const id = typeof rawBranch.id === 'string' ? rawBranch.id.slice(0, 160) : '';
+    if (id.length === 0 || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const ownsValue = Object.prototype.hasOwnProperty.call(rawBranch, 'value');
+    const value = rawBranch.value;
+    const literalSupported = ownsValue && (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+    );
+    const calls = Array.isArray(rawBranch.calls)
+      ? rawBranch.calls
+          .filter((call) => typeof call === 'string' && call.length > 0)
+          .slice(0, 16)
+          .map((call) => call.slice(0, 160))
+      : [];
+    branches.push({
+      ...(calls.length === 0 ? {} : { calls }),
+      ...(rawBranch.default === true ? { default: true } : {}),
+      id,
+      label: typeof rawBranch.label === 'string'
+        ? rawBranch.label.slice(0, 512)
+        : rawBranch.default === true ? 'default' : 'case',
+      requestedSelectable: rawBranch.selectable === true,
+      ...(literalSupported ? { value } : {}),
+    });
+  }
+  const everyCaseLiteral = branches.every(
+    (branch) => branch.default === true || Object.prototype.hasOwnProperty.call(branch, 'value'),
+  );
+  let dynamicCaseSeen = false;
+  const seenLiteralKeys = new Set();
+  return {
+    branches: branches.map(({ requestedSelectable, ...branch }) => {
+      let safeToSelect = false;
+      if (branch.default === true) {
+        safeToSelect = everyCaseLiteral;
+      } else if (Object.prototype.hasOwnProperty.call(branch, 'value')) {
+        const literalKey = branch.value === null
+          ? 'null'
+          : typeof branch.value + ':' + String(branch.value);
+        safeToSelect = !dynamicCaseSeen && !seenLiteralKeys.has(literalKey);
+        seenLiteralKeys.add(literalKey);
+      } else {
+        dynamicCaseSeen = true;
+      }
+      return { ...branch, selectable: requestedSelectable === true && safeToSelect };
+    }),
+    column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
+    expression: readText('expression', 'switch choice'),
+    kind: 'switch',
+    line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
+    ownerName: readText('ownerName'),
+    sourcePath: readText('sourcePath'),
+  };
+}
+
+/** Finds an authored branch only while preceding dynamic case expressions cannot alter matching. */
+function readPreviewInspectorAuthoredChoiceBranchId(authoredValue, branches) {
+  let defaultBranch;
+  let dynamicCaseSeen = false;
+  for (const branch of branches) {
+    if (branch.default === true) {
+      defaultBranch = branch;
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(branch, 'value')) {
+      dynamicCaseSeen = true;
+      continue;
+    }
+    if (authoredValue === branch.value) {
+      return dynamicCaseSeen ? undefined : branch.id;
+    }
+  }
+  return dynamicCaseSeen ? undefined : defaultBranch?.id;
+}
+
+/** Reports whether a retained switch record changed in a way visible to the choice editor. */
+function didPreviewInspectorRenderChoiceChange(previous, next) {
+  return previous === undefined ||
+    previous.authoredBranchId !== next.authoredBranchId ||
+    previous.effectiveBranchId !== next.effectiveBranchId ||
+    previous.metadataSignature !== next.metadataSignature;
+}
+
+/**
+ * Resolves one compiler-issued switch discriminant while preserving its exact authored identity.
+ * A forced literal is returned only for a selectable case; a safe default uses an unmatched Symbol.
+ */
+function resolvePreviewInspectorRenderChoice(choiceId, authoredValue, metadata) {
+  initializePreviewInspectorConditionState();
+  if (typeof choiceId !== 'string' || choiceId.length === 0 || choiceId.length > 128) {
+    return authoredValue;
+  }
+  const normalizedMetadata = normalizePreviewInspectorRenderChoiceMetadata(metadata);
+  const authoredBranchId = readPreviewInspectorAuthoredChoiceBranchId(
+    authoredValue,
+    normalizedMetadata.branches,
+  );
+  const overrideBranchId = previewInspectorSession.renderChoiceOverrides.get(choiceId);
+  const overrideBranch = normalizedMetadata.branches.find(
+    (branch) => branch.id === overrideBranchId && branch.selectable === true,
+  );
+  if (typeof overrideBranchId === 'string' && overrideBranch === undefined) {
+    previewInspectorSession.renderChoiceOverrides.delete(choiceId);
+  }
+  const effectiveBranchId = overrideBranch?.id ?? authoredBranchId;
+  const metadataSignature = JSON.stringify(normalizedMetadata);
+  const records = previewInspectorSession.renderChoices;
+  const previous = records.get(choiceId);
+  const nextRecord = {
+    ...normalizedMetadata,
+    authoredBranchId,
+    effectiveBranchId,
+    id: choiceId,
+    metadataSignature,
+  };
+  if (records.has(choiceId) || records.size < PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT) {
+    records.set(choiceId, nextRecord);
+    if (didPreviewInspectorRenderChoiceChange(previous, nextRecord)) {
+      schedulePreviewInspectorConditionRegistryRefresh();
+    }
+  }
+  if (overrideBranch === undefined) return authoredValue;
+  if (overrideBranch.default === true) {
+    return Symbol('React Preview forced switch default');
+  }
+  return overrideBranch.value;
 }
 
 /** Reports whether two retained records differ in a way visible to the component tree UI. */
@@ -287,6 +452,22 @@ function readPreviewInspectorRenderConditions() {
       autoOverride: !overrides.has(record.id) && autoOverrides.has(record.id)
         ? autoOverrides.get(record.id)
         : undefined,
+      override: overrides.has(record.id) ? overrides.get(record.id) : undefined,
+    }))
+    .sort((left, right) =>
+      left.sourcePath.localeCompare(right.sourcePath) ||
+      (left.line ?? 0) - (right.line ?? 0) ||
+      left.id.localeCompare(right.id),
+    );
+}
+
+/** Returns a sorted serializable switch-choice inventory without mixing it into boolean DFS gates. */
+function readPreviewInspectorRenderChoices() {
+  initializePreviewInspectorConditionState();
+  const overrides = previewInspectorSession.renderChoiceOverrides;
+  return [...previewInspectorSession.renderChoices.values()]
+    .map(({ metadataSignature: _metadataSignature, ...record }) => ({
+      ...record,
       override: overrides.has(record.id) ? overrides.get(record.id) : undefined,
     }))
     .sort((left, right) =>
@@ -529,6 +710,45 @@ function resetPreviewInspectorRenderConditionOverride(conditionId) {
   schedulePreviewInspectorCommitRefresh();
 }
 
+/** Forces one compiler-proven literal/default switch branch and remounts the page once. */
+function setPreviewInspectorRenderChoiceOverride(choiceId, branchId) {
+  initializePreviewInspectorConditionState();
+  const record = previewInspectorSession.renderChoices.get(choiceId);
+  const branch = record?.branches?.find(
+    (candidate) => candidate.id === branchId && candidate.selectable === true,
+  );
+  if (branch === undefined) return false;
+  if (previewInspectorSession.renderChoiceOverrides.get(choiceId) === branchId) return false;
+  previewInspectorSession.renderChoiceOverrides.set(choiceId, branchId);
+  previewInspectorSession.renderChoices.set(choiceId, {
+    ...record,
+    effectiveBranchId: branchId,
+  });
+  previewInspectorSession.renderConditionRevision += 1;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+
+/** Restores one switch to its authored discriminant without touching boolean branch overrides. */
+function resetPreviewInspectorRenderChoiceOverride(choiceId) {
+  initializePreviewInspectorConditionState();
+  if (!previewInspectorSession.renderChoiceOverrides.delete(choiceId)) return false;
+  const record = previewInspectorSession.renderChoices.get(choiceId);
+  if (record !== undefined) {
+    previewInspectorSession.renderChoices.set(choiceId, {
+      ...record,
+      effectiveBranchId: record.authoredBranchId,
+    });
+  }
+  previewInspectorSession.renderConditionRevision += 1;
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+
 /** Reports whether inferred props and usage-derived automatic values are currently admitted. */
 function readPreviewInspectorFallbackValuesEnabled() {
   initializePreviewInspectorConditionState();
@@ -561,6 +781,22 @@ function serializePreviewInspectorRenderConditionOverrides() {
       .filter(
         ([conditionId, value]) =>
           typeof conditionId === 'string' && conditionId.length <= 128 && typeof value === 'boolean',
+      )
+      .slice(0, PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT),
+  );
+}
+
+/** Serializes bounded switch branch identities separately from boolean condition overrides. */
+function serializePreviewInspectorRenderChoiceOverrides() {
+  initializePreviewInspectorConditionState();
+  return Object.fromEntries(
+    [...previewInspectorSession.renderChoiceOverrides]
+      .filter(
+        ([choiceId, branchId]) =>
+          typeof choiceId === 'string' &&
+          choiceId.length <= 128 &&
+          typeof branchId === 'string' &&
+          branchId.length <= 160,
       )
       .slice(0, PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT),
   );

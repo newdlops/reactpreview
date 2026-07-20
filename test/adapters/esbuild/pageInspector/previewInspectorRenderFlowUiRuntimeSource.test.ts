@@ -12,11 +12,19 @@ interface RenderNode {
   readonly blocker?: Record<string, unknown>;
   readonly blockerKind?: string;
   readonly children: readonly RenderNode[];
+  readonly choice?: Record<string, unknown>;
   readonly condition?: Record<string, unknown>;
   readonly contextOnly?: boolean;
   readonly currentFileExport?: boolean;
   readonly exportName?: string;
   readonly id: string;
+  readonly invocation?: {
+    readonly calleeName?: string;
+    readonly factoryNames?: readonly string[];
+    readonly mode?: string;
+    readonly slotName?: string;
+    readonly sourcePath?: string;
+  };
   readonly kind: string;
   readonly mounted?: boolean;
   readonly name: string;
@@ -25,11 +33,30 @@ interface RenderNode {
 
 /** One explanatory or actionable node returned by the generated flow model. */
 interface RenderStep {
+  readonly branchState?: 'active' | 'inactive';
+  readonly currentFileContext?: boolean;
   readonly directCurrentFileBlocker?: boolean;
   readonly editable: boolean;
-  readonly flowKind: 'component-context' | 'render-logic';
+  readonly flowKind:
+    | 'branch-outcome'
+    | 'component-call'
+    | 'component-context'
+    | 'flow-join'
+    | 'render-logic'
+    | 'render-return';
+  readonly graphKind:
+    | 'blocker'
+    | 'branch'
+    | 'component'
+    | 'component-slot'
+    | 'decision'
+    | 'entry'
+    | 'hoc'
+    | 'join'
+    | 'return';
   readonly id: string;
-  readonly kind: 'blocker' | 'component' | 'condition' | 'return';
+  readonly currentFileTarget?: boolean;
+  readonly kind: 'blocker' | 'branch' | 'component' | 'condition' | 'join' | 'return';
   readonly label: string;
   readonly level: number;
   readonly node: RenderNode;
@@ -41,7 +68,18 @@ interface RenderStep {
 /** Render-flow surface retaining the underlying blocker progress model unchanged. */
 interface RenderFlow {
   readonly activeStepId?: string;
+  readonly currentFileTargetNodeId?: string;
+  readonly currentFileTargetStepId?: string;
   readonly directCurrentFileBlockerCount: number;
+  readonly fingerprint: string;
+  readonly graphEdges: readonly {
+    readonly active: boolean;
+    readonly fromId: string;
+    readonly kind: string;
+    readonly label?: string;
+    readonly toId: string;
+  }[];
+  readonly graphNodes: readonly RenderStep[];
   readonly renderStages: number;
   readonly renderStepById: Map<string, RenderStep>;
   readonly renderSteps: readonly RenderStep[];
@@ -127,6 +165,11 @@ describe('Preview Inspector JSX render-flow model', () => {
     expect(flow.renderSteps.map((step) => step.id)).toEqual([
       'render-entry:app',
       'condition:auth',
+      'render-branch:condition:auth:truthy',
+      'render-branch:condition:auth:truthy:call:0',
+      'render-branch:condition:auth:falsy',
+      'render-branch:condition:auth:falsy:call:0',
+      'render-join:condition:auth',
       'render-return:app',
       'render-entry:target',
       'render-return:target',
@@ -143,12 +186,32 @@ describe('Preview Inspector JSX render-flow model', () => {
     });
     expect(flow.renderStepById.get('render-return:app')).toMatchObject({
       editable: false,
-      flowKind: 'component-context',
+      flowKind: 'render-return',
+      graphKind: 'return',
       kind: 'return',
       label: 'return · <Dashboard>',
-      predecessorIds: ['condition:auth'],
+      predecessorIds: ['render-join:condition:auth'],
       status: 'context',
     });
+    expect(flow.graphEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          active: true,
+          fromId: 'condition:auth',
+          kind: 'truthy',
+          label: 'TRUE',
+          toId: 'render-branch:condition:auth:truthy',
+        }),
+        expect.objectContaining({
+          active: false,
+          fromId: 'condition:auth',
+          kind: 'falsy',
+          label: 'FALSE',
+          toId: 'render-branch:condition:auth:falsy',
+        }),
+      ]),
+    );
+    expect(flow.graphNodes).toBe(flow.renderSteps);
     expect(flow.renderStepById.get('render-entry:chart')?.predecessorIds).toEqual([
       'render-return:target',
     ]);
@@ -158,6 +221,59 @@ describe('Preview Inspector JSX render-flow model', () => {
     expect(flow.renderStepById.get('render-entry:chart')?.level).toBe(
       flow.renderStepById.get('render-entry:toolbar')?.level,
     );
+  });
+
+  /** Marks only the exact selected function entry while retaining its internal steps as context. */
+  it('distinguishes the exact mounted current-file entry from its decision and return context', () => {
+    const runtime = evaluateRenderFlowRuntime();
+    const targetDecision: RenderNode = {
+      ...condition('condition:mode', 'mode ? Primary : Secondary', true, 14),
+      source: { line: 14, path: '/src/Dashboard.tsx' },
+    };
+    const target = component('target', 'Dashboard', [targetDecision], {
+      currentFileExport: true,
+      exportName: 'Dashboard',
+      mounted: true,
+    });
+
+    const flow = runtime.createFlow({ roots: [target] });
+
+    expect(flow.currentFileTargetNodeId).toBe('target');
+    expect(flow.currentFileTargetStepId).toBe('render-entry:target');
+    expect(flow.renderStepById.get('render-entry:target')).toMatchObject({
+      currentFileContext: true,
+      currentFileTarget: true,
+    });
+    expect(flow.renderStepById.get('condition:mode')).toMatchObject({
+      currentFileContext: true,
+    });
+    expect(flow.renderStepById.get('condition:mode')?.currentFileTarget).toBeUndefined();
+    expect(flow.renderStepById.get('render-return:target')).toMatchObject({
+      currentFileContext: true,
+    });
+    expect(flow.renderStepById.get('render-return:target')?.currentFileTarget).toBeUndefined();
+
+    const wrongSource = runtime.createFlow({
+      roots: [
+        component('wrong-source', 'Dashboard', [], {
+          currentFileExport: true,
+          exportName: 'Dashboard',
+          mounted: true,
+          source: { path: '/src/ImportedDashboard.tsx' },
+        }),
+      ],
+    });
+    const unmounted = runtime.createFlow({
+      roots: [
+        component('unmounted', 'Dashboard', [], {
+          currentFileExport: true,
+          exportName: 'Dashboard',
+          mounted: false,
+        }),
+      ],
+    });
+    expect(wrongSource.currentFileTargetStepId).toBeUndefined();
+    expect(unmounted.currentFileTargetStepId).toBeUndefined();
   });
 
   /** Leaves actionable progress owned by the blocker model while adding read-only path context. */
@@ -308,6 +424,150 @@ describe('Preview Inspector JSX render-flow model', () => {
     ]);
   });
 
+  /** Represents switch cases, default, their component calls, and convergence without flattening. */
+  it('keeps switch case branches and the selected path as labeled graph edges', () => {
+    const runtime = evaluateRenderFlowRuntime();
+    const selectedCase: RenderNode = {
+      children: [],
+      choice: {
+        branches: [
+          { calls: ['AlphaPanel'], id: 'case-alpha', label: 'case alpha' },
+          { calls: ['BetaBoundary'], id: 'case-beta', label: 'case beta' },
+          { calls: [], default: true, id: 'default', label: 'default' },
+        ],
+        effectiveBranchId: 'case-beta',
+        expression: 'variant',
+        kind: 'switch',
+      },
+      id: 'condition:variant',
+      kind: 'render-choice',
+      name: 'switch (variant)',
+      source: { line: 4, path: '/src/Dashboard.tsx' },
+    };
+    const target = component('target', 'Dashboard', [selectedCase], {
+      currentFileExport: true,
+      exportName: 'Dashboard',
+      mounted: true,
+    });
+
+    const flow = runtime.createFlow({ roots: [target] });
+
+    const caseEdges = flow.graphEdges.filter((edge) => edge.fromId === 'condition:variant');
+    expect(caseEdges).toEqual([
+      expect.objectContaining({ active: false, kind: 'case', label: 'case alpha' }),
+      expect.objectContaining({ active: true, kind: 'case', label: 'case beta' }),
+      expect.objectContaining({ active: false, kind: 'default', label: 'default' }),
+    ]);
+    expect(
+      flow.renderStepById.get('render-branch:condition:variant:case-beta:call:0'),
+    ).toMatchObject({
+      branchState: 'active',
+      graphKind: 'component',
+      label: 'BetaBoundary',
+    });
+    expect(flow.renderStepById.get('render-join:condition:variant')).toMatchObject({
+      graphKind: 'join',
+      predecessorIds: [
+        'render-branch:condition:variant:case-alpha:call:0',
+        'render-branch:condition:variant:case-beta:call:0',
+        'render-branch:condition:variant:default',
+      ],
+    });
+  });
+
+  /** Reserves the late selected entry and its direct blocker before branch detail fills the cap. */
+  it('retains a late exact target and direct blocker in an oversized ancestor render graph', () => {
+    const direct = runtimeBlocker('blocker:direct-late', 'Dashboard data', '/src/Dashboard.tsx');
+    const directStep = blockerFlowStep(
+      direct,
+      ['app', 'target'],
+      ['Application', 'Dashboard'],
+      'pending',
+    );
+    const runtime = evaluateRenderFlowRuntime({
+      activeStepId: direct.id,
+      stepById: new Map([[direct.id, directStep]]),
+      steps: [directStep],
+      unresolvedCount: 1,
+    });
+    const ancestorConditions = Array.from({ length: 48 }, (_, index) =>
+      condition(
+        'condition:ancestor-' + String(index),
+        'gate' + String(index),
+        index % 2 === 0,
+        index + 2,
+      ),
+    );
+    const target = component('target', 'Dashboard', [direct], {
+      currentFileExport: true,
+      exportName: 'Dashboard',
+      mounted: true,
+    });
+    const app = component('app', 'Application', [...ancestorConditions, target]);
+
+    const flow = runtime.createFlow({ roots: [app] });
+
+    expect(flow.renderSteps).toHaveLength(PREVIEW_INSPECTOR_RENDER_FLOW_STEP_LIMIT);
+    expect(flow.renderTruncated).toBe(true);
+    expect(flow.renderStepById.get('render-entry:target')).toMatchObject({
+      currentFileTarget: true,
+    });
+    expect(flow.renderStepById.get(direct.id)).toMatchObject({
+      directCurrentFileBlocker: true,
+      status: 'active',
+    });
+  });
+
+  /** Invalidates layout memoization when presentation or structural graph evidence changes. */
+  it('fingerprints labels, ranks, source evidence, invocations, and explicit edges', () => {
+    const runtime = evaluateRenderFlowRuntime();
+    const createSnapshot = (
+      name: string,
+      sourcePath: string,
+      slotName: string,
+      conditions: readonly RenderNode[] = [],
+    ): { readonly roots: readonly RenderNode[] } => ({
+      roots: [
+        component('app', 'Application', [
+          ...conditions,
+          component('target', name, [], {
+            currentFileExport: true,
+            exportName: 'Dashboard',
+            invocation: {
+              calleeName: 'Layout',
+              mode: 'component-prop',
+              slotName,
+              sourcePath: '/src/Layout.tsx',
+            },
+            mounted: true,
+            source: { line: 5, path: sourcePath },
+          }),
+        ]),
+      ],
+    });
+    const fingerprints = [
+      runtime.createFlow(createSnapshot('Dashboard', '/src/Dashboard.tsx', 'content')).fingerprint,
+      runtime.createFlow(createSnapshot('DashboardView', '/src/Dashboard.tsx', 'content'))
+        .fingerprint,
+      runtime.createFlow(createSnapshot('Dashboard', '/src/Alternate.tsx', 'content')).fingerprint,
+      runtime.createFlow(createSnapshot('Dashboard', '/src/Dashboard.tsx', 'sidebar')).fingerprint,
+      runtime.createFlow(
+        createSnapshot('Dashboard', '/src/Dashboard.tsx', 'content', [
+          condition('condition:rank', 'ready', true, 2),
+        ]),
+      ).fingerprint,
+    ];
+
+    expect(new Set(fingerprints).size).toBe(fingerprints.length);
+    const source = createPreviewInspectorRenderFlowUiRuntimeSource();
+    expect(source).toContain(
+      'createPreviewInspectorRenderFlowFingerprint(state.steps, graphEdges)',
+    );
+    expect(source).toContain('step.rank ?? step.level');
+    expect(source).toContain('invocation?.sourcePath');
+    expect(source).toContain('edge.fromId');
+  });
+
   /** Documents the bounded expansion contract used for large mounted component subtrees. */
   it('emits explicit graph limits and function-to-JSX metadata', () => {
     const source = createPreviewInspectorRenderFlowUiRuntimeSource();
@@ -315,8 +575,10 @@ describe('Preview Inspector JSX render-flow model', () => {
     expect(PREVIEW_INSPECTOR_RENDER_FLOW_STEP_LIMIT).toBe(128);
     expect(PREVIEW_INSPECTOR_RENDER_FLOW_OUTPUT_DEPTH_LIMIT).toBe(4);
     expect(source).toContain('function createPreviewInspectorRenderFlow(snapshot)');
-    expect(source).toContain("flowKind: 'component-context'");
+    expect(source).toContain("flowKind: flowKind ?? 'component-context'");
     expect(source).toContain("flowKind: 'render-logic'");
+    expect(source).toContain("graphKind: 'join'");
+    expect(source).toContain('graphEdges');
     expect(source).toContain("kind: 'return'");
     expect(source).toContain('condition.effectiveEnabled === true');
   });
@@ -343,10 +605,21 @@ function evaluateRenderFlowRuntime(
     `
       const previewInspectorSession = { selectedExportName: 'Dashboard' };
       const isPreviewInspectorConditionNode = (node) => node?.kind === 'condition';
+      const isPreviewInspectorRenderChoiceNode = (node) => node?.kind === 'render-choice';
       const isPreviewInspectorBlockerNode = (node) =>
         node?.kind === 'condition' || typeof node?.blockerKind === 'string';
       const isPreviewInspectorComponentNode = (node) =>
         node !== undefined && node.isHost !== true && node.kind !== 'condition-group';
+      const findSelectedPreviewInspectorDescriptor = () => ({
+        inspector: {
+          renderChainsByExport: {
+            Dashboard: {
+              target: { exportName: 'Dashboard', sourcePath: '/src/Dashboard.tsx' },
+            },
+          },
+          target: { exportName: 'Dashboard', sourcePath: '/src/Dashboard.tsx' },
+        },
+      });
       const normalizePreviewInspectorConditionSourcePath = (value) =>
         typeof value === 'string' ? value.replaceAll('\\\\', '/') : '';
       const matchesPreviewInspectorConditionSourcePath = (left, right) => {

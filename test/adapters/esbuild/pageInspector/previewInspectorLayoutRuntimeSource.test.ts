@@ -28,4 +28,17 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('.rpi-current-file-blocker-badge');
     expect(source).toContain('.rpi-current-file-blocker-summary');
   });
+
+  /** Keeps the debugger canvas readable in narrow companion tabs without inline geometry. */
+  it('composes the responsive rank/lane flowchart stylesheet', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain('.rpi-flowchart-viewport');
+    expect(source).toContain('overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable');
+    expect(source).toContain('.rpi-flowchart-canvas');
+    expect(source).toContain('.rpi-flowchart-edge-cell[data-rpi-path=\\"start-down\\"]');
+    expect(source).toContain('.rpi-flow-inspector-locate-guide');
+    expect(source).toContain('.rpi-flowchart-camera-status');
+    expect(source).toContain('@container rpi-inspector (max-width:460px)');
+  });
 });

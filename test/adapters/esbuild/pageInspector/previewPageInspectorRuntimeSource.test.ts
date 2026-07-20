@@ -87,6 +87,7 @@ describe('Page Inspector runtime source', () => {
       "':data:' + String(dataRevision) + ':condition:' + String(conditionRevision)",
     );
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
+    expect(source).toContain('resolveRenderChoice: resolvePreviewInspectorRenderChoice');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain(
       'resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation',

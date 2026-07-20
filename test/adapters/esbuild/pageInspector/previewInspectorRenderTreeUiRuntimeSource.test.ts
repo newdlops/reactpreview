@@ -107,6 +107,117 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       mounted: false,
     });
   });
+
+  /** Expands HOC factories and component-valued props into visible inert render-path boundaries. */
+  it('shows HOC and component-slot transport between the page root and current file', () => {
+    const descriptor = {
+      inspector: {
+        pageCandidates: [],
+        renderChainsByExport: {
+          CurrentCard: {
+            paths: [],
+            target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+          },
+        },
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const candidate = {
+      renderPath: {
+        entryPoint: { sourcePath: '/workspace/main.tsx' },
+        steps: [
+          {
+            certainty: 'confirmed',
+            invocation: {
+              calleeName: 'Slot',
+              factoryNames: ['memo'],
+              mode: 'component-prop',
+              slotName: 'component',
+              sourcePath: '/workspace/SlotPage.tsx',
+            },
+            kind: 'value-flow',
+            label: 'CurrentCard',
+            sourcePath: '/workspace/CurrentCard.tsx',
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            invocation: {
+              calleeName: 'memo',
+              factoryNames: ['forwardRef', 'memo'],
+              mode: 'forward-ref',
+              sourcePath: '/workspace/DecoratedPage.tsx',
+            },
+            kind: 'value-flow',
+            label: 'SlotPage',
+            sourcePath: '/workspace/SlotPage.tsx',
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'DecoratedPage',
+            sourcePath: '/workspace/DecoratedPage.tsx',
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'entry-render',
+            label: 'ApplicationEntry',
+            sourcePath: '/workspace/main.tsx',
+            wrapperNames: [],
+          },
+        ],
+      },
+      root: { exportName: 'DecoratedPage', sourcePath: '/workspace/DecoratedPage.tsx' },
+    };
+    const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
+    const snapshot = runtime({
+      roots: [
+        {
+          children: [
+            {
+              children: [
+                {
+                  children: [],
+                  exportName: 'CurrentCard',
+                  id: 'card',
+                  kind: 'function',
+                  name: 'CurrentCard',
+                  source: { path: '/workspace/CurrentCard.tsx' },
+                },
+              ],
+              id: 'slot-page',
+              kind: 'function',
+              name: 'SlotPage',
+              source: { path: '/workspace/SlotPage.tsx' },
+            },
+          ],
+          id: 'decorated-page',
+          kind: 'function',
+          name: 'DecoratedPage',
+          source: { path: '/workspace/DecoratedPage.tsx' },
+        },
+      ],
+      status: 'available',
+    });
+
+    expect(flattenNames(snapshot.roots)).toEqual([
+      'Workspace React render root',
+      'ApplicationEntry',
+      'DecoratedPage',
+      'memo(…)',
+      'forwardRef(…)',
+      'SlotPage',
+      'Slot.component',
+      'memo(…)',
+      'CurrentCard',
+    ]);
+    expect(findNode(snapshot.roots, 'memo(…)')).toMatchObject({ edgeKind: 'hoc-wrapper' });
+    expect(findNode(snapshot.roots, 'Slot.component')).toMatchObject({
+      edgeKind: 'component-slot',
+    });
+  });
 });
 
 /** Evaluates only data-oriented helpers against a deterministic descriptor and selected candidate. */

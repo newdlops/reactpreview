@@ -101,6 +101,46 @@ function createPreviewInspectorConditionTreeNode(condition) {
   };
 }
 
+/** Creates one non-boolean switch choice row without classifying it as a blocker/DFS condition. */
+function createPreviewInspectorRenderChoiceTreeNode(choice) {
+  const activeBranch = choice.branches.find((branch) => branch.id === choice.effectiveBranchId);
+  const forced = typeof choice.override === 'string';
+  return {
+    children: [],
+    choice,
+    choiceId: choice.id,
+    exportName: undefined,
+    id: 'render-choice:' + choice.id,
+    kind: 'render-choice',
+    name: 'Switch · ' + choice.expression + ' · ' + (activeBranch?.label ?? 'unresolved runtime case'),
+    props: {
+      authoredBranchId: choice.authoredBranchId,
+      effectiveBranchId: choice.effectiveBranchId,
+      mode: forced ? 'forced' : 'authored',
+    },
+    source: normalizePreviewInspectorUiSource({
+      column: choice.column,
+      displayName: choice.sourcePath,
+      line: choice.line,
+      path: choice.sourcePath,
+    }),
+    state: {
+      branches: choice.branches.map((branch) => ({
+        id: branch.id,
+        label: branch.label,
+        selectable: branch.selectable,
+      })),
+    },
+  };
+}
+
+/** Selects the correct pseudo-node representation for boolean and multi-way render controls. */
+function createPreviewInspectorRenderControlTreeNode(control) {
+  return control?.kind === 'switch'
+    ? createPreviewInspectorRenderChoiceTreeNode(control)
+    : createPreviewInspectorConditionTreeNode(control);
+}
+
 /** Flattens component source candidates while retaining their current structural identity. */
 function collectPreviewInspectorConditionOwners(nodes, owners = []) {
   for (const node of nodes) {
@@ -109,7 +149,8 @@ function collectPreviewInspectorConditionOwners(nodes, owners = []) {
       sourcePath.length > 0 &&
       node.contextOnly !== true &&
       node.kind !== 'blocker' &&
-      node.kind !== 'condition'
+      node.kind !== 'condition' &&
+      node.kind !== 'render-choice'
     ) {
       owners.push({
         id: node.id,
@@ -147,14 +188,17 @@ function appendPreviewInspectorAssignedConditions(nodes, assignments) {
     ...node,
     children: [
       ...appendPreviewInspectorAssignedConditions(node.children, assignments),
-      ...(assignments.get(node.id) ?? []).map(createPreviewInspectorConditionTreeNode),
+      ...(assignments.get(node.id) ?? []).map(createPreviewInspectorRenderControlTreeNode),
     ],
   }));
 }
 
 /** Adds every evaluated JSX condition to its component or a clearly labeled unowned tree group. */
 function attachPreviewInspectorConditionsToSnapshot(snapshot) {
-  const conditions = readPreviewInspectorRenderConditions();
+  const conditions = [
+    ...readPreviewInspectorRenderConditions(),
+    ...readPreviewInspectorRenderChoices(),
+  ];
   if (conditions.length === 0) return snapshot;
   const owners = collectPreviewInspectorConditionOwners(snapshot.roots);
   const assignments = new Map();
@@ -172,7 +216,7 @@ function attachPreviewInspectorConditionsToSnapshot(snapshot) {
   const roots = appendPreviewInspectorAssignedConditions(snapshot.roots, assignments);
   if (unowned.length > 0) {
     roots.push({
-      children: unowned.map(createPreviewInspectorConditionTreeNode),
+      children: unowned.map(createPreviewInspectorRenderControlTreeNode),
       id: 'render-conditions:unowned',
       kind: 'condition-group',
       name: 'Render conditions',
@@ -189,9 +233,14 @@ function isPreviewInspectorConditionNode(node) {
   return node?.kind === 'condition' && typeof node.conditionId === 'string';
 }
 
+/** Reports a compiler-instrumented multi-way render choice kept outside boolean blocker DFS. */
+function isPreviewInspectorRenderChoiceNode(node) {
+  return node?.kind === 'render-choice' && typeof node.choiceId === 'string';
+}
+
 /** Reads the selected source file's representative export from immutable Inspector metadata. */
 function readPreviewInspectorMainComponentName() {
-  const descriptor = previewInspectorSession.descriptors[0];
+  const descriptor = findSelectedPreviewInspectorDescriptor() ?? previewInspectorSession.descriptors[0];
   const name = descriptor?.inspector?.target?.exportName ??
     descriptor?.inspectedExportName ?? descriptor?.exportName;
   return typeof name === 'string' && name.length > 0 ? name : undefined;
@@ -201,12 +250,23 @@ function readPreviewInspectorMainComponentName() {
 function selectPreviewInspectorMainComponent() {
   const exportName = readPreviewInspectorMainComponentName();
   if (exportName === undefined) return;
-  requestPreviewInspectorTreeReveal();
+  previewInspectorDevtoolsSessionState.navigationTab = 'components';
+  previewInspectorDevtoolsSessionState.query = '';
   previewInspectorSession.selectedTreeNodeId = undefined;
   if (previewInspectorSession.selectedExportName !== exportName) {
     selectPreviewInspectorExport(exportName);
+    requestPreviewInspectorTreeReveal();
     return;
   }
+  const snapshot = collectPreviewInspectorUiTreeSnapshot();
+  const currentFileNode = findPreviewInspectorUiNodeByExport(snapshot.roots, exportName);
+  if (currentFileNode !== undefined) {
+    requestPreviewInspectorTreeReveal(currentFileNode.id);
+    selectPreviewInspectorUiNode(currentFileNode);
+    return;
+  }
+  requestPreviewInspectorTreeReveal();
+  previewInspectorSession.selectedTreeNodeId = undefined;
   persistPreviewInspectorState();
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
@@ -214,6 +274,9 @@ function selectPreviewInspectorMainComponent() {
 
 /** Renders explicit authored/forced branch buttons for one selected conditional tree row. */
 function PreviewInspectorConditionDetail({ node }) {
+  if (isPreviewInspectorRenderChoiceNode(node)) {
+    return React.createElement(PreviewInspectorRenderChoiceDetail, { node });
+  }
   const condition = node.condition;
   const enabled = condition.effectiveEnabled === true;
   const forced = typeof condition.override === 'boolean';
@@ -281,6 +344,62 @@ function PreviewInspectorConditionDetail({ node }) {
       'div',
       { className: 'rpi-note' },
       'Selecting this blocker keeps authored output unchanged until you choose a branch, then remounts the surrounding page context.',
+    ),
+  );
+}
+
+/** Renders one button per switch case while clearly retaining dynamic cases as read-only evidence. */
+function PreviewInspectorRenderChoiceDetail({ node }) {
+  const choice = node.choice;
+  const forced = typeof choice.override === 'string';
+  const activeBranch = choice.branches.find((branch) => branch.id === choice.effectiveBranchId);
+  const authoredBranch = choice.branches.find((branch) => branch.id === choice.authoredBranchId);
+  return React.createElement(
+    'div',
+    { className: 'rpi-detail-content' },
+    React.createElement(
+      'div',
+      { className: 'rpi-meta' },
+      (forced ? 'Forced switch case' : 'Authored switch case') + ' · ' +
+        (activeBranch?.label ?? 'dynamic case unresolved'),
+    ),
+    React.createElement('pre', { className: 'rpi-json' }, choice.expression),
+    React.createElement(
+      'div',
+      { className: 'rpi-note' },
+      'Authored: ' + (authoredBranch?.label ?? 'runtime-only dynamic case') +
+        ' · Effective: ' + (activeBranch?.label ?? 'runtime-only dynamic case'),
+    ),
+    React.createElement(
+      'div',
+      { className: 'rpi-actions' },
+      choice.branches.map((branch) => React.createElement(
+        PreviewInspectorDevtoolsButton,
+        {
+          disabled: branch.selectable !== true,
+          key: branch.id,
+          onClick: () => setPreviewInspectorRenderChoiceOverride(choice.id, branch.id),
+          pressed: choice.override === branch.id,
+          title: branch.selectable === true
+            ? 'Force this literal switch branch'
+            : 'Read-only dynamic case: forcing it could evaluate project logic out of order',
+        },
+        branch.label,
+      )),
+      React.createElement(
+        PreviewInspectorDevtoolsButton,
+        {
+          disabled: !forced,
+          onClick: () => resetPreviewInspectorRenderChoiceOverride(choice.id),
+          title: 'Follow the authored switch discriminant again',
+        },
+        'Use authored value',
+      ),
+    ),
+    React.createElement(
+      'div',
+      { className: 'rpi-note' },
+      'Literal cases are editable. Dynamic case expressions stay read-only because evaluating them in the Inspector could change application behavior.',
     ),
   );
 }

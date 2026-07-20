@@ -51,6 +51,8 @@ function readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurr
   if (node?.kind === 'blocker') return '≈';
   if (isCurrentFileExport) return '◎';
   if (node?.edgeKind === 'workspace-render-root') return '⌂';
+  if (node?.edgeKind === 'hoc-wrapper') return 'H';
+  if (node?.edgeKind === 'component-slot') return 'P';
   if (node?.kind === 'route' && node?.contextOnly === true) return '↳';
   if (node?.kind === 'entry' && node?.contextOnly === true) return '◆';
   if (isPreviewInspectorOverlayNode(node)) return '▱';
@@ -74,6 +76,8 @@ function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurre
   }
   if (node?.kind === 'blocker') return { key: 'assisted', label: 'PREVIEW VALUE' };
   if (isCurrentFileExport) return { key: 'target', label: 'CURRENT FILE' };
+  if (node?.edgeKind === 'hoc-wrapper') return { key: 'path', label: 'HOC' };
+  if (node?.edgeKind === 'component-slot') return { key: 'path', label: 'COMPONENT PROP' };
   if (node?.contextOnly === true) return { key: 'path', label: 'PAGE PATH' };
   return { key: 'component', label: 'COMPONENT' };
 }
@@ -81,6 +85,9 @@ function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurre
 /** Adds narrowly scoped role classes without allowing collector-provided arbitrary class names. */
 function readPreviewInspectorStructureRowClass(node) {
   if (isPreviewInspectorOverlayNode(node)) return ' rpi-overlay-row';
+  if (node?.edgeKind === 'hoc-wrapper' || node?.edgeKind === 'component-slot') {
+    return ' rpi-wrapper-row';
+  }
   if (isPreviewInspectorTransparentWrapperNode(node)) return ' rpi-wrapper-row';
   return '';
 }

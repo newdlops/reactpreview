@@ -145,6 +145,7 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         selectedExportName: 'Page',
       };
       const readPreviewInspectorRenderConditions = () => [];
+      const readPreviewInspectorRenderChoices = () => [];
       const readPreviewInspectorTargetReachabilityBlockers = () => [];
       const readPreviewInspectorRuntimeFallbacks = () => [{
         evidence: 'required form value access',

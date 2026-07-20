@@ -47,7 +47,8 @@ function PreviewInspectorComponentTreeNode({
   const hasChildren = node.children.length > 0;
   const expanded = hasChildren && expandedIds.has(node.id);
   const selected = node.id === selectedId;
-  const isCondition = isPreviewInspectorConditionNode(node);
+  const isCondition = isPreviewInspectorConditionNode(node) ||
+    isPreviewInspectorRenderChoiceNode(node);
   const isRenderControl = isPreviewInspectorBlockerNode(node);
   const isFlowOutcome = node?.blockerKind === 'target-reachability' &&
     node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
@@ -114,7 +115,7 @@ function PreviewInspectorComponentTreeNode({
           : isFlowOutcome
             ? 'This authored flow rendered without the current file. Select it to compare paths or inspect path evidence.'
           : isCondition
-            ? 'This condition controls which React branch is visible. Select it to toggle the branch.'
+            ? 'This render control selects which React branch is visible. Select it to inspect the branches.'
             : isAssisted
               ? 'React Preview supplied a local value here. Select it to inspect or edit that value.'
               : isPathProbe

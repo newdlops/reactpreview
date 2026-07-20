@@ -785,6 +785,7 @@ const previewInspectorApi = {
   resolveDataPayload: resolvePreviewInspectorDataPayload,
   resolveGraphqlFragment: resolvePreviewInspectorGraphqlFragmentValue,
   resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation,
+  resolveRenderChoice: resolvePreviewInspectorRenderChoice,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
   resolveRuntimeEffect: resolvePreviewInspectorRuntimeEffect,
   resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook,

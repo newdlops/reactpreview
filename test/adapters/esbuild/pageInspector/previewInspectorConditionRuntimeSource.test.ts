@@ -6,10 +6,17 @@ import { createPreviewInspectorConditionRuntimeSource } from '../../../../src/ad
 interface ConditionRuntimeHarness {
   readonly getRevision: () => number;
   readonly rememberDirectOwner: (exportName: string, ownerName: string) => void;
+  readonly readChoices: () => readonly Record<string, unknown>[];
   readonly readConditions: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
   readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
   readonly resetCondition: (conditionId: string) => void;
+  readonly resetChoice: (choiceId: string) => boolean;
+  readonly resolveChoice: (
+    choiceId: string,
+    authoredValue: unknown,
+    metadata: Record<string, unknown>,
+  ) => unknown;
   readonly resolveCondition: (
     conditionId: string,
     authoredValue: unknown,
@@ -17,8 +24,10 @@ interface ConditionRuntimeHarness {
   ) => unknown;
   readonly session: Record<string, unknown>;
   readonly setAutoCondition: (conditionId: string, enabled: boolean) => boolean;
+  readonly setChoice: (choiceId: string, branchId: string) => boolean;
   readonly setCondition: (conditionId: string, enabled: boolean) => void;
   readonly setFallbackValuesEnabled: (enabled: boolean) => void;
+  readonly serializeChoiceOverrides: () => Record<string, string>;
   readonly rollbackAutoDecision: (traceId: string) => boolean;
 }
 
@@ -61,6 +70,95 @@ describe('Preview Inspector condition runtime source', () => {
     });
     expect(harness.getRevision()).toBe(3);
     expect(persist).toHaveBeenCalledTimes(3);
+  });
+
+  /** Keeps multi-way choices separate and forces only compiler-proven literal/default branches. */
+  it('resolves, persists, and resets safe switch choices without changing authored identity', async () => {
+    const persist = vi.fn();
+    const harness = createConditionRuntimeHarness({}, persist);
+    const metadata = {
+      branches: [
+        { id: 'case-summary', label: 'case summary', selectable: true, value: 'summary' },
+        { id: 'case-detail', label: 'case detail', selectable: true, value: 2 },
+        { default: true, id: 'case-default', label: 'default', selectable: true },
+      ],
+      expression: 'mode',
+      kind: 'switch',
+      ownerName: 'Dashboard',
+      sourcePath: '/workspace/Dashboard.tsx',
+    };
+    const authoredObject = { mode: 'project-owned' };
+
+    expect(harness.resolveChoice('choice-1', authoredObject, metadata)).toBe(authoredObject);
+    await Promise.resolve();
+    expect(harness.readChoices()[0]).toMatchObject({
+      authoredBranchId: 'case-default',
+      effectiveBranchId: 'case-default',
+      kind: 'switch',
+      override: undefined,
+    });
+
+    expect(harness.setChoice('choice-1', 'case-summary')).toBe(true);
+    expect(harness.resolveChoice('choice-1', 2, metadata)).toBe('summary');
+    expect(harness.readChoices()[0]).toMatchObject({
+      authoredBranchId: 'case-detail',
+      effectiveBranchId: 'case-summary',
+      override: 'case-summary',
+    });
+    expect(harness.serializeChoiceOverrides()).toEqual({ 'choice-1': 'case-summary' });
+
+    expect(harness.setChoice('choice-1', 'case-default')).toBe(true);
+    expect(typeof harness.resolveChoice('choice-1', 'summary', metadata)).toBe('symbol');
+    expect(harness.resetChoice('choice-1')).toBe(true);
+    expect(harness.resolveChoice('choice-1', 2, metadata)).toBe(2);
+    expect(harness.serializeChoiceOverrides()).toEqual({});
+    expect(harness.readConditions()).toEqual([]);
+    expect(harness.getRevision()).toBe(3);
+    expect(persist).toHaveBeenCalledTimes(3);
+  });
+
+  /** Rejects dynamic cases/defaults even when external metadata incorrectly marks them selectable. */
+  it('retains dynamic switch branches as read-only records', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      branches: [
+        { id: 'dynamic', label: 'case resolveMode()', selectable: true },
+        { id: 'literal', label: 'case ready', selectable: true, value: 'ready' },
+        { default: true, id: 'default', label: 'default', selectable: true },
+      ],
+      expression: 'mode',
+      kind: 'switch',
+      sourcePath: '/workspace/Page.tsx',
+    };
+
+    expect(harness.resolveChoice('choice-dynamic', 'ready', metadata)).toBe('ready');
+    expect(harness.setChoice('choice-dynamic', 'dynamic')).toBe(false);
+    expect(harness.setChoice('choice-dynamic', 'literal')).toBe(false);
+    expect(harness.setChoice('choice-dynamic', 'default')).toBe(false);
+    expect(harness.readChoices()[0]).toMatchObject({
+      authoredBranchId: undefined,
+      effectiveBranchId: undefined,
+    });
+  });
+
+  /** Restores a persisted switch override through its dedicated non-boolean state map. */
+  it('restores bounded persisted render choice overrides', () => {
+    const harness = createConditionRuntimeHarness(
+      { renderChoiceOverrides: { 'choice-persisted': 'case-b' } },
+      vi.fn(),
+    );
+    const metadata = {
+      branches: [
+        { id: 'case-a', label: 'case a', selectable: true, value: 'a' },
+        { id: 'case-b', label: 'case b', selectable: true, value: 'b' },
+      ],
+      expression: 'mode',
+      kind: 'switch',
+      sourcePath: '/workspace/Page.tsx',
+    };
+
+    expect(harness.resolveChoice('choice-persisted', 'a', metadata)).toBe('b');
+    expect(harness.serializeChoiceOverrides()).toEqual({ 'choice-persisted': 'case-b' });
   });
 
   /** Restores the persisted automatic-value preference and advances the shared remount revision. */
@@ -292,16 +390,21 @@ function createConditionRuntimeHarness(
             [exportName, new Set([ownerName])],
           ]);
         },
+        readChoices: readPreviewInspectorRenderChoices,
         readConditions: readPreviewInspectorRenderConditions,
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
         isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
         resetCondition: resetPreviewInspectorRenderConditionOverride,
+        resetChoice: resetPreviewInspectorRenderChoiceOverride,
+        resolveChoice: resolvePreviewInspectorRenderChoice,
         resolveCondition: resolvePreviewInspectorRenderCondition,
         rollbackAutoDecision: rollbackPreviewInspectorFailedAutoDecision,
         session: previewInspectorSession,
         setAutoCondition: setPreviewInspectorTargetGuidedConditionOverride,
+        setChoice: setPreviewInspectorRenderChoiceOverride,
         setCondition: setPreviewInspectorRenderConditionOverride,
         setFallbackValuesEnabled: setPreviewInspectorFallbackValuesEnabled,
+        serializeChoiceOverrides: serializePreviewInspectorRenderChoiceOverrides,
       };
     `,
     context,

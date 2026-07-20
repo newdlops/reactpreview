@@ -5,6 +5,7 @@
  * drawer dimensions, floating coordinates, pointer/keyboard gestures, and viewport clamping. This
  * keeps project React state untouched while letting the Inspector move away from important content.
  */
+import { createPreviewInspectorFlowchartCssRuntimeSource } from './previewInspectorFlowchartCssRuntimeSource';
 
 /**
  * Creates browser source for resizable bottom/side drawers and a movable floating Inspector.
@@ -16,6 +17,7 @@
  * @returns Plain JavaScript source concatenated before the DevTools component-tree UI.
  */
 export function createPreviewInspectorLayoutRuntimeSource(): string {
+  const flowchartCss = createPreviewInspectorFlowchartCssRuntimeSource();
   return String.raw`
 /** CSS is scoped by the Inspector Shadow Root and cannot alter the rendered application page. */
 const previewInspectorDevtoolsCss = [
@@ -285,6 +287,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-blocker-help{grid-template-columns:24px minmax(0,1fr);padding:7px}.rpi-flow-stage{padding-left:18px}.rpi-flow-stage::before{left:0}',
   '.rpi-flow-stage:not(:last-child)::after{left:4px}.rpi-console-controls{grid-template-columns:1fr}.rpi-console-controls>*{grid-column:1!important;max-width:100%;width:100%}}',
   '@media(max-width:460px){.rpi-shell{max-width:calc(100vw - 8px)}}',
+  ${JSON.stringify(flowchartCss)},
 ].join('');
 
 const PREVIEW_INSPECTOR_LAYOUT_MARGIN = 8;

@@ -19,6 +19,9 @@ const MAX_COMPANION_VALUE_LENGTH = 2 * 1024 * 1024;
 const MAX_COMPANION_SOURCE_PATH_LENGTH = 16_384;
 const MAX_COMPANION_SOURCE_COORDINATE = 10_000_000;
 
+/** Maximum collector-issued tree identity accepted for one explicit companion reveal. */
+const MAX_COMPANION_TREE_NODE_ID_LENGTH = 16_384;
+
 /** Stable opaque identity assigned to one interactive element inside the preview Shadow DOM. */
 const COMPANION_REMOTE_ID_PATTERN = /^rpi-[1-9][0-9]{0,9}$/u;
 
@@ -40,6 +43,12 @@ export interface PreviewInspectorCompanionSnapshot {
   readonly html: string;
   /** Monotonic preview-session sequence used to discard delayed snapshots. */
   readonly sequence: number;
+  /**
+   * One-shot external navigation intent. `true` reveals the selected row; a string reveals the
+   * exact collector row. Ordinary pointer and keyboard selections omit this field so snapshots
+   * preserve the user's current tree and document scroll coordinates.
+   */
+  readonly treeReveal?: true | string;
   /** Exact message discriminator routed only from preview to companion. */
   readonly type: 'react-preview-inspector-companion-snapshot';
 }
@@ -93,14 +102,19 @@ export function readPreviewInspectorCompanionSnapshot(
   if (!isMessageRecord(value) || value.type !== 'react-preview-inspector-companion-snapshot') {
     return undefined;
   }
-  const { css, html, sequence } = value;
+  const { css, html, sequence, treeReveal } = value;
   if (
     typeof html !== 'string' ||
     html.length > MAX_COMPANION_HTML_LENGTH ||
     typeof css !== 'string' ||
     css.length > MAX_COMPANION_CSS_LENGTH ||
     !Number.isSafeInteger(sequence) ||
-    (sequence as number) < 1
+    (sequence as number) < 1 ||
+    (treeReveal !== undefined &&
+      treeReveal !== true &&
+      (typeof treeReveal !== 'string' ||
+        treeReveal.length === 0 ||
+        treeReveal.length > MAX_COMPANION_TREE_NODE_ID_LENGTH))
   ) {
     return undefined;
   }
@@ -108,6 +122,7 @@ export function readPreviewInspectorCompanionSnapshot(
     css,
     html,
     sequence: sequence as number,
+    ...(treeReveal === undefined ? {} : { treeReveal }),
     type: 'react-preview-inspector-companion-snapshot' as const,
   });
 }

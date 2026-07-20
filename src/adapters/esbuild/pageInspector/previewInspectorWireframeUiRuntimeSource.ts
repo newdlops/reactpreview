@@ -42,6 +42,15 @@ function consumePreviewInspectorTreeReveal(nodeId) {
     return false;
   }
   previewInspectorTreeRevealRequest = undefined;
+  // Consumption happens after the selected tree has committed. Only now may the inert companion
+  // distinguish this external reveal from an ordinary row click and move its local viewport.
+  if (typeof previewInspectorCompanionState === 'object') {
+    previewInspectorCompanionState.pendingTreeReveal =
+      typeof nodeId === 'string' && nodeId.length > 0 ? nodeId : true;
+  }
+  if (typeof schedulePreviewInspectorCompanionSnapshot === 'function') {
+    schedulePreviewInspectorCompanionSnapshot();
+  }
   return true;
 }
 

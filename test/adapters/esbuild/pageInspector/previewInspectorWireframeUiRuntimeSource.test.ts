@@ -57,6 +57,7 @@ interface WireframeRuntime {
   ) => Record<string, unknown>;
   readonly consumeReveal: (nodeId: string) => boolean;
   readonly revealBlocker: (node: WireframeNode, setCollapsed: (value: boolean) => void) => void;
+  readonly readCompanion: () => Record<string, unknown>;
   readonly readSession: () => Record<string, unknown>;
 }
 
@@ -257,9 +258,13 @@ describe('Preview Inspector wireframe UI runtime source', () => {
 
     expect(selected).toEqual([blocker]);
     expect(collapsedValues).toEqual([false]);
-    expect(runtime.readSession()).toMatchObject({ activeTab: 'blocker', blockerDetailRevision: 1 });
+    expect(runtime.readSession()).toMatchObject({
+      activeTab: 'blocker',
+      blockerDetailRevision: 1,
+    });
     expect(hostMessages).toEqual([{ type: 'react-preview-inspector-companion-reveal' }]);
     expect(runtime.consumeReveal(blocker.id)).toBe(true);
+    expect(runtime.readCompanion()).toMatchObject({ pendingTreeReveal: blocker.id });
     expect(runtime.consumeReveal(blocker.id)).toBe(false);
   });
 
@@ -292,6 +297,7 @@ function evaluateWireframeRuntime(
   vm.runInNewContext(
     `
       const previewInspectorDevtoolsSessionState = { collapsed: true };
+      const previewInspectorCompanionState = {};
       const selectPreviewInspectorUiNode = (node) => selected.push(node);
       const previewInspectorPostHostMessage = (message) => hostMessages.push(message);
       const isPreviewInspectorBlockerNode = (node) =>
@@ -306,6 +312,7 @@ function evaluateWireframeRuntime(
         collect: collectPreviewInspectorWireframeLayout,
         consumeReveal: consumePreviewInspectorTreeReveal,
         copyIndexes: copyPreviewInspectorSnapshotRuntimeIndexes,
+        readCompanion: () => ({ ...previewInspectorCompanionState }),
         readSession: () => ({ ...previewInspectorDevtoolsSessionState }),
         revealBlocker: revealPreviewInspectorWireframeBlocker,
       };

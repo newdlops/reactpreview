@@ -156,11 +156,81 @@ export function createPreviewInspectorCompanionHtml(
         try { control.setSelectionRange(selectionStart, selectionEnd); } catch { /* Not a text control. */ }
       }
 
-      /** Commits one newer inert Inspector snapshot while preserving an actively edited control. */
+      /** Converts one DOM scroll coordinate into a finite non-negative number. */
+      function normalizeCompanionScrollCoordinate(value) {
+        return Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
+      }
+
+      /** Captures the companion document and Components viewport before mirrored DOM replacement. */
+      function captureCompanionScrollSnapshot() {
+        const documentViewport = document.scrollingElement;
+        const treeViewport = mirror.querySelector('.rpi-tree-scroll');
+        return {
+          documentLeft: normalizeCompanionScrollCoordinate(documentViewport?.scrollLeft),
+          documentTop: normalizeCompanionScrollCoordinate(documentViewport?.scrollTop),
+          hasTreeViewport: treeViewport !== null,
+          treeLeft: normalizeCompanionScrollCoordinate(treeViewport?.scrollLeft),
+          treeTop: normalizeCompanionScrollCoordinate(treeViewport?.scrollTop)
+        };
+      }
+
+      /** Restores ordinary user scroll without focusing or invoking application-side callbacks. */
+      function restoreCompanionScrollSnapshot(snapshot) {
+        const documentViewport = document.scrollingElement;
+        if (documentViewport !== null) {
+          documentViewport.scrollLeft = snapshot.documentLeft;
+          documentViewport.scrollTop = snapshot.documentTop;
+        }
+        if (!snapshot.hasTreeViewport) return;
+        const treeViewport = mirror.querySelector('.rpi-tree-scroll');
+        if (treeViewport === null) return;
+        treeViewport.scrollLeft = snapshot.treeLeft;
+        treeViewport.scrollTop = snapshot.treeTop;
+      }
+
+      /** Finds a preview-authorized external reveal without interpolating its ID into a selector. */
+      function findCompanionTreeRevealRow(treeReveal) {
+        if (treeReveal !== true && typeof treeReveal !== 'string') return undefined;
+        const rows = [...mirror.querySelectorAll('[data-react-preview-tree-row]')];
+        return treeReveal === true
+          ? rows.find((row) => row.getAttribute('aria-selected') === 'true')
+          : rows.find((row) => row.getAttribute('data-react-preview-tree-row') === treeReveal);
+      }
+
+      /** Reveals one externally selected row inside the tree viewport without moving the document. */
+      function revealCompanionTreeRow(treeReveal) {
+        const row = findCompanionTreeRevealRow(treeReveal);
+        const treeViewport = row?.closest?.('.rpi-tree-scroll');
+        const viewportBounds = treeViewport?.getBoundingClientRect?.();
+        const rowBounds = row?.getBoundingClientRect?.();
+        if (viewportBounds === undefined || rowBounds === undefined) return;
+        if (rowBounds.top < viewportBounds.top) {
+          treeViewport.scrollTop = Math.max(
+            0,
+            treeViewport.scrollTop + rowBounds.top - viewportBounds.top
+          );
+        } else if (rowBounds.bottom > viewportBounds.bottom) {
+          treeViewport.scrollTop += rowBounds.bottom - viewportBounds.bottom;
+        }
+        if (rowBounds.left < viewportBounds.left) {
+          treeViewport.scrollLeft = Math.max(
+            0,
+            treeViewport.scrollLeft + rowBounds.left - viewportBounds.left
+          );
+        } else if (rowBounds.right > viewportBounds.right) {
+          treeViewport.scrollLeft += rowBounds.right - viewportBounds.right;
+        }
+      }
+
+      /**
+       * Commits one newer inert snapshot while retaining focus and ordinary scroll. Only a
+       * preview-issued tree-reveal intent may move the Components viewport after replacement.
+       */
       function renderSnapshot(message) {
         if (message.sequence === 1) latestSequence = 0;
         if (!Number.isSafeInteger(message.sequence) || message.sequence <= latestSequence) return;
         latestSequence = message.sequence;
+        const scrollSnapshot = captureCompanionScrollSnapshot();
         const active = document.activeElement?.closest?.('[data-rpi-remote-id]');
         const activeId = active?.getAttribute?.('data-rpi-remote-id') ?? undefined;
         const selectionStart = active?.selectionStart;
@@ -173,6 +243,8 @@ export function createPreviewInspectorCompanionHtml(
         mirror.hidden = false;
         installPreviewInspectorCompanionPaneResize();
         restoreControlFocus(activeId, selectionStart, selectionEnd);
+        restoreCompanionScrollSnapshot(scrollSnapshot);
+        revealCompanionTreeRow(message.treeReveal);
       }
 
       /** Returns the nearest preview-minted interaction identity for one delegated browser event. */

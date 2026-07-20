@@ -29,6 +29,7 @@ const previewInspectorCompanionState = {
     ? previousPreviewInspectorCompanionState.nextId
     : 1,
   observer: undefined,
+  pendingTreeReveal: previousPreviewInspectorCompanionState?.pendingTreeReveal,
   sequence: Number.isSafeInteger(previousPreviewInspectorCompanionState?.sequence)
     ? previousPreviewInspectorCompanionState.sequence
     : 0,
@@ -83,6 +84,23 @@ function synchronizePreviewInspectorCompanionControls(shell, clone) {
   });
 }
 
+/**
+ * Resolves a one-shot external tree navigation only after the mirrored row exists. Ordinary row
+ * clicks never create this value, which lets the companion preserve its independently scrolled
+ * viewport while still honoring picker, wireframe, and Current file navigation.
+ */
+function readPreviewInspectorCompanionTreeReveal(clone) {
+  const request = previewInspectorCompanionState.pendingTreeReveal;
+  if (request !== true && (typeof request !== 'string' || request.length === 0)) return undefined;
+  const rows = [...(clone.querySelectorAll?.('[data-react-preview-tree-row]') ?? [])];
+  if (request === true) {
+    return rows.some((row) => row.getAttribute?.('aria-selected') === 'true') ? true : undefined;
+  }
+  return rows.some(
+    (row) => row.getAttribute?.('data-react-preview-tree-row') === request,
+  ) ? request : undefined;
+}
+
 /** Publishes one changed inert shell and static stylesheet through the extension-host relay. */
 function publishPreviewInspectorCompanionSnapshot() {
   previewInspectorCompanionState.frame = undefined;
@@ -92,14 +110,20 @@ function publishPreviewInspectorCompanionSnapshot() {
   indexPreviewInspectorCompanionControls(shell);
   const clone = shell.cloneNode(true);
   synchronizePreviewInspectorCompanionControls(shell, clone);
+  let treeReveal = readPreviewInspectorCompanionTreeReveal(clone);
   let html = clone.outerHTML;
   const css = typeof previewInspectorDevtoolsCss === 'string' ? previewInspectorDevtoolsCss : '';
   if (html.length > PREVIEW_INSPECTOR_COMPANION_HTML_LIMIT) {
     html = '<aside class="rpi-shell" data-react-preview-companion-source="true">' +
       '<div class="rpi-empty">Inspector tree exceeded the bounded companion UI size. ' +
       'Filter or reduce the active page graph and refresh.</div></aside>';
+    treeReveal = undefined;
   }
-  if (html === previewInspectorCompanionState.lastHtml && css === previewInspectorCompanionState.lastCss) {
+  if (
+    html === previewInspectorCompanionState.lastHtml &&
+    css === previewInspectorCompanionState.lastCss &&
+    treeReveal === undefined
+  ) {
     return;
   }
   previewInspectorCompanionState.lastHtml = html;
@@ -110,8 +134,15 @@ function publishPreviewInspectorCompanionSnapshot() {
       css,
       html,
       sequence: previewInspectorCompanionState.sequence,
+      ...(treeReveal === undefined ? {} : { treeReveal }),
       type: 'react-preview-inspector-companion-snapshot',
     });
+    if (
+      treeReveal !== undefined &&
+      previewInspectorCompanionState.pendingTreeReveal === treeReveal
+    ) {
+      previewInspectorCompanionState.pendingTreeReveal = undefined;
+    }
   } catch (error) {
     console.warn('[React Preview] Could not update the separate Inspector tab.', error);
   }
@@ -162,6 +193,16 @@ function writePreviewInspectorCompanionControl(control, message) {
   }
 }
 
+/** Captures the authoritative tree before a programmatic remote row selection can rerender it. */
+function capturePreviewInspectorCompanionTreeSelection(control, message) {
+  if (control?.matches?.('[data-react-preview-tree-row]') !== true) return;
+  const selectsRow = message.eventType === 'click' ||
+    (message.eventType === 'keydown' && (message.key === 'Enter' || message.key === ' '));
+  if (!selectsRow || typeof capturePreviewInspectorTreeSelectionScroll !== 'function') return;
+  const treeViewport = control.closest?.('.rpi-tree-scroll');
+  capturePreviewInspectorTreeSelectionScroll(treeViewport);
+}
+
 /** Reconstructs only click, form, and accessible tree events accepted by the host protocol. */
 function handlePreviewInspectorCompanionAction(event) {
   const message = event?.data;
@@ -175,6 +216,7 @@ function handlePreviewInspectorCompanionAction(event) {
     return;
   }
   try {
+    capturePreviewInspectorCompanionTreeSelection(control, message);
     if (message.eventType === 'click') {
       previewInspectorCompanionClick?.call(control);
     } else if (message.eventType === 'dblclick') {

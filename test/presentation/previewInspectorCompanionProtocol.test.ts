@@ -27,6 +27,39 @@ describe('Preview Inspector companion protocol', () => {
     expect(Object.isFrozen(snapshot)).toBe(true);
   });
 
+  /** Keeps explicit tree navigation distinct from ordinary snapshots that preserve local scroll. */
+  it('accepts only bounded one-shot tree reveal intents', () => {
+    expect(
+      readPreviewInspectorCompanionSnapshot({
+        css: '',
+        html: '<aside></aside>',
+        sequence: 4,
+        treeReveal: 'fiber:root/target',
+        type: 'react-preview-inspector-companion-snapshot',
+      }),
+    ).toMatchObject({ sequence: 4, treeReveal: 'fiber:root/target' });
+    expect(
+      readPreviewInspectorCompanionSnapshot({
+        css: '',
+        html: '<aside></aside>',
+        sequence: 5,
+        treeReveal: true,
+        type: 'react-preview-inspector-companion-snapshot',
+      }),
+    ).toMatchObject({ sequence: 5, treeReveal: true });
+    for (const treeReveal of [false, '', 'x'.repeat(16_385)]) {
+      expect(
+        readPreviewInspectorCompanionSnapshot({
+          css: '',
+          html: '<aside></aside>',
+          sequence: 6,
+          treeReveal,
+          type: 'react-preview-inspector-companion-snapshot',
+        }),
+      ).toBeUndefined();
+    }
+  });
+
   /** Rejects malformed identities, unbounded values, and keyboard fields on non-key events. */
   it('bounds companion interactions before they reach the project runtime', () => {
     expect(

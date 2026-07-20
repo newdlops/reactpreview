@@ -65,4 +65,21 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="columns"]');
     expect(html).toContain('.rpi-workbench[data-rpi-pane-axis="rows"]');
   });
+
+  /** Preserves ordinary tree selection scroll while allowing only explicit external reveals. */
+  it('restores document and component-tree scroll across inert snapshots', () => {
+    const html = createPreviewInspectorCompanionHtml({
+      cspSource: 'vscode-webview://inspector-test',
+      documentName: 'Scrollable.tsx',
+      nonce: 'scroll-nonce',
+    });
+
+    expect(html).toContain('function captureCompanionScrollSnapshot()');
+    expect(html).toContain('function restoreCompanionScrollSnapshot(snapshot)');
+    expect(html).toContain('restoreControlFocus(activeId, selectionStart, selectionEnd);');
+    expect(html).toContain('restoreCompanionScrollSnapshot(scrollSnapshot);');
+    expect(html).toContain('revealCompanionTreeRow(message.treeReveal);');
+    expect(html).toContain("mirror.querySelector('.rpi-tree-scroll')");
+    expect(html).not.toContain('scrollIntoView');
+  });
 });

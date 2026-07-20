@@ -19,8 +19,7 @@ const EXCLUDED_DIRECTORY_NAMES = new Set([
   'dist',
   'node_modules',
 ]);
-// `log.txt` is the ignored local runtime capture users attach for diagnosis, not maintained source.
-const EXCLUDED_FILE_NAMES = new Set(['.DS_Store', 'log.txt']);
+const EXCLUDED_FILE_NAMES = new Set(['.DS_Store']);
 const BINARY_FILE_EXTENSIONS = new Set([
   '.avif',
   '.gif',
@@ -33,6 +32,11 @@ const BINARY_FILE_EXTENSIONS = new Set([
   '.woff',
   '.woff2',
 ]);
+
+/** Identifies numbered local runtime captures, which are diagnostic input rather than source. */
+function isRuntimeLogCapture(fileName) {
+  return /^log(?:\d+)?\.txt$/u.test(fileName);
+}
 
 /**
  * Recursively collects regular files below a repository-relative directory.
@@ -51,6 +55,7 @@ async function collectFiles(directoryPath) {
 
       if (
         EXCLUDED_FILE_NAMES.has(entry.name) ||
+        isRuntimeLogCapture(entry.name) ||
         BINARY_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
       ) {
         return [];

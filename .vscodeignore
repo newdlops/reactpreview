@@ -28,4 +28,4 @@ assets/*.md
 node_modules/esbuild/bin/esbuild
 .zoek-rs
 .tmp
-log.txt
+log*.txt

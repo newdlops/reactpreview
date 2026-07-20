@@ -11,15 +11,21 @@ import type { PreviewDocumentShell, PreviewDocumentShellAttribute } from './prev
  * individually so screen-mode or modal code can retain classes it added after the initial mount.
  *
  * @param shell Optional exact shell evidence discovered from a bounded project HTML document.
+ * @param portalHostIds Exact reached ReactDOM host IDs created only when currently absent.
  * @returns Browser JavaScript defining `initializePreviewDocumentShell` for the generated entry.
  */
 export function createPreviewDocumentShellRuntimeSource(
   shell: PreviewDocumentShell | undefined,
+  portalHostIds: readonly string[] = [],
 ): string {
   const encodedShell = JSON.stringify(shell ?? createEmptyDocumentShell());
+  const encodedPortalHostIds = JSON.stringify(normalizePreviewPortalHostIds(portalHostIds));
   return `
 const previewDocumentShell = ${encodedShell};
+const previewPortalHostIds = ${encodedPortalHostIds};
 const previewDocumentShellStateKey = Symbol.for('newdlops.react-file-preview.document-shell');
+const previewPortalHostMarker = 'data-react-preview-portal-host';
+const previewPortalHostOwner = 'newdlops.react-file-preview';
 
 /** Applies one static attribute set while retaining project-added class tokens across hot revisions. */
 function applyPreviewDocumentAttributes(element, attributes, previousAttributes) {
@@ -56,14 +62,63 @@ function applyPreviewDocumentAttributes(element, attributes, previousAttributes)
 /** Restores selector-relevant HTML shell evidence before any project module can read the document. */
 function initializePreviewDocumentShell(mountNode) {
   const previous = globalThis[previewDocumentShellStateKey] ?? {
-    bodyAttributes: [], htmlAttributes: [], rootAttributes: [],
+    bodyAttributes: [], htmlAttributes: [], rootAttributes: [], portalHosts: [],
   };
   applyPreviewDocumentAttributes(document.documentElement, previewDocumentShell.htmlAttributes, previous.htmlAttributes);
   applyPreviewDocumentAttributes(document.body, previewDocumentShell.bodyAttributes, previous.bodyAttributes);
   applyPreviewDocumentAttributes(mountNode, previewDocumentShell.rootAttributes, previous.rootAttributes);
-  globalThis[previewDocumentShellStateKey] = previewDocumentShell;
+  const portalHosts = initializePreviewPortalHosts(previous.portalHosts ?? []);
+  globalThis[previewDocumentShellStateKey] = { ...previewDocumentShell, portalHosts };
+}
+
+/**
+ * Reconciles only nodes created and retained by this adapter across hot runtime revisions.
+ * Project nodes are never recorded, so an authored replacement with the same ID cannot be removed.
+ */
+function initializePreviewPortalHosts(previousPortalHosts) {
+  if (document.body === null) return [];
+  const nextIds = new Set(previewPortalHostIds);
+  const retainedHosts = [];
+  const previousRecords = Array.isArray(previousPortalHosts) ? previousPortalHosts : [];
+  for (const record of previousRecords) {
+    const element = record?.element;
+    const owned =
+      typeof record?.id === 'string' &&
+      element?.getAttribute?.(previewPortalHostMarker) === previewPortalHostOwner;
+    if (!owned) continue;
+    if (nextIds.has(record.id) && document.getElementById(record.id) === element) {
+      retainedHosts.push(record);
+      continue;
+    }
+    if (!nextIds.has(record.id)) element.remove?.();
+  }
+  for (const hostId of previewPortalHostIds) {
+    if (retainedHosts.some((record) => record.id === hostId)) continue;
+    if (document.getElementById(hostId) !== null) continue;
+    const host = document.createElement?.('div');
+    if (host === undefined || host === null) continue;
+    host.setAttribute?.('id', hostId);
+    host.setAttribute?.(previewPortalHostMarker, previewPortalHostOwner);
+    document.body.append?.(host);
+    retainedHosts.push({ element: host, id: hostId });
+  }
+  return retainedHosts;
 }
 `;
+}
+
+/** De-duplicates and bounds IDs before they are serialized into the trusted browser entry. */
+function normalizePreviewPortalHostIds(hostIds: readonly string[]): readonly string[] {
+  return [
+    ...new Set(
+      hostIds.filter(
+        (hostId) =>
+          hostId.length > 0 && hostId.length <= 256 && !/[\u0000-\u0020\u007f]/u.test(hostId),
+      ),
+    ),
+  ]
+    .sort()
+    .slice(0, 64);
 }
 
 /** Returns a frozen-shape-compatible empty shell when no project HTML evidence exists. */

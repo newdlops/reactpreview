@@ -220,7 +220,16 @@ function selectCssInputSections(
   const selectedPositiveInputs = positiveInputPaths.filter((inputPath) =>
     selectedInputs.has(inputPath),
   );
-  if (selectedPositiveInputs.length === 0) return undefined;
+  if (selectedPositiveInputs.length === 0) {
+    // esbuild can omit an `@import` edge from incremental metafile input metadata when a plugin
+    // redirects the same import to a different file after a package-manifest edit. The owning CSS
+    // root still appears in both the JavaScript chunk and aggregate stylesheet with zero bytes. In
+    // that proven-owner case retain the aggregate instead of silently dropping all refreshed CSS.
+    const retainsOwningCssRoot = [...selectedInputs].some((inputPath) =>
+      Object.prototype.hasOwnProperty.call(stylesheet.metadata.inputs, inputPath),
+    );
+    return retainsOwningCssRoot ? stylesheet.contents : undefined;
+  }
 
   const css = decoder.decode(stylesheet.contents);
   const locatedSections = locateCssSections(css, positiveInputPaths);

@@ -100,12 +100,14 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
   return {
     column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
     evidence: readText('evidence', 'bounded static hook usage inference'),
+    failurePaths: normalizePreviewInspectorRequiredPropertyPaths(source.failurePaths),
     fallbackLabel: readText('fallbackLabel', 'generated static value'),
     hookName: readText('hookName', 'custom hook'),
     id: readText('id'),
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     moduleSpecifier: readText('moduleSpecifier'),
     ownerName: readText('ownerName'),
+    passive: source.passive === true,
     preserveNullish: source.preserveNullish === true,
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
     sourcePath: readText('sourcePath'),
@@ -224,6 +226,9 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     try { errorHeadline = createRuntimeErrorHeadline(error); } catch { errorHeadline = String(error); }
   }
   const previous = previewInspectorSession.runtimeFallbacks.get(metadata.id);
+  const requiredPaths = reason === 'threw' && metadata.requiredPaths.length === 0
+    ? metadata.failurePaths
+    : metadata.requiredPaths;
   const next = {
     ...metadata,
     count: (previous?.count ?? 0) + 1,
@@ -242,7 +247,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
         ? previewInspectorSession.activeTargetReachabilityKey
         : undefined,
     reason,
-    requiredPaths: metadata.requiredPaths,
+    requiredPaths,
   };
   previewInspectorSession.runtimeFallbacks.set(metadata.id, next);
   if (
@@ -253,7 +258,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   ) {
     if (
       typeof recordPreviewInspectorBlockerAutoDecision === 'function' &&
-      (next.mode === 'auto' || next.mode === 'smart')
+      !next.passive && (next.mode === 'auto' || next.mode === 'smart')
     ) {
       recordPreviewInspectorBlockerAutoDecision({
         action: reason === 'partial' ? 'Complete missing hook fields' : 'Substitute failed hook result',
@@ -268,10 +273,10 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
         reason: errorHeadline || metadata.evidence,
         selectedValue: createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
           fallback,
-          metadata.requiredPaths,
+          requiredPaths,
         ),
         sourcePath: metadata.sourcePath,
-        summary: { requiredPaths: metadata.requiredPaths },
+        summary: { requiredPaths },
       });
     }
     const message =
@@ -287,7 +292,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
       errorHeadline.length > 0 ? 'Original: ' + errorHeadline : '',
       'Evidence: ' + metadata.evidence,
       metadata.sourcePath + (metadata.line ? ':' + String(metadata.line) : ''),
-      metadata.requiredPaths.length > 0 ? 'Required paths: ' + metadata.requiredPaths.join(', ') : '',
+      requiredPaths.length > 0 ? 'Required paths: ' + requiredPaths.join(', ') : '',
       generatedPaths.length > 0 ? 'Generated paths: ' + generatedPaths.join(', ') : '',
       'Generated: ' + next.fallbackPreview,
     ].filter(Boolean).join('\n');
@@ -426,7 +431,13 @@ function resolvePreviewInspectorRuntimeHook(
     fallback,
     failure === undefined ? 'nullish' : 'threw',
     failure,
-    metadata.requiredPaths.length > 0 ? metadata.requiredPaths : ['<root>'],
+    metadata.requiredPaths.length > 0
+      ? metadata.requiredPaths
+      : failure !== undefined && metadata.failurePaths.length > 0
+        ? metadata.failurePaths
+        : metadata.passive
+          ? []
+          : ['<root>'],
   );
   return fallback;
 }

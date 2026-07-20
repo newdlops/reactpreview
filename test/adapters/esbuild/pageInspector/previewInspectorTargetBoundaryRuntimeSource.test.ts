@@ -81,6 +81,28 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     boundary.retry();
     expect(remountedExports).toEqual(['SelectedCard']);
   });
+
+  /** Defers the recoverable nested-Router invariant to the candidate's outer retry boundary. */
+  it('rethrows a nested Router error instead of replacing the application root', () => {
+    const source = [
+      createPreviewInspectorTargetBoundaryRuntimeSource(),
+      'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
+    ].join('\n');
+    const sandbox = createTargetBoundarySandbox({
+      rememberedErrors: [],
+      mountedOwnerExports: [],
+      remountedExports: [],
+      warnings: [],
+    });
+    runInContext(source, createContext(sandbox));
+    const Boundary = sandbox.__TestBoundary;
+    if (Boundary === undefined) throw new Error('Missing test boundary.');
+    const routerError = new Error(
+      'You cannot render a <Router> inside another <Router>. You should never have more than one in your app.',
+    );
+
+    expect(() => Boundary.getDerivedStateFromError(routerError)).toThrow(routerError);
+  });
 });
 
 /** Mutable observations supplied to the generated browser-source sandbox. */

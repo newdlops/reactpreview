@@ -149,6 +149,40 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(fixture.warnings).toEqual([]);
   });
 
+  /** Uses failure-only optional paths when the hook throws without completing a real empty value. */
+  it('reports and returns the compiler-shaped optional fallback after a hook exception', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      failurePaths: ['timeSeconds', 'day'],
+      preserveNullish: true,
+      requiredPaths: [],
+    };
+    const fallback = { day: {}, timeSeconds: 0 };
+
+    expect(
+      fixture.api.resolve(
+        () => {
+          throw new Error('selector unavailable');
+        },
+        () => fallback,
+        metadata,
+      ),
+    ).toEqual(fallback);
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['timeSeconds', 'day'],
+      reason: 'threw',
+      requiredPaths: ['timeSeconds', 'day'],
+    });
+    expect(
+      fixture.api.resolve(
+        () => null,
+        () => fallback,
+        metadata,
+      ),
+    ).toBeNull();
+  });
+
   /** Supplements only missing nested leaves and keeps one stable completed identity per hook site. */
   it('completes partial plain values without replacing authored sibling fields', () => {
     const fixture = createRuntimeFallbackFixture(true);

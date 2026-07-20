@@ -118,6 +118,28 @@ describe('Preview Inspector runtime health source', () => {
       message: 'AG Grid: error #272 No AG Grid modules are registered!',
       source: 'console',
     });
+    runtime.error({
+      level: 'error',
+      message: 'Warning: Support for defaultProps will be removed from function components.',
+      source: 'console',
+    });
+
+    expect(runtime.messages).toEqual([]);
+  });
+
+  /** Keeps recoverable project console failures visible only in the dedicated Console surface. */
+  it('does not treat generic project console errors as failed React commits', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.error({
+      level: 'error',
+      message: 'native bridge not found',
+      source: 'console',
+    });
+    runtime.error({
+      level: 'error',
+      message: 'currentPageConfig is undefined',
+      source: 'console',
+    });
 
     expect(runtime.messages).toEqual([]);
   });

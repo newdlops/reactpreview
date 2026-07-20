@@ -108,7 +108,7 @@ function readPreviewInspectorRuntimeHealthSeverity(event) {
  * alone cannot decide whether a warning starts a runtime failure chain.
  */
 function isPreviewInspectorNonFatalReactDiagnostic(message) {
-  return /(?:findDOMNode is deprecated|Each child in a list should have a unique|React does not recognize the|Invalid (?:DOM property|attribute name)|validateDOMNesting|Received .* for a non-boolean attribute|A component is changing an? (?:un)?controlled|AG Grid: error #272)/u.test(
+  return /(?:findDOMNode is deprecated|Each child in a list should have a unique|React does not recognize the|Invalid (?:DOM property|attribute name)|validateDOMNesting|Received .* for a non-boolean attribute|A component is changing an? (?:un)?controlled|Support for defaultProps will be removed from function components|AG Grid: error #272)/u.test(
     message,
   );
 }
@@ -191,8 +191,12 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
   if (!isStyledComponentsInstanceWarning && isPreviewInspectorNonFatalReactDiagnostic(rawMessage)) {
     return;
   }
-  initializePreviewInspectorRuntimeHealthState();
   const source = typeof entry.source === 'string' ? entry.source : 'runtime';
+  // Project code frequently uses console.error for optional bridges, configuration probes, and
+  // recoverable API failures. Those entries remain visible in Inspector Console, but only React's
+  // boundary/runtime transports can prove that the current commit actually failed.
+  if (source === 'console' && !isStyledComponentsInstanceWarning) return;
+  initializePreviewInspectorRuntimeHealthState();
   if (!['console', 'preview-runtime', 'react-boundary', 'runtime-fallback', 'target-reachability'].includes(source)) return;
   const message = rawMessage.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT);
   const key = createPreviewInspectorRuntimeHealthErrorKey(entry);

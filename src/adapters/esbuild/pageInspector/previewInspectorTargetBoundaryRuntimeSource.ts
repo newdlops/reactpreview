@@ -28,6 +28,21 @@ function describePreviewInspectorTargetError(error) {
 }
 
 /**
+ * Lets the candidate Router boundary, which is outside this target boundary, perform its one safe
+ * retry without the inferred MemoryRouter. Other target failures remain locally contained.
+ */
+function isPreviewInspectorCandidateRouterRetry(error) {
+  const bridgeDetector = typeof activePreviewRouterBridge === 'undefined'
+    ? undefined
+    : activePreviewRouterBridge?.isNestedPreviewRouterError;
+  if (typeof bridgeDetector === 'function') return bridgeDetector(error) === true;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /cannot render a <Router> inside another <Router>|should never have more than one in your app/iu.test(
+    message,
+  );
+}
+
+/**
  * Contains render and lifecycle failures below the exact component selected in Page Inspector.
  * It intentionally adds no DOM on success; the custom element exists only along the error path.
  */
@@ -40,6 +55,7 @@ class PreviewInspectorTargetBoundary extends React.Component {
 
   /** Asks React to commit the compact fallback after a descendant render or lifecycle failure. */
   static getDerivedStateFromError(error) {
+    if (isPreviewInspectorCandidateRouterRetry(error)) throw error;
     return { error };
   }
 

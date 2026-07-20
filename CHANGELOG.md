@@ -2,6 +2,28 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1096 - 2026-07-20
+
+- Blockers를 왼쪽 `Control & render flow` 캔버스와 오른쪽 `Blocker Resolver`로 분리해 선택 block의
+  active/dormant·exact/inferred 상태, owner/source, 선행·후행 관계와 기존 Auto/Smart/branch 편집기를 한 화면에서 확인
+- 별도 Inspector 탭이 소유하는 `−/100%/+/Center/Fit` 카메라를 추가해 preview React를 다시 렌더하지 않고 35~200%로
+  확대·축소하며, snapshot 교체 뒤에도 그래프 중심과 zoom을 보존하고 Inspector 전체 스크롤을 이동하지 않도록 개선
+- `Locate current file`이 단순 component 이름 대신 선택 export·정확한 source·mounted 경계를 모두 확인한 함수 진입점을
+  선택·중앙 정렬하고, 아직 마운트되지 않았으면 가장 가까운 path blocker 또는 정적 current-file 문맥을 안내
+- Resolver에 `Locate → Trace → Resolve → Verify` 가이드를 제공하고 대형 bounded graph에서도 current-file target,
+  active/direct blocker를 우선 보존하며 label·edge·source·HOC/slot 변화가 즉시 layout을 갱신하도록 fingerprint를 강화
+
+## 0.1.1095 - 2026-07-20
+
+- Blockers를 카드 목록 대신 debugger control-flow graph로 표시해 함수 진입, 조건 판단, `true`/`false` 및
+  `case`/`default` 분기, component 호출, return과 합류 지점을 실제 선으로 추적하고 활성·비활성 경로를 구분
+- 정적으로 안전하게 증명한 component-local `switch/case`를 계측해 literal case와 default를 Inspector에서
+  선택·초기화할 수 있게 하고, 동적 case는 오판 없이 읽기 전용으로 유지
+- `memo`, `forwardRef`, `compose`, `with…` 계열 HOC와 `component`/`as`/render prop을 render graph부터
+  Components tree와 Blockers flow까지 보존해 고차 컴포넌트 및 전달된 컴포넌트의 호출 문맥을 명시적으로 표시
+- 프로젝트에 `react-dom/client`가 없으면 legacy `react-dom`의 `render`/`unmountComponentAtNode` adapter를 자동
+  선택해 React 16·17 프로젝트도 확장에 포함된 React 19가 아니라 해당 프로젝트의 module root에서 bundle
+
 ## 0.1.1094 - 2026-07-20
 
 - Blockers Render flow에서 선택한 현재 파일 export가 최종 owner인 미해결 blocker만 `CURRENT FILE BLOCKER`

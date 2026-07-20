@@ -78,6 +78,8 @@ export interface PreviewBlockerTraceAutoSelection {
 export interface PreviewBlockerTraceRenderResult {
   readonly changedBlockerIds: readonly string[];
   readonly discoveredBlockerIds: readonly string[];
+  /** Whether the browser committed this attempt or coalesced it into a newer mutation. */
+  readonly outcome?: 'committed' | 'superseded';
   readonly remainingBlockerIds: readonly string[];
   readonly resolvedBlockerIds: readonly string[];
 }
@@ -256,17 +258,25 @@ function readTraceRenderResult(value: unknown): PreviewBlockerTraceRenderResult 
   const discoveredBlockerIds = readTraceTextList(value.discoveredBlockerIds);
   const remainingBlockerIds = readTraceTextList(value.remainingBlockerIds);
   const resolvedBlockerIds = readTraceTextList(value.resolvedBlockerIds);
+  const outcome =
+    value.outcome === 'committed' || value.outcome === 'superseded'
+      ? value.outcome
+      : value.outcome === undefined
+        ? undefined
+        : null;
   if (
     changedBlockerIds === undefined ||
     discoveredBlockerIds === undefined ||
     remainingBlockerIds === undefined ||
-    resolvedBlockerIds === undefined
+    resolvedBlockerIds === undefined ||
+    outcome === null
   ) {
     return undefined;
   }
   return Object.freeze({
     changedBlockerIds,
     discoveredBlockerIds,
+    ...(outcome === undefined ? {} : { outcome }),
     remainingBlockerIds,
     resolvedBlockerIds,
   });

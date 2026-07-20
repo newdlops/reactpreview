@@ -20,7 +20,10 @@ const PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT = 256;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS = 5_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS = 1_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS = 30_000;
-const PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS = 120;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_ATTEMPT_SETTLEMENT_MS = 320;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_PENDING_SETTLEMENT_LIMIT_MS = 960;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS = 320;
+const PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_SNAPSHOT_COUNT = 3;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT = 4_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_BATCH_DETAIL_LIMIT = 24;
 
@@ -67,6 +70,144 @@ function createPreviewInspectorBlockerTraceId() {
   initializePreviewInspectorBlockerTraceState();
   previewInspectorSession.blockerTraceIdentitySequence += 1;
   return 'blocker-trace-' + String(previewInspectorSession.blockerTraceIdentitySequence);
+}
+
+/**
+ * Closes one commit-producing attempt exactly once.
+ *
+ * Auto decisions can be coalesced by React before a tree snapshot is observable. Explicitly
+ * settling a superseded attempt keeps diagnostics causal and prevents a later error from being
+ * attached to a render that the browser never committed.
+ */
+function settlePreviewInspectorBlockerTraceAttempt(attempt, detail) {
+  if (attempt === undefined || attempt.settledAt !== undefined) return false;
+  attempt.settledAt = Date.now();
+  if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
+    recordPreviewInspectorRuntimeHealth({
+      category: 'render-attempt',
+      detail: { ...detail, traceId: attempt.traceId },
+      event: 'render-attempt-settled',
+    });
+  }
+  return true;
+}
+
+/** Adds bounded blocker identities to one open attempt's eventual single commit result. */
+function accumulatePreviewInspectorBlockerTraceAttemptIds(attempt, field, blockerIds) {
+  if (attempt === undefined || attempt.settledAt !== undefined || !Array.isArray(blockerIds)) return;
+  if (!(attempt[field] instanceof Set)) attempt[field] = new Set();
+  for (const blockerId of blockerIds) {
+    if (attempt[field].size >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT) break;
+    if (typeof blockerId === 'string') attempt[field].add(blockerId);
+  }
+}
+
+/** Reads one attempt accumulator without exposing its mutable Set to host diagnostics. */
+function readPreviewInspectorBlockerTraceAttemptIds(attempt, field) {
+  return attempt?.[field] instanceof Set ? [...attempt[field]] : [];
+}
+
+/**
+ * Atomically settles and publishes one commit-producing attempt exactly once.
+ *
+ * Marking the attempt settled before posting prevents a synchronous host callback or duplicate
+ * tree observation from emitting a second terminal result for the same Auto decision.
+ */
+function completePreviewInspectorBlockerTraceAttempt(
+  attempt,
+  result,
+  settlementDetail = result,
+) {
+  if (!settlePreviewInspectorBlockerTraceAttempt(attempt, settlementDetail)) return false;
+  postPreviewInspectorBlockerTraceEvent('render-result', attempt.traceId, {
+    ...(attempt.blocker === undefined ? {} : { blocker: attempt.blocker }),
+    result,
+  });
+  return true;
+}
+
+/** Reads the latest conservative blocker set when an attempt's bounded wait expires. */
+function readPreviewInspectorBlockerTraceRemainingIds(attempt) {
+  if (Array.isArray(attempt?.lastRemainingBlockerIds)) {
+    return [...attempt.lastRemainingBlockerIds];
+  }
+  return [
+    ...new Set([
+      ...previewInspectorSession.blockerTraceRecords.keys(),
+      ...previewInspectorSession.blockerTracePendingResolutions.keys(),
+    ]),
+  ];
+}
+
+/** Builds the single terminal result from all snapshots observed during one render attempt. */
+function createPreviewInspectorBlockerTraceAttemptResult(attempt, outcome = 'committed') {
+  return {
+    changedBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
+      attempt,
+      'changedBlockerIds',
+    ),
+    discoveredBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
+      attempt,
+      'discoveredBlockerIds',
+    ),
+    outcome,
+    remainingBlockerIds: readPreviewInspectorBlockerTraceRemainingIds(attempt),
+    resolvedBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
+      attempt,
+      'resolvedBlockerIds',
+    ),
+  };
+}
+
+/**
+ * Gives React one bounded stabilization window before committing a no-diff or stale observation.
+ *
+ * A disappearing blocker or lone stale observation receives two additional short windows so a
+ * later remount can provide stable evidence. The hard deadline still closes the trace when no tree
+ * refresh ever arrives, preventing an orphaned Auto record from owning unrelated errors.
+ */
+function schedulePreviewInspectorBlockerTraceAttemptSettlement(attempt, delayMs) {
+  if (
+    attempt === undefined ||
+    attempt.settledAt !== undefined ||
+    attempt.settlementScheduled === true ||
+    typeof globalThis.setTimeout !== 'function'
+  ) return;
+  attempt.settlementScheduled = true;
+  globalThis.setTimeout(() => {
+    attempt.settlementScheduled = false;
+    if (attempt.settledAt !== undefined) return;
+    const age = Date.now() - attempt.startedAt;
+    const hasObservableDiff = [
+      'changedBlockerIds',
+      'discoveredBlockerIds',
+      'resolvedBlockerIds',
+    ].some((field) => attempt[field] instanceof Set && attempt[field].size > 0);
+    const awaitsStableObservation =
+      !hasObservableDiff &&
+      (!Number.isSafeInteger(attempt.observedSnapshotCount) ||
+        attempt.observedSnapshotCount < 2);
+    const awaitsResolution = [...previewInspectorSession.blockerTracePendingResolutions.values()]
+      .some((pending) => pending.attemptTraceId === attempt.traceId);
+    if (
+      (awaitsResolution || awaitsStableObservation) &&
+      age < PREVIEW_INSPECTOR_BLOCKER_TRACE_PENDING_SETTLEMENT_LIMIT_MS
+    ) {
+      schedulePreviewInspectorTreeRefresh();
+      schedulePreviewInspectorBlockerTraceAttemptSettlement(
+        attempt,
+        Math.min(
+          PREVIEW_INSPECTOR_BLOCKER_TRACE_ATTEMPT_SETTLEMENT_MS,
+          PREVIEW_INSPECTOR_BLOCKER_TRACE_PENDING_SETTLEMENT_LIMIT_MS - age,
+        ),
+      );
+      return;
+    }
+    completePreviewInspectorBlockerTraceAttempt(
+      attempt,
+      createPreviewInspectorBlockerTraceAttemptResult(attempt),
+    );
+  }, Math.max(0, delayMs));
 }
 
 /** Returns selected preview identity without retaining descriptor or page-candidate objects. */
@@ -310,16 +451,23 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
   const next = collectPreviewInspectorBlockerTraceRecords(snapshot?.roots);
   const pendingResolutions = previewInspectorSession.blockerTracePendingResolutions;
   const pendingBeforeSnapshot = new Map(pendingResolutions);
+  const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
+  const openAttempt =
+    activeAttempt !== undefined && activeAttempt.settledAt === undefined
+      ? activeAttempt
+      : undefined;
   const newlyMissingBlockerIds = [...previous.keys()].filter((id) => !next.has(id));
   for (const blockerId of newlyMissingBlockerIds) {
     if (pendingResolutions.has(blockerId)) continue;
     pendingResolutions.set(blockerId, {
+      attemptTraceId: openAttempt?.traceId,
       missingAt: Date.now(),
       missingSnapshots: 1,
       record: previous.get(blockerId),
     });
   }
   const resolvedBlockerIds = [];
+  const standaloneResolvedBlockerIds = [];
   for (const [blockerId, pending] of [...pendingResolutions]) {
     if (next.has(blockerId)) {
       pendingResolutions.delete(blockerId);
@@ -327,10 +475,14 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
     }
     if (!newlyMissingBlockerIds.includes(blockerId)) pending.missingSnapshots += 1;
     if (
-      pending.missingSnapshots >= 2 &&
+      pending.missingSnapshots >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_SNAPSHOT_COUNT &&
       Date.now() - pending.missingAt >= PREVIEW_INSPECTOR_BLOCKER_TRACE_RESOLUTION_STABILITY_MS
     ) {
-      resolvedBlockerIds.push(blockerId);
+      if (pending.attemptTraceId === openAttempt?.traceId) {
+        resolvedBlockerIds.push(blockerId);
+      } else {
+        standaloneResolvedBlockerIds.push(blockerId);
+      }
       pendingResolutions.delete(blockerId);
     }
   }
@@ -338,6 +490,13 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
   const remainingBlockerIds = [
     ...new Set([...next.keys(), ...pendingResolutions.keys()]),
   ];
+  if (openAttempt !== undefined) {
+    openAttempt.lastRemainingBlockerIds = remainingBlockerIds;
+    openAttempt.observedSnapshotCount =
+      (Number.isSafeInteger(openAttempt.observedSnapshotCount)
+        ? openAttempt.observedSnapshotCount
+        : 0) + 1;
+  }
   const discoveredBlockerIds = [...next.keys()].filter(
     (id) => !previous.has(id) && !pendingBeforeSnapshot.has(id),
   );
@@ -348,47 +507,54 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
     ) !==
       fingerprintPreviewInspectorBlockerTraceRecord(next.get(id)),
   );
+  accumulatePreviewInspectorBlockerTraceAttemptIds(
+    openAttempt,
+    'changedBlockerIds',
+    changedBlockerIds,
+  );
+  accumulatePreviewInspectorBlockerTraceAttemptIds(
+    openAttempt,
+    'discoveredBlockerIds',
+    discoveredBlockerIds,
+  );
+  accumulatePreviewInspectorBlockerTraceAttemptIds(
+    openAttempt,
+    'resolvedBlockerIds',
+    resolvedBlockerIds,
+  );
+  const attemptAwaitsResolution =
+    openAttempt !== undefined &&
+    [...pendingResolutions.values()].some(
+      (pending) => pending.attemptTraceId === openAttempt.traceId,
+    );
+  const stableAttemptObservation =
+    openAttempt !== undefined &&
+    openAttempt.observedSnapshotCount >= 2 &&
+    Date.now() - openAttempt.startedAt >= PREVIEW_INSPECTOR_BLOCKER_TRACE_ATTEMPT_SETTLEMENT_MS;
   if (
-    discoveredBlockerIds.length === 0 &&
-    resolvedBlockerIds.length === 0 &&
-    changedBlockerIds.length === 0 &&
-    newlyMissingBlockerIds.length === 0
+    openAttempt !== undefined &&
+    !attemptAwaitsResolution &&
+    (resolvedBlockerIds.length > 0 || stableAttemptObservation)
   ) {
-    previewInspectorSession.blockerTraceRecords = next;
-    return;
+    completePreviewInspectorBlockerTraceAttempt(
+      openAttempt,
+      createPreviewInspectorBlockerTraceAttemptResult(openAttempt),
+    );
   }
-
-  const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
-  const active = activeAttempt !== undefined &&
-    activeAttempt.settledAt === undefined &&
-    Date.now() - activeAttempt.startedAt <= PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS;
-  if (active || resolvedBlockerIds.length > 0) {
-    const traceId = active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId();
-    postPreviewInspectorBlockerTraceEvent('render-result', traceId, {
-      ...(activeAttempt?.blocker === undefined ? {} : { blocker: activeAttempt.blocker }),
-      result: {
-        changedBlockerIds,
-        discoveredBlockerIds,
-        remainingBlockerIds,
-        resolvedBlockerIds,
-      },
-    });
-  }
-  if (active) {
-    activeAttempt.settledAt = Date.now();
-    if (typeof recordPreviewInspectorRuntimeHealth === 'function') {
-      recordPreviewInspectorRuntimeHealth({
-        category: 'render-attempt',
-        detail: {
-          changedBlockerIds,
-          discoveredBlockerIds,
+  if (standaloneResolvedBlockerIds.length > 0) {
+    postPreviewInspectorBlockerTraceEvent(
+      'render-result',
+      createPreviewInspectorBlockerTraceId(),
+      {
+        result: {
+          changedBlockerIds: [],
+          discoveredBlockerIds: [],
+          outcome: 'committed',
           remainingBlockerIds,
-          resolvedBlockerIds,
-          traceId: activeAttempt.traceId,
+          resolvedBlockerIds: standaloneResolvedBlockerIds,
         },
-        event: 'render-attempt-settled',
-      });
-    }
+      },
+    );
   }
   postPreviewInspectorBlockerTraceRecordBatch(
     'blocker-discovered',
@@ -398,7 +564,7 @@ function publishPreviewInspectorBlockerTraceSnapshot(snapshot) {
   );
   postPreviewInspectorBlockerTraceRecordBatch(
     'blocker-updated',
-    active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId(),
+    openAttempt?.traceId ?? createPreviewInspectorBlockerTraceId(),
     changedBlockerIds,
     next,
   );
@@ -512,26 +678,68 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
     ),
     startsRenderAttempt,
   };
-  const fingerprint = fingerprintPreviewInspectorBlockerTraceRecord({ auto, blocker });
-  const previousAt = previewInspectorSession.blockerTraceDecisionFingerprints.get(fingerprint);
   const now = Date.now();
-  if (
-    typeof previousAt === 'number' &&
-    now - previousAt < PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS
-  ) return undefined;
-  previewInspectorSession.blockerTraceDecisionFingerprints.set(fingerprint, now);
-  if (previewInspectorSession.blockerTraceDecisionFingerprints.size > 256) {
-    previewInspectorSession.blockerTraceDecisionFingerprints.delete(
-      previewInspectorSession.blockerTraceDecisionFingerprints.keys().next().value,
-    );
-  }
+  /* Render retries are causal events even when their generated value is byte-for-byte identical. */
   if (!auto.startsRenderAttempt) {
+    const fingerprint = fingerprintPreviewInspectorBlockerTraceRecord({ auto, blocker });
+    const previousAt = previewInspectorSession.blockerTraceDecisionFingerprints.get(fingerprint);
+    if (
+      typeof previousAt === 'number' &&
+      now - previousAt < PREVIEW_INSPECTOR_BLOCKER_TRACE_DECISION_DEDUPE_MS
+    ) return undefined;
+    previewInspectorSession.blockerTraceDecisionFingerprints.set(fingerprint, now);
+    if (previewInspectorSession.blockerTraceDecisionFingerprints.size > 256) {
+      previewInspectorSession.blockerTraceDecisionFingerprints.delete(
+        previewInspectorSession.blockerTraceDecisionFingerprints.keys().next().value,
+      );
+    }
     return queuePreviewInspectorBlockerTraceAutoDecision(auto, blocker);
   }
   const traceId = createPreviewInspectorBlockerTraceId();
+  if (auto.startsRenderAttempt) {
+    const supersededAttempt = previewInspectorSession.blockerTraceActiveAttempt;
+    if (supersededAttempt !== undefined && supersededAttempt.settledAt === undefined) {
+      for (const pending of previewInspectorSession.blockerTracePendingResolutions.values()) {
+        if (pending.attemptTraceId === supersededAttempt.traceId) {
+          pending.attemptTraceId = traceId;
+        }
+      }
+      const supersededResult = {
+        changedBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
+          supersededAttempt,
+          'changedBlockerIds',
+        ),
+        discoveredBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
+          supersededAttempt,
+          'discoveredBlockerIds',
+        ),
+        outcome: 'superseded',
+        remainingBlockerIds: [
+          ...new Set([
+            ...previewInspectorSession.blockerTraceRecords.keys(),
+            ...previewInspectorSession.blockerTracePendingResolutions.keys(),
+          ]),
+        ],
+        resolvedBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
+          supersededAttempt,
+          'resolvedBlockerIds',
+        ),
+      };
+      completePreviewInspectorBlockerTraceAttempt(
+        supersededAttempt,
+        supersededResult,
+        { ...supersededResult, supersededByTraceId: traceId },
+      );
+    }
+  }
   postPreviewInspectorBlockerTraceEvent('auto-selection', traceId, { auto, blocker });
   if (auto.startsRenderAttempt) {
-    previewInspectorSession.blockerTraceActiveAttempt = { blocker, startedAt: now, traceId };
+    const attempt = { blocker, observedSnapshotCount: 0, startedAt: now, traceId };
+    previewInspectorSession.blockerTraceActiveAttempt = attempt;
+    schedulePreviewInspectorBlockerTraceAttemptSettlement(
+      attempt,
+      PREVIEW_INSPECTOR_BLOCKER_TRACE_ATTEMPT_SETTLEMENT_MS,
+    );
   }
   if (auto.startsRenderAttempt && typeof recordPreviewInspectorRuntimeHealth === 'function') {
     recordPreviewInspectorRuntimeHealth({

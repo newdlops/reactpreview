@@ -7,6 +7,8 @@
  * functions so they cannot disagree about which authored component was blocked.
  */
 
+import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+
 /** Maximum component names or property paths retained for one local render failure. */
 export const PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT = 32;
 
@@ -18,6 +20,9 @@ export const PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT = 32;
 export function createPreviewInspectorFailureEvidenceRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT = ${PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT};
+const PREVIEW_INSPECTOR_FAILURE_COLLECTION_METHOD_NAMES = new Set(
+  ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
+);
 
 /** Bounds and deduplicates property paths supplied by compiler or runtime error evidence. */
 function normalizePreviewInspectorRequiredPropertyPaths(paths) {
@@ -43,17 +48,101 @@ function readPreviewInspectorFailureMessage(error) {
   }
 }
 
-/** Extracts the missing field/call/global named by common JavaScript runtime diagnostics. */
-function readPreviewInspectorErrorPropertyPaths(error) {
+/**
+ * Normalizes compiler evidence without discarding its optional value-kind classification.
+ * Callers may pass existing blocker path strings or richer path-and-kind records produced by
+ * static prop analysis. Invalid project-owned values are ignored rather than
+ * inspected recursively, keeping failure handling safe even after application code has thrown.
+ */
+function readPreviewInspectorFailureSourcePathRecords(sourceEvidence) {
+  const records = [];
+  const seen = new Set();
+  for (const candidate of Array.isArray(sourceEvidence) ? sourceEvidence : []) {
+    const path = typeof candidate === 'string'
+      ? candidate
+      : typeof candidate?.path === 'string'
+        ? candidate.path
+        : '';
+    const normalizedPath = path.trim().slice(0, 240);
+    if (normalizedPath.length === 0 || seen.has(normalizedPath)) continue;
+    seen.add(normalizedPath);
+    records.push({
+      kind: typeof candidate?.kind === 'string' ? candidate.kind : '',
+      path: normalizedPath,
+    });
+    if (records.length >= PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT) break;
+  }
+  return records;
+}
+
+/**
+ * Correlates a diagnostic's final property with one uniquely proven static receiver path.
+ * A message such as "reading 'map'" omits its receiver. It is expanded only when source evidence
+ * either contains that exact method call or identifies exactly one array receiver. Ambiguous
+ * evidence deliberately returns the bare property so automatic recovery cannot populate a guessed
+ * branch of application state.
+ */
+function correlatePreviewInspectorErrorPropertyPath(propertyName, sourceRecords) {
+  const property = typeof propertyName === 'string' ? propertyName.trim() : '';
+  if (!/^[A-Za-z_$][\w$]*$/u.test(property)) return undefined;
+  const candidates = new Set();
+  const collectionMethod = PREVIEW_INSPECTOR_FAILURE_COLLECTION_METHOD_NAMES.has(property);
+  for (const record of sourceRecords) {
+    const path = record.path.replaceAll('?.', '.').replace(/\?$/u, '');
+    const calledPath = property + '()';
+    if (path.endsWith('.' + calledPath) && path !== calledPath) candidates.add(path);
+    if (path.endsWith('.' + property) && path !== property) {
+      candidates.add(collectionMethod ? path + '()' : path);
+    }
+    if (
+      collectionMethod && record.kind === 'array' &&
+      path !== '<root>' && !path.endsWith('()')
+    ) {
+      candidates.add(path + '.' + calledPath);
+    }
+  }
+  return candidates.size === 1 ? [...candidates][0] : undefined;
+}
+
+/** Joins a destructured property to the simple receiver explicitly printed by the engine. */
+function readPreviewInspectorDestructurePropertyPath(propertyName, receiverText) {
+  const property = typeof propertyName === 'string' ? propertyName.trim() : '';
+  const receiver = typeof receiverText === 'string' ? receiverText.trim() : '';
+  if (!/^[A-Za-z_$][\w$]*$/u.test(property)) return undefined;
+  if (!/^(?:[A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*)*$/u.test(receiver)) return undefined;
+  if (new Set(['false', 'null', 'true', 'undefined']).has(receiver)) return undefined;
+  return receiver + '.' + property;
+}
+
+/**
+ * Extracts the missing field/call/global named by common JavaScript runtime diagnostics.
+ * Optional source evidence is used only for a unique correlation; the runtime message remains the
+ * fallback so error reporting is useful even when no compiler metadata reaches the boundary.
+ */
+function readPreviewInspectorErrorPropertyPaths(error, sourceEvidence = []) {
   const message = readPreviewInspectorFailureMessage(error);
+  const sourceRecords = readPreviewInspectorFailureSourcePathRecords(sourceEvidence);
   const paths = [];
   const add = (path) => {
     if (typeof path === 'string' && path.length > 0) paths.push(path);
   };
-  for (const match of message.matchAll(/reading ['"]([^'"]+)['"]/gu)) add(match[1]);
-  for (const match of message.matchAll(/read property ['"]([^'"]+)['"]/gu)) add(match[1]);
-  for (const match of message.matchAll(/Cannot destructure property ['"]([^'"]+)['"]/gu)) {
-    add(match[1]);
+  const addObservedProperty = (propertyName) => {
+    add(correlatePreviewInspectorErrorPropertyPath(propertyName, sourceRecords) ?? propertyName);
+  };
+  for (const match of message.matchAll(/reading ['"]([^'"]+)['"]/gu)) {
+    addObservedProperty(match[1]);
+  }
+  for (const match of message.matchAll(/read property ['"]([^'"]+)['"]/gu)) {
+    addObservedProperty(match[1]);
+  }
+  for (const match of message.matchAll(
+    /Cannot destructure property ['"]([^'"]+)['"](?: of ['"]([^'"]+)['"])?/gu,
+  )) {
+    add(
+      readPreviewInspectorDestructurePropertyPath(match[1], match[2]) ??
+        correlatePreviewInspectorErrorPropertyPath(match[1], sourceRecords) ??
+        match[1],
+    );
   }
   for (const match of message.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+) is not a function\b/gu)) {
     add(match[1] + '()');

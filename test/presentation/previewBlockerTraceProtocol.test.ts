@@ -132,6 +132,7 @@ describe('Preview blocker trace protocol', () => {
           result: {
             changedBlockerIds: ['request-user'],
             discoveredBlockerIds: ['hook-route'],
+            outcome: 'superseded',
             remainingBlockerIds: ['request-user', 'hook-route'],
             resolvedBlockerIds: ['login-gate'],
           },
@@ -145,6 +146,7 @@ describe('Preview blocker trace protocol', () => {
       event: {
         result: {
           discoveredBlockerIds: ['hook-route'],
+          outcome: 'superseded',
           resolvedBlockerIds: ['login-gate'],
         },
       },

@@ -6,7 +6,10 @@ import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../
 /** Generated helper surface exposed only to this dependency-free VM fixture. */
 interface FailureEvidenceRuntime {
   readonly names: (componentStack: string, fallback?: string) => readonly string[];
-  readonly paths: (error: unknown) => readonly string[];
+  readonly paths: (
+    error: unknown,
+    sourceEvidence?: readonly (string | { readonly kind?: string; readonly path: string })[],
+  ) => readonly string[];
 }
 
 describe('Preview Inspector failure evidence runtime', () => {
@@ -20,9 +23,50 @@ describe('Preview Inspector failure evidence runtime', () => {
     expect(
       runtime.paths(new TypeError("Cannot destructure property 'formikProps' as it is undefined")),
     ).toEqual(['formikProps']);
+    expect(
+      runtime.paths(
+        new TypeError(
+          "Cannot destructure property 'count' of 'captableRequestNotification' as it is undefined.",
+        ),
+      ),
+    ).toEqual(['captableRequestNotification.count']);
+    expect(
+      runtime.paths(
+        new TypeError(
+          "Cannot destructure property 'formikProps' of 'useFormContext(...)' as it is undefined.",
+        ),
+      ),
+    ).toEqual(['formikProps']);
+    expect(
+      runtime.paths(
+        new TypeError("Cannot destructure property 'value' of 'form.values' as it is undefined."),
+      ),
+    ).toEqual(['form.values.value']);
     expect(runtime.paths(new TypeError('props.theme.spacing is not a function'))).toEqual([
       'props.theme.spacing()',
     ]);
+  });
+
+  /** Expands collection diagnostics only when static evidence proves one unambiguous receiver. */
+  it('correlates bare collection methods with unique source evidence', () => {
+    const runtime = evaluateFailureEvidenceRuntime();
+
+    expect(
+      runtime.paths(new TypeError("Cannot read properties of undefined (reading 'flatMap')"), [
+        { kind: 'array', path: 'data.pages' },
+      ]),
+    ).toEqual(['data.pages.flatMap()']);
+    expect(
+      runtime.paths(new TypeError("Cannot read properties of undefined (reading 'map')"), [
+        'profile.genres.map',
+      ]),
+    ).toEqual(['profile.genres.map()']);
+    expect(
+      runtime.paths(new TypeError("Cannot read properties of undefined (reading 'slice')"), [
+        { kind: 'array', path: 'first.items' },
+        { kind: 'array', path: 'second.items' },
+      ]),
+    ).toEqual(['slice']);
   });
 
   /** Keeps authored stack hierarchy while removing React host and Inspector implementation rows. */

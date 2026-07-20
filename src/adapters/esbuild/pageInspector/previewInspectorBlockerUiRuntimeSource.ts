@@ -95,8 +95,17 @@ function readPreviewInspectorTargetFailures() {
       const reference = descriptor?.inspector?.renderChainsByExport?.[exportName]?.target ??
         descriptor?.inspector?.target;
       const componentNames = readPreviewInspectorComponentStackNames(componentStack, exportName);
+      const blockedComponentName = readPreviewInspectorBlockedComponentName(
+        componentStack,
+        exportName,
+      );
+      const requiredPaths = readPreviewInspectorErrorPropertyPaths(error);
+      const targetPropRequiredPaths =
+        typeof readPreviewInspectorTargetPropFailurePaths === 'function'
+          ? readPreviewInspectorTargetPropFailurePaths(exportName, blockedComponentName, error)
+          : [];
       failures.push({
-        blockedComponentName: readPreviewInspectorBlockedComponentName(componentStack, exportName),
+        blockedComponentName,
         componentNames,
         componentStack,
         error,
@@ -104,8 +113,11 @@ function readPreviewInspectorTargetFailures() {
         headline,
         id: 'target-error:' + exportName + ':' + String(failures.length),
         occurrenceStart: reference?.occurrenceStart,
-        requiredPaths: readPreviewInspectorErrorPropertyPaths(error),
+        requiredPaths,
         sourcePath: reference?.sourcePath,
+        // Runtime owner identity plus compiler path correlation prevents a hook/local receiver from
+        // being projected onto the selected export merely because its component name is identical.
+        targetPropRequiredPaths,
       });
     }
   }
@@ -574,7 +586,7 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
 function smartFillPreviewInspectorTargetFailure(failure) {
   const draft = createPreviewInspectorSmartPropsDraft(
     failure.exportName,
-    failure.requiredPaths,
+    failure.targetPropRequiredPaths,
   );
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
@@ -594,7 +606,7 @@ function smartFillPreviewInspectorTargetFailure(failure) {
         preservedObservedOrUserProps:
           stringifyPreviewInspectorProps(draft.generatedValue) !==
           stringifyPreviewInspectorProps(draft.value),
-        requiredPaths: failure.requiredPaths,
+        requiredPaths: failure.targetPropRequiredPaths,
       },
     });
   }
@@ -603,7 +615,7 @@ function smartFillPreviewInspectorTargetFailure(failure) {
     remountPreviewInspectorExport(failure.exportName);
     return;
   }
-  applyPreviewInspectorSmartProps(failure.exportName, failure.requiredPaths);
+  applyPreviewInspectorSmartProps(failure.exportName, failure.targetPropRequiredPaths);
 }
 
 /** Renders retry and inferred-value controls for a target-local contained React failure. */
@@ -652,7 +664,7 @@ function PreviewInspectorTargetFailureDetail({ node }) {
       ? undefined
       : React.createElement(PreviewInspectorPropsDetail, {
           node: ownerNode,
-          requiredPaths: failure.requiredPaths,
+          requiredPaths: failure.targetPropRequiredPaths,
         }),
   );
 }

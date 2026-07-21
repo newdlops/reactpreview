@@ -2,6 +2,21 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1115 - 2026-07-21
+
+- Next.js Pages Router의 암묵적인 `pages/_app -> Component` 경계를 복원하고, 선택 route를 모듈 로드 전에 주입해 전역 provider·헤더·사이드바·스타일을 실제 페이지 문맥으로 렌더링
+- 동적 Pages route의 pattern·query, RouterContext, 로컬 navigation 재렌더를 제공해 `useRouter`와 `next/link`가 Next bootstrap 없이도 정적 프리뷰에서 동작
+- hook 결과의 optional collection, 1-hop identity alias, computed JSON scalar와 Array 길이 제약을 정적으로 추적해 `flatMap/map`, 중첩 설문 payload, 음수·과대 배열 길이 오류를 최소값으로 보정
+- `steps[currentStep]` 형태의 고정 JSX 배열을 반환 선택지로 계측하고 현재 target 경로에 맞는 항목을 자동 선택하면서 사용자 스위치로 다른 화면도 확인 가능
+- Node 내장 모듈의 browser shim을 쓰기 가능한 namespace와 로컬 EventEmitter로 보강해 PouchDB 계열의 prototype 확장이 모듈 평가를 중단하지 않도록 수정
+
+## 0.1.1114 - 2026-07-21
+
+- bare Node 내장 모듈 이름은 설치된 browser polyfill을 먼저 해석하고, 없을 때만 안전한 preview shim을 사용하며 enumerable EventEmitter fallback으로 PouchDB 계열의 `Pouch.on` 초기화를 지원
+- target-to-entry render chain 순서를 보존해 앱 shell의 `/*`보다 현재 파일에 가까운 구체 route를 우선하고 HospitalRun·Zuzu의 실제 page URL로 진입
+- 정적 props 타입이 HOC에서 사라져도 mounted facade에서 관찰한 단일 `show/open/visible: false` 값을 안전하게 `true`로 보정하며, 미도달 target은 자동 해결 결과의 remaining blocker에 계속 표시
+- 이미 factory call로 변환되어 JSX가 남지 않은 `node_modules` JavaScript의 낡은 JSX pragma 경고만 제거해 react-spinners 경고 폭주를 줄이고 authored/raw JSX 경고는 유지
+
 ## 0.1.1113 - 2026-07-21
 
 - React 16/구형 ReactDOM에서도 Inspector의 선택적 행 UI가 빈 결과를 `null`로 반환해 component tree 전체를 중단하지 않도록 수정

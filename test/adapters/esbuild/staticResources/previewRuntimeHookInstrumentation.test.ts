@@ -54,6 +54,53 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
   });
 
+  /** Retains named query fields and flattens properties proven through an object rest binding. */
+  it('infers a settled query result from QueryRenderer object-rest destructuring', () => {
+    const source = [
+      `import { useQuery } from '../use-query';`,
+      'export function QueryRenderer({ query, children, loader }) {',
+      '  const { loading, data, ...result } = useQuery(query);',
+      '  if (result.fallback) return result.fallback;',
+      '  if (loading && !data) return loader;',
+      '  if (!data) return null;',
+      '  return children({ data, ...result });',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/QueryRenderer.tsx', source),
+    );
+
+    expect(transformed).toContain('"loading": false');
+    expect(transformed).toContain('"data": Object.freeze({})');
+    expect(transformed).toContain('...(');
+    expect(transformed).toContain('"fallback": null');
+    expect(transformed).toContain('"requiredPaths":["loading","data","fallback"]');
+    expect(transformed).not.toContain('() => ("query")');
+  });
+
+  /** Keeps an aliased data property at its source query-result key beside flattened rest fields. */
+  it('preserves source keys for aliased object-rest query bindings', () => {
+    const source = [
+      `import { useQuery } from '../use-query';`,
+      'export function QueryRenderer({ query, children }) {',
+      '  const { data: resultData, ...result } = useQuery(query);',
+      '  if (!resultData || result.fallback) return null;',
+      '  return children({ data: resultData, ...result });',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/QueryRenderer.tsx', source),
+    );
+
+    expect(transformed).toContain('"data": Object.freeze({})');
+    expect(transformed).toContain('"fallback": null');
+    expect(transformed).toContain('"requiredPaths":["data","fallback"]');
+  });
+
   /** Uses the local result key instead of an arbitrary sentence for directly rendered hook text. */
   it('renders a direct generated scalar as its bounded binding key', () => {
     const source = [

@@ -10,6 +10,10 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
+import {
+  createPreviewRuntimeHookObjectRestFallback,
+  readPreviewRuntimeHookBindingPropertyName,
+} from './previewRuntimeHookBindingPattern';
 import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
 import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
 import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
@@ -427,8 +431,15 @@ function createBindingFallback(
   const properties: string[] = [];
   const requiredPaths: string[] = [];
   for (const element of binding.elements) {
-    if (element.dotDotDotToken !== undefined) return undefined;
-    const propertyName = readBindingPropertyName(element);
+    if (element.dotDotDotToken !== undefined) {
+      const rest = createPreviewRuntimeHookObjectRestFallback(
+        createBindingFallback(element.name, sourceFile),
+      );
+      if (rest.expression !== undefined) properties.push(rest.expression);
+      requiredPaths.push(...rest.requiredPaths);
+      continue;
+    }
+    const propertyName = readPreviewRuntimeHookBindingPropertyName(element);
     if (propertyName === undefined) return undefined;
     const child = createBindingFallback(element.name, sourceFile) ?? {
       expression: 'Object.freeze({})',
@@ -474,19 +485,6 @@ function prefixPreviewRuntimeHookPaths(
     if (path_ === '<root>()') return `${propertyName}()`;
     return `${propertyName}.${path_}`;
   });
-}
-
-/** Reads a safe static key from one object-binding element. */
-function readBindingPropertyName(element: ts.BindingElement): string | undefined {
-  const propertyName = element.propertyName;
-  if (propertyName === undefined && ts.isIdentifier(element.name)) return element.name.text;
-  if (
-    propertyName !== undefined &&
-    (ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName))
-  ) {
-    return propertyName.text;
-  }
-  return undefined;
 }
 
 /** Infers a static scalar, collection, object, or no-op function from a semantic local name. */

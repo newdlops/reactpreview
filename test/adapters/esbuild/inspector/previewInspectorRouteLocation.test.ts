@@ -118,6 +118,71 @@ describe('collectPreviewInspectorRouteLocation', () => {
     });
   });
 
+  /** Prefers a target-near v5 child Route over the outer shell that merely owns `/patients`. */
+  it('recognizes a component rendered as the child of a React Router v5 Route', async () => {
+    const targetPath = '/workspace/application/src/patients/CareGoalForm.tsx';
+    const routesPath = '/workspace/application/src/HospitalRun.tsx';
+    const sources = {
+      [targetPath]: 'export default function CareGoalForm() { return <form />; }',
+      [routesPath]: [
+        '<Switch>',
+        '  <Route path="/patients" component={Patients} />',
+        '  <Route path="/patients/:id/care-goals/:careGoalId">',
+        '    <ViewCareGoal />',
+        '  </Route>',
+        '</Switch>',
+      ].join('\n'),
+    };
+    const baseRenderChain = createRenderChain(routesPath, targetPath, 'CareGoalForm');
+    const basePath = baseRenderChain.paths[0];
+    if (basePath === undefined) throw new Error('The route fixture requires one render path.');
+    const renderChain: PreviewRenderChainPlan = {
+      ...baseRenderChain,
+      paths: [
+        {
+          ...basePath,
+          steps: [
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'Patients',
+              occurrenceStart: 10,
+              sourcePath: routesPath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'ViewCareGoal',
+              occurrenceStart: 20,
+              sourcePath: routesPath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'CareGoalForm',
+              occurrenceStart: 30,
+              sourcePath: targetPath,
+              wrapperNames: [],
+            },
+          ],
+        },
+      ],
+    };
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toMatchObject({
+      componentName: 'ViewCareGoal',
+      pathname: '/patients/preview/care-goals/preview',
+      pattern: '/patients/:id/care-goals/:careGoalId',
+      sourcePath: routesPath,
+    });
+  });
+
   /** Composes a relative JSX route with the absolute base authored by an app-module factory. */
   it('prepends an enclosing application module base path to a relative Route', async () => {
     const routesPath = '/workspace/application/src/feature-app.tsx';

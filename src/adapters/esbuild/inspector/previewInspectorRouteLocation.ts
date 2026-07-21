@@ -179,7 +179,9 @@ function collectTargetIdentities(
     for (const value of facts.values) add(value.label);
   }
   for (const renderPath of options.renderChain.paths) {
-    for (const step of renderPath.steps) {
+    // Render paths are stored entry-to-target. A route owned by the nearest target ancestor is
+    // stronger evidence than an outer application-shell route, so admit those identities first.
+    for (const step of [...renderPath.steps].reverse()) {
       add(step.label);
       for (const wrapperName of step.wrapperNames) add(wrapperName);
     }
@@ -376,13 +378,13 @@ function collectSourceRouteCandidates(
         contributedRoutePattern =
           addSupportingRoutePattern(routePatterns, joinRouteSegments(routeSegments)) ||
           contributedRoutePattern;
-        const attributeText = opening.attributes.getText(sourceFile);
+        const renderEvidence = collectJsxRouteRenderEvidence(node, opening, sourceFile);
         for (const [identityOrder, componentName] of identities.entries()) {
           const identityPattern = new RegExp(
             `\\b${escapeRegularExpression(componentName)}\\b`,
             'u',
           );
-          if (identityPattern.test(attributeText)) {
+          if (identityPattern.test(renderEvidence)) {
             addRouteCandidate(candidates, {
               componentName,
               documentPath,
@@ -415,6 +417,33 @@ function collectSourceRouteCandidates(
       routePatterns,
     ) || contributedRoutePattern;
   return collectRouteFactoryBasePatterns(sourceFile, routePatterns) || contributedRoutePattern;
+}
+
+/**
+ * Reads the component rendered directly by a React Router v5 Route.
+ *
+ * Nested Route subtrees are deliberately excluded: their own visitor pass owns their pathname,
+ * while ordinary child expressions such as `{ready && <Page />}` remain valid render evidence.
+ */
+function collectJsxRouteRenderEvidence(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+  opening: ts.JsxOpeningLikeElement,
+  sourceFile: ts.SourceFile,
+): string {
+  const evidence = [opening.attributes.getText(sourceFile)];
+  if (!ts.isJsxElement(node)) return evidence.join('\n');
+  for (const child of node.children) {
+    if (ts.isJsxElement(child)) {
+      const childTag = child.openingElement.tagName.getText(sourceFile).split('.').at(-1);
+      if (childTag !== 'Route') evidence.push(child.openingElement.getText(sourceFile));
+    } else if (ts.isJsxSelfClosingElement(child)) {
+      const childTag = child.tagName.getText(sourceFile).split('.').at(-1);
+      if (childTag !== 'Route') evidence.push(child.getText(sourceFile));
+    } else if (ts.isJsxExpression(child) && child.expression !== undefined) {
+      evidence.push(child.expression.getText(sourceFile));
+    }
+  }
+  return evidence.join('\n');
 }
 
 /**

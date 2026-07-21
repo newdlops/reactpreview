@@ -409,6 +409,49 @@ describe('createPreviewRenderChainPlan', () => {
     expect(plan.paths[0]?.steps.map((step) => step.sourcePath)).not.toContain(storyPath);
   });
 
+  /** Uses graph distance once both alternatives are proven application entries. */
+  it('selects the shortest non-fixture application-entry path first', async () => {
+    const shortEntryPath = `${ROOT}/short-main.tsx`;
+    const longEntryPath = `${ROOT}/long-main.tsx`;
+    const shellPath = `${ROOT}/Shell.tsx`;
+    const pagePath = `${ROOT}/pages/LongPage.tsx`;
+    const sources = {
+      [TARGET_PATH]: 'export const SelectedPage = () => <article />;',
+      [shortEntryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { SelectedPage } from './pages/SelectedPage';",
+        'createRoot(document.body).render(<SelectedPage />);',
+      ].join('\n'),
+      [longEntryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { Shell } from './Shell';",
+        'createRoot(document.body).render(<Shell />);',
+      ].join('\n'),
+      [shellPath]: [
+        "import { LongPage } from './pages/LongPage';",
+        'export const Shell = () => <LongPage />;',
+      ].join('\n'),
+      [pagePath]: [
+        "import { SelectedPage } from './SelectedPage';",
+        'export const LongPage = () => <SelectedPage />;',
+      ].join('\n'),
+    };
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'SelectedPage',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.paths[0]?.entryPoint?.sourcePath).toBe(shortEntryPath);
+    expect(plan.paths[0]?.steps.map((step) => step.label)).toEqual([
+      'SelectedPage',
+      'create-root entry',
+    ]);
+  });
+
   /** Preserves distinct executable applications instead of silently choosing one monorepo entry. */
   it('reports ambiguity and retains multiple proven application entries', async () => {
     const firstEntry = '/workspace/apps/first/src/main.tsx';

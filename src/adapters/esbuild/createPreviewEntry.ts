@@ -28,6 +28,7 @@ import {
   PREVIEW_THEME_SPECIFIER,
 } from './previewPluginProtocol';
 import { createPreviewRuntimeErrorSource } from './previewRuntimeErrorSource';
+import { createPreviewStorybookRuntimeSource } from './previewStorybookRuntimeSource';
 
 /** Setup environment selected by the compiler's bounded project inspection. */
 export type PreviewEntrySetupKind = 'custom' | 'none' | 'storybook';
@@ -92,6 +93,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
     options.portalHostIds,
   );
   const progressRuntimeSource = createPreviewProgressRuntimeSource();
+  const storybookRuntimeSource = createPreviewStorybookRuntimeSource();
   const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
   const reactDomRootSource = createPreviewReactDomRootRuntimeSource({
     requiresReactDomNamespace: renderMode === 'page-inspector',
@@ -356,7 +358,13 @@ class PreviewExportErrorBoundary extends React.Component {
   /** Creates an export boundary with no captured error. */
   constructor(props) {
     super(props);
-    this.state = { componentStack: '', error: undefined };
+    this.state = { componentStack: '', error: undefined, resetKey: props.resetKey };
+  }
+
+  /** Clears a captured export error without key-remounting a healthy authored page subtree. */
+  static getDerivedStateFromProps(props, state) {
+    if (props.resetKey === state.resetKey) return null;
+    return { componentStack: '', error: undefined, resetKey: props.resetKey };
   }
 
   /** Stores the render or lifecycle error captured from this one export. */
@@ -553,45 +561,7 @@ function selectReactLikePreviewDescriptors(descriptors) {
     : [];
 }
 
-/** Merges decorator-supplied Storybook context fields while preserving nested argument objects. */
-function mergeStoryContext(baseContext, contextUpdate) {
-  if (contextUpdate === null || typeof contextUpdate !== 'object') {
-    return baseContext;
-  }
-  return {
-    ...baseContext,
-    ...contextUpdate,
-    args: { ...baseContext.args, ...contextUpdate.args },
-    globals: { ...baseContext.globals, ...contextUpdate.globals },
-    parameters: { ...baseContext.parameters, ...contextUpdate.parameters },
-  };
-}
-
-/** Applies Storybook global decorators so later array entries wrap earlier entries. */
-function applyStorybookDecorators(previewElementFactory, previewConfig, storyContext) {
-  const decorators = Array.isArray(previewConfig.decorators) ? previewConfig.decorators : [];
-  let renderStory = previewElementFactory;
-  for (const decorator of decorators) {
-    if (typeof decorator !== 'function') {
-      continue;
-    }
-
-    const renderInnerStory = renderStory;
-    renderStory = (contextUpdate) => {
-      const nextContext = mergeStoryContext(storyContext, contextUpdate);
-      const Story = (storyUpdate) => renderInnerStory(mergeStoryContext(nextContext, storyUpdate));
-      return decorator(Story, nextContext);
-    };
-  }
-  return renderStory(storyContext);
-}
-
-/** Invokes decorators during React render so decorator-owned hooks receive a valid dispatcher. */
-function StorybookPreviewRoot({ PreviewTarget, previewConfig, storyContext, targetProps }) {
-  const createElement = (context) =>
-    createTargetElement(PreviewTarget, context?.args ?? targetProps);
-  return applyStorybookDecorators(createElement, previewConfig, storyContext);
-}
+${storybookRuntimeSource}
 
 /** Renders one descriptor behind a local Suspense fallback so siblings remain independently visible. */
 function PreviewExportRenderer({ descriptor, previewConfig, setupModule, sharedProps, storyContext }) {

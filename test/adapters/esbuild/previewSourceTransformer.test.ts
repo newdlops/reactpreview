@@ -45,7 +45,8 @@ describe('PreviewSourceTransformer', () => {
     );
 
     expect(galleryResult.contents).toBe(sourceText);
-    expect(inspectorResult.contents.match(/\.resolveRenderCondition\(/gu)).toHaveLength(2);
+    expect(inspectorResult.contents.match(/\.resolveRenderCondition\(/gu)).toHaveLength(1);
+    expect(inspectorResult.contents.match(/\.resolveRenderConditionLazy\(/gu)).toHaveLength(1);
     expect(inspectorResult.contents.match(/\.resolveRenderChoice\(/gu)).toHaveLength(1);
     expect(inspectorResult.contents).toContain('"truthyLabel":"<Panel>"');
     expect(inspectorResult.contents).toContain('"falsyLabel":"<Loading>"');

@@ -844,6 +844,15 @@ function rankAndLimitPaths(paths: readonly RawRenderPath[]): readonly RawRenderP
       if (entryDifference !== 0) {
         return entryDifference;
       }
+      const fixtureDifference =
+        Number(isPreviewRenderFixturePath(left)) - Number(isPreviewRenderFixturePath(right));
+      if (fixtureDifference !== 0) {
+        return fixtureDifference;
+      }
+      const distanceDifference = left.nodeIds.length - right.nodeIds.length;
+      if (distanceDifference !== 0) {
+        return distanceDifference;
+      }
       const sourceDifference = scoreRawPath(right) - scoreRawPath(left);
       if (sourceDifference !== 0) {
         return sourceDifference;
@@ -853,17 +862,20 @@ function rankAndLimitPaths(paths: readonly RawRenderPath[]): readonly RawRenderP
     .slice(0, MAX_RENDER_CHAIN_PATHS);
 }
 
-/** Gives application entries/layouts/routes a tie-break advantage over stories, tests, and demos. */
+/** Rejects development-only callers before comparing application-path distance. */
+function isPreviewRenderFixturePath(path_: RawRenderPath): boolean {
+  const sourceText = path_.nodeIds.join('/').replaceAll('\\', '/').toLowerCase();
+  return /(?:__tests__|\.test\.|\.spec\.|\.stories\.|\/stories\/)/u.test(sourceText);
+}
+
+/** Gives semantically named application layouts and routes a final equal-distance tie-break. */
 function scoreRawPath(path_: RawRenderPath): number {
   const sourceText = path_.nodeIds.join('/').replaceAll('\\', '/').toLowerCase();
   let score = path_.entryPoint === undefined ? 0 : 10_000;
-  if (/(?:__tests__|\.test\.|\.spec\.|\.stories\.|\/stories\/)/u.test(sourceText)) {
-    score -= 2_000;
-  }
   if (/(?:\/pages?\/|\/layouts?\/|\/routes?\/|\/app\.)/u.test(sourceText)) {
     score += 200;
   }
-  return score - path_.nodeIds.length;
+  return score;
 }
 
 /** Converts one internal path into immutable path-free labels plus build-only source identities. */

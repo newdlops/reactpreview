@@ -464,7 +464,7 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
         ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
       ]).toString('utf8');
 
-      expect(javascript).toContain('DirectPreviewTarget');
+      expect(javascript).toContain('PreviewInspectorRoutedDirectTarget');
       expect(javascript).toContain('Target');
       const fallbackDiagnostic = bundle.diagnostics.find((diagnostic) =>
         diagnostic.message.includes('direct export fallback remains interactive'),

@@ -10,6 +10,7 @@ import type {
   PreviewRenderChainPlansByExport,
 } from '../renderGraph';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
+import type { PreviewReactRenderOutcomePlan } from '../staticResources/previewReactRenderOutcomes';
 import type {
   PreviewInspectorNextAppLayoutReference,
   PreviewInspectorNextAppRouteLocation,
@@ -99,6 +100,8 @@ export interface PreviewInspectorAncestorPlan {
   readonly renderChain: PreviewRenderChainPlan;
   /** Entry-to-target plans for every explicit component export in the selected source file. */
   readonly renderChainsByExport: PreviewRenderChainPlansByExport;
+  /** Static JSX return alternatives keyed by the selected file's exact runtime export names. */
+  readonly renderOutcomesByExport?: Readonly<Record<string, PreviewReactRenderOutcomePlan>>;
   /** Stable explanation shown when the ancestry is necessarily partial. */
   readonly stopReason: PreviewInspectorAncestorStopReason;
   /** Original selected export that nested instrumentation must intercept. */

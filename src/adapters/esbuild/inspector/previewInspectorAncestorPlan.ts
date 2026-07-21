@@ -22,8 +22,10 @@ import {
   type ResolvePreviewRenderGraphModule,
 } from '../renderGraph';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
+import type { PreviewReactRenderOutcomePlan } from '../staticResources/previewReactRenderOutcomes';
 import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
+import { collectPreviewInspectorRenderOutcomes } from './previewInspectorRenderOutcomeExpansion';
 import {
   collectPreviewInspectorNextAppLayoutChain,
   type PreviewInspectorNextAppLayoutReference,
@@ -172,9 +174,19 @@ export async function createPreviewInspectorAncestorPlan(
   if (renderChain === undefined) {
     throw new Error(`Missing Inspector render chain for export: ${target.exportName}`);
   }
+  const renderOutcomeAnalysis = await collectPreviewInspectorRenderOutcomes({
+    acceptedExportNames: Object.keys(renderChainsByExport),
+    readSource: options.readSource,
+    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    sourcePath: target.sourcePath,
+    sourcePaths,
+  });
+  const renderOutcomesByExport = renderOutcomeAnalysis.plansByExport;
   const sharedDependencies = new Set<string>([
     target.sourcePath,
     ...Object.values(renderChainsByExport).flatMap((plan) => plan.dependencyPaths),
+    ...renderOutcomeAnalysis.dependencyPaths,
   ]);
   const routeLocation = await collectPreviewInspectorRouteLocation({
     documentPath: target.sourcePath,
@@ -274,6 +286,7 @@ export async function createPreviewInspectorAncestorPlan(
     rootAutomaticProps: primary.rootAutomaticProps,
     renderChain,
     renderChainsByExport,
+    renderOutcomesByExport,
     stopReason: primary.stopReason,
     target,
     targetAutomaticProps: primary.targetAutomaticProps,
@@ -941,6 +954,7 @@ function freezePlan(options: {
   readonly rootAutomaticProps: PreviewParentSliceStaticProps;
   readonly renderChain: PreviewRenderChainPlan;
   readonly renderChainsByExport: PreviewRenderChainPlansByExport;
+  readonly renderOutcomesByExport: Readonly<Record<string, PreviewReactRenderOutcomePlan>>;
   readonly stopReason: PreviewInspectorAncestorStopReason;
   readonly target: PreviewInspectorComponentReference;
   readonly targetAutomaticProps: PreviewParentSliceStaticProps;
@@ -954,6 +968,7 @@ function freezePlan(options: {
     rootAutomaticProps: options.rootAutomaticProps,
     renderChain: options.renderChain,
     renderChainsByExport: options.renderChainsByExport,
+    renderOutcomesByExport: options.renderOutcomesByExport,
     stopReason: options.stopReason,
     target: options.target,
     targetAutomaticProps: options.targetAutomaticProps,

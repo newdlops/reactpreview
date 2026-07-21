@@ -29,6 +29,15 @@ export {
   type PreviewInspectorCorridorPluginOptions,
 } from './previewInspectorCorridorPlugin';
 export {
+  collectPreviewInspectorRenderOutcomes,
+  expandPreviewInspectorRenderOutcomes,
+  PREVIEW_INSPECTOR_RENDER_OUTCOME_EXPANSION_LIMITS,
+  type CollectedPreviewInspectorRenderOutcomes,
+  type CollectPreviewInspectorRenderOutcomesOptions,
+  type ExpandedPreviewInspectorRenderOutcomes,
+  type ExpandPreviewInspectorRenderOutcomesOptions,
+} from './previewInspectorRenderOutcomeExpansion';
+export {
   createPreviewInspectorRootPlugin,
   createPreviewInspectorRootSource,
   type PreviewInspectorRootPluginOptions,

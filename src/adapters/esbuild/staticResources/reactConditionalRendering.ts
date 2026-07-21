@@ -9,6 +9,18 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  applyPreviewReactConditionalReplacements,
+  selectOutermostPreviewReactConditionalReplacements,
+  type PreviewReactConditionalReplacement,
+} from './previewReactConditionalReplacements';
+import { expandPreviewReactLogicalAndExpression } from './previewReactLogicalAnd';
+import { createPreviewRenderExpressionFingerprint } from './previewReactRenderOutcomeSyntax';
+import {
+  createPreviewReactRenderTerminalAnalyzer,
+  isPreviewReactCreateElementCall,
+  type PreviewReactRenderTerminalEvidence,
+} from './previewReactRenderTerminal';
 import { instrumentReactSwitchRendering } from './reactSwitchRendering';
 
 const MAX_CONDITIONS_PER_MODULE = 128;
@@ -41,22 +53,18 @@ interface ReactDomPortalBindings {
 type OverlayRuntimeFunction =
   ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
 
-/** One non-overlapping condition expression replacement computed against the parsed source text. */
-interface ReactConditionalRenderReplacement {
-  /** Exclusive source offset after the authored condition expression. */
-  readonly end: number;
-  /** Runtime resolver call that evaluates the original expression exactly once. */
-  readonly replacement: string;
-  /** Inclusive source offset of the authored condition expression. */
-  readonly start: number;
-}
-
 /** Serializable browser metadata used to label and locate one conditional tree entry. */
 interface ReactConditionalRenderMetadata {
+  /** Bounded authored expression used for display and legacy static-outcome joins. */
+  readonly authoredExpression: string;
+  /** Whether runtime true means the opposite of the authored condition branch. */
+  readonly authoredExpressionNegated?: boolean;
   /** One-based source column of the condition expression. */
   readonly column: number;
   /** Bounded human-readable condition source. */
   readonly expression: string;
+  /** SHA-256 of the complete trimmed authored expression used for hot-edit-safe joins. */
+  readonly expressionFingerprint: string;
   /** Branch that appears to be an authored fallback, when its component name is explicit. */
   readonly fallbackBranch?: 'falsy' | 'truthy';
   /** Label rendered when the condition resolves false. */
@@ -86,7 +94,13 @@ interface ReactConditionalRenderCandidate {
   /** Static labels and source data exposed in the Inspector. */
   readonly metadata: Omit<
     ReactConditionalRenderMetadata,
-    'column' | 'expression' | 'line' | 'sourcePath'
+    | 'authoredExpression'
+    | 'authoredExpressionNegated'
+    | 'column'
+    | 'expression'
+    | 'expressionFingerprint'
+    | 'line'
+    | 'sourcePath'
   >;
   /** Whether a negative prop such as `hidden` must invert the visible-state resolver result. */
   readonly negateRuntimeResult?: boolean;
@@ -126,12 +140,12 @@ export function instrumentReactConditionalRendering(
     sourceFile,
     collectReactDomPortalBindings(sourceFile),
   ).slice(0, MAX_CONDITIONS_PER_MODULE);
-  const replacements = selectNonOverlappingConditionalReplacements(
+  const replacements = selectOutermostPreviewReactConditionalReplacements(
     candidates.map((candidate, index) =>
       createConditionalRenderReplacement(sourceFile, sourcePath, candidate, index),
     ),
   );
-  return applyConditionalRenderReplacements(switchInstrumentedSource, replacements);
+  return applyPreviewReactConditionalReplacements(switchInstrumentedSource, replacements);
 }
 
 /** Collects only boolean expressions whose selected branch directly renders JSX. */
@@ -140,6 +154,11 @@ function collectConditionalRenderCandidates(
   portalBindings: ReactDomPortalBindings,
 ): readonly ReactConditionalRenderCandidate[] {
   const candidates: ReactConditionalRenderCandidate[] = [];
+  const logicalGuardRanges = new Set<string>();
+  const terminalAnalyzer = createPreviewReactRenderTerminalAnalyzer(sourceFile, {
+    isAdditionalTerminal: (expression) =>
+      isReactDomPortalCall(expression, portalBindings) || isJsxRouteEntryExpression(expression),
+  });
   /** Visits syntax in source order while retaining nested independent branch controls. */
   function visit(node: ts.Node): void {
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
@@ -154,45 +173,66 @@ function collectConditionalRenderCandidates(
         if (earlyReturnGate !== undefined) candidates.push(earlyReturnGate);
       }
     }
-    if (
+    const logicalAnd =
       ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
-      (isDirectReactRenderExpression(node.right, portalBindings) ||
-        isJsxRouteEntryExpression(node.right))
-    ) {
-      candidates.push({
-        condition: node.left,
-        metadata: {
-          falsyLabel: 'hidden',
-          kind: 'logical-and',
-          ...(isOverlayReactRenderExpression(node.right, sourceFile, portalBindings)
-            ? { role: 'overlay' as const }
-            : {}),
-          truthyLabel: isJsxRouteEntryExpression(node.right)
-            ? describeJsxRouteEntry(node.right, sourceFile)
-            : describeRenderBranch(node.right, sourceFile, portalBindings),
-        },
-      });
-    } else if (
-      ts.isConditionalExpression(node) &&
-      (isDirectReactRenderExpression(node.whenTrue, portalBindings) ||
-        isDirectReactRenderExpression(node.whenFalse, portalBindings))
-    ) {
-      const truthyLabel = describeRenderBranch(node.whenTrue, sourceFile, portalBindings);
-      const falsyLabel = describeRenderBranch(node.whenFalse, sourceFile, portalBindings);
-      candidates.push({
-        condition: node.condition,
-        metadata: {
-          ...inferFallbackBranch(truthyLabel, falsyLabel),
-          falsyLabel,
-          kind: 'ternary',
-          ...(isOverlayReactRenderExpression(node.whenTrue, sourceFile, portalBindings) ||
-          isOverlayReactRenderExpression(node.whenFalse, sourceFile, portalBindings)
-            ? { role: 'overlay' as const }
-            : {}),
-          truthyLabel,
-        },
-      });
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        ? expandPreviewReactLogicalAndExpression(node)
+        : undefined;
+    const terminalEvidence =
+      logicalAnd === undefined ? undefined : terminalAnalyzer.analyze(logicalAnd.terminal);
+    const hasRuntimeFunction = findNearestOverlayRuntimeFunction(node) !== undefined;
+    if (logicalAnd !== undefined && terminalEvidence !== undefined && hasRuntimeFunction) {
+      const truthyLabel = describeRenderTerminalEvidence(
+        terminalEvidence,
+        sourceFile,
+        portalBindings,
+      );
+      const role = terminalEvidence.terminals.some((terminal) =>
+        isOverlayReactRenderExpression(terminal, sourceFile, portalBindings),
+      )
+        ? ('overlay' as const)
+        : undefined;
+      for (const condition of logicalAnd.guards) {
+        const rangeKey = [condition.getStart(sourceFile), condition.end].join(':');
+        if (logicalGuardRanges.has(rangeKey)) continue;
+        logicalGuardRanges.add(rangeKey);
+        candidates.push({
+          condition,
+          metadata: {
+            falsyLabel: 'hidden',
+            kind: 'logical-and',
+            ...(role === undefined ? {} : { role }),
+            truthyLabel,
+          },
+        });
+      }
+    } else if (ts.isConditionalExpression(node) && hasRuntimeFunction) {
+      const truthyEvidence = terminalAnalyzer.analyze(node.whenTrue);
+      const falsyEvidence = terminalAnalyzer.analyze(node.whenFalse);
+      if (truthyEvidence !== undefined || falsyEvidence !== undefined) {
+        const truthyLabel =
+          truthyEvidence === undefined
+            ? describeRenderBranch(node.whenTrue, sourceFile, portalBindings)
+            : describeRenderTerminalEvidence(truthyEvidence, sourceFile, portalBindings);
+        const falsyLabel =
+          falsyEvidence === undefined
+            ? describeRenderBranch(node.whenFalse, sourceFile, portalBindings)
+            : describeRenderTerminalEvidence(falsyEvidence, sourceFile, portalBindings);
+        const hasOverlayTerminal = [
+          ...(truthyEvidence?.terminals ?? []),
+          ...(falsyEvidence?.terminals ?? []),
+        ].some((terminal) => isOverlayReactRenderExpression(terminal, sourceFile, portalBindings));
+        candidates.push({
+          condition: node.condition,
+          metadata: {
+            ...inferFallbackBranch(truthyLabel, falsyLabel),
+            falsyLabel,
+            kind: 'ternary',
+            ...(hasOverlayTerminal ? { role: 'overlay' as const } : {}),
+            truthyLabel,
+          },
+        });
+      }
     }
     ts.forEachChild(node, visit);
   }
@@ -336,8 +376,8 @@ function statementReturnsNull(statement: ts.Statement): boolean {
 
 /** Finds the render-time owner of an early-return guard without crossing another function. */
 function findNearestOverlayRuntimeFunction(node: ts.Node): OverlayRuntimeFunction | undefined {
-  let current = node.parent;
-  while (!ts.isSourceFile(current)) {
+  let current = (node as unknown as { readonly parent?: ts.Node }).parent;
+  while (current !== undefined && !ts.isSourceFile(current)) {
     if (
       ts.isArrowFunction(current) ||
       ts.isFunctionDeclaration(current) ||
@@ -500,7 +540,7 @@ function createConditionalRenderReplacement(
   sourcePath: string,
   candidate: ReactConditionalRenderCandidate,
   occurrence: number,
-): ReactConditionalRenderReplacement {
+): PreviewReactConditionalReplacement {
   const start = candidate.condition.getStart(sourceFile);
   const end = candidate.condition.end;
   const authoredExpression = sourceFile.text.slice(start, end);
@@ -511,10 +551,13 @@ function createConditionalRenderReplacement(
       ? undefined
       : readOverlayRuntimeFunctionName(runtimeOwner, sourceFile);
   const metadata: ReactConditionalRenderMetadata = {
+    authoredExpression: boundMetadataText(authoredExpression.replace(/\s+/gu, ' ')),
+    ...(candidate.negateRuntimeResult === true ? { authoredExpressionNegated: true } : {}),
     column: location.character + 1,
     expression: boundMetadataText(
       (candidate.expressionLabel ?? authoredExpression).replace(/\s+/gu, ' '),
     ),
+    expressionFingerprint: createPreviewRenderExpressionFingerprint(authoredExpression),
     line: location.line + 1,
     ...(ownerName === undefined ? {} : { ownerName }),
     sourcePath: path.normalize(sourcePath),
@@ -526,45 +569,15 @@ function createConditionalRenderReplacement(
     candidate.negateRuntimeResult === true
       ? `(!(${authoredExpression}))`
       : `(${authoredExpression})`;
-  const resolverCall = `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, ${authoredValueExpression}, ${JSON.stringify(metadata)})`;
+  const resolverCall =
+    candidate.metadata.kind === 'logical-and'
+      ? `${apiExpression}.resolveRenderConditionLazy(${JSON.stringify(conditionId)}, () => ${authoredValueExpression}, ${JSON.stringify(metadata)})`
+      : `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, ${authoredValueExpression}, ${JSON.stringify(metadata)})`;
   return {
     end,
     replacement: candidate.negateRuntimeResult === true ? `!(${resolverCall})` : resolverCall,
     start,
   };
-}
-
-/**
- * Drops pathological overlapping condition ranges while preferring the most specific inner control.
- * Ordinary nested JSX conditions operate on disjoint condition operands and are all preserved.
- */
-function selectNonOverlappingConditionalReplacements(
-  replacements: readonly ReactConditionalRenderReplacement[],
-): readonly ReactConditionalRenderReplacement[] {
-  const selected: ReactConditionalRenderReplacement[] = [];
-  for (const replacement of [...replacements].sort(
-    (left, right) => left.end - left.start - (right.end - right.start),
-  )) {
-    if (
-      selected.some((current) => replacement.start < current.end && replacement.end > current.start)
-    ) {
-      continue;
-    }
-    selected.push(replacement);
-  }
-  return selected.sort((left, right) => left.start - right.start);
-}
-
-/** Applies replacements right-to-left so every parser offset continues to address original text. */
-function applyConditionalRenderReplacements(
-  sourceText: string,
-  replacements: readonly ReactConditionalRenderReplacement[],
-): string {
-  let transformed = sourceText;
-  for (const replacement of [...replacements].sort((left, right) => right.start - left.start)) {
-    transformed = `${transformed.slice(0, replacement.start)}${replacement.replacement}${transformed.slice(replacement.end)}`;
-  }
-  return transformed;
 }
 
 /** Returns whether one expression directly represents a JSX element or fragment after wrappers. */
@@ -582,9 +595,11 @@ function isDirectReactRenderExpression(
   expression: ts.Expression,
   portalBindings: ReactDomPortalBindings,
 ): boolean {
+  const unwrapped = unwrapConditionalExpression(expression);
   return (
-    isDirectJsxRenderExpression(expression) ||
-    isReactDomPortalCall(unwrapConditionalExpression(expression), portalBindings)
+    isDirectJsxRenderExpression(unwrapped) ||
+    isPreviewReactCreateElementCall(unwrapped) ||
+    isReactDomPortalCall(unwrapped, portalBindings)
   );
 }
 
@@ -601,6 +616,14 @@ function isOverlayReactRenderExpression(
 ): boolean {
   const unwrapped = unwrapConditionalExpression(expression);
   if (isReactDomPortalCall(unwrapped, portalBindings)) return true;
+  if (isPreviewReactCreateElementCall(unwrapped)) {
+    const componentType = unwrapped.arguments[0];
+    const componentName = componentType?.getText(sourceFile);
+    return (
+      componentName?.split('.').some((segment) => OVERLAY_COMPONENT_NAME_PATTERN.test(segment)) ===
+      true
+    );
+  }
   const tagName = ts.isJsxElement(unwrapped)
     ? unwrapped.openingElement.tagName.getText(sourceFile)
     : ts.isJsxSelfClosingElement(unwrapped)
@@ -686,7 +709,47 @@ function describeRenderBranch(
       ? `${describeJsxRenderExpression(portalChild, sourceFile)} portal overlay`
       : '<Portal> overlay';
   }
+  if (isPreviewReactCreateElementCall(unwrapped)) {
+    return describeReactCreateElement(unwrapped, sourceFile);
+  }
   return boundMetadataText(unwrapped.getText(sourceFile));
+}
+
+/** Labels a conventional React.createElement terminal without evaluating its component value. */
+function describeReactCreateElement(call: ts.CallExpression, sourceFile: ts.SourceFile): string {
+  const componentType = call.arguments[0];
+  if (componentType === undefined) return '<React element>';
+  const unwrapped = unwrapConditionalExpression(componentType);
+  if (
+    ts.isIdentifier(unwrapped) ||
+    ts.isPropertyAccessExpression(unwrapped) ||
+    ts.isStringLiteralLike(unwrapped)
+  ) {
+    return `<${boundMetadataText(
+      ts.isStringLiteralLike(unwrapped) ? unwrapped.text : unwrapped.getText(sourceFile),
+    )}>`;
+  }
+  return '<React element>';
+}
+
+/**
+ * Combines every direct leaf proven behind an alias, array, ternary, or map callback.
+ * The component names remain visible in one bounded label so target-path scoring can associate each
+ * flattened guard with the selected descendant instead of treating the guard as an unrelated sibling.
+ */
+function describeRenderTerminalEvidence(
+  evidence: PreviewReactRenderTerminalEvidence,
+  sourceFile: ts.SourceFile,
+  portalBindings: ReactDomPortalBindings,
+): string {
+  const labels: string[] = [];
+  for (const terminal of evidence.terminals) {
+    const label = isJsxRouteEntryExpression(terminal)
+      ? describeJsxRouteEntry(terminal, sourceFile)
+      : describeRenderBranch(terminal, sourceFile, portalBindings);
+    if (!labels.includes(label) && labels.length < 8) labels.push(label);
+  }
+  return boundMetadataText(labels.join(' | ') || 'render value');
 }
 
 /**
@@ -773,6 +836,7 @@ function createConditionalRenderIdentity(
       JSON.stringify([
         path.normalize(sourcePath),
         metadata.kind,
+        metadata.expressionFingerprint,
         metadata.expression,
         metadata.truthyLabel,
         metadata.falsyLabel,
@@ -806,8 +870,9 @@ function isJavaScriptLikeSource(sourcePath: string): boolean {
 
 /** Avoids a TypeScript parse for modules with no plausible supported conditional JSX syntax. */
 function mayContainConditionalJsx(sourceText: string): boolean {
+  const containsReactFactory = sourceText.includes('React.createElement');
   return (
-    sourceText.includes('<') &&
+    (sourceText.includes('<') || containsReactFactory) &&
     (sourceText.includes('&&') ||
       sourceText.includes('?') ||
       sourceText.includes('if') ||

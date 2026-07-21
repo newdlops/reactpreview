@@ -559,4 +559,86 @@ describe('createPreviewInspectorAncestorPlan', () => {
       { audience: 'staff' },
     ]);
   });
+
+  /**
+   * Carries the selected module's syntax-only JSX alternatives alongside the independently
+   * discovered entry-to-target path without analyzing unrelated page modules for outcomes.
+   */
+  it('attaches target-local JSX return outcomes to the immutable ancestor plan', async () => {
+    const sources = {
+      [TARGET_PATH]: [
+        'export function Target({ ready }) {',
+        '  return ready ? <ReadyPanel><StatusBadge /></ReadyPanel> : <LoadingPanel />;',
+        '}',
+      ].join('\n'),
+      [PAGE_PATH]: [
+        "import { Target } from './Target';",
+        'export default function Page() { return <main><Target ready /></main>; }',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.renderOutcomesByExport).toMatchObject({
+      Target: {
+        exportName: 'Target',
+        sourcePath: TARGET_PATH,
+        truncated: false,
+      },
+    });
+    expect(plan.renderOutcomesByExport?.Target?.outcomes).toHaveLength(2);
+    expect(plan.renderOutcomesByExport?.Target?.outcomes).toMatchObject([
+      {
+        componentNames: ['ReadyPanel', 'StatusBadge'],
+        conditions: [{ branch: 'truthy', expression: 'ready', kind: 'ternary' }],
+        exportName: 'Target',
+        kind: 'jsx',
+      },
+      {
+        componentNames: ['LoadingPanel'],
+        conditions: [{ branch: 'falsy', expression: 'ready', kind: 'ternary' }],
+        exportName: 'Target',
+        kind: 'jsx',
+      },
+    ]);
+    expect(Object.isFrozen(plan.renderOutcomesByExport)).toBe(true);
+  });
+
+  /** Watches DFS-resolved child implementations so their edits invalidate the composed page. */
+  it('adds expanded outcome component sources to ancestor-plan HMR dependencies', async () => {
+    const layoutPath = '/workspace/packages/application/src/PageLayout.tsx';
+    const headerPath = '/workspace/packages/application/src/Header.tsx';
+    const sources = {
+      [TARGET_PATH]: [
+        "import { PageLayout } from './PageLayout';",
+        'export function Target() { return <PageLayout />; }',
+      ].join('\n'),
+      [layoutPath]: [
+        "import Header from './Header';",
+        'export function PageLayout() { return <main><Header /></main>; }',
+      ].join('\n'),
+      [headerPath]: 'export default function Header() { return <header />; }',
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'Target',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.renderOutcomesByExport?.Target?.outcomes[0]?.componentTree).toMatchObject([
+      {
+        name: 'PageLayout',
+        sourcePath: TARGET_PATH,
+        children: [{ name: 'Header', sourcePath: layoutPath }],
+      },
+    ]);
+    expect(plan.dependencyPaths).toEqual([headerPath, layoutPath, TARGET_PATH].sort());
+  });
 });

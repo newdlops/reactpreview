@@ -229,6 +229,7 @@ export function createPreviewInspectorRootSource(
       pageCandidates: browserCandidates,
       renderChain: plan.renderChain,
       renderChainsByExport: plan.renderChainsByExport,
+      renderOutcomesByExport: plan.renderOutcomesByExport ?? {},
       root: plan.root,
       stopReason: plan.stopReason,
       target: plan.target,

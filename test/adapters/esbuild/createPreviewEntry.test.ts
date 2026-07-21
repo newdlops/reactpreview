@@ -46,6 +46,10 @@ describe('createPreviewEntry', () => {
     );
     expect(entry).toContain('["ZUZU"]');
     expect(entry).toContain('applyStorybookDecorators');
+    expect(entry).toContain('Story = createPreviewStorybookDecoratorLayer(Story, decorator)');
+    expect(entry).toContain('const DecoratedStory = React.useMemo(');
+    expect(entry).toContain('LayerContext.Consumer');
+    expect(entry).not.toContain('const Story = (storyUpdate) => renderInnerStory');
     expect(entry).toContain('applyStorybookParameterProviders');
     expect(entry).toContain('React.createElement(StorybookPreviewRoot');
     expect(entry).toContain("readSetupMember(setupModule, 'decorators')");

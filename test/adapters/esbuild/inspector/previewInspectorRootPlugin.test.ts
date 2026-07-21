@@ -317,4 +317,98 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('react-preview:inspector-direct-target/SecondaryCard');
     expect(source).not.toContain('direct-target:*');
   });
+
+  /**
+   * Parses the emitted descriptor JSON to prove static JSX choices cross the extension-host to
+   * webview boundary with condition, source, and component-tree evidence intact.
+   */
+  it('serializes target render outcomes into the browser descriptor', () => {
+    const plan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        renderOutcomesByExport: {
+          Target: {
+            exportName: 'Target',
+            outcomes: [
+              {
+                column: 10,
+                componentNames: ['ReadyPanel', 'StatusBadge'],
+                componentTree: [
+                  {
+                    children: [{ children: [], column: 24, line: 12, name: 'StatusBadge' }],
+                    column: 10,
+                    line: 12,
+                    name: 'ReadyPanel',
+                  },
+                ],
+                conditions: [
+                  {
+                    branch: 'truthy',
+                    column: 7,
+                    expression: 'ready',
+                    id: 'condition-ready',
+                    kind: 'if',
+                    label: 'truthy',
+                    line: 11,
+                    selectable: true,
+                    sourcePath: TARGET_PATH,
+                  },
+                ],
+                exportName: 'Target',
+                id: 'outcome-ready',
+                kind: 'jsx',
+                label: '<ReadyPanel>',
+                line: 12,
+                sourcePath: TARGET_PATH,
+              },
+            ],
+            sourcePath: TARGET_PATH,
+            truncated: false,
+          },
+        },
+      },
+    });
+    const descriptorPrefix = 'const __reactPreviewInspectorDescriptor = ';
+    const descriptorStart = source.indexOf(descriptorPrefix);
+    const descriptorEnd = source.indexOf(';\n', descriptorStart);
+    expect(descriptorStart).toBeGreaterThanOrEqual(0);
+    expect(descriptorEnd).toBeGreaterThan(descriptorStart);
+    const descriptor = JSON.parse(
+      source.slice(descriptorStart + descriptorPrefix.length, descriptorEnd),
+    ) as {
+      readonly inspector?: {
+        readonly renderOutcomesByExport?: Readonly<Record<string, unknown>>;
+      };
+    };
+
+    expect(descriptor.inspector?.renderOutcomesByExport).toMatchObject({
+      Target: {
+        exportName: 'Target',
+        outcomes: [
+          {
+            componentNames: ['ReadyPanel', 'StatusBadge'],
+            componentTree: [
+              {
+                children: [{ name: 'StatusBadge' }],
+                name: 'ReadyPanel',
+              },
+            ],
+            conditions: [
+              {
+                branch: 'truthy',
+                expression: 'ready',
+                kind: 'if',
+                sourcePath: TARGET_PATH,
+              },
+            ],
+            id: 'outcome-ready',
+            sourcePath: TARGET_PATH,
+          },
+        ],
+        sourcePath: TARGET_PATH,
+        truncated: false,
+      },
+    });
+  });
 });

@@ -10,14 +10,46 @@ export function createPreviewInspectorRequirementFrontierRuntimeSource(): string
 const PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT = 8;
 const PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT = 4;
 
+/** Reports whether compiler evidence names a property that Smart fill can actually materialize. */
+function hasPreviewInspectorMaterializableHookRequirement(record) {
+  return (record?.requiredPaths ?? []).some((path) =>
+    typeof path === 'string' && path.length > 0 && path !== '<root>' && path !== '<root>()',
+  );
+}
+
+/** Returns whether a formerly Smart record has discovered a shape not covered by its last fill. */
+function hasPreviewInspectorStaleSmartRequirement(record) {
+  if (record?.mode !== 'smart' && record?.mode !== 'smart-manual') return false;
+  const signatures = previewInspectorSession.runtimeFallbackSmartPathSignatures;
+  if (!(signatures instanceof Map)) return true;
+  const current = createPreviewInspectorRuntimeFallbackPathSignature(record.requiredPaths);
+  return signatures.get(record.id) !== current;
+}
+
+/** Excludes settled generated values while admitting newly expanded Smart requirements exactly once. */
+function hasPreviewInspectorPendingHookRequirement(record, preserveUserValues) {
+  if (record?.passive === true || !hasPreviewInspectorMaterializableHookRequirement(record)) {
+    return false;
+  }
+  if (preserveUserValues && (record.mode === 'manual' || record.mode === 'smart-manual')) {
+    return false;
+  }
+  return record.mode !== 'smart' && record.mode !== 'smart-manual' ||
+    hasPreviewInspectorStaleSmartRequirement(record);
+}
+
 /** Scores one runtime requirement by exact ownership inside the proven root-to-target corridor. */
 function scorePreviewInspectorRequirementRecord(record, evidence) {
-  let score = evidence.nameScores.get(record?.ownerName) ?? 0;
+  const ownerName = record?.ownerName;
+  const ambiguousOwner = evidence.ambiguousNames?.has(ownerName) &&
+    !evidence.runtimeOwnerNames?.has(ownerName);
+  let score = ambiguousOwner ? 0 : evidence.nameScores.get(ownerName) ?? 0;
   const sourcePath = normalizePreviewInspectorReachabilityPath(record?.sourcePath);
   if (sourcePath.length === 0) return score;
   for (const path of evidence.paths) {
     if (path === sourcePath || path.endsWith('/' + sourcePath) || sourcePath.endsWith('/' + path)) {
-      score = Math.max(score, 2_000);
+      /* Target-to-root path scores preserve distance; a shell source must not tie the target. */
+      score = Math.max(score, evidence.pathScores?.get(path) ?? 1);
     }
   }
   return score;
@@ -53,10 +85,7 @@ function readPreviewInspectorRequirementBatch(
   const hooks = readPreviewInspectorRuntimeFallbacks()
     .filter((record) =>
       record.reachabilityKey === state.key &&
-      record.passive !== true &&
-      record.mode !== 'smart' &&
-      record.mode !== 'smart-manual' &&
-      !(preserveUserValues && record.mode === 'manual'),
+      hasPreviewInspectorPendingHookRequirement(record, preserveUserValues),
     );
   const requests = readPreviewInspectorDataRequests()
     .filter((record) =>

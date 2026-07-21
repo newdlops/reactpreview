@@ -34,7 +34,90 @@ function createRequiredPathMaterializer(): (template: unknown, path: string) => 
   return materialize;
 }
 
+/** Evaluates the exact Smart template builder used by the bounded target-reachability search. */
+function createSmartDraftBuilder(): (value: unknown, paths: readonly string[]) => unknown {
+  const sandbox = {
+    blockedInspectorPropNames: new Set(['__proto__', 'constructor', 'prototype']),
+  };
+  const context = createContext(sandbox);
+  runInContext(
+    'const normalizePreviewInspectorRequiredPropertyPaths = (paths) => [...new Set(paths)];\n' +
+      `${createPreviewInspectorGeneratedValueRuntimeSource()}\n` +
+      `${createPreviewInspectorBlockerValueRuntimeSource()}\n` +
+      'globalThis.__createSmartDraft = createPreviewInspectorRuntimeFallbackSmartDraftTemplate;',
+    context,
+  );
+  const createSmartDraft = (
+    sandbox as typeof sandbox & {
+      __createSmartDraft?: (value: unknown, paths: readonly string[]) => unknown;
+    }
+  ).__createSmartDraft;
+  if (createSmartDraft === undefined) throw new Error('Smart draft builder did not initialize.');
+  return createSmartDraft;
+}
+
 describe('Preview Inspector generated collection repair', () => {
+  /** Keeps GraphQL selections that are statically hidden behind a top-level render-prop data key. */
+  it('preserves bounded structured data while minimizing a query-result carrier', () => {
+    const createSmartDraft = createSmartDraftBuilder();
+    const draft = createSmartDraft(
+      {
+        data: { company: { id: 'company-1' }, directors: [{ id: 'director-1', name: 'Director' }] },
+        error: null,
+        loading: false,
+        refetch: () => undefined,
+        unrelated: 'discard me',
+      },
+      ['loading', 'data', 'error', 'refetch()'],
+    );
+
+    expect(draft).toEqual({
+      data: { company: { id: 'company-1' }, directors: [{ id: 'director-1', name: 'Director' }] },
+      error: null,
+      loading: false,
+      refetch: '[Preview no-op function]',
+    });
+  });
+
+  /** Proves an actual GraphQL-aware hook fallback retains its selected fields after Smart Fill. */
+  it('keeps selection-shaped query data across resolve, Smart Fill, and resolve', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const document = {
+      definitions: [{ kind: 'OperationDefinition', name: { value: 'DirectorList' } }],
+      loc: { source: { body: 'query DirectorList { company { id } }' } },
+    };
+    const metadata = {
+      ...createMetadata(),
+      hookName: 'useQuery',
+      requiredPaths: ['loading', 'data', 'error', 'refetch()'],
+    };
+    const createQueryFallback = (): object => ({
+      data: {},
+      error: null,
+      loading: false,
+      refetch: () => undefined,
+    });
+    const first = fixture.api.resolve(
+      () => undefined,
+      createQueryFallback,
+      metadata,
+      () => document,
+    ) as { data: { company: { id: string } } };
+    const fallbackId = fixture.api.read()[0]?.id;
+    if (fallbackId === undefined) throw new Error('GraphQL fallback record was not registered.');
+
+    fixture.api.smart(fallbackId);
+    const second = fixture.api.resolve(
+      () => undefined,
+      createQueryFallback,
+      metadata,
+      () => document,
+    ) as { data: { company: { id: string } } };
+
+    expect(first.data.company.id).toBe('preview-1');
+    expect(second.data.company.id).toBe('preview-1');
+  });
+
   /** Repairs a populated Context placeholder only when item access proves the exact Array path. */
   it('repairs a non-empty record at a compiler-proven nested collection path', () => {
     const fixture = createRuntimeFallbackFixture(true);

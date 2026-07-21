@@ -4,8 +4,8 @@
  * Hook and backend inference intentionally runs over several committed renders because each branch
  * can reveal a deeper requirement. A project hook can nevertheless alternate between two generated
  * shapes, or a terminal search can be rediscovered after every probe. This runtime owns a bounded,
- * revision-local history so those A -> A and A -> B -> A cycles stop before another remount while an
- * explicit user retry can still clear the circuit.
+ * revision-local history so a stable A -> A frontier settles without blocking the next JSX gate,
+ * while a real A -> B -> A oscillation stops before another remount. Explicit retry clears either.
  */
 
 /** Creates browser source for canonical frontier fingerprints and the automatic pass circuit. */
@@ -229,7 +229,7 @@ function stopPreviewInspectorRequirementConvergence(state, search, status, cycle
   schedulePreviewInspectorTreeRefresh();
 }
 
-/** Inspects a candidate pass and opens the circuit before an A -> A or A -> B -> A remount. */
+/** Inspects a candidate pass and distinguishes a settled A -> A frontier from real oscillation. */
 function beginPreviewInspectorRequirementFrontier(state, search, batch) {
   const convergence = readPreviewInspectorRequirementConvergence(state);
   if (convergence.totalPasses >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) {
@@ -239,11 +239,26 @@ function beginPreviewInspectorRequirementFrontier(state, search, batch) {
   const fingerprint = createPreviewInspectorRequirementFrontierFingerprint(state, batch);
   const repeatedAt = convergence.fingerprints.lastIndexOf(fingerprint);
   if (repeatedAt >= 0) {
+    const cycleLength = Math.max(1, convergence.fingerprints.length - repeatedAt);
+    if (cycleLength === 1) {
+      /*
+       * The same generated value often means this requirement dimension is simply exhausted. It
+       * must not close the whole page corridor: a target-local JSX gate discovered by that commit
+       * may still be the actionable continuation. No remount is scheduled for the stalled batch.
+       */
+      convergence.status = 'stalled';
+      search.frontierFingerprint = fingerprint;
+      search.status = 'stalled';
+      search.totalPasses = convergence.totalPasses;
+      state.exhausted = false;
+      state.status = 'requirements-stalled';
+      return undefined;
+    }
     stopPreviewInspectorRequirementConvergence(
       state,
       search,
       'cycle-detected',
-      Math.max(1, convergence.fingerprints.length - repeatedAt),
+      cycleLength,
     );
     return undefined;
   }
@@ -259,7 +274,12 @@ function completePreviewInspectorRequirementFrontier(search, frontier, changed) 
   }
   convergence.frontierFingerprint = fingerprint;
   search.frontierFingerprint = fingerprint;
-  if (!changed) return;
+  if (!changed) {
+    /* No mutation was available in this new frontier; report completion, not an apparent loop. */
+    convergence.status = 'settled';
+    search.status = 'settled';
+    return;
+  }
   convergence.totalPasses += 1;
   convergence.status = convergence.totalPasses >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT
     ? 'limit-reached'

@@ -135,6 +135,22 @@ function readPreviewInspectorRequiredPathSeed(value, path) {
   return current;
 }
 
+/**
+ * Retains bounded compiler-shaped data carried across a render-prop or hook boundary. The wrapper
+ * can prove only the carrier key (data, payload, and similar), while the reached GraphQL or API
+ * document owns the child selection. Empty Context/Redux placeholders remain eligible for normal
+ * semantic generation instead of being mistaken for useful backend evidence.
+ */
+function copyPreviewInspectorStructuredCarrierSeed(propertyName, seed) {
+  if (!/^(?:data|payload|response|result)$/iu.test(String(propertyName))) return undefined;
+  if (seed === null || typeof seed !== 'object') return undefined;
+  const copied = copyPreviewInspectorBlockerValueForJson(seed, { nodes: 0 });
+  if (Array.isArray(copied)) return copied.length > 0 ? copied.slice(0, 1) : undefined;
+  return copied !== null && typeof copied === 'object' && Object.keys(copied).length > 0
+    ? copied
+    : undefined;
+}
+
 /** Retains an inferred scalar type but strips unproven object siblings and extra list items. */
 function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, seed) {
   if (typeof seed === 'function') {
@@ -149,6 +165,8 @@ function createPreviewInspectorRequiredPathSmartLeaf(propertyName, callable, see
   if (typeof seed === 'number') return Number.isFinite(seed) ? seed : 1;
   if (typeof seed === 'bigint') return Number(seed);
   if (typeof seed === 'string' && seed.length > 0) return seed;
+  const structuredCarrier = copyPreviewInspectorStructuredCarrierSeed(propertyName, seed);
+  if (structuredCarrier !== undefined) return structuredCarrier;
   if (Array.isArray(seed)) {
     const item = seed[0];
     if (typeof item === 'boolean' || typeof item === 'number' || typeof item === 'string') {

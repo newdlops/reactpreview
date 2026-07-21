@@ -106,8 +106,8 @@ describe('Preview Inspector requirement convergence runtime source', () => {
     });
   });
 
-  /** Treats required paths as a set so order-only registry churn is stopped as an identical state. */
-  it('canonicalizes requirement path order before comparing frontiers', () => {
+  /** Settles order-only registry churn without exhausting other page-corridor continuation types. */
+  it('canonicalizes a stable requirement frontier and leaves the corridor available', () => {
     const result = runConvergenceScenario(`
       hookRecord.requiredPaths = ['session.roles.0', 'session.user.id'];
       const first = beginPreviewInspectorRequirementFrontier(state, search, batch);
@@ -120,12 +120,12 @@ describe('Preview Inspector requirement convergence runtime source', () => {
         status: search.status,
       };
     `) as {
-      readonly cycleLength: number;
+      readonly cycleLength?: number;
       readonly exhausted: boolean;
       readonly status: string;
     };
 
-    expect(result).toEqual({ cycleLength: 1, exhausted: true, status: 'cycle-detected' });
+    expect(result).toEqual({ cycleLength: undefined, exhausted: false, status: 'stalled' });
   });
 
   /** Keeps a settled deterministic frontier terminal until new evidence or an explicit retry exists. */
@@ -133,14 +133,18 @@ describe('Preview Inspector requirement convergence runtime source', () => {
     const result = runConvergenceScenario(`
       const observed = beginPreviewInspectorRequirementFrontier(state, search, batch);
       completePreviewInspectorRequirementFrontier(search, observed, false);
-      search.status = 'settled';
+      const settledStatus = search.status;
       const automaticRestart = canStartPreviewInspectorDeterministicRequirementSearch(state, batch);
       resetPreviewInspectorRequirementConvergence(state);
       const explicitRetry = canStartPreviewInspectorDeterministicRequirementSearch(state, batch);
-      globalThis.__result = { automaticRestart, explicitRetry };
+      globalThis.__result = { automaticRestart, explicitRetry, settledStatus };
     `);
 
-    expect(result).toEqual({ automaticRestart: false, explicitRetry: true });
+    expect(result).toEqual({
+      automaticRestart: false,
+      explicitRetry: true,
+      settledStatus: 'settled',
+    });
   });
 
   /** Preserves a monotonic hard budget and gives only an explicit retry a fresh revision-local run. */

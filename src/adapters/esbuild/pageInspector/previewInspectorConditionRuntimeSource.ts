@@ -142,7 +142,7 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
   };
 }
 
-/** Bounds compiler-issued switch metadata and independently verifies selectable primitive cases. */
+/** Bounds compiler-issued switch/JSX-array metadata and verifies selectable primitive branches. */
 function normalizePreviewInspectorRenderChoiceMetadata(metadata) {
   const source = metadata !== null && typeof metadata === 'object' ? metadata : {};
   const readText = (name, fallback = '') =>
@@ -204,12 +204,51 @@ function normalizePreviewInspectorRenderChoiceMetadata(metadata) {
       return { ...branch, selectable: requestedSelectable === true && safeToSelect };
     }),
     column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
-    expression: readText('expression', 'switch choice'),
-    kind: 'switch',
+    expression: readText('expression', 'render choice'),
+    kind: source.kind === 'array-index' ? 'array-index' : 'switch',
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     ownerName: readText('ownerName'),
     sourcePath: readText('sourcePath'),
   };
+}
+
+/** Normalizes one component/path label before matching a render choice to the selected file. */
+function normalizePreviewInspectorTargetChoiceName(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  const withoutExport = text.replace(/\s*\((?:default|[^)]+ export)\)\s*$/iu, '');
+  return withoutExport.split('.').at(-1)?.replace(/[<>]/gu, '') ?? '';
+}
+
+/**
+ * Selects the sole primitive branch whose JSX component occurs on the active root-to-file path.
+ *
+ * This resolves patterns such as steps[currentStep] after an earlier return gate is opened. It is
+ * deliberately lower priority than authored scenario and manual choices and requires one unique
+ * branch, so ambiguous repeated components remain user-controlled.
+ */
+function readPreviewInspectorTargetGuidedRenderChoiceBranch(metadata) {
+  const key = previewInspectorSession.activeTargetReachabilityKey;
+  const state = typeof key === 'string'
+    ? previewInspectorSession.targetReachabilityByKey?.get?.(key)
+    : undefined;
+  if (
+    state === undefined ||
+    state.directTarget === true ||
+    previewInspectorSession.fallbackValuesEnabled !== true
+  ) {
+    return undefined;
+  }
+  const targetNames = new Set(
+    (state.applicationPath ?? [])
+      .map(normalizePreviewInspectorTargetChoiceName)
+      .filter((name) => name.length > 0),
+  );
+  const matches = (metadata?.branches ?? []).filter((branch) =>
+    branch.selectable === true &&
+    (branch.calls ?? []).some((call) =>
+      targetNames.has(normalizePreviewInspectorTargetChoiceName(call))),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** Finds an authored branch only while preceding dynamic case expressions cannot alter matching. */
@@ -274,7 +313,11 @@ function resolvePreviewInspectorRenderChoice(choiceId, authoredValue, metadata) 
   ) {
     overrideBranch = undefined;
   }
-  const selectedBranch = outcomeBranch ?? overrideBranch;
+  const targetGuidedBranch =
+    outcomeBranch === undefined && overrideBranch === undefined
+      ? readPreviewInspectorTargetGuidedRenderChoiceBranch(normalizedMetadata)
+      : undefined;
+  const selectedBranch = outcomeBranch ?? overrideBranch ?? targetGuidedBranch;
   const effectiveBranchId = selectedBranch?.id ?? authoredBranchId;
   const metadataSignature = JSON.stringify(normalizedMetadata);
   const records = previewInspectorSession.renderChoices;
@@ -285,6 +328,7 @@ function resolvePreviewInspectorRenderChoice(choiceId, authoredValue, metadata) 
     effectiveBranchId,
     id: choiceId,
     metadataSignature,
+    ...(targetGuidedBranch === undefined ? {} : { targetGuidedBranchId: targetGuidedBranch.id }),
   };
   if (records.has(choiceId) || records.size < PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT) {
     records.set(choiceId, nextRecord);

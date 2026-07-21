@@ -167,17 +167,26 @@ function completePreviewInspectorBlockerTraceAttempt(
   return true;
 }
 
+/** Retains the logical target blocker until the attempt's exact page corridor proves output. */
+function readPreviewInspectorBlockerTracePendingTargetId(attempt) {
+  const reachabilityKey = attempt?.targetReachabilityKey;
+  if (typeof reachabilityKey !== 'string' || reachabilityKey.length === 0) return undefined;
+  const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
+  const reachedTarget = state?.status === 'reached' || state?.targetHasOutput === true;
+  return reachedTarget ? undefined : 'target-reachability:' + reachabilityKey;
+}
+
 /** Reads the latest conservative blocker set when an attempt's bounded wait expires. */
 function readPreviewInspectorBlockerTraceRemainingIds(attempt) {
-  if (Array.isArray(attempt?.lastRemainingBlockerIds)) {
-    return [...attempt.lastRemainingBlockerIds];
-  }
-  return [
-    ...new Set([
-      ...previewInspectorSession.blockerTraceRecords.keys(),
-      ...previewInspectorSession.blockerTracePendingResolutions.keys(),
-    ]),
-  ];
+  const remainingIds = Array.isArray(attempt?.lastRemainingBlockerIds)
+    ? [...attempt.lastRemainingBlockerIds]
+    : [
+        ...previewInspectorSession.blockerTraceRecords.keys(),
+        ...previewInspectorSession.blockerTracePendingResolutions.keys(),
+      ];
+  const pendingTargetId = readPreviewInspectorBlockerTracePendingTargetId(attempt);
+  if (pendingTargetId !== undefined) remainingIds.push(pendingTargetId);
+  return [...new Set(remainingIds)];
 }
 
 /** Builds the single terminal result from all snapshots observed during one render attempt. */
@@ -757,12 +766,7 @@ function recordPreviewInspectorBlockerAutoDecision(candidate = {}) {
           'discoveredBlockerIds',
         ),
         outcome: 'superseded',
-        remainingBlockerIds: [
-          ...new Set([
-            ...previewInspectorSession.blockerTraceRecords.keys(),
-            ...previewInspectorSession.blockerTracePendingResolutions.keys(),
-          ]),
-        ],
+        remainingBlockerIds: readPreviewInspectorBlockerTraceRemainingIds(supersededAttempt),
         resolvedBlockerIds: readPreviewInspectorBlockerTraceAttemptIds(
           supersededAttempt,
           'resolvedBlockerIds',

@@ -7,7 +7,10 @@
 import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorBlockerValueRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorBlockerValueRuntimeSource';
-import { createPreviewInspectorGeneratedValueRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorGeneratedValueRuntimeSource';
+import {
+  createPreviewInspectorGeneratedValueRuntimeSource,
+  PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT,
+} from '../../../../src/adapters/esbuild/pageInspector/previewInspectorGeneratedValueRuntimeSource';
 import {
   createMetadata,
   createRuntimeFallbackFixture,
@@ -57,6 +60,101 @@ function createSmartDraftBuilder(): (value: unknown, paths: readonly string[]) =
 }
 
 describe('Preview Inspector generated collection repair', () => {
+  /** Replaces an application `-1` sentinel only where static syntax proves an Array length. */
+  it('repairs a negative selector count before an Array constructor can throw', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      nonNegativeNumberPaths: ['rideCancelCount'],
+      requiredPaths: ['rideCancelCount'],
+    };
+    const authored = { rideCancelCount: -1, status: 'authored' };
+
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ rideCancelCount: 0, status: 'generated' }),
+      metadata,
+    ) as { rideCancelCount: number; status: string };
+
+    expect(resolved).not.toBe(authored);
+    expect(resolved).toEqual({ rideCancelCount: 0, status: 'authored' });
+    expect(() => {
+      new Array(Math.min(5, resolved.rideCancelCount));
+    }).not.toThrow();
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['rideCancelCount'],
+      reason: 'partial',
+    });
+  });
+
+  /** Applies Array-length evidence when the hook itself returns the constrained primitive. */
+  it('repairs a negative root hook value before an Array constructor can throw', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+
+    const resolved = fixture.api.resolve(
+      () => -1,
+      () => 0,
+      {
+        ...createMetadata(),
+        nonNegativeNumberPaths: ['<root>'],
+        requiredPaths: ['<root>'],
+      },
+    );
+
+    expect(resolved).toBe(0);
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['<root>'],
+      reason: 'partial',
+    });
+  });
+
+  /** Replaces both invalid native lengths and valid lengths that would stall a preview fill/map. */
+  it('bounds authored Array lengths to the preview-safe allocation corridor', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const authored = {
+      nativeInvalid: 2 ** 32,
+      previewUnsafe: PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT + 1,
+    };
+
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ nativeInvalid: 0, previewUnsafe: 0 }),
+      {
+        ...createMetadata(),
+        nonNegativeNumberPaths: ['nativeInvalid', 'previewUnsafe'],
+        requiredPaths: ['nativeInvalid', 'previewUnsafe'],
+      },
+    ) as typeof authored;
+
+    expect(resolved).toEqual({ nativeInvalid: 0, previewUnsafe: 0 });
+    expect(() => {
+      new Array(resolved.nativeInvalid);
+    }).not.toThrow();
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['nativeInvalid', 'previewUnsafe'],
+      reason: 'partial',
+    });
+  });
+
+  /** Keeps a valid authored count so the preview never overwrites usable application state. */
+  it('preserves a valid selector count in an Array-length corridor', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const authored = { rideCancelCount: 3 };
+
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ rideCancelCount: 0 }),
+      {
+        ...createMetadata(),
+        nonNegativeNumberPaths: ['rideCancelCount'],
+        requiredPaths: ['rideCancelCount'],
+      },
+    );
+
+    expect(resolved).toBe(authored);
+    expect(fixture.api.read()).toEqual([]);
+  });
+
   /** Keeps GraphQL selections that are statically hidden behind a top-level render-prop data key. */
   it('preserves bounded structured data while minimizing a query-result carrier', () => {
     const createSmartDraft = createSmartDraftBuilder();
@@ -170,6 +268,39 @@ describe('Preview Inspector generated collection repair', () => {
 
     expect(Array.isArray(resolved.options)).toBe(true);
     expect(resolved.options.filter(Boolean)).toEqual([]);
+  });
+
+  /** Replaces a generated key-text scalar when a later hook boundary proves object descendants. */
+  it('expands a selection-shaped JSON scalar from downstream property demand', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['data.userDetailedSurvey.surveyResult.data'],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => ({
+        data: {
+          userDetailedSurvey: {
+            surveyResult: 'surveyResult',
+          },
+        },
+      }),
+      () => ({
+        data: {
+          userDetailedSurvey: {
+            surveyResult: { data: {} },
+          },
+        },
+      }),
+      metadata,
+    ) as { data: { userDetailedSurvey: { surveyResult: { data: object } } } };
+
+    expect(resolved.data.userDetailedSurvey.surveyResult.data).toEqual({});
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['data.userDetailedSurvey.surveyResult'],
+      reason: 'partial',
+    });
   });
 
   /** Preserves a scalar receiver because several allowlisted collection methods also exist on text. */

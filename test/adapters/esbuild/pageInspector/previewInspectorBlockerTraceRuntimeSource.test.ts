@@ -37,6 +37,7 @@ interface TraceRuntime {
   readonly messages: TraceMessage[];
   readonly rollbackCalls: string[];
   readonly rollbacks: string[];
+  readonly setReachability: (key: string, state: Record<string, unknown>) => void;
   readonly snapshot: (snapshot: Record<string, unknown>) => void;
 }
 
@@ -431,6 +432,52 @@ describe('Preview Inspector blocker trace runtime source', () => {
     });
   });
 
+  /** Keeps an unresolved logical corridor visible even before its blocker-tree row is published. */
+  it('retains target reachability in a settled no-diff attempt until host output succeeds', () => {
+    const runtime = createTraceRuntime();
+    const reachabilityKey = 'app-path:DeleteModal';
+    runtime.setReachability(reachabilityKey, {
+      status: 'filling-requirements',
+      targetHasOutput: false,
+    });
+    const unresolvedTraceId = runtime.decide({
+      action: 'Fill target page requirements',
+      blockerId: 'target-reachability:' + reachabilityKey,
+      mode: 'deterministic-minimum-auto',
+      startsRenderAttempt: true,
+      targetReachabilityKey: reachabilityKey,
+    });
+    runtime.snapshot({ roots: [] });
+    runtime.snapshot({ roots: [] });
+    runtime.advance(320);
+
+    const unresolvedResult = runtime.messages.find(
+      (message) =>
+        message.event.event === 'render-result' && message.event.traceId === unresolvedTraceId,
+    )?.event.result;
+    expect(unresolvedResult?.remainingBlockerIds).toEqual([
+      'target-reachability:' + reachabilityKey,
+    ]);
+
+    runtime.setReachability(reachabilityKey, { status: 'reached', targetHasOutput: true });
+    const reachedTraceId = runtime.decide({
+      action: 'Verify reached target page',
+      blockerId: 'target-reachability:' + reachabilityKey,
+      mode: 'deterministic-minimum-auto',
+      startsRenderAttempt: true,
+      targetReachabilityKey: reachabilityKey,
+    });
+    runtime.snapshot({ roots: [] });
+    runtime.snapshot({ roots: [] });
+    runtime.advance(320);
+
+    const reachedResult = runtime.messages.find(
+      (message) =>
+        message.event.event === 'render-result' && message.event.traceId === reachedTraceId,
+    )?.event.result;
+    expect(reachedResult?.remainingBlockerIds).toEqual([]);
+  });
+
   /** Keeps a lone stale observation open for a later remount, then closes it at the hard bound. */
   it('does not let one stale snapshot end the causal trace early', () => {
     const runtime = createTraceRuntime();
@@ -694,6 +741,7 @@ function createTraceRuntime(): TraceRuntime {
   vm.runInNewContext(
     `
       const previewInspectorSession = {
+        targetReachabilityByKey: new Map(),
         renderScenario: 'authored-page',
         selectedExportName: 'ProfileForm',
         selectedPageCandidateId: 'app-path',
@@ -740,6 +788,8 @@ function createTraceRuntime(): TraceRuntime {
         return true;
       };
       const resumePreviewInspectorTargetReachabilityAfterConditionAttempt = () => false;
+      const inferPreviewInspectorTargetAutoAttemptReachabilityKey = (candidate) =>
+        candidate?.targetReachabilityKey;
       const isPreviewInspectorBlockingNode = (node) => node?.blocker?.mode !== 'assisted';
       const schedulePreviewInspectorTreeRefresh = () => undefined;
       ${createPreviewInspectorBlockerTraceRuntimeSource()}
@@ -751,6 +801,9 @@ function createTraceRuntime(): TraceRuntime {
         messages,
         rollbackCalls,
         rollbacks,
+        setReachability: (key, state) => {
+          previewInspectorSession.targetReachabilityByKey.set(key, state);
+        },
         snapshot: publishPreviewInspectorBlockerTraceSnapshot,
       };
     `,

@@ -109,6 +109,9 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     id: readText('id'),
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     moduleSpecifier: readText('moduleSpecifier'),
+    nonNegativeNumberPaths: normalizePreviewInspectorRequiredPropertyPaths(
+      source.nonNegativeNumberPaths,
+    ),
     ownerName: readText('ownerName'),
     passive: source.passive === true,
     preserveNullish: source.preserveNullish === true,
@@ -345,6 +348,7 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
   initializePreviewInspectorRuntimeFallbackState();
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
     return completePreviewInspectorGeneratedValue(value, fallback, {
+      nonNegativeNumberPaths: metadata.nonNegativeNumberPaths,
       requiredPaths: metadata.requiredPaths,
     });
   }
@@ -352,6 +356,7 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
   const cached = completions?.get(metadata.id);
   if (cached !== undefined && cached.fallback === fallback) return cached.completion;
   const completion = completePreviewInspectorGeneratedValue(value, fallback, {
+    nonNegativeNumberPaths: metadata.nonNegativeNumberPaths,
     requiredPaths: metadata.requiredPaths,
   });
   if (completion.changed) {

@@ -423,6 +423,44 @@ const previewInspectorOverlayVisibilityPropNames = new Set([
   'visible',
 ]);
 
+/** Normalizes one top-level prop name without reading the corresponding project value. */
+function normalizePreviewInspectorOverlayVisibilityPropName(value) {
+  return typeof value === 'string'
+    ? value.replaceAll('_', '').toLowerCase()
+    : '';
+}
+
+/**
+ * Reads a single false visibility prop already observed at the exact mounted target facade.
+ *
+ * registerPreviewInspectorBaseProps stores a normalized, extension-owned prop record rather than
+ * the live React props object. Descriptors are still used here so an accessor accidentally placed
+ * in the session map is never invoked. A malformed/hostile record fails closed, and two possible
+ * visibility fields remain a user choice instead of opening an arbitrary overlay.
+ */
+function readPreviewInspectorObservedOverlayVisibilityPaths(exportName) {
+  const observedProps = previewInspectorSession.basePropsByExport.get(exportName);
+  if (
+    observedProps === null || typeof observedProps !== 'object' || Array.isArray(observedProps)
+  ) return [];
+  let descriptors;
+  try { descriptors = Object.getOwnPropertyDescriptors(observedProps); } catch { return []; }
+  return Object.keys(descriptors)
+    .filter((propertyName) => {
+      const descriptor = descriptors[propertyName];
+      return (
+        !previewInspectorSmartPropBlockedNames.has(propertyName) &&
+        descriptor?.enumerable === true &&
+        Object.hasOwn(descriptor, 'value') &&
+        descriptor.value === false &&
+        previewInspectorOverlayVisibilityPropNames.has(
+          normalizePreviewInspectorOverlayVisibilityPropName(propertyName),
+        )
+      );
+    })
+    .sort((left, right) => left.localeCompare(right));
+}
+
 /** Writes one compiler-proven plain prop path without accepting calls, arrays, or prototype keys. */
 function setPreviewInspectorSmartBooleanProp(value, rawPath) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
@@ -476,13 +514,18 @@ function hasPreviewInspectorSmartPropPath(value, rawPath) {
 function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityKey) {
   const evidence = readPreviewInspectorSmartPropEvidence(exportName);
   if (!evidence.found) return undefined;
-  const visibilityPaths = readPreviewInspectorSmartPropPathRecords(evidence)
+  const inferredVisibilityPaths = readPreviewInspectorSmartPropPathRecords(evidence)
     .filter((record) => {
-      const leaf = record.path.split('.').at(-1)?.replaceAll('_', '').toLowerCase();
+      const leaf = normalizePreviewInspectorOverlayVisibilityPropName(
+        record.path.split('.').at(-1),
+      );
       return record.kind === 'boolean' && previewInspectorOverlayVisibilityPropNames.has(leaf);
     })
     .map((record) => record.path)
     .sort((left, right) => left.split('.').length - right.split('.').length || left.localeCompare(right));
+  const visibilityPaths = inferredVisibilityPaths.length > 0
+    ? inferredVisibilityPaths
+    : readPreviewInspectorObservedOverlayVisibilityPaths(exportName);
   // Two independent visibility flags do not admit one safe answer. Leave that semantic choice in
   // the Inspector instead of opening an arbitrary flag merely because it sorts first.
   if (visibilityPaths.length !== 1) return undefined;

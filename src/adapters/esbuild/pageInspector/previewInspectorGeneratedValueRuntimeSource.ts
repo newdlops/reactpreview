@@ -18,6 +18,12 @@ export const PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT = 256;
 /** Maximum generated paths retained for one visible Inspector diagnostic. */
 export const PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT = 32;
 
+/** Largest length JavaScript accepts for the single-argument Array constructor. */
+export const PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX = 0xffff_ffff;
+
+/** Largest authored Array length retained before preview completion substitutes a neutral value. */
+export const PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT = 4_096;
+
 /**
  * Creates browser source for safe, demand-shaped completion of partial hook results.
  *
@@ -31,6 +37,8 @@ export function createPreviewInspectorGeneratedValueRuntimeSource(): string {
 const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT};
 const PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT};
 const PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT = ${PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT};
+const PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX = ${PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX};
+const PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT = ${PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT};
 const previewInspectorGeneratedValueBlockedKeys = new Set([
   '__proto__',
   'constructor',
@@ -142,11 +150,36 @@ function hasPreviewInspectorGeneratedCollectionRequirement(state, path) {
   });
 }
 
+/** Reports whether a compiler path proves an object read below the currently merged value. */
+function hasPreviewInspectorGeneratedDescendantRequirement(state, path) {
+  if (!Array.isArray(state.requiredPaths) || path.length === 0) return false;
+  const prefix = path.join('.') + '.';
+  return state.requiredPaths.some(
+    (requiredPath) => typeof requiredPath === 'string' && requiredPath.startsWith(prefix),
+  );
+}
+
 /** Records one bounded generated path while still counting omitted paths for diagnostics. */
 function recordPreviewInspectorGeneratedPath(state, path) {
   state.additions += 1;
   if (state.paths.length >= PREVIEW_INSPECTOR_GENERATED_VALUE_PATH_LIMIT) return;
   state.paths.push(path.length === 0 ? '<root>' : path.join('.'));
+}
+
+/** Reports whether static hook usage requires a bounded Array length at this exact value path. */
+function hasPreviewInspectorGeneratedArrayLengthRequirement(state, path) {
+  if (!Array.isArray(state.nonNegativeNumberPaths)) return false;
+  const candidate = path.length === 0 ? '<root>' : path.join('.');
+  return state.nonNegativeNumberPaths.includes(candidate);
+}
+
+/** Rejects invalid native Array lengths and valid-but-dangerous allocations in the webview. */
+function isPreviewInspectorGeneratedSafeArrayLength(value) {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= PREVIEW_INSPECTOR_ARRAY_LENGTH_MAX &&
+    value <= PREVIEW_INSPECTOR_ARRAY_LENGTH_SAFE_LIMIT;
 }
 
 /** Creates an ordinary descriptor for one extension-owned generated data property. */
@@ -235,6 +268,39 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
     ) {
       return { changed: false, value: authored };
     }
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
+
+  if (
+    isPreviewInspectorGeneratedSafeArrayLength(generated) &&
+    hasPreviewInspectorGeneratedArrayLengthRequirement(state, path) &&
+    !isPreviewInspectorGeneratedSafeArrayLength(authored)
+  ) {
+    /*
+     * A real selector may intentionally expose -1 for unavailable data. Preserve that sentinel
+     * everywhere except a compiler-proven Array-length corridor, where JavaScript would throw a
+     * RangeError before any React host output can commit. Oversized valid lengths are also replaced
+     * before a later fill/map can stall the webview. The generated integer is the narrowest
+     * render-only continuation and the authored object remains immutable.
+     */
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
+
+  if (
+    typeof authored === 'string' &&
+    authored === String(path.at(-1) ?? '') &&
+    generated !== null &&
+    typeof generated === 'object' &&
+    hasPreviewInspectorGeneratedDescendantRequirement(state, path)
+  ) {
+    /*
+     * Selection-shaped GraphQL data uses the field name as neutral text for unknown JSON scalars.
+     * A later project hook can prove that the same field is actually a JSON object by reading a
+     * descendant. Replace only that recognizable generated key text; real authored scalar values
+     * remain authoritative even when an imprecise fallback happens to contain an object.
+     */
     recordPreviewInspectorGeneratedPath(state, path);
     return { changed: true, value: generated };
   }
@@ -345,6 +411,9 @@ function completePreviewInspectorGeneratedValue(authored, generated, options = {
     additions: 0,
     nodes: 0,
     paths: [],
+    nonNegativeNumberPaths: Array.isArray(options?.nonNegativeNumberPaths)
+      ? options.nonNegativeNumberPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)
+      : [],
     replaceNullScalars: options?.replaceNullScalars === true,
     requiredPaths: Array.isArray(options?.requiredPaths)
       ? options.requiredPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)

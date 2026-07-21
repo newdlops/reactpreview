@@ -31,6 +31,7 @@ interface OverlayRevealRuntime {
   readonly fallbackCommitModes: readonly boolean[];
   readonly fallbackEnabled: boolean;
   readonly manualOverride: Readonly<Record<string, unknown>>;
+  readonly observedGetterReads: number;
   readonly path?: string;
   readonly persists: number;
   readonly propsCommitModes: readonly boolean[];
@@ -149,6 +150,57 @@ describe('Preview Inspector Smart props runtime source', () => {
         targetReachabilityKey: 'page:DeleteModal',
       }),
     ]);
+  });
+
+  /** Uses the exact mounted facade's false show prop when a styled export erased static prop types. */
+  it('reveals an observed hidden modal when static inferred props are empty', () => {
+    const runtime = evaluateOverlayRevealRuntime(undefined, [], { show: false, title: 'Observed' });
+
+    expect(runtime.path).toBe('show');
+    expect(runtime.repeatedPath).toBeUndefined();
+    expect(runtime.storedOverride).toEqual({ show: true });
+    expect(runtime.decisions).toEqual([
+      expect.objectContaining({
+        generatedPaths: ['show'],
+        mode: 'target-overlay-auto',
+        selectedValue: { show: true },
+      }),
+    ]);
+    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
+  });
+
+  /** Reads descriptors only, so an observed visibility accessor cannot run during auto reveal. */
+  it('does not invoke an observed visibility getter', () => {
+    const runtime = evaluateOverlayRevealRuntime(
+      undefined,
+      [],
+      undefined,
+      `Object.defineProperty({}, 'show', {
+        enumerable: true,
+        get() { observedGetterReads += 1; return false; },
+      })`,
+    );
+
+    expect(runtime.path).toBeUndefined();
+    expect(runtime.observedGetterReads).toBe(0);
+    expect(runtime.storedOverride).toEqual({});
+    expect(runtime).toMatchObject({ commits: 0, persists: 0, updates: 0 });
+  });
+
+  /** Fails closed when an unexpected proxy rejects descriptor inspection. */
+  it('does not let an observed proxy trap break overlay resolution', () => {
+    const runtime = evaluateOverlayRevealRuntime(
+      undefined,
+      [],
+      undefined,
+      `new Proxy({}, {
+        ownKeys() { throw new Error('hostile observed props'); },
+      })`,
+    );
+
+    expect(runtime.path).toBeUndefined();
+    expect(runtime.storedOverride).toEqual({});
+    expect(runtime).toMatchObject({ commits: 0, persists: 0, updates: 0 });
   });
 
   /** Never replaces an explicit false entered by the user merely to make a hidden target visible. */
@@ -270,6 +322,8 @@ function evaluateTargetPropFailureRuntime(
 function evaluateOverlayRevealRuntime(
   overrideProps?: Readonly<Record<string, unknown>>,
   visibilityNames: readonly string[] = ['show'],
+  observedProps?: Readonly<Record<string, unknown>>,
+  observedPropsExpression?: string,
 ): OverlayRevealRuntime {
   const inferredProperties: Record<string, { readonly kind: string }> = {
     title: { kind: 'string' },
@@ -289,12 +343,14 @@ function evaluateOverlayRevealRuntime(
       const decisions = [];
       const fallbackCommitModes = [];
       let fallbackEnabled = false;
+      let observedGetterReads = 0;
       let persists = 0;
       const propsCommitModes = [];
       let storedOverride = {};
       let updates = 0;
+      const observedProps = ${observedPropsExpression ?? JSON.stringify(observedProps ?? {})};
       const previewInspectorSession = {
-        basePropsByExport: new Map(),
+        basePropsByExport: new Map([['DeleteModal', observedProps]]),
         descriptors: [{
           exportName: 'DeleteModal',
           inspector: {
@@ -343,6 +399,7 @@ function evaluateOverlayRevealRuntime(
         fallbackCommitModes,
         fallbackEnabled,
         manualOverride: previewInspectorSession.overridesByExport.get('DeleteModal') ?? {},
+        observedGetterReads,
         path,
         persists,
         propsCommitModes,

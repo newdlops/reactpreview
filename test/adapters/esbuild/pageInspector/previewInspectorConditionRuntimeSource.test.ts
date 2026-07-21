@@ -254,6 +254,45 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.serializeChoiceOverrides()).toEqual({ 'choice-persisted': 'case-b' });
   });
 
+  /** Selects the sole JSX-array item whose component occurs on the active root-to-file path. */
+  it('automatically selects a dynamic JSX array index for the current file corridor', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), { fallbackValuesEnabled: true });
+    const key = 'candidate:Step2';
+    harness.session.activeTargetReachabilityKey = key;
+    harness.session.targetReachabilityByKey = new Map([
+      [
+        key,
+        {
+          applicationPath: ['Application', 'OnboardingPage', 'Step2 (default)', 'default'],
+          directTarget: false,
+          targetExportName: 'default',
+        },
+      ],
+    ]);
+    const metadata = {
+      branches: [
+        { calls: ['Step0'], id: 'index-0', label: 'index 0', selectable: true, value: 0 },
+        { calls: ['Step1'], id: 'index-1', label: 'index 1', selectable: true, value: 1 },
+        { calls: ['Step2'], id: 'index-2', label: 'index 2', selectable: true, value: 2 },
+      ],
+      expression: 'step',
+      kind: 'array-index',
+      ownerName: 'OnboardingPage',
+      sourcePath: '/workspace/OnboardingPage.tsx',
+    };
+
+    expect(harness.resolveChoice('onboarding-step', null, metadata)).toBe(2);
+    expect(harness.readChoices()[0]).toMatchObject({
+      effectiveBranchId: 'index-2',
+      kind: 'array-index',
+      targetGuidedBranchId: 'index-2',
+    });
+
+    expect(harness.setChoice('onboarding-step', 'index-1')).toBe(true);
+    expect(harness.resolveChoice('onboarding-step', null, metadata)).toBe(1);
+    expect(harness.serializeChoiceOverrides()).toEqual({ 'onboarding-step': 'index-1' });
+  });
+
   /** Restores the persisted automatic-value preference and advances the shared remount revision. */
   it('toggles preview-generated fallback values independently from branch overrides', () => {
     const harness = createConditionRuntimeHarness({ fallbackValuesEnabled: false }, vi.fn());

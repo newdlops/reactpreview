@@ -395,7 +395,7 @@ function appendPreviewInspectorStaticApplicationRenderPath(state) {
 /** Renders only the selected static return's complete condition conjunction. */
 function PreviewInspectorRenderOutcomeEditor({ step }) {
   const outcome = step?.renderOutcome;
-  if (outcome === undefined) return undefined;
+  if (outcome === undefined) return null;
   const selected = readPreviewInspectorSelectedRenderOutcomeId() === outcome.id;
   const names = Array.isArray(outcome.componentNames) ? outcome.componentNames.slice(0, 12) : [];
   return React.createElement(

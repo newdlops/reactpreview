@@ -399,7 +399,7 @@ function revealPreviewInspectorBlockerFlowStepInComponents(step) {
 
 /** Renders safe authored/effective branch state and a direct switch only for compiler-issued logic. */
 function PreviewInspectorRenderFlowConditionSwitch({ step }) {
-  if (!isPreviewInspectorConditionNode(step.node) || step.current !== true) return undefined;
+  if (!isPreviewInspectorConditionNode(step.node) || step.current !== true) return null;
   const condition = step.node.condition;
   const effective = condition.effectiveEnabled === true;
   const authored = condition.authoredEnabled === true;

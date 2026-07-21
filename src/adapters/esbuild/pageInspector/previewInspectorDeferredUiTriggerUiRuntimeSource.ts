@@ -154,7 +154,7 @@ function activatePreviewInspectorDeferredUiTrigger(node) {
 
 /** Renders the compact one-shot action directly beside a deferred trigger tree row. */
 function PreviewInspectorDeferredUiTriggerRowAction({ node }) {
-  if (!isPreviewInspectorDeferredUiTriggerNode(node)) return undefined;
+  if (!isPreviewInspectorDeferredUiTriggerNode(node)) return null;
   const available = node.trigger?.available === true;
   const mountedUnavailable = node.trigger?.mounted === true && !available;
   return React.createElement(

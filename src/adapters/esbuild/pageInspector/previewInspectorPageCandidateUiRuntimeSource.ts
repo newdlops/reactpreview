@@ -236,7 +236,7 @@ function PreviewInspectorFriendlyGuide({ reachability }) {
 function PreviewInspectorPageCandidateSelect({ descriptor }) {
   const candidates = readPreviewInspectorPageCandidates(descriptor);
   const selected = readSelectedPreviewInspectorPageCandidate(descriptor);
-  if (candidates.length === 0) return undefined;
+  if (candidates.length === 0) return null;
   const reachability = readPreviewInspectorTargetReachabilityState(descriptor, selected);
   const scenario = readPreviewInspectorRenderScenario();
   return React.createElement(

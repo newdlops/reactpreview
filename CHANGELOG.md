@@ -2,6 +2,18 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1108 - 2026-07-21
+
+- Smart fill이 최상위 `data` 경로만 관찰해도 GraphQL selection으로 생성한 `data/payload/response/result`의 비어 있지 않은 구조를 bounded copy로 보존
+- 이미 처리한 Smart 값은 반복 적용하지 않되 required path signature가 확장된 값만 한 번 다시 탐색해 자동 해결 루프와 신규 경로 누락을 함께 방지
+- 변경할 새 요구사항이 없으면 `settled`로 표시하고 현재 corridor에서 발견된 실제 payload 경로 수를 pass 0부터 정확히 보고
+
+## 0.1.1107 - 2026-07-21
+
+- `{ loading, data, ...result }` 객체 rest가 있는 hook 결과도 하나의 응답 계약으로 추론해 `QueryRenderer`가 값 누락으로 현재 파일의 JSX를 건너뛰지 않도록 수정
+- 동일한 payload frontier는 전체 탐색 종료가 아닌 정착 상태로 처리하고, 현재 파일의 확정 Boolean gate 및 새로 발견된 최소 데이터 탐색을 계속 진행
+- 로더·500 fallback 같은 래퍼 DOM과 authored JSX 출력을 분리하고 실제 출력이 없으면 현재 export 아래 `Expected JSX` 트리와 제한된 payload 요약을 표시
+
 ## 0.1.1106 - 2026-07-21
 
 - 사용성이 낮은 Blocker/Render flow graph와 camera·Preview setup 탭을 제거하고 모든 렌더 조작을 하나의 Components tree와 선택 행 상세 화면으로 통합
@@ -942,41 +954,29 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 ## 0.1.1012 - 2026-07-16
 
 - 프리뷰 에디터 탭 제목을 긴 workspace 경로 대신 대상 파일명만 표시하도록 변경
-- 첫 렌더 뒤에는 서버 없이 새 local ESM/CSS를 기존 웹뷰에 교체하고 전달 실패·timeout 시 전체 HTML로
-  복구하는 hot-reload 경로 추가; React Fast Refresh state 보존은 의도적으로 제공하지 않음
-- 일반 JS/TS import·package export·tsconfig alias·symlink를 esbuild 기본 resolver에 맡기고 source
-  plugin은 dirty overlay와 bounded transform만 수행하도록 단순화해 대형 graph의 resolver 오버헤드 감소
-- 가장 가까운 package 단위로 source/실제 JSX literal prop 근거를 초기 인덱싱하고 여러 탭에서 재사용하는
-  bounded cache 추가; 모노레포 형제 경계 차단, dirty consumer 즉시 무효화와 짧은 negative TTL 적용
-- 활성 export에서 도달 가능한 자식·손자 컴포넌트와 CSS/asset/library import graph를 esbuild 기준으로
-  재귀 수집하고, 원래 dynamic import 경계를 local ESM chunk로 분리·게시해 실제 지연 로딩 추가
-- 도달한 styled-components 소스의 named/default value 및 named type-only `theme` 근거를 수집하고,
-  alias·상대 경로를 resolved file identity로 합쳐 유일한 실제 theme을 지연 적용하도록 확장
+- 첫 렌더 뒤에는 서버 없이 새 local ESM/CSS를 기존 웹뷰에 교체하고 전달 실패·timeout 시 전체 HTML로 복구하는 hot-reload 경로 추가; React Fast Refresh state 보존은 의도적으로 제공하지 않음
+- 일반 JS/TS import·package export·tsconfig alias·symlink를 esbuild 기본 resolver에 맡기고 source plugin은 dirty overlay와 bounded transform만 수행하도록 단순화해 대형 graph의 resolver 오버헤드 감소
+- 가장 가까운 package 단위로 source/실제 JSX literal prop 근거를 초기 인덱싱하고 여러 탭에서 재사용하는 bounded cache 추가; 모노레포 형제 경계 차단, dirty consumer 즉시 무효화와 짧은 negative TTL 적용
+- 활성 export에서 도달 가능한 자식·손자 컴포넌트와 CSS/asset/library import graph를 esbuild 기준으로 재귀 수집하고, 원래 dynamic import 경계를 local ESM chunk로 분리·게시해 실제 지연 로딩 추가
+- 도달한 styled-components 소스의 named/default value 및 named type-only `theme` 근거를 수집하고, alias·상대 경로를 resolved file identity로 합쳐 유일한 실제 theme을 지연 적용하도록 확장
 - 지원되는 React source editor의 우클릭 메뉴에서 새 `React Preview` 탭을 바로 여는 항목 추가
-- target-rooted esbuild graph 전체에서 React Router consumer/provider 근거를 수집하고, 자식·손자에서만
-  consumer가 발견되면 최대 한 번 adaptive rebuild해 프로젝트 소유 `MemoryRouter`를 연결하도록 확장
-- custom/Storybook setup의 존재만으로 자동 Router를 끄지 않고 실제 provider 근거가 있을 때 nested
-  Router를 방지하며, setup별 bounded location·명시적 비활성화 계약 유지
-- workspace TypeScript의 명시적인 `createContext` missing default를 inline 구조뿐 아니라 같은 파일의
-  non-generic·acyclic interface/type alias까지 제한적으로 보완하고, import/generic/recursive/extends/
-  merged 선언은 변환하지 않는 fail-closed 경계 추가
+- target-rooted esbuild graph 전체에서 React Router consumer/provider 근거를 수집하고, 자식·손자에서만 consumer가 발견되면 최대 한 번 adaptive rebuild해 프로젝트 소유 `MemoryRouter`를 연결하도록 확장
+- custom/Storybook setup의 존재만으로 자동 Router를 끄지 않고 실제 provider 근거가 있을 때 nested Router를 방지하며, setup별 bounded location·명시적 비활성화 계약 유지
+- workspace TypeScript의 명시적인 `createContext` missing default를 inline 구조뿐 아니라 같은 파일의 non-generic·acyclic interface/type alias까지 제한적으로 보완하고, import/generic/recursive/extends/merged 선언은 변환하지 않는 fail-closed 경계 추가
 - 명령을 실행할 때마다 대상 URI에 고정되는 독립 프리뷰 탭을 생성해 여러 파일을 동시에 비교 가능
 - 프리뷰 포커스 변경이 활성 소스로 오인되어 재빌드·대상 변경을 일으키던 동작 제거
 - 포커스된 프리뷰를 우선 갱신하고 기존 탭의 대상은 바꾸지 않는 명시적 refresh 동작 추가
 - 패널별 revision·의존 그래프·debounce와 참조 횟수 기반 artifact lease 관리 추가
-- TS/TSX AST 기반 `import.meta.glob`/`globEager`, `require.context`, 상대 template·연결식 dynamic
-  import/require 발견 추가
+- TS/TSX AST 기반 `import.meta.glob`/`globEager`, `require.context`, 상대 template·연결식 dynamic import/require 발견 추가
 - `.mjs/.cjs/.mts/.cts`와 도달한 dependency source에도 동일한 bounded resource 분석 적용
 - `new URL(..., import.meta.url)`, package별 `public` asset·CSS import, 임의 로컬 파일의 `?url` 변환 추가
 - 프로젝트 설정이나 `.env`를 실행하지 않는 안전한 기본 `import.meta.env` 값 추가
 - 매크로별 패턴/파일/조회/깊이와 빌드 전체 참조·조회·watch directory 정적 리소스 한도 추가
-- 활성 파일의 runtime default와 모든 PascalCase named export를 소스 순서대로 렌더링하는 갤러리,
-  `export *` 확장, export별 오류 격리와 props override 추가
+- 활성 파일의 runtime default와 모든 PascalCase named export를 소스 순서대로 렌더링하는 갤러리, `export *` 확장, export별 오류 격리와 props override 추가
 - 대상 import 전 global namespace와 `.react-preview/setup.*` initialize 실행, Provider와 props 계약 추가
 - 정상 Storybook preview decorator/Apollo parameter 자동 재사용과 깨진 setup의 setup-free 재시도 추가
 - Storybook setup graph 오류만 폴백하고 누락된 상대 import의 안전한 생성 디렉터리를 계속 감시
-- 프로젝트 Apollo Client를 자동 감지해 backend 요청 없는 Provider와 bounded selection-shaped 정적
-  응답을 제공하고 setup별 operation 결과·cache seed·비활성화 계약 추가
+- 프로젝트 Apollo Client를 자동 감지해 backend 요청 없는 Provider와 bounded selection-shaped 정적 응답을 제공하고 setup별 operation 결과·cache seed·비활성화 계약 추가
 - 활성 styled-components 파일이 직접 import한 실제 theme을 자동 재사용하고 primitive/CSS array를
   보존하면서 누락 token·실패 helper만 보완하는 ThemeProvider 및 document style 복원 추가
 - 프로젝트 React Redux를 자동 감지하고 target-reachable `useSelector` 계열 callback과 이후의 안전한

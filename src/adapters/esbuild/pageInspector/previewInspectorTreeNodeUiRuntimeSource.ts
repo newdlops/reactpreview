@@ -33,12 +33,43 @@ function formatPreviewInspectorRenderContextBadge(node) {
   if (node?.edgeKind === 'expected-render-outcome') {
     return node.expectedOutcomeActive === true ? 'expected return' : 'return alternative';
   }
+  if (node?.edgeKind === 'deferred-render-callback') return 'render callback · pending';
   if (node?.edgeKind === 'expected-jsx-component') return 'expected JSX';
   if (node?.kind === 'route') return node.certainty === 'conditional' ? 'route · conditional' : 'route';
   if (node?.kind === 'entry' && node.contextOnly === true) return 'entry';
   if (node?.kind === 'lazy' && node.contextOnly === true) return 'lazy path';
   if (node?.contextOnly === true && node.edgeKind === 'wrapper') return 'wrapper path';
   return undefined;
+}
+
+/**
+ * Serializes one normalized source location onto the authoritative tree row.
+ *
+ * The companion tab clones these inert attributes and can therefore issue a source-selection action
+ * without serializing project objects or depending on a live Fiber. Approximate ancestry locations
+ * remain explicitly marked so downstream UI never presents them as exact runtime evidence.
+ */
+function createPreviewInspectorTreeRowSourceAttributes(source) {
+  const sourcePath = typeof source?.path === 'string' ? source.path : source?.sourcePath;
+  if (typeof sourcePath !== 'string' || sourcePath.length === 0) return {};
+  return {
+    'data-react-preview-source-select': 'true',
+    'data-rpi-source-approximate': typeof source.approximate === 'boolean'
+      ? source.approximate ? 'true' : 'false'
+      : undefined,
+    'data-rpi-source-column': Number.isSafeInteger(source.column) && source.column > 0
+      ? source.column
+      : undefined,
+    'data-rpi-source-line': Number.isSafeInteger(source.line) && source.line > 0
+      ? source.line
+      : undefined,
+    'data-rpi-source-offset': Number.isSafeInteger(source.occurrenceStart) &&
+      source.occurrenceStart >= 0
+      ? source.occurrenceStart
+      : undefined,
+    'data-rpi-source-origin': typeof source.origin === 'string' ? source.origin : undefined,
+    'data-rpi-source-path': sourcePath,
+  };
 }
 
 /**
@@ -119,6 +150,7 @@ function PreviewInspectorComponentTreeNode({
   const selected = node.id === selectedId;
   const isCondition = isPreviewInspectorConditionNode(node) ||
     isPreviewInspectorRenderChoiceNode(node);
+  const isDeferredUiTrigger = isPreviewInspectorDeferredUiTriggerNode(node);
   const isRenderControl = isPreviewInspectorBlockerNode(node);
   const isFlowOutcome = node?.blockerKind === 'target-reachability' &&
     node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
@@ -178,6 +210,7 @@ function PreviewInspectorComponentTreeNode({
         'data-render-condition': isCondition ? 'true' : undefined,
         'data-tree-role': role.key,
         'data-react-preview-tree-row': node.id,
+        ...createPreviewInspectorTreeRowSourceAttributes(node.source),
         onClick: () => selectPreviewInspectorUiNode(node),
         onDoubleClick: toggle,
         role: 'treeitem',
@@ -186,6 +219,10 @@ function PreviewInspectorComponentTreeNode({
           ? 'Rendering stops here. Select this row to apply a value or retry.'
           : isFlowOutcome
             ? 'This authored flow rendered without the current file. Select it to compare paths or inspect path evidence.'
+          : isDeferredUiTrigger
+            ? node.trigger?.available === true
+              ? 'This authored event can reveal deferred UI. Activate it explicitly or inspect its source.'
+              : 'Deferred UI source placeholder; its exact event handler is not currently mounted.'
           : isCondition
             ? 'This render control selects which React branch is visible. Select it to inspect the branches.'
             : isAssisted
@@ -284,6 +321,7 @@ function PreviewInspectorComponentTreeNode({
             formatPreviewInspectorBlockerBadge(node))
         : undefined,
       React.createElement(PreviewInspectorComponentTreeConditionSwitch, { node }),
+      React.createElement(PreviewInspectorDeferredUiTriggerRowAction, { node }),
       isCurrentFileExport
         ? React.createElement(
             'button',

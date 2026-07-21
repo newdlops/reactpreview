@@ -114,6 +114,9 @@ function guidePreviewInspectorPayloadTowardReachability(
 /** Smart-fills observed requests once, optionally leaving every explicit payload untouched. */
 function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey, options = {}) {
   initializePreviewInspectorDataState();
+  if (!(previewInspectorSession.dataPayloadSmartShapeSignatures instanceof Map)) {
+    previewInspectorSession.dataPayloadSmartShapeSignatures = new Map();
+  }
   const preserveUserValues = options?.preserveUserValues === true;
   const admittedIds = Array.isArray(options?.recordIds)
     ? new Set(options.recordIds.filter((value) => typeof value === 'string'))
@@ -130,7 +133,8 @@ function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey, o
     if (record.reachabilityKey !== reachabilityKey) continue;
     if (admittedIds !== undefined && !admittedIds.has(record.id)) continue;
     const current = previewInspectorSession.dataPayloadOverrides.get(record.id);
-    if (preserveUserValues && current !== undefined) continue;
+    const ownsUserPayload = current?.mode === 'custom' || current?.mode === 'smart-custom';
+    if (preserveUserValues && ownsUserPayload) continue;
     const generated = generatePreviewInspectorDataValue(record.shape, '', 'smart');
     const minimum = guidePreviewInspectorPayloadTowardReachability(
       generated,
@@ -148,10 +152,18 @@ function smartFillPreviewInspectorDataPayloadsForReachability(reachabilityKey, o
       const recordChanged = applyPreviewInspectorDataPayloadOverride(record.id, payload, mode);
       changed = recordChanged || changed;
       if (recordChanged) {
+        previewInspectorSession.dataPayloadSmartShapeSignatures.set(
+          record.id,
+          record.shapeFingerprint,
+        );
         changeCount += 1;
         if (changeCount >= changeLimit) break;
       }
     }
+    previewInspectorSession.dataPayloadSmartShapeSignatures.set(
+      record.id,
+      record.shapeFingerprint,
+    );
   }
   if (changed) previewInspectorSession.dataAutoEnabled = true;
   return changed;

@@ -13,6 +13,7 @@ import { createPreviewInspectorConditionRuntimeSource } from './previewInspector
 import { createPreviewInspectorCompanionRuntimeSource } from './previewInspectorCompanionRuntimeSource';
 import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
+import { createPreviewInspectorDeferredUiTriggerRuntimeSource } from './previewInspectorDeferredUiTriggerRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorElementVisibilityRuntimeSource } from './previewInspectorElementVisibilityRuntimeSource';
 import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewInspectorGraphqlDocumentRuntimeSource';
@@ -54,6 +55,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const conditionRuntimeSource = createPreviewInspectorConditionRuntimeSource();
   const consoleRuntimeSource = createPreviewInspectorConsoleRuntimeSource();
   const dataRuntimeSource = createPreviewInspectorDataRuntimeSource();
+  const deferredUiTriggerRuntimeSource = createPreviewInspectorDeferredUiTriggerRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const elementVisibilityRuntimeSource = createPreviewInspectorElementVisibilityRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
@@ -135,6 +137,8 @@ ${runtimeCorrelationSource}
 
 ${fiberRuntimeSource}
 
+${deferredUiTriggerRuntimeSource}
+
 ${elementVisibilityRuntimeSource}
 
 ${chainRuntimeSource}
@@ -203,6 +207,7 @@ function createPreviewInspectorSession() {
     pickerCandidate: undefined,
     pickerEnabled: false,
     propsRevisionByExport: new Map(),
+    renderabilityByExport: new Map(),
     resolverPropsByExport: new Map(),
     resolverPropsRevision: previewEntryRevision,
     renderScenario:
@@ -229,6 +234,7 @@ if (previewInspectorSession.resolverPropsRevision !== previewEntryRevision) {
   previewInspectorSession.resolverPropsRevision = previewEntryRevision;
 }
 previewInspectorSession.resolverPropsByExport ??= new Map();
+previewInspectorSession.renderabilityByExport ??= new Map();
 previewInspectorSession.treeListeners ??= new Set();
 previewInspectorSession.treeDirty ??= true;
 
@@ -260,6 +266,52 @@ function notifyPreviewInspector() {
   }
 }
 
+/**
+ * Removes runtime-proven data exports from component controls without mutating application values.
+ *
+ * Static analysis intentionally fails open around unfamiliar factories. The target facade reports
+ * the evaluated value here, letting GraphQL documents and route metadata keep their exact identity
+ * while preventing a persisted Inspector selection from waiting for a boundary they cannot mount.
+ */
+function registerPreviewInspectorTargetRenderability(exportName, renderable) {
+  if (typeof exportName !== 'string' || exportName.length === 0 || typeof renderable !== 'boolean') {
+    return;
+  }
+  const previous = previewInspectorSession.renderabilityByExport.get(exportName);
+  if (previous === renderable) return;
+  previewInspectorSession.renderabilityByExport.set(exportName, renderable);
+  const descriptorOwnsExport = previewInspectorSession.descriptors.some((descriptor) =>
+    descriptor?.inspector?.target?.exportName === exportName ||
+    Object.hasOwn(descriptor?.inspector?.renderChainsByExport ?? {}, exportName),
+  );
+  if (renderable && descriptorOwnsExport) {
+    if (!previewInspectorSession.descriptorNames.includes(exportName)) {
+      previewInspectorSession.descriptorNames = [...previewInspectorSession.descriptorNames, exportName];
+    }
+  } else if (!renderable) {
+    previewInspectorSession.descriptorNames = previewInspectorSession.descriptorNames.filter(
+      (name) => name !== exportName,
+    );
+  }
+  if (!renderable && previewInspectorSession.selectedExportName === exportName) {
+    const fallback = previewInspectorSession.descriptors.flatMap((descriptor) => [
+      descriptor?.inspector?.target?.exportName,
+      ...Object.keys(descriptor?.inspector?.renderChainsByExport ?? {}),
+    ]).find((name) =>
+      typeof name === 'string' &&
+      previewInspectorSession.renderabilityByExport.get(name) !== false,
+    );
+    previewInspectorSession.selectedExportName = fallback ??
+      previewInspectorSession.descriptorNames[0] ?? '';
+    previewInspectorSession.selectedTreeNodeId = undefined;
+    resetPreviewInspectorTargetReachability();
+  }
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
+}
+
 
 /** Updates the export inventory while retaining a valid user selection across hot reloads. */
 function setPreviewInspectorDescriptors(descriptors) {
@@ -276,10 +328,15 @@ function setPreviewInspectorDescriptors(descriptors) {
             descriptor?.inspectedExportName ??
             descriptor?.exportName,
         )
-        .filter((name) => typeof name === 'string' && name.length > 0)
+        .filter((name) =>
+          typeof name === 'string' && name.length > 0 &&
+          previewInspectorSession.renderabilityByExport.get(name) !== false,
+        )
     : [];
   const renderChainNames = previewInspectorSession.descriptors.flatMap((descriptor) =>
-    Object.keys(descriptor?.inspector?.renderChainsByExport ?? {}),
+    Object.keys(descriptor?.inspector?.renderChainsByExport ?? {}).filter(
+      (name) => previewInspectorSession.renderabilityByExport.get(name) !== false,
+    ),
   );
   const rootNames = previewInspectorSession.descriptors.flatMap((descriptor) =>
     readPreviewInspectorPageCandidates(descriptor).map((candidate) => {
@@ -452,6 +509,7 @@ function selectPreviewInspectorTreeNode(nodeId, expectedExportName) {
   }
   if (selection === undefined) return;
   previewInspectorSession.selectedTreeNodeId = selection.node.id;
+  previewInspectorSession.explicitTreeSelectionId = selection.node.id;
   if (selection.hostNodes.length > 0) previewInspectorSession.highlightEnabled = true;
   previewInspectorSession.lastTreeSnapshot = snapshot;
   persistPreviewInspectorState();
@@ -562,6 +620,7 @@ function selectPreviewInspectorExport(exportName) {
   if (
     typeof exportName !== 'string' ||
     exportName.length === 0 ||
+    previewInspectorSession.renderabilityByExport.get(exportName) === false ||
     exportName === previewInspectorSession.selectedExportName
   ) {
     return;
@@ -883,6 +942,9 @@ const previewInspectorApi = {
     };
   },
   registerTargetElement: registerPreviewInspectorTargetElement,
+  registerTargetRenderability: registerPreviewInspectorTargetRenderability,
+  registerDeferredUiTrigger: registerPreviewInspectorDeferredUiTrigger,
+  registerDeferredUiTriggerMetadata: registerPreviewInspectorDeferredUiTriggerMetadata,
   previewAxiosRequest: previewInspectorAxiosRequest,
   previewFetch: previewInspectorFetch,
   recordConsoleEntry: recordPreviewInspectorConsoleEntry,

@@ -47,6 +47,7 @@ function isPreviewInspectorTransparentWrapperNode(node) {
 function readPreviewInspectorStructureIcon(node, isCondition, isBlocking, isCurrentFileExport) {
   if (isBlocking) return '!';
   if (isCondition) return '?';
+  if (node?.kind === 'deferred-ui-trigger') return '▶';
   if (node?.blockerKind === 'target-reachability') return '↳';
   if (node?.kind === 'blocker') return '≈';
   if (isCurrentFileExport) return '◎';
@@ -71,6 +72,7 @@ function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurre
   }
   if (isBlocking) return { key: 'blocker', label: 'BLOCKER' };
   if (isCondition) return { key: 'condition', label: 'CONDITION' };
+  if (node?.kind === 'deferred-ui-trigger') return { key: 'condition', label: 'DEFERRED UI' };
   if (node?.blockerKind === 'target-reachability') {
     return { key: 'path', label: 'PAGE SEARCH' };
   }

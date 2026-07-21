@@ -140,12 +140,20 @@ function scopePreviewInspectorRuntimeFallbackMetadata(metadata, readDocument, re
 }
 
 /** Defers Inspector-only registry refreshes so a caught hook never updates UI during render. */
-function schedulePreviewInspectorRuntimeFallbackRefresh() {
+function schedulePreviewInspectorRuntimeFallbackRefresh(reachabilityKey) {
+  const pendingKeys = previewInspectorSession.runtimeFallbackRefreshReachabilityKeys ??= new Set();
+  if (typeof reachabilityKey === 'string' && reachabilityKey.length > 0) {
+    pendingKeys.add(reachabilityKey);
+  }
   if (previewInspectorSession.runtimeFallbackRefreshScheduled === true) return;
   previewInspectorSession.runtimeFallbackRefreshScheduled = true;
   previewInspectorScheduleRuntimeFallbackMicrotask(() => {
     previewInspectorSession.runtimeFallbackRefreshScheduled = false;
     schedulePreviewInspectorTreeRefresh();
+    if (typeof schedulePreviewInspectorTargetRequirementContinuation === 'function') {
+      for (const key of pendingKeys) schedulePreviewInspectorTargetRequirementContinuation(key);
+    }
+    pendingKeys.clear();
   });
 }
 
@@ -329,7 +337,7 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
     });
     readPreviewInspectorConsolePrimitives().warn('[React Preview] ' + details);
   }
-  schedulePreviewInspectorRuntimeFallbackRefresh();
+  schedulePreviewInspectorRuntimeFallbackRefresh(next.reachabilityKey);
 }
 
 /** Returns one stable completed identity per authored object and compiler-issued hook site. */

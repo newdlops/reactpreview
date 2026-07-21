@@ -438,6 +438,8 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
 function hasPreviewInspectorTargetHostOutput(state) {
   const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
   state.targetHasAnyHostOutput = false;
+  state.targetDeferredCallbackPending = false;
+  state.targetRenderedEmpty = false;
   if (!(boundaries instanceof Set)) return false;
   for (const boundary of boundaries) {
     if (boundary?.state?.error !== undefined) continue;
@@ -485,7 +487,7 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
       admittedRequestIds.has(record.id) &&
       record.reachabilityKey === state.key &&
       record.kind === 'graphql' &&
-      record.mode === 'auto' &&
+      (record.mode === 'auto' || hasPreviewInspectorStaleSmartDataRequirement(record)) &&
       readPreviewInspectorDataShapePaths(record.shape).length > 0,
     )
     .map((record) => record.id)
@@ -966,7 +968,6 @@ function showPreviewInspectorTargetDirectly() {
     readPreviewInspectorTargetReachabilityState(descriptor, candidate),
   );
 }
-
 /** Leaves target-only diagnostics and resumes the same authored page corridor and DFS choices. */
 function returnPreviewInspectorToPageContext() {
   const descriptor = findSelectedPreviewInspectorDescriptor();
@@ -985,7 +986,6 @@ function returnPreviewInspectorToPageContext() {
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();
 }
-
 /** Clears obsolete traversal state after a candidate, export, or hot descriptor replacement. */
 function resetPreviewInspectorTargetReachability() {
   initializePreviewInspectorTargetReachabilityState();

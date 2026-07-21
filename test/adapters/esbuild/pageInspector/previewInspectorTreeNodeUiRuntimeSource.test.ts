@@ -15,6 +15,7 @@ interface TreeSwitchRuntime {
   readonly readResets: () => readonly string[];
   readonly readToggles: () => readonly string[];
   readonly render: (node: Record<string, unknown>) => TestElement;
+  readonly sourceAttributes: (source: Record<string, unknown>) => Record<string, unknown>;
 }
 
 describe('Preview Inspector component-tree condition switch', () => {
@@ -25,6 +26,39 @@ describe('Preview Inspector component-tree condition switch', () => {
     expect(source).toContain(
       "'data-react-preview-tree-toggle-control': hasChildren ? node.id : undefined",
     );
+  });
+
+  /** Labels statically known callback output as pending rather than as a mounted component. */
+  it('exposes a dedicated badge for a deferred render callback placeholder', () => {
+    const source = createPreviewInspectorTreeNodeUiRuntimeSource();
+
+    expect(source).toContain("'deferred-render-callback'");
+    expect(source).toContain("'render callback · pending'");
+  });
+
+  /** Mirrors exact and approximate source coordinates through inert companion snapshot attributes. */
+  it('serializes source-select attributes directly onto a component-tree row', () => {
+    const runtime = evaluateTreeSwitchRuntime();
+
+    expect(
+      runtime.sourceAttributes({
+        approximate: true,
+        column: 11,
+        line: 23,
+        occurrenceStart: 91,
+        origin: 'ancestry',
+        path: '/workspace/src/Panel.tsx',
+      }),
+    ).toMatchObject({
+      'data-react-preview-source-select': 'true',
+      'data-rpi-source-approximate': 'true',
+      'data-rpi-source-column': 11,
+      'data-rpi-source-line': 23,
+      'data-rpi-source-offset': 91,
+      'data-rpi-source-origin': 'ancestry',
+      'data-rpi-source-path': '/workspace/src/Panel.tsx',
+    });
+    expect(runtime.sourceAttributes({ line: 23 })).toEqual({});
   });
 
   /** Keeps short-circuited guards visible but inert until a compiler-issued live ID exists. */
@@ -132,6 +166,7 @@ function evaluateTreeSwitchRuntime(): TreeSwitchRuntime {
         readResets: () => [...resets],
         readToggles: () => [...toggles],
         render: (node) => PreviewInspectorComponentTreeConditionSwitch({ node }),
+        sourceAttributes: createPreviewInspectorTreeRowSourceAttributes,
       };
     `,
     context,

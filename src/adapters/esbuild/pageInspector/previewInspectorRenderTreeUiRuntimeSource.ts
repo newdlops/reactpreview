@@ -115,6 +115,8 @@ function readPreviewInspectorExpectedOutputState(exportName) {
   let mounted = retainedState?.targetMounted === true || retainedState?.targetWasMounted === true;
   let hasOutput = retainedState?.targetHasOutput === true;
   let hasAnyHostOutput = retainedState?.targetHasAnyHostOutput === true;
+  let deferredCallbackPending = retainedState?.targetDeferredCallbackPending === true;
+  let renderedEmpty = retainedState?.targetRenderedEmpty === true;
   try {
     const boundaries = previewInspectorSession.boundariesByExport?.get(exportName);
     if (boundaries instanceof Set) {
@@ -126,13 +128,16 @@ function readPreviewInspectorExpectedOutputState(exportName) {
       mounted = hasMountedPreviewInspectorTarget({ targetExportName: exportName }) || mounted;
     }
     if (typeof hasPreviewInspectorTargetHostOutput === 'function') {
-      hasOutput = hasPreviewInspectorTargetHostOutput({ targetExportName: exportName });
+      const outputProbe = { targetExportName: exportName };
+      hasOutput = hasPreviewInspectorTargetHostOutput(outputProbe);
+      deferredCallbackPending ||= outputProbe.targetDeferredCallbackPending === true;
+      renderedEmpty ||= outputProbe.targetRenderedEmpty === true;
     }
   } catch {
     /* UI enrichment must stay available when a future collector cannot expose boundary internals. */
   }
   hasAnyHostOutput = retainedState?.targetHasAnyHostOutput === true || hasAnyHostOutput;
-  return { hasAnyHostOutput, hasOutput, mounted };
+  return { deferredCallbackPending, hasAnyHostOutput, hasOutput, mounted, renderedEmpty };
 }
 
 /** Counts a bounded static component forest when older descriptors omit component-name metadata. */
@@ -201,13 +206,24 @@ function createPreviewInspectorExpectedComponentNode(node, outcome, path) {
   return {
     children,
     contextOnly: true,
-    edgeKind: 'expected-jsx-component',
+    edgeKind: node?.renderMode === 'deferred-callback'
+      ? 'deferred-render-callback'
+      : 'expected-jsx-component',
     expectedOutput: true,
     id: 'expected-jsx:' + String(outcome?.id ?? 'unknown') + ':' + path,
     kind: 'component',
     mounted: false,
-    name: typeof node?.name === 'string' && node.name.length > 0 ? node.name : 'Unknown component',
-    props: { authored: true, expected: true, live: false },
+    name: typeof node?.name === 'string' && node.name.length > 0
+      ? node.renderMode === 'deferred-callback'
+        ? 'Deferred callback · ' + node.name
+        : node.name
+      : 'Unknown component',
+    props: {
+      authored: true,
+      deferred: node?.renderMode === 'deferred-callback',
+      expected: true,
+      live: false,
+    },
     source: normalizePreviewInspectorUiSource({
       column: node?.column,
       displayName: sourcePath,
@@ -300,13 +316,17 @@ function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName) {
     liveHostOutputMissing: outputMissing && !outputState.hasAnyHostOutput,
     mounted: false,
     name: outputMissing
-      ? outputState.hasAnyHostOutput
+      ? outputState.deferredCallbackPending
+        ? 'Expected JSX · render callback not invoked'
+        : outputState.hasAnyHostOutput
         ? 'Expected JSX · wrapper/fallback host only'
         : 'Expected JSX · no live host output'
       : 'Authored JSX alternatives',
     props: {
       authoredOutput: outputState.hasOutput === true,
+      deferredCallbackPending: outputState.deferredCallbackPending === true,
       liveHostOutput: outputState.hasAnyHostOutput === true,
+      renderedEmpty: outputState.renderedEmpty === true,
       wrapperOrFallbackHost: outputState.hasAnyHostOutput === true && outputMissing,
       targetMounted: outputState.mounted === true,
       truncated: plan.truncated === true,

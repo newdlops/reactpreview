@@ -183,6 +183,16 @@ describe('Preview Inspector blocker UI runtime source', () => {
     ).join(' ');
     expect(wrapperNode.name).toBe('Target authored JSX absent · default');
     expect(wrapperText).toContain('wrapper/fallback host only · authored JSX absent');
+
+    const deferredBlocker = { ...blocker, targetDeferredCallbackPending: true };
+    const deferredNode = runtime.createReachabilityNode(deferredBlocker);
+    const deferredText = collectRenderedText(
+      runtime.renderReachabilityDetail({ node: { blocker: deferredBlocker } }),
+    ).join(' ');
+    expect(deferredNode.name).toBe('Render callback not invoked · default');
+    expect(deferredText).toContain('mounted · render callback pending');
+    expect(deferredText).toContain('receiver has not invoked the authored render callback');
+    expect(deferredText).toContain('receiver must obtain its minimum payload');
   });
 });
 

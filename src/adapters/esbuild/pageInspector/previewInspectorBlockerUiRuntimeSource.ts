@@ -170,6 +170,8 @@ function createPreviewInspectorTargetFailureTreeNode(failure) {
 /** Represents a page corridor that has not produced connected output for the selected export. */
 function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
   const mountedWithoutOutput = blocker.targetMounted === true && blocker.targetHasOutput !== true;
+  const deferredCallbackPending = mountedWithoutOutput &&
+    blocker.targetDeferredCallbackPending === true;
   const wrapperHostOnly = mountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
   return {
     blocker,
@@ -178,7 +180,9 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
     children: [],
     id: blocker.id,
     kind: 'blocker',
-    name: (wrapperHostOnly
+    name: (deferredCallbackPending
+      ? 'Render callback not invoked · '
+      : wrapperHostOnly
       ? 'Target authored JSX absent · '
       : mountedWithoutOutput ? 'Target produced no host output · ' : 'Target not reached · ') +
         blocker.targetExportName,
@@ -187,6 +191,7 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
       appliedGates: blocker.appliedConditions.map((condition) => condition.expression),
       requiredPaths: blocker.requiredPaths,
       status: blocker.status,
+      targetDeferredCallbackPending: deferredCallbackPending,
     },
     source: createPreviewInspectorBlockerSource(blocker),
     state: {
@@ -391,7 +396,13 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
     targetFailures,
   );
   roots.push(...rootBlockers);
-  const enrichedSnapshot = { ...conditionedSnapshot, roots };
+  const blockerSnapshot = {
+    ...conditionedSnapshot,
+    roots,
+  };
+  const enrichedSnapshot = typeof attachPreviewInspectorDeferredUiTriggersToSnapshot === 'function'
+    ? attachPreviewInspectorDeferredUiTriggersToSnapshot(blockerSnapshot)
+    : blockerSnapshot;
   if (typeof publishPreviewInspectorBlockerTraceSnapshot === 'function') {
     publishPreviewInspectorBlockerTraceSnapshot(enrichedSnapshot);
   }
@@ -716,6 +727,8 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const targetMounted = blocker.targetMounted === true;
   const targetHasOutput = blocker.targetHasOutput === true;
   const targetMountedWithoutOutput = targetMounted && !targetHasOutput;
+  const deferredCallbackPending = targetMountedWithoutOutput &&
+    blocker.targetDeferredCallbackPending === true;
   const wrapperHostOnly = targetMountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
   const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
   const minimumSearch = blocker.minimumRequirementSearch;
@@ -731,17 +744,23 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
         ? minimumSearch.status === 'cycle-detected'
           ? 'Automatic resolution stopped because the same generated requirement state repeated.' +
             (targetMountedWithoutOutput
-              ? ' The selected target is mounted, but its authored JSX is still absent.'
+              ? deferredCallbackPending
+                ? ' The selected target is mounted, but its receiver has not invoked the authored render callback.'
+                : ' The selected target is mounted, but its authored JSX is still absent.'
               : '')
           : 'Automatic resolution stopped at its bounded pass limit.' +
             (targetMountedWithoutOutput
-              ? ' The selected target is mounted, but its authored JSX is still absent.'
+              ? deferredCallbackPending
+                ? ' The selected target is mounted, but its receiver has not invoked the authored render callback.'
+                : ' The selected target is mounted, but its authored JSX is still absent.'
               : '')
         : direct
           ? 'Target-only diagnostic mode is active; authored page context is not successful.'
           : pageCommitted
             ? targetMountedWithoutOutput
-              ? wrapperHostOnly
+              ? deferredCallbackPending
+                ? 'The selected target mounted, but its receiver has not invoked the authored render callback.'
+                : wrapperHostOnly
                 ? 'The selected target mounted and produced wrapper or fallback DOM, but its authored JSX subtree is absent.'
                 : 'The selected target mounted in the authored page, but produced no host output.'
               : 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
@@ -752,7 +771,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
     React.createElement('div', { className: 'rpi-note' },
       'Selected target: ' + blocker.targetExportName + ' · ' +
       (targetMountedWithoutOutput
-        ? wrapperHostOnly
+        ? deferredCallbackPending
+          ? 'mounted · render callback pending'
+          : wrapperHostOnly
           ? 'mounted · wrapper/fallback host only · authored JSX absent'
           : 'mounted · no host output'
         : targetMounted
@@ -767,7 +788,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
             .join(', '))
       : React.createElement('div', { className: 'rpi-note' },
           targetMountedWithoutOutput
-            ? 'No target-local Boolean gate has been applied yet; a child render contract or payload may be the next requirement.'
+            ? deferredCallbackPending
+              ? 'The receiver must obtain its minimum payload before it can invoke the current file render callback.'
+              : 'No target-local Boolean gate has been applied yet; a child render contract or payload may be the next requirement.'
             : 'No statically proven login/session/permission gate has been passed yet.'),
     requiredPathSummary.totalCount > 0
       ? React.createElement('div', { className: 'rpi-note' },

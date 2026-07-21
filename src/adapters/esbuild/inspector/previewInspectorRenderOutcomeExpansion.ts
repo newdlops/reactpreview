@@ -735,6 +735,7 @@ function freezeExpandedComponentNode(
     column: node.column,
     line: node.line,
     name: node.name,
+    ...(node.renderMode === undefined ? {} : { renderMode: node.renderMode }),
     sourcePath,
   });
 }
@@ -746,9 +747,13 @@ function deduplicateExpandedSiblings(
   const unique: PreviewReactRenderComponentNode[] = [];
   const keys = new Set<string>();
   for (const node of nodes) {
-    const key = [node.sourcePath ?? '', String(node.line), String(node.column), node.name].join(
-      ':',
-    );
+    const key = [
+      node.sourcePath ?? '',
+      String(node.line),
+      String(node.column),
+      node.name,
+      node.renderMode ?? '',
+    ].join(':');
     if (keys.has(key)) continue;
     keys.add(key);
     unique.push(node);

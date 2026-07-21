@@ -531,6 +531,39 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  /** Extends an earlier automatic Smart fixture when a later render reads additional fields. */
+  it('completes stale Smart payloads while preserving user payload policy', () => {
+    const runtime = evaluateDataRuntime(undefined, 'page:Target');
+    const metadata = {
+      id: 'progressive-profile',
+      kind: 'graphql',
+      label: 'Progressive profile',
+      shape: { fields: { name: { kind: 'string' } }, kind: 'object' },
+    };
+    runtime.resolve(metadata, {});
+    expect(runtime.smartReachability('page:Target', { preserveUserValues: true })).toBe(true);
+
+    runtime.resolve(
+      {
+        ...metadata,
+        shape: {
+          fields: {
+            name: { kind: 'string' },
+            profile: { fields: { id: { kind: 'string' } }, kind: 'object' },
+          },
+          kind: 'object',
+        },
+      },
+      {},
+    );
+
+    expect(runtime.smartReachability('page:Target', { preserveUserValues: true })).toBe(true);
+    expect(cloneJson(runtime.requests())[0]).toMatchObject({
+      mode: 'smart',
+      payload: { profile: { id: 'preview-1' } },
+    });
+  });
+
   /** Returns a local Response-like object and never invokes the captured backend transport. */
   it('serves compiler-instrumented REST requests entirely in memory', async () => {
     let nativeFetchCalls = 0;

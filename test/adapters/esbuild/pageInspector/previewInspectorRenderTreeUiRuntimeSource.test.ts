@@ -34,6 +34,7 @@ interface RenderTreeRuntime {
 /** Runtime-only target visibility retained by the fixture's local Inspector session. */
 interface RenderTreeRuntimeOptions {
   readonly selectedOutcomeId?: string;
+  readonly targetDeferredCallbackPending?: boolean;
   readonly targetHasAnyHostOutput?: boolean;
   readonly targetHasOutput?: boolean;
   readonly targetMounted?: boolean;
@@ -324,6 +325,7 @@ describe('Preview Inspector render-tree UI runtime source', () => {
                         column: 7,
                         line: 23,
                         name: 'Page',
+                        renderMode: 'deferred-callback',
                         sourcePath: '/workspace/CurrentCard.tsx',
                       },
                     ],
@@ -352,7 +354,11 @@ describe('Preview Inspector render-tree UI runtime source', () => {
     const runtime = evaluateRenderTreeRuntime(
       descriptor,
       { root: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' } },
-      { targetHasOutput: false, targetMounted: true },
+      {
+        targetDeferredCallbackPending: true,
+        targetHasOutput: false,
+        targetMounted: true,
+      },
     );
     const snapshot = runtime.enrich({
       roots: [
@@ -375,7 +381,7 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       ],
     });
 
-    expect(flattenNames(snapshot.roots)).toContain('Expected JSX · no live host output');
+    expect(flattenNames(snapshot.roots)).toContain('Expected JSX · render callback not invoked');
     expect(flattenNames(snapshot.roots)).toContain('Expected return · QueryRenderer → Page');
     expect(flattenNames(snapshot.roots)).toContain('PageHeader');
     const liveQueryRenderer = findNodeById(snapshot.roots, 'live-query-renderer');
@@ -387,10 +393,10 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       findNodeById(snapshot.roots, 'expected-jsx:current-card-main-outcome:0.0'),
     ).toMatchObject({
       contextOnly: true,
-      edgeKind: 'expected-jsx-component',
+      edgeKind: 'deferred-render-callback',
       expectedOutput: true,
       mounted: false,
-      name: 'Page',
+      name: 'Deferred callback · Page',
     });
     expect(findNodeById(snapshot.roots, 'expected-outcomes:CurrentCard')).toMatchObject({
       liveHostOutputMissing: true,
@@ -559,6 +565,7 @@ function evaluateRenderTreeRuntime(
           ['fixture:CurrentCard', {
             key: 'fixture:CurrentCard',
             targetExportName: 'CurrentCard',
+            targetDeferredCallbackPending: options.targetDeferredCallbackPending === true,
             targetHasAnyHostOutput: options.targetHasAnyHostOutput === true,
             targetHasOutput: options.targetHasOutput === true,
             targetMounted: options.targetMounted === true,

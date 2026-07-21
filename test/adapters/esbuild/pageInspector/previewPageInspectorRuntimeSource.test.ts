@@ -200,7 +200,9 @@ describe('Page Inspector runtime source', () => {
     const source = createPreviewInspectorFacadeRuntimeSource();
 
     expect(source).toContain('export function wrapPreviewInspectorTarget');
-    expect(source).toContain('inspectorApi?.TargetRenderer');
+    expect(source).toContain('isPreviewInspectorRenderableTarget(Component)');
+    expect(source).toContain('registerTargetRenderability?.(metadata?.exportName, renderable)');
+    expect(source).toContain('activeInspectorApi?.TargetRenderer');
     expect(source).toContain('React.forwardRef');
     expect(source).toContain('React.cloneElement(Component, fallbackProps)');
   });
@@ -244,10 +246,60 @@ describe('Page Inspector runtime source', () => {
     }
   });
 
+  /** Preserves application data exports instead of replacing their identity with forwardRef. */
+  it('does not wrap GraphQL documents or other non-renderable exported objects', async () => {
+    const facade = await importPreviewInspectorFacade();
+    const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');
+    const globalRecord = globalThis as unknown as Record<PropertyKey, unknown>;
+    const reports: [string, boolean][] = [];
+    globalRecord[apiKey] = {
+      registerTargetRenderability(exportName: string, renderable: boolean) {
+        reports.push([exportName, renderable]);
+      },
+    };
+    const wrapUnknownTarget = facade.wrapTarget as unknown as (
+      value: unknown,
+      metadata: { readonly exportName: string },
+    ) => unknown;
+    const graphqlDocument = {
+      definitions: [{ kind: 'OperationDefinition', operation: 'mutation' }],
+      kind: 'Document',
+    };
+    const routeMetadata = { path: '/companies/:companyId' };
+    try {
+      expect(
+        wrapUnknownTarget(graphqlDocument, {
+          exportName: 'COMPANY_CREATE_EDIT_USER_PHONE_MUTATION',
+        }),
+      ).toBe(graphqlDocument);
+      expect(wrapUnknownTarget(routeMetadata, { exportName: 'CompanyRoute' })).toBe(routeMetadata);
+      expect(
+        readReactTypeSymbol(
+          wrapUnknownTarget(React.createElement('strong'), {
+            exportName: 'PreparedElement',
+          }) as React.ElementType,
+        ),
+      ).toBe(Symbol.for('react.forward_ref'));
+      expect(reports).toEqual([
+        ['COMPANY_CREATE_EDIT_USER_PHONE_MUTATION', false],
+        ['CompanyRoute', false],
+        ['PreparedElement', true],
+      ]);
+    } finally {
+      Reflect.deleteProperty(globalRecord, apiKey);
+      await rm(facade.fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps descriptor names authoritative and resets errors without remounting a healthy page. */
   it('emits hot-safe inventory pruning and a root-aware error-boundary reset signal', () => {
     const source = createPreviewPageInspectorRuntimeSource();
 
+    expect(source).toContain('function registerPreviewInspectorTargetRenderability');
+    expect(source).toContain('previewInspectorSession.renderabilityByExport.get(name) !== false');
+    expect(source).toContain(
+      'registerTargetRenderability: registerPreviewInspectorTargetRenderability',
+    );
     expect(source).toContain('previewInspectorSession.boundariesByExport.keys()');
     expect(source).not.toContain('...previewInspectorSession.basePropsByExport.keys()');
     expect(source).toContain(
@@ -295,6 +347,7 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('function selectPreviewInspectorTreeNode(nodeId, expectedExportName)');
     expect(source).toContain('node?.exportName === expectedExportName');
     expect(source).toContain('previewInspectorSession.selectedTreeNodeId = selection.node.id');
+    expect(source).toContain('previewInspectorSession.explicitTreeSelectionId = selection.node.id');
     expect(source).toContain(
       'if (selection.hostNodes.length > 0) previewInspectorSession.highlightEnabled = true',
     );
@@ -316,7 +369,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain("createPreviewInspectorTreeNodeId('fiber', path, kind, name)");
     expect(source).toContain("status: roots.length === 0\n      ? 'unavailable'");
     expect(source).toContain('selected component host node(s)');
-    expect(source).toContain("[selection.hostNodes, snapshot.status === 'static']");
+    expect(source).toContain("[selection.hostNodes, snapshot.status === 'static' && !explicit]");
+    expect(source).toContain('if (selection === undefined) return explicit ? [[], false]');
     expect(source).toContain('treeSelection[0].length > 0 || !treeSelection[1]');
     expect(source).toContain('capturePreviewInspectorCompanionInteractionScroll(control, message)');
     expect(source).toContain(

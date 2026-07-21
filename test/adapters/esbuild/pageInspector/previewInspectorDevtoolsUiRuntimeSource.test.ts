@@ -356,6 +356,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     });
 
     expect(runtime.readSession()).toMatchObject({
+      explicitTreeSelectionId: 'fiber:panel',
       highlightEnabled: true,
       pickerCandidate: undefined,
       pickerEnabled: false,
@@ -379,6 +380,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     });
 
     expect(runtime.readSession()).toMatchObject({
+      explicitTreeSelectionId: 'route:context',
       highlightEnabled: false,
       pickerCandidate: undefined,
       pickerEnabled: false,
@@ -387,6 +389,59 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(runtime.readHighlightEnables()).toEqual([]);
     expect(runtime.readCollectorSelections()).toEqual([]);
     expect(runtime.readHighlightSchedules()).toBeGreaterThan(0);
+  });
+
+  /** Publishes source decoration state and a later coordinate-free clear with hot-stable sequencing. */
+  it('publishes reversible source selection from the single component-tree selection gateway', () => {
+    const runtime = evaluateDevtoolsTreeSelection(7, 31);
+
+    runtime.select({
+      children: [],
+      id: 'fiber:panel',
+      kind: 'function',
+      name: 'Panel',
+      source: {
+        approximate: true,
+        column: 5,
+        line: 12,
+        occurrenceStart: 88,
+        origin: 'ancestry',
+        path: '/workspace/src/Panel.tsx',
+      },
+    });
+    runtime.select({
+      children: [],
+      contextOnly: true,
+      id: 'static:placeholder',
+      kind: 'route',
+      name: 'Synthetic route',
+    });
+
+    const [selected, cleared] = runtime.readSourceSelections();
+    expect(selected).toEqual({
+      approximate: true,
+      column: 5,
+      line: 12,
+      occurrenceStart: 88,
+      runtimeRevision: 31,
+      sequence: 8,
+      sourcePath: '/workspace/src/Panel.tsx',
+      type: 'react-preview-inspector-source-selected',
+    });
+    expect(cleared).toEqual({
+      runtimeRevision: 31,
+      sequence: 9,
+      type: 'react-preview-inspector-source-selected',
+    });
+    const initialRuntime = evaluateDevtoolsTreeSelection();
+    initialRuntime.select({
+      children: [],
+      id: 'initial',
+      kind: 'function',
+      name: 'Initial',
+      source: { path: '/workspace/src/Initial.tsx' },
+    });
+    expect(initialRuntime.readSourceSelections()[0]).toMatchObject({ runtimeRevision: 23 });
   });
 
   /** Keeps selection reveal local to the tree instead of scrolling the surrounding preview page. */
@@ -449,12 +504,30 @@ describe('Page Inspector DevTools UI runtime source', () => {
   /** Remains useful before a live collector or editor bridge has registered its optional methods. */
   it('falls back to static exports and bounds untrusted collector snapshots', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
+    const runtime = evaluateDevtoolsUiHelpers();
 
     expect(source).toContain('createFallbackPreviewInspectorTreeSnapshot');
     expect(source).toContain("typeof collectTree !== 'function'");
     expect(source).toContain('counter.count >= 4096');
     expect(source).toContain('depth > 64');
     expect(source).toContain('normalized.occurrenceStart = source.occurrenceStart');
+    expect(
+      runtime.normalizeSource({
+        approximate: true,
+        column: 9,
+        line: 17,
+        occurrenceStart: 42,
+        origin: 'ancestry',
+        sourcePath: '/workspace/Panel.tsx',
+      }),
+    ).toMatchObject({
+      approximate: true,
+      column: 9,
+      line: 17,
+      occurrenceStart: 42,
+      origin: 'ancestry',
+      path: '/workspace/Panel.tsx',
+    });
     expect(source).toContain("typeof source.path === 'string' ? source.path : source.sourcePath");
     expect(source).toContain("typeof collectorSnapshot?.status === 'string'");
     expect(source).toContain('truncated: collectorSnapshot?.truncated === true');
@@ -476,6 +549,7 @@ interface DevtoolsUiTestNode {
   readonly name: string;
   readonly overlayState?: string;
   readonly role?: string;
+  readonly source?: Record<string, unknown>;
 }
 
 /** Generated selection behavior isolated from React rendering and project components. */
@@ -487,6 +561,7 @@ interface DevtoolsTreeSelectionRuntime {
   readonly readHighlightEnables: () => readonly boolean[];
   readonly readHighlightSchedules: () => number;
   readonly readSession: () => Record<string, unknown>;
+  readonly readSourceSelections: () => readonly Record<string, unknown>[];
   readonly select: (node: DevtoolsUiTestNode) => void;
 }
 
@@ -508,6 +583,7 @@ interface DevtoolsUiTestRuntime {
     viewport: { readonly height: number; readonly width: number },
   ) => PreviewInspectorTestLayout;
   readonly normalize: (nodes: readonly DevtoolsUiTestNode[]) => DevtoolsUiTestNode[];
+  readonly normalizeSource: (source: Record<string, unknown>) => Record<string, unknown>;
   readonly resizeLayout: (
     layout: PreviewInspectorTestLayout,
     action: 'move' | 'resize',
@@ -585,6 +661,7 @@ globalThis.__devtoolsUiRuntime = {
   normalize(nodes) {
     return normalizePreviewInspectorUiNodes(nodes, 0, { count: 0 });
   },
+  normalizeSource: normalizePreviewInspectorUiSource,
   revealTreeRow: revealPreviewInspectorTreeRow,
   resizeLayout: resizePreviewInspectorLayout,
   shellStyle: createPreviewInspectorShellStyle,
@@ -597,9 +674,13 @@ globalThis.__devtoolsUiRuntime = {
 }
 
 /** Evaluates only the generated tree-selection contract with observable adapter spies. */
-function evaluateDevtoolsTreeSelection(): DevtoolsTreeSelectionRuntime {
+function evaluateDevtoolsTreeSelection(
+  initialSourceSelectionSequence = 0,
+  entryRevision = 0,
+): DevtoolsTreeSelectionRuntime {
   const collectorSelections: { exportName?: string; id: string }[] = [];
   const highlightEnables: boolean[] = [];
+  const sourceSelections: Record<string, unknown>[] = [];
   let highlightSchedules = 0;
   const previewInspectorSession: Record<string, unknown> = {
     descriptorNames: [],
@@ -622,13 +703,20 @@ function evaluateDevtoolsTreeSelection(): DevtoolsTreeSelectionRuntime {
         });
       },
     },
+    previewHotRuntime: { inspectorSourceSelectionSequence: initialSourceSelectionSequence },
+    previewEntryRevision: entryRevision,
+    previewInspectorPostHostMessage: (message: Record<string, unknown>) => {
+      sourceSelections.push({ ...message });
+    },
     previewInspectorSession,
+    previewRuntimeRevision: 23,
     readHighlightScheduleCount: () => highlightSchedules,
     schedulePreviewInspectorHighlight: () => {
       highlightSchedules += 1;
     },
     schedulePreviewInspectorTreeRefresh: () => undefined,
     selectPreviewInspectorExport: () => undefined,
+    sourceSelections,
     setPreviewInspectorHighlightEnabled: (enabled: boolean) => {
       previewInspectorSession.highlightEnabled = enabled;
       highlightEnables.push(enabled);
@@ -641,6 +729,7 @@ function evaluateDevtoolsTreeSelection(): DevtoolsTreeSelectionRuntime {
        readHighlightEnables: () => highlightEnables,
        readHighlightSchedules: () => readHighlightScheduleCount(),
        readSession: () => ({ ...previewInspectorSession }),
+       readSourceSelections: () => [...sourceSelections],
        select: selectPreviewInspectorUiNode,
      };`,
     context,

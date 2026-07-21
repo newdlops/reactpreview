@@ -12,6 +12,7 @@ import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspect
 import { createPreviewInspectorComponentDebuggerUiRuntimeSource } from './previewInspectorComponentDebuggerUiRuntimeSource';
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
+import { createPreviewInspectorDeferredUiTriggerUiRuntimeSource } from './previewInspectorDeferredUiTriggerUiRuntimeSource';
 import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
@@ -36,6 +37,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const componentDebuggerUiRuntimeSource = createPreviewInspectorComponentDebuggerUiRuntimeSource();
   const consoleUiRuntimeSource = createPreviewInspectorConsoleUiRuntimeSource();
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
+  const deferredUiTriggerUiRuntimeSource = createPreviewInspectorDeferredUiTriggerUiRuntimeSource();
   const hiddenElementsUiRuntimeSource = createPreviewInspectorHiddenElementsUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
@@ -56,6 +58,7 @@ ${conditionUiRuntimeSource}
 ${componentDebuggerUiRuntimeSource}
 ${consoleUiRuntimeSource}
 ${dataUiRuntimeSource}
+${deferredUiTriggerUiRuntimeSource}
 ${hiddenElementsUiRuntimeSource}
 ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
@@ -75,6 +78,8 @@ function normalizePreviewInspectorUiSource(source) {
   if (Number.isSafeInteger(source.occurrenceStart) && source.occurrenceStart >= 0) {
     normalized.occurrenceStart = source.occurrenceStart;
   }
+  if (typeof source.origin === 'string') normalized.origin = source.origin;
+  if (typeof source.approximate === 'boolean') normalized.approximate = source.approximate;
   return Object.keys(normalized).length === 0 ? undefined : normalized;
 }
 
@@ -265,9 +270,57 @@ function isPreviewInspectorUiNodeEditable(node) {
       hasPreviewInspectorSmartPropEvidence(exportName));
 }
 
+/**
+ * Publishes reversible editor-decoration state for one authoritative component-tree selection.
+ *
+ * This is intentionally separate from Open source: it carries no trusted-click claim and grants no
+ * editor navigation capability. A source-less pseudo row emits the same revision/sequence envelope
+ * without coordinates, allowing the extension host to clear a previous decoration. The sequence is
+ * retained on the hot runtime so a replacement entry cannot make an older message appear newer.
+ */
+function publishPreviewInspectorSourceSelection(source) {
+  const previousSequence = previewHotRuntime.inspectorSourceSelectionSequence;
+  const sequence = Number.isSafeInteger(previousSequence) && previousSequence >= 0
+    ? previousSequence + 1
+    : 1;
+  previewHotRuntime.inspectorSourceSelectionSequence = sequence;
+  const normalizedSource = normalizePreviewInspectorUiSource(source);
+  const sourceSelection = typeof normalizedSource?.path === 'string' &&
+    normalizedSource.path.length > 0
+    ? {
+        approximate: normalizedSource.approximate === true,
+        ...(Number.isSafeInteger(normalizedSource.column) && normalizedSource.column > 0
+          ? { column: normalizedSource.column }
+          : {}),
+        ...(Number.isSafeInteger(normalizedSource.line) && normalizedSource.line > 0
+          ? { line: normalizedSource.line }
+          : {}),
+        ...(Number.isSafeInteger(normalizedSource.occurrenceStart) &&
+        normalizedSource.occurrenceStart >= 0
+          ? { occurrenceStart: normalizedSource.occurrenceStart }
+          : {}),
+        sourcePath: normalizedSource.path,
+      }
+    : {};
+  try {
+    previewInspectorPostHostMessage?.({
+      runtimeRevision: Number.isSafeInteger(previewEntryRevision) && previewEntryRevision > 0
+        ? previewEntryRevision
+        : previewRuntimeRevision,
+      sequence,
+      ...sourceSelection,
+      type: 'react-preview-inspector-source-selected',
+    });
+  } catch (error) {
+    console.warn('[React Preview] Could not publish the selected component source.', error);
+  }
+}
+
 /** Commits tree selection, cancels picker hover, and makes a mounted host visible by highlight. */
 function selectPreviewInspectorUiNode(node) {
   previewInspectorSession.selectedTreeNodeId = node.id;
+  previewInspectorSession.explicitTreeSelectionId = node.id;
+  publishPreviewInspectorSourceSelection(node?.source);
   previewInspectorSession.pickerCandidate = undefined;
   previewInspectorSession.pickerEnabled = false;
   const canHighlight = !isPreviewInspectorBlockerNode(node) &&
@@ -585,8 +638,9 @@ function PreviewInspectorSourceDetail({ node }) {
 /** Renders one tree-selected blocker/choice editor or the selected-component debugger and console. */
 function PreviewInspectorDetailsPane({ node }) {
   const blockerSelected = isPreviewInspectorBlockerNode(node);
+  const deferredUiTriggerSelected = isPreviewInspectorDeferredUiTriggerNode(node);
   const renderChoiceSelected = isPreviewInspectorRenderChoiceNode(node);
-  const renderControlSelected = blockerSelected || renderChoiceSelected;
+  const renderControlSelected = blockerSelected || deferredUiTriggerSelected || renderChoiceSelected;
   const initialDetailsTab = renderControlSelected
     ? 'blocker'
     : previewInspectorDevtoolsSessionState.detailsTab === 'console' ? 'console' : 'component';
@@ -602,7 +656,9 @@ function PreviewInspectorDetailsPane({ node }) {
   const tabs = [
     [renderControlSelected ? 'blocker' : 'component', renderChoiceSelected
       ? 'Render choice'
-      : blockerSelected ? 'Fix selected blocker' : 'Component debugger'],
+      : deferredUiTriggerSelected
+        ? 'Deferred UI'
+        : blockerSelected ? 'Fix selected blocker' : 'Component debugger'],
     ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
   ];
   return React.createElement(
@@ -644,7 +700,9 @@ function PreviewInspectorDetailsPane({ node }) {
         role: 'tabpanel',
       },
       detailsTab === 'blocker' && renderControlSelected
-        ? renderChoiceSelected
+        ? deferredUiTriggerSelected
+          ? React.createElement(PreviewInspectorDeferredUiTriggerDetail, { node })
+          : renderChoiceSelected
           ? React.createElement(PreviewInspectorConditionDetail, { node })
           : React.createElement(PreviewInspectorBlockerDetail, { node })
         : detailsTab === 'console'

@@ -89,6 +89,35 @@ describe('collectPreviewInspectorRenderOutcomes', () => {
     expect(Object.isFrozen(outcome?.componentTree[0]?.children)).toBe(true);
   });
 
+  /** Retains callback activation semantics while expanding the callback's imported component. */
+  it('preserves deferred render-prop roots across bounded component DFS', async () => {
+    const targetPath = '/workspace/src/Target.tsx';
+    const bodyPath = '/workspace/src/TargetBody.tsx';
+    const sources = {
+      [targetPath]: [
+        "import TargetBody from './TargetBody';",
+        'export function Target() {',
+        '  return <QueryRenderer>{() => <TargetBody />}</QueryRenderer>;',
+        '}',
+      ].join('\n'),
+      [bodyPath]: [
+        'function TargetMarker() { return <strong />; }',
+        'export default function TargetBody() { return <TargetMarker />; }',
+      ].join('\n'),
+    };
+
+    const result = await collectFixtureOutcomes(targetPath, sources);
+    const queryRenderer = result.plansByExport.Target?.outcomes[0]?.componentTree[0];
+
+    expect(queryRenderer?.children).toMatchObject([
+      {
+        children: [{ name: 'TargetMarker' }],
+        name: 'TargetBody',
+        renderMode: 'deferred-callback',
+      },
+    ]);
+  });
+
   /** Reserves the selected body before a large layout shell consumes the remaining node budget. */
   it('preserves authored children when an implementation reaches the node limit', async () => {
     const targetPath = '/workspace/src/Target.tsx';

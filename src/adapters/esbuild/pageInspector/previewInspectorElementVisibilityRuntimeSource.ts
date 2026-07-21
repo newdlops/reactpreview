@@ -494,13 +494,21 @@ function collectPreviewInspectorBoundaryElements(boundary) {
   }
 }
 
-/** Resolves a DevTools row selection back to its connected top-level host roots. */
+/**
+ * Resolves a DevTools row selection back to its connected top-level host roots.
+ *
+ * The tuple's second value permits legacy export fallback only for a non-explicit static selection.
+ * An explicit pseudo/static row instead returns an authoritative empty host set, which clears the
+ * previous outline rather than highlighting the active export as if it owned that source row.
+ */
 function collectSelectedPreviewInspectorTreeElements() {
   const nodeId = previewInspectorSession.selectedTreeNodeId;
   if (typeof nodeId !== 'string') return undefined;
   const snapshot = previewInspectorSession.lastTreeSnapshot ?? collectPreviewInspectorTreeSnapshot();
   const selection = selectPreviewInspectorFiberTreeNode(snapshot, nodeId);
-  return selection === undefined ? undefined : [selection.hostNodes, snapshot.status === 'static'];
+  const explicit = previewInspectorSession.explicitTreeSelectionId === nodeId;
+  if (selection === undefined) return explicit ? [[], false] : undefined;
+  return [selection.hostNodes, snapshot.status === 'static' && !explicit];
 }
 
 /** Collects connected target elements for highlighting without traversing React internals. */

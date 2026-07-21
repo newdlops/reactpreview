@@ -27,6 +27,28 @@ const blockedPreviewInspectorStaticNames = new Set([
   'name', 'propTypes', 'prototype', 'render', 'type',
 ]);
 
+/** React object protocols that represent mountable component types rather than application data. */
+const previewInspectorRenderableObjectTypes = new Set([
+  Symbol.for('react.forward_ref'),
+  Symbol.for('react.lazy'),
+  Symbol.for('react.memo'),
+]);
+
+/**
+ * Distinguishes React element types from GraphQL documents, route metadata, and other plain data.
+ *
+ * The static export inventory deliberately avoids evaluating project modules and can therefore be
+ * conservative around unusual declarations. This runtime check is the final semantic boundary:
+ * wrapping a non-component object would change its identity inside the authored application before
+ * React ever attempts to render it. Already-created elements remain valid direct preview targets.
+ */
+function isPreviewInspectorRenderableTarget(value) {
+  if (typeof value === 'function') return true;
+  if (React.isValidElement(value)) return true;
+  return value !== null && typeof value === 'object' &&
+    previewInspectorRenderableObjectTypes.has(value.$$typeof);
+}
+
 /** Copies safe component statics so owner modules can keep reading ordinary metadata. */
 function copyPreviewInspectorComponentStatics(source, target) {
   for (const propertyName of Reflect.ownKeys(source)) {
@@ -52,11 +74,17 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
   if (Component === undefined || Component === null) {
     return Component;
   }
+  const renderable = isPreviewInspectorRenderableTarget(Component);
+  const inspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
+  inspectorApi?.registerTargetRenderability?.(metadata?.exportName, renderable);
+  if (!renderable) {
+    return Component;
+  }
   const displayName =
     metadata?.exportName ?? Component.displayName ?? Component.name ?? 'default';
   const WrappedPreviewInspectorTarget = React.forwardRef((targetProps, forwardedRef) => {
-    const inspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
-    const TargetRenderer = inspectorApi?.TargetRenderer;
+    const activeInspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
+    const TargetRenderer = activeInspectorApi?.TargetRenderer;
     if (typeof TargetRenderer !== 'function') {
       const fallbackProps = forwardedRef === null
         ? targetProps

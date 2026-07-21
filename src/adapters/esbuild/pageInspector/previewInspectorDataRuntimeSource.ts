@@ -424,12 +424,20 @@ function createPreviewInspectorRuntimeRequestId(kind, method, identity) {
 }
 
 /** Coalesces request discovery into the Inspector lane without rerendering project components. */
-function schedulePreviewInspectorDataRegistryRefresh() {
+function schedulePreviewInspectorDataRegistryRefresh(reachabilityKey) {
+  const pendingKeys = previewInspectorSession.dataRefreshReachabilityKeys ??= new Set();
+  if (typeof reachabilityKey === 'string' && reachabilityKey.length > 0) {
+    pendingKeys.add(reachabilityKey);
+  }
   if (previewInspectorSession.dataRefreshScheduled === true) return;
   previewInspectorSession.dataRefreshScheduled = true;
   previewInspectorDataScheduleMicrotask(() => {
     previewInspectorSession.dataRefreshScheduled = false;
     schedulePreviewInspectorTreeRefresh();
+    if (typeof schedulePreviewInspectorTargetRequirementContinuation === 'function') {
+      for (const key of pendingKeys) schedulePreviewInspectorTargetRequirementContinuation(key);
+    }
+    pendingKeys.clear();
   });
 }
 
@@ -504,7 +512,7 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
       previewInspectorSession.dataRequests.size < PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT
     ) {
       previewInspectorSession.dataRequests.set(normalized.id, registered);
-      schedulePreviewInspectorDataRegistryRefresh();
+      schedulePreviewInspectorDataRegistryRefresh(registered.reachabilityKey);
     }
   } else {
     previewInspectorSession.dataRequests.set(normalized.id, registered);

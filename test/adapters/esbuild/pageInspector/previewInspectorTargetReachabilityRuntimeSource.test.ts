@@ -618,8 +618,8 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
-  /** Starts a one-answer compiler-shaped requirement pass without waiting for an Inspector click. */
-  it('auto-starts deterministic minimum requirements and preserves user-value policy', () => {
+  /** Re-admits a stale Smart backend shape to deterministic convergence without an Inspector click. */
+  it('auto-starts deterministic minimum requirements for an expanded Smart payload', () => {
     const context: {
       __result?: {
         readonly calls: readonly string[];
@@ -634,6 +634,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         let activeKey = '';
         const previewInspectorSession = {
           boundariesByExport: new Map(),
+          dataPayloadSmartShapeSignatures: new Map([['profile-request', 'previous-shape']]),
           dataRevision: 0,
           renderConditionOverrides: new Map(),
           renderConditionRevision: 0,
@@ -641,24 +642,23 @@ describe('Preview Inspector target reachability runtime source', () => {
           selectedExportName: 'Target',
         };
         const initializePreviewInspectorConditionState = () => undefined;
-        const readPreviewInspectorRuntimeFallbacks = () => [{
-          id: 'session-hook',
-          mode: 'auto',
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [{
+          id: 'profile-request', kind: 'graphql', mode: 'smart', shapeFingerprint: 'expanded-shape',
           reachabilityKey: activeKey,
-          requiredPaths: ['session.user.id'],
+          shape: { fields: { id: { kind: 'string' } }, kind: 'object' },
         }];
-        const readPreviewInspectorDataRequests = () => [];
-        const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorDataShapePaths = () => ['profile.id'];
         let filled = false;
         const smartFillPreviewInspectorRuntimeFallbacksForReachability = (key, options) => {
           calls.push('runtime:' + key + ':' + String(options?.preserveUserValues));
-          if (filled) return false;
-          filled = true;
-          return true;
+          return false;
         };
         const smartFillPreviewInspectorDataPayloadsForReachability = (key, options) => {
           calls.push('data:' + key + ':' + String(options?.preserveUserValues));
-          return false;
+          if (filled) return false;
+          filled = true;
+          return true;
         };
         const persistPreviewInspectorState = () => calls.push('persist');
         const notifyPreviewInspector = () => calls.push('notify');

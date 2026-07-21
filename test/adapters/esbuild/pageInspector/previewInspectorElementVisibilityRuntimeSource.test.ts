@@ -295,6 +295,25 @@ describe('Preview Inspector picked-element visibility runtime', () => {
     });
   });
 
+  /** Clears the prior host when an explicit pseudo/static row has no raw Fiber host identity. */
+  it('treats an explicit hostless tree selection as an authoritative empty host set', () => {
+    const fixture = createVisibilityFixture();
+    fixture.runtime.selectTreeNode('component');
+    fixture.runtime.setHighlightEnabled(true);
+    fixture.runtime.refreshHighlight();
+    expect(fixture.runtime.readOutline(fixture.root).outline).toBe('2px solid #f2c94c');
+
+    fixture.runtime.selectTreeNode('static:render-placeholder');
+    fixture.runtime.refreshHighlight();
+
+    expect(fixture.runtime.readOutline(fixture.root)).toEqual({
+      offset: '',
+      offsetPriority: '',
+      outline: '',
+      outlinePriority: '',
+    });
+  });
+
   /** Keeps the generated source bounded and its limit explicit for hostile broad pages. */
   it('emits an exact-selector bounded implementation', () => {
     const source = createPreviewInspectorElementVisibilityRuntimeSource();
@@ -406,6 +425,7 @@ function evaluateVisibilityRuntime(initialSnapshot: VisibilitySnapshot): Visibil
         setHighlightEnabled: (enabled) => { previewInspectorSession.highlightEnabled = enabled; },
         selectTreeNode: (treeNodeId) => {
           previewInspectorSession.selectedTreeNodeId = treeNodeId;
+          previewInspectorSession.explicitTreeSelectionId = treeNodeId;
           previewInspectorSession.lastTreeSnapshot = currentSnapshot;
           previewInspectorSession.pickerCandidate = undefined;
         },

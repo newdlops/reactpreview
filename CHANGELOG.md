@@ -2,6 +2,58 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1106 - 2026-07-21
+
+- 사용성이 낮은 Blocker/Render flow graph와 camera·Preview setup 탭을 제거하고 모든 렌더 조작을 하나의 Components tree와 선택 행 상세 화면으로 통합
+- 정적 outcome과 runtime condition을 합쳐 단락 평가 뒤의 `Not reached yet` guard까지 소유 component 아래에 인라인 Boolean switch로 표시
+- 별도 Inspector snapshot 교체와 모든 버튼·토글·선택 뒤 tree/detail/console/document의 가로·세로 스크롤을 안정 좌표로 복원
+
+## 0.1.1105 - 2026-07-21
+
+- 좌·우 결합된 JSX `&&` 체인을 평가 순서대로 펼쳐 미도달 guard까지 독립 Boolean 스위치로 제공하고 별칭·배열·삼항식·`React.createElement`·map callback의 render terminal까지 보수적으로 추적
+- visible/hidden 조합은 하나의 결과로 접고 authored identity와 단락 평가를 보존하며, 강제로 연 뒤의 property guard 예외는 Off switch와 Console warning으로 격리해 다음 값 보정으로 계속 진행
+
+## 0.1.1104 - 2026-07-21
+
+- modal의 선택된 JSX 반환 결과와 자동 visibility DFS가 충돌하지 않게 source identity를 연결하고, 같은 overlay reveal은 page corridor별 한 번만 수행하며 target 내부 오류에서는 추가 gate 탐색과 rollback을 중단
+- 자동 `open/show` prop을 사용자 JSON과 분리된 revision-local layer에 고정하고, 자동 보정 시 건강한 page, Router, Provider, portal과 modal state를 remount하지 않도록 stable key와 error reset signal을 분리
+- cold/direct 및 Storybook decorator component identity를 안정화하고, 사용자 `Remount`만 target child instance를 교체하도록 구분해 모달이 생성·해제를 반복하는 루프를 차단
+
+## 0.1.1103 - 2026-07-21
+
+- 기본 `Preview setup`을 backend/hook/props의 최소값을 준비하는 `Preview data`와 현재 파일의 정적 JSX 반환 후보만 고르는 `Rendered component` 두 항목으로 단순화하고, 자동 데이터 준비를 항목 수와 무관한 한 번의 persistence/render transaction으로 병합
+- 반환 후보가 없거나 하나뿐이면 사용자 선택 없이 authored/fixed 상태로 유지하고, 후보 선택 시 같은 source condition/choice에 남은 수동 override만 정리해 선택 결과가 즉시 적용되도록 개선
+- Router/Provider/Theme, target reachability와 내부 condition 수렴은 읽기 전용 자동 상태로 이동하고, 코드 오류는 Console, 수동 값 편집과 전체 blocker DAG는 접힌 `Advanced diagnostics`에서만 확인하도록 정리
+
+## 0.1.1102 - 2026-07-21
+
+- 현재 파일 export의 `if/else`, 삼항식, `&&`, `switch/case` JSX 반환 후보를 정적으로 분석해 반환
+  결과를 node, 결과를 선택하는 조건 조합을 edge로 표시하고 Resolver에서 한 번에 선택·복원하도록 추가
+- `Main` graph를 compiler-ranked application entry 최단 경로와 현재 파일 반환 선택지만 보이도록 단순화하고,
+  실제 mounted Fiber, 정적 target, unmounted inventory 순서로 `Locate current file` 근거를 우선하도록 수정
+- 반환 결과의 JSX component를 import, local alias, barrel re-export, 일반 HOC와 lazy dynamic import까지 bounded
+  DFS로 확장해 Layout/Header/Sidebar 같은 page 구성 근거와 HMR dependency를 수집하되 scalar prop 분기는 제외
+- condition/choice registry를 outcome별로 다시 정렬하지 않고 snapshot당 한 번만 source identity index로 만들어
+  큰 반환 그래프의 CPU와 임시 배열 할당을 줄임
+
+## 0.1.1101 - 2026-07-20
+
+- Inspector snapshot sanitizer가 의미 없는 실행 권한을 추가하지 않고 `header`와 `article` 레이아웃 경계를
+  보존하도록 해 Blocker Flow가 거대한 타원이나 잘못된 grid로 변형되던 문제를 해결
+- Advanced Blocker Flow를 기본 `Focus` 10개, current-file corridor 중심 `Main` 24개, 전체 bounded graph인
+  `All` 세 범위로 나누고 Advanced 화면의 중복 요약을 제거해 graph와 별도 Resolver에 집중하도록 정리
+- 범위 전환 시 graph를 자동으로 fit하고 기존 pan·선택·Resolver 동기화를 유지하며, graph pane 기본 폭을 52%로
+  조정하고 splitter가 좁은 화면에서는 상하 배치로 반응형 전환되도록 개선
+
+## 0.1.1100 - 2026-07-20
+
+- Advanced Blocker Resolver의 노드를 이름과 의미 아이콘만 남긴 작은 형태로 단순화하고, 현재 파일·직접
+  blocker·확정된 활성 경로는 선명하게 유지하면서 추정·휴면·대기 경로와 비활성 연결선은 흐리게 표시
+- 상세 kind/state/owner/branch 정보는 노드의 접근 가능한 설명과 오른쪽 Inspector에 보존해 캔버스에서는 주요
+  흐름을 한눈에 확인하고 노드를 선택한 뒤 세부 정보와 해결 옵션을 독립적으로 확인하도록 정리
+- 별도 Inspector 탭의 `100%`와 `Fit all` 카메라를 명확히 구분하고, 빈 캔버스를 primary pointer로 자유롭게
+  끌어 이동하는 pan·pointer capture·camera persistence를 추가하되 노드 클릭과 오른쪽 상세 선택은 그대로 유지
+
 ## 0.1.1099 - 2026-07-20
 
 - Tailwind 지시어가 있는 workspace CSS만 CSS별 nearest package의 v4 `@tailwindcss/postcss` 또는
@@ -941,19 +993,8 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 
 ## 0.1.0 - 2026-07-15
 
-- 서버 없이 현재 React 파일을 번들링하는 VS Code 확장 초기 구조 추가
-- 저장 전 문서 overlay, React 기본 내보내기 mount, CSS·기본 asset 처리 추가
-- 도달 가능한 import graph만 유지하는 default-only target bridge 추가
-- import된 `.js` JSX, 추가 이미지·폰트·미디어, `?raw`, SVG component import 지원
-- 저장하지 않은 참조 컴포넌트 overlay와 dependency 편집 자동 갱신 추가
-- 비표준 alias 구성을 위한 선택적 `reactPreview.tsconfig` 설정 추가
-- compiler resolver note를 패널 진단에 보존
-- 비정상·대용량 asset 사전 차단과 query/fragment 의존 경로 정규화 추가
-- Workspace Trust, 제한된 local resource root, 네트워크 차단 CSP 적용
-- debounce, stale revision 방지, 의존 파일 저장 시 갱신 추가
-- 직렬 artifact queue, 안전한 revision 정리, 종료 시 비동기 캐시 삭제 추가
-- symlink 문서 overlay와 CSS Modules local class 처리 추가
-- 현재 호스트 target이 표시된 플랫폼별 VSIX 패키징 추가
-- `newdlops` publisher 메타데이터, Marketplace 아이콘과 배포·지원 문서 추가
-- strict TypeScript, ESLint 계층 규칙, Prettier, 1,000줄 검사 구성
-- domain, application, 실제 esbuild, CSP/escape 테스트 추가
+- 서버 없이 현재 React 파일과 도달 가능한 import graph를 번들링하는 VS Code 확장 초기 구조 추가
+- 저장 전 문서/dependency overlay, JSX/CSS Modules/asset/SVG/query import와 alias 처리 추가
+- Workspace Trust, 제한된 local resource root, 네트워크 차단 CSP와 대용량 asset 사전 차단 적용
+- stale revision 방지, dependency hot rebuild, artifact queue/lease/cleanup 및 플랫폼별 VSIX 추가
+- `newdlops` 배포 메타데이터와 strict TypeScript, 계층 lint, formatter, 1,000줄 및 통합 테스트 구성

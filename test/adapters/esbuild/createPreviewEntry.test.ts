@@ -1,6 +1,7 @@
 /**
  * Verifies virtual-entry generation independently from the heavier real esbuild integration test.
  */
+import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
 
@@ -56,7 +57,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('mergeStoryContext');
     expect(entry).toContain('...(Array.isArray(globalMocks) ? globalMocks : [])');
     expect(entry).toContain('findGlobalPropertyDescriptor');
-    expect(entry).toContain('"storybook" !== \'none\' && globalThis.global === undefined');
+    expect(entry).toContain("findGlobalPropertyDescriptor('global') === undefined");
     expect(entry).toContain('PreviewErrorBoundary');
     expect(entry).toContain('runtimeDiagnosticRules');
     expect(entry).toContain('React Redux provider required');
@@ -275,7 +276,52 @@ describe('createPreviewEntry', () => {
     });
 
     expect(entry).not.toContain('/workspace/');
-    expect(entry).toContain('"none" !== \'none\' && globalThis.global === undefined');
+    expect(entry).toContain("findGlobalPropertyDescriptor('global') === undefined");
+  });
+
+  /** Makes legacy Browserify globals available before a no-setup target module is imported. */
+  it('installs the legacy global alias before importing a target without project setup', () => {
+    const entry = createPreviewEntry({
+      documentName: 'LegacyBrowserDependency.tsx',
+      globalNamespaces: [],
+      setupKind: 'none',
+    });
+    const initialization = entry.indexOf('initializeGlobalNamespaces();');
+    const targetImport = entry.indexOf('import("react-preview:target")');
+    const result = evaluateGeneratedGlobalInitialization(entry);
+
+    expect(initialization).toBeGreaterThan(-1);
+    expect(initialization).toBeLessThan(targetImport);
+    expect(result.sameObject).toBe(true);
+    expect(result.descriptor).toEqual({
+      configurable: true,
+      enumerable: false,
+      writable: true,
+    });
+  });
+
+  /** Leaves a host-owned global descriptor untouched and does not invoke an accessor getter. */
+  it('preserves existing global descriptors while initializing other namespaces', () => {
+    let getterCalls = 0;
+    const context: Record<string, unknown> = {};
+    Object.defineProperty(context, 'global', {
+      configurable: false,
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return undefined;
+      },
+    });
+    const entry = createPreviewEntry({
+      documentName: 'ReservedGlobal.tsx',
+      globalNamespaces: ['PreviewNamespace'],
+      setupKind: 'none',
+    });
+    const result = evaluateGeneratedGlobalInitialization(entry, context);
+
+    expect(getterCalls).toBe(0);
+    expect(result.globalAccessor).toBe(true);
+    expect(result.namespaceInitialized).toBe(true);
   });
 
   /** Encodes titles as data and keeps custom initialize, provider, and props hooks optional. */
@@ -293,3 +339,51 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('"custom" === \'storybook\'');
   });
 });
+
+/** Result retained from the generated browser-global initializer inside an isolated VM realm. */
+interface GeneratedGlobalInitializationResult {
+  readonly descriptor?: {
+    readonly configurable?: boolean;
+    readonly enumerable?: boolean;
+    readonly writable?: boolean;
+  };
+  readonly globalAccessor: boolean;
+  readonly namespaceInitialized: boolean;
+  readonly sameObject: boolean;
+}
+
+/** Evaluates only the generated global initializer without importing React or the target module. */
+function evaluateGeneratedGlobalInitialization(
+  entry: string,
+  context: Record<string, unknown> = {},
+): GeneratedGlobalInitializationResult {
+  const start = entry.indexOf('/** Finds an own or inherited global descriptor');
+  const end = entry.indexOf('/** Reads a named setup contract', start);
+  if (start < 0 || end < 0) throw new Error('Generated global initializer was not found.');
+  const runtimeContext = context as Record<string, unknown> & {
+    __result?: GeneratedGlobalInitializationResult;
+  };
+  vm.runInNewContext(
+    `${entry.slice(start, end)}
+initializeGlobalNamespaces();
+const globalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'global');
+globalThis.__result = {
+  descriptor: globalDescriptor === undefined || !('value' in globalDescriptor)
+    ? undefined
+    : {
+        configurable: globalDescriptor.configurable,
+        enumerable: globalDescriptor.enumerable,
+        writable: globalDescriptor.writable,
+      },
+  globalAccessor: globalDescriptor !== undefined && !('value' in globalDescriptor),
+  namespaceInitialized: globalThis.PreviewNamespace !== undefined,
+  sameObject: globalDescriptor !== undefined && 'value' in globalDescriptor &&
+    globalDescriptor.value === globalThis,
+};`,
+    runtimeContext,
+  );
+  if (runtimeContext.__result === undefined) {
+    throw new Error('Generated global initializer did not produce a result.');
+  }
+  return runtimeContext.__result;
+}

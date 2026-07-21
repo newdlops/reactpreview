@@ -432,7 +432,10 @@ function findGlobalPropertyDescriptor(propertyName) {
 
 /** Creates absent discovered objects without replacing primitives, accessors, or read-only globals. */
 function initializeGlobalNamespaces() {
-  if (${encodedSetupKind} !== 'none' && globalThis.global === undefined) {
+  // Browserify-era dependencies can read the free global identifier while the target graph is
+  // imported. Install the browser alias for every preview kind, but never shadow or invoke an
+  // existing host descriptor anywhere on the global object's prototype chain.
+  if (findGlobalPropertyDescriptor('global') === undefined) {
     try {
       Object.defineProperty(globalThis, 'global', {
         configurable: true,
@@ -441,7 +444,7 @@ function initializeGlobalNamespaces() {
         writable: true,
       });
     } catch {
-      // A host may reserve the Node-compatible alias; project setup can avoid it in that case.
+      // A host may reserve the Node-compatible alias between descriptor inspection and definition.
     }
   }
   for (const namespace of ${encodedGlobalNamespaces}) {

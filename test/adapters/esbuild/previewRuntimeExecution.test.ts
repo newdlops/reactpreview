@@ -424,6 +424,91 @@ describe('generated preview runtime execution', () => {
     }
   });
 
+  /** Provides the Browserify-era free global identifier before a no-setup target is evaluated. */
+  it('initializes the legacy browser global alias before importing the target graph', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(PROJECT_ROOT, 'test/fixtures/runtime-legacy-global-preview-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const documentPath = path.join(sourceDirectory, 'LegacyGlobalPreview.tsx');
+    const sourceText = [
+      'declare const global: typeof globalThis;',
+      'const importedGlobal = global;',
+      'export default function LegacyGlobalPreview() {',
+      '  const status = importedGlobal === globalThis ? "ready" : "mismatch";',
+      '  return <main data-global={status}>legacy global preview</main>;',
+      '}',
+    ].join('\n');
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(documentPath, sourceText, 'utf8'),
+      ]);
+      const bundle = await build({
+        absWorkingDir: projectRoot,
+        bundle: true,
+        define: { 'process.env.NODE_ENV': '"test"' },
+        format: 'iife',
+        jsx: 'automatic',
+        legalComments: 'none',
+        loader: PREVIEW_SOURCE_LOADERS,
+        logLevel: 'silent',
+        platform: 'browser',
+        plugins: [
+          createTestDomClientPlugin(),
+          createPreviewApolloBridgePlugin({ projectRoot }),
+          createTestContextBridgePlugin(),
+          createPreviewFormikBridgePlugin({ projectRoot }),
+          createPreviewReduxBridgePlugin({ projectRoot }),
+          createPreviewRouterBridgePlugin({ enabled: false, projectRoot }),
+          createPreviewThemeBridgePlugin({ projectRoot }),
+          createPreviewSetupBridgePlugin({}),
+          createPreviewTargetBridgePlugin({
+            documentPath,
+            exports: selectPreviewTargetExports(documentPath, sourceText),
+          }),
+        ],
+        stdin: {
+          contents: createPreviewEntry({
+            documentName: 'src/LegacyGlobalPreview.tsx',
+            globalNamespaces: [],
+            setupKind: 'none',
+          }),
+          loader: 'tsx',
+          resolveDir: sourceDirectory,
+          sourcefile: '<runtime-legacy-global-entry>',
+        },
+        target: 'es2022',
+        write: false,
+      });
+      const javascript = bundle.outputFiles[0]?.text;
+      if (javascript === undefined) {
+        throw new Error('The legacy-global fixture did not emit a JavaScript bundle.');
+      }
+
+      const mountNode = createRuntimeMountNode();
+      const sandbox: Record<string, unknown> = {
+        addEventListener: (): undefined => undefined,
+        clearTimeout,
+        console,
+        document: createRuntimeDocument(mountNode),
+        queueMicrotask,
+        setTimeout,
+      };
+      sandbox.window = sandbox;
+      runInContext(javascript, createContext(sandbox), { timeout: 10_000 });
+      await waitForRenderedMarkup(mountNode);
+
+      expect(mountNode.innerHTML).toContain(
+        '<main data-global="ready">legacy global preview</main>',
+      );
+    } finally {
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps later exports visible when an earlier PascalCase export throws during rendering. */
   it('isolates one failed export without removing the remaining gallery', async () => {
     const projectRoot = await mkdtemp(

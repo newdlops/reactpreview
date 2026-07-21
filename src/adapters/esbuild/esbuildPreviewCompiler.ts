@@ -816,7 +816,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ]
           : [];
       throwIfPreviewBuildCancelled(buildSignal);
-      const previewBundle = createPreviewBundle(
+      const previewBundle = await createPreviewBundle(
         request,
         buildExecution.result,
         buildExecution.watchDirectories,
@@ -834,6 +834,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ],
         this.diagnosticEmissionCache.admitBuildWarning.bind(this.diagnosticEmissionCache),
       );
+      throwIfPreviewBuildCancelled(buildSignal);
       return inspectorSourceGestureSecret === undefined
         ? previewBundle
         : { ...previewBundle, inspectorSourceGestureSecret };

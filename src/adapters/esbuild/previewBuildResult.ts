@@ -18,6 +18,7 @@ import {
   resolvePreviewOutputLimitBytes,
 } from '../../domain/previewOutputPolicy';
 import { planPreviewBuildOutputs } from './previewBuildOutputPlanner';
+import { selectReportablePreviewBuildWarnings } from './previewBuildWarningPolicy';
 import {
   PREVIEW_ASSET_NAMESPACE,
   PREVIEW_APOLLO_BRIDGE_NAMESPACE,
@@ -55,15 +56,19 @@ export const PREVIEW_OUTPUT_DIRECTORY_NAME = 'react-preview-output';
  * @param admitBuildWarning Compiler-lifetime admission boundary that suppresses hot-rebuild repeats.
  * @returns Validated preview bundle containing an entry, local lazy chunks, and optional CSS.
  */
-export function createPreviewBundle(
+export async function createPreviewBundle(
   request: PreviewBuildRequest,
   result: BuildResult<{ metafile: true; write: false }>,
   watchDirectories: readonly string[],
   additionalDiagnostics: readonly PreviewDiagnostic[] = [],
   additionalDependencies: readonly string[] = [],
   admitBuildWarning: (message: Message) => boolean = () => true,
-): PreviewBundle {
+): Promise<PreviewBundle> {
   assertOutputSize(result.outputFiles, request.maxOutputMebibytes);
+  const reportableBuildWarnings = await selectReportablePreviewBuildWarnings(
+    result.warnings,
+    request.workspaceRoot,
+  );
   const outputPlan = planPreviewBuildOutputs({
     absoluteOutputDirectory: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
     absoluteWorkingDirectory: request.workspaceRoot,
@@ -83,7 +88,7 @@ export function createPreviewBundle(
     ].sort(),
     diagnostics: [
       ...additionalDiagnostics,
-      ...result.warnings
+      ...reportableBuildWarnings
         .filter(admitBuildWarning)
         .map((message) => convertMessage(message, 'warning')),
     ],

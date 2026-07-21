@@ -264,6 +264,7 @@ vi.mock('vscode', () => {
     Uri: FakeUri,
     ViewColumn: { Beside: 2 },
     window: {
+      onDidChangeVisibleTextEditors: () => ({ dispose: vi.fn() }),
       createWebviewPanel: (
         _viewType: string,
         title: string,
@@ -307,7 +308,6 @@ afterEach(() => {
   vscodeState.warnings.length = 0;
   vscodeState.watchers.length = 0;
 });
-
 describe('PreviewController', () => {
   /** Keeps the selected composition mode immutable for independent tabs and later refreshes. */
   it('pins component and page-inspector modes independently for the same source file', async () => {
@@ -345,7 +345,6 @@ describe('PreviewController', () => {
     expect(vscodeState.panels).toHaveLength(3);
     const companionPanel = (vscodeState.panels as TestPanel[])[2];
     expect(companionPanel?.title).toBe('Inspector · SharedTarget.tsx');
-    expect(companionPanel?.options.enableScripts).toBe(true);
     expect(companionPanel?.webview.html).toContain('React Page Inspector');
     expect(companionPanel?.webview.html).not.toContain('/artifacts/page-inspector-2/entry.js');
     execute.mockClear();

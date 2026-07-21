@@ -8,6 +8,7 @@ import { isPreviewSourcePath } from '../domain/previewTarget';
 
 const MAX_INSPECTOR_SOURCE_PATH_LENGTH = 16_384;
 const MAX_INSPECTOR_SOURCE_COORDINATE = 10_000_000;
+const MAX_INSPECTOR_SELECTION_SEQUENCE = 10_000_000;
 const INSPECTOR_GESTURE_NONCE_PATTERN = /^[a-f0-9]{32}$/u;
 const INSPECTOR_GESTURE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
@@ -28,6 +29,39 @@ export interface PreviewInspectorOpenSourceRequest {
   /** Exact protocol discriminator owned by React Page Inspector. */
   readonly type: 'react-preview-inspector-open-source';
 }
+
+/** Common correlation fields carried by every component-tree selection notification. */
+interface PreviewInspectorSourceSelectionEnvelope {
+  /** Runtime revision that rendered the selected tree row. */
+  readonly runtimeRevision: number;
+  /** Positive runtime-owned order used to reject delayed selection messages. */
+  readonly sequence: number;
+  /** Exact protocol discriminator owned by React Page Inspector. */
+  readonly type: 'react-preview-inspector-source-selected';
+}
+
+/** Validated notification that clears the editor mark when no tree source remains selected. */
+export interface PreviewInspectorSourceSelectionClearRequest extends PreviewInspectorSourceSelectionEnvelope {
+  readonly sourcePath?: never;
+}
+
+/** Validated notification that associates the selected tree row with authored source. */
+export interface PreviewInspectorSourceSelectionLocationRequest extends PreviewInspectorSourceSelectionEnvelope {
+  /** Whether static inference supplied a best-effort rather than exact authored location. */
+  readonly approximate?: boolean;
+  /** Optional one-based source column; it is meaningful only when `line` is present. */
+  readonly column?: number;
+  /** Optional one-based source line reported by JSX metadata or static analysis. */
+  readonly line?: number;
+  /** Optional zero-based source offset retained by the static render graph. */
+  readonly occurrenceStart?: number;
+  /** Absolute JS or TS source path retained by the committed preview graph. */
+  readonly sourcePath: string;
+}
+
+/** Selection protocol accepted by the non-focusing editor decoration service. */
+export type PreviewInspectorSourceSelectionRequest =
+  PreviewInspectorSourceSelectionClearRequest | PreviewInspectorSourceSelectionLocationRequest;
 
 /**
  * Parses one structured-clone value without trusting browser-provided paths or coordinates.
@@ -88,6 +122,95 @@ export function readPreviewInspectorOpenSourceRequest(
     ...(column === undefined ? {} : { column }),
     ...(occurrenceStart === undefined ? {} : { occurrenceStart }),
   });
+}
+
+/**
+ * Reports whether an untrusted value claims the tree-selection discriminator. Host routing uses
+ * this narrow check to consume malformed selection messages instead of letting them collide with
+ * unrelated hot-reload protocols.
+ */
+export function isPreviewInspectorSourceSelectionMessage(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).type === 'react-preview-inspector-source-selected'
+  );
+}
+
+/**
+ * Parses one component-tree selection without granting it filesystem or editor authority. A clear
+ * notification intentionally carries no path or coordinates. Located selections reuse the same
+ * absolute React-source and bounded-coordinate policy as explicit source navigation.
+ *
+ * @param value Untrusted structured-clone value emitted by the preview runtime.
+ * @returns Frozen selection request, or `undefined` when any field is malformed.
+ */
+export function readPreviewInspectorSourceSelectionRequest(
+  value: unknown,
+): PreviewInspectorSourceSelectionRequest | undefined {
+  if (!isPreviewInspectorSourceSelectionMessage(value)) return undefined;
+  const message = value as Record<string, unknown>;
+  const runtimeRevision = message.runtimeRevision;
+  const sequence = message.sequence;
+  if (
+    !Number.isSafeInteger(runtimeRevision) ||
+    (runtimeRevision as number) < 0 ||
+    !Number.isSafeInteger(sequence) ||
+    (sequence as number) <= 0 ||
+    (sequence as number) > MAX_INSPECTOR_SELECTION_SEQUENCE
+  ) {
+    return undefined;
+  }
+
+  const sourcePath = message.sourcePath;
+  const line = message.line;
+  const column = message.column;
+  const occurrenceStart = message.occurrenceStart;
+  const approximate = message.approximate;
+  const envelope = {
+    runtimeRevision: runtimeRevision as number,
+    sequence: sequence as number,
+    type: 'react-preview-inspector-source-selected' as const,
+  };
+  if (sourcePath === undefined) {
+    return line === undefined &&
+      column === undefined &&
+      occurrenceStart === undefined &&
+      approximate === undefined
+      ? Object.freeze(envelope)
+      : undefined;
+  }
+  if (
+    !isInspectorSourcePath(sourcePath) ||
+    !isOptionalInspectorSourceCoordinate(line) ||
+    !isOptionalInspectorSourceCoordinate(column) ||
+    !isOptionalInspectorSourceOffset(occurrenceStart) ||
+    (approximate !== undefined && typeof approximate !== 'boolean') ||
+    (column !== undefined && line === undefined)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    ...envelope,
+    sourcePath,
+    ...(line === undefined ? {} : { line }),
+    ...(column === undefined ? {} : { column }),
+    ...(occurrenceStart === undefined ? {} : { occurrenceStart }),
+    ...(approximate === undefined ? {} : { approximate }),
+  });
+}
+
+/** Applies the shared absolute React-source policy without interpreting editor coordinates. */
+function isInspectorSourcePath(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_INSPECTOR_SOURCE_PATH_LENGTH &&
+    !value.includes('\0') &&
+    path.isAbsolute(value) &&
+    isPreviewSourcePath(value)
+  );
 }
 
 /** Reports whether one optional browser coordinate is a bounded positive one-based integer. */

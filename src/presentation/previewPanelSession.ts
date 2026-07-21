@@ -18,6 +18,7 @@ import {
 import type { PreviewInspectorCompanionOpenSourceRequest } from './previewInspectorCompanionProtocol';
 import { handlePreviewInspectorHostMessage } from './previewInspectorHostMessage';
 import { handlePreviewInspectorCompanionSourceNavigation } from './previewInspectorSourceNavigation';
+import { PreviewInspectorSourceDecoration } from './previewInspectorSourceDecoration';
 import { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewProgressMessage } from './previewProgress';
 import { PreviewProgressGate } from './previewProgressGate';
@@ -52,7 +53,9 @@ export class PreviewPanelSession implements vscode.Disposable {
   private readonly directoryWatcherDisposables = new Map<string, vscode.Disposable[]>();
   private disposed = false;
   private disposalNotified = false;
+  private displayedRuntimeRevision = 0;
   private hasCompleteContext = false;
+  private readonly inspectorSourceDecoration = new PreviewInspectorSourceDecoration();
   private readonly inspectorSourceGesture = new PreviewInspectorGestureGate();
   private readonly panelDisposables: vscode.Disposable[] = [];
   private readonly pendingHotReloads = new Map<string, PendingPreviewHotReload>();
@@ -101,6 +104,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       renderMode: options.renderMode,
     });
     this.panelDisposables.push(
+      this.inspectorSourceDecoration,
       options.panel.onDidDispose(this.handlePanelDisposed.bind(this)),
       options.panel.onDidChangeViewState(this.handleViewStateChanged.bind(this)),
       options.panel.webview.onDidReceiveMessage(this.handleWebviewMessage.bind(this)),
@@ -145,6 +149,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       return false;
     }
 
+    this.inspectorSourceDecoration.invalidateDocument(canonicalDocumentPath);
     this.scheduleRefresh(false);
     return true;
   }
@@ -163,6 +168,10 @@ export class PreviewPanelSession implements vscode.Disposable {
   public targetsDocument(documentPath: string): boolean {
     return this.targetPath === canonicalizeExistingPath(documentPath);
   }
+  /** Reapplies a pending tree-source mark after VS Code changes the visible code editors. */
+  public refreshInspectorSourceDecoration(editors: readonly vscode.TextEditor[]): void {
+    this.inspectorSourceDecoration.applyVisibleEditors(editors);
+  }
 
   /** Opens one real companion-tab source click only inside this session's committed bundle graph. */
   public openInspectorCompanionSource(request: PreviewInspectorCompanionOpenSourceRequest): void {
@@ -176,9 +185,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     });
   }
 
-  /**
-   * Invalidates work, closes this panel, releases its artifact lease, and removes listeners.
-   */
+  /** Invalidates work, closes this panel, releases its artifact lease, and removes listeners. */
   public dispose(): void {
     if (this.disposed) {
       return;
@@ -532,11 +539,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     );
   }
 
-  /**
-   * Shows one monotonic preparation milestone for the current revision only. Initial builds replace
-   * their inert loading document; hot builds preserve the existing React tree and use its isolated
-   * Shadow DOM status listener.
-   */
+  /** Shows monotonic preparation while hot builds preserve the mounted React tree and status UI. */
   private renderProgress(
     requestedRevision: number,
     documentName: string,
@@ -594,12 +597,14 @@ export class PreviewPanelSession implements vscode.Disposable {
   private handleWebviewMessage(message: unknown): void {
     if (
       handlePreviewInspectorHostMessage(message, {
+        currentRuntimeRevision: this.displayedRuntimeRevision,
         dependencyPaths: this.dependencies,
         enabled: this.options.renderMode === 'page-inspector',
         gestureGate: this.inspectorSourceGesture,
         log: this.options.log,
         panelViewColumn: this.options.panel.viewColumn,
         pinnedDocumentUri: this.documentUri,
+        sourceDecoration: this.inspectorSourceDecoration,
         targetPath: this.targetPath,
       })
     ) {
@@ -641,6 +646,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     if (acknowledgement.revision !== pending?.runtimeRevision) {
       return;
     }
+    if (acknowledgement.applied) this.displayedRuntimeRevision = pending.runtimeRevision;
     const settlesWithoutNavigation = acknowledgement.applied || acknowledgement.retainedPrevious;
     const settlementRevision = settlesWithoutNavigation
       ? this.resolveRuntimeSettlementRevision(
@@ -866,6 +872,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     runtimeToken: string,
     revision: number,
   ): void {
+    this.displayedRuntimeRevision = revision;
     this.clearInitialRuntimeWatchdog();
     const timeout = setTimeout(() => {
       const pending = this.pendingInitialRuntime;

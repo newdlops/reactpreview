@@ -36,6 +36,7 @@ export class PreviewController implements vscode.Disposable {
     private readonly log: vscode.LogOutputChannel,
   ) {
     this.extensionDisposables.push(
+      vscode.window.onDidChangeVisibleTextEditors(this.handleVisibleTextEditorsChanged.bind(this)),
       vscode.workspace.onDidChangeTextDocument(this.handleDocumentChanged.bind(this)),
       vscode.workspace.onDidSaveTextDocument(this.handleDocumentSaved.bind(this)),
       vscode.workspace.onDidChangeConfiguration(this.handleConfigurationChanged.bind(this)),
@@ -176,6 +177,11 @@ export class PreviewController implements vscode.Disposable {
     for (const session of this.sessions) {
       session.refreshForDocument(document.fileName);
     }
+  }
+
+  /** Fans one window-level visibility event into each session-owned source decoration. */
+  private handleVisibleTextEditorsChanged(editors: readonly vscode.TextEditor[]): void {
+    for (const session of this.sessions) session.refreshInspectorSourceDecoration(editors);
   }
 
   /**

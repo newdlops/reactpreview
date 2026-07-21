@@ -111,7 +111,7 @@ HTML element tag 대신 부모·형제·자식 function/class/memo/forwardRef co
 얻기 전에는 정적으로 증명한 EntryPoint→target 경로가 fallback tree가 됩니다. 다음 값을 확인·조작할 수
 있습니다.
 
-- `Highlight`: 선택 component가 commit한 top-level DOM 범위를 강조하거나 해제
+- `Highlight`: 선택 component가 commit한 top-level DOM 범위와 이미 열린 source editor의 대응 줄을 함께 강조하거나 해제
 - `Main component`: 현재 파일의 대표 default/첫 PascalCase export와 mounted target으로 tree 선택 복귀
 - `Pick element`: 실제 DOM을 골라 가장 가까운 React component를 tree에서 선택
 - `Serializable props (JSON)`: 선택한 target 또는 ancestor root의 plain data props를 적용·초기화하고,

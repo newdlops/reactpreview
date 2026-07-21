@@ -2,6 +2,24 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1111 - 2026-07-21
+
+- component tree 행을 선택하면 실제 mounted Fiber host만 노란 outline으로 강조하고 host 없는 route/blocker/placeholder에서는 이전 강조를 정확히 제거
+- 선택 source의 line/offset을 현재 bundle graph로 재검증해 이미 열린 editor에 whole-line 데코레이터로 표시하며 추정 위치는 별도 스타일로 구분
+- hot reload revision과 단조 sequence, 문서 변경 무효화, panel별 pending/cleanup으로 여러 preview의 코드 표시가 섞이거나 editor focus·scroll을 바꾸지 않도록 격리
+
+## 0.1.1110 - 2026-07-21
+
+- 함수형 children/render prop의 JSX를 지연 출력으로 식별하고 receiver의 확장된 hook·GraphQL 최소 shape부터 재탐색해 `mounted · no host output` 정착 상태를 통과
+- `show/open/present` 이벤트 경로를 미마운트 상태부터 컴포넌트 트리 placeholder로 표시하고 현재 Fiber의 동일 handler가 확인될 때만 사용자 실행을 허용
+- 0인자 로컬 JSX 반환 함수 호출을 모듈·컴포넌트 scope에서 bounded DFS로 확장하며 async·인자·side effect·cycle은 실행하지 않고 fail closed
+
+## 0.1.1109 - 2026-07-21
+
+- `gql`/`graphql` 태그·호출, `DocumentNode` 타입과 생성 AST 근거를 추적해 GraphQL 문서 export를 React 컴포넌트 대상에서 제외
+- 평가 시 함수·React element·memo/forwardRef/lazy만 target facade로 감싸고 일반 객체 export의 identity를 보존
+- hook과 mutation 문서만 있는 파일은 mutation을 억지로 mount하지 않고 직접 렌더 가능한 React export가 없음을 정확히 보고
+
 ## 0.1.1108 - 2026-07-21
 
 - Smart fill이 최상위 `data` 경로만 관찰해도 GraphQL selection으로 생성한 `data/payload/response/result`의 비어 있지 않은 구조를 bounded copy로 보존
@@ -899,22 +917,16 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 
 ## 0.1.1018 - 2026-07-16
 
-- app entry를 실행하지 않고 ambient `typeof import()` 전역 선언과 import-backed
-  `globalThis/window` 직접 할당을 정적으로 수집해 정확한 project wrapper export를 lexical inject로 연결
-- runtime assignment > ambient declaration > 동일 이름 package 순서를 적용하고, 충돌·미해석·분석 한도
-  초과에서는 의미가 다른 bare package로 내려가지 않는 fail-closed 전역 bridge planner 추가
-- 강한 wrapper 근거가 없을 때 실제 target-rooted graph에서 자유 식별자로 증명되고 같은 이름의 설치
-  package가 해석되는 경우에만 Router 요구와 합쳐 최대 한 번 adaptive rebuild하도록 확장
-- esbuild scope injection으로 local/import/shadow/type/property/JSX intrinsic/`typeof` probe를 보존하고 ESM
-  default·named·namespace와 CommonJS identity, 모노레포 hoist, dirty wrapper HMR dependency를 지원
-- package source evidence와 선택된 declaration/wrapper metadata를 탭과 hot rebuild 사이에서 bounded하게
-  공유하고 generated/public 역방향 인덱스를 제외해 실제 대형 프로젝트의 후속 rebuild 시간을 단축
+- app entry를 실행하지 않고 ambient `typeof import()` 전역 선언과 import-backed `globalThis/window` 직접 할당을 정적으로 수집해 정확한 project wrapper export를 lexical inject로 연결
+- runtime assignment > ambient declaration > 동일 이름 package 순서를 적용하고, 충돌·미해석·분석 한도 초과에서는 의미가 다른 bare package로 내려가지 않는 fail-closed 전역 bridge planner 추가
+- 강한 wrapper 근거가 없을 때 실제 target-rooted graph에서 자유 식별자로 증명되고 같은 이름의 설치 package가 해석되는 경우에만 Router 요구와 합쳐 최대 한 번 adaptive rebuild하도록 확장
+- esbuild scope injection으로 local/import/shadow/type/property/JSX intrinsic/`typeof` probe를 보존하고 ESM default·named·namespace와 CommonJS identity, 모노레포 hoist, dirty wrapper HMR dependency를 지원
+- package source evidence와 선택된 declaration/wrapper metadata를 탭과 hot rebuild 사이에서 bounded하게 공유하고 generated/public 역방향 인덱스를 제외해 실제 대형 프로젝트의 후속 rebuild 시간을 단축
 - `name is not defined`를 `missing-runtime-global`로 분류하고 오류 보고서에 Globals bridge 상태를 추가
 
 ## 0.1.1017 - 2026-07-16
 
-- 에디터 우클릭과 명령 팔레트에 opt-in `Inspect Current React File in Page Context`를 추가하고,
-  일반 component gallery와 같은 파일에서도 독립적으로 고정되는 Page Inspector 세션을 제공
+- 에디터 우클릭과 명령 팔레트에 opt-in `Inspect Current React File in Page Context`를 추가하고, 일반 component gallery와 같은 파일에서도 독립적으로 고정되는 Page Inspector 세션을 제공
 - workspace 안의 실제 JSX 사용과 barrel/consumer tsconfig alias를 최대 8단계 역추적해 바깥쪽 importable owner export를
   마운트함으로써 작성된 부모·자식·형제 JSX, 조건부 UI, event handler와 도달한 CSS/import graph를
   실제 브라우저 React tree에서 실행; private owner·cycle·한도에서는 안전한 partial root에 정지
@@ -931,25 +943,17 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 
 ## 0.1.1016 - 2026-07-16
 
-- 실제 JSX target 사용을 역추적해 sibling과 parent owner를 실행하지 않고 intrinsic/imported wrapper 한
-  갈래만 export별 Virtual DOM recipe로 합성하는 pinpoint parent render slice 추가
-- 같은 파일의 private `Body` 사용과 render-function children을 bounded하게 따라가고, dynamic prop·spread가
-  필요한 imported Form/Provider에서는 검증된 inner partial path만 유지하는 fail-closed 경계 추가
-- 선택된 wrapper와 target만 가상 ESM이 import하도록 분리해 wrapper의 styled-components/CSS/자식 graph는
-  esbuild의 정방향 해석을 재사용하고 unrelated parent/sibling export는 tree-shake
-- parent slice consumer를 dependency cache와 hot reload graph에 포함하고 runtime 오류에 wrapper 수와
-  complete/partial 상태를 표시; 명시적 setup과 Storybook composition은 자동 slice보다 우선
+- 실제 JSX target 사용을 역추적해 sibling과 parent owner를 실행하지 않고 intrinsic/imported wrapper 한 갈래만 export별 Virtual DOM recipe로 합성하는 pinpoint parent render slice 추가
+- 같은 파일의 private `Body` 사용과 render-function children을 bounded하게 따라가고, dynamic prop·spread가 필요한 imported Form/Provider에서는 검증된 inner partial path만 유지하는 fail-closed 경계 추가
+- 선택된 wrapper와 target만 가상 ESM이 import하도록 분리해 wrapper의 styled-components/CSS/자식 graph는 esbuild의 정방향 해석을 재사용하고 unrelated parent/sibling export는 tree-shake
+- parent slice consumer를 dependency cache와 hot reload graph에 포함하고 runtime 오류에 wrapper 수와 complete/partial 상태를 표시; 명시적 setup과 Storybook composition은 자동 slice보다 우선
 
 ## 0.1.1013 - 2026-07-16
 
-- target-rooted graph에서 Formik consumer/provider 근거를 수집하고, 부모 `<Form>` 없이 직접 연 leaf
-  컴포넌트에는 프로젝트가 설치한 동일 Formik 인스턴스로 backend 없는 정적 Provider를 자동 구성
-- import된 `use*Context` 호출이 실제로 역참조하는 객체 container와 호출 메서드만 bounded하게 수집해,
-  실제 Provider 값은 보존하면서 missing custom Context에 stable·deeply frozen fallback을 제공
-- `Object.keys/values/entries`를 사용하는 같은 파일의 bounded helper까지 객체 요구를 전파하고 leaf 값,
-  computed/optional/unsafe 경로와 프로젝트 업무 상태는 추측하지 않는 fail-closed 경계 유지
-- 모노레포의 nested package에서 workspace root에 hoist된 package와 package-export `.mjs`/`.cjs` entry를
-  기본 resolver로 해석하는 독립 회귀 테스트 추가
+- target-rooted graph에서 Formik consumer/provider 근거를 수집하고, 부모 `<Form>` 없이 직접 연 leaf 컴포넌트에는 프로젝트가 설치한 동일 Formik 인스턴스로 backend 없는 정적 Provider를 자동 구성
+- import된 `use*Context` 호출이 실제로 역참조하는 객체 container와 호출 메서드만 bounded하게 수집해, 실제 Provider 값은 보존하면서 missing custom Context에 stable·deeply frozen fallback을 제공
+- `Object.keys/values/entries`를 사용하는 같은 파일의 bounded helper까지 객체 요구를 전파하고 leaf 값, computed/optional/unsafe 경로와 프로젝트 업무 상태는 추측하지 않는 fail-closed 경계 유지
+- 모노레포의 nested package에서 workspace root에 hoist된 package와 package-export `.mjs`/`.cjs` entry를 기본 resolver로 해석하는 독립 회귀 테스트 추가
 
 ## 0.1.1012 - 2026-07-16
 
@@ -977,15 +981,11 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 - 정상 Storybook preview decorator/Apollo parameter 자동 재사용과 깨진 setup의 setup-free 재시도 추가
 - Storybook setup graph 오류만 폴백하고 누락된 상대 import의 안전한 생성 디렉터리를 계속 감시
 - 프로젝트 Apollo Client를 자동 감지해 backend 요청 없는 Provider와 bounded selection-shaped 정적 응답을 제공하고 setup별 operation 결과·cache seed·비활성화 계약 추가
-- 활성 styled-components 파일이 직접 import한 실제 theme을 자동 재사용하고 primitive/CSS array를
-  보존하면서 누락 token·실패 helper만 보완하는 ThemeProvider 및 document style 복원 추가
-- 프로젝트 React Redux를 자동 감지하고 target-reachable `useSelector` 계열 callback과 이후의 안전한
-  property 접근에서 객체 container path만 수집해 deeply frozen inert state skeleton을 제공하도록 확장;
-  leaf 값은 추측하지 않고 setup별 exact state·비활성화 계약과 reducer/bootstrap 비실행 경계를 유지
+- 활성 styled-components 파일이 직접 import한 실제 theme을 자동 재사용하고 primitive/CSS array를 보존하면서 누락 token·실패 helper만 보완하는 ThemeProvider 및 document style 복원 추가
+- 프로젝트 React Redux를 자동 감지하고 target-reachable `useSelector` 계열 callback과 이후의 안전한 property 접근에서 객체 container path만 수집해 deeply frozen inert state skeleton을 제공하도록 확장; leaf 값은 추측하지 않고 setup별 exact state·비활성화 계약과 reducer/bootstrap 비실행 경계를 유지
 - runtime 오류의 direct headline, 실패 phase, target/export/setup/classification, React component stack,
   JavaScript stack, cause/AggregateError와 primitive own field를 함께 보존하는 bounded 상세 보고서 추가
-- Apollo invariant URL payload의 version/code/args를 네트워크 없이 로컬 decode하고 Apollo·Redux·Router·
-  Theme 자동 경계의 실제 적용 상태를 오류 보고서에 표시
+- Apollo invariant URL payload의 version/code/args를 네트워크 없이 로컬 decode하고 Apollo·Redux·Router·Theme 자동 경계의 실제 적용 상태를 오류 보고서에 표시
 - React 19 root error callback과 JSX development source metadata를 연결하고, 프로젝트 CSS와 충돌하지
   않도록 runtime 진단 패널의 스타일을 격리
 - 특정 저장소 상태나 앱 의미를 내장하지 않고 backend·개발 서버·외부 오류 조회 없이 범용 preview

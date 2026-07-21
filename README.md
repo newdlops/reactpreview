@@ -157,7 +157,9 @@ component 소유 범위로 보여줍니다. 별도 탭을
 `Current file`처럼 사용자가 위치 이동을 명시한 작업만 조상 행을 펼치고 정확한 React 행을 tree viewport 안으로
 이동하므로 snapshot 갱신 때문에 목록 최상단으로 되돌아가지 않습니다. mounted component 행을 클릭하면 이전
 Pick hover 후보를 해제하고 `Highlight`를 자동으로 켜 실제 페이지에 연결된 host root를 노란 outline으로
-표시합니다. host가 없는 route/blocker/inventory 행은 존재하지 않는 화면 영역을 강조하지 않습니다.
+표시합니다. 같은 선택은 이미 보이는 소스 editor의 대응 줄을 별도 데코레이터로 표시하되 editor focus나
+코드 스크롤을 바꾸지 않습니다. host가 없는 route/blocker/inventory 행은 이전 outline을 지워 존재하지 않는
+화면 영역을 강조하지 않으며, 정적으로 추정한 소스 위치는 실선 대신 추정 스타일로 구분합니다.
 
 Inspector 상단은 현재 결과를 `Preparing page context`, `Page rendering is blocked`, `Page context is ready`,
 `Rendered flow does not contain the current file`, `Current-file component overview`, `Target-only view` 중 하나로

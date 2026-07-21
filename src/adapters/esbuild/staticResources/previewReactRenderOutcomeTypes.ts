@@ -50,7 +50,7 @@ export interface PreviewReactRenderConditionEdge {
   readonly value?: PreviewReactRenderSwitchValue;
 }
 
-/** One React component occurrence in a returned JSX hierarchy. */
+/** One React component occurrence or deferred DOM/text placeholder in a returned JSX hierarchy. */
 export interface PreviewReactRenderComponentNode {
   /** Nested React components, with host elements and Fragments transparently skipped. */
   readonly children: readonly PreviewReactRenderComponentNode[];
@@ -58,8 +58,16 @@ export interface PreviewReactRenderComponentNode {
   readonly column: number;
   /** One-based source line of the JSX tag. */
   readonly line: number;
-  /** PascalCase or member-expression JSX tag name. */
+  /** PascalCase/member tag name, or `#deferred-host-output` for a callback-only host subtree. */
   readonly name: string;
+  /**
+   * Indicates that this occurrence is returned by a function-valued JSX slot.
+   *
+   * The component is authored output, but it does not enter React's live tree until the receiving
+   * component invokes the callback. Keeping that distinction prevents a loader owned by the
+   * receiver from being mistaken for the selected file's completed output.
+   */
+  readonly renderMode?: 'deferred-callback';
   /** Module containing this JSX occurrence when bounded cross-module DFS has resolved it. */
   readonly sourcePath?: string;
 }

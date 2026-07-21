@@ -268,6 +268,146 @@ describe('React render outcome analysis', () => {
       true,
     );
     expect(plan?.outcomes.some((outcome) => outcome.componentNames.includes('Dialog'))).toBe(true);
+    const readyRow = plan?.outcomes
+      .flatMap((outcome) => outcome.componentTree[0]?.children ?? [])
+      .find((component) => component.name === 'ReadyRow');
+    expect(readyRow?.renderMode).toBe('deferred-callback');
+  });
+
+  /** Marks function children separately from receiver-owned loading/fallback output. */
+  it('identifies JSX returned by a render-prop child as deferred authored output', () => {
+    const source = [
+      'export function Page() {',
+      '  return (',
+      '    <QueryRenderer loader={<SectionLoader />}>',
+      '      {({ data }) => <PageBody data={data} />}',
+      '    </QueryRenderer>',
+      '  );',
+      '}',
+    ].join('\n');
+
+    const outcome = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source)[0]
+      ?.outcomes[0];
+
+    expect(outcome?.componentTree).toMatchObject([
+      {
+        children: [
+          { name: 'SectionLoader' },
+          { name: 'PageBody', renderMode: 'deferred-callback' },
+        ],
+        name: 'QueryRenderer',
+      },
+    ]);
+  });
+
+  /** Retains a callback contract even when its rendered subtree contains only DOM and text. */
+  it('represents intrinsic-only render callbacks with a deferred host placeholder', () => {
+    const source = [
+      'export function Page() {',
+      '  return <QueryRenderer>{() => <div>Ready</div>}</QueryRenderer>;',
+      '}',
+    ].join('\n');
+
+    const outcome = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source)[0]
+      ?.outcomes[0];
+
+    expect(outcome?.componentTree).toMatchObject([
+      {
+        children: [{ name: '#deferred-host-output', renderMode: 'deferred-callback' }],
+        name: 'QueryRenderer',
+      },
+    ]);
+    expect(outcome?.componentNames).toEqual(['QueryRenderer']);
+  });
+
+  /** A callback with a proven empty result must not manufacture deferred DOM evidence. */
+  it('does not create a host placeholder for a null render callback', () => {
+    const source = [
+      'export function Page() {',
+      '  return <QueryRenderer render={() => null} />;',
+      '}',
+    ].join('\n');
+
+    const outcome = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source)[0]
+      ?.outcomes[0];
+
+    expect(outcome?.componentTree).toMatchObject([{ children: [], name: 'QueryRenderer' }]);
+    expect(outcome?.componentTree[0]?.children).toEqual([]);
+  });
+
+  /** Follows immutable module and component-local zero-argument JSX helpers as synchronous output. */
+  it('expands bounded local JSX-returning calls without marking them deferred', () => {
+    const source = [
+      'const renderHeader = () => <Header />;',
+      'export function Page() {',
+      '  const renderBody = () => <Body />;',
+      '  const renderBodyAlias = renderBody;',
+      '  function renderFooter() { return <Footer />; }',
+      '  return <>{renderHeader()}{renderBodyAlias()}{renderFooter()}</>;',
+      '}',
+    ].join('\n');
+
+    const outcome = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source)[0]
+      ?.outcomes[0];
+
+    expect(outcome?.componentNames).toEqual(['Header', 'Body', 'Footer']);
+    expect(outcome?.componentTree.every((component) => component.renderMode === undefined)).toBe(
+      true,
+    );
+  });
+
+  /** Declines helpers whose runtime contract or body could execute work beyond returning JSX. */
+  it('leaves argument, async, generator, mutable, and side-effectful helper calls unknown', () => {
+    const source = [
+      'const withArgument = (value) => <WithArgument value={value} />;',
+      'const asyncBody = async () => <AsyncBody />;',
+      'function* generatedBody() { return <GeneratedBody />; }',
+      'const expressionEffect = () => (track(), <ExpressionEffect />);',
+      'const statementEffect = () => { track(); return <StatementEffect />; };',
+      'const mutableBody = () => <IncorrectUnshadowedBody />;',
+      'export function Page() {',
+      '  let mutableBody = () => <MutableBody />;',
+      '  return <>',
+      '    {withArgument(1)}{asyncBody()}{generatedBody()}',
+      '    {expressionEffect()}{statementEffect()}{mutableBody()}',
+      '  </>;',
+      '}',
+      'export function ParameterShadow({ mutableBody }) {',
+      '  return <>{mutableBody()}</>;',
+      '}',
+    ].join('\n');
+
+    const plans = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source);
+    const outcome = plans.find((plan) => plan.exportName === 'Page')?.outcomes[0];
+    const parameterShadow = plans.find((plan) => plan.exportName === 'ParameterShadow')
+      ?.outcomes[0];
+
+    expect(outcome?.componentNames).toEqual([]);
+    expect(parameterShadow?.componentNames).toEqual([]);
+  });
+
+  /** Stops alias cycles and reports a bounded plan when a local helper chain exceeds its DFS budget. */
+  it('bounds recursive and excessively deep local render helper aliases', () => {
+    const aliases = Array.from(
+      { length: PREVIEW_REACT_RENDER_OUTCOME_LIMITS.resolutionDepth + 4 },
+      (_, index) => `const helper${String(index)} = helper${String(index + 1)};`,
+    );
+    const source = [
+      'const cycleA = cycleB;',
+      'const cycleB = cycleA;',
+      ...aliases,
+      `const helper${String(aliases.length)} = () => <TooDeep />;`,
+      'export function CyclePage() { return <>{cycleA()}</>; }',
+      'export function DeepPage() { return <>{helper0()}</>; }',
+    ].join('\n');
+
+    const plans = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source);
+    const cycle = plans.find((plan) => plan.exportName === 'CyclePage');
+    const deep = plans.find((plan) => plan.exportName === 'DeepPage');
+
+    expect(cycle?.outcomes[0]?.componentNames).toEqual([]);
+    expect(deep?.outcomes[0]?.componentNames).toEqual([]);
+    expect(deep?.truncated).toBe(true);
   });
 
   /** Bounds fallback AST discovery for generated/deep unsupported return expressions. */

@@ -33,11 +33,10 @@ import {
 } from './staticPattern';
 import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPaths';
 import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
-import { instrumentReactConditionalRendering } from './reactConditionalRendering';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
 import { createFrameworkReplacements } from './previewFrameworkReplacements';
-import { instrumentPreviewReactEffects } from './previewReactEffectInstrumentation';
+import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
 import {
@@ -289,16 +288,13 @@ export class PreviewSourceTransformer {
       this.options.instrumentDataRequests === true
         ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)
         : compatibilitySource;
-    const conditionBoundarySource =
-      this.options.instrumentRenderConditions === true
-        ? instrumentReactConditionalRendering(sourcePath, dataBoundarySource)
-        : dataBoundarySource;
-    const rewrittenSource =
-      this.options.instrumentRuntimeEffectIsolation === true
-        ? instrumentPreviewReactEffects(sourcePath, conditionBoundarySource)
-        : conditionBoundarySource;
+    const runtimeSource = instrumentPreviewRuntimeSource(sourcePath, dataBoundarySource, {
+      isolateEffects: this.options.instrumentRuntimeEffectIsolation === true,
+      renderConditions: this.options.instrumentRenderConditions === true,
+    });
+    generatedImports.push(...runtimeSource.registrations);
     return {
-      contents: appendPreviewSourceImports(rewrittenSource, generatedImports),
+      contents: appendPreviewSourceImports(runtimeSource.source, generatedImports),
       watchDirectories: [...this.watchDirectories]
         .filter((directoryPath) => !initialWatchDirectories.has(directoryPath))
         .sort(),

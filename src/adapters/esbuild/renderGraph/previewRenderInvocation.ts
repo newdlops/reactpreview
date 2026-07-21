@@ -37,14 +37,6 @@ export function readPreviewRenderInvocation(
   identifier: ts.Identifier,
   boundary: ts.Node,
 ): PreviewRenderInvocation | undefined {
-  if (isJsxTagReference(identifier)) {
-    const calleeName = readContainingJsxTagName(identifier);
-    return Object.freeze({
-      ...(calleeName === undefined ? {} : { calleeName }),
-      mode: 'jsx',
-    });
-  }
-
   const attribute = findContainingJsxAttribute(identifier, boundary);
   if (attribute !== undefined) {
     const slotName = attribute.name.getText();
@@ -61,6 +53,23 @@ export function readPreviewRenderInvocation(
     }
   }
 
+  const childRenderSlot = findContainingJsxChildRenderSlot(identifier, boundary);
+  if (childRenderSlot !== undefined) {
+    return Object.freeze({
+      calleeName: childRenderSlot.receiverName,
+      mode: 'render-prop',
+      slotName: 'children',
+    });
+  }
+
+  if (isJsxTagReference(identifier)) {
+    const calleeName = readContainingJsxTagName(identifier);
+    return Object.freeze({
+      ...(calleeName === undefined ? {} : { calleeName }),
+      mode: 'jsx',
+    });
+  }
+
   if (isInsideReactCreateElement(identifier, boundary)) {
     return Object.freeze({ calleeName: 'createElement', mode: 'create-element' });
   }
@@ -74,6 +83,47 @@ export function readPreviewRenderInvocation(
     factoryNames: Object.freeze(factoryNames),
     mode: classifyHocMode(factoryNames),
   });
+}
+
+/**
+ * Finds an inline function passed as a component's direct JSX child.
+ *
+ * Libraries such as query/form renderers commonly defer their visual child until data is ready:
+ * `<QueryRenderer>{(result) => <Target />}</QueryRenderer>`. The target reference is therefore a
+ * real render-graph edge, but ordinary JSX ancestry does not describe that the parent must invoke a
+ * callback first. Retaining this bounded syntax fact lets Page Inspector prioritize the renderer's
+ * minimum payload instead of filling unrelated descendants while the selected target stays empty.
+ */
+function findContainingJsxChildRenderSlot(
+  identifier: ts.Identifier,
+  boundary: ts.Node,
+): { readonly receiverName: string } | undefined {
+  let current: ts.Node = identifier;
+  while (current !== boundary && !ts.isSourceFile(current)) {
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      let wrapped: ts.Node = current;
+      while (
+        ts.isParenthesizedExpression(wrapped.parent) ||
+        ts.isAsExpression(wrapped.parent) ||
+        ts.isSatisfiesExpression(wrapped.parent) ||
+        ts.isNonNullExpression(wrapped.parent)
+      ) {
+        wrapped = wrapped.parent;
+      }
+      const expression = wrapped.parent;
+      const wrapper = expression.parent;
+      if (
+        ts.isJsxExpression(expression) &&
+        ts.isJsxElement(wrapper) &&
+        wrapper.children.includes(expression)
+      ) {
+        return { receiverName: wrapper.openingElement.tagName.getText() };
+      }
+      return undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }
 
 /** Reports an identifier used as the tag identity of an opening or self-closing JSX element. */

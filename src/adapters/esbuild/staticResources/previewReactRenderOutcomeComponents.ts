@@ -29,6 +29,8 @@ export interface PreviewReactRenderLocalBindingEvidence {
 export interface PreviewReactNestedRenderExpression {
   /** Whether a bare PascalCase/member value denotes a component passed through a render slot. */
   readonly allowComponentReference: boolean;
+  /** Whether React output stays dormant until the receiving component invokes this expression. */
+  readonly deferred: boolean;
   /** Authored expression whose JSX branches should be analyzed. */
   readonly expression: ts.Expression;
 }
@@ -43,6 +45,26 @@ export interface PreviewReactNestedRenderExpressionCollection {
 export interface PreviewStaticComponentForestResult {
   readonly componentTree: readonly PreviewReactRenderComponentNode[];
   readonly truncated: boolean;
+}
+
+/** Projects component-tree names in first-seen DFS order for fast graph filtering. */
+export function collectPreviewComponentNames(
+  componentTree: readonly PreviewReactRenderComponentNode[],
+  excludedName?: string,
+): readonly string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const visit = (nodes: readonly PreviewReactRenderComponentNode[]): void => {
+    for (const node of nodes) {
+      if (node.name !== excludedName && !seen.has(node.name)) {
+        seen.add(node.name);
+        names.push(node.name);
+      }
+      visit(node.children);
+    }
+  };
+  visit(componentTree);
+  return Object.freeze(names);
 }
 
 /**
@@ -84,7 +106,11 @@ export function collectPreviewJsxNestedRenderExpressions(
     if (
       hasPreviewRenderableExpression(expression, bindings, allowComponentReference, new Set(), 0)
     ) {
-      expressions.push({ allowComponentReference, expression });
+      expressions.push({
+        allowComponentReference,
+        deferred: isPreviewDeferredRenderExpression(expression, bindings, new Set(), 0),
+        expression,
+      });
     }
   }
   if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
@@ -95,9 +121,13 @@ export function collectPreviewJsxNestedRenderExpressions(
       }
       remainingCandidates -= 1;
       if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child) || ts.isJsxFragment(child)) {
-        expressions.push({ allowComponentReference: false, expression: child });
+        expressions.push({ allowComponentReference: false, deferred: false, expression: child });
       } else if (ts.isJsxExpression(child) && child.expression !== undefined) {
-        expressions.push({ allowComponentReference: false, expression: child.expression });
+        expressions.push({
+          allowComponentReference: false,
+          deferred: isPreviewDeferredRenderExpression(child.expression, bindings, new Set(), 0),
+          expression: child.expression,
+        });
       }
     }
   }
@@ -154,7 +184,13 @@ export function collectPreviewStaticComponentForest(
       );
       truncated ||= nestedCollection.truncated;
       for (const nested of nestedCollection.expressions) {
-        visit(nested.expression, children, depth + 1, nested.allowComponentReference);
+        const nestedChildren: PreviewReactRenderComponentNode[] = [];
+        visit(nested.expression, nestedChildren, depth + 1, nested.allowComponentReference);
+        children.push(
+          ...nestedChildren.map((child) =>
+            nested.deferred ? { ...child, renderMode: 'deferred-callback' as const } : child,
+          ),
+        );
         if (remainingVisits <= 0) break;
       }
       if (identity === undefined) destination.push(...children);
@@ -237,6 +273,31 @@ function isPreviewRenderSlotAttribute(authoredName: string): boolean {
     name.endsWith('component') ||
     name.endsWith('slot')
   );
+}
+
+/**
+ * Proves that a JSX child/slot is a function whose returned JSX is not mounted synchronously.
+ *
+ * Only direct functions and bounded local aliases qualify. Calls and member values remain opaque:
+ * invoking either during analysis could execute application code or misclassify an ordinary value.
+ */
+function isPreviewDeferredRenderExpression(
+  expression_: ts.Expression,
+  bindings: ReadonlyMap<string, PreviewReactRenderLocalBindingEvidence>,
+  visitedBindings: ReadonlySet<string>,
+  depth: number,
+): boolean {
+  if (depth > MAX_RENDERABILITY_DEPTH) return false;
+  const expression = unwrapPreviewRenderExpression(expression_);
+  if (isPreviewRenderFunction(expression)) return true;
+  if (!ts.isIdentifier(expression) || visitedBindings.has(expression.text)) return false;
+  const binding = bindings.get(expression.text);
+  if (binding === undefined) return false;
+  if (binding.functionLike !== undefined) return true;
+  if (binding.expression === undefined) return false;
+  const nextVisited = new Set(visitedBindings);
+  nextVisited.add(expression.text);
+  return isPreviewDeferredRenderExpression(binding.expression, bindings, nextVisited, depth + 1);
 }
 
 /** Proves that an attribute value can create React output without evaluating the value. */

@@ -38,12 +38,19 @@ import {
 } from './previewReactRenderOutcomeSyntax';
 import type { PreviewRenderFunction as RenderFunction } from './previewReactRenderOutcomeSyntax';
 import {
+  collectPreviewComponentNames,
   collectPreviewJsxNestedRenderExpressions,
   collectPreviewStaticComponentForest,
   readPreviewComponentReferenceIdentity,
   readPreviewJsxComponentIdentity,
   readPreviewRenderFunctionReturnExpression,
 } from './previewReactRenderOutcomeComponents';
+import {
+  collectPreviewComponentRenderBindings,
+  collectPreviewModuleRenderBindings,
+  readPreviewSafeLocalRenderCall,
+} from './previewReactLocalRenderCalls';
+import type { PreviewLocalRenderBinding as LocalRenderBinding } from './previewReactLocalRenderCalls';
 
 export type {
   PreviewReactRenderComponentNode,
@@ -57,6 +64,7 @@ export type {
 } from './previewReactRenderOutcomeTypes';
 
 const MAX_COMPONENT_EXPORTS = 32;
+const DEFERRED_HOST_OUTPUT_NAME = '#deferred-host-output';
 const MAX_OUTCOMES_PER_EXPORT = 32;
 const MAX_CONTROL_FLOW_DEPTH = 12;
 const MAX_LOCAL_RESOLUTION_DEPTH = 12;
@@ -70,12 +78,6 @@ export const PREVIEW_REACT_RENDER_OUTCOME_LIMITS = Object.freeze({
   outcomesPerExport: MAX_OUTCOMES_PER_EXPORT,
   resolutionDepth: MAX_LOCAL_RESOLUTION_DEPTH,
 });
-
-/** A same-file binding that can participate in a bounded component/HOC resolution chain. */
-interface LocalRenderBinding {
-  readonly expression?: ts.Expression;
-  readonly functionLike?: RenderFunction;
-}
 
 /** One exported runtime name paired with the locally resolved function React invokes. */
 interface ExportedRenderFunction {
@@ -100,6 +102,7 @@ interface MutableRenderOutcome {
 interface NestedRenderVariant {
   readonly componentTree: readonly PreviewReactRenderComponentNode[];
   readonly conditions: readonly PreviewReactRenderConditionEdge[];
+  readonly hasHostOutput?: boolean;
 }
 
 /** Per-export safety state shared by control-flow and nested-JSX expansion. */
@@ -159,30 +162,11 @@ export function analyzePreviewReactRenderOutcomesFromSourceFile(
   sourcePath = sourceFile.fileName,
 ): readonly PreviewReactRenderOutcomePlan[] {
   if (hasParseDiagnostics(sourceFile)) return Object.freeze([]);
-  const bindings = collectLocalRenderBindings(sourceFile);
+  const bindings = collectPreviewModuleRenderBindings(sourceFile);
   const plans = collectExportedRenderFunctions(sourceFile, bindings)
     .slice(0, MAX_COMPONENT_EXPORTS)
     .map((component) => analyzeExportedRenderFunction(component, sourceFile, sourcePath, bindings));
   return Object.freeze(plans);
-}
-
-/** Collects named local functions and variable initializers used by export/HOC resolution. */
-function collectLocalRenderBindings(
-  sourceFile: ts.SourceFile,
-): ReadonlyMap<string, LocalRenderBinding> {
-  const bindings = new Map<string, LocalRenderBinding>();
-  for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
-      bindings.set(statement.name.text, { functionLike: statement });
-    } else if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name) && declaration.initializer !== undefined) {
-          bindings.set(declaration.name.text, { expression: declaration.initializer });
-        }
-      }
-    }
-  }
-  return bindings;
 }
 
 /** Finds direct exports and resolves local wrapper chains to the function React will invoke. */
@@ -277,7 +261,7 @@ function analyzeExportedRenderFunction(
   bindings: ReadonlyMap<string, LocalRenderBinding>,
 ): PreviewReactRenderOutcomePlan {
   const state: OutcomeAnalysisState = {
-    bindings,
+    bindings: collectPreviewComponentRenderBindings(component.functionLike, bindings),
     outcomes: [],
     sourceFile,
     sourcePath,
@@ -541,22 +525,45 @@ function expandNestedJsxNode(
     state.truncated = true;
     return [{ componentTree: collectStaticComponentForest(node, state), conditions: [] }];
   }
-  const children = collectPreviewJsxNestedRenderExpressions(node, state.bindings).expressions;
-  let variants: readonly NestedRenderVariant[] = [{ componentTree: [], conditions: [] }];
-  for (const child of children) {
-    variants = combineNestedVariants(
-      variants,
-      expandNestedExpression(
-        child.expression,
-        state,
-        depth + 1,
-        visitedBindings,
-        child.allowComponentReference,
-      ),
-      state,
-    );
-  }
   const component = readPreviewJsxComponentIdentity(node, state.sourceFile);
+  const directText =
+    (ts.isJsxElement(node) || ts.isJsxFragment(node)) &&
+    node.children.some((child) => ts.isJsxText(child) && child.text.trim().length > 0);
+  const children = collectPreviewJsxNestedRenderExpressions(node, state.bindings).expressions;
+  let variants: readonly NestedRenderVariant[] = [
+    {
+      componentTree: [],
+      conditions: [],
+      hasHostOutput: component === undefined && (!ts.isJsxFragment(node) || directText),
+    },
+  ];
+  for (const child of children) {
+    const childVariants = expandNestedExpression(
+      child.expression,
+      state,
+      depth + 1,
+      visitedBindings,
+      child.allowComponentReference,
+    ).map((variant) => ({
+      ...variant,
+      componentTree: child.deferred
+        ? variant.componentTree.length === 0 && variant.hasHostOutput === true
+          ? [
+              {
+                children: [],
+                ...readLocation(state.sourceFile, child.expression),
+                name: DEFERRED_HOST_OUTPUT_NAME,
+                renderMode: 'deferred-callback' as const,
+              },
+            ]
+          : variant.componentTree.map((component) => ({
+              ...component,
+              renderMode: 'deferred-callback' as const,
+            }))
+        : variant.componentTree,
+    }));
+    variants = combineNestedVariants(variants, childVariants, state);
+  }
   if (component === undefined) return variants;
   return variants.map((variant) => ({
     componentTree: [
@@ -636,7 +643,7 @@ function expandNestedExpression(
       visitedBindings,
       allowComponentReference,
     ).map((variant) => ({
-      componentTree: variant.componentTree,
+      ...variant,
       conditions: [...truthyConditions, ...variant.conditions],
     }));
     const hidden = logicalEdges.map((edges, index) => ({
@@ -676,11 +683,30 @@ function expandNestedExpression(
       }
     }
   }
-  if (allowComponentReference && isRenderFunction(expression)) {
+  if (isRenderFunction(expression)) {
     const returned = readPreviewRenderFunctionReturnExpression(expression);
     return returned === undefined
       ? [{ componentTree: collectStaticComponentForest(expression.body, state), conditions: [] }]
       : expandNestedExpression(returned, state, depth + 1, visitedBindings, true);
+  }
+  if (ts.isCallExpression(expression)) {
+    const localRenderCall = readPreviewSafeLocalRenderCall(
+      expression,
+      state.bindings,
+      visitedBindings,
+      depth,
+      MAX_LOCAL_RESOLUTION_DEPTH,
+    );
+    if (localRenderCall.kind === 'bounded') state.truncated = true;
+    if (localRenderCall.kind === 'resolved') {
+      return expandNestedExpression(
+        localRenderCall.expression,
+        state,
+        depth + 1,
+        localRenderCall.visitedBindings,
+        allowComponentReference,
+      );
+    }
   }
   if (
     ts.isJsxElement(expression) ||
@@ -688,6 +714,9 @@ function expandNestedExpression(
     ts.isJsxFragment(expression)
   ) {
     return expandNestedJsxNode(expression, state, depth + 1, visitedBindings);
+  }
+  if (ts.isStringLiteralLike(expression) || ts.isNumericLiteral(expression)) {
+    return [{ componentTree: [], conditions: [], hasHostOutput: true }];
   }
   if (ts.isArrayLiteralExpression(expression)) {
     let variants: readonly NestedRenderVariant[] = [{ componentTree: [], conditions: [] }];
@@ -732,6 +761,7 @@ function combineNestedVariants(
       combined.push({
         componentTree: [...leftVariant.componentTree, ...rightVariant.componentTree],
         conditions: [...leftVariant.conditions, ...rightVariant.conditions],
+        hasHostOutput: leftVariant.hasHostOutput === true || rightVariant.hasHostOutput === true,
       });
     }
   }
@@ -744,7 +774,7 @@ function prependNestedCondition(
   condition: PreviewReactRenderConditionEdge,
 ): readonly NestedRenderVariant[] {
   return variants.map((variant) => ({
-    componentTree: variant.componentTree,
+    ...variant,
     conditions: [condition, ...variant.conditions],
   }));
 }
@@ -849,7 +879,7 @@ function freezeRenderOutcome(
   const componentTree = freezeComponentForest(outcome.componentTree, {
     remaining: MAX_COMPONENTS_PER_OUTCOME,
   });
-  const componentNames = collectComponentNames(componentTree);
+  const componentNames = collectPreviewComponentNames(componentTree, DEFERRED_HOST_OUTPUT_NAME);
   const location = readLocation(sourceFile, outcome.node);
   const label = describeOutcome(outcome, componentNames, sourceFile);
   const conditions = Object.freeze([...outcome.conditions]);
@@ -894,29 +924,11 @@ function freezeComponentForest(
         column: node.column,
         line: node.line,
         name: node.name,
+        ...(node.renderMode === undefined ? {} : { renderMode: node.renderMode }),
       }),
     );
   }
   return Object.freeze(frozen);
-}
-
-/** Projects component-tree names in first-seen DFS order for fast graph filtering. */
-function collectComponentNames(
-  componentTree: readonly PreviewReactRenderComponentNode[],
-): readonly string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  const visit = (nodes: readonly PreviewReactRenderComponentNode[]): void => {
-    for (const node of nodes) {
-      if (!seen.has(node.name)) {
-        seen.add(node.name);
-        names.push(node.name);
-      }
-      visit(node.children);
-    }
-  };
-  visit(componentTree);
-  return Object.freeze(names);
 }
 
 /** Provides a compact label that distinguishes nested conditional component variants. */

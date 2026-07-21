@@ -132,6 +132,134 @@ describe('selectPreviewTargetExports', () => {
     expect(selectPreviewPrimaryTargetExport(selection)).toBe('CompanyRegisterModal');
   });
 
+  /** Prevents a hook module's adjacent gql value from becoming Page Inspector's mount target. */
+  it('excludes an exported gql mutation even when it is the only uppercase runtime value', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/use-company-phone-modal.tsx',
+      [
+        "import documentTag from 'graphql-tag';",
+        'type PhoneMutation = unknown;',
+        'export const COMPANY_CREATE_EDIT_USER_PHONE_MUTATION: typeof PhoneMutation = documentTag`mutation EditPhone { editPhone }`;',
+        'export const useCompanyPhoneModal = () => ({ show() {} });',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([]);
+    expect(selectPreviewPrimaryTargetExport(selection)).toBeUndefined();
+  });
+
+  /** Recognizes code-generator object documents and local export aliases without evaluating them. */
+  it('excludes generated DocumentNode objects through casts and export aliases', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/documents.ts',
+      [
+        "import type { TypedDocumentNode } from '@graphql-typed-document-node/core';",
+        'const CompanyDocument = { kind: "Document", definitions: [] } as unknown as TypedDocumentNode;',
+        'const AliasedDocument = CompanyDocument;',
+        'export { CompanyDocument, AliasedDocument as CompanyQuery };',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([]);
+  });
+
+  /** A component prop mentioning DocumentNode does not make the component value a document. */
+  it('retains React components whose nested props or attached metadata mention DocumentNode', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/document-viewer.tsx',
+      [
+        "import type { DocumentNode } from 'graphql';",
+        'type ViewerProps = { document: DocumentNode };',
+        'export const DocumentViewer: React.FC<ViewerProps> = () => <main />;',
+        'export const DecoratedViewer: React.FC & { document: DocumentNode } = () => <aside />;',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([
+      { displayName: 'DocumentViewer', exportName: 'DocumentViewer', kind: 'explicit' },
+      { displayName: 'DecoratedViewer', exportName: 'DecoratedViewer', kind: 'explicit' },
+    ]);
+  });
+
+  /** An opaque helper called graphql may be a React HOC and is not direct document evidence. */
+  it('retains exports produced by unproven local graphql helpers', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/wrapped-panel.tsx',
+      [
+        "import { graphql } from './component-hoc';",
+        'const Panel = () => <main />;',
+        'export const WrappedPanel = graphql(Panel);',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([
+      { displayName: 'WrappedPanel', exportName: 'WrappedPanel', kind: 'explicit' },
+    ]);
+  });
+
+  /** Package and generated-helper origins prove gql/graphql document construction. */
+  it('excludes documents created by proven package and generated helper imports', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/generated-documents.ts',
+      [
+        "import { gql as apolloGql } from '@apollo/client';",
+        "import { graphql as generatedGraphql } from './gql';",
+        'export const COMPANY_QUERY = apolloGql`query Company { company { id } }`;',
+        "export const COMPANY_MUTATION = generatedGraphql('mutation Company { updateCompany }');",
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([]);
+  });
+
+  /** Namespace members retain per-export semantics instead of trusting the package wholesale. */
+  it('does not treat an unproven graphql namespace member as a document factory', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/apollo-namespace.tsx',
+      [
+        "import * as Apollo from '@apollo/client';",
+        'export const COMPANY_QUERY = Apollo.gql`query Company { company { id } }`;',
+        'export const GraphqlPanel = Apollo.graphql(() => <main />);',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([
+      { displayName: 'GraphqlPanel', exportName: 'GraphqlPanel', kind: 'explicit' },
+    ]);
+  });
+
+  /** An exact top-level document annotation remains useful when its initializer is opaque. */
+  it('excludes only direct top-level TypedDocumentNode annotations', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/typed-document.tsx',
+      [
+        "import type { TypedDocumentNode } from '@graphql-typed-document-node/core';",
+        'export const CompanyQuery: TypedDocumentNode = createDocument();',
+        'export const QueryConsumer: React.FC<{ query: TypedDocumentNode }> = () => <main />;',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([
+      { displayName: 'QueryConsumer', exportName: 'QueryConsumer', kind: 'explicit' },
+    ]);
+  });
+
+  /** Uses value shape rather than uppercase spelling so acronym React owners remain previewable. */
+  it('retains acronym and screaming-snake React component exports', () => {
+    const selection = selectPreviewTargetExports(
+      '/workspace/src/acronyms.tsx',
+      [
+        'export const HTTP = () => <main />;',
+        'export const COMPANY_QUERY = () => <section />;',
+      ].join('\n'),
+    );
+
+    expect(selection).toEqual([
+      { displayName: 'HTTP', exportName: 'HTTP', kind: 'explicit' },
+      { displayName: 'COMPANY_QUERY', exportName: 'COMPANY_QUERY', kind: 'explicit' },
+    ]);
+  });
+
   /** Keeps a default export authoritative even when a named component has stronger role wording. */
   it('uses the default export as the primary Page Inspector target', () => {
     const selection = selectPreviewTargetExports(

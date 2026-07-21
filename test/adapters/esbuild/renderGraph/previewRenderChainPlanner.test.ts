@@ -297,6 +297,41 @@ describe('createPreviewRenderChainPlan', () => {
     });
   });
 
+  /** Marks an inline JSX child callback as a deferred render contract owned by its receiver. */
+  it('preserves inline render-function children as render-prop edges', async () => {
+    const ownerPath = `${ROOT}/QueryPage.tsx`;
+    const sources = {
+      [TARGET_PATH]: 'export const SelectedPage = () => <article />;',
+      [ownerPath]: [
+        "import { SelectedPage } from './pages/SelectedPage';",
+        'const QueryRenderer = ({ children }) => children({ data: {} });',
+        'export const QueryPage = () => (',
+        '  <QueryRenderer>{(result) => result.data && <SelectedPage />}</QueryRenderer>',
+        ');',
+      ].join('\n'),
+      [ENTRY_PATH]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { QueryPage } from './QueryPage';",
+        'createRoot(document.body).render(<QueryPage />);',
+      ].join('\n'),
+    };
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'SelectedPage',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.paths[0]?.steps[0]?.invocation).toEqual({
+      calleeName: 'QueryRenderer',
+      mode: 'render-prop',
+      slotName: 'children',
+      sourcePath: ownerPath,
+    });
+  });
+
   /** Crosses the same lazy page, route array, router object, app lazy map, and entry used by large apps. */
   it('finds the application entry through lazy and route configuration value flow', async () => {
     const sources = {

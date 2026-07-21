@@ -7,6 +7,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import { PreviewCompilationError, type PreviewDiagnostic } from '../../domain/preview';
+import { collectPreviewGraphqlDocumentExportNames } from './previewGraphqlDocumentExports';
 
 /** One statically named runtime export that the target bridge can import directly. */
 export interface PreviewExplicitTargetExportSlot {
@@ -65,6 +66,7 @@ export function selectPreviewTargetExports(
   const sourceFile = createSourceFile(documentPath, sourceText);
   assertSyntacticallyValid(sourceFile, documentPath);
   const runtimeBindings = collectRuntimeBindings(sourceFile);
+  const graphqlDocumentExports = collectPreviewGraphqlDocumentExportNames(sourceFile);
   const slots: PreviewTargetExportSlot[] = [];
   const seenExportNames = new Set<string>();
 
@@ -72,6 +74,7 @@ export function selectPreviewTargetExports(
   const addExplicitExport: AddExplicitExport = (exportName, displayName = exportName): void => {
     if (
       seenExportNames.has(exportName) ||
+      graphqlDocumentExports.has(exportName) ||
       (exportName !== 'default' && !isPascalCaseIdentifier(exportName))
     ) {
       return;
@@ -89,8 +92,9 @@ export function selectPreviewTargetExports(
 /**
  * Chooses the export whose callers should seed Page Inspector's application-path search.
  * Default remains authoritative. Otherwise component-role suffixes outrank neutral PascalCase
- * names, while GraphQL documents, Context objects, and screaming-snake constants remain last-resort
- * candidates so unusual component naming never turns a valid file into an empty preview.
+ * names. Statically proven GraphQL documents have already been removed from `slots`; unresolved
+ * Context objects and screaming-snake values remain last-resort candidates so unusual component
+ * naming never turns a valid file into an empty preview.
  */
 export function selectPreviewPrimaryTargetExport(
   slots: readonly PreviewTargetExportSlot[],

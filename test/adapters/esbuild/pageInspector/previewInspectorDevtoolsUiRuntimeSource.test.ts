@@ -91,6 +91,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Current-file component overview'");
     expect(source).toContain("'FILE COMPONENTS'");
     expect(source).toContain("'TARGET ABSENT'");
+    expect(source).toContain("'TARGET EMPTY'");
     expect(source).toContain("'Rendered flow does not contain the current file'");
     expect(source).toContain('React Preview does not classify this application outcome.');
     expect(source).toContain("'aria-label': 'Inspector tree legend'");

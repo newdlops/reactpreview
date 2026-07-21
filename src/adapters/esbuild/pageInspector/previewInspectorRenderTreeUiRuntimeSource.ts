@@ -41,6 +41,297 @@ function readPreviewInspectorCurrentFileExports(descriptor) {
   });
 }
 
+/**
+ * Resolves the current-file export whose static JSX outcomes belong in the Elements tree.
+ *
+ * A page-root export can be selected for execution while the editor still points at a nested target
+ * export. Reusing the render-outcome runtime's ownership decision keeps those two identities from
+ * being conflated and falls back to immutable descriptor evidence when that helper is unavailable.
+ */
+function readPreviewInspectorExpectedOutcomeExportName(descriptor) {
+  const runtimeName = typeof readPreviewInspectorRenderOutcomeExportName === 'function'
+    ? readPreviewInspectorRenderOutcomeExportName()
+    : undefined;
+  if (
+    typeof runtimeName === 'string' &&
+    descriptor?.inspector?.renderOutcomesByExport?.[runtimeName] !== undefined
+  ) {
+    return runtimeName;
+  }
+  const selectedName = previewInspectorSession.selectedExportName;
+  if (
+    typeof selectedName === 'string' &&
+    descriptor?.inspector?.renderOutcomesByExport?.[selectedName] !== undefined
+  ) {
+    return selectedName;
+  }
+  const targetName = descriptor?.inspector?.target?.exportName;
+  return typeof targetName === 'string' &&
+    descriptor?.inspector?.renderOutcomesByExport?.[targetName] !== undefined
+    ? targetName
+    : undefined;
+}
+
+/** Reads the persisted whole-return selection without treating logical-AND switches as outcomes. */
+function readPreviewInspectorExpectedSelectedOutcomeId(plan, exportName) {
+  const runtimeOutcome = typeof readPreviewInspectorSelectedRenderOutcome === 'function'
+    ? readPreviewInspectorSelectedRenderOutcome()
+    : undefined;
+  if (runtimeOutcome?.exportName === exportName && typeof runtimeOutcome?.id === 'string') {
+    return runtimeOutcome.id;
+  }
+  const persisted = previewInspectorSession.devtoolsState?.renderOutcomeSelectionByExport;
+  if (
+    persisted !== null &&
+    typeof persisted === 'object' &&
+    typeof persisted?.[exportName] === 'string'
+  ) {
+    return persisted[exportName];
+  }
+  const outcomes = Array.isArray(plan?.outcomes) ? plan.outcomes : [];
+  return outcomes.length === 1 &&
+    (!Array.isArray(outcomes[0]?.conditions) || outcomes[0].conditions.length === 0) &&
+    typeof outcomes[0]?.id === 'string'
+    ? outcomes[0].id
+    : undefined;
+}
+
+/**
+ * Reads current target-output truth without asking a static component row to impersonate Fiber.
+ *
+ * Boundary helpers provide the freshest answer during the delay before reachability state updates;
+ * retained state remains the safe UI-only fallback used by isolated tests and old preview artifacts.
+ */
+function readPreviewInspectorExpectedOutputState(exportName) {
+  let retainedState;
+  const states = previewInspectorSession.targetReachabilityByKey;
+  if (states instanceof Map) {
+    const activeKey = previewInspectorSession.activeTargetReachabilityKey;
+    const active = typeof activeKey === 'string' ? states.get(activeKey) : undefined;
+    retainedState = active?.targetExportName === exportName
+      ? active
+      : [...states.values()].find((state) => state?.targetExportName === exportName);
+  }
+  let mounted = retainedState?.targetMounted === true || retainedState?.targetWasMounted === true;
+  let hasOutput = retainedState?.targetHasOutput === true;
+  let hasAnyHostOutput = retainedState?.targetHasAnyHostOutput === true;
+  try {
+    const boundaries = previewInspectorSession.boundariesByExport?.get(exportName);
+    if (boundaries instanceof Set) {
+      hasAnyHostOutput = [...boundaries].some(
+        (boundary) => collectPreviewInspectorFiberElements(boundary).length > 0,
+      );
+    }
+    if (typeof hasMountedPreviewInspectorTarget === 'function') {
+      mounted = hasMountedPreviewInspectorTarget({ targetExportName: exportName }) || mounted;
+    }
+    if (typeof hasPreviewInspectorTargetHostOutput === 'function') {
+      hasOutput = hasPreviewInspectorTargetHostOutput({ targetExportName: exportName });
+    }
+  } catch {
+    /* UI enrichment must stay available when a future collector cannot expose boundary internals. */
+  }
+  hasAnyHostOutput = retainedState?.targetHasAnyHostOutput === true || hasAnyHostOutput;
+  return { hasAnyHostOutput, hasOutput, mounted };
+}
+
+/** Counts a bounded static component forest when older descriptors omit component-name metadata. */
+function countPreviewInspectorExpectedComponentNodes(nodes, state = { count: 0 }) {
+  if (!Array.isArray(nodes) || state.count >= 256) return state.count;
+  for (const node of nodes) {
+    if (node === null || typeof node !== 'object' || state.count >= 256) continue;
+    state.count += 1;
+    countPreviewInspectorExpectedComponentNodes(node.children, state);
+  }
+  return state.count;
+}
+
+/** Creates one stable family identity for outcomes that differ only by JSX logical-AND visibility. */
+function createPreviewInspectorExpectedOutcomeFamilyKey(outcome) {
+  const conditions = Array.isArray(outcome?.conditions) ? outcome.conditions : [];
+  const logicalConditions = conditions.filter((condition) => condition?.kind === 'logical-and');
+  if (logicalConditions.length === 0) return 'outcome:' + String(outcome?.id ?? 'unknown');
+  const logicalGroups = [...new Set(logicalConditions.map((condition) =>
+    condition?.logicalAndGroupId ?? condition?.id,
+  ).filter((value) => typeof value === 'string'))].sort();
+  const ordinaryConditions = conditions.filter((condition) => condition?.kind !== 'logical-and')
+    .map((condition) => [condition?.id, condition?.branch, condition?.value]);
+  return JSON.stringify([outcome?.sourcePath, outcome?.exportName, ordinaryConditions, logicalGroups]);
+}
+
+/**
+ * Collapses the visible/hidden products of logical-AND expressions into one component-rich family.
+ * Their existing component-tree Boolean switches remain the sole interactive controls, while
+ * ternary/if/switch return alternatives retain separate authored outcome rows.
+ */
+function readPreviewInspectorExpectedOutcomeFamilies(plan) {
+  const families = new Map();
+  const outcomes = Array.isArray(plan?.outcomes) ? plan.outcomes.slice(0, 32) : [];
+  for (const outcome of outcomes) {
+    if (outcome === null || typeof outcome !== 'object' || typeof outcome.id !== 'string') continue;
+    const key = createPreviewInspectorExpectedOutcomeFamilyKey(outcome);
+    const previous = families.get(key);
+    const conditions = Array.isArray(outcome.conditions) ? outcome.conditions : [];
+    const logicalOnly = conditions.length > 0 &&
+      conditions.every((condition) => condition?.kind === 'logical-and');
+    const componentCount = Array.isArray(outcome.componentNames)
+      ? outcome.componentNames.length
+      : countPreviewInspectorExpectedComponentNodes(outcome.componentTree);
+    if (previous === undefined) {
+      families.set(key, { componentCount, ids: [outcome.id], logicalOnly, outcome });
+      continue;
+    }
+    previous.ids.push(outcome.id);
+    previous.logicalOnly = previous.logicalOnly && logicalOnly;
+    if (componentCount > previous.componentCount) {
+      previous.componentCount = componentCount;
+      previous.outcome = outcome;
+    }
+  }
+  return [...families.values()];
+}
+
+/** Converts one analyzer component occurrence into an explicitly unmounted, source-backed row. */
+function createPreviewInspectorExpectedComponentNode(node, outcome, path) {
+  const sourcePath = typeof node?.sourcePath === 'string' ? node.sourcePath : outcome?.sourcePath;
+  const children = Array.isArray(node?.children)
+    ? node.children.slice(0, 96).map((child, index) =>
+        createPreviewInspectorExpectedComponentNode(child, outcome, path + '.' + String(index)))
+    : [];
+  return {
+    children,
+    contextOnly: true,
+    edgeKind: 'expected-jsx-component',
+    expectedOutput: true,
+    id: 'expected-jsx:' + String(outcome?.id ?? 'unknown') + ':' + path,
+    kind: 'component',
+    mounted: false,
+    name: typeof node?.name === 'string' && node.name.length > 0 ? node.name : 'Unknown component',
+    props: { authored: true, expected: true, live: false },
+    source: normalizePreviewInspectorUiSource({
+      column: node?.column,
+      displayName: sourcePath,
+      line: node?.line,
+      path: sourcePath,
+    }),
+    state: undefined,
+  };
+}
+
+/** Creates a selectable data-only row for one whole-return outcome or condition alternative. */
+function createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputState) {
+  const outcome = family.outcome;
+  const outputMissing = outputState.hasOutput !== true;
+  const selected = family.ids.includes(selectedId);
+  const ordinaryConditions = (Array.isArray(outcome.conditions) ? outcome.conditions : [])
+    .filter((condition) => condition?.kind !== 'logical-and')
+    .map((condition) => ({
+      branch: condition.branch,
+      expression: condition.expression,
+      kind: condition.kind,
+      label: condition.label,
+      selectable: condition.selectable,
+      value: condition.value,
+    }));
+  const logicalSwitchCount = (Array.isArray(outcome.conditions) ? outcome.conditions : [])
+    .filter((condition) => condition?.kind === 'logical-and').length;
+  const prefix = selected
+    ? 'Expected return · '
+    : selectedId === undefined ? 'Return option · ' : 'Alternative return · ';
+  return {
+    children: (Array.isArray(outcome.componentTree) ? outcome.componentTree : [])
+      .slice(0, 96)
+      .map((node, index) =>
+        createPreviewInspectorExpectedComponentNode(node, outcome, String(index))),
+    contextOnly: true,
+    edgeKind: 'expected-render-outcome',
+    authoredOutputMissing: outputMissing,
+    expectedOutcomeActive: selected,
+    expectedOutput: true,
+    id: 'expected-outcome:' + outcome.id,
+    kind: 'component',
+    liveHostOutputMissing: outputMissing && outputState.hasAnyHostOutput !== true,
+    mounted: false,
+    name: prefix + String(outcome.label ?? outcome.kind ?? 'authored return'),
+    outcomeId: outcome.id,
+    props: {
+      authored: true,
+      kind: outcome.kind,
+      authoredOutput: outputState.hasOutput === true,
+      liveHostOutput: outputState.hasAnyHostOutput === true,
+      logicalSwitchCount,
+      selected,
+    },
+    source: normalizePreviewInspectorUiSource({
+      column: outcome.column,
+      displayName: outcome.sourcePath,
+      line: outcome.line,
+      path: outcome.sourcePath,
+    }),
+    state: { conditions: ordinaryConditions },
+  };
+}
+
+/** Builds the static JSX inventory shown only as expectation/alternative evidence. */
+function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName) {
+  const plan = descriptor?.inspector?.renderOutcomesByExport?.[exportName];
+  if (plan === null || typeof plan !== 'object') return undefined;
+  const families = readPreviewInspectorExpectedOutcomeFamilies(plan);
+  if (families.length === 0) return undefined;
+  const outputState = readPreviewInspectorExpectedOutputState(exportName);
+  const outputMissing = outputState.hasOutput !== true;
+  let selectedId = readPreviewInspectorExpectedSelectedOutcomeId(plan, exportName);
+  if (selectedId === undefined && families.length === 1) selectedId = families[0]?.ids[0];
+  const visibleFamilies = outputMissing
+    ? families
+    : families.filter((family) => !family.ids.includes(selectedId) && family.logicalOnly !== true);
+  if (visibleFamilies.length === 0) return undefined;
+  const children = visibleFamilies
+    .sort((left, right) => Number(right.ids.includes(selectedId)) - Number(left.ids.includes(selectedId)))
+    .map((family) => createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputState));
+  return {
+    authoredOutputMissing: outputMissing,
+    children,
+    contextOnly: true,
+    edgeKind: 'expected-output-group',
+    expectedOutput: true,
+    id: 'expected-outcomes:' + exportName,
+    kind: 'component',
+    liveHostOutputMissing: outputMissing && !outputState.hasAnyHostOutput,
+    mounted: false,
+    name: outputMissing
+      ? outputState.hasAnyHostOutput
+        ? 'Expected JSX · wrapper/fallback host only'
+        : 'Expected JSX · no live host output'
+      : 'Authored JSX alternatives',
+    props: {
+      authoredOutput: outputState.hasOutput === true,
+      liveHostOutput: outputState.hasAnyHostOutput === true,
+      wrapperOrFallbackHost: outputState.hasAnyHostOutput === true && outputMissing,
+      targetMounted: outputState.mounted === true,
+      truncated: plan.truncated === true,
+    },
+    source: normalizePreviewInspectorUiSource({ displayName: plan.sourcePath, path: plan.sourcePath }),
+    state: undefined,
+  };
+}
+
+/** Attaches expectation evidence once below the exact selected current-file export row. */
+function appendPreviewInspectorExpectedOutcomes(nodes, descriptor, exportName) {
+  const group = createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName);
+  if (group === undefined) return nodes;
+  const attachment = { complete: false };
+  const visit = (values) => values.map((node) => {
+    const children = visit(node.children);
+    const matches = attachment.complete !== true && node.currentFileExport === true &&
+      (node.exportName === exportName || node.name === exportName);
+    if (!matches) return { ...node, children };
+    attachment.complete = true;
+    return { ...node, children: [...children, group] };
+  });
+  return visit(nodes);
+}
+
 /** Maps a render-graph edge to the React-centered category displayed by the Elements tree. */
 function classifyPreviewInspectorRenderContextStep(step) {
   if (step?.kind === 'entry-render') return 'entry';
@@ -324,6 +615,14 @@ function enrichPreviewInspectorRenderTreeSnapshot(snapshot) {
   }
   const unmountedGroup = createPreviewInspectorUnmountedExportGroup(exports, mountedNames);
   if (unmountedGroup !== undefined) roots.push(unmountedGroup);
+  const expectedOutcomeExportName = readPreviewInspectorExpectedOutcomeExportName(descriptor);
+  if (expectedOutcomeExportName !== undefined) {
+    roots = appendPreviewInspectorExpectedOutcomes(
+      roots,
+      descriptor,
+      expectedOutcomeExportName,
+    );
+  }
   const entryPath = context.entryPoint?.sourcePath;
   const workspaceRoot = {
     children: roots,

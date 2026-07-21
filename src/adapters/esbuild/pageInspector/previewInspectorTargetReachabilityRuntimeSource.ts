@@ -51,7 +51,6 @@ function readPreviewInspectorReachableTargetExports(descriptor) {
     ...Object.keys(inspector?.renderChainsByExport ?? {}),
   ].filter((name) => typeof name === 'string' && name.length > 0))];
 }
-
 /** Resolves the selected current-file export without mistaking an editable ancestor root for it. */
 function readPreviewInspectorExpectedTargetExport(descriptor) {
   const exports = readPreviewInspectorReachableTargetExports(descriptor);
@@ -59,13 +58,11 @@ function readPreviewInspectorExpectedTargetExport(descriptor) {
     ? previewInspectorSession.selectedExportName
     : exports[0] ?? descriptor?.exportName ?? 'default';
 }
-
 /** Creates one stable traversal identity per page candidate and selected current-file export. */
 function createPreviewInspectorTargetReachabilityKey(descriptor, candidate) {
   return String(candidate?.id ?? 'nearest-authored-owner') + ':' +
     readPreviewInspectorExpectedTargetExport(descriptor);
 }
-
 /** Reads target-to-entry metadata for the selected export, falling back to candidate-local evidence. */
 function readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExportName) {
   const targetPlan = descriptor?.inspector?.renderChainsByExport?.[targetExportName];
@@ -78,7 +75,6 @@ function readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExpor
   }
   return targetPlan?.paths?.[0] ?? candidatePath;
 }
-
 /** Builds one mutable but bounded state record from immutable application-path evidence. */
 function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   const targetExportName = readPreviewInspectorExpectedTargetExport(descriptor);
@@ -112,7 +108,6 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     targetWasMounted: false,
   };
 }
-
 /** Returns the retained traversal state, creating it before the candidate's first render. */
 function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   initializePreviewInspectorTargetReachabilityState();
@@ -124,12 +119,10 @@ function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   }
   return state;
 }
-
 /** Normalizes browser/source path spellings for conservative application-path matching. */
 function normalizePreviewInspectorReachabilityPath(value) {
   return typeof value === 'string' ? value.replaceAll('\\', '/') : '';
 }
-
 /** Collects source and component identities proven to lie between the root and selected target. */
 function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   const renderPath = readPreviewInspectorTargetRenderPath(
@@ -153,13 +146,18 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     ? new Set(retainedConditionIds)
     : new Set();
   const nameScores = new Map();
+  const pathScores = new Map();
   (state.applicationPath ?? []).forEach((name, index) => nameScores.set(name, index + 1));
   nameScores.set(state.targetExportName, 1_000);
   for (const runtimeOwnerName of state.runtimeOwnerNames ?? []) {
     nameScores.set(runtimeOwnerName, 900);
   }
-  for (const step of renderPath?.steps ?? []) {
-    paths.add(normalizePreviewInspectorReachabilityPath(step?.sourcePath));
+  for (const [index, step] of (renderPath?.steps ?? []).entries()) {
+    const stepPath = normalizePreviewInspectorReachabilityPath(step?.sourcePath);
+    paths.add(stepPath);
+    if (stepPath.length > 0) {
+      pathScores.set(stepPath, Math.max(pathScores.get(stepPath) ?? 0, 100, 800 - index));
+    }
     if (typeof step?.label === 'string') {
       names.add(step.label);
       if (!nameScores.has(step.label)) nameScores.set(step.label, 1);
@@ -187,12 +185,12 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     exactTargetNames,
     nameScores,
     names,
+    pathScores,
     paths,
     runtimeOwnerNames,
     staticNames,
   };
 }
-
 /** Scores component names embedded in one branch label against the proven root-to-target corridor. */
 function scorePreviewInspectorTargetConditionLabel(label, evidence) {
   const normalized = String(label ?? '').replace(/[<>]/gu, '');
@@ -211,7 +209,6 @@ function scorePreviewInspectorTargetConditionLabel(label, evidence) {
   }
   return score;
 }
-
 /** Requires a gate to belong to a statically proven path source or named path component. */
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   if (evidence.exactConditionIds?.has(condition?.id)) return true;
@@ -242,7 +239,6 @@ function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
     scorePreviewInspectorTargetConditionLabel(condition?.falsyLabel, evidence),
   ) > 0;
 }
-
 /** Selects the branch that continues toward the target using compiler-issued gate evidence only. */
 function readPreviewInspectorTargetConditionValue(condition, evidence) {
   const truthyScore = scorePreviewInspectorTargetConditionLabel(
@@ -273,12 +269,10 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
 
 /**
  * Chooses only the first newly revealed continuation gate so each pass behaves like bounded DFS.
- * Exact caller-path evidence wins. A condition outside that path is considered only after the exact
- * target facade's runtime function name is admitted as exact evidence for an off-graph HOC that
- * returns Navigate/null. Page siblings such as topbars and formatting helpers never become eligible
- * merely because the target mounted; doing so can destroy the layout before the route outlet commits.
+ * Exact facade IDs, owners, and source paths can be restricted ahead of data convergence; ordinary
+ * traversal still rejects page siblings that merely share the surrounding application page.
  */
-function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
+function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exactTargetOnly = false) {
   initializePreviewInspectorConditionState();
   const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
   return [...previewInspectorSession.renderConditions.values()]
@@ -297,12 +291,19 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
     .map((condition) => ({
       condition,
       desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
+      exactTargetLocal: evidence.exactConditionIds?.has(condition.id) ||
+        (
+          evidence.exactTargetNames?.has(condition.ownerName) &&
+          !evidence.ambiguousNames?.has(condition.ownerName)
+        ) || evidence.pathScores?.get(
+          normalizePreviewInspectorReachabilityPath(condition.sourcePath),
+        ) === 800,
       pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
     }))
-    .filter(({ condition, desiredValue, pathLocal }) =>
+    .filter(({ condition, desiredValue, exactTargetLocal, pathLocal }) =>
       typeof desiredValue === 'boolean' &&
       condition.effectiveEnabled !== desiredValue &&
-      pathLocal,
+      pathLocal && (!exactTargetOnly || exactTargetLocal),
     )
     .sort((left, right) =>
       Number(right.pathLocal) - Number(left.pathLocal) ||
@@ -311,13 +312,11 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
       (left.condition.line ?? 0) - (right.condition.line ?? 0),
     )[0];
 }
-
 /** Reports whether the exact selected target facade committed at least one live boundary. */
 function hasMountedPreviewInspectorTarget(state) {
   const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
   return boundaries instanceof Set && boundaries.size > 0;
 }
-
 /**
  * Adds the actual selected export function name to static root-to-target path evidence.
  * HOC factories often disappear from import/route graphs, while their returned named function owns
@@ -394,7 +393,6 @@ function collectPreviewInspectorTargetMountedOwnerNames(boundary) {
   }
   return names;
 }
-
 /**
  * Admits exact nested HOC owners to DFS and retries one cold direct render when new evidence appears.
  * A Set makes the retry self-settling: the second commit discovers no new owner and cannot loop.
@@ -439,10 +437,13 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
  */
 function hasPreviewInspectorTargetHostOutput(state) {
   const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  state.targetHasAnyHostOutput = false;
   if (!(boundaries instanceof Set)) return false;
   for (const boundary of boundaries) {
     if (boundary?.state?.error !== undefined) continue;
-    if (collectPreviewInspectorFiberElements(boundary).length > 0) return true;
+    if (typeof hasPreviewInspectorResolvedTargetOutput === 'function'
+      ? hasPreviewInspectorResolvedTargetOutput(boundary, state)
+      : collectPreviewInspectorFiberElements(boundary).length > 0) return true;
   }
   return false;
 }
@@ -506,6 +507,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
   const batch = search.origin === 'deterministic-auto'
     ? readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state)
     : readPreviewInspectorRequirementBatch(descriptor, candidate, state, preserveUserValues);
+  search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   const frontier = beginPreviewInspectorRequirementFrontier(state, search, batch);
   if (frontier === undefined) return state.exhausted === true;
   const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(
@@ -755,15 +757,20 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  if (stopPreviewInspectorRequirementConvergenceAtLimit(state)) return;
-  if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
+  const mountedTargetGate = (state.targetMounted || state.targetWasMounted) && !state.targetHasOutput
+    ? selectPreviewInspectorNextTargetGate(descriptor, candidate, state, true)
+    : undefined;
+  if (mountedTargetGate === undefined) {
+    if (stopPreviewInspectorRequirementConvergenceAtLimit(state)) return;
+    if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
+  }
   if (state.targetMounted && state.pageRootCommitted !== true) {
     state.status = 'page-root-pending';
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  if (state.exhausted === true) return;
-  const nextGate = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+  if (state.exhausted === true && mountedTargetGate === undefined) return;
+  const nextGate = mountedTargetGate ?? selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
   if (nextGate !== undefined && state.attempt < PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT) {
     if (!setPreviewInspectorTargetGuidedConditionOverride(
       nextGate.condition.id,
@@ -780,6 +787,8 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.attempt += 1;
     state.idlePasses = 0;
     state.status = 'advancing';
+    const search = readPreviewInspectorMinimumRequirementSearch(state);
+    if (search?.status === 'stalled') search.status = 'searching';
     state.probeRevision += 1;
     return;
   }
@@ -910,7 +919,7 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     });
   }
   previewInspectorSession.minimumRequirementSearchByKey.set(reachabilityKey, {
-    observedPathCount: 0,
+    observedPathCount: state === undefined ? 0 : readPreviewInspectorTargetReachabilityRequiredPaths(state).length,
     origin: 'user',
     pass: 0,
     status: 'searching',

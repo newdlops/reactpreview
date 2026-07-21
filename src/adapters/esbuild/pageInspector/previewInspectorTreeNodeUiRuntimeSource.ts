@@ -29,6 +29,11 @@ function revealPreviewInspectorCurrentFileExport(node) {
 /** Labels inert entry/route evidence without presenting it as a mounted application component. */
 function formatPreviewInspectorRenderContextBadge(node) {
   if (node?.edgeKind === 'workspace-render-root') return 'render root';
+  if (node?.edgeKind === 'expected-output-group') return 'authored JSX';
+  if (node?.edgeKind === 'expected-render-outcome') {
+    return node.expectedOutcomeActive === true ? 'expected return' : 'return alternative';
+  }
+  if (node?.edgeKind === 'expected-jsx-component') return 'expected JSX';
   if (node?.kind === 'route') return node.certainty === 'conditional' ? 'route · conditional' : 'route';
   if (node?.kind === 'entry' && node.contextOnly === true) return 'entry';
   if (node?.kind === 'lazy' && node.contextOnly === true) return 'lazy path';
@@ -128,12 +133,14 @@ function PreviewInspectorComponentTreeNode({
   const isActiveExport = node.exportName === previewInspectorSession.selectedExportName;
   const hiddenHostCount = countPreviewInspectorHiddenElementsForTreeNode(node.id);
   const contextBadge = formatPreviewInspectorRenderContextBadge(node);
-  const role = readPreviewInspectorTreeNodeRole(
-    node,
-    isCondition,
-    isBlocking,
-    isCurrentFileExport,
-  );
+  const role = node.expectedOutput === true
+    ? { key: 'expected', label: 'EXPECTED JSX' }
+    : readPreviewInspectorTreeNodeRole(
+        node,
+        isCondition,
+        isBlocking,
+        isCurrentFileExport,
+      );
   const toggle = () => {
     if (!hasChildren) return;
     setExpandedIds((current) => {
@@ -185,6 +192,10 @@ function PreviewInspectorComponentTreeNode({
               ? 'React Preview supplied a local value here. Select it to inspect or edit that value.'
               : isPathProbe
                 ? 'React Preview is following the authored page path to find the current file.'
+              : node.expectedOutput === true
+                ? node.liveHostOutputMissing === true
+                  ? 'Authored JSX expected below this return, but the selected export currently owns no live host output.'
+                  : 'Static authored JSX alternative; this row is not a mounted React component.'
               : node.contextOnly === true
                 ? 'Static page path evidence; this row is not a mounted React component.'
                 : 'Mounted React component. Select it to inspect props, state, and source.',
@@ -233,6 +244,13 @@ function PreviewInspectorComponentTreeNode({
         : undefined,
       node.mounted === false
         ? React.createElement('span', { className: 'rpi-badge' }, 'not mounted')
+        : undefined,
+      node.liveHostOutputMissing === true && node.edgeKind === 'expected-output-group'
+        ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
+            'NO LIVE HOST OUTPUT')
+        : node.authoredOutputMissing === true && node.edgeKind === 'expected-output-group'
+          ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
+              'AUTHORED JSX ABSENT')
         : undefined,
       isBlockedOwner
         ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' }, 'render blocked here')

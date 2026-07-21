@@ -30,6 +30,7 @@ interface ReachabilityResult {
   readonly sharedModalExactSourcePathLocal: boolean;
   readonly sharedModalNameOnlyPathLocal: boolean;
   readonly targetNameOnlyPathLocal: boolean;
+  readonly targetSourceScore: number;
   readonly targetExportName: string;
   readonly twoSidedTargetValue: boolean;
 }
@@ -223,6 +224,14 @@ describe('Preview Inspector target reachability runtime source', () => {
           sourcePath: '/workspace/unrelated-page.tsx',
         });
         const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+        const duplicateSourceEvidence = readPreviewInspectorTargetPathEvidence(
+          descriptor,
+          { ...candidate, renderPath: { ...candidate.renderPath, steps: [
+            ...candidate.renderPath.steps,
+            { label: 'DashboardWrapper', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] },
+          ] } },
+          state,
+        );
         const overlayCondition = {
           falsyLabel: 'hidden <DashboardPanel> overlay',
           kind: 'overlay-visibility',
@@ -263,6 +272,7 @@ describe('Preview Inspector target reachability runtime source', () => {
             ownerName: 'DashboardPanel',
             sourcePath: '/workspace/generated-target-facade.tsx',
           }, evidence),
+          targetSourceScore: duplicateSourceEvidence.pathScores.get('/workspace/Dashboard.tsx'),
           targetExportName: state.targetExportName,
           twoSidedTargetValue: readPreviewInspectorTargetConditionValue({
             fallbackBranch: 'truthy',
@@ -288,6 +298,7 @@ describe('Preview Inspector target reachability runtime source', () => {
       sharedModalExactSourcePathLocal: true,
       sharedModalNameOnlyPathLocal: false,
       targetNameOnlyPathLocal: true,
+      targetSourceScore: 800,
       targetExportName: 'DashboardPanel',
       twoSidedTargetValue: true,
     });
@@ -340,6 +351,10 @@ describe('Preview Inspector target reachability runtime source', () => {
             sourcePath: '/Sibling' + index + '.tsx',
           })),
           {
+            hookName: 'usePage', id: 'page-hook', mode: 'auto', ownerName: 'Page',
+            reachabilityKey: 'page:Target', requiredPaths: ['layout'], sourcePath: '/Page.tsx',
+          },
+          {
             hookName: 'useTarget', id: 'target-hook', mode: 'auto', ownerName: 'Target',
             reachabilityKey: 'page:Target', requiredPaths: ['value'], sourcePath: '/Target.tsx',
           },
@@ -347,6 +362,10 @@ describe('Preview Inspector target reachability runtime source', () => {
             hookName: 'usePassive', id: 'passive-hook', mode: 'auto', ownerName: 'Target',
             passive: true, reachabilityKey: 'page:Target', requiredPaths: ['<root>'],
             sourcePath: '/Target.tsx',
+          },
+          {
+            hookName: 'useOpaque', id: 'opaque-hook', mode: 'auto', ownerName: 'Target',
+            reachabilityKey: 'page:Target', requiredPaths: ['<root>'], sourcePath: '/Target.tsx',
           },
         ];
         const requests = [
@@ -358,6 +377,10 @@ describe('Preview Inspector target reachability runtime source', () => {
             reachabilityKey: 'page:Target',
             sourcePath: '/Sibling' + index + '.tsx',
           })),
+          {
+            id: 'page-request', label: 'Page request', mode: 'auto', ownerName: 'Page',
+            reachabilityKey: 'page:Target', sourcePath: '/Page.tsx',
+          },
           {
             id: 'target-request', label: 'Target request', mode: 'auto', ownerName: 'Target',
             reachabilityKey: 'page:Target', sourcePath: '/Target.tsx',
@@ -386,9 +409,10 @@ describe('Preview Inspector target reachability runtime source', () => {
       context,
     );
 
-    expect(context.__result?.hookIds).toEqual(['target-hook']);
+    expect(context.__result?.hookIds).toEqual(['target-hook', 'page-hook']);
     expect(context.__result?.hookIds).not.toContain('passive-hook');
-    expect(context.__result?.requestIds).toEqual(['target-request']);
+    expect(context.__result?.hookIds).not.toContain('opaque-hook');
+    expect(context.__result?.requestIds).toEqual(['target-request', 'page-request']);
   });
 
   /** Retains bounded progress for anonymous requirements when no path correlation exists at all. */
@@ -405,6 +429,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorRuntimeFallbacks = () =>
           Array.from({ length: 10 }, (_, index) => ({
             id: 'hook-' + index, mode: 'auto', reachabilityKey: 'page:Target',
+            requiredPaths: ['value'],
           }));
         const readPreviewInspectorDataRequests = () =>
           Array.from({ length: 6 }, (_, index) => ({
@@ -431,6 +456,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         readonly dataRevision: number;
         readonly fallbackValuesEnabled: boolean;
         readonly gateRetained: boolean;
+        readonly observedPathCount: number;
         readonly renderConditionRevision: number;
         readonly stateRetained: boolean;
       };
@@ -460,7 +486,10 @@ describe('Preview Inspector target reachability runtime source', () => {
         const notifyPreviewInspector = () => calls.push('notify');
         const schedulePreviewInspectorTreeRefresh = () => calls.push('tree');
         const schedulePreviewInspectorCommitRefresh = () => calls.push('commit');
-        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorRuntimeFallbacks = () => [{
+          hookName: 'useQuery', id: 'query', mode: 'auto', passive: false,
+          reachabilityKey: 'page:Target', requiredPaths: ['data'],
+        }];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
         ${createTargetReachabilityFixtureSource()}
@@ -470,6 +499,8 @@ describe('Preview Inspector target reachability runtime source', () => {
           dataRevision: previewInspectorSession.dataRevision,
           fallbackValuesEnabled: previewInspectorSession.fallbackValuesEnabled,
           gateRetained: previewInspectorSession.targetGuidedConditionOverrides.has('login'),
+          observedPathCount:
+            previewInspectorSession.minimumRequirementSearchByKey.get('page:Target').observedPathCount,
           renderConditionRevision: previewInspectorSession.renderConditionRevision,
           stateRetained: previewInspectorSession.targetReachabilityByKey.has('page:Target'),
         };
@@ -482,15 +513,17 @@ describe('Preview Inspector target reachability runtime source', () => {
       dataRevision: 3,
       fallbackValuesEnabled: true,
       gateRetained: true,
+      observedPathCount: 1,
       renderConditionRevision: 5,
       stateRetained: true,
     });
   });
 
-  /** Stops when a faulty filler reports changes without producing a new semantic frontier. */
-  it('opens the convergence circuit before an identical requirement pass remounts again', () => {
+  /** Leaves an identical data frontier and advances the mounted current-file gate without remounting. */
+  it('continues from a stalled requirement batch into an exact target-local gate', () => {
     const context: {
       __result?: {
+        readonly applied: readonly [string, boolean][];
         readonly commitCount: number;
         readonly pass: number;
         readonly runtimeCalls: number;
@@ -499,10 +532,11 @@ describe('Preview Inspector target reachability runtime source', () => {
     } = {};
     vm.runInNewContext(
       `
+        const applied = [];
         let commitCount = 0;
         let runtimeCalls = 0;
         const previewInspectorSession = {
-          boundariesByExport: new Map(),
+          boundariesByExport: new Map([['Target', new Set([{}])]]),
           dataRevision: 0,
           renderConditionOverrides: new Map(),
           renderConditionRevision: 0,
@@ -522,7 +556,11 @@ describe('Preview Inspector target reachability runtime source', () => {
         const notifyPreviewInspector = () => undefined;
         const schedulePreviewInspectorTreeRefresh = () => undefined;
         const schedulePreviewInspectorCommitRefresh = () => { commitCount += 1; };
-        const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
+        const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
+          applied.push([id, enabled]);
+          previewInspectorSession.renderConditionOverrides.set(id, enabled);
+          return true;
+        };
         const recordPreviewInspectorConsoleEntry = () => undefined;
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
         const collectPreviewInspectorFiberElements = (boundary) =>
@@ -543,12 +581,25 @@ describe('Preview Inspector target reachability runtime source', () => {
         };
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         state.pageRootCommitted = true;
+        previewInspectorSession.directTargetConditionIdsByExport = new Map([
+          ['Target', new Set(['target-guard'])],
+        ]);
+        previewInspectorSession.renderConditions.set('target-guard', {
+          effectiveEnabled: false,
+          expression: 'showDirectorList',
+          id: 'target-guard',
+          ownerName: 'Target',
+          reachabilityKey: state.key,
+          sourcePath: '/Target.tsx',
+          targetBranch: 'truthy',
+        });
         smartFillPreviewInspectorTargetApplicationPath({ key: state.key });
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         const search = readPreviewInspectorMinimumRequirementSearch(state);
         globalThis.__result = {
+          applied,
           commitCount,
           pass: search.pass,
           runtimeCalls,
@@ -559,10 +610,11 @@ describe('Preview Inspector target reachability runtime source', () => {
     );
 
     expect(context.__result).toEqual({
-      commitCount: 1,
-      pass: 1,
-      runtimeCalls: 1,
-      status: 'cycle-detected',
+      applied: [['target-guard', true]],
+      commitCount: 2,
+      pass: 2,
+      runtimeCalls: 2,
+      status: 'stalled',
     });
   });
 
@@ -820,6 +872,10 @@ describe('Preview Inspector target reachability runtime source', () => {
         ]);
         rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
         markPreviewInspectorTargetReachabilityMount('Target');
+        previewInspectorSession.minimumRequirementSearchByKey.set(state.key, {
+          origin: 'user', pass: 1, status: 'searching',
+        });
+        state.exhausted = true;
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         globalThis.__result = { applied };
       `,

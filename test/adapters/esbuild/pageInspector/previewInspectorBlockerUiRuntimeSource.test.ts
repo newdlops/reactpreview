@@ -21,7 +21,14 @@ interface BlockerTreeNode {
 /** Generated helper surface exposed only inside the VM fixture. */
 interface BlockerRuntime {
   readonly attach: (snapshot: Record<string, unknown>) => { readonly roots: BlockerTreeNode[] };
+  readonly createReachabilityNode: (blocker: Record<string, unknown>) => BlockerTreeNode;
   readonly isBlocking: (node: BlockerTreeNode) => boolean;
+  readonly renderReachabilityDetail: (node: Record<string, unknown>) => unknown;
+  readonly summarizeRequiredPaths: (paths: readonly string[]) => {
+    readonly remainingCount: number;
+    readonly totalCount: number;
+    readonly visiblePaths: readonly string[];
+  };
 }
 
 describe('Preview Inspector blocker UI runtime source', () => {
@@ -119,7 +126,9 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('creates one item only when a demanded path enters a list');
     expect(source).toContain("blockerKind: 'target-error'");
     expect(source).toContain("blockerKind: 'target-reachability'");
-    expect(source).toContain('Payload properties discovered downstream:');
+    expect(source).toContain('Payload properties discovered downstream (');
+    expect(source).toContain('PREVIEW_INSPECTOR_REQUIRED_PATH_SUMMARY_LIMIT = 10');
+    expect(source).toContain("'mounted · no host output'");
     expect(source).toContain('Rendering stops at this point in the component tree.');
     expect(source).toContain(
       'The authored page rendered without mounting this current-file component.',
@@ -128,6 +137,53 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('React Preview supplied a local preview value here.');
     expect(source).toContain('readPreviewInspectorActiveBlockerSummary');
   });
+
+  /** Distinguishes a mounted-but-empty target and bounds its large downstream payload inventory. */
+  it('reports mounted target output separately and summarizes required paths', () => {
+    const runtime = evaluateBlockerRuntime();
+    const paths = Array.from({ length: 14 }, (_, index) => 'usePreview.value' + String(index));
+    const summary = runtime.summarizeRequiredPaths(paths);
+    const blocker = {
+      applicationPath: ['Application', 'Page', 'default'],
+      appliedConditions: [],
+      directTarget: false,
+      id: 'target-reachability:page:default',
+      minimumRequirementSearch: {
+        cycleLength: 1,
+        observedPathCount: paths.length,
+        pass: 2,
+        status: 'cycle-detected',
+      },
+      pageRootCommitted: true,
+      requiredPaths: paths,
+      rootName: 'Application',
+      status: 'resolver-cycle-detected',
+      targetExportName: 'default',
+      targetHasOutput: false,
+      targetMounted: true,
+    };
+    const treeNode = runtime.createReachabilityNode(blocker);
+    const text = collectRenderedText(runtime.renderReachabilityDetail({ node: { blocker } })).join(
+      ' ',
+    );
+
+    expect(treeNode.name).toBe('Target produced no host output · default');
+    expect(summary).toMatchObject({ remainingCount: 4, totalCount: 14 });
+    expect(summary.visiblePaths).toHaveLength(10);
+    expect(text).toContain('mounted · no host output');
+    expect(text).toContain('The selected target is mounted, but its authored JSX is still absent.');
+    expect(text).toContain('Payload properties discovered downstream (14):');
+    expect(text).toContain('· +4 more');
+    expect(text).not.toContain('usePreview.value10');
+
+    const wrapperBlocker = { ...blocker, targetHasAnyHostOutput: true };
+    const wrapperNode = runtime.createReachabilityNode(wrapperBlocker);
+    const wrapperText = collectRenderedText(
+      runtime.renderReachabilityDetail({ node: { blocker: wrapperBlocker } }),
+    ).join(' ');
+    expect(wrapperNode.name).toBe('Target authored JSX absent · default');
+    expect(wrapperText).toContain('wrapper/fallback host only · authored JSX absent');
+  });
 });
 
 /** Evaluates attachment functions with fixed hook/data registries and no React project runtime. */
@@ -135,6 +191,15 @@ function evaluateBlockerRuntime(): BlockerRuntime {
   const context: { __blockers?: BlockerRuntime } = {};
   vm.runInNewContext(
     `
+      const React = {
+        createElement: (type, props, ...children) => ({ children, props, type }),
+      };
+      const PreviewInspectorDevtoolsButton = 'button';
+      const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
+      const returnPreviewInspectorToPageContext = () => undefined;
+      const retryPreviewInspectorTargetApplicationPath = () => undefined;
+      const showPreviewInspectorTargetDirectly = () => undefined;
+      const smartFillPreviewInspectorTargetApplicationPath = () => undefined;
       const previewInspectorSession = {
         boundariesByExport: new Map([['Page', new Set([{
           state: {
@@ -200,13 +265,29 @@ function evaluateBlockerRuntime(): BlockerRuntime {
       ${createPreviewInspectorBlockerUiRuntimeSource()}
       globalThis.__blockers = {
         attach: attachPreviewInspectorBlockersToSnapshot,
+        createReachabilityNode: createPreviewInspectorTargetReachabilityTreeNode,
         isBlocking: isPreviewInspectorBlockingNode,
+        renderReachabilityDetail: PreviewInspectorTargetReachabilityDetail,
+        summarizeRequiredPaths: summarizePreviewInspectorRequiredPaths,
       };
     `,
     context,
   );
   if (context.__blockers === undefined) throw new Error('Blocker UI fixture did not initialize.');
   return context.__blockers;
+}
+
+/** Flattens the inert React fixture tree into user-visible text without interpreting components. */
+function collectRenderedText(value: unknown, output: string[] = []): string[] {
+  if (typeof value === 'string' || typeof value === 'number') {
+    output.push(String(value));
+    return output;
+  }
+  if (value === null || typeof value !== 'object') return output;
+  const children = (value as { readonly children?: readonly unknown[] }).children;
+  if (!Array.isArray(children)) return output;
+  for (const child of children) collectRenderedText(child, output);
+  return output;
 }
 
 /** Finds one named node recursively without retaining any runtime owner object. */

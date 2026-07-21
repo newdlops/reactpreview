@@ -17,6 +17,28 @@
  */
 export function createPreviewInspectorBlockerUiRuntimeSource(): string {
   return String.raw`
+const PREVIEW_INSPECTOR_REQUIRED_PATH_SUMMARY_LIMIT = 10;
+const PREVIEW_INSPECTOR_REQUIRED_PATH_TEXT_LIMIT = 180;
+
+/**
+ * Bounds the target-path payload summary without hiding how much additional evidence was found.
+ * The resolver and trace logger retain the complete set; this helper changes presentation only.
+ */
+function summarizePreviewInspectorRequiredPaths(requiredPaths) {
+  const uniquePaths = [...new Set((Array.isArray(requiredPaths) ? requiredPaths : [])
+    .filter((path) => typeof path === 'string' && path.length > 0))];
+  const visiblePaths = uniquePaths
+    .slice(0, PREVIEW_INSPECTOR_REQUIRED_PATH_SUMMARY_LIMIT)
+    .map((path) => path.length <= PREVIEW_INSPECTOR_REQUIRED_PATH_TEXT_LIMIT
+      ? path
+      : path.slice(0, PREVIEW_INSPECTOR_REQUIRED_PATH_TEXT_LIMIT - 1) + '…');
+  return {
+    remainingCount: Math.max(0, uniquePaths.length - visiblePaths.length),
+    totalCount: uniquePaths.length,
+    visiblePaths,
+  };
+}
+
 /** Creates a common source object for compiler/runtime records retained by the local webview. */
 function createPreviewInspectorBlockerSource(record) {
   return normalizePreviewInspectorUiSource({
@@ -145,8 +167,10 @@ function createPreviewInspectorTargetFailureTreeNode(failure) {
   };
 }
 
-/** Represents a successful page commit that never invoked the selected current-file export. */
+/** Represents a page corridor that has not produced connected output for the selected export. */
 function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
+  const mountedWithoutOutput = blocker.targetMounted === true && blocker.targetHasOutput !== true;
+  const wrapperHostOnly = mountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
   return {
     blocker,
     blockerId: blocker.id,
@@ -154,7 +178,10 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
     children: [],
     id: blocker.id,
     kind: 'blocker',
-    name: 'Target not reached · ' + blocker.targetExportName,
+    name: (wrapperHostOnly
+      ? 'Target authored JSX absent · '
+      : mountedWithoutOutput ? 'Target produced no host output · ' : 'Target not reached · ') +
+        blocker.targetExportName,
     props: {
       applicationPath: blocker.applicationPath,
       appliedGates: blocker.appliedConditions.map((condition) => condition.expression),
@@ -687,6 +714,10 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const direct = blocker.directTarget === true;
   const pageCommitted = blocker.pageRootCommitted === true && !direct;
   const targetMounted = blocker.targetMounted === true;
+  const targetHasOutput = blocker.targetHasOutput === true;
+  const targetMountedWithoutOutput = targetMounted && !targetHasOutput;
+  const wrapperHostOnly = targetMountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
+  const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
   const minimumSearch = blocker.minimumRequirementSearch;
   const resolving = blocker.status === 'settling-auto-attempt' || minimumSearch?.status === 'searching';
   const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status);
@@ -698,18 +729,35 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
       { className: 'rpi-error', role: 'alert' },
       circuitOpen
         ? minimumSearch.status === 'cycle-detected'
-          ? 'Automatic resolution stopped because the same generated requirement state repeated.'
-          : 'Automatic resolution stopped at its bounded pass limit.'
+          ? 'Automatic resolution stopped because the same generated requirement state repeated.' +
+            (targetMountedWithoutOutput
+              ? ' The selected target is mounted, but its authored JSX is still absent.'
+              : '')
+          : 'Automatic resolution stopped at its bounded pass limit.' +
+            (targetMountedWithoutOutput
+              ? ' The selected target is mounted, but its authored JSX is still absent.'
+              : '')
         : direct
           ? 'Target-only diagnostic mode is active; authored page context is not successful.'
           : pageCommitted
-            ? 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
+            ? targetMountedWithoutOutput
+              ? wrapperHostOnly
+                ? 'The selected target mounted and produced wrapper or fallback DOM, but its authored JSX subtree is absent.'
+                : 'The selected target mounted in the authored page, but produced no host output.'
+              : 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
             : 'The authored page root has not committed yet.',
     ),
     React.createElement('div', { className: 'rpi-note' },
       'Page root: ' + blocker.rootName + ' · ' + (pageCommitted ? 'committed' : 'not committed')),
     React.createElement('div', { className: 'rpi-note' },
-      'Selected target: ' + blocker.targetExportName + ' · ' + (targetMounted ? 'mounted' : 'not mounted')),
+      'Selected target: ' + blocker.targetExportName + ' · ' +
+      (targetMountedWithoutOutput
+        ? wrapperHostOnly
+          ? 'mounted · wrapper/fallback host only · authored JSX absent'
+          : 'mounted · no host output'
+        : targetMounted
+          ? 'mounted · host output connected'
+          : 'not mounted')),
     React.createElement('div', { className: 'rpi-note' },
       'Application path: ' + blocker.applicationPath.join(' > ')),
     blocker.appliedConditions.length > 0
@@ -718,10 +766,17 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
             .map((condition) => condition.expression + ' = ' + String(condition.enabled))
             .join(', '))
       : React.createElement('div', { className: 'rpi-note' },
-          'No statically proven login/session/permission gate has been passed yet.'),
-    blocker.requiredPaths.length > 0
+          targetMountedWithoutOutput
+            ? 'No target-local Boolean gate has been applied yet; a child render contract or payload may be the next requirement.'
+            : 'No statically proven login/session/permission gate has been passed yet.'),
+    requiredPathSummary.totalCount > 0
       ? React.createElement('div', { className: 'rpi-note' },
-          'Payload properties discovered downstream: ' + blocker.requiredPaths.join(', '))
+          'Payload properties discovered downstream (' +
+          String(requiredPathSummary.totalCount) + '): ' +
+          requiredPathSummary.visiblePaths.join(', ') +
+          (requiredPathSummary.remainingCount > 0
+            ? ' · +' + String(requiredPathSummary.remainingCount) + ' more'
+            : ''))
       : React.createElement('div', { className: 'rpi-note' },
           'Downstream payload fields will appear here as each additional branch is reached.'),
     minimumSearch === undefined

@@ -25,6 +25,7 @@ import { createPreviewInspectorRenderOutcomeRuntimeSource } from './previewInspe
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 import { createPreviewInspectorTargetAttemptRuntimeSource } from './previewInspectorTargetAttemptRuntimeSource';
+import { createPreviewInspectorTargetOutputRuntimeSource } from './previewInspectorTargetOutputRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from './previewInspectorTargetReachabilityRuntimeSource';
 import { createPreviewInspectorTargetPathIdentityRuntimeSource } from './previewInspectorTargetPathIdentityRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
@@ -66,6 +67,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const targetAttemptRuntimeSource = createPreviewInspectorTargetAttemptRuntimeSource();
+  const targetOutputRuntimeSource = createPreviewInspectorTargetOutputRuntimeSource();
   const targetPathIdentityRuntimeSource = createPreviewInspectorTargetPathIdentityRuntimeSource();
   const targetReachabilityRuntimeSource = createPreviewInspectorTargetReachabilityRuntimeSource();
   const runtimeFallbackRuntimeSource = createPreviewInspectorRuntimeFallbackRuntimeSource();
@@ -146,6 +148,8 @@ ${dataRuntimeSource}
 ${renderOutcomeRuntimeSource}
 
 ${conditionRuntimeSource}
+
+${targetOutputRuntimeSource}
 
 ${targetReachabilityRuntimeSource}
 

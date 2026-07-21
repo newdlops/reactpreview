@@ -1,6 +1,7 @@
 /** Verifies authored page-candidate selection without importing React or application modules. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createPreviewInspectorPageCandidateUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorPageCandidateUiRuntimeSource';
 import { createPreviewInspectorPageCandidateRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorPageCandidateRuntimeSource';
 
 /** Minimal serializable candidate shape used by the generated runtime's pure selection helpers. */
@@ -141,7 +142,108 @@ describe('Preview Inspector page-candidate runtime source', () => {
       scheduled: 2,
     });
   });
+
+  /** Keeps invocation and connected host output as separate user-facing page states. */
+  it('labels a mounted target without host output as TARGET EMPTY', () => {
+    expect(
+      evaluatePageCandidateUiStatus({
+        pageRootCommitted: true,
+        status: 'resolver-cycle-detected',
+        targetHasOutput: false,
+        targetMounted: true,
+      }),
+    ).toEqual({
+      action: 'Inspect missing output',
+      badge: 'TARGET EMPTY',
+      revealed: 'target-reachability:fixture',
+      selected: 'target-reachability:fixture',
+      title: 'Current file mounted without output',
+    });
+    expect(
+      evaluatePageCandidateUiStatus({
+        pageRootCommitted: true,
+        status: 'reached',
+        targetHasAnyHostOutput: true,
+        targetHasOutput: false,
+        targetMounted: true,
+      }),
+    ).toMatchObject({
+      badge: 'TARGET EMPTY',
+      title: 'Current file stopped at wrapper or fallback output',
+    });
+    expect(
+      evaluatePageCandidateUiStatus({
+        pageRootCommitted: true,
+        status: 'page-blocked',
+        targetHasOutput: false,
+        targetMounted: false,
+      }),
+    ).toMatchObject({ badge: 'TARGET ABSENT' });
+    expect(
+      evaluatePageCandidateUiStatus({
+        pageRootCommitted: true,
+        status: 'reached',
+        targetHasOutput: true,
+        targetMounted: true,
+      }),
+    ).toMatchObject({ badge: 'PAGE READY' });
+  });
 });
+
+/** Executes the pure page-status helpers without mounting the companion UI or project React tree. */
+function evaluatePageCandidateUiStatus(reachability: Record<string, unknown>): {
+  readonly action?: string;
+  readonly badge: string;
+  readonly revealed?: string;
+  readonly selected?: string;
+  readonly title: string;
+} {
+  const context: {
+    __result?: ReturnType<typeof evaluatePageCandidateUiStatus>;
+    reachability: Record<string, unknown>;
+  } = { reachability };
+  vm.runInNewContext(
+    `${createPreviewInspectorPageCandidateUiRuntimeSource()}
+function readPreviewInspectorRenderScenario() { return 'authored-page'; }
+function readPreviewInspectorActiveBlockerSummary() {
+  return {
+    active: [{ blockerKind: 'target-reachability', id: 'target' }],
+    count: 1,
+    first: { blockerKind: 'target-reachability', id: 'target', name: 'Target path' },
+  };
+}
+const descriptor = {};
+const candidate = {};
+const previewInspectorSession = { selectedExportName: 'default' };
+let revealed;
+let selected;
+function findSelectedPreviewInspectorDescriptor() { return descriptor; }
+function readSelectedPreviewInspectorPageCandidate() { return candidate; }
+function readPreviewInspectorTargetReachabilityState() {
+  return { ...globalThis.reachability, key: 'fixture', targetExportName: 'default' };
+}
+function readPreviewInspectorTargetReachabilityBlockers() {
+  return [{ ...globalThis.reachability, id: 'target-reachability:fixture', key: 'fixture' }];
+}
+function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
+  return { id: blocker.id, name: 'Target output' };
+}
+function requestPreviewInspectorTreeReveal(nodeId) { revealed = nodeId; }
+function selectPreviewInspectorUiNode(node) { selected = node.id; }
+const status = readPreviewInspectorFriendlyPageStatus(globalThis.reachability);
+if (status.action === 'Inspect missing output') status.onAction();
+globalThis.__result = {
+  action: status.action,
+  badge: formatPreviewInspectorPageCorridorStatus(globalThis.reachability),
+  revealed,
+  selected,
+  title: status.title,
+};`,
+    context,
+  );
+  if (context.__result === undefined) throw new Error('Page status fixture did not initialize.');
+  return context.__result;
+}
 
 /** Runs the generated scenario state machine while leaving every React component body inert. */
 function evaluateRenderScenarioSelection(): {

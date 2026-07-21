@@ -17,10 +17,22 @@ export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
 /** Formats whether the selected authored page and current-file target share one committed render. */
 function formatPreviewInspectorPageCorridorStatus(reachability) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
-  if (reachability?.status === 'reached') return 'PAGE READY';
+  if (
+    reachability?.status === 'reached' &&
+    reachability?.targetMounted === true &&
+    reachability?.targetHasOutput === true
+  ) return 'PAGE READY';
   if (reachability?.directTarget === true) return 'TARGET ONLY';
   if (reachability?.status === 'advancing') return 'FINDING TARGET';
-  if (reachability?.pageRootCommitted === true) return 'TARGET ABSENT';
+  if (
+    reachability?.pageRootCommitted === true &&
+    reachability?.targetMounted === true &&
+    reachability?.targetHasOutput !== true
+  ) return 'TARGET EMPTY';
+  if (reachability?.pageRootCommitted === true && reachability?.targetMounted !== true) {
+    return 'TARGET ABSENT';
+  }
+  if (reachability?.pageRootCommitted === true) return 'VERIFYING TARGET';
   return 'LOADING PAGE';
 }
 
@@ -30,6 +42,26 @@ function revealPreviewInspectorFriendlyBlocker() {
   if (blocker === undefined) return;
   requestPreviewInspectorTreeReveal(blocker.id);
   selectPreviewInspectorUiNode(blocker);
+}
+
+/** Reveals mounted-empty reachability even before it becomes an exhausted active blocker. */
+function revealPreviewInspectorMissingTargetOutput() {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  const reachability = candidate === undefined
+    ? undefined
+    : readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+  const blocker = readPreviewInspectorTargetReachabilityBlockers().find(
+    (item) => item.key === reachability?.key,
+  );
+  if (blocker !== undefined) {
+    const node = createPreviewInspectorTargetReachabilityTreeNode(blocker);
+    requestPreviewInspectorTreeReveal(node.id);
+    selectPreviewInspectorUiNode(node);
+    return;
+  }
+  const exportName = reachability?.targetExportName ?? previewInspectorSession.selectedExportName;
+  requestPreviewInspectorTreeReveal('expected-outcomes:' + String(exportName));
 }
 
 /** Converts internal corridor state into one plain-language status and recommended next action. */
@@ -45,6 +77,23 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     };
   }
   const blockers = readPreviewInspectorActiveBlockerSummary();
+  const mountedWithoutOutput = reachability?.pageRootCommitted === true &&
+    reachability?.targetMounted === true && reachability?.targetHasOutput !== true;
+  if (mountedWithoutOutput) {
+    const wrapperHostOnly = reachability?.targetHasAnyHostOutput === true;
+    return {
+      action: 'Inspect missing output',
+      description: wrapperHostOnly
+        ? 'The current-file export mounted, but only a wrapper or fallback reached the DOM. Inspect the missing authored JSX and its first requirement in the component tree.'
+        : 'The current-file export was invoked inside the authored page, but its exact boundary has no connected host output. Inspect its first blocker or condition in the component tree.',
+      icon: '!',
+      kind: 'blocked',
+      onAction: revealPreviewInspectorMissingTargetOutput,
+      title: wrapperHostOnly
+        ? 'Current file stopped at wrapper or fallback output'
+        : 'Current file mounted without output',
+    };
+  }
   const renderedWithoutTarget = reachability?.pageRootCommitted === true &&
     reachability?.targetMounted !== true &&
     blockers.count > 0 &&
@@ -84,7 +133,11 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
       title: 'Page rendering is blocked',
     };
   }
-  if (reachability?.status === 'reached') {
+  if (
+    reachability?.status === 'reached' &&
+    reachability?.targetMounted === true &&
+    reachability?.targetHasOutput === true
+  ) {
     return {
       action: 'Reveal current file',
       description: 'The authored page and selected file are mounted together. Select components to inspect them.',

@@ -21,6 +21,7 @@ import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewI
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 import { createPreviewInspectorTreeScrollRuntimeSource } from './previewInspectorTreeScrollRuntimeSource';
 import { createPreviewInspectorTreeNodeUiRuntimeSource } from './previewInspectorTreeNodeUiRuntimeSource';
+import { createPreviewInspectorTreeIdentityUiRuntimeSource } from './previewInspectorTreeIdentityUiRuntimeSource';
 import { createPreviewInspectorWireframeUiRuntimeSource } from './previewInspectorWireframeUiRuntimeSource';
 
 /**
@@ -48,12 +49,14 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   const treeScrollRuntimeSource = createPreviewInspectorTreeScrollRuntimeSource();
   const treeNodeUiRuntimeSource = createPreviewInspectorTreeNodeUiRuntimeSource();
+  const treeIdentityUiRuntimeSource = createPreviewInspectorTreeIdentityUiRuntimeSource();
   const wireframeUiRuntimeSource = createPreviewInspectorWireframeUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
 ${treeScrollRuntimeSource}
 
 ${structureUiRuntimeSource}
+${treeIdentityUiRuntimeSource}
 ${conditionUiRuntimeSource}
 ${componentDebuggerUiRuntimeSource}
 ${consoleUiRuntimeSource}

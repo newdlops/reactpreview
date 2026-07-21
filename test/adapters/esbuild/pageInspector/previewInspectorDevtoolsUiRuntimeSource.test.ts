@@ -209,6 +209,35 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).not.toContain('const inspectorControlStyle');
   });
 
+  /**
+   * Executes the shared locator from the complete generated UI composition and verifies both core
+   * call sites retain one definition even when the optional flowchart surface is not emitted.
+   */
+  it('composes one exact current-file tree locator for condition and toolbar consumers', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const runtime = evaluateDevtoolsUiHelpers();
+    const wrong = {
+      ...treeNode('other-target', 'function', 'Target'),
+      exportName: 'Target',
+      source: { path: '/workspace/packages/other/Target.tsx' },
+    };
+    const exact = {
+      ...treeNode('current-target', 'function', 'Target'),
+      currentFileExport: true,
+      exportName: 'Target',
+      source: { path: '/workspace/Target.tsx' },
+    };
+
+    expect(source.match(/function findPreviewInspectorUiNodeByExport\(/gu)).toHaveLength(1);
+    expect(source).toContain(
+      'const currentFileNode = findPreviewInspectorUiNodeByExport(snapshot.roots, exportName)',
+    );
+    expect(source).toContain(
+      'findPreviewInspectorUiNodeByExport(\n      snapshot.roots,\n      previewInspectorSession.selectedExportName',
+    );
+    expect(runtime.findByExport([wrong, exact], 'Target')?.id).toBe('current-target');
+  });
+
   /** Keeps the left pane component-only, searchable, accessible, and keyboard navigable. */
   it('emits an ARIA React component tree with filtering and directional keys', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
@@ -543,6 +572,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
 interface DevtoolsUiTestNode {
   readonly children: readonly DevtoolsUiTestNode[];
   readonly contextOnly?: boolean;
+  readonly currentFileExport?: boolean;
   readonly exportName?: string;
   readonly id: string;
   readonly kind: string;
@@ -577,6 +607,10 @@ interface DevtoolsUiTestRuntime {
     selectedId: string | undefined,
     expandedIds: readonly string[],
   ) => string | undefined;
+  readonly findByExport: (
+    nodes: readonly DevtoolsUiTestNode[],
+    exportName: string,
+  ) => DevtoolsUiTestNode | undefined;
   readonly handleTreeKeyDown: (event: unknown) => void;
   readonly normalizeLayout: (
     value: Partial<PreviewInspectorTestLayout>,
@@ -646,8 +680,14 @@ function treeNode(
 function evaluateDevtoolsUiHelpers(): DevtoolsUiTestRuntime {
   const context: {
     __devtoolsUiRuntime?: DevtoolsUiTestRuntime;
+    findSelectedPreviewInspectorDescriptor: () => Record<string, unknown>;
     previewInspectorSession: Record<string, unknown>;
-  } = { previewInspectorSession: {} };
+  } = {
+    findSelectedPreviewInspectorDescriptor: () => ({
+      inspector: { target: { exportName: 'Target', sourcePath: '/workspace/Target.tsx' } },
+    }),
+    previewInspectorSession: { selectedExportName: 'Target' },
+  };
   const source = `${createPreviewInspectorDevtoolsUiRuntimeSource()}
 globalThis.__devtoolsUiRuntime = {
   expandedForSelection(nodes, selectedId, expandedIds) {
@@ -656,6 +696,7 @@ globalThis.__devtoolsUiRuntime = {
   focusableId(nodes, selectedId, expandedIds) {
     return resolvePreviewInspectorTreeFocusableId(nodes, selectedId, new Set(expandedIds));
   },
+  findByExport: findPreviewInspectorUiNodeByExport,
   handleTreeKeyDown: handlePreviewInspectorTreeKeyDown,
   normalizeLayout: normalizePreviewInspectorLayout,
   normalize(nodes) {

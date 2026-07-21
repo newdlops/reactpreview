@@ -2,6 +2,7 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorFlowchartToolbarUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFlowchartToolbarUiRuntimeSource';
+import { createPreviewInspectorTreeIdentityUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTreeIdentityUiRuntimeSource';
 
 /** Minimum graph step shape needed by locator behavior tests. */
 interface LocatorStep {
@@ -55,6 +56,7 @@ function evaluateToolbarRuntime(): ToolbarRuntime {
       const readPreviewInspectorRenderFlowDecision = () => undefined;
       const matchesPreviewInspectorConditionSourcePath = (left, right) =>
         left === right || left.endsWith('/' + (right.startsWith('./') ? right.slice(2) : right));
+      ${createPreviewInspectorTreeIdentityUiRuntimeSource()}
       ${createPreviewInspectorFlowchartToolbarUiRuntimeSource()}
       globalThis.__toolbar = {
         findNode: findPreviewInspectorUiNodeByExport,

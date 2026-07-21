@@ -9,61 +9,14 @@
 /**
  * Creates browser-side locator, legend, and toolbar helpers for the flowchart workbench.
  *
- * Expected lexical bindings include React, the selected preview session, the flowchart layout, and
- * the Blockers selection callback supplied by the parent workbench.
+ * Expected lexical bindings include React, shared current-file tree identity helpers, the selected
+ * preview session, the flowchart layout, and the Blockers selection callback supplied by the parent
+ * workbench.
  *
  * @returns Plain JavaScript concatenated before the main flowchart React component.
  */
 export function createPreviewInspectorFlowchartToolbarUiRuntimeSource(): string {
   return String.raw`
-/** Reads the selected file/export identity without guessing from a component's display name. */
-function readPreviewInspectorFlowchartCurrentFileIdentity() {
-  const descriptor = findSelectedPreviewInspectorDescriptor();
-  const inspector = descriptor?.inspector;
-  const selectedExportName = previewInspectorSession.selectedExportName;
-  const selectedChainTarget = inspector?.renderChainsByExport?.[selectedExportName]?.target;
-  const primaryTarget = inspector?.target?.exportName === selectedExportName
-    ? inspector.target
-    : undefined;
-  const target = selectedChainTarget ?? primaryTarget;
-  const exportName = typeof target?.exportName === 'string' && target.exportName.length > 0
-    ? target.exportName
-    : selectedExportName;
-  const sourcePath = typeof target?.sourcePath === 'string' && target.sourcePath.length > 0
-    ? target.sourcePath
-    : undefined;
-  return { exportName, sourcePath };
-}
-
-/**
- * Finds the strongest exact tree candidate instead of returning the first same-named export.
- * Mounted, source-matched current-file rows outrank static inventory and unrelated package exports.
- */
-function findPreviewInspectorUiNodeByExport(nodes, exportName) {
-  const identity = readPreviewInspectorFlowchartCurrentFileIdentity();
-  const candidates = [];
-  const visit = (values, depth = 0) => {
-    for (const node of values ?? []) {
-      if (node?.exportName === exportName) {
-        const sourcePath = node?.source?.path ?? node?.source?.sourcePath;
-        const sourceMatches = identity.sourcePath !== undefined &&
-          typeof sourcePath === 'string' &&
-          matchesPreviewInspectorConditionSourcePath(sourcePath, identity.sourcePath);
-        candidates.push({
-          depth,
-          node,
-          score: Number(node.currentFileExport === true) * 100 + Number(sourceMatches) * 50 +
-            Number(node.mounted !== false) * 20 + Number(node.contextOnly !== true) * 10,
-        });
-      }
-      visit(node?.children, depth + 1);
-    }
-  };
-  visit(nodes);
-  return candidates.sort((left, right) =>
-    right.score - left.score || right.depth - left.depth || left.node.id.localeCompare(right.node.id))[0]?.node;
-}
-
 /** Normalizes one graph source path without interpreting project-specific aliases or casing. */
 function readPreviewInspectorFlowchartStepSourcePath(step) {
   const nodePath = step?.node?.source?.path ?? step?.node?.source?.sourcePath;
@@ -111,7 +64,7 @@ function readPreviewInspectorFlowchartNearestTargetBlocker(layout) {
  * The result is data-only so the right resolver and toolbar always describe the same target.
  */
 function locatePreviewInspectorFlowchartCurrentFile(flow, layout) {
-  const identity = readPreviewInspectorFlowchartCurrentFileIdentity();
+  const identity = readPreviewInspectorCurrentFileTreeIdentity();
   const candidates = layout.orderedNodes
     .map((step) => ({ score: scorePreviewInspectorFlowchartCurrentFileStep(step, identity), step }))
     .filter((candidate) => candidate.score >= 0)

@@ -1,5 +1,5 @@
 /**
- * Replaces Node-only built-in modules reached by a browser preview with an inert CommonJS proxy.
+ * Replaces Node-only built-in modules with a writable, browser-local CommonJS namespace proxy.
  * Application graphs sometimes expose optional server helpers from a package entry even though the
  * rendered component never calls them. Resolving those imports lets esbuild tree-shake or retain the
  * browser-safe code without granting workspace code access to the extension host filesystem.
@@ -7,6 +7,7 @@
 import { builtinModules } from 'node:module';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { PREVIEW_NODE_BUILTIN_NAMESPACE } from './previewPluginProtocol';
+import { createPreviewNodeEventsRuntimeSource } from './previewNodeEventsRuntimeSource';
 
 /** Bare built-in names accepted with or without Node's explicit `node:` prefix. */
 const NODE_BUILTIN_NAMES = new Set(
@@ -17,14 +18,16 @@ const NODE_BUILTIN_NAMES = new Set(
 const NODE_BUILTIN_FILTER = new RegExp(
   `^(?:node:)?(?:${[...NODE_BUILTIN_NAMES].map(escapeRegularExpression).join('|')})$`,
 );
+const PREVIEW_NODE_BUILTIN_RESOLVE_MARKER = 'reactPreviewNodeBuiltinResolve';
 
 /**
  * Creates the browser boundary for optional Node-only dependencies.
  *
  * The generated module is CommonJS deliberately: esbuild can safely project arbitrary named ESM
  * imports from a dynamic CommonJS object, whereas a finite ESM export list would fail whenever a
- * package imports a less common `fs`, `crypto`, or `stream` member. Every call returns `undefined`;
- * nested properties remain callable proxies and promises are explicitly non-thenable.
+ * package imports a less common `fs`, `crypto`, or `stream` member. Unmodified calls return
+ * `undefined`; unknown nested properties remain callable proxies, local package assignments are
+ * retained, and promises are explicitly non-thenable.
  *
  * @returns Stateless esbuild plugin that handles only exact Node built-in specifiers.
  */
@@ -33,11 +36,38 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
   return {
     name: 'react-preview-node-builtins',
     setup(build): void {
-      /** Maps one exact built-in request into the private inert-module namespace. */
-      function resolveNodeBuiltin(arguments_: OnResolveArgs): OnResolveResult | undefined {
+      /**
+       * Prefers an installed browser package for a bare legacy import, then uses a safe local shim.
+       * Explicit `node:` requests never receive a project package because they intentionally name
+       * the host runtime contract. The marker prevents `build.resolve` from re-entering this plugin.
+       */
+      async function resolveNodeBuiltin(
+        arguments_: OnResolveArgs,
+      ): Promise<OnResolveResult | undefined> {
         const moduleName = removeNodePrefix(arguments_.path);
         if (!NODE_BUILTIN_NAMES.has(moduleName)) {
           return undefined;
+        }
+        const pluginData = readPreviewNodeBuiltinPluginData(arguments_.pluginData);
+        if (pluginData[PREVIEW_NODE_BUILTIN_RESOLVE_MARKER] === true) return undefined;
+        if (!arguments_.path.startsWith('node:')) {
+          const browserResolution = await build.resolve(arguments_.path, {
+            importer: arguments_.importer,
+            kind: arguments_.kind,
+            namespace: arguments_.namespace,
+            pluginData: {
+              ...pluginData,
+              [PREVIEW_NODE_BUILTIN_RESOLVE_MARKER]: true,
+            },
+            resolveDir: arguments_.resolveDir,
+          });
+          if (
+            browserResolution.errors.length === 0 &&
+            browserResolution.path.length > 0 &&
+            !browserResolution.external
+          ) {
+            return browserResolution;
+          }
         }
         return {
           namespace: PREVIEW_NODE_BUILTIN_NAMESPACE,
@@ -46,8 +76,21 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
         };
       }
 
-      /** Emits a neutral callable object without forwarding any extension-host Node capability. */
+      /**
+       * Emits a writable browser-local namespace without forwarding extension-host capabilities.
+       *
+       * Legacy packages commonly inherit from a built-in export and then assign methods such as
+       * `Child.prototype.destroy`. Export-shaped properties must therefore be writable data
+       * properties: a getter-only property on the neutral function becomes an inherited accessor
+       * and makes that ordinary assignment throw in strict-mode bundles.
+       */
       async function loadNodeBuiltin(arguments_: OnLoadArgs): Promise<OnLoadResult> {
+        if (arguments_.path === 'events') {
+          return {
+            contents: createPreviewNodeEventsRuntimeSource(),
+            loader: 'js',
+          };
+        }
         const encodedModuleName = JSON.stringify(arguments_.path);
         const encodedExportNames = JSON.stringify(
           await readNodeBuiltinExportNames(arguments_.path, exportNamesByModule),
@@ -64,12 +107,13 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
             "    if (property === 'then') return undefined;",
             "    if (property === Symbol.toStringTag) return 'ReactPreviewNodeBuiltinShim';",
             '    if (property === Symbol.toPrimitive) return () => 0;',
+            '    if (Reflect.has(_target, property)) return Reflect.get(_target, property);',
             '    return neutral;',
             '  },',
             '});',
             'for (const exportName of exportNames) {',
             '  if (!Object.hasOwn(callable, exportName)) {',
-            '    Object.defineProperty(callable, exportName, { configurable: true, enumerable: true, get: () => neutral });',
+            '    Object.defineProperty(callable, exportName, { configurable: true, enumerable: true, value: neutral, writable: true });',
             '  }',
             '}',
             "console.warn('[React Preview] Node built-in ' + moduleName + ' is unavailable in the browser preview; calls return neutral values.');",
@@ -83,6 +127,13 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
       build.onLoad({ filter: /.*/, namespace: PREVIEW_NODE_BUILTIN_NAMESPACE }, loadNodeBuiltin);
     },
   };
+}
+
+/** Copies resolver metadata only when another plugin supplied a plain record-like value. */
+function readPreviewNodeBuiltinPluginData(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 /** Reads only public property names so generated named imports never receive the host implementations. */

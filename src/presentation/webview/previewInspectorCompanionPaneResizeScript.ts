@@ -20,10 +20,11 @@ export function createPreviewInspectorCompanionPaneResizeScript(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_COMPANION_PANE_BREAKPOINT = 760;
 const PREVIEW_INSPECTOR_COMPANION_PANE_HANDLE_SIZE = 9;
+const PREVIEW_INSPECTOR_COMPANION_PANE_LAYOUT_VERSION = 2;
 const PREVIEW_INSPECTOR_COMPANION_PANE_STATE_KEY = 'reactPreviewInspectorPaneLayout';
 const PREVIEW_INSPECTOR_COMPANION_PANE_DEFAULTS = Object.freeze({
-  columnsRatio: 0.38,
-  rowsRatio: 0.34,
+  columnsRatio: 0.52,
+  rowsRatio: 0.46,
 });
 
 /** Restricts restored ratios before live dimensions provide stricter pixel-based bounds. */
@@ -37,13 +38,17 @@ function readPreviewInspectorCompanionPaneState() {
   let persisted;
   try { persisted = vscode.getState?.(); } catch { persisted = undefined; }
   const source = persisted?.[PREVIEW_INSPECTOR_COMPANION_PANE_STATE_KEY];
+  const legacyDefaultColumns = source?.version !== PREVIEW_INSPECTOR_COMPANION_PANE_LAYOUT_VERSION &&
+    Math.abs(Number(source?.columnsRatio) - 0.38) < 0.001;
+  const legacyDefaultRows = source?.version !== PREVIEW_INSPECTOR_COMPANION_PANE_LAYOUT_VERSION &&
+    Math.abs(Number(source?.rowsRatio) - 0.34) < 0.001;
   return {
     columnsRatio: normalizePreviewInspectorCompanionPaneRatio(
-      source?.columnsRatio,
+      legacyDefaultColumns ? undefined : source?.columnsRatio,
       PREVIEW_INSPECTOR_COMPANION_PANE_DEFAULTS.columnsRatio,
     ),
     rowsRatio: normalizePreviewInspectorCompanionPaneRatio(
-      source?.rowsRatio,
+      legacyDefaultRows ? undefined : source?.rowsRatio,
       PREVIEW_INSPECTOR_COMPANION_PANE_DEFAULTS.rowsRatio,
     ),
   };
@@ -60,7 +65,10 @@ function persistPreviewInspectorCompanionPaneState() {
   try {
     vscode.setState?.({
       ...root,
-      [PREVIEW_INSPECTOR_COMPANION_PANE_STATE_KEY]: { ...previewInspectorCompanionPaneState },
+      [PREVIEW_INSPECTOR_COMPANION_PANE_STATE_KEY]: {
+        ...previewInspectorCompanionPaneState,
+        version: PREVIEW_INSPECTOR_COMPANION_PANE_LAYOUT_VERSION,
+      },
     });
   } catch { /* A closing webview can reject a final best-effort state write. */ }
 }

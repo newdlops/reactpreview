@@ -4,7 +4,7 @@
  * content, applies VS Code-native styling, and forwards only explicit form/tree interactions.
  */
 import { createPreviewInspectorCompanionPaneResizeScript } from './previewInspectorCompanionPaneResizeScript';
-import { createPreviewInspectorCompanionFlowchartViewportScript } from './previewInspectorCompanionFlowchartViewportScript';
+import { createPreviewInspectorCompanionScrollScript } from './previewInspectorCompanionScrollScript';
 
 /** Complete state needed to render one independently reloadable Inspector companion document. */
 export interface PreviewInspectorCompanionHtmlOptions {
@@ -25,8 +25,8 @@ export interface PreviewInspectorCompanionHtmlOptions {
 export function createPreviewInspectorCompanionHtml(
   options: PreviewInspectorCompanionHtmlOptions,
 ): string {
-  const flowchartViewportScript = createPreviewInspectorCompanionFlowchartViewportScript();
   const paneResizeScript = createPreviewInspectorCompanionPaneResizeScript();
+  const scrollScript = createPreviewInspectorCompanionScrollScript();
   const csp = [
     "default-src 'none'",
     `script-src 'nonce-${options.nonce}'`,
@@ -70,10 +70,13 @@ export function createPreviewInspectorCompanionHtml(
       const vscode = acquireVsCodeApi();
       const mirror = document.getElementById('react-preview-inspector-mirror');
       const status = document.getElementById('react-preview-inspector-status');
+      // ARTICLE and HEADER are inert Inspector layout boundaries. Removing either wrapper would
+      // promote its children into a parent grid and change row sizing even though no script or
+      // resource capability was present, so they are retained under the same attribute filter.
       const allowedTags = new Set([
-        'ASIDE', 'BUTTON', 'CODE', 'DETAILS', 'DIV', 'INPUT', 'LABEL', 'LI', 'OL',
-        'OPTION', 'P', 'PRE', 'SECTION', 'SELECT', 'SPAN', 'STRONG', 'SUMMARY',
-        'TEXTAREA', 'UL'
+        'ARTICLE', 'ASIDE', 'BUTTON', 'CODE', 'DETAILS', 'DIV', 'HEADER', 'INPUT',
+        'LABEL', 'LI', 'OL', 'OPTION', 'P', 'PRE', 'SECTION', 'SELECT', 'SPAN',
+        'STRONG', 'SUMMARY', 'TEXTAREA', 'UL'
       ]);
       const simpleAttributes = new Set([
         'checked', 'class', 'disabled', 'hidden', 'id', 'open', 'placeholder', 'readonly', 'role',
@@ -85,7 +88,7 @@ export function createPreviewInspectorCompanionHtml(
       let latestSequence = 0;
 
       ${paneResizeScript}
-      ${flowchartViewportScript}
+      ${scrollScript}
 
       /** Removes executable or resource-loading markup before a preview mirror reaches the DOM. */
       function sanitizeInspectorMarkup(html) {
@@ -128,10 +131,10 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-page-context,.rpi-workbench,.rpi-pane,.rpi-pane-heading{max-width:100%!important;min-width:0!important}',
           '.rpi-workbench{min-height:0!important;overflow:hidden!important}',
           '.rpi-workbench[data-rpi-pane-axis="columns"]{grid-template-columns:',
-          'minmax(0,var(--rpi-pane-first-size,38%)) 9px minmax(0,1fr)!important;',
+          'minmax(0,var(--rpi-pane-first-size,52%)) 9px minmax(0,1fr)!important;',
           'grid-template-rows:minmax(0,1fr)!important}',
           '.rpi-workbench[data-rpi-pane-axis="rows"]{grid-template-columns:minmax(0,1fr)!important;',
-          'grid-template-rows:minmax(0,var(--rpi-pane-first-size,34%)) 9px minmax(0,1fr)!important}',
+          'grid-template-rows:minmax(0,var(--rpi-pane-first-size,46%)) 9px minmax(0,1fr)!important}',
           '.rpi-workbench[data-rpi-flow-resolver-collapsed="true"][data-rpi-pane-axis="columns"]{',
           'grid-template-columns:minmax(0,1fr) 9px minmax(72px,9%)!important}',
           '.rpi-workbench[data-rpi-flow-resolver-collapsed="true"][data-rpi-pane-axis="rows"]{',
@@ -146,7 +149,7 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-pane-resize-handle:hover,.rpi-pane-resize-handle[data-dragging="true"]{',
           'background:color-mix(in srgb,var(--vscode-focusBorder,#007fd4) 18%,transparent)}',
           '.rpi-pane-resize-handle:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
-          '.rpi-flowchart-canvas{zoom:var(--rpi-companion-flowchart-zoom,1)!important}',
+          '.rpi-tree-scroll,.rpi-detail-scroll,.rpi-console-list,.rpi-json{overflow-anchor:none!important}',
           '.rpi-wireframe-layer,.rpi-resize-handle,.rpi-move-handle{display:none!important}',
           '.rpi-toolbar select[aria-label="Inspector position"]{display:none!important}',
           '.rpi-toolbar button[title="Collapse inspector"],',
@@ -155,82 +158,23 @@ export function createPreviewInspectorCompanionHtml(
         return style;
       }
 
-      /** Restores focus and a text selection after a semantic snapshot replaces mirrored markup. */
-      function restoreControlFocus(remoteId, selectionStart, selectionEnd) {
+      /** Restores focus, text selection, and an editor's own scroll after mirrored DOM replacement. */
+      function restoreControlFocus(
+        remoteId,
+        selectionStart,
+        selectionEnd,
+        controlScrollLeft,
+        controlScrollTop
+      ) {
         if (remoteId === undefined) return;
         const control = mirror.querySelector('[data-rpi-remote-id="' + remoteId + '"]');
         control?.focus?.({ preventScroll: true });
+        if (control !== null && control !== undefined) {
+          control.scrollLeft = normalizeCompanionScrollCoordinate(controlScrollLeft);
+          control.scrollTop = normalizeCompanionScrollCoordinate(controlScrollTop);
+        }
         if (typeof control?.setSelectionRange !== 'function') return;
         try { control.setSelectionRange(selectionStart, selectionEnd); } catch { /* Not a text control. */ }
-      }
-
-      /** Converts one DOM scroll coordinate into a finite non-negative number. */
-      function normalizeCompanionScrollCoordinate(value) {
-        return Number.isFinite(value) ? Math.max(0, Number(value)) : 0;
-      }
-
-      /** Reads one bounded extension-issued identity for a preserved Inspector scroll viewport. */
-      function readCompanionScrollRegionKey(viewport) {
-        const key = viewport?.getAttribute?.('data-rpi-scroll-key');
-        return typeof key === 'string' && /^[a-z][a-z0-9-]{0,63}$/u.test(key)
-          ? key
-          : undefined;
-      }
-
-      /** Names legacy tree/flow viewports locally until every retained snapshot emits the key. */
-      function readCompanionScrollRegions() {
-        for (const [selector, key] of [
-          ['.rpi-tree-scroll', 'components-tree'],
-          ['.rpi-blocker-navigation-scroll', 'blocker-flow']
-        ]) {
-          const viewport = mirror.querySelector(selector);
-          if (viewport !== null && readCompanionScrollRegionKey(viewport) === undefined) {
-            viewport.setAttribute('data-rpi-scroll-key', key);
-          }
-        }
-        return [...mirror.querySelectorAll('[data-rpi-scroll-key]')].slice(0, 16);
-      }
-
-      /** Captures the document and every named Inspector viewport before mirrored DOM replacement. */
-      function captureCompanionScrollSnapshot() {
-        const documentViewport = document.scrollingElement;
-        const regions = [];
-        const retainedKeys = new Set();
-        for (const viewport of readCompanionScrollRegions()) {
-          const key = readCompanionScrollRegionKey(viewport);
-          if (key === undefined || retainedKeys.has(key)) continue;
-          retainedKeys.add(key);
-          regions.push({
-            key,
-            left: normalizeCompanionScrollCoordinate(viewport.scrollLeft),
-            top: normalizeCompanionScrollCoordinate(viewport.scrollTop)
-          });
-        }
-        return {
-          documentLeft: normalizeCompanionScrollCoordinate(documentViewport?.scrollLeft),
-          documentTop: normalizeCompanionScrollCoordinate(documentViewport?.scrollTop),
-          regions
-        };
-      }
-
-      /** Restores ordinary user scroll without focusing or invoking application-side callbacks. */
-      function restoreCompanionScrollSnapshot(snapshot) {
-        const documentViewport = document.scrollingElement;
-        if (documentViewport !== null) {
-          documentViewport.scrollLeft = snapshot.documentLeft;
-          documentViewport.scrollTop = snapshot.documentTop;
-        }
-        const retainedRegions = new Map(
-          (Array.isArray(snapshot.regions) ? snapshot.regions : [])
-            .map((region) => [region.key, region]),
-        );
-        for (const viewport of readCompanionScrollRegions()) {
-          const key = readCompanionScrollRegionKey(viewport);
-          const region = key === undefined ? undefined : retainedRegions.get(key);
-          if (region === undefined) continue;
-          viewport.scrollLeft = normalizeCompanionScrollCoordinate(region.left);
-          viewport.scrollTop = normalizeCompanionScrollCoordinate(region.top);
-        }
       }
 
       /** Finds a preview-authorized external reveal without interpolating its ID into a selector. */
@@ -276,11 +220,12 @@ export function createPreviewInspectorCompanionHtml(
         if (!Number.isSafeInteger(message.sequence) || message.sequence <= latestSequence) return;
         latestSequence = message.sequence;
         const scrollSnapshot = captureCompanionScrollSnapshot();
-        const flowchartCameraSnapshot = capturePreviewInspectorCompanionFlowchartCamera();
         const active = document.activeElement?.closest?.('[data-rpi-remote-id]');
         const activeId = active?.getAttribute?.('data-rpi-remote-id') ?? undefined;
         const selectionStart = active?.selectionStart;
         const selectionEnd = active?.selectionEnd;
+        const controlScrollLeft = active?.scrollLeft;
+        const controlScrollTop = active?.scrollTop;
         const fragment = sanitizeInspectorMarkup(message.html);
         const style = document.createElement('style');
         style.textContent = sanitizeInspectorCss(message.css);
@@ -288,11 +233,19 @@ export function createPreviewInspectorCompanionHtml(
         status.hidden = true;
         mirror.hidden = false;
         installPreviewInspectorCompanionPaneResize();
-        installPreviewInspectorCompanionFlowchartViewport();
-        restoreControlFocus(activeId, selectionStart, selectionEnd);
-        restoreCompanionScrollSnapshot(scrollSnapshot);
-        restorePreviewInspectorCompanionFlowchartCamera(flowchartCameraSnapshot);
-        revealCompanionTreeRow(message.treeReveal);
+        restoreControlFocus(
+          activeId,
+          selectionStart,
+          selectionEnd,
+          controlScrollLeft,
+          controlScrollTop
+        );
+        scheduleCompanionScrollRestoration(
+          scrollSnapshot,
+          message.treeReveal === undefined
+            ? undefined
+            : () => revealCompanionTreeRow(message.treeReveal)
+        );
       }
 
       /** Returns the nearest preview-minted interaction identity for one delegated browser event. */
@@ -329,6 +282,7 @@ export function createPreviewInspectorCompanionHtml(
       function postControlEvent(control, eventType, key) {
         const remoteId = control?.getAttribute?.('data-rpi-remote-id');
         if (remoteId === null || remoteId === undefined) return;
+        rememberCompanionScrollBeforeInteraction();
         const message = {
           eventType,
           remoteId,
@@ -347,10 +301,12 @@ export function createPreviewInspectorCompanionHtml(
         if (control === null || control instanceof HTMLSelectElement ||
           control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) return;
         event.preventDefault();
-        const flowchartDisposition =
-          handlePreviewInspectorCompanionFlowchartCommand(control);
-        if (flowchartDisposition === 'local-only') return;
-        if (postSourceClick(control)) return;
+        // Source navigation leaves this editor tab immediately, so capture its current position
+        // before posting instead of relying on the ordinary remote-control path below.
+        if (control.matches('[data-react-preview-source-open="true"]')) {
+          rememberCompanionScrollBeforeInteraction();
+          if (postSourceClick(control)) return;
+        }
         postControlEvent(control, 'click');
       });
       mirror.addEventListener('dblclick', (event) => {
@@ -373,17 +329,6 @@ export function createPreviewInspectorCompanionHtml(
         if (!navigationKeys.has(event.key)) return;
         const control = findRemoteControl(event);
         if (control === null || control.matches('input,textarea,select')) return;
-        if (event.key === 'Enter' || event.key === ' ') {
-          const flowchartDisposition =
-            handlePreviewInspectorCompanionFlowchartCommand(control);
-          if (flowchartDisposition !== undefined) {
-            event.preventDefault();
-            if (flowchartDisposition === 'local-and-remote') {
-              postControlEvent(control, 'click');
-            }
-            return;
-          }
-        }
         event.preventDefault();
         postControlEvent(control, 'keydown', event.key);
       });

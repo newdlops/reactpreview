@@ -35,6 +35,13 @@ interface PaneResizeRuntime {
   readonly refresh: (workbench: FakeElement, handle: FakeElement) => void;
 }
 
+/** Persisted splitter payload, including the schema marker used for default migrations. */
+interface PersistedPaneState {
+  readonly columnsRatio: number;
+  readonly rowsRatio: number;
+  readonly version?: number;
+}
+
 describe('Preview Inspector companion pane resize script', () => {
   /** Resizes left/right and upper/lower layouts independently while persisting bounded ratios. */
   it('installs one accessible responsive separator and remembers both orientations', () => {
@@ -45,27 +52,49 @@ describe('Preview Inspector companion pane resize script', () => {
     expect(handle?.className).toBe('rpi-pane-resize-handle');
     expect(handle?.attributes.get('role')).toBe('separator');
     expect(handle?.attributes.get('aria-orientation')).toBe('vertical');
-    expect(fixture.workbench.style.values.get('--rpi-pane-first-size')).toBe('38%');
+    expect(fixture.workbench.style.values.get('--rpi-pane-first-size')).toBe('52%');
 
     handle?.listeners.get('keydown')?.(createKeyboardEvent('ArrowRight'));
-    expect(fixture.runtime.readState().columnsRatio).toBeCloseTo(0.405);
-    expect(fixture.persisted.reactPreviewInspectorPaneLayout?.columnsRatio).toBeCloseTo(0.405);
+    expect(fixture.runtime.readState().columnsRatio).toBeCloseTo(0.545);
+    expect(fixture.persisted.reactPreviewInspectorPaneLayout?.columnsRatio).toBeCloseTo(0.545);
 
     fixture.workbench.clientWidth = 620;
     fixture.workbench.clientHeight = 700;
     if (handle !== undefined) fixture.runtime.refresh(fixture.workbench, handle);
     expect(handle?.attributes.get('aria-orientation')).toBe('horizontal');
-    expect(fixture.workbench.style.values.get('--rpi-pane-first-size')).toBe('34%');
+    expect(fixture.workbench.style.values.get('--rpi-pane-first-size')).toBe('46%');
 
     handle?.listeners.get('keydown')?.(createKeyboardEvent('ArrowDown', true));
-    expect(fixture.runtime.readState().rowsRatio).toBeCloseTo(0.42);
-    expect(fixture.runtime.readState().columnsRatio).toBeCloseTo(0.405);
+    expect(fixture.runtime.readState().rowsRatio).toBeCloseTo(0.54);
+    expect(fixture.runtime.readState().columnsRatio).toBeCloseTo(0.545);
+    expect(fixture.persisted.reactPreviewInspectorPaneLayout?.version).toBe(2);
+  });
+
+  /** Moves only untouched legacy defaults so deliberate user-resized panes remain stable. */
+  it('migrates legacy defaults while preserving customized ratios', () => {
+    const legacyDefault = evaluatePaneResizeRuntime({
+      columnsRatio: 0.38,
+      rowsRatio: 0.34,
+    });
+    expect(legacyDefault.runtime.readState()).toEqual({
+      columnsRatio: 0.52,
+      rowsRatio: 0.46,
+    });
+
+    const customized = evaluatePaneResizeRuntime({
+      columnsRatio: 0.44,
+      rowsRatio: 0.57,
+    });
+    expect(customized.runtime.readState()).toEqual({
+      columnsRatio: 0.44,
+      rowsRatio: 0.57,
+    });
   });
 });
 
 /** Evaluates the generated browser helpers against a deterministic two-pane workbench. */
-function evaluatePaneResizeRuntime(): {
-  readonly persisted: Record<string, { columnsRatio: number; rowsRatio: number } | undefined>;
+function evaluatePaneResizeRuntime(initialPaneState?: PersistedPaneState): {
+  readonly persisted: Record<string, PersistedPaneState | undefined>;
   readonly runtime: PaneResizeRuntime;
   readonly workbench: FakeElement;
 } {
@@ -74,7 +103,8 @@ function evaluatePaneResizeRuntime(): {
   const workbench = createFakeElement('rpi-workbench', [firstPane, secondPane]);
   workbench.clientHeight = 600;
   workbench.clientWidth = 1_000;
-  const persisted: Record<string, { columnsRatio: number; rowsRatio: number } | undefined> = {};
+  const persisted: Record<string, PersistedPaneState | undefined> =
+    initialPaneState === undefined ? {} : { reactPreviewInspectorPaneLayout: initialPaneState };
   const context: {
     __paneRuntime?: PaneResizeRuntime;
     document: { createElement(): FakeElement };

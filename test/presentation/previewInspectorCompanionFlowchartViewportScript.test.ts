@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   createPreviewInspectorCompanionFlowchartViewportScript,
+  PREVIEW_INSPECTOR_COMPANION_FLOWCHART_FIT_MIN_ZOOM,
   PREVIEW_INSPECTOR_COMPANION_FLOWCHART_MAX_ZOOM,
   PREVIEW_INSPECTOR_COMPANION_FLOWCHART_MIN_ZOOM,
 } from '../../src/presentation/webview/previewInspectorCompanionFlowchartViewportScript';
@@ -22,7 +23,7 @@ interface FakeElement {
   clientWidth: number;
   getBoundingClientRect(): FakeRectangle;
   getAttribute(name: string): string | null;
-  readonly listeners: Map<string, () => void>;
+  readonly listeners: Map<string, (event?: FakePointerEvent) => void>;
   querySelector(selector: string): FakeElement | null;
   readonly scrollHeight: number;
   scrollLeft: number;
@@ -30,9 +31,25 @@ interface FakeElement {
   scrollTop: number;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
+  releasePointerCapture(pointerId: number): void;
+  setPointerCapture(pointerId: number): void;
   textContent: string;
-  addEventListener(name: string, listener: () => void): void;
-  removeEventListener(name: string, listener: () => void): void;
+  addEventListener(name: string, listener: (event?: FakePointerEvent) => void): void;
+  removeEventListener(name: string, listener: (event?: FakePointerEvent) => void): void;
+}
+
+/** Minimal pointer/click event used to exercise companion-local blank-canvas panning. */
+interface FakePointerEvent {
+  readonly button?: number;
+  readonly clientX?: number;
+  readonly clientY?: number;
+  defaultPrevented?: boolean;
+  readonly isPrimary?: boolean;
+  readonly pointerId?: number;
+  propagationStopped?: boolean;
+  readonly target?: { closest(selector: string): unknown };
+  preventDefault?(): void;
+  stopPropagation?(): void;
 }
 
 /** Camera helpers exposed from the generated script only for deterministic VM assertions. */
@@ -48,6 +65,8 @@ interface FlowchartCameraRuntime {
 interface FlowchartCameraState {
   readonly centerX: number;
   readonly centerY: number;
+  readonly graphKey?: string;
+  readonly viewMode?: 'all' | 'focus' | 'main';
   readonly zoomPercent: number;
 }
 
@@ -68,12 +87,16 @@ interface FlowchartCameraFixture {
   naturalHeight: number;
   naturalWidth: number;
   readonly commands: FlowchartCameraCommands;
+  readonly flushAnimationFrames: () => void;
+  graphKey?: string;
   readonly label: FakeElement;
   readonly mirrorStyle: Map<string, string>;
   readonly persisted: Record<string, unknown>;
   readonly runtime: FlowchartCameraRuntime;
+  setStateCalls: number;
   readonly status: FakeElement;
   readonly viewport: FakeElement;
+  viewMode: 'all' | 'focus' | 'main';
 }
 
 describe('Preview Inspector companion flowchart viewport script', () => {
@@ -123,6 +146,7 @@ describe('Preview Inspector companion flowchart viewport script', () => {
     expect(fixture.runtime.readState()).toEqual({
       centerX: 0.5,
       centerY: 0.5,
+      viewMode: 'focus',
       zoomPercent: 47,
     });
     expect(fixture.label.textContent).toBe('47%');
@@ -133,6 +157,120 @@ describe('Preview Inspector companion flowchart viewport script', () => {
         centerY: 0.5,
         zoomPercent: 47,
       },
+    });
+  });
+
+  /** Lets Fit all go below the manual zoom floor for the bounded 128-node/32-lane graph. */
+  it('fits an oversized bounded graph while preserving ordinary zoom and 100 percent reset', () => {
+    const fixture = evaluateFlowchartCameraRuntime();
+    fixture.naturalWidth = 40_000;
+    fixture.naturalHeight = 2_200;
+    fixture.runtime.install();
+
+    fixture.runtime.command(fixture.commands.fit);
+    expect(fixture.runtime.readState().zoomPercent).toBe(
+      PREVIEW_INSPECTOR_COMPANION_FLOWCHART_FIT_MIN_ZOOM,
+    );
+    expect(fixture.label.textContent).toBe('1%');
+
+    fixture.runtime.command(fixture.commands['zoom-in']);
+    expect(fixture.runtime.readState().zoomPercent).toBe(
+      PREVIEW_INSPECTOR_COMPANION_FLOWCHART_MIN_ZOOM,
+    );
+    fixture.runtime.command(fixture.commands['zoom-reset']);
+    expect(fixture.runtime.readState().zoomPercent).toBe(100);
+    expect(fixture.label.textContent).toBe('100%');
+  });
+
+  /** Auto-fits a replacement only when Focus/Main/All scope changes. */
+  it('keeps camera state within one scope and auto-fits each newly selected graph scope', () => {
+    const fixture = evaluateFlowchartCameraRuntime({
+      centerX: 0.25,
+      centerY: 0.25,
+      viewMode: 'focus',
+      zoomPercent: 90,
+    });
+    fixture.naturalWidth = 12_000;
+    fixture.naturalHeight = 2_000;
+    fixture.runtime.install();
+    fixture.runtime.restore();
+    expect(fixture.runtime.readState().zoomPercent).toBe(90);
+
+    const focusCamera = fixture.runtime.capture();
+    fixture.viewMode = 'all';
+    fixture.runtime.install();
+    fixture.runtime.restore(focusCamera);
+
+    expect(fixture.runtime.readState()).toMatchObject({
+      centerX: 0.5,
+      centerY: 0.5,
+      viewMode: 'all',
+      zoomPercent: 3,
+    });
+    expect(fixture.status.textContent).toBe('Fit render flow at 3%.');
+  });
+
+  /** Refits a compact scope when selection replaces its visible neighborhood inside one mode. */
+  it('auto-fits changed Focus geometry so Locate current file reveals the replacement graph', () => {
+    const fixture = evaluateFlowchartCameraRuntime({
+      centerX: 0.25,
+      centerY: 0.25,
+      graphKey: 'focus:5:before',
+      viewMode: 'focus',
+      zoomPercent: 90,
+    });
+    fixture.naturalWidth = 4_000;
+    fixture.naturalHeight = 1_000;
+    fixture.runtime.install();
+    fixture.runtime.restore();
+    expect(fixture.runtime.readState().zoomPercent).toBe(90);
+
+    const previousFocusCamera = fixture.runtime.capture();
+    fixture.graphKey = 'focus:5:current';
+    fixture.runtime.install();
+    fixture.runtime.restore(previousFocusCamera);
+
+    expect(fixture.runtime.readState()).toMatchObject({
+      centerX: 0.5,
+      centerY: 0.5,
+      graphKey: 'focus:5:current',
+      viewMode: 'focus',
+      zoomPercent: 11,
+    });
+  });
+
+  /** Keeps Main camera state for an in-graph selection and refits only a changed visible set. */
+  it('preserves Main pan and zoom until its compact graph identity changes', () => {
+    const fixture = evaluateFlowchartCameraRuntime({
+      centerX: 0.25,
+      centerY: 0.25,
+      graphKey: 'main:24:same',
+      viewMode: 'main',
+      zoomPercent: 90,
+    });
+    fixture.naturalWidth = 4_000;
+    fixture.naturalHeight = 1_000;
+    fixture.runtime.install();
+    fixture.runtime.restore();
+    const previousMainCamera = fixture.runtime.capture();
+
+    fixture.runtime.install();
+    fixture.runtime.restore(previousMainCamera);
+    expect(fixture.runtime.readState()).toMatchObject({
+      centerX: 0.25,
+      centerY: 0.25,
+      graphKey: 'main:24:same',
+      zoomPercent: 90,
+    });
+
+    fixture.graphKey = 'main:24:changed';
+    fixture.runtime.install();
+    fixture.runtime.restore(previousMainCamera);
+    expect(fixture.runtime.readState()).toMatchObject({
+      centerX: 0.5,
+      centerY: 0.5,
+      graphKey: 'main:24:changed',
+      zoomPercent: 11,
     });
   });
 
@@ -175,7 +313,126 @@ describe('Preview Inspector companion flowchart viewport script', () => {
     expect(fixture.runtime.command(fixture.commands['locate-current'])).toBe('local-and-remote');
     expect(fixture.status.textContent).toContain('unavailable');
   });
+
+  /** Drags graph whitespace while preserving node clicks for resolver selection. */
+  it('pans freely from blank canvas without turning graph nodes into drag handles', () => {
+    const fixture = evaluateFlowchartCameraRuntime();
+    fixture.runtime.install();
+    fixture.viewport.scrollLeft = 300;
+    fixture.viewport.scrollTop = 220;
+    const blankTarget = { closest: () => null };
+    const down = createFakePointerEvent({
+      button: 0,
+      clientX: 160,
+      clientY: 140,
+      isPrimary: true,
+      pointerId: 7,
+      target: blankTarget,
+    });
+    fixture.viewport.listeners.get('pointerdown')?.(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(fixture.viewport.attributes.get('data-rpi-panning')).toBe('true');
+
+    const move = createFakePointerEvent({
+      clientX: 100,
+      clientY: 90,
+      pointerId: 7,
+      target: blankTarget,
+    });
+    fixture.viewport.listeners.get('pointermove')?.(move);
+    fixture.viewport.listeners.get('scroll')?.();
+    fixture.viewport.listeners.get('scroll')?.();
+    expect(fixture.viewport.scrollLeft).toBe(360);
+    expect(fixture.viewport.scrollTop).toBe(270);
+    expect(fixture.setStateCalls).toBe(0);
+    fixture.viewport.listeners.get('pointerup')?.(createFakePointerEvent({ pointerId: 7 }));
+    expect(fixture.viewport.attributes.has('data-rpi-panning')).toBe(false);
+    expect(fixture.status.textContent).toBe('Panned render flow.');
+    expect(fixture.setStateCalls).toBe(1);
+
+    const click = createFakePointerEvent();
+    fixture.viewport.listeners.get('click')?.(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(click.propagationStopped).toBe(true);
+
+    const beforeNodeGesture = fixture.viewport.scrollLeft;
+    const nodeTarget = { closest: () => ({ node: true }) };
+    fixture.viewport.listeners.get('pointerdown')?.(
+      createFakePointerEvent({
+        button: 0,
+        clientX: 100,
+        clientY: 100,
+        isPrimary: true,
+        pointerId: 8,
+        target: nodeTarget,
+      }),
+    );
+    fixture.viewport.listeners.get('pointermove')?.(
+      createFakePointerEvent({
+        clientX: 20,
+        clientY: 20,
+        pointerId: 8,
+        target: nodeTarget,
+      }),
+    );
+    expect(fixture.viewport.scrollLeft).toBe(beforeNodeGesture);
+
+    fixture.viewport.listeners.get('scroll')?.();
+    fixture.viewport.listeners.get('scroll')?.();
+    expect(fixture.setStateCalls).toBe(1);
+    fixture.flushAnimationFrames();
+    expect(fixture.setStateCalls).toBe(2);
+
+    const installedPointerMove = fixture.viewport.listeners.get('pointermove');
+    fixture.viewport.listeners.get('pointerdown')?.(
+      createFakePointerEvent({
+        button: 0,
+        clientX: 90,
+        clientY: 90,
+        isPrimary: true,
+        pointerId: 9,
+        target: blankTarget,
+      }),
+    );
+    fixture.viewport.listeners.get('pointermove')?.(
+      createFakePointerEvent({ clientX: 30, clientY: 30, pointerId: 9, target: blankTarget }),
+    );
+    fixture.viewport.listeners.get('pointercancel')?.(createFakePointerEvent({ pointerId: 9 }));
+    expect(fixture.setStateCalls).toBe(3);
+    expect(fixture.viewport.attributes.has('data-rpi-panning')).toBe(false);
+
+    fixture.viewport.listeners.get('scroll')?.();
+    fixture.viewport.listeners.get('pointerdown')?.(
+      createFakePointerEvent({
+        button: 0,
+        clientX: 80,
+        clientY: 80,
+        isPrimary: true,
+        pointerId: 10,
+        target: blankTarget,
+      }),
+    );
+    fixture.runtime.install();
+    expect(fixture.viewport.attributes.has('data-rpi-panning')).toBe(false);
+    expect(fixture.viewport.listeners.get('pointermove')).not.toBe(installedPointerMove);
+    fixture.flushAnimationFrames();
+    expect(fixture.setStateCalls).toBe(3);
+  });
 });
+
+/** Creates one observable pointer-like event without requiring a DOM implementation. */
+function createFakePointerEvent(values: Partial<FakePointerEvent> = {}): FakePointerEvent {
+  const event: FakePointerEvent = {
+    ...values,
+    preventDefault: () => {
+      event.defaultPrevented = true;
+    },
+    stopPropagation: () => {
+      event.propagationStopped = true;
+    },
+  };
+  return event;
+}
 
 /** Evaluates generated companion code against a deterministic scrollable graph and toolbar. */
 function evaluateFlowchartCameraRuntime(
@@ -187,6 +444,8 @@ function evaluateFlowchartCameraRuntime(
     currentAvailable: true,
     naturalHeight: 800,
     naturalWidth: 1_000,
+    graphKey: restoredCamera.graphKey,
+    viewMode: restoredCamera.viewMode ?? 'focus',
   } as FlowchartCameraFixture;
   const viewport = createFakeElement({
     clientHeight: 400,
@@ -243,6 +502,14 @@ function evaluateFlowchartCameraRuntime(
   });
   const label = createFakeElement({ attributes: { 'data-rpi-flowchart-zoom-label': '' } });
   const status = createFakeElement({ attributes: { 'data-rpi-flowchart-camera-status': '' } });
+  const flowchart = createFakeElement({
+    attributes: { 'data-rpi-flowchart-view': fixture.viewMode },
+  });
+  flowchart.getAttribute = (name) => {
+    if (name === 'data-rpi-flowchart-view') return fixture.viewMode;
+    if (name === 'data-rpi-flowchart-camera-key') return fixture.graphKey ?? null;
+    return flowchart.attributes.get(name) ?? null;
+  };
   const command = (name: string): FakeElement =>
     createFakeElement({ attributes: { 'data-rpi-flowchart-command': name } });
   const commands: FlowchartCameraCommands = {
@@ -266,6 +533,7 @@ function evaluateFlowchartCameraRuntime(
     querySelector: (selector: string): FakeElement | null => {
       if (selector === '.rpi-flowchart-viewport') return viewport;
       if (selector === '.rpi-flowchart-canvas') return canvas;
+      if (selector === '.rpi-flowchart') return flowchart;
       if (selector.includes('[aria-pressed="true"]')) return selected;
       if (selector.includes('[data-rpi-current-file="true"]')) {
         return fixture.currentAvailable ? current : null;
@@ -291,24 +559,39 @@ function evaluateFlowchartCameraRuntime(
   viewport.querySelector = (selector) => (selector === '.rpi-flowchart-canvas' ? canvas : null);
   const persisted: Record<string, unknown> = {
     preservedPaneState: { columnsRatio: 0.4 },
-    reactPreviewInspectorFlowchartCamera: restoredCamera,
+    reactPreviewInspectorFlowchartCamera: { viewMode: 'focus', ...restoredCamera },
   };
+  let nextAnimationFrameId = 1;
+  const animationFrames = new Map<number, () => void>();
+  fixture.setStateCalls = 0;
   const context: {
     __camera?: FlowchartCameraRuntime;
+    cancelAnimationFrame(handle: number): void;
     globalThis: Record<string, unknown>;
     mirror: typeof mirror;
+    requestAnimationFrame(callback: () => void): number;
     ResizeObserver: undefined;
     vscode: {
       getState(): Record<string, unknown>;
       setState(value: Record<string, unknown>): void;
     };
   } = {
+    cancelAnimationFrame: (handle) => {
+      animationFrames.delete(handle);
+    },
     globalThis: {},
     mirror,
+    requestAnimationFrame: (callback) => {
+      const handle = nextAnimationFrameId;
+      nextAnimationFrameId += 1;
+      animationFrames.set(handle, callback);
+      return handle;
+    },
     ResizeObserver: undefined,
     vscode: {
       getState: () => persisted,
       setState: (value) => {
+        fixture.setStateCalls += 1;
         Object.assign(persisted, value);
       },
     },
@@ -330,6 +613,11 @@ function evaluateFlowchartCameraRuntime(
   }
   Object.assign(fixture, {
     commands,
+    flushAnimationFrames: () => {
+      const pending = [...animationFrames.values()];
+      animationFrames.clear();
+      for (const callback of pending) callback();
+    },
     label,
     mirrorStyle,
     persisted,
@@ -352,7 +640,7 @@ function createFakeElement(
   } = {},
 ): FakeElement {
   const attributes = new Map(Object.entries(options.attributes ?? {}));
-  const listeners = new Map<string, () => void>();
+  const listeners = new Map<string, (event?: FakePointerEvent) => void>();
   const element: FakeElement = {
     attributes,
     addEventListener: (name, listener) => listeners.set(name, listener),
@@ -363,6 +651,7 @@ function createFakeElement(
     listeners,
     querySelector: () => null,
     removeAttribute: (name) => attributes.delete(name),
+    releasePointerCapture: () => undefined,
     removeEventListener: (name, listener) => {
       if (listeners.get(name) === listener) listeners.delete(name);
     },
@@ -375,6 +664,7 @@ function createFakeElement(
     },
     scrollTop: 0,
     setAttribute: (name, value) => attributes.set(name, value),
+    setPointerCapture: () => undefined,
     textContent: '',
   };
   return element;

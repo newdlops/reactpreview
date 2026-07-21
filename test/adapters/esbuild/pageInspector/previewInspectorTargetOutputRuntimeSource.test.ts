@@ -11,8 +11,20 @@ interface TestFiber {
   readonly sibling?: TestFiber;
 }
 
-/** Evaluates one selected outcome against a live boundary-shaped component tree. */
-function hasResolvedOutput(
+/** Observable reachability state retained after one target-output evaluation. */
+interface TestTargetOutputState {
+  readonly targetDeferredCallbackPending?: boolean;
+  readonly targetExportName: string;
+}
+
+/** Result and diagnostic state produced by one selected-outcome evaluation. */
+interface TestTargetOutputEvaluation {
+  readonly resolved: boolean;
+  readonly state: TestTargetOutputState;
+}
+
+/** Evaluates one selected outcome and exposes both its readiness and pending-callback evidence. */
+function evaluateResolvedOutput(
   componentTree: readonly Record<string, unknown>[],
   liveChild: TestFiber | undefined,
   options: {
@@ -21,7 +33,7 @@ function hasResolvedOutput(
     readonly kind?: 'empty' | 'jsx';
     readonly selected?: boolean;
   } = {},
-): boolean {
+): TestTargetOutputEvaluation {
   const outcome = {
     componentTree,
     exportName: 'default',
@@ -38,6 +50,7 @@ function hasResolvedOutput(
     __outcome: typeof outcome;
     __result?: boolean;
     __selected: boolean;
+    __state?: TestTargetOutputState;
   } = {
     __host: options.host !== false,
     __includePlan: options.includePlan !== false,
@@ -62,14 +75,31 @@ function hasResolvedOutput(
       const isPreviewInspectorOwnedFiber = () => false;
       const collectPreviewInspectorFiberElements = (boundary) => boundary.host ? [{}] : [];
       ${createPreviewInspectorTargetOutputRuntimeSource()}
+      const state = { targetExportName: 'default' };
       globalThis.__result = hasPreviewInspectorResolvedTargetOutput(
         { fiber: { child: liveChild }, host: globalThis.__host },
-        { targetExportName: 'default' },
+        state,
       );
+      globalThis.__state = state;
     `,
     context,
   );
-  return context.__result === true;
+  if (context.__state === undefined) throw new Error('Target output state was not captured.');
+  return { resolved: context.__result === true, state: context.__state };
+}
+
+/** Evaluates one selected outcome when a test needs only its ready/not-ready decision. */
+function hasResolvedOutput(
+  componentTree: readonly Record<string, unknown>[],
+  liveChild: TestFiber | undefined,
+  options: {
+    readonly host?: boolean;
+    readonly includePlan?: boolean;
+    readonly kind?: 'empty' | 'jsx';
+    readonly selected?: boolean;
+  } = {},
+): boolean {
+  return evaluateResolvedOutput(componentTree, liveChild, options).resolved;
 }
 
 describe('Preview Inspector target output runtime source', () => {
@@ -134,8 +164,36 @@ describe('Preview Inspector target output runtime source', () => {
       name: 'QueryRenderer',
     };
 
-    expect(hasResolvedOutput(expected, loading)).toBe(false);
-    expect(hasResolvedOutput(expected, ready)).toBe(true);
+    const loadingEvaluation = evaluateResolvedOutput(expected, loading);
+    const readyEvaluation = evaluateResolvedOutput(expected, ready);
+
+    expect(loadingEvaluation.resolved).toBe(false);
+    expect(loadingEvaluation.state.targetDeferredCallbackPending).toBe(true);
+    expect(readyEvaluation.resolved).toBe(true);
+    expect(readyEvaluation.state.targetDeferredCallbackPending).toBe(false);
+  });
+
+  /** A callback below an absent modal receiver is unresolved output, not a live callback wait. */
+  it('classifies a deep deferred callback as pending only after its receiver mounts', () => {
+    const expected = [
+      {
+        children: [{ children: [], name: 'ModalBody', renderMode: 'deferred-callback' }],
+        name: 'Modal',
+      },
+    ];
+    const absentReceiver = evaluateResolvedOutput(expected, {
+      kind: 'function',
+      name: 'ErrorFallback',
+    });
+    const liveReceiver = evaluateResolvedOutput(expected, {
+      kind: 'function',
+      name: 'Modal',
+    });
+
+    expect(absentReceiver.resolved).toBe(false);
+    expect(absentReceiver.state.targetDeferredCallbackPending).not.toBe(true);
+    expect(liveReceiver.resolved).toBe(false);
+    expect(liveReceiver.state.targetDeferredCallbackPending).toBe(true);
   });
 
   /** Distinguishes an intrinsic callback result from a named receiver-owned loading component. */

@@ -12,6 +12,10 @@ interface TestElement {
 
 /** Generated switch contract exposed only inside the VM fixture. */
 interface TreeSwitchRuntime {
+  readonly contextBadge: (node: Record<string, unknown>) => string | undefined;
+  readonly expectedOutputBadge: (node: Record<string, unknown>) => string | undefined;
+  readonly expectedTitle: (node: Record<string, unknown>) => string;
+  readonly presenceBadge: (node: Record<string, unknown>) => string | undefined;
   readonly readResets: () => readonly string[];
   readonly readToggles: () => readonly string[];
   readonly render: (node: Record<string, unknown>) => TestElement;
@@ -30,10 +34,55 @@ describe('Preview Inspector component-tree condition switch', () => {
 
   /** Labels statically known callback output as pending rather than as a mounted component. */
   it('exposes a dedicated badge for a deferred render callback placeholder', () => {
-    const source = createPreviewInspectorTreeNodeUiRuntimeSource();
+    const runtime = evaluateTreeSwitchRuntime();
 
-    expect(source).toContain("'deferred-render-callback'");
-    expect(source).toContain("'render callback · pending'");
+    expect(runtime.contextBadge({ edgeKind: 'deferred-render-callback' })).toBe(
+      'awaiting callback',
+    );
+    expect(
+      runtime.contextBadge({ edgeKind: 'deferred-render-callback', expectedFrontier: true }),
+    ).toBe('callback output not observed');
+  });
+
+  /** Static source evidence must not repeat a false `not mounted` assertion down every JSX row. */
+  it('separates authored JSX evidence from proven active-page absence', () => {
+    const runtime = evaluateTreeSwitchRuntime();
+
+    expect(runtime.presenceBadge({ expectedOutput: true, mounted: false })).toBeUndefined();
+    expect(runtime.presenceBadge({ currentFileExport: true, mounted: false })).toBe(
+      'not on active page path',
+    );
+    expect(runtime.presenceBadge({ mounted: false })).toBe('not mounted');
+    expect(runtime.contextBadge({ edgeKind: 'expected-jsx-component' })).toBe('authored child');
+    expect(
+      runtime.contextBadge({ edgeKind: 'expected-jsx-component', expectedFrontier: true }),
+    ).toBe('output not observed');
+    expect(
+      runtime.contextBadge({ edgeKind: 'expected-render-outcome', expectedOutcomeActive: false }),
+    ).toBe('inactive return');
+  });
+
+  /** Reports one group-level output cause while the nearest static frontier remains explanatory. */
+  it('summarizes missing authored output without assigning descendant mount states', () => {
+    const runtime = evaluateTreeSwitchRuntime();
+
+    expect(
+      runtime.expectedOutputBadge({
+        authoredOutputMissing: true,
+        edgeKind: 'expected-output-group',
+        props: { deferredCallbackPending: true },
+      }),
+    ).toBe('CALLBACK OUTPUT NOT OBSERVED');
+    expect(
+      runtime.expectedOutputBadge({
+        authoredOutputMissing: true,
+        edgeKind: 'expected-output-group',
+        props: { wrapperOrFallbackHost: true },
+      }),
+    ).toBe('FALLBACK VISIBLE');
+    expect(runtime.expectedTitle({ edgeKind: 'expected-jsx-component' })).toContain(
+      'individual runtime presence is not asserted',
+    );
   });
 
   /** Mirrors exact and approximate source coordinates through inert companion snapshot attributes. */
@@ -163,6 +212,10 @@ function evaluateTreeSwitchRuntime(): TreeSwitchRuntime {
       const resetPreviewInspectorRenderConditionOverride = (id) => resets.push(id);
       ${createPreviewInspectorTreeNodeUiRuntimeSource()}
       globalThis.__runtime = {
+        contextBadge: formatPreviewInspectorRenderContextBadge,
+        expectedOutputBadge: formatPreviewInspectorExpectedOutputBadge,
+        expectedTitle: formatPreviewInspectorExpectedEvidenceTitle,
+        presenceBadge: readPreviewInspectorTreePresenceBadge,
         readResets: () => [...resets],
         readToggles: () => [...toggles],
         render: (node) => PreviewInspectorComponentTreeConditionSwitch({ node }),

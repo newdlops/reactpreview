@@ -130,8 +130,8 @@ function readPreviewInspectorExpectedOutputState(exportName) {
     if (typeof hasPreviewInspectorTargetHostOutput === 'function') {
       const outputProbe = { targetExportName: exportName };
       hasOutput = hasPreviewInspectorTargetHostOutput(outputProbe);
-      deferredCallbackPending ||= outputProbe.targetDeferredCallbackPending === true;
-      renderedEmpty ||= outputProbe.targetRenderedEmpty === true;
+      deferredCallbackPending = outputProbe.targetDeferredCallbackPending === true;
+      renderedEmpty = outputProbe.targetRenderedEmpty === true;
     }
   } catch {
     /* UI enrichment must stay available when a future collector cannot expose boundary internals. */
@@ -196,23 +196,97 @@ function readPreviewInspectorExpectedOutcomeFamilies(plan) {
   return [...families.values()];
 }
 
-/** Converts one analyzer component occurrence into an explicitly unmounted, source-backed row. */
-function createPreviewInspectorExpectedComponentNode(node, outcome, path) {
+/** Collects exact live JSX occurrences below the selected export for one-to-one static matching. */
+function collectPreviewInspectorLiveSourceClaims(nodes, claims = []) {
+  if (!Array.isArray(nodes) || claims.length >= 512) return claims;
+  for (const node of nodes) {
+    const source = node?.source;
+    if (
+      node?.contextOnly !== true &&
+      node?.expectedOutput !== true &&
+      node?.mounted !== false &&
+      source?.approximate !== true &&
+      typeof source?.path === 'string' &&
+      Number.isSafeInteger(source?.line) &&
+      source.line > 0
+    ) {
+      claims.push({ claimed: false, source });
+    }
+    collectPreviewInspectorLiveSourceClaims(node?.children, claims);
+  }
+  return claims;
+}
+
+/** Claims one exact JSX source occurrence even when HOCs rename the corresponding live Fiber. */
+function claimPreviewInspectorExpectedLiveOccurrence(source, claims) {
+  if (
+    source?.approximate === true ||
+    typeof source?.path !== 'string' ||
+    !Number.isSafeInteger(source?.line) ||
+    source.line <= 0
+  ) {
+    return false;
+  }
+  const match = claims.find((claim) => {
+    const live = claim.source;
+    const columnsConflict = Number.isSafeInteger(source.column) && source.column > 0 &&
+      Number.isSafeInteger(live?.column) && live.column > 0 && source.column !== live.column;
+    return claim.claimed !== true &&
+      live?.approximate !== true &&
+      Number.isSafeInteger(live?.line) &&
+      live.line === source.line &&
+      !columnsConflict &&
+      matchesPreviewInspectorConditionSourcePath(live?.path, source.path);
+  });
+  if (match === undefined) return false;
+  match.claimed = true;
+  return true;
+}
+
+/**
+ * Converts one analyzer occurrence into authored evidence, never a counterfeit Fiber mount claim.
+ *
+ * Exact source matches consume the duplicate static row and promote their children. Once the first
+ * missing occurrence is found, its descendants remain possibilities because expanded implementation
+ * outcomes can contain mutually exclusive branches that syntax alone cannot classify as unmounted.
+ */
+function createPreviewInspectorExpectedComponentForest(
+  node,
+  outcome,
+  path,
+  liveClaims,
+  ancestorUnobserved = false,
+) {
   const sourcePath = typeof node?.sourcePath === 'string' ? node.sourcePath : outcome?.sourcePath;
-  const children = Array.isArray(node?.children)
-    ? node.children.slice(0, 96).map((child, index) =>
-        createPreviewInspectorExpectedComponentNode(child, outcome, path + '.' + String(index)))
-    : [];
-  return {
+  const source = normalizePreviewInspectorUiSource({
+    column: node?.column,
+    displayName: sourcePath,
+    line: node?.line,
+    path: sourcePath,
+  });
+  const liveMatched = !ancestorUnobserved && Array.isArray(liveClaims) &&
+    claimPreviewInspectorExpectedLiveOccurrence(source, liveClaims);
+  const children = (Array.isArray(node?.children) ? node.children : []).slice(0, 96).flatMap(
+    (child, index) => createPreviewInspectorExpectedComponentForest(
+      child,
+      outcome,
+      path + '.' + String(index),
+      liveClaims,
+      ancestorUnobserved || !liveMatched,
+    ),
+  );
+  if (liveMatched) return children;
+  const expectedFrontier = Array.isArray(liveClaims) && !ancestorUnobserved;
+  return [{
     children,
     contextOnly: true,
     edgeKind: node?.renderMode === 'deferred-callback'
       ? 'deferred-render-callback'
       : 'expected-jsx-component',
     expectedOutput: true,
+    expectedFrontier,
     id: 'expected-jsx:' + String(outcome?.id ?? 'unknown') + ':' + path,
     kind: 'component',
-    mounted: false,
     name: typeof node?.name === 'string' && node.name.length > 0
       ? node.renderMode === 'deferred-callback'
         ? 'Deferred callback · ' + node.name
@@ -222,20 +296,16 @@ function createPreviewInspectorExpectedComponentNode(node, outcome, path) {
       authored: true,
       deferred: node?.renderMode === 'deferred-callback',
       expected: true,
+      expectedPresence: expectedFrontier ? 'not-observed' : 'unproven',
       live: false,
     },
-    source: normalizePreviewInspectorUiSource({
-      column: node?.column,
-      displayName: sourcePath,
-      line: node?.line,
-      path: sourcePath,
-    }),
+    source,
     state: undefined,
-  };
+  }];
 }
 
 /** Creates a selectable data-only row for one whole-return outcome or condition alternative. */
-function createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputState) {
+function createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputState, liveClaims) {
   const outcome = family.outcome;
   const outputMissing = outputState.hasOutput !== true;
   const selected = family.ids.includes(selectedId);
@@ -255,10 +325,13 @@ function createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputSta
     ? 'Expected return · '
     : selectedId === undefined ? 'Return option · ' : 'Alternative return · ';
   return {
-    children: (Array.isArray(outcome.componentTree) ? outcome.componentTree : [])
-      .slice(0, 96)
-      .map((node, index) =>
-        createPreviewInspectorExpectedComponentNode(node, outcome, String(index))),
+    children: (Array.isArray(outcome.componentTree) ? outcome.componentTree : []).slice(0, 96)
+      .flatMap((node, index) => createPreviewInspectorExpectedComponentForest(
+        node,
+        outcome,
+        String(index),
+        selected ? liveClaims : undefined,
+      )),
     contextOnly: true,
     edgeKind: 'expected-render-outcome',
     authoredOutputMissing: outputMissing,
@@ -267,7 +340,6 @@ function createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputSta
     id: 'expected-outcome:' + outcome.id,
     kind: 'component',
     liveHostOutputMissing: outputMissing && outputState.hasAnyHostOutput !== true,
-    mounted: false,
     name: prefix + String(outcome.label ?? outcome.kind ?? 'authored return'),
     outcomeId: outcome.id,
     props: {
@@ -289,7 +361,7 @@ function createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputSta
 }
 
 /** Builds the static JSX inventory shown only as expectation/alternative evidence. */
-function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName) {
+function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName, liveNodes) {
   const plan = descriptor?.inspector?.renderOutcomesByExport?.[exportName];
   if (plan === null || typeof plan !== 'object') return undefined;
   const families = readPreviewInspectorExpectedOutcomeFamilies(plan);
@@ -302,9 +374,15 @@ function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName) {
     ? families
     : families.filter((family) => !family.ids.includes(selectedId) && family.logicalOnly !== true);
   if (visibleFamilies.length === 0) return undefined;
+  const liveClaims = collectPreviewInspectorLiveSourceClaims(liveNodes);
   const children = visibleFamilies
     .sort((left, right) => Number(right.ids.includes(selectedId)) - Number(left.ids.includes(selectedId)))
-    .map((family) => createPreviewInspectorExpectedOutcomeNode(family, selectedId, outputState));
+    .map((family) => createPreviewInspectorExpectedOutcomeNode(
+      family,
+      selectedId,
+      outputState,
+      liveClaims,
+    ));
   return {
     authoredOutputMissing: outputMissing,
     children,
@@ -314,10 +392,9 @@ function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName) {
     id: 'expected-outcomes:' + exportName,
     kind: 'component',
     liveHostOutputMissing: outputMissing && !outputState.hasAnyHostOutput,
-    mounted: false,
     name: outputMissing
       ? outputState.deferredCallbackPending
-        ? 'Expected JSX · render callback not invoked'
+        ? 'Expected JSX · callback output not observed'
         : outputState.hasAnyHostOutput
         ? 'Expected JSX · wrapper/fallback host only'
         : 'Expected JSX · no live host output'
@@ -338,8 +415,6 @@ function createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName) {
 
 /** Attaches expectation evidence once below the exact selected current-file export row. */
 function appendPreviewInspectorExpectedOutcomes(nodes, descriptor, exportName) {
-  const group = createPreviewInspectorExpectedOutcomeGroup(descriptor, exportName);
-  if (group === undefined) return nodes;
   const attachment = { complete: false };
   const visit = (values) => values.map((node) => {
     const children = visit(node.children);
@@ -347,7 +422,12 @@ function appendPreviewInspectorExpectedOutcomes(nodes, descriptor, exportName) {
       (node.exportName === exportName || node.name === exportName);
     if (!matches) return { ...node, children };
     attachment.complete = true;
-    return { ...node, children: [...children, group] };
+    const group = createPreviewInspectorExpectedOutcomeGroup(
+      descriptor,
+      exportName,
+      children,
+    );
+    return group === undefined ? { ...node, children } : { ...node, children: [...children, group] };
   });
   return visit(nodes);
 }

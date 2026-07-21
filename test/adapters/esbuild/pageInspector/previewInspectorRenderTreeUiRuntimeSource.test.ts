@@ -9,6 +9,7 @@ interface RenderTreeNode {
   readonly contextOnly?: boolean;
   readonly currentFileExport?: boolean;
   readonly edgeKind?: string;
+  readonly expectedFrontier?: boolean;
   readonly expectedOutcomeActive?: boolean;
   readonly expectedOutput?: boolean;
   readonly exportName?: string;
@@ -369,7 +370,7 @@ describe('Preview Inspector render-tree UI runtime source', () => {
               id: 'live-query-renderer',
               kind: 'function',
               name: 'QueryRenderer',
-              source: { path: '/workspace/QueryRenderer.tsx' },
+              source: { column: 5, line: 20, path: '/workspace/CurrentCard.tsx' },
             },
           ],
           exportName: 'CurrentCard',
@@ -381,7 +382,7 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       ],
     });
 
-    expect(flattenNames(snapshot.roots)).toContain('Expected JSX · render callback not invoked');
+    expect(flattenNames(snapshot.roots)).toContain('Expected JSX · callback output not observed');
     expect(flattenNames(snapshot.roots)).toContain('Expected return · QueryRenderer → Page');
     expect(flattenNames(snapshot.roots)).toContain('PageHeader');
     const liveQueryRenderer = findNodeById(snapshot.roots, 'live-query-renderer');
@@ -394,14 +395,22 @@ describe('Preview Inspector render-tree UI runtime source', () => {
     ).toMatchObject({
       contextOnly: true,
       edgeKind: 'deferred-render-callback',
+      expectedFrontier: true,
       expectedOutput: true,
-      mounted: false,
       name: 'Deferred callback · Page',
     });
+    expect(
+      findNodeById(snapshot.roots, 'expected-jsx:current-card-main-outcome:0'),
+    ).toBeUndefined();
+    expect(
+      findNodeById(snapshot.roots, 'expected-jsx:current-card-main-outcome:0.0'),
+    ).not.toHaveProperty('mounted');
     expect(findNodeById(snapshot.roots, 'expected-outcomes:CurrentCard')).toMatchObject({
       liveHostOutputMissing: true,
-      mounted: false,
     });
+    expect(findNodeById(snapshot.roots, 'expected-outcomes:CurrentCard')).not.toHaveProperty(
+      'mounted',
+    );
     expect(
       findNodeById(snapshot.roots, 'current-card')?.children.map((child) => child.id),
     ).toContain('expected-outcomes:CurrentCard');
@@ -437,6 +446,91 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       liveHostOutputMissing: false,
       props: { authoredOutput: false, liveHostOutput: true },
     });
+  });
+
+  /** Reconciles HOC-renamed live Fibers by exact JSX source and leaves only the missing frontier. */
+  it('removes duplicate authored ancestors already observed at the same source occurrence', () => {
+    const descriptor = {
+      inspector: {
+        renderChainsByExport: {
+          CurrentCard: {
+            paths: [],
+            target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+          },
+        },
+        renderOutcomesByExport: {
+          CurrentCard: {
+            exportName: 'CurrentCard',
+            outcomes: [
+              {
+                column: 3,
+                componentNames: ['Modal', 'ModalHeader'],
+                componentTree: [
+                  {
+                    children: [
+                      {
+                        children: [],
+                        column: 7,
+                        line: 15,
+                        name: 'ModalHeader',
+                        sourcePath: '/workspace/CurrentCard.tsx',
+                      },
+                    ],
+                    column: 5,
+                    line: 14,
+                    name: 'Modal',
+                    sourcePath: '/workspace/CurrentCard.tsx',
+                  },
+                ],
+                conditions: [],
+                exportName: 'CurrentCard',
+                id: 'modal-outcome',
+                kind: 'jsx',
+                label: 'Modal',
+                line: 14,
+                sourcePath: '/workspace/CurrentCard.tsx',
+              },
+            ],
+            sourcePath: '/workspace/CurrentCard.tsx',
+          },
+        },
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const runtime = evaluateRenderTreeRuntime(
+      descriptor,
+      { root: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' } },
+      { targetHasOutput: false, targetMounted: true },
+    );
+    const snapshot = runtime.enrich({
+      roots: [
+        {
+          children: [
+            {
+              children: [],
+              id: 'live-modal',
+              kind: 'function',
+              name: 'Modal2',
+              source: { column: 5, line: 14, path: '/workspace/CurrentCard.tsx' },
+            },
+          ],
+          exportName: 'CurrentCard',
+          id: 'current-card',
+          kind: 'function',
+          name: 'CurrentCard',
+          source: { path: '/workspace/CurrentCard.tsx' },
+        },
+      ],
+    });
+
+    expect(findNodeById(snapshot.roots, 'expected-jsx:modal-outcome:0')).toBeUndefined();
+    expect(findNodeById(snapshot.roots, 'expected-jsx:modal-outcome:0.0')).toMatchObject({
+      expectedFrontier: true,
+      name: 'ModalHeader',
+    });
+    expect(findNodeById(snapshot.roots, 'expected-jsx:modal-outcome:0.0')).not.toHaveProperty(
+      'mounted',
+    );
   });
 
   /**

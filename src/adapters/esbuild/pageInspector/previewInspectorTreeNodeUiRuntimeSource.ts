@@ -29,17 +29,66 @@ function revealPreviewInspectorCurrentFileExport(node) {
 /** Labels inert entry/route evidence without presenting it as a mounted application component. */
 function formatPreviewInspectorRenderContextBadge(node) {
   if (node?.edgeKind === 'workspace-render-root') return 'render root';
-  if (node?.edgeKind === 'expected-output-group') return 'authored JSX';
+  if (node?.edgeKind === 'expected-output-group') return 'authored output';
   if (node?.edgeKind === 'expected-render-outcome') {
-    return node.expectedOutcomeActive === true ? 'expected return' : 'return alternative';
+    return node.expectedOutcomeActive === true ? 'selected return' : 'inactive return';
   }
-  if (node?.edgeKind === 'deferred-render-callback') return 'render callback · pending';
-  if (node?.edgeKind === 'expected-jsx-component') return 'expected JSX';
+  if (node?.edgeKind === 'deferred-render-callback') {
+    return node?.expectedFrontier === true ? 'callback output not observed' : 'awaiting callback';
+  }
+  if (node?.edgeKind === 'expected-jsx-component') {
+    return node?.expectedFrontier === true ? 'output not observed' : 'authored child';
+  }
   if (node?.kind === 'route') return node.certainty === 'conditional' ? 'route · conditional' : 'route';
   if (node?.kind === 'entry' && node.contextOnly === true) return 'entry';
   if (node?.kind === 'lazy' && node.contextOnly === true) return 'lazy path';
   if (node?.contextOnly === true && node.edgeKind === 'wrapper') return 'wrapper path';
   return undefined;
+}
+
+/**
+ * Labels only proven absence from the active Fiber path.
+ *
+ * Analyzer-only JSX rows describe authored possibilities and cannot truthfully claim a mount state;
+ * their nearest missing runtime frontier is reported separately as output evidence.
+ */
+function readPreviewInspectorTreePresenceBadge(node) {
+  if (node?.mounted !== false || node?.expectedOutput === true) return undefined;
+  return node?.currentFileExport === true ? 'not on active page path' : 'not mounted';
+}
+
+/** Summarizes one missing-output cause at the expectation group instead of every static descendant. */
+function formatPreviewInspectorExpectedOutputBadge(node) {
+  if (node?.edgeKind !== 'expected-output-group') return undefined;
+  if (node?.props?.deferredCallbackPending === true) return 'CALLBACK OUTPUT NOT OBSERVED';
+  if (node?.props?.wrapperOrFallbackHost === true) return 'FALLBACK VISIBLE';
+  return node?.authoredOutputMissing === true ? 'OUTPUT NOT OBSERVED' : undefined;
+}
+
+/** Explains the distinction between live Fiber rows and source-only authored JSX evidence. */
+function formatPreviewInspectorExpectedEvidenceTitle(node) {
+  if (node?.edgeKind === 'expected-output-group') {
+    if (node?.props?.deferredCallbackPending === true) {
+      return 'A mounted callback receiver has not produced its authored JSX output yet.';
+    }
+    if (node?.props?.wrapperOrFallbackHost === true) {
+      return 'The selected export owns fallback or wrapper DOM, but its authored output is not observed.';
+    }
+    return 'The selected export mounted without observable authored host output.';
+  }
+  if (node?.edgeKind === 'expected-render-outcome') {
+    return node?.expectedOutcomeActive === true
+      ? 'Selected authored return. Runtime presence is reported by its output group and live Fiber rows.'
+      : 'Inactive authored return alternative; it is not a claim about the current Fiber tree.';
+  }
+  if (node?.edgeKind === 'deferred-render-callback') {
+    return node?.expectedFrontier === true
+      ? 'Authored callback output is the first source occurrence not observed in the live subtree.'
+      : 'Authored callback output may appear after its receiver invokes the function child.';
+  }
+  return node?.expectedFrontier === true
+    ? 'First authored source occurrence not observed in the live subtree.'
+    : 'Authored child discovered statically; individual runtime presence is not asserted.';
 }
 
 /**
@@ -81,7 +130,7 @@ function createPreviewInspectorTreeRowSourceAttributes(source) {
  */
 function PreviewInspectorComponentTreeConditionSwitch({ node }) {
   if (!isPreviewInspectorConditionNode(node) || node.condition?.kind !== 'logical-and') {
-    return undefined;
+    return null;
   }
   const condition = node.condition;
   const reached = condition.reached !== false && typeof node.conditionId === 'string';
@@ -165,6 +214,8 @@ function PreviewInspectorComponentTreeNode({
   const isActiveExport = node.exportName === previewInspectorSession.selectedExportName;
   const hiddenHostCount = countPreviewInspectorHiddenElementsForTreeNode(node.id);
   const contextBadge = formatPreviewInspectorRenderContextBadge(node);
+  const expectedOutputBadge = formatPreviewInspectorExpectedOutputBadge(node);
+  const presenceBadge = readPreviewInspectorTreePresenceBadge(node);
   const role = node.expectedOutput === true
     ? { key: 'expected', label: 'EXPECTED JSX' }
     : readPreviewInspectorTreeNodeRole(
@@ -230,9 +281,7 @@ function PreviewInspectorComponentTreeNode({
               : isPathProbe
                 ? 'React Preview is following the authored page path to find the current file.'
               : node.expectedOutput === true
-                ? node.liveHostOutputMissing === true
-                  ? 'Authored JSX expected below this return, but the selected export currently owns no live host output.'
-                  : 'Static authored JSX alternative; this row is not a mounted React component.'
+                ? formatPreviewInspectorExpectedEvidenceTitle(node)
               : node.contextOnly === true
                 ? 'Static page path evidence; this row is not a mounted React component.'
                 : 'Mounted React component. Select it to inspect props, state, and source.',
@@ -279,15 +328,12 @@ function PreviewInspectorComponentTreeNode({
             'hidden ' + String(hiddenHostCount),
           )
         : undefined,
-      node.mounted === false
-        ? React.createElement('span', { className: 'rpi-badge' }, 'not mounted')
+      presenceBadge
+        ? React.createElement('span', { className: 'rpi-badge' }, presenceBadge)
         : undefined,
-      node.liveHostOutputMissing === true && node.edgeKind === 'expected-output-group'
+      expectedOutputBadge
         ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
-            'NO LIVE HOST OUTPUT')
-        : node.authoredOutputMissing === true && node.edgeKind === 'expected-output-group'
-          ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' },
-              'AUTHORED JSX ABSENT')
+            expectedOutputBadge)
         : undefined,
       isBlockedOwner
         ? React.createElement('span', { className: 'rpi-badge rpi-blocker-badge' }, 'render blocked here')
@@ -333,7 +379,7 @@ function PreviewInspectorComponentTreeNode({
                 event.stopPropagation();
                 revealPreviewInspectorCurrentFileExport(node);
               },
-              title: node.mounted === false
+              title: presenceBadge !== undefined
                 ? 'Reveal this export row; choose a page path that mounts it to highlight DOM output'
                 : 'Reveal and highlight this current-file export in the rendered page',
               type: 'button',

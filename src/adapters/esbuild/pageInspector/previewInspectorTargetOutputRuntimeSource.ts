@@ -32,6 +32,7 @@ function readPreviewInspectorExpectedTargetOutput(state) {
   const candidates = hasSelectedOutcome ? [selected] : outcomes;
   const deferredNames = new Set();
   const deferredFallbackNames = new Set();
+  const deferredReceiverNames = new Set();
   const independentNames = new Set();
   const rootNames = new Set();
   const descendantNames = new Set();
@@ -50,7 +51,11 @@ function readPreviewInspectorExpectedTargetOutput(state) {
       visit(node.children, depth + 1);
     }
   };
-  /** Finds the nearest receiver subtree for each callback while retaining unrelated visible roots. */
+  /**
+   * Finds each callback's nearest synchronous receiver while retaining unrelated visible roots.
+   * Receiver names later prevent a dormant callback in an absent modal/slot from being reported as
+   * a pending operation in the currently mounted page branch.
+   */
   const inspectDeferredContract = (node) => {
     if (node === null || typeof node !== 'object') {
       return { synchronousNames: new Set(), unownedDeferred: false };
@@ -64,6 +69,7 @@ function readPreviewInspectorExpectedTargetOutput(state) {
     const childEvidence = (Array.isArray(node.children) ? node.children : [])
       .map(inspectDeferredContract);
     if (childEvidence.some((evidence) => evidence.unownedDeferred)) {
+      if (name.length > 0) deferredReceiverNames.add(name);
       for (const evidence of childEvidence) {
         if (!evidence.unownedDeferred) {
           for (const childName of evidence.synchronousNames) deferredFallbackNames.add(childName);
@@ -97,6 +103,7 @@ function readPreviewInspectorExpectedTargetOutput(state) {
   return {
     deferredNames,
     deferredFallbackNames,
+    deferredReceiverNames,
     descendantNames,
     hasEvidence: outcomes.length > 0,
     hasIntentionalEmpty,
@@ -152,9 +159,14 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
       .some((name) => liveNames.has(name));
     const hostCallbackInvoked = expected.hasDeferredHostOutput && hasAnyHostOutput &&
       ![...expected.deferredFallbackNames].some((name) => liveNames.has(name));
+    // Pending is a runtime claim, so static callback evidence becomes pending only after its nearest
+    // receiver is visible in this exact selected-export boundary.
+    const hasLiveDeferredReceiver = [...expected.deferredReceiverNames]
+      .some((name) => liveNames.has(name));
     const callbackRequired = !hasIndependentOutput;
     const callbackInvoked = namedCallbackInvoked || hostCallbackInvoked;
-    state.targetDeferredCallbackPending ||= callbackRequired && !callbackInvoked;
+    state.targetDeferredCallbackPending ||=
+      callbackRequired && hasLiveDeferredReceiver && !callbackInvoked;
     if (!callbackRequired || callbackInvoked) state.targetDeferredCallbackPending = false;
     if (hasIndependentOutput) return hasAnyHostOutput;
     if (callbackRequired && !callbackInvoked) return false;

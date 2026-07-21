@@ -19,6 +19,12 @@ export const PREVIEW_INSPECTOR_FLOWCHART_LANE_LIMIT = 32;
 /** Maximum independently routed edges shown between two adjacent ranks. */
 export const PREVIEW_INSPECTOR_FLOWCHART_TRACK_LIMIT = 8;
 
+/** Maximum selected/current-blocker neighborhood nodes shown by the default Focus graph view. */
+export const PREVIEW_INSPECTOR_FLOWCHART_FOCUS_NODE_LIMIT = 10;
+
+/** Maximum current-file corridor nodes shown by the intermediate Main graph view. */
+export const PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT = 24;
+
 /**
  * Creates browser-side helpers that normalize, rank, lane, and route a debugger flowchart.
  *
@@ -34,6 +40,10 @@ const PREVIEW_INSPECTOR_FLOWCHART_NODE_LIMIT = ${PREVIEW_INSPECTOR_FLOWCHART_NOD
 const PREVIEW_INSPECTOR_FLOWCHART_EDGE_LIMIT = ${PREVIEW_INSPECTOR_FLOWCHART_EDGE_LIMIT};
 const PREVIEW_INSPECTOR_FLOWCHART_LANE_LIMIT = ${PREVIEW_INSPECTOR_FLOWCHART_LANE_LIMIT};
 const PREVIEW_INSPECTOR_FLOWCHART_TRACK_LIMIT = ${PREVIEW_INSPECTOR_FLOWCHART_TRACK_LIMIT};
+const PREVIEW_INSPECTOR_FLOWCHART_FOCUS_NODE_LIMIT =
+  ${PREVIEW_INSPECTOR_FLOWCHART_FOCUS_NODE_LIMIT};
+const PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT =
+  ${PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT};
 const previewInspectorFlowchartGraphKinds = new Set([
   'entry', 'decision', 'branch', 'join', 'return', 'component', 'hoc',
   'component-slot', 'blocker',
@@ -83,6 +93,226 @@ function scorePreviewInspectorFlowchartRetention(step) {
   if (step?.branchState === 'active') return 4;
   if (step?.branchState === 'inactive') return 6;
   return 5;
+}
+
+/**
+ * Scores a Main-view candidate without changing the full graph's source order or blocker meaning.
+ * Exact anchors and corridor endpoints survive first; remaining corridor nodes are selected nearest
+ * the current-file/blocker rank so a very long wrapper chain remains useful at the bounded size.
+ */
+function scorePreviewInspectorFlowchartFocusCandidate(
+  step,
+  preferredIds,
+  anchorIds,
+  corridorRootIds,
+  anchorRank,
+) {
+  const priority = anchorIds.has(step.id)
+    ? 0
+    : step.currentFileTarget === true || step.directCurrentFileBlocker === true
+      ? 1
+      : corridorRootIds.has(step.id)
+        ? 2
+        : preferredIds.has(step.id)
+          ? 3
+          : step.status === 'active'
+            ? 4
+            : 5;
+  return [priority, Math.abs(step.rank - anchorRank), step.sourceIndex, step.id];
+}
+
+/** Compares stable tuple fields used by the bounded Main-view retention policy. */
+function comparePreviewInspectorFlowchartFocusScores(left, right) {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] < right[index]) return -1;
+    if (left[index] > right[index]) return 1;
+  }
+  return left.length - right.length;
+}
+
+/**
+ * Bridges retained nodes across hidden secondary records so Focus mode remains a readable flow.
+ * Traversal stops at the next retained node, is bounded independently from graph size, and carries
+ * inactive/conditional evidence forward instead of upgrading an inferred path to exact execution.
+ */
+function createPreviewInspectorFocusedFlowchartEdges(layout, retainedIds) {
+  const outgoingByNode = new Map(layout.orderedNodes.map((node) => [node.id, []]));
+  for (const edge of layout.edges) outgoingByNode.get(edge.fromId)?.push(edge);
+  for (const outgoing of outgoingByNode.values()) {
+    outgoing.sort((left, right) =>
+      Number(right.active === true) - Number(left.active === true) ||
+      Number(left.certainty === 'conditional') - Number(right.certainty === 'conditional') ||
+      left.sourceIndex - right.sourceIndex || left.id.localeCompare(right.id));
+  }
+  const focusedEdges = [];
+  const retainedRoutes = new Set();
+  let expansionCount = 0;
+  for (const source of layout.orderedNodes.filter((node) => retainedIds.has(node.id))) {
+    const pending = (outgoingByNode.get(source.id) ?? []).map((edge) => ({
+      active: edge.active === true,
+      certainty: edge.certainty,
+      edge,
+      hiddenCount: 0,
+      label: edge.label,
+    }));
+    const visited = new Set();
+    while (pending.length > 0 && expansionCount < PREVIEW_INSPECTOR_FLOWCHART_EDGE_LIMIT * 8) {
+      expansionCount += 1;
+      const route = pending.shift();
+      if (route === undefined) continue;
+      const targetId = route.edge.toId;
+      const visitKey = targetId + ':' + String(route.active) + ':' + route.certainty;
+      if (visited.has(visitKey)) continue;
+      visited.add(visitKey);
+      if (retainedIds.has(targetId)) {
+        const routeKey = source.id + '->' + targetId + ':' + route.label;
+        if (retainedRoutes.has(routeKey)) continue;
+        retainedRoutes.add(routeKey);
+        const bridged = route.hiddenCount > 0;
+        focusedEdges.push({
+          active: route.active,
+          certainty: route.certainty,
+          fromId: source.id,
+          id: bridged
+            ? 'focus-edge:' + source.id + ':' + targetId + ':' + String(focusedEdges.length)
+            : route.edge.id,
+          kind: bridged ? 'focus-bridge' : route.edge.kind,
+          label: route.label.length > 0
+            ? route.label
+            : bridged ? '… ' + String(route.hiddenCount) + ' hidden' : '',
+          toId: targetId,
+        });
+        if (focusedEdges.length >= PREVIEW_INSPECTOR_FLOWCHART_EDGE_LIMIT) return focusedEdges;
+        continue;
+      }
+      for (const edge of outgoingByNode.get(targetId) ?? []) {
+        pending.push({
+          active: route.active && edge.active === true,
+          certainty: route.certainty === 'conditional' || edge.certainty === 'conditional'
+            ? 'conditional'
+            : 'confirmed',
+          edge,
+          hiddenCount: route.hiddenCount + 1,
+          label: route.label || edge.label,
+        });
+      }
+    }
+  }
+  return focusedEdges;
+}
+
+/**
+ * Creates the default Main graph from a proven current-file corridor and explicit anchor IDs.
+ * The original flow remains untouched for All mode and the right Inspector. If no current-file
+ * evidence exists, active blockers and the first graph root provide a small actionable fallback.
+ */
+function createPreviewInspectorFocusedFlowchartFlow(
+  flow,
+  layout,
+  preferredNodeIds,
+  explicitAnchorIds = [],
+  nodeLimit = PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT,
+  includeIntrinsicAnchors = true,
+) {
+  const preferredValues = preferredNodeIds !== null && preferredNodeIds !== undefined &&
+    typeof preferredNodeIds[Symbol.iterator] === 'function'
+    ? [...preferredNodeIds].slice(0, PREVIEW_INSPECTOR_FLOWCHART_NODE_LIMIT)
+    : [];
+  const preferredIds = new Set(preferredValues);
+  const anchorIds = new Set(explicitAnchorIds.filter((id) => layout.nodeById.has(id)));
+  if (includeIntrinsicAnchors) {
+    for (const node of layout.orderedNodes) {
+      if (node.currentFileTarget === true || node.directCurrentFileBlocker === true) {
+        anchorIds.add(node.id);
+        preferredIds.add(node.id);
+      }
+    }
+  }
+  if (preferredIds.size === 0) {
+    for (const node of layout.orderedNodes) {
+      if (node.status === 'active') preferredIds.add(node.id);
+    }
+    const firstRoot = layout.orderedNodes.find(
+      (node) => (layout.predecessorIdsByNode.get(node.id)?.length ?? 0) === 0,
+    );
+    if (firstRoot !== undefined) preferredIds.add(firstRoot.id);
+  }
+  for (const anchorId of anchorIds) preferredIds.add(anchorId);
+  const corridorRootIds = new Set([...preferredIds].filter(
+    (id) => (layout.predecessorIdsByNode.get(id) ?? [])
+      .every((predecessorId) => !preferredIds.has(predecessorId)),
+  ));
+  const anchorRanks = [...anchorIds]
+    .map((id) => layout.nodeById.get(id)?.rank)
+    .filter((rank) => Number.isSafeInteger(rank));
+  const anchorRank = anchorRanks.length > 0
+    ? Math.max(...anchorRanks)
+    : Math.max(0, ...layout.orderedNodes.filter((node) => preferredIds.has(node.id))
+        .map((node) => node.rank));
+  const candidates = layout.orderedNodes.filter((node) => preferredIds.has(node.id));
+  const normalizedNodeLimit = Number.isSafeInteger(nodeLimit)
+    ? Math.max(1, Math.min(PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT, nodeLimit))
+    : PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT;
+  const retainedNodes = [...candidates]
+    .sort((left, right) => comparePreviewInspectorFlowchartFocusScores(
+      scorePreviewInspectorFlowchartFocusCandidate(
+        left,
+        preferredIds,
+        anchorIds,
+        corridorRootIds,
+        anchorRank,
+      ),
+      scorePreviewInspectorFlowchartFocusCandidate(
+        right,
+        preferredIds,
+        anchorIds,
+        corridorRootIds,
+        anchorRank,
+      ),
+    ))
+    .slice(0, normalizedNodeLimit)
+    .sort((left, right) => left.rank - right.rank || left.sourceIndex - right.sourceIndex);
+  const retainedIds = new Set(retainedNodes.map((node) => node.id));
+  const focusedEdges = createPreviewInspectorFocusedFlowchartEdges(layout, retainedIds);
+  return {
+    ...flow,
+    fingerprint: String(flow?.fingerprint ?? '') + '::main:' +
+      retainedNodes.map((node) => node.id).join(','),
+    focusOmittedNodeCount: Math.max(0, layout.orderedNodes.length - retainedNodes.length),
+    focusSourceNodeCount: layout.orderedNodes.length,
+    graphEdges: focusedEdges,
+    graphNodes: retainedNodes,
+    steps: retainedNodes,
+  };
+}
+
+/**
+ * Collects an actual-step neighborhood around the selected blocker/current-file seed. Both incoming
+ * and outgoing relationships are followed for two bounded hops; no synthetic node identities are
+ * introduced, so clicking any Focus node still resolves the exact full-graph Inspector record.
+ */
+function createPreviewInspectorFlowchartNeighborhood(layout, seedIds, radius = 2) {
+  const retainedIds = new Set(seedIds.filter((id) => layout.nodeById.has(id)));
+  let frontier = [...retainedIds];
+  const boundedRadius = Number.isSafeInteger(radius) ? Math.max(0, Math.min(2, radius)) : 2;
+  for (let depth = 0; depth < boundedRadius && frontier.length > 0; depth += 1) {
+    const next = [];
+    for (const nodeId of frontier) {
+      const edges = layout.edges.filter((edge) => edge.fromId === nodeId || edge.toId === nodeId)
+        .sort((left, right) =>
+          Number(right.active === true) - Number(left.active === true) ||
+          Number(left.certainty === 'conditional') - Number(right.certainty === 'conditional') ||
+          left.sourceIndex - right.sourceIndex || left.id.localeCompare(right.id));
+      for (const edge of edges) {
+        const neighborId = edge.fromId === nodeId ? edge.toId : edge.fromId;
+        if (retainedIds.has(neighborId)) continue;
+        retainedIds.add(neighborId);
+        next.push(neighborId);
+      }
+    }
+    frontier = next;
+  }
+  return retainedIds;
 }
 
 /** Finds the closest unoccupied lane to a predecessor-guided preference. */

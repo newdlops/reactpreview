@@ -1,5 +1,5 @@
 /**
- * Generates the right-hand Blocker Resolver panel for React Page Inspector's flow debugger.
+ * Generates the right-hand advanced diagnostics panel for React Page Inspector's flow debugger.
  *
  * The panel consumes the already-bounded flowchart view model. It never discovers components,
  * executes project code, or invents blocker values. Instead, it explains the selected graph step,
@@ -12,10 +12,10 @@
  * Creates browser-side React components for the selected-step Inspector and current-file guide.
  *
  * Expected lexical bindings include React, `PreviewInspectorDevtoolsButton`,
- * `PreviewInspectorRenderFlowConditionSwitch`, `PreviewInspectorRenderFlowNodeEditor`,
- * `PreviewInspectorSourceDetail`, `formatPreviewInspectorFlowchartGraphKind`, and
- * `readPreviewInspectorFlowchartNodeName`. The caller supplies the data-only layout, original flow,
- * selected step, selection callback, and current-file locator result.
+ * `PreviewInspectorSimpleResolver`, `PreviewInspectorSourceDetail`,
+ * `formatPreviewInspectorFlowchartGraphKind`, and `readPreviewInspectorFlowchartNodeName`. The
+ * caller supplies the data-only layout, original flow, selected step, selection callback, and
+ * current-file locator result.
  *
  * The locator accepts either resolved step objects or their IDs:
  * `{ status, currentFileStep, currentFileStepId, nearestBlockerStep, nearestBlockerStepId, detail }`.
@@ -44,6 +44,7 @@ function resolvePreviewInspectorFlowchartInspectorStep(layout, candidate, candid
 /** Recognizes a retained exact target or static current-file entry without guessing from its name. */
 function isPreviewInspectorFlowchartCurrentFileStep(step) {
   if (step?.currentFileTarget === true) return true;
+  if (step?.staticCurrentFileTarget === true) return true;
   const node = step?.node;
   return step?.graphKind === 'entry' && node?.currentFileExport === true;
 }
@@ -385,23 +386,12 @@ function PreviewInspectorFlowchartSelectedSummary({ layout, selectedStep }) {
   );
 }
 
-/** Delegates safe branch and blocker edits to the existing render-flow controls. */
-function PreviewInspectorFlowchartSelectedEditor({ selectedStep }) {
-  if (selectedStep === undefined) return undefined;
-  return React.createElement(
-    'section',
-    { className: 'rpi-flow-inspector-selected-editor' },
-    React.createElement(PreviewInspectorRenderFlowConditionSwitch, { step: selectedStep }),
-    React.createElement(PreviewInspectorRenderFlowNodeEditor, { step: selectedStep }),
-  );
-}
-
-/** Keeps predecessor/successor diagnostics available without making the default task visually dense. */
+/** Keeps predecessor/successor diagnostics together under the selected-node disclosure. */
 function PreviewInspectorFlowchartAdvancedRelations({ layout, onSelect, selectedStep }) {
   return React.createElement(
-    'details',
+    'section',
     { className: 'rpi-flow-inspector-disclosure rpi-flow-inspector-advanced-relations' },
-    React.createElement('summary', undefined, 'Advanced path relationships'),
+    React.createElement('strong', undefined, 'Path relationships'),
     React.createElement(
       'div',
       { className: 'rpi-flow-inspector-disclosure-content' },
@@ -422,7 +412,36 @@ function PreviewInspectorFlowchartAdvancedRelations({ layout, onSelect, selected
 }
 
 /**
- * Renders the independently collapsible right-hand Blocker Resolver.
+ * Groups source identity and graph relations behind native disclosure. The simple resolver remains
+ * the first everyday surface, while all selected-node internals stay available for debugging.
+ */
+function PreviewInspectorFlowchartDiagnostics({ layout, locator, onSelect, selectedStep }) {
+  return React.createElement(
+    'details',
+    { className: 'rpi-flow-inspector-disclosure rpi-flow-inspector-diagnostics' },
+    React.createElement('summary', undefined, 'Selected graph diagnostics'),
+    React.createElement(
+      'div',
+      { className: 'rpi-flow-inspector-disclosure-content' },
+      React.createElement(PreviewInspectorFlowchartCurrentFileGuide, {
+        locator,
+        onSelect,
+      }),
+      React.createElement(PreviewInspectorFlowchartSelectedSummary, {
+        layout,
+        selectedStep,
+      }),
+      React.createElement(PreviewInspectorFlowchartAdvancedRelations, {
+        layout,
+        onSelect,
+        selectedStep,
+      }),
+    ),
+  );
+}
+
+/**
+ * Renders independently collapsible advanced render diagnostics beside the full graph.
  *
  * Collapsing hides only explanation/editing chrome; the graph and its selection remain mounted.
  */
@@ -438,11 +457,10 @@ function PreviewInspectorFlowchartInspector({
   const normalizedLocator = normalizePreviewInspectorFlowchartLocator(locator, layout);
   const toggle = typeof onToggleCollapsed === 'function' ? onToggleCollapsed : () => undefined;
   const select = typeof onSelect === 'function' ? onSelect : () => undefined;
-  const unresolvedCount = Number.isSafeInteger(flow?.unresolvedCount) ? flow.unresolvedCount : 0;
   return React.createElement(
     'aside',
     {
-      'aria-label': 'Blocker Resolver',
+      'aria-label': 'Advanced render diagnostics',
       className: 'rpi-flow-inspector',
       'data-rpi-collapsed': String(collapsed === true),
     },
@@ -452,7 +470,11 @@ function PreviewInspectorFlowchartInspector({
       React.createElement(
         'span',
         { className: 'rpi-flow-inspector-heading-copy' },
-        React.createElement('span', { className: 'rpi-flow-inspector-kicker' }, 'BLOCKER RESOLVER'),
+        React.createElement(
+          'span',
+          { className: 'rpi-flow-inspector-kicker' },
+          'ADVANCED RENDER DIAGNOSTICS',
+        ),
         React.createElement(
           'strong',
           undefined,
@@ -460,20 +482,17 @@ function PreviewInspectorFlowchartInspector({
             ? 'No selected block'
             : readPreviewInspectorFlowchartNodeName(selectedStep),
         ),
-        React.createElement(
-          'span',
-          { className: 'rpi-meta' },
-          String(unresolvedCount) + ' unresolved blocker(s)',
-        ),
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
           expanded: collapsed !== true,
           onClick: toggle,
-          title: collapsed === true ? 'Open Blocker Resolver' : 'Collapse Blocker Resolver',
+          title: collapsed === true
+            ? 'Open advanced render diagnostics'
+            : 'Collapse advanced render diagnostics',
         },
-        collapsed === true ? 'Inspector' : '×',
+        collapsed === true ? 'Diagnostics' : '×',
       ),
     ),
     collapsed === true
@@ -481,19 +500,13 @@ function PreviewInspectorFlowchartInspector({
       : React.createElement(
           'div',
           { className: 'rpi-flow-inspector-scroll' },
-          React.createElement(PreviewInspectorFlowchartCurrentFileGuide, {
+          React.createElement(PreviewInspectorSimpleResolver, {
+            flow: flow.simpleResolverFlow ?? flow,
+            showManualEditor: true,
+          }),
+          React.createElement(PreviewInspectorFlowchartDiagnostics, {
+            layout,
             locator: normalizedLocator,
-            onSelect: select,
-          }),
-          React.createElement('span', { className: 'rpi-flow-inspector-section-title' }, 'CURRENT BLOCKER'),
-          React.createElement(PreviewInspectorFlowchartSelectedSummary, {
-            layout,
-            selectedStep,
-          }),
-          React.createElement('span', { className: 'rpi-flow-inspector-section-title' }, 'NEXT ACTION'),
-          React.createElement(PreviewInspectorFlowchartSelectedEditor, { selectedStep }),
-          React.createElement(PreviewInspectorFlowchartAdvancedRelations, {
-            layout,
             onSelect: select,
             selectedStep,
           }),

@@ -17,70 +17,30 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('max-width:none;min-height:27px;min-width:360px');
   });
 
-  /** Keeps current-file blockers visibly distinct without relying on color alone. */
-  it('emits current-file blocker card, border, badge, and summary emphasis', () => {
+  /** Keeps authored logical-AND choices compact and readable inside the component-tree row. */
+  it('styles inline boolean switches without pushing controls outside narrow tree rows', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();
 
+    expect(source).toContain('.rpi-tree-condition-controls{align-items:center;display:inline-flex');
     expect(source).toContain(
-      '.rpi-flow-node-shell[data-current-file-blocker="true"]>.rpi-flow-card',
+      '.rpi-tree-condition-controls>.rpi-row-action{flex:0 0 auto;margin-left:0}',
     );
-    expect(source).toContain('border-inline-start:4px solid var(--vscode-charts-yellow,#cca700)');
-    expect(source).toContain('.rpi-current-file-blocker-badge');
-    expect(source).toContain('.rpi-current-file-blocker-summary');
+    expect(source).toContain('.rpi-tree-condition-switch[aria-checked="true"]');
+    expect(source).toContain('.rpi-tree-condition-reset{max-width:64px');
+    expect(source).toContain(
+      '.rpi-tree-condition-controls{flex:0 0 auto;margin-left:auto}.rpi-tree-condition-controls>.rpi-row-action{flex:0 0 auto;margin-left:0}',
+    );
   });
 
-  /** Keeps the default resolver compact and lets every label/action wrap on narrow panes. */
-  it('styles the progressive blocker overview without requiring the graph canvas', () => {
+  /** Removes every graph/setup stylesheet while preserving owner-local blocker detail styling. */
+  it('omits retired graph, setup navigation, and simple resolver CSS', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();
 
-    expect(source).toContain('.rpi-flow-overview{');
-    expect(source).toContain('.rpi-flow-overview-path,.rpi-flow-overview-blocker');
-    expect(source).toContain('overflow-wrap:anywhere');
-    expect(source).toContain('.rpi-flowchart-advanced[hidden]{display:none}');
-    expect(source).toContain(
-      '.rpi-workbench[data-rpi-blocker-simple-mode="true"]{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}',
-    );
-    expect(source).toContain('.rpi-flow-overview-actions>.rpi-button{flex:1 1 min(180px,100%)}');
-    expect(source).toContain('.rpi-blocker-flow{gap:7px;padding:6px}');
-  });
-
-  /** Keeps the debugger canvas readable in narrow companion tabs without inline geometry. */
-  it('composes the responsive rank/lane flowchart stylesheet', () => {
-    const source = createPreviewInspectorLayoutRuntimeSource();
-
-    expect(source).toContain('.rpi-flowchart-viewport');
-    expect(source).toContain('overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable');
-    expect(source).toContain('.rpi-flowchart-canvas');
-    expect(source).toContain('.rpi-flowchart-edge-cell[data-rpi-path=\\"start-down\\"]');
-    expect(source).toContain('.rpi-flow-inspector-locate-guide');
-    expect(source).toContain('.rpi-flow-inspector-disclosure');
-    expect(source).toContain('.rpi-flowchart-camera-status');
+    expect(source).toContain('.rpi-blocker-editor{min-height:100%}');
     expect(source).toContain('@container rpi-inspector (max-width:460px)');
-  });
-
-  /** Keeps graph controls and Resolver editors usable when the Inspector occupies a narrow group. */
-  it('stacks, wraps, and internally scrolls the blocker debugger at compact widths', () => {
-    const source = createPreviewInspectorLayoutRuntimeSource();
-
-    expect(source).toContain(
-      '@container rpi-inspector (max-width:760px){.rpi-flowchart{grid-template-rows:auto minmax(96px,1fr)}',
-    );
-    expect(source).toContain('.rpi-flowchart-viewport{min-height:96px}');
-    expect(source).toContain(
-      '.rpi-flowchart-camera{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%}',
-    );
-    expect(source).toContain('.rpi-flowchart-locate-button{grid-column:1/-1;grid-row:3}');
-    expect(source).toContain(
-      '.rpi-flowchart{grid-template-rows:auto minmax(0,1fr)}.rpi-flowchart-viewport{min-height:0}',
-    );
-    expect(source).toContain(
-      '.rpi-flow-inspector .rpi-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));min-width:0}',
-    );
-    expect(source).toContain(
-      '.rpi-flow-inspector-selected-editor,.rpi-flow-inspector-selected-editor>*{max-width:100%;min-width:0}',
-    );
-    expect(source).toContain('@container rpi-inspector (max-width:320px)');
-    expect(source).toContain('@media(max-height:520px)');
-    expect(source).toContain('@media(max-height:520px){@container rpi-inspector (max-width:460px)');
+    expect(source).not.toContain('.rpi-flowchart');
+    expect(source).not.toContain('.rpi-flow-overview');
+    expect(source).not.toContain('.rpi-blocker-navigation-scroll');
+    expect(source).not.toContain('.rpi-simple-resolver');
   });
 });

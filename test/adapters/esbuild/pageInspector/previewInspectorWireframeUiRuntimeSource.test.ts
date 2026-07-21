@@ -241,8 +241,8 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     expect(Object.keys(target)).toEqual(['roots']);
   });
 
-  /** Opens the Blockers Render flow without replacing the last selected React component. */
-  it('routes a wireframe marker to its blocker graph node', () => {
+  /** Selects a wireframe blocker and requests an owner-relative reveal in the component tree. */
+  it('routes a wireframe marker to its component-tree blocker row', () => {
     const selected: WireframeNode[] = [];
     const collapsedValues: boolean[] = [];
     const hostMessages: unknown[] = [];
@@ -256,15 +256,17 @@ describe('Preview Inspector wireframe UI runtime source', () => {
 
     runtime.revealBlocker(blocker, (value) => collapsedValues.push(value));
 
-    expect(selected).toEqual([]);
+    expect(selected).toEqual([blocker]);
     expect(collapsedValues).toEqual([false]);
     expect(runtime.readSession()).toMatchObject({
-      blockerDetailRevision: 1,
-      navigationTab: 'blockers',
-      selectedBlockerFlowNodeId: blocker.id,
+      collapsed: false,
+      treeRevealRevision: 1,
     });
+    expect(runtime.readSession()).not.toHaveProperty('navigationTab');
+    expect(runtime.readSession()).not.toHaveProperty('selectedBlockerFlowNodeId');
     expect(hostMessages).toEqual([{ type: 'react-preview-inspector-companion-reveal' }]);
-    expect(runtime.consumeReveal(blocker.id)).toBe(false);
+    expect(runtime.consumeReveal(blocker.id)).toBe(true);
+    expect(runtime.readCompanion()).toMatchObject({ pendingTreeReveal: blocker.id });
   });
 
   /** Keeps emitted limits explicit and the interaction surface constrained to blocker buttons. */

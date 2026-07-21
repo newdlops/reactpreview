@@ -9,6 +9,7 @@ interface LocatorStep {
   readonly directCurrentFileBlocker?: boolean;
   readonly graphKind?: string;
   readonly id: string;
+  readonly staticCurrentFileTarget?: boolean;
   readonly node?: {
     readonly blockerKind?: string;
     readonly contextOnly?: boolean;
@@ -108,6 +109,42 @@ describe('Preview Inspector flowchart toolbar runtime source', () => {
     expect(result.step?.id).toBe('render-entry:target');
   });
 
+  /** Uses the proven static application corridor before the disconnected export inventory row. */
+  it('prefers the static application target when no exact Fiber target has mounted', () => {
+    const locate = evaluateLocator();
+    const inventory: LocatorStep = {
+      graphKind: 'entry',
+      id: 'render-entry:unmounted-target',
+      node: {
+        contextOnly: true,
+        currentFileExport: true,
+        exportName: 'Target',
+        mounted: false,
+        name: 'Target',
+        source: { path: '/workspace/Target.tsx' },
+      },
+      rank: 1,
+    };
+    const staticTarget: LocatorStep = {
+      graphKind: 'component',
+      id: 'static-application:target',
+      node: {
+        currentFileExport: true,
+        exportName: 'Target',
+        mounted: false,
+        name: 'Target',
+        source: { path: '/workspace/Target.tsx' },
+      },
+      rank: 8,
+      staticCurrentFileTarget: true,
+    };
+
+    const result = locate({}, { orderedNodes: [inventory, staticTarget] });
+
+    expect(result.status).toBe('estimated');
+    expect(result.step?.id).toBe('static-application:target');
+  });
+
   /** Points at a proven path blocker instead of fabricating a current-file component node. */
   it('falls back to the nearest target reachability blocker when the file is absent', () => {
     const locate = evaluateLocator();
@@ -153,8 +190,8 @@ describe('Preview Inspector flowchart toolbar runtime source', () => {
     expect(result?.id).toBe('current-file-target');
   });
 
-  /** Emits companion-safe camera commands and plain-language graph semantics. */
-  it('renders zoom, fit, center, locator, inspector, and legend controls', () => {
+  /** Emits camera commands and an explicit Focus/Main/All graph scope switch. */
+  it('renders zoom, fit, center, locator, inspector, and Focus/Main/All controls', () => {
     const source = createPreviewInspectorFlowchartToolbarUiRuntimeSource();
 
     expect(() => new vm.Script(source)).not.toThrow();
@@ -174,8 +211,16 @@ describe('Preview Inspector flowchart toolbar runtime source', () => {
     expect(source).toContain("className: 'rpi-button rpi-flowchart-inspector-toggle'");
     expect(source).toContain("'Control & render flow'");
     expect(source).toContain("'Locate current file'");
-    expect(source).toContain("'solid · active/proven'");
-    expect(source).toContain("'dashed · inferred/dormant'");
+    expect(source).toContain("className: 'rpi-flowchart-view-switch'");
+    expect(source).toContain("mode === 'focus' ? 'Focus' : mode === 'main' ? 'Main' : 'All'");
+    expect(source).toContain(
+      "'Show one shortest application-entry path plus the current file JSX flow'",
+    );
+    expect(source).toContain("'aria-pressed': viewMode === mode");
+    expect(source).toContain("label: 'Fit all'");
+    expect(source).toContain("'100%'");
+    expect(source).not.toContain('function PreviewInspectorFlowchartLegend');
+    expect(source).not.toContain('rpi-flowchart-legend');
     expect(source).not.toContain('style:');
   });
 });

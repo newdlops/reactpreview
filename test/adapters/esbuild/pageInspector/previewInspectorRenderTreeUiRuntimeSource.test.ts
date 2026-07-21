@@ -18,6 +18,14 @@ interface RenderTreeSnapshot {
   readonly roots: readonly RenderTreeNode[];
 }
 
+/** Pure data helpers exposed from the generated enrichment source. */
+interface RenderTreeRuntime {
+  readonly enrich: (snapshot: Record<string, unknown>) => RenderTreeSnapshot;
+  readonly readContext: (options?: { readonly preferShortest?: boolean }) => {
+    readonly entries: readonly { readonly name: string }[];
+  };
+}
+
 /** Proves entry/route context and missing exports remain visible around the mounted page Fiber. */
 describe('Preview Inspector render-tree UI runtime source', () => {
   it('prepends the workspace render root and inventories unmounted current-file exports', () => {
@@ -67,7 +75,7 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
     };
     const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
-    const snapshot = runtime({
+    const snapshot = runtime.enrich({
       roots: [
         {
           children: [
@@ -172,7 +180,7 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       root: { exportName: 'DecoratedPage', sourcePath: '/workspace/DecoratedPage.tsx' },
     };
     const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
-    const snapshot = runtime({
+    const snapshot = runtime.enrich({
       roots: [
         {
           children: [
@@ -218,15 +226,63 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       edgeKind: 'component-slot',
     });
   });
+
+  /** Keeps Main's application corridor independent from a longer selected page candidate. */
+  it('reads the compiler-ranked shortest path when the caller requests it', () => {
+    const shortestPath = {
+      steps: [
+        {
+          kind: 'component-render',
+          label: 'CurrentCard',
+          sourcePath: '/workspace/CurrentCard.tsx',
+        },
+        { kind: 'entry-render', label: 'ShortEntry', sourcePath: '/workspace/main.tsx' },
+      ],
+    };
+    const descriptor = {
+      inspector: {
+        renderChainsByExport: {
+          CurrentCard: {
+            paths: [shortestPath],
+            target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+          },
+        },
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const candidate = {
+      renderPath: {
+        steps: [
+          {
+            kind: 'component-render',
+            label: 'CurrentCard',
+            sourcePath: '/workspace/CurrentCard.tsx',
+          },
+          { kind: 'component-render', label: 'LongPage', sourcePath: '/workspace/LongPage.tsx' },
+          { kind: 'entry-render', label: 'LongEntry', sourcePath: '/workspace/long-main.tsx' },
+        ],
+      },
+    };
+    const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
+
+    expect(runtime.readContext().entries.map((entry) => entry.name)).toEqual([
+      'LongEntry',
+      'LongPage',
+      'CurrentCard',
+    ]);
+    expect(
+      runtime.readContext({ preferShortest: true }).entries.map((entry) => entry.name),
+    ).toEqual(['ShortEntry', 'CurrentCard']);
+  });
 });
 
 /** Evaluates only data-oriented helpers against a deterministic descriptor and selected candidate. */
 function evaluateRenderTreeRuntime(
   descriptor: Record<string, unknown>,
   candidate: Record<string, unknown>,
-): (snapshot: Record<string, unknown>) => RenderTreeSnapshot {
+): RenderTreeRuntime {
   const context: {
-    __enrich?: (snapshot: Record<string, unknown>) => RenderTreeSnapshot;
+    __runtime?: RenderTreeRuntime;
     candidate: Record<string, unknown>;
     descriptor: Record<string, unknown>;
   } = { candidate, descriptor };
@@ -245,11 +301,14 @@ function evaluateRenderTreeRuntime(
       const matchesPreviewInspectorConditionSourcePath = (left, right) =>
         left === right || left.endsWith('/' + right) || right.endsWith('/' + left);
       ${createPreviewInspectorRenderTreeUiRuntimeSource()}
-      globalThis.__enrich = enrichPreviewInspectorRenderTreeSnapshot;
+      globalThis.__runtime = {
+        enrich: enrichPreviewInspectorRenderTreeSnapshot,
+        readContext: (options) => readPreviewInspectorRenderContextEntries(descriptor, options),
+      };
     `,
     context,
   );
-  const runtime = context.__enrich;
+  const runtime = context.__runtime;
   if (runtime === undefined) throw new Error('Render-tree UI fixture did not initialize.');
   return runtime;
 }

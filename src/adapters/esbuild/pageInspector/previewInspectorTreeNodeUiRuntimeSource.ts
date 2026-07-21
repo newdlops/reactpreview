@@ -36,6 +36,71 @@ function formatPreviewInspectorRenderContextBadge(node) {
   return undefined;
 }
 
+/**
+ * Renders one logical-AND control directly in its component-tree row.
+ *
+ * The button stops only the row click; the tree viewport's capture handler still records both scroll
+ * axes before a condition remounts the page. A source-proven but short-circuited guard stays visible
+ * and disabled until its preceding guard allows JavaScript to evaluate the live resolver.
+ */
+function PreviewInspectorComponentTreeConditionSwitch({ node }) {
+  if (!isPreviewInspectorConditionNode(node) || node.condition?.kind !== 'logical-and') {
+    return undefined;
+  }
+  const condition = node.condition;
+  const reached = condition.reached !== false && typeof node.conditionId === 'string';
+  const enabled = reached && condition.effectiveEnabled === true;
+  const overridden = reached && (
+    typeof condition.override === 'boolean' || typeof condition.autoOverride === 'boolean'
+  );
+  const stopRowClick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  return React.createElement(
+    'span',
+    { className: 'rpi-tree-condition-controls' },
+    React.createElement(
+      'button',
+      {
+        'aria-checked': enabled,
+        'aria-disabled': !reached,
+        'aria-label': reached
+          ? (enabled ? 'Disable ' : 'Enable ') + condition.expression
+          : condition.expression + ' is not reached yet',
+        className: 'rpi-row-action rpi-tree-condition-switch',
+        disabled: !reached,
+        onClick: (event) => {
+          stopRowClick(event);
+          if (reached) togglePreviewInspectorRenderCondition(node.conditionId);
+        },
+        role: 'switch',
+        title: reached
+          ? 'Toggle this JSX logical-AND condition'
+          : 'Not reached yet; enable the preceding JSX switch first',
+        type: 'button',
+      },
+      reached ? enabled ? 'On' : 'Off' : 'Wait',
+    ),
+    overridden
+      ? React.createElement(
+          'button',
+          {
+            'aria-label': 'Use authored value for ' + condition.expression,
+            className: 'rpi-row-action rpi-tree-condition-reset',
+            onClick: (event) => {
+              stopRowClick(event);
+              resetPreviewInspectorRenderConditionOverride(node.conditionId);
+            },
+            title: 'Use the project-authored condition value again',
+            type: 'button',
+          },
+          'Authored',
+        )
+      : undefined,
+  );
+}
+
 /** Renders one React-centered branch with export, route, overlay, condition, and blocker badges. */
 function PreviewInspectorComponentTreeNode({
   expandedIds,
@@ -130,6 +195,7 @@ function PreviewInspectorComponentTreeNode({
           'aria-hidden': true,
           className: 'rpi-twisty',
           'data-expandable': hasChildren,
+          'data-react-preview-tree-toggle-control': hasChildren ? node.id : undefined,
           onClick: (event) => {
             if (!hasChildren) return;
             event.preventDefault();
@@ -199,6 +265,7 @@ function PreviewInspectorComponentTreeNode({
         ? React.createElement('span', { className: 'rpi-badge' },
             formatPreviewInspectorBlockerBadge(node))
         : undefined,
+      React.createElement(PreviewInspectorComponentTreeConditionSwitch, { node }),
       isCurrentFileExport
         ? React.createElement(
             'button',

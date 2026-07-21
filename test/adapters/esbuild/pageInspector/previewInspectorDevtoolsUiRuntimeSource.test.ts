@@ -41,30 +41,19 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('const pageContext = readPreviewInspectorPageContext()');
     expect(source).toContain('title: "Go to the current file\'s main component"');
     expect(source).toContain("'Current file'");
-    expect(source).toContain("'Auto values'");
+    expect(source).not.toContain("'Auto values'");
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
-    expect(source).toContain('function PreviewInspectorBlockerFlowDetail');
-    expect(source).toContain('function createPreviewInspectorFlowchartLayout(flow)');
-    expect(source).toContain('function PreviewInspectorFlowchart({ flow, onSelect');
-    expect(source).toContain('function PreviewInspectorFlowchartToolbar({');
-    expect(source).toContain('function PreviewInspectorFlowchartResolverPane({ flow })');
-    expect(source).toContain("'CURRENT FILE PATH'");
-    expect(source).toContain("'data-rpi-flow-resolver-collapsed'");
-    expect(source).toContain("'data-rpi-flowchart-command': 'locate-current'");
     expect(source).toContain('function PreviewInspectorNavigationPane');
-    expect(source).toContain("['components', 'Components']");
-    expect(source).toContain("['blockers', 'Blockers (' + String(flow.unresolvedCount) + ')']");
-    expect(source).toContain('.rpi-navigation-panel[data-rpi-active="false"]{display:none}');
-    expect(source).toContain("'.rpi-blocker-navigation-scroll{overflow:auto");
-    expect(source).toContain('React.createElement(PreviewInspectorRenderFlowDetail');
-    expect(source).toContain('createPreviewInspectorBlockerFlow(snapshot)');
-    expect(source).toContain('const blockerFlow = createPreviewInspectorRenderFlow(snapshot)');
-    expect(source).not.toContain("['flow', 'Fix blockers (' + String(flow.unresolvedCount) + ')']");
+    expect(source).toContain('return React.createElement(PreviewInspectorComponentsPane');
+    expect(source).not.toContain("['blockers', 'Preview setup']");
+    expect(source).not.toContain('React.createElement(PreviewInspectorRenderFlowDetail');
+    expect(source).not.toContain('createPreviewInspectorRenderFlow(snapshot)');
     expect(source).toContain("['blocker', 'component', 'console']");
     expect(source).toContain('React.createElement(PreviewInspectorComponentDebuggerDetail');
     expect(source).toContain("blockerSelected ? 'Fix selected blocker' : 'Component debugger'");
-    expect(source).toContain("'aria-label': 'Advanced blocker dependency flow chart'");
+    expect(source).not.toContain('PreviewInspectorFlowchart');
+    expect(source).not.toContain('PreviewInspectorSimpleResolver');
     expect(source).toContain("'aria-label': 'React page layout wireframe'");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
     expect(source).toContain('revealPreviewInspectorWireframeBlocker(node, setCollapsed)');
@@ -106,6 +95,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('React Preview does not classify this application outcome.');
     expect(source).toContain("'aria-label': 'Inspector tree legend'");
     expect(source).toContain("'Fix next blocker'");
+    expect(source).toContain('function revealPreviewInspectorFriendlyBlocker()');
+    expect(source).toContain('requestPreviewInspectorTreeReveal(blocker.id)');
+    expect(source).toContain('selectPreviewInspectorUiNode(blocker)');
     expect(source).toContain("'Page context is ready'");
     expect(source).toContain("'aria-label': 'Resize React Page Inspector'");
     expect(source).toContain("'aria-label': 'Move floating React Page Inspector'");
@@ -119,28 +111,23 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('() => previewInspectorDevtoolsSessionState.query');
   });
 
-  /** Avoids graph layout and a duplicate detail pane until the user explicitly requests Advanced. */
-  it('gates the graph resolver and two-column workbench behind advanced blocker state', () => {
+  /** Keeps resolution controls owner-local and excludes the retired graph/setup navigation state. */
+  it('renders tree-selected blocker details without composing a graph resolver', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
     const detailsStart = source.indexOf('function PreviewInspectorDetailsPane');
     const toolbarStart = source.indexOf('function PreviewInspectorToolbar');
     const detailsSource = source.slice(detailsStart, toolbarStart);
 
-    expect(detailsSource).toContain(
-      'previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true',
-    );
-    expect(detailsSource).toContain(
-      '? React.createElement(PreviewInspectorFlowchartResolverPane, { flow })',
-    );
-    expect(detailsSource).toContain(': undefined;');
+    expect(detailsSource).toContain('function PreviewInspectorDetailsPane({ node })');
+    expect(detailsSource).toContain('React.createElement(PreviewInspectorBlockerDetail, { node })');
     expect(source).toContain(
-      "const simpleBlockerMode = readPreviewInspectorNavigationTab() === 'blockers' &&",
+      'React.createElement(PreviewInspectorDetailsPane, { node: selectedNode })',
     );
-    expect(source).toContain("'data-rpi-blocker-simple-mode': String(simpleBlockerMode)");
-    expect(source).toContain('simpleBlockerMode\n          ? undefined');
-    expect(source).toContain(
-      '.rpi-workbench[data-rpi-blocker-simple-mode="true"]{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}',
-    );
+    expect(source).not.toContain('readPreviewInspectorNavigationTab');
+    expect(source).not.toContain('blockerFlowAdvancedOpen');
+    expect(source).not.toContain('selectedBlockerFlowNodeId');
+    expect(source).not.toContain('blockerDetailRevision');
+    expect(source).not.toContain('data-rpi-flow-resolver-collapsed');
   });
 
   /** Clamps restored geometry and applies edge-specific pointer deltas deterministically. */

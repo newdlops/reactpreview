@@ -1,65 +1,67 @@
-/** Verifies persistent Components/Blockers navigation without mounting project React. */
+/** Verifies the single Components navigation boundary without mounting project React. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorNavigationUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorNavigationUiRuntimeSource';
 
-/** Tiny API exposed from the generated navigation source for state-boundary assertions. */
-interface NavigationRuntime {
-  readonly notifications: () => number;
-  readonly persisted: () => number;
-  readonly read: () => 'blockers' | 'components';
-  readonly select: (tabId: string) => void;
+/** Small serializable view of the generated React element used by the VM fixture. */
+interface NavigationRenderResult {
+  readonly rootCount: number;
+  readonly selectedId: string;
+  readonly status: string;
+  readonly truncated: boolean;
+  readonly type: string;
 }
 
 describe('Preview Inspector navigation UI runtime source', () => {
-  /** Keeps both panels mounted and uses companion-safe data state instead of stripped `hidden`. */
-  it('emits accessible primary tabs with bounded panel visibility', () => {
+  /** Keeps the component tree as the only primary pane and omits graph/setup navigation state. */
+  it('renders one stable Components pane without tabs or blocker graph UI', () => {
     const source = createPreviewInspectorNavigationUiRuntimeSource();
 
     expect(() => new vm.Script(source)).not.toThrow();
-    expect(source).toContain("['components', 'Components']");
-    expect(source).toContain("['blockers', 'Blockers (' + String(flow.unresolvedCount) + ')']");
-    expect(source).toContain("role: 'tablist'");
-    expect(source).toContain("'data-rpi-active': String(activeTab === 'components')");
-    expect(source).toContain("'data-rpi-active': String(activeTab === 'blockers')");
-    expect(source).toContain("'data-rpi-scroll-key': 'blocker-flow'");
+    expect(source).toContain(
+      'function PreviewInspectorNavigationPane({ roots, selectedId, status, truncated })',
+    );
     expect(source).toContain('React.createElement(PreviewInspectorComponentsPane');
-    expect(source).toContain('React.createElement(PreviewInspectorRenderFlowDetail');
-    expect(source).not.toContain('hidden: activeTab');
+    expect(source).not.toContain("['blockers', 'Preview setup']");
+    expect(source).not.toContain('PreviewInspectorRenderFlowDetail');
+    expect(source).not.toContain('navigationTab');
+    expect(source).not.toContain("role: 'tablist'");
   });
 
-  /** Rejects unknown persisted identities and commits an explicit Blockers selection once. */
-  it('normalizes and persists navigation independently from detail/debugger tabs', () => {
-    const runtime = evaluateNavigationRuntime('legacy-tab');
-
-    expect(runtime.read()).toBe('components');
-    runtime.select('blockers');
-    expect(runtime.read()).toBe('blockers');
-    expect(runtime.persisted()).toBe(1);
-    expect(runtime.notifications()).toBe(1);
-    runtime.select('debugger');
-    expect(runtime.read()).toBe('blockers');
-    expect(runtime.persisted()).toBe(1);
+  /** Forwards tree inputs unchanged so the searchable pane retains expansion and scroll state. */
+  it('forwards the component snapshot through the named workbench boundary', () => {
+    expect(evaluateNavigationRender()).toEqual({
+      rootCount: 2,
+      selectedId: 'target',
+      status: 'live tree',
+      truncated: true,
+      type: 'components-pane',
+    });
   });
 });
 
-/** Evaluates only navigation state helpers with inert UI bindings. */
-function evaluateNavigationRuntime(initialTab: string): NavigationRuntime {
-  const context: { __navigation?: NavigationRuntime } = {};
+/** Evaluates only the generated composition function with an inert React element factory. */
+function evaluateNavigationRender(): NavigationRenderResult {
+  const context: { __navigation?: NavigationRenderResult } = {};
   vm.runInNewContext(
     `
-      const React = {};
-      const previewInspectorDevtoolsSessionState = { navigationTab: ${JSON.stringify(initialTab)} };
-      let persistedCount = 0;
-      let notificationCount = 0;
-      const persistPreviewInspectorState = () => { persistedCount += 1; };
-      const notifyPreviewInspector = () => { notificationCount += 1; };
+      const React = {
+        createElement: (type, props) => ({ props, type }),
+      };
+      const PreviewInspectorComponentsPane = 'components-pane';
       ${createPreviewInspectorNavigationUiRuntimeSource()}
+      const result = PreviewInspectorNavigationPane({
+        roots: [{ id: 'root' }, { id: 'target' }],
+        selectedId: 'target',
+        status: 'live tree',
+        truncated: true,
+      });
       globalThis.__navigation = {
-        notifications: () => notificationCount,
-        persisted: () => persistedCount,
-        read: readPreviewInspectorNavigationTab,
-        select: selectPreviewInspectorNavigationTab,
+        rootCount: result.props.roots.length,
+        selectedId: result.props.selectedId,
+        status: result.props.status,
+        truncated: result.props.truncated,
+        type: result.type,
       };
     `,
     context,

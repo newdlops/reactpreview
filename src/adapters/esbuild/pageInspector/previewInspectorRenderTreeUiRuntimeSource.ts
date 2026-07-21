@@ -105,17 +105,26 @@ function appendPreviewInspectorInvocationContextEntries(entries, step) {
   }
 }
 
-/** Reads the selected export's inert workspace-entry-to-target path in outer-to-inner order. */
-function readPreviewInspectorRenderContextEntries(descriptor) {
+/**
+ * Reads one inert workspace-entry-to-target path in outer-to-inner order.
+ *
+ * The Elements tree may follow the user's selected page candidate. The compact Main flow instead
+ * requests the compiler-ranked shortest entry path so page choice UI cannot silently make the
+ * current-file locator longer or less deterministic.
+ */
+function readPreviewInspectorRenderContextEntries(descriptor, options = {}) {
   const inspector = descriptor?.inspector;
   if (inspector === undefined) return { entries: [], entryPoint: undefined };
   const selectedName = previewInspectorSession.selectedExportName;
   const primaryName = inspector.target?.exportName ?? descriptor?.exportName;
   const selectedChain = inspector.renderChainsByExport?.[selectedName] ?? inspector.renderChain;
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
-  const path = selectedName === primaryName
-    ? candidate?.renderPath ?? selectedChain?.paths?.[0]
-    : selectedChain?.paths?.[0] ?? candidate?.renderPath;
+  const shortestPath = selectedChain?.paths?.[0];
+  const path = options.preferShortest === true
+    ? shortestPath ?? candidate?.renderPath
+    : selectedName === primaryName
+      ? candidate?.renderPath ?? shortestPath
+      : shortestPath ?? candidate?.renderPath;
   const entries = [];
   for (const step of [...(path?.steps ?? [])].slice(0, 64).reverse()) {
     appendPreviewInspectorInvocationContextEntries(entries, step);

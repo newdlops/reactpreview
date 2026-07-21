@@ -1,5 +1,5 @@
 /**
- * Generates scroll-preservation helpers for the remountable Page Component Tree.
+ * Generates scroll-preservation helpers for Inspector interactions and the component tree.
  *
  * Selecting an instrumented export can remount the preview shell, so React component-local refs are
  * not sufficient to retain the tree viewport. These helpers keep only finite coordinates in the
@@ -7,7 +7,7 @@
  */
 
 /**
- * Creates browser source that captures a row-click viewport and restores it after React commits.
+ * Creates browser source that captures a UI interaction and restores it after React commits.
  *
  * Expected lexical bindings include `previewInspectorDevtoolsSessionState`, animation-frame APIs,
  * and the webview document supplied by the composed Inspector runtime.
@@ -31,17 +31,20 @@ function rememberPreviewInspectorTreeScrollPosition(treeViewport) {
     normalizePreviewInspectorTreeScrollCoordinate(treeViewport.scrollTop);
 }
 
-/** Captures both Inspector-tree and preview-document coordinates before a row receives focus. */
+/** Captures preview-document coordinates plus the tree when that named viewport is mounted. */
 function capturePreviewInspectorTreeSelectionScroll(treeViewport) {
-  if (treeViewport === null || treeViewport === undefined) return undefined;
   const scrollingElement = globalThis.document?.scrollingElement;
   const revision = (previewInspectorDevtoolsSessionState.treeScrollSnapshotRevision ?? 0) + 1;
   const snapshot = {
     documentLeft: normalizePreviewInspectorTreeScrollCoordinate(scrollingElement?.scrollLeft),
     documentTop: normalizePreviewInspectorTreeScrollCoordinate(scrollingElement?.scrollTop),
     revision,
-    treeLeft: normalizePreviewInspectorTreeScrollCoordinate(treeViewport.scrollLeft),
-    treeTop: normalizePreviewInspectorTreeScrollCoordinate(treeViewport.scrollTop),
+    treeLeft: normalizePreviewInspectorTreeScrollCoordinate(
+      treeViewport?.scrollLeft ?? previewInspectorDevtoolsSessionState.treeScrollLeft,
+    ),
+    treeTop: normalizePreviewInspectorTreeScrollCoordinate(
+      treeViewport?.scrollTop ?? previewInspectorDevtoolsSessionState.treeScrollTop,
+    ),
   };
   previewInspectorDevtoolsSessionState.treeScrollLeft = snapshot.treeLeft;
   previewInspectorDevtoolsSessionState.treeScrollTop = snapshot.treeTop;
@@ -52,9 +55,11 @@ function capturePreviewInspectorTreeSelectionScroll(treeViewport) {
 
 /** Restores a finite snapshot without invoking focus, smooth scrolling, or application callbacks. */
 function restorePreviewInspectorTreeScrollSnapshot(treeViewport, snapshot, restoreDocument) {
-  if (treeViewport === null || treeViewport === undefined || snapshot === undefined) return;
-  treeViewport.scrollLeft = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeLeft);
-  treeViewport.scrollTop = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeTop);
+  if (snapshot === undefined) return;
+  if (treeViewport !== null && treeViewport !== undefined) {
+    treeViewport.scrollLeft = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeLeft);
+    treeViewport.scrollTop = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeTop);
+  }
   if (restoreDocument !== true) return;
   const scrollingElement = globalThis.document?.scrollingElement;
   if (scrollingElement === null || scrollingElement === undefined) return;

@@ -11,11 +11,11 @@ interface ScrollSurface {
 
 /** Generated helper contract exposed only inside the isolated test realm. */
 interface TreeScrollRuntime {
-  readonly capture: (viewport: ScrollSurface) => unknown;
+  readonly capture: (viewport: ScrollSurface | undefined) => unknown;
   readonly readSession: () => Record<string, unknown>;
   readonly remember: (viewport: ScrollSurface) => void;
   readonly runFrame: () => void;
-  readonly scheduleRestore: (viewport: ScrollSurface) => number;
+  readonly scheduleRestore: (viewport: ScrollSurface | undefined) => number;
 }
 
 describe('Preview Inspector tree scroll runtime source', () => {
@@ -70,6 +70,22 @@ describe('Preview Inspector tree scroll runtime source', () => {
     runtime.scheduleRestore(viewport);
 
     expect(viewport).toEqual({ scrollLeft: 95, scrollTop: 275 });
+  });
+
+  /** Protects the rendered page scroll even when a toolbar control has no tree ancestor. */
+  it('captures and restores the preview document for a non-tree interaction', () => {
+    const documentScroll: ScrollSurface = { scrollLeft: 14, scrollTop: 510 };
+    const runtime = evaluateTreeScrollRuntime(documentScroll);
+
+    runtime.capture(undefined);
+    documentScroll.scrollLeft = 0;
+    documentScroll.scrollTop = 0;
+    runtime.scheduleRestore(undefined);
+
+    expect(documentScroll).toEqual({ scrollLeft: 14, scrollTop: 510 });
+    documentScroll.scrollTop = 0;
+    runtime.runFrame();
+    expect(documentScroll.scrollTop).toBe(510);
   });
 });
 

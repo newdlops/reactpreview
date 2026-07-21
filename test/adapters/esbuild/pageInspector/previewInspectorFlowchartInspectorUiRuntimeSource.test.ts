@@ -1,4 +1,4 @@
-/** Verifies the generated right-hand Blocker Resolver without mounting project React components. */
+/** Verifies generated advanced render diagnostics without mounting project React components. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorFlowchartInspectorUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFlowchartInspectorUiRuntimeSource';
@@ -66,15 +66,20 @@ interface InspectorLayout {
 }
 
 describe('Preview Inspector flowchart Inspector UI runtime source', () => {
-  /** Emits the screenshot-style Resolver anatomy while delegating all mutations to existing editors. */
-  it('renders selected-block identity, relations, source, editor, collapse, and locate guidance', () => {
+  /** Leads with simple choices while retaining selected identity, source, and relations as diagnostics. */
+  it('renders simple setup before disclosed graph diagnostics without raw editors', () => {
     const source = createPreviewInspectorFlowchartInspectorUiRuntimeSource();
 
     expect(() => new vm.Script(source)).not.toThrow();
     expect(source).toContain('function PreviewInspectorFlowchartInspector({');
-    expect(source).toContain("'aria-label': 'Blocker Resolver'");
-    expect(source).toContain("'BLOCKER RESOLVER'");
-    expect(source).toContain("collapsed === true ? 'Inspector' : '×'");
+    expect(source).toContain("'aria-label': 'Advanced render diagnostics'");
+    expect(source).toContain("'ADVANCED RENDER DIAGNOSTICS'");
+    expect(source).toContain("collapsed === true ? 'Diagnostics' : '×'");
+    expect(source).toContain('React.createElement(PreviewInspectorSimpleResolver');
+    expect(source).toContain('function PreviewInspectorFlowchartDiagnostics');
+    expect(source).toContain(
+      "React.createElement('summary', undefined, 'Selected graph diagnostics')",
+    );
     expect(source).toContain('function PreviewInspectorFlowchartSelectedSummary');
     expect(source).toContain('formatPreviewInspectorFlowchartGraphKind(selectedStep.graphKind)');
     expect(source).toContain('formatPreviewInspectorFlowchartInspectorStatus(selectedStep)');
@@ -85,8 +90,8 @@ describe('Preview Inspector flowchart Inspector UI runtime source', () => {
     expect(source).toContain(
       'React.createElement(PreviewInspectorSourceDetail, { node: sourceNode })',
     );
-    expect(source).toContain('React.createElement(PreviewInspectorRenderFlowConditionSwitch');
-    expect(source).toContain('React.createElement(PreviewInspectorRenderFlowNodeEditor');
+    expect(source).not.toContain('React.createElement(PreviewInspectorRenderFlowConditionSwitch');
+    expect(source).not.toContain('React.createElement(PreviewInspectorRenderFlowNodeEditor');
     expect(source).toContain("direction: 'predecessor'");
     expect(source).toContain("direction: 'successor'");
   });
@@ -110,17 +115,15 @@ describe('Preview Inspector flowchart Inspector UI runtime source', () => {
     expect(source).not.toContain('selectPreviewInspectorUiNode(');
   });
 
-  /** Keeps the routine path/blocker/action visible while moving tutorials and relations aside. */
-  it('uses native progressive disclosure for advanced resolver details', () => {
+  /** Keeps the path tutorial and graph relationships inside the diagnostics disclosure. */
+  it('uses native progressive disclosure for selected graph details', () => {
     const source = createPreviewInspectorFlowchartInspectorUiRuntimeSource();
 
     expect(source).toContain("React.createElement('summary', undefined, 'How path tracing works')");
     expect(source).toContain('function PreviewInspectorFlowchartAdvancedRelations');
-    expect(source).toContain(
-      "React.createElement('summary', undefined, 'Advanced path relationships')",
-    );
-    expect(source).toContain("'CURRENT BLOCKER'");
-    expect(source).toContain("'NEXT ACTION'");
+    expect(source).toContain("React.createElement('strong', undefined, 'Path relationships')");
+    expect(source).not.toContain("'CURRENT BLOCKER'");
+    expect(source).not.toContain("'NEXT ACTION'");
   });
 
   /** Distinguishes mounted and static current-file evidence from a path blocker or absent target. */

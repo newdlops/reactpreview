@@ -86,6 +86,9 @@ function scorePreviewInspectorFlowchartCurrentFileStep(step, identity) {
   const exportMatches = typeof identity.exportName === 'string' && identity.exportName.length > 0 &&
     (node?.exportName === identity.exportName || node?.name === identity.exportName);
   if (step?.currentFileTarget === true) return 1000;
+  // The analyzer-backed application corridor is more useful than the unmounted export inventory,
+  // but it must never outrank a target that React actually mounted in the live Fiber tree.
+  if (step?.staticCurrentFileTarget === true) return 950;
   if (node?.currentFileExport === true) {
     const entry = String(step?.id ?? '').startsWith('render-entry:');
     return 800 + Number(sourceMatches) * 80 + Number(exportMatches) * 40 +
@@ -170,36 +173,17 @@ function PreviewInspectorFlowchartCameraButton({ command, label, title }) {
   );
 }
 
-/** Explains line and node semantics without requiring users to infer meaning from color alone. */
-function PreviewInspectorFlowchartLegend() {
-  const items = [
-    ['exact', 'solid · active/proven'],
-    ['inferred', 'dashed · inferred/dormant'],
-    ['blocker', '! blocker'],
-    ['current', '◎ current file'],
-    ['branch', '? branch/case'],
-    ['hoc', 'H HOC'],
-    ['slot', 'P component prop'],
-  ];
-  return React.createElement(
-    'div',
-    { 'aria-label': 'Render flow legend', className: 'rpi-flowchart-legend' },
-    items.map(([kind, label]) => React.createElement(
-      'span',
-      { className: 'rpi-flowchart-legend-item', 'data-rpi-legend-kind': kind, key: kind },
-      label,
-    )),
-  );
-}
-
-/** Renders camera actions, the exact current-file locator, and the resolver visibility switch. */
+/** Renders camera actions, graph scope, the exact locator, and the resolver visibility switch. */
 function PreviewInspectorFlowchartToolbar({
   flow,
   inspectorCollapsed,
   layout,
   locator,
+  onChangeViewMode,
   onSelect,
   onToggleInspector,
+  totalNodeCount,
+  viewMode,
 }) {
   const locate = () => {
     if (locator?.step !== undefined) onSelect(locator.step);
@@ -221,10 +205,31 @@ function PreviewInspectorFlowchartToolbar({
       React.createElement(
         'span',
         { className: 'rpi-meta' },
-        String(layout.orderedNodes.length) + ' blocks · ' + String(flow.unresolvedCount) + ' unresolved',
+        String(layout.orderedNodes.length) +
+          (layout.orderedNodes.length < totalNodeCount ? ' of ' + String(totalNodeCount) : '') +
+          ' blocks · ' + String(flow.unresolvedCount) + ' unresolved',
       ),
     ),
-    React.createElement(PreviewInspectorFlowchartLegend),
+    React.createElement(
+      'div',
+      { 'aria-label': 'Render flow scope', className: 'rpi-flowchart-view-switch', role: 'group' },
+      ...['focus', 'main', 'all'].map((mode) => React.createElement(
+        'button',
+        {
+          'aria-pressed': viewMode === mode,
+          className: 'rpi-button rpi-flowchart-view-button',
+          key: mode,
+          onClick: () => onChangeViewMode(mode),
+          title: mode === 'focus'
+            ? 'Show up to ten blocks around the selected/current blocker'
+            : mode === 'main'
+              ? 'Show one shortest application-entry path plus the current file JSX flow'
+              : 'Show every node retained by the bounded graph',
+          type: 'button',
+        },
+        mode === 'focus' ? 'Focus' : mode === 'main' ? 'Main' : 'All',
+      )),
+    ),
     React.createElement(
       'div',
       { 'aria-label': 'Render flow camera controls', className: 'rpi-flowchart-camera', role: 'toolbar' },
@@ -258,7 +263,7 @@ function PreviewInspectorFlowchartToolbar({
       }),
       React.createElement(PreviewInspectorFlowchartCameraButton, {
         command: 'fit',
-        label: 'Fit',
+        label: 'Fit all',
         title: 'Fit the complete bounded graph inside the visible canvas',
       }),
       React.createElement(
@@ -293,7 +298,7 @@ function PreviewInspectorFlowchartToolbar({
         'data-rpi-flowchart-camera-status': 'true',
         role: 'status',
       },
-      locator?.detail ?? 'Use Locate current file to find the selected export in this page flow.',
+      '',
     ),
   );
 }

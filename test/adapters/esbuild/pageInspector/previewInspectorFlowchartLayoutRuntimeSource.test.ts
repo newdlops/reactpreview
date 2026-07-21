@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import {
   createPreviewInspectorFlowchartLayoutRuntimeSource,
   PREVIEW_INSPECTOR_FLOWCHART_EDGE_LIMIT,
+  PREVIEW_INSPECTOR_FLOWCHART_FOCUS_NODE_LIMIT,
   PREVIEW_INSPECTOR_FLOWCHART_LANE_LIMIT,
+  PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT,
   PREVIEW_INSPECTOR_FLOWCHART_NODE_LIMIT,
   PREVIEW_INSPECTOR_FLOWCHART_TRACK_LIMIT,
 } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorFlowchartLayoutRuntimeSource';
@@ -55,6 +57,31 @@ interface FlowchartLayout {
   readonly truncated: boolean;
 }
 
+/** Pure Focus/Main helpers exported only from the evaluated generated browser source. */
+interface FlowchartFocusRuntime {
+  readonly createFocus: (
+    flow: Record<string, unknown>,
+    layout: FlowchartLayout,
+    preferredIds: Set<string>,
+    anchorIds: readonly string[],
+    nodeLimit: number,
+    includeIntrinsicAnchors?: boolean,
+  ) => {
+    readonly focusOmittedNodeCount: number;
+    readonly graphEdges: readonly GraphEdge[];
+    readonly graphNodes: readonly GraphNode[];
+  };
+  readonly createLayout: (flow: {
+    readonly graphEdges: readonly GraphEdge[];
+    readonly graphNodes: readonly GraphNode[];
+  }) => FlowchartLayout;
+  readonly neighborhood: (
+    layout: FlowchartLayout,
+    seedIds: readonly string[],
+    radius?: number,
+  ) => Set<string>;
+}
+
 /** Evaluates the generated data-only layout with no React, DOM, or project module dependency. */
 function evaluateFlowchartLayout(): (flow: {
   readonly graphEdges: readonly GraphEdge[];
@@ -73,6 +100,27 @@ function evaluateFlowchartLayout(): (flow: {
     throw new Error('Flowchart layout runtime fixture did not initialize.');
   }
   return context.__createLayout;
+}
+
+/** Evaluates the focus reducer alongside layout so tests exercise exact generated identities. */
+function evaluateFlowchartFocusRuntime(): FlowchartFocusRuntime {
+  const context: { __runtime?: FlowchartFocusRuntime } = {};
+  vm.runInNewContext(
+    `
+      const isPreviewInspectorBlockerNode = (node) => node?.kind === 'blocker';
+      ${createPreviewInspectorFlowchartLayoutRuntimeSource()}
+      globalThis.__runtime = {
+        createFocus: createPreviewInspectorFocusedFlowchartFlow,
+        createLayout: createPreviewInspectorFlowchartLayout,
+        neighborhood: createPreviewInspectorFlowchartNeighborhood,
+      };
+    `,
+    context,
+  );
+  if (context.__runtime === undefined) {
+    throw new Error('Flowchart focus runtime fixture did not initialize.');
+  }
+  return context.__runtime;
 }
 
 describe('Preview Inspector flowchart layout runtime source', () => {
@@ -265,11 +313,66 @@ describe('Preview Inspector flowchart layout runtime source', () => {
     expect(layout.nodeById.has('parallel:39')).toBe(false);
   });
 
+  /** Reduces a 121-node route to exact 2-hop Focus and bridged 24-node Main views. */
+  it('builds bounded Focus/Main views without replacing real step identities', () => {
+    const runtime = evaluateFlowchartFocusRuntime();
+    const graphNodes: GraphNode[] = Array.from({ length: 121 }, (_, index) => ({
+      currentFileTarget: index === 120,
+      graphKind: index === 0 ? 'entry' : 'component',
+      id: 'step:' + String(index),
+      label: 'Step ' + String(index),
+      rank: index,
+    }));
+    const graphEdges = graphNodes
+      .slice(1)
+      .map((node, index) =>
+        edge('edge:' + String(index), 'step:' + String(index), node.id, '', true),
+      );
+    const flow = { fingerprint: 'large-flow', graphEdges, graphNodes };
+    const completeLayout = runtime.createLayout(flow);
+    const neighborhood = runtime.neighborhood(completeLayout, ['step:60'], 2);
+    const focus = runtime.createFocus(
+      flow,
+      completeLayout,
+      neighborhood,
+      ['step:60'],
+      PREVIEW_INSPECTOR_FLOWCHART_FOCUS_NODE_LIMIT,
+      false,
+    );
+
+    expect(focus.graphNodes.map((node) => node.id)).toEqual([
+      'step:58',
+      'step:59',
+      'step:60',
+      'step:61',
+      'step:62',
+    ]);
+    expect(focus.focusOmittedNodeCount).toBe(116);
+    expect(focus.graphNodes.every((node) => completeLayout.nodeById.get(node.id) === node)).toBe(
+      true,
+    );
+
+    const main = runtime.createFocus(
+      flow,
+      completeLayout,
+      new Set(graphNodes.map((node) => node.id)),
+      ['step:120'],
+      PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT,
+    );
+    expect(main.graphNodes).toHaveLength(PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT);
+    expect(main.graphNodes.some((node) => node.id === 'step:0')).toBe(true);
+    expect(main.graphNodes.some((node) => node.id === 'step:120')).toBe(true);
+    expect(main.graphEdges.some((candidate) => candidate.kind === 'focus-bridge')).toBe(true);
+    expect(main.focusOmittedNodeCount).toBe(97);
+  });
+
   /** Documents the explicit resource ceilings used by large switch/case and wrapper graphs. */
   it('emits stable graph resource limits', () => {
     expect(PREVIEW_INSPECTOR_FLOWCHART_NODE_LIMIT).toBe(128);
     expect(PREVIEW_INSPECTOR_FLOWCHART_EDGE_LIMIT).toBe(256);
+    expect(PREVIEW_INSPECTOR_FLOWCHART_FOCUS_NODE_LIMIT).toBe(10);
     expect(PREVIEW_INSPECTOR_FLOWCHART_LANE_LIMIT).toBe(32);
+    expect(PREVIEW_INSPECTOR_FLOWCHART_MAIN_NODE_LIMIT).toBe(24);
     expect(PREVIEW_INSPECTOR_FLOWCHART_TRACK_LIMIT).toBe(8);
   });
 });

@@ -14,98 +14,13 @@ import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspector
 import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDataUiRuntimeSource';
 import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
-import { createPreviewInspectorFlowchartLayoutRuntimeSource } from './previewInspectorFlowchartLayoutRuntimeSource';
-import { createPreviewInspectorFlowchartInspectorUiRuntimeSource } from './previewInspectorFlowchartInspectorUiRuntimeSource';
-import { createPreviewInspectorFlowchartToolbarUiRuntimeSource } from './previewInspectorFlowchartToolbarUiRuntimeSource';
-import { createPreviewInspectorFlowchartUiRuntimeSource } from './previewInspectorFlowchartUiRuntimeSource';
-import { createPreviewInspectorBlockerFlowUiRuntimeSource } from './previewInspectorBlockerFlowUiRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
-import { createPreviewInspectorRenderFlowUiRuntimeSource } from './previewInspectorRenderFlowUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 import { createPreviewInspectorTreeScrollRuntimeSource } from './previewInspectorTreeScrollRuntimeSource';
 import { createPreviewInspectorTreeNodeUiRuntimeSource } from './previewInspectorTreeNodeUiRuntimeSource';
 import { createPreviewInspectorWireframeUiRuntimeSource } from './previewInspectorWireframeUiRuntimeSource';
-/** Source location exposed to the UI without prescribing an extension-host transport. */
-export interface PreviewInspectorUiSourceLocation {
-  /** Optional one-based source column. */
-  readonly column?: number;
-  /** Human-readable file label; collectors may omit the absolute path from this value. */
-  readonly displayName?: string;
-  /** Optional one-based source line. */
-  readonly line?: number;
-  /** Optional collector byte/character offset used to disambiguate repeated component names. */
-  readonly occurrenceStart?: number;
-  /** Collector-owned source identity forwarded unchanged to `openSource`. */
-  readonly path?: string;
-  /** Compatibility spelling emitted by static/Fiber source evidence before UI normalization. */
-  readonly sourcePath?: string;
-}
-/** One read-only React component node accepted by the inspector UI. */
-export interface PreviewInspectorUiTreeNode {
-  /** Nested React component children; HTML host nodes should be omitted or marked as `host`. */
-  readonly children: readonly PreviewInspectorUiTreeNode[];
-  /** Compiler-issued switch metadata present only on editable multi-way render-choice rows. */
-  readonly choice?: unknown;
-  /** Stable compiler-issued identity present only on multi-way render-choice rows. */
-  readonly choiceId?: string;
-  /** Render-graph certainty retained only on inert entry, route, lazy, or wrapper context nodes. */
-  readonly certainty?: 'conditional' | 'confirmed';
-  /** Compiler-issued condition metadata present only on editable conditional-render pseudo nodes. */
-  readonly condition?: unknown;
-  /** Stable compiler-issued identity present only on conditional-render pseudo nodes. */
-  readonly conditionId?: string;
-  /** True for data-only route/entry/group nodes that do not claim a mounted Fiber identity. */
-  readonly contextOnly?: boolean;
-  /** Marks a component export declared by the source file whose preview tab is pinned. */
-  readonly currentFileExport?: boolean;
-  /** Static render-graph relationship represented by a context-only node. */
-  readonly edgeKind?: string;
-  /** Export identity when the node is an instrumented editable target or ancestor root. */
-  readonly exportName?: string;
-  /** Stable identity for selection across collector refreshes. */
-  readonly id: string;
-  /** Collector classification such as `component`, `target`, `root`, or `host`. */
-  readonly kind: string;
-  /** Component display name shown in the tree. */
-  readonly name: string;
-  /** Distinguishes a live export from one retained only in the current-file inventory. */
-  readonly mounted?: boolean;
-  /** Mounted/dormant state supplied only for overlay components and portals. */
-  readonly overlayState?: 'dormant' | 'mounted';
-  /** Read-only props snapshot; only instrumented target/root props are editable. */
-  readonly props?: unknown;
-  /** Structural presentation role proven by the collector. */
-  readonly role?: 'overlay' | 'transparent-wrapper';
-  /** Source location suitable for the optional source-opening adapter. */
-  readonly source?: PreviewInspectorUiSourceLocation;
-  /** Read-only class, hook, or collector-defined state snapshot. */
-  readonly state?: unknown;
-}
-/** Bounded component-tree snapshot returned by the optional live collector. */
-export interface PreviewInspectorUiTreeSnapshot {
-  /** React component roots currently mounted below the preview root. */
-  readonly roots: readonly PreviewInspectorUiTreeNode[];
-  /** Collector-selected node, when selection originated from host picking or another adapter. */
-  readonly selectedId?: string;
-  /** Optional collector capability or freshness note shown above the tree. */
-  readonly status?: string;
-  /** Whether a collector visit bound omitted deeper or later component nodes. */
-  readonly truncated?: boolean;
-}
-/**
- * Small browser contract between the UI shell and independently implemented collector/host adapters.
- * Every method except `collectTree` is optional so static export fallback remains fully functional.
- */
-export interface PreviewInspectorUiAdapter {
-  /** Returns a current read-only React component tree. */
-  collectTree(): PreviewInspectorUiTreeSnapshot;
-  /** Mirrors a tree-row selection back into the live collector with optional export identity. */
-  selectNode?(id: string, exportName?: string): void;
-  /** Subscribes to React commits; returning cleanup follows React effect conventions. */
-  subscribeTree?(listener: () => void): (() => void) | undefined;
-}
 
 /**
  * Creates the browser source for a bottom-docked, Elements-like React component inspector.
@@ -123,17 +38,10 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const hiddenElementsUiRuntimeSource = createPreviewInspectorHiddenElementsUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
-  const flowchartLayoutRuntimeSource = createPreviewInspectorFlowchartLayoutRuntimeSource();
-  const flowchartInspectorUiRuntimeSource =
-    createPreviewInspectorFlowchartInspectorUiRuntimeSource();
-  const flowchartToolbarUiRuntimeSource = createPreviewInspectorFlowchartToolbarUiRuntimeSource();
-  const flowchartUiRuntimeSource = createPreviewInspectorFlowchartUiRuntimeSource();
   const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
-  const blockerFlowUiRuntimeSource = createPreviewInspectorBlockerFlowUiRuntimeSource();
   const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
-  const renderFlowUiRuntimeSource = createPreviewInspectorRenderFlowUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   const treeScrollRuntimeSource = createPreviewInspectorTreeScrollRuntimeSource();
@@ -153,12 +61,6 @@ ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
 ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
-${blockerFlowUiRuntimeSource}
-${renderFlowUiRuntimeSource}
-${flowchartLayoutRuntimeSource}
-${flowchartToolbarUiRuntimeSource}
-${flowchartUiRuntimeSource}
-${flowchartInspectorUiRuntimeSource}
 ${navigationUiRuntimeSource}
 ${wireframeUiRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
@@ -680,8 +582,8 @@ function PreviewInspectorSourceDetail({ node }) {
   );
 }
 
-/** Renders either one explicit blocker editor or the selected-component debugger and console. */
-function PreviewInspectorDetailsPane({ flow, node }) {
+/** Renders one tree-selected blocker/choice editor or the selected-component debugger and console. */
+function PreviewInspectorDetailsPane({ node }) {
   const blockerSelected = isPreviewInspectorBlockerNode(node);
   const renderChoiceSelected = isPreviewInspectorRenderChoiceNode(node);
   const renderControlSelected = blockerSelected || renderChoiceSelected;
@@ -697,11 +599,6 @@ function PreviewInspectorDetailsPane({ flow, node }) {
     setDetailsTab(nextTab);
     persistPreviewInspectorState();
   }, [node?.id, renderControlSelected]);
-  if (readPreviewInspectorNavigationTab() === 'blockers') {
-    return previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true
-      ? React.createElement(PreviewInspectorFlowchartResolverPane, { flow })
-      : undefined;
-  }
   const tabs = [
     [renderControlSelected ? 'blocker' : 'component', renderChoiceSelected
       ? 'Render choice'
@@ -772,7 +669,6 @@ function PreviewInspectorToolbar() {
   usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible);
   const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
-  const blockerFlow = createPreviewInspectorRenderFlow(snapshot);
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
   const selectedNode = findPreviewInspectorUiNode(snapshot.roots, selectedTreeNodeId) ??
@@ -783,12 +679,7 @@ function PreviewInspectorToolbar() {
   const selectedId = selectedNode?.id;
   const editable = isPreviewInspectorUiNodeEditable(selectedNode);
   const mainComponentName = readPreviewInspectorMainComponentName();
-  const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
-  const dataAutoEnabled = readPreviewInspectorDataAutoEnabled();
-  const runtimeFallbackCount = readPreviewInspectorRuntimeFallbacks().length;
   const pageContext = readPreviewInspectorPageContext();
-  const simpleBlockerMode = readPreviewInspectorNavigationTab() === 'blockers' &&
-    previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen !== true;
   return React.createElement(
     React.Fragment,
     undefined,
@@ -865,31 +756,6 @@ function PreviewInspectorToolbar() {
           },
           'Wireframe',
         ),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => setPreviewInspectorFallbackValuesEnabled(!fallbackValuesEnabled),
-            pressed: fallbackValuesEnabled,
-            title: 'Toggle preview-generated fallback prop values',
-          },
-          'Auto values',
-        ),
-        runtimeFallbackCount > 0
-          ? React.createElement(
-              'span',
-              { className: 'rpi-meta', title: 'Render-blocking hook edges replaced by generated static values' },
-              'Fallbacks: ' + String(runtimeFallbackCount),
-            )
-          : undefined,
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => setPreviewInspectorDataAutoEnabled(!dataAutoEnabled),
-            pressed: dataAutoEnabled,
-            title: 'Toggle inferred no-network API and GraphQL payloads',
-          },
-          'Auto payloads',
-        ),
         React.createElement('select', {
           'aria-label': 'Instrumented target export',
           className: 'rpi-select',
@@ -947,30 +813,14 @@ function PreviewInspectorToolbar() {
       ),
       React.createElement(
         'div',
-        {
-          className: 'rpi-workbench',
-          'data-rpi-blocker-simple-mode': String(simpleBlockerMode),
-          'data-rpi-flow-resolver-collapsed': String(
-            readPreviewInspectorNavigationTab() === 'blockers' &&
-              previewInspectorDevtoolsSessionState.flowchartInspectorCollapsed === true,
-          ),
-        },
+        { className: 'rpi-workbench' },
         React.createElement(PreviewInspectorNavigationPane, {
-          flow: blockerFlow,
           roots: snapshot.roots,
           selectedId,
           status: snapshot.status,
           truncated: snapshot.truncated,
         }),
-        simpleBlockerMode
-          ? undefined
-          : React.createElement(PreviewInspectorDetailsPane, {
-              flow: blockerFlow,
-              key: 'details:' + String(
-                previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0,
-              ),
-              node: selectedNode,
-            }),
+        React.createElement(PreviewInspectorDetailsPane, { node: selectedNode }),
       ),
     ),
   );

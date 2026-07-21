@@ -54,15 +54,12 @@ function consumePreviewInspectorTreeReveal(nodeId) {
   return true;
 }
 
-/** Routes one marker to the Blockers Render flow without replacing component-tree selection. */
+/** Selects one wireframe blocker and reveals its exact owner-relative row in the component tree. */
 function revealPreviewInspectorWireframeBlocker(node, setCollapsed) {
   if (node === null || typeof node !== 'object' || typeof node.id !== 'string') return;
   previewInspectorDevtoolsSessionState.collapsed = false;
-  previewInspectorDevtoolsSessionState.navigationTab = 'blockers';
-  previewInspectorDevtoolsSessionState.selectedBlockerFlowNodeId = node.id;
-  previewInspectorDevtoolsSessionState.blockerDetailRevision =
-    (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
-  persistPreviewInspectorState();
+  requestPreviewInspectorTreeReveal(node.id);
+  selectPreviewInspectorUiNode(node);
   setCollapsed(false);
   notifyPreviewInspector();
   previewInspectorPostHostMessage?.({ type: 'react-preview-inspector-companion-reveal' });

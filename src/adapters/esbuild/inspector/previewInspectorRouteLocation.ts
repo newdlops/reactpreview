@@ -179,9 +179,9 @@ function collectTargetIdentities(
     for (const value of facts.values) add(value.label);
   }
   for (const renderPath of options.renderChain.paths) {
-    // Render paths are stored entry-to-target. A route owned by the nearest target ancestor is
-    // stronger evidence than an outer application-shell route, so admit those identities first.
-    for (const step of [...renderPath.steps].reverse()) {
+    // Render paths are stored target-to-entry (inner-to-outer). Preserve that order so a concrete
+    // page owner outranks the application shell's broad `/*` or index route.
+    for (const step of renderPath.steps) {
       add(step.label);
       for (const wrapperName of step.wrapperNames) add(wrapperName);
     }

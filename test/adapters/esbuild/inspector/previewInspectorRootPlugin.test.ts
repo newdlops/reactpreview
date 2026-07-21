@@ -250,6 +250,56 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"params":{"accountId":"accountId"}');
   });
 
+  /** Injects a Pages Router page through `_app.Component` so global shell UI remains authored. */
+  it('wraps a Next Pages page in its implicit app component', () => {
+    const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const appPath = '/workspace/application/pages/_app.tsx';
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        dependencyPaths: [...plan.dependencyPaths, appPath],
+        pageCandidates: [
+          {
+            ...candidate,
+            nextPagesShell: {
+              app: { exportName: 'default', sourcePath: appPath },
+              routeLocation: {
+                componentName: 'NextPagesPage',
+                evidenceKind: 'next-pages-filesystem',
+                pathname: '/callBlock',
+                pattern: '/callBlock',
+                sourcePath: PAGE_PATH,
+              },
+            },
+            routeLocation: {
+              componentName: 'NextPagesPage',
+              evidenceKind: 'next-pages-filesystem',
+              pathname: '/callBlock',
+              pattern: '/callBlock',
+              sourcePath: PAGE_PATH,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(source).toContain("import * as React from 'react';");
+    expect(source).toContain(
+      "import __reactPreviewNextPagesRouter, { RouterContext as __reactPreviewNextPagesRouterContext } from 'next/router';",
+    );
+    expect(source).toContain(
+      'Promise.all([import("/workspace/application/Page.tsx"),import("/workspace/application/pages/_app.tsx")])',
+    );
+    expect(source).toContain('function __reactPreviewComposeNextPagesPage');
+    expect(source).toContain('Component: Page');
+    expect(source).toContain('pageProps');
+    expect(source).toContain('router: __reactPreviewNextPagesRouter');
+    expect(source).toContain('__reactPreviewNextPagesRouterContext.Provider');
+    expect(source).toContain('"evidenceKind":"next-pages-filesystem"');
+  });
+
   /** Executes the emitted record helper so direct reads, await, and React `use()` metadata agree. */
   it('emits one stable route record compatible with legacy and promised Next props', async () => {
     const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });

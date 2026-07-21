@@ -101,12 +101,14 @@ describe('Preview Inspector page-candidate runtime source', () => {
     });
   });
 
-  /** Seeds a full application BrowserRouter before its dynamically imported module evaluates. */
-  it('moves browser history only for an owned Router with a proven safe route', () => {
+  /** Seeds an owned BrowserRouter or framework-owned Next Pages route before module evaluation. */
+  it('moves browser history only for an owned or implicit Router with a safe route', () => {
     expect(evaluateOwnedRouterLocationPreparation()).toEqual({
       accepted: true,
       directTarget: false,
-      paths: ['/company/1/dashboard'],
+      nextPages: true,
+      nextPagesState: { pathname: '/driver/callBlock', pattern: '/driver/[screen]' },
+      paths: ['/company/1/dashboard', '/driver/callBlock'],
       rejectedAuthority: false,
       unowned: false,
     });
@@ -373,6 +375,8 @@ globalThis.__result = {
 function evaluateOwnedRouterLocationPreparation(): {
   readonly accepted: boolean;
   readonly directTarget: boolean;
+  readonly nextPages: boolean;
+  readonly nextPagesState: { readonly pathname: string; readonly pattern: string };
   readonly paths: readonly string[];
   readonly rejectedAuthority: boolean;
   readonly unowned: boolean;
@@ -402,6 +406,18 @@ const directTarget = preparePreviewInspectorOwnedRouterLocation({
   rootOwnsRouter: true,
   routeLocation: { pathname: '/direct' },
 }, true);
+const nextPages = preparePreviewInspectorOwnedRouterLocation({
+  nextPagesShell: { app: { exportName: 'default', sourcePath: '/workspace/pages/_app.tsx' } },
+  rootOwnsRouter: false,
+  routeLocation: {
+    evidenceKind: 'next-pages-filesystem',
+    pathname: '/driver/callBlock',
+    pattern: '/driver/[screen]',
+  },
+}, false);
+const nextPagesState = globalThis[
+  Symbol.for('newdlops.react-file-preview.next-pages-router-state')
+];
 const rejectedAuthority = preparePreviewInspectorOwnedRouterLocation({
   rootOwnsRouter: true,
   routeLocation: { pathname: '//foreign.invalid/path' },
@@ -410,7 +426,9 @@ const unowned = preparePreviewInspectorOwnedRouterLocation({
   rootOwnsRouter: false,
   routeLocation: { pathname: '/unowned' },
 }, false);
-globalThis.__result = { accepted, directTarget, paths, rejectedAuthority, unowned };`,
+globalThis.__result = {
+  accepted, directTarget, nextPages, nextPagesState, paths, rejectedAuthority, unowned,
+};`,
     context,
   );
   if (context.__result === undefined) {

@@ -15,6 +15,39 @@ function createSourceReader(
 }
 
 describe('createPreviewInspectorAncestorPlan', () => {
+  /** Restores Next Pages `_app` even though the framework never imports the selected page from it. */
+  it('attaches the implicit Next Pages app shell and filesystem pathname', async () => {
+    const pagePath = '/workspace/projects/driver-web/pages/callBlock/index.tsx';
+    const appPath = '/workspace/projects/driver-web/pages/_app.tsx';
+    const sources = {
+      [pagePath]: 'export default function CallBlockPage() { return <main />; }',
+      [appPath]: [
+        'export default function App({ Component, pageProps }) {',
+        '  return <div><header /><aside /><Component {...pageProps} /></div>;',
+        '}',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: pagePath,
+      exportName: 'default',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates[0]).toMatchObject({
+      complete: true,
+      nextPagesShell: { app: { exportName: 'default', sourcePath: appPath } },
+      routeLocation: {
+        evidenceKind: 'next-pages-filesystem',
+        pathname: '/callBlock',
+        pattern: '/callBlock',
+      },
+      stopReason: 'root-reached',
+    });
+    expect(plan.dependencyPaths).toEqual([appPath, pagePath]);
+  });
+
   /** Restores Next's implicit layout wrappers, which cannot appear in the JavaScript import graph. */
   it('attaches the App Router layout chain and filesystem pathname to a page candidate', async () => {
     const pagePath = '/workspace/packages/web/src/app/(account)/profile/edit/page.tsx';

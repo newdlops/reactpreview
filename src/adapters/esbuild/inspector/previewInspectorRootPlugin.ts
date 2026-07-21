@@ -128,6 +128,7 @@ export function createPreviewInspectorRootSource(
     ...(candidate.nextAppLayoutChain === undefined
       ? {}
       : { nextAppLayoutChain: candidate.nextAppLayoutChain }),
+    ...(candidate.nextPagesShell === undefined ? {} : { nextPagesShell: candidate.nextPagesShell }),
     rootOwnsRouter: candidate.rootOwnsRouter,
     ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
     ...(candidate.routeLocation === undefined
@@ -180,6 +181,20 @@ export function createPreviewInspectorRootSource(
         JSON.stringify(nextAppRouteLocation?.searchParams ?? {}),
         ', ',
         JSON.stringify(candidate.nextAppLayoutChain?.map((layout) => layout.params) ?? []),
+        ')) }',
+      ].join('');
+    }
+    if (candidate.nextPagesShell !== undefined) {
+      const appSpecifier = candidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
+      return [
+        '{ id: ',
+        JSON.stringify(candidate.id),
+        ', load: () => Promise.all([import(',
+        JSON.stringify(rootSpecifier),
+        '),import(',
+        JSON.stringify(appSpecifier),
+        ')]).then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
+        JSON.stringify(candidate.root.exportName),
         ')) }',
       ].join('');
     }
@@ -245,9 +260,18 @@ export function createPreviewInspectorRootSource(
   const requiresNextAppLayoutRuntime = pageCandidates.some(
     (candidate) => (candidate.nextAppLayoutChain?.length ?? 0) > 0,
   );
+  const requiresNextPagesRuntime = pageCandidates.some(
+    (candidate) => candidate.nextPagesShell !== undefined,
+  );
+  const requiresFrameworkReactRuntime = requiresNextAppLayoutRuntime || requiresNextPagesRuntime;
 
   return [
-    ...(requiresNextAppLayoutRuntime ? ["import * as React from 'react';"] : []),
+    ...(requiresFrameworkReactRuntime ? ["import * as React from 'react';"] : []),
+    ...(requiresNextPagesRuntime
+      ? [
+          "import __reactPreviewNextPagesRouter, { RouterContext as __reactPreviewNextPagesRouterContext } from 'next/router';",
+        ]
+      : []),
     ...(themeImport.statement === undefined ? [] : [themeImport.statement]),
     ...globalStyleImports.statements,
     ...(requiresNextAppLayoutRuntime
@@ -295,6 +319,28 @@ export function createPreviewInspectorRootSource(
           '      });',
           '    }',
           '    return child;',
+          '  };',
+          '}',
+        ]
+      : []),
+    ...(requiresNextPagesRuntime
+      ? [
+          '/** Recreates Next Pages `_app -> Component` composition absent from import graphs. */',
+          'function __reactPreviewComposeNextPagesPage(modules, rootExportName) {',
+          '  const Page = modules[0]?.[rootExportName];',
+          '  const App = modules[1]?.default;',
+          '  if (App === undefined || App === null) return Page;',
+          '  return function ReactPreviewNextPagesPage(props) {',
+          '    const pageProps = Object.assign({}, props);',
+          '    return React.createElement(',
+          '      __reactPreviewNextPagesRouterContext.Provider,',
+          '      { value: __reactPreviewNextPagesRouter },',
+          '      React.createElement(App, {',
+          '        Component: Page,',
+          '        pageProps,',
+          '        router: __reactPreviewNextPagesRouter,',
+          '      }),',
+          '    );',
           '  };',
           '}',
         ]

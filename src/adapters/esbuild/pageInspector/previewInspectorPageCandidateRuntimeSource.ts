@@ -101,16 +101,51 @@ function createPreviewInspectorCandidateInitialEntry(candidate, rootValue, direc
   return localPathname.length === 0 ? '/' : localPathname;
 }
 
+const previewInspectorNextPagesRouterStateSymbol = Symbol.for(
+  'newdlops.react-file-preview.next-pages-router-state',
+);
+
+/** Publishes a validated Pages Router pattern before _app and the selected page are imported. */
+function preparePreviewInspectorNextPagesRouterState(candidate, directTarget) {
+  const routeLocation = candidate?.routeLocation;
+  const pathname = routeLocation?.pathname;
+  const pattern = routeLocation?.pattern;
+  const eligible =
+    directTarget !== true &&
+    candidate?.nextPagesShell !== undefined &&
+    routeLocation?.evidenceKind === 'next-pages-filesystem' &&
+    typeof pathname === 'string' &&
+    typeof pattern === 'string' &&
+    pathname.length > 0 && pathname.length <= 2048 &&
+    pattern.length > 0 && pattern.length <= 2048 &&
+    pathname.startsWith('/') && pattern.startsWith('/') &&
+    !pathname.startsWith('//') && !pattern.startsWith('//') &&
+    !/[\\\u0000-\u001f\u007f]/u.test(pathname) &&
+    !/[\\\u0000-\u001f\u007f]/u.test(pattern);
+  try {
+    globalThis[previewInspectorNextPagesRouterStateSymbol] = eligible
+      ? Object.freeze({ pathname, pattern })
+      : undefined;
+  } catch {
+    return false;
+  }
+  return eligible;
+}
+
 /**
- * Seeds an application-owned BrowserRouter before its module creates browser history.
+ * Seeds an application-owned BrowserRouter or implicit Next Pages Router before module evaluation.
  * The route is static compiler evidence, not user HTML; nevertheless this boundary accepts only a
  * short same-origin pathname and never changes scheme, authority, state payload, query, or hash.
  */
 function preparePreviewInspectorOwnedRouterLocation(candidate, directTarget) {
+  const nextPagesRouterPrepared = preparePreviewInspectorNextPagesRouterState(
+    candidate,
+    directTarget,
+  );
   const pathname = candidate?.routeLocation?.pathname;
   if (
     directTarget === true ||
-    candidate?.rootOwnsRouter !== true ||
+    (candidate?.rootOwnsRouter !== true && !nextPagesRouterPrepared) ||
     typeof pathname !== 'string' ||
     pathname.length === 0 ||
     pathname.length > 2048 ||

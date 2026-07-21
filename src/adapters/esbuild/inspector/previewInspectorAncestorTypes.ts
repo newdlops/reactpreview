@@ -15,6 +15,10 @@ import type {
   PreviewInspectorNextAppLayoutReference,
   PreviewInspectorNextAppRouteLocation,
 } from './previewInspectorNextAppLayoutChain';
+import type {
+  PreviewInspectorNextPagesRouteLocation,
+  PreviewInspectorNextPagesShell,
+} from './previewInspectorNextPagesShell';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
 
 /** Importable component identity retained without loading its module in the extension host. */
@@ -70,10 +74,15 @@ export interface PreviewInspectorPageCandidate {
   readonly rootInference?: PreviewInferredExportProps;
   /** Implicit Next App Router wrappers, ordered exactly as root layout through leaf layout. */
   readonly nextAppLayoutChain?: readonly PreviewInspectorNextAppLayoutReference[];
+  /** Implicit Next Pages Router `_app` wrapper supplied through the framework Component prop. */
+  readonly nextPagesShell?: PreviewInspectorNextPagesShell;
   /** Whether this independently mounted root's target-facing branch creates its own Router. */
   readonly rootOwnsRouter: boolean;
   /** Exact static route used to reproduce this detached root's authored page branch. */
-  readonly routeLocation?: PreviewInspectorRouteLocation | PreviewInspectorNextAppRouteLocation;
+  readonly routeLocation?:
+    | PreviewInspectorRouteLocation
+    | PreviewInspectorNextAppRouteLocation
+    | PreviewInspectorNextPagesRouteLocation;
   /** Render-step index used to explain path-derived roots in the browser selector. */
   readonly rootStepIndex?: number;
   /** Honest reason an incomplete candidate could not be promoted farther. */

@@ -17,20 +17,19 @@ import {
   collectPreviewRenderModuleSpecifiers,
   createPreviewRenderChainPlan,
   type PreviewRenderChainCandidate,
-  type PreviewRenderChainPlan,
   type PreviewRenderChainPlansByExport,
   type ResolvePreviewRenderGraphModule,
 } from '../renderGraph';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
-import type { PreviewReactRenderOutcomePlan } from '../staticResources/previewReactRenderOutcomes';
+import {
+  freezePreviewInspectorAncestorPlan,
+  freezePreviewInspectorPageCandidate,
+} from './previewInspectorAncestorFreezing';
 import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
 import { collectPreviewInspectorRenderOutcomes } from './previewInspectorRenderOutcomeExpansion';
-import {
-  collectPreviewInspectorNextAppLayoutChain,
-  type PreviewInspectorNextAppLayoutReference,
-  type PreviewInspectorNextAppRouteLocation,
-} from './previewInspectorNextAppLayoutChain';
+import { collectPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppLayoutChain';
+import { collectPreviewInspectorNextPagesShell } from './previewInspectorNextPagesShell';
 import {
   collectPreviewInspectorModuleFrontiers,
   type PreviewInspectorModuleFrontier,
@@ -277,7 +276,7 @@ export async function createPreviewInspectorAncestorPlan(
       sharedDependencies.add(dependencyPath);
     }
   }
-  return freezePlan({
+  return freezePreviewInspectorAncestorPlan({
     complete: primary.complete,
     dependencies: sharedDependencies,
     edges: primary.edges,
@@ -343,9 +342,16 @@ async function createInspectorPageCandidate(arguments_: {
       sourcePaths,
     });
     for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
-    const candidateRouteLocation = nextAppShell?.routeLocation ?? routeLocation;
-    return freezePageCandidate({
-      complete,
+    const nextPagesShell = collectPreviewInspectorNextPagesShell({
+      exportName: currentRoot.exportName,
+      pagePath: currentRoot.sourcePath,
+      sourcePaths,
+    });
+    if (nextPagesShell !== undefined) dependencies.add(nextPagesShell.app.sourcePath);
+    const candidateRouteLocation =
+      nextAppShell?.routeLocation ?? nextPagesShell?.routeLocation ?? routeLocation;
+    return freezePreviewInspectorPageCandidate({
+      complete: nextPagesShell === undefined ? complete : true,
       dependencies,
       edges,
       id: renderPath?.id ?? 'nearest-authored-owner',
@@ -354,9 +360,10 @@ async function createInspectorPageCandidate(arguments_: {
       rootAutomaticProps,
       ...(rootInference === undefined ? {} : { rootInference }),
       ...(nextAppShell === undefined ? {} : { nextAppLayoutChain: nextAppShell.layouts }),
+      ...(nextPagesShell === undefined ? {} : { nextPagesShell }),
       rootOwnsRouter,
       ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
-      stopReason,
+      stopReason: nextPagesShell === undefined ? stopReason : 'root-reached',
       targetAutomaticProps,
     });
   };
@@ -478,9 +485,18 @@ async function createRenderPathPageCandidate(arguments_: {
     sourcePaths: options.sourcePaths,
   });
   for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
-  const candidateRouteLocation = nextAppShell?.routeLocation ?? routeLocation;
-  const complete = renderPath.entryPoint !== undefined && renderPathRoot.outermost;
-  return freezePageCandidate({
+  const nextPagesShell = collectPreviewInspectorNextPagesShell({
+    exportName: root.exportName,
+    pagePath: root.sourcePath,
+    sourcePaths: options.sourcePaths,
+  });
+  if (nextPagesShell !== undefined) dependencies.add(nextPagesShell.app.sourcePath);
+  const candidateRouteLocation =
+    nextAppShell?.routeLocation ?? nextPagesShell?.routeLocation ?? routeLocation;
+  const complete =
+    nextPagesShell !== undefined ||
+    (renderPath.entryPoint !== undefined && renderPathRoot.outermost);
+  return freezePreviewInspectorPageCandidate({
     complete,
     dependencies,
     edges: base.edges,
@@ -490,6 +506,7 @@ async function createRenderPathPageCandidate(arguments_: {
     rootAutomaticProps,
     ...(rootInference === undefined ? {} : { rootInference }),
     ...(nextAppShell === undefined ? {} : { nextAppLayoutChain: nextAppShell.layouts }),
+    ...(nextPagesShell === undefined ? {} : { nextPagesShell }),
     rootOwnsRouter,
     rootStepIndex: renderPathRoot.stepIndex,
     ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
@@ -905,72 +922,4 @@ function createInspectorPageCandidateKey(candidate: PreviewInspectorPageCandidat
       (edge) => `${createReferenceKey(edge.child)}>${createReferenceKey(edge.owner)}`,
     ),
   ].join('\0');
-}
-
-/** Freezes one selectable page candidate without retaining mutable traversal collections. */
-function freezePageCandidate(options: {
-  readonly complete: boolean;
-  readonly dependencies: ReadonlySet<string>;
-  readonly edges: readonly PreviewInspectorAncestorEdge[];
-  readonly id: string;
-  readonly renderPath: PreviewRenderChainCandidate | undefined;
-  readonly root: PreviewInspectorComponentReference;
-  readonly rootAutomaticProps: PreviewParentSliceStaticProps;
-  readonly rootInference?: PreviewInferredExportProps;
-  readonly nextAppLayoutChain?: readonly PreviewInspectorNextAppLayoutReference[];
-  readonly rootOwnsRouter: boolean;
-  readonly rootStepIndex?: number;
-  readonly routeLocation?: PreviewInspectorRouteLocation | PreviewInspectorNextAppRouteLocation;
-  readonly stopReason: PreviewInspectorAncestorStopReason;
-  readonly targetAutomaticProps: PreviewParentSliceStaticProps;
-}): PreviewInspectorPageCandidate {
-  return Object.freeze({
-    complete: options.complete,
-    dependencyPaths: Object.freeze([...options.dependencies].sort()),
-    edges: Object.freeze([...options.edges]),
-    id: options.id,
-    ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
-    root: options.root,
-    rootAutomaticProps: options.rootAutomaticProps,
-    ...(options.rootInference === undefined ? {} : { rootInference: options.rootInference }),
-    ...(options.nextAppLayoutChain === undefined
-      ? {}
-      : { nextAppLayoutChain: Object.freeze([...options.nextAppLayoutChain]) }),
-    rootOwnsRouter: options.rootOwnsRouter,
-    ...(options.rootStepIndex === undefined ? {} : { rootStepIndex: options.rootStepIndex }),
-    ...(options.routeLocation === undefined ? {} : { routeLocation: options.routeLocation }),
-    stopReason: options.stopReason,
-    targetAutomaticProps: options.targetAutomaticProps,
-  });
-}
-
-/** Freezes one successful or safely partial plan without retaining parser nodes/source text. */
-function freezePlan(options: {
-  readonly complete: boolean;
-  readonly dependencies: ReadonlySet<string>;
-  readonly edges: readonly PreviewInspectorAncestorEdge[];
-  readonly pageCandidates: readonly PreviewInspectorPageCandidate[];
-  readonly root: PreviewInspectorComponentReference;
-  readonly rootAutomaticProps: PreviewParentSliceStaticProps;
-  readonly renderChain: PreviewRenderChainPlan;
-  readonly renderChainsByExport: PreviewRenderChainPlansByExport;
-  readonly renderOutcomesByExport: Readonly<Record<string, PreviewReactRenderOutcomePlan>>;
-  readonly stopReason: PreviewInspectorAncestorStopReason;
-  readonly target: PreviewInspectorComponentReference;
-  readonly targetAutomaticProps: PreviewParentSliceStaticProps;
-}): PreviewInspectorAncestorPlan {
-  return Object.freeze({
-    complete: options.complete,
-    dependencyPaths: Object.freeze([...options.dependencies].sort()),
-    edges: Object.freeze([...options.edges]),
-    pageCandidates: Object.freeze([...options.pageCandidates]),
-    root: options.root,
-    rootAutomaticProps: options.rootAutomaticProps,
-    renderChain: options.renderChain,
-    renderChainsByExport: options.renderChainsByExport,
-    renderOutcomesByExport: options.renderOutcomesByExport,
-    stopReason: options.stopReason,
-    target: options.target,
-    targetAutomaticProps: options.targetAutomaticProps,
-  });
 }

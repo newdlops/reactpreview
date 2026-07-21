@@ -145,9 +145,9 @@ describe('collectPreviewInspectorRouteLocation', () => {
             {
               certainty: 'confirmed',
               kind: 'component-render',
-              label: 'Patients',
+              label: 'CareGoalForm',
               occurrenceStart: 10,
-              sourcePath: routesPath,
+              sourcePath: targetPath,
               wrapperNames: [],
             },
             {
@@ -161,9 +161,9 @@ describe('collectPreviewInspectorRouteLocation', () => {
             {
               certainty: 'confirmed',
               kind: 'component-render',
-              label: 'CareGoalForm',
+              label: 'Patients',
               occurrenceStart: 30,
-              sourcePath: targetPath,
+              sourcePath: routesPath,
               wrapperNames: [],
             },
           ],

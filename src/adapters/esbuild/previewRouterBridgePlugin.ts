@@ -10,10 +10,16 @@ import {
   PREVIEW_ROUTER_BRIDGE_NAMESPACE,
   PREVIEW_ROUTER_SPECIFIER,
 } from './previewPluginProtocol';
+import { createPreviewNextPagesRouterContextRuntimeSource } from './previewNextPagesRouterContextRuntimeSource';
+import { createPreviewNextPagesRouterRuntimeSource } from './previewNextPagesRouterRuntimeSource';
 import { createPreviewRouterRuntimeSource } from './previewRouterRuntimeSource';
 
 const REACT_ROUTER_DOM_SPECIFIER = 'react-router-dom';
 const ROUTER_BRIDGE_DATA_KIND = 'react-preview-router-bridge-data';
+const NEXT_PAGES_ROUTER_NAMESPACE = 'react-preview-next-pages-router';
+const NEXT_PAGES_ROUTER_CONTEXT_NAMESPACE = 'react-preview-next-pages-router-context';
+const NEXT_PAGES_ROUTER_CONTEXT_PATTERN =
+  /(?:^|[/\\])router-context(?:\.shared-runtime)?(?:\.[cm]?[jt]s)?$/u;
 
 /** Immutable project and capability boundary used for one preview compilation. */
 export interface PreviewRouterBridgePluginOptions {
@@ -106,7 +112,62 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
         };
       }
 
+      /** Replaces Next's bootstrap-owned Pages Router hook with an isolated local-location facade. */
+      function resolveNextPagesRouter(arguments_: OnResolveArgs): OnResolveResult | undefined {
+        return arguments_.path === 'next/router'
+          ? { namespace: NEXT_PAGES_ROUTER_NAMESPACE, path: arguments_.path, sideEffects: false }
+          : undefined;
+      }
+
+      /** Shares a local RouterContext with Next Link and other framework-internal consumers. */
+      function resolveNextPagesRouterContext(
+        arguments_: OnResolveArgs,
+      ): OnResolveResult | undefined {
+        const normalizedImporter = arguments_.importer.replaceAll('\\', '/');
+        const exactPackageRequest = arguments_.path.startsWith(
+          'next/dist/shared/lib/router-context',
+        );
+        const internalNextRequest =
+          normalizedImporter.includes('/next/dist/') &&
+          NEXT_PAGES_ROUTER_CONTEXT_PATTERN.test(arguments_.path);
+        return exactPackageRequest || internalNextRequest
+          ? {
+              namespace: NEXT_PAGES_ROUTER_CONTEXT_NAMESPACE,
+              path: 'next-pages-router-context',
+              sideEffects: false,
+            }
+          : undefined;
+      }
+
+      /** Loads the static Pages Router without importing Next's missing application bootstrap. */
+      function loadNextPagesRouter(): OnLoadResult {
+        return {
+          contents: createPreviewNextPagesRouterRuntimeSource(),
+          loader: 'js',
+          resolveDir: options.projectRoot,
+        };
+      }
+
+      /** Loads the global-symbol-backed context shared with the public Pages Router facade. */
+      function loadNextPagesRouterContext(): OnLoadResult {
+        return {
+          contents: createPreviewNextPagesRouterContextRuntimeSource(),
+          loader: 'js',
+          resolveDir: options.projectRoot,
+        };
+      }
+
+      build.onResolve(
+        { filter: /router-context(?:\.shared-runtime)?(?:\.[cm]?[jt]s)?$/ },
+        resolveNextPagesRouterContext,
+      );
+      build.onResolve({ filter: /^next\/router$/ }, resolveNextPagesRouter);
       build.onResolve({ filter: /^react-preview:router$/ }, resolveRouterBridge);
+      build.onLoad({ filter: /.*/, namespace: NEXT_PAGES_ROUTER_NAMESPACE }, loadNextPagesRouter);
+      build.onLoad(
+        { filter: /.*/, namespace: NEXT_PAGES_ROUTER_CONTEXT_NAMESPACE },
+        loadNextPagesRouterContext,
+      );
       build.onLoad({ filter: /.*/, namespace: PREVIEW_ROUTER_BRIDGE_NAMESPACE }, loadRouterBridge);
     },
   };

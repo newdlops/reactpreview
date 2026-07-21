@@ -25,6 +25,12 @@ export {
   type PreviewInspectorNextAppRouteParams,
 } from './previewInspectorNextAppLayoutChain';
 export {
+  collectPreviewInspectorNextPagesShell,
+  type CollectPreviewInspectorNextPagesShellOptions,
+  type PreviewInspectorNextPagesRouteLocation,
+  type PreviewInspectorNextPagesShell,
+} from './previewInspectorNextPagesShell';
+export {
   createPreviewInspectorCorridorPlugin,
   type PreviewInspectorCorridorPluginOptions,
 } from './previewInspectorCorridorPlugin';

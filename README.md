@@ -196,6 +196,11 @@ export한 component는 실제 페이지 안의 위치에서 `current file export
 있습니다. 따라서 target의 children뿐 아니라 실제 page root가 만든 parent, sibling, Portal/overlay 문맥을 한
 트리에서 비교할 수 있습니다.
 
+`Expected JSX`는 Fiber mount를 가장하지 않는 작성 소스 근거입니다. JSX development의 정확한 path·line·column이
+live Fiber와 같으면 HOC가 이름을 바꿔도 중복 정적 행을 접고, 실제로 관측되지 않은 첫 occurrence만
+`output not observed` frontier로 남깁니다. 그 아래 자손은 가능한 authored child일 뿐 `not mounted`로 단정하지
+않으며, active page path에 없다고 확정할 수 있는 current-file export만 별도 부재 상태를 표시합니다.
+
 JSX boolean/ternary condition, 실패하거나 필수 leaf가 비어 보완된 hook, no-network API/GraphQL payload와 target
 local error boundary는 가장 가까운 source-backed component 아래에 control node로 표시됩니다. `&&` 조건 행에는
 현재 On/Off 상태와 authored/forced 여부를 나타내는 native switch가 직접 표시됩니다. 앞 guard의 단락 평가 때문에

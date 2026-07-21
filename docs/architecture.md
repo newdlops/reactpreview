@@ -500,6 +500,16 @@ props와 hook/class state는 own data descriptor만 제한된 깊이·key·array
 project code를 실행하지 않습니다. JSX development `_debugSource`가 있으면 authored line/column을 쓰고,
 없으면 inspector ancestry/render-chain의 source path와 occurrence를 사용합니다. Fiber를 읽지 못하는 초기 또는
 오류 상태에서도 정적 EntryPoint→target 경로는 fallback component tree로 남습니다.
+expected-outcome enrichment는 선택 export 아래의 exact JSX source occurrence를 live Fiber와 one-to-one으로
+대조해 HOC/displayName 차이로 생기는 중복 행을 제거합니다. 처음 관측되지 않은 occurrence만 frontier이며, 확장된
+구현 outcome의 후손은 분기 합집합일 수 있으므로 mounted false가 아닌 authored possibility로 유지합니다. deferred
+callback도 가장 가까운 receiver가 live subtree에 있을 때만 pending runtime evidence로 승격됩니다.
+
+route location 분석은 entry→target render chain을 target 쪽부터 우선하고, React Router v5의
+`<Route path="…"><Page /></Route>` 직접 child도 해당 route의 render identity로 읽습니다. 중첩 `Route`
+subtree는 자기 pathname visitor가 소유하므로 바깥 route의 component 근거로 섞지 않습니다. 런타임 오류는 같은
+revision·page target에서 browser event, React boundary와 fallback이 전달한 동일 message를 한 causal record로
+합치며, 성공한 빌드의 동일 esbuild warning도 compiler lifetime에 source identity별 한 번만 전달합니다.
 
 DevTools UI source는 main runtime과 분리된 `previewInspectorDevtoolsUiRuntimeSource`에서 생성합니다.
 `previewInspectorCompanionRuntimeSource`는 isolated Shadow DOM workbench의 form property를 inert clone에

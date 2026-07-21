@@ -274,17 +274,20 @@ describe('Preview Inspector blocker flow UI runtime source', () => {
     expect(flow.supportingCount).toBe(1);
   });
 
-  /** Locks the simple active editor and opt-in bounded graph into generated browser source. */
-  it('emits an immediate next-step editor with an advanced staged graph', () => {
+  /** Locks the two-choice setup surface and opt-in bounded graph into generated browser source. */
+  it('emits the simple resolver before an advanced diagnostics graph', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
 
     expect(PREVIEW_INSPECTOR_BLOCKER_FLOW_STEP_LIMIT).toBe(96);
     expect(PREVIEW_INSPECTOR_BLOCKER_FLOW_SCOPE_LIMIT).toBe(8);
     expect(source).toContain('function createPreviewInspectorBlockerFlow(snapshot)');
     expect(source).toContain("'aria-label': 'Advanced blocker dependency flow chart'");
-    expect(source).toContain('function PreviewInspectorBlockerFlowPrimaryEditor');
-    expect(source).toContain("'Advanced · Show flow graph'");
-    expect(source).toContain('const activeStep = flow.stepById.get(flow.activeStepId)');
+    expect(source).toContain('function PreviewInspectorBlockerFlowSetup');
+    expect(source).toContain('React.createElement(PreviewInspectorSimpleResolver');
+    expect(source).toContain("'Advanced diagnostics'");
+    expect(source).not.toContain('function PreviewInspectorBlockerFlowPrimaryEditor');
+    expect(source).not.toContain("'Current blocking path'");
+    expect(source).not.toContain("'Blocker resolution progress'");
     expect(source).toContain('becameResolved');
     expect(source).toContain('PreviewInspectorBlockerDetail');
   });

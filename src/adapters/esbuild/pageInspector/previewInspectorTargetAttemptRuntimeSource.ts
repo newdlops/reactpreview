@@ -13,6 +13,7 @@ const PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS = 160;
 const PREVIEW_INSPECTOR_TARGET_AUTO_ATTEMPT_MODES = new Set([
   'deterministic-minimum-auto',
   'minimum-requirement-dfs',
+  'target-overlay-auto',
   'target-guided-auto',
 ]);
 
@@ -66,7 +67,7 @@ function isPreviewInspectorTargetAutoAttemptPending(state) {
   if (readPreviewInspectorTargetAutoAttemptReachabilityKey(attempt) !== state?.key) return false;
   if (attempt.targetReachabilityResumeHandled === true) return false;
   if (attempt.settledAt === undefined) return true;
-  return attempt.autoMode === 'target-guided-auto' &&
+  return ['target-guided-auto', 'target-overlay-auto'].includes(attempt.autoMode) &&
     Date.now() - attempt.settledAt <= PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS;
 }
 
@@ -119,7 +120,10 @@ function schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attemp
     attempt.targetReachabilityResumeScheduled = false;
     resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt);
   };
-  if (attempt.autoMode === 'target-guided-auto' && typeof globalThis.setTimeout === 'function') {
+  if (
+    ['target-guided-auto', 'target-overlay-auto'].includes(attempt.autoMode) &&
+    typeof globalThis.setTimeout === 'function'
+  ) {
     globalThis.setTimeout(resume, PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS);
   } else {
     resume();

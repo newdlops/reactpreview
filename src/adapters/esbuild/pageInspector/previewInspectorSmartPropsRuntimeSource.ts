@@ -332,7 +332,9 @@ function createPreviewInspectorSmartPropRequirementValue(inferredValue, required
 function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
   const evidence = readPreviewInspectorSmartPropEvidence(exportName);
   const observedProps = previewInspectorSession.basePropsByExport.get(exportName) ?? {};
+  const resolverProps = previewInspectorSession.resolverPropsByExport?.get?.(exportName) ?? {};
   const overrideProps = previewInspectorSession.overridesByExport.get(exportName) ?? {};
+  const materializedResolver = materializePreviewInspectorRuntimeFallbackOverride(resolverProps);
   const materializedOverride = materializePreviewInspectorRuntimeFallbackOverride(overrideProps);
   const inferredValue = createPreviewPropsFromLayers(
     evidence.inferredPropShape,
@@ -342,6 +344,7 @@ function createPreviewInspectorSmartPropsDraft(exportName, requiredPaths = []) {
     evidence.inferredPropShape,
     evidence.automaticProps,
     observedProps,
+    materializedResolver,
     materializedOverride,
   );
   const resolvedRequiredPaths = resolvePreviewInspectorSmartPropRequiredPaths(
@@ -399,11 +402,11 @@ function hasPreviewInspectorSmartPropsDraft(draft) {
     (Object.keys(draft.value).length > 0 || draft.generatedPaths?.length > 0);
 }
 
-/** Applies the generated JSON record and enables fallback values before remounting the export. */
-function applyPreviewInspectorSmartProps(exportName, requiredPaths = []) {
+/** Applies generated props and optionally participates in one surrounding render transaction. */
+function applyPreviewInspectorSmartProps(exportName, requiredPaths = [], commit = true) {
   const draft = createPreviewInspectorSmartPropsDraft(exportName, requiredPaths);
-  setPreviewInspectorFallbackValuesEnabled(true);
-  setPreviewInspectorPropsOverride(exportName, draft.value);
+  setPreviewInspectorFallbackValuesEnabled(true, commit);
+  setPreviewInspectorPropsOverride(exportName, draft.value, commit);
   return draft;
 }
 
@@ -447,14 +450,32 @@ function setPreviewInspectorSmartBooleanProp(value, rawPath) {
   return false;
 }
 
+/** Reports whether one own, prototype-safe prop path is already controlled by a value layer. */
+function hasPreviewInspectorSmartPropPath(value, rawPath) {
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (parsed === undefined || parsed.callable || parsed.collection || parsed.path.length === 0) {
+    return false;
+  }
+  let current = value;
+  for (const propertyName of parsed.path) {
+    if (
+      current === null || typeof current !== 'object' || Array.isArray(current) ||
+      previewInspectorSmartPropBlockedNames.has(propertyName) ||
+      !Object.prototype.hasOwnProperty.call(current, propertyName)
+    ) return false;
+    current = current[propertyName];
+  }
+  return true;
+}
+
 /**
  * Reveals a selected modal/drawer only when its declared boolean prop gives one deterministic answer.
  * Existing user JSON remains authoritative; this automatic path is used solely for a cold target
  * that mounted in its real page corridor but produced no host node.
  */
-function autoRevealPreviewInspectorOverlayTarget(exportName) {
+function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityKey) {
   const evidence = readPreviewInspectorSmartPropEvidence(exportName);
-  if (!evidence.found || previewInspectorSession.overridesByExport.has(exportName)) return undefined;
+  if (!evidence.found) return undefined;
   const visibilityPaths = readPreviewInspectorSmartPropPathRecords(evidence)
     .filter((record) => {
       const leaf = record.path.split('.').at(-1)?.replaceAll('_', '').toLowerCase();
@@ -467,8 +488,13 @@ function autoRevealPreviewInspectorOverlayTarget(exportName) {
   if (visibilityPaths.length !== 1) return undefined;
   const visibilityPath = visibilityPaths[0];
   if (visibilityPath === undefined) return undefined;
-  const draft = createPreviewInspectorSmartPropsDraft(exportName, [visibilityPath]);
-  const value = copyPreviewInspectorBlockerValueForJson(draft.value, { nodes: 0 });
+  const userProps = previewInspectorSession.overridesByExport.get(exportName) ?? {};
+  const resolverProps = previewInspectorSession.resolverPropsByExport?.get?.(exportName) ?? {};
+  if (
+    hasPreviewInspectorSmartPropPath(userProps, visibilityPath) ||
+    hasPreviewInspectorSmartPropPath(resolverProps, visibilityPath)
+  ) return undefined;
+  const value = {};
   if (!setPreviewInspectorSmartBooleanProp(value, visibilityPath)) return undefined;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
@@ -482,10 +508,15 @@ function autoRevealPreviewInspectorOverlayTarget(exportName) {
       reason: 'The selected overlay mounted without host output and has one declared visibility prop',
       selectedValue: value,
       startsRenderAttempt: true,
+      targetReachabilityKey,
     });
   }
-  setPreviewInspectorFallbackValuesEnabled(true);
-  setPreviewInspectorPropsOverride(exportName, value);
+  /* Apply both generated-value policies as one render transaction so the modal opens once. */
+  setPreviewInspectorFallbackValuesEnabled(true, false);
+  setPreviewInspectorResolverPropsOverride(exportName, value, false);
+  persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorCommitRefresh();
   return visibilityPath;
 }
 `;

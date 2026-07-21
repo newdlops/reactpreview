@@ -60,8 +60,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('React.cloneElement(Component, props)');
     expect(source).toContain('createPreviewInspectorRootName');
     expect(source).toContain('descriptor?.inspector === undefined');
-    expect(source).toContain('DirectPreviewTarget');
-    expect(source).toContain('RoutedDirectPreviewTarget');
+    expect(source).toContain('PreviewInspectorDirectTarget');
+    expect(source).toContain('PreviewInspectorRoutedDirectTarget');
     expect(source).toContain('createPreviewCandidateRouterElement(');
     expect(source).toContain('{ ownsRouter: false }');
     expect(source).toContain('describePreviewInspectorAncestry');
@@ -84,9 +84,13 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL');
     expect(source).toContain('materializePreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain(
-      "':data:' + String(dataRevision) + ':condition:' + String(conditionRevision)",
+      "resetKey: String(targetRevision) + ':' + rootName + ':' + String(rootRevision)",
     );
+    expect(source).toContain("key: inspectedExportName + ':candidate:'");
     expect(source).toContain('resolveRenderCondition: resolvePreviewInspectorRenderCondition');
+    expect(source).toContain(
+      'resolveRenderConditionLazy: resolvePreviewInspectorRenderConditionLazy',
+    );
     expect(source).toContain('resolveRenderChoice: resolvePreviewInspectorRenderChoice');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain(
@@ -117,6 +121,78 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('setPreviewInspectorFallbackValuesEnabled');
     expect(source).toContain('Internal hook state uses the page UI or a source edit');
     expect(source).not.toContain('__REACT_DEVTOOLS_GLOBAL_HOOK__');
+  });
+
+  /** Keeps cold first-paint Router and target identities stable across Inspector store updates. */
+  it('declares direct-target component types outside the subscribed root renderer', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const rootStart = source.indexOf('function PreviewPageInspectorRootRenderer');
+    const rootEnd = source.indexOf('function PreviewPageInspectorExportBoundary', rootStart);
+    const rootSource = source.slice(rootStart, rootEnd);
+
+    expect(source).toContain(
+      'const PreviewInspectorDirectTargetContext = React.createContext(undefined)',
+    );
+    expect(source).toContain('function PreviewInspectorDirectTarget(targetProps)');
+    expect(source).toContain('function PreviewInspectorRoutedDirectTarget(targetProps)');
+    expect(rootSource).toContain('PreviewTarget: PreviewInspectorRoutedDirectTarget');
+    expect(rootSource).toContain(
+      'React.createElement(PreviewInspectorRoutedDirectTarget, targetProps)',
+    );
+    expect(rootSource).not.toContain('const DirectPreviewTarget');
+    expect(rootSource).not.toContain('const RoutedDirectPreviewTarget');
+  });
+
+  /** Separates ordinary prop/error refreshes from the user's explicit target-only Remount action. */
+  it('uses an instance epoch only for explicit component remounts', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const setPropsStart = source.indexOf('function setPreviewInspectorPropsOverride');
+    const resetPropsStart = source.indexOf('function resetPreviewInspectorPropsOverride');
+    const refreshStart = source.indexOf('function refreshPreviewInspectorExport');
+    const remountStart = source.indexOf('function remountPreviewInspectorExport');
+    const registerBoundaryStart = source.indexOf('function registerPreviewInspectorBoundary');
+    const targetRendererStart = source.indexOf('function PreviewInspectorTargetRenderer');
+    const directContextStart = source.indexOf('const PreviewInspectorDirectTargetContext');
+    const setPropsSource = source.slice(setPropsStart, resetPropsStart);
+    const resetPropsSource = source.slice(resetPropsStart, refreshStart);
+    const refreshSource = source.slice(refreshStart, remountStart);
+    const remountSource = source.slice(remountStart, registerBoundaryStart);
+    const targetRendererSource = source.slice(targetRendererStart, directContextStart);
+
+    expect(source).toContain('instanceEpochByExport: new Map()');
+    expect(source).toContain('resolverPropsByExport: new Map()');
+    expect(source).toContain(
+      'previewInspectorSession.resolverPropsRevision !== previewEntryRevision',
+    );
+    expect(source).toContain('previewInspectorSession.instanceEpochByExport ??= new Map()');
+    expect(setPropsSource).toContain('refreshPreviewInspectorExport(exportName, false)');
+    expect(resetPropsSource).toContain('refreshPreviewInspectorExport(exportName, false)');
+    expect(setPropsSource).not.toContain('remountPreviewInspectorExport');
+    expect(resetPropsSource).not.toContain('remountPreviewInspectorExport');
+    expect(refreshSource).toContain('propsRevisionByExport.set(exportName, currentRevision + 1)');
+    expect(refreshSource).toContain(
+      'if (activeReachabilityState?.targetExportName === exportName)',
+    );
+    expect(refreshSource).toContain('activeReachabilityState.probeRevision += 1');
+    expect(refreshSource).not.toContain('instanceEpochByExport.set');
+    expect(refreshSource).not.toContain('setTimeout');
+    expect(remountSource).toContain(
+      'previewInspectorSession.instanceEpochByExport.set(exportName, currentEpoch + 1)',
+    );
+    expect(remountSource).toContain('refreshPreviewInspectorExport(exportName, persist)');
+    expect(targetRendererSource).toContain(
+      'const instanceEpoch = previewInspectorSession.instanceEpochByExport.get(exportName)',
+    );
+    expect(targetRendererSource).toContain(
+      'previewInspectorSession.resolverPropsByExport.get(exportName)',
+    );
+    expect(targetRendererSource.indexOf('resolverProps,')).toBeLessThan(
+      targetRendererSource.indexOf('overrideProps,'),
+    );
+    expect(targetRendererSource).toContain(
+      "key: exportName + ':instance:' + String(instanceEpoch)",
+    );
+    expect(targetRendererSource).toContain('key: exportName');
   });
 
   /** Delegates facade wrappers through the same global API installed before target evaluation. */
@@ -168,8 +244,8 @@ describe('Page Inspector runtime source', () => {
     }
   });
 
-  /** Keeps descriptor/boundary names authoritative and resets errors for root prop revisions. */
-  it('emits hot-safe inventory pruning and a root-aware error-boundary key', () => {
+  /** Keeps descriptor names authoritative and resets errors without remounting a healthy page. */
+  it('emits hot-safe inventory pruning and a root-aware error-boundary reset signal', () => {
     const source = createPreviewPageInspectorRuntimeSource();
 
     expect(source).toContain('previewInspectorSession.boundariesByExport.keys()');
@@ -177,7 +253,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       'const rootRevision = previewInspectorSession.propsRevisionByExport.get(rootName)',
     );
-    expect(source).toContain("String(rootRevision) + ':candidate:'");
+    expect(source).toContain("key: inspectedExportName + ':candidate:'");
+    expect(source).toContain("resetKey: String(targetRevision) + ':' + rootName");
     expect(source).toContain("':data:' + String(dataRevision)");
     expect(source).toContain(
       'createPageCandidateElement: createPreviewInspectorPageCandidateElement',
@@ -241,12 +318,17 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('selected component host node(s)');
     expect(source).toContain("[selection.hostNodes, snapshot.status === 'static']");
     expect(source).toContain('treeSelection[0].length > 0 || !treeSelection[1]');
-    expect(source).toContain('capturePreviewInspectorCompanionTreeSelection(control, message)');
+    expect(source).toContain('capturePreviewInspectorCompanionInteractionScroll(control, message)');
+    expect(source).toContain(
+      'schedulePreviewInspectorTreeScrollRestoration(scrollGuard.treeViewport)',
+    );
     expect(source).toContain('pendingTreeReveal');
     expect(source).toContain("type: 'react-preview-inspector-open-source'");
     expect(source).toContain('function setPreviewInspectorCompanionShell(shell)');
     expect(source).toContain('function handlePreviewInspectorCompanionAction(event)');
     expect(source).toContain('previewInspectorCompanionState.elementById');
+    expect(source).toContain('\'button,input,select,summary,textarea,[role="separator"],');
+    expect(source).toContain("'[data-react-preview-tree-toggle-control]'");
   });
 });
 

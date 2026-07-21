@@ -24,13 +24,12 @@ function formatPreviewInspectorPageCorridorStatus(reachability) {
   return 'LOADING PAGE';
 }
 
-/** Opens the root-to-current-file Render flow in the primary Blockers navigation tab. */
-function openPreviewInspectorFriendlyBlockerFlow() {
-  previewInspectorDevtoolsSessionState.navigationTab = 'blockers';
-  previewInspectorDevtoolsSessionState.blockerDetailRevision =
-    (previewInspectorDevtoolsSessionState.blockerDetailRevision ?? 0) + 1;
-  persistPreviewInspectorState();
-  notifyPreviewInspector();
+/** Reveals the first active blocker at its owning location in the component tree. */
+function revealPreviewInspectorFriendlyBlocker() {
+  const blocker = readPreviewInspectorActiveBlockerSummary().first;
+  if (blocker === undefined) return;
+  requestPreviewInspectorTreeReveal(blocker.id);
+  selectPreviewInspectorUiNode(blocker);
 }
 
 /** Converts internal corridor state into one plain-language status and recommended next action. */
@@ -81,7 +80,7 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
         ' Start with the first red BLOCKER row.',
       icon: '!',
       kind: 'blocked',
-      onAction: openPreviewInspectorFriendlyBlockerFlow,
+      onAction: revealPreviewInspectorFriendlyBlocker,
       title: 'Page rendering is blocked',
     };
   }

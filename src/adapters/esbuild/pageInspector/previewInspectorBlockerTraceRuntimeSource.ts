@@ -119,7 +119,7 @@ function settlePreviewInspectorBlockerTraceAttempt(attempt, detail) {
     schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attempt);
   } else if (typeof resumePreviewInspectorTargetReachabilityAfterConditionAttempt === 'function') {
     if (
-      attempt.autoMode === 'target-guided-auto' &&
+      ['target-guided-auto', 'target-overlay-auto'].includes(attempt.autoMode) &&
       typeof globalThis.setTimeout === 'function'
     ) {
       globalThis.setTimeout(
@@ -834,7 +834,9 @@ function recordPreviewInspectorBlockerTraceError(entry) {
   }
   const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
   const now = Date.now();
-  const settledErrorGrace = activeAttempt?.autoMode === 'target-guided-auto'
+  const settledErrorGrace = ['target-guided-auto', 'target-overlay-auto'].includes(
+    activeAttempt?.autoMode,
+  )
     ? PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS
     : PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS;
   const active = activeAttempt !== undefined &&
@@ -887,7 +889,9 @@ function recordPreviewInspectorBlockerTraceError(entry) {
   // A target-guided JSX choice is a reversible preview transaction. If that exact render attempt
   // produces a new fatal error, restore authored semantics before the DFS evaluates another gate.
   // Runtime fallback and user-authored mutations intentionally remain outside this narrow hook.
+  const rollbackEligible = active && activeAttempt.autoMode === 'target-guided-auto';
   const rolledBack = (
+    rollbackEligible &&
     active &&
     !errorWasKnownAtAttemptStart &&
     typeof rollbackPreviewInspectorFailedAutoDecision === 'function'

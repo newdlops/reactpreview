@@ -122,7 +122,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('PreviewInspectorFileComponentItem');
     expect(source).toContain('PreviewExportErrorBoundary');
     expect(source).toContain(
-      "{ exportName, key: exportName + ':condition:' + String(conditionRevision) }",
+      '{ exportName, key: exportName, resetKey: String(conditionRevision) }',
     );
     expect(source).toContain("'data-react-preview-render-scenario': 'file-components'");
     expect(source).toContain('including any fallback UI that path legitimately renders');

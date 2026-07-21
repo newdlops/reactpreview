@@ -417,6 +417,7 @@ function readPreviewInspectorActiveBlockerSummary() {
 /** Produces the compact status badge shown directly beside one blocker tree row. */
 function formatPreviewInspectorBlockerBadge(node) {
   if (isPreviewInspectorConditionNode(node)) {
+    if (node.condition?.reached === false) return 'not reached yet';
     return (node.condition?.effectiveEnabled === true ? 'branch on' : 'branch off') +
       (typeof node.condition?.override === 'boolean'
         ? ' · forced'
@@ -582,8 +583,12 @@ function PreviewInspectorRuntimeBlockerDetail({ node }) {
   );
 }
 
-/** Applies the minimum type-, usage-, parent-, observation-, and error-backed prop record. */
-function smartFillPreviewInspectorTargetFailure(failure) {
+/**
+ * Applies the minimum prop record and optionally defers the single refresh to a surrounding batch.
+ * The non-draft path still advances the target input revision so retry semantics are preserved
+ * without treating an automatic repair as the user's explicit component-remount command.
+ */
+function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
   const draft = createPreviewInspectorSmartPropsDraft(
     failure.exportName,
     failure.targetPropRequiredPaths,
@@ -611,11 +616,18 @@ function smartFillPreviewInspectorTargetFailure(failure) {
     });
   }
   if (!hasPreviewInspectorSmartPropsDraft(draft)) {
-    setPreviewInspectorFallbackValuesEnabled(true);
-    remountPreviewInspectorExport(failure.exportName);
-    return;
+    setPreviewInspectorFallbackValuesEnabled(true, commit);
+    if (commit) {
+      refreshPreviewInspectorExport(failure.exportName);
+    } else {
+      const currentRevision =
+        previewInspectorSession.propsRevisionByExport.get(failure.exportName) ?? 0;
+      previewInspectorSession.propsRevisionByExport.set(failure.exportName, currentRevision + 1);
+    }
+    return true;
   }
-  applyPreviewInspectorSmartProps(failure.exportName, failure.targetPropRequiredPaths);
+  applyPreviewInspectorSmartProps(failure.exportName, failure.targetPropRequiredPaths, commit);
+  return true;
 }
 
 /** Renders retry and inferred-value controls for a target-local contained React failure. */

@@ -45,7 +45,8 @@ const previewInspectorCompanionClick = globalThis.HTMLElement?.prototype?.click;
 function indexPreviewInspectorCompanionControls(shell) {
   previewInspectorCompanionState.elementById.clear();
   const controls = shell.querySelectorAll?.(
-    'button,input,select,textarea,[role="separator"],[data-react-preview-tree-row]',
+    'button,input,select,summary,textarea,[role="separator"],[data-react-preview-tree-row],' +
+      '[data-react-preview-tree-toggle-control]',
   ) ?? [];
   for (const control of controls) {
     let remoteId = control.getAttribute?.('data-rpi-remote-id');
@@ -193,14 +194,22 @@ function writePreviewInspectorCompanionControl(control, message) {
   }
 }
 
-/** Captures the authoritative tree before a programmatic remote row selection can rerender it. */
-function capturePreviewInspectorCompanionTreeSelection(control, message) {
-  if (control?.matches?.('[data-react-preview-tree-row]') !== true) return;
-  const selectsRow = message.eventType === 'click' ||
-    (message.eventType === 'keydown' && (message.key === 'Enter' || message.key === ' '));
-  if (!selectsRow || typeof capturePreviewInspectorTreeSelectionScroll !== 'function') return;
-  const treeViewport = control.closest?.('.rpi-tree-scroll');
-  capturePreviewInspectorTreeSelectionScroll(treeViewport);
+/**
+ * Captures the preview document and component tree before any remote control can rerender them.
+ * Directional tree keys remain navigation gestures; clicks, edits, and activation keys are the
+ * state-changing interactions whose scroll coordinates must survive the resulting React commit.
+ */
+function capturePreviewInspectorCompanionInteractionScroll(control, message) {
+  const changesUi = message.eventType !== 'keydown' ||
+    message.key === 'Enter' || message.key === ' ';
+  if (!changesUi || typeof capturePreviewInspectorTreeSelectionScroll !== 'function') {
+    return undefined;
+  }
+  const shell = control?.closest?.('.rpi-shell');
+  const treeViewport = shell?.querySelector?.('.rpi-tree-scroll') ??
+    control?.closest?.('.rpi-tree-scroll');
+  const snapshot = capturePreviewInspectorTreeSelectionScroll(treeViewport);
+  return snapshot === undefined ? undefined : { snapshot, treeViewport };
 }
 
 /** Reconstructs only click, form, and accessible tree events accepted by the host protocol. */
@@ -215,8 +224,8 @@ function handlePreviewInspectorCompanionAction(event) {
     schedulePreviewInspectorCompanionSnapshot();
     return;
   }
+  const scrollGuard = capturePreviewInspectorCompanionInteractionScroll(control, message);
   try {
-    capturePreviewInspectorCompanionTreeSelection(control, message);
     if (message.eventType === 'click') {
       previewInspectorCompanionClick?.call(control);
     } else if (message.eventType === 'dblclick') {
@@ -245,6 +254,13 @@ function handlePreviewInspectorCompanionAction(event) {
     }
   } catch (error) {
     console.warn('[React Preview] Inspector companion interaction failed.', error);
+  } finally {
+    if (
+      scrollGuard !== undefined &&
+      typeof schedulePreviewInspectorTreeScrollRestoration === 'function'
+    ) {
+      schedulePreviewInspectorTreeScrollRestoration(scrollGuard.treeViewport);
+    }
   }
   schedulePreviewInspectorCompanionSnapshot();
 }

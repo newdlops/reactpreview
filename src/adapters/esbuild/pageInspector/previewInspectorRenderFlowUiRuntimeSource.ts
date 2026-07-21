@@ -528,6 +528,82 @@ function createPreviewInspectorRenderFlowEdges(steps) {
 }
 
 /**
+ * Compares same-depth BFS candidates without changing shortest-path semantics. Executed edges win
+ * first, compiler-confirmed edges win next, and the complete edge-ID sequence makes the remaining
+ * tie deterministic across remounts and JavaScript engine insertion-order differences.
+ */
+function comparePreviewInspectorRenderFlowPathCandidates(left, right) {
+  return left.inactiveEdgeCount - right.inactiveEdgeCount ||
+    left.unconfirmedEdgeCount - right.unconfirmedEdgeCount ||
+    left.edgeIds.join('\u001f').localeCompare(right.edgeIds.join('\u001f')) ||
+    left.nodeIds.join('\u001f').localeCompare(right.nodeIds.join('\u001f'));
+}
+
+/**
+ * Finds one shortest application-entry-to-exact-target route from authoritative graph edges.
+ * Breadth-first layers preserve minimum hop count. Within one layer, active and confirmed evidence
+ * selects the most representative route without deleting dormant alternatives from the full graph.
+ */
+function createPreviewInspectorRenderFlowMainPath(graphEdges, entryStepId, targetStepId) {
+  if (typeof entryStepId !== 'string' || typeof targetStepId !== 'string') {
+    return { edgeIds: [], nodeIds: [] };
+  }
+  const outgoingByNode = new Map();
+  for (const edge of graphEdges) {
+    const outgoing = outgoingByNode.get(edge.fromId) ?? [];
+    outgoing.push(edge);
+    outgoingByNode.set(edge.fromId, outgoing);
+  }
+  for (const outgoing of outgoingByNode.values()) {
+    outgoing.sort((left, right) =>
+      Number(right.active === true) - Number(left.active === true) ||
+      Number(left.certainty !== 'confirmed') - Number(right.certainty !== 'confirmed') ||
+      left.id.localeCompare(right.id));
+  }
+  let frontier = [{
+    edgeIds: [],
+    inactiveEdgeCount: 0,
+    nodeId: entryStepId,
+    nodeIds: [entryStepId],
+    unconfirmedEdgeCount: 0,
+  }];
+  const visitedAtEarlierDepth = new Set();
+  for (let depth = 0;
+    frontier.length > 0 && depth <= PREVIEW_INSPECTOR_RENDER_FLOW_STEP_LIMIT;
+    depth += 1) {
+    frontier.sort(comparePreviewInspectorRenderFlowPathCandidates);
+    const completed = frontier.find((candidate) => candidate.nodeId === targetStepId);
+    if (completed !== undefined) {
+      return { edgeIds: completed.edgeIds, nodeIds: completed.nodeIds };
+    }
+    for (const candidate of frontier) visitedAtEarlierDepth.add(candidate.nodeId);
+    const nextByNode = new Map();
+    for (const candidate of frontier) {
+      for (const edge of outgoingByNode.get(candidate.nodeId) ?? []) {
+        if (visitedAtEarlierDepth.has(edge.toId) || candidate.nodeIds.includes(edge.toId)) continue;
+        const next = {
+          edgeIds: [...candidate.edgeIds, edge.id],
+          inactiveEdgeCount: candidate.inactiveEdgeCount + Number(edge.active !== true),
+          nodeId: edge.toId,
+          nodeIds: [...candidate.nodeIds, edge.toId],
+          unconfirmedEdgeCount: candidate.unconfirmedEdgeCount +
+            Number(edge.certainty !== 'confirmed'),
+        };
+        const previous = nextByNode.get(edge.toId);
+        if (
+          previous === undefined ||
+          comparePreviewInspectorRenderFlowPathCandidates(next, previous) < 0
+        ) {
+          nextByNode.set(edge.toId, next);
+        }
+      }
+    }
+    frontier = [...nextByNode.values()];
+  }
+  return { edgeIds: [], nodeIds: [] };
+}
+
+/**
  * Reserves graph capacity for the exact target and actionable blockers before explanatory branches.
  * The strict direct-blocker predicate is reused unchanged, so reservation cannot broaden which
  * source/owner records receive current-file blocker semantics.
@@ -764,19 +840,31 @@ function createPreviewInspectorRenderFlow(snapshot) {
   const exactCurrentFileTarget = [...targetPath].reverse().find(
     (node) => isPreviewInspectorExactCurrentFileTargetNode(node, currentFileReference),
   );
+  const referencedCurrentFileTarget = [...targetPath].reverse().find(
+    (node) => isPreviewInspectorReferencedRenderOutcomeTargetNode(node, currentFileReference),
+  );
+  const renderCurrentFileTarget = exactCurrentFileTarget ?? referencedCurrentFileTarget;
   const protectedStepIds = readPreviewInspectorProtectedRenderFlowStepIds(
     blockerFlow,
     currentFileTarget,
-    exactCurrentFileTarget,
+    renderCurrentFileTarget,
   );
+  for (const outcome of readPreviewInspectorStaticRenderOutcomes()) {
+    if (typeof outcome?.id === 'string') protectedStepIds.add('render-outcome:' + outcome.id);
+  }
   const state = {
+    currentFileOutcomeChoiceNodeIds: new Set(),
+    currentFileOutcomeNodeIds: new Set(),
     exactCurrentFileTargetNodeId: exactCurrentFileTarget?.id,
     pendingProtectedStepIds: new Set(protectedStepIds),
     protectedStepIds,
     stepById: new Map(),
+    staticMainPathNodeIds: [],
+    staticMainPathTargetStepId: undefined,
     steps: [],
     truncated: false,
   };
+  appendPreviewInspectorStaticApplicationRenderPath(state);
   if (targetPath.length > 0) {
     appendPreviewInspectorRenderFlowComponent({
       blockerFlow,
@@ -823,6 +911,36 @@ function createPreviewInspectorRenderFlow(snapshot) {
     ? 0
     : Math.max(...state.steps.map((step) => step.level)) + 1;
   const graphEdges = createPreviewInspectorRenderFlowEdges(state.steps);
+  const staticMainPathNodeIdSet = new Set(state.staticMainPathNodeIds);
+  const staticMainPathEdgeIds = graphEdges.filter((edge) =>
+    staticMainPathNodeIdSet.has(edge.fromId) && staticMainPathNodeIdSet.has(edge.toId),
+  ).map((edge) => edge.id);
+  const currentFileOutcomeEdgeIds = graphEdges.filter((edge) =>
+    state.currentFileOutcomeNodeIds.has(edge.toId) &&
+    (state.currentFileOutcomeNodeIds.has(edge.fromId) ||
+      edge.fromId === state.staticMainPathTargetStepId)).map((edge) => edge.id);
+  const currentFileOutcomeChoiceEdgeIds = graphEdges.filter((edge) =>
+    state.currentFileOutcomeChoiceNodeIds.has(edge.toId) &&
+    edge.fromId === state.staticMainPathTargetStepId).map((edge) => edge.id);
+  const mainPathEntryStepId = targetPath[0] === undefined
+    ? undefined
+    : 'render-entry:' + targetPath[0].id;
+  // A capacity-limited static traversal can retain only an entry-prefix. Treat it as a usable
+  // application path only after the selected export itself was materialized; otherwise the live
+  // Fiber-derived BFS remains the safer fallback.
+  const staticMainPathAvailable =
+    typeof state.staticMainPathTargetStepId === 'string' &&
+    state.staticMainPathNodeIds.includes(state.staticMainPathTargetStepId);
+  const mainPathTargetStepId = staticMainPathAvailable
+    ? state.staticMainPathTargetStepId
+    : renderCurrentFileTarget === undefined ? undefined : 'render-entry:' + renderCurrentFileTarget.id;
+  const mainPath = staticMainPathAvailable
+    ? { edgeIds: staticMainPathEdgeIds, nodeIds: state.staticMainPathNodeIds }
+    : createPreviewInspectorRenderFlowMainPath(
+        graphEdges,
+        mainPathEntryStepId,
+        mainPathTargetStepId,
+      );
   const renderFingerprint = createPreviewInspectorRenderFlowFingerprint(state.steps, graphEdges);
   return {
     ...blockerFlow,
@@ -830,10 +948,23 @@ function createPreviewInspectorRenderFlow(snapshot) {
     fingerprint: blockerFlow.fingerprint + '::render:' + renderFingerprint,
     graphEdges,
     graphNodes: state.steps,
+    currentFileOutcomeChoiceEdgeIds,
+    currentFileOutcomeChoiceNodeIds: [...state.currentFileOutcomeChoiceNodeIds],
+    currentFileOutcomeEdgeIds,
+    currentFileOutcomeNodeIds: [...state.currentFileOutcomeNodeIds],
+    mainPathEdgeIds: mainPath.edgeIds,
+    mainPathEntryStepId: staticMainPathAvailable
+      ? state.staticMainPathNodeIds[0]
+      : mainPathEntryStepId,
+    mainPathNodeIds: mainPath.nodeIds,
+    mainPathTargetStepId,
     currentFileTargetNodeId: exactCurrentFileTarget?.id,
     currentFileTargetStepId: exactCurrentFileTarget === undefined
       ? undefined
       : 'render-entry:' + exactCurrentFileTarget.id,
+    renderOutcomeTargetStepId: renderCurrentFileTarget === undefined
+      ? undefined
+      : 'render-entry:' + renderCurrentFileTarget.id,
     renderStages,
     renderStepById: state.stepById,
     renderSteps: state.steps,

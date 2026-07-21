@@ -4,16 +4,13 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorBlockerFlowUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorBlockerFlowUiRuntimeSource';
 
 describe('Preview Inspector blocker-flow navigation UI source', () => {
-  /** Keeps context read-only while exposing existing blocker editors at their selected graph node. */
-  it('renders inline node controls across the complete JSX render sequence', () => {
+  /** Keeps the complete JSX graph available only after advanced diagnostics is requested. */
+  it('retains graph node controls across the complete JSX render sequence', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
 
     expect(() => new vm.Script(source)).not.toThrow();
     expect(source).toContain('function PreviewInspectorRenderFlowDetail');
     expect(source).toContain('function PreviewInspectorRenderFlowNode');
-    expect(source).toContain(
-      'JSX function entry → guard / condition → selected return JSX → child render',
-    );
     expect(source).toContain("step.kind === 'component' || step.kind === 'return'");
     expect(source).toContain('React.createElement(PreviewInspectorBlockerDetail');
     expect(source).toContain("'Reveal in Components'");
@@ -21,49 +18,41 @@ describe('Preview Inspector blocker-flow navigation UI source', () => {
     expect(source).toContain("return 'Current file function'");
     expect(source).toContain("return 'Entry / route context'");
     expect(source).toContain("return 'Child component'");
-    expect(source).toContain('flow.renderTruncated === true');
-    expect(source).toContain('Bounded Render flow');
     expect(source).toContain('React.createElement(PreviewInspectorFlowchart');
     expect(source).toContain('selectedStepId');
   });
 
-  /** Leads with one actionable corridor and keeps the dense graph behind explicit disclosure. */
-  it('uses a simple current-blocker overview before the opt-in advanced graph', () => {
+  /** Leads with the two-choice resolver and keeps the dense graph behind explicit disclosure. */
+  it('uses the simple preview setup before the opt-in advanced graph', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
 
-    expect(source).toContain('function PreviewInspectorBlockerFlowOverview');
-    expect(source).toContain("'Current blocking path'");
-    expect(source).toContain("'Current blocker'");
-    expect(source).toContain("'Next action'");
-    expect(source).toContain("advancedOpen ? 'Hide flow graph' : 'Advanced · Show flow graph'");
-    expect(source).toContain('hidden: advancedOpen !== true');
+    expect(source).toContain('function PreviewInspectorBlockerFlowSetup');
+    expect(source).toContain('React.createElement(PreviewInspectorSimpleResolver');
+    expect(source).toContain("'Advanced diagnostics'");
+    expect(source).not.toContain("'Current blocking path'");
+    expect(source).not.toContain("'Current blocker'");
+    expect(source).not.toContain("'Next action'");
+    expect(source).not.toContain("'Blocker resolution progress'");
+    expect(source).toContain("className: 'rpi-flowchart-backbar'");
+    expect(source).toContain("'← Preview setup'");
     expect(source).toContain("'aria-controls': 'react-preview-blocker-flow-advanced'");
     expect(source).toContain(
       'previewInspectorDevtoolsSessionState.blockerFlowAdvancedOpen === true',
     );
   });
 
-  /** The simple view must expose the real safe editor instead of making its button a dead end. */
-  it('renders the active blocker editor without requiring the advanced graph', () => {
+  /** The default view delegates its bounded actions only to the shared simple resolver. */
+  it('does not expose the raw active-blocker editor in preview setup', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
-    const editorStart = source.indexOf('function PreviewInspectorBlockerFlowPrimaryEditor');
-    const overviewStart = source.indexOf('function PreviewInspectorBlockerFlowOverview');
+    const setupStart = source.indexOf('function PreviewInspectorBlockerFlowSetup');
     const detailStart = source.indexOf('function PreviewInspectorBlockerFlowDetail');
-    const editorSource = source.slice(editorStart, overviewStart);
-    const overviewSource = source.slice(overviewStart, detailStart);
+    const setupSource = source.slice(setupStart, detailStart);
 
-    expect(source).toContain('function PreviewInspectorBlockerFlowPrimaryEditor');
-    expect(source).toContain("'aria-label': 'Current blocker actions'");
-    expect(editorSource).toContain(
-      'React.createElement(PreviewInspectorRenderFlowNodeEditor, { step })',
-    );
-    expect(editorSource).not.toContain('PreviewInspectorRenderFlowConditionSwitch');
-    expect(overviewSource).toContain(
-      'React.createElement(PreviewInspectorBlockerFlowPrimaryEditor, { step: activeStep })',
-    );
-    expect(overviewSource.indexOf('PreviewInspectorBlockerFlowPrimaryEditor')).toBeLessThan(
-      overviewSource.indexOf("'react-preview-blocker-flow-advanced'"),
-    );
+    expect(setupStart).toBeGreaterThan(-1);
+    expect(setupSource).toContain('React.createElement(PreviewInspectorSimpleResolver');
+    expect(setupSource).not.toContain('PreviewInspectorRenderFlowNodeEditor');
+    expect(setupSource).not.toContain('PreviewInspectorRenderFlowConditionSwitch');
+    expect(setupSource).not.toContain('PreviewInspectorBlockerDetail');
     expect(source).toContain('notifyPreviewInspector();');
   });
 
@@ -80,8 +69,8 @@ describe('Preview Inspector blocker-flow navigation UI source', () => {
     expect(source).toContain("effective ? 'Switch false' : 'Switch true'");
   });
 
-  /** Makes direct current-file blockers visually and accessibly distinct from page-path blockers. */
-  it('labels direct current-file blockers and reports their bounded graph count', () => {
+  /** Makes direct current-file blockers visually and accessibly distinct in advanced diagnostics. */
+  it('labels direct current-file blockers in advanced graph nodes', () => {
     const source = createPreviewInspectorBlockerFlowUiRuntimeSource();
 
     expect(source).toContain(
@@ -91,10 +80,6 @@ describe('Preview Inspector blocker-flow navigation UI source', () => {
     expect(source).toContain("? 'Adjust current file blocker: '");
     expect(source).toContain("'rpi-badge rpi-current-file-blocker-badge'");
     expect(source).toContain("'CURRENT FILE BLOCKER'");
-    expect(source).toContain('flow.directCurrentFileBlockerCount > 0');
-    expect(source).toContain(
-      "String(flow.directCurrentFileBlockerCount) + ' direct current-file blocker(s)'",
-    );
   });
 
   /** Preserves component selection until the dedicated Components reveal action is requested. */

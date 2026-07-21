@@ -594,10 +594,13 @@ function commitPreviewInspectorDataChange() {
   schedulePreviewInspectorTreeRefresh();
 }
 
-/** Enables or disables automatic payload generation without allowing a real backend transport. */
-function setPreviewInspectorDataAutoEnabled(enabled) {
+/**
+ * Enables or disables automatic payload generation and optionally participates in a larger batch.
+ * Batch callers still advance the data revision but own the single persistence/render notification.
+ */
+function setPreviewInspectorDataAutoEnabled(enabled, commit = true) {
   initializePreviewInspectorDataState();
-  if (typeof enabled !== 'boolean' || enabled === previewInspectorSession.dataAutoEnabled) return;
+  if (typeof enabled !== 'boolean' || enabled === previewInspectorSession.dataAutoEnabled) return false;
   previewInspectorSession.dataAutoEnabled = enabled;
   if (enabled && typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     const requests = [...previewInspectorSession.dataRequests.values()].slice(0, 24);
@@ -615,7 +618,12 @@ function setPreviewInspectorDataAutoEnabled(enabled) {
       startsRenderAttempt: true,
     });
   }
-  commitPreviewInspectorDataChange();
+  if (commit) {
+    commitPreviewInspectorDataChange();
+  } else {
+    previewInspectorSession.dataRevision += 1;
+  }
+  return true;
 }
 
 /** Adds missing Smart fields recursively while retaining every non-null user-authored payload value. */

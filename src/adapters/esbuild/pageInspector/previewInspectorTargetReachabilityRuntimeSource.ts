@@ -286,6 +286,10 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state) {
       condition?.reachabilityKey === state.key &&
       !previewInspectorSession.renderConditionOverrides.has(condition.id) &&
       (
+        typeof isPreviewInspectorRenderConditionControlledByOutcome !== 'function' ||
+        !isPreviewInspectorRenderConditionControlledByOutcome(condition)
+      ) &&
+      (
         typeof isPreviewInspectorTargetGuidedConditionRejected !== 'function' ||
         !isPreviewInspectorTargetGuidedConditionRejected(condition.id, state.key)
       ),
@@ -441,6 +445,13 @@ function hasPreviewInspectorTargetHostOutput(state) {
     if (collectPreviewInspectorFiberElements(boundary).length > 0) return true;
   }
   return false;
+}
+
+/** Stops automatic branch traversal while the selected target owns a contained render failure. */
+function hasPreviewInspectorTargetRenderError(state) {
+  const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  return boundaries instanceof Set &&
+    [...boundaries].some((boundary) => boundary?.state?.error !== undefined);
 }
 
 /** Reports success only when the authored root and a visible selected target share one live render. */
@@ -699,7 +710,8 @@ function activatePreviewInspectorDirectTarget(state) {
 
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
-  state.targetMounted = state.targetWasMounted === true || hasMountedPreviewInspectorTarget(state);
+  state.targetMounted = hasMountedPreviewInspectorTarget(state);
+  state.targetWasMounted = state.targetWasMounted === true || state.targetMounted;
   state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
   if (hasReachedPreviewInspectorPageCorridor(state)) {
     completePreviewInspectorMinimumRequirementSearch(state);
@@ -708,14 +720,20 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
+  if (hasPreviewInspectorTargetRenderError(state)) {
+    state.status = 'target-error';
+    state.idlePasses = 0;
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
   if (
-    state.targetMounted &&
+    (state.targetMounted || state.targetWasMounted) &&
     !state.targetHasOutput &&
     state.overlayVisibilityAttempted !== true
   ) {
     state.overlayVisibilityAttempted = true;
     const visibilityPath = typeof autoRevealPreviewInspectorOverlayTarget === 'function'
-      ? autoRevealPreviewInspectorOverlayTarget(state.targetExportName)
+      ? autoRevealPreviewInspectorOverlayTarget(state.targetExportName, state.key)
       : undefined;
     if (visibilityPath !== undefined) {
       state.status = 'revealing-overlay';
@@ -747,6 +765,10 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   if (state.exhausted === true) return;
   const nextGate = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
   if (nextGate !== undefined && state.attempt < PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT) {
+    if (!setPreviewInspectorTargetGuidedConditionOverride(
+      nextGate.condition.id,
+      nextGate.desiredValue,
+    )) return;
     state.appliedConditions.push({
       enabled: nextGate.desiredValue,
       expression: nextGate.condition.expression,
@@ -759,10 +781,6 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.idlePasses = 0;
     state.status = 'advancing';
     state.probeRevision += 1;
-    setPreviewInspectorTargetGuidedConditionOverride(
-      nextGate.condition.id,
-      nextGate.desiredValue,
-    );
     return;
   }
   if (startPreviewInspectorDeterministicRequirementSearch(descriptor, candidate, state)) return;

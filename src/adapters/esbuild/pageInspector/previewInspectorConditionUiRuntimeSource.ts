@@ -1,3 +1,5 @@
+import { createPreviewInspectorLogicalSwitchModelRuntimeSource } from './previewInspectorLogicalSwitchModelRuntimeSource';
+
 /**
  * Generates condition-tree enrichment and branch controls for the Page Inspector UI.
  *
@@ -15,7 +17,10 @@
  * @returns Plain JavaScript source concatenated before the Inspector React components render.
  */
 export function createPreviewInspectorConditionUiRuntimeSource(): string {
+  const logicalSwitchModelRuntimeSource = createPreviewInspectorLogicalSwitchModelRuntimeSource();
   return String.raw`
+${logicalSwitchModelRuntimeSource}
+
 /** Normalizes a local source identity for same-file condition/component matching. */
 function normalizePreviewInspectorConditionSourcePath(value) {
   return typeof value === 'string' ? value.replaceAll('\\', '/') : '';
@@ -33,13 +38,13 @@ function matchesPreviewInspectorConditionSourcePath(left, right) {
 }
 
 /**
- * Reports a dormant overlay that lies on the proven path to the selected current-file component.
+ * Reports a reached Boolean branch whose live value contradicts the source-proven target path.
  *
- * This is deliberately narrower than "every hidden modal": both target-path membership and the
- * compiler/runtime branch decision must prove that visible=true is required for this exact target.
+ * This is deliberately narrower than "every false condition": both target-path membership and the
+ * compiler/runtime evidence must prove the opposite Boolean value is required for this exact target.
  */
 function doesPreviewInspectorConditionBlockCurrentTarget(condition) {
-  if (condition?.role !== 'overlay' || condition?.effectiveEnabled === true) return false;
+  if (condition?.reached === false || typeof condition?.effectiveEnabled !== 'boolean') return false;
   if (
     typeof readPreviewInspectorTargetPathEvidence !== 'function' ||
     typeof isPreviewInspectorConditionOnTargetPath !== 'function' ||
@@ -56,35 +61,43 @@ function doesPreviewInspectorConditionBlockCurrentTarget(condition) {
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return false;
   const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
+  const requiredValue = readPreviewInspectorTargetConditionValue(condition, evidence);
   return isPreviewInspectorConditionOnTargetPath(condition, evidence) &&
-    readPreviewInspectorTargetConditionValue(condition, evidence) === true;
+    typeof requiredValue === 'boolean' && requiredValue !== condition.effectiveEnabled;
 }
 
 /** Creates one serializable pseudo-component node representing an authored render condition. */
 function createPreviewInspectorConditionTreeNode(condition) {
+  const reached = condition.reached !== false && typeof condition.id === 'string';
   const enabled = condition.effectiveEnabled === true;
-  const activeLabel = enabled ? condition.truthyLabel : condition.falsyLabel;
+  const activeLabel = reached
+    ? enabled ? condition.truthyLabel : condition.falsyLabel
+    : 'Not reached yet';
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
+  const booleanSwitch = condition.kind === 'logical-and';
   const blocksCurrentTarget = doesPreviewInspectorConditionBlockCurrentTarget(condition);
   return {
     blocksCurrentTarget,
     children: [],
     condition,
-    conditionId: condition.id,
+    conditionId: reached ? condition.id : undefined,
     exportName: undefined,
-    id: 'render-condition:' + condition.id,
+    id: 'render-condition:' + (condition.conditionTreeId ?? condition.id),
     kind: 'condition',
-    name: (overlay ? 'Overlay · ' : '') + condition.expression + ' · ' + activeLabel,
+    name: (overlay ? 'Overlay · ' : booleanSwitch ? 'JSX switch · ' : '') +
+      condition.expression + ' · ' + activeLabel,
     overlayState: overlay ? (enabled ? 'mounted' : 'dormant') : undefined,
     props: {
       authored: condition.authoredEnabled,
       blocksCurrentTarget,
+      control: booleanSwitch ? 'boolean-switch' : 'branch',
       effective: enabled,
       fallbackActive,
       mode: forced ? 'forced' : targetGuided ? 'target-guided' : 'authored',
+      reached,
     },
     role: overlay ? 'overlay' : undefined,
     source: normalizePreviewInspectorUiSource({
@@ -142,7 +155,7 @@ function createPreviewInspectorRenderControlTreeNode(control) {
 }
 
 /** Flattens component source candidates while retaining their current structural identity. */
-function collectPreviewInspectorConditionOwners(nodes, owners = []) {
+function collectPreviewInspectorConditionOwners(nodes, owners = [], depth = 0) {
   for (const node of nodes) {
     const sourcePath = normalizePreviewInspectorConditionSourcePath(node.source?.path);
     if (
@@ -154,11 +167,14 @@ function collectPreviewInspectorConditionOwners(nodes, owners = []) {
     ) {
       owners.push({
         id: node.id,
+        depth,
+        exportName: node.exportName,
         line: Number.isSafeInteger(node.source?.line) ? node.source.line : 0,
+        name: node.name,
         sourcePath,
       });
     }
-    collectPreviewInspectorConditionOwners(node.children, owners);
+    collectPreviewInspectorConditionOwners(node.children, owners, depth + 1);
   }
   return owners;
 }
@@ -168,12 +184,20 @@ function findPreviewInspectorConditionOwner(condition, owners) {
   const sourcePath = normalizePreviewInspectorConditionSourcePath(condition.sourcePath);
   if (sourcePath.length === 0) return undefined;
   const conditionLine = Number.isSafeInteger(condition.line) ? condition.line : 0;
+  const ownerName = typeof condition.ownerName === 'string' ? condition.ownerName : '';
+  const sameSourceOwners = owners.filter((owner) =>
+    matchesPreviewInspectorConditionSourcePath(owner.sourcePath, sourcePath));
+  const exactNamedOwners = ownerName.length === 0
+    ? []
+    : sameSourceOwners.filter((owner) =>
+        owner.name === ownerName || owner.exportName === ownerName);
+  const candidates = exactNamedOwners.length > 0 ? exactNamedOwners : sameSourceOwners;
   let selected;
   let selectedScore = Number.POSITIVE_INFINITY;
-  for (const owner of owners) {
-    if (!matchesPreviewInspectorConditionSourcePath(owner.sourcePath, sourcePath)) continue;
+  for (const owner of candidates) {
     const precedes = owner.line <= conditionLine;
-    const score = (precedes ? 0 : 1_000_000) + Math.abs(conditionLine - owner.line);
+    const score = (precedes ? 0 : 1_000_000) + Math.abs(conditionLine - owner.line) -
+      owner.depth / 1_000;
     if (score < selectedScore) {
       selected = owner;
       selectedScore = score;
@@ -184,19 +208,29 @@ function findPreviewInspectorConditionOwner(condition, owners) {
 
 /** Appends assigned condition nodes without mutating the collector-owned component snapshot. */
 function appendPreviewInspectorAssignedConditions(nodes, assignments) {
-  return nodes.map((node) => ({
-    ...node,
-    children: [
-      ...appendPreviewInspectorAssignedConditions(node.children, assignments),
-      ...(assignments.get(node.id) ?? []).map(createPreviewInspectorRenderControlTreeNode),
-    ],
-  }));
+  return nodes.map((node) => {
+    const componentChildren = appendPreviewInspectorAssignedConditions(node.children, assignments);
+    const controls = (assignments.get(node.id) ?? [])
+      .map(createPreviewInspectorRenderControlTreeNode)
+      .sort((left, right) =>
+        (left.source?.line ?? 0) - (right.source?.line ?? 0) ||
+        (left.source?.column ?? 0) - (right.source?.column ?? 0) ||
+        left.id.localeCompare(right.id));
+    return { ...node, children: [...componentChildren, ...controls] };
+  });
 }
 
 /** Adds every evaluated JSX condition to its component or a clearly labeled unowned tree group. */
 function attachPreviewInspectorConditionsToSnapshot(snapshot) {
+  const runtimeConditions = readPreviewInspectorRenderConditions();
   const conditions = [
-    ...readPreviewInspectorRenderConditions(),
+    ...runtimeConditions.filter((condition) => condition?.kind !== 'logical-and'),
+    ...readPreviewInspectorLogicalSwitchRecords(
+      typeof readPreviewInspectorStaticRenderOutcomes === 'function'
+        ? readPreviewInspectorStaticRenderOutcomes()
+        : [],
+      runtimeConditions,
+    ),
     ...readPreviewInspectorRenderChoices(),
   ];
   if (conditions.length === 0) return snapshot;
@@ -230,7 +264,8 @@ function attachPreviewInspectorConditionsToSnapshot(snapshot) {
 
 /** Reports whether a tree node is a compiler-instrumented conditional branch control. */
 function isPreviewInspectorConditionNode(node) {
-  return node?.kind === 'condition' && typeof node.conditionId === 'string';
+  return node?.kind === 'condition' &&
+    (node?.condition !== undefined || typeof node?.conditionId === 'string');
 }
 
 /** Reports a compiler-instrumented multi-way render choice kept outside boolean blocker DFS. */
@@ -250,7 +285,6 @@ function readPreviewInspectorMainComponentName() {
 function selectPreviewInspectorMainComponent() {
   const exportName = readPreviewInspectorMainComponentName();
   if (exportName === undefined) return;
-  previewInspectorDevtoolsSessionState.navigationTab = 'components';
   previewInspectorDevtoolsSessionState.query = '';
   previewInspectorSession.selectedTreeNodeId = undefined;
   if (previewInspectorSession.selectedExportName !== exportName) {
@@ -278,20 +312,28 @@ function PreviewInspectorConditionDetail({ node }) {
     return React.createElement(PreviewInspectorRenderChoiceDetail, { node });
   }
   const condition = node.condition;
+  const reached = condition.reached !== false && typeof condition.id === 'string';
   const enabled = condition.effectiveEnabled === true;
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
-  const activeBranch = enabled ? condition.truthyLabel : condition.falsyLabel;
+  const activeBranch = reached
+    ? enabled ? condition.truthyLabel : condition.falsyLabel
+    : 'not evaluated';
   const fallbackActive = condition.fallbackBranch === (enabled ? 'truthy' : 'falsy');
   const overlay = condition.role === 'overlay';
+  const booleanSwitch = condition.kind === 'logical-and';
   return React.createElement(
     'div',
     { className: 'rpi-detail-content' },
     React.createElement(
       'div',
       { className: 'rpi-meta' },
-      (overlay
+      (!reached
+        ? 'JSX boolean switch · not reached'
+        : overlay
         ? 'Overlay visibility'
+        : booleanSwitch
+          ? 'JSX boolean switch'
         : forced
           ? 'Forced branch'
           : targetGuided
@@ -300,7 +342,7 @@ function PreviewInspectorConditionDetail({ node }) {
         (overlay && (forced || targetGuided)
           ? (targetGuided ? 'target-guided · ' : 'forced · ')
           : '') +
-        (enabled ? 'true' : 'false'),
+        (reached ? enabled ? 'true' : 'false' : 'not reached'),
     ),
     React.createElement('pre', { className: 'rpi-json' }, condition.expression),
     React.createElement(
@@ -312,28 +354,51 @@ function PreviewInspectorConditionDetail({ node }) {
     React.createElement(
       'div',
       { className: 'rpi-actions' },
+      booleanSwitch
+        ? React.createElement(
+            'button',
+            {
+              'aria-checked': enabled,
+              'aria-disabled': !reached,
+              className: 'rpi-button',
+              disabled: !reached,
+              onClick: () => reached && setPreviewInspectorRenderConditionOverride(condition.id, !enabled),
+              role: 'switch',
+              title: reached
+                ? 'Toggle this logical-AND JSX branch'
+                : 'Not reached yet; enable the preceding logical-AND switch first',
+              type: 'button',
+            },
+            reached
+              ? enabled ? 'On · ' + condition.truthyLabel : 'Off · ' + condition.falsyLabel
+              : 'Not reached yet',
+          )
+        : React.createElement(
+            React.Fragment,
+            undefined,
+            React.createElement(
+              PreviewInspectorDevtoolsButton,
+              {
+                onClick: () => setPreviewInspectorRenderConditionOverride(condition.id, true),
+                pressed: condition.override === true,
+                title: 'Force the truthy JSX branch',
+              },
+              'Show ' + condition.truthyLabel,
+            ),
+            React.createElement(
+              PreviewInspectorDevtoolsButton,
+              {
+                onClick: () => setPreviewInspectorRenderConditionOverride(condition.id, false),
+                pressed: condition.override === false,
+                title: 'Force the falsy or hidden JSX branch',
+              },
+              'Show ' + condition.falsyLabel,
+            ),
+          ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          onClick: () => setPreviewInspectorRenderConditionOverride(condition.id, true),
-          pressed: condition.override === true,
-          title: 'Force the truthy JSX branch',
-        },
-        'Show ' + condition.truthyLabel,
-      ),
-      React.createElement(
-        PreviewInspectorDevtoolsButton,
-        {
-          onClick: () => setPreviewInspectorRenderConditionOverride(condition.id, false),
-          pressed: condition.override === false,
-          title: 'Force the falsy or hidden JSX branch',
-        },
-        'Show ' + condition.falsyLabel,
-      ),
-      React.createElement(
-        PreviewInspectorDevtoolsButton,
-        {
-          disabled: !forced && !targetGuided,
+          disabled: !reached || (!forced && !targetGuided),
           onClick: () => resetPreviewInspectorRenderConditionOverride(condition.id),
           title: 'Follow the authored runtime value again',
         },

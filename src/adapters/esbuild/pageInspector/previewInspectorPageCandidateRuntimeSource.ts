@@ -360,7 +360,7 @@ function PreviewInspectorFileComponentItem({ definition, targetProps }) {
     ),
     React.createElement(
       PreviewExportErrorBoundary,
-      { exportName, key: exportName + ':condition:' + String(conditionRevision) },
+      { exportName, key: exportName, resetKey: String(conditionRevision) },
       React.createElement(React.Suspense, { fallback: suspenseFallback }, content),
     ),
   );

@@ -50,7 +50,13 @@ class PreviewInspectorTargetBoundary extends React.Component {
   /** Creates a fresh boundary whose authored child remains eligible for normal rendering. */
   constructor(props) {
     super(props);
-    this.state = { componentStack: '', error: undefined };
+    this.state = { componentStack: '', error: undefined, resetKey: props.resetKey };
+  }
+
+  /** Retries a failed target while preserving healthy modal state and portal ownership. */
+  static getDerivedStateFromProps(props, state) {
+    if (props.resetKey === state.resetKey) return null;
+    return { componentStack: '', error: undefined, resetKey: props.resetKey };
   }
 
   /** Asks React to commit the compact fallback after a descendant render or lifecycle failure. */
@@ -99,7 +105,7 @@ class PreviewInspectorTargetBoundary extends React.Component {
     this.unregisterBoundary?.();
   }
 
-  /** Remounts only this inspected export; its revision key also clears the captured error state. */
+  /** Remounts only this inspected export and clears its captured error without replacing the page. */
   retry = () => {
     remountPreviewInspectorExport(this.props.exportName);
   };

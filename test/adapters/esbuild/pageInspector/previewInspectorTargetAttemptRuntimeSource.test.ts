@@ -5,10 +5,12 @@ import { createPreviewInspectorTargetAttemptRuntimeSource } from '../../../../sr
 
 describe('Preview Inspector target attempt runtime source', () => {
   /** Retains a condition corridor after its render-scoped condition records have disappeared. */
-  it('locks a condition attempt by durable attempt metadata and resumes it exactly once', () => {
-    const context: { __result?: Record<string, unknown> } = {};
-    vm.runInNewContext(
-      `
+  it.each(['target-guided-auto', 'target-overlay-auto'])(
+    'locks a %s attempt by durable metadata and resumes it exactly once',
+    (mode) => {
+      const context: { __result?: Record<string, unknown> } = {};
+      vm.runInNewContext(
+        `
         let notifications = 0;
         let treeRefreshes = 0;
         let currentTime = 100;
@@ -24,7 +26,7 @@ describe('Preview Inspector target attempt runtime source', () => {
           status: 'settling-condition-attempt',
         };
         const attempt = {
-          autoMode: 'target-guided-auto',
+          autoMode: ${JSON.stringify(mode)},
           blocker: { id: 'gate-a' },
           traceId: 'trace-a',
         };
@@ -68,23 +70,24 @@ describe('Preview Inspector target attempt runtime source', () => {
           treeRefreshes,
         };
       `,
-      context,
-    );
+        context,
+      );
 
-    expect(context.__result).toEqual({
-      duplicateResume: false,
-      duplicateSchedule: false,
-      firstSchedule: true,
-      notifications: 1,
-      pendingAfterRegistryRemoval: true,
-      pendingDuringGrace: true,
-      pendingFromAttemptMetadata: true,
-      probeRevision: 4,
-      retainedKey: 'candidate:Target',
-      status: 'probing',
-      treeRefreshes: 1,
-    });
-  });
+      expect(context.__result).toEqual({
+        duplicateResume: false,
+        duplicateSchedule: false,
+        firstSchedule: true,
+        notifications: 1,
+        pendingAfterRegistryRemoval: true,
+        pendingDuringGrace: true,
+        pendingFromAttemptMetadata: true,
+        probeRevision: 4,
+        retainedKey: 'candidate:Target',
+        status: 'probing',
+        treeRefreshes: 1,
+      });
+    },
+  );
 
   /** Keeps both minimum-shape modes locked through trace settlement and resumes only their state. */
   it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(

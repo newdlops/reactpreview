@@ -14,10 +14,12 @@ interface ConditionTreeNode {
   readonly children: readonly ConditionTreeNode[];
   readonly choiceId?: string;
   readonly conditionId?: string;
+  readonly condition?: Record<string, unknown>;
   readonly id: string;
   readonly kind: string;
   readonly name: string;
   readonly overlayState?: string;
+  readonly props?: Record<string, unknown>;
   readonly role?: string;
   readonly source?: { readonly line: number; readonly path: string };
 }
@@ -101,6 +103,152 @@ describe('Preview Inspector condition UI runtime source', () => {
     expect(source).toContain('Read-only dynamic case');
   });
 
+  /** Labels logical-AND JSX controls as boolean switches in both tree and detail semantics. */
+  it('presents logical-and JSX conditions as boolean switches', () => {
+    const runtime = createConditionUiRuntime([
+      {
+        authoredEnabled: false,
+        effectiveEnabled: true,
+        expression: 'showPanel',
+        falsyLabel: 'hidden',
+        id: 'panel-switch',
+        kind: 'logical-and',
+        line: 12,
+        override: true,
+        sourcePath: '/workspace/Page.tsx',
+        truthyLabel: '<Panel>',
+      },
+    ]);
+    const snapshot = runtime.attachConditions({
+      roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)],
+    });
+    const source = createPreviewInspectorConditionUiRuntimeSource();
+
+    expect(snapshot.roots[0]?.children[0]).toMatchObject({
+      conditionId: 'panel-switch',
+      kind: 'condition',
+      name: 'JSX switch · showPanel · <Panel>',
+    });
+    expect(source).toContain("? 'JSX boolean switch'");
+    expect(source).toContain("role: 'switch'");
+    expect(source).toContain('setPreviewInspectorRenderConditionOverride(condition.id, !enabled)');
+  });
+
+  /** Keeps every static chain guard under its owner even before short-circuit evaluation reaches it. */
+  it('attaches short-circuited logical guards as stable read-only tree switches', () => {
+    const staticConditions = [
+      logicalCondition('guard-a', 'session', 'fingerprint-a', 0, 'truthy'),
+      logicalCondition('guard-b', 'session.user', 'fingerprint-b', 1, 'truthy'),
+    ];
+    const outcomes = [
+      {
+        componentNames: ['Panel'],
+        conditions: staticConditions,
+        exportName: 'Page',
+        id: 'visible',
+        kind: 'jsx',
+        sourcePath: '/workspace/Page.tsx',
+      },
+      {
+        componentNames: [],
+        conditions: [logicalCondition('guard-a', 'session', 'fingerprint-a', 0, 'falsy')],
+        exportName: 'Page',
+        id: 'hidden-first',
+        kind: 'empty',
+        sourcePath: '/workspace/Page.tsx',
+      },
+    ];
+    const runtime = createConditionUiRuntime(
+      [
+        {
+          authoredEnabled: false,
+          column: 10,
+          effectiveEnabled: true,
+          expression: 'session',
+          expressionFingerprint: 'fingerprint-a',
+          falsyLabel: 'hidden',
+          id: 'runtime-a',
+          kind: 'logical-and',
+          line: 15,
+          ownerName: 'Page',
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: '<Panel>',
+        },
+      ],
+      { descriptors: [] },
+      () => undefined,
+      outcomes,
+    );
+    const snapshot = runtime.attachConditions({
+      roots: [
+        componentNode('page', 'Page', '/workspace/Page.tsx', 2, [
+          componentNode('nearby-child', 'NearbyChild', '/workspace/Page.tsx', 14),
+        ]),
+      ],
+    });
+    const pageChildren = snapshot.roots[0]?.children ?? [];
+    const first = pageChildren.find((node) => node.name.includes('session ·'));
+    const second = pageChildren.find((node) => node.name.includes('session.user'));
+
+    expect(first).toMatchObject({
+      conditionId: 'runtime-a',
+      id: 'render-condition:logical-and:guard-a:0',
+      props: { effective: true, reached: true },
+    });
+    expect(second).toMatchObject({
+      conditionId: undefined,
+      id: 'render-condition:logical-and:guard-b:1',
+      props: { effective: false, reached: false },
+    });
+    expect(second?.name).toContain('Not reached yet');
+    expect(snapshot.roots[0]?.children[0]?.children).toHaveLength(0);
+  });
+
+  /** Preserves a static row identity when the formerly short-circuited runtime guard appears. */
+  it('upgrades a not-reached guard in place after its predecessor is enabled', () => {
+    const outcome = {
+      componentNames: ['Panel'],
+      conditions: [logicalCondition('guard-b', 'session.user', 'fingerprint-b', 1, 'truthy')],
+      exportName: 'Page',
+      id: 'visible',
+      kind: 'jsx',
+      sourcePath: '/workspace/Page.tsx',
+    };
+    const initial = createConditionUiRuntime([], { descriptors: [] }, () => undefined, [
+      outcome,
+    ]).attachConditions({ roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)] })
+      .roots[0]?.children[0];
+    const reached = createConditionUiRuntime(
+      [
+        {
+          authoredEnabled: true,
+          column: 10,
+          effectiveEnabled: true,
+          expression: 'session.user',
+          expressionFingerprint: 'fingerprint-b',
+          falsyLabel: 'hidden',
+          id: 'runtime-b',
+          kind: 'logical-and',
+          line: 16,
+          ownerName: 'Page',
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: '<Panel>',
+        },
+      ],
+      { descriptors: [] },
+      () => undefined,
+      [outcome],
+    ).attachConditions({ roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)] })
+      .roots[0]?.children[0];
+
+    expect(initial?.id).toBe('render-condition:logical-and:guard-b:1');
+    expect(reached).toMatchObject({
+      conditionId: 'runtime-b',
+      id: initial?.id,
+      props: { reached: true },
+    });
+  });
+
   /** Selects the descriptor target even after the user inspected a sibling or conditional row. */
   it('returns selection to the current file main component', () => {
     const selectExport = vi.fn();
@@ -178,7 +326,68 @@ describe('Preview Inspector condition UI runtime source', () => {
 
     expect(snapshot.roots[0]?.children[0]).toMatchObject({ blocksCurrentTarget: true });
   });
+
+  /** Marks an ordinary logical gate only when path evidence proves the opposite value is required. */
+  it('marks a source-proven target-path logical switch as blocking', () => {
+    const runtime = createConditionUiRuntime(
+      [
+        {
+          authoredEnabled: false,
+          effectiveEnabled: false,
+          expression: 'canRenderTarget',
+          falsyLabel: 'hidden',
+          id: 'target-gate',
+          kind: 'logical-and',
+          reachabilityKey: 'page:target',
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: '<CurrentTarget>',
+        },
+      ],
+      {
+        conditionOnTargetPath: true,
+        conditionTargetValue: true,
+        descriptors: [],
+        selectedCandidate: { id: 'candidate' },
+        selectedDescriptor: { exportName: 'CurrentTarget' },
+        targetReachabilityByKey: new Map([['page:target', { key: 'page:target' }]]),
+      },
+    );
+
+    const snapshot = runtime.attachConditions({
+      roots: [componentNode('page', 'Page', '/workspace/Page.tsx', 2)],
+    });
+
+    expect(snapshot.roots[0]?.children[0]).toMatchObject({
+      blocksCurrentTarget: true,
+      conditionId: 'target-gate',
+    });
+  });
 });
+
+/** Creates one analyzer edge for a guard shared by visible and short-circuited outcomes. */
+function logicalCondition(
+  groupId: string,
+  expression: string,
+  expressionFingerprint: string,
+  guardIndex: number,
+  branch: 'falsy' | 'truthy',
+): Record<string, unknown> {
+  return {
+    branch,
+    column: 10,
+    expression,
+    expressionFingerprint,
+    id: groupId + ':' + branch,
+    kind: 'logical-and',
+    label: branch,
+    line: 15 + guardIndex,
+    logicalAndGroupId: groupId,
+    logicalAndGuardCount: 2,
+    logicalAndGuardIndex: guardIndex,
+    selectable: true,
+    sourcePath: '/workspace/Page.tsx',
+  };
+}
 
 /** Creates one component node carrying JSX-dev source evidence used for condition ownership. */
 function componentNode(
@@ -202,15 +411,18 @@ function createConditionUiRuntime(
   conditions: readonly Record<string, unknown>[],
   previewInspectorSession: Record<string, unknown> = { descriptors: [] },
   selectPreviewInspectorExport: (name: string) => void = () => undefined,
+  outcomes: readonly Record<string, unknown>[] = [],
 ): ConditionUiRuntime {
   const context: {
     __conditionUiRuntime?: ConditionUiRuntime;
     conditions: readonly Record<string, unknown>[];
+    outcomes: readonly Record<string, unknown>[];
     previewInspectorDevtoolsSessionState: Record<string, unknown>;
     previewInspectorSession: Record<string, unknown>;
     selectPreviewInspectorExport: (name: string) => void;
   } = {
     conditions,
+    outcomes,
     previewInspectorDevtoolsSessionState: {},
     previewInspectorSession,
     selectPreviewInspectorExport,
@@ -221,6 +433,7 @@ function createConditionUiRuntime(
         conditions.filter((condition) => condition.kind !== 'switch');
       const readPreviewInspectorRenderChoices = () =>
         conditions.filter((condition) => condition.kind === 'switch');
+      const readPreviewInspectorStaticRenderOutcomes = () => outcomes;
       const normalizePreviewInspectorUiSource = (source) => source;
       const persistPreviewInspectorState = () => undefined;
       const requestPreviewInspectorTreeReveal = () => undefined;

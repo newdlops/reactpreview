@@ -88,6 +88,27 @@ function initializePreviewInspectorConditionState() {
   }
 }
 
+/** Persists lazy outcome/manual reconciliation after project render leaves the current call stack. */
+function schedulePreviewInspectorRenderOutcomeReconciliationPersistence() {
+  if (previewInspectorSession.renderOutcomeReconciliationScheduled === true) return;
+  previewInspectorSession.renderOutcomeReconciliationScheduled = true;
+  previewInspectorScheduleConditionMicrotask(() => {
+    previewInspectorSession.renderOutcomeReconciliationScheduled = false;
+    persistPreviewInspectorState();
+  });
+}
+
+/**
+ * Removes one exact manual decision when a selected whole-return outcome controls the same source.
+ * The caller supplies an outcome value only after source path/line/column/expression matching, so an
+ * inactive branch can reconcile safely when it registers for the first time after outcome selection.
+ */
+function reconcilePreviewInspectorManualOverrideWithOutcome(overrides, controlId, outcomeValue) {
+  if (outcomeValue === undefined || !overrides.delete(controlId)) return false;
+  schedulePreviewInspectorRenderOutcomeReconciliationPersistence();
+  return true;
+}
+
 /** Bounds untrusted compiler metadata before it is retained in the live Inspector registry. */
 function normalizePreviewInspectorConditionMetadata(metadata) {
   const source = metadata !== null && typeof metadata === 'object' ? metadata : {};
@@ -99,12 +120,16 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
   const targetBranch = source.targetBranch === 'truthy' || source.targetBranch === 'falsy'
     ? source.targetBranch
     : undefined;
+  const expressionFingerprint = readText('expressionFingerprint');
   const kind = ['early-return', 'logical-and', 'overlay-visibility', 'ternary'].includes(source.kind)
     ? source.kind
     : 'logical-and';
   return {
+    authoredExpression: readText('authoredExpression', readText('expression', 'conditional render')),
+    ...(source.authoredExpressionNegated === true ? { authoredExpressionNegated: true } : {}),
     column: Number.isSafeInteger(source.column) && source.column > 0 ? source.column : undefined,
     expression: readText('expression', 'conditional render'),
+    ...(expressionFingerprint.length === 0 ? {} : { expressionFingerprint }),
     ...(fallbackBranch === undefined ? {} : { fallbackBranch }),
     falsyLabel: readText('falsyLabel', 'hidden'),
     kind,
@@ -230,13 +255,27 @@ function resolvePreviewInspectorRenderChoice(choiceId, authoredValue, metadata) 
     normalizedMetadata.branches,
   );
   const overrideBranchId = previewInspectorSession.renderChoiceOverrides.get(choiceId);
-  const overrideBranch = normalizedMetadata.branches.find(
+  let overrideBranch = normalizedMetadata.branches.find(
     (branch) => branch.id === overrideBranchId && branch.selectable === true,
   );
   if (typeof overrideBranchId === 'string' && overrideBranch === undefined) {
     previewInspectorSession.renderChoiceOverrides.delete(choiceId);
   }
-  const effectiveBranchId = overrideBranch?.id ?? authoredBranchId;
+  const outcomeBranch = typeof readPreviewInspectorRenderOutcomeChoiceBranch === 'function'
+    ? readPreviewInspectorRenderOutcomeChoiceBranch(normalizedMetadata)
+    : undefined;
+  if (
+    outcomeBranch !== undefined &&
+    reconcilePreviewInspectorManualOverrideWithOutcome(
+      previewInspectorSession.renderChoiceOverrides,
+      choiceId,
+      outcomeBranch,
+    )
+  ) {
+    overrideBranch = undefined;
+  }
+  const selectedBranch = outcomeBranch ?? overrideBranch;
+  const effectiveBranchId = selectedBranch?.id ?? authoredBranchId;
   const metadataSignature = JSON.stringify(normalizedMetadata);
   const records = previewInspectorSession.renderChoices;
   const previous = records.get(choiceId);
@@ -253,21 +292,24 @@ function resolvePreviewInspectorRenderChoice(choiceId, authoredValue, metadata) 
       schedulePreviewInspectorConditionRegistryRefresh();
     }
   }
-  if (overrideBranch === undefined) return authoredValue;
-  if (overrideBranch.default === true) {
+  if (selectedBranch === undefined) return authoredValue;
+  if (selectedBranch.default === true) {
     return Symbol('React Preview forced switch default');
   }
-  return overrideBranch.value;
+  return selectedBranch.value;
 }
 
 /** Reports whether two retained records differ in a way visible to the component tree UI. */
 function didPreviewInspectorConditionChange(previous, next) {
   if (previous === undefined) return true;
   for (const name of [
+    'authoredExpression',
+    'authoredExpressionNegated',
     'authoredEnabled',
     'column',
     'effectiveEnabled',
     'expression',
+    'expressionFingerprint',
     'fallbackBranch',
     'falsyLabel',
     'kind',
@@ -350,8 +392,10 @@ function rememberPreviewInspectorDirectTargetCondition(conditionId) {
 }
 
 /**
- * Resolves one compiler-issued condition without changing authored semantics unless a user forced it.
- * A truthy authored object is returned unchanged so logical-and retains its exact normal result.
+ * Resolves one compiler-issued condition from an exact whole-outcome choice, a manual edit, bounded
+ * automatic continuation, or authored semantics in that order. A truthy authored object is returned
+ * unchanged when no override applies so logical-and retains its exact normal result. The Inspector
+ * presents that branch as a boolean switch without coercing project values in authored mode.
  */
 function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, metadata) {
   initializePreviewInspectorConditionState();
@@ -364,13 +408,22 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
   }
   const overrides = previewInspectorSession.renderConditionOverrides;
   const autoOverrides = previewInspectorSession.renderConditionAutoOverrides;
-  const override = overrides.get(conditionId);
+  let override = overrides.get(conditionId);
   let autoOverride = autoOverrides.get(conditionId);
   const authoredEnabled = Boolean(authoredValue);
   const normalizedMetadata = normalizePreviewInspectorConditionMetadata(metadata);
+  const outcomeOverride = typeof readPreviewInspectorRenderOutcomeConditionOverride === 'function'
+    ? readPreviewInspectorRenderOutcomeConditionOverride(normalizedMetadata)
+    : undefined;
+  if (
+    typeof outcomeOverride === 'boolean' &&
+    reconcilePreviewInspectorManualOverrideWithOutcome(overrides, conditionId, outcomeOverride)
+  ) {
+    override = undefined;
+  }
   const directContinuation = readPreviewInspectorDirectContinuationOverride(
     normalizedMetadata,
-    override,
+    override ?? outcomeOverride,
     autoOverride,
   );
   if (directContinuation !== undefined) {
@@ -378,7 +431,7 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     autoOverrides.set(conditionId, directContinuation);
     autoOverride = directContinuation;
   }
-  const effectiveEnabled = override ?? autoOverride ?? authoredEnabled;
+  const effectiveEnabled = outcomeOverride ?? override ?? autoOverride ?? authoredEnabled;
   const records = previewInspectorSession.renderConditions;
   const previous = records.get(conditionId);
   const reachabilityKey =
@@ -435,10 +488,54 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
       },
     });
   }
-  const selectedOverride = override ?? autoOverride;
+  const selectedOverride = override ?? outcomeOverride ?? autoOverride;
   if (selectedOverride === undefined) return authoredValue;
   if (selectedOverride === false) return false;
   return authoredEnabled ? authoredValue : true;
+}
+
+/**
+ * Evaluates one logical-AND guard behind an error boundary owned by the preview runtime.
+ *
+ * A preceding manually revealed guard can expose a dependent expression that authored JavaScript
+ * previously short-circuited, such as session.user when session is null. That missing value must
+ * become the next visible condition switch instead of aborting the component render. Normal values
+ * still pass through the shared resolver unchanged, preserving object identity and exact falsy values.
+ */
+function resolvePreviewInspectorRenderConditionLazy(conditionId, evaluateAuthoredValue, metadata) {
+  let authoredValue;
+  try {
+    if (typeof evaluateAuthoredValue !== 'function') {
+      throw new TypeError('Render condition evaluator must be a function.');
+    }
+    authoredValue = evaluateAuthoredValue();
+  } catch (error) {
+    const normalizedMetadata = normalizePreviewInspectorConditionMetadata(metadata);
+    if (typeof recordPreviewInspectorConsoleEntry === 'function') {
+      let errorDescription = 'Unknown condition evaluation error';
+      try {
+        errorDescription = error instanceof Error
+          ? error.name + ': ' + error.message
+          : String(error);
+      } catch {
+        /* Keep the neutral error description when a hostile thrown value cannot be formatted. */
+      }
+      const sourceLocation = normalizedMetadata.sourcePath +
+        (normalizedMetadata.line === undefined ? '' : ':' + String(normalizedMetadata.line)) +
+        (normalizedMetadata.column === undefined ? '' : ':' + String(normalizedMetadata.column));
+      recordPreviewInspectorConsoleEntry({
+        details: 'Condition: ' + normalizedMetadata.authoredExpression + '\n' + errorDescription,
+        error,
+        level: 'warn',
+        location: sourceLocation,
+        message: '[React Preview] Render condition evaluation failed; authored value treated as false.',
+        phase: 'evaluate-render-condition',
+        source: 'render-condition',
+      });
+    }
+    return resolvePreviewInspectorRenderCondition(conditionId, false, metadata);
+  }
+  return resolvePreviewInspectorRenderCondition(conditionId, authoredValue, metadata);
 }
 
 /** Returns a sorted serializable inventory for condition nodes in the Inspector tree. */
@@ -483,15 +580,20 @@ function readPreviewInspectorRenderChoices() {
  */
 function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) {
   initializePreviewInspectorConditionState();
-  if (!previewInspectorSession.renderConditions.has(conditionId) || typeof enabled !== 'boolean') {
+  const record = previewInspectorSession.renderConditions.get(conditionId);
+  if (record === undefined || typeof enabled !== 'boolean') {
     return false;
   }
+  /* A complete current-file return choice is user intent; DFS must not fight that scenario. */
+  if (
+    typeof isPreviewInspectorRenderConditionControlledByOutcome === 'function' &&
+    isPreviewInspectorRenderConditionControlledByOutcome(record)
+  ) return false;
   if (previewInspectorSession.renderConditionAutoOverrides.get(conditionId) === enabled) {
     return false;
   }
   previewInspectorSession.renderConditionAutoOverrides.set(conditionId, enabled);
-  const record = previewInspectorSession.renderConditions.get(conditionId);
-  if (record !== undefined && !previewInspectorSession.renderConditionOverrides.has(conditionId)) {
+  if (!previewInspectorSession.renderConditionOverrides.has(conditionId)) {
     previewInspectorSession.renderConditions.set(conditionId, {
       ...record,
       effectiveEnabled: enabled,
@@ -575,8 +677,10 @@ function rollbackPreviewInspectorFailedAutoDecision(traceId) {
   ) {
     return false;
   }
-  previewInspectorSession.renderConditionAutoOverrides.delete(attempt.conditionId);
   const record = previewInspectorSession.renderConditions.get(attempt.conditionId);
+  /* Keep overlays visible when their newly exposed child fails; closing them recreates a loop. */
+  if (record?.role === 'overlay') return false;
+  previewInspectorSession.renderConditionAutoOverrides.delete(attempt.conditionId);
   if (record !== undefined) {
     previewInspectorSession.renderConditions.set(attempt.conditionId, {
       ...record,
@@ -755,16 +859,22 @@ function readPreviewInspectorFallbackValuesEnabled() {
   return previewInspectorSession.fallbackValuesEnabled;
 }
 
-/** Toggles all preview-generated prop values while preserving setup and real parent props. */
-function setPreviewInspectorFallbackValuesEnabled(enabled) {
+/**
+ * Toggles preview-generated prop values and optionally leaves persistence/render notification to a
+ * larger transaction. The revision always advances before returning a successful mutation.
+ */
+function setPreviewInspectorFallbackValuesEnabled(enabled, commit = true) {
   initializePreviewInspectorConditionState();
   const normalized = enabled === true;
-  if (previewInspectorSession.fallbackValuesEnabled === normalized) return;
+  if (previewInspectorSession.fallbackValuesEnabled === normalized) return false;
   previewInspectorSession.fallbackValuesEnabled = normalized;
   previewInspectorSession.renderConditionRevision += 1;
-  persistPreviewInspectorState();
-  notifyPreviewInspector();
-  schedulePreviewInspectorHighlight();
+  if (commit) {
+    persistPreviewInspectorState();
+    notifyPreviewInspector();
+    schedulePreviewInspectorHighlight();
+  }
+  return true;
 }
 
 /** Returns the remount key shared by branch and automatic-value controls. */

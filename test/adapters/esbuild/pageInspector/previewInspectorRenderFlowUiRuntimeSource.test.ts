@@ -80,6 +80,10 @@ interface RenderFlow {
     readonly toId: string;
   }[];
   readonly graphNodes: readonly RenderStep[];
+  readonly mainPathEdgeIds: readonly string[];
+  readonly mainPathEntryStepId?: string;
+  readonly mainPathNodeIds: readonly string[];
+  readonly mainPathTargetStepId?: string;
   readonly renderStages: number;
   readonly renderStepById: Map<string, RenderStep>;
   readonly renderSteps: readonly RenderStep[];
@@ -93,6 +97,17 @@ interface RenderFlow {
 /** Pure generated fixture API. */
 interface RenderFlowRuntime {
   readonly createFlow: (snapshot: { readonly roots: readonly RenderNode[] }) => RenderFlow;
+  readonly createMainPath: (
+    edges: readonly {
+      readonly active: boolean;
+      readonly certainty: string;
+      readonly fromId: string;
+      readonly id: string;
+      readonly toId: string;
+    }[],
+    entryStepId: string,
+    targetStepId: string,
+  ) => { readonly edgeIds: readonly string[]; readonly nodeIds: readonly string[] };
 }
 
 /** Creates one component node with deterministic render/source identities. */
@@ -212,6 +227,18 @@ describe('Preview Inspector JSX render-flow model', () => {
       ]),
     );
     expect(flow.graphNodes).toBe(flow.renderSteps);
+    expect(flow.mainPathEntryStepId).toBe('render-entry:app');
+    expect(flow.mainPathTargetStepId).toBe('render-entry:target');
+    expect(flow.mainPathNodeIds).toEqual([
+      'render-entry:app',
+      'condition:auth',
+      'render-branch:condition:auth:truthy',
+      'render-branch:condition:auth:truthy:call:0',
+      'render-join:condition:auth',
+      'render-return:app',
+      'render-entry:target',
+    ]);
+    expect(flow.mainPathNodeIds).not.toContain('render-entry:chart');
     expect(flow.renderStepById.get('render-entry:chart')?.predecessorIds).toEqual([
       'render-return:target',
     ]);
@@ -221,6 +248,58 @@ describe('Preview Inspector JSX render-flow model', () => {
     expect(flow.renderStepById.get('render-entry:chart')?.level).toBe(
       flow.renderStepById.get('render-entry:toolbar')?.level,
     );
+  });
+
+  /** Keeps BFS shortest distance primary, then prefers active and confirmed evidence deterministically. */
+  it('chooses one stable active-first and confirmed-first shortest graph route', () => {
+    const runtime = evaluateRenderFlowRuntime();
+    const createEdge = (
+      id: string,
+      fromId: string,
+      toId: string,
+      active: boolean,
+      certainty: string,
+    ): {
+      readonly active: boolean;
+      readonly certainty: string;
+      readonly fromId: string;
+      readonly id: string;
+      readonly toId: string;
+    } => ({ active, certainty, fromId, id, toId });
+    const activeFirst = runtime.createMainPath(
+      [
+        createEdge('inactive-a', 'entry', 'inactive', false, 'confirmed'),
+        createEdge('active-a', 'entry', 'active', true, 'conditional'),
+        createEdge('inactive-b', 'inactive', 'target', true, 'confirmed'),
+        createEdge('active-b', 'active', 'target', true, 'conditional'),
+      ],
+      'entry',
+      'target',
+    );
+    const confirmedFirst = runtime.createMainPath(
+      [
+        createEdge('conditional-a', 'entry', 'conditional', true, 'conditional'),
+        createEdge('confirmed-a', 'entry', 'confirmed', true, 'confirmed'),
+        createEdge('conditional-b', 'conditional', 'target', true, 'conditional'),
+        createEdge('confirmed-b', 'confirmed', 'target', true, 'confirmed'),
+      ],
+      'entry',
+      'target',
+    );
+    const shortestFirst = runtime.createMainPath(
+      [
+        createEdge('short-inactive', 'entry', 'target', false, 'conditional'),
+        createEdge('long-active-a', 'entry', 'middle', true, 'confirmed'),
+        createEdge('long-active-b', 'middle', 'target', true, 'confirmed'),
+      ],
+      'entry',
+      'target',
+    );
+
+    expect(activeFirst.edgeIds).toEqual(['active-a', 'active-b']);
+    expect(activeFirst.nodeIds).toEqual(['entry', 'active', 'target']);
+    expect(confirmedFirst.edgeIds).toEqual(['confirmed-a', 'confirmed-b']);
+    expect(shortestFirst.edgeIds).toEqual(['short-inactive']);
   });
 
   /** Marks only the exact selected function entry while retaining its internal steps as context. */
@@ -631,6 +710,13 @@ function evaluateRenderFlowRuntime(
         const relative = leftAbsolute ? right : left;
         return relative.length > 0 && absolute.endsWith('/' + relative.replace(/^\\.\\//u, ''));
       };
+      const isPreviewInspectorReferencedRenderOutcomeTargetNode = (node, reference) =>
+        reference !== undefined && node?.currentFileExport === true &&
+        node?.exportName === reference.exportName &&
+        matchesPreviewInspectorConditionSourcePath(node?.source?.path ?? '', reference.sourcePath);
+      const readPreviewInspectorStaticRenderOutcomes = () => [];
+      const appendPreviewInspectorStaticRenderOutcomes = () => undefined;
+      const appendPreviewInspectorStaticApplicationRenderPath = () => undefined;
       const readPreviewInspectorBlockerFlowTargetOwnerIds = (nodes, path = []) => {
         let fallback;
         for (const node of nodes ?? []) {
@@ -645,7 +731,10 @@ function evaluateRenderFlowRuntime(
       };
       const createPreviewInspectorBlockerFlow = () => globalThis.__blockerFlow;
       ${createPreviewInspectorRenderFlowUiRuntimeSource()}
-      globalThis.__runtime = { createFlow: createPreviewInspectorRenderFlow };
+      globalThis.__runtime = {
+        createFlow: createPreviewInspectorRenderFlow,
+        createMainPath: createPreviewInspectorRenderFlowMainPath,
+      };
     `,
     Object.assign(context, { __blockerFlow: blockerFlow }),
   );

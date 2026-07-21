@@ -112,6 +112,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallback');
     expect(source).toContain('smartFillPreviewInspectorTargetFailure');
+    expect(source).toContain('refreshPreviewInspectorExport(failure.exportName)');
     expect(source).toContain('createPreviewInspectorSmartPropsDraft');
     expect(source).toContain('applyPreviewInspectorSmartProps');
     expect(source).toContain('autoPassPreviewInspectorRuntimeFallback');

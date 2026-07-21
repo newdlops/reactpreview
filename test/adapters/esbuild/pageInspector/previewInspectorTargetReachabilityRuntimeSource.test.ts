@@ -307,7 +307,9 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('smartFillPreviewInspectorTargetApplicationPath');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallbacksForReachability');
     expect(source).toContain('smartFillPreviewInspectorDataPayloadsForReachability');
-    expect(source).toContain('autoRevealPreviewInspectorOverlayTarget(state.targetExportName)');
+    expect(source).toContain(
+      'autoRevealPreviewInspectorOverlayTarget(state.targetExportName, state.key)',
+    );
     expect(source).not.toContain('OVERLAY_TARGET_NAME_PATTERN');
     expect(source).toContain('startPreviewInspectorDeterministicRequirementSearch');
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
@@ -689,6 +691,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
         const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
           applied.push([id, enabled]);
+          return true;
         };
         ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {

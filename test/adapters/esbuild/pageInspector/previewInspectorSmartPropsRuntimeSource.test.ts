@@ -26,10 +26,17 @@ interface SmartPropsRuntime {
 
 /** Result of the deterministic hidden-overlay recovery path. */
 interface OverlayRevealRuntime {
+  readonly commits: number;
   readonly decisions: readonly Readonly<Record<string, unknown>>[];
+  readonly fallbackCommitModes: readonly boolean[];
   readonly fallbackEnabled: boolean;
+  readonly manualOverride: Readonly<Record<string, unknown>>;
   readonly path?: string;
+  readonly persists: number;
+  readonly propsCommitModes: readonly boolean[];
+  readonly repeatedPath?: string;
   readonly storedOverride: Readonly<Record<string, unknown>>;
+  readonly updates: number;
 }
 
 /** Result of correlating one React target error to compiler-proven external props. */
@@ -125,15 +132,21 @@ describe('Preview Inspector Smart props runtime source', () => {
     const runtime = evaluateOverlayRevealRuntime();
 
     expect(runtime.path).toBe('show');
+    expect(runtime.repeatedPath).toBeUndefined();
     expect(runtime.fallbackEnabled).toBe(true);
-    expect(runtime.storedOverride).toEqual({ show: true, title: '' });
+    expect(runtime.manualOverride).toEqual({});
+    expect(runtime.storedOverride).toEqual({ show: true });
+    expect(runtime.fallbackCommitModes).toEqual([false]);
+    expect(runtime.propsCommitModes).toEqual([false]);
+    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
     expect(runtime.decisions).toEqual([
       expect.objectContaining({
         blockerId: 'target-overlay:DeleteModal',
         generatedPaths: ['show'],
         mode: 'target-overlay-auto',
-        selectedValue: { show: true, title: '' },
+        selectedValue: { show: true },
         startsRenderAttempt: true,
+        targetReachabilityKey: 'page:DeleteModal',
       }),
     ]);
   });
@@ -144,8 +157,20 @@ describe('Preview Inspector Smart props runtime source', () => {
 
     expect(runtime.path).toBeUndefined();
     expect(runtime.fallbackEnabled).toBe(false);
+    expect(runtime.manualOverride).toEqual({ show: false });
     expect(runtime.storedOverride).toEqual({});
     expect(runtime.decisions).toEqual([]);
+    expect(runtime).toMatchObject({ commits: 0, persists: 0, updates: 0 });
+  });
+
+  /** Preserves unrelated user JSON while adding visibility in the lower automatic prop layer. */
+  it('reveals a modal without replacing an unrelated user prop', () => {
+    const runtime = evaluateOverlayRevealRuntime({ title: 'Delete account' });
+
+    expect(runtime.path).toBe('show');
+    expect(runtime.manualOverride).toEqual({ title: 'Delete account' });
+    expect(runtime.storedOverride).toEqual({ show: true });
+    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
   });
 
   /** Leaves two independent visibility switches for the user because neither is uniquely proven. */
@@ -156,6 +181,7 @@ describe('Preview Inspector Smart props runtime source', () => {
     expect(runtime.fallbackEnabled).toBe(false);
     expect(runtime.storedOverride).toEqual({});
     expect(runtime.decisions).toEqual([]);
+    expect(runtime).toMatchObject({ commits: 0, persists: 0, updates: 0 });
   });
 
   /** Maps React's authored function name back to a default export before filling its array prop. */
@@ -259,9 +285,14 @@ function evaluateOverlayRevealRuntime(
   vm.runInNewContext(
     `
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+      let commits = 0;
       const decisions = [];
+      const fallbackCommitModes = [];
       let fallbackEnabled = false;
+      let persists = 0;
+      const propsCommitModes = [];
       let storedOverride = {};
+      let updates = 0;
       const previewInspectorSession = {
         basePropsByExport: new Map(),
         descriptors: [{
@@ -279,19 +310,46 @@ function evaluateOverlayRevealRuntime(
         overridesByExport: new Map(${JSON.stringify(
           overrideProps === undefined ? [] : [['DeleteModal', overrideProps]],
         )}),
+        resolverPropsByExport: new Map(),
       };
       const readSelectedPreviewInspectorPageCandidate = () => undefined;
       const createPreviewInspectorRootName = (root) => root.exportName;
-      const setPreviewInspectorFallbackValuesEnabled = (value) => { fallbackEnabled = value; };
-      const setPreviewInspectorPropsOverride = (_exportName, value) => { storedOverride = value; };
+      const setPreviewInspectorFallbackValuesEnabled = (value, commit = true) => {
+        fallbackCommitModes.push(commit);
+        fallbackEnabled = value;
+      };
+      const setPreviewInspectorResolverPropsOverride = (exportName, value, commit = true) => {
+        propsCommitModes.push(commit);
+        storedOverride = value;
+        previewInspectorSession.resolverPropsByExport.set(exportName, value);
+      };
+      const persistPreviewInspectorState = () => { persists += 1; };
+      const notifyPreviewInspector = () => { updates += 1; };
+      const schedulePreviewInspectorCommitRefresh = () => { commits += 1; };
       const recordPreviewInspectorBlockerAutoDecision = (decision) => decisions.push(decision);
       ${createPreviewAutomaticPropsRuntimeSource()}
       ${createPreviewInspectorFailureEvidenceRuntimeSource()}
       ${createPreviewInspectorGeneratedValueRuntimeSource()}
       ${createPreviewInspectorBlockerValueRuntimeSource()}
       ${createPreviewInspectorSmartPropsRuntimeSource()}
-      const path = autoRevealPreviewInspectorOverlayTarget('DeleteModal');
-      globalThis.__overlayReveal = { decisions, fallbackEnabled, path, storedOverride };
+      const path = autoRevealPreviewInspectorOverlayTarget('DeleteModal', 'page:DeleteModal');
+      const repeatedPath = autoRevealPreviewInspectorOverlayTarget(
+        'DeleteModal',
+        'page:DeleteModal',
+      );
+      globalThis.__overlayReveal = {
+        commits,
+        decisions,
+        fallbackCommitModes,
+        fallbackEnabled,
+        manualOverride: previewInspectorSession.overridesByExport.get('DeleteModal') ?? {},
+        path,
+        persists,
+        propsCommitModes,
+        repeatedPath,
+        storedOverride,
+        updates,
+      };
     `,
     context,
   );

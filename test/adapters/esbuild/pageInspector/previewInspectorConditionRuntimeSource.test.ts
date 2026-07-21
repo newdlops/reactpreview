@@ -8,6 +8,7 @@ interface ConditionRuntimeHarness {
   readonly rememberDirectOwner: (exportName: string, ownerName: string) => void;
   readonly readChoices: () => readonly Record<string, unknown>[];
   readonly readConditions: () => readonly Record<string, unknown>[];
+  readonly readConsoleEntries: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
   readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
   readonly resetCondition: (conditionId: string) => void;
@@ -20,6 +21,11 @@ interface ConditionRuntimeHarness {
   readonly resolveCondition: (
     conditionId: string,
     authoredValue: unknown,
+    metadata: Record<string, unknown>,
+  ) => unknown;
+  readonly resolveConditionLazy: (
+    conditionId: string,
+    evaluateAuthoredValue: () => unknown,
     metadata: Record<string, unknown>,
   ) => unknown;
   readonly session: Record<string, unknown>;
@@ -39,6 +45,7 @@ describe('Preview Inspector condition runtime source', () => {
     const truthyValue = { loaded: true };
     const metadata = {
       expression: 'data',
+      expressionFingerprint: 'a'.repeat(64),
       falsyLabel: '<LoadingFallback>',
       kind: 'ternary',
       sourcePath: '/workspace/Page.tsx',
@@ -50,6 +57,7 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.readConditions()[0]).toMatchObject({
       authoredEnabled: true,
       effectiveEnabled: true,
+      expressionFingerprint: 'a'.repeat(64),
       override: undefined,
     });
 
@@ -70,6 +78,91 @@ describe('Preview Inspector condition runtime source', () => {
     });
     expect(harness.getRevision()).toBe(3);
     expect(persist).toHaveBeenCalledTimes(3);
+  });
+
+  /** Presents logical JSX guards as switches without coercing their authored JavaScript values. */
+  it('preserves object identity and exact falsy values behind logical-and switches', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const authoredObject = { permission: 'granted' };
+    const metadata = {
+      expression: 'permission',
+      falsyLabel: 'hidden',
+      kind: 'logical-and',
+      sourcePath: '/workspace/Page.tsx',
+      truthyLabel: '<PrivatePanel>',
+    };
+
+    expect(harness.resolveCondition('logical-object', authoredObject, metadata)).toBe(
+      authoredObject,
+    );
+    expect(harness.resolveCondition('logical-zero', 0, metadata)).toBe(0);
+
+    harness.setCondition('logical-object', false);
+    expect(harness.resolveCondition('logical-object', authoredObject, metadata)).toBe(false);
+
+    harness.setCondition('logical-zero', true);
+    expect(harness.resolveCondition('logical-zero', 0, metadata)).toBe(true);
+    harness.resetCondition('logical-zero');
+    expect(harness.resolveCondition('logical-zero', 0, metadata)).toBe(0);
+  });
+
+  /** Converts newly exposed dependent-property failures into another controllable render gate. */
+  it('lazily catches dependent guard errors while preserving authored values and short circuiting', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      authoredExpression: 'session',
+      column: 10,
+      expression: 'session',
+      falsyLabel: 'hidden',
+      kind: 'logical-and',
+      line: 4,
+      sourcePath: '/workspace/Page.tsx',
+      truthyLabel: '<Panel>',
+    };
+    const authoredObject = { user: { id: 1 } };
+
+    expect(
+      harness.resolveConditionLazy('logical-object-lazy', () => authoredObject, metadata),
+    ).toBe(authoredObject);
+    expect(harness.resolveConditionLazy('logical-zero-lazy', () => 0, metadata)).toBe(0);
+
+    const session: { user: unknown } | null = null;
+    let dependentEvaluations = 0;
+    const renderDependentChain = (): unknown =>
+      harness.resolveConditionLazy('session-gate', () => session, metadata) &&
+      harness.resolveConditionLazy(
+        'user-gate',
+        () => {
+          dependentEvaluations += 1;
+          return (session as unknown as { user: unknown }).user;
+        },
+        { ...metadata, authoredExpression: 'session.user', column: 21, expression: 'session.user' },
+      ) &&
+      'panel-rendered';
+
+    expect(renderDependentChain()).toBe(null);
+    expect(dependentEvaluations).toBe(0);
+
+    harness.setCondition('session-gate', true);
+    expect(renderDependentChain()).toBe(false);
+    expect(dependentEvaluations).toBe(1);
+    expect(harness.readConditions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ authoredEnabled: false, id: 'user-gate' }),
+      ]),
+    );
+    expect(harness.readConsoleEntries()).toEqual([
+      expect.objectContaining({
+        level: 'warn',
+        location: '/workspace/Page.tsx:4:21',
+        phase: 'evaluate-render-condition',
+        source: 'render-condition',
+      }),
+    ]);
+
+    harness.setCondition('user-gate', true);
+    expect(renderDependentChain()).toBe('panel-rendered');
+    expect(dependentEvaluations).toBe(2);
   });
 
   /** Keeps multi-way choices separate and forces only compiler-proven literal/default branches. */
@@ -231,11 +324,11 @@ describe('Preview Inspector condition runtime source', () => {
   it('rolls back and rejects a failed target-guided condition without touching user state', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn());
     const metadata = {
-      expression: '<DocumentPreviewModal>.open: open',
-      kind: 'overlay-visibility',
-      ownerName: 'Modal',
-      role: 'overlay',
-      sourcePath: '/workspace/document-preview-modal.tsx',
+      expression: '<GuardedPage> gate: !session',
+      kind: 'early-return',
+      ownerName: 'GuardedPage',
+      sourcePath: '/workspace/guarded-page.tsx',
+      targetBranch: 'falsy',
     };
     harness.session.activeTargetReachabilityKey = 'candidate:SelectedField';
     harness.session.targetReachabilityByKey = new Map([
@@ -272,6 +365,27 @@ describe('Preview Inspector condition runtime source', () => {
       ],
       status: 'recovering-after-rejected-gate',
     });
+  });
+
+  /** Keeps a revealed modal mounted when its child exposes a new data/runtime failure. */
+  it('does not roll back an overlay visibility decision after a descendant error', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      expression: '<DocumentPreviewModal>.open: open',
+      kind: 'overlay-visibility',
+      ownerName: 'DocumentPreviewModal',
+      role: 'overlay',
+      sourcePath: '/workspace/document-preview-modal.tsx',
+    };
+    harness.session.activeTargetReachabilityKey = 'candidate:DocumentPreviewModal';
+
+    expect(harness.resolveCondition('modal-open', false, metadata)).toBe(false);
+    expect(harness.setAutoCondition('modal-open', true)).toBe(true);
+    expect(harness.rollbackAutoDecision('condition-trace-1')).toBe(false);
+    expect(harness.resolveCondition('modal-open', false, metadata)).toBe(true);
+    expect(harness.isAutoConditionRejected('modal-open', 'candidate:DocumentPreviewModal')).toBe(
+      false,
+    );
   });
 
   /** Bypasses one proven direct-target guard before expensive reverse page discovery completes. */
@@ -376,6 +490,11 @@ function createConditionRuntimeHarness(
       const schedulePreviewInspectorCommitRefresh = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
       const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const recordedConsoleEntries = [];
+      const recordPreviewInspectorConsoleEntry = (candidate) => {
+        recordedConsoleEntries.push(candidate);
+        return candidate;
+      };
       let automaticTraceSequence = 0;
       const recordPreviewInspectorBlockerAutoDecision = (candidate) => {
         if (candidate?.startsRenderAttempt !== true) return undefined;
@@ -392,12 +511,14 @@ function createConditionRuntimeHarness(
         },
         readChoices: readPreviewInspectorRenderChoices,
         readConditions: readPreviewInspectorRenderConditions,
+        readConsoleEntries: () => recordedConsoleEntries.slice(),
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
         isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
         resetCondition: resetPreviewInspectorRenderConditionOverride,
         resetChoice: resetPreviewInspectorRenderChoiceOverride,
         resolveChoice: resolvePreviewInspectorRenderChoice,
         resolveCondition: resolvePreviewInspectorRenderCondition,
+        resolveConditionLazy: resolvePreviewInspectorRenderConditionLazy,
         rollbackAutoDecision: rollbackPreviewInspectorFailedAutoDecision,
         session: previewInspectorSession,
         setAutoCondition: setPreviewInspectorTargetGuidedConditionOverride,

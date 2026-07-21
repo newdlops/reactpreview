@@ -21,6 +21,7 @@ import { createPreviewInspectorPropsUiRuntimeSource } from './previewInspectorPr
 import { createPreviewInspectorRefreshRuntimeSource } from './previewInspectorRefreshRuntimeSource';
 import { createPreviewInspectorRuntimeCorrelationSource } from './previewInspectorRuntimeCorrelationSource';
 import { createPreviewInspectorRuntimeHealthSource } from './previewInspectorRuntimeHealthSource';
+import { createPreviewInspectorRenderOutcomeRuntimeSource } from './previewInspectorRenderOutcomeRuntimeSource';
 import { createPreviewInspectorStateRuntimeSource } from './previewInspectorStateRuntimeSource';
 import { createPreviewInspectorTargetBoundaryRuntimeSource } from './previewInspectorTargetBoundaryRuntimeSource';
 import { createPreviewInspectorTargetAttemptRuntimeSource } from './previewInspectorTargetAttemptRuntimeSource';
@@ -61,6 +62,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const refreshRuntimeSource = createPreviewInspectorRefreshRuntimeSource();
   const runtimeCorrelationSource = createPreviewInspectorRuntimeCorrelationSource();
   const runtimeHealthSource = createPreviewInspectorRuntimeHealthSource();
+  const renderOutcomeRuntimeSource = createPreviewInspectorRenderOutcomeRuntimeSource();
   const stateRuntimeSource = createPreviewInspectorStateRuntimeSource();
   const targetBoundaryRuntimeSource = createPreviewInspectorTargetBoundaryRuntimeSource();
   const targetAttemptRuntimeSource = createPreviewInspectorTargetAttemptRuntimeSource();
@@ -141,6 +143,8 @@ ${stateRuntimeSource}
 
 ${dataRuntimeSource}
 
+${renderOutcomeRuntimeSource}
+
 ${conditionRuntimeSource}
 
 ${targetReachabilityRuntimeSource}
@@ -191,9 +195,12 @@ function createPreviewInspectorSession() {
     overridesByExport: new Map(
       persistedOverrides.filter(([, value]) => value !== null && typeof value === 'object'),
     ),
+    instanceEpochByExport: new Map(),
     pickerCandidate: undefined,
     pickerEnabled: false,
     propsRevisionByExport: new Map(),
+    resolverPropsByExport: new Map(),
+    resolverPropsRevision: previewEntryRevision,
     renderScenario:
       persisted.renderScenario === 'file-components' ? 'file-components' : 'authored-page',
     selectedExportName:
@@ -211,6 +218,13 @@ function createPreviewInspectorSession() {
 const previewInspectorSession =
   previewHotRuntime.inspectorSession ?? createPreviewInspectorSession();
 previewHotRuntime.inspectorSession = previewInspectorSession;
+previewInspectorSession.instanceEpochByExport ??= new Map();
+if (previewInspectorSession.resolverPropsRevision !== previewEntryRevision) {
+  /* Automatic overlay props belong only to one built source revision, never persisted user state. */
+  previewInspectorSession.resolverPropsByExport = new Map();
+  previewInspectorSession.resolverPropsRevision = previewEntryRevision;
+}
+previewInspectorSession.resolverPropsByExport ??= new Map();
 previewInspectorSession.treeListeners ??= new Set();
 previewInspectorSession.treeDirty ??= true;
 
@@ -292,7 +306,9 @@ function setPreviewInspectorDescriptors(descriptors) {
   for (const registry of [
     previewInspectorSession.basePropsByExport,
     previewInspectorSession.basePropsFingerprintByExport,
+    previewInspectorSession.instanceEpochByExport,
     previewInspectorSession.propsRevisionByExport,
+    previewInspectorSession.resolverPropsByExport,
   ]) {
     for (const name of registry.keys()) if (!activeNames.has(name)) registry.delete(name);
   }
@@ -554,36 +570,91 @@ function selectPreviewInspectorExport(exportName) {
   schedulePreviewInspectorCommitRefresh();
 }
 
-/** Stores a JSON-safe prop override, preserving inferred callbacks as visible no-op sentinels. */
-function setPreviewInspectorPropsOverride(exportName, value) {
+/**
+ * Stores a JSON-safe prop override and optionally leaves persistence/notification to a batch. A
+ * non-committing write still advances the input revision so the batch's one notification can retry
+ * a failed boundary without replacing a healthy component instance.
+ */
+function setPreviewInspectorPropsOverride(exportName, value, commit = true) {
   if (typeof exportName !== 'string' || exportName.length === 0) {
-    return;
+    return false;
   }
   const serializedValue = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
   previewInspectorSession.overridesByExport.set(
     exportName,
     normalizePreviewInspectorProps(serializedValue),
   );
-  remountPreviewInspectorExport(exportName, false);
-  persistPreviewInspectorState();
+  if (commit) {
+    refreshPreviewInspectorExport(exportName, false);
+    persistPreviewInspectorState();
+  } else {
+    const currentRevision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
+    previewInspectorSession.propsRevisionByExport.set(exportName, currentRevision + 1);
+  }
+  return true;
 }
 
-/** Removes every user override from one export and remounts it from observed page props. */
+/**
+ * Stores one revision-local automatic prop layer below explicit user JSON.
+ * The map is intentionally absent from webview persistence and is reset only by a new built entry;
+ * ordinary condition/data refreshes therefore cannot close and recreate an already revealed modal.
+ */
+function setPreviewInspectorResolverPropsOverride(exportName, value, commit = true) {
+  if (typeof exportName !== 'string' || exportName.length === 0) return false;
+  const serializedValue = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
+  previewInspectorSession.resolverPropsByExport.set(
+    exportName,
+    normalizePreviewInspectorProps(serializedValue),
+  );
+  if (commit) {
+    refreshPreviewInspectorExport(exportName, false);
+  } else {
+    const revision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
+    previewInspectorSession.propsRevisionByExport.set(exportName, revision + 1);
+  }
+  return true;
+}
+
+/** Removes every user override and refreshes the export from its observed page props. */
 function resetPreviewInspectorPropsOverride(exportName) {
   previewInspectorSession.overridesByExport.delete(exportName);
-  remountPreviewInspectorExport(exportName, false);
+  refreshPreviewInspectorExport(exportName, false);
   persistPreviewInspectorState();
 }
 
-/** Advances the key used below the app owner without replacing the entire page root. */
-function remountPreviewInspectorExport(exportName, persist = true) {
+/**
+ * Advances input state for one export without changing the identity of a healthy target subtree.
+ * Error boundaries observe this revision so generated props, payloads, or conditions can retry an
+ * already failed component while Router, modal, portal, and hook state remain intact on success.
+ * An active matching DFS state receives one probe revision in the same notification transaction;
+ * no timer or follow-up refresh is created here, so a persistent error cannot self-poll.
+ */
+function refreshPreviewInspectorExport(exportName, persist = true) {
   const currentRevision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
   previewInspectorSession.propsRevisionByExport.set(exportName, currentRevision + 1);
+  const activeReachabilityKey = previewInspectorSession.activeTargetReachabilityKey;
+  const activeReachabilityState = typeof activeReachabilityKey === 'string'
+    ? previewInspectorSession.targetReachabilityByKey?.get(activeReachabilityKey)
+    : undefined;
+  if (activeReachabilityState?.targetExportName === exportName) {
+    activeReachabilityState.probeRevision += 1;
+  }
   if (persist) {
     persistPreviewInspectorState();
   }
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();
+}
+
+/**
+ * Honors the user's explicit Remount action by changing only the inspected target element key.
+ * The accompanying input refresh clears a captured target/export error, but the authored page root
+ * and its Router/provider/portal owners retain their existing React identities.
+ */
+function remountPreviewInspectorExport(exportName, persist = true) {
+  const currentEpoch = previewInspectorSession.instanceEpochByExport.get(exportName) ?? 0;
+  previewInspectorSession.instanceEpochByExport.set(exportName, currentEpoch + 1);
+  refreshPreviewInspectorExport(exportName, persist);
 }
 
 /** Adds a boundary instance without exposing React's private Fiber fields. */
@@ -628,7 +699,7 @@ function createPreviewInspectorElement(Component, props) {
     : React.createElement(Component, props);
 }
 
-/** Renders a facade target with live override props and a key scoped to that target only. */
+/** Renders a facade target with live props and an explicit-remount key scoped to that target only. */
 function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
@@ -647,20 +718,58 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
   const overrideProps = materializePreviewInspectorRuntimeFallbackOverride(
     previewInspectorSession.overridesByExport.get(exportName) ?? {},
   );
+  const resolverProps = materializePreviewInspectorRuntimeFallbackOverride(
+    previewInspectorSession.resolverPropsByExport.get(exportName) ?? {},
+  );
   const effectiveProps = createPreviewPropsFromLayers(
     undefined,
     automaticTargetProps,
+    resolverProps,
     overrideProps,
   );
   if (forwardedRef !== undefined && forwardedRef !== null) {
     effectiveProps.ref = forwardedRef;
   }
   const revision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
+  const instanceEpoch = previewInspectorSession.instanceEpochByExport.get(exportName) ?? 0;
   const conditionRevision = readPreviewInspectorRenderConditionRevision();
   return React.createElement(
     PreviewInspectorTargetBoundary,
-    { exportName, key: exportName + ':' + String(revision) + ':' + String(conditionRevision) },
-    createPreviewInspectorElement(Component, effectiveProps),
+    {
+      exportName,
+      key: exportName,
+      resetKey: String(revision) + ':' + String(conditionRevision),
+    },
+    createPreviewInspectorElement(Component, {
+      ...effectiveProps,
+      key: exportName + ':instance:' + String(instanceEpoch),
+    }),
+  );
+}
+
+/**
+ * Carries cold direct-target metadata without manufacturing a new component type on each store
+ * notification. The provider is extension-owned, hostless, and disappears once ancestry analysis
+ * replaces the cold descriptor with an authored-page candidate.
+ */
+const PreviewInspectorDirectTargetContext = React.createContext(undefined);
+
+/** Renders one cold direct target through a module-stable component identity. */
+function PreviewInspectorDirectTarget(targetProps) {
+  const definition = React.useContext(PreviewInspectorDirectTargetContext);
+  return React.createElement(PreviewInspectorTargetRenderer, {
+    Component: definition?.Component,
+    forwardedRef: undefined,
+    metadata: definition?.metadata,
+    targetProps,
+  });
+}
+
+/** Keeps the temporary direct target behind the same context-aware Router bridge as page roots. */
+function PreviewInspectorRoutedDirectTarget(targetProps) {
+  return createPreviewCandidateRouterElement(
+    React.createElement(PreviewInspectorDirectTarget, targetProps),
+    { ownsRouter: false },
   );
 }
 
@@ -673,28 +782,19 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
       inferredPropShape: descriptor?.inferredPropShape,
       inferredProps: descriptor?.inferredProps,
     };
-    const DirectPreviewTarget = (props) => React.createElement(PreviewInspectorTargetRenderer, {
-      Component: descriptor?.value,
-      forwardedRef: undefined,
-      metadata,
-      targetProps: props,
-    });
-    // Cold first paint intentionally has no reverse-usage descriptor yet, but its direct graph can
-    // still consume Router hooks or render Navigate. Keep that temporary target behind the same
-    // context-aware boundary used by full page candidates; the bridge removes itself when a setup
-    // decorator or application wrapper already owns Router context.
-    const RoutedDirectPreviewTarget = (props) => createPreviewCandidateRouterElement(
-      React.createElement(DirectPreviewTarget, props),
-      { ownsRouter: false },
-    );
-    return useStorybook
+    const directTarget = useStorybook
       ? React.createElement(StorybookPreviewRoot, {
-          PreviewTarget: RoutedDirectPreviewTarget,
+          PreviewTarget: PreviewInspectorRoutedDirectTarget,
           previewConfig,
           storyContext,
           targetProps,
         })
-      : React.createElement(RoutedDirectPreviewTarget, targetProps);
+      : React.createElement(PreviewInspectorRoutedDirectTarget, targetProps);
+    return React.createElement(
+      PreviewInspectorDirectTargetContext.Provider,
+      { value: { Component: descriptor?.value, metadata } },
+      directTarget,
+    );
   }
   const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   const selectedRoot = selectedCandidate?.root ?? descriptor?.inspector?.root;
@@ -715,27 +815,25 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
     previewInspectorSession.overridesByExport.get(rootName) ?? {},
   );
   const effectiveProps = { ...baseRootProps, ...overrideProps };
-  const revision = previewInspectorSession.propsRevisionByExport.get(rootName) ?? 0;
-  const conditionRevision = readPreviewInspectorRenderConditionRevision();
   const candidateKey = selectedCandidate?.id ?? 'nearest-authored-owner';
   return useStorybook
     ? React.createElement(StorybookPreviewRoot, {
         PreviewTarget: descriptor.value,
-        key: candidateKey + ':' + String(revision) + ':' + String(conditionRevision),
+        key: candidateKey,
         previewConfig,
         storyContext: { ...storyContext, args: effectiveProps },
         targetProps: effectiveProps,
       })
     : createPreviewInspectorElement(descriptor.value, {
         ...effectiveProps,
-        key: candidateKey + ':' + String(revision) + ':' + String(conditionRevision),
+        key: candidateKey,
       });
 }
 
 /**
- * Resets an ancestor-root error boundary when props, data, candidate, or JSX conditions remount.
- * Including the condition revision is essential for automatic rollback: changing only a child key
- * cannot clear error state already latched by the surrounding class boundary.
+ * Resets a captured ancestor error when inputs change without remounting a healthy authored page.
+ * The stable candidate key preserves Router, modal, and provider state; resetKey is observed only by
+ * the error boundary and therefore retries a failed subtree without recreating successful portals.
  */
 function PreviewPageInspectorExportBoundary({ descriptor, children }) {
   usePreviewInspectorStore();
@@ -754,10 +852,10 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
     PreviewExportErrorBoundary,
     {
       exportName: descriptor?.exportName ?? inspectedExportName,
-      key: inspectedExportName + ':' + String(targetRevision) + ':' + rootName + ':' +
-        String(rootRevision) + ':candidate:' + String(selectedCandidate?.id ?? '') +
-        ':data:' + String(dataRevision) + ':condition:' + String(conditionRevision),
+      key: inspectedExportName + ':candidate:' + String(selectedCandidate?.id ?? ''),
       parentSlice: descriptor?.parentSlice,
+      resetKey: String(targetRevision) + ':' + rootName + ':' + String(rootRevision) +
+        ':data:' + String(dataRevision) + ':condition:' + String(conditionRevision),
     },
     children,
   );
@@ -791,6 +889,7 @@ const previewInspectorApi = {
   resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation,
   resolveRenderChoice: resolvePreviewInspectorRenderChoice,
   resolveRenderCondition: resolvePreviewInspectorRenderCondition,
+  resolveRenderConditionLazy: resolvePreviewInspectorRenderConditionLazy,
   resolveRuntimeEffect: resolvePreviewInspectorRuntimeEffect,
   resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook,
   remount: remountPreviewInspectorExport,

@@ -35,6 +35,7 @@ interface TraceRuntime {
   readonly error: (entry: Record<string, unknown>) => void;
   readonly flush: () => void;
   readonly messages: TraceMessage[];
+  readonly rollbackCalls: string[];
   readonly rollbacks: string[];
   readonly snapshot: (snapshot: Record<string, unknown>) => void;
 }
@@ -219,6 +220,55 @@ describe('Preview Inspector blocker trace runtime source', () => {
         (message) => message.event.event === 'render-result' && message.event.traceId === traceId,
       )?.event.result?.outcome,
     ).toBe('rolled-back');
+  });
+
+  /** Keeps a revealed modal open when one of its newly visible descendants throws. */
+  it('never rolls back an overlay visibility attempt after a descendant error', () => {
+    const runtime = createTraceRuntime();
+    const traceId = runtime.decide({
+      action: 'Reveal selected overlay target',
+      blockerId: 'target-overlay:DeleteModal',
+      mode: 'target-overlay-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error({
+      level: 'error',
+      message: 'visible modal child needs backend data',
+      source: 'react-boundary',
+    });
+
+    expect(runtime.rollbackCalls).toEqual([]);
+    expect(runtime.rollbacks).toEqual([]);
+    expect(runtime.messages.at(-1)?.event).toMatchObject({
+      event: 'subsequent-error',
+      traceId,
+    });
+  });
+
+  /** Stops attributing later page errors to a modal reveal after its short settle grace expires. */
+  it('bounds a settled overlay reveal to the target-attempt error grace', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('hidden-overlay'));
+    const traceId = runtime.decide({
+      action: 'Reveal selected overlay target',
+      blockerId: 'target-overlay:DeleteModal',
+      mode: 'target-overlay-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.snapshot(createSnapshot('visible-overlay'));
+    runtime.snapshot(createSnapshot('visible-overlay'));
+    runtime.advance(320);
+    runtime.advance(161);
+    runtime.error({
+      level: 'error',
+      message: 'independent page failure',
+      source: 'react-boundary',
+    });
+
+    const error = runtime.messages.at(-1)?.event;
+    expect(error?.event).toBe('subsequent-error');
+    expect(error?.traceId).not.toBe(traceId);
+    expect(error?.blocker).toBeUndefined();
   });
 
   /** Ends causal attachment after the bounded settlement and its short late-error grace. */
@@ -648,6 +698,7 @@ function createTraceRuntime(): TraceRuntime {
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS = 160;
       const messages = [];
+      const rollbackCalls = [];
       const rollbacks = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
       const readPreviewInspectorRuntimeCorrelation = () => ({
@@ -656,6 +707,7 @@ function createTraceRuntime(): TraceRuntime {
         runtimeSessionId: 'rp-0123456789abcdef01234567',
       });
       const rollbackPreviewInspectorFailedAutoDecision = (traceId) => {
+        rollbackCalls.push(traceId);
         const selection = messages.find(
           (message) => message?.event?.event === 'auto-selection' &&
             message?.event?.traceId === traceId,
@@ -674,6 +726,7 @@ function createTraceRuntime(): TraceRuntime {
         error: recordPreviewInspectorBlockerTraceError,
         flush: flushPreviewInspectorBlockerTraceAutoDecisions,
         messages,
+        rollbackCalls,
         rollbacks,
         snapshot: publishPreviewInspectorBlockerTraceSnapshot,
       };

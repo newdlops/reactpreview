@@ -21,6 +21,7 @@ import {
   isPreviewReactCreateElementCall,
   type PreviewReactRenderTerminalEvidence,
 } from './previewReactRenderTerminal';
+import { instrumentReactArrayIndexRendering } from './reactArrayIndexRendering';
 import { instrumentReactSwitchRendering } from './reactSwitchRendering';
 
 const MAX_CONDITIONS_PER_MODULE = 128;
@@ -123,7 +124,11 @@ export function instrumentReactConditionalRendering(
   if (!isJavaScriptLikeSource(sourcePath)) {
     return sourceText;
   }
-  const switchInstrumentedSource = instrumentReactSwitchRendering(sourcePath, sourceText);
+  const arrayInstrumentedSource = instrumentReactArrayIndexRendering(sourcePath, sourceText);
+  const switchInstrumentedSource = instrumentReactSwitchRendering(
+    sourcePath,
+    arrayInstrumentedSource,
+  );
   if (!mayContainConditionalJsx(switchInstrumentedSource)) return switchInstrumentedSource;
   const sourceFile = ts.createSourceFile(
     sourcePath,

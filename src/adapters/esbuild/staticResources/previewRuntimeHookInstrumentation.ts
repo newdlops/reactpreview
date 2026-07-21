@@ -15,9 +15,17 @@ import {
   readPreviewRuntimeHookBindingPropertyName,
 } from './previewRuntimeHookBindingPattern';
 import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
+import { applyPreviewRuntimeHookArrayLengthConstraints } from './previewRuntimeHookArrayLengthConstraints';
+import type { PreviewRuntimeHookArrayLengthConstraintMetadata } from './previewRuntimeHookArrayLengthConstraints';
 import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
 import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
+import { readPreviewRuntimeHookIdentityAliasCollectionUsages } from './previewRuntimeHookIdentityAliases';
+import {
+  isPreviewRuntimeHookArrayUsageProperty,
+  readPreviewRuntimeHookPropertyUsage,
+  shouldMaterializePreviewRuntimeHookNestedFallback,
+} from './previewRuntimeHookPropertyUsage';
 import {
   findNearestPreviewRuntimeFunction as findNearestRuntimeFunction,
   hasPreviewRuntimeParseDiagnostics as hasParseDiagnostics,
@@ -46,20 +54,6 @@ const EXCLUDED_MODULES = new Set([
   'react/jsx-runtime',
   'styled-components',
 ]);
-const ARRAY_USAGE_PROPERTIES = new Set([
-  'at',
-  'every',
-  'filter',
-  'find',
-  'findIndex',
-  'flatMap',
-  'forEach',
-  'length',
-  'map',
-  'reduce',
-  'some',
-]);
-
 /** Import or local-declaration evidence for one callable custom hook binding. */
 interface PreviewRuntimeHookBinding {
   /** Authored hook name shown in Inspector diagnostics. */
@@ -68,13 +62,11 @@ interface PreviewRuntimeHookBinding {
   readonly moduleSpecifier: string;
 }
 
-/** Namespace import whose property calls may expose eligible custom hooks. */
 interface PreviewRuntimeHookNamespace {
   /** Static module specifier used to decide whether hook failures may be isolated. */
   readonly moduleSpecifier: string;
 }
 
-/** Direct and namespace hook bindings proven by one parsed source module. */
 interface PreviewRuntimeHookInventory {
   /** Local call identifiers mapped to their authored hook identities. */
   readonly direct: ReadonlyMap<string, PreviewRuntimeHookBinding>;
@@ -83,7 +75,7 @@ interface PreviewRuntimeHookInventory {
 }
 
 /** Bounded static fallback emitted beside one hook call. */
-interface PreviewRuntimeHookFallback {
+interface PreviewRuntimeHookFallback extends PreviewRuntimeHookArrayLengthConstraintMetadata {
   /** Human-readable inference description exposed to the user. */
   readonly evidence: string;
   /** TypeScript expression evaluated lazily only after a nullish value or failure. */
@@ -120,6 +112,13 @@ interface PreviewRuntimeHookUsageNode {
   readonly children: Map<string, PreviewRuntimeHookUsageNode>;
   /** Static leaf expression, omitted while the node remains an object container. */
   expression?: string;
+}
+
+/** One local hook-result path plus optional collection-receiver evidence. */
+interface PreviewRuntimeHookUsagePath {
+  readonly called: boolean;
+  readonly collectionProperty?: string;
+  readonly names: readonly string[];
 }
 
 /** Parsed hook call and inferred fallback before a stable identity is serialized. */
@@ -255,7 +254,13 @@ function collectRuntimeHookCandidates(
       const hook = readRuntimeHookBinding(node.expression, inventory);
       if (hook !== undefined && findNearestRuntimeFunction(node) !== undefined) {
         const fallback = inferRuntimeHookFallback(node, hook, sourceFile, sourceText);
-        if (fallback !== undefined) candidates.push({ call: node, fallback, hook });
+        if (fallback !== undefined) {
+          candidates.push({
+            call: node,
+            fallback: applyPreviewRuntimeHookArrayLengthConstraints(node, fallback),
+            hook,
+          });
+        }
       }
     }
     ts.forEachChild(node, visit);
@@ -411,6 +416,7 @@ function createBindingFallback(
   }
   if (ts.isArrayBindingPattern(binding)) {
     const values: string[] = [];
+    const failurePaths: string[] = [];
     const requiredPaths: string[] = [];
     for (const [index, element] of binding.elements.entries()) {
       if (ts.isOmittedExpression(element)) {
@@ -419,16 +425,25 @@ function createBindingFallback(
       }
       if (element.dotDotDotToken !== undefined) return undefined;
       const child = createBindingFallback(element.name, sourceFile);
-      values.push(readNestedPreviewRuntimeHookExpression(child));
+      const propertyName = String(index);
+      values.push(readNestedPreviewRuntimeHookExpression(child, propertyName));
+      if (
+        child?.failurePaths !== undefined &&
+        shouldMaterializePreviewRuntimeHookNestedFallback(child, propertyName)
+      ) {
+        failurePaths.push(...prefixPreviewRuntimeHookPaths(child.failurePaths, String(index)));
+      }
       requiredPaths.push(...prefixPreviewRuntimeHookPaths(child?.requiredPaths, String(index)));
     }
     return {
       expression: `Object.freeze([${values.join(', ')}])`,
+      ...(failurePaths.length === 0 ? {} : { failurePaths }),
       label: 'generated tuple',
       requiredPaths,
     };
   }
   const properties: string[] = [];
+  const failurePaths: string[] = [];
   const requiredPaths: string[] = [];
   for (const element of binding.elements) {
     if (element.dotDotDotToken !== undefined) {
@@ -446,24 +461,32 @@ function createBindingFallback(
       label: 'static object',
     };
     properties.push(
-      `${JSON.stringify(propertyName)}: ${readNestedPreviewRuntimeHookExpression(child)}`,
+      `${JSON.stringify(propertyName)}: ${readNestedPreviewRuntimeHookExpression(child, propertyName)}`,
     );
+    if (
+      child.failurePaths !== undefined &&
+      shouldMaterializePreviewRuntimeHookNestedFallback(child, propertyName)
+    ) {
+      failurePaths.push(...prefixPreviewRuntimeHookPaths(child.failurePaths, propertyName));
+    }
     requiredPaths.push(...prefixPreviewRuntimeHookPaths(child.requiredPaths, propertyName));
   }
   return {
     expression: `Object.freeze({${properties.length === 0 ? '' : ` ${properties.join(', ')} `}})`,
+    ...(failurePaths.length === 0 ? {} : { failurePaths }),
     label: 'generated object fields',
     requiredPaths,
   };
 }
 
-/** Keeps an optional destructured child absent while a root selector may still recover on throw. */
+/** Keeps a child's failure shape available when its containing hook result must be synthesized. */
 function readNestedPreviewRuntimeHookExpression(
   fallback: PreviewRuntimeHookValueFallback | undefined,
+  propertyName: string,
 ): string {
-  return fallback?.preserveNullish === true && (fallback.requiredPaths?.length ?? 0) === 0
-    ? 'undefined'
-    : (fallback?.expression ?? 'undefined');
+  return shouldMaterializePreviewRuntimeHookNestedFallback(fallback, propertyName)
+    ? (fallback?.expression ?? 'undefined')
+    : 'undefined';
 }
 
 /** Prefixes child demand paths while keeping a root requirement readable in Inspector diagnostics. */
@@ -579,8 +602,8 @@ function createIdentifierUsageFallback(
 ): PreviewRuntimeHookValueFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
-  const paths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
-  const optionalPaths: { readonly called: boolean; readonly names: readonly string[] }[] = [];
+  const paths: PreviewRuntimeHookUsagePath[] = [];
+  const optionalPaths: PreviewRuntimeHookUsagePath[] = [];
   const arrayRootEvidence: string[] = [];
   const arrayItemFallbacks: PreviewRuntimeHookValueFallback[] = [];
   let optionalReferences = 0;
@@ -590,9 +613,11 @@ function createIdentifierUsageFallback(
       return;
     }
     if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
-      const usagePath = readIdentifierPropertyUsagePath(node, identifier.text);
+      const usagePath = readPreviewRuntimeHookPropertyUsage(node, identifier.text);
       if (usagePath !== undefined && usagePath.names.length > 0) {
-        if (!usagePath.optional && isArrayUsageProperty(usagePath.names[0])) {
+        const collectionProperty = usagePath.names.at(-1);
+        const collection = isPreviewRuntimeHookArrayUsageProperty(collectionProperty);
+        if (!usagePath.optional && collection && usagePath.names.length === 1) {
           arrayRootEvidence.push(usagePath.names[0] ?? 'array operation');
           const itemFallback = inferPreviewRuntimeArrayItemFallback(
             node,
@@ -602,8 +627,10 @@ function createIdentifierUsageFallback(
         } else if (paths.length + optionalPaths.length < 64 && usagePath.names.length <= 12) {
           const target = usagePath.optional ? optionalPaths : paths;
           target.push({
-            called: ts.isCallExpression(node.parent) && node.parent.expression === node,
-            names: usagePath.names,
+            called:
+              !collection && ts.isCallExpression(node.parent) && node.parent.expression === node,
+            ...(collection && collectionProperty !== undefined ? { collectionProperty } : {}),
+            names: collection ? usagePath.names.slice(0, -1) : usagePath.names,
           });
         }
       }
@@ -641,6 +668,8 @@ function createIdentifierUsageFallback(
     ts.forEachChild(node, visit);
   };
   visit(owner);
+  for (const usage of readPreviewRuntimeHookIdentityAliasCollectionUsages(identifier, owner))
+    (usage.optional ? optionalPaths : paths).push({ called: false, ...usage });
   if (arrayRootEvidence.length > 0) {
     const item = [...arrayItemFallbacks].sort(
       (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
@@ -655,46 +684,48 @@ function createIdentifierUsageFallback(
       requiredPaths: prefixPreviewRuntimeHookPaths(item.requiredPaths, '[]'),
     };
   }
-  if (paths.length === 0) {
-    if (optionalReferences === 0 || unsafeReferences !== 0) return undefined;
+  if (paths.length === 0 && unsafeReferences === 0) {
+    if (optionalReferences === 0) return undefined;
     const completedOptionalPaths = deduplicatePreviewRuntimeHookUsagePaths(optionalPaths);
     const optionalRoot: PreviewRuntimeHookUsageNode = { children: new Map() };
     for (const path_ of completedOptionalPaths) addUsagePath(optionalRoot, path_);
     return {
       expression: serializeUsageNode(optionalRoot),
-      failurePaths: completedOptionalPaths.map(
-        (path_) => path_.names.join('.') + (path_.called ? '()' : ''),
-      ),
+      failurePaths: completedOptionalPaths.map(formatPreviewRuntimeHookUsagePath),
       label: 'generated optional failure shape',
       preserveNullish: true,
       requiredPaths: [],
     };
   }
+  if (paths.length === 0 && optionalPaths.length === 0) return undefined;
   const completedPaths = deduplicatePreviewRuntimeHookUsagePaths([...paths, ...optionalPaths]);
   const root: PreviewRuntimeHookUsageNode = { children: new Map() };
   for (const path_ of completedPaths) addUsagePath(root, path_);
   return {
     expression: serializeUsageNode(root),
     label: 'generated required property shape',
-    requiredPaths: completedPaths.map(
-      (path_) => path_.names.join('.') + (path_.called ? '()' : ''),
-    ),
+    requiredPaths: completedPaths.map(formatPreviewRuntimeHookUsagePath),
   };
 }
 
 /** Keeps one deterministic occurrence of every demanded hook-result path. */
 function deduplicatePreviewRuntimeHookUsagePaths(
-  paths: readonly { readonly called: boolean; readonly names: readonly string[] }[],
-): readonly { readonly called: boolean; readonly names: readonly string[] }[] {
-  const retained = new Map<
-    string,
-    { readonly called: boolean; readonly names: readonly string[] }
-  >();
+  paths: readonly PreviewRuntimeHookUsagePath[],
+): readonly PreviewRuntimeHookUsagePath[] {
+  const retained = new Map<string, PreviewRuntimeHookUsagePath>();
   for (const path_ of paths) {
-    const key = `${path_.names.join('.')}\u0000${path_.called ? 'call' : 'value'}`;
+    const key = `${path_.names.join('.')}\u0000${path_.collectionProperty ?? (path_.called ? 'call' : 'value')}`;
     if (!retained.has(key)) retained.set(key, path_);
   }
   return [...retained.values()];
+}
+
+/** Formats receiver evidence as the authored collection access instead of a fake own method. */
+function formatPreviewRuntimeHookUsagePath(path_: PreviewRuntimeHookUsagePath): string {
+  const base = path_.names.join('.');
+  if (path_.collectionProperty === undefined) return base + (path_.called ? '()' : '');
+  const suffix = path_.collectionProperty + (path_.collectionProperty === 'length' ? '' : '()');
+  return base.length === 0 ? suffix : `${base}.${suffix}`;
 }
 
 /** Infers the first array-callback parameter from the fields actually read inside that callback. */
@@ -714,10 +745,7 @@ function inferPreviewRuntimeArrayItemFallback(
 }
 
 /** Adds one property path into a bounded shape while preserving existing deeper evidence. */
-function addUsagePath(
-  root: PreviewRuntimeHookUsageNode,
-  path_: { readonly called: boolean; readonly names: readonly string[] },
-): void {
+function addUsagePath(root: PreviewRuntimeHookUsageNode, path_: PreviewRuntimeHookUsagePath): void {
   let current = root;
   for (const [index, propertyName] of path_.names.entries()) {
     let child = current.children.get(propertyName);
@@ -727,9 +755,12 @@ function addUsagePath(
     }
     current = child;
     if (index === path_.names.length - 1) {
-      current.expression = path_.called
-        ? 'Object.freeze(() => undefined)'
-        : (inferSemanticFallback(propertyName)?.expression ?? 'Object.freeze({})');
+      current.expression =
+        path_.collectionProperty !== undefined
+          ? 'Object.freeze([])'
+          : path_.called
+            ? 'Object.freeze(() => undefined)'
+            : (inferSemanticFallback(propertyName)?.expression ?? 'Object.freeze({})');
     }
   }
 }
@@ -743,29 +774,6 @@ function serializeUsageNode(node: PreviewRuntimeHookUsageNode): string {
       ([propertyName, child]) => `${JSON.stringify(propertyName)}: ${serializeUsageNode(child)}`,
     );
   return `Object.freeze({ ${properties.join(', ')} })`;
-}
-
-/** Reads one property path and remembers whether any link used nullish-safe optional access. */
-function readIdentifierPropertyUsagePath(
-  expression: ts.PropertyAccessExpression,
-  identifierName: string,
-): { readonly names: readonly string[]; readonly optional: boolean } | undefined {
-  const names: string[] = [];
-  let optional = false;
-  let current: ts.Expression = expression;
-  while (ts.isPropertyAccessExpression(current)) {
-    optional = optional || current.questionDotToken !== undefined;
-    names.unshift(current.name.text);
-    current = unwrapExpression(current.expression);
-  }
-  return ts.isIdentifier(current) && current.text === identifierName
-    ? { names, optional }
-    : undefined;
-}
-
-/** Recognizes array-oriented operations whose safest visual fallback is an empty collection. */
-function isArrayUsageProperty(propertyName: string | undefined): boolean {
-  return propertyName !== undefined && ARRAY_USAGE_PROPERTIES.has(propertyName);
 }
 
 /** Detects a nested function parameter that would shadow the analyzed hook-result identifier. */
@@ -918,6 +926,9 @@ function createRuntimeHookReplacement(
       : { failurePaths: candidate.fallback.failurePaths }),
     ...(candidate.fallback.passive === true ? { passive: true } : {}),
     ...(candidate.fallback.preserveNullish === true ? { preserveNullish: true } : {}),
+    ...(candidate.fallback.nonNegativeNumberPaths === undefined
+      ? {}
+      : { nonNegativeNumberPaths: candidate.fallback.nonNegativeNumberPaths }),
     requiredPaths: candidate.fallback.requiredPaths ?? ['<root>'],
     sourcePath: path.normalize(sourcePath),
   };
@@ -961,6 +972,7 @@ function createRuntimeHookIdentity(
         candidate.fallback.evidence,
         candidate.fallback.expression,
         candidate.fallback.preserveNullish === true,
+        candidate.fallback.nonNegativeNumberPaths ?? [],
         candidate.fallback.requiredPaths ?? ['<root>'],
         occurrence,
       ]),

@@ -215,8 +215,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":[]');
   });
 
-  /** Does not turn an optional destructured query payload into a truthy empty object. */
-  it('keeps an optional destructured child absent until a descendant is required', () => {
+  /** Shapes a failed hook while keeping optional descendants out of ordinary required paths. */
+  it('records an optional destructured collection as failure-only evidence', () => {
     const source = [
       `import { useInfiniteFeedbacks } from './use-infinite-feedbacks';`,
       'export function FeedbackPage() {',
@@ -231,9 +231,103 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/FeedbackPage.tsx', source),
     );
 
-    expect(transformed).toContain('Object.freeze({ "data": undefined })');
+    expect(transformed).toContain(
+      'Object.freeze({ "data": Object.freeze({ "pages": Object.freeze([]) }) })',
+    );
+    expect(transformed).toContain('"failurePaths":["data.pages.flatMap()"]');
     expect(transformed).toContain('"requiredPaths":[]');
     expect(transformed).not.toContain('"requiredPaths":["data"]');
+  });
+
+  /** Gives a swallowed infinite-query failure the collection receiver required by optional data. */
+  it('shapes an optional nested collection for a failed custom hook result', () => {
+    const source = [
+      `import { useInfiniteFeedbacks } from './use-infinite-feedbacks';`,
+      `import { useMemo } from 'react';`,
+      'export function FeedbackPage() {',
+      '  const { data, fetchNextPage, hasNextPage } = useInfiniteFeedbacks();',
+      '  const feedbacks = useMemo(',
+      '    () => data?.pages.flatMap((page) => page.items) ?? [],',
+      '    [data],',
+      '  );',
+      '  return <button onClick={fetchNextPage}>{hasNextPage ? feedbacks.length : 0}</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/FeedbackPage.tsx', source),
+    );
+
+    expect(transformed).toContain('"data": Object.freeze({ "pages": Object.freeze([]) })');
+    expect(transformed).toContain('"failurePaths":["data.pages.flatMap()"]');
+    expect(transformed).toContain('"requiredPaths":["fetchNextPage()","hasNextPage"]');
+  });
+
+  /** Carries collection demand back through a pure memo identity and later object destructuring. */
+  it('infers nested collections through a bounded useMemo identity alias', () => {
+    const source = [
+      `import { useMemo } from 'react';`,
+      `import { useGetUserProfile } from './use-get-user-profile';`,
+      'export function ProfilePage() {',
+      '  const userQuery = useGetUserProfile();',
+      '  const userProfile = useMemo(() => userQuery.data, [userQuery.data]);',
+      '  if (!userProfile) return null;',
+      '  const { name, genres } = userProfile;',
+      '  return <main><h1>{name}</h1>{genres.map((genre) => <span key={genre}>{genre}</span>)}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/ProfilePage.tsx', source),
+    );
+
+    expect(transformed).toContain('"data": Object.freeze({ "genres": Object.freeze([]) })');
+    expect(transformed).toContain('"requiredPaths":["data","data.genres.map()"]');
+  });
+
+  /** Refuses memo callbacks that execute project code instead of returning an identity projection. */
+  it('does not propagate collection demand through a computed useMemo value', () => {
+    const source = [
+      `import { useMemo } from 'react';`,
+      `import { useGetUserProfile } from './use-get-user-profile';`,
+      'export function ProfilePage() {',
+      '  const userQuery = useGetUserProfile();',
+      '  const userProfile = useMemo(() => normalize(userQuery.data), [userQuery.data]);',
+      '  const { genres } = userProfile;',
+      '  return <main>{genres.map((genre) => <span key={genre}>{genre}</span>)}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/ProfilePage.tsx', source),
+    );
+
+    expect(transformed).toContain('"data": Object.freeze({})');
+    expect(transformed).not.toContain('data.genres.map()');
+  });
+
+  /** Retains the receiver of a dynamic JSON-scalar lookup as a demanded object container. */
+  it('infers descendants read through a computed GraphQL scalar property', () => {
+    const source = [
+      `import { useQuery } from './use-query';`,
+      'export function CompanyStep() {',
+      '  const { data: surveyData } = useQuery(SURVEY_QUERY);',
+      '  const answer = surveyData &&',
+      '    surveyData.userDetailedSurvey?.surveyResult.data[QUESTION_KEYS.USAGE];',
+      '  return <main>{String(answer)}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/CompanyStep.tsx', source),
+    );
+
+    expect(transformed).toContain('"surveyResult": Object.freeze({ "data": Object.freeze({}) })');
+    expect(transformed).toContain('"requiredPaths":["data.userDetailedSurvey.surveyResult.data"]');
   });
 
   /** Keeps failed selector state usable without triggering negative time sentinels or overlays. */
@@ -260,6 +354,27 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('() => ("indicatorType")');
     expect(transformed).not.toContain('() => (State.Loading)');
     expect(transformed).not.toContain('() => (Type.OVERLAY)');
+  });
+
+  /** Marks a destructured selector count as non-negative when it feeds an Array length. */
+  it('constrains destructured hook values used by a single-argument Array constructor', () => {
+    const source = [
+      `import { useSelector } from 'react-redux';`,
+      'export function RideCancelCountGraph() {',
+      '  const { rideCancelCount } = useSelector(selectCancelledRideConditionStatus);',
+      '  const circles = new Array(Math.min(5, rideCancelCount)).fill(null);',
+      '  return <main>{circles.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/RideCancelCountGraph.tsx', source),
+    );
+
+    expect(transformed).toContain('"rideCancelCount": 0');
+    expect(transformed).toContain('"nonNegativeNumberPaths":["rideCancelCount"]');
+    expect(transformed).toContain('"requiredPaths":["rideCancelCount"]');
   });
 
   /** Tags fire-and-forget hooks so their caught exceptions remain console warnings, not blockers. */

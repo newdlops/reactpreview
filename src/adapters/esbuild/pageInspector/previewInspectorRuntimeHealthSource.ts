@@ -203,6 +203,12 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
   const key = createPreviewInspectorRuntimeHealthErrorKey(entry);
   const now = Date.now();
   const previousRoot = previewInspectorSession.runtimeHealthRootErrors.get(key);
+  const repeatsRecentRoot = !isStyledComponentsInstanceWarning && previousRoot !== undefined &&
+    now - previousRoot.timestamp <= PREVIEW_INSPECTOR_HEALTH_ERROR_CHAIN_MS &&
+    previousRoot.message === message;
+  // Browser error events, React's boundary, and the fallback scope can report the same exception
+  // one commit. Keep the first causal record instead of serializing the same stack two to four times.
+  if (repeatsRecentRoot) return;
   const componentStack = typeof entry.componentStack === 'string' ? entry.componentStack : '';
   const hasFallbackEvidence = source === 'runtime-fallback' ||
     /(?:ErrorBoundary|ErrorStatus|Fallback|NotFoundStatus)/u.test(componentStack);

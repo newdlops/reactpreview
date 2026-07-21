@@ -875,9 +875,8 @@ function recordPreviewInspectorBlockerTraceError(entry) {
   const fingerprint = [
     active ? activeAttempt.traceId : '',
     entry.level,
-    entry.source,
+    typeof entry.exportName === 'string' ? entry.exportName : target.exportName,
     entry.message,
-    entry.details,
   ].join('\0');
   if (previewInspectorSession.blockerTraceErrorFingerprints.has(fingerprint)) return;
   previewInspectorSession.blockerTraceErrorFingerprints.set(fingerprint, Date.now());

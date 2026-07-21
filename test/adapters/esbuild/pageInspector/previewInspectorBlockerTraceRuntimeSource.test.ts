@@ -124,6 +124,29 @@ describe('Preview Inspector blocker trace runtime source', () => {
     });
   });
 
+  /** Coalesces the same failure forwarded by more than one renderer error transport. */
+  it('records one standalone trace for an identical cross-transport error', () => {
+    const runtime = createTraceRuntime();
+    const message = 'PreviewInspectorTreeRow(...): Nothing was returned from render.';
+    runtime.error({ details: 'browser stack', level: 'error', message, source: 'preview-runtime' });
+    runtime.error({
+      details: 'React component stack',
+      level: 'error',
+      message,
+      source: 'react-boundary',
+    });
+    runtime.error({
+      details: 'fallback stack',
+      level: 'error',
+      message,
+      source: 'runtime-fallback',
+    });
+
+    expect(
+      runtime.messages.filter((entry) => entry.event.event === 'subsequent-error'),
+    ).toHaveLength(1);
+  });
+
   /** Does not blame a new JSX decision for the same fatal error already active before it began. */
   it('rolls back only errors that were absent from the attempt baseline', () => {
     const runtime = createTraceRuntime();

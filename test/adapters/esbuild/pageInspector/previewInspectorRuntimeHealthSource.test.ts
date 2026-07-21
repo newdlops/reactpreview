@@ -87,6 +87,32 @@ describe('Preview Inspector runtime health source', () => {
     expect(runtime.messages[2]?.event.parentEventId).toBe(runtime.messages[1]?.event.eventId);
   });
 
+  /** Coalesces one exception repeated by browser, boundary, and fallback transports. */
+  it('records an identical commit failure only once across runtime transports', () => {
+    const runtime = createRuntimeHealthFixture();
+    const message = 'PreviewInspectorTreeRow(...): Nothing was returned from render.';
+    runtime.error({
+      level: 'error',
+      location: 'entry.js:10:2',
+      message,
+      source: 'preview-runtime',
+    });
+    runtime.error({
+      componentStack: 'at PreviewInspectorTreeRow\n at PreviewInspectorToolbar',
+      level: 'error',
+      message,
+      source: 'react-boundary',
+    });
+    runtime.error({
+      componentStack: 'at PreviewErrorBoundary',
+      level: 'error',
+      message,
+      source: 'runtime-fallback',
+    });
+
+    expect(runtime.messages.map((entry) => entry.event.event)).toEqual(['runtime-error-root']);
+  });
+
   /** Keeps the package's own duplicate-instance warning outside an unrelated error chain. */
   it('records styled-components identity warnings as independent health warnings', () => {
     const runtime = createRuntimeHealthFixture();

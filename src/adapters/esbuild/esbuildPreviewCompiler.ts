@@ -832,6 +832,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ),
           ...targetUsageProps.dependencyPaths,
         ],
+        this.diagnosticEmissionCache.admitBuildWarning.bind(this.diagnosticEmissionCache),
       );
       return inspectorSourceGestureSecret === undefined
         ? previewBundle

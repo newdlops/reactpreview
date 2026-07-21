@@ -52,6 +52,7 @@ export const PREVIEW_OUTPUT_DIRECTORY_NAME = 'react-preview-output';
  * @param watchDirectories Static resource roots whose future additions can affect this build.
  * @param additionalDiagnostics Adapter warnings produced outside esbuild's successful result.
  * @param additionalDependencies Setup files retained after an automatic environment fallback.
+ * @param admitBuildWarning Compiler-lifetime admission boundary that suppresses hot-rebuild repeats.
  * @returns Validated preview bundle containing an entry, local lazy chunks, and optional CSS.
  */
 export function createPreviewBundle(
@@ -60,6 +61,7 @@ export function createPreviewBundle(
   watchDirectories: readonly string[],
   additionalDiagnostics: readonly PreviewDiagnostic[] = [],
   additionalDependencies: readonly string[] = [],
+  admitBuildWarning: (message: Message) => boolean = () => true,
 ): PreviewBundle {
   assertOutputSize(result.outputFiles, request.maxOutputMebibytes);
   const outputPlan = planPreviewBuildOutputs({
@@ -81,7 +83,9 @@ export function createPreviewBundle(
     ].sort(),
     diagnostics: [
       ...additionalDiagnostics,
-      ...result.warnings.map((message) => convertMessage(message, 'warning')),
+      ...result.warnings
+        .filter(admitBuildWarning)
+        .map((message) => convertMessage(message, 'warning')),
     ],
     javascript: outputPlan.entryJavaScript,
     watchDirectories,

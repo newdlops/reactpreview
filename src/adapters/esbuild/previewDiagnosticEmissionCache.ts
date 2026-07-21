@@ -3,6 +3,7 @@
  * Diagnostics admitted here are informational compiler decisions; build errors remain uncached and
  * are always surfaced by the owning revision.
  */
+import type { Message } from 'esbuild';
 
 const MAX_EMITTED_DIAGNOSTICS = 512;
 
@@ -22,6 +23,21 @@ export class PreviewDiagnosticEmissionCache {
       this.identities.delete(oldestIdentity);
     }
     return !alreadyEmitted;
+  }
+
+  /** Admits one esbuild advisory once across hot rebuilds using only stable source identity. */
+  public admitBuildWarning(message: Message): boolean {
+    const location = message.location;
+    return this.admit(
+      [
+        'esbuild-warning',
+        message.id,
+        location?.file ?? '',
+        location?.line ?? '',
+        location?.column ?? '',
+        message.text,
+      ].join('\0'),
+    );
   }
 
   /** Removes all target identities during compiler shutdown. */

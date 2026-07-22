@@ -2,6 +2,13 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1122 - 2026-07-22
+
+- classic JSX의 암묵적 `React` namespace를 증거 기반 import로 복원하고 lock 없는 exact React 19 manifest에는 확장의 같은 major 최신 runtime을 사용해 `node_modules` 없는 React 18/19 샘플을 프리뷰
+- export 없는 `createRoot`/`hydrateRoot`/legacy render entry를 안전한 합성 export로 전환하고 runtime global 오류가 Smart Fill payload blocker로 오인되지 않도록 진단 분류를 수정
+- MDX collection query를 bounded metadata-first 모듈로 바꾸고 누락된 generated alias UI·미빌드 workspace package JS/CSS export를 문서·manifest·symlink 경계 증거가 있을 때만 복구
+- 대형 side-effect-free package barrel을 증명된 named deep import로 축소하고 설치 없는 Next image/font/link 및 Tailwind root import를 정적 render-only fallback으로 처리
+
 ## 0.1.1121 - 2026-07-22
 
 - named React runtime import만 있는 소스를 classic JSX로 낮출 때 정확한 `react` import·JSX·비어 있는 `React` runtime binding을 함께 증명해 lexical namespace fallback을 추가하고 custom JSX runtime과 작성된 binding은 보존

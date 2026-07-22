@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1121",
+  "version": "0.1.1122",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -154,11 +154,13 @@
     "package:vsix": "npm run check && node ./scripts/package-vsix.mjs"
   },
   "dependencies": {
+    "@mdx-js/mdx": "3.1.1",
     "@yarnpkg/parsers": "3.0.3",
     "esbuild": "0.28.1",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "tar": "7.5.20"
+    "tar": "7.5.20",
+    "yaml": "2.8.1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

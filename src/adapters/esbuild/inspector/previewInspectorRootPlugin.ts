@@ -185,16 +185,25 @@ export function createPreviewInspectorRootSource(
       ].join('');
     }
     if (candidate.nextPagesShell !== undefined) {
-      const appSpecifier = candidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
+      const appIsTarget =
+        path.normalize(candidate.nextPagesShell.app.sourcePath) ===
+        path.normalize(plan.target.sourcePath);
+      const appSpecifier = appIsTarget
+        ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
+        : candidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
+      const syntheticPage = candidate.nextPagesShell.syntheticPage === true;
+      const imports = (syntheticPage ? [appSpecifier] : [rootSpecifier, appSpecifier]).map(
+        (specifier) => `import(${JSON.stringify(specifier)})`,
+      );
       return [
         '{ id: ',
         JSON.stringify(candidate.id),
-        ', load: () => Promise.all([import(',
-        JSON.stringify(rootSpecifier),
-        '),import(',
-        JSON.stringify(appSpecifier),
-        ')]).then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
+        ', load: () => Promise.all([',
+        imports.join(','),
+        ']).then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
         JSON.stringify(candidate.root.exportName),
+        ', ',
+        JSON.stringify(syntheticPage),
         ')) }',
       ].join('');
     }
@@ -325,10 +334,15 @@ export function createPreviewInspectorRootSource(
       : []),
     ...(requiresNextPagesRuntime
       ? [
+          '/** Supplies a stable host marker when `_app` is the only authored Pages module. */',
+          'function __reactPreviewSyntheticNextPagesPage() {',
+          "  return React.createElement('main', { 'data-react-preview-synthetic-next-page': 'true' });",
+          '}',
           '/** Recreates Next Pages `_app -> Component` composition absent from import graphs. */',
-          'function __reactPreviewComposeNextPagesPage(modules, rootExportName) {',
-          '  const Page = modules[0]?.[rootExportName];',
-          '  const App = modules[1]?.default;',
+          'function __reactPreviewComposeNextPagesPage(modules, rootExportName, syntheticPage) {',
+          '  const authoredPage = syntheticPage ? undefined : modules[0]?.[rootExportName];',
+          '  const Page = authoredPage ?? __reactPreviewSyntheticNextPagesPage;',
+          '  const App = modules[syntheticPage ? 0 : 1]?.default;',
           '  if (App === undefined || App === null) return Page;',
           '  return function ReactPreviewNextPagesPage(props) {',
           '    const pageProps = Object.assign({}, props);',

@@ -48,6 +48,128 @@ describe('createPreviewInspectorAncestorPlan', () => {
     expect(plan.dependencyPaths).toEqual([appPath, pagePath]);
   });
 
+  /** Uses a finite server-side registry key instead of an invalid dynamic parameter placeholder. */
+  it('refines a Next Pages dynamic pathname from static guard evidence', async () => {
+    const pagePath = '/workspace/projects/web/pages/hotels/[hotelName]/callTada.tsx';
+    const appPath = '/workspace/projects/web/pages/_app.tsx';
+    const guardPath = '/workspace/projects/web/lib/guard.ts';
+    const constantsPath = '/workspace/projects/web/lib/constants.ts';
+    const sources = {
+      [pagePath]: [
+        "import { guardPage } from '../../../lib/guard';",
+        'export default function CallTada({ hotelName }) { return <main>{hotelName}</main>; }',
+        'export const getServerSideProps = guardPage();',
+      ].join('\n'),
+      [appPath]: 'export default function App({ Component }) { return <Component />; }',
+      [guardPath]: [
+        "import { HOTELS } from './constants';",
+        'export const guardPage = () => async ({ query }) => {',
+        '  const hotelName = query.hotelName as string;',
+        '  return Object.keys(HOTELS).includes(hotelName)',
+        '    ? { props: { hotelName } } : { notFound: true };',
+        '};',
+      ].join('\n'),
+      [constantsPath]: 'export const HOTELS = { testHotel: {}, anotherHotel: {} };',
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: pagePath,
+      exportName: 'default',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates[0]?.routeLocation).toMatchObject({
+      pathname: '/hotels/testHotel/callTada',
+      pattern: '/hotels/[hotelName]/callTada',
+    });
+    expect(plan.dependencyPaths).toEqual(
+      expect.arrayContaining([appPath, constantsPath, guardPath, pagePath]),
+    );
+  });
+
+  /** Uses a real route leaf when the selected file is the framework-injected `_app` wrapper. */
+  it('previews a selected Next Pages app through the root index page', async () => {
+    const appPath = '/workspace/projects/driver-web/pages/_app.tsx';
+    const indexPath = '/workspace/projects/driver-web/pages/index.tsx';
+    const nestedPath = '/workspace/projects/driver-web/pages/account/index.tsx';
+    const apiPath = '/workspace/projects/driver-web/pages/api/session.ts';
+    const sources = {
+      [appPath]: [
+        'export default function App({ Component, pageProps }) {',
+        '  return <div><header /><Component {...pageProps} /></div>;',
+        '}',
+      ].join('\n'),
+      [indexPath]: 'export default function HomePage() { return <main>home</main>; }',
+      [nestedPath]: 'export default function AccountPage() { return <main>account</main>; }',
+      [apiPath]: 'export default function handler() { return undefined; }',
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: appPath,
+      exportName: 'default',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.target).toEqual({ exportName: 'default', sourcePath: appPath });
+    expect(plan.pageCandidates).toHaveLength(1);
+    expect(plan.pageCandidates[0]).toMatchObject({
+      complete: true,
+      nextPagesShell: {
+        app: { exportName: 'default', sourcePath: appPath },
+        routeLocation: {
+          evidenceKind: 'next-pages-filesystem',
+          pathname: '/',
+          sourcePath: indexPath,
+        },
+      },
+      root: { exportName: 'default', sourcePath: indexPath },
+      stopReason: 'root-reached',
+    });
+    expect(plan.pageCandidates[0]?.nextPagesShell?.syntheticPage).toBeUndefined();
+    expect(plan.dependencyPaths).toEqual(expect.arrayContaining([appPath, indexPath]));
+  });
+
+  /** Keeps `_app` mountable without recursive self-composition when no real route page exists. */
+  it('uses a synthetic page for a selected Next Pages app without a safe leaf', async () => {
+    const appPath = '/workspace/projects/driver-web/pages/_app.tsx';
+    const apiPath = '/workspace/projects/driver-web/pages/api/session.ts';
+    const errorPath = '/workspace/projects/driver-web/pages/500.tsx';
+    const documentPath = '/workspace/projects/driver-web/pages/_document.tsx';
+    const sources = {
+      [appPath]: [
+        'export default function App({ Component }) {',
+        '  return <div><aside /><Component /></div>;',
+        '}',
+      ].join('\n'),
+      [apiPath]: 'export default function handler() { return undefined; }',
+      [errorPath]: 'export default function ErrorPage() { return <main />; }',
+      [documentPath]: 'export default function Document() { return <html />; }',
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: appPath,
+      exportName: 'default',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates).toHaveLength(1);
+    expect(plan.pageCandidates[0]).toMatchObject({
+      nextPagesShell: {
+        app: { exportName: 'default', sourcePath: appPath },
+        routeLocation: {
+          evidenceKind: 'next-pages-synthetic',
+          pathname: '/',
+          sourcePath: appPath,
+        },
+        syntheticPage: true,
+      },
+      root: { exportName: 'default', sourcePath: appPath },
+    });
+  });
+
   /** Restores Next's implicit layout wrappers, which cannot appear in the JavaScript import graph. */
   it('attaches the App Router layout chain and filesystem pathname to a page candidate', async () => {
     const pagePath = '/workspace/packages/web/src/app/(account)/profile/edit/page.tsx';

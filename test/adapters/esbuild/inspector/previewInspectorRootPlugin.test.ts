@@ -300,6 +300,87 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"evidenceKind":"next-pages-filesystem"');
   });
 
+  /** Imports the selected `_app` through its facade while a real page supplies Component. */
+  it('keeps selected Next Pages app instrumentation in an authored page composition', () => {
+    const appPath = '/workspace/application/pages/_app.tsx';
+    const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextPagesShell: {
+              app: { exportName: 'default', sourcePath: appPath },
+              routeLocation: {
+                componentName: 'NextPagesPage',
+                evidenceKind: 'next-pages-filesystem',
+                pathname: '/',
+                pattern: '/',
+                sourcePath: PAGE_PATH,
+              },
+            },
+            routeLocation: {
+              componentName: 'NextPagesPage',
+              evidenceKind: 'next-pages-filesystem',
+              pathname: '/',
+              pattern: '/',
+              sourcePath: PAGE_PATH,
+            },
+          },
+        ],
+        target: { exportName: 'default', sourcePath: appPath },
+      },
+    });
+
+    expect(source).toContain(
+      'Promise.all([import("/workspace/application/Page.tsx"),import("react-preview:inspector-target-facade")])',
+    );
+    expect(source).toContain('Component: Page');
+    expect(source).not.toContain('import("/workspace/application/pages/_app.tsx")');
+  });
+
+  /** Supplies a non-recursive host marker when `_app` is the package's only safe Pages module. */
+  it('composes a selected Next Pages app with the synthetic page fallback', () => {
+    const appPath = '/workspace/application/pages/_app.tsx';
+    const plan = createPlan({ exportName: 'default', sourcePath: appPath });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const syntheticRoute = {
+      componentName: 'NextPagesPage' as const,
+      evidenceKind: 'next-pages-synthetic' as const,
+      pathname: '/',
+      pattern: '/',
+      sourcePath: appPath,
+    };
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextPagesShell: {
+              app: { exportName: 'default', sourcePath: appPath },
+              routeLocation: syntheticRoute,
+              syntheticPage: true,
+            },
+            routeLocation: syntheticRoute,
+          },
+        ],
+        target: { exportName: 'default', sourcePath: appPath },
+      },
+    });
+
+    expect(source).toContain(
+      'Promise.all([import("react-preview:inspector-target-facade")]).then((modules) => __reactPreviewComposeNextPagesPage(modules, "default", true))',
+    );
+    expect(source).toContain('function __reactPreviewSyntheticNextPagesPage()');
+    expect(source).toContain("'data-react-preview-synthetic-next-page': 'true'");
+    expect(source).toContain('const Page = authoredPage ?? __reactPreviewSyntheticNextPagesPage;');
+  });
+
   /** Executes the emitted record helper so direct reads, await, and React `use()` metadata agree. */
   it('emits one stable route record compatible with legacy and promised Next props', async () => {
     const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });

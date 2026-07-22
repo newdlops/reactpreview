@@ -29,6 +29,11 @@ import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerS
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
 import { collectPreviewInspectorRenderOutcomes } from './previewInspectorRenderOutcomeExpansion';
 import { collectPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppLayoutChain';
+import { collectPreviewInspectorNextPagesAppTarget } from './previewInspectorNextPagesAppTarget';
+import {
+  createPreviewInspectorNextPagesShellRefiner,
+  type PreviewInspectorNextPagesShellRefiner,
+} from './previewInspectorNextPagesParameterEvidence';
 import { collectPreviewInspectorNextPagesShell } from './previewInspectorNextPagesShell';
 import {
   collectPreviewInspectorModuleFrontiers,
@@ -132,6 +137,8 @@ interface InspectorCandidateSource {
 /** Reused source and candidate indexes prevent each alternative caller path from reparsing a repo. */
 interface InspectorUsagePlanningContext {
   readonly inferenceByReference: Map<string, Promise<PreviewInferredExportProps | undefined>>;
+  /** Reuses finite dynamic-route evidence across alternative page candidates. */
+  readonly nextPagesShellRefiner: PreviewInspectorNextPagesShellRefiner;
   readonly routerOwnershipBySource: Map<string, Promise<boolean>>;
   readonly rankedCandidatesByFrontier: Map<
     string,
@@ -200,6 +207,12 @@ export async function createPreviewInspectorAncestorPlan(
   }
   const planningContext: InspectorUsagePlanningContext = {
     inferenceByReference: new Map(),
+    nextPagesShellRefiner: createPreviewInspectorNextPagesShellRefiner({
+      readSource: options.readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      sourcePaths,
+    }),
     rankedCandidatesByFrontier: new Map(),
     routerOwnershipBySource: new Map(),
     sourceFileByPath: new Map(),
@@ -227,38 +240,81 @@ export async function createPreviewInspectorAncestorPlan(
     discoveredCandidates.push(candidate);
   };
 
-  for (const renderPath of candidatePaths) {
-    throwIfPreviewBuildCancelled(options.signal);
-    const candidate = await createInspectorPageCandidate({
-      options,
-      planningContext,
-      renderPath,
-      sourcePaths,
-      target,
-      routeLocation,
-    });
-    baseCandidates.push({ candidate, renderPath });
-    addCandidate(candidate);
-  }
+  const nextPagesAppTarget = await collectPreviewInspectorNextPagesAppTarget({
+    appPath: target.sourcePath,
+    exportName: target.exportName,
+    readSource: options.readSource,
+    sourcePaths,
+  });
+  if (nextPagesAppTarget !== undefined) {
+    const root =
+      nextPagesAppTarget.kind === 'authored-page'
+        ? freezeReference(nextPagesAppTarget.page.sourcePath, 'default')
+        : target;
+    const dependencies = new Set([target.sourcePath, root.sourcePath]);
+    const nextPagesRefinement = await planningContext.nextPagesShellRefiner.refine(
+      nextPagesAppTarget.shell,
+    );
+    for (const dependencyPath of nextPagesRefinement.dependencyPaths) {
+      dependencies.add(dependencyPath);
+    }
+    const rootInference = await readPreviewInspectorRootInference(
+      root,
+      options.readSource,
+      planningContext.sourceTextByPath,
+      planningContext.inferenceByReference,
+    );
+    addCandidate(
+      freezePreviewInspectorPageCandidate({
+        complete: true,
+        dependencies,
+        edges: [],
+        id: `next-pages-app:${root.sourcePath}`,
+        renderPath: undefined,
+        root,
+        rootAutomaticProps: Object.freeze({}),
+        ...(rootInference === undefined ? {} : { rootInference }),
+        nextPagesShell: nextPagesRefinement.shell,
+        rootOwnsRouter: false,
+        routeLocation: nextPagesRefinement.shell.routeLocation,
+        stopReason: 'root-reached',
+        targetAutomaticProps: Object.freeze({}),
+      }),
+    );
+  } else {
+    for (const renderPath of candidatePaths) {
+      throwIfPreviewBuildCancelled(options.signal);
+      const candidate = await createInspectorPageCandidate({
+        options,
+        planningContext,
+        renderPath,
+        sourcePaths,
+        target,
+        routeLocation,
+      });
+      baseCandidates.push({ candidate, renderPath });
+      addCandidate(candidate);
+    }
 
-  for (const { candidate, renderPath } of baseCandidates) {
-    if (renderPath === undefined) continue;
-    const renderPathRoots = await collectPreviewInspectorRenderPathRoots({
-      readSource: options.readSource,
-      renderPath,
-      sourceCache: planningContext.sourceTextByPath,
-      target,
-    });
-    for (const renderPathRoot of renderPathRoots) {
-      addCandidate(
-        await createRenderPathPageCandidate({
-          base: candidate,
-          options,
-          planningContext,
-          renderPathRoot,
-          routeLocation,
-        }),
-      );
+    for (const { candidate, renderPath } of baseCandidates) {
+      if (renderPath === undefined) continue;
+      const renderPathRoots = await collectPreviewInspectorRenderPathRoots({
+        readSource: options.readSource,
+        renderPath,
+        sourceCache: planningContext.sourceTextByPath,
+        target,
+      });
+      for (const renderPathRoot of renderPathRoots) {
+        addCandidate(
+          await createRenderPathPageCandidate({
+            base: candidate,
+            options,
+            planningContext,
+            renderPathRoot,
+            routeLocation,
+          }),
+        );
+      }
     }
   }
 
@@ -342,12 +398,17 @@ async function createInspectorPageCandidate(arguments_: {
       sourcePaths,
     });
     for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
-    const nextPagesShell = collectPreviewInspectorNextPagesShell({
+    let nextPagesShell = collectPreviewInspectorNextPagesShell({
       exportName: currentRoot.exportName,
       pagePath: currentRoot.sourcePath,
       sourcePaths,
     });
-    if (nextPagesShell !== undefined) dependencies.add(nextPagesShell.app.sourcePath);
+    if (nextPagesShell !== undefined) {
+      dependencies.add(nextPagesShell.app.sourcePath);
+      const refinement = await planningContext.nextPagesShellRefiner.refine(nextPagesShell);
+      nextPagesShell = refinement.shell;
+      for (const dependencyPath of refinement.dependencyPaths) dependencies.add(dependencyPath);
+    }
     const candidateRouteLocation =
       nextAppShell?.routeLocation ?? nextPagesShell?.routeLocation ?? routeLocation;
     return freezePreviewInspectorPageCandidate({
@@ -485,12 +546,17 @@ async function createRenderPathPageCandidate(arguments_: {
     sourcePaths: options.sourcePaths,
   });
   for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
-  const nextPagesShell = collectPreviewInspectorNextPagesShell({
+  let nextPagesShell = collectPreviewInspectorNextPagesShell({
     exportName: root.exportName,
     pagePath: root.sourcePath,
     sourcePaths: options.sourcePaths,
   });
-  if (nextPagesShell !== undefined) dependencies.add(nextPagesShell.app.sourcePath);
+  if (nextPagesShell !== undefined) {
+    dependencies.add(nextPagesShell.app.sourcePath);
+    const refinement = await planningContext.nextPagesShellRefiner.refine(nextPagesShell);
+    nextPagesShell = refinement.shell;
+    for (const dependencyPath of refinement.dependencyPaths) dependencies.add(dependencyPath);
+  }
   const candidateRouteLocation =
     nextAppShell?.routeLocation ?? nextPagesShell?.routeLocation ?? routeLocation;
   const complete =

@@ -14,7 +14,8 @@ const NEXT_PAGES_PAGE_PATTERN = /\.[cm]?[jt]sx?$/iu;
 /** Filesystem route evidence emitted for one conventional Pages Router module. */
 export interface PreviewInspectorNextPagesRouteLocation {
   readonly componentName: 'NextPagesPage';
-  readonly evidenceKind: 'next-pages-filesystem';
+  /** Distinguishes an authored route leaf from the bounded no-page `_app` fallback. */
+  readonly evidenceKind: 'next-pages-filesystem' | 'next-pages-synthetic';
   readonly pathname: string;
   readonly pattern: string;
   readonly sourcePath: string;
@@ -27,10 +28,14 @@ export interface PreviewInspectorNextPagesShell {
     readonly sourcePath: string;
   };
   readonly routeLocation: PreviewInspectorNextPagesRouteLocation;
+  /** Uses an extension-owned empty page only when the selected `_app` has no safe authored leaf. */
+  readonly syntheticPage?: true;
 }
 
 /** Inputs bounded by the ancestor planner's existing project source inventory. */
 export interface CollectPreviewInspectorNextPagesShellOptions {
+  /** Optional static-record evidence for dynamic filesystem parameters. */
+  readonly dynamicParameterValues?: Readonly<Record<string, string>>;
   readonly exportName: string;
   readonly pagePath: string;
   readonly sourcePaths: readonly string[];
@@ -72,7 +77,9 @@ export function collectPreviewInspectorNextPagesShell(
     index === relativeSegments.length - 1 ? segment.replace(NEXT_PAGES_PAGE_PATTERN, '') : segment,
   );
   if (patternSegments.at(-1)?.toLowerCase() === 'index') patternSegments.pop();
-  const pathnameSegments = patternSegments.flatMap(materializeNextPagesSegment);
+  const pathnameSegments = patternSegments.flatMap((segment) =>
+    materializeNextPagesSegment(segment, options.dynamicParameterValues),
+  );
   const pattern = joinSegments(patternSegments);
   const pathname = joinSegments(pathnameSegments);
   return Object.freeze({
@@ -123,13 +130,35 @@ function selectNextPagesAppPath(
 }
 
 /** Converts one literal/dynamic Pages segment into a deterministic browser pathname segment. */
-function materializeNextPagesSegment(segment: string): readonly string[] {
+function materializeNextPagesSegment(
+  segment: string,
+  parameterValues: Readonly<Record<string, string>> | undefined,
+): readonly string[] {
   const optionalCatchAll = /^\[\[\.\.\.([^\]]+)\]\]$/u.exec(segment);
   if (optionalCatchAll !== null) return [];
   const catchAll = /^\[\.\.\.([^\]]+)\]$/u.exec(segment);
-  if (catchAll !== null) return [normalizeParameterName(catchAll[1])];
+  if (catchAll !== null) return [materializeParameterValue(catchAll[1], parameterValues)];
   const dynamic = /^\[([^\]]+)\]$/u.exec(segment);
-  return dynamic === null ? [segment] : [normalizeParameterName(dynamic[1])];
+  return dynamic === null ? [segment] : [materializeParameterValue(dynamic[1], parameterValues)];
+}
+
+/** Encodes a proven record key or falls back to the short visible parameter name. */
+function materializeParameterValue(
+  parameterName: string | undefined,
+  parameterValues: Readonly<Record<string, string>> | undefined,
+): string {
+  const inferred = parameterName === undefined ? undefined : parameterValues?.[parameterName];
+  if (
+    typeof inferred === 'string' &&
+    inferred.length > 0 &&
+    inferred.length <= 64 &&
+    !/[\\/\u0000-\u001f\u007f]/u.test(inferred) &&
+    inferred !== '.' &&
+    inferred !== '..'
+  ) {
+    return encodeURIComponent(inferred);
+  }
+  return normalizeParameterName(parameterName);
 }
 
 /** Keeps generated dynamic values short enough to avoid distorting page layout. */

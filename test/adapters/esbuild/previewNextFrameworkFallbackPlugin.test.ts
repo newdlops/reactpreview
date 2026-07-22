@@ -1,0 +1,283 @@
+/** Verifies inert Next.js render facades for declared projects without installed framework files. */
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
+import {
+  build,
+  type BuildOptions,
+  type BuildResult,
+  type OnLoadResult,
+  type Plugin,
+} from 'esbuild';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createPreviewNextFrameworkFallbackPlugin } from '../../../src/adapters/esbuild/previewNextFrameworkFallbackPlugin';
+
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
+  );
+});
+
+describe('Next framework render fallback', () => {
+  /** Renders images, links, and named Google fonts from declaration evidence alone. */
+  it('supplies exact visual modules for a declared dependency-free Next project', async () => {
+    const projectRoot = await createProject('next-missing-', {
+      dependencies: { next: '15.5.20', react: '19.1.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      [
+        "import Image, { getImageProps } from 'next/image';",
+        "import Link from 'next/link';",
+        "import { Geist, Roboto_Mono } from 'next/font/google';",
+        'const image = Image({ alt: "Logo", height: 38, priority: true, src: "/logo.svg", width: 180 });',
+        'const link = Link({ children: "Docs", href: { pathname: "/docs", query: { tab: "api" } } });',
+        'export const result = {',
+        '  font: Geist({ variable: "--font-geist" }),',
+        '  image,',
+        '  imageProps: getImageProps({ alt: "Small", src: { src: "/small.svg" } }),',
+        '  link,',
+        '  mono: Roboto_Mono({ subsets: ["latin"] }),',
+        '};',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      createReactFixturePlugin(),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '') as {
+      readonly result: {
+        readonly font: { readonly className: string; readonly variable: string };
+        readonly image: PreviewFixtureElement;
+        readonly imageProps: { readonly props: { readonly src: string } };
+        readonly link: PreviewFixtureElement;
+        readonly mono: { readonly style: { readonly fontFamily: string } };
+      };
+    };
+
+    expect(exports.result.image).toMatchObject({
+      props: {
+        alt: 'Logo',
+        'data-react-preview-next-image': '',
+        height: 38,
+        loading: 'eager',
+        src: '/logo.svg',
+        width: 180,
+      },
+      tag: 'img',
+    });
+    expect(exports.result.image.props).not.toHaveProperty('priority');
+    expect(exports.result.imageProps.props.src).toBe('/small.svg');
+    expect(exports.result.link).toMatchObject({
+      children: ['Docs'],
+      props: { 'data-react-preview-next-link': '', href: '/docs?tab=api' },
+      tag: 'a',
+    });
+    expect(exports.result.font).toMatchObject({
+      className: 'react-preview-next-font',
+      variable: '--font-geist',
+    });
+    expect(exports.result.mono.style.fontFamily).toContain('Arial');
+    expect(result.warnings.map((warning) => warning.text)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('next/font/google'),
+        expect.stringContaining('next/image'),
+        expect.stringContaining('next/link'),
+      ]),
+    );
+    expect(result.warnings).toHaveLength(3);
+    expect(result.metafile.inputs[path.join(projectRoot, 'package.json')]).toBeUndefined();
+  });
+
+  /** Keeps an installed framework export authoritative instead of replacing it with a facade. */
+  it('preserves normal resolution when the requested Next module exists', async () => {
+    const projectRoot = await createProject('next-installed-', {
+      dependencies: { next: '15.5.20' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    const nextRoot = path.join(projectRoot, 'node_modules', 'next');
+    await Promise.all([
+      mkdir(path.dirname(entryPath), { recursive: true }),
+      mkdir(nextRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(nextRoot, 'package.json'),
+        JSON.stringify({ exports: { './image': './image.js' }, name: 'next', version: '15.5.20' }),
+        'utf8',
+      ),
+      writeFile(
+        path.join(nextRoot, 'image.js'),
+        'module.exports = function InstalledImage() { return "installed-next-image"; };',
+        'utf8',
+      ),
+      writeFile(
+        entryPath,
+        "import Image from 'next/image'; export const result = Image();",
+        'utf8',
+      ),
+    ]);
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
+
+    expect(exports.result).toBe('installed-next-image');
+    expect(result.warnings).toEqual([]);
+  });
+
+  /** Replaces installed Google-font code because raw modules require Next compiler rewriting. */
+  it('keeps named fonts callable even when an installed raw module exports undefined', async () => {
+    const projectRoot = await createProject('next-font-installed-', {
+      dependencies: { next: '15.5.20' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    const fontRoot = path.join(projectRoot, 'node_modules', 'next', 'font');
+    await Promise.all([
+      mkdir(path.dirname(entryPath), { recursive: true }),
+      mkdir(fontRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(projectRoot, 'node_modules', 'next', 'package.json'),
+        JSON.stringify({
+          exports: { './font/google': './font/google.js' },
+          name: 'next',
+          version: '15.5.20',
+        }),
+        'utf8',
+      ),
+      writeFile(path.join(fontRoot, 'google.js'), 'exports.Geist = undefined;', 'utf8'),
+      writeFile(
+        entryPath,
+        "import { Geist } from 'next/font/google'; export const result = Geist({ variable: '--font' });",
+        'utf8',
+      ),
+    ]);
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
+
+    expect(exports.result).toMatchObject({
+      className: 'react-preview-next-font',
+      variable: '--font',
+    });
+    expect(result.warnings[0]?.text).toContain('without running Next build transforms');
+  });
+
+  /** Leaves missing modules actionable when the nearest package never declared Next. */
+  it('fails closed without a workspace-owned Next declaration', async () => {
+    const projectRoot = await createProject('next-undeclared-', {
+      dependencies: { react: '19.1.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(entryPath, "import Image from 'next/image'; export default Image;", 'utf8');
+
+    await expect(
+      buildFixture(entryPath, projectRoot, [
+        createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      ]),
+    ).rejects.toThrow('Could not resolve "next/image"');
+  });
+
+  /** Does not generalize manifest evidence to unreviewed framework runtime modules. */
+  it('keeps unsupported Next runtime imports as hard errors', async () => {
+    const projectRoot = await createProject('next-unsupported-', {
+      dependencies: { next: '15.5.20' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      "import { redirect } from 'next/navigation'; export default redirect;",
+      'utf8',
+    );
+
+    await expect(
+      buildFixture(entryPath, projectRoot, [
+        createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      ]),
+    ).rejects.toThrow('Could not resolve "next/navigation"');
+  });
+});
+
+/** Plain element shape emitted by the deliberately tiny React test implementation. */
+interface PreviewFixtureElement {
+  readonly children: readonly unknown[];
+  readonly props: Record<string, unknown>;
+  readonly tag: string;
+}
+
+/** Literal build options make emitted files and the metafile non-optional in test assertions. */
+interface PreviewFixtureBuildOptions extends BuildOptions {
+  readonly metafile: true;
+  readonly write: false;
+}
+
+/** Creates one isolated package and records it for deterministic cleanup. */
+async function createProject(prefix: string, manifest: object): Promise<string> {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), `react-preview-${prefix}`));
+  temporaryRoots.push(projectRoot);
+  await writeFile(path.join(projectRoot, 'package.json'), JSON.stringify(manifest), 'utf8');
+  return projectRoot;
+}
+
+/** Bundles one fixture as executable CommonJS while retaining metadata and diagnostics. */
+function buildFixture(
+  entryPath: string,
+  workspaceRoot: string,
+  plugins: readonly Plugin[],
+): Promise<BuildResult<PreviewFixtureBuildOptions>> {
+  return build({
+    absWorkingDir: workspaceRoot,
+    bundle: true,
+    entryPoints: [entryPath],
+    format: 'cjs',
+    logLevel: 'silent',
+    metafile: true,
+    platform: 'node',
+    plugins: [...plugins],
+    write: false,
+  });
+}
+
+/** Provides only the structural React methods exercised by the generated visual facades. */
+function createReactFixturePlugin(): Plugin {
+  return {
+    name: 'react-fixture',
+    setup(build): void {
+      build.onResolve({ filter: /^react$/ }, () => ({ namespace: 'react-fixture', path: 'react' }));
+      build.onLoad({ filter: /.*/, namespace: 'react-fixture' }, (): OnLoadResult => ({
+        contents: [
+          'exports.createElement = (tag, props, ...children) => ({ children, props: props || {}, tag });',
+          'exports.forwardRef = (render) => (props) => render(props, null);',
+          'exports.isValidElement = (value) => value !== null && typeof value === "object" && "tag" in value;',
+          'exports.cloneElement = (value, props) => ({ ...value, props: { ...value.props, ...props } });',
+        ].join('\n'),
+        loader: 'js',
+      }));
+    },
+  };
+}
+
+/** Evaluates a fully bundled CommonJS artifact without exposing Node's module loader. */
+function executeCommonJs(source: string): Record<string, unknown> {
+  const module = { exports: {} as Record<string, unknown> };
+  vm.runInNewContext(source, {
+    URLSearchParams,
+    exports: module.exports,
+    module,
+  });
+  return module.exports;
+}

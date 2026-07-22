@@ -219,6 +219,23 @@ describe('collectReactExportPropInference', () => {
     expect(result.Card?.shape.properties).not.toHaveProperty('optional');
   });
 
+  /** Shares the conservative String-method classifier used by runtime blocker value repair. */
+  it('infers text receivers from String-only prototype methods', () => {
+    const source = [
+      'export function TemplateLabel({ template, label }: any) {',
+      "  const normalized = template.replaceAll('-monorepo', '');",
+      '  return <span>{normalized}{label.trimStart()}</span>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/TemplateLabel.tsx', source);
+
+    expect(result.TemplateLabel?.shape.properties).toMatchObject({
+      label: { kind: 'string' },
+      template: { kind: 'string' },
+    });
+  });
+
   /** Preserves optional-chain absence instead of inventing data that changes the rendered branch. */
   it('materializes only containers before the first optional receiver', () => {
     const source = [

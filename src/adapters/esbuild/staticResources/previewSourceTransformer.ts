@@ -47,6 +47,7 @@ import {
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
+import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 
 export { PreviewSourceTransformError } from './previewSourceReplacement';
@@ -140,6 +141,10 @@ export class PreviewSourceTransformer {
     const allocate = (kind: string): string => bindings.next(kind);
 
     if (isPathInside(this.options.workspaceRoot, sourcePath)) {
+      const reactJsxNamespaceImport = createPreviewReactJsxNamespaceCompatibilityImport(analysis);
+      if (reactJsxNamespaceImport !== undefined) {
+        generatedImports.push(reactJsxNamespaceImport);
+      }
       if (
         this.options.implicitPackageGlobalResolver !== undefined &&
         (this.options.implicitPackageGlobalCandidateNames?.length ?? 0) > 0

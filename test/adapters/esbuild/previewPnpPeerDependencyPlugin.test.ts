@@ -33,18 +33,54 @@ describe('createPreviewPnpPeerDependencyPlugin', () => {
       await rm(fixture.workspaceRoot, { force: true, recursive: true });
     }
   });
+
+  /** Recovers a direct dependency when only the transformed virtual issuer lost its locator. */
+  it('retries a declared workspace dependency from the physical package issuer', async () => {
+    const fixture = await createPeerFixture(false, 'direct');
+    try {
+      const result = await buildPeerFixture(fixture);
+
+      expect(result.outputFiles?.[0]?.text).toContain('APPLICATION_PEER_VALUE');
+      expect(result.warnings.map((warning) => warning.text).join('\n')).toContain(
+        'restored the Yarn PnP dependency "peer-package"',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Uses the proven page package when the selected component belongs to a sibling workspace. */
+  it('restores peers from an Inspector page candidate application', async () => {
+    const fixture = await createPeerFixture(true);
+    try {
+      const applicationSourcePaths = [path.join(fixture.applicationRoot, 'pages', 'index.tsx')];
+      const result = await buildPeerFixture(fixture, fixture.sharedRoot, applicationSourcePaths);
+
+      expect(result.outputFiles?.[0]?.text).toContain('APPLICATION_PEER_VALUE');
+      expect(result.warnings.map((warning) => warning.text).join('\n')).toContain(
+        'from application package projects/application',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });
 
 /** Paths needed by the synthetic virtual workspace package and consuming application. */
 interface PeerFixture {
+  readonly allowPhysicalDependency: boolean;
   readonly applicationRoot: string;
   readonly peerPath: string;
+  readonly sharedRoot: string;
   readonly virtualIndexPath: string;
   readonly workspaceRoot: string;
 }
 
 /** Creates physical sources plus a non-materialized Yarn-style virtual package identity. */
-async function createPeerFixture(applicationDeclaresPeer: boolean): Promise<PeerFixture> {
+async function createPeerFixture(
+  applicationDeclaresPeer: boolean,
+  ownerDependencyKind: 'direct' | 'peer' = 'peer',
+): Promise<PeerFixture> {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-pnp-peer-fallback-'));
   const applicationRoot = path.join(workspaceRoot, 'projects', 'application');
   const sharedRoot = path.join(workspaceRoot, 'shared', 'common');
@@ -76,7 +112,12 @@ async function createPeerFixture(applicationDeclaresPeer: boolean): Promise<Peer
     ),
     writeFile(
       path.join(sharedRoot, 'package.json'),
-      JSON.stringify({ name: '@scope/common', peerDependencies: { 'peer-package': '*' } }),
+      JSON.stringify({
+        ...(ownerDependencyKind === 'direct'
+          ? { dependencies: { 'peer-package': '1.0.0' } }
+          : { peerDependencies: { 'peer-package': '*' } }),
+        name: '@scope/common',
+      }),
       'utf8',
     ),
     writeFile(
@@ -91,21 +132,37 @@ async function createPeerFixture(applicationDeclaresPeer: boolean): Promise<Peer
     ),
     writeFile(peerPath, "export default 'APPLICATION_PEER_VALUE';", 'utf8'),
   ]);
-  return { applicationRoot, peerPath, virtualIndexPath, workspaceRoot };
+  return {
+    allowPhysicalDependency: ownerDependencyKind === 'direct',
+    applicationRoot,
+    peerPath,
+    sharedRoot,
+    virtualIndexPath,
+    workspaceRoot,
+  };
 }
 
 /** Bundles the virtual package with normal preview plugins and a deterministic PnP stand-in. */
-async function buildPeerFixture(fixture: PeerFixture): Promise<BuildResult> {
+async function buildPeerFixture(
+  fixture: PeerFixture,
+  projectRoot = fixture.applicationRoot,
+  applicationSourcePaths: readonly string[] = [],
+): Promise<BuildResult> {
   return build({
     bundle: true,
     format: 'esm',
     logLevel: 'silent',
     plugins: [
       createPreviewPnpPeerDependencyPlugin({
-        projectRoot: fixture.applicationRoot,
+        applicationSourcePaths,
+        projectRoot,
         workspaceRoot: fixture.workspaceRoot,
       }),
-      createSyntheticPnpResolver(fixture.virtualIndexPath, fixture.peerPath),
+      createSyntheticPnpResolver(
+        fixture.virtualIndexPath,
+        fixture.peerPath,
+        fixture.allowPhysicalDependency,
+      ),
       createWorkspaceSourcePlugin({
         snapshots: [],
         transformer: new PreviewSourceTransformer({
@@ -125,13 +182,18 @@ async function buildPeerFixture(fixture: PeerFixture): Promise<BuildResult> {
 }
 
 /** Reproduces esbuild rejecting a virtual peer while allowing the same app-owned package. */
-function createSyntheticPnpResolver(virtualIndexPath: string, peerPath: string): Plugin {
+function createSyntheticPnpResolver(
+  virtualIndexPath: string,
+  peerPath: string,
+  allowPhysicalDependency: boolean,
+): Plugin {
   return {
     name: 'test-synthetic-pnp-peer-resolver',
     setup(buildContext): void {
       buildContext.onResolve({ filter: /^@scope\/common$/ }, () => ({ path: virtualIndexPath }));
       buildContext.onResolve({ filter: /^peer-package$/ }, (arguments_) =>
-        path.basename(arguments_.importer) === '__react_preview_peer_issuer__.js'
+        path.basename(arguments_.importer) === '__react_preview_peer_issuer__.js' ||
+        (allowPhysicalDependency && !arguments_.importer.includes(`${path.sep}.yarn${path.sep}`))
           ? { path: peerPath }
           : { errors: [{ text: `virtual peer denied for ${arguments_.importer}` }] },
       );

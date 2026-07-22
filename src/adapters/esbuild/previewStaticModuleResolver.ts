@@ -12,6 +12,7 @@ import {
   canonicalizeExistingPath,
   canonicalizePathThroughExistingAncestor,
 } from '../../shared/pathIdentity';
+import { createPreviewWorkspacePackageResolver } from './previewWorkspacePackageResolver';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
@@ -98,6 +99,7 @@ export function createPreviewStaticModuleResolver(
   const configPathByDirectory = new Map<string, string | undefined>();
   const matchedSpecifiersByTarget = new Map<string, Set<string>>();
   const fallbackContext = createResolutionContext(undefined, workspaceRoot);
+  const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
   const managedFallbackResolvers = createManagedFallbackResolvers(
     options.fallbackNodeModulesPaths ?? [],
   );
@@ -162,6 +164,14 @@ export function createPreviewStaticModuleResolver(
     return configPath;
   }
 
+  /** Tries authored workspace sources before immutable extension-managed dependency packages. */
+  function resolveStaticPackageFallback(moduleSpecifier: string): string | undefined {
+    return (
+      workspacePackageResolver.resolve(moduleSpecifier) ??
+      resolveManagedFallback(moduleSpecifier, managedFallbackResolvers)
+    );
+  }
+
   /** Resolves one authored import with the exact compiler options selected for its source file. */
   function resolve(moduleSpecifier: string, consumerPath: string): string | undefined {
     const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
@@ -178,18 +188,19 @@ export function createPreviewStaticModuleResolver(
         context.cache,
       ).resolvedModule;
       if (resolution === undefined) {
-        return resolveManagedFallback(cleanSpecifier, managedFallbackResolvers);
+        return resolveStaticPackageFallback(cleanSpecifier);
       }
       const physicalPath = resolvePreviewYarnVirtualPath(
         resolution.resolvedFileName,
         workspaceRoot,
       );
-      return physicalPath !== undefined && ts.sys.fileExists(physicalPath)
-        ? canonicalizeExistingPath(physicalPath)
-        : undefined;
+      if (physicalPath !== undefined && ts.sys.fileExists(physicalPath)) {
+        return canonicalizeExistingPath(physicalPath);
+      }
+      return resolveStaticPackageFallback(cleanSpecifier);
     } catch {
       // Invalid or transient project configuration cannot make syntax-only discovery fail a build.
-      return undefined;
+      return resolveStaticPackageFallback(cleanSpecifier);
     }
   }
 

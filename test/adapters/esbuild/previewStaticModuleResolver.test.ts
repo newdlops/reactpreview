@@ -185,4 +185,124 @@ describe('createPreviewStaticModuleResolver', () => {
       ]);
     }
   });
+
+  /** Resolves an authored workspace package even when no node_modules or PnP artifact exists. */
+  it('falls back to bounded workspace package source metadata', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-workspace-'));
+    const appRoot = path.join(workspaceRoot, 'projects', 'app');
+    const packageRoot = path.join(workspaceRoot, 'shared', 'ui');
+    const consumerPath = path.join(appRoot, 'src', 'Page.tsx');
+    const targetPath = path.join(packageRoot, 'src', 'index.ts');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(consumerPath), { recursive: true }),
+        mkdir(path.dirname(targetPath), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(
+          path.join(workspaceRoot, 'package.json'),
+          JSON.stringify({ private: true, workspaces: ['projects/*', 'shared/*'] }),
+          'utf8',
+        ),
+        writeFile(
+          path.join(appRoot, 'package.json'),
+          JSON.stringify({ name: '@example/app' }),
+          'utf8',
+        ),
+        writeFile(
+          path.join(packageRoot, 'package.json'),
+          JSON.stringify({ main: 'src/index.ts', name: '@example/ui' }),
+          'utf8',
+        ),
+        writeFile(consumerPath, "import { Button } from '@example/ui';", 'utf8'),
+        writeFile(targetPath, 'export const Button = () => null;', 'utf8'),
+      ]);
+
+      const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+      expect(resolver.resolve('@example/ui', consumerPath)).toBe(await realpath(targetPath));
+      expect(resolver.matchesTarget('@example/ui', consumerPath, targetPath)).toBe(true);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Applies exact and wildcard exports while preferring their existing authored source targets. */
+  it('resolves workspace package subpath exports without loading package code', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-exports-'));
+    const packageRoot = path.join(workspaceRoot, 'packages', 'ui');
+    const consumerPath = path.join(workspaceRoot, 'src', 'Page.tsx');
+    const buttonPath = path.join(packageRoot, 'src', 'button.tsx');
+    const distributionPath = path.join(packageRoot, 'dist', 'button.js');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(consumerPath), { recursive: true }),
+        mkdir(path.dirname(buttonPath), { recursive: true }),
+        mkdir(path.dirname(distributionPath), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(
+          path.join(workspaceRoot, 'package.json'),
+          JSON.stringify({ workspaces: { packages: ['packages/*'] } }),
+          'utf8',
+        ),
+        writeFile(
+          path.join(packageRoot, 'package.json'),
+          JSON.stringify({
+            exports: {
+              './*': { source: './src/*.tsx', import: './dist/*.js' },
+            },
+            name: '@example/ui',
+            source: './src/index.ts',
+          }),
+          'utf8',
+        ),
+        writeFile(consumerPath, "import { Button } from '@example/ui/button';", 'utf8'),
+        writeFile(buttonPath, 'export const Button = () => null;', 'utf8'),
+        writeFile(distributionPath, 'export const Button = () => null;', 'utf8'),
+      ]);
+
+      const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+      expect(resolver.resolve('@example/ui/button', consumerPath)).toBe(await realpath(buttonPath));
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Refuses package entry paths that escape their package even when they stay in the workspace. */
+  it('keeps workspace package entries inside their declared package root', async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(tmpdir(), 'react-preview-static-entry-boundary-'),
+    );
+    const packageRoot = path.join(workspaceRoot, 'packages', 'unsafe');
+    const consumerPath = path.join(workspaceRoot, 'src', 'Page.tsx');
+    const outsidePath = path.join(workspaceRoot, 'packages', 'outside.ts');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(consumerPath), { recursive: true }),
+        mkdir(packageRoot, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(
+          path.join(workspaceRoot, 'package.json'),
+          JSON.stringify({ workspaces: ['packages/*', '../outside/*'] }),
+          'utf8',
+        ),
+        writeFile(
+          path.join(packageRoot, 'package.json'),
+          JSON.stringify({ main: './../outside.ts', name: '@example/unsafe' }),
+          'utf8',
+        ),
+        writeFile(consumerPath, "import value from '@example/unsafe';", 'utf8'),
+        writeFile(outsidePath, 'export default "outside";', 'utf8'),
+      ]);
+
+      const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+      expect(resolver.resolve('@example/unsafe', consumerPath)).toBeUndefined();
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });

@@ -1,13 +1,15 @@
 /**
- * Restores application-owned peer dependency bindings for Yarn PnP virtual workspace packages.
+ * Restores declared dependency bindings for Yarn PnP virtual workspace packages.
  * Source transforms sometimes need to read a virtual package through its physical files; when
- * esbuild subsequently forgets that virtual locator, a valid peer can be reported as undeclared.
+ * esbuild subsequently mixes those identities, a valid direct dependency or peer can be reported
+ * as undeclared. Recovery remains manifest-proven and never executes the PnP manifest.
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
+import { collectPreviewPnpApplicationRoots } from './previewPnpApplicationRoots';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const BARE_PACKAGE_PATTERN = /^(@[^/]+\/[^/]+|[^./][^/]*)/;
@@ -21,8 +23,16 @@ interface PreviewPackageManifest {
   readonly peerDependencies?: Readonly<Record<string, unknown>>;
 }
 
+/** Manifest plus the physical package directory that owns the virtual importer. */
+interface PreviewPackageManifestRecord {
+  readonly manifest: PreviewPackageManifest;
+  readonly root: string;
+}
+
 /** Trusted application and workspace boundaries used by the peer resolver. */
 export interface PreviewPnpPeerDependencyPluginOptions {
+  /** Page and framework-wrapper sources that may belong to a sibling consuming application. */
+  readonly applicationSourcePaths?: readonly string[];
   /** Nearest application package that owns the selected React target. */
   readonly projectRoot: string;
   /** Workspace boundary containing application and virtual workspace packages. */
@@ -30,17 +40,28 @@ export interface PreviewPnpPeerDependencyPluginOptions {
 }
 
 /**
- * Creates a resolver that retries a proven workspace peer from the selected application package.
- * The fallback never invents a module: both manifests must declare the package and esbuild must
- * resolve its exact installed implementation through the application's normal Yarn PnP graph.
+ * Creates a resolver that retries a proven dependency from its physical workspace package issuer.
+ * Peers are retried from the selected application package because that package owns their concrete
+ * version. The fallback never invents a module and still delegates final identity to esbuild/PnP.
  */
 export function createPreviewPnpPeerDependencyPlugin(
   options: PreviewPnpPeerDependencyPluginOptions,
 ): Plugin {
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const projectRoot = canonicalizeExistingPath(options.projectRoot);
-  const projectManifestPromise = readPackageManifest(path.join(projectRoot, PACKAGE_MANIFEST_NAME));
-  const manifestByDirectory = new Map<string, Promise<PreviewPackageManifest | undefined>>();
+  const applicationManifestsPromise = collectPreviewPnpApplicationRoots({
+    projectRoot,
+    sourcePaths: options.applicationSourcePaths ?? [],
+    workspaceRoot,
+  }).then((roots) =>
+    Promise.all(
+      roots.map(async (root) => ({
+        manifest: await readPackageManifest(path.join(root, PACKAGE_MANIFEST_NAME)),
+        root,
+      })),
+    ),
+  );
+  const manifestByDirectory = new Map<string, Promise<PreviewPackageManifestRecord | undefined>>();
   const warnedPackages = new Set<string>();
 
   return {
@@ -55,52 +76,93 @@ export function createPreviewPnpPeerDependencyPlugin(
         const physicalImporter = resolvePreviewYarnVirtualPath(arguments_.importer, workspaceRoot);
         if (packageName === undefined || physicalImporter === undefined) return undefined;
 
-        const [ownerManifest, projectManifest] = await Promise.all([
+        const [ownerPackage, applicationManifests] = await Promise.all([
           findNearestPackageManifest(
             path.dirname(physicalImporter),
             workspaceRoot,
             manifestByDirectory,
           ),
-          projectManifestPromise,
+          applicationManifestsPromise,
         ]);
-        if (
-          !hasDependency(ownerManifest?.peerDependencies, packageName) ||
-          !doesApplicationProvideDependency(projectManifest, packageName)
-        ) {
+        const ownerManifest = ownerPackage?.manifest;
+        const ownerDeclaresDirectDependency = doesPackageProvideDirectDependency(
+          ownerManifest,
+          packageName,
+        );
+        const peerApplicationRoots = hasDependency(ownerManifest?.peerDependencies, packageName)
+          ? applicationManifests
+              .filter(
+                ({ manifest, root }) =>
+                  root !== ownerPackage?.root &&
+                  doesApplicationProvideDependency(manifest, packageName),
+              )
+              .map(({ root }) => root)
+          : [];
+        const ownerDeclaresApplicationPeer = peerApplicationRoots.length > 0;
+        if (!ownerDeclaresDirectDependency && !ownerDeclaresApplicationPeer) {
           return undefined;
         }
 
         const normalResolution = await resolveWithImporter(build, arguments_, arguments_.importer);
         if ((normalResolution.errors?.length ?? 0) === 0) return normalResolution;
 
-        const applicationIssuer = path.join(projectRoot, '__react_preview_peer_issuer__.js');
-        const applicationResolution = await resolveWithImporter(
-          build,
-          arguments_,
-          applicationIssuer,
-        );
-        if ((applicationResolution.errors?.length ?? 0) > 0 || applicationResolution.external) {
-          return normalResolution;
+        if (ownerDeclaresDirectDependency) {
+          const physicalResolution = await resolveWithImporter(build, arguments_, physicalImporter);
+          if ((physicalResolution.errors?.length ?? 0) === 0 && !physicalResolution.external) {
+            const warningKey = `${packageName}\0${path.dirname(physicalImporter)}\0direct`;
+            const includeWarning = !warnedPackages.has(warningKey);
+            warnedPackages.add(warningKey);
+            return {
+              ...physicalResolution,
+              warnings: [
+                ...(physicalResolution.warnings ?? []),
+                ...(includeWarning
+                  ? [
+                      {
+                        text:
+                          `React Preview restored the Yarn PnP dependency "${packageName}" ` +
+                          `from its physical workspace package issuer.`,
+                      },
+                    ]
+                  : []),
+              ],
+            };
+          }
         }
 
-        const warningKey = `${packageName}\0${path.dirname(physicalImporter)}`;
-        const includeWarning = !warnedPackages.has(warningKey);
-        warnedPackages.add(warningKey);
-        return {
-          ...applicationResolution,
-          warnings: [
-            ...(applicationResolution.warnings ?? []),
-            ...(includeWarning
-              ? [
-                  {
-                    text:
-                      `React Preview restored the Yarn PnP peer "${packageName}" ` +
-                      `from application package ${formatWorkspacePath(projectRoot, workspaceRoot)}.`,
-                  },
-                ]
-              : []),
-          ],
-        };
+        if (!ownerDeclaresApplicationPeer) return normalResolution;
+
+        for (const applicationRoot of peerApplicationRoots) {
+          const applicationIssuer = path.join(applicationRoot, '__react_preview_peer_issuer__.js');
+          const applicationResolution = await resolveWithImporter(
+            build,
+            arguments_,
+            applicationIssuer,
+          );
+          if ((applicationResolution.errors?.length ?? 0) > 0 || applicationResolution.external) {
+            continue;
+          }
+
+          const warningKey = `${packageName}\0${path.dirname(physicalImporter)}\0${applicationRoot}`;
+          const includeWarning = !warnedPackages.has(warningKey);
+          warnedPackages.add(warningKey);
+          return {
+            ...applicationResolution,
+            warnings: [
+              ...(applicationResolution.warnings ?? []),
+              ...(includeWarning
+                ? [
+                    {
+                      text:
+                        `React Preview restored the Yarn PnP peer "${packageName}" ` +
+                        `from application package ${formatWorkspacePath(applicationRoot, workspaceRoot)}.`,
+                    },
+                  ]
+                : []),
+            ],
+          };
+        }
+        return normalResolution;
       }
 
       build.onResolve({ filter: BARE_PACKAGE_PATTERN }, resolvePeerDependency);
@@ -159,18 +221,20 @@ function readBarePackageName(moduleSpecifier: string): string | undefined {
 async function findNearestPackageManifest(
   startDirectory: string,
   workspaceRoot: string,
-  cache: Map<string, Promise<PreviewPackageManifest | undefined>>,
-): Promise<PreviewPackageManifest | undefined> {
+  cache: Map<string, Promise<PreviewPackageManifestRecord | undefined>>,
+): Promise<PreviewPackageManifestRecord | undefined> {
   let directory = canonicalizeExistingPath(startDirectory);
   while (isPathInside(workspaceRoot, directory)) {
     const manifestPath = path.join(directory, PACKAGE_MANIFEST_NAME);
     let manifestPromise = cache.get(manifestPath);
     if (manifestPromise === undefined) {
-      manifestPromise = readPackageManifest(manifestPath);
+      manifestPromise = readPackageManifest(manifestPath).then((manifest) =>
+        manifest === undefined ? undefined : { manifest, root: directory },
+      );
       cache.set(manifestPath, manifestPromise);
     }
-    const manifest = await manifestPromise;
-    if (manifest !== undefined) return manifest;
+    const record = await manifestPromise;
+    if (record !== undefined) return record;
     if (directory === workspaceRoot) break;
     directory = path.dirname(directory);
   }
@@ -207,6 +271,18 @@ function doesApplicationProvideDependency(
     hasDependency(manifest?.devDependencies, packageName) ||
     hasDependency(manifest?.optionalDependencies, packageName) ||
     hasDependency(manifest?.peerDependencies, packageName)
+  );
+}
+
+/** Accepts only dependency kinds that the physical workspace package owns itself. */
+function doesPackageProvideDirectDependency(
+  manifest: PreviewPackageManifest | undefined,
+  packageName: string,
+): boolean {
+  return (
+    hasDependency(manifest?.dependencies, packageName) ||
+    hasDependency(manifest?.devDependencies, packageName) ||
+    hasDependency(manifest?.optionalDependencies, packageName)
   );
 }
 

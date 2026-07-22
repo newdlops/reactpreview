@@ -13,6 +13,7 @@ import {
   PreviewSourceTransformError,
   type PreviewSourceTransformer,
 } from './staticResources/previewSourceTransformer';
+import { createPreviewBoundedWorkGate } from './previewBoundedWorkGate';
 import { preparePreviewGeneratedBarrelFallback } from './previewGeneratedModuleFallback';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 import {
@@ -21,6 +22,7 @@ import {
 } from './previewYarnVirtualPath';
 
 const PROJECT_SOURCE_FILTER = /\.[cCmM]?[jJtT][sS][xX]?$/;
+const MAX_CONCURRENT_WORKSPACE_SOURCE_TRANSFORMS = 4;
 
 /** Editor snapshots and transformation policy that may advance between incremental rebuilds. */
 export interface WorkspaceSourceCompilationState {
@@ -124,6 +126,9 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
     'incrementalState' in options
       ? options.incrementalState
       : new MutableWorkspaceSourceState(options);
+  const sourceTransformGate = createPreviewBoundedWorkGate(
+    MAX_CONCURRENT_WORKSPACE_SOURCE_TRANSFORMS,
+  );
 
   return {
     name: 'react-preview-workspace-source',
@@ -212,37 +217,42 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         }
 
         try {
-          const sourceText = snapshot?.sourceText ?? (await readFile(physicalSourcePath, 'utf8'));
-          const generatedFallback = preparePreviewGeneratedBarrelFallback(
-            canonicalSourcePath,
-            sourceText,
-            lexicalWorkspaceRoot,
-          );
-          if (generatedFallback !== undefined) {
-            sourceState.transformer.registerWatchDirectory(generatedFallback.watchDirectory);
-          }
-          const preparedSource =
-            sourceState.prepareSource?.(
+          // Reading inside the gate prevents hundreds of queued callbacks from retaining complete
+          // source strings while they wait to enter the TypeScript AST transformation boundary.
+          return await sourceTransformGate.run(async () => {
+            const sourceText = snapshot?.sourceText ?? (await readFile(physicalSourcePath, 'utf8'));
+            const generatedFallback = preparePreviewGeneratedBarrelFallback(
               canonicalSourcePath,
-              generatedFallback?.contents ?? sourceText,
-            ) ??
-            generatedFallback?.contents ??
-            sourceText;
-          const transformed = await sourceState.transformer.transform(
-            canonicalSourcePath,
-            preparedSource,
-          );
-          return {
-            contents: transformed.contents,
-            loader: language,
-            resolveDir: path.dirname(canonicalSourcePath),
-            warnings: generatedFallback === undefined ? [] : [{ text: generatedFallback.warning }],
-            watchDirs: [
-              ...transformed.watchDirectories,
-              ...(generatedFallback === undefined ? [] : [generatedFallback.watchDirectory]),
-            ],
-            watchFiles: [physicalSourcePath],
-          };
+              sourceText,
+              lexicalWorkspaceRoot,
+            );
+            if (generatedFallback !== undefined) {
+              sourceState.transformer.registerWatchDirectory(generatedFallback.watchDirectory);
+            }
+            const preparedSource =
+              sourceState.prepareSource?.(
+                canonicalSourcePath,
+                generatedFallback?.contents ?? sourceText,
+              ) ??
+              generatedFallback?.contents ??
+              sourceText;
+            const transformed = await sourceState.transformer.transform(
+              canonicalSourcePath,
+              preparedSource,
+            );
+            return {
+              contents: transformed.contents,
+              loader: language,
+              resolveDir: path.dirname(canonicalSourcePath),
+              warnings:
+                generatedFallback === undefined ? [] : [{ text: generatedFallback.warning }],
+              watchDirs: [
+                ...transformed.watchDirectories,
+                ...(generatedFallback === undefined ? [] : [generatedFallback.watchDirectory]),
+              ],
+              watchFiles: [physicalSourcePath],
+            };
+          });
         } catch (error) {
           const transformMessage =
             error instanceof PreviewSourceTransformError ? error.message : String(error);

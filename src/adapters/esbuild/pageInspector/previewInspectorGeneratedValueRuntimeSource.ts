@@ -8,6 +8,7 @@
  * evidence. It never invokes getters, mutates project objects, or traverses class instances.
  */
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 
 /** Maximum nested object/array depth completed during one hook read. */
 export const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = 12;
@@ -46,6 +47,9 @@ const previewInspectorGeneratedValueBlockedKeys = new Set([
 ]);
 const previewInspectorGeneratedValueCollectionMethods = new Set(
   ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
+);
+const previewInspectorGeneratedValueStringMethods = new Set(
+  ${JSON.stringify(PREVIEW_STRING_ONLY_METHOD_NAMES)},
 );
 
 /** Reports whether a property can be copied without prototype mutation or unbounded UI text. */
@@ -105,6 +109,24 @@ function isPreviewInspectorGeneratedCollectionMethodRecord(value) {
     if (
       typeof propertyName !== 'string' ||
       !previewInspectorGeneratedValueCollectionMethods.has(propertyName)
+    ) return false;
+    const descriptor = descriptors[propertyName];
+    return descriptor !== undefined &&
+      Object.prototype.hasOwnProperty.call(descriptor, 'value') &&
+      typeof descriptor.value === 'function';
+  });
+}
+
+/** Detects the compiler placeholder previously emitted for a called String prototype method. */
+function isPreviewInspectorGeneratedStringMethodRecord(value) {
+  if (!isPreviewInspectorGeneratedPlainRecord(value)) return false;
+  const descriptors = readPreviewInspectorGeneratedValueDescriptors(value);
+  if (descriptors === undefined) return false;
+  const names = Reflect.ownKeys(descriptors);
+  return names.length > 0 && names.every((propertyName) => {
+    if (
+      typeof propertyName !== 'string' ||
+      !previewInspectorGeneratedValueStringMethods.has(propertyName)
     ) return false;
     const descriptor = descriptors[propertyName];
     return descriptor !== undefined &&
@@ -329,6 +351,15 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
     !authoredIsArray &&
     isPreviewInspectorGeneratedCollectionMethodRecord(authored)
   ) {
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
+  if (
+    typeof generated === 'string' &&
+    !authoredIsArray &&
+    isPreviewInspectorGeneratedStringMethodRecord(authored)
+  ) {
+    /* A called built-in proves text; keeping the own callback breaks later replace/split reads. */
     recordPreviewInspectorGeneratedPath(state, path);
     return { changed: true, value: generated };
   }

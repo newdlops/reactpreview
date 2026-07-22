@@ -8,6 +8,7 @@
  */
 import { PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY } from '../previewAutomaticPropsRuntimeSource';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 
 /** Text stored in editable JSON wherever the preview runtime inferred a no-op callback. */
 export const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = '[Preview no-op function]';
@@ -25,6 +26,9 @@ const PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_NODE_LIMIT = 256;
 const PREVIEW_INSPECTOR_COLLECTION_METHOD_NAMES = new Set(
   ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
+);
+const PREVIEW_INSPECTOR_STRING_METHOD_NAMES = new Set(
+  ${JSON.stringify(PREVIEW_STRING_ONLY_METHOD_NAMES)},
 );
 
 /** Copies one generated value into bounded JSON without invoking accessors or retaining prototypes. */
@@ -95,6 +99,8 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (/^(?:is|has|can|should|will|did|does|was|were|allow|enable)/u.test(name) || /(?:enabled|visible|active|selected|checked|ready|success|valid)$/u.test(name)) {
     return !/(?:disabled|hidden|loading|pending|suspended|denied|forbidden|locked|error|invalid)$/u.test(name);
   }
+  /* Timer APIs require a finite number; an object placeholder makes arithmetic and schedulers fail. */
+  if (/(?:duration|timeout|delay|interval|milliseconds|millis|seconds)$/u.test(name)) return 1;
   if (/(?:count|total|index|length|size|page|amount|rate|number|price|cost|limit|offset)$/u.test(name)) return 1;
   if (/(?:items|rows|list|options|results|nodes|edges|records|entries|users|companies)$/u.test(name)) {
     return [createPreviewInspectorRequiredPathCollectionItem()];
@@ -103,6 +109,8 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (name.includes('email')) return 'preview@example.invalid';
   if (/(?:date|time|timestamp|createdat|updatedat)$/u.test(name)) return '2026-01-15T09:00:00.000Z';
   if (/(?:url|uri|href|link)$/u.test(name)) return 'https://example.invalid/preview/1';
+  /* Image/data adapters commonly call String methods on src without requiring a valid URL. */
+  if (name === 'src' || name.endsWith('src')) return keyText;
   if (/(?:status|state)$/u.test(name)) return 'ACTIVE';
   if (/(?:props|context|form|data|filter|params|values|config|settings|user|company|session)$/u.test(name)) {
     return createPreviewInspectorRequiredPathCollectionItem();
@@ -113,8 +121,9 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
 /** Reports whether a demanded property name proves that its value is a render-safe scalar leaf. */
 function isPreviewInspectorRequiredPathScalarLeaf(propertyName) {
   const name = String(propertyName).replaceAll('_', '').toLowerCase();
-  return /(?:label|caption|name|owner|author|assignee|title|subject|headline|description|message|content|summary|text|body|email|date|time|timestamp|createdat|updatedat|url|uri|href|link|path|route|status|state)$/u.test(name) ||
+  return /(?:label|caption|name|owner|author|assignee|title|subject|headline|description|message|content|summary|text|body|email|date|time|timestamp|createdat|updatedat|url|uri|href|link|src|path|route|status|state)$/u.test(name) ||
     name === 'id' || name.endsWith('id') || name === 'uuid' ||
+    /(?:duration|timeout|delay|interval|milliseconds|millis|seconds)$/u.test(name) ||
     /(?:count|total|index|length|size|page|amount|rate|number|price|cost|limit|offset)$/u.test(name) ||
     /^(?:is|has|can|should|will|did|does|was|were|allow|enable)/u.test(name) ||
     /(?:enabled|visible|active|selected|checked|ready|success|valid|disabled|hidden|loading|pending|suspended|denied|forbidden|locked|error|invalid|touched|dirty)$/u.test(name);
@@ -201,16 +210,31 @@ function parsePreviewInspectorRequiredPath(rawPath) {
     .map((part) => part.replace(/\?$/u, ''))
     .filter((part) => part.length > 0 && part !== '<root>')
     .slice(0, PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT);
-  const collection = callable && PREVIEW_INSPECTOR_COLLECTION_METHOD_NAMES.has(parsedPath.at(-1));
-  const path = collection ? parsedPath.slice(0, -1) : parsedPath;
-  return path.length === 0 && !collection ? undefined : { callable: callable && !collection, collection, path };
+  const methodName = parsedPath.at(-1);
+  const stringReceiver = callable && PREVIEW_INSPECTOR_STRING_METHOD_NAMES.has(methodName);
+  const collection = callable && !stringReceiver && PREVIEW_INSPECTOR_COLLECTION_METHOD_NAMES.has(methodName);
+  const receiverConstrained = collection || stringReceiver;
+  const path = receiverConstrained ? parsedPath.slice(0, -1) : parsedPath;
+  return path.length === 0 && !receiverConstrained
+    ? undefined
+    : { callable: callable && !receiverConstrained, collection, path, stringReceiver };
 }
 
 /** Adds one compiler-proven path when serialization alone could not expose its missing property. */
 function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
   if (parsed === undefined) return template;
-  const { callable, collection, path } = parsed;
+  const { callable, collection, path, stringReceiver } = parsed;
+  /*
+   * Calls such as value.trim() and value.endsWith() prove that the receiver itself is text. The
+   * method lives on String.prototype and must not be represented as an own no-op child property.
+   * In particular, a later template.endsWith() requirement must preserve an already generated
+   * template string rather than widening it to an object with an own endsWith callback.
+   */
+  if (stringReceiver && path.length === 0) {
+    if (typeof template === 'string') return template;
+    return typeof seedValue === 'string' && seedValue.length > 0 ? seedValue : 'value';
+  }
   /*
    * A direct result.filter()/map()/find() observation proves the root itself is an array. The
    * method belongs to Array.prototype and must never become an own no-op property on an object.
@@ -233,6 +257,14 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
     if (blockedInspectorPropNames.has(propertyName)) return root;
     const atLeaf = index === path.length - 1;
     if (atLeaf) {
+      if (stringReceiver) {
+        if (typeof current[propertyName] !== 'string') {
+          current[propertyName] = typeof smartSeed === 'string' && smartSeed.length > 0
+            ? smartSeed
+            : createPreviewInspectorRequiredPathKeyText(propertyName);
+        }
+        break;
+      }
       if (collection) {
         /*
          * Exact method-call evidence is stronger than a neutral object emitted by a Context,
@@ -285,6 +317,9 @@ function createPreviewInspectorRuntimeFallbackSmartRoot(value, requiredPaths) {
     .map(parsePreviewInspectorRequiredPath)
     .find((path) => path !== undefined);
   if (firstPath !== undefined) {
+    if (firstPath.stringReceiver && firstPath.path.length === 0) {
+      return typeof value === 'string' && value.length > 0 ? value : 'value';
+    }
     return (firstPath.collection && firstPath.path.length === 0) || /^\d+$/u.test(firstPath.path[0])
       ? []
       : {};

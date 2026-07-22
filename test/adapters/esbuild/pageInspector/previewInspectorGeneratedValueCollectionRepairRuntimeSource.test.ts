@@ -321,6 +321,81 @@ describe('Preview Inspector generated collection repair', () => {
     expect(resolved).toBe(authored);
   });
 
+  /** Keeps a tuple field textual when a later String prototype call adds deeper path evidence. */
+  it('preserves a Smart-filled string receiver across a String method requirement', () => {
+    const createSmartDraft = createSmartDraftBuilder();
+    const draft = createSmartDraft(
+      [{}, () => undefined],
+      ['0.template', '0.template.endsWith()', '1()'],
+    ) as [{ template: unknown }, unknown];
+
+    expect(draft).toEqual([{ template: 'template' }, '[Preview no-op function]']);
+    expect(typeof draft[0].template).toBe('string');
+    expect((draft[0].template as string).replace('-monorepo', '')).toBe('template');
+  });
+
+  /** Applies the same receiver constraint while the automatic hook fallback is first registered. */
+  it('preserves an Auto-filled string receiver across a String method requirement', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => [{}, () => undefined],
+      {
+        ...createMetadata(),
+        requiredPaths: ['0.template', '0.template.endsWith()', '1()'],
+      },
+    ) as [{ template: unknown }, () => undefined];
+
+    expect(typeof resolved[0].template).toBe('string');
+    expect((resolved[0].template as string).endsWith('-monorepo')).toBe(false);
+    expect(typeof resolved[1]).toBe('function');
+    resolved[1]();
+  });
+
+  /** Treats exact and suffixed `src` fields as compact text even when a neutral seed was an object. */
+  it('repairs image source placeholders to short strings', () => {
+    const createSmartDraft = createSmartDraftBuilder();
+    const draft = createSmartDraft({ imageSrc: {}, src: {} }, ['imageSrc', 'src']) as {
+      imageSrc: unknown;
+      src: unknown;
+    };
+    const fixture = createRuntimeFallbackFixture(true);
+    const automatic = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      {
+        ...createMetadata(),
+        requiredPaths: ['imageSrc', 'src'],
+      },
+    ) as { imageSrc: unknown; src: unknown };
+
+    expect(draft).toEqual({ imageSrc: 'imageSrc', src: 'src' });
+    expect(automatic).toEqual({ imageSrc: 'imageSrc', src: 'src' });
+    expect((draft.imageSrc as string).replace('/preview', '')).toBe('imageSrc');
+  });
+
+  /** Keeps timer-shaped leaves numeric so toast, debounce, and transition APIs can consume them. */
+  it('repairs timer placeholders to finite numeric values', () => {
+    const createSmartDraft = createSmartDraftBuilder();
+    const draft = createSmartDraft({ duration: {}, retryDelay: {}, requestTimeout: {} }, [
+      'duration',
+      'retryDelay',
+      'requestTimeout',
+    ]) as Record<string, unknown>;
+    const fixture = createRuntimeFallbackFixture(true);
+    const automatic = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      {
+        ...createMetadata(),
+        requiredPaths: ['duration', 'retryDelay', 'requestTimeout'],
+      },
+    ) as Record<string, unknown>;
+
+    expect(draft).toEqual({ duration: 1, requestTimeout: 1, retryDelay: 1 });
+    expect(automatic).toEqual({ duration: 1, requestTimeout: 1, retryDelay: 1 });
+  });
+
   /** Matches runtime numeric indices back to static array markers for nested collection fields. */
   it('repairs a nested collection below an authored array item', () => {
     const fixture = createRuntimeFallbackFixture(true);

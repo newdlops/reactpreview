@@ -713,6 +713,25 @@ describe('Preview Inspector runtime fallback source', () => {
     ).toEqual([{ id: 'preview-1', name: 'name' }]);
   });
 
+  /** Repairs an older syntax placeholder when a String method proves the receiver's real kind. */
+  it('materializes string-method evidence as an actual string inside a tuple', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['0.template', '0.template.endsWith()', '1()'],
+    };
+
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => [{ template: { endsWith: () => undefined } }, () => undefined],
+      metadata,
+    ) as [{ template: string }, () => unknown];
+
+    expect(typeof resolved[0].template).toBe('string');
+    expect(resolved[0].template.replace('-monorepo', '')).toBe('template');
+    expect(typeof resolved[1]).toBe('function');
+  });
+
   /** Preserves router-style push APIs because the verb alone does not prove an Array receiver. */
   it('materializes an ambiguous push call as an object method', () => {
     const fixture = createRuntimeFallbackFixture(true);

@@ -661,6 +661,39 @@ function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
     failure.exportName,
     failure.targetPropRequiredPaths,
   );
+  /*
+   * A nested hook/context value can surface as a target-boundary error even though none of the
+   * missing receiver paths belong to the selected export's props. Reapplying an empty object in that
+   * case cannot change project input; it only remounts the same failing tree and lets an automatic
+   * resolver oscillate forever. Enabling the global generated-value boundary is the sole safe
+   * mutation left. If it is already enabled, report a no-op so the surrounding transaction and
+   * convergence tracker do not schedule another render attempt.
+   */
+  if (!hasPreviewInspectorSmartPropsDraft(draft)) {
+    const enabled = setPreviewInspectorFallbackValuesEnabled(true, commit);
+    if (!enabled) return false;
+    if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+      recordPreviewInspectorBlockerAutoDecision({
+        action: 'Enable generated preview values and retry',
+        blockerId: failure.id,
+        blockerKind: 'target-error',
+        blockerName: 'Component error · ' + failure.blockedComponentName,
+        generatedPaths: [],
+        mode: 'automatic-values',
+        occurrenceStart: failure.occurrenceStart,
+        ownerName: failure.exportName,
+        reason: failure.headline,
+        selectedValue: {},
+        sourcePath: failure.sourcePath,
+        startsRenderAttempt: true,
+        summary: {
+          preservedObservedOrUserProps: true,
+          requiredPaths: failure.targetPropRequiredPaths,
+        },
+      });
+    }
+    return true;
+  }
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Smart fill target props and retry',
@@ -682,17 +715,6 @@ function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
         requiredPaths: failure.targetPropRequiredPaths,
       },
     });
-  }
-  if (!hasPreviewInspectorSmartPropsDraft(draft)) {
-    setPreviewInspectorFallbackValuesEnabled(true, commit);
-    if (commit) {
-      refreshPreviewInspectorExport(failure.exportName);
-    } else {
-      const currentRevision =
-        previewInspectorSession.propsRevisionByExport.get(failure.exportName) ?? 0;
-      previewInspectorSession.propsRevisionByExport.set(failure.exportName, currentRevision + 1);
-    }
-    return true;
   }
   applyPreviewInspectorSmartProps(failure.exportName, failure.targetPropRequiredPaths, commit);
   return true;

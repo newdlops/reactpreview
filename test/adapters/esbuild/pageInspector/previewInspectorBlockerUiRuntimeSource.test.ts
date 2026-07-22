@@ -143,7 +143,7 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallback');
     expect(source).toContain('smartFillPreviewInspectorTargetFailure');
-    expect(source).toContain('refreshPreviewInspectorExport(failure.exportName)');
+    expect(source).toContain('if (!enabled) return false;');
     expect(source).toContain('createPreviewInspectorSmartPropsDraft');
     expect(source).toContain('applyPreviewInspectorSmartProps');
     expect(source).toContain('autoPassPreviewInspectorRuntimeFallback');
@@ -160,6 +160,55 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain("helpKind = 'flow-outcome'");
     expect(source).toContain('React Preview supplied a local preview value here.');
     expect(source).toContain('readPreviewInspectorActiveBlockerSummary');
+  });
+
+  /**
+   * A child hook failure is not repairable through the selected export's props. Once generated
+   * values are enabled, an empty Smart draft must therefore converge instead of remounting the
+   * same target with `{}` and recording another ineffective automatic decision.
+   */
+  it('enables automatic values once, then converges an evidence-free target prop repair', () => {
+    const calls: string[] = [];
+    const context: {
+      __smartFill?: (failure: Record<string, unknown>, commit?: boolean) => boolean;
+      calls: string[];
+    } = { calls };
+    vm.runInNewContext(
+      `
+        const createPreviewInspectorSmartPropsDraft = () => ({
+          generatedPaths: [],
+          generatedValue: {},
+          value: {},
+        });
+        const hasPreviewInspectorSmartPropsDraft = () => false;
+        let fallbackValuesEnabled = false;
+        const setPreviewInspectorFallbackValuesEnabled = (enabled) => {
+          if (fallbackValuesEnabled === enabled) return false;
+          fallbackValuesEnabled = enabled;
+          calls.push('enable');
+          return true;
+        };
+        const recordPreviewInspectorBlockerAutoDecision = () => calls.push('decision');
+        const applyPreviewInspectorSmartProps = () => calls.push('apply');
+        ${createPreviewInspectorBlockerUiRuntimeSource()}
+        globalThis.__smartFill = smartFillPreviewInspectorTargetFailure;
+      `,
+      context,
+    );
+
+    const failure = {
+      blockedComponentName: 'StaticImage',
+      exportName: 'default',
+      headline: 'TypeError: src.replace is not a function',
+      id: 'target-error:default:0',
+      targetPropRequiredPaths: [],
+    };
+
+    expect(context.__smartFill?.(failure)).toBe(true);
+    expect(calls).toEqual(['enable', 'decision']);
+    calls.length = 0;
+    expect(context.__smartFill?.(failure)).toBe(false);
+    expect(calls).toEqual([]);
   });
 
   /** Distinguishes a mounted-but-empty target and bounds its large downstream payload inventory. */

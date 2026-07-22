@@ -78,6 +78,9 @@ describe('PreviewCompilerWorkerServer', () => {
     port.request(createCompileRequest(2, 'full'));
     port.request(createCompileRequest(3, 'fast'));
     expect(compiler.calls.map((call) => call.request.documentPath)).toEqual(['/Target1.tsx']);
+    expect(port.responses.filter((response) => response.type === 'started')).toEqual([
+      { id: 1, type: 'started' },
+    ]);
 
     compiler.calls[0]?.deferred.resolve(createBundle(1));
     await waitForMicrotasks();
@@ -85,12 +88,21 @@ describe('PreviewCompilerWorkerServer', () => {
       '/Target1.tsx',
       '/Target3.tsx',
     ]);
+    expect(port.responses.filter((response) => response.type === 'started')).toEqual([
+      { id: 1, type: 'started' },
+      { id: 3, type: 'started' },
+    ]);
     compiler.calls[1]?.deferred.resolve(createBundle(3));
     await waitForMicrotasks();
     expect(compiler.calls.map((call) => call.request.documentPath)).toEqual([
       '/Target1.tsx',
       '/Target3.tsx',
       '/Target2.tsx',
+    ]);
+    expect(port.responses.filter((response) => response.type === 'started')).toEqual([
+      { id: 1, type: 'started' },
+      { id: 3, type: 'started' },
+      { id: 2, type: 'started' },
     ]);
     compiler.calls[2]?.deferred.resolve(createBundle(2));
     await waitForMicrotasks();
@@ -112,6 +124,25 @@ describe('PreviewCompilerWorkerServer', () => {
     expect(compiler.shutdown).toHaveBeenCalledOnce();
     expect(port.responses.at(-1)).toEqual({ type: 'shutdown-complete' });
     expect(port.close).toHaveBeenCalledOnce();
+  });
+
+  /** Large cloned snapshots cannot accumulate without bound behind one native graph build. */
+  it('rejects work beyond the bounded serialized queue', () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+
+    for (let id = 1; id <= 10; id += 1) {
+      port.request(createCompileRequest(id, 'full'));
+    }
+
+    expect(compiler.calls).toHaveLength(1);
+    expect(
+      port.responses.filter(
+        (response) => response.type === 'failure' && response.error.kind === 'stalled',
+      ),
+    ).toHaveLength(1);
   });
 });
 

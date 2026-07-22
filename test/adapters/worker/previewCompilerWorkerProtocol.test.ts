@@ -1,7 +1,10 @@
 /** Verifies error reconstruction and zero-copy bundle transfer-list selection. */
 import { describe, expect, it } from 'vitest';
 import { PreviewCompilationError } from '../../../src/domain/preview';
-import { PreviewBuildCancelledError } from '../../../src/domain/previewBuildExecution';
+import {
+  PreviewBuildCancelledError,
+  PreviewBuildStalledError,
+} from '../../../src/domain/previewBuildExecution';
 import {
   collectPreviewBundleTransferList,
   deserializePreviewCompilerWorkerError,
@@ -25,6 +28,24 @@ describe('previewCompilerWorkerProtocol', () => {
         serializePreviewCompilerWorkerError(new PreviewBuildCancelledError()),
       ),
     ).toBeInstanceOf(PreviewBuildCancelledError);
+  });
+
+  /** Native service death is a resource stall so first paint never repeats the same heavy graph. */
+  it('classifies esbuild service termination as a non-retriable stall', () => {
+    const serialized = serializePreviewCompilerWorkerError(
+      new Error('The service was stopped'),
+      undefined,
+      '/workspace/Target.tsx',
+    );
+
+    expect(serialized).toMatchObject({
+      kind: 'stalled',
+      stallReason: 'native-service',
+      target: '/workspace/Target.tsx',
+    });
+    expect(deserializePreviewCompilerWorkerError(serialized)).toBeInstanceOf(
+      PreviewBuildStalledError,
+    );
   });
 
   /** Selects every unique JavaScript, CSS, and lazy chunk ArrayBuffer exactly once. */

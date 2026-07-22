@@ -11,7 +11,10 @@ import {
 } from '../../domain/preview';
 import {
   isPreviewBuildCancellation,
+  isPreviewBuildStall,
   PreviewBuildCancelledError,
+  PreviewBuildStalledError,
+  type PreviewBuildStallReason,
 } from '../../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
 
@@ -55,6 +58,14 @@ export interface PreviewCompilerWorkerProgressResponse {
   readonly type: 'progress';
 }
 
+/** Confirms that a queued request now owns the serialized compiler and its watchdog may start. */
+export interface PreviewCompilerWorkerStartedResponse {
+  /** Owning compile request identity. */
+  readonly id: number;
+  /** Protocol discriminator. */
+  readonly type: 'started';
+}
+
 /** Returns one completed in-memory bundle to the extension host. */
 export interface PreviewCompilerWorkerSuccessResponse {
   /** Browser bundle whose byte buffers are transferred rather than copied. */
@@ -70,13 +81,21 @@ export interface PreviewCompilerWorkerSerializedError {
   /** Structured build diagnostics retained for PreviewCompilationError reconstruction. */
   readonly diagnostics: readonly PreviewDiagnostic[];
   /** Error category required by main-thread orchestration. */
-  readonly kind: 'cancelled' | 'compilation' | 'unexpected';
+  readonly kind: 'cancelled' | 'compilation' | 'stalled' | 'unexpected';
+  /** Last worker milestone retained when a host watchdog produced the failure. */
+  readonly lastStage?: PreviewProgressStage;
   /** Human-readable error message. */
   readonly message: string;
   /** Original error name used only for diagnostics. */
   readonly name: string;
+  /** Absolute target used to prevent a resource failure from being retried as a source error. */
+  readonly target?: string;
+  /** Bounded watchdog duration when known by the worker-side failure. */
+  readonly elapsedMs?: number;
   /** Optional background stack included in the reconstructed cause. */
   readonly stack?: string;
+  /** Resource boundary used to explain why the graph is not immediately retried. */
+  readonly stallReason?: PreviewBuildStallReason;
 }
 
 /** Rejects one compile request with a domain-preserving serialized failure. */
@@ -100,6 +119,7 @@ export type PreviewCompilerWorkerResponse =
   | PreviewCompilerWorkerFailureResponse
   | PreviewCompilerWorkerProgressResponse
   | PreviewCompilerWorkerShutdownResponse
+  | PreviewCompilerWorkerStartedResponse
   | PreviewCompilerWorkerSuccessResponse;
 
 /**
@@ -112,6 +132,7 @@ export type PreviewCompilerWorkerResponse =
 export function serializePreviewCompilerWorkerError(
   error: unknown,
   signal?: AbortSignal,
+  target?: string,
 ): PreviewCompilerWorkerSerializedError {
   if (isPreviewBuildCancellation(error, signal)) {
     return {
@@ -120,6 +141,21 @@ export function serializePreviewCompilerWorkerError(
       message:
         error instanceof Error ? error.message : 'The background preview build was cancelled.',
       name: error instanceof Error ? error.name : 'PreviewBuildCancelledError',
+      ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+    };
+  }
+  if (isPreviewBuildStall(error) || isNativeCompilerResourceFailure(error)) {
+    return {
+      diagnostics: [],
+      elapsedMs: isPreviewBuildStall(error) ? error.elapsedMs : 0,
+      kind: 'stalled',
+      ...(isPreviewBuildStall(error) && error.lastStage !== undefined
+        ? { lastStage: error.lastStage }
+        : {}),
+      message: error instanceof Error ? error.message : String(error),
+      name: error instanceof Error ? error.name : 'PreviewBuildStalledError',
+      stallReason: isPreviewBuildStall(error) ? error.reason : 'native-service',
+      target: isPreviewBuildStall(error) ? error.target : (target ?? 'background esbuild service'),
       ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
     };
   }
@@ -153,6 +189,16 @@ export function deserializePreviewCompilerWorkerError(
   if (serialized.kind === 'cancelled') {
     return new PreviewBuildCancelledError();
   }
+  if (serialized.kind === 'stalled') {
+    const stalled = new PreviewBuildStalledError(
+      serialized.target ?? 'background esbuild service',
+      serialized.lastStage,
+      serialized.elapsedMs ?? 0,
+      serialized.stallReason ?? 'watchdog',
+    );
+    if (serialized.stack !== undefined) stalled.stack = serialized.stack;
+    return stalled;
+  }
   const cause = new Error(serialized.message);
   cause.name = serialized.name;
   if (serialized.stack !== undefined) {
@@ -168,6 +214,14 @@ export function deserializePreviewCompilerWorkerError(
           },
         ];
   return new PreviewCompilationError(serialized.message, diagnostics, cause);
+}
+
+/** Recognizes native esbuild service termination that must not trigger a second full graph build. */
+function isNativeCompilerResourceFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /(?:the service (?:was stopped|is no longer running)|write EPIPE|broken pipe|(?:fatal error|runtime): out of memory|cannot allocate memory)/iu.test(
+    `${error.name}: ${error.message}`,
+  );
 }
 
 /**
@@ -202,7 +256,7 @@ export function isPreviewCompilerWorkerResponse(
     return true;
   }
   return (
-    (type === 'progress' || type === 'success' || type === 'failure') &&
+    (type === 'started' || type === 'progress' || type === 'success' || type === 'failure') &&
     'id' in value &&
     typeof value.id === 'number' &&
     Number.isSafeInteger(value.id)

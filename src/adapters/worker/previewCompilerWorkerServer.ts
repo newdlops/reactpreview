@@ -4,7 +4,10 @@
  * without importing VS Code or creating a real thread.
  */
 import type { PreviewCompiler } from '../../application/previewCompiler';
-import { PreviewBuildCancelledError } from '../../domain/previewBuildExecution';
+import {
+  PreviewBuildCancelledError,
+  PreviewBuildStalledError,
+} from '../../domain/previewBuildExecution';
 import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
 import { attachPreviewArtifactMetadata } from '../vscode/previewArtifactLayout';
 import {
@@ -41,6 +44,8 @@ interface QueuedPreviewCompilation {
   /** Lower values run first; cold fast passes precede queued full enrichment. */
   readonly priority: number;
 }
+
+const MAX_QUEUED_COMPILATIONS = 8;
 
 /** Serial worker scheduler that owns all compiler caches and native esbuild lifecycle. */
 export class PreviewCompilerWorkerServer {
@@ -80,7 +85,12 @@ export class PreviewCompilerWorkerServer {
       return;
     }
     if (this.shuttingDown) {
-      this.postFailure(message.id, new PreviewBuildCancelledError());
+      this.postFailure(
+        message.id,
+        new PreviewBuildCancelledError(),
+        undefined,
+        message.request.documentPath,
+      );
       return;
     }
     this.enqueue(message);
@@ -92,6 +102,7 @@ export class PreviewCompilerWorkerServer {
       message,
       priority: message.request.preparationMode === 'fast' ? 0 : 1,
     };
+    if (!this.reserveQueueCapacity(queued)) return;
     const laterIndex = this.queue.findIndex((candidate) => candidate.priority > queued.priority);
     if (laterIndex < 0) {
       this.queue.push(queued);
@@ -99,6 +110,49 @@ export class PreviewCompilerWorkerServer {
       this.queue.splice(laterIndex, 0, queued);
     }
     void this.drain();
+  }
+
+  /** Keeps cloned editor snapshots bounded and lets a first-paint request displace enrichment. */
+  private reserveQueueCapacity(queued: QueuedPreviewCompilation): boolean {
+    if (this.queue.length < MAX_QUEUED_COMPILATIONS) return true;
+    let replaceableIndex = -1;
+    if (queued.priority === 0) {
+      for (let index = this.queue.length - 1; index >= 0; index -= 1) {
+        if ((this.queue[index]?.priority ?? queued.priority) > queued.priority) {
+          replaceableIndex = index;
+          break;
+        }
+      }
+    }
+    if (replaceableIndex >= 0) {
+      const [replaced] = this.queue.splice(replaceableIndex, 1);
+      if (replaced !== undefined) {
+        this.postFailure(
+          replaced.message.id,
+          new PreviewBuildStalledError(
+            replaced.message.request.documentPath,
+            undefined,
+            0,
+            'queue-capacity',
+          ),
+          undefined,
+          replaced.message.request.documentPath,
+        );
+      }
+      return true;
+    }
+    this.postFailure(
+      queued.message.id,
+      new PreviewBuildStalledError(
+        queued.message.request.documentPath,
+        undefined,
+        0,
+        'queue-capacity',
+      ),
+      undefined,
+      queued.message.request.documentPath,
+    );
+    return false;
   }
 
   /** Aborts active work or removes a queued revision before it consumes analysis resources. */
@@ -111,8 +165,13 @@ export class PreviewCompilerWorkerServer {
     if (queuedIndex < 0) {
       return;
     }
-    this.queue.splice(queuedIndex, 1);
-    this.postFailure(requestId, new PreviewBuildCancelledError());
+    const [queued] = this.queue.splice(queuedIndex, 1);
+    this.postFailure(
+      requestId,
+      new PreviewBuildCancelledError(),
+      undefined,
+      queued?.message.request.documentPath,
+    );
   }
 
   /** Cancels all work and waits for active compiler cleanup before acknowledging shutdown. */
@@ -124,7 +183,12 @@ export class PreviewCompilerWorkerServer {
     this.activeController?.abort();
     const queued = this.queue.splice(0);
     for (const entry of queued) {
-      this.postFailure(entry.message.id, new PreviewBuildCancelledError());
+      this.postFailure(
+        entry.message.id,
+        new PreviewBuildCancelledError(),
+        undefined,
+        entry.message.request.documentPath,
+      );
     }
     if (!this.running) {
       void this.finalize();
@@ -145,6 +209,7 @@ export class PreviewCompilerWorkerServer {
     this.activeController = controller;
     this.activeRequestId = queued.message.id;
     try {
+      this.port.postMessage({ id: queued.message.id, type: 'started' });
       const compiledBundle = await this.compiler.compile(queued.message.request, {
         reportProgress: (stage) => {
           this.port.postMessage({ id: queued.message.id, stage, type: 'progress' });
@@ -157,7 +222,12 @@ export class PreviewCompilerWorkerServer {
         collectPreviewBundleTransferList(bundle),
       );
     } catch (error) {
-      this.postFailure(queued.message.id, error, controller.signal);
+      this.postFailure(
+        queued.message.id,
+        error,
+        controller.signal,
+        queued.message.request.documentPath,
+      );
     } finally {
       this.activeController = undefined;
       this.activeRequestId = undefined;
@@ -176,9 +246,14 @@ export class PreviewCompilerWorkerServer {
   }
 
   /** Serializes one request failure without allowing port errors to corrupt queue state. */
-  private postFailure(requestId: number, error: unknown, signal?: AbortSignal): void {
+  private postFailure(
+    requestId: number,
+    error: unknown,
+    signal?: AbortSignal,
+    target?: string,
+  ): void {
     this.port.postMessage({
-      error: serializePreviewCompilerWorkerError(error, signal),
+      error: serializePreviewCompilerWorkerError(error, signal, target),
       id: requestId,
       type: 'failure',
     });

@@ -21,13 +21,16 @@ interface TreeScrollRuntime {
 describe('Preview Inspector tree scroll runtime source', () => {
   /** Keeps generated browser source syntactically valid as the lifecycle policy evolves. */
   it('emits valid standalone runtime source', () => {
+    const source = createPreviewInspectorTreeScrollRuntimeSource();
     expect(
       () =>
         new vm.Script(`
           const previewInspectorDevtoolsSessionState = {};
-          ${createPreviewInspectorTreeScrollRuntimeSource()}
+          ${source}
         `),
     ).not.toThrow();
+    expect(source).toContain('if (treeViewport.scrollLeft !== treeLeft)');
+    expect(source).toContain('if (scrollingElement.scrollTop !== documentTop)');
   });
 
   /** Restores a deep row and the preview canvas after focus and export remount reset both to zero. */

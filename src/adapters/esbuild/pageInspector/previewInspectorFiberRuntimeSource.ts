@@ -713,6 +713,12 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
     let fiber = firstFiber;
     let siblingIndex = 0;
     while (fiber !== undefined) {
+      // Corrupt, stale, or third-party Fiber-like records can form a sibling cycle. Stop at the
+      // first repeated identity so a diagnostic snapshot can never monopolize the renderer thread.
+      if (visitedFibers.has(fiber)) {
+        truncated = true;
+        break;
+      }
       if (
         visitCount >= PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT ||
         nodeCount >= PREVIEW_INSPECTOR_TREE_NODE_LIMIT ||
@@ -722,65 +728,63 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
         break;
       }
       const nextSibling = readPreviewInspectorFiberLink(fiber, 'sibling');
-      if (!visitedFibers.has(fiber)) {
-        visitedFibers.add(fiber);
-        visitCount += 1;
-        const path = pathPrefix + '.' + String(siblingIndex);
-        if (!isPreviewInspectorOwnedPortalFiber(fiber)) {
-          const kind = classifyPreviewInspectorFiber(fiber);
-          const name = namePreviewInspectorFiber(fiber, kind);
-          const source = readPreviewInspectorFiberSource(fiber, name, options, ancestorSource);
-          const owned = isPreviewInspectorOwnedFiber(fiber, name, kind);
-          if (owned) {
-            const promoted = buildForest(
-              readPreviewInspectorFiberLink(fiber, 'child'),
-              parentId,
-              path + '.i',
-              depth + 1,
-              source ?? ancestorSource,
-            );
-            nodes.push(...promoted.nodes);
-            promotedHostRoots.push(...promoted.hostRoots);
-          } else {
-            const id = createPreviewInspectorTreeNodeId('fiber', path, kind, name);
-            const stateNode = readPreviewInspectorOwnData(fiber, 'stateNode');
-            const directHost = normalizePreviewInspectorHostElement(stateNode);
-            const role = readPreviewInspectorFiberStructureRole(fiber, kind, name);
-            const overlayState = readPreviewInspectorOverlayState(fiber, role);
-            const node = {
-              children: [],
-              hostElementCount: 0,
-              id,
-              kind,
-              name,
-              props: snapshotPreviewInspectorValue(readPreviewInspectorOwnData(fiber, 'memoizedProps')),
-              ...(role === undefined ? {} : { role }),
-              state: snapshotPreviewInspectorFiberState(fiber, kind),
-              ...(overlayState === undefined ? {} : { overlayState }),
-              ...(source === undefined ? {} : { source }),
-            };
-            nodeCount += 1;
-            nodeById.set(id, node);
-            nodeIdByFiber.set(fiber, id);
-            if (parentId !== undefined) parentIdById.set(id, parentId);
-            const childResult = buildForest(
-              readPreviewInspectorFiberLink(fiber, 'child'),
-              id,
-              path,
-              depth + 1,
-              source ?? ancestorSource,
-            );
-            node.children = childResult.nodes;
-            const hostRoots = directHost === undefined ? childResult.hostRoots : [directHost];
-            const normalizedHosts = normalizePreviewInspectorHostRoots(hostRoots);
-            node.hostElementCount = normalizedHosts.length;
-            hostNodesById.set(id, normalizedHosts);
-            if (directHost !== undefined && kind === 'host') {
-              nodeIdByHost.set(directHost, id);
-            }
-            nodes.push(node);
-            promotedHostRoots.push(...normalizedHosts);
+      visitedFibers.add(fiber);
+      visitCount += 1;
+      const path = pathPrefix + '.' + String(siblingIndex);
+      if (!isPreviewInspectorOwnedPortalFiber(fiber)) {
+        const kind = classifyPreviewInspectorFiber(fiber);
+        const name = namePreviewInspectorFiber(fiber, kind);
+        const source = readPreviewInspectorFiberSource(fiber, name, options, ancestorSource);
+        const owned = isPreviewInspectorOwnedFiber(fiber, name, kind);
+        if (owned) {
+          const promoted = buildForest(
+            readPreviewInspectorFiberLink(fiber, 'child'),
+            parentId,
+            path + '.i',
+            depth + 1,
+            source ?? ancestorSource,
+          );
+          nodes.push(...promoted.nodes);
+          promotedHostRoots.push(...promoted.hostRoots);
+        } else {
+          const id = createPreviewInspectorTreeNodeId('fiber', path, kind, name);
+          const stateNode = readPreviewInspectorOwnData(fiber, 'stateNode');
+          const directHost = normalizePreviewInspectorHostElement(stateNode);
+          const role = readPreviewInspectorFiberStructureRole(fiber, kind, name);
+          const overlayState = readPreviewInspectorOverlayState(fiber, role);
+          const node = {
+            children: [],
+            hostElementCount: 0,
+            id,
+            kind,
+            name,
+            props: snapshotPreviewInspectorValue(readPreviewInspectorOwnData(fiber, 'memoizedProps')),
+            ...(role === undefined ? {} : { role }),
+            state: snapshotPreviewInspectorFiberState(fiber, kind),
+            ...(overlayState === undefined ? {} : { overlayState }),
+            ...(source === undefined ? {} : { source }),
+          };
+          nodeCount += 1;
+          nodeById.set(id, node);
+          nodeIdByFiber.set(fiber, id);
+          if (parentId !== undefined) parentIdById.set(id, parentId);
+          const childResult = buildForest(
+            readPreviewInspectorFiberLink(fiber, 'child'),
+            id,
+            path,
+            depth + 1,
+            source ?? ancestorSource,
+          );
+          node.children = childResult.nodes;
+          const hostRoots = directHost === undefined ? childResult.hostRoots : [directHost];
+          const normalizedHosts = normalizePreviewInspectorHostRoots(hostRoots);
+          node.hostElementCount = normalizedHosts.length;
+          hostNodesById.set(id, normalizedHosts);
+          if (directHost !== undefined && kind === 'host') {
+            nodeIdByHost.set(directHost, id);
           }
+          nodes.push(node);
+          promotedHostRoots.push(...normalizedHosts);
         }
       }
       fiber = nextSibling;

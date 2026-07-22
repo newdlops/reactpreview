@@ -57,14 +57,18 @@ function capturePreviewInspectorTreeSelectionScroll(treeViewport) {
 function restorePreviewInspectorTreeScrollSnapshot(treeViewport, snapshot, restoreDocument) {
   if (snapshot === undefined) return;
   if (treeViewport !== null && treeViewport !== undefined) {
-    treeViewport.scrollLeft = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeLeft);
-    treeViewport.scrollTop = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeTop);
+    const treeLeft = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeLeft);
+    const treeTop = normalizePreviewInspectorTreeScrollCoordinate(snapshot.treeTop);
+    if (treeViewport.scrollLeft !== treeLeft) treeViewport.scrollLeft = treeLeft;
+    if (treeViewport.scrollTop !== treeTop) treeViewport.scrollTop = treeTop;
   }
   if (restoreDocument !== true) return;
   const scrollingElement = globalThis.document?.scrollingElement;
   if (scrollingElement === null || scrollingElement === undefined) return;
-  scrollingElement.scrollLeft = normalizePreviewInspectorTreeScrollCoordinate(snapshot.documentLeft);
-  scrollingElement.scrollTop = normalizePreviewInspectorTreeScrollCoordinate(snapshot.documentTop);
+  const documentLeft = normalizePreviewInspectorTreeScrollCoordinate(snapshot.documentLeft);
+  const documentTop = normalizePreviewInspectorTreeScrollCoordinate(snapshot.documentTop);
+  if (scrollingElement.scrollLeft !== documentLeft) scrollingElement.scrollLeft = documentLeft;
+  if (scrollingElement.scrollTop !== documentTop) scrollingElement.scrollTop = documentTop;
 }
 
 /** Restores persisted coordinates now and once more after browser focus/layout scrolling settles. */

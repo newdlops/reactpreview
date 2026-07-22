@@ -284,6 +284,26 @@ describe('preview Inspector Fiber runtime source', () => {
     expect(snapshot.visitedCount).toBeLessThanOrEqual(PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT);
   });
 
+  /** Stops immediately when a stale/private Fiber sibling link points back to an earlier record. */
+  it('terminates a cyclic sibling list without blocking the renderer thread', () => {
+    const runtime = evaluateFiberRuntime();
+    const cyclicCard = createFiber(0, namedComponent('CyclicCard'));
+    const boundaryFiber = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    connectChildren(boundaryFiber, [cyclicCard]);
+    cyclicCard.sibling = cyclicCard;
+    const page = createFiber(0, namedComponent('DashboardPage'));
+    connectChildren(page, [boundaryFiber]);
+    const exportBoundary = createFiber(1, namedComponent('PreviewPageInspectorExportBoundary'));
+    connectChildren(exportBoundary, [page]);
+
+    const snapshot = runtime.collect({ _reactInternals: boundaryFiber });
+
+    expect(snapshot.status).toBe('partial');
+    expect(snapshot.truncated).toBe(true);
+    expect(flattenTreeNames(snapshot.roots)).toContain('CyclicCard');
+    expect(snapshot.visitedCount).toBeLessThan(10);
+  });
+
   /** Uses inert entry-to-target evidence when a production React build exposes no boundary Fiber. */
   it('returns a component-only static render chain when the live tree is unavailable', () => {
     const runtime = evaluateFiberRuntime();

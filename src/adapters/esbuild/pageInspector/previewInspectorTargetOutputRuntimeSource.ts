@@ -15,7 +15,8 @@ const PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT = 512;
 /** Normalizes component/member spellings used by analyzer and runtime Fiber labels. */
 function normalizePreviewInspectorTargetOutputName(value) {
   const text = typeof value === 'string' ? value.replace(/\(…\)$/u, '') : '';
-  return text.split('.').at(-1) ?? text;
+  const generated = /^PreviewGenerated\(([^()]+)\)$/u.exec(text)?.[1] ?? text;
+  return generated.split('.').at(-1) ?? generated;
 }
 
 /** Collects root and nested component names for the selected or currently possible JSX outcomes. */

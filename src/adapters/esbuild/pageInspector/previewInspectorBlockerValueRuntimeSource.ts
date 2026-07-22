@@ -217,14 +217,26 @@ function parsePreviewInspectorRequiredPath(rawPath) {
   const path = receiverConstrained ? parsedPath.slice(0, -1) : parsedPath;
   return path.length === 0 && !receiverConstrained
     ? undefined
-    : { callable: callable && !receiverConstrained, collection, path, stringReceiver };
+    : { callable: callable && !receiverConstrained, collection, methodName, path, stringReceiver };
+}
+
+/** Detects a generated object API without invoking getters or treating its method as String data. */
+function hasPreviewInspectorRequiredPathCallableMember(value, propertyName) {
+  if (value === null || typeof value !== 'object' || typeof propertyName !== 'string') return false;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, propertyName);
+    return typeof descriptor?.value === 'function' ||
+      descriptor?.value === PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
+  } catch {
+    return false;
+  }
 }
 
 /** Adds one compiler-proven path when serialization alone could not expose its missing property. */
 function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
   if (parsed === undefined) return template;
-  const { callable, collection, path, stringReceiver } = parsed;
+  const { callable, collection, methodName, path, stringReceiver } = parsed;
   /*
    * Calls such as value.trim() and value.endsWith() prove that the receiver itself is text. The
    * method lives on String.prototype and must not be represented as an own no-op child property.
@@ -232,6 +244,10 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
    * template string rather than widening it to an object with an own endsWith callback.
    */
   if (stringReceiver && path.length === 0) {
+    if (
+      hasPreviewInspectorRequiredPathCallableMember(template, methodName) ||
+      hasPreviewInspectorRequiredPathCallableMember(seedValue, methodName)
+    ) return template;
     if (typeof template === 'string') return template;
     return typeof seedValue === 'string' && seedValue.length > 0 ? seedValue : 'value';
   }
@@ -318,6 +334,9 @@ function createPreviewInspectorRuntimeFallbackSmartRoot(value, requiredPaths) {
     .find((path) => path !== undefined);
   if (firstPath !== undefined) {
     if (firstPath.stringReceiver && firstPath.path.length === 0) {
+      if (hasPreviewInspectorRequiredPathCallableMember(value, firstPath.methodName)) {
+        return copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 }) ?? {};
+      }
       return typeof value === 'string' && value.length > 0 ? value : 'value';
     }
     return (firstPath.collection && firstPath.path.length === 0) || /^\d+$/u.test(firstPath.path[0])

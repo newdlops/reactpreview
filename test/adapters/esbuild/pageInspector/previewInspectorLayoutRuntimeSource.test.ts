@@ -17,6 +17,15 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('max-width:none;min-height:27px;min-width:360px');
   });
 
+  /** Makes collapse state legible without consuming excessive width in a docked tree. */
+  it('uses a visible disclosure target and colors the expanded state', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain('flex:0 0 20px');
+    expect(source).toContain('font-size:14px;font-weight:800;height:20px');
+    expect(source).toContain('.rpi-tree-row[aria-expanded="true"]>.rpi-twisty');
+  });
+
   /** Keeps authored logical-AND choices compact and readable inside the component-tree row. */
   it('styles inline boolean switches without pushing controls outside narrow tree rows', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();

@@ -77,6 +77,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('routerPathname: candidateInitialEntry');
     expect(source).toContain("event: 'page-context-selected'");
     expect(source).toContain("evidenceKind: routeLocation?.evidenceKind ?? 'none'");
+    expect(source).toContain('nextAppLayoutPaths: (candidate?.nextAppLayoutChain ?? [])');
+    expect(source).toContain('nextPagesAppPath: candidate?.nextPagesShell?.app?.sourcePath');
+    expect(source).toContain('rootSourcePath: candidate?.root?.sourcePath');
     expect(source).toContain('PreviewInspectorTargetReachabilityProbe');
     expect(source).toContain('class PreviewInspectorPageRootCommitBoundary');
     expect(source).toContain('state.pageRootCommitted = true');

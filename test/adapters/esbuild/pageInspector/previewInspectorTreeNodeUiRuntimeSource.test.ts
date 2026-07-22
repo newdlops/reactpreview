@@ -30,6 +30,7 @@ describe('Preview Inspector component-tree condition switch', () => {
     expect(source).toContain(
       "'data-react-preview-tree-toggle-control': hasChildren ? node.id : undefined",
     );
+    expect(source).toContain("hasChildren ? (expanded ? '▼' : '▶') : ''");
   });
 
   /** Labels statically known callback output as pending rather than as a mounted component. */

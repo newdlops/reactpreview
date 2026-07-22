@@ -751,6 +751,22 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(resolved.push()).toBeUndefined();
   });
 
+  /** Keeps a proven router-style API when `replace` also appears in the String method vocabulary. */
+  it('preserves an authored callable replace member during Smart completion', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = { ...createMetadata(), requiredPaths: ['replace()'] };
+
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({ replace: () => undefined }),
+      metadata,
+    ) as { replace: () => unknown };
+
+    expect(typeof resolved).toBe('object');
+    expect(typeof resolved.replace).toBe('function');
+    expect(resolved.replace()).toBeUndefined();
+  });
+
   /** Removes unrelated inferred siblings and retains exactly one semantic leaf per demanded path. */
   it('smart-fills the minimum compiler-proven hook result shape', () => {
     const fixture = createRuntimeFallbackFixture(true);

@@ -142,6 +142,14 @@ describe('Preview Inspector target output runtime source', () => {
     expect(hasResolvedOutput(expected, live)).toBe(true);
   });
 
+  /** Generated structural UI keeps the authored export identity for target-output verification. */
+  it('matches a generated UI placeholder to its missing authored component', () => {
+    const expected = [{ children: [], name: 'Card' }];
+    const live = { kind: 'function', name: 'PreviewGenerated(Card)' };
+
+    expect(hasResolvedOutput(expected, live)).toBe(true);
+  });
+
   /** A receiver-owned loader is not proof that its function child has been invoked. */
   it('requires a deferred render-prop root instead of accepting wrapper fallback output', () => {
     const expected = [

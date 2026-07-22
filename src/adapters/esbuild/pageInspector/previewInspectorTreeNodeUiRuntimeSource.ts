@@ -301,7 +301,7 @@ function PreviewInspectorComponentTreeNode({
           },
           title: hasChildren ? (expanded ? 'Collapse component' : 'Expand component') : undefined,
         },
-        hasChildren ? (expanded ? '▾' : '▸') : '',
+        hasChildren ? (expanded ? '▼' : '▶') : '',
       ),
       React.createElement(
         'span',

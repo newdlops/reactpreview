@@ -120,8 +120,13 @@ const previewInspectorDevtoolsCss = [
   '.rpi-overlay-row{border-left:2px solid var(--vscode-charts-purple,#b180d7);padding-left:4px}',
   '.rpi-overlay-row .rpi-component-icon{color:var(--vscode-charts-purple,#b180d7)}',
   '.rpi-wrapper-row .rpi-component-icon{color:var(--vscode-symbolIcon-interfaceForeground,#75beff)}',
-  '.rpi-twisty{display:inline-block;font-size:10px;text-align:center;width:12px}',
-  '.rpi-twisty[data-expandable="true"]{cursor:pointer}',
+  // Keep the disclosure control visibly larger than the component glyph while reserving the same
+  // width on leaf rows. A 20px hit target remains usable in narrow docked Inspector layouts.
+  '.rpi-twisty{align-items:center;border:1px solid transparent;border-radius:4px;box-sizing:border-box;display:inline-flex;flex:0 0 20px;',
+  'font-size:14px;font-weight:800;height:20px;justify-content:center;line-height:1;text-align:center;width:20px}',
+  '.rpi-twisty[data-expandable="true"]{color:var(--vscode-foreground,#ccc);cursor:pointer}',
+  '.rpi-twisty[data-expandable="true"]:hover{background:var(--vscode-toolbar-hoverBackground,rgba(90,93,94,.31));border-color:var(--rpi-border)}',
+  '.rpi-tree-row[aria-expanded="true"]>.rpi-twisty{color:var(--vscode-focusBorder,#75beff)}',
   '.rpi-component-icon{align-items:center;border:1px solid currentColor;border-radius:3px;color:var(--vscode-symbolIcon-classForeground,#ee9d28);',
   'display:inline-flex;flex:0 0 16px;font-size:9px;font-weight:800;height:16px;justify-content:center;width:16px}',
   '.rpi-blocker-row .rpi-component-icon{border-radius:50%}',

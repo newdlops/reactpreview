@@ -2,6 +2,39 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1130 - 2026-07-22
+
+- direct default/PascalCase export가 없는 helper·registry 파일은 빈 갤러리를 표시하되 대상 모듈, theme, 수천 개 lazy branch를 side-effect import하지 않고 package/workspace ancestor 분석도 생략해 `mdx-components.tsx`의 불필요한 3,758개 registry 번들을 차단
+- workspace source 읽기·TypeScript AST 변환과 MDX metadata/body 처리를 공용 FIFO gate에서 최대 4개로 제한해 esbuild의 동시 callback이 전체 source text와 AST를 한꺼번에 보유하지 않도록 보강
+- native esbuild context 보존량을 12개에서 최근 2개로 낮춰 여러 탭의 hot reload는 유지하면서 parsed graph, Tailwind processor, MDX cache가 시스템 메모리에 누적되는 상한을 축소
+
+## 0.1.1129 - 2026-07-22
+
+- `bundling-modules`에서 멈춘 직렬 compiler worker에 fast/full hard deadline과 cancel/shutdown acknowledgement deadline, 8개 queue 상한을 적용하고 중독된 worker가 완전히 종료된 뒤에만 다음 worker를 시작하도록 수정
+- worker V8 heap을 512 MiB, esbuild Go heap을 384 MiB와 4 scheduler로 강제 제한하고 resource stall은 같은 그래프의 full fallback으로 재실행하지 않으며, 30초간 사용하지 않은 native graph worker를 회수해 메모리 폭증과 idle RSS가 시스템 전체로 번지는 경로를 차단
+- 모든 프리뷰를 첫 시도부터 coalesced output으로 빌드하고 제외된 lazy route를 단일 placeholder로 합치며, parse 실패는 fail-closed하고 Next route parameter와 일치하는 대형 registry branch 하나와 이를 여는 작은 helper import만 실제로 보존
+- 같은 package의 Tailwind processor를 직렬화하고 context 없는 v4 `@apply` leaf의 확정 실패를 건너뛰어 sibling stylesheet의 동시 graph allocation과 중복 오류를 줄임
+
+## 0.1.1128 - 2026-07-22
+
+- 현재 Next App Router page JSX가 실제로 사용하는 `next/dynamic` named component는 page corridor에서 보존하고, 라우트 registry에만 있는 lazy branch는 계속 제외해 `ForwardRef(LoadableComponent)` object render 오류를 차단
+- `useRouter().replace()`와 string `replace`/`endsWith`의 receiver를 구분해 Smart Fill이 router API를 문자열로 바꾸지 않게 하고, 실제 string receiver는 key 길이의 작은 값으로 생성
+- generated UI placeholder의 `PreviewGenerated(Component)` 이름을 실제 target Fiber로 정규화해 authored JSX가 렌더되었음에도 absent로 판정하는 오탐을 제거
+- 미빌드 workspace package의 CSS export를 Tailwind processor에서도 source fallback으로 해석하고, fail-soft CSS의 `@reference`/`@import` prelude를 안전하게 정렬해 작성된 스타일을 최대한 보존
+
+## 0.1.1127 - 2026-07-22
+
+- Next App Router의 multiple root layout, `template`, route group, private folder, 중첩 일반 `app` 세그먼트와 catch-all 배열을 실제 page 단위로 분석하고 상위 layout의 `generateStaticParams`까지 병합
+- Pages Router `_app`에 여러 실제 leaf를 bounded lazy 후보로 연결하고 개발용 route를 후순위로 두며, 기본 HOC export를 통과해 공유 모노레포 컴포넌트도 소비 application page까지 역추적
+- Yarn/npm workspace manifest를 실행 없이 해석하고 Inspector page package에서 PnP peer를 복원해 `.pnp.cjs` 실행이나 프로젝트 `node_modules` 설치 없이 sibling application을 번들링
+- 런타임 page-context 로그에 root/page/layout 근거 경로를 추가하고 컴포넌트 트리의 접기·펼치기 화살표와 클릭 영역을 확대해 작은 화면에서도 상태를 명확히 표시
+
+## 0.1.1126 - 2026-07-22
+
+- Next App Router의 암시적 `layout -> children page` 파일시스템 경계를 복원해 layout 또는 그 helper를 선택해도 route group을 제외한 실제 하위 page와 상위 layout chain을 함께 렌더링
+- `generateStaticParams`의 local/import/re-export/조건부 spread 배열을 실행 없이 bounded하게 따라 동적 route의 유효한 첫 parameter 조합을 복원하고 관련 source를 hot-reload dependency로 추적
+- App Router page 후보를 단독 layout보다 우선하며 선택 파일이 layout이면 target facade를 유지하고, `server-only` marker를 정적 effectful facade로 바꿔 브라우저 throw와 무의미한 tree-shaking 경고를 방지
+
 ## 0.1.1125 - 2026-07-22
 
 - Next Pages `_app`이 합성 자기 참조 대신 증명된 실제 leaf page를 한 번만 감싸고, 정적 registry가 허용하는 dynamic route parameter를 복원해 작성된 app shell과 페이지를 함께 렌더링
@@ -944,51 +977,5 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
   progress message를 bounded 구조로 검증해 DOM text만 갱신하는 no-server/CSP 정책을 유지
 - React 실제 commit 전에는 완료 표시를 숨기지 않고 completed revision을 terminal로 고정하며, 초기 ESM
   entry가 실행 전에 실패해도 token/revision handshake와 30초 watchdog으로 영구 loading을 방지
-
-## 0.1.1022 - 2026-07-16
-
-- 현재 파일의 모든 direct component export를 한 번의 module index로 분석하고 실제 application EntryPoint까지
-  export별 정적 render graph를 만들어, import identity가 증명된 `createRoot`/`hydrateRoot`/legacy ReactDOM
-  mount를 일반 미사용 export와 구분
-- named/wildcard re-export, literal `React.lazy`와 named `.then` adapter, JSX/createElement owner뿐 아니라
-  route 배열·router 객체·page/app map의 top-level value flow를 통과하고 최대 8개 후보 경로를 보존
-- route `element`의 layout·guard와 entry wrapper를 경로에 포함하고 실제 entry 도달 후보를 story/test의
-  끊긴 usage보다 우선하며, 복수 entry·orphan export·bounded graph를 Inspector toolbar에 명시
-- 발견한 entry는 실행하지 않고 기존 importable ancestor mount와 분리해 bootstrap/API side effect를
-  차단하며, target/ancestor/lazy/route/entry/wrapper source를 HMR dependency로 연결
-- filename은 후보 선택에만 쓰고 ReactDOM import/call identity로 증명한 entry에서 target까지 literal import
-  경로를 먼저 좁혀 분석하며, 실제 render 경로가 아니면 선형 reverse import index로 자동 fallback
-- fallback의 반복 workspace scan을 relative dependency 역색인과 exact alias resolver memo로 교체하고,
-  필요할 때만 bounded workspace로 넓혀 모노레포 sibling app을 지원하며 unsaved target fingerprint로 무효화
-- EntryPoint 분석을 props/ancestor 탐색보다 먼저 수행하고 소스 캐시를 공유하며, 읽기·graph·path 한도는
-  `graph-limit`으로 표시하고 non-selected export 경로까지 HMR/cache dependency로 추적
-- 실제 10,693개 source의 `zuzu` 모노레포에서 812개 source read와 약 2.1초로
-  `rtcc-public-upload-page → lazy export → publicRoutes → router → AppRouter → BUILD_TARGETS → src/index.tsx`
-  경로와 `RightToConsentOrConsultLayout`, `TwoFactorRedirectChecker`, `RootLayout` wrapper를 확인하고,
-  fallback reverse closure도 동일 fixture에서 141초에서 9.3초로 단축
-
-## 0.1.1021 - 2026-07-16
-
-- Browserify 전제의 브라우저 package가 자유 `process`를 읽어도 target graph 평가 전에 기존 값을 보존하거나
-  `platform`, `env`, `cwd`, `nextTick`만 가진 bounded browser compatibility object를 설치하도록 보강
-- Node filesystem·network·native binding은 제공하지 않고 hot entry 사이에서 같은 fallback을 재사용하며,
-  실제 선택 상태를 Globals runtime boundary에 표시
-- `window.name = window.name || importedBinding` 및 `??` 형태의 app bootstrap을 실행 없이 증명해
-  `process/browser`, `Buffer` 같은 정확한 project import를 기존 lexical bridge로 재사용
-- `process is not defined`를 일반 package 설치 문제가 아닌 browser process boundary 오류로 별도 설명하고,
-  실제 `rtcc-public-upload-page.tsx`의 2,296개 의존 graph와 53개 chunk가 경고 없이 번들되는 것을 검증
-
-## 0.1.1020 - 2026-07-16
-
-- 직접 export component의 필수 prop 타입과 비옵셔널 receiver 사용 경로를 bounded하게 분석해 string,
-  number, boolean, array, object container와 no-op function의 가장 낮은 우선순위 정적 shape를 생성
-- 실제 JSX 사용, 공통/setup/export별 props와 Inspector override를 자동 shape 위에 깊이별로 병합하고,
-  optional chain은 없는 상태를 유지하며 prototype-sensitive key·깊이·node 수를 제한
-- Page Inspector toolbar와 일반 gallery label에 자동 생성값의 path/kind를 표시해 사용자가 임의 정적값을
-  확인·수정할 수 있도록 하고, 선택 target 오류는 부모·외부 sibling을 유지하는 inline placeholder로 격리
-- export 오류의 전체 보고서는 console warning으로 보존하면서 preview surface에는 작은 local placeholder만
-  표시하고, 구체적인 nullish property read를 backend 전용 문제가 아닌 missing static value로 분류
-- `styled((props) => <Target />)\`...\`` owner를 styled-components import identity로 증명해 실제 부모
-  ancestry로 승격하되 임의 tagged template은 계속 fail closed하는 Page Inspector 탐색 보강
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

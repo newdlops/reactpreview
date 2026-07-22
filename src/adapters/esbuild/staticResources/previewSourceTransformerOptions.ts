@@ -31,6 +31,8 @@ export interface PreviewSourceTransformerOptions {
   readonly readGraphqlSource?: (sourcePath: string) => string | undefined;
   /** Nearest package root used for the conventional public asset directory. */
   readonly projectRoot: string;
+  /** Whether the nearest manifest or exact resolver proves a Next runtime for this project. */
+  readonly projectUsesNextRuntime?: boolean;
   /** Whether inert package metadata declares an installed or managed React runtime. */
   readonly projectUsesReactRuntime?: boolean;
   /** Trusted workspace boundary used for every static filesystem expansion. */

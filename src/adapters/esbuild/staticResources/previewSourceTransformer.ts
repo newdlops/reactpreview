@@ -35,7 +35,7 @@ import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPat
 import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
-import { createFrameworkReplacements } from './previewFrameworkReplacements';
+import * as framework from './previewFrameworkReplacements';
 import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
@@ -131,6 +131,8 @@ export class PreviewSourceTransformer {
     sourcePath: string,
     sourceText: string,
   ): Promise<PreviewSourceTransformResult> {
+    if (isPathInside(this.options.workspaceRoot, sourcePath))
+      sourceText = framework.prepareFrameworkSource(sourcePath, sourceText, this.options);
     const initialWatchDirectories = new Set(this.watchDirectories);
     const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
@@ -179,7 +181,7 @@ export class PreviewSourceTransformer {
       if (sourceText.includes('createContext')) {
         replacements.push(...createReactContextFallbackReplacements(sourcePath, sourceText));
       }
-      replacements.push(...createFrameworkReplacements(sourcePath, sourceText));
+      replacements.push(...framework.createFrameworkReplacements(sourcePath, sourceText));
       if (sourceText.includes('Context')) {
         const contextIdentityInventory =
           sourceText.includes('createContext') && sourceText.includes('useContext')
@@ -265,9 +267,7 @@ export class PreviewSourceTransformer {
 
     for (const call of analysis.findCalls('new URL')) {
       const transformed = this.transformNewUrl(call, bindings);
-      if (transformed === undefined) {
-        continue;
-      }
+      if (transformed === undefined) continue;
       generatedImports.push(transformed.importStatement);
       replacements.push({ ...call, replacement: transformed.expression });
     }

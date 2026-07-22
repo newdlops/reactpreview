@@ -66,6 +66,12 @@ export interface PreviewStaticModuleResolver {
    * @returns Canonical resolved file path, or `undefined` for unresolved/external modules.
    */
   readonly resolve: (moduleSpecifier: string, consumerPath: string) => string | undefined;
+  /**
+   * Reports declarative package evidence that delaying one source module cannot suppress authored
+   * top-level effects. Only an owning manifest with the exact `sideEffects: false` contract is
+   * admitted; missing, `true`, and pattern-valued declarations remain effectful.
+   */
+  readonly isSideEffectFree?: (sourcePath: string) => boolean;
 }
 
 /** Compiler options and TypeScript's own bounded module-resolution memoization. */
@@ -98,6 +104,8 @@ export function createPreviewStaticModuleResolver(
   const contextByConfigPath = new Map<string, PreviewStaticResolutionContext>();
   const configPathByDirectory = new Map<string, string | undefined>();
   const matchedSpecifiersByTarget = new Map<string, Set<string>>();
+  const sideEffectContractByDirectory = new Map<string, boolean>();
+  const sideEffectFreeBySourcePath = new Map<string, boolean>();
   const fallbackContext = createResolutionContext(undefined, workspaceRoot);
   const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
   const managedFallbackResolvers = createManagedFallbackResolvers(
@@ -256,6 +264,18 @@ export function createPreviewStaticModuleResolver(
       return Object.freeze(
         [...(matchedSpecifiersByTarget.get(normalizeSourceIdentity(targetPath)) ?? [])].sort(),
       );
+    },
+    isSideEffectFree(sourcePath: string): boolean {
+      const canonicalSourcePath = canonicalizeExistingPath(sourcePath);
+      const cached = sideEffectFreeBySourcePath.get(canonicalSourcePath);
+      if (cached !== undefined) return cached;
+      const sideEffectFree = readNearestSideEffectContract(
+        canonicalSourcePath,
+        workspaceRoot,
+        sideEffectContractByDirectory,
+      );
+      sideEffectFreeBySourcePath.set(canonicalSourcePath, sideEffectFree);
+      return sideEffectFree;
     },
     matchesTarget(moduleSpecifier: string, consumerPath: string, targetPath: string): boolean {
       const resolvedPath = resolve(moduleSpecifier, consumerPath);
@@ -430,6 +450,56 @@ function sourceCandidateExists(candidatePath: string): boolean {
       ts.sys.fileExists(`${candidatePath}${extension}`) ||
       ts.sys.fileExists(path.join(candidatePath, `index${extension}`)),
   );
+}
+
+/**
+ * Reads the nearest inert package manifest and accepts only the package-wide no-side-effects flag.
+ * Pattern arrays are deliberately rejected: matching npm's complete glob semantics here would risk
+ * delaying a stylesheet or registration module that the project explicitly kept effectful.
+ */
+function readNearestSideEffectContract(
+  sourcePath: string,
+  workspaceRoot: string,
+  cache: Map<string, boolean>,
+): boolean {
+  let directoryPath = path.dirname(path.resolve(sourcePath));
+  const boundary = path.resolve(workspaceRoot);
+  const visited: string[] = [];
+  while (isPathInside(boundary, directoryPath)) {
+    const cached = cache.get(directoryPath);
+    if (cached !== undefined) {
+      for (const visitedPath of visited) cache.set(visitedPath, cached);
+      return cached;
+    }
+    visited.push(directoryPath);
+    const manifestPath = path.join(directoryPath, 'package.json');
+    if (ts.sys.fileExists(manifestPath)) {
+      try {
+        const contents = ts.sys.readFile(manifestPath);
+        if (contents === undefined || contents.length > 1024 * 1024) {
+          for (const visitedPath of visited) cache.set(visitedPath, false);
+          return false;
+        }
+        const manifest = JSON.parse(contents) as unknown;
+        const sideEffectFree =
+          typeof manifest === 'object' &&
+          manifest !== null &&
+          Object.prototype.hasOwnProperty.call(manifest, 'sideEffects') &&
+          Reflect.get(manifest, 'sideEffects') === false;
+        for (const visitedPath of visited) cache.set(visitedPath, sideEffectFree);
+        return sideEffectFree;
+      } catch {
+        for (const visitedPath of visited) cache.set(visitedPath, false);
+        return false;
+      }
+    }
+    if (directoryPath === boundary) break;
+    const parentPath = path.dirname(directoryPath);
+    if (parentPath === directoryPath) break;
+    directoryPath = parentPath;
+  }
+  for (const visitedPath of visited) cache.set(visitedPath, false);
+  return false;
 }
 
 /** Accepts only an existing explicit config that remains inside the trusted workspace. */

@@ -10,12 +10,14 @@ import {
   PREVIEW_ROUTER_BRIDGE_NAMESPACE,
   PREVIEW_ROUTER_SPECIFIER,
 } from './previewPluginProtocol';
+import { createPreviewNextAppNavigationRuntimeSource } from './previewNextAppNavigationRuntimeSource';
 import { createPreviewNextPagesRouterContextRuntimeSource } from './previewNextPagesRouterContextRuntimeSource';
 import { createPreviewNextPagesRouterRuntimeSource } from './previewNextPagesRouterRuntimeSource';
 import { createPreviewRouterRuntimeSource } from './previewRouterRuntimeSource';
 
 const REACT_ROUTER_DOM_SPECIFIER = 'react-router-dom';
 const ROUTER_BRIDGE_DATA_KIND = 'react-preview-router-bridge-data';
+const NEXT_APP_NAVIGATION_NAMESPACE = 'react-preview-next-app-navigation';
 const NEXT_PAGES_ROUTER_NAMESPACE = 'react-preview-next-pages-router';
 const NEXT_PAGES_ROUTER_CONTEXT_NAMESPACE = 'react-preview-next-pages-router-context';
 const NEXT_PAGES_ROUTER_CONTEXT_PATTERN =
@@ -27,6 +29,8 @@ export interface PreviewRouterBridgePluginOptions {
   readonly automaticallyWrap?: boolean;
   /** Whether static analysis found a reason to provide a router context for this preview. */
   readonly enabled: boolean;
+  /** Whether a selected Next App filesystem route requires its bootstrap-owned navigation hooks. */
+  readonly nextAppEnabled?: boolean;
   /** Nearest package root from which the target itself resolves react-router-dom. */
   readonly projectRoot: string;
 }
@@ -119,6 +123,18 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
           : undefined;
       }
 
+      /** Replaces both public App Router module spellings only for a proven App Router page. */
+      function resolveNextAppNavigation(arguments_: OnResolveArgs): OnResolveResult | undefined {
+        return options.nextAppEnabled === true &&
+          /^next\/navigation(?:\.js)?$/u.test(arguments_.path)
+          ? {
+              namespace: NEXT_APP_NAVIGATION_NAMESPACE,
+              path: 'next-app-navigation',
+              sideEffects: false,
+            }
+          : undefined;
+      }
+
       /** Shares a local RouterContext with Next Link and other framework-internal consumers. */
       function resolveNextPagesRouterContext(
         arguments_: OnResolveArgs,
@@ -148,6 +164,15 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
         };
       }
 
+      /** Loads a no-network facade backed by the generated page candidate's inferred route. */
+      function loadNextAppNavigation(): OnLoadResult {
+        return {
+          contents: createPreviewNextAppNavigationRuntimeSource(),
+          loader: 'js',
+          resolveDir: options.projectRoot,
+        };
+      }
+
       /** Loads the global-symbol-backed context shared with the public Pages Router facade. */
       function loadNextPagesRouterContext(): OnLoadResult {
         return {
@@ -161,9 +186,14 @@ export function createPreviewRouterBridgePlugin(options: PreviewRouterBridgePlug
         { filter: /router-context(?:\.shared-runtime)?(?:\.[cm]?[jt]s)?$/ },
         resolveNextPagesRouterContext,
       );
+      build.onResolve({ filter: /^next\/navigation(?:\.js)?$/ }, resolveNextAppNavigation);
       build.onResolve({ filter: /^next\/router$/ }, resolveNextPagesRouter);
       build.onResolve({ filter: /^react-preview:router$/ }, resolveRouterBridge);
       build.onLoad({ filter: /.*/, namespace: NEXT_PAGES_ROUTER_NAMESPACE }, loadNextPagesRouter);
+      build.onLoad(
+        { filter: /.*/, namespace: NEXT_APP_NAVIGATION_NAMESPACE },
+        loadNextAppNavigation,
+      );
       build.onLoad(
         { filter: /.*/, namespace: NEXT_PAGES_ROUTER_CONTEXT_NAMESPACE },
         loadNextPagesRouterContext,

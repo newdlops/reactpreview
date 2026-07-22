@@ -1,5 +1,6 @@
 /** Verifies conservative, non-evaluating selection of the optional MemoryRouter boundary. */
 import { describe, expect, it } from 'vitest';
+import { selectPreviewInitialRouterBuild } from '../../../src/adapters/esbuild/previewCompilerDefaults';
 import {
   collectPreviewRouterRequirement,
   requiresPreviewRouter,
@@ -70,5 +71,27 @@ describe('requiresPreviewRouter', () => {
         "import type { LinkProps } from 'react-router-dom'; import { Link } from './Link'; export default Link;",
       ),
     ).toBe(false);
+  });
+});
+
+describe('selectPreviewInitialRouterBuild', () => {
+  /** Direct target evidence avoids a redundant discovery build on a cold large graph. */
+  it('preseeds a MemoryRouter from the current target before graph discovery', () => {
+    expect(
+      selectPreviewInitialRouterBuild(undefined, {
+        consumesRouter: true,
+        ownsRouter: false,
+      }),
+    ).toEqual({ automaticallyWrap: true, enabled: true });
+  });
+
+  /** Provider ownership from either current or cached evidence prevents nested routers. */
+  it('combines cached consumers with current provider ownership', () => {
+    expect(
+      selectPreviewInitialRouterBuild(
+        { consumesRouter: true, ownsRouter: false },
+        { consumesRouter: false, ownsRouter: true },
+      ),
+    ).toEqual({ automaticallyWrap: false, enabled: true });
   });
 });

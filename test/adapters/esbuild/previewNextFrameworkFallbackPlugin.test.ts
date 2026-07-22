@@ -34,15 +34,18 @@ describe('Next framework render fallback', () => {
       entryPath,
       [
         "import Image, { getImageProps } from 'next/image';",
-        "import Link from 'next/link';",
+        "import Link, { useLinkStatus } from 'next/link';",
         "import { Geist, Roboto_Mono } from 'next/font/google';",
         'const image = Image({ alt: "Logo", height: 38, priority: true, src: "/logo.svg", width: 180 });',
         'const link = Link({ children: "Docs", href: { pathname: "/docs", query: { tab: "api" } } });',
+        'const firstLinkStatus = useLinkStatus();',
         'export const result = {',
         '  font: Geist({ variable: "--font-geist" }),',
         '  image,',
         '  imageProps: getImageProps({ alt: "Small", priority: true, src: { default: { height: 12, src: "/small.svg", width: 16 } } }),',
         '  link,',
+        '  linkStatus: firstLinkStatus,',
+        '  linkStatusIsStable: firstLinkStatus === useLinkStatus(),',
         '  mono: Roboto_Mono({ subsets: ["latin"] }),',
         '};',
       ].join('\n'),
@@ -66,6 +69,8 @@ describe('Next framework render fallback', () => {
           };
         };
         readonly link: PreviewFixtureElement;
+        readonly linkStatus: { readonly pending: boolean };
+        readonly linkStatusIsStable: boolean;
         readonly mono: { readonly style: { readonly fontFamily: string } };
       };
     };
@@ -94,6 +99,8 @@ describe('Next framework render fallback', () => {
       props: { 'data-react-preview-next-link': '', href: '/docs?tab=api' },
       tag: 'a',
     });
+    expect(exports.result.linkStatus).toEqual({ pending: false });
+    expect(exports.result.linkStatusIsStable).toBe(true);
     expect(exports.result.font).toMatchObject({
       className: 'react-preview-next-font',
       variable: '--font-geist',
@@ -108,6 +115,37 @@ describe('Next framework render fallback', () => {
     );
     expect(result.warnings).toHaveLength(3);
     expect(result.metafile.inputs[path.join(projectRoot, 'package.json')]).toBeUndefined();
+  });
+
+  /** Emitted packages may retain Link's `.js` suffix while requesting the same public API. */
+  it('supports the emitted next/link.js spelling and its status hook', async () => {
+    const projectRoot = await createProject('next-link-js-missing-', {
+      dependencies: { next: '15.5.20', react: '19.1.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      [
+        "import Link, { useLinkStatus } from 'next/link.js';",
+        "export const result = { link: Link({ href: '/docs' }), status: useLinkStatus() };",
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      createReactFixturePlugin(),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '') as {
+      readonly result: {
+        readonly link: PreviewFixtureElement;
+        readonly status: { readonly pending: boolean };
+      };
+    };
+
+    expect(exports.result.link).toMatchObject({ props: { href: '/docs' }, tag: 'a' });
+    expect(exports.result.status).toEqual({ pending: false });
   });
 
   /** Replaces installed image code because raw Next interop may expose its module object as JSX. */

@@ -13,7 +13,7 @@ import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { isFileBackedPreviewNamespace, PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 
 const NEXT_RENDER_FALLBACK_NAMESPACE = 'react-preview-next-render-fallback';
-const NEXT_RENDER_MODULE_PATTERN = /^(?:next\/(?:font\/google|image|link)|server-only)$/;
+const NEXT_RENDER_MODULE_PATTERN = /^(?:next\/(?:font\/google|image|link(?:\.js)?)|server-only)$/;
 const MAXIMUM_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_IMPORTER_BYTES = 2 * 1024 * 1024;
 const PACKAGE_DEPENDENCY_FIELDS = [
@@ -86,8 +86,9 @@ export function createPreviewNextFrameworkFallbackPlugin(
           manifestPromise = findNearestNextManifest(importerDirectory, workspaceRoot);
           manifestByImporterDirectory.set(importerDirectory, manifestPromise);
         }
-        const earlyManifestPath =
-          arguments_.path === 'next/link' ? undefined : await manifestPromise;
+        const earlyManifestPath = isNextLinkSpecifier(arguments_.path)
+          ? undefined
+          : await manifestPromise;
         if (earlyManifestPath !== undefined) {
           return createNextFallbackResolution(arguments_, importerPath, earlyManifestPath);
         }
@@ -254,7 +255,7 @@ function createNextRenderModuleSource(
 ): string | undefined {
   if (moduleSpecifier === 'server-only') return 'export {};';
   if (moduleSpecifier === 'next/image') return createNextImageFallbackSource();
-  if (moduleSpecifier === 'next/link') return createNextLinkFallbackSource();
+  if (isNextLinkSpecifier(moduleSpecifier)) return createNextLinkFallbackSource();
   if (moduleSpecifier === 'next/font/google') {
     return createNextGoogleFontFallbackSource(fontExportNames);
   }
@@ -336,6 +337,11 @@ function createNextLinkFallbackSource(): string {
   return `
 import * as React from 'react';
 
+const previewLinkStatus = Object.freeze({ pending: false });
+
+/** Keeps Next 15+ link descendants renderable without a framework transition store. */
+export function useLinkStatus() { return previewLinkStatus; }
+
 /** Serializes the static pathname/query subset commonly passed to Next Link. */
 function readHref(value) {
   if (typeof value === 'string') return value;
@@ -372,6 +378,11 @@ const PreviewNextLink = React.forwardRef(function PreviewNextLink(properties, re
 PreviewNextLink.displayName = 'PreviewNextLink';
 export default PreviewNextLink;
 `;
+}
+
+/** Accepts source and emitted-package spellings of Next's public Link entry. */
+function isNextLinkSpecifier(moduleSpecifier: string): boolean {
+  return moduleSpecifier === 'next/link' || moduleSpecifier === 'next/link.js';
 }
 
 /** Creates arbitrary named Google-font factories through safe CommonJS named-import interop. */

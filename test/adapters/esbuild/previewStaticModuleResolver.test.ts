@@ -305,4 +305,34 @@ describe('createPreviewStaticModuleResolver', () => {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
   });
+
+  /** Accepts only the exact nearest package-wide contract used by safe lazy overlay deferral. */
+  it('proves side-effect freedom from inert nearest-package metadata', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-effects-'));
+    const safeRoot = path.join(workspaceRoot, 'packages', 'safe');
+    const unknownRoot = path.join(workspaceRoot, 'packages', 'unknown');
+    const safeSource = path.join(safeRoot, 'src', 'Dialog.tsx');
+    const unknownSource = path.join(unknownRoot, 'src', 'Dialog.tsx');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(safeSource), { recursive: true }),
+        mkdir(path.dirname(unknownSource), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(safeRoot, 'package.json'), JSON.stringify({ sideEffects: false })),
+        writeFile(
+          path.join(unknownRoot, 'package.json'),
+          JSON.stringify({ sideEffects: ['*.css'] }),
+        ),
+        writeFile(safeSource, 'export default () => null;'),
+        writeFile(unknownSource, 'export default () => null;'),
+      ]);
+
+      const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+      expect(resolver.isSideEffectFree?.(safeSource)).toBe(true);
+      expect(resolver.isSideEffectFree?.(unknownSource)).toBe(false);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });

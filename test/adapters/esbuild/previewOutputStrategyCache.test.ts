@@ -1,17 +1,21 @@
-/** Verifies bounded hot-reload reuse for targets that previously exceeded split artifact fan-out. */
+/** Verifies pre-build split/coalesced selection without allocating native esbuild output graphs. */
 import { describe, expect, it } from 'vitest';
 import { PreviewOutputStrategyCache } from '../../../src/adapters/esbuild/previewOutputStrategyCache';
 
 describe('PreviewOutputStrategyCache', () => {
-  /** Retains immutable split evidence, refreshes reads, and clears all host-session identities. */
-  it('remembers and clears coalesced target strategies', () => {
+  /** Every build avoids speculative split-file allocation; dynamic initializers remain lazy. */
+  it('coalesces every preview mode before native output allocation', () => {
     const cache = new PreviewOutputStrategyCache();
 
-    cache.write('target-a', 2400);
-    expect(cache.read('target-a')).toEqual({ splitOutputCount: 2400 });
-    expect(Object.isFrozen(cache.read('target-a'))).toBe(true);
+    expect(cache.shouldSplit()).toBe(false);
+  });
 
-    cache.clear();
-    expect(cache.read('target-a')).toBeUndefined();
+  /** A component gallery reuses overflow evidence after its first bounded split attempt. */
+  it('coalesces a gallery plan after split overflow is recorded', () => {
+    const cache = new PreviewOutputStrategyCache();
+    cache.write('large-gallery', 2049);
+
+    expect(cache.shouldSplit()).toBe(false);
+    expect(cache.read('large-gallery')).toEqual({ splitOutputCount: 2049 });
   });
 });

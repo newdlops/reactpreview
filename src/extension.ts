@@ -76,6 +76,14 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
 
   const compiler = new PreviewCompilerWorkerClient(
     state.context.asAbsolutePath('dist/previewCompilerWorker.js'),
+    {
+      bundledNodeModulesPath: state.context.asAbsolutePath('node_modules'),
+      managedDependencyStoreRoot: vscode.Uri.joinPath(
+        state.context.globalStorageUri,
+        'dependency-store',
+        'v1',
+      ).fsPath,
+    },
   );
   const artifactStore = new GlobalStoragePreviewArtifactStore(
     state.context.globalStorageUri,

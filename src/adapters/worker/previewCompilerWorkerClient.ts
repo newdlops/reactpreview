@@ -38,8 +38,18 @@ export interface PreviewCompilerWorkerTransport {
 
 /** Optional transport factory used to isolate Node worker construction in unit tests. */
 export interface PreviewCompilerWorkerClientOptions {
+  /** Extension-packaged production node_modules used to seed a compatible React runtime. */
+  readonly bundledNodeModulesPath?: string;
   /** Creates one transport; omitted in production to use `node:worker_threads`. */
   readonly createTransport?: () => PreviewCompilerWorkerTransport;
+  /** Persistent global-storage root for cross-workspace dependency environments. */
+  readonly managedDependencyStoreRoot?: string;
+}
+
+/** Serializable immutable bootstrap data delivered before the worker constructs its compiler. */
+export interface PreviewCompilerWorkerBootstrap {
+  readonly bundledNodeModulesPath?: string;
+  readonly managedDependencyStoreRoot?: string;
 }
 
 /** One unresolved compile request and its thread-local callback/cancellation ownership. */
@@ -59,8 +69,8 @@ class NodePreviewCompilerWorkerTransport implements PreviewCompilerWorkerTranspo
   private readonly worker: Worker;
 
   /** Creates one worker from the packaged compiler entry path. */
-  public constructor(workerPath: string) {
-    this.worker = new Worker(workerPath);
+  public constructor(workerPath: string, bootstrap: PreviewCompilerWorkerBootstrap) {
+    this.worker = new Worker(workerPath, { workerData: bootstrap });
   }
 
   /** Registers one error listener. */
@@ -203,7 +213,14 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     }
     const transport =
       this.options.createTransport?.() ??
-      new NodePreviewCompilerWorkerTransport(path.resolve(this.workerPath));
+      new NodePreviewCompilerWorkerTransport(path.resolve(this.workerPath), {
+        ...(this.options.bundledNodeModulesPath === undefined
+          ? {}
+          : { bundledNodeModulesPath: path.resolve(this.options.bundledNodeModulesPath) }),
+        ...(this.options.managedDependencyStoreRoot === undefined
+          ? {}
+          : { managedDependencyStoreRoot: path.resolve(this.options.managedDependencyStoreRoot) }),
+      });
     this.transport = transport;
     transport.onMessage((message) => {
       if (this.transport === transport) {

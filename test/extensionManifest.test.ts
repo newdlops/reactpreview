@@ -37,6 +37,8 @@ interface ExtensionManifest {
       readonly 'editor/context'?: readonly EditorContextMenuContribution[];
     };
   };
+  /** Runtime packages VSCE must retain for compiler and managed React seed environments. */
+  readonly dependencies?: Readonly<Record<string, string>>;
   /** Minimum editor version required by the packaged extension-host module format. */
   readonly engines?: {
     readonly vscode?: string;
@@ -62,6 +64,11 @@ describe('extension manifest', () => {
 
     expect(manifest.engines?.vscode).toBe('^1.100.0');
     expect(manifest.main).toBe('./dist/extension.mjs');
+    expect(manifest.dependencies).toMatchObject({
+      esbuild: '0.28.1',
+      react: '19.2.7',
+      'react-dom': '19.2.7',
+    });
     expect(manifest.activationEvents).toEqual(
       expect.arrayContaining([
         'onCommand:reactPreview.open',

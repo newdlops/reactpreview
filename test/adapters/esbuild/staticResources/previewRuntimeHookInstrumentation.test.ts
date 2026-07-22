@@ -461,6 +461,52 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
   });
 
+  /** Reuses authored Nuqs parser defaults so registry-backed query values stay in their domain. */
+  it('recovers a local useQueryStates parser map without executing its provider', () => {
+    const source = [
+      `import { useQueryStates, parseAsStringLiteral } from 'nuqs';`,
+      `import { DEFAULTS } from './defaults';`,
+      'const parsers = {',
+      `  theme: parseAsStringLiteral(['neutral']).withDefault(DEFAULTS.theme),`,
+      `  template: parseAsStringLiteral(['next']).withDefault('next').withOptions({ shallow: true }),`,
+      '};',
+      'export function Form() {',
+      '  const [params, setParams] = useQueryStates(parsers);',
+      '  return <button onClick={() => setParams({})}>{params.theme}{params.template}</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Form.tsx', source),
+    );
+
+    expect(transformed).toContain('"theme": (DEFAULTS.theme)');
+    expect(transformed).toContain('"template": (\'next\')');
+    expect(transformed).toContain('"requiredPaths":["0.theme","0.template","1()"]');
+    expect(transformed).toContain('"evidence":"authored query-state parser defaults"');
+  });
+
+  /** Never borrows a same-name module parser map when a component parameter owns the call binding. */
+  it('fails closed for a shadowed useQueryStates parser-map identifier', () => {
+    const source = [
+      `import { useQueryStates, parseAsString } from 'nuqs';`,
+      `const parsers = { theme: parseAsString.withDefault('module-theme') };`,
+      'export function Form({ parsers }) {',
+      '  const [params] = useQueryStates(parsers);',
+      '  return <span>{params.theme}</span>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Form.tsx', source),
+    );
+
+    expect(transformed).not.toContain('"theme": (\'module-theme\')');
+    expect(transformed).not.toContain('authored query-state parser defaults');
+  });
+
   /** Instruments state and Context wrapper hooks while leaving React-owned hooks to their bridges. */
   it('wraps supported state-library and Context hooks but not React-owned hooks', () => {
     const source = [

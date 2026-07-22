@@ -22,6 +22,10 @@ import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDes
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
 import { readPreviewRuntimeHookIdentityAliasCollectionUsages } from './previewRuntimeHookIdentityAliases';
 import {
+  readPreviewRuntimeQueryParamDefaultExpression,
+  readPreviewRuntimeQueryStatesDefaults,
+} from './previewRuntimeHookQueryDefaults';
+import {
   isPreviewRuntimeHookArrayUsageProperty,
   readPreviewRuntimeHookPropertyUsage,
   shouldMaterializePreviewRuntimeHookNestedFallback,
@@ -31,7 +35,6 @@ import {
   hasPreviewRuntimeParseDiagnostics as hasParseDiagnostics,
   isPreviewRuntimeFunction as isRuntimeFunction,
   isPreviewRuntimeJavaScriptLikeSource as isJavaScriptLikeSource,
-  readPreviewRuntimeCalleePropertyName as readCalleePropertyName,
   readPreviewRuntimeFunctionName,
   selectPreviewRuntimeScriptKind as selectScriptKind,
   unwrapPreviewRuntimeExpression as unwrapExpression,
@@ -301,13 +304,23 @@ function inferRuntimeHookFallback(
   sourceFile: ts.SourceFile,
   sourceText: string,
 ): PreviewRuntimeHookFallback | undefined {
+  const queryStatesDefaults = readPreviewRuntimeQueryStatesDefaults(
+    call,
+    hook.moduleSpecifier,
+    hook.hookName,
+    sourceFile,
+    sourceText,
+  );
+  if (queryStatesDefaults !== undefined) {
+    return { evidence: 'authored query-state parser defaults', ...queryStatesDefaults };
+  }
   if (
     hook.moduleSpecifier === QUERY_PARAM_MODULE &&
     (hook.hookName === 'useQueryParam' || hook.hookName === 'useQueryParams')
   ) {
     const defaultExpression =
       hook.hookName === 'useQueryParam'
-        ? readQueryParamDefaultExpression(call, sourceFile, sourceText)
+        ? readPreviewRuntimeQueryParamDefaultExpression(call, sourceFile, sourceText)
         : 'Object.freeze({})';
     return {
       evidence: 'query parameter default plus an inert local setter',
@@ -367,27 +380,6 @@ function inferRuntimeHookFallback(
         label: semanticFallback.label,
         requiredPaths: ['<root>'],
       };
-}
-
-/** Reads `withDefault(codec, value)` from a query-param hook or uses a neutral object. */
-function readQueryParamDefaultExpression(
-  call: ts.CallExpression,
-  sourceFile: ts.SourceFile,
-  sourceText: string,
-): string {
-  const codec = call.arguments[1];
-  if (codec !== undefined) {
-    const unwrapped = unwrapExpression(codec);
-    if (
-      ts.isCallExpression(unwrapped) &&
-      readCalleePropertyName(unwrapped.expression) === 'withDefault' &&
-      unwrapped.arguments[1] !== undefined
-    ) {
-      const fallback = unwrapped.arguments[1];
-      return sourceText.slice(fallback.getStart(sourceFile), fallback.end);
-    }
-  }
-  return 'Object.freeze({})';
 }
 
 /** Creates an array, object, or semantic scalar from one destructuring/identifier binding. */

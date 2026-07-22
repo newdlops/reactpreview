@@ -9,6 +9,7 @@
  */
 import { instrumentPreviewDeferredUiTriggers } from './previewDeferredUiTriggerInstrumentation';
 import { instrumentPreviewReactEffects } from './previewReactEffectInstrumentation';
+import { isolatePreviewAsyncReactComponents } from './previewAsyncReactComponentIsolation';
 import {
   applyPreviewSourceReplacements,
   selectCompatiblePreviewSourceReplacements,
@@ -19,7 +20,7 @@ import { instrumentReactConditionalRendering } from './reactConditionalRendering
 export interface PreviewRuntimeSourceInstrumentationOptions {
   /** Wraps React effects with the render-only side-effect boundary. */
   readonly isolateEffects: boolean;
-  /** Enables JSX branch instrumentation and deferred UI trigger discovery. */
+  /** Enables JSX branches, deferred UI discovery, and async client-component isolation. */
   readonly renderConditions: boolean;
 }
 
@@ -31,7 +32,7 @@ export interface PreviewRuntimeSourceInstrumentationResult {
   readonly source: string;
 }
 
-/** Applies the three cooperating runtime transforms without allowing overlapping edits. */
+/** Applies cooperating runtime transforms without allowing authored-offset analyses to drift. */
 export function instrumentPreviewRuntimeSource(
   sourcePath: string,
   sourceText: string,
@@ -47,10 +48,13 @@ export function instrumentPreviewRuntimeSource(
   const conditionSource = options.renderConditions
     ? instrumentReactConditionalRendering(sourcePath, deferredSource)
     : deferredSource;
+  const effectSource = options.isolateEffects
+    ? instrumentPreviewReactEffects(sourcePath, conditionSource)
+    : conditionSource;
   return {
     registrations: deferred.registrations,
-    source: options.isolateEffects
-      ? instrumentPreviewReactEffects(sourcePath, conditionSource)
-      : conditionSource,
+    source: options.renderConditions
+      ? isolatePreviewAsyncReactComponents(sourcePath, effectSource)
+      : effectSource,
   };
 }

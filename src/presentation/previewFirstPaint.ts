@@ -7,6 +7,7 @@ import type { BuildPreview } from '../application/buildPreview';
 import type { PreparedPreview, PreviewBuildRequest, PreviewRenderMode } from '../domain/preview';
 import {
   isPreviewBuildCancellation,
+  isPreviewBuildStall,
   type PreviewBuildExecutionContext,
 } from '../domain/previewBuildExecution';
 
@@ -67,7 +68,7 @@ export async function preparePreviewFirstPaint(
     );
     return { preparedPreview, requiresContextEnrichment: true };
   } catch (error) {
-    if (isPreviewBuildCancellation(error, options.context.signal)) {
+    if (isPreviewBuildCancellation(error, options.context.signal) || isPreviewBuildStall(error)) {
       throw error;
     }
     const preparedPreview = await options.buildPreview.execute(

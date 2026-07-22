@@ -39,6 +39,51 @@ export class PreviewBuildCancelledError extends Error {
   }
 }
 
+/** Resource boundary that prevented a background compilation from completing normally. */
+export type PreviewBuildStallReason =
+  'cancel-timeout' | 'memory' | 'native-service' | 'queue-capacity' | 'watchdog';
+
+/**
+ * Domain error raised when a background compiler stops making a bounded build complete.
+ * Keeping this distinct from a normal source compilation error prevents first-paint orchestration
+ * from immediately repeating the same memory-heavy graph through its full fallback path.
+ */
+export class PreviewBuildStalledError extends Error {
+  /** Creates an actionable failure retaining the last milestone observed by the host. */
+  public constructor(
+    public readonly target: string,
+    public readonly lastStage: PreviewProgressStage | undefined,
+    public readonly elapsedMs: number,
+    public readonly reason: PreviewBuildStallReason = 'watchdog',
+  ) {
+    const stageMessage = lastStage === undefined ? 'before its first milestone' : `at ${lastStage}`;
+    super(createPreviewBuildStallMessage(reason, target, stageMessage, elapsedMs));
+    this.name = 'PreviewBuildStalledError';
+  }
+}
+
+/** Produces an accurate recovery message for watchdog, queue, memory, and native-service limits. */
+function createPreviewBuildStallMessage(
+  reason: PreviewBuildStallReason,
+  target: string,
+  stageMessage: string,
+  elapsedMs: number,
+): string {
+  if (reason === 'queue-capacity') {
+    return `React preview compilation was not started because the background queue reached its safe capacity for ${target}. Wait for an active preview or close stale preview tabs before refreshing.`;
+  }
+  if (reason === 'memory') {
+    return `Background React preview compilation exceeded its isolated memory budget ${stageMessage} for ${target}. The compiler worker was restarted before the process could exhaust system memory.`;
+  }
+  if (reason === 'native-service') {
+    return `The isolated esbuild service stopped ${stageMessage} for ${target}. The build was not retried with the same graph so system memory can recover.`;
+  }
+  if (reason === 'cancel-timeout') {
+    return `A cancelled React preview did not release its compiler within ${elapsedMs.toString()} ms. The isolated worker was restarted before newer previews could overlap its native graph.`;
+  }
+  return `Background React preview compilation stalled ${stageMessage} after ${elapsedMs.toString()} ms for ${target}. The isolated compiler was restarted to protect editor responsiveness and system memory.`;
+}
+
 /**
  * Throws a stable domain cancellation when the supplied execution has been aborted.
  * Calling this at asynchronous boundaries prevents stale work from entering the next side effect.
@@ -64,4 +109,12 @@ export function isPreviewBuildCancellation(error: unknown, signal?: AbortSignal)
     return true;
   }
   return error instanceof Error && error.name === 'AbortError';
+}
+
+/** Identifies a watchdog termination without classifying ordinary project build failures as stalls. */
+export function isPreviewBuildStall(error: unknown): error is PreviewBuildStalledError {
+  return (
+    error instanceof PreviewBuildStalledError ||
+    (error instanceof Error && error.name === 'PreviewBuildStalledError')
+  );
 }

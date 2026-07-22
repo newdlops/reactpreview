@@ -25,6 +25,7 @@ import type {
   PreviewInspectorAncestorPlan,
   PreviewInspectorAncestorStopReason,
   PreviewInspectorComponentReference,
+  PreviewInspectorModuleContextReference,
   PreviewInspectorPageCandidate,
 } from './previewInspectorAncestorTypes';
 
@@ -78,6 +79,7 @@ export function freezePreviewInspectorPageCandidate(
 /** Mutable traversal values accepted immediately before the complete plan is published. */
 export interface FreezePreviewInspectorAncestorPlanOptions {
   readonly complete: boolean;
+  readonly contextModule?: PreviewInspectorModuleContextReference;
   readonly dependencies: ReadonlySet<string>;
   readonly edges: readonly PreviewInspectorAncestorEdge[];
   readonly pageCandidates: readonly PreviewInspectorPageCandidate[];
@@ -97,6 +99,7 @@ export function freezePreviewInspectorAncestorPlan(
 ): PreviewInspectorAncestorPlan {
   return Object.freeze({
     complete: options.complete,
+    ...(options.contextModule === undefined ? {} : { contextModule: options.contextModule }),
     dependencyPaths: Object.freeze([...options.dependencies].sort()),
     edges: Object.freeze([...options.edges]),
     pageCandidates: Object.freeze([...options.pageCandidates]),

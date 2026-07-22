@@ -66,6 +66,7 @@ export type {
   PreviewInspectorAncestorPlan,
   PreviewInspectorAncestorStopReason,
   PreviewInspectorComponentReference,
+  PreviewInspectorModuleContextReference,
   PreviewInspectorPageCandidate,
   ReadPreviewInspectorAcceptedSpecifiers,
   ReadPreviewInspectorSource,

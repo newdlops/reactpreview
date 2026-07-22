@@ -56,6 +56,9 @@ export interface PreviewInspectorNextAppLayoutChain {
   readonly routeLocation: PreviewInspectorNextAppRouteLocation;
 }
 
+/** Reusable convention index keyed by absolute directory plus `layout`/`page`/`template` stem. */
+export type PreviewInspectorNextAppModuleIndex = ReadonlyMap<string, string>;
+
 /** Inputs for convention-only discovery over the planner's existing bounded inventory. */
 export interface CollectPreviewInspectorNextAppLayoutChainOptions {
   /** Optional authored static-parameter values that replace visibly synthetic segment keys. */
@@ -64,6 +67,8 @@ export interface CollectPreviewInspectorNextAppLayoutChainOptions {
   readonly exportName: string;
   /** Candidate source. Only an exact App Router `page` module is accepted. */
   readonly pagePath: string;
+  /** Optional shared index avoids sorting the same package inventory for every page candidate. */
+  readonly sourceIndex?: PreviewInspectorNextAppModuleIndex;
   /** Existing project/package inventory; this helper never performs another directory walk. */
   readonly sourcePaths: readonly string[];
 }
@@ -83,7 +88,8 @@ export function collectPreviewInspectorNextAppLayoutChain(
   }
 
   const pageDirectory = path.dirname(pagePath);
-  const sourceIndex = indexNextAppModules(options.sourcePaths);
+  const sourceIndex =
+    options.sourceIndex ?? createPreviewInspectorNextAppModuleIndex(options.sourcePaths);
   const appRoot = findNextAppRoot(pageDirectory, sourceIndex);
   if (appRoot === undefined) return undefined;
 
@@ -209,7 +215,9 @@ function hasProvenNextAppRootLayout(
 }
 
 /** Indexes only Next page/shell source names and deterministically prefers TSX alternatives. */
-function indexNextAppModules(sourcePaths: readonly string[]): ReadonlyMap<string, string> {
+export function createPreviewInspectorNextAppModuleIndex(
+  sourcePaths: readonly string[],
+): PreviewInspectorNextAppModuleIndex {
   const index = new Map<string, string>();
   const sources = [...new Set(sourcePaths.map((sourcePath) => path.normalize(sourcePath)))].sort(
     compareNextModulePaths,

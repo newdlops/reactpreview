@@ -6,6 +6,7 @@ export {
   type PreviewInspectorAncestorPlan,
   type PreviewInspectorAncestorStopReason,
   type PreviewInspectorComponentReference,
+  type PreviewInspectorModuleContextReference,
   type PreviewInspectorPageCandidate,
   type ReadPreviewInspectorAcceptedSpecifiers,
   type ReadPreviewInspectorSource,
@@ -24,6 +25,10 @@ export {
   type PreviewInspectorNextAppRouteLocation,
   type PreviewInspectorNextAppRouteParams,
 } from './previewInspectorNextAppLayoutChain';
+export {
+  createPreviewInspectorNextAppModulePagePlan,
+  type CreatePreviewInspectorNextAppModulePagePlanOptions,
+} from './previewInspectorNextAppModulePagePlan';
 export {
   collectPreviewInspectorNextPagesShell,
   type CollectPreviewInspectorNextPagesShellOptions,

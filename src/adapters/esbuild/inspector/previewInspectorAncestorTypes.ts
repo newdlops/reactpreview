@@ -29,6 +29,16 @@ export interface PreviewInspectorComponentReference {
   readonly sourcePath: string;
 }
 
+/** Non-component editor module whose nearest authored Next page supplies the visible preview. */
+export interface PreviewInspectorModuleContextReference {
+  /** Static evidence used to connect the selected module to the mounted page. */
+  readonly evidenceKind: 'import-chain' | 'next-app-filesystem';
+  /** Page-to-module authored imports, ordered from the mounted page toward the selected module. */
+  readonly importPath: readonly string[];
+  /** Absolute source path originally selected by the editor command. */
+  readonly sourcePath: string;
+}
+
 /** One proven child-to-owner relationship in the selected inspector ancestry. */
 export interface PreviewInspectorAncestorEdge {
   /** Import spelling used at this exact occurrence; aliases identify the same child value. */
@@ -95,6 +105,8 @@ export interface PreviewInspectorPageCandidate {
 export interface PreviewInspectorAncestorPlan {
   /** `true` only when the scan reached an export with no further package-local usage. */
   readonly complete: boolean;
+  /** Present when a non-component module is represented by one consuming Next App page. */
+  readonly contextModule?: PreviewInspectorModuleContextReference;
   /** Files selected by ancestry, route evidence, and therefore relevant to hot reload. */
   readonly dependencyPaths: readonly string[];
   /** Proven import relationships ordered from selected target toward mounted root. */

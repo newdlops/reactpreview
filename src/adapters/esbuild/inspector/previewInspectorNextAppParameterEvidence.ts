@@ -8,6 +8,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import type { ReadPreviewInspectorSource } from './previewInspectorAncestorTypes';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
@@ -28,6 +29,8 @@ export interface CollectRefinedPreviewInspectorNextAppLayoutChainOptions extends
   readonly readSource: ReadPreviewInspectorSource;
   /** Project-aware alias resolver used only for reached static collection bindings. */
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
+  /** Cancels stale parameter analysis before each source read and import traversal. */
+  readonly signal?: AbortSignal;
 }
 
 /** Refined framework shell plus source files whose edits must invalidate the preview. */
@@ -59,6 +62,7 @@ interface StaticParameterReadContext {
   readonly inventory: ReadonlySet<string>;
   readonly readSource: ReadPreviewInspectorSource;
   readonly resolveModule: ResolvePreviewRenderGraphModule;
+  readonly signal?: AbortSignal;
   readonly sourceFiles: Map<string, ts.SourceFile>;
 }
 
@@ -78,6 +82,7 @@ interface StaticImportBinding {
 export async function collectRefinedPreviewInspectorNextAppLayoutChain(
   options: CollectRefinedPreviewInspectorNextAppLayoutChainOptions,
 ): Promise<RefinedPreviewInspectorNextAppLayoutChain | undefined> {
+  throwIfPreviewBuildCancelled(options.signal);
   const initial = collectPreviewInspectorNextAppLayoutChain(options);
   if (initial === undefined) return undefined;
   const parameterNames = collectDynamicParameterNames(initial.routeLocation.pattern);
@@ -91,6 +96,7 @@ export async function collectRefinedPreviewInspectorNextAppLayoutChain(
     readSource: options.readSource,
     resolveModule:
       options.resolveModule ?? createLexicalInspectorModuleResolver(options.sourcePaths),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
     sourceFiles: new Map(),
   };
   const values: Record<string, PreviewInspectorNextAppParamValue> = {};
@@ -98,6 +104,7 @@ export async function collectRefinedPreviewInspectorNextAppLayoutChain(
     ...new Set([...initial.layouts.map((layout) => path.normalize(layout.sourcePath)), pagePath]),
   ];
   for (const sourcePath of parameterSourcePaths) {
+    throwIfPreviewBuildCancelled(options.signal);
     const sourceFile = await readStaticSourceFile(sourcePath, context);
     if (sourceFile === undefined) continue;
     const sourceValues = await collectGenerateStaticParameterValues(
@@ -372,6 +379,7 @@ async function readStaticSourceFile(
   sourcePath: string,
   context: StaticParameterReadContext,
 ): Promise<ts.SourceFile | undefined> {
+  throwIfPreviewBuildCancelled(context.signal);
   const cached = context.sourceFiles.get(sourcePath);
   if (cached !== undefined) return cached;
   const sourceText = await context.readSource(sourcePath);

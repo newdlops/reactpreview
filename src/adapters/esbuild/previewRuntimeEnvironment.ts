@@ -8,6 +8,11 @@ import { open, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { PreviewCompilationError } from '../../domain/preview';
 import { normalizeLexicalPath } from '../../shared/pathIdentity';
+import {
+  createPreviewPublicEnvironmentCandidatePaths,
+  resolvePreviewPublicEnvironment,
+  type PreviewPublicEnvironment,
+} from './previewPublicEnvironment';
 
 /** Maximum prefix read from any one convention file during inert namespace discovery. */
 export const MAX_RUNTIME_DISCOVERY_FILE_BYTES = 1024 * 1024;
@@ -157,8 +162,10 @@ export interface PreviewRuntimeEnvironmentOptions {
 export interface PreviewRuntimeEnvironment {
   /** Names declared through an empty-object global namespace initializer in bounded source text. */
   readonly globalNamespaces: readonly string[];
+  /** Browser-public dotenv values; omitted when no admitted declaration was discovered. */
+  readonly publicEnvironment?: PreviewPublicEnvironment;
   /** Canonical setup module path, omitted when no setup convention was selected. */
-  readonly setupModulePath?: string;
+  readonly setupModulePath?: string | undefined;
   /** Explains whether setup was explicitly configured, conventionally discovered, or absent. */
   readonly setupKind: 'none' | 'custom' | 'storybook';
 }
@@ -202,6 +209,7 @@ export async function createPreviewRuntimeWatchInputs(
     ...createStorybookPreviewCandidatePaths(normalizedProjectRoot),
     ...createProjectBootstrapEvidenceCandidatePaths(normalizedProjectRoot),
     ...createRuntimeMetadataPaths(normalizedProjectRoot),
+    ...createPreviewPublicEnvironmentCandidatePaths(normalizedProjectRoot),
   ];
   const dependencyPaths = (
     await Promise.all(
@@ -311,16 +319,19 @@ export async function resolvePreviewRuntimeEnvironment(
   );
   assertInsideWorkspace(canonicalWorkspaceRoot, canonicalProjectRoot, 'Preview project root');
 
-  const setup = await resolveSetupModule(options, canonicalProjectRoot, canonicalWorkspaceRoot);
-  const globalNamespaces = await discoverGlobalNamespaces(
-    canonicalProjectRoot,
-    canonicalWorkspaceRoot,
-  );
+  const [setup, globalNamespaces, publicEnvironment] = await Promise.all([
+    resolveSetupModule(options, canonicalProjectRoot, canonicalWorkspaceRoot),
+    discoverGlobalNamespaces(canonicalProjectRoot, canonicalWorkspaceRoot),
+    resolvePreviewPublicEnvironment(canonicalProjectRoot, canonicalWorkspaceRoot),
+  ]);
+  const publicEnvironmentLayer =
+    Object.keys(publicEnvironment).length === 0 ? {} : { publicEnvironment };
 
   return setup.setupModulePath === undefined
-    ? { globalNamespaces, setupKind: setup.setupKind }
+    ? { globalNamespaces, ...publicEnvironmentLayer, setupKind: setup.setupKind }
     : {
         globalNamespaces,
+        ...publicEnvironmentLayer,
         setupKind: setup.setupKind,
         setupModulePath: setup.setupModulePath,
       };

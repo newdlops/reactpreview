@@ -11,6 +11,7 @@ describe('createPreviewEntry', () => {
     const entry = createPreviewEntry({
       documentName: 'src/Preview.tsx',
       globalNamespaces: ['ZUZU'],
+      publicEnvironment: { NEXT_PUBLIC_APP_URL: 'https://app.example/' },
       setupKind: 'storybook',
     });
 
@@ -66,6 +67,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('Failure context:');
     expect(entry).toContain('Automatic runtime boundaries:');
     expect(entry).toContain('Node I/O remains unavailable');
+    expect(entry).toContain('Object.freeze({"NEXT_PUBLIC_APP_URL":"https://app.example/"})');
     expect(entry).toContain('React component stack:');
     expect(entry).toContain('componentDidCatch(error, errorInfo)');
     expect(entry).toContain('onUncaughtError(error, errorInfo)');

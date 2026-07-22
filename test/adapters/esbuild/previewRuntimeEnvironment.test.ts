@@ -193,6 +193,27 @@ describe('resolvePreviewRuntimeEnvironment', () => {
     ).resolves.toEqual({ globalNamespaces: [], setupKind: 'none' });
   });
 
+  /** Carries only browser-public dotenv values into the runtime plan identity. */
+  it('discovers a bounded public environment beside setup metadata', async () => {
+    const { projectRoot, workspaceRoot } = await createWorkspaceProject();
+    await writeFile(
+      path.join(projectRoot, '.env.development.local'),
+      'NEXT_PUBLIC_APP_URL=https://app.example/\nSERVER_TOKEN=must-not-enter-webview',
+    );
+
+    await expect(
+      resolvePreviewRuntimeEnvironment({
+        projectRoot,
+        useStorybookPreview: false,
+        workspaceRoot,
+      }),
+    ).resolves.toEqual({
+      globalNamespaces: [],
+      publicEnvironment: { NEXT_PUBLIC_APP_URL: 'https://app.example/' },
+      setupKind: 'none',
+    });
+  });
+
   /** Converts missing, unsupported, and non-file explicit setup paths to domain failures. */
   it('rejects invalid explicit setup modules', async () => {
     const { projectRoot, workspaceRoot } = await createWorkspaceProject();
@@ -369,6 +390,12 @@ describe('resolvePreviewRuntimeEnvironment', () => {
 
     expect(inputs.dependencyPaths).toEqual(
       expect.arrayContaining([await realpath(entryPath), await realpath(declarationPath)]),
+    );
+    expect(inputs.dependencyPaths).toEqual(
+      expect.arrayContaining([
+        path.join(projectRoot, '.env'),
+        path.join(projectRoot, '.env.development.local'),
+      ]),
     );
   });
 });

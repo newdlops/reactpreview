@@ -51,6 +51,8 @@ export interface PreviewEntryOptions {
   readonly renderMode?: PreviewRenderMode;
   /** Exact DOM IDs required by ReactDOM portals in the statically reached target graph. */
   readonly portalHostIds?: readonly string[];
+  /** Browser-public dotenv values admitted by the compiler's project-root security boundary. */
+  readonly publicEnvironment?: Readonly<Record<string, string>> | undefined;
   /** Uses ReactDOM.render when the project predates the react-dom/client entry point. */
   readonly reactDomRootKind?: PreviewReactDomRootKind;
   /** Determines whether standard Storybook decorators and parameters should be applied. */
@@ -86,7 +88,9 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedThemeSpecifier = JSON.stringify(PREVIEW_THEME_SPECIFIER);
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
-  const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource();
+  const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource(
+    options.publicEnvironment,
+  );
   const regeneratorRuntimeGlobalSource = createPreviewRegeneratorRuntimeGlobalSource();
   const documentShellRuntimeSource = createPreviewDocumentShellRuntimeSource(
     options.documentShell,

@@ -14,7 +14,9 @@ import {
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
 
-const MAX_INCREMENTAL_BUILD_CONTEXTS = 12;
+// A native context retains the complete parsed graph plus plugin-local Tailwind and MDX caches.
+// Two entries preserve hot reload across the active tab pair without multiplying large-repo memory.
+const MAX_INCREMENTAL_BUILD_CONTEXTS = 2;
 
 /** Exact esbuild result contract consumed by the preview output planner. */
 export type PreviewIncrementalBuildResult = BuildResult<{ metafile: true; write: false }>;

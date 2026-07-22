@@ -148,6 +148,35 @@ describe('PreviewIncrementalBuildCache', () => {
     expect(second.dispose).toHaveBeenCalledOnce();
   });
 
+  /** Evicts the oldest parsed graph before an arbitrary number of preview tabs can accumulate it. */
+  it('retains at most two incompatible native contexts', async () => {
+    const first = createNativeContext();
+    const second = createNativeContext();
+    const third = createNativeContext();
+    esbuildMocks.context
+      .mockResolvedValueOnce(first.context)
+      .mockResolvedValueOnce(second.context)
+      .mockResolvedValueOnce(third.context);
+    const cache = new PreviewIncrementalBuildCache();
+
+    for (const contextKey of ['plan-a', 'plan-b', 'plan-c']) {
+      await cache.rebuild({
+        contextKey,
+        createOptions: () => createBuildOptions(),
+        sourceCompilation: createCompilation(contextKey),
+      });
+    }
+    await vi.waitFor(() => {
+      expect(first.dispose).toHaveBeenCalledOnce();
+    });
+    expect(second.dispose).not.toHaveBeenCalled();
+    expect(third.dispose).not.toHaveBeenCalled();
+
+    await cache.shutdown();
+    expect(second.dispose).toHaveBeenCalledOnce();
+    expect(third.dispose).toHaveBeenCalledOnce();
+  });
+
   /** Uses an isolated cancellable context for stateful fallback plugins and disposes it immediately. */
   it('runs one-shot builds without retaining their native context', async () => {
     const native = createNativeContext();

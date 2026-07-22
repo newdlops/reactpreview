@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { isPreviewRenderHocFactoryCall } from '../renderGraph/previewRenderInvocation';
 import {
   collectPreviewParentSliceImportBindings,
   matchesPreviewParentSliceTargetImport,
@@ -801,8 +802,11 @@ function readVariableExportNames(
  */
 function appendExportAliases(names: string[], localName: string, sourceFile: ts.SourceFile): void {
   for (const statement of sourceFile.statements) {
-    if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
-      if (statement.expression.text === localName && !statement.isExportEquals) {
+    if (ts.isExportAssignment(statement)) {
+      if (
+        !statement.isExportEquals &&
+        isDefaultComponentExportForLocal(statement.expression, localName)
+      ) {
         names.push('default');
       }
       continue;
@@ -822,6 +826,24 @@ function appendExportAliases(names: string[], localName: string, sourceFile: ts.
       names.push(element.name.text);
     }
   }
+}
+
+/**
+ * Recognizes a local component passed through a conventional default-export HOC.
+ *
+ * Framework roots commonly use `export default withStore(App)` while the selected descendant is
+ * rendered inside `App`. Treating that as a private terminal hides the Next `_app` page shell. The
+ * check remains syntax-only and admits only the same conventional HOC factories used by the render
+ * graph; arbitrary function calls cannot turn a private declaration into a mountable export.
+ */
+function isDefaultComponentExportForLocal(expression: ts.Expression, localName: string): boolean {
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) return current.text === localName;
+  if (!ts.isCallExpression(current) || !isPreviewRenderHocFactoryCall(current)) return false;
+  return current.arguments.some((argument) => {
+    const componentArgument = unwrapExpression(argument);
+    return ts.isIdentifier(componentArgument) && componentArgument.text === localName;
+  });
 }
 
 /**

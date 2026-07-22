@@ -1,8 +1,9 @@
 /**
  * Supplies a tiny browser-rendering surface for selected Next.js modules outside Next's compiler.
- * Image and font modules require build transforms even when installed, while link defers to normal
- * resolution. Every fallback still requires an inert, workspace-owned manifest that declares Next.
- * It never imports Next configuration, starts a server, or executes package scripts.
+ * Image and font modules require build transforms even when installed, while the `server-only`
+ * marker deliberately throws in a browser. Link defers to normal resolution. Every fallback still
+ * requires an inert, workspace-owned manifest that declares Next. It never imports configuration,
+ * starts a server, or executes package scripts.
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,7 +13,7 @@ import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { isFileBackedPreviewNamespace, PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 
 const NEXT_RENDER_FALLBACK_NAMESPACE = 'react-preview-next-render-fallback';
-const NEXT_RENDER_MODULE_PATTERN = /^next\/(?:font\/google|image|link)$/;
+const NEXT_RENDER_MODULE_PATTERN = /^(?:next\/(?:font\/google|image|link)|server-only)$/;
 const MAXIMUM_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_IMPORTER_BYTES = 2 * 1024 * 1024;
 const PACKAGE_DEPENDENCY_FIELDS = [
@@ -136,7 +137,10 @@ export function createPreviewNextFrameworkFallbackPlugin(
             manifestPath,
             moduleSpecifier: arguments_.path,
           } satisfies PreviewNextFrameworkFallbackData,
-          sideEffects: false,
+          // A bare `server-only` import is an intentional runtime boundary marker. Keeping that
+          // one facade effectful prevents esbuild from reporting that the reached marker was
+          // ignored, while visual value imports remain tree-shakeable like ordinary facades.
+          sideEffects: arguments_.path === 'server-only',
           warnings: includeWarning
             ? [
                 {
@@ -248,6 +252,7 @@ function createNextRenderModuleSource(
   moduleSpecifier: string,
   fontExportNames: readonly string[],
 ): string | undefined {
+  if (moduleSpecifier === 'server-only') return 'export {};';
   if (moduleSpecifier === 'next/image') return createNextImageFallbackSource();
   if (moduleSpecifier === 'next/link') return createNextLinkFallbackSource();
   if (moduleSpecifier === 'next/font/google') {

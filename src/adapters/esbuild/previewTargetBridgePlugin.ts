@@ -113,11 +113,11 @@ function createTargetBridgeSource(
   });
   if (hasWildcard) {
     importLines.push(`import * as __reactPreviewNamespace from ${documentSpecifier};`);
-  } else if (explicitSelections.length === 0) {
-    importLines.push(`import ${documentSpecifier};`);
   }
 
-  const themeSource = createThemeImportSource(themeImport);
+  // An empty gallery has no render tree that can consume a theme. Omitting it keeps helper/data
+  // modules completely outside the graph even when static syntax happened to expose a theme name.
+  const themeSource = createThemeImportSource(selections.length === 0 ? undefined : themeImport);
   if (themeSource.importLine !== undefined) {
     importLines.push(themeSource.importLine);
   }

@@ -37,8 +37,8 @@ describe('EsbuildPreviewCompiler', () => {
     );
 
     expect(bundle.javascript.byteLength).toBeGreaterThan(0);
-    expect(bundle.chunks.length).toBeGreaterThan(0);
-    expect(new TextDecoder().decode(bundle.javascript)).toContain('./chunks/');
+    expect(bundle.chunks).toEqual([]);
+    expect(new TextDecoder().decode(bundle.javascript)).not.toContain('./chunks/');
     const stylesheet = decodePreviewBundleStyles(bundle);
     expect(stylesheet).toContain('.sample-card');
     expect(stylesheet).toMatch(/\.samplePreview_title|\.title/u);
@@ -516,21 +516,29 @@ describe('EsbuildPreviewCompiler', () => {
     }
   });
 
-  /** Produces a valid empty gallery when a module has no component-shaped direct exports. */
+  /** Produces a valid empty gallery without evaluating a non-component module or its broad graph. */
   it('bundles files without default or PascalCase component exports', async () => {
     const compiler = new EsbuildPreviewCompiler();
+    const sourceText = [
+      'globalThis.__NON_COMPONENT_TARGET_MUST_NOT_RUN = true;',
+      `export const namedOnly = [${Array.from(
+        { length: 96 },
+        (_, index) => `() => import('./missing-registry-leaf-${index.toString()}')`,
+      ).join(',')}];`,
+    ].join('\n');
     const bundle = await compiler.compile({
       dependencySnapshots: [],
       documentPath: FIXTURE_PATH,
       language: 'tsx',
-      sourceText: 'export const namedOnly = 1;',
+      renderMode: 'page-inspector',
+      sourceText,
       workspaceRoot: PROJECT_ROOT,
     });
     const javascript = decodeBundleJavascript(bundle);
-
     expect(javascript).toContain(
       'This file has no direct default or PascalCase component exports to preview.',
     );
+    expect(javascript).not.toContain('NON_COMPONENT_TARGET_MUST_NOT_RUN');
   });
 
   /**

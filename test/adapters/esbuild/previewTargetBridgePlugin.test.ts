@@ -13,6 +13,58 @@ import { createPreviewParentSlicePlugin } from '../../../src/adapters/esbuild/pr
 import { createPreviewTargetBridgePlugin } from '../../../src/adapters/esbuild/previewTargetBridgePlugin';
 
 describe('createPreviewTargetBridgePlugin', () => {
+  /**
+   * Leaves a non-component module completely outside the runtime graph when static selection is empty.
+   * Generated registries often export lower-camel data objects whose evaluation reaches thousands of
+   * deferred leaves; the empty gallery must explain that there is no component without importing them.
+   */
+  it('does not evaluate the target module when no previewable export was selected', async () => {
+    const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'react-preview-empty-target-'));
+    const documentPath = path.join(temporaryDirectory, 'registry.ts');
+    const themePath = path.join(temporaryDirectory, 'theme.ts');
+    try {
+      await Promise.all([
+        writeFile(
+          documentPath,
+          "throw new Error('EMPTY_SELECTION_MUST_NOT_IMPORT_TARGET'); export const registry = {};",
+          'utf8',
+        ),
+        writeFile(
+          themePath,
+          "throw new Error('EMPTY_SELECTION_MUST_NOT_IMPORT_THEME'); export const theme = {};",
+          'utf8',
+        ),
+      ]);
+      const result = await build({
+        bundle: true,
+        format: 'esm',
+        logLevel: 'silent',
+        plugins: [
+          createPreviewTargetBridgePlugin({
+            documentPath,
+            exports: [],
+            themeImport: { exportName: 'theme', moduleSpecifier: './theme' },
+          }),
+        ],
+        stdin: {
+          contents:
+            "import targets from 'react-preview:target'; globalThis.__emptyTargetCount = targets.length;",
+          loader: 'js',
+          resolveDir: temporaryDirectory,
+        },
+        write: false,
+      });
+      const javascript = result.outputFiles[0]?.text ?? '';
+
+      expect(javascript).not.toContain('EMPTY_SELECTION_MUST_NOT_IMPORT_TARGET');
+      expect(javascript).not.toContain('EMPTY_SELECTION_MUST_NOT_IMPORT_THEME');
+      expect(javascript).toContain('var __reactPreviewTargets = [];');
+      expect(javascript).toContain('__emptyTargetCount = registry_default.length');
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   /** Imports only the selected wrapper branch while tree-shaking an unrelated sibling export. */
   it('mounts an explicit export through its pinpoint parent render slice', async () => {
     const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'react-preview-target-slice-'));

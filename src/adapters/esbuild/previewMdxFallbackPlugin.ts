@@ -11,6 +11,7 @@ import path from 'node:path';
 import { compile } from '@mdx-js/mdx';
 import type { OnLoadArgs, OnLoadResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { createPreviewBoundedWorkGate } from './previewBoundedWorkGate';
 import {
   completePreviewMdxModuleSource,
   createEmptyPreviewMdxMetadata,
@@ -65,12 +66,6 @@ interface PreviewMdxSourceAdmission {
   readonly admitted: boolean;
 }
 
-/** Minimal concurrency limiter used to keep hundreds of generated collection imports responsive. */
-interface PreviewMdxCompileGate {
-  /** Runs one expensive MDX compilation after a bounded queue slot becomes available. */
-  readonly run: <Result>(operation: () => Promise<Result>) => Promise<Result>;
-}
-
 /** One successful compiled or metadata-only module retained across hot rebuilds. */
 interface PreviewMdxCompiledCacheEntry {
   /** Complete JavaScript module returned to esbuild on a cache hit. */
@@ -104,7 +99,7 @@ interface PreviewMdxCompiledModuleCache {
 export function createPreviewMdxFallbackPlugin(options: PreviewMdxFallbackPluginOptions): Plugin {
   const canonicalWorkspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const budget = createPreviewMdxBuildBudget();
-  const compileGate = createPreviewMdxCompileGate(MAX_PREVIEW_MDX_CONCURRENCY);
+  const moduleLoadGate = createPreviewBoundedWorkGate(MAX_PREVIEW_MDX_CONCURRENCY);
   const moduleCache = createPreviewMdxCompiledModuleCache();
 
   return {
@@ -123,12 +118,9 @@ export function createPreviewMdxFallbackPlugin(options: PreviewMdxFallbackPlugin
       build.onLoad(
         { filter: PREVIEW_MDX_FILE_FILTER, namespace: 'file' },
         async (arguments_: OnLoadArgs): Promise<OnLoadResult> =>
-          await loadPreviewMdxModule(
-            arguments_,
-            canonicalWorkspaceRoot,
-            budget,
-            compileGate,
-            moduleCache,
+          await moduleLoadGate.run(
+            async () =>
+              await loadPreviewMdxModule(arguments_, canonicalWorkspaceRoot, budget, moduleCache),
           ),
       );
     },
@@ -141,7 +133,6 @@ export function createPreviewMdxFallbackPlugin(options: PreviewMdxFallbackPlugin
  * @param arguments_ Esbuild identity containing a query-free path and preserved suffix.
  * @param workspaceRoot Canonical workspace boundary used after symlink resolution.
  * @param budget Mutable rebuild-local resource accounting.
- * @param compileGate Shared limiter preventing an eager collection from saturating the worker.
  * @param moduleCache Bounded content cache retained by a persistent esbuild plugin instance.
  * @returns JavaScript or JSX load result with dependency watching and non-fatal diagnostics.
  */
@@ -149,7 +140,6 @@ async function loadPreviewMdxModule(
   arguments_: OnLoadArgs,
   workspaceRoot: string,
   budget: PreviewMdxBuildBudget,
-  compileGate: PreviewMdxCompileGate,
   moduleCache: PreviewMdxCompiledModuleCache,
 ): Promise<OnLoadResult> {
   const canonicalSourcePath = canonicalizeExistingPath(arguments_.path);
@@ -260,18 +250,15 @@ async function loadPreviewMdxModule(
 
   const collector = createPreviewMdxMetadataCollector();
   try {
-    const compiled = await compileGate.run(
-      async () =>
-        await compile(
-          { path: canonicalSourcePath, value: document.bodyText },
-          {
-            development: false,
-            format: 'mdx',
-            jsx: true,
-            outputFormat: 'program',
-            remarkPlugins: [collector.remarkPlugin],
-          },
-        ),
+    const compiled = await compile(
+      { path: canonicalSourcePath, value: document.bodyText },
+      {
+        development: false,
+        format: 'mdx',
+        jsx: true,
+        outputFormat: 'program',
+        remarkPlugins: [collector.remarkPlugin],
+      },
     );
     const metadata = collector.readMetadata();
     const contents = completePreviewMdxModuleSource(
@@ -579,47 +566,6 @@ function reservePreviewMdxOutput(
   }
   budget.outputBytes += outputBytes;
   return undefined;
-}
-
-/**
- * Creates a FIFO concurrency gate around CPU-heavy MDX compilation.
- *
- * @param maximumConcurrency Positive number of simultaneous compiler operations.
- * @returns Gate whose queued promises always release their slot in a `finally` block.
- */
-function createPreviewMdxCompileGate(maximumConcurrency: number): PreviewMdxCompileGate {
-  let activeOperations = 0;
-  const waiters: (() => void)[] = [];
-
-  /** Waits until one active slot can be reserved. */
-  async function acquire(): Promise<void> {
-    if (activeOperations < maximumConcurrency) {
-      activeOperations += 1;
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      waiters.push(resolve);
-    });
-    activeOperations += 1;
-  }
-
-  /** Releases a slot and wakes exactly one queued compilation. */
-  function release(): void {
-    activeOperations = Math.max(0, activeOperations - 1);
-    waiters.shift()?.();
-  }
-
-  /** Runs one operation under the FIFO slot discipline. */
-  async function run<Result>(operation: () => Promise<Result>): Promise<Result> {
-    await acquire();
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-
-  return Object.freeze({ run });
 }
 
 /** Formats a source path without exposing filesystem content beyond its trusted workspace label. */

@@ -1,5 +1,5 @@
 /**
- * Verifies the adaptive oversized-graph path with a low test-only split threshold.
+ * Verifies the preemptive oversized-graph path with a low test-only split threshold.
  * Real esbuild output proves that dynamic imports are retained as deferred initializers while the
  * artifact planner receives a bounded number of local files.
  */
@@ -12,7 +12,7 @@ import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPre
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('EsbuildPreviewCompiler output coalescing', () => {
-  /** Retries an over-fragmented graph and preserves deferred module initialization in one entry. */
+  /** Avoids fragmented output allocation and preserves deferred initialization in one entry. */
   it('coalesces excessive split outputs without eagerly invoking dynamic modules', async () => {
     const projectRoot = await mkdtemp(
       path.join(REPOSITORY_ROOT, 'test/fixtures/output-coalescing-preview-'),
@@ -56,12 +56,10 @@ describe('EsbuildPreviewCompiler output coalescing', () => {
       expect(javascript).toContain('COALESCED_ENTRY');
       expect(javascript).toContain('Promise.resolve().then');
       expect(
-        bundle.diagnostics.some(
-          (diagnostic) =>
-            diagnostic.severity === 'warning' &&
-            diagnostic.message.includes('automatically coalesced it into 1 output file(s)'),
+        bundle.diagnostics.some((diagnostic) =>
+          diagnostic.message.includes('automatically coalesced'),
         ),
-      ).toBe(true);
+      ).toBe(false);
       const cachedBundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,

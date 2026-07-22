@@ -135,7 +135,6 @@ import {
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
 export type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
-
 /** esbuild-backed compiler for browser-safe React preview bundles. */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
   /** Compiler-owned signals let shutdown cancel analysis that has not reached esbuild yet. */
@@ -230,6 +229,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       assertPreviewReactTarget(request, managedDependencyEnvironment.profile, staticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
       const targetExports = targetSelection.targetExports;
+      const hasPreviewableTarget = targetExports.length > 0;
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
         request.sourceText,
@@ -253,7 +253,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           : createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
       ]);
       const [packageTargetUsageProps, implicitGlobalSourcePaths] = await Promise.all([
-        useFastPreparation
+        useFastPreparation || !hasPreviewableTarget
           ? Promise.resolve(EMPTY_TARGET_USAGE_PROPS)
           : this.projectUsageCache.discover({
               climbParentSlices:
@@ -268,7 +268,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
               workspaceRoot: canonicalWorkspaceRoot,
             }),
-        useFastPreparation
+        useFastPreparation || !hasPreviewableTarget
           ? Promise.resolve(Object.freeze([]) as readonly string[])
           : this.projectUsageCache.getSourcePaths(canonicalWorkspaceRoot, projectRoot, buildSignal),
       ]);
@@ -281,6 +281,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const requiresWorkspaceAncestorEscalation =
         !useFastPreparation &&
         request.renderMode === 'page-inspector' &&
+        inspectorExportName !== undefined &&
         !targetSelection.isImperativeEntry &&
         !packageHasEntryConnectedPage &&
         (packageTargetUsageProps.inspectorPlan === undefined ||
@@ -290,7 +291,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         targetUsageProps = await this.projectUsageCache.discover({
           documentPath: request.documentPath,
           exports: targetExports,
-          ...(inspectorExportName === undefined ? {} : { inspectorExportName }),
+          inspectorExportName,
           projectRoot: canonicalWorkspaceRoot,
           signal: buildSignal,
           snapshots: request.dependencySnapshots,
@@ -465,6 +466,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 projectRoot,
               }),
               createPreviewPnpPeerDependencyPlugin({
+                applicationSourcePaths:
+                  inspectorPlan?.pageCandidates.map((candidate) => candidate.root.sourcePath) ?? [],
                 projectRoot,
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
@@ -776,7 +779,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         });
         return finalBuild;
       };
-
       const outputStrategyKey = createPreviewBuildPlanIdentity({
         documentPath: request.documentPath,
         managedDependencyEnvironment: managedDependencyEnvironment.identity,
@@ -789,10 +791,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       });
       const setupFailureKey = preparedSetupFallback.cacheKey;
       const cachedSetupFailure = preparedSetupFallback.plan;
-      const cachedOutputStrategy = useFastPreparation
-        ? undefined
-        : this.outputStrategyCache.read(outputStrategyKey);
-      let splitOutputs = !useFastPreparation && cachedOutputStrategy === undefined;
+      let splitOutputs = this.outputStrategyCache.shouldSplit();
       let discoveredSplitOutputCount: number | undefined;
       let activeRuntimeEnvironment =
         cachedSetupFailure === undefined

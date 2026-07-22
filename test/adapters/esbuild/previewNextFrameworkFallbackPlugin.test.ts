@@ -183,6 +183,46 @@ describe('Next framework render fallback', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  /** Inerts Next's deliberate browser throw while preserving the reached server module body. */
+  it('treats the installed server-only marker as a static preview boundary', async () => {
+    const projectRoot = await createProject('next-server-only-', {
+      dependencies: { next: '15.5.20', 'server-only': '0.0.1' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    const markerRoot = path.join(projectRoot, 'node_modules', 'server-only');
+    await Promise.all([
+      mkdir(path.dirname(entryPath), { recursive: true }),
+      mkdir(markerRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(markerRoot, 'package.json'),
+        JSON.stringify({ main: 'index.js', name: 'server-only', version: '0.0.1' }),
+        'utf8',
+      ),
+      writeFile(
+        path.join(markerRoot, 'index.js'),
+        `throw new Error('server-only browser throw');`,
+        'utf8',
+      ),
+      writeFile(entryPath, `import 'server-only'; export const result = 'renderable';`, 'utf8'),
+    ]);
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
+
+    expect(exports.result).toBe('renderable');
+    expect(result.outputFiles[0]?.text).not.toContain('server-only browser throw');
+    expect(result.warnings.map((warning) => warning.text)).toEqual([
+      expect.stringContaining('server-only'),
+    ]);
+    expect(result.warnings).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'ignored-bare-import' })]),
+    );
+  });
+
   /** Replaces installed Google-font code because raw modules require Next compiler rewriting. */
   it('keeps named fonts callable even when an installed raw module exports undefined', async () => {
     const projectRoot = await createProject('next-font-installed-', {

@@ -17,7 +17,7 @@ describe('preview progress presentation', () => {
       label: 'Bundling reachable modules',
       stage: 'bundling-modules',
       step: 5,
-      total: 7,
+      total: 8,
     });
     expect(PREVIEW_PROGRESS_STEPS.map((step) => step.stage)).toEqual([
       'resolving-target',
@@ -25,6 +25,7 @@ describe('preview progress presentation', () => {
       'discovering-components',
       'preparing-runtime',
       'bundling-modules',
+      'acquiring-dependencies',
       'publishing-artifacts',
       'loading-preview',
     ]);
@@ -38,8 +39,8 @@ describe('preview progress presentation', () => {
       label: 'Preview ready',
       revision: 42,
       stage: 'ready',
-      step: 7,
-      total: 7,
+      step: 8,
+      total: 8,
       type: 'react-preview-progress',
     });
   });

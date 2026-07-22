@@ -45,7 +45,7 @@ describe('createPreviewHtml', () => {
     });
 
     expect(html).toContain('Preparing React Preview');
-    expect(html).toContain('Step 3 of 7 · Discovering component context');
+    expect(html).toContain('Step 3 of 8 · Discovering component context');
     expect(html).toContain('Finding component usage, styles, props, and application render paths.');
     expect(html).toContain('role="status"');
     expect(html).toContain('role="progressbar"');

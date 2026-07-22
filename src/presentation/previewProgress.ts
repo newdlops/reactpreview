@@ -62,6 +62,11 @@ export const PREVIEW_PROGRESS_STEPS: readonly PreviewProgressStep[] = Object.fre
     stage: 'bundling-modules',
   }),
   Object.freeze({
+    detail: 'Restoring exact lockfile packages into verified extension storage.',
+    label: 'Acquiring missing dependencies',
+    stage: 'acquiring-dependencies',
+  }),
+  Object.freeze({
     detail: 'Writing cache-busted JavaScript and CSS into VS Code storage.',
     label: 'Publishing local artifacts',
     stage: 'publishing-artifacts',

@@ -14,6 +14,7 @@ export const PREVIEW_PROGRESS_STAGES = Object.freeze([
   'discovering-components',
   'preparing-runtime',
   'bundling-modules',
+  'acquiring-dependencies',
   'publishing-artifacts',
   'loading-preview',
   'ready',

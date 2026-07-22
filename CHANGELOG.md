@@ -2,6 +2,19 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1133 - 2026-07-23
+
+- foreground·context-enrichment 빌드를 분리하고 미시작 요청을 새 워커에서 재생해 탭 간 OOM·watchdog·취소 오류 전파와 반복 보강 루프를 차단
+- Next App Router를 증거 기반 bounded corridor와 후속 full 탐색으로 구성하고 layout segment·async root·병렬 slot 계약·navigation/link facade를 보강
+- 훅·JSX factory의 실제 앱 소비 경로, 안전한 dormant overlay 지연 로딩, 기본값 존중 props 추론과 문서 revision 기반 경량 재시도 식별자를 추가
+
+## 0.1.1132 - 2026-07-23
+
+- Next App `page/layout/template`과 이를 소비하는 helper·MDX 모듈은 최초 fast 빌드부터 단일 page corridor를 구성해 수천 개 generated registry 분기를 esbuild가 분석하기 전에 제외
+- 추론한 `pathname`·`params`·`searchParams`를 page/layout과 `next/navigation(.js)` 정적 facade에 함께 공급해 Nuqs/App Router context invariant와 runtime props의 `undefined` 덮어쓰기를 차단
+- 확장자 없는 동적 template import를 실제 `.tsx/.ts/.jsx/.js` 및 directory index 파일에 유한 매핑해 `./__lucide__` 같은 프로젝트 bundler 해석을 브라우저 프리뷰에서도 재현
+- layout의 동일 깊이 하위 page는 최대 16개만 읽고 source 크기·runtime import·generated registry fan-out 비용을 비교해 더 가벼운 실제 페이지를 우선 선택하며 page-context health log에 pathname과 context 적용 여부를 분리
+
 ## 0.1.1131 - 2026-07-22
 
 - Next App Router의 component export뿐 아니라 helper, provider, registry, default object가 실제로 도달하는 `page.tsx`와 암시적 layout 체인을 정적 import로 역연결해 `app` 소스를 페이지 단위로 프리뷰

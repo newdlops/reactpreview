@@ -42,7 +42,6 @@ import {
   unwrapPreviewRuntimeParentExpression as unwrapParentExpression,
 } from './previewRuntimeHookSyntax';
 import type { PreviewRuntimeFunction as RuntimeFunction } from './previewRuntimeHookSyntax';
-
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
 const MAX_METADATA_TEXT_LENGTH = 180;
@@ -66,11 +65,8 @@ interface PreviewRuntimeHookBinding {
   readonly moduleSpecifier: string;
 }
 
-interface PreviewRuntimeHookNamespace {
-  /** Static module specifier used to decide whether hook failures may be isolated. */
-  readonly moduleSpecifier: string;
-}
-
+/** Namespace import and its static module specifier used by hook isolation policy. */
+type PreviewRuntimeHookNamespace = Readonly<{ moduleSpecifier: string }>;
 interface PreviewRuntimeHookInventory {
   /** Local call identifiers mapped to their authored hook identities. */
   readonly direct: ReadonlyMap<string, PreviewRuntimeHookBinding>;
@@ -381,7 +377,7 @@ function inferRuntimeHookFallback(
       };
 }
 
-/** Creates an array, object, or semantic scalar from one destructuring/identifier binding. */
+/** Creates a binding fallback while leaving defaulted fields absent for authored JS initializers. */
 function createBindingFallback(
   binding: ts.BindingName,
   sourceFile: ts.SourceFile,
@@ -415,6 +411,10 @@ function createBindingFallback(
         continue;
       }
       if (element.dotDotDotToken !== undefined) return undefined;
+      if (element.initializer !== undefined) {
+        values.push('undefined');
+        continue;
+      }
       const child = createBindingFallback(element.name, sourceFile);
       const propertyName = String(index);
       values.push(readNestedPreviewRuntimeHookExpression(child, propertyName));
@@ -445,6 +445,7 @@ function createBindingFallback(
       requiredPaths.push(...rest.requiredPaths);
       continue;
     }
+    if (element.initializer !== undefined) continue;
     const propertyName = readPreviewRuntimeHookBindingPropertyName(element);
     if (propertyName === undefined) return undefined;
     const child = createBindingFallback(element.name, sourceFile) ?? {

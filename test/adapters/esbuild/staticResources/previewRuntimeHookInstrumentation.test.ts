@@ -554,8 +554,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(replacements[0]?.replacement).toContain('"requiredPaths":["company","refetch()"]');
   });
 
-  /** Keeps semantic guard sentinels neutral and never captures a later local in a hook fallback. */
-  it('uses deterministic semantic values before unsafe direct-condition evidence', () => {
+  /** Lets an authored binding initializer satisfy a missing route param without inventing data. */
+  it('omits defaulted hook fields from generated values and required paths', () => {
     const source = [
       `import { useQuery } from './use-query';`,
       `import { useParams } from 'react-router-dom';`,
@@ -573,7 +573,9 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Layout.tsx', source),
     );
 
-    expect(transformed).toContain('"companyId": "preview-id"');
+    expect(transformed).not.toContain('"companyId": "preview-id"');
+    expect(transformed).toContain('Object.freeze({})');
+    expect(transformed).not.toContain('"requiredPaths":["companyId"]');
     expect(transformed).toContain('"data": Object.freeze({})');
     expect(transformed).toContain('"loading": false');
     expect(transformed).toContain('"fallback": null');

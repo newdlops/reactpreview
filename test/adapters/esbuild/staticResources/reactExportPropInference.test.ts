@@ -166,6 +166,71 @@ describe('collectReactExportPropInference', () => {
     });
   });
 
+  /** A bare rest spread cannot prove whether a project's Modal API uses `show` or `open`. */
+  it('does not guess a visibility prop for an ambiguous rest-forwarding overlay export', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      "import { Modal } from './modal';",
+      "import type { ModalProps } from './modal';",
+      'const UnstyledEditModal = ({ className, ...props }: ModalProps & { className?: string }) => (',
+      '  <Modal className={className} {...props}><strong>Edit</strong></Modal>',
+      ');',
+      'export default styled(UnstyledEditModal)``;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/EditModal.tsx', source);
+
+    expect(result.default).toBeUndefined();
+  });
+
+  /** An exact rest-property forwarding expression proves the wrapper's public visibility key. */
+  it('infers a rest-forwarded visibility prop only from same-named JSX evidence', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      "import { Modal } from './modal';",
+      'const UnstyledEditModal = ({ className, ...props }: any) => (',
+      '  <Modal className={className} show={props.show} {...props}>Edit</Modal>',
+      ');',
+      'export default styled(UnstyledEditModal)``;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/EditModal.tsx', source);
+
+    expect(result.default?.shape.properties).toMatchObject({
+      show: { kind: 'boolean', value: true },
+    });
+    expect(result.default?.provenance).toContainEqual({
+      kind: 'boolean',
+      path: 'show',
+      source: 'usage',
+    });
+  });
+
+  /** `active` is commonly an item key, so an untyped menu name alone cannot make it boolean. */
+  it('does not treat an untyped active menu value as overlay visibility', () => {
+    const source =
+      'export function MainMenu({ active }: any) { return <nav data-active={active} />; }';
+
+    expect(collectReactExportPropInference('/workspace/MainMenu.tsx', source)).toEqual({});
+  });
+
+  /** Uses an explicit overlay visibility binding instead of guessing another control spelling. */
+  it('makes one explicit overlay visibility prop true for direct preview', () => {
+    const source = [
+      'type DrawerProps = { open: boolean; title: string };',
+      'export function Drawer({ open = false, title }: DrawerProps) {',
+      '  return open ? <aside>{title}</aside> : null;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Drawer.tsx', source);
+
+    expect(result.Drawer?.shape.properties).toMatchObject({
+      open: { kind: 'boolean', value: true },
+      title: { kind: 'string' },
+    });
+  });
+
   /** Refuses imported HOC inputs and cyclic local aliases because neither proves a function body. */
   it('fails closed for external and cyclic HOC component references', () => {
     const source = [

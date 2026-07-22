@@ -9,6 +9,7 @@ import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
+import { inferReactOverlayVisibilityProp } from './reactOverlayVisibilityInference';
 
 const MAX_COMPONENT_EXPORTS = 32;
 const MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH = 12;
@@ -157,10 +158,26 @@ function inferComponentProps(
   );
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  addOverlayVisibilityRequirement(component, state);
   if (state.root.children.size === 0) {
     return undefined;
   }
   return freezeInference(state.root);
+}
+
+/**
+ * Gives a directly previewed overlay its one visible state while retaining authored/user priority.
+ * Exact visibility bindings win. A rest wrapper is admitted only when an overlay-named component
+ * explicitly forwards the same rest property into a visibility attribute; a bare spread cannot
+ * prove whether a project uses `show`, `open`, or another API. The inferred `usage` provenance keeps
+ * this generated value visible and editable in Page Inspector rather than changing project source.
+ */
+function addOverlayVisibilityRequirement(
+  component: ExportedComponentFunction,
+  state: InferenceState,
+): void {
+  const propName = inferReactOverlayVisibilityProp(component.functionLike, component.exportName);
+  if (propName !== undefined) requirePath(state, [propName], 'boolean', 'usage', true);
 }
 
 /** Maps destructured/local prop bindings to their external root property paths. */

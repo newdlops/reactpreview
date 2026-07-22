@@ -7,12 +7,17 @@ import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
+  /** Replaces proven false-state project overlays with visible lightweight deferred markers. */
+  readonly deferDormantOverlayImports?: boolean;
   /** Active editor target whose direct component exports may receive bounded prop defaults. */
   readonly documentPath?: string;
   /** Exact dependency/global names worth checking in modules esbuild actually reaches. */
   readonly implicitPackageGlobalCandidateNames?: readonly string[];
   /** Project-aware resolver proving a free name maps to its exact installed package. */
-  readonly implicitPackageGlobalResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
+  readonly implicitPackageGlobalResolver?: Pick<
+    PreviewStaticModuleResolver,
+    'isSideEffectFree' | 'resolve'
+  >;
   /** Nearest inert tsconfig/jsconfig evidence used to preserve Preact or a custom JSX factory. */
   readonly jsxRuntimeResolver?: Pick<PreviewStaticModuleResolver, 'usesAlternativeJsxRuntime'>;
   /** Whether reached JSX conditions should expose authored/forced branch controls to Page Inspector. */

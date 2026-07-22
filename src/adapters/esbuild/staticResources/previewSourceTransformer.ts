@@ -48,6 +48,13 @@ import {
 } from './previewSourceReplacement';
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
+import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
+import {
+  createDynamicTemplateDiscoveryPatterns,
+  createDynamicTemplateLoaderProperties,
+  createDynamicTemplatePlan,
+  matchesDynamicTemplateCandidate,
+} from './previewDynamicModuleResolution';
 import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 export { PreviewSourceTransformError } from './previewSourceReplacement';
 export type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
@@ -80,16 +87,6 @@ interface RequireContextOptions {
   readonly matcher: RegExp;
   /** Whether files below nested directories are considered. */
   readonly recursive: boolean;
-}
-
-/** Filesystem pattern, exact key predicate, and static suffix for one dynamic template import. */
-interface DynamicTemplatePlan {
-  /** Broad finite glob used only to enumerate candidates at the template's fixed depth. */
-  readonly discoveryPattern: string;
-  /** Exact regex over normalized importer-relative keys, with each interpolation kept non-slash. */
-  readonly matcher: RegExp;
-  /** Static query and/or fragment appended to generated runtime import keys. */
-  readonly suffix: string;
 }
 
 /** Stateful per-build transformer that also accumulates watched glob directories. */
@@ -133,6 +130,17 @@ export class PreviewSourceTransformer {
   ): Promise<PreviewSourceTransformResult> {
     if (isPathInside(this.options.workspaceRoot, sourcePath))
       sourceText = framework.prepareFrameworkSource(sourcePath, sourceText, this.options);
+    if (
+      this.options.deferDormantOverlayImports === true &&
+      this.options.implicitPackageGlobalResolver !== undefined
+    ) {
+      sourceText = deferPreviewDormantOverlayImports({
+        resolver: this.options.implicitPackageGlobalResolver,
+        sourcePath,
+        sourceText,
+        workspaceRoot: this.options.workspaceRoot,
+      });
+    }
     const initialWatchDirectories = new Set(this.watchDirectories);
     const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
@@ -411,13 +419,12 @@ export class PreviewSourceTransformer {
     assertArgumentCount(arguments_, 1, 1, 'dynamic import', sourcePath);
 
     const plan = createDynamicTemplatePlan(templateSegments, sourcePath);
-    const expansion = await this.expand(sourcePath, [plan.discoveryPattern], (relativeKey) =>
-      plan.matcher.test(relativeKey),
+    const expansion = await this.expand(
+      sourcePath,
+      createDynamicTemplateDiscoveryPatterns(plan),
+      (relativeKey) => matchesDynamicTemplateCandidate(plan, relativeKey),
     );
-    const properties = expansion.matches.map((match) => {
-      const runtimeKey = `${match.key}${plan.suffix}`;
-      return `${JSON.stringify(runtimeKey)}: () => import(${JSON.stringify(runtimeKey)})`;
-    });
+    const properties = createDynamicTemplateLoaderProperties(plan, expansion.matches, true);
     const loaders = `({${properties.join(',')}})`;
     return createBoundedLoaderExpression(template, loaders, 'dynamic import', true);
   }
@@ -441,13 +448,12 @@ export class PreviewSourceTransformer {
     }
 
     const plan = createDynamicTemplatePlan(staticSegments, sourcePath);
-    const expansion = await this.expand(sourcePath, [plan.discoveryPattern], (relativeKey) =>
-      plan.matcher.test(relativeKey),
+    const expansion = await this.expand(
+      sourcePath,
+      createDynamicTemplateDiscoveryPatterns(plan),
+      (relativeKey) => matchesDynamicTemplateCandidate(plan, relativeKey),
     );
-    const properties = expansion.matches.map((match) => {
-      const runtimeKey = `${match.key}${plan.suffix}`;
-      return `${JSON.stringify(runtimeKey)}: () => require(${JSON.stringify(runtimeKey)})`;
-    });
+    const properties = createDynamicTemplateLoaderProperties(plan, expansion.matches, false);
     return createBoundedLoaderExpression(
       firstArgument,
       `({${properties.join(',')}})`,
@@ -881,77 +887,6 @@ function createBoundedLoaderExpression(
     ? `return Promise.reject(new Error(${message} + value));`
     : `throw new Error(${message} + value);`;
   return `((specifier) => { const value = String(specifier); const suffixIndex = [value.indexOf("?"), value.indexOf("#")].filter((index) => index >= 0).reduce((lowest, index) => Math.min(lowest, index), value.length); const sourcePath = value.slice(0, suffixIndex); const suffix = value.slice(suffixIndex); const parts = []; for (const part of sourcePath.split("/")) { if (part === "" || part === ".") continue; if (part === ".." && parts.length > 0 && parts[parts.length - 1] !== "..") parts.pop(); else if (part !== ".." || parts.length === 0 || parts[parts.length - 1] === "..") parts.push(part); } const normalized = (parts[0] === ".." ? "" : "./") + parts.join("/") + suffix; const loader = ${loaders}[normalized]; if (loader === undefined) { ${missingResult} } return loader(); })(${argumentExpression})`;
-}
-
-/**
- * Converts decoded dynamic path segments into a finite broad glob and exact normalized matcher.
- * A NUL sentinel represents expressions internally; NUL cannot occur in a filesystem path. Static
- * glob metacharacters are widened to one-character matches and then narrowed by the exact regex.
- */
-function createDynamicTemplatePlan(
-  staticSegments: readonly string[],
-  sourcePath: string,
-): DynamicTemplatePlan {
-  const expressionSentinel = '\0';
-  if (staticSegments.some((segment) => segment.includes(expressionSentinel))) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: dynamic import templates cannot contain NUL characters.`,
-    );
-  }
-
-  const combined = staticSegments.join(expressionSentinel);
-  const queryIndex = combined.indexOf('?');
-  const fragmentIndex = combined.indexOf('#');
-  const suffixIndex = [queryIndex, fragmentIndex]
-    .filter((index) => index >= 0)
-    .reduce((lowest, index) => Math.min(lowest, index), combined.length);
-  const rawPathPattern = combined.slice(0, suffixIndex);
-  const suffix = combined.slice(suffixIndex);
-  if (suffix.includes(expressionSentinel)) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: dynamic import query and fragment expressions are not statically discoverable.`,
-    );
-  }
-  if (!rawPathPattern.startsWith('./') && !rawPathPattern.startsWith('../')) {
-    throw new PreviewSourceTransformError(
-      `${sourcePath}: dynamic import templates must begin with "./" or "../".`,
-    );
-  }
-
-  const normalizedPath = normalizeRelativeTemplatePath(rawPathPattern);
-  let discoveryPattern = '';
-  let matcherSource = '^';
-  let previousWasExpression = false;
-  for (const character of normalizedPath) {
-    if (character === expressionSentinel) {
-      if (!previousWasExpression) {
-        discoveryPattern += '*';
-      }
-      matcherSource += '[^/]*';
-      previousWasExpression = true;
-    } else {
-      discoveryPattern += /[*?{}]/u.test(character) ? '?' : character;
-      matcherSource += escapeRegexFragment(character);
-      previousWasExpression = false;
-    }
-  }
-  matcherSource += '$';
-  return { discoveryPattern, matcher: new RegExp(matcherSource, 'u'), suffix };
-}
-
-/** Normalizes dot segments while restoring the explicit relative prefix required by expansion. */
-function normalizeRelativeTemplatePath(pattern: string): string {
-  const normalized = path.posix.normalize(pattern.replaceAll('\\', '/'));
-  return normalized.startsWith('../') || normalized === '..'
-    ? normalized
-    : normalized.startsWith('./')
-      ? normalized
-      : `./${normalized}`;
-}
-
-/** Escapes one literal character for the exact dynamic-template key matcher. */
-function escapeRegexFragment(value: string): string {
-  return value.replace(/[|\\{}()[\]^$+*?.]/gu, '\\$&');
 }
 
 /** Separates a dynamic import transform query or fragment from its filesystem match pattern. */

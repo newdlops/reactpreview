@@ -380,6 +380,35 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).not.toContain('.resolveRuntimeHook(');
   });
 
+  /** Resolves extensionless template requests with the same finite aliases as normal TS imports. */
+  it('maps extensionless dynamic templates to typed source files and directory indexes', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const iconsDirectory = path.join(workspaceRoot, 'icons');
+    const panelsDirectory = path.join(workspaceRoot, 'panels', 'settings');
+    await mkdir(iconsDirectory, { recursive: true });
+    await mkdir(panelsDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(path.join(iconsDirectory, '__lucide__.ts'), 'export const Search = 1;'),
+      writeFile(path.join(panelsDirectory, 'index.tsx'), 'export default function Panel() {}'),
+    ]);
+    const sourcePath = path.join(workspaceRoot, 'Loader.tsx');
+    const sourceText = [
+      'const library = "lucide";',
+      'const section = "settings";',
+      'export const icon = import(`./icons/__${library}__`);',
+      'export const panel = import(`./panels/${section}`);',
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain(
+      '"./icons/__lucide__": () => import("./icons/__lucide__.ts")',
+    );
+    expect(transformed.contents).toContain(
+      '"./panels/settings": () => import("./panels/settings/index.tsx")',
+    );
+  });
+
   /** Leaves human-readable JSX examples and a similarly named property chain byte-for-byte intact. */
   it('does not treat JSX text or another object property as a resource macro', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

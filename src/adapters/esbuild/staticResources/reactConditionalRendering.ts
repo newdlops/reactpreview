@@ -121,7 +121,7 @@ export function instrumentReactConditionalRendering(
   sourcePath: string,
   sourceText: string,
 ): string {
-  if (!isJavaScriptLikeSource(sourcePath)) {
+  if (!isJavaScriptLikeSource(sourcePath) || !mayContainReactRenderSyntax(sourceText)) {
     return sourceText;
   }
   const arrayInstrumentedSource = instrumentReactArrayIndexRendering(sourcePath, sourceText);
@@ -151,6 +151,15 @@ export function instrumentReactConditionalRendering(
     ),
   );
   return applyPreviewReactConditionalReplacements(switchInstrumentedSource, replacements);
+}
+
+/** Prevents array/switch analyzers from reparsing utility modules that cannot contain React UI. */
+function mayContainReactRenderSyntax(sourceText: string): boolean {
+  return (
+    sourceText.includes('<') ||
+    sourceText.includes('React.createElement') ||
+    sourceText.includes('createPortal')
+  );
 }
 
 /** Collects only boolean expressions whose selected branch directly renders JSX. */

@@ -24,6 +24,7 @@ import {
   PreviewManagedDependencyStore,
   type PreviewManagedDependencyEnvironment,
 } from '../node/previewManagedDependencyStore';
+import { findPreviewDependencySpecifier } from '../node/previewDependencyProfile';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
 import { createPreviewInspectorCorridorPlugin } from './inspector/previewInspectorCorridorPlugin';
@@ -68,12 +69,13 @@ import {
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
 import type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
-import { createPreviewGeneratedModuleFallbackPlugin } from './previewGeneratedModuleFallback';
+import { createPreviewMissingSourceFallbackPlugin } from './previewMissingSourceFallbackPlugin';
 import {
   createPreviewLegacyCommonJsGlobalDefines,
   discoverPreviewLegacyCommonJsGlobals,
 } from './previewLegacyCommonJsGlobalDiscovery';
 import { createPreviewManagedDependencyPeerPlugin } from './previewManagedDependencyPeerPlugin';
+import { createPreviewMdxFallbackPlugin } from './previewMdxFallbackPlugin';
 import {
   tryAcquirePreviewMissingDependencies,
   type PreviewMissingDependencyAcquisitionContext,
@@ -81,6 +83,7 @@ import {
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
+import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
 import {
   mergePreviewPortalHostIds,
   refinePreviewPortalHostsFromBuild,
@@ -118,11 +121,7 @@ import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { PreviewSetupFailureCache } from './previewSetupFailureCache';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
 import { createPreviewTailwindPlugin } from './previewTailwindPlugin';
-import {
-  selectPreviewPrimaryTargetExport,
-  selectPreviewTargetExports,
-  selectPreviewThemeImport,
-} from './previewTargetExports';
+import { selectPreviewThemeImport } from './previewTargetExports';
 import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin';
 import { shouldEscalatePreviewAncestorSearch } from './previewWorkspaceAncestorPolicy';
@@ -133,7 +132,6 @@ import {
   type MutableWorkspaceSourceState,
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
-
 export type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 
 /** esbuild-backed compiler for browser-safe React preview bundles. */
@@ -161,7 +159,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly managedDependencyStore: PreviewManagedDependencyStore | undefined;
   private readonly maximumSplitOutputFiles: number;
   private shutdownPromise: Promise<void> | undefined;
-
   /** Creates a production compiler or a lower-threshold deterministic test instance. */
   public constructor(options: EsbuildPreviewCompilerOptions = {}) {
     this.maximumSplitOutputFiles = normalizeMaximumSplitOutputFiles(
@@ -180,7 +177,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             rootPath: options.managedDependencyStoreRoot,
           });
   }
-
   /**
    * Bundles the current editor snapshot, its dependency graph, CSS, and small binary assets.
    * Project build scripts and framework plugins are deliberately not loaded or executed.
@@ -198,7 +194,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     if (this.disposed) {
       throw new PreviewCompilationError('The React preview compiler is already closed.', []);
     }
-
     const buildController = new AbortController();
     const detachCallerAbort = forwardPreviewAbort(context?.signal, buildController);
     this.activeBuildControllers.add(buildController);
@@ -224,18 +219,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         reportAcquisition: () => context?.reportProgress?.('acquiring-dependencies'),
         workspaceRoot: canonicalWorkspaceRoot,
       };
-      const targetExports = selectPreviewTargetExports(request.documentPath, request.sourceText);
+      const targetSelection = preparePreviewCompilerTarget(request);
+      const targetExports = targetSelection.targetExports;
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
         request.sourceText,
       );
-      const explicitTargetExportNames = targetExports.flatMap((slot) =>
-        slot.kind === 'explicit' ? [slot.exportName] : [],
-      );
-      const inspectorExportName =
-        request.renderMode === 'page-inspector'
-          ? selectPreviewPrimaryTargetExport(targetExports)
-          : undefined;
+      const explicitTargetExportNames = targetSelection.explicitExportNames;
+      const inspectorExportName = targetSelection.inspectorExportName;
       const themeImport = selectPreviewThemeImport(request.sourceText);
       const useFastPreparation = request.preparationMode === 'fast';
       context?.reportProgress?.('discovering-components');
@@ -264,7 +255,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               projectRoot,
               signal: buildSignal,
               snapshots: request.dependencySnapshots,
-              sourceText: request.sourceText,
+              sourceText: targetSelection.sourceText,
               ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
               workspaceRoot: canonicalWorkspaceRoot,
             }),
@@ -281,6 +272,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const requiresWorkspaceAncestorEscalation =
         !useFastPreparation &&
         request.renderMode === 'page-inspector' &&
+        !targetSelection.isImperativeEntry &&
         !packageHasEntryConnectedPage &&
         (packageTargetUsageProps.inspectorPlan === undefined ||
           packageTargetUsageProps.inspectorPlan.edges.length === 0) &&
@@ -293,7 +285,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           projectRoot: canonicalWorkspaceRoot,
           signal: buildSignal,
           snapshots: request.dependencySnapshots,
-          sourceText: request.sourceText,
+          sourceText: targetSelection.sourceText,
           ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
           workspaceRoot: canonicalWorkspaceRoot,
         });
@@ -404,11 +396,16 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           instrumentRuntimeEffectIsolation: request.renderMode === 'page-inspector',
           instrumentRuntimeHookFallbacks: request.renderMode === 'page-inspector',
           graphqlModuleResolver: staticModuleResolver,
+          jsxRuntimeResolver: staticModuleResolver,
           projectRoot,
+          projectUsesReactRuntime:
+            findPreviewDependencySpecifier(managedDependencyEnvironment.profile, 'react') !==
+            undefined,
           readGraphqlSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
           workspaceRoot: canonicalWorkspaceRoot,
         });
         const sourceCompilation: WorkspaceSourceCompilationState = {
+          prepareSource: targetSelection.prepareSource,
           snapshots: [
             {
               documentPath: request.documentPath,
@@ -470,8 +467,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 projectRoot,
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
-              createPreviewGeneratedModuleFallbackPlugin({
+              createPreviewMissingSourceFallbackPlugin({
+                readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
                 registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
+                staticModuleResolver,
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
               createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
@@ -547,6 +546,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     }),
                   ]),
               ...(fallbackBoundary === undefined ? [] : [fallbackBoundary.plugin]),
+              createPreviewMdxFallbackPlugin({ workspaceRoot: canonicalWorkspaceRoot }),
               createPreviewAssetPlugin({
                 documentPath: request.documentPath,
                 projectRoot,
@@ -978,7 +978,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     if (this.shutdownPromise !== undefined) {
       return this.shutdownPromise;
     }
-
     this.disposed = true;
     for (const controller of this.activeBuildControllers) {
       controller.abort();

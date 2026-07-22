@@ -311,6 +311,52 @@ describe('PreviewManagedDependencyStore', () => {
     expect(environment.nodeModulesPaths).toEqual([]);
     await store.shutdown();
   });
+
+  /** Gives a verified lock-backed React tuple precedence over the extension's compatible seed. */
+  it('exposes exactly one React runtime when a managed layer already provides it', async () => {
+    const fixture = await createFixture();
+    const bundledNodeModules = path.join(fixture.rootPath, 'extension', 'node_modules');
+    await Promise.all([
+      writePackage(bundledNodeModules, 'react', '19.2.7', 'exports.origin = "bundled";'),
+      writePackage(bundledNodeModules, 'react-dom', '19.2.7', 'exports.origin = "bundled";'),
+      writePackage(bundledNodeModules, 'scheduler', '0.27.0', 'exports.origin = "bundled";'),
+    ]);
+    const dependencies = { react: '^19.0.0', 'react-dom': '^19.0.0' };
+    const installedProject = await createProject(
+      fixture.rootPath,
+      'installed-react-project',
+      dependencies,
+    );
+    const installedNodeModules = path.join(installedProject, 'node_modules');
+    const reachedPackages = await Promise.all([
+      writePackage(installedNodeModules, 'react', '19.2.7', 'exports.origin = "managed";'),
+      writePackage(installedNodeModules, 'react-dom', '19.2.7', 'exports.origin = "managed";'),
+      writePackage(installedNodeModules, 'scheduler', '0.27.0', 'exports.origin = "managed";'),
+    ]);
+    const admittingStore = new PreviewManagedDependencyStore({
+      bundledNodeModulesPath: bundledNodeModules,
+      rootPath: fixture.storeRoot,
+    });
+    const installedEnvironment = await admittingStore.prepare(installedProject);
+    admittingStore.scheduleAdmission({
+      dependencyPaths: reachedPackages.map((packageRoot) => path.join(packageRoot, 'index.js')),
+      profile: installedEnvironment.profile,
+      workspaceRoot: installedProject,
+    });
+    await admittingStore.shutdown();
+
+    const emptyProject = await createProject(fixture.rootPath, 'empty-react-project', dependencies);
+    const selectingStore = new PreviewManagedDependencyStore({
+      bundledNodeModulesPath: bundledNodeModules,
+      rootPath: fixture.storeRoot,
+    });
+    const selectedEnvironment = await selectingStore.prepare(emptyProject);
+
+    expect(selectedEnvironment.nodeModulesPaths).toHaveLength(1);
+    expect(selectedEnvironment.nodeModulesPaths[0]).toContain(`${path.sep}environments${path.sep}`);
+    expect(selectedEnvironment.nodeModulesPaths[0]).not.toContain(`${path.sep}seeds${path.sep}`);
+    await selectingStore.shutdown();
+  });
 });
 
 describe('managed dependency peer resolution', () => {

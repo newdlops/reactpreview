@@ -100,11 +100,21 @@ describe('preview dependency profile', () => {
   it('proves only conservative exact-version compatibility', () => {
     expect(doesPreviewSpecifierAcceptVersion('^19.0.0', '19.2.7')).toBe(true);
     expect(doesPreviewSpecifierAcceptVersion('^18.0.0', '19.2.7')).toBe(false);
+    expect(doesPreviewSpecifierAcceptVersion('^18', '18.3.1')).toBe(true);
+    expect(doesPreviewSpecifierAcceptVersion('^18', '19.0.0')).toBe(false);
+    expect(doesPreviewSpecifierAcceptVersion('^18.2', '18.2.7')).toBe(true);
+    expect(doesPreviewSpecifierAcceptVersion('^18.2', '18.9.0')).toBe(true);
+    expect(doesPreviewSpecifierAcceptVersion('^18.2', '18.1.9')).toBe(false);
     expect(doesPreviewSpecifierAcceptVersion('~19.2.0', '19.2.7')).toBe(true);
+    expect(doesPreviewSpecifierAcceptVersion('~18', '18.9.9')).toBe(true);
+    expect(doesPreviewSpecifierAcceptVersion('~18', '19.0.0')).toBe(false);
+    expect(doesPreviewSpecifierAcceptVersion('~18.2', '18.2.7')).toBe(true);
+    expect(doesPreviewSpecifierAcceptVersion('~18.2', '18.3.0')).toBe(false);
     expect(doesPreviewSpecifierAcceptVersion('19.2.x', '19.2.7')).toBe(true);
     expect(doesPreviewSpecifierAcceptVersion('>=19.0.0 <20.0.0', '19.2.7')).toBe(true);
     expect(doesPreviewSpecifierAcceptVersion('workspace:*', '19.2.7')).toBe(false);
     expect(doesPreviewSpecifierAcceptVersion('19 || 20', '19.2.7')).toBe(false);
+    expect(doesPreviewSpecifierAcceptVersion('^18.0.0-beta.1', '18.3.1')).toBe(false);
   });
 });
 

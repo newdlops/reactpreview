@@ -81,7 +81,7 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
       managedDependencyStoreRoot: vscode.Uri.joinPath(
         state.context.globalStorageUri,
         'dependency-store',
-        'v1',
+        'v3',
       ).fsPath,
     },
   );

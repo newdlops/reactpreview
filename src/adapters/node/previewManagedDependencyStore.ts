@@ -4,7 +4,6 @@
  * staging, links, workspace source, and package scripts are never exposed to preview resolution.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import {
   mkdir,
   open,
@@ -22,19 +21,30 @@ import {
   collectPreviewManagedPackageCopies,
   copyPreviewManagedPackages,
   verifyPreviewManagedPackages,
-  type PreviewManagedPackageCopy,
+  type PreviewManagedPackageCopyResult,
   type PreviewManagedPackageIdentity,
 } from './previewManagedDependencyAdmission';
+import {
+  doesPreviewBundledRuntimeMatchStaging,
+  inspectPreviewBundledReactRuntimesCached,
+  selectPreviewBundledReactRuntime,
+  type PreviewBundledReactRuntime,
+} from './previewBundledReactRuntime';
 import {
   doesPreviewSpecifierAcceptVersion,
   findPreviewDependencySpecifier,
   readPreviewDependencyProfile,
   type PreviewDependencyProfile,
 } from './previewDependencyProfile';
+import { acquirePreviewLockedDependencies } from './previewLockedDependencyAcquirer';
+import {
+  selectCompatiblePreviewManagedLayers,
+  type PreviewManagedDependencyLayerCoverage,
+} from './previewManagedDependencyLayerSelection';
 
 const COMMITTED_MARKER = 'COMMITTED';
 const ENVIRONMENT_MANIFEST = 'environment.json';
-const STORE_SCHEMA_VERSION = 2;
+const STORE_SCHEMA_VERSION = 3;
 const MAX_ENVIRONMENTS = 24;
 const MAX_STORE_BYTES = 512 * 1024 * 1024;
 const LOCK_STALE_MILLISECONDS = 5 * 60 * 1000;
@@ -56,8 +66,22 @@ export interface PreviewManagedDependencyEnvironment {
 export interface PreviewManagedDependencyStoreOptions {
   /** Extension-packaged production node_modules used only to seed compatible React runtimes. */
   readonly bundledNodeModulesPath?: string;
+  /** Injectable lockfile acquirer used by offline tests; production uses the verified HTTPS path. */
+  readonly lockedDependencyAcquirer?: typeof acquirePreviewLockedDependencies;
   /** Persistent sibling of the disposable preview artifact cache. */
   readonly rootPath: string;
+}
+
+/** One compiler-requested package batch proven unresolved after every local fallback. */
+export interface PreviewLockedDependencyAcquisitionRequest {
+  /** Exact profile and lock evidence selected before the failed build. */
+  readonly profile: PreviewDependencyProfile | undefined;
+  /** Package root whose manifest and lock entry define direct requirements. */
+  readonly projectRoot: string;
+  /** Declared npm package roots parsed from esbuild's unresolved diagnostics. */
+  readonly requiredPackageNames: readonly string[];
+  /** Active preview revision cancellation propagated into download and extraction. */
+  readonly signal?: AbortSignal;
 }
 
 /** Inputs retained for a background admission after a successful local package build. */
@@ -74,6 +98,7 @@ export interface PreviewManagedDependencyAdmission {
 interface ManagedEnvironmentManifest {
   readonly bytes: number;
   readonly contentDigest: string;
+  readonly coverage: PreviewManagedDependencyLayerCoverage;
   readonly createdAt: string;
   readonly files: number;
   /** Immutable layer identity derived from profile and verified package contents. */
@@ -82,14 +107,6 @@ interface ManagedEnvironmentManifest {
   /** Dependency/lock profile shared by every independently reached package layer. */
   readonly profileFingerprint: string;
   readonly schemaVersion: number;
-}
-
-/** Exact extension-bundled runtime versions eligible for one compatible seed environment. */
-interface BundledReactRuntime {
-  readonly copies: readonly PreviewManagedPackageCopy[];
-  readonly identity: string;
-  readonly reactDomVersion?: string;
-  readonly reactVersion?: string;
 }
 
 /** Metadata needed for cheap quota pruning without walking immutable package trees. */
@@ -113,12 +130,17 @@ export class PreviewManagedDependencyStore {
     Promise<ManagedEnvironmentManifest | undefined>
   >();
   private readonly pendingAdmissions = new Map<string, Promise<void>>();
+  private readonly pendingAcquisitions = new Map<string, Promise<boolean>>();
+  private readonly successfulAcquisitions = new Set<string>();
+  private readonly lockedDependencyAcquirer: typeof acquirePreviewLockedDependencies;
   private readonly rootPath: string;
-  private seedRuntimePromise: Promise<BundledReactRuntime | undefined> | undefined;
+  private seedRuntimePromise: Promise<readonly PreviewBundledReactRuntime[]> | undefined;
 
   /** Creates a path-scoped store without reading the filesystem on extension activation. */
   public constructor(private readonly options: PreviewManagedDependencyStoreOptions) {
     this.rootPath = path.resolve(options.rootPath);
+    this.lockedDependencyAcquirer =
+      options.lockedDependencyAcquirer ?? acquirePreviewLockedDependencies;
   }
 
   /**
@@ -140,16 +162,23 @@ export class PreviewManagedDependencyStore {
           .map(([, task]) => task),
       );
     }
-    const [cachedNodeModulesPaths, bundledNodeModulesPath] = await Promise.all([
+    const cachedNodeModulesPaths =
       profile?.hasReusableLockEvidence !== true
         ? Object.freeze([])
-        : this.readCommittedEnvironmentLayers(profile),
-      this.prepareBundledReactSeed(profile, projectRoot),
-    ]);
+        : await this.readCommittedEnvironmentLayers(profile);
+    const hasManagedCoreRuntime = await doesAnyLayerContainReactRuntime(cachedNodeModulesPaths);
+    const bundledNodeModulesPath = hasManagedCoreRuntime
+      ? undefined
+      : await this.prepareBundledReactSeed(profile, projectRoot);
     const nodeModulesPaths = Object.freeze(
-      [...new Set([...cachedNodeModulesPaths, bundledNodeModulesPath].filter(isString))].map(
-        (value) => path.resolve(value),
-      ),
+      [
+        ...new Set(
+          [
+            ...cachedNodeModulesPaths,
+            ...(hasManagedCoreRuntime ? [] : [bundledNodeModulesPath]),
+          ].filter(isString),
+        ),
+      ].map((value) => path.resolve(value)),
     );
     return Object.freeze({
       identity: createHash('sha256')
@@ -190,6 +219,43 @@ export class PreviewManagedDependencyStore {
     this.pendingAdmissions.set(taskIdentity, task);
   }
 
+  /**
+   * Restores one unresolved package closure from exact supported public lockfile evidence.
+   * Concurrent previews share the same immutable operation and never write into the workspace.
+   *
+   * @param request Profile, package roots, project boundary, and active revision cancellation.
+   * @returns Whether a new or existing verified layer can satisfy a single compiler retry.
+   */
+  public acquireLockedDependencies(
+    request: PreviewLockedDependencyAcquisitionRequest,
+  ): Promise<boolean> {
+    const profile = request.profile;
+    if (
+      this.disposed ||
+      !profile?.hasReusableLockEvidence ||
+      request.requiredPackageNames.length === 0
+    ) {
+      return Promise.resolve(false);
+    }
+    const taskIdentity = createLockedAcquisitionTaskIdentity(
+      profile.fingerprint,
+      request.requiredPackageNames,
+    );
+    const activeTask = this.pendingAcquisitions.get(taskIdentity);
+    if (activeTask !== undefined) return activeTask;
+    if (this.successfulAcquisitions.has(taskIdentity)) return Promise.resolve(false);
+    const task = this.acquireLockedDependencyLayer({ ...request, profile })
+      .then((acquired) => {
+        if (acquired) this.successfulAcquisitions.add(taskIdentity);
+        return acquired;
+      })
+      .finally(() => {
+        this.pendingAcquisitions.delete(taskIdentity);
+      });
+    this.pendingAcquisitions.set(taskIdentity, task);
+    return task;
+  }
+
   /** Reports whether an immutable package input belongs to this extension's private store. */
   public ownsPath(candidatePath: string): boolean {
     return isPathInside(this.rootPath, path.resolve(candidatePath));
@@ -202,7 +268,10 @@ export class PreviewManagedDependencyStore {
   public async shutdown(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    await Promise.allSettled([...this.pendingAdmissions.values()]);
+    await Promise.allSettled([
+      ...this.pendingAdmissions.values(),
+      ...this.pendingAcquisitions.values(),
+    ]);
     await this.prune().catch(() => undefined);
   }
 
@@ -231,41 +300,79 @@ export class PreviewManagedDependencyStore {
       ) {
         return;
       }
-      const layerFingerprint = createLayerFingerprint(profile.fingerprint, result.contentDigest);
-      const environmentPath = this.layerPath(profile.fingerprint, layerFingerprint);
-      const manifest: ManagedEnvironmentManifest = Object.freeze({
-        bytes: result.bytes,
-        contentDigest: result.contentDigest,
-        createdAt: new Date().toISOString(),
-        files: result.files,
-        fingerprint: layerFingerprint,
-        packages: result.packages,
-        profileFingerprint: profile.fingerprint,
-        schemaVersion: STORE_SCHEMA_VERSION,
-      });
-      await writeFile(
-        path.join(stagingPath, ENVIRONMENT_MANIFEST),
-        `${JSON.stringify(manifest, undefined, 2)}\n`,
-        { encoding: 'utf8', flag: 'wx' },
-      );
-      await writeFile(path.join(stagingPath, COMMITTED_MARKER), `${layerFingerprint}\n`, {
-        encoding: 'utf8',
-        flag: 'wx',
-      });
-      await mkdir(path.dirname(environmentPath), { recursive: true });
-      await withEnvironmentLock(environmentPath, async () => {
-        if (
-          (await this.readValidatedEnvironment(environmentPath, layerFingerprint)) !== undefined
-        ) {
-          return;
-        }
-        await rm(environmentPath, { force: true, recursive: true }).catch(() => undefined);
-        this.committedValidationByPath.delete(environmentPath);
-        await publishStagingDirectory(stagingPath, environmentPath, layerFingerprint);
-      });
+      await this.publishStagedLayer(profile, result, stagingPath, 'reached');
     } finally {
       await rm(stagingPath, { force: true, recursive: true }).catch(() => undefined);
     }
+  }
+
+  /** Downloads, verifies, extracts, and publishes one exact missing-package closure. */
+  private async acquireLockedDependencyLayer(
+    request: PreviewLockedDependencyAcquisitionRequest & {
+      readonly profile: PreviewDependencyProfile;
+    },
+  ): Promise<boolean> {
+    const profilePath = this.profilePath(request.profile.fingerprint);
+    const stagingPath = path.join(
+      profilePath,
+      `.acquiring-${process.pid.toString()}-${randomUUID()}`,
+    );
+    await mkdir(profilePath, { recursive: true });
+    try {
+      const result = await this.lockedDependencyAcquirer({
+        profile: request.profile,
+        projectRoot: request.projectRoot,
+        requiredPackageNames: request.requiredPackageNames,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        targetNodeModulesPath: path.join(stagingPath, 'root', 'node_modules'),
+      });
+      return result === undefined
+        ? false
+        : await this.publishStagedLayer(request.profile, result, stagingPath, 'lockfile');
+    } finally {
+      await rm(stagingPath, { force: true, recursive: true }).catch(() => undefined);
+    }
+  }
+
+  /** Commits one completely staged package set under a content-derived immutable layer identity. */
+  private async publishStagedLayer(
+    profile: PreviewDependencyProfile,
+    result: PreviewManagedPackageCopyResult,
+    stagingPath: string,
+    coverage: ManagedEnvironmentManifest['coverage'],
+  ): Promise<boolean> {
+    const layerFingerprint = createLayerFingerprint(profile.fingerprint, result.contentDigest);
+    const environmentPath = this.layerPath(profile.fingerprint, layerFingerprint);
+    const manifest: ManagedEnvironmentManifest = Object.freeze({
+      bytes: result.bytes,
+      contentDigest: result.contentDigest,
+      coverage,
+      createdAt: new Date().toISOString(),
+      files: result.files,
+      fingerprint: layerFingerprint,
+      packages: result.packages,
+      profileFingerprint: profile.fingerprint,
+      schemaVersion: STORE_SCHEMA_VERSION,
+    });
+    await writeFile(
+      path.join(stagingPath, ENVIRONMENT_MANIFEST),
+      `${JSON.stringify(manifest, undefined, 2)}\n`,
+      { encoding: 'utf8', flag: 'wx' },
+    );
+    await writeFile(path.join(stagingPath, COMMITTED_MARKER), `${layerFingerprint}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+    await mkdir(path.dirname(environmentPath), { recursive: true });
+    await withEnvironmentLock(environmentPath, async () => {
+      if ((await this.readValidatedEnvironment(environmentPath, layerFingerprint)) !== undefined) {
+        return;
+      }
+      await rm(environmentPath, { force: true, recursive: true }).catch(() => undefined);
+      this.committedValidationByPath.delete(environmentPath);
+      await publishStagingDirectory(stagingPath, environmentPath, layerFingerprint);
+    });
+    return (await this.readValidatedEnvironment(environmentPath, layerFingerprint)) !== undefined;
   }
 
   /** Returns every validated immutable layer while rejecting conflicting package identities. */
@@ -298,17 +405,21 @@ export class PreviewManagedDependencyStore {
         readonly manifest: ManagedEnvironmentManifest;
       } => layer !== undefined,
     );
-    if (haveConflictingPackageLayers(validatedLayers.map((layer) => layer.manifest))) {
-      return Object.freeze([]);
-    }
+    const compatibleLayers = selectCompatiblePreviewManagedLayers(
+      validatedLayers.map((layer) => ({
+        ...layer,
+        coverage: layer.manifest.coverage,
+        packages: layer.manifest.packages,
+      })),
+    );
     const now = new Date();
     await Promise.all(
-      validatedLayers.map(async ({ environmentPath }) =>
+      compatibleLayers.map(async ({ environmentPath }) =>
         utimes(path.join(environmentPath, COMMITTED_MARKER), now, now).catch(() => undefined),
       ),
     );
     return Object.freeze(
-      validatedLayers.map(({ environmentPath }) =>
+      compatibleLayers.map(({ environmentPath }) =>
         path.join(environmentPath, 'root', 'node_modules'),
       ),
     );
@@ -332,16 +443,12 @@ export class PreviewManagedDependencyStore {
     profile: PreviewDependencyProfile | undefined,
     projectRoot: string,
   ): Promise<string | undefined> {
-    const runtime = await this.readBundledReactRuntime();
-    const projectRuntime = await inspectProjectReactRuntime(projectRoot);
-    if (
-      runtime === undefined ||
-      projectRuntime.reactVersion !== undefined ||
-      projectRuntime.reactDomVersion !== undefined ||
-      !isBundledRuntimeCompatible(runtime, profile)
-    ) {
-      return undefined;
-    }
+    const runtime = await selectPreviewBundledReactRuntime(
+      () => this.readBundledReactRuntimes(),
+      profile,
+      projectRoot,
+    );
+    if (runtime === undefined) return undefined;
     const seedPath = path.join(this.rootPath, 'seeds', runtime.identity);
     if ((await this.readValidatedEnvironment(seedPath, runtime.identity)) === undefined) {
       await mkdir(path.dirname(seedPath), { recursive: true });
@@ -353,9 +460,11 @@ export class PreviewManagedDependencyStore {
             runtime.copies,
             path.join(stagingPath, 'root', 'node_modules'),
           );
+          if (!doesPreviewBundledRuntimeMatchStaging(runtime, result.packages)) return;
           const manifest: ManagedEnvironmentManifest = {
             bytes: result.bytes,
             contentDigest: result.contentDigest,
+            coverage: 'bundled',
             createdAt: new Date().toISOString(),
             files: result.files,
             fingerprint: runtime.identity,
@@ -387,8 +496,10 @@ export class PreviewManagedDependencyStore {
   }
 
   /** Reads exact packaged core versions once without resolving any project-controlled module. */
-  private readBundledReactRuntime(): Promise<BundledReactRuntime | undefined> {
-    this.seedRuntimePromise ??= inspectBundledReactRuntime(this.options.bundledNodeModulesPath);
+  private readBundledReactRuntimes(): Promise<readonly PreviewBundledReactRuntime[]> {
+    this.seedRuntimePromise ??= inspectPreviewBundledReactRuntimesCached(
+      this.options.bundledNodeModulesPath,
+    );
     return this.seedRuntimePromise;
   }
 
@@ -442,62 +553,6 @@ export const EMPTY_MANAGED_ENVIRONMENT: PreviewManagedDependencyEnvironment = Ob
   nodeModulesPaths: Object.freeze([]),
 });
 
-/** Inspects the packaged core without admitting unrelated extension dependencies. */
-async function inspectBundledReactRuntime(
-  bundledNodeModulesPath: string | undefined,
-): Promise<BundledReactRuntime | undefined> {
-  if (bundledNodeModulesPath === undefined) return undefined;
-  const packageNames = ['react', 'react-dom', 'scheduler'] as const;
-  const copies: PreviewManagedPackageCopy[] = [];
-  const versions = new Map<string, string>();
-  for (const packageName of packageNames) {
-    const sourceRoot = path.join(path.resolve(bundledNodeModulesPath), packageName);
-    try {
-      const parsed: unknown = JSON.parse(
-        await readFile(path.join(sourceRoot, 'package.json'), 'utf8'),
-      );
-      if (typeof parsed !== 'object' || parsed === null || !('version' in parsed)) continue;
-      const version = parsed.version;
-      if (typeof version !== 'string') continue;
-      versions.set(packageName, version);
-      copies.push({ sourceRoot, targetRelativePath: packageName });
-    } catch {
-      // One absent optional core package does not invalidate the rest of the bundled seed.
-    }
-  }
-  const reactVersion = versions.get('react');
-  if (reactVersion === undefined) return undefined;
-  const reactDomVersion = versions.get('react-dom');
-  const identity = createHash('sha256')
-    .update(JSON.stringify({ schemaVersion: STORE_SCHEMA_VERSION, versions: [...versions] }))
-    .digest('hex');
-  return Object.freeze({
-    copies: Object.freeze(copies),
-    identity,
-    ...(reactDomVersion === undefined ? {} : { reactDomVersion }),
-    reactVersion,
-  });
-}
-
-/** Prevents explicit project React ranges from receiving a second incompatible runtime. */
-function isBundledRuntimeCompatible(
-  runtime: BundledReactRuntime,
-  profile: PreviewDependencyProfile | undefined,
-): boolean {
-  return (
-    (runtime.reactVersion === undefined ||
-      doesPreviewSpecifierAcceptVersion(
-        findPreviewDependencySpecifier(profile, 'react'),
-        runtime.reactVersion,
-      )) &&
-    (runtime.reactDomVersion === undefined ||
-      doesPreviewSpecifierAcceptVersion(
-        findPreviewDependencySpecifier(profile, 'react-dom'),
-        runtime.reactDomVersion,
-      ))
-  );
-}
-
 /** Rejects stale installs and non-registry direct specs before their bytes become reusable. */
 function doInstalledPackagesMatchDeclaredRequirements(
   profile: PreviewDependencyProfile,
@@ -510,40 +565,6 @@ function doInstalledPackagesMatchDeclaredRequirements(
       doesPreviewSpecifierAcceptVersion(declaredSpecifier, packageIdentity.version)
     );
   });
-}
-
-/** Detects a project/hoisted React runtime so the bundled seed never creates a mixed major pair. */
-async function inspectProjectReactRuntime(projectRoot: string): Promise<{
-  readonly reactDomVersion?: string;
-  readonly reactVersion?: string;
-}> {
-  const resolveFromProject = createRequire(path.join(path.resolve(projectRoot), 'package.json'));
-  const [reactVersion, reactDomVersion] = await Promise.all([
-    readInstalledPackageVersion(resolveFromProject, 'react'),
-    readInstalledPackageVersion(resolveFromProject, 'react-dom'),
-  ]);
-  return Object.freeze({
-    ...(reactVersion === undefined ? {} : { reactVersion }),
-    ...(reactDomVersion === undefined ? {} : { reactDomVersion }),
-  });
-}
-
-/** Reads package metadata through Node resolution without evaluating the package entry module. */
-async function readInstalledPackageVersion(
-  resolveFromProject: NodeJS.Require,
-  packageName: string,
-): Promise<string | undefined> {
-  try {
-    const manifestPath = resolveFromProject.resolve(`${packageName}/package.json`);
-    const parsed: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
-    return typeof parsed === 'object' && parsed !== null && 'version' in parsed
-      ? typeof parsed.version === 'string'
-        ? parsed.version
-        : undefined
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Separates append-only layers by verified bytes while keeping them under one lock profile. */
@@ -568,18 +589,35 @@ function createAdmissionTaskIdentity(
   return `${profileFingerprint}:${reachedGraphDigest}`;
 }
 
-/** Fails closed when the same portable package slot has competing bytes under one lock profile. */
-function haveConflictingPackageLayers(manifests: readonly ManagedEnvironmentManifest[]): boolean {
-  const identityByRelativePath = new Map<string, string>();
-  for (const manifest of manifests) {
-    for (const packageIdentity of manifest.packages) {
-      const identity = `${packageIdentity.name}\0${packageIdentity.version}\0${packageIdentity.contentDigest}`;
-      const previousIdentity = identityByRelativePath.get(packageIdentity.relativePath);
-      if (previousIdentity !== undefined && previousIdentity !== identity) return true;
-      identityByRelativePath.set(packageIdentity.relativePath, identity);
-    }
-  }
-  return false;
+/** Deduplicates one exact lock profile and stable unresolved package-root batch. */
+function createLockedAcquisitionTaskIdentity(
+  profileFingerprint: string,
+  requiredPackageNames: readonly string[],
+): string {
+  const requirementDigest = createHash('sha256')
+    .update(JSON.stringify([...new Set(requiredPackageNames)].sort()))
+    .digest('hex');
+  return `${profileFingerprint}:acquire:${requirementDigest}`;
+}
+
+/**
+ * Detects either half of React in validated managed layers before composing a bundled runtime.
+ * A partial lock-proven runtime intentionally suppresses the seed as well: failing explicitly is
+ * safer than combining different React installations and producing invalid hook identities.
+ */
+async function doesAnyLayerContainReactRuntime(
+  nodeModulesPaths: readonly string[],
+): Promise<boolean> {
+  const probes = nodeModulesPaths.flatMap((nodeModulesPath) =>
+    ['react', 'react-dom'].map(async (packageName) => {
+      try {
+        return (await stat(path.join(nodeModulesPath, packageName, 'package.json'))).isFile();
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return (await Promise.all(probes)).some(Boolean);
 }
 
 /** Verifies marker, metadata, package identities and deterministic package bytes before reuse. */
@@ -623,6 +661,9 @@ function isManagedEnvironmentManifest(
   return (
     manifest.fingerprint === fingerprint &&
     manifest.schemaVersion === STORE_SCHEMA_VERSION &&
+    (manifest.coverage === 'bundled' ||
+      manifest.coverage === 'lockfile' ||
+      manifest.coverage === 'reached') &&
     typeof manifest.profileFingerprint === 'string' &&
     typeof manifest.contentDigest === 'string' &&
     /^[a-f\d]{64}$/u.test(manifest.contentDigest) &&
@@ -752,7 +793,11 @@ async function readProfileEnvironmentUsages(
   }
   await Promise.all(
     profileEntries
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('.staging-'))
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          (entry.name.startsWith('.staging-') || entry.name.startsWith('.acquiring-')),
+      )
       .map(async (entry) => removeCrashedStagingDirectory(path.join(profilePath, entry.name))),
   );
   const layersPath = path.join(profilePath, 'layers');

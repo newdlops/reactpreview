@@ -81,6 +81,12 @@ interface StableVersion {
   readonly patch: number;
 }
 
+/** Stable numeric range floor plus the authored component count that determines its upper bound. */
+interface PartialStableVersion {
+  readonly precision: 1 | 2 | 3;
+  readonly version: StableVersion;
+}
+
 /**
  * Reads one package manifest and derives a profile suitable for cross-workspace cache reuse.
  *
@@ -298,17 +304,12 @@ export function doesPreviewSpecifierAcceptVersion(
   if (exact !== undefined) return compareStableVersions(candidate, exact) === 0;
 
   if (normalizedSpecifier.startsWith('^')) {
-    const lower = parseStableVersion(normalizedSpecifier.slice(1));
+    const lower = parsePartialStableVersion(normalizedSpecifier.slice(1));
     return lower !== undefined && acceptsCaretRange(candidate, lower);
   }
   if (normalizedSpecifier.startsWith('~')) {
-    const lower = parseStableVersion(normalizedSpecifier.slice(1));
-    if (lower === undefined) return false;
-    return (
-      candidate.major === lower.major &&
-      candidate.minor === lower.minor &&
-      compareStableVersions(candidate, lower) >= 0
-    );
+    const lower = parsePartialStableVersion(normalizedSpecifier.slice(1));
+    return lower !== undefined && acceptsTildeRange(candidate, lower);
   }
   if (/^[v\d]+(?:\.(?:\d+|x|\*)){0,2}$/iu.test(normalizedSpecifier)) {
     return acceptsWildcardRange(candidate, normalizedSpecifier);
@@ -341,14 +342,40 @@ function parseStableVersion(value: string): StableVersion | undefined {
   return [major, minor, patch].every(Number.isSafeInteger) ? { major, minor, patch } : undefined;
 }
 
-/** Implements npm caret upper bounds for stable major, zero-major and zero-minor releases. */
-function acceptsCaretRange(candidate: StableVersion, lower: StableVersion): boolean {
-  if (compareStableVersions(candidate, lower) < 0) return false;
-  if (lower.major > 0) return candidate.major === lower.major;
-  if (lower.minor > 0) {
-    return candidate.major === 0 && candidate.minor === lower.minor;
+/**
+ * Parses one to three stable numeric components and fills omitted components only as a range floor.
+ * Keeping precision separate is essential: npm treats `^0` as `<1`, while the complete `^0.0.0`
+ * range stops before `0.0.1`. Prerelease, build, wildcard, and compound syntax remain unsupported.
+ */
+function parsePartialStableVersion(value: string): PartialStableVersion | undefined {
+  const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/u.exec(value.trim());
+  if (match === null) return undefined;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  const patch = Number(match[3] ?? 0);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return undefined;
+  const precision: PartialStableVersion['precision'] =
+    match[3] !== undefined ? 3 : match[2] !== undefined ? 2 : 1;
+  return { precision, version: { major, minor, patch } };
+}
+
+/** Implements npm caret upper bounds for complete and abbreviated stable numeric ranges. */
+function acceptsCaretRange(candidate: StableVersion, lower: PartialStableVersion): boolean {
+  if (compareStableVersions(candidate, lower.version) < 0) return false;
+  if (lower.precision === 1) return candidate.major === lower.version.major;
+  if (lower.version.major > 0) return candidate.major === lower.version.major;
+  if (lower.precision === 2 || lower.version.minor > 0) {
+    return candidate.major === 0 && candidate.minor === lower.version.minor;
   }
-  return candidate.major === 0 && candidate.minor === 0 && candidate.patch === lower.patch;
+  return candidate.major === 0 && candidate.minor === 0 && candidate.patch === lower.version.patch;
+}
+
+/** Implements npm tilde bounds: major-only ranges span a major, while others pin the minor. */
+function acceptsTildeRange(candidate: StableVersion, lower: PartialStableVersion): boolean {
+  if (compareStableVersions(candidate, lower.version) < 0) return false;
+  return lower.precision === 1
+    ? candidate.major === lower.version.major
+    : candidate.major === lower.version.major && candidate.minor === lower.version.minor;
 }
 
 /** Checks `1`, `1.x`, `1.2.x`, and their `*` equivalents without widening missing evidence. */

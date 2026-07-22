@@ -316,7 +316,13 @@ function PreviewInspectorComponentTreeNode({
       React.createElement('span', { className: 'rpi-node-name' }, node.name),
       selected ? React.createElement('span', { className: 'rpi-badge' }, 'selected') : undefined,
       isCurrentFileExport
-        ? React.createElement('span', { className: 'rpi-badge rpi-export-badge' }, 'current file export')
+        ? React.createElement(
+            'span',
+            { className: 'rpi-badge rpi-export-badge' },
+            findSelectedPreviewInspectorDescriptor()?.inspector?.contextModule === undefined
+              ? 'current file export'
+              : 'consuming page root',
+          )
         : undefined,
       isActiveExport
         ? React.createElement('span', { className: 'rpi-badge' }, 'active')

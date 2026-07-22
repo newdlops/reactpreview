@@ -77,7 +77,14 @@ function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurre
     return { key: 'path', label: 'PAGE SEARCH' };
   }
   if (node?.kind === 'blocker') return { key: 'assisted', label: 'PREVIEW VALUE' };
-  if (isCurrentFileExport) return { key: 'target', label: 'CURRENT FILE' };
+  if (isCurrentFileExport) {
+    const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+      ? findSelectedPreviewInspectorDescriptor()
+      : undefined;
+    return descriptor?.inspector?.contextModule === undefined
+      ? { key: 'target', label: 'CURRENT FILE' }
+      : { key: 'target', label: 'PAGE ROOT' };
+  }
   if (node?.edgeKind === 'hoc-wrapper') return { key: 'path', label: 'HOC' };
   if (node?.edgeKind === 'component-slot') return { key: 'path', label: 'COMPONENT PROP' };
   if (node?.contextOnly === true) return { key: 'path', label: 'PAGE PATH' };

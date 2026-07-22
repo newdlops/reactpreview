@@ -28,6 +28,19 @@ function readPreviewInspectorPageContext() {
       kind: 'standalone',
     };
   }
+  if (inspector.contextModule !== undefined) {
+    const importPath = Array.isArray(inspector.contextModule.importPath)
+      ? inspector.contextModule.importPath
+      : [];
+    const names = importPath.map((sourcePath) => String(sourcePath)
+      .replaceAll('\\', '/').split('/').at(-1)?.replace(/\.[^.]+$/u, ''));
+    return {
+      badge: 'MODULE PAGE',
+      breadcrumb: names.filter(Boolean).join('  ›  '),
+      detail: 'The selected module participates in this authored Next page · no standalone DOM boundary is expected',
+      kind: 'module-page',
+    };
+  }
   if (
     typeof readPreviewInspectorRenderScenario === 'function' &&
     readPreviewInspectorRenderScenario() === 'file-components'

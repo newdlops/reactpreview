@@ -17,6 +17,7 @@ export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
 /** Formats whether the selected authored page and current-file target share one committed render. */
 function formatPreviewInspectorPageCorridorStatus(reachability) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
+  const moduleContext = findSelectedPreviewInspectorDescriptor()?.inspector?.contextModule;
   if (
     reachability?.status === 'reached' &&
     reachability?.targetMounted === true &&
@@ -28,9 +29,9 @@ function formatPreviewInspectorPageCorridorStatus(reachability) {
     reachability?.pageRootCommitted === true &&
     reachability?.targetMounted === true &&
     reachability?.targetHasOutput !== true
-  ) return 'TARGET EMPTY';
+  ) return moduleContext === undefined ? 'TARGET EMPTY' : 'PAGE EMPTY';
   if (reachability?.pageRootCommitted === true && reachability?.targetMounted !== true) {
-    return 'TARGET ABSENT';
+    return moduleContext === undefined ? 'TARGET ABSENT' : 'PAGE ABSENT';
   }
   if (reachability?.pageRootCommitted === true) return 'VERIFYING TARGET';
   return 'LOADING PAGE';
@@ -66,6 +67,8 @@ function revealPreviewInspectorMissingTargetOutput() {
 
 /** Converts internal corridor state into one plain-language status and recommended next action. */
 function readPreviewInspectorFriendlyPageStatus(reachability) {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const moduleContext = descriptor?.inspector?.contextModule;
   if (readPreviewInspectorRenderScenario() === 'file-components') {
     return {
       action: 'Return to page flow',
@@ -83,15 +86,19 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     const wrapperHostOnly = reachability?.targetHasAnyHostOutput === true;
     return {
       action: 'Inspect missing output',
-      description: wrapperHostOnly
-        ? 'The current-file export mounted, but only a wrapper or fallback reached the DOM. Inspect the missing authored JSX and its first requirement in the component tree.'
-        : 'The current-file export was invoked inside the authored page, but its exact boundary has no connected host output. Inspect its first blocker or condition in the component tree.',
+      description: moduleContext !== undefined
+        ? 'The consuming page mounted without connected host output. Inspect its first requirement; the selected module supplies page values and is not expected to own a DOM boundary.'
+        : wrapperHostOnly
+          ? 'The current-file export mounted, but only a wrapper or fallback reached the DOM. Inspect the missing authored JSX and its first requirement in the component tree.'
+          : 'The current-file export was invoked inside the authored page, but its exact boundary has no connected host output. Inspect its first blocker or condition in the component tree.',
       icon: '!',
       kind: 'blocked',
       onAction: revealPreviewInspectorMissingTargetOutput,
-      title: wrapperHostOnly
-        ? 'Current file stopped at wrapper or fallback output'
-        : 'Current file mounted without output',
+      title: moduleContext !== undefined
+        ? 'Consuming page mounted without output'
+        : wrapperHostOnly
+          ? 'Current file stopped at wrapper or fallback output'
+          : 'Current file mounted without output',
     };
   }
   const renderedWithoutTarget = reachability?.pageRootCommitted === true &&
@@ -99,6 +106,16 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     blockers.count > 0 &&
     blockers.active.every((node) => node?.blockerKind === 'target-reachability');
   if (renderedWithoutTarget) {
+    if (moduleContext !== undefined) {
+      return {
+        action: 'Inspect page path',
+        description: 'The selected consuming page committed a different branch before its page boundary mounted. Inspect the authored path; this module has no independent component view.',
+        icon: '↳',
+        kind: 'flow-outcome',
+        onAction: revealPreviewInspectorMissingTargetOutput,
+        title: 'Consuming page selected another flow',
+      };
+    }
     return {
       action: 'Show file components',
       description: 'The chosen authored path committed its UI without mounting the current file. Compare another page path or inspect every current-file export; React Preview does not classify this application outcome.',
@@ -125,7 +142,8 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     return {
       action: 'Fix next blocker',
       description: String(Math.max(1, blockers.count)) +
-        ' issue(s) stop the current file from rendering.' + firstBlocker +
+        ' issue(s) stop ' + (moduleContext === undefined ? 'the current file' : 'the consuming page') +
+        ' from rendering.' + firstBlocker +
         ' Start with the first red BLOCKER row.',
       icon: '!',
       kind: 'blocked',
@@ -138,6 +156,14 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     reachability?.targetMounted === true &&
     reachability?.targetHasOutput === true
   ) {
+    if (moduleContext !== undefined) {
+      return {
+        description: 'The selected source module is loaded through its statically proven consuming page and layout chain.',
+        icon: '✓',
+        kind: 'ready',
+        title: 'Module page context is ready',
+      };
+    }
     return {
       action: 'Reveal current file',
       description: 'The authored page and selected file are mounted together. Select components to inspect them.',
@@ -149,22 +175,29 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
   }
   return {
     description: reachability?.status === 'advancing'
-      ? 'React Preview is crossing a proven page condition and will check the target again.'
+      ? 'React Preview is crossing a proven page condition and will check ' +
+        (moduleContext === undefined ? 'the target' : 'the consuming page') + ' again.'
       : 'The authored page is loading. Yellow conditions and generated preview values are not fatal errors.',
     icon: '…',
     kind: 'preparing',
-    title: reachability?.status === 'advancing' ? 'Finding the target on this page' : 'Preparing page context',
+    title: reachability?.status === 'advancing'
+      ? moduleContext === undefined ? 'Finding the target on this page' : 'Finding the consuming page flow'
+      : 'Preparing page context',
   };
 }
 
 /** Lets the user choose perspective while keeping application fallback screens as authored output. */
 function PreviewInspectorRenderScenarioSelect() {
   const scenario = readPreviewInspectorRenderScenario();
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const moduleContext = descriptor?.inspector?.contextModule;
   return React.createElement(
     'label',
     {
       className: 'rpi-candidate-select',
-      title: 'Page flow preserves the chosen authored route. File components mounts each current-file export independently.',
+      title: moduleContext === undefined
+        ? 'Page flow preserves the chosen authored route. File components mounts each current-file export independently.'
+        : 'This file contributes values to the selected authored page and has no standalone component export.',
     },
     React.createElement('span', { className: 'rpi-context-badge' }, 'VIEW'),
     React.createElement(
@@ -176,7 +209,9 @@ function PreviewInspectorRenderScenarioSelect() {
         value: scenario,
       },
       React.createElement('option', { value: 'authored-page' }, 'Page flow (as authored)'),
-      React.createElement('option', { value: 'file-components' }, 'File components (all exports)'),
+      moduleContext === undefined
+        ? React.createElement('option', { value: 'file-components' }, 'File components (all exports)')
+        : undefined,
     ),
   );
 }
@@ -184,9 +219,11 @@ function PreviewInspectorRenderScenarioSelect() {
 /** Shows the current outcome, next action, and stable visual vocabulary before the tree. */
 function PreviewInspectorFriendlyGuide({ reachability }) {
   const status = readPreviewInspectorFriendlyPageStatus(reachability);
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const moduleContext = descriptor?.inspector?.contextModule;
   const legend = [
     ['component', 'C', 'Component'],
-    ['target', '◎', 'Current file'],
+    ['target', '◎', moduleContext === undefined ? 'Current file' : 'Consuming page'],
     ['path', '↳', 'Page path'],
     ['condition', '?', 'Condition'],
     ['assisted', '≈', 'Preview value'],

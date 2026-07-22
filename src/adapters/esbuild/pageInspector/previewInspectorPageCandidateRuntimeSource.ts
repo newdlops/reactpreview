@@ -181,6 +181,10 @@ function preparePreviewInspectorOwnedRouterLocation(candidate, directTarget) {
 
 /** Returns the explicit rendering perspective without inferring business meaning from page text. */
 function readPreviewInspectorRenderScenario() {
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  if (descriptor?.inspector?.contextModule !== undefined) return 'authored-page';
   return previewInspectorSession.renderScenario === 'file-components'
     ? 'file-components'
     : 'authored-page';
@@ -189,6 +193,12 @@ function readPreviewInspectorRenderScenario() {
 /** Switches between the preserved authored page and an export overview chosen by the user. */
 function setPreviewInspectorRenderScenario(nextScenario) {
   if (nextScenario !== 'authored-page' && nextScenario !== 'file-components') return;
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  if (nextScenario === 'file-components' && descriptor?.inspector?.contextModule !== undefined) {
+    return;
+  }
   if (readPreviewInspectorRenderScenario() === nextScenario) return;
   resetPreviewInspectorTargetReachability();
   previewInspectorSession.renderScenario = nextScenario;

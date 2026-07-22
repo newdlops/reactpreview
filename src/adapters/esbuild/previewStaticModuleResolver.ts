@@ -8,7 +8,10 @@
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import {
+  canonicalizeExistingPath,
+  canonicalizePathThroughExistingAncestor,
+} from '../../shared/pathIdentity';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
@@ -27,6 +30,8 @@ export interface PreviewStaticModuleResolverOptions {
 export interface PreviewStaticModuleResolver {
   /** Returns authored specifiers already proven to resolve to one target during this scan. */
   readonly getMatchedSpecifiers: (targetPath: string) => readonly string[];
+  /** Reports explicit tsconfig/jsconfig evidence that JSX belongs to a non-React runtime. */
+  readonly usesAlternativeJsxRuntime: (consumerPath: string) => boolean;
   /**
    * Reports whether one consumer import resolves to the exact selected source module.
    *
@@ -40,6 +45,17 @@ export interface PreviewStaticModuleResolver {
     targetPath: string,
   ) => boolean;
   /**
+   * Resolves only the lexical filesystem candidate selected by an explicit tsconfig `paths` alias.
+   *
+   * Unlike {@link resolve}, this operation may return a path that does not exist yet. Consumers use
+   * it only after normal module resolution fails, for evidence-backed generated-source recovery.
+   * Relative, package-only, and workspace-escaping requests always return `undefined`.
+   */
+  readonly resolveMissingPathAliasCandidate: (
+    moduleSpecifier: string,
+    consumerPath: string,
+  ) => string | undefined;
+  /**
    * Resolves one import to a source path when TypeScript can prove its identity.
    *
    * @param moduleSpecifier Authored import specifier.
@@ -51,6 +67,8 @@ export interface PreviewStaticModuleResolver {
 
 /** Compiler options and TypeScript's own bounded module-resolution memoization. */
 interface PreviewStaticResolutionContext {
+  /** Directory against which TypeScript path mapping targets are interpreted. */
+  readonly baseDirectory: string;
   readonly cache: ts.ModuleResolutionCache;
   readonly options: ts.CompilerOptions;
 }
@@ -68,7 +86,8 @@ interface PreviewStaticResolutionContext {
 export function createPreviewStaticModuleResolver(
   options: PreviewStaticModuleResolverOptions,
 ): PreviewStaticModuleResolver {
-  const workspaceRoot = path.resolve(options.workspaceRoot);
+  const lexicalWorkspaceRoot = path.resolve(options.workspaceRoot);
+  const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const configuredConfigPath = normalizeConfiguredConfigPath(
     options.configuredTsconfigPath,
     workspaceRoot,
@@ -83,9 +102,10 @@ export function createPreviewStaticModuleResolver(
 
   /** Selects explicit configuration or the nearest trusted tsconfig/jsconfig for one consumer. */
   function getResolutionContext(consumerPath: string): PreviewStaticResolutionContext {
+    const physicalConsumerPath = normalizeWorkspaceConsumerPath(consumerPath);
     const configPath =
       configuredConfigPath ??
-      findNearestPreviewConfig(path.dirname(path.resolve(consumerPath)), workspaceRoot);
+      findNearestPreviewConfig(path.dirname(physicalConsumerPath), workspaceRoot);
     if (configPath === undefined) {
       return fallbackContext;
     }
@@ -96,6 +116,16 @@ export function createPreviewStaticModuleResolver(
     const created = createResolutionContext(configPath, path.dirname(configPath));
     contextByConfigPath.set(configPath, created);
     return created;
+  }
+
+  /** Maps missing editor paths across platform aliases such as macOS `/var` and `/private/var`. */
+  function normalizeWorkspaceConsumerPath(consumerPath: string): string {
+    const resolvedPath = path.resolve(consumerPath);
+    if (isPathInside(workspaceRoot, resolvedPath)) return resolvedPath;
+    if (isPathInside(lexicalWorkspaceRoot, resolvedPath)) {
+      return path.join(workspaceRoot, path.relative(lexicalWorkspaceRoot, resolvedPath));
+    }
+    return canonicalizeExistingPath(resolvedPath);
   }
 
   /** Finds a nearest config once per importing directory without crossing the workspace root. */
@@ -140,7 +170,7 @@ export function createPreviewStaticModuleResolver(
       const context = getResolutionContext(consumerPath);
       const resolution = ts.resolveModuleName(
         cleanSpecifier,
-        path.resolve(consumerPath),
+        normalizeWorkspaceConsumerPath(consumerPath),
         context.options,
         ts.sys,
         context.cache,
@@ -159,6 +189,50 @@ export function createPreviewStaticModuleResolver(
       // Invalid or transient project configuration cannot make syntax-only discovery fail a build.
       return undefined;
     }
+  }
+
+  /** Maps an unresolved explicit `paths` request without pretending the candidate exists. */
+  function resolveMissingPathAliasCandidate(
+    moduleSpecifier: string,
+    consumerPath: string,
+  ): string | undefined {
+    const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0];
+    if (
+      cleanSpecifier === undefined ||
+      cleanSpecifier.length === 0 ||
+      cleanSpecifier.startsWith('.') ||
+      path.isAbsolute(cleanSpecifier)
+    ) {
+      return undefined;
+    }
+    try {
+      const context = getResolutionContext(consumerPath);
+      const pathTargets = context.options.paths;
+      if (pathTargets === undefined) return undefined;
+      const matchingPatterns = Object.keys(pathTargets)
+        .map((pattern) => ({ match: matchPathAlias(pattern, cleanSpecifier), pattern }))
+        .filter(
+          (candidate): candidate is { readonly match: string; readonly pattern: string } =>
+            candidate.match !== undefined,
+        )
+        .sort(comparePathAliasMatches);
+      for (const { match, pattern } of matchingPatterns) {
+        for (const target of pathTargets[pattern] ?? []) {
+          const substitutedTarget = target.replaceAll('*', match);
+          const candidatePath = path.resolve(context.baseDirectory, substitutedTarget);
+          const canonicalCandidate = canonicalizePathThroughExistingAncestor(candidatePath);
+          if (
+            isPathInside(workspaceRoot, canonicalCandidate) &&
+            !sourceCandidateExists(canonicalCandidate)
+          ) {
+            return canonicalCandidate;
+          }
+        }
+      }
+    } catch {
+      // Malformed path mappings remain an ordinary esbuild resolution failure.
+    }
+    return undefined;
   }
 
   return Object.freeze({
@@ -183,7 +257,29 @@ export function createPreviewStaticModuleResolver(
       return matches;
     },
     resolve,
+    resolveMissingPathAliasCandidate,
+    usesAlternativeJsxRuntime(consumerPath: string): boolean {
+      return compilerOptionsUseAlternativeJsxRuntime(getResolutionContext(consumerPath).options);
+    },
   });
+}
+
+/**
+ * Preserves explicit custom JSX ownership instead of treating a package-level React declaration as
+ * proof for every module in a hybrid monorepo. Undefined/default options remain inconclusive so a
+ * React manifest may still support Babel-automatic source beside an editor-only classic tsconfig.
+ */
+function compilerOptionsUseAlternativeJsxRuntime(options: ts.CompilerOptions): boolean {
+  const jsxImportSource = options.jsxImportSource?.trim();
+  const jsxFactory = options.jsxFactory?.trim();
+  const jsxFragmentFactory = options.jsxFragmentFactory?.trim();
+  const reactNamespace = options.reactNamespace?.trim();
+  return (
+    (jsxImportSource !== undefined && jsxImportSource !== 'react') ||
+    (jsxFactory !== undefined && jsxFactory !== 'React.createElement') ||
+    (jsxFragmentFactory !== undefined && jsxFragmentFactory !== 'React.Fragment') ||
+    (reactNamespace !== undefined && reactNamespace !== 'React')
+  );
 }
 
 /** One immutable Node resolver paired with the node_modules boundary it may expose. */
@@ -235,6 +331,7 @@ function createResolutionContext(
   };
   if (configPath === undefined) {
     return {
+      baseDirectory: currentDirectory,
       cache: ts.createModuleResolutionCache(
         currentDirectory,
         canonicalizeCachePath,
@@ -254,7 +351,13 @@ function createResolutionContext(
   };
   const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {}, host);
   const compilerOptions = parsed?.options ?? fallbackOptions;
+  const internalPathsBasePath = Reflect.get(compilerOptions, 'pathsBasePath') as unknown;
+  const configuredBaseUrl = Reflect.get(compilerOptions, 'baseUrl') as unknown;
   return {
+    baseDirectory:
+      (typeof internalPathsBasePath === 'string' ? internalPathsBasePath : undefined) ??
+      (typeof configuredBaseUrl === 'string' ? configuredBaseUrl : undefined) ??
+      path.dirname(configPath),
     cache: ts.createModuleResolutionCache(
       path.dirname(configPath),
       canonicalizeCachePath,
@@ -262,6 +365,47 @@ function createResolutionContext(
     ),
     options: compilerOptions,
   };
+}
+
+/** Matches one exact or single-wildcard TypeScript path alias and returns its wildcard text. */
+function matchPathAlias(pattern: string, moduleSpecifier: string): string | undefined {
+  const wildcardOffset = pattern.indexOf('*');
+  if (wildcardOffset < 0) return pattern === moduleSpecifier ? '' : undefined;
+  if (pattern.slice(wildcardOffset + 1).includes('*')) return undefined;
+  const prefix = pattern.slice(0, wildcardOffset);
+  const suffix = pattern.slice(wildcardOffset + 1);
+  if (
+    !moduleSpecifier.startsWith(prefix) ||
+    !moduleSpecifier.endsWith(suffix) ||
+    moduleSpecifier.length < prefix.length + suffix.length
+  ) {
+    return undefined;
+  }
+  return moduleSpecifier.slice(prefix.length, moduleSpecifier.length - suffix.length);
+}
+
+/** Gives exact aliases priority, then follows TypeScript's longest-prefix wildcard preference. */
+function comparePathAliasMatches(
+  left: { readonly pattern: string },
+  right: { readonly pattern: string },
+): number {
+  const leftWildcardOffset = left.pattern.indexOf('*');
+  const rightWildcardOffset = right.pattern.indexOf('*');
+  if (leftWildcardOffset < 0 || rightWildcardOffset < 0) {
+    return Number(leftWildcardOffset >= 0) - Number(rightWildcardOffset >= 0);
+  }
+  return rightWildcardOffset - leftWildcardOffset || left.pattern.localeCompare(right.pattern);
+}
+
+/** Checks normal JS/TS file and directory-index candidates without traversing the workspace. */
+function sourceCandidateExists(candidatePath: string): boolean {
+  if (ts.sys.fileExists(candidatePath)) return true;
+  const extensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json'];
+  return extensions.some(
+    (extension) =>
+      ts.sys.fileExists(`${candidatePath}${extension}`) ||
+      ts.sys.fileExists(path.join(candidatePath, `index${extension}`)),
+  );
 }
 
 /** Accepts only an existing explicit config that remains inside the trusted workspace. */
@@ -273,8 +417,9 @@ function normalizeConfiguredConfigPath(
     return undefined;
   }
   const normalizedPath = path.resolve(configuredPath);
-  return isPathInside(workspaceRoot, normalizedPath) && ts.sys.fileExists(normalizedPath)
-    ? normalizedPath
+  const canonicalPath = canonicalizeExistingPath(normalizedPath);
+  return isPathInside(workspaceRoot, canonicalPath) && ts.sys.fileExists(canonicalPath)
+    ? canonicalPath
     : undefined;
 }
 

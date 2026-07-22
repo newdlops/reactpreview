@@ -50,17 +50,36 @@ export function analyzePreviewRenderSource(
   sourceText: string,
 ): PreviewRenderSourceAnalysis {
   const normalizedPath = path.normalize(sourcePath);
-  const sourceFile = ts.createSourceFile(
-    normalizedPath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    normalizedPath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
+  const sourceFile = createPreviewRenderSourceFile(normalizedPath, sourceText);
   return Object.freeze({
     entryEvidence: collectPreviewEntryPointEvidence(normalizedPath, sourceFile),
     moduleFacts: collectPreviewRenderModuleFactsFromSourceFile(normalizedPath, sourceFile),
   });
+}
+
+/**
+ * Parses one React-capable source file with the grammar implied by its authored extension.
+ * JavaScript grammar deliberately retains JSX: legacy CRA and webpack bootstraps commonly mount
+ * `<App />` from `index.js`, while parsing those files as TypeScript mistakes JSX for a type
+ * assertion and silently loses otherwise import-proven ReactDOM entry evidence.
+ *
+ * @param sourcePath Authored source identity used only to select a JS/JSX or TS/TSX grammar.
+ * @param sourceText Current disk or editor source.
+ * @returns TypeScript source file with parent pointers required by conservative scope checks.
+ */
+export function createPreviewRenderSourceFile(
+  sourcePath: string,
+  sourceText: string,
+): ts.SourceFile {
+  const lowerPath = sourcePath.toLowerCase();
+  const scriptKind = /(?:^|\.)[cm]?tsx$/u.test(lowerPath)
+    ? ts.ScriptKind.TSX
+    : /(?:^|\.)[cm]?ts$/u.test(lowerPath)
+      ? ts.ScriptKind.TS
+      : /(?:^|\.)[cm]?jsx?$/u.test(lowerPath)
+        ? ts.ScriptKind.JSX
+        : ts.ScriptKind.JS;
+  return ts.createSourceFile(sourcePath, sourceText, ts.ScriptTarget.Latest, true, scriptKind);
 }
 
 /**

@@ -28,6 +28,7 @@ describe('createPreviewStaticModuleResolver', () => {
               jsx: 'react-jsx',
               paths: {
                 '@design/*': ['../ui/src/*'],
+                '@escape/*': ['../../../outside/*'],
                 '@selected': ['../ui/src/Target.tsx'],
               },
             },
@@ -45,6 +46,13 @@ describe('createPreviewStaticModuleResolver', () => {
       expect(resolver.matchesTarget('@selected', consumerPath, targetPath)).toBe(true);
       expect(resolver.getMatchedSpecifiers(targetPath)).toEqual(['@design/Target', '@selected']);
       expect(resolver.matchesTarget('@design/Missing', consumerPath, targetPath)).toBe(false);
+      expect(resolver.resolveMissingPathAliasCandidate('@design/Missing', consumerPath)).toBe(
+        path.join(await realpath(uiSource), 'Missing'),
+      );
+      expect(resolver.resolveMissingPathAliasCandidate('./Missing', consumerPath)).toBeUndefined();
+      expect(
+        resolver.resolveMissingPathAliasCandidate('@escape/Missing', consumerPath),
+      ).toBeUndefined();
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
@@ -76,6 +84,48 @@ describe('createPreviewStaticModuleResolver', () => {
         rm(workspaceRoot, { force: true, recursive: true }),
         rm(outsideRoot, { force: true, recursive: true }),
       ]);
+    }
+  });
+
+  /** Reads nearest JSX ownership without executing project config or crossing package boundaries. */
+  it('distinguishes React defaults from Preact and custom classic factories', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-jsx-runtime-'));
+    const reactRoot = path.join(workspaceRoot, 'packages', 'react-app');
+    const preactRoot = path.join(workspaceRoot, 'packages', 'preact-app');
+    const customRoot = path.join(workspaceRoot, 'packages', 'custom-app');
+    const reactConsumer = path.join(reactRoot, 'src', 'Page.tsx');
+    const preactConsumer = path.join(preactRoot, 'src', 'Page.tsx');
+    const customConsumer = path.join(customRoot, 'src', 'Page.tsx');
+    try {
+      await Promise.all(
+        [reactConsumer, preactConsumer, customConsumer].map((consumerPath) =>
+          mkdir(path.dirname(consumerPath), { recursive: true }),
+        ),
+      );
+      await Promise.all([
+        writeFile(
+          path.join(reactRoot, 'tsconfig.json'),
+          JSON.stringify({ compilerOptions: { jsx: 'react-jsx' } }),
+          'utf8',
+        ),
+        writeFile(
+          path.join(preactRoot, 'tsconfig.json'),
+          JSON.stringify({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: 'preact' } }),
+          'utf8',
+        ),
+        writeFile(
+          path.join(customRoot, 'tsconfig.json'),
+          JSON.stringify({ compilerOptions: { jsx: 'react', jsxFactory: 'h' } }),
+          'utf8',
+        ),
+      ]);
+      const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+      expect(resolver.usesAlternativeJsxRuntime(reactConsumer)).toBe(false);
+      expect(resolver.usesAlternativeJsxRuntime(preactConsumer)).toBe(true);
+      expect(resolver.usesAlternativeJsxRuntime(customConsumer)).toBe(true);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
     }
   });
 

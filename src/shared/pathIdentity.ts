@@ -33,6 +33,34 @@ export function canonicalizeExistingPath(filePath: string): string {
 }
 
 /**
+ * Canonicalizes a missing path through its nearest existing ancestor.
+ *
+ * Missing generated children cannot be passed directly to `realpath`, but a parent directory may
+ * itself be a symbolic link. Resolving that existing prefix before appending the absent suffix lets
+ * callers enforce workspace boundaries without trusting a lexical in-workspace path whose real
+ * filesystem destination is outside the workspace.
+ *
+ * @param filePath Existing or not-yet-existing filesystem path selected from project metadata.
+ * @returns Canonical existing prefix plus the untouched missing relative suffix.
+ */
+export function canonicalizePathThroughExistingAncestor(filePath: string): string {
+  const resolvedPath = path.resolve(filePath);
+  const missingSegments: string[] = [];
+  let ancestorPath = resolvedPath;
+  for (;;) {
+    try {
+      const canonicalAncestor = realpathSync.native(ancestorPath);
+      return normalizeLexicalPath(path.join(canonicalAncestor, ...missingSegments));
+    } catch {
+      const parentPath = path.dirname(ancestorPath);
+      if (parentPath === ancestorPath) return normalizeLexicalPath(resolvedPath);
+      missingSegments.unshift(path.basename(ancestorPath));
+      ancestorPath = parentPath;
+    }
+  }
+}
+
+/**
  * Builds a comparison set containing both authored lexical paths and their current canonical targets.
  * Callers must supply extension-owned build/editor paths rather than values received from a webview;
  * retaining both identities lets later security checks reject unknown lexical aliases before realpath.

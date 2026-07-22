@@ -33,6 +33,7 @@ describe('preparePreviewFirstPaint', () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      buildIntent: 'foreground',
       preparationMode: 'fast',
       renderMode: 'component',
     });
@@ -101,7 +102,10 @@ describe('preparePreviewFirstPaint', () => {
     });
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(execute.mock.calls[0]?.[0].preparationMode).toBe('full');
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      buildIntent: 'foreground',
+      preparationMode: 'full',
+    });
     expect(result.requiresContextEnrichment).toBe(false);
   });
 

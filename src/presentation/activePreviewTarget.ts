@@ -113,6 +113,7 @@ export function resolvePreviewTarget(
   const baseRequest = {
     dependencySnapshots: collectDirtyDependencySnapshots(document, workspaceFolder),
     documentPath: document.fileName,
+    documentVersion: document.version,
     language,
     maxOutputMebibytes,
     sourceText: document.getText(),
@@ -170,6 +171,7 @@ function collectDirtyDependencySnapshots(
     return [
       {
         documentPath: document.fileName,
+        documentVersion: document.version,
         language,
         sourceText: document.getText(),
       },

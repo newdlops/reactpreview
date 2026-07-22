@@ -50,6 +50,7 @@ export async function preparePreviewFirstPaint(
     const preparedPreview = await options.buildPreview.execute(
       {
         ...options.request,
+        buildIntent: 'foreground',
         preparationMode: 'full',
         renderMode: options.renderMode,
       },
@@ -61,6 +62,7 @@ export async function preparePreviewFirstPaint(
     const preparedPreview = await options.buildPreview.execute(
       {
         ...options.request,
+        buildIntent: 'foreground',
         preparationMode: 'fast',
         renderMode: options.renderMode,
       },
@@ -74,6 +76,7 @@ export async function preparePreviewFirstPaint(
     const preparedPreview = await options.buildPreview.execute(
       {
         ...options.request,
+        buildIntent: 'foreground',
         preparationMode: 'full',
         renderMode: options.renderMode,
       },

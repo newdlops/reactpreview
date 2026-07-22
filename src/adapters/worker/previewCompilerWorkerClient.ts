@@ -8,14 +8,17 @@ import { Worker } from 'node:worker_threads';
 import type { PreviewCompiler } from '../../application/previewCompiler';
 import {
   PreviewCompilationError,
+  type PreviewBuildIntent,
   type PreviewBuildRequest,
   type PreviewBundle,
+  type PreviewPreparationMode,
 } from '../../domain/preview';
 import {
   PreviewBuildCancelledError,
   PreviewBuildStalledError,
   throwIfPreviewBuildCancelled,
   type PreviewBuildExecutionContext,
+  type PreviewBuildStallReason,
 } from '../../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
 import {
@@ -66,6 +69,8 @@ export interface PreviewCompilerWorkerBootstrap {
 
 /** One unresolved compile request and its thread-local callback/cancellation ownership. */
 interface PendingWorkerCompilation {
+  /** Scheduling intent kept independent from fast/full graph completeness. */
+  readonly buildIntent: PreviewBuildIntent;
   /** Clears the hard build watchdog after any terminal settlement. */
   readonly clearDeadline: () => void;
   /** Removes the caller signal listener after every settlement path. */
@@ -74,6 +79,10 @@ interface PendingWorkerCompilation {
   lastStage?: PreviewProgressStage;
   /** Optional progress callback retained only on the extension-host side. */
   readonly reportProgress?: PreviewBuildExecutionContext['reportProgress'];
+  /** Request retained only until start so untouched queued work can survive worker recycling. */
+  replayRequest?: PreviewBuildRequest;
+  /** Number of transport replacements already attempted for this exact queued request. */
+  readonly replayCount: number;
   /** Rejects the caller promise. */
   readonly reject: (error: Error) => void;
   /** Resolves the caller promise with transferred bytes. */
@@ -82,6 +91,10 @@ interface PendingWorkerCompilation {
   readonly startDeadline: () => void;
   /** Exact worker owning this request; old responses cannot affect a replacement worker. */
   readonly transport: PreviewCompilerWorkerTransport;
+  /** Caller signal retained only until settlement or a bounded replay onto a clean worker. */
+  readonly signal?: AbortSignal;
+  /** Explicit normalized mode included in request-scoped worker failure diagnostics. */
+  readonly preparationMode: PreviewPreparationMode;
   /** Absolute target identity included in watchdog and memory-limit diagnostics. */
   readonly target: string;
   /** Host clock captured when the worker confirms this request became active. */
@@ -196,6 +209,15 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     request: PreviewBuildRequest,
     context?: PreviewBuildExecutionContext,
   ): Promise<PreviewBundle> {
+    return this.compileWithReplay(request, context, 0);
+  }
+
+  /** Implements compile while retaining a bounded replay count across worker replacement. */
+  private compileWithReplay(
+    request: PreviewBuildRequest,
+    context: PreviewBuildExecutionContext | undefined,
+    replayCount: number,
+  ): Promise<PreviewBundle> {
     if (this.disposed) {
       return Promise.reject(
         new PreviewCompilationError('The background React preview compiler is already closed.', []),
@@ -209,9 +231,12 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     }
     const retirement = this.transportRetirement;
     if (retirement !== undefined) {
-      return retirement.then(() => this.compile(request, context));
+      return retirement.then(() => this.compileWithReplay(request, context, replayCount));
     }
 
+    const buildIntent = request.buildIntent ?? 'foreground';
+    const preparationMode = request.preparationMode ?? 'full';
+    const target = request.documentPath;
     const id = this.nextRequestId++;
     return new Promise<PreviewBundle>((resolve, reject) => {
       const transport = this.getTransport();
@@ -223,11 +248,11 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
         this.pending.delete(id);
         pending.detachAbort();
         pending.clearDeadline();
+        this.expectCancellationAcknowledgement(id, pending.transport);
         try {
           pending.transport.postMessage({ id, type: 'cancel' });
-          this.expectCancellationAcknowledgement(id, pending.transport);
         } catch {
-          // Worker failure is handled by its error/exit event; cancellation still settles now.
+          // The acknowledgement watchdog recycles transports that cannot accept cancellation.
         }
         reject(new PreviewBuildCancelledError());
       };
@@ -235,41 +260,52 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       const timeoutMs = selectCompilationTimeoutMs(request, this.options.compilationTimeoutMs);
       const activationTimeoutMs = Math.max(timeoutMs, DEFAULT_QUEUE_ACQUISITION_TIMEOUT_MS);
       const activationDeadline = setTimeout(() => {
-        this.handleCompilationTimeout(id, request.documentPath, activationTimeoutMs, transport);
+        this.handleCompilationTimeout(id, target, activationTimeoutMs, transport);
       }, activationTimeoutMs);
       activationDeadline.unref();
       let deadline: ReturnType<typeof setTimeout> | undefined;
       const pending: PendingWorkerCompilation = {
+        buildIntent,
         clearDeadline: () => {
           clearTimeout(activationDeadline);
           if (deadline !== undefined) clearTimeout(deadline);
         },
         detachAbort,
+        preparationMode,
         reject,
+        replayCount,
+        replayRequest: request,
         resolve,
         startDeadline: () => {
           if (deadline !== undefined) return;
           clearTimeout(activationDeadline);
           pending.startedAt = Date.now();
+          delete pending.replayRequest;
           deadline = setTimeout(() => {
-            this.handleCompilationTimeout(id, request.documentPath, timeoutMs, transport);
+            this.handleCompilationTimeout(id, target, timeoutMs, transport);
           }, timeoutMs);
           deadline.unref();
         },
-        target: request.documentPath,
+        target,
         transport,
+        ...(context?.signal === undefined ? {} : { signal: context.signal }),
         ...(context?.reportProgress === undefined
           ? {}
           : { reportProgress: context.reportProgress }),
       };
       this.pending.set(id, pending);
+      if (buildIntent === 'foreground') {
+        this.preemptActiveContextEnrichment(transport);
+      }
       try {
         transport.postMessage({ id, request, type: 'compile' });
       } catch (error) {
         this.pending.delete(id);
         detachAbort();
         pending.clearDeadline();
-        reject(createWorkerTransportError(error));
+        reject(
+          attachRequestContext(createWorkerTransportError(error, target, preparationMode), pending),
+        );
       }
     });
   }
@@ -373,6 +409,9 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     }
     if (message.type === 'started') {
       pending.startDeadline();
+      if (pending.buildIntent === 'context-enrichment') {
+        this.preemptActiveContextEnrichment(transport);
+      }
       return;
     }
     if (message.type === 'progress') {
@@ -387,7 +426,9 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     if (message.type === 'success') {
       pending.resolve(message.bundle);
     } else {
-      pending.reject(deserializePreviewCompilerWorkerError(message.error));
+      pending.reject(
+        attachRequestContext(deserializePreviewCompilerWorkerError(message.error), pending),
+      );
     }
     this.scheduleIdleRetirement(transport);
   }
@@ -401,18 +442,12 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       this.finishShutdown(transport);
       return;
     }
-    const active = [...this.pending.values()].find((pending) => pending.transport === transport);
-    const failure =
-      active !== undefined && isWorkerMemoryFailure(error)
-        ? new PreviewBuildStalledError(
-            active.target,
-            active.lastStage,
-            Math.max(0, Date.now() - (active.startedAt ?? Date.now())),
-            'memory',
-          )
-        : createWorkerTransportError(error);
-    this.rejectAllPending(failure);
-    void this.beginTransportRetirement(transport);
+    const memoryFailure = isWorkerMemoryFailure(error);
+    this.retireTransportPending(transport, (pending) =>
+      memoryFailure
+        ? createRequestScopedStall(pending, 'memory')
+        : createWorkerTransportError(error, pending.target, pending.preparationMode),
+    );
   }
 
   /** Detaches listeners logically, terminates the acknowledged worker, and resolves deactivation. */
@@ -529,8 +564,87 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     this.transport = undefined;
     this.clearIdleRetirement();
     this.clearCancellationAcknowledgements(transport);
-    this.rejectAllPending(error);
-    void this.beginTransportRetirement(transport);
+    this.retireTransportPending(transport, (pending) =>
+      createRequestScopedStall(pending, error.reason, error.elapsedMs),
+    );
+  }
+
+  /** Rejects active failures while replaying every untouched queued request at most once. */
+  private retireTransportPending(
+    transport: PreviewCompilerWorkerTransport,
+    createError: (pending: PendingWorkerCompilation) => Error,
+  ): void {
+    const replayable: (PendingWorkerCompilation & {
+      readonly replayRequest: PreviewBuildRequest;
+    })[] = [];
+    for (const [requestId, pending] of this.pending) {
+      if (pending.transport !== transport) continue;
+      this.pending.delete(requestId);
+      pending.detachAbort();
+      pending.clearDeadline();
+      if (
+        pending.replayRequest !== undefined &&
+        pending.startedAt === undefined &&
+        pending.replayCount < 1 &&
+        pending.signal?.aborted !== true
+      ) {
+        replayable.push(
+          pending as PendingWorkerCompilation & { readonly replayRequest: PreviewBuildRequest },
+        );
+      } else if (pending.signal?.aborted === true) {
+        pending.reject(new PreviewBuildCancelledError());
+      } else {
+        pending.reject(attachRequestContext(createError(pending), pending));
+      }
+    }
+    const retirement = this.beginTransportRetirement(transport);
+    for (const pending of replayable) {
+      void retirement.then(() => {
+        this.compileWithReplay(
+          pending.replayRequest,
+          {
+            ...(pending.reportProgress === undefined
+              ? {}
+              : { reportProgress: pending.reportProgress }),
+            ...(pending.signal === undefined ? {} : { signal: pending.signal }),
+          },
+          pending.replayCount + 1,
+        ).then(pending.resolve, pending.reject);
+      });
+    }
+  }
+
+  /**
+   * Cancels only explicitly optional context work when foreground work needs the serialized worker.
+   * The cancellation acknowledgement timer is authoritative: if native esbuild ignores AbortSignal,
+   * the queued fast request is replayed once on a clean worker instead of waiting behind it.
+   */
+  private preemptActiveContextEnrichment(transport: PreviewCompilerWorkerTransport): void {
+    const hasQueuedForeground = [...this.pending.values()].some(
+      (pending) =>
+        pending.transport === transport &&
+        pending.buildIntent === 'foreground' &&
+        pending.startedAt === undefined,
+    );
+    if (!hasQueuedForeground) return;
+    const activeEntry = [...this.pending.entries()].find(
+      ([, pending]) =>
+        pending.transport === transport &&
+        pending.buildIntent === 'context-enrichment' &&
+        pending.startedAt !== undefined,
+    );
+    if (activeEntry === undefined) return;
+    const [requestId, pending] = activeEntry;
+    this.pending.delete(requestId);
+    pending.detachAbort();
+    pending.clearDeadline();
+    pending.reject(new PreviewBuildCancelledError());
+    this.expectCancellationAcknowledgement(requestId, transport);
+    try {
+      transport.postMessage({ id: requestId, type: 'cancel' });
+    } catch {
+      // The acknowledgement watchdog recycles this transport and replays queued first paint.
+    }
   }
 
   /** Forces deactivation to finish when a cancelled native build never acknowledges shutdown. */
@@ -599,13 +713,95 @@ function attachAbortListener(signal: AbortSignal | undefined, abort: () => void)
 }
 
 /** Converts worker construction, protocol, and crash failures into an actionable domain error. */
-function createWorkerTransportError(error: unknown): PreviewCompilationError {
+function createWorkerTransportError(
+  error: unknown,
+  target?: string,
+  preparationMode?: PreviewPreparationMode,
+): PreviewCompilationError {
   const message = error instanceof Error ? error.message : String(error);
-  return new PreviewCompilationError(
-    `Background preview compiler unavailable: ${message}`,
-    [{ message, severity: 'error' }],
+  const requestContext =
+    target === undefined || preparationMode === undefined
+      ? ''
+      : ` for ${target} during ${preparationMode} preparation`;
+  const failure = new PreviewCompilationError(
+    `Background preview compiler unavailable${requestContext}: ${message}`,
+    [
+      {
+        message:
+          requestContext.length === 0
+            ? message
+            : `Worker transport failed${requestContext}: ${message}`,
+        severity: 'error',
+      },
+    ],
     error,
   );
+  if (target !== undefined) {
+    Object.defineProperty(failure, 'target', { enumerable: true, value: target });
+  }
+  if (preparationMode !== undefined) {
+    Object.defineProperty(failure, 'preparationMode', {
+      enumerable: true,
+      value: preparationMode,
+    });
+  }
+  return failure;
+}
+
+/** Creates one resource-stall error whose path and mode belong to the rejected request itself. */
+function createRequestScopedStall(
+  pending: PendingWorkerCompilation,
+  reason: PreviewBuildStallReason,
+  fallbackElapsedMs = 0,
+): PreviewBuildStalledError & { readonly preparationMode: PreviewPreparationMode } {
+  const elapsedMs =
+    pending.startedAt === undefined
+      ? Math.max(0, fallbackElapsedMs)
+      : Math.max(0, Date.now() - pending.startedAt);
+  const stalled = new PreviewBuildStalledError(
+    pending.target,
+    pending.lastStage,
+    elapsedMs,
+    reason,
+  ) as PreviewBuildStalledError & { readonly preparationMode: PreviewPreparationMode };
+  Object.defineProperty(stalled, 'preparationMode', {
+    enumerable: true,
+    value: pending.preparationMode,
+  });
+  stalled.message = `${stalled.message} Preparation mode: ${pending.preparationMode}.`;
+  return stalled;
+}
+
+/** Adds immutable request ownership to every worker-side or host-side terminal failure. */
+function attachRequestContext(
+  error: Error,
+  pending: PendingWorkerCompilation,
+): Error & {
+  readonly buildIntent: PreviewBuildIntent;
+  readonly preparationMode: PreviewPreparationMode;
+  readonly target: string;
+} {
+  const contextual = error as Error & {
+    readonly buildIntent: PreviewBuildIntent;
+    readonly preparationMode: PreviewPreparationMode;
+    readonly target: string;
+  };
+  if (!('target' in contextual)) {
+    Object.defineProperty(contextual, 'target', { enumerable: true, value: pending.target });
+  }
+  if (!('preparationMode' in contextual)) {
+    Object.defineProperty(contextual, 'preparationMode', {
+      enumerable: true,
+      value: pending.preparationMode,
+    });
+  }
+  if (!('buildIntent' in contextual)) {
+    Object.defineProperty(contextual, 'buildIntent', {
+      enumerable: true,
+      value: pending.buildIntent,
+    });
+  }
+  return contextual;
 }
 
 /** Chooses a hard watchdog that protects memory while allowing complete monorepo analysis. */

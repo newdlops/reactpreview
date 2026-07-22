@@ -13,10 +13,22 @@ export type PreviewRenderMode = 'component' | 'page-inspector';
 /** Two-phase preparation policy used to minimize time to the first rendered component. */
 export type PreviewPreparationMode = 'fast' | 'full';
 
+/**
+ * Scheduling intent kept separate from graph completeness.
+ * A complete foreground fallback or warm rebuild must never be mistaken for optional background
+ * context discovery merely because both use `preparationMode: 'full'`.
+ */
+export type PreviewBuildIntent = 'context-enrichment' | 'foreground';
+
 /** Immutable editor contents for a file-backed source module that may be imported by the target. */
 export interface PreviewSourceSnapshot {
   /** Absolute filesystem path used to match esbuild's resolved module identity. */
   readonly documentPath: string;
+  /**
+   * Monotonic editor revision used for exact, constant-size snapshot identity when available.
+   * Programmatic callers may omit it; consumers must then compare the complete source text.
+   */
+  readonly documentVersion?: number;
   /** esbuild loader selected from the document filename. */
   readonly language: PreviewSourceLanguage;
   /** Complete current editor contents, including unsaved changes. */
@@ -28,10 +40,17 @@ export interface PreviewSourceSnapshot {
  * `sourceText` deliberately comes from the editor rather than disk so unsaved changes are visible.
  */
 export interface PreviewBuildRequest {
+  /** Foreground work by default, or optional page-context enrichment that may be preempted. */
+  readonly buildIntent?: PreviewBuildIntent;
   /** Dirty file-backed editor snapshots that should override saved dependency modules when reached. */
   readonly dependencySnapshots: readonly PreviewSourceSnapshot[];
   /** Absolute filesystem path used as the module identity and import resolution base. */
   readonly documentPath: string;
+  /**
+   * Monotonic active-editor revision paired with `sourceText` when VS Code supplied the request.
+   * Keeping this optional preserves exact text-based invalidation for non-editor integrations.
+   */
+  readonly documentVersion?: number;
   /** esbuild loader selected from the document filename. */
   readonly language: PreviewSourceLanguage;
   /** Resource-scoped maximum combined generated output, expressed in whole mebibytes. */

@@ -4,6 +4,7 @@
  * without importing VS Code or creating a real thread.
  */
 import type { PreviewCompiler } from '../../application/previewCompiler';
+import type { PreviewBuildIntent, PreviewBuildRequest } from '../../domain/preview';
 import {
   PreviewBuildCancelledError,
   PreviewBuildStalledError,
@@ -41,14 +42,18 @@ export interface PreviewCompilerWorkerBackend extends PreviewCompiler {
 interface QueuedPreviewCompilation {
   /** Immutable request received from the host. */
   readonly message: PreviewCompilerWorkerCompileRequest;
-  /** Lower values run first; cold fast passes precede queued full enrichment. */
-  readonly priority: number;
+  /** Lower values run first: cold foreground, complete foreground, then optional enrichment. */
+  readonly priority: PreviewCompilationPriority;
 }
+
+/** Stable scheduler tiers that preserve fast first paint without making required full work optional. */
+type PreviewCompilationPriority = 0 | 1 | 2;
 
 const MAX_QUEUED_COMPILATIONS = 8;
 
 /** Serial worker scheduler that owns all compiler caches and native esbuild lifecycle. */
 export class PreviewCompilerWorkerServer {
+  private activeBuildIntent: PreviewBuildIntent | undefined;
   private activeController: AbortController | undefined;
   private activeRequestId: number | undefined;
   private finalizing = false;
@@ -96,11 +101,11 @@ export class PreviewCompilerWorkerServer {
     this.enqueue(message);
   }
 
-  /** Inserts fast work ahead of queued enrichment while preserving FIFO order per priority. */
+  /** Inserts foreground work ahead of queued enrichment while preserving FIFO order per intent. */
   private enqueue(message: PreviewCompilerWorkerCompileRequest): void {
     const queued = {
       message,
-      priority: message.request.preparationMode === 'fast' ? 0 : 1,
+      priority: selectCompilationPriority(message.request),
     };
     if (!this.reserveQueueCapacity(queued)) return;
     const laterIndex = this.queue.findIndex((candidate) => candidate.priority > queued.priority);
@@ -109,16 +114,33 @@ export class PreviewCompilerWorkerServer {
     } else {
       this.queue.splice(laterIndex, 0, queued);
     }
+    this.preemptActiveContextEnrichment(queued);
     void this.drain();
+  }
+
+  /**
+   * Gives first paint ownership of the serialized compiler ahead of optional full enrichment.
+   * The host also watches the cancellation acknowledgement and recycles a native build that does
+   * not observe AbortSignal, so this cooperative abort cannot leave the foreground request stuck.
+   */
+  private preemptActiveContextEnrichment(queued: QueuedPreviewCompilation): void {
+    if (
+      queued.message.request.buildIntent === 'context-enrichment' ||
+      this.activeBuildIntent !== 'context-enrichment' ||
+      this.activeController?.signal.aborted === true
+    ) {
+      return;
+    }
+    this.activeController?.abort();
   }
 
   /** Keeps cloned editor snapshots bounded and lets a first-paint request displace enrichment. */
   private reserveQueueCapacity(queued: QueuedPreviewCompilation): boolean {
     if (this.queue.length < MAX_QUEUED_COMPILATIONS) return true;
     let replaceableIndex = -1;
-    if (queued.priority === 0) {
+    if (queued.message.request.buildIntent !== 'context-enrichment') {
       for (let index = this.queue.length - 1; index >= 0; index -= 1) {
-        if ((this.queue[index]?.priority ?? queued.priority) > queued.priority) {
+        if (this.queue[index]?.message.request.buildIntent === 'context-enrichment') {
           replaceableIndex = index;
           break;
         }
@@ -207,6 +229,7 @@ export class PreviewCompilerWorkerServer {
     this.running = true;
     const controller = new AbortController();
     this.activeController = controller;
+    this.activeBuildIntent = queued.message.request.buildIntent ?? 'foreground';
     this.activeRequestId = queued.message.id;
     try {
       this.port.postMessage({ id: queued.message.id, type: 'started' });
@@ -216,6 +239,9 @@ export class PreviewCompilerWorkerServer {
         },
         signal: controller.signal,
       });
+      if (controller.signal.aborted) {
+        throw new PreviewBuildCancelledError();
+      }
       const bundle = attachPreviewArtifactMetadata(compiledBundle);
       this.port.postMessage(
         { bundle, id: queued.message.id, type: 'success' },
@@ -230,6 +256,7 @@ export class PreviewCompilerWorkerServer {
       );
     } finally {
       this.activeController = undefined;
+      this.activeBuildIntent = undefined;
       this.activeRequestId = undefined;
       this.running = false;
       if (this.shouldFinalizeAfterRun()) {
@@ -269,4 +296,10 @@ export class PreviewCompilerWorkerServer {
     this.port.postMessage({ type: 'shutdown-complete' });
     this.port.close();
   }
+}
+
+/** Maps scheduling intent and completeness to a stable FIFO-preserving worker priority. */
+function selectCompilationPriority(request: PreviewBuildRequest): PreviewCompilationPriority {
+  if (request.buildIntent === 'context-enrichment') return 2;
+  return request.preparationMode === 'fast' ? 0 : 1;
 }

@@ -67,17 +67,18 @@ class DeferredCompiler implements PreviewCompilerWorkerBackend {
 }
 
 describe('PreviewCompilerWorkerServer', () => {
-  /** Runs one graph at a time and moves a cold fast pass ahead of queued full enrichment. */
-  it('bounds concurrency and prioritizes fast first paint', async () => {
+  /** Cancels active enrichment and moves a cold fast pass ahead of queued full analysis. */
+  it('preempts optional full enrichment for fast first paint', async () => {
     const port = new FakeWorkerPort();
     const compiler = new DeferredCompiler();
     const server = new PreviewCompilerWorkerServer(port, compiler);
     server.start();
 
-    port.request(createCompileRequest(1, 'full'));
-    port.request(createCompileRequest(2, 'full'));
+    port.request(createCompileRequest(1, 'full', 'context-enrichment'));
+    port.request(createCompileRequest(2, 'full', 'context-enrichment'));
     port.request(createCompileRequest(3, 'fast'));
     expect(compiler.calls.map((call) => call.request.documentPath)).toEqual(['/Target1.tsx']);
+    expect(compiler.calls[0]?.context?.signal?.aborted).toBe(true);
     expect(port.responses.filter((response) => response.type === 'started')).toEqual([
       { id: 1, type: 'started' },
     ]);
@@ -106,7 +107,64 @@ describe('PreviewCompilerWorkerServer', () => {
     ]);
     compiler.calls[2]?.deferred.resolve(createBundle(2));
     await waitForMicrotasks();
-    expect(port.responses.filter((response) => response.type === 'success')).toHaveLength(3);
+    expect(port.responses.filter((response) => response.type === 'success')).toHaveLength(2);
+    expect(
+      port.responses.find((response) => response.type === 'failure' && response.id === 1),
+    ).toMatchObject({ error: { kind: 'cancelled' }, id: 1, type: 'failure' });
+  });
+
+  /** A required complete fallback remains foreground work and cannot be preempted by another tab. */
+  it('does not preempt a foreground full build', async () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+
+    port.request(createCompileRequest(1, 'full'));
+    port.request(createCompileRequest(2, 'fast'));
+    expect(compiler.calls[0]?.context?.signal?.aborted).toBe(false);
+
+    compiler.calls[0]?.deferred.resolve(createBundle(1));
+    await waitForMicrotasks();
+    expect(compiler.calls.map((call) => call.request.documentPath)).toEqual([
+      '/Target1.tsx',
+      '/Target2.tsx',
+    ]);
+  });
+
+  /** Queued first paint overtakes complete foreground work without cancelling or dropping it. */
+  it('orders fast foreground before queued full foreground and enrichment', async () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+
+    port.request(createCompileRequest(1, 'full'));
+    port.request(createCompileRequest(2, 'full'));
+    port.request(createCompileRequest(3, 'full', 'context-enrichment'));
+    port.request(createCompileRequest(4, 'fast'));
+
+    compiler.calls[0]?.deferred.resolve(createBundle(1));
+    await waitForMicrotasks();
+    expect(compiler.calls.map((call) => call.request.documentPath)).toEqual([
+      '/Target1.tsx',
+      '/Target4.tsx',
+    ]);
+    compiler.calls[1]?.deferred.resolve(createBundle(4));
+    await waitForMicrotasks();
+    expect(compiler.calls.map((call) => call.request.documentPath)).toEqual([
+      '/Target1.tsx',
+      '/Target4.tsx',
+      '/Target2.tsx',
+    ]);
+    compiler.calls[2]?.deferred.resolve(createBundle(2));
+    await waitForMicrotasks();
+    expect(compiler.calls.map((call) => call.request.documentPath)).toEqual([
+      '/Target1.tsx',
+      '/Target4.tsx',
+      '/Target2.tsx',
+      '/Target3.tsx',
+    ]);
   });
 
   /** Aborts active work before stopping native compiler state and closing the worker port. */
@@ -143,6 +201,32 @@ describe('PreviewCompilerWorkerServer', () => {
         (response) => response.type === 'failure' && response.error.kind === 'stalled',
       ),
     ).toHaveLength(1);
+    expect(
+      port.responses.find(
+        (response) => response.type === 'failure' && response.error.kind === 'stalled',
+      ),
+    ).toMatchObject({ id: 10 });
+  });
+
+  /** Queue pressure lets foreground replace only optional enrichment, never another foreground tab. */
+  it('evicts queued enrichment to admit fast foreground', () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+
+    port.request(createCompileRequest(1, 'full'));
+    for (let id = 2; id <= 8; id += 1) {
+      port.request(createCompileRequest(id, 'full'));
+    }
+    port.request(createCompileRequest(9, 'full', 'context-enrichment'));
+    port.request(createCompileRequest(10, 'fast'));
+
+    const capacityFailures = port.responses.filter(
+      (response) => response.type === 'failure' && response.error.kind === 'stalled',
+    );
+    expect(capacityFailures).toHaveLength(1);
+    expect(capacityFailures[0]).toMatchObject({ id: 9 });
   });
 });
 
@@ -150,11 +234,13 @@ describe('PreviewCompilerWorkerServer', () => {
 function createCompileRequest(
   id: number,
   preparationMode: 'fast' | 'full',
+  buildIntent: 'context-enrichment' | 'foreground' = 'foreground',
 ): Extract<PreviewCompilerWorkerRequest, { readonly type: 'compile' }> {
   return {
     id,
     request: {
       dependencySnapshots: [],
+      buildIntent,
       documentPath: `/Target${id.toString()}.tsx`,
       language: 'tsx',
       preparationMode,

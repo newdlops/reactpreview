@@ -134,10 +134,12 @@ describe('resolveActivePreviewTarget', () => {
     expect(target.request.dependencySnapshots).toEqual([
       {
         documentPath: dirtyChild.fileName,
+        documentVersion: dirtyChild.version,
         language: 'tsx',
         sourceText: 'dirty child source',
       },
     ]);
+    expect(target.request.documentVersion).toBe(activeDocument.version);
     expect(target.request.maxOutputMebibytes).toBe(256);
     expect(target.request.tsconfigPath).toBe(path.join('/workspace', 'tsconfig.app.json'));
     expect(target.request.setupModulePath).toBe(
@@ -189,5 +191,6 @@ function createDocument(
     isDirty,
     isUntitled: false,
     uri: vscode.Uri.file(fileName),
+    version: sourceText.length,
   } as vscode.TextDocument;
 }

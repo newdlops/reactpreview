@@ -6,11 +6,18 @@
 
 /** One statically inspectable CSS import and the optional layer/supports/media suffix after it. */
 export interface PreviewCssImport {
+  /** Offset immediately after the statement semicolon, used for exact fail-soft removal. */
+  readonly statementEnd: number;
+  /** Offset of the `@` beginning this import, used for exact fail-soft removal. */
+  readonly statementStart: number;
   /** Unescaped local or bare package request. */
   readonly specifier: string;
   /** Authored tokens following the request, such as Tailwind's `source(...)` modifier. */
   readonly modifiers: string;
 }
+
+/** Parsed request body before the outer scanner attaches its exact source range. */
+type PreviewCssImportBody = Omit<PreviewCssImport, 'statementEnd' | 'statementStart'>;
 
 /** Complete parse result; `unsafeReason` means no adapter may process this stylesheet. */
 export interface PreviewCssImportParseResult {
@@ -54,7 +61,13 @@ export function parsePreviewCssImports(source: string): PreviewCssImportParseRes
     if (statement.unsafeReason !== undefined) return invalidImport(imports, statement.unsafeReason);
     const parsed = parseImportBody(statement.body ?? '');
     if (parsed.unsafeReason !== undefined) return invalidImport(imports, parsed.unsafeReason);
-    if (parsed.import !== undefined) imports.push(parsed.import);
+    if (parsed.import !== undefined) {
+      imports.push({
+        ...parsed.import,
+        statementEnd: statement.nextIndex ?? source.length,
+        statementStart: index,
+      });
+    }
     index = statement.nextIndex ?? source.length;
   }
   return { imports };
@@ -96,7 +109,7 @@ function readImportStatement(
 
 /** Parses one import request and leaves its optional modifiers untouched for policy validation. */
 function parseImportBody(body: string): {
-  readonly import?: PreviewCssImport;
+  readonly import?: PreviewCssImportBody;
   readonly unsafeReason?: string;
 } {
   const value = body.trimStart();

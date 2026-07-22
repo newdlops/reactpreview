@@ -106,6 +106,14 @@ interface PreviewCssImportPreflight {
   readonly unsafeReason?: string;
 }
 
+/** Result of removing only proven-unresolvable Tailwind package imports from fail-soft CSS. */
+interface PreviewTailwindImportFallback {
+  /** Whether at least one exact root import was omitted. */
+  readonly omittedUnresolvedImport: boolean;
+  /** CSS safe to return to esbuild's ordinary loader. */
+  readonly source: string;
+}
+
 /** Trusted roots and live dirty-source access used by one persistent esbuild context. */
 export interface PreviewTailwindPluginOptions {
   /** Nearest package boundary selected for the active preview target. */
@@ -177,13 +185,18 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
         }
         if (implementation === undefined) {
           const pnpManifestPath = findNearestPnpManifest(styleRoot, workspaceRoot);
-          return createFailSoftResult(
-            source,
-            sourcePath,
-            loader,
+          const importFallback = omitUnresolvedTailwindRootImports(source, sourcePath);
+          const missingAdapterMessage =
             pnpManifestPath === undefined
               ? 'No compatible project-local Tailwind PostCSS adapter was found. Install @tailwindcss/postcss for Tailwind v4 or postcss with tailwindcss for Tailwind v2/v3.'
-              : "Yarn PnP zero-install Tailwind packages could not be loaded without activating the workspace's process-wide .pnp.cjs hook, so React Preview retained the authored CSS. Unplug @tailwindcss/postcss, postcss, tailwindcss, and @tailwindcss/oxide or use a node_modules linker.",
+              : "Yarn PnP zero-install Tailwind packages could not be loaded without activating the workspace's process-wide .pnp.cjs hook, so React Preview retained the authored CSS. Unplug @tailwindcss/postcss, postcss, tailwindcss, and @tailwindcss/oxide or use a node_modules linker.";
+          return createFailSoftResult(
+            importFallback.source,
+            sourcePath,
+            loader,
+            importFallback.omittedUnresolvedImport
+              ? `${missingAdapterMessage} The unresolved @import "tailwindcss" rule was omitted so remaining authored CSS can render.`
+              : missingAdapterMessage,
             undefined,
             [
               path.join(styleRoot, 'package.json'),
@@ -242,6 +255,40 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
       build.onLoad({ filter: CSS_FILTER, namespace: 'file' }, loadTailwindStylesheet);
     },
   };
+}
+
+/**
+ * Removes exact Tailwind root imports only when Node's inert package resolver cannot find them.
+ * Other imports, comments, strings, and Tailwind directives remain byte-for-byte authored. Exact
+ * parser ranges avoid a broad regular expression that could rewrite commented documentation.
+ */
+function omitUnresolvedTailwindRootImports(
+  source: string,
+  sourcePath: string,
+): PreviewTailwindImportFallback {
+  const parsedImports = parsePreviewCssImports(source);
+  if (
+    parsedImports.unsafeReason !== undefined ||
+    !parsedImports.imports.some((cssImport) => cssImport.specifier === 'tailwindcss')
+  ) {
+    return { omittedUnresolvedImport: false, source };
+  }
+  try {
+    createRequire(sourcePath).resolve('tailwindcss');
+    return { omittedUnresolvedImport: false, source };
+  } catch {
+    let output = source;
+    for (const cssImport of [...parsedImports.imports].reverse()) {
+      if (cssImport.specifier !== 'tailwindcss') continue;
+      const removed = source.slice(cssImport.statementStart, cssImport.statementEnd);
+      const replacement = removed.replaceAll(/[^\r\n]/gu, ' ');
+      output =
+        output.slice(0, cssImport.statementStart) +
+        replacement +
+        output.slice(cssImport.statementEnd);
+    }
+    return { omittedUnresolvedImport: true, source: output };
+  }
 }
 
 /** Loads v4 first, then a configuration-free v2/v3 PostCSS fallback from the same package graph. */

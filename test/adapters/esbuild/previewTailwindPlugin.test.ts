@@ -97,6 +97,28 @@ describe('createPreviewTailwindPlugin', () => {
     expect(result.warnings[0]?.text).toContain('No compatible project-local Tailwind');
   });
 
+  /** Omits only an unresolved package root import so remaining authored CSS can still bundle. */
+  it('removes an unresolved Tailwind root import when no project package is installed', async () => {
+    const projectRoot = await createProject('tailwind-import-missing-');
+    const stylesheetPath = path.join(projectRoot, 'globals.css');
+    await writeFile(
+      stylesheetPath,
+      [
+        '/* @import "tailwindcss"; remains documentation */',
+        '@import "tailwindcss";',
+        '.authored-after-import { display: grid; }',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath);
+    const css = readCssOutput(result);
+
+    expect(css).toContain('.authored-after-import');
+    expect(css).not.toContain('@import');
+    expect(result.warnings[0]?.text).toContain('unresolved @import "tailwindcss"');
+  });
+
   /** Identifies zero-install PnP explicitly without executing its process-wide runtime hook. */
   it('explains the Yarn PnP zero-install adapter boundary', async () => {
     const projectRoot = await createProject('tailwind-pnp-');

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { PreviewCompilationError, type PreviewBuildRequest } from '../../domain/preview';
 import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
 import type { PreviewRuntimeWatchInputs } from './previewRuntimeEnvironment';
+import type { PreviewRouterRequirement } from './previewRouterRequirement';
 import type { PreviewSassBoundary } from './previewSassPlugin';
 import type { PreviewTargetUsageProps } from './previewTargetUsageProps';
 import type { PreviewGlobalPackageBridgePlan } from './globalPackageBridge/previewGlobalPackageBridge';
@@ -43,6 +44,22 @@ export interface PreviewRouterBuildSelection {
   readonly automaticallyWrap: boolean;
   /** Whether the project router package should be resolved into the final runtime. */
   readonly enabled: boolean;
+}
+
+/**
+ * Seeds the first native build from both a cached reached graph and the current editor target.
+ * Direct router hooks are therefore wrapped on the first pass instead of compiling the same large
+ * dependency graph once to discover the hook and a second time to install its MemoryRouter.
+ */
+export function selectPreviewInitialRouterBuild(
+  cached: PreviewRouterRequirement | undefined,
+  target: PreviewRouterRequirement,
+): PreviewRouterBuildSelection {
+  const consumesRouter = cached?.consumesRouter === true || target.consumesRouter;
+  const ownsRouter = cached?.ownsRouter === true || target.ownsRouter;
+  return consumesRouter
+    ? { automaticallyWrap: !ownsRouter, enabled: true }
+    : { automaticallyWrap: false, enabled: false };
 }
 
 /** Reports whether cached router ownership exactly matches the newly reached source graph. */

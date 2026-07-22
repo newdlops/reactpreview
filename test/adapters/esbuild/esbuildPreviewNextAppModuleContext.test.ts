@@ -27,7 +27,11 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
         mkdir(libraryDirectory, { recursive: true }),
       ]);
       await Promise.all([
-        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(
+          path.join(projectRoot, 'package.json'),
+          '{"private":true,"dependencies":{"next":"15.5.20"}}',
+          'utf8',
+        ),
         writeFile(
           layoutPath,
           "export default function Layout({ children }) { return <div data-shell='ROOT_LAYOUT_MARKER'>{children}</div>; }",
@@ -48,6 +52,7 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
         dependencySnapshots: [],
         documentPath: modulePath,
         language: 'tsx',
+        preparationMode: 'full',
         renderMode: 'page-inspector',
         sourceText: moduleSource,
         useStorybookPreview: false,
@@ -62,7 +67,7 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
       expect(javascript).toContain('DASHBOARD_PAGE_MARKER');
       expect(javascript).toContain('MODULE_CONTEXT_VALUE');
       expect(javascript).toContain('import-chain');
-      expect(javascript).toContain('The selected module participates in this authored Next page');
+      expect(javascript).toContain('The selected module participates in this authored page');
       expect(javascript).not.toContain('direct-target:default');
       expect(bundle.dependencies).toEqual(
         expect.arrayContaining([layoutPath, modulePath, pagePath]),
@@ -91,7 +96,11 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
     try {
       await mkdir(pageDirectory, { recursive: true });
       await Promise.all([
-        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(
+          path.join(projectRoot, 'package.json'),
+          '{"private":true,"dependencies":{"next":"15.5.20"}}',
+          'utf8',
+        ),
         writeFile(
           path.join(appDirectory, 'layout.tsx'),
           "export default function Layout({ children }) { return <div data-shell='SETTINGS_LAYOUT'>{children}</div>; }",
@@ -125,7 +134,7 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
       expect(javascript).toContain('SETTINGS_LAYOUT');
       expect(javascript).toContain('SETTINGS_PAGE');
       expect(javascript).toContain('SETTINGS_CONTEXT_VALUE');
-      expect(javascript).toContain('The selected module participates in this authored Next page');
+      expect(javascript).toContain('The selected module participates in this authored page');
       expect(javascript).not.toContain('direct-target:SETTINGS_CONFIG');
     } finally {
       await compiler.shutdown();
@@ -199,7 +208,7 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
       expect(javascript).toContain('MONOREPO_LAYOUT');
       expect(javascript).toContain('MONOREPO_PAGE');
       expect(javascript).toContain('MONOREPO_CONTEXT_VALUE');
-      expect(javascript).toContain('The selected module participates in this authored Next page');
+      expect(javascript).toContain('The selected module participates in this authored page');
     } finally {
       await compiler.shutdown();
       await rm(workspaceRoot, { force: true, recursive: true });
@@ -220,7 +229,11 @@ describe('EsbuildPreviewCompiler Next App module context', () => {
     try {
       await mkdir(pageDirectory, { recursive: true });
       await Promise.all([
-        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(
+          path.join(projectRoot, 'package.json'),
+          '{"private":true,"dependencies":{"next":"15.5.20"}}',
+          'utf8',
+        ),
         writeFile(
           path.join(appDirectory, 'layout.tsx'),
           "export default function Layout({ children }) { return <div data-shell='LOADING_LAYOUT_MARKER'>{children}</div>; }",

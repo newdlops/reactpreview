@@ -63,6 +63,7 @@ import {
   haveEquivalentRouterSelections,
   mergePreviewWatchDirectories,
   requirePreviewSassBoundary,
+  selectPreviewInitialRouterBuild,
   type PreviewRouterBuildSelection,
 } from './previewCompilerDefaults';
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
@@ -92,7 +93,9 @@ import {
 import { selectPreviewReactDomRootKind } from './previewReactDomRootRuntimeSource';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
+import { collectPreviewRouterRequirement } from './previewRouterRequirement';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
+import { collectPreviewNextRuntimeEvidence as findNext } from './previewNextRuntimeEvidence';
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import { PreviewProjectUsageCache } from './previewProjectUsageCache';
 import { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
@@ -213,6 +216,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const managedDependencyEnvironment: PreviewManagedDependencyEnvironment =
         (await this.managedDependencyStore?.prepare(projectRoot, canonicalWorkspaceRoot)) ??
         EMPTY_MANAGED_ENVIRONMENT;
+      const dependencyProfile = managedDependencyEnvironment.profile;
+      const nextEvidence = await findNext(dependencyProfile, projectRoot, request);
       acquisitionContext = {
         environment: managedDependencyEnvironment,
         projectRoot,
@@ -226,8 +231,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      assertPreviewReactTarget(request, managedDependencyEnvironment.profile, staticModuleResolver);
+      assertPreviewReactTarget(request, dependencyProfile, staticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
+      const routerNeed = collectPreviewRouterRequirement(request.documentPath, request.sourceText);
       const targetExports = targetSelection.targetExports;
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
@@ -254,6 +260,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         await preparePreviewCompilerUsage({
           cache: this.projectUsageCache,
           projectRoot,
+          projectUsesNextRuntime: nextEvidence.routeContext,
           request,
           resolver: staticModuleResolver,
           signal: buildSignal,
@@ -387,6 +394,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ? targetUsageProps.parentSlicesByExport
             : {};
         const sourceTransformer = new PreviewSourceTransformer({
+          deferDormantOverlayImports: useFastPreparation,
           documentPath: canonicalizeExistingPath(request.documentPath),
           implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
           implicitPackageGlobalResolver: staticModuleResolver,
@@ -398,12 +406,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           graphqlModuleResolver: staticModuleResolver,
           jsxRuntimeResolver: staticModuleResolver,
           projectRoot,
-          projectUsesNextRuntime:
-            findPreviewDependencySpecifier(managedDependencyEnvironment.profile, 'next') !==
-            undefined,
+          projectUsesNextRuntime: nextEvidence.projectRuntime,
           projectUsesReactRuntime:
-            findPreviewDependencySpecifier(managedDependencyEnvironment.profile, 'react') !==
-            undefined,
+            findPreviewDependencySpecifier(dependencyProfile, 'react') !== undefined,
           readGraphqlSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
           workspaceRoot: canonicalWorkspaceRoot,
         });
@@ -509,6 +514,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               createPreviewRouterBridgePlugin({
                 automaticallyWrap: routerSelection.automaticallyWrap,
                 enabled: routerSelection.enabled,
+                nextAppEnabled:
+                  inspectorPlan?.pageCandidates.some(
+                    (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',
+                  ) === true,
                 projectRoot,
               }),
               createPreviewThemeBridgePlugin({ projectRoot }),
@@ -660,7 +669,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ),
         };
       };
-
       /**
        * Rebuilds at most once for graph-proven router hooks or exact installed-package globals.
        * Strong bootstrap/ambient bridges participate in the first build. Conservative same-name
@@ -692,13 +700,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           referencedGlobalNames: cachedPlan?.referencedGlobalNames ?? [],
           workspaceRoot: canonicalWorkspaceRoot,
         });
-        const initialRouterSelection: PreviewRouterBuildSelection =
-          cachedPlan?.routerRequirement.consumesRouter === true
-            ? {
-                automaticallyWrap: !cachedPlan.routerRequirement.ownsRouter,
-                enabled: true,
-              }
-            : { automaticallyWrap: false, enabled: false };
+        const initialRouterSelection: PreviewRouterBuildSelection = selectPreviewInitialRouterBuild(
+          cachedPlan?.routerRequirement,
+          routerNeed,
+        );
         let fallbackBoundary = createStorybookFallbackBoundary(environment);
         activeStorybookFallbackBoundary = fallbackBoundary;
         const initialBuild = await runBuild(
@@ -815,7 +820,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         if (failedFallbackBoundary?.shouldRetry(error.errors, request.workspaceRoot) !== true) {
           throw error;
         }
-
         const setupFailureMessage = error.errors[0]?.text ?? 'unknown setup error';
         const fallbackWatchInputs = await failedFallbackBoundary.createWatchInputs(
           error.errors,
@@ -869,7 +873,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           fallbackWatchDirectories,
         ),
       };
-
       const outputStrategyDiagnostics: readonly PreviewDiagnostic[] =
         discoveredSplitOutputCount === undefined
           ? []
@@ -880,7 +883,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 createPreviewDocumentName(request),
               ),
             ];
-
       const inspectorFallbackDiagnostics: readonly PreviewDiagnostic[] =
         request.renderMode === 'page-inspector' &&
         !useFastPreparation &&
@@ -950,20 +952,17 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       if (error instanceof PreviewCompilationError) {
         throw error;
       }
-
       const diagnostics = isBuildFailure(error)
         ? error.errors.map((message) => convertMessage(message, 'error'))
         : [{ message: describeUnknownError(error), severity: 'error' as const }];
       const firstDiagnostic = diagnostics[0];
       const summary = firstDiagnostic?.message ?? 'The React module could not be bundled.';
-
       throw new PreviewCompilationError(`Preview build failed: ${summary}`, diagnostics, error);
     } finally {
       detachCallerAbort();
       this.activeBuildControllers.delete(buildController);
     }
   }
-
   /**
    * Prevents new builds and stops esbuild's shared native service during extension deactivation.
    * Any in-flight build rejects and is discarded by the controller's revision guard.
@@ -971,7 +970,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   public dispose(): void {
     void this.shutdown();
   }
-
   /**
    * Stops esbuild's native service and exposes a promise for orderly extension deactivation.
    * Repeated calls return one promise so explicit shutdown and context disposal remain idempotent.

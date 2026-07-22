@@ -4,12 +4,14 @@
  * readable while preserving exact domain shapes for fast and full preparation modes.
  */
 import path from 'node:path';
-import type { PreviewBuildRequest } from '../../domain/preview';
+import { PreviewCompilationError, type PreviewBuildRequest } from '../../domain/preview';
 import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
 import type { PreviewRuntimeWatchInputs } from './previewRuntimeEnvironment';
 import type { PreviewSassBoundary } from './previewSassPlugin';
 import type { PreviewTargetUsageProps } from './previewTargetUsageProps';
 import type { PreviewGlobalPackageBridgePlan } from './globalPackageBridge/previewGlobalPackageBridge';
+
+const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
 
 /** Direct preview omits package-wide reverse analysis until background enrichment begins. */
 export const EMPTY_TARGET_USAGE_PROPS: PreviewTargetUsageProps = Object.freeze({
@@ -116,4 +118,18 @@ export function requirePreviewSassBoundary(
     throw new Error('React Preview could not initialize its project-scoped Sass boundary.');
   }
   return boundary;
+}
+
+/** Merges resource, runtime, and style watch roots under one lightweight session limit. */
+export function mergePreviewWatchDirectories(
+  ...directoryGroups: readonly (readonly string[])[]
+): readonly string[] {
+  const directories = [...new Set(directoryGroups.flat())].sort();
+  if (directories.length > MAX_PREVIEW_WATCH_DIRECTORIES) {
+    throw new PreviewCompilationError(
+      `Preview build exceeds the ${MAX_PREVIEW_WATCH_DIRECTORIES.toString()} watch directory safety limit.`,
+      [],
+    );
+  }
+  return directories;
 }

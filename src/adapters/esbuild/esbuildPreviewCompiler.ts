@@ -61,10 +61,12 @@ import {
   describeGlobalPackageBridgeStatus,
   haveEquivalentGlobalPackageBridges,
   haveEquivalentRouterSelections,
+  mergePreviewWatchDirectories,
   requirePreviewSassBoundary,
   type PreviewRouterBuildSelection,
 } from './previewCompilerDefaults';
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
+import type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewGeneratedModuleFallbackPlugin } from './previewGeneratedModuleFallback';
 import {
@@ -72,6 +74,10 @@ import {
   discoverPreviewLegacyCommonJsGlobals,
 } from './previewLegacyCommonJsGlobalDiscovery';
 import { createPreviewManagedDependencyPeerPlugin } from './previewManagedDependencyPeerPlugin';
+import {
+  tryAcquirePreviewMissingDependencies,
+  type PreviewMissingDependencyAcquisitionContext,
+} from './previewMissingDependencyRequirements';
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
@@ -128,17 +134,7 @@ import {
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
 
-const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
-
-/** Optional compiler policy overrides used by deterministic integration tests. */
-export interface EsbuildPreviewCompilerOptions {
-  /** Extension-packaged node_modules containing the compatible baseline React runtime. */
-  readonly bundledNodeModulesPath?: string;
-  /** Persistent global-storage directory used for immutable cross-workspace package environments. */
-  readonly managedDependencyStoreRoot?: string;
-  /** Split-output threshold before retrying with lazy initializers in a coalesced local artifact. */
-  readonly maximumSplitOutputFiles?: number;
-}
+export type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 
 /** esbuild-backed compiler for browser-safe React preview bundles. */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
@@ -178,6 +174,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ...(options.bundledNodeModulesPath === undefined
               ? {}
               : { bundledNodeModulesPath: options.bundledNodeModulesPath }),
+            ...(options.lockedDependencyAcquirer === undefined
+              ? {}
+              : { lockedDependencyAcquirer: options.lockedDependencyAcquirer }),
             rootPath: options.managedDependencyStoreRoot,
           });
   }
@@ -194,6 +193,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   public async compile(
     request: PreviewBuildRequest,
     context?: PreviewBuildExecutionContext,
+    dependencyAcquisitionAttempted = false,
   ): Promise<PreviewBundle> {
     if (this.disposed) {
       throw new PreviewCompilationError('The React preview compiler is already closed.', []);
@@ -203,6 +203,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     const detachCallerAbort = forwardPreviewAbort(context?.signal, buildController);
     this.activeBuildControllers.add(buildController);
     const buildSignal = buildController.signal;
+    let acquisitionContext: PreviewMissingDependencyAcquisitionContext | undefined;
     try {
       throwIfPreviewBuildCancelled(buildSignal);
       const canonicalWorkspaceRoot = canonicalizeExistingPath(request.workspaceRoot);
@@ -217,6 +218,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const managedDependencyEnvironment: PreviewManagedDependencyEnvironment =
         (await this.managedDependencyStore?.prepare(projectRoot, canonicalWorkspaceRoot)) ??
         EMPTY_MANAGED_ENVIRONMENT;
+      acquisitionContext = {
+        environment: managedDependencyEnvironment,
+        projectRoot,
+        reportAcquisition: () => context?.reportProgress?.('acquiring-dependencies'),
+        workspaceRoot: canonicalWorkspaceRoot,
+      };
       const targetExports = selectPreviewTargetExports(request.documentPath, request.sourceText);
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
@@ -924,6 +931,18 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       if (isPreviewBuildCancellation(error, buildSignal)) {
         throw error;
       }
+      if (!dependencyAcquisitionAttempted && isBuildFailure(error)) {
+        if (
+          await tryAcquirePreviewMissingDependencies({
+            context: acquisitionContext,
+            errors: error.errors,
+            signal: buildSignal,
+            store: this.managedDependencyStore,
+          })
+        ) {
+          return await this.compile(request, context, true);
+        }
+      }
       if (error instanceof PreviewCompilationError) {
         throw error;
       }
@@ -976,24 +995,4 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     });
     return this.shutdownPromise;
   }
-}
-
-/**
- * Merges resource, runtime-convention, and recoverable style roots under one build limit.
- *
- * @param directoryGroups Independent bounded directory collections produced by build adapters.
- * @returns Sorted unique watch directories for one pinned preview session.
- * @throws PreviewCompilationError when the combined graph exceeds the lightweight watcher budget.
- */
-function mergePreviewWatchDirectories(
-  ...directoryGroups: readonly (readonly string[])[]
-): readonly string[] {
-  const directories = [...new Set(directoryGroups.flat())].sort();
-  if (directories.length > MAX_PREVIEW_WATCH_DIRECTORIES) {
-    throw new PreviewCompilationError(
-      `Preview build exceeds the ${MAX_PREVIEW_WATCH_DIRECTORIES.toString()} watch directory safety limit.`,
-      [],
-    );
-  }
-  return directories;
 }

@@ -276,6 +276,105 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       'INTERNAL_THEME_MARKER',
     );
   });
+
+  /** Keeps pruning when a shared-package target is mounted by a sibling application package. */
+  it('applies a module page corridor across monorepo package roots', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const projectRoot = path.join(workspaceRoot, 'packages', 'shared');
+    const appRoot = path.join(workspaceRoot, 'apps', 'site');
+    const entryPath = path.join(appRoot, 'entry.ts');
+    const selectedPath = path.join(appRoot, 'Selected.ts');
+    const unrelatedPath = path.join(appRoot, 'Unrelated.ts');
+    const contextModulePath = path.join(projectRoot, 'registry.ts');
+    await Promise.all([
+      mkdir(projectRoot, { recursive: true }),
+      mkdir(appRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          `export const selected = () => import('./Selected');`,
+          `export const unrelated = () => import('./Unrelated');`,
+        ].join('\n'),
+      ),
+      writeFile(selectedPath, `export default 'CROSS_PACKAGE_SELECTED';`),
+      writeFile(unrelatedPath, `export default 'CROSS_PACKAGE_UNRELATED';`),
+      writeFile(contextModulePath, `export const registry = {};`),
+    ]);
+    const ordinaryPlan = createCorridorPlan(entryPath, selectedPath);
+    const plan: PreviewInspectorAncestorPlan = {
+      ...ordinaryPlan,
+      contextModule: {
+        evidenceKind: 'import-chain',
+        importPath: [entryPath, contextModulePath],
+        sourcePath: contextModulePath,
+      },
+    };
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan,
+          projectRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('CROSS_PACKAGE_SELECTED');
+    expect(source).not.toContain('CROSS_PACKAGE_UNRELATED');
+    expect(source).toContain('ReactPreviewDeferredCorridorRoute');
+  });
+
+  /** Coalesces unresolved generated aliases instead of letting a broad registry fail the build. */
+  it('omits unresolved branches from a broad generated registry', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const selectedPath = path.join(workspaceRoot, 'src', 'Selected.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        `export const routes = [${Array.from(
+          { length: 30 },
+          (_, index) => `() => import('@generated/missing-${index.toString()}')`,
+        ).join(',')}];`,
+      ),
+      writeFile(selectedPath, `export default 'SELECTED';`),
+    ]);
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan: createCorridorPlan(entryPath, selectedPath),
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+
+    expect(result.outputFiles.map((outputFile) => outputFile.text).join('\n')).toContain(
+      'ReactPreviewDeferredCorridorRoute',
+    );
+  });
 });
 
 /** Creates the minimum immutable plan whose entry and selected module form the allowed corridor. */

@@ -222,9 +222,10 @@ export function createPreviewInspectorRootSource(
   // Register every statically proven current-file component behind its own dynamic import. The
   // browser invokes these loaders only for the explicit file-component overview; authored page
   // flow still mounts one selected caller path and preserves its exact UI.
-  const directTargetExportNames = [
-    ...new Set([plan.target.exportName, ...Object.keys(plan.renderChainsByExport)]),
-  ];
+  const directTargetExportNames =
+    plan.contextModule === undefined
+      ? [...new Set([plan.target.exportName, ...Object.keys(plan.renderChainsByExport)])]
+      : [];
   for (const exportName of directTargetExportNames) assertExportName(exportName);
   const directTargetDefinitions = directTargetExportNames.map((exportName) =>
     [
@@ -252,6 +253,7 @@ export function createPreviewInspectorRootSource(
     inspector: {
       ancestry: plan.edges,
       complete: plan.complete,
+      ...(plan.contextModule === undefined ? {} : { contextModule: plan.contextModule }),
       pageCandidates: browserCandidates,
       renderChain: plan.renderChain,
       renderChainsByExport: plan.renderChainsByExport,

@@ -56,6 +56,7 @@ export function createPreviewInspectorCorridorPlugin(
 ): Plugin {
   const projectRoot = canonicalizeExistingPath(options.projectRoot);
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const contextMayCrossPackages = options.plan.contextModule !== undefined;
   const corridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
   const routeParameterGroups = collectPreviewInspectorRouteParameterGroups(options.plan);
   const importerEvidenceByPath = new Map<string, Promise<PreviewDynamicImporterEvidence>>();
@@ -76,27 +77,37 @@ export function createPreviewInspectorCorridorPlugin(
     if (
       !SOURCE_MODULE_PATTERN.test(canonicalImporter) ||
       !isPathInside(workspaceRoot, canonicalImporter) ||
-      !isPathInside(projectRoot, canonicalImporter) ||
-      containsDependencyDirectory(projectRoot, canonicalImporter)
+      (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalImporter)) ||
+      containsDependencyDirectory(workspaceRoot, canonicalImporter)
     ) {
       return undefined;
     }
+    if (matchesPreviewRouteParameters(arguments_.path, routeParameterGroups)) return undefined;
     const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) {
-      return undefined;
+      const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
+      if (
+        corridorPaths.has(canonicalImporter) &&
+        importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path)
+      ) {
+        return undefined;
+      }
+      return importerEvidence.isBroadRegistry
+        ? {
+            namespace: INSPECTOR_CORRIDOR_NAMESPACE,
+            path: INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
+          }
+        : undefined;
     }
     const canonicalTarget = canonicalizeExistingPath(resolvedPath);
     if (
       !isPathInside(workspaceRoot, canonicalTarget) ||
-      !isPathInside(projectRoot, canonicalTarget) ||
-      containsDependencyDirectory(projectRoot, canonicalTarget)
+      (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
+      containsDependencyDirectory(workspaceRoot, canonicalTarget)
     ) {
       return undefined;
     }
-    if (
-      corridorPaths.has(canonicalTarget) ||
-      matchesPreviewRouteParameters(arguments_.path, routeParameterGroups)
-    ) {
+    if (corridorPaths.has(canonicalTarget)) {
       return undefined;
     }
     const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
@@ -210,6 +221,7 @@ function createPreviewInspectorCorridorPathSet(
   const sourcePaths = new Set<string>([
     plan.root.sourcePath,
     plan.target.sourcePath,
+    ...(plan.contextModule === undefined ? [] : plan.contextModule.importPath),
     ...plan.dependencyPaths,
     ...plan.pageCandidates.flatMap((candidate) => [
       candidate.root.sourcePath,

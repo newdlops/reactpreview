@@ -19,8 +19,8 @@ async function transform(
 }
 
 describe('Next App Router metadata isolation', () => {
-  /** Keeps RootLayout executable when deployment-only URL metadata would throw in a browser. */
-  it('inerts direct metadata initialization while preserving the default layout JSX', async () => {
+  /** Keeps RootLayout executable and its children visible without owning the preview document. */
+  it('inerts direct metadata initialization while preserving safe default layout content', async () => {
     const source = [
       `import type { Metadata } from 'next';`,
       `export const metadata: Metadata = {`,
@@ -39,7 +39,7 @@ describe('Next App Router metadata isolation', () => {
     expect(result).not.toContain('process.env.NEXT_PUBLIC_APP_URL');
     expect(result).not.toContain('./icon.png');
     expect(result).toContain('export default function RootLayout({ children })');
-    expect(result).toContain('<html lang="en"><body>{children}</body></html>');
+    expect(result).toContain('<div  lang="en"><div >{children}</div ></div >');
     expect(result.length).toBe(source.length);
     expect(result.indexOf('export default function RootLayout')).toBe(
       source.indexOf('export default function RootLayout'),

@@ -4,6 +4,7 @@
  * transformer extensible without allowing framework details to cross into resource expansion.
  */
 import { createEmotionTargetReplacements } from './previewEmotionStyledTargetInstrumentation';
+import { createNextAppDocumentElementReplacements } from './previewNextAppDocumentElementIsolation';
 import { createNextAppMetadataReplacements } from './previewNextAppMetadataIsolation';
 import { createNextDynamicReplacements } from './previewNextDynamicInstrumentation';
 import {
@@ -28,10 +29,14 @@ export function prepareFrameworkSource(
   sourceText: string,
   options: Pick<PreviewSourceTransformerOptions, 'projectUsesNextRuntime'> = {},
 ): string {
-  return applyPreviewSourceReplacements(
-    sourceText,
-    createNextAppMetadataReplacements(sourcePath, sourceText, options.projectUsesNextRuntime),
-  );
+  return applyPreviewSourceReplacements(sourceText, [
+    ...createNextAppMetadataReplacements(sourcePath, sourceText, options.projectUsesNextRuntime),
+    ...createNextAppDocumentElementReplacements(
+      sourcePath,
+      sourceText,
+      options.projectUsesNextRuntime,
+    ),
+  ]);
 }
 
 /** Returns all bounded framework compatibility edits computed against one original source. */

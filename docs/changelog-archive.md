@@ -2,6 +2,19 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1019 - 2026-07-16
+
+- 필수 Context 구조분해와 optional descendant가 함께 있을 때 optional receiver를 없는 값으로 유지하면서
+  이미 증명된 object container fallback을 폐기하지 않도록 `use*Context` 분석을 보강
+- React import identity로 같은 module의 `use*Context → useContext(LocalContext)` 관계를 bounded하게
+  증명하고, 도달한 consumer shape를 정확한 raw Context Provider에 연결하는 범용 Context bridge 추가
+- 여러 hook이 같은 Context를 읽으면 구조 fallback을 병합하고 object/callable 충돌은 해당 Context만
+  제외하며, lazy chunk의 늦은 등록은 project React의 `useSyncExternalStore` 경계로 다시 합성
+- 작성된 application Provider·bootstrap·backend는 실행하지 않고 실제 내부/setup Provider를 우선하며,
+  nullish custom Context 구조분해 오류를 별도 분류하고 Context bridge 상태를 runtime 보고서에 표시
+- HOC 안의 null-default Context, nested destructuring, optional map과 `new Set` 조합을 Page Inspector 전체
+  compiler 경로에서 검증하는 회귀 테스트 추가
+
 ## 0.1.1018 - 2026-07-16
 
 - app entry를 실행하지 않고 ambient `typeof import()` 전역 선언과 import-backed `globalThis/window` 직접 할당을 정적으로 수집해 정확한 project wrapper export를 lexical inject로 연결

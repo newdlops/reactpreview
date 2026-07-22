@@ -2,6 +2,14 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1125 - 2026-07-22
+
+- Next Pages `_app`이 합성 자기 참조 대신 증명된 실제 leaf page를 한 번만 감싸고, 정적 registry가 허용하는 dynamic route parameter를 복원해 작성된 app shell과 페이지를 함께 렌더링
+- direct React 선언과 lock 증거가 있을 때 호환 `react-dom` companion을 전역 dependency layer에 포함하고, Next image/font의 정적 facade와 cache 갱신으로 설치 없는 프로젝트의 framework import를 안정화
+- string receiver·이미지 source·시간값·Nuqs authored default를 사용 지점에서 추론하고 빈 `{}` 자동 해결 반복을 중단해 Smart Fill의 잘못된 함수값과 무한 remount를 방지
+- 중첩 async React component를 안정된 Suspense record로 격리해 서버 데이터가 늦거나 실패해도 작성된 페이지 전체가 반복 실행되지 않고 해당 경계만 정적 marker로 대체
+- Next layout의 `html/head/body` singleton을 preview host로 정규화하고 동일 스크롤 좌표 이벤트를 생략하며, generated UI의 닫힌 overlay·불안정 hook·무한 contract proxy를 bounded fallback으로 바꿔 대형 페이지의 renderer CPU 고정을 방지
+
 ## 0.1.1124 - 2026-07-22
 
 - Next App Router `app/**/layout.*`의 화면 밖 `metadata` 초기화를 격리해 배포 환경 URL이 없어도 실제 RootLayout과 현재 React 파일이 먼저 렌더링되도록 수정
@@ -982,18 +990,5 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
   표시하고, 구체적인 nullish property read를 backend 전용 문제가 아닌 missing static value로 분류
 - `styled((props) => <Target />)\`...\`` owner를 styled-components import identity로 증명해 실제 부모
   ancestry로 승격하되 임의 tagged template은 계속 fail closed하는 Page Inspector 탐색 보강
-
-## 0.1.1019 - 2026-07-16
-
-- 필수 Context 구조분해와 optional descendant가 함께 있을 때 optional receiver를 없는 값으로 유지하면서
-  이미 증명된 object container fallback을 폐기하지 않도록 `use*Context` 분석을 보강
-- React import identity로 같은 module의 `use*Context → useContext(LocalContext)` 관계를 bounded하게
-  증명하고, 도달한 consumer shape를 정확한 raw Context Provider에 연결하는 범용 Context bridge 추가
-- 여러 hook이 같은 Context를 읽으면 구조 fallback을 병합하고 object/callable 충돌은 해당 Context만
-  제외하며, lazy chunk의 늦은 등록은 project React의 `useSyncExternalStore` 경계로 다시 합성
-- 작성된 application Provider·bootstrap·backend는 실행하지 않고 실제 내부/setup Provider를 우선하며,
-  nullish custom Context 구조분해 오류를 별도 분류하고 Context bridge 상태를 runtime 보고서에 표시
-- HOC 안의 null-default Context, nested destructuring, optional map과 `new Set` 조합을 Page Inspector 전체
-  compiler 경로에서 검증하는 회귀 테스트 추가
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

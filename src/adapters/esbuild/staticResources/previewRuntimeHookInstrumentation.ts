@@ -27,6 +27,7 @@ import {
 } from './previewRuntimeHookQueryDefaults';
 import {
   isPreviewRuntimeHookArrayUsageProperty,
+  isPreviewRuntimeHookStringUsageProperty,
   readPreviewRuntimeHookPropertyUsage,
   shouldMaterializePreviewRuntimeHookNestedFallback,
 } from './previewRuntimeHookPropertyUsage';
@@ -116,14 +117,13 @@ interface PreviewRuntimeHookUsageNode {
   /** Static leaf expression, omitted while the node remains an object container. */
   expression?: string;
 }
-
 /** One local hook-result path plus optional collection-receiver evidence. */
 interface PreviewRuntimeHookUsagePath {
   readonly called: boolean;
   readonly collectionProperty?: string;
   readonly names: readonly string[];
+  readonly stringProperty?: string;
 }
-
 /** Parsed hook call and inferred fallback before a stable identity is serialized. */
 interface PreviewRuntimeHookCandidate {
   /** Exact call expression replaced without changing its arguments. */
@@ -133,7 +133,6 @@ interface PreviewRuntimeHookCandidate {
   /** Static fallback selected from local syntax. */
   readonly fallback: PreviewRuntimeHookFallback;
 }
-
 /**
  * Creates Page Inspector replacements for render-critical project and query-parameter hooks.
  *
@@ -609,6 +608,12 @@ function createIdentifierUsageFallback(
       if (usagePath !== undefined && usagePath.names.length > 0) {
         const collectionProperty = usagePath.names.at(-1);
         const collection = isPreviewRuntimeHookArrayUsageProperty(collectionProperty);
+        const terminalCalled = ts.isCallExpression(node.parent) && node.parent.expression === node;
+        const stringReceiver =
+          terminalCalled &&
+          isPreviewRuntimeHookStringUsageProperty(collectionProperty) &&
+          inferSemanticFallback(usagePath.names.at(-2) ?? identifier.text)?.label !==
+            'generated object';
         if (!usagePath.optional && collection && usagePath.names.length === 1) {
           arrayRootEvidence.push(usagePath.names[0] ?? 'array operation');
           const itemFallback = inferPreviewRuntimeArrayItemFallback(
@@ -619,10 +624,10 @@ function createIdentifierUsageFallback(
         } else if (paths.length + optionalPaths.length < 64 && usagePath.names.length <= 12) {
           const target = usagePath.optional ? optionalPaths : paths;
           target.push({
-            called:
-              !collection && ts.isCallExpression(node.parent) && node.parent.expression === node,
+            called: !collection && !stringReceiver && terminalCalled,
             ...(collection && collectionProperty !== undefined ? { collectionProperty } : {}),
-            names: collection ? usagePath.names.slice(0, -1) : usagePath.names,
+            names: collection || stringReceiver ? usagePath.names.slice(0, -1) : usagePath.names,
+            ...(stringReceiver ? { stringProperty: collectionProperty ?? '' } : {}),
           });
         }
       }
@@ -699,22 +704,21 @@ function createIdentifierUsageFallback(
     requiredPaths: completedPaths.map(formatPreviewRuntimeHookUsagePath),
   };
 }
-
 /** Keeps one deterministic occurrence of every demanded hook-result path. */
 function deduplicatePreviewRuntimeHookUsagePaths(
   paths: readonly PreviewRuntimeHookUsagePath[],
 ): readonly PreviewRuntimeHookUsagePath[] {
   const retained = new Map<string, PreviewRuntimeHookUsagePath>();
   for (const path_ of paths) {
-    const key = `${path_.names.join('.')}\u0000${path_.collectionProperty ?? (path_.called ? 'call' : 'value')}`;
+    const key = `${path_.names.join('.')}\u0000${path_.collectionProperty ?? path_.stringProperty ?? (path_.called ? 'call' : 'value')}`;
     if (!retained.has(key)) retained.set(key, path_);
   }
   return [...retained.values()];
 }
-
 /** Formats receiver evidence as the authored collection access instead of a fake own method. */
 function formatPreviewRuntimeHookUsagePath(path_: PreviewRuntimeHookUsagePath): string {
   const base = path_.names.join('.');
+  if (path_.stringProperty !== undefined) return `${base}.${path_.stringProperty}()`;
   if (path_.collectionProperty === undefined) return base + (path_.called ? '()' : '');
   const suffix = path_.collectionProperty + (path_.collectionProperty === 'length' ? '' : '()');
   return base.length === 0 ? suffix : `${base}.${suffix}`;
@@ -750,9 +754,13 @@ function addUsagePath(root: PreviewRuntimeHookUsageNode, path_: PreviewRuntimeHo
       current.expression =
         path_.collectionProperty !== undefined
           ? 'Object.freeze([])'
-          : path_.called
-            ? 'Object.freeze(() => undefined)'
-            : (inferSemanticFallback(propertyName)?.expression ?? 'Object.freeze({})');
+          : path_.stringProperty !== undefined
+            ? JSON.stringify(createSemanticString(propertyName))
+            : path_.called
+              ? 'Object.freeze(() => undefined)'
+              : (current.expression ??
+                inferSemanticFallback(propertyName)?.expression ??
+                'Object.freeze({})');
     }
   }
 }

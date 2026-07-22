@@ -4,8 +4,9 @@
  * Next's normal Webpack/SWC pipeline often receives a single `{ default: Component }` namespace.
  * Esbuild correctly wraps some CommonJS packages as `{ default: { default: Component } }`; older
  * Next `dynamic()` implementations unwrap only once and pass the remaining object to React.lazy.
- * This bounded source edit removes at most one extra default layer without importing or executing
- * Next compiler plugins and without changing ordinary React.lazy or dynamic-import semantics.
+ * This bounded source edit removes at most one extra default layer. Conventional named-export
+ * selectors also retain the module default as a last-resort inert corridor placeholder, because
+ * Page Inspector deliberately replaces unrelated lazy routes with a default-only module.
  */
 import path from 'node:path';
 import ts from 'typescript';
@@ -15,9 +16,10 @@ const NEXT_DYNAMIC_SPECIFIER = 'next/dynamic';
 const MAX_NEXT_DYNAMIC_LOADERS = 128;
 
 /**
- * Wraps literal-import results returned directly by statically imported `next/dynamic` loaders.
- * User-authored `.then()` export selection, computed imports, object loader options, and unrelated
- * `dynamic` identifiers fail closed.
+ * Wraps literal-import results returned by statically imported `next/dynamic` loaders.
+ * A conventional `.then((module) => module.Component)` keeps its authored component first and adds
+ * only a nullish default fallback. Computed imports, transforming callbacks, and unrelated dynamic
+ * identifiers fail closed.
  *
  * @param sourcePath Authored source identity used only to select parser grammar.
  * @param sourceText Original source whose offsets are retained in returned edits.
@@ -44,13 +46,21 @@ export function createNextDynamicReplacements(
   const visit = (node: ts.Node): void => {
     if (replacements.length >= MAX_NEXT_DYNAMIC_LOADERS) return;
     if (ts.isCallExpression(node) && isNextDynamicCall(node, bindings)) {
-      const loaderImport = readDirectLoaderImport(node.arguments[0]);
-      if (loaderImport !== undefined) {
-        const importText = loaderImport.getText(sourceFile);
+      const loader = readNextDynamicLoader(node.arguments[0]);
+      if (loader?.selection !== undefined) {
+        const moduleName = loader.selection.moduleParameter.text;
+        const selectionText = loader.selection.expression.getText(sourceFile);
         replacements.push({
-          end: loaderImport.getEnd(),
+          end: loader.selection.expression.getEnd(),
+          replacement: `(${selectionText} ?? ${moduleName}?.default?.default ?? ${moduleName}?.default ?? (() => null))`,
+          start: loader.selection.expression.getStart(sourceFile),
+        });
+      } else if (loader !== undefined) {
+        const importText = loader.importCall.getText(sourceFile);
+        replacements.push({
+          end: loader.importCall.getEnd(),
           replacement: `${importText}.then((__reactPreviewDynamicModule) => (__reactPreviewDynamicModule?.default?.default ?? __reactPreviewDynamicModule?.default ?? __reactPreviewDynamicModule))`,
-          start: loaderImport.getStart(sourceFile),
+          start: loader.importCall.getStart(sourceFile),
         });
       }
     }
@@ -58,6 +68,82 @@ export function createNextDynamicReplacements(
   };
   ts.forEachChild(sourceFile, visit);
   return replacements.sort((left, right) => left.start - right.start);
+}
+
+/** One statically proven loader and its optional conventional named-export selector. */
+interface NextDynamicLoaderAnalysis {
+  readonly importCall: ts.CallExpression;
+  readonly selection?: {
+    readonly expression: ts.Expression;
+    readonly moduleParameter: ts.Identifier;
+  };
+}
+
+/**
+ * Lists literal modules assigned through `next/dynamic` and rendered as JSX in the same source.
+ * The corridor plugin uses this conservative evidence to retain real page-local lazy components
+ * without retaining broad route registries that merely declare many deferred branches.
+ */
+export function collectRenderedNextDynamicSpecifiers(
+  sourcePath: string,
+  sourceText: string,
+): ReadonlySet<string> {
+  if (!sourceText.includes(NEXT_DYNAMIC_SPECIFIER) || !sourceText.includes('import(')) {
+    return new Set();
+  }
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    selectScriptKind(sourcePath),
+  );
+  if (hasParseDiagnostics(sourceFile)) return new Set();
+  const bindings = collectNextDynamicBindings(sourceFile);
+  if (bindings.size === 0) return new Set();
+  const renderedBindings = collectJsxComponentBindings(sourceFile);
+  const specifiers = new Set<string>();
+
+  /** Retains only a direct variable binding that appears as a JSX component in this module. */
+  const visit = (node: ts.Node): void => {
+    if (specifiers.size >= MAX_NEXT_DYNAMIC_LOADERS) return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined
+    ) {
+      const initializer = unwrapExpression(node.initializer);
+      if (
+        ts.isCallExpression(initializer) &&
+        isNextDynamicCall(initializer, bindings) &&
+        renderedBindings.has(node.name.text)
+      ) {
+        const loader = readNextDynamicLoader(initializer.arguments[0]);
+        const moduleSpecifier = loader?.importCall.arguments[0];
+        if (moduleSpecifier !== undefined && ts.isStringLiteral(moduleSpecifier)) {
+          specifiers.add(moduleSpecifier.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return specifiers;
+}
+
+/** Collects root identifiers from authored JSX element names. */
+function collectJsxComponentBindings(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const bindings = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      let tagName: ts.JsxTagNameExpression = node.tagName;
+      while (ts.isPropertyAccessExpression(tagName)) tagName = tagName.expression;
+      if (ts.isIdentifier(tagName) && /^[A-Z]/u.test(tagName.text)) bindings.add(tagName.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return bindings;
 }
 
 /** Selects parser grammar without reading project compiler configuration. */
@@ -137,10 +223,10 @@ function bindingContainsName(binding: ts.BindingName, name: string): boolean {
   );
 }
 
-/** Reads a zero-argument loader whose direct return is one literal dynamic import. */
-function readDirectLoaderImport(
+/** Reads a zero-argument loader returning a literal import or conventional named selection. */
+function readNextDynamicLoader(
   loaderExpression: ts.Expression | undefined,
-): ts.CallExpression | undefined {
+): NextDynamicLoaderAnalysis | undefined {
   if (loaderExpression === undefined) return undefined;
   const loader = unwrapExpression(loaderExpression);
   if (
@@ -152,17 +238,66 @@ function readDirectLoaderImport(
   const returned = readReturnExpression(loader.body);
   if (returned === undefined) return undefined;
   const candidate = unwrapAwaitExpression(returned);
-  const moduleSpecifier = ts.isCallExpression(candidate) ? candidate.arguments[0] : undefined;
+  if (isLiteralDynamicImport(candidate)) return { importCall: candidate };
+  if (!ts.isCallExpression(candidate) || candidate.arguments.length !== 1) return undefined;
+  const thenExpression = unwrapExpression(candidate.expression);
+  if (!ts.isPropertyAccessExpression(thenExpression) || thenExpression.name.text !== 'then') {
+    return undefined;
+  }
+  const importCall = unwrapExpression(thenExpression.expression);
+  if (!isLiteralDynamicImport(importCall)) return undefined;
+  const callbackExpression = candidate.arguments[0];
+  if (callbackExpression === undefined) return undefined;
+  const callback = unwrapExpression(callbackExpression);
   if (
-    !ts.isCallExpression(candidate) ||
-    candidate.expression.kind !== ts.SyntaxKind.ImportKeyword ||
-    candidate.arguments.length !== 1 ||
-    moduleSpecifier === undefined ||
-    !ts.isStringLiteral(moduleSpecifier)
+    (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) ||
+    callback.parameters.length !== 1
   ) {
     return undefined;
   }
-  return candidate;
+  const parameter = callback.parameters[0];
+  if (parameter === undefined || !ts.isIdentifier(parameter.name)) return undefined;
+  const selection = readReturnExpression(callback.body);
+  if (
+    selection === undefined ||
+    !isDirectModuleMemberSelection(unwrapExpression(selection), parameter.name.text)
+  ) {
+    return undefined;
+  }
+  return {
+    importCall,
+    selection: {
+      expression: unwrapExpression(selection),
+      moduleParameter: parameter.name,
+    },
+  };
+}
+
+/** Proves an `import("literal")` call without accepting computed or multi-argument proposals. */
+function isLiteralDynamicImport(expression: ts.Expression): expression is ts.CallExpression {
+  const moduleSpecifier = ts.isCallExpression(expression) ? expression.arguments[0] : undefined;
+  return (
+    ts.isCallExpression(expression) &&
+    expression.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    expression.arguments.length === 1 &&
+    moduleSpecifier !== undefined &&
+    ts.isStringLiteral(moduleSpecifier)
+  );
+}
+
+/** Accepts only `module.Name` or `module["Name"]`, never an arbitrary transforming callback. */
+function isDirectModuleMemberSelection(expression: ts.Expression, moduleName: string): boolean {
+  if (ts.isPropertyAccessExpression(expression)) {
+    const receiver = unwrapExpression(expression.expression);
+    return ts.isIdentifier(receiver) && receiver.text === moduleName;
+  }
+  if (!ts.isElementAccessExpression(expression)) return false;
+  const receiver = unwrapExpression(expression.expression);
+  return (
+    ts.isIdentifier(receiver) &&
+    receiver.text === moduleName &&
+    ts.isStringLiteral(expression.argumentExpression)
+  );
 }
 
 /** Reads a concise loader or a block containing exactly one return statement. */

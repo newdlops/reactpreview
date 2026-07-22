@@ -6,6 +6,7 @@
  * computed keys; callers can still retain the last statically named receiver before such a key.
  */
 import ts from 'typescript';
+import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { unwrapPreviewRuntimeExpression } from './previewRuntimeHookSyntax';
 
 const ARRAY_USAGE_PROPERTIES = new Set([
@@ -21,6 +22,7 @@ const ARRAY_USAGE_PROPERTIES = new Set([
   'reduce',
   'some',
 ]);
+const STRING_USAGE_PROPERTIES = new Set<string>(PREVIEW_STRING_ONLY_METHOD_NAMES);
 
 /** One statically named property chain and whether any receiver used optional access. */
 export interface PreviewRuntimeHookPropertyUsage {
@@ -51,6 +53,11 @@ export function readPreviewRuntimeHookPropertyUsage(
 /** Reports whether a named terminal property proves an Array-style receiver in preview code. */
 export function isPreviewRuntimeHookArrayUsageProperty(propertyName: string | undefined): boolean {
   return propertyName !== undefined && ARRAY_USAGE_PROPERTIES.has(propertyName);
+}
+
+/** Reports whether a called terminal property unambiguously proves a String receiver. */
+export function isPreviewRuntimeHookStringUsageProperty(propertyName: string | undefined): boolean {
+  return propertyName !== undefined && STRING_USAGE_PROPERTIES.has(propertyName);
 }
 
 /**

@@ -618,6 +618,47 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(replacements[0]?.replacement).toContain('"name": "name"');
   });
 
+  /** Treats String prototype calls as receiver evidence instead of generating callable properties. */
+  it('infers a string receiver for nested hook values used through string-only methods', () => {
+    const source = [
+      `import { useDesignParams } from './use-design-params';`,
+      'export function ProjectForm() {',
+      '  const [params, setParams] = useDesignParams();',
+      '  const framework = getFramework(params.template ?? "next");',
+      '  const monorepo = params.template?.endsWith("-monorepo") ?? false;',
+      '  return <button onClick={setParams}>{framework.replace("next", "vite") + String(monorepo)}</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/ProjectForm.tsx', source),
+    );
+
+    expect(transformed).toContain('"template": "template"');
+    expect(transformed).toContain('"requiredPaths":["0.template","0.template.endsWith()","1()"]');
+    expect(transformed).not.toContain('"endsWith": Object.freeze(() => undefined)');
+  });
+
+  /** Keeps object APIs callable when their method name also exists on String.prototype. */
+  it('does not classify a semantic router replace method as a string receiver', () => {
+    const source = [
+      `import { useRouter } from 'next/navigation';`,
+      'export function RedirectButton() {',
+      '  const router = useRouter();',
+      '  return <button onClick={() => router.replace("/next")}>Next</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/RedirectButton.tsx', source),
+    );
+
+    expect(transformed).toContain('"replace": Object.freeze(() => undefined)');
+    expect(transformed).toContain('"requiredPaths":["replace()"]');
+  });
+
   /** Handles callable and conditional hook bindings without guessing their package semantics. */
   it('infers direct function and boolean use for unknown hook return values', () => {
     const source = [

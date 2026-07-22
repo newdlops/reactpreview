@@ -74,6 +74,45 @@ describe('EsbuildPreviewCompiler without a project React installation', () => {
   });
 
   /**
+   * Mirrors Storybook's React 18 webpack sandbox before and after initialization. Its Babel build
+   * uses the automatic JSX runtime, but the retained TypeScript config says `jsx: react`; esbuild
+   * therefore lowers JSX to a classic factory unless the preview supplies the missing namespace.
+   */
+  it.each([
+    { label: 'before Storybook initialization', withStorybookPreview: false },
+    { label: 'after Storybook initialization', withStorybookPreview: true },
+  ])('binds classic JSX factories $label', async ({ withStorybookPreview }) => {
+    const fixture = await createClassicJsxReact18WebpackFixture(withStorybookPreview);
+    const compiler = new EsbuildPreviewCompiler({
+      bundledNodeModulesPath: fixture.bundledNodeModulesPath,
+      managedDependencyStoreRoot: fixture.managedStoreRoot,
+      maximumSplitOutputFiles: 1,
+    });
+
+    try {
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: fixture.targetPath,
+        language: 'tsx',
+        sourceText: await readFile(fixture.targetPath, 'utf8'),
+        useStorybookPreview: true,
+        workspaceRoot: fixture.projectRoot,
+      });
+      const javascript = decodeCompleteBundle(bundle);
+      const targetModule = selectGeneratedModule(javascript, 'CLASSIC_JSX_NAMESPACE_TARGET');
+
+      expect(targetModule).toContain('createElement');
+      expectClassicFactoryReceiversToBeBound(targetModule);
+      if (withStorybookPreview) {
+        expect(javascript).toContain('STORYBOOK_PREVIEW_SELECTED');
+      }
+      await expectPathToBeMissing(path.join(fixture.projectRoot, 'node_modules'));
+    } finally {
+      await compiler.shutdown();
+    }
+  });
+
+  /**
    * Reproduces the logged failure when an exact lock acquisition produces no managed layer. This
    * keeps the failure attributable to the unavailable React pair rather than webpack or TypeScript
    * configuration, and proves both package roots were recognized before the compiler stopped.
@@ -344,6 +383,120 @@ async function createManifestOnlyReact18WebpackFixture(): Promise<ManifestOnlyRe
     projectRoot,
     targetPath,
   });
+}
+
+/**
+ * Changes the manifest-only fixture to the conflicting Babel/TypeScript JSX configuration used by
+ * Storybook's generated webpack sandbox. The target intentionally imports a named React value but
+ * never declares the `React` namespace that the classic TypeScript transform otherwise expects.
+ */
+async function createClassicJsxReact18WebpackFixture(
+  withStorybookPreview: boolean,
+): Promise<ManifestOnlyReact18WebpackFixture> {
+  const fixture = await createManifestOnlyReact18WebpackFixture();
+  const storybookDirectory = path.join(fixture.projectRoot, '.storybook');
+  await Promise.all([
+    writeFile(
+      path.join(fixture.projectRoot, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          allowSyntheticDefaultImports: true,
+          jsx: 'react',
+          target: 'es5',
+        },
+        include: ['src/*'],
+      }),
+      'utf8',
+    ),
+    writeFile(
+      path.join(fixture.projectRoot, '.babelrc'),
+      JSON.stringify({
+        presets: [
+          ['@babel/preset-env', { targets: { chrome: '100' } }],
+          ['@babel/preset-react', { runtime: 'automatic' }],
+          '@babel/preset-typescript',
+        ],
+      }),
+      'utf8',
+    ),
+    writeFile(
+      fixture.targetPath,
+      [
+        "import { StrictMode } from 'react';",
+        'export default function App() {',
+        '  return (',
+        '    <StrictMode>',
+        '      <main>CLASSIC_JSX_NAMESPACE_TARGET</main>',
+        '    </StrictMode>',
+        '  );',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    ),
+  ]);
+  if (withStorybookPreview) {
+    await mkdir(storybookDirectory, { recursive: true });
+    await writeFile(
+      path.join(storybookDirectory, 'preview.tsx'),
+      [
+        "import type { Preview } from '@storybook/react-webpack5';",
+        'globalThis.STORYBOOK_PREVIEW_SELECTED = true;',
+        'const preview: Preview = { parameters: { controls: {} } };',
+        'export default preview;',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+  }
+  return fixture;
+}
+
+/** Decodes the entry and any split chunks so target source can be checked independent of policy. */
+function decodeCompleteBundle(bundle: {
+  readonly chunks: readonly { readonly contents: Uint8Array }[];
+  readonly javascript: Uint8Array;
+}): string {
+  const decoder = new TextDecoder();
+  return [bundle.javascript, ...bundle.chunks.map(({ contents }) => contents)]
+    .map((contents) => decoder.decode(contents))
+    .join('\n');
+}
+
+/** Selects the generated source module containing one fixture-only marker. */
+function selectGeneratedModule(javascript: string, marker: string): string {
+  const markerIndex = javascript.indexOf(marker);
+  expect(markerIndex).toBeGreaterThanOrEqual(0);
+  const moduleStart = javascript.lastIndexOf('\n// ', markerIndex);
+  const nextModuleStart = javascript.indexOf('\n// ', markerIndex);
+  return javascript.slice(
+    moduleStart < 0 ? 0 : moduleStart,
+    nextModuleStart < 0 ? javascript.length : nextModuleStart,
+  );
+}
+
+/**
+ * Proves every classic JSX factory receiver is lexical rather than an undeclared browser global.
+ * The receiver name is intentionally not fixed because esbuild renames deduplicated imports.
+ */
+function expectClassicFactoryReceiversToBeBound(generatedModule: string): void {
+  const receiverNames = [
+    ...new Set(
+      [...generatedModule.matchAll(/\b([A-Za-z_$][\w$]*)\.createElement\(/gu)].flatMap((match) =>
+        match[1] === undefined ? [] : [match[1]],
+      ),
+    ),
+  ];
+  expect(receiverNames.length).toBeGreaterThan(0);
+  const declaredNames = new Set(
+    [...generatedModule.matchAll(/\bvar\s+([^;]+);/gu)].flatMap((match) =>
+      (match[1] ?? '')
+        .split(',')
+        .map((declaration) => /^\s*([A-Za-z_$][\w$]*)/u.exec(declaration)?.[1])
+        .filter((name): name is string => name !== undefined),
+    ),
+  );
+  expect(receiverNames.filter((name) => !declaredNames.has(name))).toEqual([]);
 }
 
 /** Writes the exact three alias packages retained by the extension's React 18 runtime catalog. */

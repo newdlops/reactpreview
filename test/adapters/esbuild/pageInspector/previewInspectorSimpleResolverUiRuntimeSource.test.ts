@@ -176,15 +176,20 @@ describe('Preview Inspector simple resolver UI runtime source', () => {
       headline: 'ReferenceError: implementationBug is not defined',
       requiredPaths: ['implementationBug.value'],
     });
+    const runtimeGlobal = blocker('jsx-runtime', 'runtime-global', {
+      headline: 'ReferenceError: React is not defined',
+      runtimeGlobalName: 'React',
+    });
     const unprovenPath = blocker('unproven-path', 'target-reachability');
 
-    const model = createModel({ steps: [condition, codeError, unprovenPath] });
+    const model = createModel({ steps: [condition, codeError, runtimeGlobal, unprovenPath] });
 
     expect(model.data.actionable).toBe(false);
     expect(model.data.items).toHaveLength(0);
     expect(model.automatic.diagnostics.map((diagnostic) => diagnostic.kind)).toEqual([
       'condition',
       'target-error',
+      'runtime-global',
       'target-reachability',
     ]);
   });

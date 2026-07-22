@@ -9,6 +9,7 @@ import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../
 interface BlockerTreeNode {
   readonly blocksCurrentTarget?: boolean;
   readonly blockedOwner?: boolean;
+  readonly blocker?: Record<string, unknown>;
   readonly blockerKind?: string;
   readonly children: readonly BlockerTreeNode[];
   readonly conditionId?: string;
@@ -24,6 +25,7 @@ interface BlockerRuntime {
   readonly createReachabilityNode: (blocker: Record<string, unknown>) => BlockerTreeNode;
   readonly isBlocking: (node: BlockerTreeNode) => boolean;
   readonly renderReachabilityDetail: (node: Record<string, unknown>) => unknown;
+  readonly renderRuntimeGlobalDetail: (node: Record<string, unknown>) => unknown;
   readonly summarizeRequiredPaths: (paths: readonly string[]) => {
     readonly remainingCount: number;
     readonly totalCount: number;
@@ -52,6 +54,14 @@ describe('Preview Inspector blocker UI runtime source', () => {
           name: 'Page',
           exportName: 'Page',
           source: { line: 2, path: '/workspace/Page.tsx' },
+        },
+        {
+          children: [],
+          id: 'runtime-page',
+          kind: 'function',
+          name: 'RuntimePage',
+          exportName: 'RuntimePage',
+          source: { line: 2, path: '/workspace/RuntimePage.tsx' },
         },
       ],
     });
@@ -91,6 +101,20 @@ describe('Preview Inspector blocker UI runtime source', () => {
     const renderErrorNode = brokenChild?.children[0];
     if (renderErrorNode === undefined) throw new Error('Expected contained render-error blocker.');
     expect(runtime.isBlocking(renderErrorNode)).toBe(true);
+    const runtimeGlobalNode = findNode(snapshot.roots, 'JSX runtime unavailable · React');
+    expect(runtimeGlobalNode).toMatchObject({
+      blockerKind: 'runtime-global',
+      props: { requiredPaths: [], runtimeGlobal: 'React' },
+    });
+    if (runtimeGlobalNode === undefined) throw new Error('Expected runtime-global blocker.');
+    expect(runtime.isBlocking(runtimeGlobalNode)).toBe(true);
+    expect(findNode(snapshot.roots, 'Button')).toBeUndefined();
+    const runtimeGlobalText = collectRenderedText(
+      runtime.renderRuntimeGlobalDetail({ node: runtimeGlobalNode }),
+    ).join(' ');
+    expect(runtimeGlobalText).toContain('Smart Fill is unavailable');
+    expect(runtimeGlobalText).toContain('Retry');
+    expect(runtimeGlobalText).not.toContain('Smart fill and retry');
     expect(
       runtime.isBlocking({
         blocksCurrentTarget: true,
@@ -211,14 +235,24 @@ function evaluateBlockerRuntime(): BlockerRuntime {
       const showPreviewInspectorTargetDirectly = () => undefined;
       const smartFillPreviewInspectorTargetApplicationPath = () => undefined;
       const previewInspectorSession = {
-        boundariesByExport: new Map([['Page', new Set([{
-          state: {
-            componentStack: '\\n    at BrokenChild\\n    at Page',
-            error: new TypeError("Cannot read properties of undefined (reading 'value')"),
-          },
-        }])]]),
+        boundariesByExport: new Map([
+          ['Page', new Set([{
+            state: {
+              componentStack: '\\n    at BrokenChild\\n    at Page',
+              error: new TypeError("Cannot read properties of undefined (reading 'value')"),
+            },
+          }])],
+          ['RuntimePage', new Set([{
+            state: {
+              componentStack: '\\n    at Button\\n    at Header\\n    at RuntimePage',
+              error: new ReferenceError('React is not defined'),
+            },
+          }])],
+        ]),
         descriptors: [{ inspector: {
           target: { exportName: 'Page', sourcePath: '/workspace/Page.tsx' },
+        } }, { inspector: {
+          target: { exportName: 'RuntimePage', sourcePath: '/workspace/RuntimePage.tsx' },
         } }],
         selectedExportName: 'Page',
       };
@@ -278,6 +312,7 @@ function evaluateBlockerRuntime(): BlockerRuntime {
         createReachabilityNode: createPreviewInspectorTargetReachabilityTreeNode,
         isBlocking: isPreviewInspectorBlockingNode,
         renderReachabilityDetail: PreviewInspectorTargetReachabilityDetail,
+        renderRuntimeGlobalDetail: PreviewInspectorRuntimeGlobalFailureDetail,
         summarizeRequiredPaths: summarizePreviewInspectorRequiredPaths,
       };
     `,

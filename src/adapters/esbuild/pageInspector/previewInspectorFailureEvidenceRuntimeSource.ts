@@ -23,6 +23,18 @@ const PREVIEW_INSPECTOR_FAILURE_EVIDENCE_LIMIT = ${PREVIEW_INSPECTOR_FAILURE_EVI
 const PREVIEW_INSPECTOR_FAILURE_COLLECTION_METHOD_NAMES = new Set(
   ${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)},
 );
+const PREVIEW_INSPECTOR_JSX_RUNTIME_GLOBAL_NAMES = new Set([
+  'Fragment',
+  'React',
+  '_Fragment',
+  '_jsx',
+  '_jsxDEV',
+  '_jsxs',
+  'h',
+  'jsx',
+  'jsxDEV',
+  'jsxs',
+]);
 
 /** Bounds and deduplicates property paths supplied by compiler or runtime error evidence. */
 function normalizePreviewInspectorRequiredPropertyPaths(paths) {
@@ -46,6 +58,29 @@ function readPreviewInspectorFailureMessage(error) {
   } catch {
     return 'Unknown error';
   }
+}
+
+/**
+ * Extracts a missing lexical/runtime identifier without treating it as editable component data.
+ * Reference errors describe JavaScript bindings, not property paths that Smart Fill can add to a
+ * prop, hook result, or backend payload. Both real Error objects and serialized diagnostic strings
+ * are accepted because browser and React boundaries may cross realms before Inspector sees them.
+ */
+function readPreviewInspectorMissingRuntimeGlobalName(error) {
+  const message = readPreviewInspectorFailureMessage(error).trim();
+  const explicitReferenceError = message.match(
+    /(?:^|\b)ReferenceError:\s*([A-Za-z_$][\w$]*) is not defined\b/u,
+  );
+  if (explicitReferenceError !== null) return explicitReferenceError[1];
+  let errorName = '';
+  try { errorName = typeof error?.name === 'string' ? error.name : ''; } catch { errorName = ''; }
+  if (errorName !== 'ReferenceError') return undefined;
+  return message.match(/^([A-Za-z_$][\w$]*) is not defined\b/u)?.[1];
+}
+
+/** Identifies conventional classic and automatic JSX factory bindings for focused diagnostics. */
+function isPreviewInspectorJsxRuntimeGlobalName(globalName) {
+  return PREVIEW_INSPECTOR_JSX_RUNTIME_GLOBAL_NAMES.has(globalName);
 }
 
 /**
@@ -147,7 +182,6 @@ function readPreviewInspectorErrorPropertyPaths(error, sourceEvidence = []) {
   for (const match of message.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+) is not a function\b/gu)) {
     add(match[1] + '()');
   }
-  for (const match of message.matchAll(/\b([A-Za-z_$][\w$]*) is not defined\b/gu)) add(match[1]);
   return normalizePreviewInspectorRequiredPropertyPaths(paths);
 }
 

@@ -5,11 +5,13 @@ import { createPreviewInspectorFailureEvidenceRuntimeSource } from '../../../../
 
 /** Generated helper surface exposed only to this dependency-free VM fixture. */
 interface FailureEvidenceRuntime {
+  readonly isJsxRuntimeGlobal: (globalName: string) => boolean;
   readonly names: (componentStack: string, fallback?: string) => readonly string[];
   readonly paths: (
     error: unknown,
     sourceEvidence?: readonly (string | { readonly kind?: string; readonly path: string })[],
   ) => readonly string[];
+  readonly runtimeGlobal: (error: unknown) => string | undefined;
 }
 
 describe('Preview Inspector failure evidence runtime', () => {
@@ -45,6 +47,18 @@ describe('Preview Inspector failure evidence runtime', () => {
     expect(runtime.paths(new TypeError('props.theme.spacing is not a function'))).toEqual([
       'props.theme.spacing()',
     ]);
+  });
+
+  /** Keeps missing lexical bindings out of payload paths and recognizes JSX compiler factories. */
+  it('classifies missing runtime globals separately from Smart Fill data', () => {
+    const runtime = evaluateFailureEvidenceRuntime();
+
+    expect(runtime.runtimeGlobal(new ReferenceError('React is not defined'))).toBe('React');
+    expect(runtime.runtimeGlobal('ReferenceError: process is not defined')).toBe('process');
+    expect(runtime.paths(new ReferenceError('React is not defined'))).toEqual([]);
+    expect(runtime.isJsxRuntimeGlobal('React')).toBe(true);
+    expect(runtime.isJsxRuntimeGlobal('_jsxDEV')).toBe(true);
+    expect(runtime.isJsxRuntimeGlobal('process')).toBe(false);
   });
 
   /** Expands collection diagnostics only when static evidence proves one unambiguous receiver. */
@@ -92,8 +106,10 @@ function evaluateFailureEvidenceRuntime(): FailureEvidenceRuntime {
   vm.runInNewContext(
     `${createPreviewInspectorFailureEvidenceRuntimeSource()}\n` +
       'globalThis.__failureEvidence = {' +
+      ' isJsxRuntimeGlobal: isPreviewInspectorJsxRuntimeGlobalName,' +
       ' names: readPreviewInspectorComponentStackNames,' +
-      ' paths: readPreviewInspectorErrorPropertyPaths' +
+      ' paths: readPreviewInspectorErrorPropertyPaths,' +
+      ' runtimeGlobal: readPreviewInspectorMissingRuntimeGlobalName' +
       '};',
     context,
   );

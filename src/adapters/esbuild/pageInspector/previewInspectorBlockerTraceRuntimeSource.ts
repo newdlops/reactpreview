@@ -59,12 +59,12 @@ function initializePreviewInspectorBlockerTraceState() {
  * Retains only fatal errors that the latest committed blocker tree still represents.
  *
  * A timestamp-only cache incorrectly treated a recently resolved error as an active baseline. A
- * later Auto gate could then reproduce the same message without being rolled back. Target-error
- * nodes are the render snapshot's authoritative evidence that a fatal error remains mounted.
+ * later Auto gate could then reproduce the same message without being rolled back. Target-error and
+ * non-editable runtime-global nodes are the snapshot's authoritative evidence of a mounted failure.
  */
 function reconcilePreviewInspectorBlockerTraceFatalErrors(records) {
   const activeTargetErrors = [...records.values()].filter(
-    (record) => record?.kind === 'target-error',
+    (record) => record?.kind === 'target-error' || record?.kind === 'runtime-global',
   );
   for (const [fingerprint, fatalError] of previewInspectorSession.blockerTraceRecentFatalErrors) {
     const stillActive = activeTargetErrors.some((record) => {
@@ -407,7 +407,7 @@ function createPreviewInspectorBlockerTraceRecord(node) {
       ? node?.state
       : node?.blockerKind === 'runtime-fallback'
         ? { error: blocker?.error, reason: blocker?.reason }
-        : node?.blockerKind === 'target-error'
+        : node?.blockerKind === 'target-error' || node?.blockerKind === 'runtime-global'
           ? { error: blocker?.headline, requiredPaths: blocker?.requiredPaths }
           : undefined;
   return {

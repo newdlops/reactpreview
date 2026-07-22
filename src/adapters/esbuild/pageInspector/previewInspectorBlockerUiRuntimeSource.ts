@@ -116,13 +116,26 @@ function readPreviewInspectorTargetFailures() {
       );
       const reference = descriptor?.inspector?.renderChainsByExport?.[exportName]?.target ??
         descriptor?.inspector?.target;
-      const componentNames = readPreviewInspectorComponentStackNames(componentStack, exportName);
-      const blockedComponentName = readPreviewInspectorBlockedComponentName(
-        componentStack,
-        exportName,
-      );
-      const requiredPaths = readPreviewInspectorErrorPropertyPaths(error);
+      const runtimeGlobalName = readPreviewInspectorMissingRuntimeGlobalName(error);
+      // A missing lexical JSX/runtime binding is not evidence that the innermost stack label owns
+      // the selected export's source. Anchor it to the proven export instead of inventing a child
+      // component/source pairing such as Button at its parent's import statement.
+      const componentNames = runtimeGlobalName === undefined
+        ? readPreviewInspectorComponentStackNames(componentStack, exportName)
+        : [exportName];
+      const blockedComponentName = runtimeGlobalName === undefined
+        ? readPreviewInspectorBlockedComponentName(componentStack, exportName)
+        : exportName;
+      const requiredPaths = runtimeGlobalName === undefined
+        ? readPreviewInspectorErrorPropertyPaths(error)
+        : [];
+      const failureKind = runtimeGlobalName === undefined
+        ? 'component-error'
+        : isPreviewInspectorJsxRuntimeGlobalName(runtimeGlobalName)
+          ? 'jsx-runtime-global'
+          : 'runtime-global';
       const targetPropRequiredPaths =
+        runtimeGlobalName === undefined &&
         typeof readPreviewInspectorTargetPropFailurePaths === 'function'
           ? readPreviewInspectorTargetPropFailurePaths(exportName, blockedComponentName, error)
           : [];
@@ -132,10 +145,13 @@ function readPreviewInspectorTargetFailures() {
         componentStack,
         error,
         exportName,
+        failureKind,
         headline,
-        id: 'target-error:' + exportName + ':' + String(failures.length),
+        id: (runtimeGlobalName === undefined ? 'target-error:' : 'runtime-global:') +
+          exportName + ':' + String(failures.length),
         occurrenceStart: reference?.occurrenceStart,
         requiredPaths,
+        runtimeGlobalName,
         sourcePath: reference?.sourcePath,
         // Runtime owner identity plus compiler path correlation prevents a hook/local receiver from
         // being projected onto the selected export merely because its component name is identical.
@@ -148,19 +164,26 @@ function readPreviewInspectorTargetFailures() {
 
 /** Creates a locally recoverable node for an error already contained inside the rendered page. */
 function createPreviewInspectorTargetFailureTreeNode(failure) {
+  const runtimeGlobal = failure.failureKind === 'runtime-global' ||
+    failure.failureKind === 'jsx-runtime-global';
   return {
     blocker: failure,
     blockerId: failure.id,
-    blockerKind: 'target-error',
+    blockerKind: runtimeGlobal ? 'runtime-global' : 'target-error',
     children: [],
     id: failure.id,
     kind: 'blocker',
-    name: 'Component error · ' + failure.blockedComponentName,
+    name: runtimeGlobal
+      ? (failure.failureKind === 'jsx-runtime-global'
+          ? 'JSX runtime unavailable · '
+          : 'Runtime global unavailable · ') + failure.runtimeGlobalName
+      : 'Component error · ' + failure.blockedComponentName,
     ownerExportName: failure.exportName,
     props: {
       componentPath: failure.componentNames,
       error: failure.headline,
       requiredPaths: failure.requiredPaths,
+      ...(runtimeGlobal ? { runtimeGlobal: failure.runtimeGlobalName } : {}),
     },
     source: createPreviewInspectorBlockerSource(failure),
     state: undefined,
@@ -435,7 +458,7 @@ function isPreviewInspectorBlockingNode(node) {
     return node.blocker?.directTarget === true || node.blocker?.exhausted === true ||
       node.blocker?.status === 'page-blocked';
   }
-  return node?.blockerKind === 'target-error';
+  return node?.blockerKind === 'target-error' || node?.blockerKind === 'runtime-global';
 }
 
 /** Collects only active render stops for the friendly page-status summary. */
@@ -480,6 +503,7 @@ function formatPreviewInspectorBlockerBadge(node) {
   if (node?.blockerKind === 'target-reachability') {
     return node.blocker?.directTarget === true ? 'target only' : 'page path';
   }
+  if (node?.blockerKind === 'runtime-global') return 'runtime/compiler';
   if (node?.blockerKind === 'target-error') return 'component error';
   return 'blocker';
 }
@@ -490,11 +514,17 @@ function PreviewInspectorBlockerGuide({ node }) {
   const blocking = isPreviewInspectorBlockingNode(node);
   const targetAbsent = node?.blockerKind === 'target-reachability' &&
     node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
+  const runtimeGlobal = node?.blockerKind === 'runtime-global';
   let detail = 'The page can continue, but you can inspect or replace the generated value below.';
   let helpKind = 'assisted';
   let icon = '≈';
   let title = 'React Preview supplied a local preview value here.';
-  if (condition && blocking) {
+  if (runtimeGlobal) {
+    detail = 'This JavaScript binding must come from the compiler or application runtime. Component props and backend payloads cannot supply it.';
+    helpKind = 'blocking';
+    icon = '!';
+    title = 'A required runtime/compiler binding is unavailable.';
+  } else if (condition && blocking) {
     detail = 'This hidden overlay contains the selected file. React Preview will choose its visible branch automatically unless a manual branch override prevents it.';
     helpKind = 'blocking';
     icon = '!';
@@ -719,6 +749,34 @@ function PreviewInspectorTargetFailureDetail({ node }) {
   );
 }
 
+/**
+ * Explains a non-data runtime/compiler failure without exposing payload or prop generation controls.
+ * Retry remains useful after hot reload, dependency restoration, or a compiler compatibility pass.
+ */
+function PreviewInspectorRuntimeGlobalFailureDetail({ node }) {
+  const failure = node.blocker;
+  const jsxRuntime = failure.failureKind === 'jsx-runtime-global';
+  return React.createElement(
+    'div',
+    { className: 'rpi-detail-content' },
+    React.createElement('div', { className: 'rpi-error', role: 'alert' }, failure.headline),
+    React.createElement('div', { className: 'rpi-note' },
+      'Missing binding: ' + failure.runtimeGlobalName + ' · ' +
+      (jsxRuntime ? 'JSX compiler/runtime' : 'application runtime')),
+    React.createElement('div', { className: 'rpi-note' },
+      'Smart Fill is unavailable because this is not component data. Restore the runtime import or refresh after the preview compiler compatibility layer changes.'),
+    React.createElement(
+      'div',
+      { className: 'rpi-actions' },
+      React.createElement(
+        PreviewInspectorDevtoolsButton,
+        { onClick: () => remountPreviewInspectorExport(failure.exportName) },
+        'Retry',
+      ),
+    ),
+  );
+}
+
 /** Explains a logical path blocker and exposes retry/direct-target recovery without hiding context. */
 function PreviewInspectorTargetReachabilityDetail({ node }) {
   const blocker = node.blocker;
@@ -858,6 +916,8 @@ function PreviewInspectorBlockerDetail({ node }) {
     editor = React.createElement(PreviewInspectorRuntimeBlockerDetail, { node });
   } else if (node?.blockerKind === 'target-reachability') {
     editor = React.createElement(PreviewInspectorTargetReachabilityDetail, { node });
+  } else if (node?.blockerKind === 'runtime-global') {
+    editor = React.createElement(PreviewInspectorRuntimeGlobalFailureDetail, { node });
   } else if (node?.blockerKind === 'target-error') {
     editor = React.createElement(PreviewInspectorTargetFailureDetail, { node });
   } else {

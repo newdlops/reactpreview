@@ -49,6 +49,7 @@ function readPreviewInspectorBlockerFlowPhase(node) {
   if (isPreviewInspectorConditionNode(node)) return 1;
   if (node?.blockerKind === 'runtime-fallback') return 2;
   if (node?.blockerKind === 'data-request') return 3;
+  if (node?.blockerKind === 'runtime-global') return 4;
   if (node?.blockerKind === 'target-error') return 4;
   return 5;
 }
@@ -163,7 +164,7 @@ function isPreviewInspectorBlockerFlowCorridorRecord(record, context) {
     return true;
   }
   if (
-    node?.blockerKind === 'target-error' &&
+    (node?.blockerKind === 'target-error' || node?.blockerKind === 'runtime-global') &&
     node?.blocker?.exportName === previewInspectorSession.selectedExportName
   ) {
     return true;
@@ -356,6 +357,7 @@ function formatPreviewInspectorBlockerFlowKind(node) {
   if (node?.blockerKind === 'target-reachability') return 'Target not reached';
   if (node?.blockerKind === 'runtime-fallback') return 'Hook needs value';
   if (node?.blockerKind === 'data-request') return 'Backend data needed';
+  if (node?.blockerKind === 'runtime-global') return 'Runtime/compiler dependency unavailable';
   if (node?.blockerKind === 'target-error') return 'Component crashed';
   return 'Blocker';
 }

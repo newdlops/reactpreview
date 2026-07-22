@@ -1,8 +1,8 @@
 /**
- * Supplies a tiny browser-rendering surface for selected Next.js modules when the framework itself
- * is not installed. The fallback exists for dependency-free source snapshots: it is admitted only
- * after normal esbuild resolution fails and an inert, workspace-owned package manifest explicitly
- * declares Next. It never imports Next configuration, starts a server, or executes package scripts.
+ * Supplies a tiny browser-rendering surface for selected Next.js modules outside Next's compiler.
+ * Image and font modules require build transforms even when installed, while link defers to normal
+ * resolution. Every fallback still requires an inert, workspace-owned manifest that declares Next.
+ * It never imports Next configuration, starts a server, or executes package scripts.
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -53,10 +53,10 @@ interface PreviewNextPackageManifest {
 /**
  * Creates the missing-Next render fallback.
  *
- * Normal installed image/link code wins. Google-font modules always use static metadata because
- * Next's compiler normally rewrites their exports and raw esbuild evaluation yields undefined font
- * factories. Every facade still requires an explicit nearest `next` declaration. Missing arbitrary
- * Next internals remain hard errors instead of hiding an incompatible runtime contract.
+ * Installed link code wins. Image and Google-font modules always use static rendering facades
+ * because Next normally rewrites their exports; raw ESM/CJS interop can otherwise expose an object
+ * as the image component or an undefined font factory. Every facade still requires an explicit
+ * nearest `next` declaration. Missing arbitrary internals remain hard errors.
  */
 export function createPreviewNextFrameworkFallbackPlugin(
   options: PreviewNextFrameworkFallbackOptions,
@@ -68,7 +68,12 @@ export function createPreviewNextFrameworkFallbackPlugin(
   return {
     name: 'react-preview-next-framework-fallback',
     setup(build): void {
-      /** Uses the font facade by contract; image/link defer to real Next before using a fallback. */
+      /** Re-probes package manifests after every watched package.json change or hot rebuild. */
+      build.onStart(() => {
+        manifestByImporterDirectory.clear();
+      });
+
+      /** Uses transform-owned image/font facades; link defers to real Next before fallback. */
       async function resolveNextRenderModule(
         arguments_: OnResolveArgs,
       ): Promise<OnResolveResult | undefined> {
@@ -81,7 +86,7 @@ export function createPreviewNextFrameworkFallbackPlugin(
           manifestByImporterDirectory.set(importerDirectory, manifestPromise);
         }
         const earlyManifestPath =
-          arguments_.path === 'next/font/google' ? await manifestPromise : undefined;
+          arguments_.path === 'next/link' ? undefined : await manifestPromise;
         if (earlyManifestPath !== undefined) {
           return createNextFallbackResolution(arguments_, importerPath, earlyManifestPath);
         }
@@ -257,11 +262,18 @@ function createNextImageFallbackSource(): string {
 import * as React from 'react';
 
 /** Reads a public URL from Next static-image objects without importing an image optimizer. */
+function readStaticImageData(source) {
+  if (source === null || typeof source !== 'object') return undefined;
+  if (typeof source.src === 'string') return source;
+  const nested = source.default;
+  return nested !== null && typeof nested === 'object' && typeof nested.src === 'string'
+    ? nested
+    : undefined;
+}
+
+/** Reads both StaticImageData and Next's public StaticRequire wrapper. */
 function readImageSource(source) {
-  return typeof source === 'string' ? source :
-    source !== null && typeof source === 'object' && typeof source.src === 'string'
-      ? source.src
-      : '';
+  return typeof source === 'string' ? source : readStaticImageData(source)?.src ?? '';
 }
 
 /** Renders the visual image contract with no server loader or framework bootstrap. */
@@ -270,7 +282,7 @@ const PreviewNextImage = React.forwardRef(function PreviewNextImage(properties, 
     blurDataURL, fill, loader, onLoadingComplete, placeholder, priority, quality, unoptimized,
     src: source, style, ...imageProperties
   } = properties ?? {};
-  const staticSource = source !== null && typeof source === 'object' ? source : undefined;
+  const staticSource = readStaticImageData(source);
   const imageStyle = fill === true
     ? { position: 'absolute', height: '100%', width: '100%', inset: 0, objectFit: 'cover', ...style }
     : style;
@@ -293,8 +305,23 @@ export default PreviewNextImage;
 
 /** Mirrors the public helper sufficiently for render-time property spreading. */
 export function getImageProps(properties) {
-  const { src, ...rest } = properties ?? {};
-  return { props: { ...rest, src: readImageSource(src) } };
+  const {
+    blurDataURL, fill, loader, onLoadingComplete, placeholder, priority, quality, unoptimized,
+    src: source, style, ...imageProperties
+  } = properties ?? {};
+  const staticSource = readStaticImageData(source);
+  const imageStyle = fill === true
+    ? { position: 'absolute', height: '100%', width: '100%', inset: 0, objectFit: 'cover', ...style }
+    : style;
+  return { props: {
+    ...imageProperties,
+    alt: typeof imageProperties.alt === 'string' ? imageProperties.alt : '',
+    height: imageProperties.height ?? staticSource?.height,
+    loading: priority === true ? 'eager' : imageProperties.loading,
+    src: readImageSource(source),
+    style: imageStyle,
+    width: imageProperties.width ?? staticSource?.width,
+  } };
 }
 `;
 }

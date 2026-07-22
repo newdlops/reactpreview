@@ -105,7 +105,7 @@ export function createPreviewGeneratedModuleFallbackPlugin(
         };
       }
 
-      /** Emits a recursive callable value that tolerates DTO constructors, enums, and serializers. */
+      /** Emits a depth-bounded callable value for DTO constructors, enums, and serializers. */
       function loadGeneratedModule(arguments_: OnLoadArgs): OnLoadResult {
         const fallbackData = readFallbackData(arguments_.pluginData);
         if (fallbackData === undefined) {
@@ -201,29 +201,38 @@ function generatedSourceExists(resolveDirectory: string, moduleSpecifier: string
   return candidates.some(isFile);
 }
 
-/** Produces a browser-safe recursive value for unavailable generated contracts. */
+/** Produces a browser-safe value whose property and call chains terminate after a fixed depth. */
 function createGeneratedNeutralModuleSource(label: string, exportNames: readonly string[]): string {
   return [
     '/** Render-only neutral replacement for an unavailable generated project module. */',
-    'let neutral;',
-    'const callable = function ReactPreviewGeneratedContractNeutral() { return neutral; };',
-    'neutral = new Proxy(callable, {',
-    '  apply() { return neutral; },',
-    '  construct() { return neutral; },',
-    '  get(_target, property) {',
+    'const maximumNeutralDepth = 8;',
+    'const neutralByDepth = [];',
+    'const readNeutral = (depth) => {',
+    '  if (neutralByDepth[depth] !== undefined) return neutralByDepth[depth];',
+    '  const readNext = () => depth < maximumNeutralDepth ? readNeutral(depth + 1) : undefined;',
+    '  const callable = function ReactPreviewGeneratedContractNeutral() { return readNext(); };',
+    '  const neutral = new Proxy(callable, {',
+    '  apply() { return readNext(); },',
+    '  construct() { return readNext() ?? Object.create(null); },',
+    '  get(target, property, receiver) {',
     "    if (property === '__esModule') return false;",
     "    if (property === 'then') return undefined;",
     "    if (property === 'toJSON') return () => ({});",
     '    if (property === Symbol.iterator) return () => [][Symbol.iterator]();',
     "    if (property === Symbol.toPrimitive) return (hint) => hint === 'string' ? '' : 0;",
-    '    return neutral;',
+    '    if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);',
+    '    return readNext();',
     '  },',
-    '  has() { return true; },',
+    '  has(target, property) { return Reflect.has(target, property); },',
     '  set() { return true; },',
-    '});',
+    '  });',
+    '  neutralByDepth[depth] = neutral;',
+    '  return neutral;',
+    '};',
+    'const neutral = readNeutral(0);',
     `for (const exportName of ${JSON.stringify(exportNames)}) {`,
-    "  if (!Object.hasOwn(callable, exportName) && exportName !== 'default') {",
-    '    Object.defineProperty(callable, exportName, { configurable: true, enumerable: true, get: () => neutral });',
+    "  if (!Object.hasOwn(neutral, exportName) && exportName !== 'default') {",
+    '    Object.defineProperty(neutral, exportName, { configurable: true, enumerable: true, get: () => neutral });',
     '  }',
     '}',
     `console.warn(${JSON.stringify(`[React Preview] Generated source ${label} is unavailable; using neutral render-only contract values.`)});`,

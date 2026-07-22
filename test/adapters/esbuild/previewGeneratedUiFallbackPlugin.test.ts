@@ -29,14 +29,26 @@ describe('generated UI preview fallback', () => {
         writeFile(
           entryPath,
           [
-            "import { Button, buttonVariants } from '@/styles/theme/ui/button';",
+            "import * as React from 'react';",
+            "import { Button, Dialog, DialogContent, buttonVariants, useGenerated } from '@/styles/theme/ui/button';",
             "import { Card } from '@/styles/theme/ui/card';",
+            'let heavyCalls = 0;',
+            "const Heavy = () => { heavyCalls += 1; return React.createElement('span', null, 'heavy'); };",
+            'const closedDialog = React.__render(React.createElement(Dialog, { open: false }, React.createElement(DialogContent, null, React.createElement(Heavy))));',
+            'const openDialog = React.__render(React.createElement(Dialog, { open: true }, React.createElement(DialogContent, null, React.createElement(Heavy))));',
             'export const result = {',
             "  button: Button({ children: 'Continue', id: 'next', variant: 'primary' }),",
             "  header: Card.Header({ children: 'Summary' }),",
             "  classes: buttonVariants({ variant: 'primary' }),",
+            '  closedDialog,',
+            '  openDialog,',
+            '  heavyCalls,',
+            '  stableHookValue: useGenerated() === useGenerated(),',
+            '  blockedCompound: Button.WrappedComponent,',
+            '  boundedCompound: Button.A?.B?.C?.D?.E?.F?.G,',
             '  prototypeKinds: [typeof Button.prototype, typeof Card.Header.prototype],',
             '  classMarkers: [Button.prototype.isReactComponent, Card.Header.prototype.isReactComponent],',
+            '  reactStatics: [Button.childContextTypes, Button.getDerivedStateFromProps, Card.contextTypes],',
             '};',
           ].join('\n'),
           'utf8',
@@ -59,10 +71,17 @@ describe('generated UI preview fallback', () => {
       const exports = executeCommonJs(result.outputFiles?.[0]?.text ?? '') as {
         readonly result: {
           readonly button: { readonly props: Record<string, unknown> };
+          readonly blockedCompound: unknown;
+          readonly boundedCompound: unknown;
+          readonly closedDialog: { readonly children: readonly unknown[] };
           readonly classes: unknown;
           readonly header: unknown;
+          readonly heavyCalls: number;
+          readonly openDialog: unknown;
+          readonly stableHookValue: boolean;
           readonly classMarkers: readonly unknown[];
           readonly prototypeKinds: readonly string[];
+          readonly reactStatics: readonly unknown[];
         };
       };
 
@@ -81,8 +100,18 @@ describe('generated UI preview fallback', () => {
         tag: 'div',
       });
       expect(exports.result.classes).toBe('');
+      expect(JSON.stringify(exports.result.closedDialog)).not.toContain('heavy');
+      expect(JSON.stringify(exports.result.closedDialog)).toContain(
+        'data-react-preview-generated-overlay',
+      );
+      expect(JSON.stringify(exports.result.openDialog)).toContain('heavy');
+      expect(exports.result.heavyCalls).toBe(1);
+      expect(exports.result.stableHookValue).toBe(true);
+      expect(exports.result.blockedCompound).toBeUndefined();
+      expect(exports.result.boundedCompound).toBeUndefined();
       expect(exports.result.prototypeKinds).toEqual(['object', 'object']);
       expect(exports.result.classMarkers).toEqual([undefined, undefined]);
+      expect(exports.result.reactStatics).toEqual([undefined, undefined, undefined]);
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]?.text).toContain('Generated project UI source');
       expect(new Set(watchedDirectories)).toEqual(
@@ -309,10 +338,34 @@ function createReactFixturePlugin(): Plugin {
       }));
       buildContext.onLoad({ filter: /.*/, namespace: 'react-fixture' }, () => ({
         contents: [
+          'const contextValues = new Map();',
+          'const render = (element) => {',
+          "  if (element === null || typeof element !== 'object' || !('tag' in element)) return element;",
+          "  const providerContext = typeof element.tag === 'function' ? Object.getOwnPropertyDescriptor(element.tag, '__previewContext')?.value : undefined;",
+          '  if (providerContext !== undefined) {',
+          '    const hadValue = contextValues.has(providerContext);',
+          '    const previous = contextValues.get(providerContext);',
+          '    contextValues.set(providerContext, element.props?.value);',
+          '    const rendered = element.children.map(render);',
+          '    if (hadValue) contextValues.set(providerContext, previous);',
+          '    else contextValues.delete(providerContext);',
+          '    return rendered.length === 1 ? rendered[0] : rendered;',
+          '  }',
+          "  if (typeof element.tag === 'function') return render(element.tag({ ...(element.props || {}), children: element.children.length === 1 ? element.children[0] : element.children }));",
+          '  return { ...element, children: element.children.map(render) };',
+          '};',
           'module.exports = {',
+          '  __render: render,',
+          '  createContext: (defaultValue) => {',
+          '    const context = { defaultValue };',
+          '    context.Provider = function Provider() {};',
+          '    context.Provider.__previewContext = context;',
+          '    return context;',
+          '  },',
           '  createElement: (tag, props, ...children) => ({ children, props, tag }),',
           '  cloneElement: (element, props) => ({ ...element, props: { ...element.props, ...props } }),',
           "  isValidElement: (value) => Boolean(value && typeof value === 'object' && 'tag' in value),",
+          '  useContext: (context) => contextValues.has(context) ? contextValues.get(context) : context.defaultValue,',
           '};',
         ].join('\n'),
         loader: 'js',

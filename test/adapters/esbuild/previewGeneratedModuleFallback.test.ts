@@ -37,8 +37,16 @@ describe('generated module preview fallback', () => {
         'utf8',
       );
       const result = await buildPreviewFixture({
-        entrySource:
-          "import { Timestamp } from '@scope/proto'; console.log(Timestamp.fromJSON({}).seconds);",
+        entrySource: [
+          "import { Timestamp } from '@scope/proto';",
+          'let propertyCursor = Timestamp;',
+          'let callCursor = Timestamp;',
+          'for (let index = 0; index < 20; index += 1) {',
+          '  propertyCursor = propertyCursor?.parent;',
+          '  callCursor = callCursor?.();',
+          '}',
+          "console.log(Timestamp.fromJSON({}).seconds, propertyCursor, callCursor, 'unknown' in Timestamp);",
+        ].join('\n'),
         plugins: [
           createVirtualResolutionPlugin('@scope/proto', virtualPath),
           createWorkspacePlugin(workspaceRoot),
@@ -53,6 +61,7 @@ describe('generated module preview fallback', () => {
         vm.runInNewContext(result.outputFiles?.[0]?.text ?? '', { console: consoleFixture });
       }).not.toThrow();
       expect(consoleFixture.log).toHaveBeenCalledOnce();
+      expect(consoleFixture.log.mock.calls[0]?.slice(1)).toEqual([undefined, undefined, false]);
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }

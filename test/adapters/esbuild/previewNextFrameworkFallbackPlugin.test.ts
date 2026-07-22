@@ -5,6 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {
   build,
+  context,
   type BuildOptions,
   type BuildResult,
   type OnLoadResult,
@@ -40,7 +41,7 @@ describe('Next framework render fallback', () => {
         'export const result = {',
         '  font: Geist({ variable: "--font-geist" }),',
         '  image,',
-        '  imageProps: getImageProps({ alt: "Small", src: { src: "/small.svg" } }),',
+        '  imageProps: getImageProps({ alt: "Small", priority: true, src: { default: { height: 12, src: "/small.svg", width: 16 } } }),',
         '  link,',
         '  mono: Roboto_Mono({ subsets: ["latin"] }),',
         '};',
@@ -56,7 +57,14 @@ describe('Next framework render fallback', () => {
       readonly result: {
         readonly font: { readonly className: string; readonly variable: string };
         readonly image: PreviewFixtureElement;
-        readonly imageProps: { readonly props: { readonly src: string } };
+        readonly imageProps: {
+          readonly props: {
+            readonly height: number;
+            readonly loading: string;
+            readonly src: string;
+            readonly width: number;
+          };
+        };
         readonly link: PreviewFixtureElement;
         readonly mono: { readonly style: { readonly fontFamily: string } };
       };
@@ -74,7 +82,13 @@ describe('Next framework render fallback', () => {
       tag: 'img',
     });
     expect(exports.result.image.props).not.toHaveProperty('priority');
-    expect(exports.result.imageProps.props.src).toBe('/small.svg');
+    expect(exports.result.imageProps.props).toMatchObject({
+      height: 12,
+      loading: 'eager',
+      src: '/small.svg',
+      width: 16,
+    });
+    expect(exports.result.imageProps.props).not.toHaveProperty('priority');
     expect(exports.result.link).toMatchObject({
       children: ['Docs'],
       props: { 'data-react-preview-next-link': '', href: '/docs?tab=api' },
@@ -96,8 +110,8 @@ describe('Next framework render fallback', () => {
     expect(result.metafile.inputs[path.join(projectRoot, 'package.json')]).toBeUndefined();
   });
 
-  /** Keeps an installed framework export authoritative instead of replacing it with a facade. */
-  it('preserves normal resolution when the requested Next module exists', async () => {
+  /** Replaces installed image code because raw Next interop may expose its module object as JSX. */
+  it('uses the render facade even when the raw Next image module exists', async () => {
     const projectRoot = await createProject('next-installed-', {
       dependencies: { next: '15.5.20' },
     });
@@ -115,14 +129,49 @@ describe('Next framework render fallback', () => {
       ),
       writeFile(
         path.join(nextRoot, 'image.js'),
-        'module.exports = function InstalledImage() { return "installed-next-image"; };',
+        'module.exports = { default: function InstalledImage() { return "installed"; } };',
         'utf8',
       ),
       writeFile(
         entryPath,
-        "import Image from 'next/image'; export const result = Image();",
+        "import Image from 'next/image'; export const result = Image({ src: '/safe.png' });",
         'utf8',
       ),
+    ]);
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      createReactFixturePlugin(),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
+
+    expect(exports.result).toMatchObject({ props: { src: '/safe.png' }, tag: 'img' });
+    expect(result.warnings[0]?.text).toContain('next/image');
+  });
+
+  /** Keeps an installed link implementation authoritative because it does not need compilation. */
+  it('preserves normal link resolution when the requested public module exists', async () => {
+    const projectRoot = await createProject('next-installed-link-', {
+      dependencies: { next: '15.5.20' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    const nextRoot = path.join(projectRoot, 'node_modules', 'next');
+    await Promise.all([
+      mkdir(path.dirname(entryPath), { recursive: true }),
+      mkdir(nextRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(nextRoot, 'package.json'),
+        JSON.stringify({ exports: { './link': './link.js' }, name: 'next', version: '15.5.20' }),
+        'utf8',
+      ),
+      writeFile(
+        path.join(nextRoot, 'link.js'),
+        'module.exports = function InstalledLink() { return "installed-next-link"; };',
+        'utf8',
+      ),
+      writeFile(entryPath, "import Link from 'next/link'; export const result = Link();", 'utf8'),
     ]);
 
     const result = await buildFixture(entryPath, projectRoot, [
@@ -130,7 +179,7 @@ describe('Next framework render fallback', () => {
     ]);
     const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
 
-    expect(exports.result).toBe('installed-next-image');
+    expect(exports.result).toBe('installed-next-link');
     expect(result.warnings).toEqual([]);
   });
 
@@ -173,6 +222,49 @@ describe('Next framework render fallback', () => {
       variable: '--font',
     });
     expect(result.warnings[0]?.text).toContain('without running Next build transforms');
+  });
+
+  /** Re-reads a changed package manifest instead of retaining a failed first-build lookup. */
+  it('discovers a newly declared Next dependency on persistent rebuild', async () => {
+    const projectRoot = await createProject('next-rebuild-', {
+      dependencies: { react: '19.1.0' },
+    });
+    const manifestPath = path.join(projectRoot, 'package.json');
+    const entryPath = path.join(projectRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      "import Image from 'next/image'; export const result = Image({ src: '/fresh.png' });",
+      'utf8',
+    );
+    const buildContext = await context({
+      absWorkingDir: projectRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'cjs',
+      logLevel: 'silent',
+      platform: 'node',
+      plugins: [
+        createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+        createReactFixturePlugin(),
+      ],
+      write: false,
+    });
+
+    try {
+      await expect(buildContext.rebuild()).rejects.toThrow('Could not resolve "next/image"');
+      await writeFile(
+        manifestPath,
+        JSON.stringify({ dependencies: { next: '15.5.20', react: '19.1.0' } }),
+        'utf8',
+      );
+      const rebuilt = await buildContext.rebuild();
+      const exports = executeCommonJs(rebuilt.outputFiles[0]?.text ?? '');
+
+      expect(exports.result).toMatchObject({ props: { src: '/fresh.png' }, tag: 'img' });
+    } finally {
+      await buildContext.dispose();
+    }
   });
 
   /** Leaves missing modules actionable when the nearest package never declared Next. */

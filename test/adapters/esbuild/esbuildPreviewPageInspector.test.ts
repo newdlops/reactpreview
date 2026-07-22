@@ -113,6 +113,71 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
     }
   });
 
+  /** Prevents a nested async server component from creating fresh client suspension promises. */
+  it('bundles nested async JSX through a stable one-shot Suspense adapter', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-async-component-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const targetPath = path.join(sourceDirectory, 'AsyncTarget.tsx');
+    const pagePath = path.join(sourceDirectory, 'Page.tsx');
+    const targetSource = [
+      'export async function AsyncTarget({ children }) {',
+      '  await new Promise(() => undefined);',
+      '  return <section>ASYNC_BODY_SHOULD_NOT_REACH_CLIENT{children}</section>;',
+      '}',
+      'export function LocalOwner() {',
+      '  return <AsyncTarget><span>AUTHORED_CHILD</span></AsyncTarget>;',
+      '}',
+    ].join('\n');
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(targetPath, targetSource, 'utf8'),
+        writeFile(
+          pagePath,
+          [
+            "import { LocalOwner } from './AsyncTarget';",
+            'export function Page() {',
+            '  return <main><h1>PAGE_SHELL</h1><LocalOwner /></main>;',
+            '}',
+          ].join('\n'),
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(javascript).toContain('PAGE_SHELL');
+      expect(javascript).toContain('AUTHORED_CHILD');
+      expect(javascript).toContain('data-react-preview-async-component');
+      expect(javascript).toContain('AsyncTarget');
+      expect(javascript).toContain('ASYNC_BODY_SHOULD_NOT_REACH_CLIENT');
+      expect(javascript).toContain('throw record.promise');
+      expect(javascript).toContain('Promise.resolve().then(load)');
+      expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
+        [],
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Eagerly carries exact page theme and authored HTML selector attributes across lazy roots. */
   it('preserves the application style context before rendering a lazy page candidate', async () => {
     const projectRoot = await mkdtemp(

@@ -239,6 +239,83 @@ describe('global package bridge discovery', () => {
     }
   });
 
+  /**
+   * Bridges the standard capitalized Buffer contract even when only a transitive package installed
+   * it and the free reference lives in node_modules, outside workspace source instrumentation.
+   */
+  it('plans an installed browser Buffer polyfill before reached dependency evaluation', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'preview-global-buffer-'));
+    const projectRoot = path.join(workspaceRoot, 'application');
+    const packageRoot = path.join(workspaceRoot, 'node_modules', 'buffer');
+    const consumerRoot = path.join(workspaceRoot, 'node_modules', 'buffer-from');
+    const targetPath = path.join(projectRoot, 'Target.js');
+    try {
+      await Promise.all([
+        mkdir(projectRoot, { recursive: true }),
+        mkdir(packageRoot, { recursive: true }),
+        mkdir(consumerRoot, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(workspaceRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(
+          path.join(packageRoot, 'package.json'),
+          '{"name":"buffer","version":"1.0.0","type":"module","main":"index.js"}',
+          'utf8',
+        ),
+        writeFile(
+          path.join(packageRoot, 'index.js'),
+          `export const BUFFER_POLYFILL_MARKER = 'reached-buffer-polyfill';
+           export class Buffer {
+             static from(value) { return { toString: () => value + ':' + BUFFER_POLYFILL_MARKER }; }
+           }`,
+          'utf8',
+        ),
+        writeFile(
+          path.join(consumerRoot, 'package.json'),
+          '{"name":"buffer-from","version":"1.0.0","main":"index.js"}',
+          'utf8',
+        ),
+        writeFile(
+          path.join(consumerRoot, 'index.js'),
+          `module.exports = value => Buffer.from(value).toString();`,
+          'utf8',
+        ),
+      ]);
+      const plan = await discoverPreviewGlobalPackageBridges({
+        projectRoot,
+        referencedGlobalNames: [],
+        workspaceRoot,
+      });
+      const blockedPlan = await discoverPreviewGlobalPackageBridges({
+        blockedGlobalNames: ['Buffer'],
+        projectRoot,
+        referencedGlobalNames: [],
+        workspaceRoot,
+      });
+      const fixture = { plan, projectRoot, targetPath, workspaceRoot };
+      const reached = await bundleAndRun(
+        fixture,
+        `globalThis.output = require('buffer-from')('ready');`,
+      );
+      const unused = await bundleFixture(fixture, `globalThis.output = 'no-buffer-reference';`);
+
+      expect(plan.bridges).toContainEqual(
+        expect.objectContaining({
+          exportKind: 'named',
+          exportName: 'Buffer',
+          globalName: 'Buffer',
+          moduleSpecifier: 'buffer/',
+        }),
+      );
+      expect(reached.output).toBe('ready:reached-buffer-polyfill');
+      expect(unused.outputFiles[0]?.text).not.toContain('reached-buffer-polyfill');
+      expect(blockedPlan.bridges.some((bridge) => bridge.globalName === 'Buffer')).toBe(false);
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Supports exact aliases and named exports only when supplied as inert explicit hints. */
   it('retains validated explicit export-shape hints', async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'preview-global-hint-'));

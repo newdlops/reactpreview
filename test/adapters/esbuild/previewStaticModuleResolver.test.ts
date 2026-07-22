@@ -78,4 +78,58 @@ describe('createPreviewStaticModuleResolver', () => {
       ]);
     }
   });
+
+  /** Uses immutable managed packages only after normal project resolution has no installed match. */
+  it('supports a local-first managed node_modules fallback', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-managed-'));
+    const managedRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-store-'));
+    const consumerPath = path.join(workspaceRoot, 'src', 'Page.tsx');
+    const managedPackageRoot = path.join(managedRoot, 'node_modules', 'runtime-package');
+    const localPackageRoot = path.join(workspaceRoot, 'node_modules', 'runtime-package');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(consumerPath), { recursive: true }),
+        mkdir(managedPackageRoot, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(consumerPath, "import value from 'runtime-package';", 'utf8'),
+        writeFile(
+          path.join(managedPackageRoot, 'package.json'),
+          JSON.stringify({ main: 'index.js', name: 'runtime-package', version: '1.0.0' }),
+          'utf8',
+        ),
+        writeFile(path.join(managedPackageRoot, 'index.js'), 'export default "managed";', 'utf8'),
+      ]);
+
+      const managedResolver = createPreviewStaticModuleResolver({
+        fallbackNodeModulesPaths: [path.join(managedRoot, 'node_modules')],
+        workspaceRoot,
+      });
+      expect(managedResolver.resolve('runtime-package', consumerPath)).toBe(
+        await realpath(path.join(managedPackageRoot, 'index.js')),
+      );
+
+      await mkdir(localPackageRoot, { recursive: true });
+      await Promise.all([
+        writeFile(
+          path.join(localPackageRoot, 'package.json'),
+          JSON.stringify({ main: 'index.js', name: 'runtime-package', version: '2.0.0' }),
+          'utf8',
+        ),
+        writeFile(path.join(localPackageRoot, 'index.js'), 'export default "local";', 'utf8'),
+      ]);
+      const localResolver = createPreviewStaticModuleResolver({
+        fallbackNodeModulesPaths: [path.join(managedRoot, 'node_modules')],
+        workspaceRoot,
+      });
+      expect(localResolver.resolve('runtime-package', consumerPath)).toBe(
+        await realpath(path.join(localPackageRoot, 'index.js')),
+      );
+    } finally {
+      await Promise.all([
+        rm(workspaceRoot, { force: true, recursive: true }),
+        rm(managedRoot, { force: true, recursive: true }),
+      ]);
+    }
+  });
 });

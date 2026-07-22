@@ -1,5 +1,5 @@
 /**
- * Reuses graph-proven router and lexical-global requirements across hot preview rebuilds.
+ * Reuses graph-proven router, lexical-global, and portal-host requirements across hot rebuilds.
  * The first build for a target may still expand its plan once; later revisions start from the last
  * successful evidence and avoid the former unconditional discovery build.
  */
@@ -16,6 +16,10 @@ export interface CachedPreviewRouterRequirement {
 
 /** Evidence retained for one target/configuration identity. */
 export interface PreviewAdaptiveBuildPlan {
+  /** Sloppy CommonJS assignment globals proven by the last successful dependency graph. */
+  readonly legacyCommonJsGlobalNames: readonly string[];
+  /** Exact portal roots discovered from the last successful esbuild input graph. */
+  readonly portalHostIds: readonly string[];
   /** Free lexical identifiers that required exact installed-package fallback on the last build. */
   readonly referencedGlobalNames: readonly string[];
   /** Last graph-proven router ownership requirement. */
@@ -42,6 +46,10 @@ export class PreviewAdaptiveBuildPlanCache {
     this.plans.set(
       cacheKey,
       Object.freeze({
+        legacyCommonJsGlobalNames: Object.freeze(
+          [...new Set(plan.legacyCommonJsGlobalNames)].sort(),
+        ),
+        portalHostIds: Object.freeze([...new Set(plan.portalHostIds)].sort()),
         referencedGlobalNames: Object.freeze([...new Set(plan.referencedGlobalNames)].sort()),
         routerRequirement: Object.freeze({ ...plan.routerRequirement }),
       }),

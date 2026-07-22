@@ -19,6 +19,11 @@ import {
   type PreviewBuildExecutionContext,
 } from '../../domain/previewBuildExecution';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import {
+  EMPTY_MANAGED_ENVIRONMENT,
+  PreviewManagedDependencyStore,
+  type PreviewManagedDependencyEnvironment,
+} from '../node/previewManagedDependencyStore';
 import { createPreviewEntry } from './createPreviewEntry';
 import { createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
 import { createPreviewInspectorCorridorPlugin } from './inspector/previewInspectorCorridorPlugin';
@@ -37,6 +42,7 @@ import { PreviewAdaptiveBuildPlanCache } from './previewAdaptiveBuildPlanCache';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
 import { createPreviewBuildPlanIdentity } from './previewBuildPlanIdentity';
 import {
+  collectPreviewBuildDependencies,
   convertMessage,
   createPreviewBundle,
   describeUnknownError,
@@ -46,21 +52,40 @@ import {
   VIRTUAL_ENTRY_NAME,
 } from './previewBuildResult';
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
+import {
+  EMPTY_IMPLICIT_GLOBAL_EVIDENCE,
+  EMPTY_RUNTIME_WATCH_INPUTS,
+  EMPTY_TARGET_USAGE_PROPS,
+  createImplicitGlobalEvidenceCacheKey,
+  createPreviewDocumentName,
+  describeGlobalPackageBridgeStatus,
+  haveEquivalentGlobalPackageBridges,
+  haveEquivalentRouterSelections,
+  requirePreviewSassBoundary,
+  type PreviewRouterBuildSelection,
+} from './previewCompilerDefaults';
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewGeneratedModuleFallbackPlugin } from './previewGeneratedModuleFallback';
+import {
+  createPreviewLegacyCommonJsGlobalDefines,
+  discoverPreviewLegacyCommonJsGlobals,
+} from './previewLegacyCommonJsGlobalDiscovery';
+import { createPreviewManagedDependencyPeerPlugin } from './previewManagedDependencyPeerPlugin';
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
+import {
+  mergePreviewPortalHostIds,
+  refinePreviewPortalHostsFromBuild,
+} from './previewPortalHostBuildRefinement';
 import { selectPreviewReactDomRootKind } from './previewReactDomRootRuntimeSource';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from './previewRouterBridgePlugin';
 import { PREVIEW_SOURCE_LOADERS } from './previewLoaderPolicy';
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import { PreviewProjectUsageCache } from './previewProjectUsageCache';
-import type { PreviewTargetUsageProps } from './previewTargetUsageProps';
 import { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
-import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
 import {
   PreviewIncrementalBuildCache,
   type PreviewIncrementalBuildOptions,
@@ -71,7 +96,6 @@ import {
   createPreviewRuntimeWatchInputs,
   resolvePreviewRuntimeEnvironment,
   type PreviewRuntimeEnvironment,
-  type PreviewRuntimeWatchInputs,
 } from './previewRuntimeEnvironment';
 import {
   createPreviewSassPlugin,
@@ -105,37 +129,13 @@ import {
 } from './workspaceSourcePlugin';
 
 const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
-/** Direct-preview fast path omits package-wide reverse analysis until background enrichment. */
-const EMPTY_TARGET_USAGE_PROPS: PreviewTargetUsageProps = Object.freeze({
-  dependencyPaths: Object.freeze([]),
-  parentSlicesByExport: Object.freeze({}),
-  propsByExport: Object.freeze({}),
-});
-/** Fast builds discover exact free globals from their reached esbuild graph instead of a cold scan. */
-const EMPTY_IMPLICIT_GLOBAL_EVIDENCE: PreviewImplicitGlobalEvidenceInventory = Object.freeze({
-  ambiguousGlobalNames: Object.freeze([]),
-  dependencyPaths: Object.freeze([]),
-  evidence: Object.freeze([]),
-  truncated: false,
-  unresolvedGlobalNames: Object.freeze([]),
-});
-
-/** Fast first paint observes only reached esbuild inputs; convention candidates join enrichment. */
-const EMPTY_RUNTIME_WATCH_INPUTS: PreviewRuntimeWatchInputs = Object.freeze({
-  dependencyPaths: Object.freeze([]),
-  watchDirectories: Object.freeze([]),
-});
-
-/** Router bridge selection carried into one discovery or final esbuild attempt. */
-interface PreviewRouterBuildSelection {
-  /** Whether graph evidence permits a default automatic MemoryRouter wrapper. */
-  readonly automaticallyWrap: boolean;
-  /** Whether the project router package should be resolved into the final runtime. */
-  readonly enabled: boolean;
-}
 
 /** Optional compiler policy overrides used by deterministic integration tests. */
 export interface EsbuildPreviewCompilerOptions {
+  /** Extension-packaged node_modules containing the compatible baseline React runtime. */
+  readonly bundledNodeModulesPath?: string;
+  /** Persistent global-storage directory used for immutable cross-workspace package environments. */
+  readonly managedDependencyStoreRoot?: string;
   /** Split-output threshold before retrying with lazy initializers in a coalesced local artifact. */
   readonly maximumSplitOutputFiles?: number;
 }
@@ -161,6 +161,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly setupFailureCache = new PreviewSetupFailureCache();
   /** Host-lifetime entropy derives entry-private source gesture keys without invalidating rebuilds. */
   private readonly inspectorGestureSeed = randomBytes(32);
+  /** Optional persistent package store; absent in isolated compiler unit tests. */
+  private readonly managedDependencyStore: PreviewManagedDependencyStore | undefined;
   private readonly maximumSplitOutputFiles: number;
   private shutdownPromise: Promise<void> | undefined;
 
@@ -169,6 +171,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     this.maximumSplitOutputFiles = normalizeMaximumSplitOutputFiles(
       options.maximumSplitOutputFiles,
     );
+    this.managedDependencyStore =
+      options.managedDependencyStoreRoot === undefined
+        ? undefined
+        : new PreviewManagedDependencyStore({
+            ...(options.bundledNodeModulesPath === undefined
+              ? {}
+              : { bundledNodeModulesPath: options.bundledNodeModulesPath }),
+            rootPath: options.managedDependencyStoreRoot,
+          });
   }
 
   /**
@@ -203,6 +214,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         canonicalizeExistingPath(request.documentPath),
         canonicalWorkspaceRoot,
       );
+      const managedDependencyEnvironment: PreviewManagedDependencyEnvironment =
+        (await this.managedDependencyStore?.prepare(projectRoot, canonicalWorkspaceRoot)) ??
+        EMPTY_MANAGED_ENVIRONMENT;
       const targetExports = selectPreviewTargetExports(request.documentPath, request.sourceText);
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
@@ -283,6 +297,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ...(request.tsconfigPath === undefined
           ? {}
           : { configuredTsconfigPath: request.tsconfigPath }),
+        fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       const reactDomRootKind = selectPreviewReactDomRootKind(
@@ -318,10 +333,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const {
         documentShellEvidence,
         globalStyleImports,
-        portalHostIds,
         snapshotSourceByPath,
         themeImport: selectedThemeImport,
       } = styleContext;
+      let legacyCommonJsGlobalNames: readonly string[] = [];
+      let portalHostIds = styleContext.portalHostIds;
       const implicitGlobalEvidence = useFastPreparation
         ? EMPTY_IMPLICIT_GLOBAL_EVIDENCE
         : await this.implicitGlobalEvidenceCache.discover({
@@ -415,6 +431,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             bundle: true,
             charset: 'utf8',
             define: {
+              ...createPreviewLegacyCommonJsGlobalDefines(legacyCommonJsGlobalNames),
               'import.meta.env': JSON.stringify({
                 BASE_URL: '/',
                 DEV: true,
@@ -433,10 +450,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             loader: PREVIEW_SOURCE_LOADERS,
             logLevel: 'silent',
             metafile: true,
+            nodePaths: [...managedDependencyEnvironment.nodeModulesPaths],
             outdir: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
             platform: 'browser',
             plugins: [
               createPreviewNodeBuiltinPlugin(),
+              createPreviewManagedDependencyPeerPlugin({
+                managedNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
+                projectRoot,
+              }),
               createPreviewPnpPeerDependencyPlugin({
                 projectRoot,
                 workspaceRoot: canonicalWorkspaceRoot,
@@ -573,6 +595,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           globalStyleImports,
           inferredPropsByExport,
           inspectorPlan,
+          legacyCommonJsGlobalNames,
+          managedDependencyEnvironment: managedDependencyEnvironment.identity,
           parentSlices: activeParentSlices,
           preparationMode: request.preparationMode,
           projectRoot,
@@ -635,6 +659,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         const adaptivePlanKey = createPreviewBuildPlanIdentity({
           documentPath: request.documentPath,
           environment,
+          managedDependencyEnvironment: managedDependencyEnvironment.identity,
           preparationMode: request.preparationMode,
           projectRoot,
           renderMode: request.renderMode,
@@ -642,6 +667,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           workspaceRoot: canonicalWorkspaceRoot,
         });
         const cachedPlan = this.adaptiveBuildPlanCache.read(adaptivePlanKey);
+        legacyCommonJsGlobalNames = cachedPlan?.legacyCommonJsGlobalNames ?? [];
+        portalHostIds = mergePreviewPortalHostIds(
+          styleContext.portalHostIds,
+          cachedPlan?.portalHostIds ?? [],
+        );
         const initialGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
           ...globalBridgeEvidencePolicy,
           projectRoot,
@@ -695,7 +725,43 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             fallbackBoundary,
           );
         }
+        const readReachedSource = (
+          sourcePath: string,
+          maximumBytes: number,
+        ): Promise<string | undefined> =>
+          this.projectUsageCache.readSourceText({ maximumBytes, sourcePath });
+        const [portalRefinement, legacyCommonJsRefinement] = await Promise.all([
+          refinePreviewPortalHostsFromBuild({
+            baselineHostIds: styleContext.portalHostIds,
+            currentHostIds: portalHostIds,
+            metafile: finalBuild.result.metafile,
+            readSource: readReachedSource,
+            request,
+          }),
+          discoverPreviewLegacyCommonJsGlobals({
+            currentGlobalNames: legacyCommonJsGlobalNames,
+            metafile: finalBuild.result.metafile,
+            readSource: readReachedSource,
+            request,
+          }),
+        ]);
+        portalHostIds = portalRefinement.hostIds;
+        legacyCommonJsGlobalNames = legacyCommonJsRefinement.globalNames;
+        throwIfPreviewBuildCancelled(buildSignal);
+        if (portalRefinement.changed || legacyCommonJsRefinement.changed) {
+          fallbackBoundary = createStorybookFallbackBoundary(environment);
+          activeStorybookFallbackBoundary = fallbackBoundary;
+          finalBuild = await runBuild(
+            environment,
+            exactRouterSelection,
+            exactGlobalPackagePlan,
+            splitOutputs,
+            fallbackBoundary,
+          );
+        }
         this.adaptiveBuildPlanCache.write(adaptivePlanKey, {
+          legacyCommonJsGlobalNames,
+          portalHostIds,
           referencedGlobalNames: finalBuild.referencedGlobalNames,
           routerRequirement: finalBuild.routerRequirement,
         });
@@ -704,6 +770,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
 
       const outputStrategyKey = createPreviewBuildPlanIdentity({
         documentPath: request.documentPath,
+        managedDependencyEnvironment: managedDependencyEnvironment.identity,
         preparationMode: request.preparationMode,
         projectRoot,
         renderMode: request.renderMode,
@@ -823,6 +890,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         [...fallbackDiagnostics, ...outputStrategyDiagnostics, ...inspectorFallbackDiagnostics],
         [
           ...buildExecution.globalPackagePlan.dependencyPaths,
+          ...(managedDependencyEnvironment.profile?.dependencyPaths ?? []),
           ...runtimeWatchInputs.dependencyPaths,
           ...fallbackDependencies,
           ...buildExecution.styleDependencyPaths,
@@ -834,10 +902,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ],
         this.diagnosticEmissionCache.admitBuildWarning.bind(this.diagnosticEmissionCache),
       );
+      this.managedDependencyStore?.scheduleAdmission({
+        dependencyPaths: collectPreviewBuildDependencies(request, buildExecution.result.metafile),
+        profile: managedDependencyEnvironment.profile,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      const externallyWatchableBundle =
+        this.managedDependencyStore === undefined
+          ? previewBundle
+          : {
+              ...previewBundle,
+              dependencies: previewBundle.dependencies.filter(
+                (dependencyPath) => !this.managedDependencyStore?.ownsPath(dependencyPath),
+              ),
+            };
       throwIfPreviewBuildCancelled(buildSignal);
       return inspectorSourceGestureSecret === undefined
-        ? previewBundle
-        : { ...previewBundle, inspectorSourceGestureSecret };
+        ? externallyWatchableBundle
+        : { ...externallyWatchableBundle, inspectorSourceGestureSecret };
     } catch (error) {
       if (isPreviewBuildCancellation(error, buildSignal)) {
         throw error;
@@ -889,93 +971,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     this.projectUsageCache.clear();
     this.setupFailureCache.clear();
     this.shutdownPromise = this.incrementalBuildCache.shutdown().then(async () => {
+      await this.managedDependencyStore?.shutdown();
       await stop();
     });
     return this.shutdownPromise;
   }
-}
-
-/** Separates nearest-config and explicitly configured evidence resolution policies per package. */
-function createImplicitGlobalEvidenceCacheKey(
-  projectRoot: string,
-  configuredTsconfigPath: string | undefined,
-): string {
-  const configIdentity =
-    configuredTsconfigPath === undefined
-      ? 'nearest-config'
-      : path.normalize(configuredTsconfigPath);
-  return `${path.normalize(projectRoot)}\0${configIdentity}`;
-}
-
-/** Describes static module injection without claiming that every available candidate was used. */
-function describeGlobalPackageBridgeStatus(plan: PreviewGlobalPackageBridgePlan): string {
-  if (plan.bridges.length === 0) {
-    return plan.truncated
-      ? 'degraded: implicit-global evidence or exact package candidates exceeded a safety budget'
-      : 'available: no active bridge; exact package fallback is enabled only for reached free identifiers';
-  }
-  const projectEvidenceCount = plan.bridges.filter(
-    (bridge) =>
-      bridge.evidence === 'ambient-declaration' || bridge.evidence === 'runtime-assignment',
-  ).length;
-  const packageFallbackCount = plan.bridges.filter(
-    (bridge) => bridge.evidence === 'dependency-name',
-  ).length;
-  return `active: ${plan.bridges.length.toString()} lexical module bridge(s); ${projectEvidenceCount.toString()} from project bootstrap/ambient evidence, ${packageFallbackCount.toString()} from exact installed-package fallback`;
-}
-
-/** Reports whether a cached router boundary exactly matches the newly reached source graph. */
-function haveEquivalentRouterSelections(
-  left: PreviewRouterBuildSelection,
-  right: PreviewRouterBuildSelection,
-): boolean {
-  return left.enabled === right.enabled && left.automaticallyWrap === right.automaticallyWrap;
-}
-
-/** Reports whether adaptive discovery selected the same generated module bindings. */
-function haveEquivalentGlobalPackageBridges(
-  left: PreviewGlobalPackageBridgePlan,
-  right: PreviewGlobalPackageBridgePlan,
-): boolean {
-  return (
-    left.bridges.length === right.bridges.length &&
-    left.bridges.every((bridge, index) => {
-      const candidate = right.bridges[index];
-      return (
-        bridge.globalName === candidate?.globalName &&
-        bridge.moduleSpecifier === candidate.moduleSpecifier &&
-        bridge.resolveDir === candidate.resolveDir &&
-        bridge.exportKind === candidate.exportKind &&
-        bridge.exportName === candidate.exportName
-      );
-    })
-  );
-}
-
-/**
- * Creates a stable setup/decorator title without exposing a path outside the selected workspace.
- *
- * @param request Compilation request containing target and workspace identities.
- * @returns Workspace-relative target name, or the basename when the target is outside that root.
- */
-function createPreviewDocumentName(request: PreviewBuildRequest): string {
-  const relativeName = path.relative(request.workspaceRoot, request.documentPath);
-  return relativeName.length > 0 && !relativeName.startsWith('..') && !path.isAbsolute(relativeName)
-    ? relativeName.split(path.sep).join('/')
-    : path.basename(request.documentPath);
-}
-
-/**
- * Narrows the Sass resource injected by either the persistent-context cache or one-shot build.
- * A missing boundary indicates an internal build-plan wiring error rather than a project error.
- */
-function requirePreviewSassBoundary(
-  boundary: PreviewSassBoundary | undefined,
-): PreviewSassBoundary {
-  if (boundary === undefined) {
-    throw new Error('React Preview could not initialize its project-scoped Sass boundary.');
-  }
-  return boundary;
 }
 
 /**

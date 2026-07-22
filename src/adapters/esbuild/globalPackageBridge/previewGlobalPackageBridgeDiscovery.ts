@@ -23,6 +23,9 @@ const MAX_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
 const EXACT_PACKAGE_GLOBAL = /^[a-z][a-z0-9_]*$/u;
 const JAVASCRIPT_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
 const PACKAGE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
+const BROWSER_BUFFER_GLOBAL_NAME = 'Buffer';
+const BROWSER_BUFFER_PACKAGE_NAME = 'buffer';
+const BROWSER_BUFFER_MODULE_SPECIFIER = 'buffer/';
 
 /** Browser, language, and Node names that package metadata must never replace automatically. */
 const UNSAFE_AUTOMATIC_GLOBALS = new Set([
@@ -150,7 +153,7 @@ export async function discoverPreviewGlobalPackageBridges(
     const globalName = inferExactPackageGlobalName(candidate.packageSpecifier);
     return globalName !== undefined && referencedGlobalNames.has(globalName);
   });
-  const [hintCandidates, installedCandidates] = await Promise.all([
+  const [hintCandidates, installedCandidates, browserCompatibilityCandidates] = await Promise.all([
     Promise.all(
       (options.hints ?? []).map((hint) => createHintCandidate(hint, projectRoot, workspaceRoot)),
     ),
@@ -164,11 +167,16 @@ export async function discoverPreviewGlobalPackageBridges(
         ),
       })),
     ),
+    createBrowserCompatibilityCandidates(options, projectRoot, workspaceRoot, blockedGlobalNames),
   ]);
 
   const candidates: PreviewGlobalPackageBridgeCandidate[] = hintCandidates.filter(
     (candidate): candidate is PreviewGlobalPackageBridgeCandidate => candidate !== undefined,
   );
+  candidates.push(...browserCompatibilityCandidates);
+  for (const candidate of browserCompatibilityCandidates) {
+    dependencyPaths.add(candidate.watchPath);
+  }
   for (const { candidate, installed } of installedCandidates) {
     const globalName = inferExactPackageGlobalName(candidate.packageSpecifier);
     if (installed === undefined || globalName === undefined) {
@@ -194,6 +202,43 @@ export async function discoverPreviewGlobalPackageBridges(
     }),
     truncated: availableExactCandidates.length > boundedAvailableCandidates.length,
   });
+}
+
+/**
+ * Proves standard browser globals whose identifier deliberately differs from its npm package name.
+ * These candidates are safe to plan before source traversal because esbuild injects their module
+ * only when a loaded file actually contains the free identifier; unused polyfills tree-shake away.
+ */
+async function createBrowserCompatibilityCandidates(
+  options: PreviewGlobalPackageBridgeDiscoveryOptions,
+  projectRoot: string,
+  workspaceRoot: string,
+  blockedGlobalNames: ReadonlySet<string>,
+): Promise<readonly PreviewGlobalPackageBridgeCandidate[]> {
+  if (
+    options.disableDependencyFallback === true ||
+    blockedGlobalNames.has(BROWSER_BUFFER_GLOBAL_NAME)
+  ) {
+    return [];
+  }
+  const installed = await findInstalledPackageIdentity(
+    BROWSER_BUFFER_PACKAGE_NAME,
+    projectRoot,
+    workspaceRoot,
+  );
+  return installed === undefined
+    ? []
+    : [
+        {
+          evidence: 'dependency-name',
+          exportKind: 'named',
+          exportName: BROWSER_BUFFER_GLOBAL_NAME,
+          globalName: BROWSER_BUFFER_GLOBAL_NAME,
+          moduleSpecifier: BROWSER_BUFFER_MODULE_SPECIFIER,
+          resolveDir: projectRoot,
+          watchPath: installed.manifestPath,
+        },
+      ];
 }
 
 /** Converts stronger analyzer evidence into a generic workspace/package module candidate. */

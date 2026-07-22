@@ -6,6 +6,7 @@
  * evaluating project configuration or importing application modules in the extension host.
  */
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import ts from 'typescript';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
@@ -16,6 +17,8 @@ const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 export interface PreviewStaticModuleResolverOptions {
   /** Optional explicit tsconfig/jsconfig already selected by extension configuration. */
   readonly configuredTsconfigPath?: string;
+  /** Immutable managed node_modules roots consulted only after project TypeScript resolution fails. */
+  readonly fallbackNodeModulesPaths?: readonly string[];
   /** Filesystem boundary above which automatic config discovery must never climb. */
   readonly workspaceRoot: string;
 }
@@ -74,6 +77,9 @@ export function createPreviewStaticModuleResolver(
   const configPathByDirectory = new Map<string, string | undefined>();
   const matchedSpecifiersByTarget = new Map<string, Set<string>>();
   const fallbackContext = createResolutionContext(undefined, workspaceRoot);
+  const managedFallbackResolvers = createManagedFallbackResolvers(
+    options.fallbackNodeModulesPaths ?? [],
+  );
 
   /** Selects explicit configuration or the nearest trusted tsconfig/jsconfig for one consumer. */
   function getResolutionContext(consumerPath: string): PreviewStaticResolutionContext {
@@ -140,7 +146,7 @@ export function createPreviewStaticModuleResolver(
         context.cache,
       ).resolvedModule;
       if (resolution === undefined) {
-        return undefined;
+        return resolveManagedFallback(cleanSpecifier, managedFallbackResolvers);
       }
       const physicalPath = resolvePreviewYarnVirtualPath(
         resolution.resolvedFileName,
@@ -178,6 +184,42 @@ export function createPreviewStaticModuleResolver(
     },
     resolve,
   });
+}
+
+/** One immutable Node resolver paired with the node_modules boundary it may expose. */
+interface ManagedFallbackResolver {
+  readonly nodeModulesPath: string;
+  readonly resolve: (moduleSpecifier: string) => string;
+}
+
+/** Creates fallback resolvers without adding managed packages to TypeScript's project search path. */
+function createManagedFallbackResolvers(
+  nodeModulesPaths: readonly string[],
+): readonly ManagedFallbackResolver[] {
+  return [...new Set(nodeModulesPaths.map((candidate) => canonicalizeExistingPath(candidate)))].map(
+    (nodeModulesPath) => ({
+      nodeModulesPath,
+      resolve: createRequire(path.join(path.dirname(nodeModulesPath), 'package.json')).resolve,
+    }),
+  );
+}
+
+/** Resolves a package only when Node proves that its selected file remains in the managed root. */
+function resolveManagedFallback(
+  moduleSpecifier: string,
+  resolvers: readonly ManagedFallbackResolver[],
+): string | undefined {
+  for (const resolver of resolvers) {
+    try {
+      const resolvedPath = resolver.resolve(moduleSpecifier);
+      if (isPathInside(resolver.nodeModulesPath, resolvedPath) && ts.sys.fileExists(resolvedPath)) {
+        return canonicalizeExistingPath(resolvedPath);
+      }
+    } catch {
+      // A missing export in one immutable environment may still exist in the next fallback root.
+    }
+  }
+  return undefined;
 }
 
 /** Creates a TypeScript resolution context without enumerating project source globs. */

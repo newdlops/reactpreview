@@ -82,7 +82,7 @@ export async function createPreviewBundle(
     ),
     dependencies: [
       ...new Set([
-        ...collectDependencies(request, result.metafile),
+        ...collectPreviewBuildDependencies(request, result.metafile),
         ...additionalDependencies.map((dependency) => path.normalize(dependency)),
       ]),
     ].sort(),
@@ -149,7 +149,10 @@ function formatMebibytes(bytes: number): string {
  * @param metafile esbuild metadata containing every bundled input module.
  * @returns Sorted unique absolute input paths.
  */
-function collectDependencies(request: PreviewBuildRequest, metafile: Metafile): readonly string[] {
+export function collectPreviewBuildDependencies(
+  request: PreviewBuildRequest,
+  metafile: Metafile,
+): readonly string[] {
   const dependencies = Object.keys(metafile.inputs)
     .filter(
       (inputPath) =>

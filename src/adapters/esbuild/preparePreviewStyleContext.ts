@@ -91,7 +91,11 @@ export async function preparePreviewStyleContext(
         resolveModule: options.staticModuleResolver.resolve,
       }),
       discoverPreviewPortalHostIds({
-        dependencyPaths: [options.request.documentPath, ...options.portalHostDependencyPaths],
+        dependencyPaths: [
+          options.request.documentPath,
+          ...options.inspectorDependencyPaths,
+          ...options.portalHostDependencyPaths,
+        ],
         readSource,
       }),
     ],

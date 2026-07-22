@@ -428,6 +428,56 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
     }
   });
 
+  /** Turns an export-less ReactDOM bootstrap into one safe authored-page Inspector root. */
+  it('previews a private App mounted by an imperative createRoot entry', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-entry-'),
+    );
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const entryPath = path.join(sourceDirectory, 'index.tsx');
+    const entrySource = [
+      "import * as ReactDOMClient from 'react-dom/client';",
+      'const root = ReactDOMClient.createRoot(document.getElementById("root")!);',
+      'function App() { return <main><h1>IMPERATIVE_ENTRY_PAGE</h1></main>; }',
+      'root.render(<App />);',
+    ].join('\n');
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8'),
+        writeFile(entryPath, entrySource, 'utf8'),
+      ]);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: entryPath,
+        language: 'tsx',
+        renderMode: 'page-inspector',
+        sourceText: entrySource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(javascript).toContain('IMPERATIVE_ENTRY_PAGE');
+      expect(javascript).toContain('ReactPreviewImperativeEntryRoot');
+      expect(javascript).toContain('wrapPreviewInspectorTarget');
+      expect(
+        bundle.diagnostics.some((diagnostic) =>
+          diagnostic.message.includes('could not prove an exported ancestor'),
+        ),
+      ).toBe(false);
+      expect(bundle.dependencies).toContain(entryPath);
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Keeps wildcard-only barrels interactive while clearly reporting missing ancestor evidence. */
   it('uses an actionable direct-root fallback when static export identity is unavailable', async () => {
     const projectRoot = await mkdtemp(

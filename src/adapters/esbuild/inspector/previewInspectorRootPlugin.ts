@@ -9,6 +9,7 @@ import {
   PREVIEW_TARGET_SPECIFIER,
 } from '../previewPluginProtocol';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
+import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
 import {
   createPreviewInspectorDirectTargetSpecifier,
   PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER,
@@ -16,6 +17,10 @@ import {
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 import type { PreviewThemeImportSelection } from '../previewTargetExports';
 import type { PreviewGlobalStyleImportSelection } from '../previewGlobalStyleSelection';
+import {
+  PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY,
+  PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY,
+} from '../previewNextAppNavigationRuntimeSource';
 
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 
@@ -162,12 +167,12 @@ export function createPreviewInspectorRootSource(
         ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
         : layout.sourcePath.replaceAll('\\', '/'),
     );
-    if (layoutSpecifiers !== undefined && layoutSpecifiers.length > 0) {
-      const nextAppRouteLocation =
-        candidate.routeLocation?.evidenceKind === 'next-app-filesystem'
-          ? candidate.routeLocation
-          : undefined;
-      const imports = [rootSpecifier, ...layoutSpecifiers].map(
+    const nextAppRouteLocation =
+      candidate.routeLocation?.evidenceKind === 'next-app-filesystem'
+        ? candidate.routeLocation
+        : undefined;
+    if (nextAppRouteLocation !== undefined) {
+      const imports = [rootSpecifier, ...(layoutSpecifiers ?? [])].map(
         (specifier) => `import(${JSON.stringify(specifier)})`,
       );
       return [
@@ -178,11 +183,17 @@ export function createPreviewInspectorRootSource(
         ']).then((modules) => __reactPreviewComposeNextAppPage(modules, ',
         JSON.stringify(candidate.root.exportName),
         ', ',
-        JSON.stringify(nextAppRouteLocation?.params ?? {}),
+        JSON.stringify(nextAppRouteLocation.pathname),
         ', ',
-        JSON.stringify(nextAppRouteLocation?.searchParams ?? {}),
+        JSON.stringify(nextAppRouteLocation.params),
+        ', ',
+        JSON.stringify(nextAppRouteLocation.searchParams),
         ', ',
         JSON.stringify(candidate.nextAppLayoutChain?.map((layout) => layout.params) ?? []),
+        ', ',
+        JSON.stringify(createNextAppLayoutNavigationValues(candidate)),
+        ', ',
+        JSON.stringify(candidate.nextAppLayoutChain?.map((layout) => layout.slotNames ?? []) ?? []),
         ')) }',
       ].join('');
     }
@@ -270,13 +281,13 @@ export function createPreviewInspectorRootSource(
   };
   const themeImport = createInspectorThemeImport(options.themeImport);
   const globalStyleImports = createInspectorGlobalStyleImports(options.globalStyleImports ?? []);
-  const requiresNextAppLayoutRuntime = pageCandidates.some(
-    (candidate) => (candidate.nextAppLayoutChain?.length ?? 0) > 0,
+  const requiresNextAppRuntime = pageCandidates.some(
+    (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',
   );
   const requiresNextPagesRuntime = pageCandidates.some(
     (candidate) => candidate.nextPagesShell !== undefined,
   );
-  const requiresFrameworkReactRuntime = requiresNextAppLayoutRuntime || requiresNextPagesRuntime;
+  const requiresFrameworkReactRuntime = requiresNextAppRuntime || requiresNextPagesRuntime;
 
   return [
     ...(requiresFrameworkReactRuntime ? ["import * as React from 'react';"] : []),
@@ -287,8 +298,56 @@ export function createPreviewInspectorRootSource(
       : []),
     ...(themeImport.statement === undefined ? [] : [themeImport.statement]),
     ...globalStyleImports.statements,
-    ...(requiresNextAppLayoutRuntime
+    ...(requiresNextAppRuntime
       ? [
+          "import { PreviewLayoutSegmentsContext as __reactPreviewNextLayoutSegmentsContext } from 'next/navigation';",
+          `const __reactPreviewNextAppRouteStateSymbol = Symbol.for(${JSON.stringify(PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY)});`,
+          `const __reactPreviewNextAppControlSignalSymbol = Symbol.for(${JSON.stringify(PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY)});`,
+          '/** Publishes one inferred App route without resetting local navigation on re-render. */',
+          'function __reactPreviewInstallNextAppRoute(pathname, params, searchParams) {',
+          '  const signature = JSON.stringify([pathname, params, searchParams]);',
+          '  const previous = globalThis[__reactPreviewNextAppRouteStateSymbol];',
+          '  if (previous?.initialSignature === signature) return;',
+          '  globalThis[__reactPreviewNextAppRouteStateSymbol] = {',
+          '    initialSignature: signature,',
+          '    params: Object.freeze({ ...params }),',
+          '    pathname,',
+          '    revision: Number.isSafeInteger(previous?.revision) ? previous.revision + 1 : 0,',
+          '    searchParams: Object.freeze({ ...searchParams }),',
+          '  };',
+          '}',
+          '/** Keeps Next never-returning guards local while allowing surrounding layouts to render. */',
+          'class __reactPreviewNextAppControlBoundary extends React.Component {',
+          '  constructor(props) { super(props); this.state = { error: null }; }',
+          '  static getDerivedStateFromError(error) { return { error }; }',
+          '  render() {',
+          '    const error = this.state.error;',
+          '    if (error !== null) {',
+          '      const signal = error?.[__reactPreviewNextAppControlSignalSymbol];',
+          '      if (signal === undefined) throw error;',
+          '      const destination = typeof signal.destination === "string"',
+          '        ? ` · ${signal.destination}`',
+          '        : "";',
+          '      return React.createElement(',
+          '        "section",',
+          '        {',
+          '          "data-react-preview-next-app-control": signal.kind,',
+          '          style: {',
+          '            border: "1px dashed #c98b2e", borderRadius: "6px", color: "#7a5318",',
+          '            margin: "8px", padding: "10px",',
+          '          },',
+          '        },',
+          '        React.createElement("strong", null, `Next ${signal.kind}() intercepted${destination}`),',
+          '        React.createElement(',
+          '          "button",',
+          '          { onClick: () => this.setState({ error: null }), style: { marginLeft: "8px" } },',
+          '          "Retry",',
+          '        ),',
+          '      );',
+          '    }',
+          '    return this.props.children;',
+          '  }',
+          '}',
           '/**',
           ' * Creates a stable object that supports legacy direct property reads, `await`, and',
           ' * React 19 `use()` without choosing a project-specific Next.js major version.',
@@ -309,27 +368,101 @@ export function createPreviewInspectorRootSource(
           '  });',
           '  return Object.freeze(record);',
           '}',
+          '/** Keeps each async App page/layout on one stable promise instead of suspending forever. */',
+          'function __reactPreviewAdaptNextComponent(Component) {',
+          '  if (typeof Component !== "function" || Component.constructor?.name !== "AsyncFunction") return Component;',
+          '  let record;',
+          '  return function ReactPreviewAsyncNextComponent(props) {',
+          '   if (record === undefined) {',
+          '    let resume;',
+          '    const promise = new Promise((resolve) => { resume = resolve; });',
+          '    record = { promise, status: "pending", value: null };',
+          '    let timer = setTimeout(() => {',
+          '      if (record.status !== "pending") return;',
+          '      record.status = "fulfilled";',
+          '      record.value = React.createElement("span", {',
+          '        "data-react-preview-next-async": "timeout", role: "status", title: "Async Next output timed out",',
+          '      }, "…");',
+          '      resume();',
+          '    }, 1500);',
+          '    Promise.resolve().then(() => Component(props)).then(',
+          '      (value) => {',
+          '        if (record.status !== "pending") return;',
+          '        clearTimeout(timer); record.status = "fulfilled"; record.value = value; resume();',
+          '      },',
+          '      (error) => {',
+          '        if (record.status !== "pending") return;',
+          '        clearTimeout(timer);',
+          '        if (error?.[__reactPreviewNextAppControlSignalSymbol] !== undefined) {',
+          '          record.status = "rejected"; record.value = error;',
+          '        } else {',
+          '          globalThis.console?.warn?.("[React Preview] async Next component", error);',
+          '          record.status = "fulfilled";',
+          '          record.value = React.createElement("span", {',
+          '            "data-react-preview-next-async": "failed", role: "status", title: String(error?.message ?? error).slice(0, 240),',
+          '          }, "…");',
+          '        }',
+          '        resume();',
+          '      },',
+          '    );',
+          '   }',
+          '   if (record.status === "pending") throw record.promise;',
+          '   if (record.status === "rejected") throw record.value;',
+          '   return record.value;',
+          '  };',
+          '}',
+          '/** Supplies one inert but truthy React node for each statically proven named slot prop. */',
+          'function __reactPreviewCreateNextSlotProps(slotNames) {',
+          '  const props = {};',
+          '  for (const slotName of slotNames) {',
+          '    props[slotName] = React.createElement("span", {',
+          '      "data-react-preview-next-slot": slotName, hidden: true,',
+          '    });',
+          '  }',
+          '  return props;',
+          '}',
           '/** Recreates Next App Router implicit root-to-leaf layout nesting around one page. */',
           'function __reactPreviewComposeNextAppPage(',
           '  modules,',
           '  rootExportName,',
+          '  pathname,',
           '  pageParamValues,',
           '  searchParamValues,',
           '  layoutParamValues,',
+          '  layoutNavigationValues,',
+          '  layoutSlotNames,',
           ') {',
-          '  const Root = modules[0]?.[rootExportName];',
-          '  const layouts = modules.slice(1).map((module) => module?.default);',
+          '  const Root = __reactPreviewAdaptNextComponent(modules[0]?.[rootExportName]);',
+          '  const layouts = modules.slice(1).map((module) => __reactPreviewAdaptNextComponent(module?.default));',
           '  const pageParams = __reactPreviewCreateNextAppCompatRecord(pageParamValues);',
           '  const searchParams = __reactPreviewCreateNextAppCompatRecord(searchParamValues);',
           '  const layoutParams = layoutParamValues.map(__reactPreviewCreateNextAppCompatRecord);',
           '  return function ReactPreviewNextAppPage(props) {',
-          '    const pageProps = Object.assign({ params: pageParams, searchParams }, props);',
-          '    let child = React.createElement(Root, pageProps);',
+          '    __reactPreviewInstallNextAppRoute(pathname, pageParamValues, searchParamValues);',
+          '    const pageProps = Object.assign({}, props, { params: pageParams, searchParams });',
+          '    let child = React.createElement(',
+          '      __reactPreviewNextLayoutSegmentsContext.Provider,',
+          '      { value: { segments: [], slots: {} } },',
+          '      React.createElement(',
+          '        __reactPreviewNextAppControlBoundary,',
+          '        null,',
+          '        React.createElement(Root, pageProps),',
+          '      ),',
+          '    );',
           '    for (let index = layouts.length - 1; index >= 0; index -= 1) {',
-          '      child = React.createElement(layouts[index], {',
-          '        children: child,',
-          '        params: layoutParams[index],',
-          '      });',
+          '      const layoutProps = Object.assign(',
+          '        { children: child, params: layoutParams[index] },',
+          '        __reactPreviewCreateNextSlotProps(layoutSlotNames[index] ?? []),',
+          '      );',
+          '      child = React.createElement(',
+          '        __reactPreviewNextLayoutSegmentsContext.Provider,',
+          '        { value: layoutNavigationValues[index] ?? { segments: [], slots: {} } },',
+          '        React.createElement(',
+          '          __reactPreviewNextAppControlBoundary,',
+          '          null,',
+          '          React.createElement(layouts[index], layoutProps),',
+          '        ),',
+          '      );',
           '    }',
           '    return child;',
           '  };',
@@ -381,6 +514,93 @@ export function createPreviewInspectorRootSource(
     `export const previewGlobalStyles = Object.freeze([${globalStyleImports.references.join(',')}]);`,
     'export default Object.freeze([Object.freeze(__reactPreviewInspectorDescriptor)]);',
   ].join('\n');
+}
+
+/** Per-layout navigation context serialized beside one composed App Router candidate. */
+interface PreviewNextAppLayoutNavigationValue {
+  /** Active route segments below this exact layout/template boundary. */
+  readonly segments: readonly string[];
+  /** Known named slots remain neutral until a future bounded slot branch is selected. */
+  readonly slots: Readonly<Record<string, readonly string[]>>;
+}
+
+/**
+ * Derives Next's layout-relative segment hook values from the same filesystem route evidence.
+ * Using source directories instead of splitting the final URL preserves route groups and collapses
+ * catch-all values into the single segment returned by Next's public navigation hooks.
+ */
+function createNextAppLayoutNavigationValues(
+  candidate: PreviewInspectorPageCandidate,
+): readonly PreviewNextAppLayoutNavigationValue[] {
+  const routeParams =
+    candidate.routeLocation !== undefined && 'params' in candidate.routeLocation
+      ? candidate.routeLocation.params
+      : {};
+  const pageDirectory = path.dirname(candidate.root.sourcePath);
+  return Object.freeze(
+    (candidate.nextAppLayoutChain ?? []).map((layout) => {
+      const relativePath = path.relative(path.dirname(layout.sourcePath), pageDirectory);
+      const segments =
+        relativePath.startsWith('..') || path.isAbsolute(relativePath)
+          ? []
+          : relativePath
+              .split(path.sep)
+              .filter(Boolean)
+              .flatMap((segment) => normalizeNextLayoutSegment(segment, routeParams));
+      const slots = Object.fromEntries((layout.slotNames ?? []).map((slotName) => [slotName, []]));
+      return Object.freeze({
+        segments: Object.freeze(segments),
+        slots: Object.freeze(slots),
+      });
+    }),
+  );
+}
+
+/** Converts one filesystem segment into the public layout-hook representation. */
+function normalizeNextLayoutSegment(
+  sourceSegment: string,
+  params: Readonly<Record<string, string | readonly string[]>>,
+): readonly string[] {
+  if (
+    sourceSegment.startsWith('@') ||
+    sourceSegment.startsWith('_') ||
+    /^\([^)]*\)$/u.test(sourceSegment)
+  ) {
+    return Object.freeze([]);
+  }
+  const segment = sourceSegment.replace(/^(?:\(\.\.\.\)|\(\.\.\)|\(\.\))+/u, '');
+  const optionalCatchAll = /^\[\[\.\.\.([^\]]+)\]\]$/u.exec(segment);
+  if (optionalCatchAll !== null) {
+    const values = readNextLayoutParameterValues(params[optionalCatchAll[1] ?? '']);
+    return values.length === 0 ? Object.freeze([]) : Object.freeze([values.join('/')]);
+  }
+  const catchAll = /^\[\.\.\.([^\]]+)\]$/u.exec(segment);
+  if (catchAll !== null) {
+    const values = readNextLayoutParameterValues(params[catchAll[1] ?? '']);
+    return Object.freeze([values.length === 0 ? (catchAll[1] ?? 'preview') : values.join('/')]);
+  }
+  const dynamic = /^\[([^\]]+)\]$/u.exec(segment);
+  if (dynamic !== null) {
+    const values = readNextLayoutParameterValues(params[dynamic[1] ?? '']);
+    return Object.freeze([values[0] ?? dynamic[1] ?? 'preview']);
+  }
+  return Object.freeze([decodeNextLayoutSegment(segment)]);
+}
+
+/** Narrows scalar and catch-all route values to one immutable string sequence. */
+function readNextLayoutParameterValues(value: string | readonly string[] | undefined): string[] {
+  if (typeof value === 'string') return [value];
+  if (value === undefined) return [];
+  return Array.from(value);
+}
+
+/** Decodes ordinary URL-safe segment spelling while keeping malformed escapes inspectable. */
+function decodeNextLayoutSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment.replace(/^%5f/iu, '_'));
+  } catch {
+    return segment;
+  }
 }
 
 /** Creates stable eager imports for app-level global styles while page candidates remain lazy. */

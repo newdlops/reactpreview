@@ -207,6 +207,7 @@ describe('collectPreviewInspectorNextAppLayoutChain', () => {
       '/workspace/app/layout.tsx',
       '/workspace/app/dashboard/layout.tsx',
     ]);
+    expect(result?.layouts[1]?.slotNames).toEqual(['modal']);
     expect(result?.routeLocation.pathname).toBe('/dashboard');
   });
 

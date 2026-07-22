@@ -61,10 +61,10 @@ describe('collectPreviewInspectorNextAppDescendantPages', () => {
 
     expect(candidates).toHaveLength(2);
     expect(candidates.map((candidate) => candidate.root.sourcePath)).toEqual([
-      dynamicPage,
       typesetPage,
+      dynamicPage,
     ]);
-    expect(candidates[0]).toMatchObject({
+    expect(candidates[1]).toMatchObject({
       complete: true,
       routeLocation: {
         evidenceKind: 'next-app-filesystem',
@@ -76,11 +76,11 @@ describe('collectPreviewInspectorNextAppDescendantPages', () => {
     expect(candidates[0]?.nextAppLayoutChain?.map((layout) => layout.sourcePath)).toEqual([
       ROOT_LAYOUT,
       PREVIEW_LAYOUT,
+      typesetLayout,
     ]);
     expect(candidates[1]?.nextAppLayoutChain?.map((layout) => layout.sourcePath)).toEqual([
       ROOT_LAYOUT,
       PREVIEW_LAYOUT,
-      typesetLayout,
     ]);
     expect(candidates.flatMap((candidate) => candidate.dependencyPaths)).not.toContain(
       parallelPage,
@@ -88,7 +88,65 @@ describe('collectPreviewInspectorNextAppDescendantPages', () => {
     expect(candidates.flatMap((candidate) => candidate.dependencyPaths)).not.toContain(
       unrelatedPage,
     );
-    expect(candidates[0]?.dependencyPaths).toContain(registryPath);
+    expect(candidates[1]?.dependencyPaths).toContain(registryPath);
+  });
+
+  /** Reads only a bounded lexical window and picks its lowest-cost equally near page. */
+  it('prefers a cheaper same-depth page without scanning every descendant source', async () => {
+    const pagePaths = ['a-heavy', 'b-imports', 'c-light', 'd-large', 'e-unread', 'f-unread'].map(
+      (segment) => `/workspace/app/(view)/preview/${segment}/page.tsx`,
+    );
+    const [heavyPage, importPage, lightPage, largePage] = pagePaths;
+    const sourceByPath: Readonly<Record<string, string>> = {
+      [heavyPage ?? '']: [
+        `import { Index } from './generated/registry';`,
+        `import { helper } from './helper';`,
+        'export default function Page() { return <main>{helper(Index)}</main>; }',
+      ].join('\n'),
+      [importPage ?? '']: [
+        `import a from './a';`,
+        `import b from './b';`,
+        `import c from './c';`,
+        'export default function Page() { return <main>{a}{b}{c}</main>; }',
+      ].join('\n'),
+      [lightPage ?? '']: 'export default function Page() { return <main />; }',
+      [largePage ?? '']:
+        `export default function Page() { return <main>${'x'.repeat(4096)}</main>; }`,
+    };
+    const readPaths: string[] = [];
+
+    const candidates = await collectPreviewInspectorNextAppDescendantPages({
+      base: createLayoutCandidate(),
+      maximumCount: 1,
+      readSource: (sourcePath) => {
+        readPaths.push(sourcePath);
+        return Promise.resolve(sourceByPath[sourcePath]);
+      },
+      sourcePaths: [ROOT_LAYOUT, PREVIEW_LAYOUT, ...pagePaths],
+    });
+
+    expect(candidates.map((candidate) => candidate.root.sourcePath)).toEqual([lightPage]);
+    expect(readPaths).toEqual(pagePaths.slice(0, 4));
+  });
+
+  /** Does not mistake a stale inventory entry with unavailable source for a zero-cost page. */
+  it('places an unreadable shortlist page behind a measured same-depth candidate', async () => {
+    const missingPage = '/workspace/app/(view)/preview/a-missing/page.tsx';
+    const readablePage = '/workspace/app/(view)/preview/b-readable/page.tsx';
+
+    const candidates = await collectPreviewInspectorNextAppDescendantPages({
+      base: createLayoutCandidate(),
+      maximumCount: 1,
+      readSource: (sourcePath) =>
+        Promise.resolve(
+          sourcePath === readablePage
+            ? 'export default function Page() { return <main />; }'
+            : undefined,
+        ),
+      sourcePaths: [ROOT_LAYOUT, PREVIEW_LAYOUT, missingPage, readablePage],
+    });
+
+    expect(candidates.map((candidate) => candidate.root.sourcePath)).toEqual([readablePage]);
   });
 
   /** Refuses a similarly named generic layout without a default App Router export contract. */

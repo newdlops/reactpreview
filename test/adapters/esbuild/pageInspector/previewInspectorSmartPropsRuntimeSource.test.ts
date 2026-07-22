@@ -152,6 +152,16 @@ describe('Preview Inspector Smart props runtime source', () => {
     ]);
   });
 
+  /** Remembers the exact automatic open attempt even if another resolver clears generated props. */
+  it('does not repeat an identical modal visibility attempt in one revision', () => {
+    const runtime = evaluateOverlayRevealRuntime(undefined, ['show'], undefined, undefined, true);
+
+    expect(runtime.path).toBe('show');
+    expect(runtime.repeatedPath).toBeUndefined();
+    expect(runtime.decisions).toHaveLength(1);
+    expect(runtime).toMatchObject({ commits: 1, persists: 1, updates: 1 });
+  });
+
   /** Uses the exact mounted facade's false show prop when a styled export erased static prop types. */
   it('reveals an observed hidden modal when static inferred props are empty', () => {
     const runtime = evaluateOverlayRevealRuntime(undefined, [], { show: false, title: 'Observed' });
@@ -324,6 +334,7 @@ function evaluateOverlayRevealRuntime(
   visibilityNames: readonly string[] = ['show'],
   observedProps?: Readonly<Record<string, unknown>>,
   observedPropsExpression?: string,
+  clearResolverBeforeRepeat = false,
 ): OverlayRevealRuntime {
   const inferredProperties: Record<string, { readonly kind: string }> = {
     title: { kind: 'string' },
@@ -389,6 +400,9 @@ function evaluateOverlayRevealRuntime(
       ${createPreviewInspectorBlockerValueRuntimeSource()}
       ${createPreviewInspectorSmartPropsRuntimeSource()}
       const path = autoRevealPreviewInspectorOverlayTarget('DeleteModal', 'page:DeleteModal');
+      if (${JSON.stringify(clearResolverBeforeRepeat)}) {
+        previewInspectorSession.resolverPropsByExport.clear();
+      }
       const repeatedPath = autoRevealPreviewInspectorOverlayTarget(
         'DeleteModal',
         'page:DeleteModal',

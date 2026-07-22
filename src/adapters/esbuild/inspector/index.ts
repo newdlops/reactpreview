@@ -30,6 +30,12 @@ export {
   type CreatePreviewInspectorNextAppModulePagePlanOptions,
 } from './previewInspectorNextAppModulePagePlan';
 export {
+  createPreviewInspectorModuleConsumerPagePlan,
+  hasPreviewInspectorCallableModuleExports,
+  PREVIEW_INSPECTOR_MODULE_CONSUMER_LIMITS,
+  type CreatePreviewInspectorModuleConsumerPagePlanOptions,
+} from './previewInspectorModuleConsumerPagePlan';
+export {
   collectPreviewInspectorNextPagesShell,
   type CollectPreviewInspectorNextPagesShellOptions,
   type PreviewInspectorNextPagesRouteLocation,

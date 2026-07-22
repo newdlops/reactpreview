@@ -215,6 +215,7 @@ describe('createPreviewInspectorRootSource', () => {
               {
                 exportName: 'default',
                 params: { accountId: 'accountId' },
+                slotNames: ['modal'],
                 sourcePath: '/workspace/application/account/layout.tsx',
               },
             ],
@@ -234,20 +235,117 @@ describe('createPreviewInspectorRootSource', () => {
 
     expect(source).toContain("import * as React from 'react';");
     expect(source).toContain(
+      "import { PreviewLayoutSegmentsContext as __reactPreviewNextLayoutSegmentsContext } from 'next/navigation';",
+    );
+    expect(source).toContain(
       'Promise.all([import("/workspace/application/Page.tsx"),import("/workspace/application/layout.tsx"),import("/workspace/application/account/layout.tsx")])',
     );
     expect(source).toContain('function __reactPreviewComposeNextAppPage');
+    expect(source).toContain('Symbol.for("newdlops.react-file-preview.next-app-route")');
+    expect(source).toContain('Symbol.for("newdlops.react-file-preview.next-app-control-signal")');
+    expect(source).toContain('class __reactPreviewNextAppControlBoundary extends React.Component');
+    expect(source).toContain('"data-react-preview-next-app-control": signal.kind');
+    expect(source).toContain(
+      '__reactPreviewInstallNextAppRoute(pathname, pageParamValues, searchParamValues)',
+    );
     expect(source).toContain('function __reactPreviewCreateNextAppCompatRecord(source)');
+    expect(source).toContain('function __reactPreviewAdaptNextComponent(Component)');
+    expect(source).toContain('if (record.status === "pending") throw record.promise;');
+    expect(source).toContain('function __reactPreviewCreateNextSlotProps(slotNames)');
+    expect(source).toContain('"data-react-preview-next-slot": slotName, hidden: true');
     expect(source).toContain(
       "status: { configurable: false, enumerable: false, value: 'fulfilled' }",
     );
     expect(source).toContain(
-      'const pageProps = Object.assign({ params: pageParams, searchParams }, props);',
+      'const pageProps = Object.assign({}, props, { params: pageParams, searchParams });',
     );
-    expect(source).toContain('[{},{"accountId":"accountId"}])');
+    expect(source).toContain('[{},{"accountId":"accountId"}],');
+    expect(source).toContain('[[],["modal"]])');
+    expect(source).toContain('__reactPreviewNextLayoutSegmentsContext.Provider');
     expect(source).toContain('params: layoutParams[index]');
     expect(source).toContain('"evidenceKind":"next-app-filesystem"');
     expect(source).toContain('"params":{"accountId":"accountId"}');
+  });
+
+  /** Each layout hook receives only the active segments below its own filesystem boundary. */
+  it('serializes layout-relative segment contexts for nested App Router shells', () => {
+    const routePagePath = '/workspace/application/(account)/company/[companyId]/profile/page.tsx';
+    const plan = createPlan({ exportName: 'default', sourcePath: routePagePath });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextAppLayoutChain: [
+              {
+                exportName: 'default',
+                params: {},
+                sourcePath: '/workspace/application/layout.tsx',
+              },
+              {
+                exportName: 'default',
+                params: {},
+                sourcePath: '/workspace/application/(account)/layout.tsx',
+              },
+              {
+                exportName: 'default',
+                params: { companyId: 'acme' },
+                slotNames: ['drawer'],
+                sourcePath: '/workspace/application/(account)/company/[companyId]/layout.tsx',
+              },
+            ],
+            routeLocation: {
+              componentName: 'NextAppPage',
+              evidenceKind: 'next-app-filesystem',
+              pathname: '/company/acme/profile',
+              params: { companyId: 'acme' },
+              pattern: '/company/[companyId]/profile',
+              searchParams: {},
+              sourcePath: routePagePath,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(source).toContain(
+      '[{"segments":["company","acme","profile"],"slots":{}},{"segments":["company","acme","profile"],"slots":{}},{"segments":["profile"],"slots":{"drawer":[]}}]',
+    );
+  });
+
+  /** Installs route props for an App page even when the project has no authored layout file. */
+  it('composes a layout-free Next App Router page through the route runtime', () => {
+    const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextAppLayoutChain: [],
+            routeLocation: {
+              componentName: 'NextAppPage',
+              evidenceKind: 'next-app-filesystem',
+              pathname: '/standalone/value',
+              params: { slug: 'value' },
+              pattern: '/standalone/[slug]',
+              searchParams: {},
+              sourcePath: PAGE_PATH,
+            },
+          },
+        ],
+      },
+    });
+
+    expect(source).toContain(
+      'Promise.all([import("/workspace/application/Page.tsx")]).then((modules) => __reactPreviewComposeNextAppPage',
+    );
+    expect(source).toContain('"/standalone/value", {"slug":"value"}');
   });
 
   /** Keeps target instrumentation active when the selected file is an implicit layout wrapper. */

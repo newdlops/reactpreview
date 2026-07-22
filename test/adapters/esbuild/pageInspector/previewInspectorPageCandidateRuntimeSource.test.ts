@@ -75,6 +75,8 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('owned-router-location-seeded');
     expect(source).toContain('initialEntry: candidateInitialEntry');
     expect(source).toContain('routerPathname: candidateInitialEntry');
+    expect(source).toContain('requestedRouterPathname: candidateInitialEntry');
+    expect(source).toContain("routeLocation?.evidenceKind === 'next-app-filesystem'");
     expect(source).toContain("event: 'page-context-selected'");
     expect(source).toContain("evidenceKind: routeLocation?.evidenceKind ?? 'none'");
     expect(source).toContain('nextAppLayoutPaths: (candidate?.nextAppLayoutChain ?? [])');

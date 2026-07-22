@@ -29,7 +29,7 @@ export interface PreviewInspectorComponentReference {
   readonly sourcePath: string;
 }
 
-/** Non-component editor module whose nearest authored Next page supplies the visible preview. */
+/** Non-component editor module whose nearest statically proven authored page supplies the preview. */
 export interface PreviewInspectorModuleContextReference {
   /** Static evidence used to connect the selected module to the mounted page. */
   readonly evidenceKind: 'import-chain' | 'next-app-filesystem';

@@ -26,6 +26,8 @@ export interface PreviewInspectorNextAppLayoutReference {
   readonly exportName: 'default';
   /** Dynamic route parameters accumulated from the app root through this layout directory. */
   readonly params: PreviewInspectorNextAppRouteParams;
+  /** Named parallel-route props that Next would pass beside the implicit `children` slot. */
+  readonly slotNames?: readonly string[];
   /** Absolute authored `layout` or `template` path. */
   readonly sourcePath: string;
 }
@@ -132,6 +134,7 @@ export function collectPreviewInspectorNextAppLayoutChain(
         Object.freeze({
           exportName: 'default',
           params: freezeNextRouteParams(accumulatedParams),
+          ...collectNextParallelSlotNames(directory, options.sourcePaths),
           sourcePath: wrapperPath,
         }),
       );
@@ -170,6 +173,35 @@ export function collectPreviewInspectorNextAppLayoutChain(
       sourcePath: pagePath,
     }),
   });
+}
+
+/**
+ * Collects immediate `@slot` directories without choosing or evaluating their active branch.
+ * The generated page root supplies one hidden neutral React node per proven name, which preserves
+ * layout prop contracts while keeping parallel route loading outside the fast first-paint budget.
+ */
+function collectNextParallelSlotNames(
+  layoutDirectory: string,
+  sourcePaths: readonly string[],
+): { readonly slotNames?: readonly string[] } {
+  const slotNames = new Set<string>();
+  for (const sourcePath of sourcePaths) {
+    if (slotNames.size >= 16) break;
+    const relativePath = path.relative(layoutDirectory, path.normalize(sourcePath));
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) continue;
+    const slotSegment = relativePath.split(path.sep).find((segment) => segment.length > 0);
+    if (
+      slotSegment === undefined ||
+      !slotSegment.startsWith('@') ||
+      slotSegment.length <= 1 ||
+      slotSegment.length > 65
+    ) {
+      continue;
+    }
+    const slotName = slotSegment.slice(1);
+    if (slotName !== 'children') slotNames.add(slotName);
+  }
+  return slotNames.size === 0 ? {} : { slotNames: Object.freeze([...slotNames].sort()) };
 }
 
 /**

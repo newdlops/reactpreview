@@ -531,6 +531,14 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
   if (visibilityPaths.length !== 1) return undefined;
   const visibilityPath = visibilityPaths[0];
   if (visibilityPath === undefined) return undefined;
+  const attemptRevision = typeof previewEntryRevision === 'undefined' ? 0 : previewEntryRevision;
+  if (previewInspectorSession.overlayAutoAttemptRevision !== attemptRevision) {
+    previewInspectorSession.overlayAutoAttemptRevision = attemptRevision;
+    previewInspectorSession.overlayAutoAttemptKeys = new Set();
+  }
+  previewInspectorSession.overlayAutoAttemptKeys ??= new Set();
+  const attemptKey = String(targetReachabilityKey) + '\u0000' + exportName + '\u0000' + visibilityPath;
+  if (previewInspectorSession.overlayAutoAttemptKeys.has(attemptKey)) return undefined;
   const userProps = previewInspectorSession.overridesByExport.get(exportName) ?? {};
   const resolverProps = previewInspectorSession.resolverPropsByExport?.get?.(exportName) ?? {};
   if (
@@ -539,6 +547,9 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
   ) return undefined;
   const value = {};
   if (!setPreviewInspectorSmartBooleanProp(value, visibilityPath)) return undefined;
+  // Record before scheduling React work. Even if another resolver clears its generated prop layer,
+  // this exact revision/corridor/value cannot oscillate between opening and closing the same modal.
+  previewInspectorSession.overlayAutoAttemptKeys.add(attemptKey);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Reveal selected overlay target',

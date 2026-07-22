@@ -37,7 +37,7 @@ function readPreviewInspectorPageContext() {
     return {
       badge: 'MODULE PAGE',
       breadcrumb: names.filter(Boolean).join('  ›  '),
-      detail: 'The selected module participates in this authored Next page · no standalone DOM boundary is expected',
+      detail: 'The selected module participates in this authored page · no standalone DOM boundary is expected',
       kind: 'module-page',
     };
   }

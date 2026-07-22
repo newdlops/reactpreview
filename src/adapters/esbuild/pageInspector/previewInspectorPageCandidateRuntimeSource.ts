@@ -483,12 +483,15 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
           ? { evidence: { sourcePath: routeLocation.sourcePath } }
           : {}),
         evidenceKind: routeLocation?.evidenceKind ?? 'none',
+        nextAppContextApplied:
+          directTarget !== true && routeLocation?.evidenceKind === 'next-app-filesystem',
         nextAppLayoutPaths: (candidate?.nextAppLayoutChain ?? [])
           .slice(0, 16)
           .map((layout) => layout?.sourcePath)
           .filter((sourcePath) => typeof sourcePath === 'string'),
         nextPagesAppPath: candidate?.nextPagesShell?.app?.sourcePath,
         pathname: routeLocation?.pathname ?? '/',
+        requestedRouterPathname: candidateInitialEntry ?? '/',
         routePattern: routeLocation?.pattern,
         routerPathname: candidateInitialEntry ?? '/',
         rootExport: candidate?.root?.exportName,

@@ -13,6 +13,8 @@ export interface PreviewSourceTransformerOptions {
   readonly implicitPackageGlobalCandidateNames?: readonly string[];
   /** Project-aware resolver proving a free name maps to its exact installed package. */
   readonly implicitPackageGlobalResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
+  /** Nearest inert tsconfig/jsconfig evidence used to preserve Preact or a custom JSX factory. */
+  readonly jsxRuntimeResolver?: Pick<PreviewStaticModuleResolver, 'usesAlternativeJsxRuntime'>;
   /** Whether reached JSX conditions should expose authored/forced branch controls to Page Inspector. */
   readonly instrumentRenderConditions?: boolean;
   /** Whether proven browser backend calls should use editable no-network preview payloads. */
@@ -29,6 +31,8 @@ export interface PreviewSourceTransformerOptions {
   readonly readGraphqlSource?: (sourcePath: string) => string | undefined;
   /** Nearest package root used for the conventional public asset directory. */
   readonly projectRoot: string;
+  /** Whether inert package metadata declares an installed or managed React runtime. */
+  readonly projectUsesReactRuntime?: boolean;
   /** Trusted workspace boundary used for every static filesystem expansion. */
   readonly workspaceRoot: string;
 }

@@ -39,6 +39,64 @@ describe('preview bundled React runtime catalog', () => {
     ]);
   });
 
+  /** A lockless exact manifest has no reproducible graph, so a newer same-major pair is usable. */
+  it('selects a newer same-major runtime for a lockless exact manifest', async () => {
+    const fixture = await createCatalogFixture();
+    const projectRoot = await writeProject(fixture.rootPath, {
+      react: '19.1.0',
+      'react-dom': '19.1.0',
+    });
+    const profile = await readPreviewDependencyProfile(projectRoot, projectRoot);
+    const selected = await selectPreviewBundledReactRuntime(
+      await inspectPreviewBundledReactRuntimes(fixture.nodeModulesPath),
+      profile,
+      projectRoot,
+    );
+
+    expect(profile?.lockfileEvidenceStatus).toBe('absent');
+    expect(selected?.reactVersion).toBe('19.2.7');
+    expect(selected?.reactDomVersion).toBe('19.2.7');
+  });
+
+  /** A bundled runtime must never move backwards from an exact project requirement. */
+  it('rejects an older same-major runtime for a lockless exact manifest', async () => {
+    const fixture = await createCatalogFixture();
+    const projectRoot = await writeProject(fixture.rootPath, {
+      react: '19.3.0',
+      'react-dom': '19.3.0',
+    });
+    const selected = await selectPreviewBundledReactRuntime(
+      await inspectPreviewBundledReactRuntimes(fixture.nodeModulesPath),
+      await readPreviewDependencyProfile(projectRoot, projectRoot),
+      projectRoot,
+    );
+
+    expect(selected).toBeUndefined();
+  });
+
+  /** Readable lock evidence keeps exact authored semantics and disables the lockless widening. */
+  it('does not widen an exact requirement when a reusable lockfile exists', async () => {
+    const fixture = await createCatalogFixture();
+    const projectRoot = await writeProject(fixture.rootPath, {
+      react: '19.1.0',
+      'react-dom': '19.1.0',
+    });
+    await writeFile(
+      path.join(projectRoot, 'package-lock.json'),
+      JSON.stringify({ lockfileVersion: 3, name: 'fixture-project', packages: {} }),
+      'utf8',
+    );
+    const profile = await readPreviewDependencyProfile(projectRoot, projectRoot);
+    const selected = await selectPreviewBundledReactRuntime(
+      await inspectPreviewBundledReactRuntimes(fixture.nodeModulesPath),
+      profile,
+      projectRoot,
+    );
+
+    expect(profile?.lockfileEvidenceStatus).toBe('reusable');
+    expect(selected).toBeUndefined();
+  });
+
   /** Reads the shipped dist catalog when development-only npm aliases are absent from a VSIX. */
   it('selects the packaged React 18 tuple outside extension node_modules', async () => {
     const fixture = await createCatalogFixture();

@@ -259,21 +259,75 @@ async function inspectPackageSlot(
   return undefined;
 }
 
-/** Prevents explicit project ranges from receiving a different React or ReactDOM version. */
+/**
+ * Prevents explicit project ranges from receiving an incompatible React or ReactDOM version.
+ * A lockless exact manifest may use a newer stable bundled patch/minor in the same major: there is
+ * no resolved graph to reproduce, and keeping React plus ReactDOM paired is safer than failing an
+ * otherwise self-contained static preview. Lock-backed projects retain exact range semantics.
+ */
 function isRuntimeCompatible(
   runtime: PreviewBundledReactRuntime,
   profile: PreviewDependencyProfile | undefined,
 ): boolean {
+  const allowLocklessSameMajor = profile?.lockfileEvidenceStatus === 'absent';
   return (
-    doesPreviewSpecifierAcceptVersion(
+    doesPreviewReactSpecifierAcceptRuntime(
       findPreviewDependencySpecifier(profile, 'react'),
       runtime.reactVersion,
+      allowLocklessSameMajor,
     ) &&
-    doesPreviewSpecifierAcceptVersion(
+    doesPreviewReactSpecifierAcceptRuntime(
       findPreviewDependencySpecifier(profile, 'react-dom'),
       runtime.reactDomVersion,
+      allowLocklessSameMajor,
     )
   );
+}
+
+/**
+ * Applies normal semver admission first, then one bounded lockless exact-version compatibility rule.
+ * Unsupported protocols, prereleases, ranges, older bundled releases, and cross-major candidates
+ * remain rejected so the fallback cannot silently reinterpret ambiguous manifest intent.
+ */
+function doesPreviewReactSpecifierAcceptRuntime(
+  specifier: string | undefined,
+  runtimeVersion: string,
+  allowLocklessSameMajor: boolean,
+): boolean {
+  if (doesPreviewSpecifierAcceptVersion(specifier, runtimeVersion)) return true;
+  if (!allowLocklessSameMajor || specifier === undefined) return false;
+  const requested = parseExactStableVersion(specifier);
+  const runtime = parseExactStableVersion(runtimeVersion);
+  return (
+    requested !== undefined &&
+    runtime?.major === requested.major &&
+    compareVersionTuple(runtime, requested) >= 0
+  );
+}
+
+/** Parses only an authored three-component stable version with an optional exact marker. */
+function parseExactStableVersion(
+  value: string,
+): { readonly major: number; readonly minor: number; readonly patch: number } | undefined {
+  const match = /^=?v?(\d+)\.(\d+)\.(\d+)$/u.exec(value.trim());
+  if (match === null) return undefined;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return undefined;
+  return Object.freeze({
+    major,
+    minor,
+    patch,
+  });
+}
+
+/** Orders two stable versions without accepting prerelease or build metadata. */
+function compareVersionTuple(
+  left: { readonly major: number; readonly minor: number; readonly patch: number },
+  right: { readonly major: number; readonly minor: number; readonly patch: number },
+): number {
+  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
 }
 
 /** Detects project-local or hoisted React halves before a bundled singleton can be selected. */

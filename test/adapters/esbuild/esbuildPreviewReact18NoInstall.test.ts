@@ -100,9 +100,12 @@ describe('EsbuildPreviewCompiler without a project React installation', () => {
       });
       const javascript = decodeCompleteBundle(bundle);
       const targetModule = selectGeneratedModule(javascript, 'CLASSIC_JSX_NAMESPACE_TARGET');
+      const childModule = selectGeneratedModule(javascript, 'IMPORT_FREE_STORYBOOK_CHILD');
 
       expect(targetModule).toContain('createElement');
       expectClassicFactoryReceiversToBeBound(targetModule);
+      expect(childModule).toContain('createElement');
+      expectClassicFactoryReceiversToBeBound(childModule);
       if (withStorybookPreview) {
         expect(javascript).toContain('STORYBOOK_PREVIEW_SELECTED');
       }
@@ -387,8 +390,8 @@ async function createManifestOnlyReact18WebpackFixture(): Promise<ManifestOnlyRe
 
 /**
  * Changes the manifest-only fixture to the conflicting Babel/TypeScript JSX configuration used by
- * Storybook's generated webpack sandbox. The target intentionally imports a named React value but
- * never declares the `React` namespace that the classic TypeScript transform otherwise expects.
+ * Storybook's generated webpack sandbox. Both modules intentionally omit React imports, matching
+ * source generated for Babel's automatic runtime even though TypeScript retains classic lowering.
  */
 async function createClassicJsxReact18WebpackFixture(
   withStorybookPreview: boolean,
@@ -422,13 +425,23 @@ async function createClassicJsxReact18WebpackFixture(
     writeFile(
       fixture.targetPath,
       [
-        "import { StrictMode } from 'react';",
+        "import { Header } from './Header';",
         'export default function App() {',
         '  return (',
-        '    <StrictMode>',
-        '      <main>CLASSIC_JSX_NAMESPACE_TARGET</main>',
-        '    </StrictMode>',
+        '    <main data-marker="CLASSIC_JSX_NAMESPACE_TARGET">',
+        '      <Header />',
+        '    </main>',
         '  );',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    ),
+    writeFile(
+      path.join(fixture.projectRoot, 'src', 'Header.tsx'),
+      [
+        'export function Header() {',
+        '  return <header>IMPORT_FREE_STORYBOOK_CHILD</header>;',
         '}',
         '',
       ].join('\n'),

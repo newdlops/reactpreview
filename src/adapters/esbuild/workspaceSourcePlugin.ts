@@ -24,6 +24,8 @@ const PROJECT_SOURCE_FILTER = /\.[cCmM]?[jJtT][sS][xX]?$/;
 
 /** Editor snapshots and transformation policy that may advance between incremental rebuilds. */
 export interface WorkspaceSourceCompilationState {
+  /** Optional pre-transform source adaptation advanced atomically with editor snapshots. */
+  readonly prepareSource?: (sourcePath: string, sourceText: string) => string;
   /** Active document followed by any dirty dependency candidates. */
   readonly snapshots: readonly PreviewSourceSnapshot[];
   /** Per-build bounded transformer for framework resource syntax. */
@@ -49,6 +51,7 @@ export type WorkspaceSourcePluginOptions = {
  */
 export class MutableWorkspaceSourceState {
   private currentSnapshots: readonly PreviewSourceSnapshot[] = [];
+  private currentPrepareSource: WorkspaceSourceCompilationState['prepareSource'];
   private snapshotByCanonicalPath = new Map<string, PreviewSourceSnapshot>();
   private snapshotByLexicalPath = new Map<string, PreviewSourceSnapshot>();
   private currentTransformer: PreviewSourceTransformer;
@@ -69,6 +72,11 @@ export class MutableWorkspaceSourceState {
     return this.currentSnapshots;
   }
 
+  /** Current source adaptation associated with the same revision as snapshots and transformer. */
+  public get prepareSource(): WorkspaceSourceCompilationState['prepareSource'] {
+    return this.currentPrepareSource;
+  }
+
   /**
    * Replaces every dirty snapshot and the transformer before `BuildContext.rebuild()` starts.
    * Maps are rebuilt off to the side and swapped together so an aborted previous rebuild cannot
@@ -87,6 +95,7 @@ export class MutableWorkspaceSourceState {
     }
     this.snapshotByCanonicalPath = nextCanonical;
     this.snapshotByLexicalPath = nextLexical;
+    this.currentPrepareSource = compilation.prepareSource;
     this.currentSnapshots = Object.freeze([...compilation.snapshots]);
     this.currentTransformer = compilation.transformer;
   }
@@ -212,9 +221,16 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
           if (generatedFallback !== undefined) {
             sourceState.transformer.registerWatchDirectory(generatedFallback.watchDirectory);
           }
+          const preparedSource =
+            sourceState.prepareSource?.(
+              canonicalSourcePath,
+              generatedFallback?.contents ?? sourceText,
+            ) ??
+            generatedFallback?.contents ??
+            sourceText;
           const transformed = await sourceState.transformer.transform(
             canonicalSourcePath,
-            generatedFallback?.contents ?? sourceText,
+            preparedSource,
           );
           return {
             contents: transformed.contents,

@@ -35,11 +35,89 @@ describe('classic JSX React namespace compatibility', () => {
     expect(collectCompatibilityImport(source)).toBeUndefined();
   });
 
+  /** Non-JSX dependencies avoid nearest-config work on large reached module graphs. */
+  it('does not resolve project JSX ownership when the module contains no JSX', () => {
+    let resolutionCount = 0;
+    const source = 'export const value = 42;';
+
+    expect(
+      collectCompatibilityImport(source, true, () => {
+        resolutionCount += 1;
+        return true;
+      }),
+    ).toBeUndefined();
+    expect(resolutionCount).toBe(0);
+  });
+
   /** JSX owned by another library must retain that library's authored runtime contract. */
   it('does not infer React from JSX without an exact React runtime import', () => {
     const source = "import { h } from 'preact'; export const View = () => <main data-h={h} />;";
 
     expect(collectCompatibilityImport(source)).toBeUndefined();
+  });
+
+  /** A package-wide React declaration cannot override a module's Preact factory ownership. */
+  it('does not inject React into a Preact module when the project also declares React', () => {
+    const source = "import { h } from 'preact'; export const View = () => <main data-h={h} />;";
+
+    expect(collectCompatibilityImport(source, true)).toBeUndefined();
+  });
+
+  /** Erased Preact types are not runtime ownership evidence in an otherwise React-authored file. */
+  it('ignores type-only Preact imports when the project declares React', () => {
+    const source = [
+      "import type { ComponentChildren } from 'preact';",
+      'export const View = ({ children }: { children: ComponentChildren }) => <main>{children}</main>;',
+    ].join('\n');
+
+    expect(collectCompatibilityImport(source, true)).toBe(GENERATED_REACT_IMPORT);
+  });
+
+  /** Per-file automatic-runtime pragmas are stronger evidence than an enclosing manifest. */
+  it('preserves an explicit custom JSX import source in a hybrid React project', () => {
+    const source = [
+      '/** @jsxImportSource custom-jsx-runtime */',
+      "import { useState } from 'react';",
+      'export const View = () => <main>{useState(0)[0]}</main>;',
+    ].join('\n');
+
+    expect(collectCompatibilityImport(source, true)).toBeUndefined();
+  });
+
+  /** A classic custom factory must remain authoritative even when React is another dependency. */
+  it('preserves an explicit classic JSX factory in a hybrid React project', () => {
+    const source = [
+      '/** @jsx h */',
+      "import { h } from './custom-runtime';",
+      'export const View = () => <main />;',
+    ].join('\n');
+
+    expect(collectCompatibilityImport(source, true)).toBeUndefined();
+  });
+
+  /** Nearest config evidence covers import-free custom-runtime source with no file pragma. */
+  it('preserves a custom JSX runtime selected only by project configuration', () => {
+    const source = 'export const View = () => <main>CUSTOM_CONFIG_RUNTIME</main>;';
+
+    expect(collectCompatibilityImport(source, true, true)).toBeUndefined();
+  });
+
+  /** Text that resembles a pragma outside leading trivia must not suppress React compatibility. */
+  it('ignores pragma-like runtime strings inside source statements', () => {
+    const source = [
+      "const note = '@jsxImportSource custom-jsx-runtime';",
+      'export const View = () => <main data-note={note} />;',
+    ].join('\n');
+
+    expect(collectCompatibilityImport(source, true)).toBe(GENERATED_REACT_IMPORT);
+  });
+
+  /** Package metadata is sufficient ownership evidence for Babel-automatic modules with no import. */
+  it('adds a namespace to import-free JSX when the project declares React', () => {
+    const source = 'export const Header = () => <header>STORYBOOK_HEADER</header>;';
+
+    expect(collectCompatibilityImport(source, true)).toBe(GENERATED_REACT_IMPORT);
+    expect(collectCompatibilityImport(source, false)).toBeUndefined();
   });
 
   /**
@@ -66,6 +144,18 @@ describe('classic JSX React namespace compatibility', () => {
     expect(collectCompatibilityImport(source)).toBe(GENERATED_REACT_IMPORT);
   });
 
+  /** Module-scoped `var` remains an import collision even when authored inside a top-level block. */
+  it('preserves a nested top-level var binding that owns the classic React namespace', () => {
+    const source = [
+      'if (globalThis.useCustomFactory) {',
+      '  var React = globalThis.customReact;',
+      '}',
+      'export const View = () => <main />;',
+    ].join('\n');
+
+    expect(collectCompatibilityImport(source, true)).toBeUndefined();
+  });
+
   /** The complete transformer appends the fallback only to source inside its trusted workspace. */
   it('appends the generated namespace through the workspace transformer', async () => {
     const source = [
@@ -87,8 +177,14 @@ describe('classic JSX React namespace compatibility', () => {
 });
 
 /** Parses one TSX module with the same shared syntax index used by the production transformer. */
-function collectCompatibilityImport(source: string): string | undefined {
+function collectCompatibilityImport(
+  source: string,
+  projectUsesReactRuntime = false,
+  projectUsesAlternativeJsxRuntime: boolean | (() => boolean) = false,
+): string | undefined {
   return createPreviewReactJsxNamespaceCompatibilityImport(
     new StaticSourceAnalysis(SOURCE_PATH, source),
+    projectUsesReactRuntime,
+    projectUsesAlternativeJsxRuntime,
   );
 }

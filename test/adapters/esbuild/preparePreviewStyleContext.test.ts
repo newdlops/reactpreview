@@ -19,6 +19,8 @@ function createEmptyStaticModuleResolver(): PreviewStaticModuleResolver {
     getMatchedSpecifiers: () => [],
     matchesTarget: () => false,
     resolve: () => undefined,
+    resolveMissingPathAliasCandidate: () => undefined,
+    usesAlternativeJsxRuntime: () => false,
   };
 }
 

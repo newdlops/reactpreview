@@ -49,7 +49,6 @@ import {
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
-
 export { PreviewSourceTransformError } from './previewSourceReplacement';
 export type { PreviewSourceTransformerOptions } from './previewSourceTransformerOptions';
 const MAX_BUILD_EXPANSIONS = 128;
@@ -63,7 +62,6 @@ export interface PreviewSourceTransformResult {
   /** Glob roots used to route newly created or saved files back to the preview session. */
   readonly watchDirectories: readonly string[];
 }
-
 /** Parsed Vite glob behavior accepted by the safe compatibility layer. */
 interface GlobOptions {
   /** Whether modules are imported synchronously at module evaluation time. */
@@ -139,9 +137,12 @@ export class PreviewSourceTransformer {
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
     const bindings = new PreviewSourceBindingAllocator(analysis);
     const allocate = (kind: string): string => bindings.next(kind);
-
     if (isPathInside(this.options.workspaceRoot, sourcePath)) {
-      const reactJsxNamespaceImport = createPreviewReactJsxNamespaceCompatibilityImport(analysis);
+      const reactJsxNamespaceImport = createPreviewReactJsxNamespaceCompatibilityImport(
+        analysis,
+        this.options.projectUsesReactRuntime,
+        () => this.options.jsxRuntimeResolver?.usesAlternativeJsxRuntime(sourcePath) === true,
+      );
       if (reactJsxNamespaceImport !== undefined) {
         generatedImports.push(reactJsxNamespaceImport);
       }
@@ -990,7 +991,6 @@ function createUrlImportSpecifier(assetPath: string, workspaceRoot: string): str
   const fragment = fragmentIndex < 0 ? '' : suffix.slice(fragmentIndex);
   return `${sourcePath}?url${fragment}`;
 }
-
 /** Reports whether one absolute asset path is equal to or contained by a trusted directory. */
 function isPathInside(directoryPath: string, candidatePath: string): boolean {
   const relativePath = path.relative(directoryPath, candidatePath);

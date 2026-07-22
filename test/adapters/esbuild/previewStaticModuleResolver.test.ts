@@ -121,6 +121,9 @@ describe('createPreviewStaticModuleResolver', () => {
       ]);
       const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
 
+      expect(resolver.getJsxImportSource(reactConsumer)).toBeUndefined();
+      expect(resolver.getJsxImportSource(preactConsumer)).toBe('preact');
+      expect(resolver.getJsxImportSource(customConsumer)).toBeUndefined();
       expect(resolver.usesAlternativeJsxRuntime(reactConsumer)).toBe(false);
       expect(resolver.usesAlternativeJsxRuntime(preactConsumer)).toBe(true);
       expect(resolver.usesAlternativeJsxRuntime(customConsumer)).toBe(true);

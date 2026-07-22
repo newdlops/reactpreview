@@ -16,6 +16,7 @@ const PORTAL_PATH = path.join(WORKSPACE_ROOT, 'src', 'app', 'Portal.tsx');
 /** Minimal resolver boundary needed when this fixture has no aliases, themes, or global styles. */
 function createEmptyStaticModuleResolver(): PreviewStaticModuleResolver {
   return {
+    getJsxImportSource: () => undefined,
     getMatchedSpecifiers: () => [],
     matchesTarget: () => false,
     resolve: () => undefined,

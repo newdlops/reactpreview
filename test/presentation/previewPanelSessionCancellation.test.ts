@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import type { PreparedPreview } from '../../src/domain/preview';
+import { PreviewCompilationError, type PreparedPreview } from '../../src/domain/preview';
 import type { PreviewBuildExecutionContext } from '../../src/domain/previewBuildExecution';
 import type { ResolvedPreviewTarget } from '../../src/presentation/activePreviewTarget';
 import {
@@ -233,11 +233,39 @@ describe('PreviewPanelSession cancellation and coalescing', () => {
     expect(traceMessages.every((message) => message.includes('"durationMs":'))).toBe(true);
     fixture.session.dispose();
   });
+
+  /** Preserves structured compiler locations and notes in the extension log used for diagnosis. */
+  it('logs build diagnostic details beside the retained-preview summary', async () => {
+    const fixture = createFixture({
+      execute: vi.fn(() =>
+        Promise.reject(
+          new PreviewCompilationError('Unsupported UI runtime: SolidJS.', [
+            {
+              location: { column: 8, file: '/workspace/src/Page.tsx', line: 1 },
+              message: 'SolidJS source cannot be rendered by React File Preview.',
+              notes: ['Solid JSX requires its own compiler.'],
+              severity: 'error',
+            },
+          ]),
+        ),
+      ),
+    });
+
+    fixture.session.start();
+    await settleAsyncWork();
+
+    const message = String(fixture.error.mock.calls[0]?.[0]);
+    expect(message).toContain('/workspace/src/Page.tsx:1:8');
+    expect(message).toContain('SolidJS source cannot be rendered');
+    expect(message).toContain('Solid JSX requires its own compiler.');
+    fixture.session.dispose();
+  });
 });
 
 /** Observable collaborators returned for one real panel session. */
 interface CancellationFixture {
   readonly debug: ReturnType<typeof vi.fn>;
+  readonly error: ReturnType<typeof vi.fn>;
   readonly execute: ReturnType<typeof vi.fn>;
   readonly panel: CancellationPanel;
   readonly resolveTarget: ReturnType<typeof vi.fn>;
@@ -255,6 +283,7 @@ function createFixture(overrides: CancellationFixtureOverrides = {}): Cancellati
   const target = createTarget('/workspace/src/CancellationTarget.tsx');
   const panel = new CancellationPanel();
   const debug = vi.fn();
+  const error = vi.fn();
   const execute = overrides.execute ?? vi.fn(() => Promise.resolve(createPreparedPreview('ready')));
   const resolveTarget = overrides.resolveTarget ?? vi.fn(() => Promise.resolve(target));
   const session = new PreviewPanelSession({
@@ -264,12 +293,12 @@ function createFixture(overrides: CancellationFixtureOverrides = {}): Cancellati
     },
     callbacks: { onDidDispose: vi.fn(), onDidFocus: vi.fn() },
     initialTarget: target,
-    log: { debug, error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+    log: { debug, error, warn: vi.fn() } as unknown as vscode.LogOutputChannel,
     panel: panel as unknown as vscode.WebviewPanel,
     renderMode: 'component',
     resolveTarget: resolveTarget as unknown as PinnedPreviewTargetResolver,
   });
-  return { debug, execute, panel, resolveTarget, session };
+  return { debug, error, execute, panel, resolveTarget, session };
 }
 
 /** Creates one immutable React target pinned to the fixture session. */

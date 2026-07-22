@@ -30,6 +30,8 @@ export interface PreviewStaticModuleResolverOptions {
 export interface PreviewStaticModuleResolver {
   /** Returns authored specifiers already proven to resolve to one target during this scan. */
   readonly getMatchedSpecifiers: (targetPath: string) => readonly string[];
+  /** Returns the exact configured automatic JSX package, when the nearest config names one. */
+  readonly getJsxImportSource: (consumerPath: string) => string | undefined;
   /** Reports explicit tsconfig/jsconfig evidence that JSX belongs to a non-React runtime. */
   readonly usesAlternativeJsxRuntime: (consumerPath: string) => boolean;
   /**
@@ -236,6 +238,9 @@ export function createPreviewStaticModuleResolver(
   }
 
   return Object.freeze({
+    getJsxImportSource(consumerPath: string): string | undefined {
+      return readConfiguredJsxImportSource(getResolutionContext(consumerPath).options);
+    },
     getMatchedSpecifiers(targetPath: string): readonly string[] {
       return Object.freeze(
         [...(matchedSpecifiersByTarget.get(normalizeSourceIdentity(targetPath)) ?? [])].sort(),
@@ -262,6 +267,14 @@ export function createPreviewStaticModuleResolver(
       return compilerOptionsUseAlternativeJsxRuntime(getResolutionContext(consumerPath).options);
     },
   });
+}
+
+/** Preserves an exact configured automatic JSX owner without interpreting custom classic factories. */
+function readConfiguredJsxImportSource(options: ts.CompilerOptions): string | undefined {
+  const jsxImportSource = options.jsxImportSource?.trim();
+  return jsxImportSource === undefined || jsxImportSource.length === 0
+    ? undefined
+    : jsxImportSource;
 }
 
 /**

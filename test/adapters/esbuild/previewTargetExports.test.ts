@@ -8,6 +8,7 @@ import {
   selectPreviewPrimaryTargetExport,
   selectPreviewTargetExports,
   selectPreviewThemeImport,
+  shouldPreferPreviewModulePageContext,
 } from '../../../src/adapters/esbuild/previewTargetExports';
 import { PreviewCompilationError } from '../../../src/domain/preview';
 
@@ -130,6 +131,38 @@ describe('selectPreviewTargetExports', () => {
     );
 
     expect(selectPreviewPrimaryTargetExport(selection)).toBe('CompanyRegisterModal');
+  });
+
+  /** Separates page data modules from actual component functions before Next page promotion. */
+  it('prefers module page context only for definitely non-component export values', () => {
+    expect(
+      shouldPreferPreviewModulePageContext(
+        '/workspace/navigation.tsx',
+        'export const NavigationItems = [{ label: "Home" }];',
+        'NavigationItems',
+      ),
+    ).toBe(true);
+    expect(
+      shouldPreferPreviewModulePageContext(
+        '/workspace/registry.tsx',
+        'const registry = { title: "Home" }; export default registry;',
+        'default',
+      ),
+    ).toBe(true);
+    expect(
+      shouldPreferPreviewModulePageContext(
+        '/workspace/page-card.tsx',
+        'export default function PageCard() { return <article />; }',
+        'default',
+      ),
+    ).toBe(false);
+    expect(
+      shouldPreferPreviewModulePageContext(
+        '/workspace/widget.tsx',
+        'export const Widget = () => <section />;',
+        'Widget',
+      ),
+    ).toBe(false);
   });
 
   /** Prevents a hook module's adjacent gql value from becoming Page Inspector's mount target. */

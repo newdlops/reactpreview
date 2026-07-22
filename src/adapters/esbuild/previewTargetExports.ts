@@ -110,6 +110,126 @@ export function selectPreviewPrimaryTargetExport(
   )[0]?.exportName;
 }
 
+/**
+ * Decides whether Page Inspector should mount a proven consuming Next page instead of invoking the
+ * selected export as a component. Missing targets, object/array/scalar exports, Context/config
+ * names, and default aliases to those values are module data. Functions, classes, JSX factories,
+ * and unknown HOC calls remain on ordinary component ancestry so their exact DOM boundary can be
+ * highlighted rather than mislabeled as a non-DOM module.
+ */
+export function shouldPreferPreviewModulePageContext(
+  documentPath: string,
+  sourceText: string,
+  exportName: string | undefined,
+): boolean {
+  if (exportName === undefined) return true;
+  if (exportName !== 'default' && scorePrimaryPreviewExport(exportName) < 0) return true;
+  const sourceFile = createSourceFile(documentPath, sourceText);
+  const expression = findPreviewExportValueExpression(sourceFile, exportName);
+  return expression === undefined ? false : isDefinitelyNonComponentExport(expression, sourceFile);
+}
+
+/** Finds the expression behind a direct/default/aliased top-level runtime export. */
+function findPreviewExportValueExpression(
+  sourceFile: ts.SourceFile,
+  exportName: string,
+): ts.Expression | undefined {
+  for (const statement of sourceFile.statements) {
+    if (exportName === 'default' && ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      return statement.expression;
+    }
+    if (ts.isVariableStatement(statement) && hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.name.text === exportName) {
+          return declaration.initializer;
+        }
+      }
+    }
+    if (!ts.isExportDeclaration(statement) || statement.exportClause === undefined) continue;
+    if (!ts.isNamedExports(statement.exportClause) || statement.moduleSpecifier !== undefined) {
+      continue;
+    }
+    for (const element of statement.exportClause.elements) {
+      if (element.isTypeOnly || element.name.text !== exportName) continue;
+      const localName = (element.propertyName ?? element.name).text;
+      return findLocalPreviewValueExpression(sourceFile, localName);
+    }
+  }
+  return exportName === 'default'
+    ? findDefaultDeclarationValueExpression(sourceFile)
+    : findLocalPreviewValueExpression(sourceFile, exportName);
+}
+
+/** Resolves only top-level identifier aliases to their initializer without following imports. */
+function findLocalPreviewValueExpression(
+  sourceFile: ts.SourceFile,
+  localName: string,
+): ts.Expression | undefined {
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === localName) {
+        return declaration.initializer;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Treats default function/class declarations as components and returns no value expression. */
+function findDefaultDeclarationValueExpression(
+  sourceFile: ts.SourceFile,
+): ts.Expression | undefined {
+  for (const statement of sourceFile.statements) {
+    if (
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+      hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+    ) {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Classifies only syntax whose runtime value is definitely not a React element type. */
+function isDefinitelyNonComponentExport(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+): boolean {
+  const value = unwrapPreviewExportExpression(expression);
+  if (ts.isIdentifier(value)) {
+    const initializer = findLocalPreviewValueExpression(sourceFile, value.text);
+    return initializer === undefined
+      ? false
+      : isDefinitelyNonComponentExport(initializer, sourceFile);
+  }
+  return (
+    ts.isObjectLiteralExpression(value) ||
+    ts.isArrayLiteralExpression(value) ||
+    ts.isStringLiteralLike(value) ||
+    ts.isNumericLiteral(value) ||
+    ts.isNoSubstitutionTemplateLiteral(value) ||
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword ||
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    ts.isNewExpression(value)
+  );
+}
+
+/** Removes TypeScript-only wrappers while leaving calls/functions opaque and component-safe. */
+function unwrapPreviewExportExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
 /** Assigns only broad React-role evidence while preserving source order for equal candidates. */
 function scorePrimaryPreviewExport(exportName: string): number {
   if (/^[A-Z][A-Z0-9_]*$/u.test(exportName) || NON_COMPONENT_NAME_PATTERN.test(exportName)) {

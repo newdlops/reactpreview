@@ -56,7 +56,6 @@ import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import {
   EMPTY_IMPLICIT_GLOBAL_EVIDENCE,
   EMPTY_RUNTIME_WATCH_INPUTS,
-  EMPTY_TARGET_USAGE_PROPS,
   createImplicitGlobalEvidenceCacheKey,
   createPreviewDocumentName,
   describeGlobalPackageBridgeStatus,
@@ -85,6 +84,7 @@ import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
 import { createPreviewImportMetaEnvironment } from './previewPublicEnvironment';
 import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
+import { preparePreviewCompilerUsage } from './preparePreviewCompilerUsage';
 import {
   mergePreviewPortalHostIds,
   refinePreviewPortalHostsFromBuild,
@@ -229,12 +229,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       assertPreviewReactTarget(request, managedDependencyEnvironment.profile, staticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
       const targetExports = targetSelection.targetExports;
-      const hasPreviewableTarget = targetExports.length > 0;
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
         request.sourceText,
       );
-      const explicitTargetExportNames = targetSelection.explicitExportNames;
       const inspectorExportName = targetSelection.inspectorExportName;
       const themeImport = selectPreviewThemeImport(request.sourceText);
       const useFastPreparation = request.preparationMode === 'fast';
@@ -252,29 +250,25 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ? Promise.resolve(EMPTY_RUNTIME_WATCH_INPUTS)
           : createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
       ]);
-      const [packageTargetUsageProps, implicitGlobalSourcePaths] = await Promise.all([
-        useFastPreparation || !hasPreviewableTarget
-          ? Promise.resolve(EMPTY_TARGET_USAGE_PROPS)
-          : this.projectUsageCache.discover({
-              climbParentSlices:
-                request.renderMode !== 'page-inspector' && runtimeEnvironment.setupKind === 'none',
-              documentPath: request.documentPath,
-              exports: targetExports,
-              ...(inspectorExportName === undefined ? {} : { inspectorExportName }),
-              projectRoot,
-              signal: buildSignal,
-              snapshots: request.dependencySnapshots,
-              sourceText: targetSelection.sourceText,
-              ...(request.tsconfigPath === undefined ? {} : { tsconfigPath: request.tsconfigPath }),
-              workspaceRoot: canonicalWorkspaceRoot,
-            }),
-        useFastPreparation || !hasPreviewableTarget
-          ? Promise.resolve(Object.freeze([]) as readonly string[])
-          : this.projectUsageCache.getSourcePaths(canonicalWorkspaceRoot, projectRoot, buildSignal),
-      ]);
+      const { packageTargetUsageProps, implicitGlobalSourcePaths } =
+        await preparePreviewCompilerUsage({
+          cache: this.projectUsageCache,
+          projectRoot,
+          request,
+          resolver: staticModuleResolver,
+          signal: buildSignal,
+          setupKind: runtimeEnvironment.setupKind,
+          targetSelection,
+          workspaceRoot: canonicalWorkspaceRoot,
+        });
       let targetUsageProps = packageTargetUsageProps;
+      const packageHasFrameworkPageContext =
+        packageTargetUsageProps.inspectorPlan?.pageCandidates.some(
+          (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',
+        ) === true;
       const packageHasEntryConnectedPage =
         inspectorExportName !== undefined &&
+        packageTargetUsageProps.inspectorPlan?.contextModule === undefined &&
         packageTargetUsageProps.renderChainsByExport?.[inspectorExportName]?.paths.some(
           (candidate) => candidate.entryPoint !== undefined,
         ) === true;
@@ -283,6 +277,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         request.renderMode === 'page-inspector' &&
         inspectorExportName !== undefined &&
         !targetSelection.isImperativeEntry &&
+        packageTargetUsageProps.inspectorPlan?.contextModule === undefined &&
+        !packageHasFrameworkPageContext &&
         !packageHasEntryConnectedPage &&
         (packageTargetUsageProps.inspectorPlan === undefined ||
           packageTargetUsageProps.inspectorPlan.edges.length === 0) &&
@@ -318,9 +314,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         workspaceRoot: canonicalWorkspaceRoot,
       });
       const primaryRenderPath =
-        inspectorExportName === undefined
+        targetUsageProps.inspectorPlan?.renderChain.paths[0] ??
+        (inspectorExportName === undefined
           ? undefined
-          : targetUsageProps.renderChainsByExport?.[inspectorExportName]?.paths[0];
+          : targetUsageProps.renderChainsByExport?.[inspectorExportName]?.paths[0]);
       const styleContext = await preparePreviewStyleContext({
         ...(themeImport === undefined ? {} : { directThemeImport: themeImport }),
         inspectorDependencyPaths: targetUsageProps.inspectorPlan?.dependencyPaths ?? [],
@@ -488,10 +485,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                             acceptedTargetImportSpecifiers:
                               targetUsageProps.inspectorTargetImportSpecifiers,
                           }),
-                      documentPath: request.documentPath,
-                      exportNames: explicitTargetExportNames,
-                      inferredPropsByExport,
-                      originalHasDefaultExport: explicitTargetExportNames.includes('default'),
+                      documentPath: inspectorPlan.target.sourcePath,
+                      exportNames: Object.keys(inspectorPlan.renderChainsByExport),
+                      ...(inspectorPlan.contextModule === undefined
+                        ? { inferredPropsByExport }
+                        : {}),
+                      originalHasDefaultExport: Object.keys(
+                        inspectorPlan.renderChainsByExport,
+                      ).includes('default'),
                     }),
                     createPreviewInspectorRuntimePlugin({ projectRoot }),
                     createPreviewInspectorCorridorPlugin({
@@ -542,7 +543,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       ...(selectedThemeImport === undefined
                         ? {}
                         : { themeImport: selectedThemeImport }),
-                      ...(inferredPropsByExport[inspectorPlan.target.exportName] === undefined
+                      ...(inspectorPlan.contextModule !== undefined ||
+                      inferredPropsByExport[inspectorPlan.target.exportName] === undefined
                         ? {}
                         : {
                             targetInference: inferredPropsByExport[inspectorPlan.target.exportName],

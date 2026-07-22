@@ -718,6 +718,7 @@ source·경로·토큰은 저장하지 않습니다. 이 저장소는 512 MiB/24
 | ---------------------------------- | ----------------------------------------------------------------------------------------- |
 | `reactPreview.*` command not found | 0.1.1074 이상 설치 후 `Developer: Reload Window`; Remote면 원격에 설치                    |
 | React 모듈을 찾지 못함             | local/lock 근거 또는 versioned React 18/19 seed와 manifest range가 호환되는지 확인        |
+| classic JSX에서 `React`가 없음     | 0.1.1121 이상인지 확인하고 custom JSX runtime이면 namespace를 setup에서 명시              |
 | package 자동 획득이 건너뛰어짐     | 지원 lock과 SHA-512 근거인지, private/git/file/workspace package가 아닌지 Output에서 확인 |
 | export가 갤러리에 표시되지 않음    | runtime default 또는 PascalCase 이름으로 직접 export했는지 확인                           |
 | Inspector가 기대한 페이지가 아님   | toolbar ancestry/partial 이유를 확인하고 다른 업무 scenario는 harness                     |

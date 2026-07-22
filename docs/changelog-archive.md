@@ -2,6 +2,16 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1017 - 2026-07-16
+
+- 에디터 우클릭과 명령 팔레트에 opt-in `Inspect Current React File in Page Context`를 추가하고, 일반 component gallery와 같은 파일에서도 독립적으로 고정되는 Page Inspector 세션을 제공
+- workspace 안의 실제 JSX 사용과 barrel/consumer tsconfig alias를 최대 8단계 역추적해 바깥쪽 importable owner export를 마운트함으로써 작성된 부모·자식·형제 JSX, 조건부 UI, event handler와 도달한 CSS/import graph를 실제 브라우저 React tree에서 실행; private owner·cycle·한도에서는 안전한 partial root에 정지
+- 선택 target import만 facade로 계측하고 application DOM marker/layout wrapper 없이 read-only React host lookup과 격리된 Shadow DOM toolbar를 사용해 target highlight, DOM element picker와 정적 ancestry를 제공
+- page/layout/App 후보 우선순위와 test/story 감점, route 배열·router 객체 root 거부, named/wildcard barrel, 모노레포 sibling package와 alias-aware target facade resolution을 추가
+- target 또는 실제 ancestor root의 직렬화 가능한 props를 JSON으로 적용·초기화하고 명시적으로 remount할 수 있는 도구 추가; boolean prop 분기는 UI에서 바꿀 수 있지만 임의의 hook/local state slot은 수정하지 않음
+- Inspector의 선택 export, highlight와 props override를 패널별 webview state에 보존하고, 선택된 ancestor dependency 변경 시 기존 서버 없는 ESM/CSS hot reload를 수행한 뒤 override를 다시 적용
+- 실제 page owner graph를 실행하는 Inspector도 외부 연결 차단 CSP, Workspace Trust, package 경계와 bounded 정적 탐색을 유지하며 전체 app entry, backend, 개발 서버나 프로젝트별 업무 상태를 자동 실행하지 않음
+
 ## 0.1.1016 - 2026-07-16
 
 - 실제 JSX target 사용을 역추적해 sibling과 parent owner를 실행하지 않고 intrinsic/imported wrapper 한 갈래만 export별 Virtual DOM recipe로 합성하는 pinpoint parent render slice 추가

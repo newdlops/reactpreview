@@ -2,6 +2,11 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1121 - 2026-07-22
+
+- named React runtime import만 있는 소스를 classic JSX로 낮출 때 정확한 `react` import·JSX·비어 있는 `React` runtime binding을 함께 증명해 lexical namespace fallback을 추가하고 custom JSX runtime과 작성된 binding은 보존
+- `node_modules` 없는 React 18 webpack fixture를 Storybook 초기화 전후로 번들링해 모든 `createElement` receiver가 선언되고 프로젝트 installation은 생성되지 않는 것을 검증
+
 ## 0.1.1120 - 2026-07-22
 
 - 확장에 React/ReactDOM/Scheduler 18.3.1/18.3.1/0.23.2와 기존 19.2.7/19.2.7/0.27.0 exact tuple을 함께 둔 versioned seed catalog를 추가해 호환 manifest만 있는 React 18 프로젝트도 `node_modules` 없이 프리뷰
@@ -982,15 +987,5 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 - esbuild scope injection으로 local/import/shadow/type/property/JSX intrinsic/`typeof` probe를 보존하고 ESM default·named·namespace와 CommonJS identity, 모노레포 hoist, dirty wrapper HMR dependency를 지원
 - package source evidence와 선택된 declaration/wrapper metadata를 탭과 hot rebuild 사이에서 bounded하게 공유하고 generated/public 역방향 인덱스를 제외해 실제 대형 프로젝트의 후속 rebuild 시간을 단축
 - `name is not defined`를 `missing-runtime-global`로 분류하고 오류 보고서에 Globals bridge 상태를 추가
-
-## 0.1.1017 - 2026-07-16
-
-- 에디터 우클릭과 명령 팔레트에 opt-in `Inspect Current React File in Page Context`를 추가하고, 일반 component gallery와 같은 파일에서도 독립적으로 고정되는 Page Inspector 세션을 제공
-- workspace 안의 실제 JSX 사용과 barrel/consumer tsconfig alias를 최대 8단계 역추적해 바깥쪽 importable owner export를 마운트함으로써 작성된 부모·자식·형제 JSX, 조건부 UI, event handler와 도달한 CSS/import graph를 실제 브라우저 React tree에서 실행; private owner·cycle·한도에서는 안전한 partial root에 정지
-- 선택 target import만 facade로 계측하고 application DOM marker/layout wrapper 없이 read-only React host lookup과 격리된 Shadow DOM toolbar를 사용해 target highlight, DOM element picker와 정적 ancestry를 제공
-- page/layout/App 후보 우선순위와 test/story 감점, route 배열·router 객체 root 거부, named/wildcard barrel, 모노레포 sibling package와 alias-aware target facade resolution을 추가
-- target 또는 실제 ancestor root의 직렬화 가능한 props를 JSON으로 적용·초기화하고 명시적으로 remount할 수 있는 도구 추가; boolean prop 분기는 UI에서 바꿀 수 있지만 임의의 hook/local state slot은 수정하지 않음
-- Inspector의 선택 export, highlight와 props override를 패널별 webview state에 보존하고, 선택된 ancestor dependency 변경 시 기존 서버 없는 ESM/CSS hot reload를 수행한 뒤 override를 다시 적용
-- 실제 page owner graph를 실행하는 Inspector도 외부 연결 차단 CSP, Workspace Trust, package 경계와 bounded 정적 탐색을 유지하며 전체 app entry, backend, 개발 서버나 프로젝트별 업무 상태를 자동 실행하지 않음
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

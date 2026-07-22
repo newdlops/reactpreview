@@ -10,6 +10,7 @@ import path from 'node:path';
 import { parseSyml } from '@yarnpkg/parsers';
 import {
   findPreviewDependencySpecifier,
+  findPreviewReactDomCompanionSpecifier,
   type PreviewDependencyField,
   type PreviewDependencyProfile,
 } from './previewDependencyProfile';
@@ -276,7 +277,11 @@ function buildYarnPackageLayout(
   if (rootRequests === undefined) return undefined;
   for (const { packageName, required } of rootRequests) {
     if (placedByPath.size >= MAX_PACKAGE_COUNT) return undefined;
-    const specifier = findPreviewDependencySpecifier(profile, packageName);
+    // Defense in depth mirrors the diagnostic collector: direct planner callers may infer only
+    // the exact React DOM companion, and only from a safe direct React registry declaration.
+    const specifier =
+      findPreviewDependencySpecifier(profile, packageName) ??
+      (packageName === 'react-dom' ? findPreviewReactDomCompanionSpecifier(profile) : undefined);
     const record =
       specifier === undefined
         ? undefined

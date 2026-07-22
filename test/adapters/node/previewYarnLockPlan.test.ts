@@ -216,6 +216,72 @@ describe('createPreviewYarnLockPlan', () => {
     });
   });
 
+  /** Uses direct React's range to select a lock-retained React DOM companion without widening names. */
+  it('plans an undeclared React DOM companion from reusable Berry lock evidence', async () => {
+    const projectRoot = await createProject(
+      { react: 'latest' },
+      [
+        '__metadata:',
+        '  version: 6',
+        '',
+        '"react@npm:latest":',
+        '  version: 19.2.7',
+        '  resolution: "react@npm:19.2.7"',
+        '  languageName: node',
+        '  linkType: hard',
+        '',
+        '"react-dom@npm:latest":',
+        '  version: 19.2.7',
+        '  resolution: "react-dom@npm:19.2.7"',
+        '  languageName: node',
+        '  linkType: hard',
+        '',
+      ].join('\n'),
+    );
+    const profile = await requireProfile(projectRoot);
+
+    const plan = await createPreviewYarnLockPlan({
+      profile,
+      projectRoot,
+      requiredPackageNames: ['react-dom'],
+    });
+
+    expect(plan).toEqual({
+      entries: [
+        { packageName: 'react', targetRelativePath: 'react', version: '19.2.7' },
+        { packageName: 'react-dom', targetRelativePath: 'react-dom', version: '19.2.7' },
+      ],
+      flavor: 'berry',
+    });
+  });
+
+  /** Refuses the companion when React itself is supplied by a local path rather than npm. */
+  it('rejects React DOM companion inference for a local React declaration', async () => {
+    const projectRoot = await createProject(
+      { react: 'file:../react' },
+      [
+        '__metadata:',
+        '  version: 6',
+        '',
+        '"react-dom@npm:latest":',
+        '  version: 19.2.7',
+        '  resolution: "react-dom@npm:19.2.7"',
+        '  languageName: node',
+        '  linkType: hard',
+        '',
+      ].join('\n'),
+    );
+    const profile = await requireProfile(projectRoot);
+
+    await expect(
+      createPreviewYarnLockPlan({
+        profile,
+        projectRoot,
+        requiredPackageNames: ['react-dom'],
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   /** Keeps a classic npm alias in its authored slot while downloading the real package archive. */
   it('preserves classic alias placement and package identity', async () => {
     const projectRoot = await createProject(

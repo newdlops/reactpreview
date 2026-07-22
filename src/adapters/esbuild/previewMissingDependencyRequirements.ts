@@ -7,6 +7,7 @@ import { builtinModules } from 'node:module';
 import type { Message } from 'esbuild';
 import {
   findPreviewDependencySpecifier,
+  findPreviewReactDomCompanionSpecifier,
   type PreviewDependencyProfile,
 } from '../node/previewDependencyProfile';
 import type {
@@ -60,7 +61,10 @@ export function collectPreviewMissingDependencyRequirements(
     if (moduleSpecifier === undefined || !isSafeBareSpecifier(moduleSpecifier)) continue;
     const packageName = readPackageRoot(moduleSpecifier);
     const dependencySpecifier =
-      packageName === undefined ? undefined : findPreviewDependencySpecifier(profile, packageName);
+      packageName === undefined
+        ? undefined
+        : (findPreviewDependencySpecifier(profile, packageName) ??
+          findExactReactDomCompanionSpecifier(moduleSpecifier, packageName, profile));
     if (
       packageName === undefined ||
       NODE_BUILTIN_NAMES.has(packageName) ||
@@ -72,6 +76,21 @@ export function collectPreviewMissingDependencyRequirements(
     packageNames.add(packageName);
   }
   return Object.freeze([...packageNames].sort());
+}
+
+/**
+ * Admits React DOM's exact package root only when direct React and reusable lock evidence can
+ * identify a matching companion record. Keeping this check on the raw module request prevents the
+ * narrow exception from silently widening to arbitrary `react-dom/*` entry points.
+ */
+function findExactReactDomCompanionSpecifier(
+  moduleSpecifier: string,
+  packageName: string,
+  profile: PreviewDependencyProfile,
+): string | undefined {
+  return moduleSpecifier === 'react-dom' && packageName === 'react-dom'
+    ? findPreviewReactDomCompanionSpecifier(profile)
+    : undefined;
 }
 
 /** Acquires one declared unresolved package batch and converts unsupported/network failures to miss. */

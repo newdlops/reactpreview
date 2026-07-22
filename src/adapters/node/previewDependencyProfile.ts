@@ -276,6 +276,46 @@ export function findPreviewDependencySpecifier(
 }
 
 /**
+ * Derives the only undeclared companion requirement admitted by managed acquisition.
+ *
+ * React DOM is a peer runtime of React, yet some generated or plugin manifests declare only
+ * `react` while their reusable lock still contains the matching `react-dom` descriptor. The
+ * fallback deliberately requires a direct production dependency and an ordinary registry range:
+ * aliases, development-only declarations, workspace links, files, URLs, and an authored
+ * `react-dom` declaration never receive an inferred replacement.
+ *
+ * @param profile Normalized project package profile with manifest fields kept separate.
+ * @returns The direct React registry range to reuse for React DOM, or `undefined` when unsafe.
+ */
+export function findPreviewReactDomCompanionSpecifier(
+  profile: PreviewDependencyProfile | undefined,
+): string | undefined {
+  if (
+    profile?.hasReusableLockEvidence !== true ||
+    findPreviewDependencySpecifier(profile, 'react-dom') !== undefined
+  ) {
+    return undefined;
+  }
+  const reactSpecifier = profile.requirementsByField.dependencies.react;
+  return reactSpecifier !== undefined && isOrdinaryRegistryRange(reactSpecifier)
+    ? reactSpecifier
+    : undefined;
+}
+
+/** Accepts inert npm tags/ranges while excluding every alias, path, protocol, and fragment form. */
+function isOrdinaryRegistryRange(specifier: string): boolean {
+  return (
+    specifier.length > 0 &&
+    specifier.length <= 2048 &&
+    specifier === specifier.trim() &&
+    !specifier.startsWith('.') &&
+    !specifier.startsWith('/') &&
+    !/[\\/@\0\r\n?!#]/u.test(specifier) &&
+    !/^[a-z][a-z\d+.-]*:/iu.test(specifier)
+  );
+}
+
+/**
  * Conservatively checks whether an exact bundled version satisfies a common npm range form.
  * Unsupported compound, prerelease, alias, URL and workspace forms return `false` instead of
  * guessing; a project with explicit incompatible evidence must never receive another React copy.

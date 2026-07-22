@@ -31,6 +31,17 @@ const PROFILE: PreviewDependencyProfile = {
   schemaVersion: 2,
 };
 
+/** React-only manifest fixture modeling a generated package whose lock retains React DOM. */
+const REACT_COMPANION_PROFILE: PreviewDependencyProfile = {
+  ...PROFILE,
+  requirementsByField: {
+    dependencies: { react: 'latest' },
+    devDependencies: {},
+    optionalDependencies: {},
+    peerDependencies: {},
+  },
+};
+
 describe('collectPreviewMissingDependencyRequirements', () => {
   /** Normalizes package subpaths and removes repeated build diagnostics. */
   it('collects declared package roots in stable order', () => {
@@ -89,6 +100,60 @@ describe('collectPreviewMissingDependencyRequirements', () => {
         hasReusableLockEvidence: false,
         lockfileEvidenceStatus: 'absent',
       }),
+    ).toEqual([]);
+  });
+
+  /** Restores only the exact React DOM companion root proven by direct React and lock evidence. */
+  it('collects an undeclared exact react-dom root for a direct registry React dependency', () => {
+    expect(
+      collectPreviewMissingDependencyRequirements(
+        [message('Could not resolve "react-dom"')],
+        REACT_COMPANION_PROFILE,
+      ),
+    ).toEqual(['react-dom']);
+    expect(
+      collectPreviewMissingDependencyRequirements(
+        [message('Could not resolve "react-dom/client"')],
+        REACT_COMPANION_PROFILE,
+      ),
+    ).toEqual([]);
+  });
+
+  /** Keeps local, development-only, and unrelated undeclared requirements outside the exception. */
+  it('rejects unsafe or unrelated companion inference', () => {
+    const localReactProfile: PreviewDependencyProfile = {
+      ...REACT_COMPANION_PROFILE,
+      requirementsByField: {
+        ...REACT_COMPANION_PROFILE.requirementsByField,
+        dependencies: { react: 'file:../react' },
+      },
+    };
+    const developmentReactProfile: PreviewDependencyProfile = {
+      ...REACT_COMPANION_PROFILE,
+      requirementsByField: {
+        ...REACT_COMPANION_PROFILE.requirementsByField,
+        dependencies: {},
+        devDependencies: { react: 'latest' },
+      },
+    };
+
+    expect(
+      collectPreviewMissingDependencyRequirements(
+        [message('Could not resolve "react-dom"')],
+        localReactProfile,
+      ),
+    ).toEqual([]);
+    expect(
+      collectPreviewMissingDependencyRequirements(
+        [message('Could not resolve "react-dom"')],
+        developmentReactProfile,
+      ),
+    ).toEqual([]);
+    expect(
+      collectPreviewMissingDependencyRequirements(
+        [message('Could not resolve "react-dmo"')],
+        REACT_COMPANION_PROFILE,
+      ),
     ).toEqual([]);
   });
 

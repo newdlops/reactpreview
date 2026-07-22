@@ -11,7 +11,14 @@ import path from 'node:path';
 import type { Loader, OnLoadArgs, OnLoadResult, Plugin } from 'esbuild';
 import type { PreviewSourceSnapshot } from '../../domain/preview';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import { normalizePreviewCssFailSoftPrelude } from './previewCssFailSoftNormalization';
 import { parsePreviewCssImports } from './previewCssImportParser';
+import { parsePreviewCssReferences } from './previewCssReferenceParser';
+import { runPreviewSerialWork } from './previewSerialWorkQueue';
+import {
+  createPreviewWorkspacePackageResolver,
+  type PreviewWorkspacePackageResolver,
+} from './previewWorkspacePackageResolver';
 
 /** Project-anchored CommonJS resolver returned by Node's `createRequire`. */
 type PreviewProjectRequire = ReturnType<typeof createRequire>;
@@ -139,7 +146,8 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const defaultProjectRoot = canonicalizeExistingPath(options.projectRoot);
   const implementationByStyleRoot = new Map<string, PreviewTailwindImplementation>();
-
+  const processingQueueByStyleRoot = new Map<string, Promise<void>>();
+  const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
   return {
     name: 'react-preview-tailwind',
     setup(build): void {
@@ -172,7 +180,13 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           workspaceRoot,
           defaultProjectRoot,
         );
-        const importPreflight = preflightCssImports(source, sourcePath, styleRoot, workspaceRoot);
+        const importPreflight = preflightCssImports(
+          source,
+          sourcePath,
+          styleRoot,
+          workspaceRoot,
+          workspacePackageResolver,
+        );
         if (importPreflight.unsafeReason !== undefined) {
           return createFailSoftResult(source, sourcePath, loader, importPreflight.unsafeReason);
         }
@@ -204,6 +218,21 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
             ],
           );
         }
+        if (
+          implementation.kind === 'v4' &&
+          loader === 'css' &&
+          isStandaloneApplyStylesheet(source)
+        ) {
+          // Tailwind v4 deterministically rejects @apply files that omit both @reference and a
+          // theme/import context. Generated style registries commonly import these leaves beneath
+          // one contextual parent; preserve them for ordinary CSS bundling instead of allocating
+          // and failing an independent Tailwind graph for every sibling file.
+          return {
+            contents: source,
+            loader,
+            resolveDir: path.dirname(sourcePath),
+          };
+        }
 
         const snapshots = collectSnapshotSources(
           options.readSourceSnapshots?.(),
@@ -214,11 +243,21 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           implementation.kind === 'v4' && implementation.Scanner !== undefined
             ? scanInlineCandidates(implementation.Scanner, snapshots)
             : [];
-        const processorInput = appendInlineCandidates(source, inlineCandidates);
+        const processorSource = rewriteWorkspaceCssImportFallbacks(
+          source,
+          sourcePath,
+          styleRoot,
+          workspaceRoot,
+          workspacePackageResolver,
+        );
+        const processorInput = appendInlineCandidates(processorSource, inlineCandidates);
         try {
-          const result = await implementation
-            .createProcessor(snapshots)
-            .process(processorInput, { from: sourcePath });
+          // Esbuild may load sibling CSS files concurrently. Tailwind v4 reuses one processor per
+          // package root, while each run may allocate a large candidate graph. Serializing only
+          // this processor boundary bounds peak memory without blocking unrelated packages.
+          const result = await runPreviewSerialWork(processingQueueByStyleRoot, styleRoot, () =>
+            implementation.createProcessor(snapshots).process(processorInput, { from: sourcePath }),
+          );
           if (result.css.trim().length === 0 && source.trim().length > 0) {
             return createFailSoftResult(
               source,
@@ -255,6 +294,14 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
       build.onLoad({ filter: CSS_FILTER, namespace: 'file' }, loadTailwindStylesheet);
     },
   };
+}
+
+/** Detects a v4-invalid independent @apply leaf without mistaking a contextual stylesheet. */
+function isStandaloneApplyStylesheet(source: string): boolean {
+  return (
+    /@apply\b/iu.test(source) &&
+    !/@(?:custom-variant|import|reference|tailwind|theme|utility)\b/iu.test(source)
+  );
 }
 
 /**
@@ -535,6 +582,7 @@ function preflightCssImports(
   rootSourcePath: string,
   styleRoot: string,
   workspaceRoot: string,
+  workspacePackageResolver: PreviewWorkspacePackageResolver,
 ): PreviewCssImportPreflight {
   const projectRequire = createRequire(path.join(styleRoot, 'package.json'));
   const dependencyPaths = new Set<string>();
@@ -593,8 +641,19 @@ function preflightCssImports(
         unsafeReason: `${parsedImports.unsafeReason} File: ${path.basename(current.sourcePath)}`,
       };
     }
-    for (const cssImport of parsedImports.imports) {
-      const { modifiers, specifier } = cssImport;
+    const parsedReferences = parsePreviewCssReferences(current.source);
+    if (parsedReferences.unsafeReason !== undefined) {
+      return {
+        dependencyPaths: [...dependencyPaths],
+        sourceDirectories: [...sourceDirectories],
+        unsafeReason: `${parsedReferences.unsafeReason} File: ${path.basename(current.sourcePath)}`,
+      };
+    }
+    const dependencyRequests = [
+      ...parsedImports.imports.map(({ modifiers, specifier }) => ({ modifiers, specifier })),
+      ...parsedReferences.references.map(({ specifier }) => ({ modifiers: '', specifier })),
+    ];
+    for (const { modifiers, specifier } of dependencyRequests) {
       const modifierValidation = validateImportSourceModifier(
         specifier,
         modifiers,
@@ -619,6 +678,7 @@ function preflightCssImports(
         current.sourcePath,
         projectRequire,
         workspaceRoot,
+        workspacePackageResolver,
       );
       if (importedPath === undefined) {
         return {
@@ -677,6 +737,7 @@ function resolveImportedCssPath(
   importerPath: string,
   projectRequire: PreviewProjectRequire,
   workspaceRoot: string,
+  workspacePackageResolver: PreviewWorkspacePackageResolver,
 ): string | undefined {
   const cleanSpecifier = specifier.split(/[?#]/u, 1)[0];
   if (cleanSpecifier === undefined || cleanSpecifier.length === 0) return undefined;
@@ -692,8 +753,84 @@ function resolveImportedCssPath(
     const resolved = canonicalizeExistingPath(projectRequire.resolve(cleanSpecifier));
     return CSS_FILTER.test(resolved) ? resolved : undefined;
   } catch {
-    return undefined;
+    return resolveWorkspaceCssFallback(cleanSpecifier, workspaceRoot, workspacePackageResolver);
   }
+}
+
+/**
+ * Resolves an unbuilt workspace package's CSS source after its installed export target misses.
+ * The shared resolver reads only workspace manifests and existing files; this final CSS/boundary
+ * check prevents its broader JavaScript source support from widening Tailwind's import policy.
+ */
+function resolveWorkspaceCssFallback(
+  specifier: string,
+  workspaceRoot: string,
+  workspacePackageResolver: PreviewWorkspacePackageResolver,
+): string | undefined {
+  const resolvedPath = workspacePackageResolver.resolve(specifier);
+  if (resolvedPath === undefined) return undefined;
+  const canonicalPath = canonicalizeExistingPath(resolvedPath);
+  return CSS_FILTER.test(canonicalPath) && isPathInside(workspaceRoot, canonicalPath)
+    ? canonicalPath
+    : undefined;
+}
+
+/**
+ * Redirects only bare CSS imports whose normal package export is absent to proven workspace source.
+ * Tailwind's PostCSS adapter performs its own import resolution and therefore cannot observe
+ * esbuild's workspace-package fallback. Relative paths keep the transformed request portable and
+ * preserve every authored layer/supports/media modifier while avoiding project code execution.
+ */
+function rewriteWorkspaceCssImportFallbacks(
+  source: string,
+  sourcePath: string,
+  styleRoot: string,
+  workspaceRoot: string,
+  workspacePackageResolver: PreviewWorkspacePackageResolver,
+): string {
+  const parsedImports = parsePreviewCssImports(source);
+  if (parsedImports.unsafeReason !== undefined) return source;
+  const projectRequire = createRequire(path.join(styleRoot, 'package.json'));
+  let output = source;
+  for (const cssImport of [...parsedImports.imports].reverse()) {
+    const cleanSpecifier = cssImport.specifier.split(/[?#]/u, 1)[0];
+    if (
+      cleanSpecifier === undefined ||
+      cleanSpecifier.length === 0 ||
+      cleanSpecifier.startsWith('.') ||
+      path.isAbsolute(cleanSpecifier)
+    ) {
+      continue;
+    }
+    try {
+      projectRequire.resolve(cleanSpecifier);
+      continue;
+    } catch {
+      const fallbackPath = resolveWorkspaceCssFallback(
+        cleanSpecifier,
+        workspaceRoot,
+        workspacePackageResolver,
+      );
+      if (fallbackPath === undefined) continue;
+      const relativePath = normalizeCssRelativePath(
+        path.relative(path.dirname(sourcePath), fallbackPath),
+      );
+      const replacement = `@import ${JSON.stringify(relativePath)}${
+        cssImport.modifiers.length === 0 ? '' : ` ${cssImport.modifiers}`
+      };`;
+      output =
+        output.slice(0, cssImport.statementStart) +
+        replacement +
+        output.slice(cssImport.statementEnd);
+    }
+  }
+  return output;
+}
+
+/** Produces an explicit POSIX-style CSS-relative request on every host platform. */
+function normalizeCssRelativePath(relativePath: string): string {
+  const normalizedPath = relativePath.split(path.sep).join('/');
+  return normalizedPath.startsWith('.') ? normalizedPath : `./${normalizedPath}`;
 }
 
 /** Refuses executable directives and explicit filesystem scans that escape the workspace. */
@@ -827,7 +964,7 @@ function createFailSoftResult(
   additionalWatchFiles: readonly string[] = [],
 ): OnLoadResult {
   return {
-    contents: source,
+    contents: normalizePreviewCssFailSoftPrelude(source),
     loader,
     resolveDir: path.dirname(sourcePath),
     warnings: [{ ...(error === undefined ? {} : { detail: error }), text: message }],

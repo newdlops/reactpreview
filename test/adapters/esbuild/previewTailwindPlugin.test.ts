@@ -97,6 +97,102 @@ describe('createPreviewTailwindPlugin', () => {
     expect(result.warnings[0]?.text).toContain('No compatible project-local Tailwind');
   });
 
+  /**
+   * Redirects an unbuilt workspace CSS export for both safety preflight and Tailwind's private
+   * processor resolver. The fixture intentionally has no node_modules link and no dist artifact.
+   */
+  it('uses authored workspace CSS when a package export points at missing dist output', async () => {
+    const workspaceRoot = await createProject('tailwind-workspace-css-');
+    const projectRoot = path.join(workspaceRoot, 'apps/web');
+    const packageRoot = path.join(workspaceRoot, 'packages/shadcn');
+    const stylesheetPath = path.join(projectRoot, 'src/globals.css');
+    await Promise.all([
+      mkdir(path.dirname(stylesheetPath), { recursive: true }),
+      mkdir(path.join(packageRoot, 'src'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(workspaceRoot, 'package.json'),
+        JSON.stringify({ private: true, workspaces: ['apps/*', 'packages/*'] }),
+        'utf8',
+      ),
+      writeFile(path.join(projectRoot, 'package.json'), '{"name":"preview-web"}', 'utf8'),
+      writeFile(
+        path.join(packageRoot, 'package.json'),
+        JSON.stringify({
+          exports: { './tailwind.css': './dist/tailwind.css' },
+          name: 'shadcn',
+        }),
+        'utf8',
+      ),
+      writeFile(
+        path.join(packageRoot, 'src/tailwind.css'),
+        '.workspace-theme-source { color: rebeccapurple; }',
+        'utf8',
+      ),
+      writeFile(stylesheetPath, '@import "shadcn/tailwind.css";\n@tailwind utilities;', 'utf8'),
+      installFakePostcss(projectRoot),
+      installFakeTailwindV4(projectRoot),
+    ]);
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath, [], workspaceRoot);
+
+    expect(readCssOutput(result)).toContain('.workspace-import-true');
+    expect(result.warnings).toEqual([]);
+  });
+
+  /**
+   * Mirrors a registry stylesheet that references global Tailwind CSS. The nested unsafe source is
+   * detected before Tailwind runs, while direct authored registry styles still survive fail-soft.
+   */
+  it('preflights nested references and keeps fail-soft imports ahead of them', async () => {
+    const projectRoot = await createProject('tailwind-reference-fallback-');
+    const stylesheetPath = path.join(projectRoot, 'style-registry.css');
+    await Promise.all([
+      writeFile(
+        stylesheetPath,
+        '@reference "./globals.css";\n\n@import "./base.css";\n@tailwind utilities;',
+        'utf8',
+      ),
+      writeFile(
+        path.join(projectRoot, 'globals.css'),
+        '@import "shadcn/tailwind.css";\n@source "../node_modules/widgets/*.js";',
+        'utf8',
+      ),
+      writeFile(path.join(projectRoot, 'base.css'), '.base-fallback { display: block; }', 'utf8'),
+      installFakePostcss(projectRoot),
+      installFakeTailwindV4(projectRoot),
+    ]);
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath);
+
+    expect(readCssOutput(result)).toContain('.base-fallback');
+    expect(readCssOutput(result)).not.toContain('.fake-v4-generated');
+    expect(result.warnings[0]?.text).toContain('outside workspace-owned source');
+    expect(result.warnings.map((warning) => warning.text).join('\n')).not.toContain(
+      'All "@import" rules must come first',
+    );
+  });
+
+  /** Avoids a guaranteed v4 processor failure for generated @apply leaves lacking local context. */
+  it('preserves standalone v4 apply leaves without compiling each as a full Tailwind graph', async () => {
+    const projectRoot = await createProject('tailwind-standalone-apply-');
+    const stylesheetPath = path.join(projectRoot, 'generated-style.css');
+    await Promise.all([
+      writeFile(stylesheetPath, '.generated-leaf { @apply rounded-md px-2; }', 'utf8'),
+      installFakePostcss(projectRoot),
+      installFakeTailwindV4(projectRoot),
+    ]);
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath);
+    const css = readCssOutput(result);
+
+    expect(css).toContain('.generated-leaf');
+    expect(css).toContain('@apply rounded-md px-2');
+    expect(css).not.toContain('.fake-v4-generated');
+    expect(result.warnings).toEqual([]);
+  });
+
   /** Omits only an unresolved package root import so remaining authored CSS can still bundle. */
   it('removes an unresolved Tailwind root import when no project package is installed', async () => {
     const projectRoot = await createProject('tailwind-import-missing-');
@@ -226,6 +322,7 @@ function buildStylesheet(
   projectRoot: string,
   stylesheetPath: string,
   snapshots: readonly PreviewSourceSnapshot[] = [],
+  workspaceRoot = projectRoot,
 ): Promise<BuildResult> {
   return build({
     absWorkingDir: projectRoot,
@@ -237,7 +334,7 @@ function buildStylesheet(
       createPreviewTailwindPlugin({
         projectRoot,
         readSourceSnapshots: () => snapshots,
-        workspaceRoot: projectRoot,
+        workspaceRoot,
       }),
     ],
     write: false,
@@ -310,9 +407,10 @@ async function installFakeTailwindV4(projectRoot: string): Promise<void> {
         '  return {',
         '  transform: async (source, options) => {',
         '    const inline = /@source inline\\("([^"]*)"\\)/.exec(source)?.[1] || "";',
+        '    const workspaceImport = source.includes("packages/shadcn/src/tailwind.css");',
         '    const classes = inline.split(/\\s+/).filter((value) => value.includes("dirty-")).map((value) => `.${value} { display: block; }`).join("\\n");',
         '    return {',
-        '      css: `/* base:${adapterOptions.base}; inline:${inline} */\\n.fake-v4-generated,.generated,.flex { display: flex; }\\n${classes}`,',
+        '      css: `/* base:${adapterOptions.base}; inline:${inline} */\\n.fake-v4-generated,.generated,.flex,.workspace-import-${workspaceImport} { display: flex; }\\n${classes}`,',
         '      messages: [{ type: "dependency", file: options.from }],',
         '    };',
         '  },',

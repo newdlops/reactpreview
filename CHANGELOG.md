@@ -2,6 +2,23 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1118 - 2026-07-21
+
+- 성공한 browser bundle에 실제 도달한 public `node_modules` package를 nearest lock·dependency map·플랫폼별 content-hashed immutable layer로 전역 저장하고, 동일 profile의 다른 workspace가 설치 없이 local-first fallback으로 재사용하도록 추가
+- 후속 target의 새 package를 같은 profile의 별도 layer로 누적하고 React/ReactDOM/scheduler 19는 compatible·project-local runtime 부재 시만 선택하며, managed React subpath/peer를 active issuer로 재해석해 singleton을 유지
+- symlink·private/virtual package·민감 설정·실행 shim·oversized tree를 제외하고 package SHA-256 재검증, cross-window heartbeat lock, atomic commit, bounded LRU와 회귀 테스트를 추가
+
+## 0.1.1117 - 2026-07-21
+
+- 실제 esbuild 입력 그래프에 도달한 `node_modules`의 non-strict CommonJS만 검사하고 선언 없는 assignment-only 식별자를 원래 sloppy browser semantics인 `globalThis` 쓰기로 복원해 `md5-jkmyers` 같은 레거시 UMD self-test가 React mount를 중단하지 않도록 수정
+- minified dependency 우선·파일/바이트/식별자 상한과 hot-build 계획 캐시를 적용하고, authored source·strict module·선언된 변수·read-only free global은 자동 보정에서 제외
+
+## 0.1.1116 - 2026-07-21
+
+- 성공한 esbuild 메타그래프에서 Yarn PnP 가상 경로를 실제 소스로 복원하고 `createPortal` 구현이 증명한 host ID를 엔트리 import 전에 생성해 Next `_app`의 spinner·popup·toast 전역 UI가 중단되지 않도록 수정
+- 포털 host 계획을 target별 hot-build 캐시에 보존하고 실제 portal 구현과 같은 모듈의 ID만 허용해 warm rebuild를 유지하면서 일반 form element ID 오탐을 차단
+- transitive dependency가 자유 전역 `Buffer`를 읽으면 설치된 `buffer` 패키지의 named export를 browser inject로 연결하고, 사용하지 않는 프로젝트에서는 polyfill 코드가 tree-shake되도록 보강
+
 ## 0.1.1115 - 2026-07-21
 
 - Next.js Pages Router의 암묵적인 `pages/_app -> Component` 경계를 복원하고, 선택 route를 모듈 로드 전에 주입해 전역 provider·헤더·사이드바·스타일을 실제 페이지 문맥으로 렌더링
@@ -976,18 +993,4 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 - `Object.keys/values/entries`를 사용하는 같은 파일의 bounded helper까지 객체 요구를 전파하고 leaf 값, computed/optional/unsafe 경로와 프로젝트 업무 상태는 추측하지 않는 fail-closed 경계 유지
 - 모노레포의 nested package에서 workspace root에 hoist된 package와 package-export `.mjs`/`.cjs` entry를 기본 resolver로 해석하는 독립 회귀 테스트 추가
 
-## 0.1.1012 - 2026-07-16
-
-- 파일 고정 다중 탭, 명시적 refresh와 서버 없는 ESM/CSS hot reload, revision·artifact lease를 추가
-- esbuild 기본 resolver와 package별 source cache, dynamic import·glob·require context·public asset을 포함하는 bounded graph 분석을 도입
-- export gallery, setup/Storybook fallback과 Apollo·Redux·Router·Theme·Context의 네트워크 없는 정적 runtime 경계를 추가
-- React component/JS stack과 자동 경계 상태를 보존하는 bounded 오류 보고서 및 격리된 진단 UI를 추가
-- 프로젝트 업무 의미를 내장하지 않는 범용 setup/harness 복구 원칙과 정적 리소스 안전 한도를 확립
-
-## 0.1.0 - 2026-07-15
-
-- 서버 없이 현재 React 파일과 도달 가능한 import graph를 번들링하는 VS Code 확장 초기 구조 추가
-- 저장 전 문서/dependency overlay, JSX/CSS Modules/asset/SVG/query import와 alias 처리 추가
-- Workspace Trust, 제한된 local resource root, 네트워크 차단 CSP와 대용량 asset 사전 차단 적용
-- stale revision 방지, dependency hot rebuild, artifact queue/lease/cleanup 및 플랫폼별 VSIX 추가
-- `newdlops` 배포 메타데이터와 strict TypeScript, 계층 lint, formatter, 1,000줄 및 통합 테스트 구성
+초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

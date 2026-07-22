@@ -28,9 +28,13 @@ GitHub repository 설정에서 이 기능을 활성화해야 합니다.
 
 - 신뢰되지 않은 워크스페이스에서는 확장을 실행하지 않습니다.
 - 사용자 워크스페이스에 생성물을 쓰거나 package script와 개발 서버를 실행하지 않습니다.
+- 전역 dependency store는 성공한 browser bundle에 도달하고 bounded lock evidence가 있는 public package만
+  content-hashed immutable layer로 저장합니다. 재사용 전 package bytes를 검증하고 registry 요청이나 install
+  script를 실행하지 않으며, local project resolution을 항상 우선합니다.
 - 웹뷰의 로컬 리소스 범위는 현재 session artifact directory로 제한합니다.
 - CSP는 네트워크, worker, frame, form, inline script와 `unsafe-eval`을 차단합니다.
 - 확장은 텔레메트리나 외부 데이터 전송 기능을 포함하지 않습니다.
-- 종료 시 workspace source를 포함할 수 있는 session artifact 삭제를 기다립니다.
+- 종료 시 workspace source를 포함할 수 있는 session artifact 삭제를 기다립니다. Source를 포함하지 않는
+  immutable dependency environment만 별도 quota/LRU 저장소에 유지합니다.
 
 이 불변식을 약화하는 변경은 보안 검토와 해당 경계의 회귀 테스트가 필요합니다.

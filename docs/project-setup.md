@@ -26,6 +26,22 @@ package manifest가 없을 때만 workspace root를 사용하므로 모노레포
 한 프리뷰 환경으로 섞지 않습니다. 일반 package import는 대상 package에서 시작하는 esbuild resolver가
 처리하므로 workspace root나 그 상위에 hoist된 `node_modules`도 Node의 통상 탐색 규칙으로 찾습니다.
 
+프로젝트 resolver가 성공한 package가 항상 우선합니다. 성공한 preview graph에서 실제 도달한 일반
+`node_modules` package는 nearest package-manager lockfile, exact dependency map과 플랫폼으로 구분한 VS Code
+전역 저장소에 content-hashed immutable layer로 백그라운드 복사됩니다. 모노레포에서는 package부터 workspace
+root까지 가장 가까운 lockfile을 사용합니다. 후속 target이 다른 package에 도달하면 같은 profile에 layer를
+추가하므로 최초 graph의 부분집합으로 고정되지 않습니다. 같은 dependency·lock profile을 가진 다른
+clone/workspace는 자기 프로젝트에 설치하지 않아도 검증된 layer를 fallback으로 사용합니다. React 19 범위 또는
+manifest 없는 작은 파일은 확장에 포함된 React/ReactDOM/scheduler runtime을 사용할 수 있습니다. 명시한 React
+range가 다르거나 project-local React가 하나라도 해석되면 내장 runtime을 섞지 않습니다. cached package의 React
+subpath와 선언된 peer는 active project에서 다시 해석하므로 local React가 있을 때 두 인스턴스가 섞이지 않습니다.
+
+이 자동 경로는 네트워크나 package manager를 실행하지 않습니다. 따라서 readable bounded lockfile이 없거나 어느
+성공한 프로젝트와 확장에도 byte가 없던 package, Pnpm/PnP virtual package, private package,
+`workspace:`/`file:` package와 native/install-script 산출물은 여전히 프로젝트 설치가 필요합니다. 저장소는
+프로젝트 source가 아니라 bundle에 도달한 public package tree만 보관하고 package별 내용 digest를 재검증하며,
+프로젝트 `package.json`, lockfile과 `node_modules`를 수정하지 않습니다.
+
 최초 요청은 이 package 안의 authored source 경로를 bounded하게 열거하고, 대상 component를 실제로
 import해 JSX에서 사용한 곳이 있으면 boolean·number·string·null literal attribute만 자동 props로
 수집합니다. 선택 파일의 직접 export function은 same-file 필수 type과 실제 비옵셔널 receiver 경로도

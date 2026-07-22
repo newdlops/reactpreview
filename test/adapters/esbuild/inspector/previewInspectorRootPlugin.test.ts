@@ -250,6 +250,47 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"params":{"accountId":"accountId"}');
   });
 
+  /** Keeps target instrumentation active when the selected file is an implicit layout wrapper. */
+  it('imports a selected App Router layout through the target facade', () => {
+    const layoutPath = '/workspace/application/account/layout.tsx';
+    const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });
+    const candidate = plan.pageCandidates[0];
+    if (candidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [
+          {
+            ...candidate,
+            nextAppLayoutChain: [
+              {
+                exportName: 'default',
+                params: {},
+                sourcePath: '/workspace/application/layout.tsx',
+              },
+              { exportName: 'default', params: {}, sourcePath: layoutPath },
+            ],
+            routeLocation: {
+              componentName: 'NextAppPage',
+              evidenceKind: 'next-app-filesystem',
+              pathname: '/account/profile',
+              params: {},
+              pattern: '/account/profile',
+              searchParams: {},
+              sourcePath: PAGE_PATH,
+            },
+          },
+        ],
+        target: { exportName: 'default', sourcePath: layoutPath },
+      },
+    });
+
+    expect(source).toContain(
+      'Promise.all([import("/workspace/application/Page.tsx"),import("/workspace/application/layout.tsx"),import("react-preview:inspector-target-facade")])',
+    );
+    expect(source).not.toContain(`import(${JSON.stringify(layoutPath)})`);
+  });
+
   /** Injects a Pages Router page through `_app.Component` so global shell UI remains authored. */
   it('wraps a Next Pages page in its implicit app component', () => {
     const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });

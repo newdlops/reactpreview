@@ -101,6 +101,133 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).toContain('ReactPreviewDeferredCorridorRoute');
   });
 
+  /** Retains a `next/dynamic` component visibly rendered by the selected page, including named loaders. */
+  it('keeps page-local rendered next/dynamic modules while pruning registry-only siblings', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const pagePath = path.join(workspaceRoot, 'src', 'Page.tsx');
+    const welcomePath = path.join(workspaceRoot, 'src', 'Welcome.ts');
+    const registryPath = path.join(workspaceRoot, 'src', 'RegistryOnly.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(entryPath, `export { default } from './Page';`),
+      writeFile(
+        pagePath,
+        [
+          `import dynamic from 'next/dynamic';`,
+          `const Welcome = dynamic(() => import('./Welcome').then((module) => module.Welcome));`,
+          `export const RegistryOnly = dynamic(() => import('./RegistryOnly'));`,
+          `export default function Page() { return <Welcome />; }`,
+        ].join('\n'),
+      ),
+      writeFile(welcomePath, `export const Welcome = () => 'RENDERED_DYNAMIC_MARKER';`),
+      writeFile(registryPath, `export default 'REGISTRY_ONLY_MARKER';`),
+    ]);
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      external: ['next/dynamic', 'react/jsx-runtime'],
+      format: 'esm',
+      jsx: 'automatic',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan: createCorridorPlan(entryPath, pagePath),
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('RENDERED_DYNAMIC_MARKER');
+    expect(source).not.toContain('REGISTRY_ONLY_MARKER');
+    expect(source).toContain('ReactPreviewDeferredCorridorRoute');
+  });
+
+  /**
+   * Preserves a small API loader, then narrows its generated registry to the exact App Router
+   * parameter tuple. Every omitted branch shares one module so split output remains bounded.
+   */
+  it('narrows broad lazy registries with selected Next route parameters', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const entryPath = path.join(sourceRoot, 'entry.ts');
+    const pagePath = path.join(sourceRoot, 'Page.ts');
+    const helperPath = path.join(sourceRoot, 'helper.ts');
+    const indexPath = path.join(sourceRoot, 'Index.ts');
+    const registryPath = path.join(sourceRoot, 'Registry.ts');
+    const selectedPath = path.join(sourceRoot, 'base', 'preview', 'index.ts');
+    await Promise.all([
+      mkdir(sourceRoot, { recursive: true }),
+      mkdir(path.dirname(selectedPath), { recursive: true }),
+    ]);
+    const unrelatedBranches = Array.from({ length: 30 }, (_, index) => ({
+      path: path.join(sourceRoot, `route-${index.toString()}.ts`),
+      specifier: `./route-${index.toString()}`,
+    }));
+    await Promise.all([
+      writeFile(entryPath, `export { default } from './Page';`),
+      writeFile(
+        pagePath,
+        [
+          `import { loadIndex, loadRegistry } from './helper';`,
+          `export const pending = Promise.all([loadIndex(), loadRegistry()]);`,
+          `export default 'PAGE_MARKER';`,
+        ].join('\n'),
+      ),
+      writeFile(
+        helperPath,
+        [
+          `export const loadIndex = () => import('./Index');`,
+          `export const loadRegistry = () => import('./Registry');`,
+        ].join('\n'),
+      ),
+      writeFile(indexPath, `export const Index = 'SMALL_HELPER_IMPORT_MARKER';`),
+      writeFile(
+        registryPath,
+        `export const routes = [${[
+          ...unrelatedBranches.map(({ specifier }) => `() => import('${specifier}')`),
+          `() => import('./base/preview/index')`,
+        ].join(',')}];`,
+      ),
+      writeFile(selectedPath, `export default 'ROUTE_SELECTED_MARKER';`),
+      ...unrelatedBranches.map(({ path: branchPath }, index) =>
+        writeFile(branchPath, `export default 'UNRELATED_ROUTE_${index.toString()}';`),
+      ),
+    ]);
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan: createCorridorPlan(entryPath, pagePath, { base: 'base', name: 'preview' }),
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('SMALL_HELPER_IMPORT_MARKER');
+    expect(source).toContain('ROUTE_SELECTED_MARKER');
+    expect(source).not.toContain('UNRELATED_ROUTE_0');
+    expect(source.match(/function ReactPreviewDeferredCorridorRoute/g)?.length).toBe(1);
+    expect(result.outputFiles.length).toBeLessThanOrEqual(6);
+  });
+
   /** Leaves nested compiler resolver probes untouched so theme/setup bridge resolution stays local. */
   it('does not intercept guarded internal dynamic resolution', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
@@ -152,7 +279,11 @@ describe('createPreviewInspectorCorridorPlugin', () => {
 });
 
 /** Creates the minimum immutable plan whose entry and selected module form the allowed corridor. */
-function createCorridorPlan(entryPath: string, selectedPath: string): PreviewInspectorAncestorPlan {
+function createCorridorPlan(
+  entryPath: string,
+  selectedPath: string,
+  routeParams?: Readonly<Record<string, string>>,
+): PreviewInspectorAncestorPlan {
   const target = { exportName: 'default', sourcePath: selectedPath };
   const renderPath = {
     entryPoint: {
@@ -197,6 +328,21 @@ function createCorridorPlan(entryPath: string, selectedPath: string): PreviewIns
     root: target,
     rootAutomaticProps: {},
     rootOwnsRouter: false,
+    ...(routeParams === undefined
+      ? {}
+      : {
+          routeLocation: {
+            componentName: 'NextAppPage' as const,
+            evidenceKind: 'next-app-filesystem' as const,
+            params: routeParams,
+            pathname: `/${Object.values(routeParams).join('/')}`,
+            pattern: `/${Object.keys(routeParams)
+              .map((name) => `[${name}]`)
+              .join('/')}`,
+            searchParams: {},
+            sourcePath: selectedPath,
+          },
+        }),
     stopReason: 'root-reached' as const,
     targetAutomaticProps: {},
   };

@@ -34,6 +34,12 @@ export interface CollectPreviewInspectorNextPagesAppTargetOptions {
   readonly sourcePaths: readonly string[];
 }
 
+/** Inputs for collecting several real Pages Router leaves behind one framework `_app`. */
+export interface CollectPreviewInspectorNextPagesAppTargetsOptions extends CollectPreviewInspectorNextPagesAppTargetOptions {
+  /** Strict upper bound that prevents a large pages directory from becoming an eager gallery. */
+  readonly maximumCount: number;
+}
+
 /** Authored page selected to supply the framework-owned `_app.Component` prop. */
 export interface PreviewInspectorNextPagesAuthoredAppTarget {
   readonly kind: 'authored-page';
@@ -64,15 +70,29 @@ export type PreviewInspectorNextPagesAppTarget =
 export async function collectPreviewInspectorNextPagesAppTarget(
   options: CollectPreviewInspectorNextPagesAppTargetOptions,
 ): Promise<PreviewInspectorNextPagesAppTarget | undefined> {
+  return (await collectPreviewInspectorNextPagesAppTargets({ ...options, maximumCount: 1 }))[0];
+}
+
+/**
+ * Collects a bounded set of authored Pages Router leaves for one selected `_app`.
+ *
+ * Every candidate is still lazy in the browser. The extension reads only enough source files to
+ * prove `maximumCount` runtime default exports, and retains the synthetic page solely when no real
+ * visual leaf exists. This makes `_app` a page selector instead of incorrectly treating it as `/`.
+ */
+export async function collectPreviewInspectorNextPagesAppTargets(
+  options: CollectPreviewInspectorNextPagesAppTargetsOptions,
+): Promise<readonly PreviewInspectorNextPagesAppTarget[]> {
   const appPath = path.normalize(options.appPath);
   const pagesRoot = path.dirname(appPath);
   if (
+    options.maximumCount <= 0 ||
     options.exportName !== 'default' ||
     path.basename(pagesRoot).toLowerCase() !== 'pages' ||
     !NEXT_PAGES_APP_PATTERN.test(path.basename(appPath)) ||
     !isPreferredNextPagesApp(appPath, options.sourcePaths)
   ) {
-    return undefined;
+    return Object.freeze([]);
   }
 
   const pagePaths = options.sourcePaths
@@ -80,6 +100,7 @@ export async function collectPreviewInspectorNextPagesAppTarget(
     .filter((sourcePath) => isSafeNextPagesLeaf(sourcePath, appPath, pagesRoot))
     .sort((left, right) => compareNextPagesLeaves(left, right, pagesRoot));
 
+  const targets: PreviewInspectorNextPagesAppTarget[] = [];
   for (const pagePath of pagePaths) {
     const sourceText = await options.readSource(pagePath);
     if (sourceText === undefined || !hasRuntimeDefaultExport(pagePath, sourceText)) continue;
@@ -89,27 +110,34 @@ export async function collectPreviewInspectorNextPagesAppTarget(
       sourcePaths: options.sourcePaths,
     });
     if (shell === undefined || path.normalize(shell.app.sourcePath) !== appPath) continue;
-    return Object.freeze({
-      kind: 'authored-page',
-      page: Object.freeze({ exportName: 'default', sourcePath: pagePath }),
-      shell,
-    });
+    targets.push(
+      Object.freeze({
+        kind: 'authored-page',
+        page: Object.freeze({ exportName: 'default', sourcePath: pagePath }),
+        shell,
+      }),
+    );
+    if (targets.length >= options.maximumCount) break;
   }
 
-  return Object.freeze({
-    kind: 'synthetic-page',
-    shell: Object.freeze({
-      app: Object.freeze({ exportName: 'default', sourcePath: appPath }),
-      routeLocation: Object.freeze({
-        componentName: 'NextPagesPage',
-        evidenceKind: 'next-pages-synthetic',
-        pathname: '/',
-        pattern: '/',
-        sourcePath: appPath,
+  if (targets.length > 0) return Object.freeze(targets);
+
+  return Object.freeze([
+    Object.freeze({
+      kind: 'synthetic-page',
+      shell: Object.freeze({
+        app: Object.freeze({ exportName: 'default', sourcePath: appPath }),
+        routeLocation: Object.freeze({
+          componentName: 'NextPagesPage',
+          evidenceKind: 'next-pages-synthetic',
+          pathname: '/',
+          pattern: '/',
+          sourcePath: appPath,
+        }),
+        syntheticPage: true,
       }),
-      syntheticPage: true,
     }),
-  });
+  ]);
 }
 
 /** Requires the selected `_app` to be the framework-preferred sibling extension. */
@@ -166,7 +194,14 @@ function compareNextPagesLeaves(left: string, right: string, pagesRoot: string):
     const stem = path.basename(sourcePath).replace(NEXT_PAGES_SOURCE_PATTERN, '');
     const indexRank = stem.toLowerCase() === 'index' ? (segments.length === 1 ? 0 : 100) : 1_000;
     const dynamicPenalty = segments.some((segment) => segment.includes('[')) ? 100 : 0;
-    return indexRank + dynamicPenalty + segments.length;
+    // Development-only pages are valid Next routes, but are poor representatives of the authored
+    // production shell when `_app` itself is selected. Keep them selectable only after real pages.
+    const developmentPenalty = segments.some((segment) =>
+      /^(?:dev|demo|examples?|playground|sandbox)$/iu.test(segment),
+    )
+      ? 100_000
+      : 0;
+    return indexRank + dynamicPenalty + developmentPenalty + segments.length;
   };
   return score(left) - score(right) || left.localeCompare(right);
 }

@@ -90,7 +90,10 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
       expect(javascript).toContain('Auto payloads');
       expect(javascript).toContain('logical-and');
       expect(javascript).toContain('<Target>');
-      expect(entryJavascript).not.toContain('UNUSED_TARGET_MARKER');
+      // Inspector output is intentionally coalesced before esbuild allocates thousands of files.
+      // Dynamic-import initializers remain lazy even though their code shares the entry artifact.
+      expect(bundle.chunks).toHaveLength(0);
+      expect(entryJavascript).toContain('UNUSED_TARGET_MARKER');
       expect(javascript).toContain('UNUSED_TARGET_MARKER');
       expect(javascript).toContain('selected-direct-target:UnusedTargetSibling');
       expect(decodePreviewBundleStyles(bundle)).toContain('min-height: 100vh');
@@ -424,8 +427,8 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
     }
   });
 
-  /** Bundles alternative application callers as lazy page roots instead of one eager merged page. */
-  it('keeps mount-distinct caller pages selectable behind dynamic chunks', async () => {
+  /** Bundles alternative callers as independently activated roots inside one bounded artifact. */
+  it('keeps mount-distinct caller pages selectable in coalesced inspector output', async () => {
     const projectRoot = await mkdtemp(
       path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-candidates-'),
     );
@@ -477,8 +480,9 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
         ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
       ]).toString('utf8');
 
-      expect(entryJavascript).not.toContain('PUBLIC_PAGE_CONTEXT');
-      expect(entryJavascript).not.toContain('STAFF_PAGE_CONTEXT');
+      expect(bundle.chunks).toHaveLength(0);
+      expect(entryJavascript).toContain('PUBLIC_PAGE_CONTEXT');
+      expect(entryJavascript).toContain('STAFF_PAGE_CONTEXT');
       expect(allJavascript).toContain('PUBLIC_PAGE_CONTEXT');
       expect(allJavascript).toContain('STAFF_PAGE_CONTEXT');
       expect(allJavascript).toContain('Authored page caller path');

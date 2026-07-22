@@ -3,12 +3,13 @@
  *
  * App Router layouts do not import their child page, so the ordinary JavaScript import graph can
  * never prove this relationship. This module intentionally handles only Next's strict filesystem
- * convention: a nested `page` module below `app` with an existing root `app/layout` module. Both
- * conventions keeps generic React repositories out of this framework-specific path.
+ * convention: a nested `page` module below `app` with an existing root layout. A root layout may
+ * live directly below `app`, or below an initial route-group chain when the application authors
+ * multiple roots. These conventions keep generic React repositories out of this path.
  */
 import path from 'node:path';
 
-const NEXT_APP_MODULE_PATTERN = /^(?:layout|page)\.[cm]?[jt]sx?$/iu;
+const NEXT_APP_MODULE_PATTERN = /^(?:layout|page|template)\.[cm]?[jt]sx?$/iu;
 const NEXT_APP_PAGE_PATTERN = /^page\.[cm]?[jt]sx?$/iu;
 
 /** One deterministic App Router parameter value safe to serialize into the browser bridge. */
@@ -19,13 +20,13 @@ export type PreviewInspectorNextAppRouteParams = Readonly<
   Record<string, PreviewInspectorNextAppParamValue>
 >;
 
-/** One implicit Next layout imported by the generated inspector candidate wrapper. */
+/** One implicit Next layout-compatible wrapper imported by the generated candidate shell. */
 export interface PreviewInspectorNextAppLayoutReference {
   /** Next App Router requires the component to be the module's default export. */
   readonly exportName: 'default';
   /** Dynamic route parameters accumulated from the app root through this layout directory. */
   readonly params: PreviewInspectorNextAppRouteParams;
-  /** Absolute authored layout path. */
+  /** Absolute authored `layout` or `template` path. */
   readonly sourcePath: string;
 }
 
@@ -49,7 +50,7 @@ export interface PreviewInspectorNextAppRouteLocation {
 
 /** Complete implicit shell surrounding one independently mountable Next page. */
 export interface PreviewInspectorNextAppLayoutChain {
-  /** Layouts in root-to-leaf order, matching Next's authored nesting order. */
+  /** Layouts and templates in root-to-leaf wrapper order, matching Next's authored nesting. */
   readonly layouts: readonly PreviewInspectorNextAppLayoutReference[];
   /** File-system route evidence for Next navigation and detached router shims. */
   readonly routeLocation: PreviewInspectorNextAppRouteLocation;
@@ -57,6 +58,8 @@ export interface PreviewInspectorNextAppLayoutChain {
 
 /** Inputs for convention-only discovery over the planner's existing bounded inventory. */
 export interface CollectPreviewInspectorNextAppLayoutChainOptions {
+  /** Optional authored static-parameter values that replace visibly synthetic segment keys. */
+  readonly dynamicParameterValues?: PreviewInspectorNextAppRouteParams;
   /** Candidate export. Next recognizes only the page module's default export as the route leaf. */
   readonly exportName: string;
   /** Candidate source. Only an exact App Router `page` module is accepted. */
@@ -66,7 +69,7 @@ export interface CollectPreviewInspectorNextAppLayoutChainOptions {
 }
 
 /**
- * Collects every segment layout from `app/layout` through the page's own directory.
+ * Collects every layout/template from the branch's root layout through the page directory.
  *
  * @param options Candidate page and already-bounded source inventory.
  * @returns An immutable chain, or `undefined` outside a proven Next App Router tree.
@@ -80,23 +83,22 @@ export function collectPreviewInspectorNextAppLayoutChain(
   }
 
   const pageDirectory = path.dirname(pagePath);
-  const appRoot = findNextAppRoot(pageDirectory);
+  const sourceIndex = indexNextAppModules(options.sourcePaths);
+  const appRoot = findNextAppRoot(pageDirectory, sourceIndex);
   if (appRoot === undefined) return undefined;
 
   const routeSegments = path.relative(appRoot, pageDirectory).split(path.sep).filter(Boolean);
+  // A private folder is deliberately removed from Next's route tree. Treating a page nested below
+  // it as public would invent a route and is especially confusing for co-located `_components`.
+  if (routeSegments.some((segment) => segment.startsWith('_'))) return undefined;
   // A page below `@slot` or an intercepted segment is not the ordinary children branch. The
   // bounded path inventory cannot prove the simultaneously active sibling slots, so mounting it
   // as `children` would fabricate a page Next never produces. Such candidates deliberately fall
   // back to the direct inspector until a future analyzer can prove and compose every named slot.
   if (routeSegments.some(isNextParallelOrInterceptedSegment)) return undefined;
 
-  const sourceIndex = indexNextAppModules(options.sourcePaths);
-  const rootLayout = sourceIndex.get(path.join(appRoot, 'layout'));
-  // Every real App Router tree requires a root layout. This guard prevents a coincidental
-  // `app/**/page.tsx` file in a framework-neutral project from changing preview semantics.
-  if (rootLayout === undefined) return undefined;
-
   const layouts: PreviewInspectorNextAppLayoutReference[] = [];
+  let layoutCount = 0;
   const accumulatedParams: Record<string, PreviewInspectorNextAppParamValue> = {};
   for (const directory of collectAncestorDirectories(appRoot, pageDirectory)) {
     const directorySegment = path
@@ -105,29 +107,44 @@ export function collectPreviewInspectorNextAppLayoutChain(
       .filter(Boolean)
       .at(-1);
     const segmentEvidence =
-      directorySegment === undefined ? undefined : normalizeNextRouteSegment(directorySegment);
+      directorySegment === undefined
+        ? undefined
+        : normalizeNextRouteSegment(directorySegment, options.dynamicParameterValues);
     if (segmentEvidence?.parameter !== undefined) {
       accumulatedParams[segmentEvidence.parameter.name] = segmentEvidence.parameter.value;
     }
-    const layoutPath = sourceIndex.get(path.join(directory, 'layout'));
-    if (layoutPath === undefined) continue;
-    layouts.push(
-      Object.freeze({
-        exportName: 'default',
-        params: freezeNextRouteParams(accumulatedParams),
-        sourcePath: layoutPath,
-      }),
-    );
+    // Next places a segment template inside its layout and outside the next child segment. Keeping
+    // this deterministic order lets the generic reverse composer reproduce that nesting exactly.
+    for (const moduleKind of ['layout', 'template'] as const) {
+      const wrapperPath = sourceIndex.get(path.join(directory, moduleKind));
+      if (wrapperPath === undefined) continue;
+      // In a multiple-root tree the first route-group layout is the actual document root. A stray
+      // higher template cannot wrap it because no parent layout exists to own that template slot.
+      if (moduleKind === 'template' && layoutCount === 0) continue;
+      if (moduleKind === 'layout') layoutCount += 1;
+      layouts.push(
+        Object.freeze({
+          exportName: 'default',
+          params: freezeNextRouteParams(accumulatedParams),
+          sourcePath: wrapperPath,
+        }),
+      );
+    }
   }
+  // Every real App Router branch must cross one root layout. Templates alone are not sufficient
+  // evidence, while a layout under an initial route group is a legal multiple-root application.
+  if (layoutCount === 0) return undefined;
 
   const patternSegments: string[] = [];
   const pathnameSegments: string[] = [];
   const pageParams: Record<string, PreviewInspectorNextAppParamValue> = {};
   for (const segment of routeSegments) {
-    const routeSegment = normalizeNextRouteSegment(segment);
+    const routeSegment = normalizeNextRouteSegment(segment, options.dynamicParameterValues);
     if (routeSegment === undefined) continue;
     patternSegments.push(routeSegment.pattern);
-    if (routeSegment.pathname !== undefined) pathnameSegments.push(routeSegment.pathname);
+    if (routeSegment.pathnameSegments !== undefined) {
+      pathnameSegments.push(...routeSegment.pathnameSegments);
+    }
     if (routeSegment.parameter !== undefined) {
       pageParams[routeSegment.parameter.name] = routeSegment.parameter.value;
     }
@@ -149,17 +166,49 @@ export function collectPreviewInspectorNextAppLayoutChain(
   });
 }
 
-/** Finds the nearest path segment named `app`, allowing conventional `src/app` and monorepos. */
-function findNextAppRoot(pageDirectory: string): string | undefined {
+/**
+ * Finds the outermost structurally proven App Router root above one page.
+ *
+ * Choosing the nearest directory named `app` breaks valid URLs such as `/download/app`: that
+ * ordinary route segment is not a second router root. Conversely, blindly choosing the outermost
+ * `app` breaks repositories whose own directory happens to have that name. A candidate therefore
+ * needs either a direct layout or a root layout reached solely through leading route groups.
+ */
+function findNextAppRoot(
+  pageDirectory: string,
+  sourceIndex: ReadonlyMap<string, string>,
+): string | undefined {
+  const candidates: string[] = [];
   let current = pageDirectory;
   while (path.dirname(current) !== current) {
-    if (path.basename(current).toLowerCase() === 'app') return current;
+    if (path.basename(current).toLowerCase() === 'app') candidates.push(current);
     current = path.dirname(current);
   }
-  return path.basename(current).toLowerCase() === 'app' ? current : undefined;
+  if (path.basename(current).toLowerCase() === 'app') candidates.push(current);
+  return candidates
+    .reverse()
+    .find((candidate) => hasProvenNextAppRootLayout(candidate, pageDirectory, sourceIndex));
 }
 
-/** Indexes only Next page/layout source names and deterministically prefers TSX over alternatives. */
+/** Accepts a direct root layout or a multiple-root layout below only leading route groups. */
+function hasProvenNextAppRootLayout(
+  appRoot: string,
+  pageDirectory: string,
+  sourceIndex: ReadonlyMap<string, string>,
+): boolean {
+  if (sourceIndex.has(path.join(appRoot, 'layout'))) return true;
+  let current = appRoot;
+  const relative = path.relative(appRoot, pageDirectory);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return false;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    if (!/^\([^)]*\)$/u.test(segment)) return false;
+    current = path.join(current, segment);
+    if (sourceIndex.has(path.join(current, 'layout'))) return true;
+  }
+  return false;
+}
+
+/** Indexes only Next page/shell source names and deterministically prefers TSX alternatives. */
 function indexNextAppModules(sourcePaths: readonly string[]): ReadonlyMap<string, string> {
   const index = new Map<string, string>();
   const sources = [...new Set(sourcePaths.map((sourcePath) => path.normalize(sourcePath)))].sort(
@@ -202,13 +251,16 @@ function collectAncestorDirectories(appRoot: string, pageDirectory: string): rea
 }
 
 /** Converts one Next route segment into authored and browser-ready representations. */
-function normalizeNextRouteSegment(segment: string):
+function normalizeNextRouteSegment(
+  segment: string,
+  dynamicParameterValues?: PreviewInspectorNextAppRouteParams,
+):
   | {
       readonly parameter?: {
         readonly name: string;
         readonly value: PreviewInspectorNextAppParamValue;
       };
-      readonly pathname?: string;
+      readonly pathnameSegments?: readonly string[];
       readonly pattern: string;
     }
   | undefined {
@@ -219,44 +271,92 @@ function normalizeNextRouteSegment(segment: string):
   const optionalCatchAll = /^\[\[\.\.\.([^\]]+)\]\]$/u.exec(interceptionStripped);
   if (optionalCatchAll !== null) {
     const name = normalizeNextParameterName(optionalCatchAll[1]);
-    // Next may omit this key at runtime. The preview uses an empty array because it preserves the
+    const values = previewCatchAllRouteValues(name, dynamicParameterValues, true);
+    // Next may omit this key at runtime. Without authored evidence the empty array preserves the
     // neutral URL while allowing common collection reads such as `.map()` and `.join()` to render.
     return {
-      ...(name === undefined ? {} : { parameter: { name, value: Object.freeze([] as string[]) } }),
+      ...(name === undefined ? {} : { parameter: { name, value: values } }),
+      ...(values.length === 0 ? {} : { pathnameSegments: values }),
       pattern: interceptionStripped,
     };
   }
   const catchAll = /^\[\.\.\.([^\]]+)\]$/u.exec(interceptionStripped);
   if (catchAll !== null) {
     const name = normalizeNextParameterName(catchAll[1]);
-    const value = previewRouteValue(name);
-    // A catch-all always consumes at least one segment, so one visibly synthetic item satisfies
-    // both the filesystem pathname and the page/layout array contract without inventing content.
+    const values = previewCatchAllRouteValues(name, dynamicParameterValues, false);
+    // Preserve every safe authored item because each one occupies a real URL segment. The fallback
+    // still uses one visibly synthetic item so the required catch-all contract remains valid.
     return {
-      ...(name === undefined ? {} : { parameter: { name, value: Object.freeze([value]) } }),
-      pathname: value,
+      ...(name === undefined ? {} : { parameter: { name, value: values } }),
+      pathnameSegments: values,
       pattern: interceptionStripped,
     };
   }
   const dynamic = /^\[([^\]]+)\]$/u.exec(interceptionStripped);
   if (dynamic !== null) {
     const name = normalizeNextParameterName(dynamic[1]);
-    const value = previewRouteValue(name);
+    const value = previewRouteValue(name, dynamicParameterValues);
     return {
       ...(name === undefined ? {} : { parameter: { name, value } }),
-      pathname: value,
+      pathnameSegments: Object.freeze([value]),
       pattern: interceptionStripped,
     };
   }
-  return interceptionStripped.length === 0
+  const publicSegment = interceptionStripped.replace(/^%5f/iu, '_');
+  return publicSegment.length === 0
     ? undefined
-    : { pathname: interceptionStripped, pattern: interceptionStripped };
+    : { pathnameSegments: Object.freeze([publicSegment]), pattern: publicSegment };
 }
 
-/** Uses the parameter key itself to keep generated URLs short and visibly synthetic. */
-function previewRouteValue(parameterName: string | undefined): string {
+/** Preserves a safe authored catch-all array, or supplies the smallest valid neutral fallback. */
+function previewCatchAllRouteValues(
+  parameterName: string | undefined,
+  dynamicParameterValues: PreviewInspectorNextAppRouteParams | undefined,
+  optional: boolean,
+): readonly string[] {
   const normalized = normalizeNextParameterName(parameterName);
+  const authored = normalized === undefined ? undefined : dynamicParameterValues?.[normalized];
+  const authoredValues = isNextAppParameterArray(authored)
+    ? authored.filter(isSafeNextRouteValue).slice(0, 16)
+    : typeof authored === 'string' && isSafeNextRouteValue(authored)
+      ? [authored]
+      : [];
+  if (authoredValues.length > 0) return Object.freeze(authoredValues);
+  return optional
+    ? Object.freeze([])
+    : Object.freeze([normalized === undefined || normalized.length === 0 ? 'preview' : normalized]);
+}
+
+/** Prefers safe authored evidence, then uses the key itself as a visibly synthetic fallback. */
+function previewRouteValue(
+  parameterName: string | undefined,
+  dynamicParameterValues?: PreviewInspectorNextAppRouteParams,
+): string {
+  const normalized = normalizeNextParameterName(parameterName);
+  const authored = normalized === undefined ? undefined : dynamicParameterValues?.[normalized];
+  const authoredScalar = isNextAppParameterArray(authored) ? authored[0] : authored;
+  if (typeof authoredScalar === 'string' && isSafeNextRouteValue(authoredScalar)) {
+    return authoredScalar;
+  }
   return normalized === undefined || normalized.length === 0 ? 'preview' : normalized;
+}
+
+/** Narrows readonly catch-all values without leaking `Array.isArray`'s mutable-any signature. */
+function isNextAppParameterArray(
+  value: PreviewInspectorNextAppParamValue | undefined,
+): value is readonly string[] {
+  return Array.isArray(value);
+}
+
+/** Rejects evidence that could escape one pathname segment or inject browser control bytes. */
+function isSafeNextRouteValue(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 64 &&
+    !/[\\/\u0000-\u001f\u007f]/u.test(value) &&
+    value !== '.' &&
+    value !== '..'
+  );
 }
 
 /** Normalizes a parameter key once so the pathname and props cannot disagree. */

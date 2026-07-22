@@ -7,16 +7,31 @@
  * project dynamic imports with inert ESM placeholders. Static imports, installed dependencies,
  * setup entry loading, and every selected target/ancestor module remain untouched.
  */
-import { createHash } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { PREVIEW_RESOLVE_GUARD } from '../previewPluginProtocol';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
+import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
+import { collectRenderedNextDynamicSpecifiers } from '../staticResources/previewNextDynamicInstrumentation';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
 
 const INSPECTOR_CORRIDOR_NAMESPACE = 'react-preview-inspector-corridor';
+const INSPECTOR_CORRIDOR_PLACEHOLDER_PATH = 'omitted-deferred-route';
+const MAX_DYNAMIC_IMPORTER_SOURCE_BYTES = 1024 * 1024;
+const MAX_SMALL_DYNAMIC_IMPORTS = 24;
 const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
+
+/** Bounded syntax facts used to distinguish a helper loader from a generated route registry. */
+interface PreviewDynamicImporterEvidence {
+  /** True when a small registry directly declares a path already selected by static analysis. */
+  readonly hasCorridorTarget: boolean;
+  /** Large/truncated registries are narrowed to a selected route instead of bundled wholesale. */
+  readonly isBroadRegistry: boolean;
+  /** Page-local `next/dynamic` requests whose bindings are visibly mounted in JSX. */
+  readonly renderedNextDynamicSpecifiers: ReadonlySet<string>;
+}
 
 /** Build inputs required to bound deferred project branches without touching package dependencies. */
 export interface PreviewInspectorCorridorPluginOptions {
@@ -42,10 +57,13 @@ export function createPreviewInspectorCorridorPlugin(
   const projectRoot = canonicalizeExistingPath(options.projectRoot);
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const corridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
-  const omittedSourcePathByVirtualPath = new Map<string, string>();
+  const routeParameterGroups = collectPreviewInspectorRouteParameterGroups(options.plan);
+  const importerEvidenceByPath = new Map<string, Promise<PreviewDynamicImporterEvidence>>();
 
   /** Resolves one project dynamic import once, retaining only targets outside the proven corridor. */
-  function resolveDeferredBranch(arguments_: OnResolveArgs): OnResolveResult | undefined {
+  async function resolveDeferredBranch(
+    arguments_: OnResolveArgs,
+  ): Promise<OnResolveResult | undefined> {
     if (
       arguments_.kind !== 'dynamic-import' ||
       (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD ||
@@ -69,28 +87,78 @@ export function createPreviewInspectorCorridorPlugin(
     }
     const canonicalTarget = canonicalizeExistingPath(resolvedPath);
     if (
-      corridorPaths.has(canonicalTarget) ||
       !isPathInside(workspaceRoot, canonicalTarget) ||
       !isPathInside(projectRoot, canonicalTarget) ||
       containsDependencyDirectory(projectRoot, canonicalTarget)
     ) {
       return undefined;
     }
-    const virtualPath = createPreviewInspectorCorridorVirtualPath(canonicalTarget);
-    omittedSourcePathByVirtualPath.set(virtualPath, canonicalTarget);
+    if (
+      corridorPaths.has(canonicalTarget) ||
+      matchesPreviewRouteParameters(arguments_.path, routeParameterGroups)
+    ) {
+      return undefined;
+    }
+    const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
+    if (
+      (corridorPaths.has(canonicalImporter) &&
+        importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path)) ||
+      (!corridorPaths.has(canonicalImporter) &&
+        !importerEvidence.hasCorridorTarget &&
+        !importerEvidence.isBroadRegistry)
+    ) {
+      return undefined;
+    }
     return {
       namespace: INSPECTOR_CORRIDOR_NAMESPACE,
-      path: virtualPath,
-      pluginData: { sourcePath: canonicalTarget },
+      path: INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
     };
   }
 
-  /** Emits a side-effect-free lazy route placeholder and watches the omitted authored source. */
+  /**
+   * Reads each reached importer once and classifies its deferred requests without evaluating code.
+   * Small helper modules remain intact unless they explicitly contain a selected-path sibling;
+   * broad generated registries are narrowed by route evidence and share one omitted placeholder.
+   */
+  function readDynamicImporterEvidence(
+    sourcePath: string,
+  ): Promise<PreviewDynamicImporterEvidence> {
+    const existing = importerEvidenceByPath.get(sourcePath);
+    if (existing !== undefined) return existing;
+    const pending = readBoundedSource(sourcePath).then((sourceText) => {
+      if (sourceText === undefined) {
+        return {
+          hasCorridorTarget: false,
+          isBroadRegistry: true,
+          renderedNextDynamicSpecifiers: new Set<string>(),
+        };
+      }
+      const inventory = collectPreviewDynamicImportInventory(sourcePath, sourceText);
+      const isBroadRegistry =
+        !inventory.reliable ||
+        inventory.truncated ||
+        inventory.specifiers.length > MAX_SMALL_DYNAMIC_IMPORTS;
+      const hasCorridorTarget =
+        !isBroadRegistry &&
+        inventory.specifiers.some((specifier) => {
+          const resolvedPath = options.resolveModule(specifier, sourcePath);
+          return (
+            resolvedPath !== undefined && corridorPaths.has(canonicalizeExistingPath(resolvedPath))
+          );
+        });
+      return {
+        hasCorridorTarget,
+        isBroadRegistry,
+        renderedNextDynamicSpecifiers: collectRenderedNextDynamicSpecifiers(sourcePath, sourceText),
+      };
+    });
+    importerEvidenceByPath.set(sourcePath, pending);
+    return pending;
+  }
+
+  /** Emits one shared side-effect-free module for every unselected generated route branch. */
   function loadDeferredBranch(arguments_: OnLoadArgs): OnLoadResult {
-    const sourcePath =
-      readPreviewInspectorCorridorSourcePath(arguments_.pluginData) ??
-      omittedSourcePathByVirtualPath.get(arguments_.path);
-    if (sourcePath === undefined) {
+    if (arguments_.path !== INSPECTOR_CORRIDOR_PLACEHOLDER_PATH) {
       throw new TypeError('Unknown React Preview deferred corridor module.');
     }
     return {
@@ -101,17 +169,38 @@ export function createPreviewInspectorCorridorPlugin(
         'export const __reactPreviewDeferredCorridorRoute = ReactPreviewDeferredCorridorRoute;',
       ].join('\n'),
       loader: 'js',
-      watchFiles: [sourcePath],
     };
   }
 
   return {
     name: 'react-preview-inspector-corridor',
     setup(build): void {
+      // Persistent esbuild contexts reuse the plugin closure across hot rebuilds. Syntax evidence
+      // must therefore be reread at each build boundary instead of retaining a stale generated
+      // registry after an authored source save.
+      build.onStart(() => {
+        importerEvidenceByPath.clear();
+      });
       build.onResolve({ filter: /.*/ }, resolveDeferredBranch);
       build.onLoad({ filter: /.*/, namespace: INSPECTOR_CORRIDOR_NAMESPACE }, loadDeferredBranch);
     },
   };
+}
+
+/** Reads a source only after a file-size check so resolver-time evidence remains memory-bounded. */
+async function readBoundedSource(sourcePath: string): Promise<string | undefined> {
+  try {
+    const sourceStats = await stat(sourcePath);
+    if (!sourceStats.isFile() || sourceStats.size > MAX_DYNAMIC_IMPORTER_SOURCE_BYTES) {
+      return undefined;
+    }
+    const sourceText = await readFile(sourcePath, 'utf8');
+    return Buffer.byteLength(sourceText, 'utf8') <= MAX_DYNAMIC_IMPORTER_SOURCE_BYTES
+      ? sourceText
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Collects every normalized source that proves a selectable candidate or render-chain path. */
@@ -141,16 +230,42 @@ function createPreviewInspectorCorridorPathSet(
   return new Set([...sourcePaths].map(canonicalizeExistingPath));
 }
 
-/** Creates a compact stable custom-namespace path without exposing an absolute path in output. */
-function createPreviewInspectorCorridorVirtualPath(sourcePath: string): string {
-  return createHash('sha256').update(sourcePath).digest('hex').slice(0, 24);
+/**
+ * Collects exact Next App Router parameter choices for every selectable page candidate.
+ * Group boundaries matter: one deferred request must satisfy all values from one candidate, never
+ * an accidental union assembled from unrelated routes.
+ */
+function collectPreviewInspectorRouteParameterGroups(
+  plan: PreviewInspectorAncestorPlan,
+): readonly (readonly string[])[] {
+  const groups = plan.pageCandidates.flatMap((candidate) => {
+    const route = candidate.routeLocation;
+    if (route?.evidenceKind !== 'next-app-filesystem' || !('params' in route)) return [];
+    const values = Object.values(route.params).flatMap((value) =>
+      typeof value === 'string' ? [value] : [...value],
+    );
+    const normalizedValues = [...new Set(values.map(normalizeRouteParameterValue).filter(Boolean))];
+    return normalizedValues.length === 0 ? [] : [Object.freeze(normalizedValues)];
+  });
+  return Object.freeze(groups);
 }
 
-/** Reads only compiler-owned custom-namespace metadata. */
-function readPreviewInspectorCorridorSourcePath(pluginData: unknown): string | undefined {
-  if (pluginData === null || typeof pluginData !== 'object') return undefined;
-  const sourcePath = (pluginData as Record<string, unknown>).sourcePath;
-  return typeof sourcePath === 'string' ? sourcePath : undefined;
+/** Keeps one literal lazy branch when its path contains every selected route parameter segment. */
+function matchesPreviewRouteParameters(
+  moduleSpecifier: string,
+  parameterGroups: readonly (readonly string[])[],
+): boolean {
+  if (parameterGroups.length === 0) return false;
+  const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier;
+  const segments = new Set(
+    cleanSpecifier.split(/[\\/]/u).map(normalizeRouteParameterValue).filter(Boolean),
+  );
+  return parameterGroups.some((group) => group.every((value) => segments.has(value)));
+}
+
+/** Normalizes path-safe evidence without decoding arbitrary URL or filesystem syntax. */
+function normalizeRouteParameterValue(value: string): string {
+  return value.trim().replace(/^['"]|['"]$/gu, '');
 }
 
 /** Checks trusted-root containment while rejecting sibling-prefix lookalikes. */

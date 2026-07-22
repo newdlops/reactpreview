@@ -72,6 +72,94 @@ describe('collectPreviewInspectorNextAppLayoutChain', () => {
     ]);
   });
 
+  /** Keeps every authored catch-all item because each value occupies one pathname segment. */
+  it('preserves authored required and optional catch-all arrays', () => {
+    const pagePath = '/workspace/app/docs/[...slug]/[[...view]]/page.tsx';
+    const result = collectPreviewInspectorNextAppLayoutChain({
+      dynamicParameterValues: { slug: ['guides', 'routing'], view: ['print', 'compact'] },
+      exportName: 'default',
+      pagePath,
+      sourcePaths: ['/workspace/app/layout.tsx', pagePath],
+    });
+
+    expect(result?.routeLocation).toMatchObject({
+      params: { slug: ['guides', 'routing'], view: ['print', 'compact'] },
+      pathname: '/docs/guides/routing/print/compact',
+    });
+  });
+
+  /** Next allows separate root layouts under leading route groups instead of `app/layout`. */
+  it('accepts a multiple-root application whose root layout lives below a route group', () => {
+    const pagePath = '/workspace/src/app/(shop)/cart/page.tsx';
+    const groupLayout = '/workspace/src/app/(shop)/layout.tsx';
+    const result = collectPreviewInspectorNextAppLayoutChain({
+      exportName: 'default',
+      pagePath,
+      sourcePaths: ['/workspace/src/app/template.tsx', groupLayout, pagePath],
+    });
+
+    expect(result?.layouts.map((layout) => layout.sourcePath)).toEqual([groupLayout]);
+    expect(result?.routeLocation.pathname).toBe('/cart');
+  });
+
+  /** An ordinary URL folder named `app` must not replace the outer App Router root. */
+  it('keeps a nested ordinary app directory as a pathname segment', () => {
+    const pagePath = '/workspace/src/app/download/app/page.tsx';
+    const result = collectPreviewInspectorNextAppLayoutChain({
+      exportName: 'default',
+      pagePath,
+      sourcePaths: ['/workspace/src/app/layout.tsx', pagePath],
+    });
+
+    expect(result?.routeLocation).toMatchObject({
+      pathname: '/download/app',
+      pattern: '/download/app',
+    });
+  });
+
+  /** Segment templates wrap children inside their same-directory layouts in authored order. */
+  it('collects root and nested templates in Next wrapper order', () => {
+    const pagePath = '/workspace/app/dashboard/page.tsx';
+    const result = collectPreviewInspectorNextAppLayoutChain({
+      exportName: 'default',
+      pagePath,
+      sourcePaths: [
+        '/workspace/app/layout.tsx',
+        '/workspace/app/template.tsx',
+        '/workspace/app/dashboard/layout.tsx',
+        '/workspace/app/dashboard/template.jsx',
+        pagePath,
+      ],
+    });
+
+    expect(result?.layouts.map((layout) => layout.sourcePath)).toEqual([
+      '/workspace/app/layout.tsx',
+      '/workspace/app/template.tsx',
+      '/workspace/app/dashboard/layout.tsx',
+      '/workspace/app/dashboard/template.jsx',
+    ]);
+  });
+
+  /** Private folders are excluded, while Next's encoded leading underscore remains routable. */
+  it('rejects private folders and decodes an authored percent-escaped underscore route', () => {
+    const sourcePaths = ['/workspace/app/layout.tsx'];
+    expect(
+      collectPreviewInspectorNextAppLayoutChain({
+        exportName: 'default',
+        pagePath: '/workspace/app/_components/page.tsx',
+        sourcePaths,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      collectPreviewInspectorNextAppLayoutChain({
+        exportName: 'default',
+        pagePath: '/workspace/app/%5Fadmin/page.tsx',
+        sourcePaths,
+      })?.routeLocation.pathname,
+    ).toBe('/_admin');
+  });
+
   /** Refuses to misrepresent a named parallel slot page as a layout's ordinary children branch. */
   it('omits an unproven parallel-slot page shell', () => {
     const pagePath = '/workspace/app/dashboard/@modal/(.)photo/[id]/page.tsx';

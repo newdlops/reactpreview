@@ -27,14 +27,14 @@ import {
 } from './previewInspectorAncestorFreezing';
 import { isPreviewInspectorComponentShapedOwner } from './previewInspectorOwnerShape';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
+import { collectPreviewInspectorFrameworkPageShell } from './previewInspectorFrameworkPageShell';
+import { collectPreviewInspectorNextAppDescendantPages } from './previewInspectorNextAppDescendantPages';
 import { collectPreviewInspectorRenderOutcomes } from './previewInspectorRenderOutcomeExpansion';
-import { collectPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppLayoutChain';
-import { collectPreviewInspectorNextPagesAppTarget } from './previewInspectorNextPagesAppTarget';
+import { collectPreviewInspectorNextPagesDescendantPages } from './previewInspectorNextPagesDescendantPages';
 import {
   createPreviewInspectorNextPagesShellRefiner,
   type PreviewInspectorNextPagesShellRefiner,
 } from './previewInspectorNextPagesParameterEvidence';
-import { collectPreviewInspectorNextPagesShell } from './previewInspectorNextPagesShell';
 import {
   collectPreviewInspectorModuleFrontiers,
   type PreviewInspectorModuleFrontier,
@@ -240,81 +240,54 @@ export async function createPreviewInspectorAncestorPlan(
     discoveredCandidates.push(candidate);
   };
 
-  const nextPagesAppTarget = await collectPreviewInspectorNextPagesAppTarget({
-    appPath: target.sourcePath,
-    exportName: target.exportName,
-    readSource: options.readSource,
-    sourcePaths,
-  });
-  if (nextPagesAppTarget !== undefined) {
-    const root =
-      nextPagesAppTarget.kind === 'authored-page'
-        ? freezeReference(nextPagesAppTarget.page.sourcePath, 'default')
-        : target;
-    const dependencies = new Set([target.sourcePath, root.sourcePath]);
-    const nextPagesRefinement = await planningContext.nextPagesShellRefiner.refine(
-      nextPagesAppTarget.shell,
-    );
-    for (const dependencyPath of nextPagesRefinement.dependencyPaths) {
-      dependencies.add(dependencyPath);
-    }
-    const rootInference = await readPreviewInspectorRootInference(
-      root,
-      options.readSource,
-      planningContext.sourceTextByPath,
-      planningContext.inferenceByReference,
-    );
-    addCandidate(
-      freezePreviewInspectorPageCandidate({
-        complete: true,
-        dependencies,
-        edges: [],
-        id: `next-pages-app:${root.sourcePath}`,
-        renderPath: undefined,
-        root,
-        rootAutomaticProps: Object.freeze({}),
-        ...(rootInference === undefined ? {} : { rootInference }),
-        nextPagesShell: nextPagesRefinement.shell,
-        rootOwnsRouter: false,
-        routeLocation: nextPagesRefinement.shell.routeLocation,
-        stopReason: 'root-reached',
-        targetAutomaticProps: Object.freeze({}),
-      }),
-    );
-  } else {
-    for (const renderPath of candidatePaths) {
-      throwIfPreviewBuildCancelled(options.signal);
-      const candidate = await createInspectorPageCandidate({
-        options,
-        planningContext,
-        renderPath,
-        sourcePaths,
-        target,
-        routeLocation,
-      });
-      baseCandidates.push({ candidate, renderPath });
-      addCandidate(candidate);
-    }
+  for (const renderPath of candidatePaths) {
+    throwIfPreviewBuildCancelled(options.signal);
+    const candidate = await createInspectorPageCandidate({
+      options,
+      planningContext,
+      renderPath,
+      sourcePaths,
+      target,
+      routeLocation,
+    });
+    baseCandidates.push({ candidate, renderPath });
+    const nextPagesDescendants = await collectPreviewInspectorNextPagesDescendantPages({
+      base: candidate,
+      maximumCount: pageCandidateLimit,
+      nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
+      readSource: options.readSource,
+      sourcePaths,
+    });
+    if (nextPagesDescendants.length === 0) addCandidate(candidate);
+    else for (const descendant of nextPagesDescendants) addCandidate(descendant);
+    for (const descendant of await collectPreviewInspectorNextAppDescendantPages({
+      base: candidate,
+      maximumCount: pageCandidateLimit,
+      readSource: options.readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+      sourcePaths,
+    }))
+      addCandidate(descendant);
+  }
 
-    for (const { candidate, renderPath } of baseCandidates) {
-      if (renderPath === undefined) continue;
-      const renderPathRoots = await collectPreviewInspectorRenderPathRoots({
-        readSource: options.readSource,
-        renderPath,
-        sourceCache: planningContext.sourceTextByPath,
-        target,
-      });
-      for (const renderPathRoot of renderPathRoots) {
-        addCandidate(
-          await createRenderPathPageCandidate({
-            base: candidate,
-            options,
-            planningContext,
-            renderPathRoot,
-            routeLocation,
-          }),
-        );
-      }
+  for (const { candidate, renderPath } of baseCandidates) {
+    if (renderPath === undefined) continue;
+    const renderPathRoots = await collectPreviewInspectorRenderPathRoots({
+      readSource: options.readSource,
+      renderPath,
+      sourceCache: planningContext.sourceTextByPath,
+      target,
+    });
+    for (const renderPathRoot of renderPathRoots) {
+      addCandidate(
+        await createRenderPathPageCandidate({
+          base: candidate,
+          options,
+          planningContext,
+          renderPathRoot,
+          routeLocation,
+        }),
+      );
     }
   }
 
@@ -392,27 +365,19 @@ async function createInspectorPageCandidate(arguments_: {
       rootStepIndex: undefined,
       sourceCache: planningContext.sourceTextByPath,
     });
-    const nextAppShell = collectPreviewInspectorNextAppLayoutChain({
+    const frameworkShell = await collectPreviewInspectorFrameworkPageShell({
       exportName: currentRoot.exportName,
+      nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
       pagePath: currentRoot.sourcePath,
+      readSource: options.readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
       sourcePaths,
     });
-    for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
-    let nextPagesShell = collectPreviewInspectorNextPagesShell({
-      exportName: currentRoot.exportName,
-      pagePath: currentRoot.sourcePath,
-      sourcePaths,
-    });
-    if (nextPagesShell !== undefined) {
-      dependencies.add(nextPagesShell.app.sourcePath);
-      const refinement = await planningContext.nextPagesShellRefiner.refine(nextPagesShell);
-      nextPagesShell = refinement.shell;
-      for (const dependencyPath of refinement.dependencyPaths) dependencies.add(dependencyPath);
-    }
-    const candidateRouteLocation =
-      nextAppShell?.routeLocation ?? nextPagesShell?.routeLocation ?? routeLocation;
+    for (const dependencyPath of frameworkShell.dependencyPaths) dependencies.add(dependencyPath);
+    const { nextAppShell, nextPagesShell } = frameworkShell;
+    const candidateRouteLocation = frameworkShell.routeLocation ?? routeLocation;
     return freezePreviewInspectorPageCandidate({
-      complete: nextPagesShell === undefined ? complete : true,
+      complete: nextAppShell === undefined && nextPagesShell === undefined ? complete : true,
       dependencies,
       edges,
       id: renderPath?.id ?? 'nearest-authored-owner',
@@ -424,7 +389,8 @@ async function createInspectorPageCandidate(arguments_: {
       ...(nextPagesShell === undefined ? {} : { nextPagesShell }),
       rootOwnsRouter,
       ...(candidateRouteLocation === undefined ? {} : { routeLocation: candidateRouteLocation }),
-      stopReason: nextPagesShell === undefined ? stopReason : 'root-reached',
+      stopReason:
+        nextAppShell === undefined && nextPagesShell === undefined ? stopReason : 'root-reached',
       targetAutomaticProps,
     });
   };
@@ -540,26 +506,19 @@ async function createRenderPathPageCandidate(arguments_: {
   });
   const dependencies = new Set(base.dependencyPaths);
   dependencies.add(root.sourcePath);
-  const nextAppShell = collectPreviewInspectorNextAppLayoutChain({
+  const frameworkShell = await collectPreviewInspectorFrameworkPageShell({
     exportName: root.exportName,
+    nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
     pagePath: root.sourcePath,
+    readSource: options.readSource,
+    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     sourcePaths: options.sourcePaths,
   });
-  for (const layout of nextAppShell?.layouts ?? []) dependencies.add(layout.sourcePath);
-  let nextPagesShell = collectPreviewInspectorNextPagesShell({
-    exportName: root.exportName,
-    pagePath: root.sourcePath,
-    sourcePaths: options.sourcePaths,
-  });
-  if (nextPagesShell !== undefined) {
-    dependencies.add(nextPagesShell.app.sourcePath);
-    const refinement = await planningContext.nextPagesShellRefiner.refine(nextPagesShell);
-    nextPagesShell = refinement.shell;
-    for (const dependencyPath of refinement.dependencyPaths) dependencies.add(dependencyPath);
-  }
-  const candidateRouteLocation =
-    nextAppShell?.routeLocation ?? nextPagesShell?.routeLocation ?? routeLocation;
+  for (const dependencyPath of frameworkShell.dependencyPaths) dependencies.add(dependencyPath);
+  const { nextAppShell, nextPagesShell } = frameworkShell;
+  const candidateRouteLocation = frameworkShell.routeLocation ?? routeLocation;
   const complete =
+    nextAppShell !== undefined ||
     nextPagesShell !== undefined ||
     (renderPath.entryPoint !== undefined && renderPathRoot.outermost);
   return freezePreviewInspectorPageCandidate({
@@ -921,7 +880,11 @@ function scoreInspectorSourcePath(sourcePath: string): number {
   ) {
     score -= 420;
   }
-  if (/(?:^|\/)(?:examples?|demos?|fixtures?|mocks?|playgrounds?)(?:\/|$)/u.test(normalizedPath)) {
+  if (
+    /(?:^|\/)(?:__templates__|examples?|demos?|fixtures?|generators?|mocks?|playgrounds?|scaffolds?|templates?)(?:\/|$)/u.test(
+      normalizedPath,
+    )
+  ) {
     score -= 260;
   }
 

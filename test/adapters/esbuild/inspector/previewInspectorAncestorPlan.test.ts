@@ -113,7 +113,7 @@ describe('createPreviewInspectorAncestorPlan', () => {
     });
 
     expect(plan.target).toEqual({ exportName: 'default', sourcePath: appPath });
-    expect(plan.pageCandidates).toHaveLength(1);
+    expect(plan.pageCandidates).toHaveLength(2);
     expect(plan.pageCandidates[0]).toMatchObject({
       complete: true,
       nextPagesShell: {
@@ -128,6 +128,12 @@ describe('createPreviewInspectorAncestorPlan', () => {
       stopReason: 'root-reached',
     });
     expect(plan.pageCandidates[0]?.nextPagesShell?.syntheticPage).toBeUndefined();
+    expect(plan.pageCandidates[1]).toMatchObject({
+      nextPagesShell: {
+        routeLocation: { pathname: '/account', sourcePath: nestedPath },
+      },
+      root: { exportName: 'default', sourcePath: nestedPath },
+    });
     expect(plan.dependencyPaths).toEqual(expect.arrayContaining([appPath, indexPath]));
   });
 
@@ -170,6 +176,60 @@ describe('createPreviewInspectorAncestorPlan', () => {
     });
   });
 
+  /** Crosses a conventional HOC export so shared shell UI receives a real consuming page. */
+  it('reaches Pages Router leaves through a private app shell and default HOC export', async () => {
+    const targetPath = '/workspace/shared/ui/src/ResetStyle.tsx';
+    const barrelPath = '/workspace/shared/ui/src/index.ts';
+    const appPath = '/workspace/apps/web/pages/_app.tsx';
+    const pagePath = '/workspace/apps/web/pages/home.tsx';
+    const templateAppPath = '/workspace/projects/__templates__/starter/pages/_app.tsx';
+    const sources = {
+      [targetPath]: 'export function ResetStyle() { return <style />; }',
+      [barrelPath]: "export * from './ResetStyle';",
+      [appPath]: [
+        "import { ResetStyle } from '@workspace/ui';",
+        'function AppShell({ Component }) { return <><ResetStyle /><Component /></>; }',
+        'function MyApp(props) { return <AppShell {...props} />; }',
+        'export default withStore(MyApp);',
+      ].join('\n'),
+      [pagePath]: 'export default function HomePage() { return <main>home</main>; }',
+      [templateAppPath]: [
+        "import { ResetStyle } from '@workspace/ui';",
+        'export default function TemplateApp() { return <ResetStyle />; }',
+      ].join('\n'),
+    };
+    const resolutions: Readonly<Record<string, string>> = {
+      [`${appPath}\0@workspace/ui`]: barrelPath,
+      [`${barrelPath}\0./ResetStyle`]: targetPath,
+      [`${templateAppPath}\0@workspace/ui`]: barrelPath,
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: targetPath,
+      exportName: 'ResetStyle',
+      matchesTargetImport: (specifier, consumerPath, expectedPath) =>
+        resolutions[`${consumerPath}\0${specifier}`] === expectedPath,
+      readSource: createSourceReader(sources),
+      resolveModule: (specifier, consumerPath) => resolutions[`${consumerPath}\0${specifier}`],
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates[0]).toMatchObject({
+      complete: true,
+      nextPagesShell: {
+        app: { exportName: 'default', sourcePath: appPath },
+        routeLocation: { pathname: '/home', sourcePath: pagePath },
+      },
+      root: { exportName: 'default', sourcePath: pagePath },
+      stopReason: 'root-reached',
+    });
+    expect(plan.pageCandidates[0]?.edges[0]).toMatchObject({
+      child: { exportName: 'ResetStyle', sourcePath: barrelPath },
+      localOwnerNames: ['AppShell'],
+      owner: { exportName: 'default', sourcePath: appPath },
+    });
+  });
+
   /** Restores Next's implicit layout wrappers, which cannot appear in the JavaScript import graph. */
   it('attaches the App Router layout chain and filesystem pathname to a page candidate', async () => {
     const pagePath = '/workspace/packages/web/src/app/(account)/profile/edit/page.tsx';
@@ -200,6 +260,7 @@ describe('createPreviewInspectorAncestorPlan', () => {
     });
 
     expect(plan.pageCandidates[0]).toMatchObject({
+      complete: true,
       nextAppLayoutChain: [
         { exportName: 'default', sourcePath: rootLayoutPath },
         { exportName: 'default', sourcePath: profileLayoutPath },
@@ -214,6 +275,56 @@ describe('createPreviewInspectorAncestorPlan', () => {
     });
     expect(plan.dependencyPaths).toEqual(
       [pagePath, profileLayoutPath, rootLayoutPath, unrelatedRegistryPath].sort(),
+    );
+  });
+
+  /** Crosses the implicit layout children slot so layout-only helpers still mount in a real page. */
+  it('selects a descendant App Router page for a component owned by a layout', async () => {
+    const helperPath = '/workspace/apps/site/app/(view)/preview/font-variables.tsx';
+    const rootLayoutPath = '/workspace/apps/site/app/layout.tsx';
+    const previewLayoutPath = '/workspace/apps/site/app/(view)/preview/layout.tsx';
+    const pagePath = '/workspace/apps/site/app/(view)/preview/[base]/[name]/page.tsx';
+    const sources = {
+      [helperPath]: 'export function PreviewFontVariables() { return null; }',
+      [rootLayoutPath]:
+        'export default function RootLayout({ children }) { return <html><body>{children}</body></html>; }',
+      [previewLayoutPath]: [
+        "import { PreviewFontVariables } from './font-variables';",
+        'export default function PreviewLayout({ children }) {',
+        '  return <section><PreviewFontVariables />{children}</section>;',
+        '}',
+      ].join('\n'),
+      [pagePath]: [
+        `const ITEMS = ['preview'] as const;`,
+        'export function generateStaticParams() {',
+        '  return ITEMS.map((name) => ({ base: "base", name }));',
+        '}',
+        'export default function PreviewPage() { return <main />; }',
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: helperPath,
+      exportName: 'PreviewFontVariables',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates[0]).toMatchObject({
+      complete: true,
+      root: { exportName: 'default', sourcePath: pagePath },
+      routeLocation: {
+        evidenceKind: 'next-app-filesystem',
+        pathname: '/preview/base/preview',
+      },
+      stopReason: 'root-reached',
+    });
+    expect(plan.pageCandidates[0]?.nextAppLayoutChain?.map((layout) => layout.sourcePath)).toEqual([
+      rootLayoutPath,
+      previewLayoutPath,
+    ]);
+    expect(plan.dependencyPaths).toEqual(
+      [helperPath, pagePath, previewLayoutPath, rootLayoutPath].sort(),
     );
   });
 

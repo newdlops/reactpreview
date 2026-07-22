@@ -158,7 +158,9 @@ export function createPreviewInspectorRootSource(
       ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
       : candidate.root.sourcePath.replaceAll('\\', '/');
     const layoutSpecifiers = candidate.nextAppLayoutChain?.map((layout) =>
-      layout.sourcePath.replaceAll('\\', '/'),
+      path.normalize(layout.sourcePath) === path.normalize(plan.target.sourcePath)
+        ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
+        : layout.sourcePath.replaceAll('\\', '/'),
     );
     if (layoutSpecifiers !== undefined && layoutSpecifiers.length > 0) {
       const nextAppRouteLocation =

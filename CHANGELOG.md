@@ -2,6 +2,12 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1131 - 2026-07-22
+
+- Next App Router의 component export뿐 아니라 helper, provider, registry, default object가 실제로 도달하는 `page.tsx`와 암시적 layout 체인을 정적 import로 역연결해 `app` 소스를 페이지 단위로 프리뷰
+- package-local 탐색 실패 시에만 bounded monorepo inventory로 넓히고, 정적 import를 deferred loader보다 우선하며 전체 32 MiB/2,048 module 상한과 target-affinity pruning으로 대형 generated registry의 CPU·메모리 폭증을 차단
+- `loading.tsx`·`error.tsx`·`not-found.tsx`를 소유 route의 layout 안에서 렌더링하고 parallel/private route 오탐, nested `app` segment, type-only/unused/shadowed import, unresolved broad alias branch를 보강
+
 ## 0.1.1130 - 2026-07-22
 
 - direct default/PascalCase export가 없는 helper·registry 파일은 빈 갤러리를 표시하되 대상 모듈, theme, 수천 개 lazy branch를 side-effect import하지 않고 package/workspace ancestor 분석도 생략해 `mdx-components.tsx`의 불필요한 3,758개 registry 번들을 차단

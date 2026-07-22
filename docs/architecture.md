@@ -289,6 +289,15 @@ callback으로 materialize합니다. modal 자동 reveal의 단일 boolean은 ho
 Page Inspector는 기본 명령의 composition 정책이며 component gallery의 parent slice를 확장하는 flag가
 아닙니다. 이전 `reactPreview.openPageInspector` command id는 호환 alias로 유지하고, 독립 export 렌더링은
 `reactPreview.openComponentGallery`가 명시적으로 선택합니다.
+
+component-shaped export가 없거나 Next page가 직접 소비하는 일반 source에는
+`previewInspectorNextAppModulePagePlan`이 page와 암시적 layout을 multi-source BFS seed로 사용합니다. runtime
+import/re-export를 따라 선택 module에 닿는 정적 경로를 deferred 경로보다 먼저 선택하고, package-local miss만
+workspace-bounded monorepo inventory로 한 번 확장합니다. 계획은 한 page, 정확한 import predecessor, 그 layout과
+route parameter dependency만 남기며 source text를 보유하지 않고 32 MiB/2,048 module에서 닫힙니다. 따라서
+Inspector root는 실제 consuming page이고 `contextModule`은 에디터 파일의 non-DOM identity를 별도로 보존합니다.
+Next `loading/error/not-found`는 선택 module 자체를 target으로 유지한 채 equal/descendant page의 route와 layout을
+빌려 framework page-state로 조합합니다.
 `PreviewRenderMode`는 command가 panel session을 만들 때 선택하고, session이 고정 URI를 다시 해석하는 모든
 수동·자동 rebuild request에 같은 값을 복사합니다. 따라서 같은 파일의 component gallery와 Inspector를
 동시에 열어도 한 패널의 refresh가 다른 패널의 root 선택이나 상태를 바꾸지 않습니다.

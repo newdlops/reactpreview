@@ -65,7 +65,8 @@ code --install-extension react-file-preview-<version>-<platform>.vsix
 
 1. React 16.8 이상 프로젝트의 신뢰할 수 있는 워크스페이스를 엽니다. 프로젝트 설치가 없어도 지원되는
    lockfile 또는 확장 내장 React runtime 근거가 있으면 프리뷰에 필요한 package를 준비할 수 있습니다.
-2. React 컴포넌트를 내보내는 `.tsx`, `.jsx`, `.ts`, `.js` 계열 파일을 엽니다.
+2. React 컴포넌트 또는 페이지가 소비하는 helper/provider/registry를 담은 `.tsx`, `.jsx`, `.ts`, `.js`
+   계열 파일을 엽니다.
 3. 에디터에서 우클릭해 `Open Current React File in Page Context`를 선택하거나, 명령 팔레트에서
    `React Preview: Open Current React File in Page Context`를 실행합니다. 파일의 export만 각각 확인하려면
    보조 명령 `Open Current File Export Gallery`를 선택합니다.
@@ -103,6 +104,13 @@ tsconfig/jsconfig alias를 통과하면서 최대 8개의 project-level owner를
 page/layout/route/App 후보를 tests/stories/examples보다 우선해 가장 바깥쪽 작성자 export를 실제 root로
 마운트합니다. 같은 파일의 private owner도 bounded하게 통과하지만 route 배열·router 객체·private terminal,
 cycle 또는 깊이 한도에서는 마지막으로 확인된 React root와 partial 이유를 유지합니다.
+
+Next App Router에서는 선택 파일이 독립 component를 내보내지 않더라도 이를 runtime으로 import하는 실제
+`page.tsx` 하나를 찾고, 그 페이지와 암시적 `layout.tsx`/`template.tsx` 체인을 함께 마운트합니다. layout에서만
+소비되는 theme/provider/navigation helper와 모노레포 sibling app도 package-local 실패 뒤 제한적으로 찾습니다.
+정적 import 경로를 호출 여부가 불확실한 `import()`보다 우선하며, 선택한 한 경로 이외의 대형 generated loader는
+번들 corridor에서 합칩니다. `loading.tsx`, `error.tsx`, `not-found.tsx`는 소유 route의 page-state로 표시됩니다.
+Inspector의 `MODULE PAGE`는 현재 파일이 DOM 경계가 아니라 선택 페이지에 값을 공급하는 모듈임을 뜻합니다.
 
 별도의 inert render graph는 현재 파일의 모든 direct component export를 한 번 인덱싱하고 각 export에서
 실제 ReactDOM mount까지 여러 후보를 탐색합니다. literal

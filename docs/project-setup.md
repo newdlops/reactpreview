@@ -31,16 +31,38 @@ package manifest가 없을 때만 workspace root를 사용하므로 모노레포
 전역 저장소에 content-hashed immutable layer로 백그라운드 복사됩니다. 모노레포에서는 package부터 workspace
 root까지 가장 가까운 lockfile을 사용합니다. 후속 target이 다른 package에 도달하면 같은 profile에 layer를
 추가하므로 최초 graph의 부분집합으로 고정되지 않습니다. 같은 dependency·lock profile을 가진 다른
-clone/workspace는 자기 프로젝트에 설치하지 않아도 검증된 layer를 fallback으로 사용합니다. React 19 범위 또는
-manifest 없는 작은 파일은 확장에 포함된 React/ReactDOM/scheduler runtime을 사용할 수 있습니다. 명시한 React
-range가 다르거나 project-local React가 하나라도 해석되면 내장 runtime을 섞지 않습니다. cached package의 React
-subpath와 선언된 peer는 active project에서 다시 해석하므로 local React가 있을 때 두 인스턴스가 섞이지 않습니다.
+clone/workspace는 자기 프로젝트에 설치하지 않아도 검증된 layer를 fallback으로 사용합니다. 확장은 단일
+React 19 fallback 대신 React/ReactDOM/Scheduler
+18.3.1/18.3.1/0.23.2와 19.2.7/19.2.7/0.27.0 exact tuple을 versioned seed catalog로 포함합니다. 정상적인
+project-local React 또는 ReactDOM을 항상 먼저 사용하고, 현재 lock profile의 검증된 managed runtime을 그다음,
+manifest range에 호환되는 extension seed를 마지막으로 선택합니다. local React pair의 절반이라도 해석되면
+seed를 섞지 않으며, 명시된 React/ReactDOM range가 tuple과 맞지 않아도 seed를 사용하지 않습니다. 두 range가
+모두 없을 때만 19 tuple이 기본입니다. seed package의 authored identity는 ordinary `react`, `react-dom`,
+`scheduler`로 복원되고 subpath와 peer는 active project에서 다시 해석하므로 두 React 인스턴스가 섞이지 않습니다.
+Seed는 VSIX에 포함된 exact package byte를 global storage에 복사할 뿐 프로젝트를 수정하거나 lock evidence 없는
+임의 package를 network에서 획득하지 않습니다.
 
-이 자동 경로는 네트워크나 package manager를 실행하지 않습니다. 따라서 readable bounded lockfile이 없거나 어느
-성공한 프로젝트와 확장에도 byte가 없던 package, Pnpm/PnP virtual package, private package,
-`workspace:`/`file:` package와 native/install-script 산출물은 여전히 프로젝트 설치가 필요합니다. 저장소는
-프로젝트 source가 아니라 bundle에 도달한 public package tree만 보관하고 package별 내용 digest를 재검증하며,
-프로젝트 `package.json`, lockfile과 `node_modules`를 수정하지 않습니다.
+프로젝트 `node_modules`와 기존 managed layer 모두에서 선언된 bare package를 찾지 못하면 컴파일러는 실패한
+request의 package root만 후보로 삼습니다. 설치 없는 복원에 지원되는 lockfile 근거는 다음 세 가지입니다.
+
+- npm `package-lock.json` v2/v3 `packages` map의 exact URL과 SHA-512 integrity
+- Yarn v1 `yarn.lock`의 exact version, public npm/Yarn registry URL과 SHA-512 integrity
+- Yarn Berry `yarn.lock`의 exact `npm:` resolution과 `registry.npmjs.org` exact-version metadata가 반환한
+  tarball URL 및 SHA-512 integrity. Berry cache checksum 자체는 tarball SRI로 취급하지 않음
+
+extension worker는 이 근거가 closure 전체에 있을 때만 public package를 global storage staging directory로
+받습니다. tarball integrity와 추출 경로·package identity를 검증한 뒤 ordinary `node_modules` layout의 immutable
+layer로 atomic publish하고, 새 dependency environment로 전체 compile을 한 번만 다시 시작합니다. 여러
+unresolved import는 한 번의 bounded acquisition에 합치며 같은 requirement state가 반복되어도 두 번째
+download/build를 시작하지 않습니다.
+
+이 과정은 `npm install` 같은 package manager, lifecycle/install script와 프로젝트 config를 실행하지 않으며
+프로젝트 `package.json`, lockfile, `.yarn` cache와 `node_modules`를 만들거나 수정하지 않습니다. 프로젝트의
+정상 local/PnP resolution이 항상 우선이고, lock 획득 package도 publish 뒤 package별 content digest를 다시
+검증합니다. pnpm lock, lockfile 없는 range, SHA-512 근거가 없는 entry, private/custom registry, git
+dependency, Yarn workspace와 `workspace:`/`file:`/`link:` dependency 및 native/install-script 산출물이 필요한
+package는 자동 network 복원 대상이 아닙니다. 이 경우 원래 resolve 오류를 유지하므로 프로젝트 설치,
+unplugged package 또는 명시적 setup이 필요합니다.
 
 최초 요청은 이 package 안의 authored source 경로를 bounded하게 열거하고, 대상 component를 실제로
 import해 JSX에서 사용한 곳이 있으면 boolean·number·string·null literal attribute만 자동 props로

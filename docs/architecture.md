@@ -671,8 +671,9 @@ template과 문자열 연결식 dynamic import/require는 runtime expression을 
 한도가 있습니다. 상대 패턴은 `./` 또는 `../`로 시작해 workspace 안에 남고 `/...` Vite 패턴은
 nearest package root 안에 남아야 하며, 따라가는 symlink에도 같은 canonical boundary를 적용합니다.
 `.git`, `.hg`, `.svn`과 중첩 `node_modules`는 순회하지 않습니다. 디렉터리는 streaming iterator로
-읽고 exact path 조회도 같은 budget에 포함합니다. Vite/Webpack 설정과 `.env`는 읽거나 실행하지 않으며
-`import.meta.env`에는 `BASE_URL`, `MODE`, `DEV`, `PROD`, `SSR` 고정값만 주입합니다.
+읽고 exact path 조회도 같은 budget에 포함합니다. Vite/Webpack 설정은 실행하지 않습니다. 가장 가까운
+package의 고정 dotenv convention은 파일별 최대 1MiB를 읽되 브라우저 공개 prefix만 최대 256개 key로
+제한하고 변수 확장을 하지 않습니다. `import.meta.env`에는 고정 development flag와 `VITE_*`만 주입합니다.
 
 `PreviewCompiler.compile(request, context)` port는 요청 단위 계약을 유지하지만 실제 adapter와 위의 inert
 package/usage cache, 최대 256개 adaptive Router/global plan 및 최대 12개 native build context는 전용 Node
@@ -698,8 +699,9 @@ analyzer 테스트에서 잘못된 range 생성이 숨겨지지 않도록 produc
 
 `previewRuntimeEnvironment`는 setup 후보를 extension host에서 import하지 않고 regular file과
 canonical workspace 경계만 검사합니다. `public/index.html`, package `index.html`, Storybook main은
-파일별 최대 1MiB만 읽고 `window.X = window.X || {}` 이름만 반환합니다. property 값, `.env`, API key,
-template placeholder는 번들에 넣지 않습니다.
+파일별 최대 1MiB만 읽고 `window.X = window.X || {}` 이름만 반환합니다. property 값과 template
+placeholder는 번들에 넣지 않습니다. dotenv reader는 동일 canonical 경계에서 공개 prefix만 반환하고
+비공개 key, interpolation, 외부 symlink를 거부하며 후보 경로를 hot-rebuild dependency로 유지합니다.
 
 `previewSetupBridgePlugin`은 선택된 setup module namespace를 웹뷰 bundle에 연결합니다. generated
 entry는 `initializePreview`, `PreviewProviders`, `previewProps`, `createPreviewProps`,

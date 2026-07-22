@@ -551,14 +551,17 @@ export default function ComponentUnderPreviewHarness() {
 
 setup import 전에 `public/index.html`, package `index.html`, `.storybook/main.*`의 최대 1MiB prefix를
 문자열로만 읽습니다. `window.NAME = window.NAME || {}`와 같은 빈 객체 초기화에서 안전한 namespace
-이름만 추출해 빈 객체를 만듭니다. 파일을 실행하거나 property 값, template placeholder, `.env`, API
-키와 라이선스를 복사하지 않습니다. 실제 값이 필요하면 `initializePreview`에서 비밀이 아닌 mock을
-명시하세요.
+이름만 추출해 빈 객체를 만듭니다. 파일을 실행하거나 property 값, template placeholder, 비공개 API
+키와 라이선스를 복사하지 않습니다. 가장 가까운 package의 `.env.example`, `.env`, development/local
+convention은 최대 1MiB씩 구문만 읽고 `NEXT_PUBLIC_`, `VITE_`, `REACT_APP_`, `PUBLIC_` 값만 변수 확장
+없이 preview에 전달합니다. 그 밖의 실제 값은 `initializePreview`에서 비밀이 아닌 mock으로 명시하세요.
 
 Browserify가 자유 `process`를 주입한다고 가정하는 package는 별도 setup 없이도 bounded browser process
 object를 먼저 받습니다. 기존 `globalThis.process`는 덮어쓰지 않으며 fallback은 `platform`, `env`, `cwd`,
-`nextTick`과 inert event method만 제공합니다. Node filesystem, network, native binding이나 process 제어는
-제공하지 않습니다. application entry에 `window.process = window.process || importedProcess`처럼 동일 global을
+`nextTick`과 inert event method만 제공합니다. 공개 dotenv 값은 이 fallback의 `env`에만 병합되고 누락된
+공개 URL-shaped key는 비통신 `.invalid` URL로 직접 읽기를 보완합니다. Node filesystem, network, native
+binding이나 process 제어는 제공하지 않습니다. application entry에
+`window.process = window.process || importedProcess`처럼 동일 global을
 확인한 뒤 imported binding을 쓰는 구문이 있으면 entry를 실행하지 않고 정확한 import를 lexical bridge
 근거로도 사용합니다. 업무적으로 다른 process 값이 필요할 때만 setup에서 명시적으로 교체하세요.
 

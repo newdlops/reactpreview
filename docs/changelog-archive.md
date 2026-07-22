@@ -2,6 +2,15 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1018 - 2026-07-16
+
+- app entry를 실행하지 않고 ambient `typeof import()` 전역 선언과 import-backed `globalThis/window` 직접 할당을 정적으로 수집해 정확한 project wrapper export를 lexical inject로 연결
+- runtime assignment > ambient declaration > 동일 이름 package 순서를 적용하고, 충돌·미해석·분석 한도 초과에서는 의미가 다른 bare package로 내려가지 않는 fail-closed 전역 bridge planner 추가
+- 강한 wrapper 근거가 없을 때 실제 target-rooted graph에서 자유 식별자로 증명되고 같은 이름의 설치 package가 해석되는 경우에만 Router 요구와 합쳐 최대 한 번 adaptive rebuild하도록 확장
+- esbuild scope injection으로 local/import/shadow/type/property/JSX intrinsic/`typeof` probe를 보존하고 ESM default·named·namespace와 CommonJS identity, 모노레포 hoist, dirty wrapper HMR dependency를 지원
+- package source evidence와 선택된 declaration/wrapper metadata를 탭과 hot rebuild 사이에서 bounded하게 공유하고 generated/public 역방향 인덱스를 제외해 실제 대형 프로젝트의 후속 rebuild 시간을 단축
+- `name is not defined`를 `missing-runtime-global`로 분류하고 오류 보고서에 Globals bridge 상태를 추가
+
 ## 0.1.1017 - 2026-07-16
 
 - 에디터 우클릭과 명령 팔레트에 opt-in `Inspect Current React File in Page Context`를 추가하고, 일반 component gallery와 같은 파일에서도 독립적으로 고정되는 Page Inspector 세션을 제공

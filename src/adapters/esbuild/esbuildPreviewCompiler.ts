@@ -83,6 +83,7 @@ import {
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
+import { createPreviewImportMetaEnvironment } from './previewPublicEnvironment';
 import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
 import {
   mergePreviewPortalHostIds,
@@ -120,6 +121,7 @@ import { createPreviewStaticModuleResolver } from './previewStaticModuleResolver
 import { PreviewSetupFallbackBoundary } from './previewSetupFallbackBoundary';
 import { PreviewSetupFailureCache } from './previewSetupFailureCache';
 import { createPreviewTargetBridgePlugin } from './previewTargetBridgePlugin';
+import { assertPreviewReactTarget } from './previewTargetRuntimeGuard';
 import { createPreviewTailwindPlugin } from './previewTailwindPlugin';
 import { selectPreviewThemeImport } from './previewTargetExports';
 import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
@@ -180,7 +182,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   /**
    * Bundles the current editor snapshot, its dependency graph, CSS, and small binary assets.
    * Project build scripts and framework plugins are deliberately not loaded or executed.
-   *
    * @param request Active editor snapshot and workspace module-resolution context.
    * @param context Optional progress observer and cancellation signal for the owning revision.
    * @returns In-memory ESM JavaScript, optional CSS, warnings, and dependency paths.
@@ -219,6 +220,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         reportAcquisition: () => context?.reportProgress?.('acquiring-dependencies'),
         workspaceRoot: canonicalWorkspaceRoot,
       };
+      const staticModuleResolver = createPreviewStaticModuleResolver({
+        ...(request.tsconfigPath === undefined
+          ? {}
+          : { configuredTsconfigPath: request.tsconfigPath }),
+        fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      assertPreviewReactTarget(request, managedDependencyEnvironment.profile, staticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
       const targetExports = targetSelection.targetExports;
       const inferredPropsByExport = collectReactExportPropInference(
@@ -292,13 +301,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       }
       throwIfPreviewBuildCancelled(buildSignal);
       context?.reportProgress?.('preparing-runtime');
-      const staticModuleResolver = createPreviewStaticModuleResolver({
-        ...(request.tsconfigPath === undefined
-          ? {}
-          : { configuredTsconfigPath: request.tsconfigPath }),
-        fallbackNodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
-        workspaceRoot: canonicalWorkspaceRoot,
-      });
       const reactDomRootKind = selectPreviewReactDomRootKind(
         staticModuleResolver,
         request.documentPath,
@@ -398,6 +400,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           graphqlModuleResolver: staticModuleResolver,
           jsxRuntimeResolver: staticModuleResolver,
           projectRoot,
+          projectUsesNextRuntime:
+            findPreviewDependencySpecifier(managedDependencyEnvironment.profile, 'next') !==
+            undefined,
           projectUsesReactRuntime:
             findPreviewDependencySpecifier(managedDependencyEnvironment.profile, 'react') !==
             undefined,
@@ -436,13 +441,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             charset: 'utf8',
             define: {
               ...createPreviewLegacyCommonJsGlobalDefines(legacyCommonJsGlobalNames),
-              'import.meta.env': JSON.stringify({
-                BASE_URL: '/',
-                DEV: true,
-                MODE: 'development',
-                PROD: false,
-                SSR: false,
-              }),
+              'import.meta.env': JSON.stringify(
+                createPreviewImportMetaEnvironment(environment.publicEnvironment),
+              ),
               'process.env.NODE_ENV': '"development"',
             },
             chunkNames: 'chunks/[hash]',
@@ -576,6 +577,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                   : { documentShell: documentShellEvidence.shell }),
                 globalNamespaces: environment.globalNamespaces,
                 globalPackageBridgeStatus: describeGlobalPackageBridgeStatus(globalPackagePlan),
+                publicEnvironment: environment.publicEnvironment,
                 ...(inspectorSourceGestureSecret === undefined
                   ? {}
                   : { inspectorSourceGestureSecret }),
@@ -795,7 +797,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       let activeRuntimeEnvironment =
         cachedSetupFailure === undefined
           ? runtimeEnvironment
-          : { globalNamespaces: runtimeEnvironment.globalNamespaces, setupKind: 'none' as const };
+          : { ...runtimeEnvironment, setupKind: 'none' as const, setupModulePath: undefined };
       let buildExecution: Awaited<ReturnType<typeof runBuild>> | undefined;
       let fallbackDependencies = cachedSetupFailure?.dependencyPaths ?? [];
       let fallbackWatchDirectories = cachedSetupFailure?.watchDirectories ?? [];
@@ -844,8 +846,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           );
         }
         activeRuntimeEnvironment = {
-          globalNamespaces: runtimeEnvironment.globalNamespaces,
+          ...runtimeEnvironment,
           setupKind: 'none',
+          setupModulePath: undefined,
         };
         buildExecution = await runAdaptiveBuild(activeRuntimeEnvironment, splitOutputs);
       }
@@ -971,7 +974,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   /**
    * Stops esbuild's native service and exposes a promise for orderly extension deactivation.
    * Repeated calls return one promise so explicit shutdown and context disposal remain idempotent.
-   *
    * @returns Promise resolved after esbuild confirms that its shared service has stopped.
    */
   public shutdown(): Promise<void> {

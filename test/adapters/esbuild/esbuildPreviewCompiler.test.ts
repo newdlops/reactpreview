@@ -43,6 +43,8 @@ describe('EsbuildPreviewCompiler', () => {
     expect(stylesheet).toContain('.sample-card');
     expect(stylesheet).toMatch(/\.samplePreview_title|\.title/u);
     expect(bundle.dependencies).toContain(FIXTURE_PATH);
+    expect(bundle.dependencies).toContain(path.join(PROJECT_ROOT, '.env'));
+    expect(bundle.dependencies).toContain(path.join(PROJECT_ROOT, '.env.development.local'));
     expect(
       bundle.dependencies.filter((dependency) => dependency.includes('react-preview-entry')),
     ).toEqual([]);

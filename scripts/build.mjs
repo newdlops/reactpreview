@@ -4,10 +4,31 @@
  * worker; runtime `esbuild` remains external to retain its platform-specific native binary.
  */
 import * as esbuild from 'esbuild';
-import { rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm } from 'node:fs/promises';
+import path from 'node:path';
 
 const isProduction = process.argv.includes('--production');
 const shouldWatch = process.argv.includes('--watch');
+const REACT_18_RUNTIME_ROOT = path.resolve('dist/runtime/react18/node_modules');
+
+/** Exact npm alias inputs copied to authored package names in the shipped runtime catalog. */
+const REACT_18_RUNTIME_PACKAGES = Object.freeze([
+  Object.freeze({
+    name: 'react',
+    sourceDirectory: 'react-preview-react-18',
+    version: '18.3.1',
+  }),
+  Object.freeze({
+    name: 'react-dom',
+    sourceDirectory: 'react-preview-react-dom-18',
+    version: '18.3.1',
+  }),
+  Object.freeze({
+    name: 'scheduler',
+    sourceDirectory: 'react-preview-scheduler-18',
+    version: '0.23.2',
+  }),
+]);
 
 const sharedBuildOptions = {
   bundle: true,
@@ -49,13 +70,66 @@ const buildPlans = [extensionBuildOptions, compilerWorkerBuildOptions];
  * Removes the former CommonJS host artifacts so VSIX packaging cannot retain an obsolete entry.
  * Worker output is left intact until its replacement is committed by esbuild.
  *
- * @returns {Promise<void>} Promise resolved after both known legacy files are absent.
+ * @returns {Promise<void>} Promise resolved after legacy files and the stale runtime are absent.
  */
 async function removeObsoleteHostArtifacts() {
-  await Promise.all(
-    ['dist/extension.js', 'dist/extension.js.map'].map(async (artifactPath) =>
+  await Promise.all([
+    ...['dist/extension.js', 'dist/extension.js.map'].map(async (artifactPath) =>
       rm(artifactPath, { force: true }),
     ),
+    rm(REACT_18_RUNTIME_ROOT, { force: true, recursive: true }),
+  ]);
+}
+
+/**
+ * Copies the exact React 18 browser runtime into dist under ordinary npm package names.
+ *
+ * Keeping npm aliases as development-only inputs avoids an unsatisfied ReactDOM 18 peer beside
+ * the extension host's React 19, while the VSIX still carries a complete immutable preview tuple.
+ * Nested node_modules are excluded because Scheduler is copied as its own verified package and no
+ * package-manager installation layout should leak into the release artifact.
+ *
+ * @returns Promise resolved after all three exact package trees are present below dist.
+ */
+async function prepareReact18RuntimeCatalog() {
+  await mkdir(REACT_18_RUNTIME_ROOT, { recursive: true });
+  await Promise.all(
+    REACT_18_RUNTIME_PACKAGES.map(async (runtimePackage) => {
+      const sourceRoot = path.resolve('node_modules', runtimePackage.sourceDirectory);
+      const destinationRoot = path.join(REACT_18_RUNTIME_ROOT, runtimePackage.name);
+      await assertRuntimePackageIdentity(sourceRoot, runtimePackage);
+      await cp(sourceRoot, destinationRoot, {
+        dereference: false,
+        errorOnExist: true,
+        filter: (sourcePath) => shouldCopyRuntimePath(sourceRoot, sourcePath),
+        force: false,
+        recursive: true,
+        verbatimSymlinks: true,
+      });
+      await assertRuntimePackageIdentity(destinationRoot, runtimePackage);
+    }),
+  );
+}
+
+/** Rejects missing, renamed, or unexpectedly upgraded catalog build inputs before packaging. */
+async function assertRuntimePackageIdentity(packageRoot, expected) {
+  const parsed = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  if (parsed.name !== expected.name || parsed.version !== expected.version) {
+    throw new Error(
+      `React runtime catalog expected ${expected.name}@${expected.version} in ${packageRoot}.`,
+    );
+  }
+}
+
+/** Keeps package-owned files while excluding nested install state and sensitive configuration. */
+function shouldCopyRuntimePath(packageRoot, sourcePath) {
+  const relativePath = path.relative(packageRoot, sourcePath);
+  if (relativePath === '') return true;
+  const segments = relativePath.split(path.sep);
+  const basename = segments.at(-1) ?? '';
+  return (
+    !segments.includes('node_modules') &&
+    !/^(?:\.env(?:\..*)?|\.npmrc|\.yarnrc(?:\..*)?)$/iu.test(basename)
   );
 }
 
@@ -69,9 +143,11 @@ async function runBuild() {
   await removeObsoleteHostArtifacts();
   if (!shouldWatch) {
     await Promise.all(buildPlans.map(async (options) => esbuild.build(options)));
+    await prepareReact18RuntimeCatalog();
     return;
   }
 
+  await prepareReact18RuntimeCatalog();
   const contexts = await Promise.all(buildPlans.map(async (options) => esbuild.context(options)));
   await Promise.all(contexts.map(async (context) => context.watch()));
   console.log('Watching extension sources for changes...');

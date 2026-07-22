@@ -39,6 +39,8 @@ interface ExtensionManifest {
   };
   /** Runtime packages VSCE must retain for compiler and managed React seed environments. */
   readonly dependencies?: Readonly<Record<string, string>>;
+  /** Exact build inputs copied into the versioned React 18 catalog below dist. */
+  readonly devDependencies?: Readonly<Record<string, string>>;
   /** Minimum editor version required by the packaged extension-host module format. */
   readonly engines?: {
     readonly vscode?: string;
@@ -65,9 +67,16 @@ describe('extension manifest', () => {
     expect(manifest.engines?.vscode).toBe('^1.100.0');
     expect(manifest.main).toBe('./dist/extension.mjs');
     expect(manifest.dependencies).toMatchObject({
+      '@yarnpkg/parsers': '3.0.3',
       esbuild: '0.28.1',
       react: '19.2.7',
       'react-dom': '19.2.7',
+      tar: '7.5.20',
+    });
+    expect(manifest.devDependencies).toMatchObject({
+      'react-preview-react-18': 'npm:react@18.3.1',
+      'react-preview-react-dom-18': 'npm:react-dom@18.3.1',
+      'react-preview-scheduler-18': 'npm:scheduler@0.23.2',
     });
     expect(manifest.activationEvents).toEqual(
       expect.arrayContaining([

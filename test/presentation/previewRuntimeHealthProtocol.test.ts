@@ -37,6 +37,50 @@ describe('Preview runtime health protocol', () => {
     });
   });
 
+  /** Accepts the bounded page composition shape used by human-readable Output formatting. */
+  it('parses page composition snapshots', () => {
+    const message = readPreviewRuntimeHealthMessage({
+      event: {
+        category: 'page-composition',
+        detail: {
+          applicationPath: ['Application', 'Page', 'Target'],
+          blockerSummary: { active: 0, items: [], total: 0 },
+          candidate: { complete: true, id: 'application-page', rootExport: 'Application' },
+          missingShellNames: [],
+          statusCounts: { hostOutput: 4, mounted: 6 },
+          targetState: { hasOutput: true, mounted: true, stage: 'target-output' },
+          treeRows: [
+            {
+              blocker: false,
+              currentFile: true,
+              depth: 2,
+              kind: 'target',
+              mounted: true,
+              name: 'Target',
+              state: 'mounted-output',
+            },
+          ],
+        },
+        event: 'page-composition-snapshot',
+        eventId: 'runtime-health-2',
+        revision: 1,
+        sequence: 2,
+        severity: 'info',
+        timestamp: '2026-07-23T00:00:00.000Z',
+      },
+      type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
+    });
+
+    expect(message?.event).toMatchObject({
+      detail: {
+        targetState: { stage: 'target-output' },
+        treeRows: [{ currentFile: true, name: 'Target' }],
+      },
+      event: 'page-composition-snapshot',
+      severity: 'info',
+    });
+  });
+
   /** Accepts one source-backed circular GraphQL interpolation recovery warning. */
   it('parses GraphQL document recovery diagnostics', () => {
     const message = readPreviewRuntimeHealthMessage({
@@ -61,6 +105,25 @@ describe('Preview runtime health protocol', () => {
       event: 'graphql-interpolation-repaired',
       severity: 'warn',
     });
+  });
+
+  /** Preserves effect-isolation warnings emitted when preview-only side effects are neutralized. */
+  it('parses runtime effect isolation diagnostics', () => {
+    const message = readPreviewRuntimeHealthMessage({
+      event: {
+        category: 'render-isolation',
+        detail: { hookName: 'usePollingEffect', reason: 'repeating-preview-side-effect' },
+        event: 'runtime-effect-isolated',
+        eventId: 'runtime-health-3',
+        revision: 1,
+        sequence: 3,
+        severity: 'warn',
+        timestamp: '2026-07-23T00:00:02.000Z',
+      },
+      type: PREVIEW_RUNTIME_HEALTH_MESSAGE_TYPE,
+    });
+
+    expect(message?.event.event).toBe('runtime-effect-isolated');
   });
 
   /** Retains revision, parent error ancestry, and exact compiler-authored source evidence. */

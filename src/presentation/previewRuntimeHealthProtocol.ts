@@ -21,9 +21,11 @@ const HEALTH_JSON_CHARACTER_LIMIT = 64 * 1024;
 const HEALTH_BLOCKED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const HEALTH_EVENTS = new Set<PreviewRuntimeHealthEventKind>([
   'graphql-interpolation-repaired',
+  'page-composition-snapshot',
   'page-context-selected',
   'render-attempt-started',
   'render-attempt-settled',
+  'runtime-effect-isolated',
   'runtime-error-cascade',
   'runtime-error-fallback',
   'runtime-error-root',
@@ -36,9 +38,11 @@ const HEALTH_SEVERITIES = new Set<PreviewRuntimeHealthSeverity>(['error', 'info'
 /** Renderer mechanisms and correlated outcomes admitted by the live health stream. */
 export type PreviewRuntimeHealthEventKind =
   | 'graphql-interpolation-repaired'
+  | 'page-composition-snapshot'
   | 'page-context-selected'
   | 'render-attempt-started'
   | 'render-attempt-settled'
+  | 'runtime-effect-isolated'
   | 'runtime-error-cascade'
   | 'runtime-error-fallback'
   | 'runtime-error-root'

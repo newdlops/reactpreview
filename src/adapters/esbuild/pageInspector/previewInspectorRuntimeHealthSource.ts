@@ -14,6 +14,7 @@ const PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT = 4_000;
 const PREVIEW_INSPECTOR_HEALTH_ERROR_CHAIN_MS = 5_000;
 const previewInspectorRuntimeHealthEvents = new Set([
   'graphql-interpolation-repaired',
+  'page-composition-snapshot',
   'page-context-selected',
   'render-attempt-started',
   'render-attempt-settled',

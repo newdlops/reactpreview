@@ -35,6 +35,11 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
     expect(source).toContain('ref: setPreviewInspectorCompanionShell');
     expect(source).toContain('React.useEffect(schedulePreviewInspectorCompanionSnapshot)');
+    expect(source).toContain('createPreviewInspectorPageCompositionHealthSnapshot(snapshot)');
+    expect(source).toContain(
+      'recordPreviewInspectorPageCompositionHealthSnapshot(pageCompositionHealth)',
+    );
+    expect(source).toContain("event: 'page-composition-snapshot'");
     expect(source).toContain('function PreviewInspectorResizeHandle');
     expect(source).toContain('function PreviewInspectorMoveHandle');
     expect(source).toContain('beginPreviewInspectorLayoutPointerGesture');

@@ -15,6 +15,7 @@ import { createPreviewInspectorDataUiRuntimeSource } from './previewInspectorDat
 import { createPreviewInspectorDeferredUiTriggerUiRuntimeSource } from './previewInspectorDeferredUiTriggerUiRuntimeSource';
 import { createPreviewInspectorHiddenElementsUiRuntimeSource } from './previewInspectorHiddenElementsUiRuntimeSource';
 import { createPreviewInspectorPageCandidateUiRuntimeSource } from './previewInspectorPageCandidateUiRuntimeSource';
+import { createPreviewInspectorPageCompositionHealthRuntimeSource } from './previewInspectorPageCompositionHealthRuntimeSource';
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
@@ -43,6 +44,8 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
+  const pageCompositionHealthRuntimeSource =
+    createPreviewInspectorPageCompositionHealthRuntimeSource();
   const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
@@ -69,6 +72,7 @@ ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
 ${navigationUiRuntimeSource}
 ${wireframeUiRuntimeSource}
+${pageCompositionHealthRuntimeSource}
 /** Normalizes one source identity while leaving its opaque path untouched for source navigation. */
 function normalizePreviewInspectorUiSource(source) {
   if (source === null || typeof source !== 'object') return undefined;
@@ -730,6 +734,12 @@ function PreviewInspectorToolbar() {
   usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible);
   const { layout, persistLayout, updateLayout } = usePreviewInspectorLayout();
   const snapshot = collectPreviewInspectorUiTreeSnapshot();
+  const pageCompositionHealth =
+    createPreviewInspectorPageCompositionHealthSnapshot(snapshot);
+  React.useEffect(
+    () => recordPreviewInspectorPageCompositionHealthSnapshot(pageCompositionHealth),
+    [pageCompositionHealth.digest],
+  );
   const collectorSelectedId = snapshot.selectedId;
   const selectedTreeNodeId = previewInspectorSession.selectedTreeNodeId ?? collectorSelectedId;
   const selectedNode = findPreviewInspectorUiNode(snapshot.roots, selectedTreeNodeId) ??

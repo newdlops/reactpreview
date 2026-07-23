@@ -49,6 +49,27 @@ describe('Preview Inspector runtime health source', () => {
     });
   });
 
+  /** Admits compact page-tree snapshots as first-class informational health decisions. */
+  it('records page composition snapshots once per stable renderer-owned detail', () => {
+    const runtime = createRuntimeHealthFixture();
+    const snapshot = {
+      category: 'page-composition',
+      detail: {
+        applicationPath: ['Application', 'Page', 'Target'],
+        statusCounts: { mounted: 3 },
+        targetState: { hasOutput: true, mounted: true },
+      },
+      event: 'page-composition-snapshot',
+    };
+
+    runtime.record(snapshot);
+    runtime.record(snapshot);
+
+    expect(runtime.messages.map((message) => message.event.event)).toEqual([
+      'page-composition-snapshot',
+    ]);
+  });
+
   /** Emits theme repairs once and links a stack-evidenced fallback to its first runtime error. */
   it('records revision-local health decisions and fallback error ancestry', () => {
     const runtime = createRuntimeHealthFixture();

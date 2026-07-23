@@ -276,6 +276,38 @@ function formatPreviewInspectorPageCandidate(candidate, index) {
       : entryConnected ? ' · application path' : ' · partial context') + routeLabel;
 }
 
+/**
+ * Serializes the bounded static evidence behind one page choice for the Output-channel trace.
+ *
+ * Candidate labels alone conceal why a direct-file fallback beat an application root. Retaining
+ * the stop reason, entry identity, root checkpoint, route, and authored step names makes that
+ * ranking failure diagnosable without dumping the complete compiler descriptor into the webview
+ * protocol or log.
+ */
+function createPreviewInspectorPageCandidateHealthSummary(candidate) {
+  const renderPath = candidate?.renderPath;
+  const steps = (renderPath?.steps ?? []).slice(0, 8);
+  return {
+    complete: candidate?.complete === true,
+    entryConnected: renderPath?.entryPoint !== undefined,
+    entrySourcePath: renderPath?.entryPoint?.sourcePath,
+    id: candidate?.id,
+    rootExport: candidate?.root?.exportName,
+    rootSourcePath: candidate?.root?.sourcePath,
+    rootStepIndex: Number.isInteger(candidate?.rootStepIndex)
+      ? candidate.rootStepIndex
+      : undefined,
+    routePathname: candidate?.routeLocation?.pathname,
+    stopReason: candidate?.stopReason ?? 'unknown',
+    steps: steps.map((step) => ({
+      label: step?.label,
+      sourcePath: step?.sourcePath,
+      wrappers: (step?.wrapperNames ?? []).slice(0, 8),
+    })),
+    stepsOmitted: Math.max(0, (renderPath?.steps?.length ?? 0) - steps.length),
+  };
+}
+
 /** Selects one authored caller path and asks the root, tree, and highlight layers to reconcile. */
 function selectPreviewInspectorPageCandidate(candidateId) {
   if (typeof candidateId !== 'string' || candidateId.length === 0) return;
@@ -489,11 +521,19 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
   React.useEffect(() => {
     if (typeof recordPreviewInspectorRuntimeHealth !== 'function') return;
     const routeLocation = candidate?.routeLocation;
+    const pageCandidates = readPreviewInspectorPageCandidates(descriptor);
+    const candidateSummaries = pageCandidates
+      .slice(0, 4)
+      .map(createPreviewInspectorPageCandidateHealthSummary);
     recordPreviewInspectorRuntimeHealth({
       category: 'page-context',
       detail: {
+        applicationPath: (reachability.applicationPath ?? []).slice(0, 32),
         candidateComplete: candidate?.complete === true,
+        candidateCount: pageCandidates.length,
         candidateId: candidate?.id,
+        candidateSummaries,
+        candidatesOmitted: Math.max(0, pageCandidates.length - candidateSummaries.length),
         directTarget,
         ...(typeof routeLocation?.sourcePath === 'string'
           ? { evidence: { sourcePath: routeLocation.sourcePath } }
@@ -512,8 +552,11 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
         routerPathname: candidateInitialEntry ?? '/',
         rootExport: candidate?.root?.exportName,
         rootSourcePath: candidate?.root?.sourcePath,
+        rootStepIndex: candidate?.rootStepIndex,
         rootOwnsRouter: candidate?.rootOwnsRouter === true,
         routeInferred: typeof routeLocation?.pathname === 'string',
+        stopReason: candidate?.stopReason ?? 'unknown',
+        targetExport: reachability.targetExportName,
       },
       event: 'page-context-selected',
     });

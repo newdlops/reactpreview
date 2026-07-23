@@ -12,6 +12,7 @@ interface CandidateFixture {
     readonly entryPoint?: { readonly sourcePath: string };
     readonly steps?: readonly {
       readonly label: string;
+      readonly sourcePath?: string;
       readonly wrapperNames?: readonly string[];
     }[];
   };
@@ -19,6 +20,7 @@ interface CandidateFixture {
   readonly rootStepIndex?: number;
   readonly rootOwnsRouter?: boolean;
   readonly routeLocation?: { readonly pathname: string };
+  readonly stopReason?: string;
 }
 
 describe('Preview Inspector page-candidate runtime source', () => {
@@ -92,6 +94,11 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('requestedRouterPathname: candidateInitialEntry');
     expect(source).toContain("routeLocation?.evidenceKind === 'next-app-filesystem'");
     expect(source).toContain("event: 'page-context-selected'");
+    expect(source).toContain('function createPreviewInspectorPageCandidateHealthSummary');
+    expect(source).toContain('applicationPath: (reachability.applicationPath ?? []).slice(0, 32)');
+    expect(source).toContain('candidateSummaries');
+    expect(source).toContain('candidatesOmitted');
+    expect(source).toContain("stopReason: candidate?.stopReason ?? 'unknown'");
     expect(source).toContain("evidenceKind: routeLocation?.evidenceKind ?? 'none'");
     expect(source).toContain('nextAppLayoutPaths: (candidate?.nextAppLayoutChain ?? [])');
     expect(source).toContain('nextPagesAppPath: candidate?.nextPagesShell?.app?.sourcePath');

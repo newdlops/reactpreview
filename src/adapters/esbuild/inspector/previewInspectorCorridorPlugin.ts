@@ -12,6 +12,7 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+import { createPreviewLargePackageBarrelPlugin } from '../previewLargePackageBarrelPlugin';
 import { PREVIEW_RESOLVE_GUARD } from '../previewPluginProtocol';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
@@ -24,6 +25,7 @@ import {
   type PreviewStaticRouteProjectionInventory,
 } from './previewInspectorStaticRouteProjection';
 import {
+  collectPreviewInspectorRuntimeHookProjectionInventory,
   collectPreviewInspectorShallowProjectionInventory,
   createPreviewInspectorShallowProjectionSource,
   type PreviewInspectorShallowProjection,
@@ -37,6 +39,7 @@ const INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE = 'react-preview-inspector-shallow-co
 const MAX_DYNAMIC_IMPORTER_SOURCE_BYTES = 1024 * 1024;
 const MAX_SMALL_DYNAMIC_IMPORTS = 24;
 const MAX_SMALL_STATIC_ROUTE_IMPORTS = 0;
+const MINIMUM_SELECTED_PACKAGE_BARREL_EXPORTS = 64;
 const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 
 /** Bounded syntax facts used to distinguish a helper loader from a generated route registry. */
@@ -55,10 +58,14 @@ export interface PreviewInspectorCorridorPluginOptions {
   readonly maximumSmallDynamicImports?: number;
   /** Optional first-paint limit after which proven eager leaf routes use inert projections. */
   readonly maximumSmallStaticRouteImports?: number;
+  /** Enables direct leaf projection only for package roots imported by the selected fast corridor. */
+  readonly optimizeSelectedPackageBarrels?: boolean;
   /** Static target-to-entry and mount-candidate evidence selected for this Page Inspector build. */
   readonly plan: PreviewInspectorAncestorPlan;
   /** Nearest package root used to distinguish application sources from installed dependencies. */
   readonly projectRoot: string;
+  /** Reads the current dirty editor source before falling back to the filesystem. */
+  readonly readSource?: (sourcePath: string) => string | undefined;
   /** Existing compiler-owned resolver; reusing it avoids recursive esbuild resolution per route. */
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   /** Trusted VS Code workspace that must contain every intercepted project source. */
@@ -91,6 +98,11 @@ export function createPreviewInspectorCorridorPlugin(
     [...shallowExportsByPath.keys()].filter((sourcePath) => !exactCorridorPaths.has(sourcePath)),
   );
   const corridorPaths = new Set([...exactCorridorPaths, ...shallowVisualPaths]);
+  const selectedPackageDemandPaths = new Set([
+    ...corridorPaths,
+    ...(options.plan.shallowVisualPaths?.map((item) => canonicalizeExistingPath(item.sourcePath)) ??
+      []),
+  ]);
   const corridorModuleStems = createPreviewInspectorCorridorModuleStemSet(options.plan);
   const routeParameterGroups = collectPreviewInspectorRouteParameterGroups(options.plan);
   const importerEvidenceByPath = new Map<string, Promise<PreviewDynamicImporterEvidence>>();
@@ -102,13 +114,17 @@ export function createPreviewInspectorCorridorPlugin(
     string,
     Promise<PreviewInspectorShallowProjectionInventory>
   >();
+  const runtimeHookImporterEvidenceByPath = new Map<
+    string,
+    Promise<PreviewInspectorShallowProjectionInventory>
+  >();
 
   /**
-   * Stops one project-component boundary below an authentic shallow visual root.
+   * Stops one project-component boundary below a shallow root or one fallback-proven project hook.
    *
-   * Only imports proven to supply React component identities are projected. Styles, assets,
-   * helpers, hooks, mixed imports, exact corridor modules, and other shallow roots keep their
-   * authored behavior.
+   * Visual projection remains limited to authentic shallow roots. Exact selected corridor modules
+   * may additionally cut hook-only project imports when every call has demand-shaped fallback
+   * evidence; styles, assets, helpers, mixed imports, and semantic infrastructure stay authored.
    */
   async function resolveShallowVisualChild(
     arguments_: OnResolveArgs,
@@ -122,8 +138,10 @@ export function createPreviewInspectorCorridorPlugin(
       return undefined;
     }
     const canonicalImporter = canonicalizeExistingPath(arguments_.importer);
-    if (!shallowVisualPaths.has(canonicalImporter)) return undefined;
-    const evidence = await readShallowImporterEvidence(canonicalImporter);
+    if (!corridorPaths.has(canonicalImporter)) return undefined;
+    const evidence = shallowVisualPaths.has(canonicalImporter)
+      ? await readShallowImporterEvidence(canonicalImporter)
+      : await readRuntimeHookImporterEvidence(canonicalImporter);
     const projection = evidence.projectionsBySpecifier.get(arguments_.path);
     if (projection === undefined) return undefined;
     const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
@@ -332,6 +350,24 @@ export function createPreviewInspectorCorridorPlugin(
     return pending;
   }
 
+  /** Parses hook-only project boundaries on an exact selected module once per rebuild. */
+  function readRuntimeHookImporterEvidence(
+    sourcePath: string,
+  ): Promise<PreviewInspectorShallowProjectionInventory> {
+    const existing = runtimeHookImporterEvidenceByPath.get(sourcePath);
+    if (existing !== undefined) return existing;
+    const pending = readBoundedSource(sourcePath).then((sourceText) =>
+      sourceText === undefined
+        ? {
+            projectionsBySpecifier: new Map<string, PreviewInspectorShallowProjection>(),
+            truncated: true,
+          }
+        : collectPreviewInspectorRuntimeHookProjectionInventory(sourcePath, sourceText),
+    );
+    runtimeHookImporterEvidenceByPath.set(sourcePath, pending);
+    return pending;
+  }
+
   /** Emits one shared side-effect-free module for every unselected generated route branch. */
   function loadDeferredBranch(arguments_: OnLoadArgs): OnLoadResult {
     if (arguments_.path !== INSPECTOR_CORRIDOR_PLACEHOLDER_PATH) {
@@ -376,11 +412,22 @@ export function createPreviewInspectorCorridorPlugin(
   return {
     name: 'react-preview-inspector-corridor',
     setup(build): void {
+      if (options.optimizeSelectedPackageBarrels === true) {
+        void createPreviewLargePackageBarrelPlugin({
+          allowPhysicalLeafProjection: true,
+          minimumBarrelExports: MINIMUM_SELECTED_PACKAGE_BARREL_EXPORTS,
+          packageDemandSourcePaths: selectedPackageDemandPaths,
+          ...(options.readSource === undefined ? {} : { readSource: options.readSource }),
+          resolvePackageRoot: options.resolveModule,
+          workspaceRoot,
+        }).setup(build);
+      }
       // Persistent esbuild contexts reuse the plugin closure across hot rebuilds. Syntax evidence
       // must therefore be reread at each build boundary instead of retaining a stale generated
       // registry after an authored source save.
       build.onStart(() => {
         importerEvidenceByPath.clear();
+        runtimeHookImporterEvidenceByPath.clear();
         shallowImporterEvidenceByPath.clear();
         staticImporterEvidenceByPath.clear();
       });
@@ -470,13 +517,17 @@ function readShallowProjectionPluginData(
     typeof value.moduleSpecifier !== 'string' ||
     !('exportNames' in value) ||
     !Array.isArray(value.exportNames) ||
-    !value.exportNames.every((name) => typeof name === 'string')
+    !value.exportNames.every((name) => typeof name === 'string') ||
+    !('runtimeHookExportNames' in value) ||
+    !Array.isArray(value.runtimeHookExportNames) ||
+    !value.runtimeHookExportNames.every((name) => typeof name === 'string')
   ) {
     return undefined;
   }
   return {
     exportNames: Object.freeze([...value.exportNames]),
     moduleSpecifier: value.moduleSpecifier,
+    runtimeHookExportNames: Object.freeze([...value.runtimeHookExportNames]),
   };
 }
 
@@ -522,7 +573,12 @@ function collectPreviewInspectorShallowExportsByPath(
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const exportsByPath = new Map<string, Set<string>>();
   for (const item of plan.shallowVisualPaths ?? []) {
-    if (item.relation === 'wrapper') continue;
+    /*
+     * Route alternatives are inactive page outcomes and wrappers already belong to the exact
+     * corridor. Siblings and ordinary component props are requested first-depth page composition:
+     * a frame's `component={Header}` must keep Header authentic while projecting its descendants.
+     */
+    if (item.relation === 'wrapper' || item.relation === 'route-alternative') continue;
     const sourcePath = canonicalizeExistingPath(item.sourcePath);
     const exportNames = exportsByPath.get(sourcePath) ?? new Set<string>();
     exportNames.add(item.exportName);

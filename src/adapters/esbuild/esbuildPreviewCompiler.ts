@@ -486,8 +486,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     }),
                     createPreviewInspectorCorridorPlugin({
                       ...(useFastPreparation ? { maximumSmallDynamicImports: 8 } : {}),
+                      optimizeSelectedPackageBarrels: useFastPreparation,
                       plan: inspectorPlan,
                       projectRoot,
+                      readSource: (sourcePath) =>
+                        snapshotSourceByPath.get(path.normalize(sourcePath)),
                       resolveModule: staticModuleResolver.resolve,
                       workspaceRoot: canonicalWorkspaceRoot,
                     }),

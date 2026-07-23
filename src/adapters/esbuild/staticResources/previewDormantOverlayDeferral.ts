@@ -1,11 +1,11 @@
 /**
- * Lazily defers statically dormant, package-declared side-effect-free project overlays.
+ * Removes statically dormant project overlays from the provisional first-paint graph.
  *
  * The transform is intentionally strict. It rewrites an import only when every reference resolves
  * to the exact imported binding, every JSX use is hidden by a lexical React `useState` boolean or a
- * literal, no JSX spread can override visibility, and the owning package declares
- * `sideEffects: false`. Activating the visibility switch loads and renders the real component
- * through `React.lazy`; the placeholder exists only while that real module is loading.
+ * literal, and no JSX spread can override visibility. Fast preparation may cross a package whose
+ * manifest omits `sideEffects` only when the caller explicitly opts into a provisional boundary;
+ * the subsequent full preparation never enables this transform and restores exact module effects.
  */
 import path from 'node:path';
 import ts from 'typescript';
@@ -37,6 +37,8 @@ export interface PreviewDormantOverlayResolver {
 
 /** Inputs needed to prove that a dormant component belongs to the trusted workspace. */
 export interface PreviewDormantOverlayDeferralOptions {
+  /** Allows a fast-only placeholder when a workspace package omits side-effect metadata. */
+  readonly allowProvisionalSideEffectDeferral?: boolean;
   /** Exact compiler resolver shared with the eventual esbuild graph. */
   readonly resolver: PreviewDormantOverlayResolver;
   /** Absolute source identity used for parser grammar and relative resolution. */
@@ -100,8 +102,6 @@ interface LexicalBindingIndex {
 interface DeferredReactBindings {
   readonly createElement: string;
   readonly forwardRef: string;
-  readonly lazy: string;
-  readonly suspense: string;
 }
 
 /** Allocates generated identifiers while retaining authored and previously generated names. */
@@ -156,8 +156,6 @@ export function deferPreviewDormantOverlayImports(
   const react: DeferredReactBindings = {
     createElement: allocator.next('__reactPreviewCreateElement'),
     forwardRef: allocator.next('__reactPreviewForwardRef'),
-    lazy: allocator.next('__reactPreviewLazy'),
-    suspense: allocator.next('__reactPreviewSuspense'),
   };
   const edits = groupBindingsByDeclaration(deferred).map((plan, index) =>
     createImportReplacement(plan, sourceFile, react, allocator, index === 0),
@@ -331,7 +329,7 @@ function readReactUseStateInitialBoolean(
   return undefined;
 }
 
-/** Selects component-shaped imports from side-effect-free workspace modules only. */
+/** Selects component-shaped workspace imports allowed by exact or provisional fast evidence. */
 function collectOverlayImportBindings(
   sourceFile: ts.SourceFile,
   options: PreviewDormantOverlayDeferralOptions,
@@ -354,7 +352,11 @@ function collectOverlayImportBindings(
       options.workspaceRoot,
       options.resolver,
     );
-    if (resolvedPath === undefined || options.resolver.isSideEffectFree?.(resolvedPath) !== true) {
+    if (
+      resolvedPath === undefined ||
+      (options.resolver.isSideEffectFree?.(resolvedPath) !== true &&
+        options.allowProvisionalSideEffectDeferral !== true)
+    ) {
       continue;
     }
     const clause = statement.importClause;
@@ -513,7 +515,7 @@ function groupBindingsByDeclaration(
   return [...grouped].map(([declaration, group]) => ({ bindings: group, declaration }));
 }
 
-/** Reprints retained bindings and appends line-preserving lazy overlay wrappers. */
+/** Reprints retained bindings and appends line-preserving provisional overlay wrappers. */
 function createImportReplacement(
   plan: DeferredImportPlan,
   sourceFile: ts.SourceFile,
@@ -546,7 +548,7 @@ function createImportReplacement(
       ? ''
       : `import ${retainedParts.join(', ')} from ${plan.declaration.moduleSpecifier.getText(sourceFile)};`;
   const reactImport = includeReactImport
-    ? `import { createElement as ${react.createElement}, forwardRef as ${react.forwardRef}, lazy as ${react.lazy}, Suspense as ${react.suspense} } from "react";`
+    ? `import { createElement as ${react.createElement}, forwardRef as ${react.forwardRef} } from "react";`
     : '';
   const wrappers = plan.bindings.map((binding) =>
     createDeferredOverlayWrapper(binding, react, allocator),
@@ -563,13 +565,12 @@ function createImportReplacement(
   };
 }
 
-/** Creates a ref-preserving wrapper that renders the real imported component after activation. */
+/** Creates a ref-preserving fast placeholder without retaining the dormant module graph. */
 function createDeferredOverlayWrapper(
   binding: OverlayImportBinding,
   react: DeferredReactBindings,
   allocator: GeneratedBindingAllocator,
 ): string {
-  const lazyComponent = allocator.next('__reactPreviewDeferredOverlay');
   const properties = allocator.next('__reactPreviewOverlayProps');
   const forwardedRef = allocator.next('__reactPreviewOverlayRef');
   const visible = allocator.next('__reactPreviewOverlayVisible');
@@ -587,14 +588,12 @@ function createDeferredOverlayWrapper(
     'defaultVisible',
   ].map((name) => `${properties}?.${name}`);
   const negativeChecks = ['hidden', 'isHidden'].map((name) => `${properties}?.${name} === false`);
-  const loadingLabel = `${binding.localName} · loading deferred overlay`;
+  const loadingLabel = `${binding.localName} · deferred during fast preview`;
   return [
-    `const ${lazyComponent} = ${react.lazy}(() => import(${JSON.stringify(binding.specifier)}).then((module) => ({ default: module[${JSON.stringify(binding.exportName)}] })));`,
     `const ${binding.localName} = ${react.forwardRef}((${properties}, ${forwardedRef}) => {`,
     `const ${visible} = Boolean(${[...positiveChecks, ...negativeChecks].join(' || ')});`,
     `if (!${visible}) return null;`,
-    `const loading = ${react.createElement}("div", { "data-react-preview-deferred-overlay": ${JSON.stringify(binding.localName)}, role: "status" }, ${JSON.stringify(loadingLabel)});`,
-    `return ${react.createElement}(${react.suspense}, { fallback: loading }, ${react.createElement}(${lazyComponent}, { ...${properties}, ref: ${forwardedRef} }));`,
+    `return ${react.createElement}("div", { "data-react-preview-deferred-overlay": ${JSON.stringify(binding.localName)}, "data-react-preview-module": ${JSON.stringify(binding.specifier)}, ref: ${forwardedRef}, role: "status" }, ${JSON.stringify(loadingLabel)});`,
     '});',
   ].join(' ');
 }

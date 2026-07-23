@@ -7,8 +7,10 @@ import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
-  /** Replaces proven false-state project overlays with visible lightweight deferred markers. */
+  /** Removes proven false-state overlays from fast builds behind visible provisional markers. */
   readonly deferDormantOverlayImports?: boolean;
+  /** Uses a target-focused compatibility pass before exact full-context enrichment replaces it. */
+  readonly fastPreparation?: boolean;
   /** Active editor target whose direct component exports may receive bounded prop defaults. */
   readonly documentPath?: string;
   /** Exact dependency/global names worth checking in modules esbuild actually reaches. */

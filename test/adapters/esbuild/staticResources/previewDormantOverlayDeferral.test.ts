@@ -25,8 +25,8 @@ describe('deferPreviewDormantOverlayImports', () => {
 
     expect(transformed).toContain("import { EditorButton } from './editor';");
     expect(transformed).toContain('const EditorModal = __reactPreviewForwardRef');
-    expect(transformed).toContain('lazy as __reactPreviewLazy');
-    expect(transformed).toContain('import("./editor")');
+    expect(transformed).not.toContain('import("./editor")');
+    expect(transformed).toContain('data-react-preview-module');
     expect(transformed).toContain('data-react-preview-deferred-overlay');
     expect(transformed).toContain('<EditorModal show={showEditorModal}');
   });
@@ -39,7 +39,7 @@ describe('deferPreviewDormantOverlayImports', () => {
 
     expect(transformed).not.toContain("import AccountDialog from './AccountDialog'");
     expect(transformed).toContain('const AccountDialog = __reactPreviewForwardRef');
-    expect(transformed).toContain('module["default"]');
+    expect(transformed).not.toContain('import("./AccountDialog")');
   });
 
   /** A non-JSX reference can carry styled or imperative semantics, so it must fail closed. */
@@ -100,7 +100,7 @@ describe('deferPreviewDormantOverlayImports', () => {
     expect(transform(laterVisible)).toBe(laterVisible);
   });
 
-  /** Negative and less-common positive visibility controls load the real module after activation. */
+  /** Negative and less-common positive visibility controls expose the provisional marker. */
   it('supports every visibility family used by conditional instrumentation', () => {
     const hidden =
       "import NoticeDrawer from './NoticeDrawer';\nexport const Page = () => <NoticeDrawer hidden />;";
@@ -111,7 +111,7 @@ describe('deferPreviewDormantOverlayImports', () => {
     const presentResult = transform(present);
     expect(hiddenResult).toContain('__reactPreviewOverlayProps?.hidden === false');
     expect(presentResult).toContain('__reactPreviewOverlayProps?.present');
-    expect(presentResult).toContain('import("./NoticeModal")');
+    expect(presentResult).not.toContain('import("./NoticeModal")');
   });
 
   /** Missing declarative side-effect evidence keeps normal eager import evaluation exact. */
@@ -126,6 +126,23 @@ describe('deferPreviewDormantOverlayImports', () => {
     });
 
     expect(transformed).toBe(source);
+  });
+
+  /** Fast preparation may use an auditable placeholder until the exact full graph replaces it. */
+  it('provisionally defers a workspace overlay without package side-effect metadata', () => {
+    const source =
+      "import AccountDialog from './AccountDialog';\nexport default () => <AccountDialog open={false} />;";
+    const transformed = deferPreviewDormantOverlayImports({
+      allowProvisionalSideEffectDeferral: true,
+      resolver: { resolve: () => '/workspace/src/AccountDialog.tsx' },
+      sourcePath: SOURCE_PATH,
+      sourceText: source,
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    expect(transformed).not.toContain("from './AccountDialog'");
+    expect(transformed).toContain('AccountDialog · deferred during fast preview');
+    expect(transformed).not.toContain('import("./AccountDialog")');
   });
 
   /** Generated wrappers consume no additional physical lines before later authored statements. */

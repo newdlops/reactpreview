@@ -35,6 +35,7 @@ import { collectPreviewReduxStateContainerPaths } from './reduxStateContainerPat
 import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGlobals';
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
+import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntimeHookChildPropDemand';
 import * as framework from './previewFrameworkReplacements';
 import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
@@ -47,6 +48,7 @@ import {
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
+import { requiresFastDependencyCompatibility } from './previewFastDependencyCompatibility';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
 import {
@@ -103,6 +105,8 @@ export class PreviewSourceTransformer {
   };
   private readonly watchDirectories = new Set<string>();
   private readonly graphqlInstrumentation: PreviewGraphqlDocumentInstrumentation | undefined;
+  private readonly runtimeHookChildPropDemands:
+    PreviewRuntimeHookChildPropDemandCatalogBuilder | undefined;
   /** Creates a transformer without reading or executing project build configuration. */
   public constructor(private readonly options: PreviewSourceTransformerOptions) {
     this.graphqlInstrumentation =
@@ -115,6 +119,21 @@ export class PreviewSourceTransformer {
             workspaceRoot: options.workspaceRoot,
           })
         : undefined;
+    this.runtimeHookChildPropDemands =
+      options.instrumentRuntimeHookFallbacks === true && options.graphqlModuleResolver !== undefined
+        ? new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+            ...(options.readGraphqlSource === undefined
+              ? {}
+              : { readSource: options.readGraphqlSource }),
+            resolveModule: options.graphqlModuleResolver.resolve,
+            workspaceRoot: options.workspaceRoot,
+          })
+        : undefined;
+  }
+
+  /** Reports whether this transformer owns a provisional first-paint compilation. */
+  public get usesFastPreparation(): boolean {
+    return this.options.fastPreparation === true;
   }
 
   /**
@@ -135,6 +154,7 @@ export class PreviewSourceTransformer {
       this.options.implicitPackageGlobalResolver !== undefined
     ) {
       sourceText = deferPreviewDormantOverlayImports({
+        allowProvisionalSideEffectDeferral: true,
         resolver: this.options.implicitPackageGlobalResolver,
         sourcePath,
         sourceText,
@@ -142,6 +162,9 @@ export class PreviewSourceTransformer {
       });
     }
     const initialWatchDirectories = new Set(this.watchDirectories);
+    if (this.canUseFastDependencyPassThrough(sourcePath, sourceText)) {
+      return { contents: sourceText, watchDirectories: [] };
+    }
     const replacements: PreviewSourceReplacement[] = [];
     const generatedImports: string[] = [];
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
@@ -209,7 +232,13 @@ export class PreviewSourceTransformer {
         );
       }
       if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('use')) {
-        replacements.push(...createPreviewRuntimeHookReplacements(sourcePath, sourceText));
+        replacements.push(
+          ...createPreviewRuntimeHookReplacements(
+            sourcePath,
+            sourceText,
+            this.runtimeHookChildPropDemands?.collect(sourcePath, sourceText),
+          ),
+        );
       }
       if (
         this.options.instrumentRuntimeHookFallbacks === true &&
@@ -348,6 +377,23 @@ export class PreviewSourceTransformer {
       consumesRouter: this.routerConsumerDetected,
       ownsRouter: this.routerProviderDetected,
     };
+  }
+
+  /**
+   * Leaves ordinary fast descendants to esbuild's native parser instead of allocating several
+   * TypeScript trees per module. The selected target, provider definitions, framework adapters,
+   * and non-native resource expressions still use the complete compatibility pipeline. Full
+   * preparation never enters this path and therefore remains the exact Inspector artifact.
+   */
+  private canUseFastDependencyPassThrough(sourcePath: string, sourceText: string): boolean {
+    if (this.options.fastPreparation !== true) return false;
+    if (
+      this.options.documentPath !== undefined &&
+      path.normalize(sourcePath) === path.normalize(this.options.documentPath)
+    ) {
+      return false;
+    }
+    return !requiresFastDependencyCompatibility(sourceText, this.options.projectUsesNextRuntime);
   }
 
   /** Transforms one Vite glob call into a deterministic lazy or eager object literal. */

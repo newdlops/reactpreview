@@ -461,6 +461,27 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
   });
 
+  /** Keeps ReactNode-style Context arrays renderable when their map callback returns each item. */
+  it('infers a scalar item for an identity map that flows directly into React children', () => {
+    const source = [
+      `import { useButtons } from './button-toolbar-provider';`,
+      'export function ButtonToolBar() {',
+      '  const buttons = useButtons();',
+      '  if (buttons.length === 0) return null;',
+      '  return <div className="button-toolbar">{buttons.map((button) => button)}</div>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/ButtonToolBar.tsx', source),
+    );
+
+    expect(transformed).toContain('Object.freeze(["button"])');
+    expect(transformed).toContain('"requiredPaths":["[]"]');
+    expect(transformed).not.toContain('Object.freeze({ id: "preview-id", name: "name" })');
+  });
+
   /** Reuses authored Nuqs parser defaults so registry-backed query values stay in their domain. */
   it('recovers a local useQueryStates parser map without executing its provider', () => {
     const source = [

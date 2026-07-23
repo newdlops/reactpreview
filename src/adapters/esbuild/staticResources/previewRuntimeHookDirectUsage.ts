@@ -60,7 +60,11 @@ export function createPreviewRuntimeHookDirectUsageFallback(
         usage.conditional = true;
       } else if (ts.isJsxExpression(parent) && parent.expression === node) {
         if (isCallableJsxAttribute(parent.parent)) usage.called = true;
-        else if (!ts.isJsxAttribute(parent.parent)) usage.rendered = true;
+        else if (!ts.isJsxAttribute(parent.parent) || isChildrenJsxAttribute(parent.parent)) {
+          usage.rendered = true;
+        }
+      } else if (isRenderedCollectionCallbackValue(node, owner)) {
+        usage.rendered = true;
       }
     }
     ts.forEachChild(node, visit);
@@ -96,6 +100,51 @@ function createCompactPreviewKey(identifierName: string): string {
 function isCallableJsxAttribute(node: ts.Node): boolean {
   if (!ts.isJsxAttribute(node) || !ts.isIdentifier(node.name)) return false;
   return /^(?:on[A-Z0-9_$]|render[A-Z0-9_$])/u.test(node.name.text);
+}
+
+/** Recognizes React's explicit `children` prop as rendered content rather than an opaque prop. */
+function isChildrenJsxAttribute(node: ts.Node): boolean {
+  return ts.isJsxAttribute(node) && ts.isIdentifier(node.name) && node.name.text === 'children';
+}
+
+/**
+ * Detects an array callback that returns its item unchanged into an immediate React render sink.
+ *
+ * A Context hook such as `useButtons(): ReactNode[]` often feeds `buttons.map(button => button)`.
+ * Property-free analysis previously invented an `{ id, name }` object for that item, which React
+ * rejects as a child. The narrow identity-and-render proof below permits a short scalar while
+ * leaving callbacks that read item fields to the existing object-shape inference.
+ */
+function isRenderedCollectionCallbackValue(
+  expression: ts.Identifier,
+  owner: RuntimeFunction,
+): boolean {
+  if (!ts.isArrowFunction(owner) && !ts.isFunctionExpression(owner)) return false;
+  if (!owner.parameters.some((parameter) => bindingContainsName(parameter.name, expression.text))) {
+    return false;
+  }
+  const returnParent = unwrapParentNode(expression);
+  const returnsItem =
+    (ts.isArrowFunction(owner) &&
+      !ts.isBlock(owner.body) &&
+      unwrapExpression(owner.body) === expression) ||
+    (ts.isReturnStatement(returnParent) && returnParent.expression !== undefined);
+  if (!returnsItem) return false;
+  const call = unwrapParentNode(owner);
+  if (!ts.isCallExpression(call)) return false;
+  const callee = unwrapExpression(call.expression);
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    (callee.name.text !== 'map' && callee.name.text !== 'flatMap')
+  ) {
+    return false;
+  }
+  const renderParent = unwrapParentNode(call);
+  if (ts.isReturnStatement(renderParent)) return true;
+  return (
+    ts.isJsxExpression(renderParent) &&
+    (!ts.isJsxAttribute(renderParent.parent) || isChildrenJsxAttribute(renderParent.parent))
+  );
 }
 
 /** Locates the closest hook-capable runtime function without entering module initialization. */

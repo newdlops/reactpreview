@@ -15,6 +15,10 @@ import {
   readPreviewRuntimeHookBindingPropertyName,
 } from './previewRuntimeHookBindingPattern';
 import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
+import {
+  readPreviewRuntimeHookChildPropUsages,
+  type PreviewRuntimeHookChildPropDemandCatalog,
+} from './previewRuntimeHookChildPropDemand';
 import { applyPreviewRuntimeHookArrayLengthConstraints } from './previewRuntimeHookArrayLengthConstraints';
 import type { PreviewRuntimeHookArrayLengthConstraintMetadata } from './previewRuntimeHookArrayLengthConstraints';
 import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
@@ -42,6 +46,10 @@ import {
   unwrapPreviewRuntimeParentExpression as unwrapParentExpression,
 } from './previewRuntimeHookSyntax';
 import type { PreviewRuntimeFunction as RuntimeFunction } from './previewRuntimeHookSyntax';
+import {
+  createPreviewRuntimeSemanticString,
+  inferPreviewRuntimeSemanticFallback,
+} from './previewRuntimeHookSemantics';
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
 const MAX_METADATA_TEXT_LENGTH = 180;
@@ -57,6 +65,11 @@ const EXCLUDED_MODULES = new Set([
   'react/jsx-runtime',
   'styled-components',
 ]);
+/** Cross-module JSX demand is scoped to its parser tree and released after compilation. */
+const childPropDemandsBySourceFile = new WeakMap<
+  ts.SourceFile,
+  PreviewRuntimeHookChildPropDemandCatalog
+>();
 /** Import or local-declaration evidence for one callable custom hook binding. */
 interface PreviewRuntimeHookBinding {
   /** Authored hook name shown in Inspector diagnostics. */
@@ -143,6 +156,7 @@ interface PreviewRuntimeHookCandidate {
 export function createPreviewRuntimeHookReplacements(
   sourcePath: string,
   sourceText: string,
+  childPropDemands?: PreviewRuntimeHookChildPropDemandCatalog,
 ): readonly PreviewSourceReplacement[] {
   if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) {
     return [];
@@ -156,6 +170,9 @@ export function createPreviewRuntimeHookReplacements(
   );
   if (hasParseDiagnostics(sourceFile)) {
     return [];
+  }
+  if (childPropDemands !== undefined && childPropDemands.size > 0) {
+    childPropDemandsBySourceFile.set(sourceFile, childPropDemands);
   }
   const inventory = collectRuntimeHookInventory(sourceFile);
   if (inventory.direct.size === 0 && inventory.namespaces.size === 0) {
@@ -366,7 +383,7 @@ function inferRuntimeHookFallback(
   if (propertyFallback !== undefined) {
     return propertyFallback;
   }
-  const semanticFallback = inferSemanticFallback(hook.hookName);
+  const semanticFallback = inferPreviewRuntimeSemanticFallback(hook.hookName);
   return semanticFallback === undefined
     ? undefined
     : {
@@ -391,7 +408,7 @@ function createBindingFallback(
     if (directUsage?.callable === true) {
       return { ...directUsage, requiredPaths: ['<root>()'] };
     }
-    const semantic = inferSemanticFallback(binding.text);
+    const semantic = inferPreviewRuntimeSemanticFallback(binding.text);
     if (semantic !== undefined) return { ...semantic, requiredPaths: ['<root>'] };
     if (directUsage !== undefined) {
       return {
@@ -502,88 +519,6 @@ function prefixPreviewRuntimeHookPaths(
   });
 }
 
-/** Infers a static scalar, collection, object, or no-op function from a semantic local name. */
-function inferSemanticFallback(
-  rawName: string,
-): { readonly expression: string; readonly label: string } | undefined {
-  // Strip a hook prefix only at an actual `useX` boundary; `userName` is a data key, not `useRName`.
-  const name = rawName.replace(/^use(?=[A-Z0-9_$]|$)/u, '');
-  const semanticName = name.length === 0 ? name : name.charAt(0).toLowerCase() + name.slice(1);
-  const normalized = name.toLowerCase();
-  if (/^(?:is|matches)(?:large|wide|desktop)/u.test(normalized)) {
-    return {
-      expression: `(typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) >= 1024)`,
-      label: 'generated viewport match',
-    };
-  }
-  if (/^(?:is|matches)(?:small|narrow|mobile)/u.test(normalized)) {
-    return {
-      expression: `(typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) < 768)`,
-      label: 'generated viewport match',
-    };
-  }
-  if (
-    /^(?:is|has|can|should|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
-    /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended|touched|dirty|pristine|pending|matches)$/u.test(
-      normalized,
-    )
-  ) {
-    return { expression: 'false', label: 'generated boolean false' };
-  }
-  if (
-    /^(?:set|on|handle|toggle|open|close|submit|refetch|refresh|mutate|dispatch|navigate|reset|update|remove|add)(?=[A-Z0-9_$]|$)/u.test(
-      semanticName,
-    ) ||
-    /(?:handler|callback)$/u.test(normalized)
-  ) {
-    return { expression: 'Object.freeze(() => undefined)', label: 'generated no-op function' };
-  }
-  if (
-    /(?:items|rows|list|options|results|nodes|edges|records|files|users|companies)$/u.test(
-      normalized,
-    )
-  ) {
-    return { expression: 'Object.freeze([])', label: 'generated empty list' };
-  }
-  if (
-    /(?:count|total|index|length|size|page|amount|rate|percent|number|seconds|milliseconds|durationms|timestamp)$/u.test(
-      normalized,
-    )
-  ) {
-    return { expression: '0', label: 'generated number 0' };
-  }
-  if (
-    /(?:props|context|form|data|filter|params|state|values|config|settings|location|router|navigation|user|company|fragment)$/u.test(
-      normalized,
-    )
-  ) {
-    return { expression: 'Object.freeze({})', label: 'generated object' };
-  }
-  if (/(?:fallback|element|component|children|content)$/u.test(normalized)) {
-    return { expression: 'null', label: 'generated empty render value' };
-  }
-  if (/(?:error|exception)$/u.test(normalized)) {
-    return { expression: 'null', label: 'generated empty error value' };
-  }
-  if (/(?:search|query)$/u.test(normalized)) {
-    return {
-      expression: JSON.stringify(createSemanticString(semanticName)),
-      label: 'generated key text',
-    };
-  }
-  if (
-    /(?:value|id|name|title|status|type|kind|code|message|description|text|slug|url|path|email)$/u.test(
-      normalized,
-    )
-  ) {
-    return {
-      expression: JSON.stringify(createSemanticString(semanticName)),
-      label: 'generated key text',
-    };
-  }
-  return undefined;
-}
-
 /**
  * Builds a deep object from required property reads rooted at one bound hook result.
  * Array operations synthesize one callback-shaped item so list layouts become visible, while called
@@ -613,7 +548,7 @@ function createIdentifierUsageFallback(
         const stringReceiver =
           terminalCalled &&
           isPreviewRuntimeHookStringUsageProperty(collectionProperty) &&
-          inferSemanticFallback(usagePath.names.at(-2) ?? identifier.text)?.label !==
+          inferPreviewRuntimeSemanticFallback(usagePath.names.at(-2) ?? identifier.text)?.label !==
             'generated object';
         if (!usagePath.optional && collection && usagePath.names.length === 1) {
           arrayRootEvidence.push(usagePath.names[0] ?? 'array operation');
@@ -668,6 +603,12 @@ function createIdentifierUsageFallback(
   visit(owner);
   for (const usage of readPreviewRuntimeHookIdentityAliasCollectionUsages(identifier, owner))
     (usage.optional ? optionalPaths : paths).push({ called: false, ...usage });
+  paths.push(
+    ...readPreviewRuntimeHookChildPropUsages(
+      identifier,
+      childPropDemandsBySourceFile.get(identifier.getSourceFile()),
+    ),
+  );
   if (arrayRootEvidence.length > 0) {
     const item = [...arrayItemFallbacks].sort(
       (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
@@ -756,11 +697,11 @@ function addUsagePath(root: PreviewRuntimeHookUsageNode, path_: PreviewRuntimeHo
         path_.collectionProperty !== undefined
           ? 'Object.freeze([])'
           : path_.stringProperty !== undefined
-            ? JSON.stringify(createSemanticString(propertyName))
+            ? JSON.stringify(createPreviewRuntimeSemanticString(propertyName))
             : path_.called
               ? 'Object.freeze(() => undefined)'
               : (current.expression ??
-                inferSemanticFallback(propertyName)?.expression ??
+                inferPreviewRuntimeSemanticFallback(propertyName)?.expression ??
                 'Object.freeze({})');
     }
   }
@@ -791,15 +732,6 @@ function bindingContainsName(binding: ts.BindingName, identifierName: string): b
   );
 }
 
-/** Produces compact key-derived text while preserving formats used by common runtime operations. */
-function createSemanticString(rawName: string): string {
-  const normalizedName = rawName.toLowerCase();
-  if (normalizedName.endsWith('id')) return 'preview-id';
-  if (normalizedName.endsWith('status')) return 'PREVIEW';
-  if (normalizedName.endsWith('email')) return 'preview@example.invalid';
-  return rawName.length <= 32 ? rawName : `${rawName.slice(0, 31)}…`;
-}
-
 /** Uses a literal comparison near one identifier when semantic naming alone is inconclusive. */
 function findComparedLiteralFallback(
   identifier: ts.Identifier,
@@ -815,7 +747,7 @@ function findComparedLiteralFallback(
       if (other !== undefined && isStaticComparableExpression(other)) {
         result = {
           expression: createPreviewComparisonFalseExpression(
-            createSemanticString(identifier.text),
+            createPreviewRuntimeSemanticString(identifier.text),
             other,
             node.operatorToken.kind,
             sourceFile,
@@ -882,7 +814,8 @@ function createDirectPropertyFallback(
   const called = ts.isCallExpression(current.parent) && current.parent.expression === current;
   let child = called
     ? 'Object.freeze(() => undefined)'
-    : (inferSemanticFallback(properties.at(-1) ?? '')?.expression ?? 'Object.freeze({})');
+    : (inferPreviewRuntimeSemanticFallback(properties.at(-1) ?? '')?.expression ??
+      'Object.freeze({})');
   for (const propertyName of [...properties].reverse()) {
     child = `Object.freeze({ ${JSON.stringify(propertyName)}: ${child} })`;
   }

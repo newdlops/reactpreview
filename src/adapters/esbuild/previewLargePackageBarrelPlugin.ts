@@ -36,6 +36,17 @@ interface NamedImportDemand {
   readonly safe: boolean;
 }
 
+/** Every package-root demand collected during one parse of an authored importer. */
+type NamedImportDemandInventory = ReadonlyMap<string, NamedImportDemand>;
+
+/** Mutable demand used only while one importer syntax tree is traversed. */
+interface MutableNamedImportDemand {
+  /** Runtime export names requested from the exact package root. */
+  readonly exportNames: Set<string>;
+  /** Becomes false when any use needs authentic package-root namespace semantics. */
+  safe: boolean;
+}
+
 /** One direct named re-export in the package's root ESM barrel. */
 interface BarrelExportMapping {
   /** Binding name exported by the physical leaf module. */
@@ -97,7 +108,8 @@ export function createPreviewLargePackageBarrelPlugin(
   options: PreviewLargePackageBarrelPluginOptions,
 ): Plugin {
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
-  let demandByImporter = new Map<string, NamedImportDemand>();
+  let demandInventoryByImporter = new Map<string, Promise<NamedImportDemandInventory>>();
+  let resolutionByImport = new Map<string, Promise<OnResolveResult | undefined>>();
   let evidenceByEntry = new Map<string, Promise<LargePackageBarrelEvidence | undefined>>();
   let resolvedMappingByIdentity = new Map<string, Promise<ResolvedBarrelProjection | undefined>>();
 
@@ -106,7 +118,8 @@ export function createPreviewLargePackageBarrelPlugin(
     setup(build): void {
       /** Package files and editor imports may change between persistent-context rebuilds. */
       build.onStart(() => {
-        demandByImporter = new Map<string, NamedImportDemand>();
+        demandInventoryByImporter = new Map<string, Promise<NamedImportDemandInventory>>();
+        resolutionByImport = new Map<string, Promise<OnResolveResult | undefined>>();
         evidenceByEntry = new Map<string, Promise<LargePackageBarrelEvidence | undefined>>();
         resolvedMappingByIdentity = new Map<
           string,
@@ -119,16 +132,30 @@ export function createPreviewLargePackageBarrelPlugin(
         arguments_: OnResolveArgs,
       ): Promise<OnResolveResult | undefined> {
         if (!isEligibleRootImport(arguments_)) return undefined;
-        const importerPath = resolvePreviewYarnVirtualPath(arguments_.importer, workspaceRoot);
-        if (importerPath === undefined) return undefined;
-        const demandKey = `${sourceIdentity(importerPath)}\0${arguments_.path}`;
-        let demand = demandByImporter.get(demandKey);
-        if (demand === undefined) {
-          demand = await readNamedImportDemand(importerPath, arguments_.path, options.readSource);
-          demandByImporter.set(demandKey, demand);
+        if (!mayRepresentAuthoredWorkspaceImporter(arguments_.importer, workspaceRoot)) {
+          return undefined;
         }
-        if (!demand.safe || demand.exportNames.length === 0) return undefined;
+        const importerPath = resolvePreviewYarnVirtualPath(arguments_.importer, workspaceRoot);
+        if (
+          importerPath === undefined ||
+          !isAuthoredWorkspaceImporter(importerPath, workspaceRoot)
+        ) {
+          return undefined;
+        }
+        const resolutionIdentity = createPackageImportResolutionIdentity(arguments_);
+        let resolutionPromise = resolutionByImport.get(resolutionIdentity);
+        if (resolutionPromise === undefined) {
+          resolutionPromise = resolveEligibleLargeBarrel(arguments_, importerPath);
+          resolutionByImport.set(resolutionIdentity, resolutionPromise);
+        }
+        return await resolutionPromise;
+      }
 
+      /** Resolves one unique importer/package edge after its syntax demand is proven once. */
+      async function resolveEligibleLargeBarrel(
+        arguments_: OnResolveArgs,
+        importerPath: string,
+      ): Promise<OnResolveResult | undefined> {
         const rootResolution = await build.resolve(arguments_.path, {
           importer: arguments_.importer,
           kind: arguments_.kind,
@@ -147,17 +174,32 @@ export function createPreviewLargePackageBarrelPlugin(
         const physicalEntry = resolvePreviewYarnVirtualPath(rootResolution.path, workspaceRoot);
         if (physicalEntry === undefined) return undefined;
         const entryIdentity = sourceIdentity(physicalEntry);
-        let evidencePromise = evidenceByEntry.get(entryIdentity);
+        const evidenceIdentity = `${entryIdentity}\0${arguments_.path}`;
+        let evidencePromise = evidenceByEntry.get(evidenceIdentity);
         if (evidencePromise === undefined) {
           evidencePromise = analyzeLargePackageBarrel(physicalEntry, arguments_.path);
-          evidenceByEntry.set(entryIdentity, evidencePromise);
+          evidenceByEntry.set(evidenceIdentity, evidencePromise);
         }
         const evidence = await evidencePromise;
         if (evidence === undefined) return undefined;
 
+        // Importer parsing is useful only after the resolved package proves that it can be
+        // projected. Ordinary React/runtime packages therefore pay one root resolution, but no
+        // duplicate TypeScript parse on top of esbuild's own parser.
+        const importerIdentity = path.normalize(importerPath);
+        let inventoryPromise = demandInventoryByImporter.get(importerIdentity);
+        if (inventoryPromise === undefined) {
+          inventoryPromise = readNamedImportDemands(importerPath, options.readSource);
+          demandInventoryByImporter.set(importerIdentity, inventoryPromise);
+        }
+        const demand = (await inventoryPromise).get(arguments_.path);
+        if (demand === undefined || !demand.safe || demand.exportNames.length === 0) {
+          return undefined;
+        }
+
         const mappings = await Promise.all(
           demand.exportNames.map(async (exportName) => {
-            const mappingIdentity = `${entryIdentity}\0${exportName}`;
+            const mappingIdentity = `${evidenceIdentity}\0${exportName}`;
             let mappingPromise = resolvedMappingByIdentity.get(mappingIdentity);
             if (mappingPromise === undefined) {
               mappingPromise = resolveBarrelProjection(
@@ -227,28 +269,85 @@ function isEligibleRootImport(arguments_: OnResolveArgs): boolean {
   );
 }
 
-/** Reads and parses one importer without retaining its source beyond this rebuild's small demand. */
-async function readNamedImportDemand(
+/**
+ * Keeps TypeScript importer analysis on authored workspace source.
+ * Dependency packages already have optimized published entry points, while parsing every nested
+ * package-to-package import duplicates esbuild's own work and dominates large application graphs.
+ */
+function isAuthoredWorkspaceImporter(importerPath: string, workspaceRoot: string): boolean {
+  if (!path.isAbsolute(importerPath) || !isPathInside(workspaceRoot, importerPath)) return false;
+  return !path
+    .relative(workspaceRoot, importerPath)
+    .split(path.sep)
+    .some((segment) => segment === 'node_modules' || segment === '.yarn');
+}
+
+/**
+ * Rejects ordinary installed modules before Yarn virtual-path decoding.
+ * A `.yarn/__virtual__` identity may still point to an authored workspace package, so `.yarn` is
+ * excluded only after `resolvePreviewYarnVirtualPath()` exposes its physical source identity.
+ */
+function mayRepresentAuthoredWorkspaceImporter(
   importerPath: string,
-  packageName: string,
+  workspaceRoot: string,
+): boolean {
+  if (!path.isAbsolute(importerPath) || !isPathInside(workspaceRoot, importerPath)) return false;
+  return !path
+    .relative(workspaceRoot, importerPath)
+    .split(path.sep)
+    .some((segment) => segment === 'node_modules');
+}
+
+/**
+ * Identifies one exact esbuild resolution context so duplicate import declarations share proof.
+ * Importer and resolve directory remain in the key because nested installs and PnP issuers may map
+ * the same package spelling to different physical package instances.
+ */
+function createPackageImportResolutionIdentity(arguments_: OnResolveArgs): string {
+  const attributes = Object.entries(arguments_.with)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => `${name}=${value}`)
+    .join('\0');
+  return [
+    path.normalize(arguments_.importer),
+    arguments_.path,
+    arguments_.kind,
+    arguments_.namespace,
+    path.normalize(arguments_.resolveDir),
+    attributes,
+  ].join('\0');
+}
+
+/** Reads and parses one importer once, collecting every package-root demand in one traversal. */
+async function readNamedImportDemands(
+  importerPath: string,
   readSource: PreviewLargePackageBarrelPluginOptions['readSource'],
-): Promise<NamedImportDemand> {
+): Promise<NamedImportDemandInventory> {
   let sourceText: string;
   try {
     sourceText = readSource?.(importerPath) ?? (await readFile(importerPath, 'utf8'));
   } catch {
-    return { exportNames: [], safe: false };
+    return new Map();
   }
   const sourceFile = ts.createSourceFile(importerPath, sourceText, ts.ScriptTarget.Latest, false);
-  const exportNames = new Set<string>();
-  let safe = true;
+  const mutableDemands = new Map<string, MutableNamedImportDemand>();
+
+  /** Returns the importer-local record whose safety reflects every use of one package root. */
+  const demandFor = (packageName: string): MutableNamedImportDemand => {
+    const existing = mutableDemands.get(packageName);
+    if (existing !== undefined) return existing;
+    const created: MutableNamedImportDemand = { exportNames: new Set<string>(), safe: true };
+    mutableDemands.set(packageName, created);
+    return created;
+  };
+
   const visit = (node: ts.Node): void => {
-    if (!safe) return;
     if (
       ts.isImportDeclaration(node) &&
       ts.isStringLiteralLike(node.moduleSpecifier) &&
-      node.moduleSpecifier.text === packageName
+      PACKAGE_ROOT_PATTERN.test(node.moduleSpecifier.text)
     ) {
+      const demand = demandFor(node.moduleSpecifier.text);
       const importClause = node.importClause;
       if (
         importClause === undefined ||
@@ -258,11 +357,13 @@ async function readNamedImportDemand(
         !ts.isNamedImports(importClause.namedBindings) ||
         node.attributes !== undefined
       ) {
-        safe = false;
+        demand.safe = false;
         return;
       }
       for (const element of importClause.namedBindings.elements) {
-        if (!element.isTypeOnly) exportNames.add(element.propertyName?.text ?? element.name.text);
+        if (!element.isTypeOnly) {
+          demand.exportNames.add(element.propertyName?.text ?? element.name.text);
+        }
       }
       return;
     }
@@ -270,44 +371,52 @@ async function readNamedImportDemand(
       ts.isExportDeclaration(node) &&
       node.moduleSpecifier !== undefined &&
       ts.isStringLiteralLike(node.moduleSpecifier) &&
-      node.moduleSpecifier.text === packageName
+      PACKAGE_ROOT_PATTERN.test(node.moduleSpecifier.text)
     ) {
-      safe = false;
+      demandFor(node.moduleSpecifier.text).safe = false;
       return;
     }
     if (
       ts.isImportEqualsDeclaration(node) &&
       ts.isExternalModuleReference(node.moduleReference) &&
       ts.isStringLiteralLike(node.moduleReference.expression) &&
-      node.moduleReference.expression.text === packageName
+      PACKAGE_ROOT_PATTERN.test(node.moduleReference.expression.text)
     ) {
-      safe = false;
+      demandFor(node.moduleReference.expression.text).safe = false;
       return;
     }
-    if (ts.isCallExpression(node) && isDynamicPackageLoad(node, packageName)) {
-      safe = false;
-      return;
+    if (ts.isCallExpression(node)) {
+      const packageName = readDynamicPackageRoot(node);
+      if (packageName !== undefined) {
+        demandFor(packageName).safe = false;
+        return;
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return { exportNames: [...exportNames].sort(), safe };
+  return new Map(
+    [...mutableDemands].map(([packageName, demand]) => [
+      packageName,
+      { exportNames: [...demand.exportNames].sort(), safe: demand.safe },
+    ]),
+  );
 }
 
-/** Detects dynamic import and CommonJS require calls for the exact package root. */
-function isDynamicPackageLoad(node: ts.CallExpression, packageName: string): boolean {
+/** Reads the package root from one dynamic import or CommonJS require expression. */
+function readDynamicPackageRoot(node: ts.CallExpression): string | undefined {
   const argument = node.arguments[0];
   if (
     argument === undefined ||
     !ts.isStringLiteralLike(argument) ||
-    argument.text !== packageName
+    !PACKAGE_ROOT_PATTERN.test(argument.text)
   ) {
-    return false;
+    return undefined;
   }
-  return (
-    node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+  return node.expression.kind === ts.SyntaxKind.ImportKeyword ||
     (ts.isIdentifier(node.expression) && node.expression.text === 'require')
-  );
+    ? argument.text
+    : undefined;
 }
 
 /** Builds a unique direct-export index only for a large, side-effect-free package root barrel. */

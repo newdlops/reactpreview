@@ -5,6 +5,8 @@ import path from 'node:path';
 import { build, type BuildResult, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { createPreviewPnpPeerDependencyPlugin } from '../../../src/adapters/esbuild/previewPnpPeerDependencyPlugin';
+import { createPreviewWorkspacePackageResolver } from '../../../src/adapters/esbuild/previewWorkspacePackageResolver';
+import { canonicalizeExistingPath } from '../../../src/shared/pathIdentity';
 import { PreviewSourceTransformer } from '../../../src/adapters/esbuild/staticResources/previewSourceTransformer';
 import { createWorkspaceSourcePlugin } from '../../../src/adapters/esbuild/workspaceSourcePlugin';
 
@@ -64,6 +66,38 @@ describe('createPreviewPnpPeerDependencyPlugin', () => {
       await rm(fixture.workspaceRoot, { force: true, recursive: true });
     }
   });
+
+  /** Restores React DOM for the generated entry from an exact React-paired workspace issuer. */
+  it('restores an exact React DOM companion for a React-only Yarn PnP package', async () => {
+    const fixture = await createReactDomCompanionFixture('latest');
+    try {
+      expect(
+        createPreviewWorkspacePackageResolver(
+          fixture.workspaceRoot,
+        ).findExactDependencyProviderRoots({ react: 'latest', 'react-dom': 'latest' }),
+      ).toEqual([canonicalizeExistingPath(fixture.applicationRoot)]);
+      const result = await buildReactDomCompanionFixture(fixture);
+
+      expect(result.outputFiles?.[0]?.text).toContain('MATCHED_REACT_DOM');
+      expect(result.warnings.map((warning) => warning.text).join('\n')).toContain(
+        'restored the Yarn PnP React DOM companion from workspace package projects/application',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Refuses a sibling React DOM issuer whose declarative range differs from target React. */
+  it('does not infer a React DOM companion from a mismatched workspace range', async () => {
+    const fixture = await createReactDomCompanionFixture('^18.0.0');
+    try {
+      await expect(buildReactDomCompanionFixture(fixture)).rejects.toThrow(
+        'synthetic preview entry denied',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });
 
 /** Paths needed by the synthetic virtual workspace package and consuming application. */
@@ -73,6 +107,14 @@ interface PeerFixture {
   readonly peerPath: string;
   readonly sharedRoot: string;
   readonly virtualIndexPath: string;
+  readonly workspaceRoot: string;
+}
+
+/** Paths proving the generated preview entry may borrow one exact React DOM PnP issuer. */
+interface ReactDomCompanionFixture {
+  readonly applicationRoot: string;
+  readonly projectRoot: string;
+  readonly reactDomPath: string;
   readonly workspaceRoot: string;
 }
 
@@ -181,6 +223,69 @@ async function buildPeerFixture(
   });
 }
 
+/** Creates a React-only target plus one sibling application offering a candidate React pair. */
+async function createReactDomCompanionFixture(
+  reactDomSpecifier: string,
+): Promise<ReactDomCompanionFixture> {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-pnp-companion-'));
+  const applicationRoot = path.join(workspaceRoot, 'projects', 'application');
+  const projectRoot = path.join(workspaceRoot, 'plugin');
+  const reactDomPath = path.join(workspaceRoot, 'installed', 'react-dom.js');
+  await Promise.all([
+    mkdir(applicationRoot, { recursive: true }),
+    mkdir(projectRoot, { recursive: true }),
+    mkdir(path.dirname(reactDomPath), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({ name: 'workspace', private: true, workspaces: ['projects/*', 'plugin'] }),
+      'utf8',
+    ),
+    writeFile(
+      path.join(projectRoot, 'package.json'),
+      JSON.stringify({ dependencies: { react: 'latest' }, name: 'react-only-plugin' }),
+      'utf8',
+    ),
+    writeFile(
+      path.join(applicationRoot, 'package.json'),
+      JSON.stringify({
+        dependencies: { react: 'latest', 'react-dom': reactDomSpecifier },
+        name: 'application',
+      }),
+      'utf8',
+    ),
+    writeFile(reactDomPath, "export default 'MATCHED_REACT_DOM';", 'utf8'),
+  ]);
+  return { applicationRoot, projectRoot, reactDomPath, workspaceRoot };
+}
+
+/** Bundles the generated preview entry against a resolver that enforces Yarn PnP issuer ownership. */
+async function buildReactDomCompanionFixture(
+  fixture: ReactDomCompanionFixture,
+): Promise<BuildResult> {
+  return build({
+    absWorkingDir: fixture.workspaceRoot,
+    bundle: true,
+    format: 'esm',
+    logLevel: 'silent',
+    plugins: [
+      createPreviewPnpPeerDependencyPlugin({
+        projectRoot: fixture.projectRoot,
+        workspaceRoot: fixture.workspaceRoot,
+      }),
+      createSyntheticReactDomPnpResolver(fixture.applicationRoot, fixture.reactDomPath),
+    ],
+    stdin: {
+      contents: "import reactDom from 'react-dom'; console.log(reactDom);",
+      loader: 'ts',
+      resolveDir: fixture.projectRoot,
+      sourcefile: path.join(fixture.workspaceRoot, '<react-preview-entry>'),
+    },
+    write: false,
+  });
+}
+
 /** Reproduces esbuild rejecting a virtual peer while allowing the same app-owned package. */
 function createSyntheticPnpResolver(
   virtualIndexPath: string,
@@ -196,6 +301,30 @@ function createSyntheticPnpResolver(
         (allowPhysicalDependency && !arguments_.importer.includes(`${path.sep}.yarn${path.sep}`))
           ? { path: peerPath }
           : { errors: [{ text: `virtual peer denied for ${arguments_.importer}` }] },
+      );
+    },
+  };
+}
+
+/** Allows React DOM only when resolution is retried from the declared sibling application. */
+function createSyntheticReactDomPnpResolver(applicationRoot: string, reactDomPath: string): Plugin {
+  return {
+    name: 'test-synthetic-react-dom-pnp-resolver',
+    setup(buildContext): void {
+      buildContext.onResolve({ filter: /^react-dom$/ }, (arguments_) =>
+        path.basename(arguments_.importer) === '__react_preview_peer_issuer__.js' &&
+        canonicalizeExistingPath(path.dirname(arguments_.importer)) ===
+          canonicalizeExistingPath(applicationRoot)
+          ? { path: reactDomPath }
+          : {
+              errors: [
+                {
+                  text:
+                    `synthetic preview entry denied for ${arguments_.importer} ` +
+                    `(namespace: ${arguments_.namespace})`,
+                },
+              ],
+            },
       );
     },
   };

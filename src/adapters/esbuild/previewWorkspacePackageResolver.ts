@@ -65,6 +65,10 @@ interface WorkspacePackageRequest {
 
 /** Read-only package source lookup consumed by the static TypeScript resolver. */
 export interface PreviewWorkspacePackageResolver {
+  /** Finds workspace issuers whose production dependency strings exactly match every requirement. */
+  readonly findExactDependencyProviderRoots: (
+    requirements: Readonly<Record<string, string>>,
+  ) => readonly string[];
   /** Resolves a bare package or package subpath to one existing authored source file. */
   readonly resolve: (moduleSpecifier: string) => string | undefined;
 }
@@ -86,6 +90,20 @@ export function createPreviewWorkspacePackageResolver(
   const resolutionCache = new Map<string, string | undefined>();
 
   return Object.freeze({
+    findExactDependencyProviderRoots(
+      requirements: Readonly<Record<string, string>>,
+    ): readonly string[] {
+      packageRecords ??= discoverWorkspacePackages(canonicalWorkspaceRoot);
+      return Object.freeze(
+        [...packageRecords.values()]
+          .filter(
+            (record): record is WorkspacePackageRecord =>
+              record !== undefined && hasExactProductionRequirements(record, requirements),
+          )
+          .map(({ rootPath }) => rootPath)
+          .sort(),
+      );
+    },
     resolve(moduleSpecifier: string): string | undefined {
       const request = parseWorkspacePackageRequest(moduleSpecifier);
       if (request === undefined) return undefined;
@@ -102,6 +120,26 @@ export function createPreviewWorkspacePackageResolver(
       return resolvedPath;
     },
   });
+}
+
+/** Proves an issuer owns the same inert production ranges as the package requesting a companion. */
+function hasExactProductionRequirements(
+  record: WorkspacePackageRecord,
+  requirements: Readonly<Record<string, string>>,
+): boolean {
+  const dependencies = isPlainObject(record.manifest.dependencies)
+    ? record.manifest.dependencies
+    : undefined;
+  const entries = Object.entries(requirements);
+  return (
+    dependencies !== undefined &&
+    entries.length > 0 &&
+    entries.every(
+      ([packageName, specifier]) =>
+        Object.prototype.hasOwnProperty.call(dependencies, packageName) &&
+        dependencies[packageName] === specifier,
+    )
+  );
 }
 
 /** Reads the root workspaces declaration and indexes a bounded set of uniquely named packages. */

@@ -24,6 +24,7 @@ describe('createPreviewNodeBuiltinPlugin', () => {
           '  defaultMember: typeof fs.readFileSync,',
           '  namedMember: typeof readFileSync,',
           '  nestedMember: typeof promises.readFile,',
+          "  emptyText: readFileSync('/host-secret', 'utf8'),",
           "  neutralCall: existsSync('/host-secret'),",
           '};',
         ].join('\n'),
@@ -41,12 +42,55 @@ describe('createPreviewNodeBuiltinPlugin', () => {
 
     expect(context.__nodeBuiltinResult).toEqual({
       defaultMember: 'function',
+      emptyText: '',
       namedMember: 'function',
       nestedMember: 'function',
-      neutralCall: undefined,
+      neutralCall: false,
     });
     expect(warning).toHaveBeenCalledTimes(2);
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('unavailable'));
+  });
+
+  /** Keeps awaited server metadata helpers alive while returning no host filesystem bytes. */
+  it('preserves promise and callback fs read shapes with empty no-I/O values', async () => {
+    const result = await build({
+      bundle: true,
+      format: 'cjs',
+      logLevel: 'silent',
+      platform: 'browser',
+      plugins: [createPreviewNodeBuiltinPlugin()],
+      stdin: {
+        contents: [
+          "import fs, { promises as namedPromises } from 'node:fs';",
+          "import { readFile } from 'node:fs/promises';",
+          'globalThis.__fsResultPromise = (async () => {',
+          "  const promiseText = await readFile('/workspace/item.tsx', 'utf8');",
+          "  const promiseBytes = await readFile('/workspace/item.bin');",
+          "  const registrySource = await namedPromises.readFile('/workspace/registry.tsx', 'utf-8');",
+          "  const normalizedRegistrySource = registrySource.replaceAll('export default', 'export').replace(/@\\/legacy/g, '@/preview');",
+          "  const callbackText = await new Promise((resolve) => fs.readFile('/workspace/item.tsx', 'utf8', (_error, value) => resolve(value)));",
+          '  globalThis.__fsResult = { callbackText, normalizedRegistrySource, promiseText, byteLength: promiseBytes.byteLength };',
+          '})();',
+        ].join('\n'),
+        loader: 'js',
+      },
+      write: false,
+    });
+    const context: { __fsResult?: Record<string, unknown> } = {};
+    runInNewContext(result.outputFiles[0]?.text ?? '', {
+      console: { warn: vi.fn() },
+      globalThis: context,
+      queueMicrotask,
+      Uint8Array,
+    });
+    await (context as { __fsResultPromise?: Promise<void> }).__fsResultPromise;
+
+    expect(context.__fsResult).toEqual({
+      byteLength: 0,
+      callbackText: '',
+      normalizedRegistrySource: '',
+      promiseText: '',
+    });
   });
 
   /**

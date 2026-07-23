@@ -8,6 +8,7 @@ import { builtinModules } from 'node:module';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { PREVIEW_NODE_BUILTIN_NAMESPACE } from './previewPluginProtocol';
 import { createPreviewNodeEventsRuntimeSource } from './previewNodeEventsRuntimeSource';
+import { createPreviewNodeFsRuntimeSource } from './previewNodeFsRuntimeSource';
 
 /** Bare built-in names accepted with or without Node's explicit `node:` prefix. */
 const NODE_BUILTIN_NAMES = new Set(
@@ -88,6 +89,12 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
         if (arguments_.path === 'events') {
           return {
             contents: createPreviewNodeEventsRuntimeSource(),
+            loader: 'js',
+          };
+        }
+        if (arguments_.path === 'fs' || arguments_.path === 'fs/promises') {
+          return {
+            contents: createPreviewNodeFsRuntimeSource(arguments_.path),
             loader: 'js',
           };
         }

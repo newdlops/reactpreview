@@ -10,10 +10,12 @@ import type { OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 import { collectPreviewPnpApplicationRoots } from './previewPnpApplicationRoots';
+import { createPreviewWorkspacePackageResolver } from './previewWorkspacePackageResolver';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const BARE_PACKAGE_PATTERN = /^(@[^/]+\/[^/]+|[^./][^/]*)/;
 const PACKAGE_MANIFEST_NAME = 'package.json';
+const PREVIEW_ENTRY_NAME = '<react-preview-entry>';
 
 /** Minimal package metadata needed to prove that a PnP peer retry is legitimate. */
 interface PreviewPackageManifest {
@@ -49,6 +51,16 @@ export function createPreviewPnpPeerDependencyPlugin(
 ): Plugin {
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const projectRoot = canonicalizeExistingPath(options.projectRoot);
+  const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
+  const reactDomCompanionRootsPromise = readPackageManifest(
+    path.join(projectRoot, PACKAGE_MANIFEST_NAME),
+  ).then((manifest) =>
+    collectReactDomCompanionRoots(
+      manifest,
+      projectRoot,
+      workspacePackageResolver.findExactDependencyProviderRoots.bind(workspacePackageResolver),
+    ),
+  );
   const applicationManifestsPromise = collectPreviewPnpApplicationRoots({
     projectRoot,
     sourcePaths: options.applicationSourcePaths ?? [],
@@ -71,6 +83,34 @@ export function createPreviewPnpPeerDependencyPlugin(
       async function resolvePeerDependency(
         arguments_: OnResolveArgs,
       ): Promise<OnResolveResult | undefined> {
+        if (isSyntheticReactDomCompanionRequest(arguments_, workspaceRoot)) {
+          for (const providerRoot of await reactDomCompanionRootsPromise) {
+            const providerIssuer = path.join(providerRoot, '__react_preview_peer_issuer__.js');
+            const providerResolution = await resolveWithImporter(build, arguments_, providerIssuer);
+            if ((providerResolution.errors?.length ?? 0) > 0 || providerResolution.external) {
+              continue;
+            }
+            const warningKey = `react-dom\0${providerRoot}\0companion`;
+            const includeWarning = !warnedPackages.has(warningKey);
+            warnedPackages.add(warningKey);
+            return {
+              ...providerResolution,
+              warnings: [
+                ...(providerResolution.warnings ?? []),
+                ...(includeWarning
+                  ? [
+                      {
+                        text:
+                          'React Preview restored the Yarn PnP React DOM companion ' +
+                          `from workspace package ${formatWorkspacePath(providerRoot, workspaceRoot)}.`,
+                      },
+                    ]
+                  : []),
+              ],
+            };
+          }
+          return undefined;
+        }
         if (!isEligibleVirtualPeerRequest(arguments_, workspaceRoot)) return undefined;
         const packageName = readBarePackageName(arguments_.path);
         const physicalImporter = resolvePreviewYarnVirtualPath(arguments_.importer, workspaceRoot);
@@ -168,6 +208,71 @@ export function createPreviewPnpPeerDependencyPlugin(
       build.onResolve({ filter: BARE_PACKAGE_PATTERN }, resolvePeerDependency);
     },
   };
+}
+
+/**
+ * Finds a PnP issuer whose exact React and React DOM ranges match a React-only target package.
+ * The same workspace lock then binds both descriptors to one concrete pair without mixing an
+ * extension-owned React DOM version into the project's already installed React singleton.
+ */
+function collectReactDomCompanionRoots(
+  projectManifest: PreviewPackageManifest | undefined,
+  projectRoot: string,
+  findProviderRoots: (requirements: Readonly<Record<string, string>>) => readonly string[],
+): readonly string[] {
+  const reactSpecifier = readDirectProductionSpecifier(projectManifest, 'react');
+  if (
+    reactSpecifier === undefined ||
+    !isOrdinaryRegistryRange(reactSpecifier) ||
+    doesApplicationProvideDependency(projectManifest, 'react-dom')
+  ) {
+    return Object.freeze([]);
+  }
+  return Object.freeze(
+    findProviderRoots({ react: reactSpecifier, 'react-dom': reactSpecifier }).filter(
+      (root) => root !== projectRoot,
+    ),
+  );
+}
+
+/** Limits companion inference to the extension-owned root import in the generated browser entry. */
+function isSyntheticReactDomCompanionRequest(
+  arguments_: OnResolveArgs,
+  workspaceRoot: string,
+): boolean {
+  return (
+    arguments_.namespace === 'file' &&
+    (arguments_.pluginData as unknown) !== PREVIEW_RESOLVE_GUARD &&
+    arguments_.path === 'react-dom' &&
+    path.isAbsolute(arguments_.importer) &&
+    path.basename(arguments_.importer) === PREVIEW_ENTRY_NAME &&
+    canonicalizeExistingPath(path.dirname(arguments_.importer)) === workspaceRoot
+  );
+}
+
+/** Reads one exact production dependency string without admitting inherited manifest properties. */
+function readDirectProductionSpecifier(
+  manifest: PreviewPackageManifest | undefined,
+  packageName: string,
+): string | undefined {
+  const value = manifest?.dependencies?.[packageName];
+  return Object.prototype.hasOwnProperty.call(manifest?.dependencies ?? {}, packageName) &&
+    typeof value === 'string'
+    ? value
+    : undefined;
+}
+
+/** Rejects aliases, paths, URLs, workspace protocols, and malformed ranges for inferred pairs. */
+function isOrdinaryRegistryRange(specifier: string): boolean {
+  return (
+    specifier.length > 0 &&
+    specifier.length <= 2048 &&
+    specifier === specifier.trim() &&
+    !specifier.startsWith('.') &&
+    !specifier.startsWith('/') &&
+    !/[\\/@\0\r\n?!#]/u.test(specifier) &&
+    !/^[a-z][a-z\d+.-]*:/iu.test(specifier)
+  );
 }
 
 /** Delegates to esbuild while preventing this resolver from recursively handling its own retry. */

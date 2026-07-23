@@ -412,7 +412,7 @@ function appendOwnerFallbackPaths(options: {
   const reachableOwnerIds = collectReachableOwnerIds(options.facts, options.ownerExportName);
   const selectedEdges = options.facts.localEdges.filter(
     (edge) =>
-      isVisualRenderEdge(edge.kind, edge.invocation?.mode) &&
+      isVisualRenderEdge(edge.kind, edge.invocation?.mode, edge.childLocalName) &&
       (reachableOwnerIds.size === 0 || reachableOwnerIds.has(edge.ownerId)) &&
       options
         .resolveOrigins(edge.childLocalName)
@@ -423,7 +423,7 @@ function appendOwnerFallbackPaths(options: {
       if (
         edge.ownerId !== selectedEdge.ownerId ||
         edge === selectedEdge ||
-        !isVisualRenderEdge(edge.kind, edge.invocation?.mode) ||
+        !isVisualRenderEdge(edge.kind, edge.invocation?.mode, edge.childLocalName) ||
         (options.componentPropsOnly && !isComponentPropMode(edge.invocation?.mode))
       ) {
         continue;
@@ -461,11 +461,20 @@ function appendOwnerFallbackPaths(options: {
 function isVisualRenderEdge(
   kind: ReturnType<typeof analyzePreviewRenderSource>['moduleFacts']['localEdges'][number]['kind'],
   mode: PreviewRenderInvocationMode | undefined,
+  childLocalName: string,
 ): boolean {
+  /*
+   * Route factories place path builders and component elements under one configuration owner.
+   * `route-branch` alone therefore proves shared control flow, not a visual React value. A route
+   * child must additionally look like a component binding; lowercase path/map helpers remain exact
+   * executable dependencies so their string/object contracts cannot become placeholder elements.
+   */
+  if (kind === 'route-branch') {
+    return isComponentShapedLocalName(childLocalName) || isComponentPropMode(mode);
+  }
   return (
     kind === 'component-render' ||
     kind === 'create-element' ||
-    kind === 'route-branch' ||
     mode === 'jsx' ||
     mode === 'create-element' ||
     isComponentPropMode(mode)
@@ -513,6 +522,12 @@ function collectReachableOwnerIds(
 /** Component/member names resolve through the imported namespace or local root binding. */
 function readRootLocalName(localName: string): string {
   return localName.split('.', 1)[0] ?? localName;
+}
+
+/** Accepts a local component or a PascalCase member reached through an imported namespace. */
+function isComponentShapedLocalName(localName: string): boolean {
+  const segments = localName.split('.');
+  return COMPONENT_NAME_PATTERN.test(segments.at(-1) ?? localName);
 }
 
 /** Recognizes component-valued JSX slots already proven by the render-graph invocation analyzer. */

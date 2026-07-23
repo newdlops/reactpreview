@@ -10,7 +10,7 @@ import {
   type MatchesPreviewParentSliceTargetImport,
   type PreviewParentSliceStaticProps,
 } from '../parentSlice';
-import type { PreviewRenderChainCandidate } from '../renderGraph';
+import type { PreviewRenderChainCandidate, PreviewRenderInvocationMode } from '../renderGraph';
 import { collectPreviewRenderModuleFacts } from '../renderGraph/previewRenderModuleFacts';
 import { collectPreviewRouterRequirement } from '../previewRouterRequirement';
 import {
@@ -20,6 +20,7 @@ import {
 import { isPreviewInspectorComponentShapedExport } from './previewInspectorOwnerShape';
 
 const MAX_RENDER_PATH_ROOTS = 12;
+const MAX_EXPORT_COMPONENT_TRANSPORT_DEPTH = 8;
 
 /** Minimal public component identity shared structurally with the ancestor planner. */
 export interface PreviewInspectorRenderPathReference {
@@ -243,6 +244,8 @@ function selectStepComponentReference(
       !exportFact.wildcard &&
       (exportFact.exportName === 'default' || /^\p{Lu}/u.test(exportFact.exportName)) &&
       ((exportFact.localName !== undefined && matchingLocalNames.has(exportFact.localName)) ||
+        (exportFact.localName !== undefined &&
+          doesExportTransportComponentLabel(facts, exportFact.localName, label)) ||
         (matchingValues.length === 0 && exportFact.exportName === label)),
   );
   const exportNames = matchingExports.map((exportFact) => exportFact.exportName);
@@ -263,6 +266,52 @@ function selectStepComponentReference(
     exportName,
     sourcePath,
   });
+}
+
+/**
+ * Follows a bounded component-only value pipeline from a public export to one render-path label.
+ *
+ * `export default withPermission(withStaff(Page))` exposes `@default` in module facts while the
+ * render path correctly names `Page`. Requiring the same-module HOC/memo/styled/forward-ref edge
+ * reconnects those identities without promoting arbitrary default-exported route data or helper
+ * expressions into mount roots.
+ */
+function doesExportTransportComponentLabel(
+  facts: ReturnType<typeof collectPreviewRenderModuleFacts>,
+  exportLocalName: string,
+  componentLabel: string,
+): boolean {
+  if (!isComponentLikeStepLabel(componentLabel)) return false;
+  const valueByLocalName = new Map(facts.values.map((value) => [value.localName, value]));
+  const pending: { readonly depth: number; readonly localName: string }[] = [
+    { depth: 0, localName: exportLocalName },
+  ];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined || visited.has(current.localName)) continue;
+    visited.add(current.localName);
+    if (current.localName === componentLabel) return true;
+    if (current.depth >= MAX_EXPORT_COMPONENT_TRANSPORT_DEPTH) continue;
+    const value = valueByLocalName.get(current.localName);
+    if (value === undefined) continue;
+    for (const edge of facts.localEdges) {
+      if (
+        edge.ownerId !== value.id ||
+        !isComponentTransportInvocation(edge.invocation?.mode) ||
+        visited.has(edge.childLocalName)
+      ) {
+        continue;
+      }
+      pending.push({ depth: current.depth + 1, localName: edge.childLocalName });
+    }
+  }
+  return false;
+}
+
+/** Restricts public-export traversal to React component identity-preserving wrappers. */
+function isComponentTransportInvocation(mode: PreviewRenderInvocationMode | undefined): boolean {
+  return mode === 'hoc' || mode === 'memo' || mode === 'styled' || mode === 'forward-ref';
 }
 
 /** Removes the display-only suffix used for a named declaration exported as default. */

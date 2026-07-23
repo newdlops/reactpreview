@@ -125,6 +125,48 @@ describe('collectPreviewInspectorShallowVisualEvidence', () => {
     });
   });
 
+  /**
+   * Keeps route calculations executable while projecting only component-shaped route elements.
+   *
+   * Route factories commonly read path maps beside JSX element declarations. Those data helpers
+   * share a render-graph owner with the selected page but must keep returning strings and objects;
+   * replacing them with a shallow React placeholder breaks the router before any page can mount.
+   */
+  it('excludes lowercase route helpers that share a route factory with the selected page', () => {
+    const sourceText = [
+      "import { createBrowserRouter, createRoutesFromElements, Route, RouterProvider } from 'react-router-dom';",
+      "import { getPagePath, pageNamePathMap } from './route-config';",
+      "import PageLayout from './PageLayout';",
+      "import TargetPage from './TargetPage';",
+      'const router = createBrowserRouter(createRoutesFromElements(',
+      '  <Route',
+      '    path={getPagePath(pageNamePathMap.TargetPage)}',
+      '    element={<PageLayout><TargetPage /></PageLayout>}',
+      '  />',
+      '));',
+      'export default function App() { return <RouterProvider router={router} />; }',
+    ].join('\n');
+
+    const evidence = collectPreviewInspectorShallowVisualEvidence({
+      importerPath: '/workspace/App.tsx',
+      ownerExportName: 'default',
+      resolveModule: createResolver({
+        './PageLayout': '/workspace/PageLayout.tsx',
+        './TargetPage': '/workspace/TargetPage.tsx',
+        './route-config': '/workspace/route-config.ts',
+      }),
+      selectedChildPath: '/workspace/TargetPage.tsx',
+      sourceText,
+    });
+
+    expect(evidence.paths.map((visualPath) => visualPath.sourcePath)).toContain(
+      '/workspace/PageLayout.tsx',
+    );
+    expect(evidence.paths.map((visualPath) => visualPath.sourcePath)).not.toContain(
+      '/workspace/route-config.ts',
+    );
+  });
+
   it('admits project siblings before applying raw and per-step caps to external JSX imports', async () => {
     const appPath = '/workspace/App.tsx';
     const targetPath = '/workspace/Target.tsx';

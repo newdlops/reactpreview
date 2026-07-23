@@ -12,14 +12,13 @@ import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecut
 import { analyzePreviewRenderSource } from '../renderGraph/previewRenderSourceAnalysis';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph/previewRenderGraphTypes';
 import type { ReadPreviewInspectorSource } from './previewInspectorAncestorTypes';
+import { isPreviewInspectorFastAuxiliarySourcePath } from './previewInspectorFastResolvedImports';
 import { collectPreviewInspectorShallowVisualEvidence } from './previewInspectorShallowVisualEvidence';
 import type { PreviewInspectorOneHopVisualPath } from './previewInspectorShallowVisualTypes';
 import { collectPreviewStaticRouteProjectionInventory } from './previewInspectorStaticRouteProjection';
 
 const MAXIMUM_JSX_IMPORTS_PER_CORRIDOR_STEP = 48;
 const SOURCE_FILE_PATTERN = /\.[cm]?[jt]sx?$/iu;
-const AUXILIARY_PATH_PATTERN =
-  /(?:^|\/)(?:__tests__|tests?|stories?|storybook|examples?|demos?|fixtures?|mocks?|playgrounds?|sandboxes?|generated|dist|build|coverage)(?:\/|$)|\.(?:stories?|spec|test)\.[cm]?[jt]sx?$/iu;
 
 /** Inputs for one syntax-only direct JSX context collection pass. */
 export interface CollectPreviewInspectorOneHopContextOptions {
@@ -90,6 +89,7 @@ export async function collectPreviewInspectorOneHopContext(
     const evidence = collectPreviewInspectorShallowVisualEvidence({
       admitVisualPath: (visualPath) =>
         !routeProjectionSpecifiers.has(visualPath.moduleSpecifier) &&
+        !isDeferredLazyComponentChoice(visualPath) &&
         isAdmittedProjectSourcePath(
           path.normalize(visualPath.sourcePath),
           workspaceRoot,
@@ -205,6 +205,18 @@ function findCorridorOwnerExportName(
   return {};
 }
 
+/**
+ * Leaves off-corridor `React.lazy` component choices to the corridor plugin.
+ *
+ * A lazy sibling or wrapper can be visible page chrome and remains eligible. A lazy value used as
+ * a component-valued prop is instead a route/factory/modal choice whose branch is not on the proven
+ * target path. Promoting it to shallow visual context would mark the deferred module as exact again
+ * and make esbuild traverse an inactive page graph during first paint.
+ */
+function isDeferredLazyComponentChoice(visualPath: PreviewInspectorOneHopVisualPath): boolean {
+  return visualPath.importKind === 'react-lazy' && visualPath.relation === 'component-prop';
+}
+
 /** Removes duplicate evidence caused by equivalent outcomes or repeated sibling occurrences. */
 function deduplicateShallowVisualPaths(
   visualPaths: readonly PreviewInspectorOneHopVisualPath[],
@@ -242,9 +254,13 @@ function isAdmittedProjectSourcePath(
   ) {
     return false;
   }
-  const auxiliary = AUXILIARY_PATH_PATTERN.test(
-    normalizePortableRelativePath(workspaceRoot, sourcePath),
-  );
+  /*
+   * Reuse the exact fast-graph classifier rather than maintaining a weaker directory-only copy.
+   * Example owners are frequently colocated with product pages and use names such as
+   * `feature-demo-page.tsx`; admitting one here can promote its complete application path over the
+   * real owner and force esbuild to retain the demo's entire dependency graph.
+   */
+  const auxiliary = isPreviewInspectorFastAuxiliarySourcePath(sourcePath, workspaceRoot);
   return (
     !auxiliary ||
     (selectedAuxiliaryRoot !== undefined &&

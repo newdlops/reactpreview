@@ -113,6 +113,98 @@ describe('collectPreviewInspectorOneHopContext', () => {
     expect(context.truncated).toBe(false);
   });
 
+  /**
+   * Colocated demo consumers are not authored page chrome. Retaining them as a direct visual root
+   * can make the ancestor planner prefer a shorter demo route and force the fast bundle to traverse
+   * every dependency owned by that demonstration page.
+   */
+  it('excludes a colocated demo page unless the selected target belongs to that auxiliary tree', async () => {
+    const appPath = '/workspace/App.tsx';
+    const pagePath = '/workspace/FeaturePage.tsx';
+    const targetPath = '/workspace/TargetPanel.tsx';
+    const demoPath = '/workspace/feature-demo-page.tsx';
+    const sourceByPath = new Map([
+      [
+        appPath,
+        [
+          "import Page from './FeaturePage';",
+          "import DemoPage from './feature-demo-page';",
+          'export default function App() { return <><Page /><DemoPage /></>; }',
+        ].join('\n'),
+      ],
+      [
+        pagePath,
+        [
+          "import TargetPanel from './TargetPanel';",
+          'export default function FeaturePage() { return <TargetPanel />; }',
+        ].join('\n'),
+      ],
+      [targetPath, 'export default function TargetPanel() { return null; }'],
+      [demoPath, 'export default function DemoPage() { return null; }'],
+    ]);
+    const resolver = createFixtureResolver([appPath, pagePath, targetPath, demoPath]);
+
+    const productContext = await collectPreviewInspectorOneHopContext({
+      importPath: [appPath, pagePath, targetPath],
+      maximumFiles: 8,
+      readSource: (sourcePath) => Promise.resolve(sourceByPath.get(path.normalize(sourcePath))),
+      resolveModule: resolver,
+      workspaceRoot: '/workspace',
+    });
+    const auxiliaryContext = await collectPreviewInspectorOneHopContext({
+      importPath: [appPath, pagePath, targetPath],
+      maximumFiles: 8,
+      readSource: (sourcePath) => Promise.resolve(sourceByPath.get(path.normalize(sourcePath))),
+      resolveModule: resolver,
+      selectedAuxiliaryRoot: '/workspace',
+      workspaceRoot: '/workspace',
+    });
+
+    expect(productContext.sourcePaths).not.toContain(demoPath);
+    expect(auxiliaryContext.sourcePaths).toContain(demoPath);
+  });
+
+  /** Keeps lazy page chrome but does not reactivate a lazy component supplied as a route choice. */
+  it('defers an off-corridor lazy component choice while retaining a rendered lazy sibling', async () => {
+    const appPath = '/workspace/App.tsx';
+    const pagePath = '/workspace/Page.tsx';
+    const targetPath = '/workspace/Target.tsx';
+    const headerPath = '/workspace/LazyHeader.tsx';
+    const routePath = '/workspace/LazyRoute.tsx';
+    const sourceByPath = new Map([
+      [
+        appPath,
+        [
+          "import { lazy } from 'react';",
+          "import { Route, Routes } from 'react-router-dom';",
+          "import Page from './Page';",
+          "const LazyHeader = lazy(() => import('./LazyHeader'));",
+          "const LazyRoute = lazy(() => import('./LazyRoute'));",
+          'export default function App() {',
+          '  return <><LazyHeader /><Routes><Route path="other" element={<LazyRoute />} /></Routes><Page /></>;',
+          '}',
+        ].join('\n'),
+      ],
+      [
+        pagePath,
+        "import Target from './Target'; export default function Page() { return <Target />; }",
+      ],
+      [targetPath, 'export default function Target() { return null; }'],
+    ]);
+    const resolver = createFixtureResolver([appPath, pagePath, targetPath, headerPath, routePath]);
+
+    const context = await collectPreviewInspectorOneHopContext({
+      importPath: [appPath, pagePath, targetPath],
+      maximumFiles: 8,
+      readSource: (sourcePath) => Promise.resolve(sourceByPath.get(path.normalize(sourcePath))),
+      resolveModule: resolver,
+      workspaceRoot: '/workspace',
+    });
+
+    expect(context.sourcePaths).toContain(headerPath);
+    expect(context.sourcePaths).not.toContain(routePath);
+  });
+
   it('adds direct non-page JSX modules from every proven corridor step to source evidence', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'preview-one-hop-corridor-'));
     temporaryRoots.push(projectRoot);

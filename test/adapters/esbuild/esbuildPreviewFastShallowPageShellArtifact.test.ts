@@ -239,12 +239,18 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
           relativePath: 'src/RootLayout.tsx',
           sourceText: [
             "import { lazy, Suspense } from 'react';",
+            "import { Route } from './router-runtime';",
             "import SelectedPage from './SelectedPage';",
             "const LazyHeader = lazy(() => import('./shell/LazyHeader'));",
+            "const LazyInactiveRoute = lazy(() => import('./routes/LazyInactiveRoute'));",
             'export default function RootLayout() {',
-            '  return <Suspense fallback={null}><LazyHeader /><SelectedPage /></Suspense>;',
+            '  return <Suspense fallback={null}><LazyHeader /><Route element={<LazyInactiveRoute />} /><SelectedPage /></Suspense>;',
             '}',
           ].join('\n'),
+        },
+        {
+          relativePath: 'src/router-runtime.tsx',
+          sourceText: 'export function Route() { return null; }',
         },
         {
           relativePath: 'src/shell/LazyHeader.tsx',
@@ -260,6 +266,11 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
           sourceText:
             'export default function LazyDeepChild() { return <span>SHALLOW_LAZY_DEEP_MARKER</span>; }',
         },
+        {
+          relativePath: 'src/routes/LazyInactiveRoute.tsx',
+          sourceText:
+            'export default function LazyInactiveRoute() { return <main>SHALLOW_LAZY_INACTIVE_ROUTE_MARKER</main>; }',
+        },
         { relativePath: 'src/SelectedPage.tsx', sourceText: SELECTED_PAGE_SOURCE },
       ],
       targetRelativePath: 'src/Target.tsx',
@@ -269,11 +280,13 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
     expect({
       deepChild: javascript.includes('SHALLOW_LAZY_DEEP_MARKER'),
       headerHost: javascript.includes('SHALLOW_LAZY_HEADER_HOST_MARKER'),
+      inactiveRoute: javascript.includes('SHALLOW_LAZY_INACTIVE_ROUTE_MARKER'),
       selectedPage: javascript.includes('SHALLOW_SELECTED_PAGE_MARKER'),
       target: javascript.includes('SHALLOW_TARGET_MARKER'),
     }).toEqual({
       deepChild: false,
       headerHost: true,
+      inactiveRoute: false,
       selectedPage: true,
       target: true,
     });

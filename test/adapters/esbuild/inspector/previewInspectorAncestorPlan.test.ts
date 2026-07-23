@@ -566,6 +566,59 @@ describe('createPreviewInspectorAncestorPlan', () => {
     });
   });
 
+  /**
+   * Promotes a local page declaration through a default-exported HOC pipeline.
+   *
+   * Render-prop helpers intentionally produce no host node by themselves. The page checkpoint must
+   * therefore remain the exported HOC value that invokes the helper's callback, rather than
+   * degrading the selected helper into a context-free direct root.
+   */
+  it('mounts a default HOC page above a selected render-prop helper', async () => {
+    const flowPath = '/workspace/packages/application/src/PageFlow.tsx';
+    const pagePath = '/workspace/packages/application/src/FlowPage.tsx';
+    const hocPath = '/workspace/packages/application/src/page-hoc.tsx';
+    const entryPath = '/workspace/packages/application/src/main.tsx';
+    const sources = {
+      [flowPath]: [
+        "import type { ReactElement } from 'react';",
+        'export function PageFlow({ children }: { children: (view: { body: ReactElement }) => ReactElement }) {',
+        '  return children({ body: <section>Loaded</section> });',
+        '}',
+      ].join('\n'),
+      [pagePath]: [
+        "import { PageFlow } from './PageFlow';",
+        "import { withPermission, withStaff } from './page-hoc';",
+        'const FlowPage = () => (',
+        '  <PageFlow>{({ body }) => <main><header />{body}</main>}</PageFlow>',
+        ');',
+        "export default withPermission(withStaff(FlowPage), 'FlowPage');",
+      ].join('\n'),
+      [hocPath]: [
+        'export const withPermission = (Component) => Component;',
+        'export const withStaff = (Component) => Component;',
+      ].join('\n'),
+      [entryPath]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import FlowPage from './FlowPage';",
+        "createRoot(document.getElementById('root')).render(<FlowPage />);",
+      ].join('\n'),
+    };
+
+    const plan = await createPreviewInspectorAncestorPlan({
+      documentPath: flowPath,
+      exportName: 'PageFlow',
+      readSource: createSourceReader(sources),
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.pageCandidates[0]).toMatchObject({
+      complete: true,
+      root: { exportName: 'default', sourcePath: pagePath },
+      stopReason: 'root-reached',
+    });
+    expect(plan.pageCandidates[0]?.renderPath?.entryPoint?.sourcePath).toBe(entryPath);
+  });
+
   /** Keeps Router ownership local to each independently mountable page checkpoint. */
   it('distinguishes a detached routed page from the application root that owns its Router', async () => {
     const routerRootPath = '/workspace/packages/application/src/AppRouter.tsx';

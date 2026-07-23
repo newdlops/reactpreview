@@ -2,7 +2,8 @@
  * Creates a low-cost Page Inspector plan for a directly selected Next App Router route module.
  * Cold previews need this filesystem-only shell before esbuild starts; otherwise a page's broad
  * generated registries enter the bundle before the full reverse component analysis can install
- * the corridor pruner. The planner reads only the chosen page/layout parameter evidence.
+ * the corridor pruner. The planner reads the chosen page/layout plus exact static-parameter
+ * bindings reached inside an optional trusted source boundary; it never scans that boundary.
  */
 import path from 'node:path';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
@@ -30,8 +31,12 @@ export interface CreatePreviewInspectorNextAppDirectRoutePlanOptions {
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   /** Project-aware resolver used only by reached `generateStaticParams` collections. */
   readonly resolveModule: ResolvePreviewRenderGraphModule;
-  /** Existing source inventory; this helper performs no filesystem walk. */
+  /** Cancels stale static-parameter work before it opens another reached source module. */
+  readonly signal?: AbortSignal;
+  /** Existing route inventory; exact parameter imports may be read but are never enumerated. */
   readonly sourcePaths: readonly string[];
+  /** Optional package/source root that admits only reached static-parameter imports. */
+  readonly staticParameterSourceBoundary?: string;
 }
 
 /**
@@ -63,7 +68,11 @@ export async function createPreviewInspectorNextAppDirectRoutePlan(
       pagePath: documentPath,
       readSource: options.readSource,
       resolveModule: options.resolveModule,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       sourcePaths: options.sourcePaths,
+      ...(options.staticParameterSourceBoundary === undefined
+        ? {}
+        : { staticParameterSourceBoundary: options.staticParameterSourceBoundary }),
     });
     const shell = refinement?.shell ?? initialShell;
     for (const dependencyPath of refinement?.dependencyPaths ?? []) {

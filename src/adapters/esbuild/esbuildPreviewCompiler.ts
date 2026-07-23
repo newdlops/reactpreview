@@ -1,8 +1,4 @@
-/**
- * Implements the preview compiler port with esbuild's in-process build API.
- * It never starts `serve()` or writes into the user's project: browser artifacts remain in memory
- * until the separate artifact-store adapter publishes them under VS Code global storage.
- */
+/** Implements in-memory preview compilation; no project script or application server is started. */
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { stop, type BuildResult } from 'esbuild';
@@ -53,6 +49,7 @@ import {
   VIRTUAL_ENTRY_NAME,
 } from './previewBuildResult';
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
+import { resolvePreviewContextCoverage } from './previewContextCoverage';
 import {
   EMPTY_IMPLICIT_GLOBAL_EVIDENCE,
   EMPTY_RUNTIME_WATCH_INPUTS,
@@ -138,28 +135,22 @@ import {
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
 export type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
-/** esbuild-backed compiler for browser-safe React preview bundles. */
+/**
+ * Coordinates bounded source analysis, runtime facades, native esbuild contexts, and dependency
+ * recovery while keeping every generated preview browser-safe and isolated from project scripts.
+ */
 export class EsbuildPreviewCompiler implements PreviewCompiler {
   /** Compiler-owned signals let shutdown cancel analysis that has not reached esbuild yet. */
   private readonly activeBuildControllers = new Set<AbortController>();
-  /** Graph-proven runtime requirements reused so hot rebuilds normally need one native pass. */
   private readonly adaptiveBuildPlanCache = new PreviewAdaptiveBuildPlanCache();
   private disposed = false;
-  /** Package-scoped bootstrap/ambient evidence reused across preview tabs and hot rebuilds. */
   private readonly implicitGlobalEvidenceCache = new PreviewImplicitGlobalEvidenceCache();
-  /** Package-scoped inert source inventories reused by multiple tabs and hot rebuilds. */
   private readonly projectUsageCache = new PreviewProjectUsageCache();
-  /** Native build contexts retaining parsed dependency graphs across compatible revisions. */
   private readonly incrementalBuildCache = new PreviewIncrementalBuildCache();
-  /** One-time informational warnings retained separately from repeatable build errors. */
   private readonly diagnosticEmissionCache = new PreviewDiagnosticEmissionCache();
-  /** Target plans whose previous split build exceeded the local artifact fan-out boundary. */
   private readonly outputStrategyCache = new PreviewOutputStrategyCache();
-  /** Trackable broken Storybook graphs skipped until their exact source evidence changes. */
   private readonly setupFailureCache = new PreviewSetupFailureCache();
-  /** Host-lifetime entropy derives entry-private source gesture keys without invalidating rebuilds. */
   private readonly inspectorGestureSeed = randomBytes(32);
-  /** Optional persistent package store; absent in isolated compiler unit tests. */
   private readonly managedDependencyStore: PreviewManagedDependencyStore | undefined;
   private readonly maximumSplitOutputFiles: number;
   private shutdownPromise: Promise<void> | undefined;
@@ -182,12 +173,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           });
   }
   /**
-   * Bundles the current editor snapshot, its dependency graph, CSS, and small binary assets.
-   * Project build scripts and framework plugins are deliberately not loaded or executed.
+   * Bundles the editor snapshot, graph, CSS, and small assets into browser-safe in-memory output.
    * @param request Active editor snapshot and workspace module-resolution context.
    * @param context Optional progress observer and cancellation signal for the owning revision.
-   * @returns In-memory ESM JavaScript, optional CSS, warnings, and dependency paths.
-   * @throws PreviewCompilationError when esbuild cannot parse or bundle the module graph.
+   * @throws PreviewCompilationError when esbuild cannot parse or bundle the graph.
    */
   public async compile(
     request: PreviewBuildRequest,
@@ -396,6 +385,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         const sourceTransformer = new PreviewSourceTransformer({
           deferDormantOverlayImports: useFastPreparation,
           documentPath: canonicalizeExistingPath(request.documentPath),
+          fastPreparation: useFastPreparation,
           implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
           implicitPackageGlobalResolver: staticModuleResolver,
           instrumentDataRequests: request.renderMode === 'page-inspector',
@@ -421,6 +411,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               sourceText: request.sourceText,
             },
             ...request.dependencySnapshots,
+            ...styleContext.tailwindCandidateSnapshots,
           ],
           transformer: sourceTransformer,
         };
@@ -473,13 +464,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 projectRoot,
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
-              createPreviewMissingSourceFallbackPlugin({
-                readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
-                registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
-                staticModuleResolver,
-                workspaceRoot: canonicalWorkspaceRoot,
-              }),
-              createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
               ...(inspectorPlan === undefined
                 ? []
                 : [
@@ -499,14 +483,25 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                         inspectorPlan.renderChainsByExport,
                       ).includes('default'),
                     }),
-                    createPreviewInspectorRuntimePlugin({ projectRoot }),
                     createPreviewInspectorCorridorPlugin({
+                      ...(useFastPreparation ? { maximumSmallDynamicImports: 8 } : {}),
                       plan: inspectorPlan,
                       projectRoot,
                       resolveModule: staticModuleResolver.resolve,
                       workspaceRoot: canonicalWorkspaceRoot,
                     }),
                   ]),
+              createPreviewMissingSourceFallbackPlugin({
+                fastPreparation: useFastPreparation,
+                readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
+                registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
+                staticModuleResolver,
+                workspaceRoot: canonicalWorkspaceRoot,
+              }),
+              createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
+              ...(inspectorPlan === undefined
+                ? []
+                : [createPreviewInspectorRuntimePlugin({ projectRoot })]),
               createPreviewApolloBridgePlugin({ projectRoot }),
               createPreviewContextBridgePlugin({ projectRoot }),
               createPreviewFormikBridgePlugin({ projectRoot }),
@@ -548,6 +543,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     createPreviewInspectorRootPlugin({
                       displayName: path.basename(request.documentPath),
                       globalStyleImports,
+                      ...(useFastPreparation ? { maximumPageCandidates: 1 } : {}),
                       plan: inspectorPlan,
                       ...(selectedThemeImport === undefined
                         ? {}
@@ -569,6 +565,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
               createPreviewTailwindPlugin({
+                boundedSourceDiscovery:
+                  useFastPreparation &&
+                  (packageHasFrameworkPageContext || packageHasEntryConnectedPage),
                 projectRoot,
                 readSourceSnapshots: () =>
                   incrementalState?.snapshots ?? sourceCompilation.snapshots,
@@ -914,6 +913,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ...targetUsageProps.dependencyPaths,
         ],
         this.diagnosticEmissionCache.admitBuildWarning.bind(this.diagnosticEmissionCache),
+        resolvePreviewContextCoverage({
+          request,
+          inspectorPlan: targetUsageProps.inspectorPlan,
+          maximumPublishedPageCandidates: useFastPreparation ? 1 : undefined,
+        }),
       );
       this.managedDependencyStore?.scheduleAdmission({
         dependencyPaths: collectPreviewBuildDependencies(request, buildExecution.result.metafile),
@@ -976,13 +980,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
    * @returns Promise resolved after esbuild confirms that its shared service has stopped.
    */
   public shutdown(): Promise<void> {
-    if (this.shutdownPromise !== undefined) {
-      return this.shutdownPromise;
-    }
+    if (this.shutdownPromise !== undefined) return this.shutdownPromise;
     this.disposed = true;
-    for (const controller of this.activeBuildControllers) {
-      controller.abort();
-    }
+    for (const controller of this.activeBuildControllers) controller.abort();
     this.adaptiveBuildPlanCache.clear();
     this.diagnosticEmissionCache.clear();
     this.implicitGlobalEvidenceCache.clear();

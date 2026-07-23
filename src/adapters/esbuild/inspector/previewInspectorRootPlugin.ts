@@ -30,6 +30,8 @@ export interface PreviewInspectorRootPluginOptions {
   readonly displayName?: string;
   /** Exported app-level global styles recovered from wrappers above the safe mounted root. */
   readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
+  /** Optional first-paint cap preventing unselected alternate application roots from bundling. */
+  readonly maximumPageCandidates?: number;
   /** Bounded real-owner plan produced from current editor-or-disk source. */
   readonly plan: PreviewInspectorAncestorPlan;
   /** Neutral target props inferred without evaluating the selected project module. */
@@ -66,6 +68,9 @@ export function createPreviewInspectorRootPlugin(
         ...(options.globalStyleImports === undefined
           ? {}
           : { globalStyleImports: options.globalStyleImports }),
+        ...(options.maximumPageCandidates === undefined
+          ? {}
+          : { maximumPageCandidates: options.maximumPageCandidates }),
         plan: options.plan,
         ...(options.targetInference === undefined
           ? {}
@@ -94,6 +99,7 @@ export function createPreviewInspectorRootPlugin(
 export interface PreviewInspectorRootSourceOptions {
   readonly displayName?: string;
   readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
+  readonly maximumPageCandidates?: number;
   readonly plan: PreviewInspectorAncestorPlan;
   readonly targetInference?: PreviewInferredExportProps;
   readonly themeImport?: PreviewThemeImportSelection;
@@ -113,7 +119,10 @@ export function createPreviewInspectorRootSource(
   options: PreviewInspectorRootSourceOptions,
 ): string {
   const { plan } = options;
-  const pageCandidates = plan.pageCandidates;
+  const pageCandidates =
+    options.maximumPageCandidates === undefined
+      ? plan.pageCandidates
+      : plan.pageCandidates.slice(0, Math.max(1, Math.floor(options.maximumPageCandidates)));
   for (const candidate of pageCandidates) {
     assertExportName(candidate.root.exportName);
   }

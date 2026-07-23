@@ -59,6 +59,52 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     await expect(readFile(unrelatedPath, 'utf8')).resolves.toContain('UNRELATED_ROUTE_MARKER');
   });
 
+  /** Lets first paint classify a medium dormant lazy-choice list without traversing every child. */
+  it('accepts a lower generated-registry threshold for bounded fast preparation', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    const branches = Array.from({ length: 10 }, (_, index) => ({
+      path: path.join(workspaceRoot, 'src', `Fallback${index.toString()}.ts`),
+      specifier: `./Fallback${index.toString()}`,
+    }));
+    await Promise.all([
+      writeFile(
+        entryPath,
+        `export const fallbacks = [${branches
+          .map(({ specifier }) => `() => import('${specifier}')`)
+          .join(',')}];`,
+      ),
+      ...branches.map(({ path: branchPath }, index) =>
+        writeFile(branchPath, `export default 'DORMANT_FALLBACK_${index.toString()}';`),
+      ),
+    ]);
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          maximumSmallDynamicImports: 8,
+          plan: createCorridorPlan(entryPath, entryPath),
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('ReactPreviewDeferredCorridorRoute');
+    expect(source).not.toContain('DORMANT_FALLBACK_');
+    expect(result.outputFiles).toHaveLength(2);
+  });
+
   /** Prunes a deferred route declared in a statically reached manifest outside direct path evidence. */
   it('prunes project lazy branches even when their importer is not a render-chain step', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
@@ -353,6 +399,8 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       writeFile(selectedPath, `export default 'SELECTED';`),
     ]);
 
+    const staticResolver = createPreviewStaticModuleResolver({ workspaceRoot });
+    let resolvedBranchCount = 0;
     const result = await build({
       absWorkingDir: workspaceRoot,
       bundle: true,
@@ -363,7 +411,10 @@ describe('createPreviewInspectorCorridorPlugin', () => {
         createPreviewInspectorCorridorPlugin({
           plan: createCorridorPlan(entryPath, selectedPath),
           projectRoot: workspaceRoot,
-          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          resolveModule: (specifier, importerPath) => {
+            resolvedBranchCount += 1;
+            return staticResolver.resolve(specifier, importerPath);
+          },
           workspaceRoot,
         }),
       ],
@@ -374,6 +425,93 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(result.outputFiles.map((outputFile) => outputFile.text).join('\n')).toContain(
       'ReactPreviewDeferredCorridorRoute',
     );
+    expect(resolvedBranchCount).toBe(0);
+  });
+
+  /** A direct target hidden in a broad non-route registry is retained through one lexical hint. */
+  it('resolves only a selected module stem in a broad registry without route params', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const selectedPath = path.join(workspaceRoot, 'src', 'selected', 'index.ts');
+    await mkdir(path.dirname(selectedPath), { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        `export const routes = [${[
+          ...Array.from(
+            { length: 30 },
+            (_, index) => `() => import('./unrelated-${index.toString()}/index')`,
+          ),
+          `() => import('./selected')`,
+        ].join(',')}];`,
+      ),
+      writeFile(selectedPath, `export default 'BROAD_SELECTED_MARKER';`),
+    ]);
+    const staticResolver = createPreviewStaticModuleResolver({ workspaceRoot });
+    let resolvedBranchCount = 0;
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan: createCorridorPlan(entryPath, selectedPath),
+          projectRoot: workspaceRoot,
+          resolveModule: (specifier, importerPath) => {
+            resolvedBranchCount += 1;
+            return staticResolver.resolve(specifier, importerPath);
+          },
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+
+    expect(result.outputFiles.map((outputFile) => outputFile.text).join('\n')).toContain(
+      'BROAD_SELECTED_MARKER',
+    );
+    expect(resolvedBranchCount).toBe(1);
+  });
+
+  /** An unreadable-size authored loader is not treated as generated-registry pruning evidence. */
+  it('fails open when an importer exceeds the bounded registry evidence size', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const entryPath = path.join(sourceRoot, 'entry.ts');
+    const selectedPath = path.join(sourceRoot, 'Selected.ts');
+    await mkdir(sourceRoot, { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        `/*${'x'.repeat(1024 * 1024)}*/\nexport const routes = [() => import('./Selected'), () => import('./Sibling')];`,
+      ),
+      writeFile(selectedPath, `export default 'OVERSIZED_SELECTED_MARKER';`),
+    ]);
+
+    await expect(
+      build({
+        absWorkingDir: workspaceRoot,
+        bundle: true,
+        entryPoints: [entryPath],
+        format: 'esm',
+        logLevel: 'silent',
+        outdir: path.join(workspaceRoot, 'out'),
+        plugins: [
+          createPreviewInspectorCorridorPlugin({
+            plan: createCorridorPlan(entryPath, selectedPath),
+            projectRoot: workspaceRoot,
+            resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+            workspaceRoot,
+          }),
+        ],
+        splitting: true,
+        write: false,
+      }),
+    ).rejects.toThrow('Could not resolve "./Sibling"');
   });
 });
 

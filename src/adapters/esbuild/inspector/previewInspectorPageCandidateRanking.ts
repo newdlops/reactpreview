@@ -37,6 +37,7 @@ function compareCandidates(
 /** Scores production shell coverage, page roles, and exact direct-ancestry completeness. */
 function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
   const sourceStem = path.basename(candidate.root.sourcePath).replace(/\.[^.]+$/u, '');
+  const sourceName = path.basename(candidate.root.sourcePath);
   const renderLabel =
     candidate.rootStepIndex === undefined
       ? ''
@@ -62,6 +63,19 @@ function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
     score += 500;
   }
   if (candidate.rootStepIndex === undefined && candidate.edges.length > 0) score += 500;
+  /*
+   * A re-export-only index checkpoint does not own page JSX. Mounting it commonly activates every
+   * lazy sibling in a broad page barrel, while the complete concrete page candidate already exists
+   * beside it. Prefer that authored page without penalizing real `index.tsx` components that reverse
+   * ancestry proved complete.
+   */
+  if (
+    !candidate.complete &&
+    candidate.stopReason === 'render-path-checkpoint' &&
+    /^index\.[cm]?[jt]sx?$/iu.test(sourceName)
+  ) {
+    score -= 8_000;
+  }
   // An owned BrowserRouter is useful when static route evidence lets the runtime seed its location
   // before module evaluation. Without such evidence, retain the older conservative penalty.
   if (candidate.rootOwnsRouter && candidate.routeLocation === undefined) score -= 2_500;

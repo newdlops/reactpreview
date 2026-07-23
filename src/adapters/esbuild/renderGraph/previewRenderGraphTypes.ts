@@ -85,6 +85,8 @@ export interface PreviewRenderInvocation {
 export interface PreviewRenderChainStep {
   /** Whether the edge is unconditional syntax or belongs to a route/configuration branch. */
   readonly certainty: PreviewRenderChainCertainty;
+  /** Authored wrapper modules that contribute the edge without becoming standalone graph nodes. */
+  readonly evidenceSourcePaths?: readonly string[];
   /** Relationship connecting this step to the following outer step. */
   readonly kind: PreviewRenderChainEdgeKind;
   /** React-specific invocation detail when syntax proves a component transport boundary. */

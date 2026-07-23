@@ -606,7 +606,7 @@ function createComponentRenderPlan(seed: ConsumerSeed): PreviewRenderChainPlan {
       Object.freeze({
         ...candidate,
         id: `${candidate.id}:consumer:${seed.component.exportName}`,
-        steps: Object.freeze(candidate.steps.slice(stepIndex)),
+        steps: preservePromotedCallableEvidence(candidate, stepIndex, seed.plan.target.sourcePath),
       }),
     ];
   });
@@ -619,12 +619,48 @@ function createComponentRenderPlan(seed: ConsumerSeed): PreviewRenderChainPlan {
             Object.freeze({
               ...seed.path,
               id: `${seed.path.id}:consumer:${seed.component.exportName}`,
-              steps: Object.freeze(seed.path.steps.slice(seed.componentStepIndex)),
+              steps: preservePromotedCallableEvidence(
+                seed.path,
+                seed.componentStepIndex,
+                seed.plan.target.sourcePath,
+              ),
             }),
           ],
     ),
     target: seed.component,
   });
+}
+
+/**
+ * Carries the discarded hook/HOC segment into the promoted component's exact path evidence.
+ *
+ * A context module has no host boundary, so its render path is intentionally re-based at the first
+ * consuming component. The removed steps can nevertheless contain wrapper definitions such as an
+ * authentication HOC whose early return decides whether that component ever renders. Folding only
+ * those compiler-proven source identities into the first retained step lets the browser's bounded
+ * DFS recognize the guard without admitting arbitrary transitive dependencies or page siblings.
+ */
+function preservePromotedCallableEvidence(
+  candidate: PreviewRenderChainCandidate,
+  stepIndex: number,
+  callableSourcePath: string,
+): readonly PreviewRenderChainStep[] {
+  const retained = candidate.steps.slice(stepIndex);
+  const promoted = retained[0];
+  if (promoted === undefined) return Object.freeze([]);
+  const evidenceSourcePaths = new Set<string>([path.normalize(callableSourcePath)]);
+  for (const step of candidate.steps.slice(0, stepIndex + 1)) {
+    for (const sourcePath of step.evidenceSourcePaths ?? []) {
+      evidenceSourcePaths.add(path.normalize(sourcePath));
+    }
+  }
+  return Object.freeze([
+    Object.freeze({
+      ...promoted,
+      evidenceSourcePaths: Object.freeze([...evidenceSourcePaths]),
+    }),
+    ...retained.slice(1),
+  ]);
 }
 
 /** Orders the static corridor from the mounted page root toward the selected source module. */

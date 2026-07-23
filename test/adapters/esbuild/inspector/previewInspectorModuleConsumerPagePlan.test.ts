@@ -241,6 +241,38 @@ describe('createPreviewInspectorModuleConsumerPagePlan', () => {
     });
   });
 
+  /** Keeps a selected HOC's guard source on the promoted page path after removing factory steps. */
+  it('preserves callable guard evidence when a HOC consumer becomes the render target', async () => {
+    const hocPath = '/workspace/src/guards/with-staff-page.tsx';
+    const pagePath = '/workspace/src/pages/StaffDashboardPage.tsx';
+    const fixture = createFixture({
+      [hocPath]: [
+        'export const withStaffPage = (Component) => {',
+        '  const GuardedPage = (props) => {',
+        '    const isStaffMode = false;',
+        '    if (!isStaffMode) return <Navigate to="/" />;',
+        '    return <Component {...props} />;',
+        '  };',
+        '  return GuardedPage;',
+        '};',
+      ].join('\n'),
+      [pagePath]: [
+        "import { withStaffPage } from '../guards/with-staff-page';",
+        'const StaffDashboardPage = () => <main>dashboard</main>;',
+        'export default withStaffPage(StaffDashboardPage);',
+      ].join('\n'),
+    });
+
+    const plan = await createPreviewInspectorModuleConsumerPagePlan({
+      documentPath: hocPath,
+      ...fixture,
+    });
+
+    expect(plan?.target).toEqual({ exportName: 'default', sourcePath: pagePath });
+    expect(plan?.renderChain.paths[0]?.steps[0]?.evidenceSourcePaths).toContain(hocPath);
+    expect(plan?.contextModule?.sourcePath).toBe(hocPath);
+  });
+
   /** Does not invent a page for unused hooks or similarly named non-callable configuration. */
   it('returns no plan when no exported component calls the selected module', async () => {
     const hookPath = '/workspace/src/use-unused.ts';

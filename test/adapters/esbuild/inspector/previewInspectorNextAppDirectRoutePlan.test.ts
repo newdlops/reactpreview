@@ -58,6 +58,10 @@ describe('createPreviewInspectorNextAppDirectRoutePlan', () => {
     const plan = await createPreviewInspectorNextAppDirectRoutePlan({
       documentPath: pagePath,
       ...fixture,
+      // The direct filesystem inventory intentionally keeps only framework route modules. The
+      // exact reached parameter collection remains readable through the package source boundary.
+      sourcePaths: [pagePath, previewLayoutPath, rootLayoutPath, unrelatedPagePath],
+      staticParameterSourceBoundary: '/workspace',
     });
 
     expect(plan?.root.sourcePath).toBe(pagePath);
@@ -79,6 +83,39 @@ describe('createPreviewInspectorNextAppDirectRoutePlan', () => {
     );
     expect(plan?.dependencyPaths).not.toContain(unrelatedPagePath);
     expect(plan?.dependencyPaths).not.toContain(unrelatedRegistryPath);
+  });
+
+  /** Rejects a resolved static collection when it escapes the explicitly trusted source root. */
+  it('does not admit parameter-only imports outside the direct route source boundary', async () => {
+    const projectRoot = '/workspace/product';
+    const pagePath = `${projectRoot}/app/[name]/page.tsx`;
+    const rootLayoutPath = `${projectRoot}/app/layout.tsx`;
+    const outsideRegistryPath = '/workspace/shared/names.ts';
+    const fixture = createFixture({
+      [pagePath]: [
+        "import { NAMES } from '../../../shared/names';",
+        'export function generateStaticParams() {',
+        '  return NAMES.map((name) => ({ name }));',
+        '}',
+        'export default function Page() { return <main />; }',
+      ].join('\n'),
+      [rootLayoutPath]:
+        'export default function RootLayout({ children }) { return <body>{children}</body>; }',
+      [outsideRegistryPath]: "export const NAMES = ['outside'];",
+    });
+
+    const plan = await createPreviewInspectorNextAppDirectRoutePlan({
+      documentPath: pagePath,
+      ...fixture,
+      sourcePaths: [pagePath, rootLayoutPath],
+      staticParameterSourceBoundary: projectRoot,
+    });
+
+    expect(plan?.pageCandidates[0]?.routeLocation).toMatchObject({
+      params: { name: 'name' },
+      pathname: '/name',
+    });
+    expect(plan?.dependencyPaths).not.toContain(outsideRegistryPath);
   });
 
   /** Converts a selected layout to exactly one closest descendant page instead of every sibling. */

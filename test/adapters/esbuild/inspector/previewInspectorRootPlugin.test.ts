@@ -195,6 +195,31 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"id":"candidate-alternate"');
   });
 
+  /** Keeps cold fast bundles from eagerly traversing alternate app roots in coalesced output. */
+  it('can publish only the highest-ranked page candidate for first paint', () => {
+    const primaryPlan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const primaryCandidate = primaryPlan.pageCandidates[0];
+    if (primaryCandidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      maximumPageCandidates: 1,
+      plan: {
+        ...primaryPlan,
+        pageCandidates: [
+          primaryCandidate,
+          {
+            ...primaryCandidate,
+            id: 'candidate-expensive-app-root',
+            root: { exportName: 'App', sourcePath: ALTERNATE_PAGE_PATH },
+          },
+        ],
+      },
+    });
+
+    expect(source).toContain('import("/workspace/application/Page.tsx")');
+    expect(source).not.toContain(ALTERNATE_PAGE_PATH);
+    expect(source).not.toContain('candidate-expensive-app-root');
+  });
+
   /** Loads and composes implicit Next layouts root-to-leaf while preserving the page children. */
   it('wraps a Next App Router page in its filesystem layout chain', () => {
     const plan = createPlan({ exportName: 'default', sourcePath: PAGE_PATH });

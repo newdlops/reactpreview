@@ -14,6 +14,13 @@ export type PreviewRenderMode = 'component' | 'page-inspector';
 export type PreviewPreparationMode = 'fast' | 'full';
 
 /**
+ * Compiler-owned statement about whether one artifact contains the selected file's authored page
+ * context. `partial` is deliberately the safe default: a successful direct-file bundle proves
+ * that bytes can render, but it does not prove the App-to-page route and layout corridor.
+ */
+export type PreviewContextCoverage = 'complete' | 'partial';
+
+/**
  * Scheduling intent kept separate from graph completeness.
  * A complete foreground fallback or warm rebuild must never be mistaken for optional background
  * context discovery merely because both use `preparationMode: 'full'`.
@@ -124,6 +131,11 @@ export interface PreviewBundle {
   readonly artifactMetadata?: PreviewBundleArtifactMetadata;
   /** Auxiliary ESM/CSS files retained separately so browser module and style loading stays lazy. */
   readonly chunks: readonly PreviewBundleChunk[];
+  /**
+   * Static page-context proof produced by the compiler. Older/custom adapters may omit the field;
+   * application and presentation boundaries must then treat the result as `partial`.
+   */
+  readonly contextCoverage?: PreviewContextCoverage;
   /** Absolute graph inputs and bounded convention candidates used for future targeted rebuilds. */
   readonly dependencies: readonly string[];
   /** Non-fatal diagnostics returned by a successful build. */
@@ -152,6 +164,11 @@ export interface StoredPreviewArtifact {
 export interface PreparedPreview {
   /** Published locations that the presentation layer can convert to webview URIs. */
   readonly artifact: StoredPreviewArtifact;
+  /**
+   * Compiler-owned page-context proof forwarded without presentation-layer reinterpretation.
+   * Absence remains equivalent to `partial` for compatibility with older compiler adapters.
+   */
+  readonly contextCoverage?: PreviewContextCoverage;
   /** Input module paths involved in the successful build. */
   readonly dependencies: readonly string[];
   /** Non-fatal diagnostics produced by the compiler. */

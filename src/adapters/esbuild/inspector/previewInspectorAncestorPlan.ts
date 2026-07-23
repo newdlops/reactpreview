@@ -373,6 +373,7 @@ async function createInspectorPageCandidate(arguments_: {
       readSource: options.readSource,
       ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
       sourcePaths,
+      targetPath: target.sourcePath,
     });
     for (const dependencyPath of frameworkShell.dependencyPaths) dependencies.add(dependencyPath);
     const { nextAppShell, nextPagesShell } = frameworkShell;
@@ -514,6 +515,7 @@ async function createRenderPathPageCandidate(arguments_: {
     readSource: options.readSource,
     ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     sourcePaths: options.sourcePaths,
+    targetPath: options.documentPath,
   });
   for (const dependencyPath of frameworkShell.dependencyPaths) dependencies.add(dependencyPath);
   const { nextAppShell, nextPagesShell } = frameworkShell;

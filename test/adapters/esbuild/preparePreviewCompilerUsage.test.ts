@@ -130,6 +130,176 @@ describe('preparePreviewCompilerUsage inventory policy', () => {
     expect(getSourcePaths).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * Keeps fast route discovery convention-bounded while allowing one exact reached parameter
+   * collection elsewhere in the same package through the existing bounded source reader.
+   */
+  it('reads a parameter-only project import outside the direct Next route inventory', async () => {
+    const projectRoot = '/workspace/apps/web';
+    const pagePath = `${projectRoot}/app/[name]/page.tsx`;
+    const rootLayoutPath = `${projectRoot}/app/layout.tsx`;
+    const registryPath = `${projectRoot}/lib/route-names.ts`;
+    const pageSource = [
+      "import { ROUTE_NAMES } from '../../lib/route-names';",
+      'export function generateStaticParams() {',
+      '  return ROUTE_NAMES.map((name) => ({ name }));',
+      '}',
+      'export default function Page() { return <main />; }',
+    ].join('\n');
+    const request: PreviewBuildRequest = {
+      ...createRequest(pagePath, pageSource),
+      dependencySnapshots: [
+        {
+          documentPath: rootLayoutPath,
+          language: 'tsx',
+          sourceText:
+            'export default function RootLayout({ children }) { return <body>{children}</body>; }',
+        },
+      ],
+    };
+    const readSourceText = vi.fn(({ sourcePath }: { readonly sourcePath: string }) =>
+      Promise.resolve(
+        path.normalize(sourcePath) === path.normalize(registryPath)
+          ? "export const ROUTE_NAMES = ['authored'];"
+          : undefined,
+      ),
+    );
+    const getSourcePaths = vi.fn();
+    const cache = {
+      discover: vi.fn(),
+      getSourcePaths,
+      readSourceText,
+    } as unknown as PreviewProjectUsageCache;
+    const resolver = {
+      ...createResolverStub(),
+      resolve: (specifier: string, consumer: string) =>
+        specifier === '../../lib/route-names' &&
+        path.normalize(consumer) === path.normalize(pagePath)
+          ? registryPath
+          : undefined,
+    } as ReturnType<typeof createPreviewStaticModuleResolver>;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot,
+      projectUsesNextRuntime: true,
+      request,
+      resolver,
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    expect(
+      prepared.packageTargetUsageProps.inspectorPlan?.pageCandidates[0]?.routeLocation,
+    ).toMatchObject({
+      params: { name: 'authored' },
+      pathname: '/authored',
+    });
+    expect(prepared.packageTargetUsageProps.dependencyPaths).toContain(registryPath);
+    expect(readSourceText).toHaveBeenCalledWith({
+      maximumBytes: 4 * 1024 * 1024,
+      sourcePath: registryPath,
+    });
+    expect(getSourcePaths).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Pages Router supplies `_app` through framework props, so fast preparation must add that shell
+   * and its dynamic route evidence without waiting for the later package inventory pass.
+   */
+  it('prepares a direct Next Pages route with its app shell on the first fast artifact', async () => {
+    const projectRoot = '/workspace/apps/front-office';
+    const pagePath = `${projectRoot}/pages/hotels/[hotelName]/callTada.tsx`;
+    const appPath = `${projectRoot}/pages/_app.tsx`;
+    const guardPath = `${projectRoot}/lib/guard.ts`;
+    const constantsPath = `${projectRoot}/lib/constants.ts`;
+    const pageSource = [
+      "import { guardPage } from '../../../lib/guard';",
+      'export default function CallTada() { return <main>Call</main>; }',
+      'export const getServerSideProps = guardPage();',
+    ].join('\n');
+    const request: PreviewBuildRequest = {
+      ...createRequest(pagePath, pageSource),
+      dependencySnapshots: [
+        {
+          documentPath: appPath,
+          language: 'tsx',
+          sourceText: [
+            "import { QueryClientProvider } from '@tanstack/react-query';",
+            'export default function App({ Component, pageProps }) {',
+            '  return <QueryClientProvider><Component {...pageProps} /></QueryClientProvider>;',
+            '}',
+          ].join('\n'),
+        },
+      ],
+    };
+    const sourceByPath = new Map<string, string>([
+      [
+        guardPath,
+        [
+          "import { REGISTERED_HOTELS } from './constants';",
+          'export const guardPage = () => async ({ query }) => {',
+          '  const hotelName = query.hotelName;',
+          '  if (!Object.keys(REGISTERED_HOTELS).includes(hotelName)) return { notFound: true };',
+          '  return { props: { hotelName } };',
+          '};',
+        ].join('\n'),
+      ],
+      [constantsPath, 'export const REGISTERED_HOTELS = { testHotel: {}, secondHotel: {} };'],
+    ]);
+    const getSourcePaths = vi.fn();
+    const cache = {
+      discover: vi.fn(),
+      getSourcePaths,
+      readSourceText: vi.fn(({ sourcePath }: { readonly sourcePath: string }) =>
+        Promise.resolve(sourceByPath.get(path.normalize(sourcePath))),
+      ),
+    } as unknown as PreviewProjectUsageCache;
+    const resolver = {
+      ...createResolverStub(),
+      resolve: (specifier: string, consumer: string) => {
+        if (
+          path.normalize(consumer) === path.normalize(pagePath) &&
+          specifier === '../../../lib/guard'
+        ) {
+          return guardPath;
+        }
+        if (path.normalize(consumer) === path.normalize(guardPath) && specifier === './constants') {
+          return constantsPath;
+        }
+        return undefined;
+      },
+    } as ReturnType<typeof createPreviewStaticModuleResolver>;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot,
+      projectUsesNextRuntime: true,
+      request,
+      resolver,
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(prepared.packageTargetUsageProps.inspectorPlan?.pageCandidates[0]).toMatchObject({
+      id: `next-pages-direct:${pagePath}`,
+      nextPagesShell: {
+        app: { exportName: 'default', sourcePath: appPath },
+        routeLocation: {
+          pathname: '/hotels/testHotel/callTada',
+          pattern: '/hotels/[hotelName]/callTada',
+        },
+      },
+      root: { exportName: 'default', sourcePath: pagePath },
+    });
+    expect(prepared.implicitGlobalSourcePaths).toEqual(
+      expect.arrayContaining([pagePath, appPath, guardPath, constantsPath]),
+    );
+  });
+
   /** A local story must not mask the entry-connected product page in a sibling app package. */
   it('compares a weak package-local callable consumer with the monorepo application path', async () => {
     const projectRoot = '/workspace/packages/dialog';

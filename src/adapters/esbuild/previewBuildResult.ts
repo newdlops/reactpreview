@@ -9,6 +9,7 @@ import {
   PreviewCompilationError,
   type PreviewBuildRequest,
   type PreviewBundle,
+  type PreviewContextCoverage,
   type PreviewDiagnostic,
   type PreviewDiagnosticLocation,
 } from '../../domain/preview';
@@ -54,6 +55,7 @@ export const PREVIEW_OUTPUT_DIRECTORY_NAME = 'react-preview-output';
  * @param additionalDiagnostics Adapter warnings produced outside esbuild's successful result.
  * @param additionalDependencies Setup files retained after an automatic environment fallback.
  * @param admitBuildWarning Compiler-lifetime admission boundary that suppresses hot-rebuild repeats.
+ * @param contextCoverage Compiler-owned proof of the selected file's authored application shell.
  * @returns Validated preview bundle containing an entry, local lazy chunks, and optional CSS.
  */
 export async function createPreviewBundle(
@@ -63,6 +65,7 @@ export async function createPreviewBundle(
   additionalDiagnostics: readonly PreviewDiagnostic[] = [],
   additionalDependencies: readonly string[] = [],
   admitBuildWarning: (message: Message) => boolean = () => true,
+  contextCoverage: PreviewContextCoverage = 'partial',
 ): Promise<PreviewBundle> {
   assertOutputSize(result.outputFiles, request.maxOutputMebibytes);
   const reportableBuildWarnings = await selectReportablePreviewBuildWarnings(
@@ -80,6 +83,7 @@ export async function createPreviewBundle(
     chunks: [...outputPlan.auxiliaryJavaScript, ...outputPlan.auxiliaryStylesheets].sort(
       (left, right) => left.relativePath.localeCompare(right.relativePath),
     ),
+    contextCoverage,
     dependencies: [
       ...new Set([
         ...collectPreviewBuildDependencies(request, result.metafile),

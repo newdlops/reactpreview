@@ -21,6 +21,7 @@ import {
   type PreviewInspectorNextAppLayoutChain,
 } from './previewInspectorNextAppLayoutChain';
 import { collectRefinedPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppParameterEvidence';
+import { inferPreviewInspectorNextAppTargetPathParams } from './previewInspectorNextAppTargetPathParams';
 
 const NEXT_APP_PAGE_PATTERN = /^page\.[cm]?[jt]sx?$/iu;
 const NEXT_APP_ROUTE_STATE_PATTERN = /^(?:error|loading|not-found)\.[cm]?[jt]sx?$/iu;
@@ -32,6 +33,11 @@ const MAXIMUM_TOTAL_SOURCE_BYTES = 32 * 1024 * 1024;
 
 /** Snapshot-aware inputs supplied from the compiler's existing package inventory and file cache. */
 export interface CreatePreviewInspectorNextAppModulePagePlanOptions {
+  /**
+   * Component export selected inside a lazy registry. When present, nested instrumentation keeps
+   * this exact target instead of describing the selected file as a non-rendering context module.
+   */
+  readonly componentTargetExportName?: string;
   /** Absolute non-component module selected by the editor command. */
   readonly documentPath: string;
   /** Reads current editor or disk source under the caller's established byte ceiling. */
@@ -114,8 +120,18 @@ export async function createPreviewInspectorNextAppModulePagePlan(
 
   const initialShell = pageShellByPath.get(evidence.pagePath);
   if (initialShell === undefined) return undefined;
+  const targetParameterValues =
+    options.componentTargetExportName === undefined
+      ? undefined
+      : inferPreviewInspectorNextAppTargetPathParams({
+          routePattern: initialShell.routeLocation.pattern,
+          targetPath: documentPath,
+        });
 
   const refinement = await collectRefinedPreviewInspectorNextAppLayoutChain({
+    ...(targetParameterValues === undefined
+      ? {}
+      : { dynamicParameterValues: targetParameterValues }),
     exportName: 'default',
     pagePath: evidence.pagePath,
     readSource: readCachedSource,
@@ -125,7 +141,14 @@ export async function createPreviewInspectorNextAppModulePagePlan(
     sourcePaths,
   });
   const shell = refinement?.shell ?? initialShell;
-  const target = Object.freeze({ exportName: 'default', sourcePath: evidence.pagePath });
+  const pageRoot = Object.freeze({ exportName: 'default', sourcePath: evidence.pagePath });
+  const target =
+    options.componentTargetExportName === undefined
+      ? pageRoot
+      : Object.freeze({
+          exportName: options.componentTargetExportName,
+          sourcePath: documentPath,
+        });
   const dependencies = new Set<string>([
     documentPath,
     ...evidence.importPath,
@@ -134,7 +157,26 @@ export async function createPreviewInspectorNextAppModulePagePlan(
   ]);
   const renderChain: PreviewRenderChainPlan = Object.freeze({
     dependencyPaths: Object.freeze([...dependencies].sort()),
-    paths: Object.freeze([]),
+    paths:
+      options.componentTargetExportName === undefined
+        ? Object.freeze([])
+        : Object.freeze([
+            Object.freeze({
+              id: `next-app-lazy-component:${evidence.importPath.join('>')}`,
+              steps: Object.freeze(
+                [...evidence.importPath].reverse().map((sourcePath, index) =>
+                  Object.freeze({
+                    certainty: 'confirmed' as const,
+                    kind: index === 0 ? ('react-lazy' as const) : ('value-flow' as const),
+                    label: path.basename(sourcePath).replace(/\.[^.]+$/u, ''),
+                    occurrenceStart: 0,
+                    sourcePath,
+                    wrapperNames: Object.freeze([]),
+                  }),
+                ),
+              ),
+            }),
+          ]),
     reachability: 'entry-unreachable',
     stopReason: 'entry-unreachable',
     target,
@@ -147,7 +189,7 @@ export async function createPreviewInspectorNextAppModulePagePlan(
     edges: Object.freeze([]),
     id: `next-app-module-context:${evidence.pagePath}`,
     renderPath: undefined,
-    root: target,
+    root: pageRoot,
     rootAutomaticProps: emptyProps,
     nextAppLayoutChain: shell.layouts,
     rootOwnsRouter: false,
@@ -157,18 +199,22 @@ export async function createPreviewInspectorNextAppModulePagePlan(
   });
   return freezePreviewInspectorAncestorPlan({
     complete: true,
-    contextModule: Object.freeze({
-      evidenceKind: evidence.evidenceKind,
-      importPath: Object.freeze([...evidence.importPath]),
-      sourcePath: documentPath,
-    }),
+    ...(options.componentTargetExportName === undefined
+      ? {
+          contextModule: Object.freeze({
+            evidenceKind: evidence.evidenceKind,
+            importPath: Object.freeze([...evidence.importPath]),
+            sourcePath: documentPath,
+          }),
+        }
+      : {}),
     dependencies,
     edges: Object.freeze([]),
     pageCandidates: Object.freeze([candidate]),
-    root: target,
+    root: pageRoot,
     rootAutomaticProps: emptyProps,
     renderChain,
-    renderChainsByExport: Object.freeze({ default: renderChain }),
+    renderChainsByExport: Object.freeze({ [target.exportName]: renderChain }),
     renderOutcomesByExport: Object.freeze({}),
     stopReason: 'root-reached',
     target,

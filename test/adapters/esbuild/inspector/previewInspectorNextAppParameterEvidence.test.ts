@@ -47,6 +47,112 @@ describe('collectRefinedPreviewInspectorNextAppLayoutChain', () => {
     expect(result?.dependencyPaths).toEqual([basesPath, pagePath, registryPath]);
   });
 
+  /** Selects one deterministic tuple from nested imperative loops without running route code. */
+  it('refines nested for-of pushes from imported and local literal collections', async () => {
+    const pagePath = '/workspace/app/(view)/view/[style]/[name]/page.tsx';
+    const stylesPath = '/workspace/app/(view)/view/[style]/[name]/styles.ts';
+    const sources = new Map<string, string>([
+      [
+        pagePath,
+        [
+          `import { LEGACY_STYLES } from './styles';`,
+          `const COMPONENT_NAMES = ['accordion', 'alert-dialog'] as const;`,
+          'export function generateStaticParams() {',
+          '  const params: Array<{ style: string; name: string }> = [];',
+          '  for (const style of LEGACY_STYLES) {',
+          '    for (const name of COMPONENT_NAMES) {',
+          '      params.push({ style: style.name, name });',
+          '    }',
+          '  }',
+          '  return params;',
+          '}',
+          'export default function Page() { return <main />; }',
+        ].join('\n'),
+      ],
+      [
+        stylesPath,
+        `export const LEGACY_STYLES = [{ name: 'new-york-v4' }, { name: 'base-nova' }] as const;`,
+      ],
+    ]);
+
+    const result = await collectRefinedPreviewInspectorNextAppLayoutChain({
+      exportName: 'default',
+      pagePath,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier) => (specifier === './styles' ? stylesPath : undefined),
+      sourcePaths: [pagePath, stylesPath, '/workspace/app/layout.tsx'],
+    });
+
+    expect(result?.shell.routeLocation).toMatchObject({
+      params: { style: 'new-york-v4', name: 'accordion' },
+      pathname: '/view/new-york-v4/accordion',
+      pattern: '/view/[style]/[name]',
+    });
+    expect(result?.dependencyPaths).toEqual([pagePath, stylesPath]);
+  });
+
+  /** Follows a generated registry through an awaited import and a filtered `for...in` push. */
+  it('selects the first allowed registry value as one coherent imperative route tuple', async () => {
+    const pagePath = '/workspace/app/view/[style]/[name]/page.tsx';
+    const stylesPath = '/workspace/registry/styles.ts';
+    const indexPath = '/workspace/registry/index.ts';
+    const sources = new Map<string, string>([
+      [
+        pagePath,
+        [
+          `import { legacyStyles } from '@/registry/styles';`,
+          'export async function generateStaticParams() {',
+          `  const { Index } = await import('@/registry/index');`,
+          '  const params: Array<{ style: string; name: string }> = [];',
+          '  for (const style of legacyStyles) {',
+          '    const styleIndex = Index[style.name];',
+          '    for (const itemName in styleIndex) {',
+          '      const item = styleIndex[itemName];',
+          "      if (['registry:block', 'registry:component'].includes(item.type)) {",
+          '        params.push({ style: style.name, name: item.name });',
+          '      }',
+          '    }',
+          '  }',
+          '  return params;',
+          '}',
+          'export default function Page() { return <main />; }',
+        ].join('\n'),
+      ],
+      [stylesPath, `export const legacyStyles = [{ name: 'new-york-v4' }] as const;`],
+      [
+        indexPath,
+        [
+          'export const Index = {',
+          "  'new-york-v4': {",
+          "    accordion: { name: 'accordion', type: 'registry:ui' },",
+          "    'dashboard-01': { name: 'dashboard-01', type: 'registry:block' },",
+          '  },',
+          '} as const;',
+        ].join('\n'),
+      ],
+    ]);
+
+    const result = await collectRefinedPreviewInspectorNextAppLayoutChain({
+      exportName: 'default',
+      pagePath,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier) =>
+        specifier === '@/registry/styles'
+          ? stylesPath
+          : specifier === '@/registry/index'
+            ? indexPath
+            : undefined,
+      sourcePaths: [pagePath, '/workspace/app/layout.tsx'],
+      staticParameterSourceBoundary: '/workspace',
+    });
+
+    expect(result?.shell.routeLocation).toMatchObject({
+      params: { style: 'new-york-v4', name: 'dashboard-01' },
+      pathname: '/view/new-york-v4/dashboard-01',
+    });
+    expect(result?.dependencyPaths).toEqual([pagePath, indexPath, stylesPath].sort());
+  });
+
   /** Keeps values from the same returned object instead of independently mixing route variants. */
   it('selects one authored literal object for all dynamic keys', async () => {
     const pagePath = '/workspace/app/[locale]/items/[slug]/page.tsx';

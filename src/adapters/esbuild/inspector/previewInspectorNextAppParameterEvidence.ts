@@ -2,9 +2,10 @@
  * Refines Next App Router dynamic segments from local `generateStaticParams` evidence.
  *
  * The browser preview cannot ask Next's server to enumerate a route. This analyzer recognizes
- * literal return objects and bounded literal arrays used by `map` or `flatMap`, then chooses one
- * coherent authored parameter record. Imported collections are followed only through the existing
- * project source inventory; project modules are never evaluated in the extension host.
+ * literal return objects and bounded literal arrays used by `map`, `flatMap`, or synchronous
+ * `for...of` pushes, then chooses one coherent authored parameter record. Imported collections are
+ * followed only through the known inventory or an explicit package boundary; project modules are
+ * never evaluated in the extension host.
  */
 import path from 'node:path';
 import ts from 'typescript';
@@ -18,10 +19,31 @@ import {
   type PreviewInspectorNextAppLayoutChain,
   type PreviewInspectorNextAppParamValue,
 } from './previewInspectorNextAppLayoutChain';
+import {
+  bindingNameContainsIdentifier,
+  findVisibleStaticLocalBinding,
+  hasExportModifier,
+  incrementStaticExpressionReadState,
+  isExpressionInsideCollectionPush,
+  isPathInsideStaticSourceBoundary,
+  loopContainsCollectionPush,
+  readAwaitedDynamicImportSpecifier,
+  readForInLiteralIncludesGuard,
+  readLoopBindingMatch,
+  readSafeScalar,
+  readStaticPropertyName,
+  type StaticExpressionReadState,
+  type StaticForInIncludesGuard,
+  unwrapExpression,
+  visitStaticExpressionBinding,
+} from './previewInspectorNextAppStaticSyntax';
 
 const MAXIMUM_STATIC_PARAM_OBJECTS = 32;
 const MAXIMUM_STATIC_ARRAY_ITEMS = 16;
 const MAXIMUM_STATIC_IMPORT_DEPTH = 4;
+const MAXIMUM_STATIC_LOOP_DEPTH = 4;
+const MAXIMUM_STATIC_OBJECT_PROPERTIES = 128;
+const MAXIMUM_STATIC_EXPRESSION_DEPTH = 16;
 
 /** Inputs for collecting and refining one exact default App Router page. */
 export interface CollectRefinedPreviewInspectorNextAppLayoutChainOptions extends CollectPreviewInspectorNextAppLayoutChainOptions {
@@ -29,6 +51,8 @@ export interface CollectRefinedPreviewInspectorNextAppLayoutChainOptions extends
   readonly readSource: ReadPreviewInspectorSource;
   /** Project-aware alias resolver used only for reached static collection bindings. */
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
+  /** Optional package/source root that may supply reached evidence outside a direct inventory. */
+  readonly staticParameterSourceBoundary?: string;
   /** Cancels stale parameter analysis before each source read and import traversal. */
   readonly signal?: AbortSignal;
 }
@@ -48,7 +72,7 @@ interface StaticParameterCandidate {
 type StaticCollectionItem =
   PreviewInspectorNextAppParamValue | Readonly<Record<string, PreviewInspectorNextAppParamValue>>;
 
-/** One source scope retained while a mapped callback binding is resolved across imports. */
+/** One source scope retained while an iteration binding is resolved across imports. */
 interface StaticExpressionScope {
   readonly depth: number;
   readonly sourceFile: ts.SourceFile;
@@ -63,8 +87,26 @@ interface StaticParameterReadContext {
   readonly readSource: ReadPreviewInspectorSource;
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly signal?: AbortSignal;
+  readonly sourceBoundary?: string;
   readonly sourceFiles: Map<string, ts.SourceFile>;
 }
+
+/** An unevaluated object literal retained with the source scope that owns its bindings. */
+interface StaticObjectReference {
+  readonly expression: ts.ObjectLiteralExpression;
+  readonly kind: 'object';
+  readonly scope: StaticExpressionScope;
+}
+
+/** An unevaluated array literal retained until one bounded iterator asks for its first item. */
+interface StaticArrayReference {
+  readonly expression: ts.ArrayLiteralExpression;
+  readonly kind: 'array';
+  readonly scope: StaticExpressionScope;
+}
+
+type StaticResolvedExpression =
+  PreviewInspectorNextAppParamValue | StaticArrayReference | StaticObjectReference;
 
 /** Exact imported or re-exported binding reached without evaluating its owning module. */
 interface StaticImportBinding {
@@ -97,6 +139,9 @@ export async function collectRefinedPreviewInspectorNextAppLayoutChain(
     resolveModule:
       options.resolveModule ?? createLexicalInspectorModuleResolver(options.sourcePaths),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.staticParameterSourceBoundary === undefined
+      ? {}
+      : { sourceBoundary: path.resolve(options.staticParameterSourceBoundary) }),
     sourceFiles: new Map(),
   };
   const values: Record<string, PreviewInspectorNextAppParamValue> = {};
@@ -220,7 +265,7 @@ function findGenerateStaticParamsBody(sourceFile: ts.SourceFile): ts.ConciseBody
   return undefined;
 }
 
-/** Reads a direct literal, local literal-array value, or mapped callback item property. */
+/** Reads a direct literal, local literal-array value, or statically bounded iteration item. */
 async function readStaticParameterValue(
   expression: ts.Expression,
   scope: StaticExpressionScope,
@@ -235,35 +280,446 @@ async function readStaticParameterValue(
       ? { localName: current.expression.text, propertyName: current.name.text }
       : undefined;
   if (binding === undefined) return undefined;
-  const item = await readMappedCollectionItem(current, binding.localName, scope, context);
-  if (item === undefined) return undefined;
-  if (typeof item === 'string' || isStaticParameterArray(item)) {
-    return binding.propertyName === undefined ? item : undefined;
+  const item = await readStaticIterationItem(current, binding.localName, scope, context);
+  if (item !== undefined) {
+    if (typeof item === 'string' || isStaticParameterArray(item)) {
+      return binding.propertyName === undefined ? item : undefined;
+    }
+    const itemProperty =
+      binding.propertyName === undefined ? undefined : item[binding.propertyName];
+    if (itemProperty !== undefined) return itemProperty;
   }
-  return binding.propertyName === undefined ? undefined : item[binding.propertyName];
+  const resolved = await readStaticExpressionValue(current, scope, context, {
+    depth: 0,
+    visited: new Set(),
+  });
+  return typeof resolved === 'string' || isResolvedStaticParameterArray(resolved)
+    ? resolved
+    : undefined;
 }
 
-/** Resolves the first local literal collection item feeding the callback that owns an expression. */
-async function readMappedCollectionItem(
+/**
+ * Resolves the first safe collection item bound to an expression by an authored iterator.
+ *
+ * Callback parameters retain the existing `map`/`flatMap` behavior. Synchronous `for...of` loops
+ * are additionally accepted when the reached value is part of a `.push(...)` argument, which is
+ * Next's common imperative `generateStaticParams` shape. Each nested loop independently selects
+ * its first static item, so every property in one pushed object belongs to the same deterministic
+ * first tuple rather than mixing values from separate route variants.
+ */
+async function readStaticIterationItem(
   expression: ts.Expression,
   localName: string,
   scope: StaticExpressionScope,
   context: StaticParameterReadContext,
 ): Promise<StaticCollectionItem | undefined> {
+  let loopDepth = 0;
   for (let current = expression.parent; !ts.isSourceFile(current); current = current.parent) {
-    if (!ts.isArrowFunction(current) && !ts.isFunctionExpression(current)) continue;
-    if (
-      !current.parameters.some(
-        (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === localName,
-      )
-    ) {
-      continue;
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      const ownsBinding = current.parameters.some((parameter) =>
+        bindingNameContainsIdentifier(parameter.name, localName),
+      );
+      if (!ownsBinding) continue;
+      const parameter = current.parameters.find((candidate) =>
+        bindingNameContainsIdentifier(candidate.name, localName),
+      );
+      if (parameter === undefined || !ts.isIdentifier(parameter.name)) return undefined;
+      const call = readOwningCollectionCall(current);
+      if (call === undefined || !ts.isPropertyAccessExpression(call.expression)) return undefined;
+      return readFirstStaticCollectionItem(call.expression.expression, scope, context);
     }
-    const call = readOwningCollectionCall(current);
-    if (call === undefined || !ts.isPropertyAccessExpression(call.expression)) return undefined;
-    return readFirstStaticCollectionItem(call.expression.expression, scope, context);
+    if (!ts.isForOfStatement(current)) continue;
+    loopDepth += 1;
+    if (loopDepth > MAXIMUM_STATIC_LOOP_DEPTH) return undefined;
+    const loopBinding = readLoopBindingMatch(current.initializer, localName);
+    if (loopBinding === undefined) continue;
+    if (loopBinding === 'unsupported') return undefined;
+    if (
+      current.awaitModifier !== undefined ||
+      !isExpressionInsideCollectionPush(expression, current)
+    ) {
+      return undefined;
+    }
+    return readFirstStaticCollectionItem(current.expression, scope, context);
   }
   return undefined;
+}
+
+/**
+ * Resolves a bounded subset of expressions used by imperative `generateStaticParams` builders.
+ *
+ * This is intentionally not a JavaScript evaluator. It follows literal arrays/objects, lexical
+ * aliases, exact project imports, property reads, and iterator bindings only. Calls, mutations,
+ * getters, computed runtime values, and arbitrary module initialization remain opaque.
+ */
+async function readStaticExpressionValue(
+  expression: ts.Expression,
+  scope: StaticExpressionScope,
+  context: StaticParameterReadContext,
+  state: StaticExpressionReadState,
+): Promise<StaticResolvedExpression | undefined> {
+  if (state.depth > MAXIMUM_STATIC_EXPRESSION_DEPTH) return undefined;
+  throwIfPreviewBuildCancelled(context.signal);
+  const current = unwrapExpression(expression);
+  const direct = readDirectStaticParameterValue(current);
+  if (direct !== undefined) return direct;
+  if (ts.isObjectLiteralExpression(current)) {
+    return Object.freeze({ expression: current, kind: 'object', scope });
+  }
+  if (ts.isArrayLiteralExpression(current)) {
+    return Object.freeze({ expression: current, kind: 'array', scope });
+  }
+  if (ts.isConditionalExpression(current)) {
+    return (
+      (await readStaticExpressionValue(
+        current.whenTrue,
+        scope,
+        context,
+        incrementStaticExpressionReadState(state),
+      )) ??
+      (await readStaticExpressionValue(
+        current.whenFalse,
+        scope,
+        context,
+        incrementStaticExpressionReadState(state),
+      ))
+    );
+  }
+  if (ts.isIdentifier(current)) {
+    const iterationValue = await readStaticIteratorBindingValue(
+      current,
+      current.text,
+      scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    if (iterationValue !== undefined) return iterationValue;
+    const localBinding = findVisibleStaticLocalBinding(scope.sourceFile, current.text, current);
+    if (localBinding !== undefined) {
+      const nextState = visitStaticExpressionBinding(
+        state,
+        localBinding.bindingKey,
+        MAXIMUM_STATIC_EXPRESSION_DEPTH,
+      );
+      if (nextState === undefined) return undefined;
+      const dynamicImport = readAwaitedDynamicImportSpecifier(localBinding.initializer);
+      if (dynamicImport !== undefined) {
+        return localBinding.propertyName === undefined
+          ? undefined
+          : resolveImportedStaticExpression(
+              { exportName: localBinding.propertyName, moduleSpecifier: dynamicImport },
+              scope,
+              context,
+              nextState,
+            );
+      }
+      const localValue = await readStaticExpressionValue(
+        localBinding.initializer,
+        scope,
+        context,
+        nextState,
+      );
+      return localBinding.propertyName === undefined
+        ? localValue
+        : readStaticObjectProperty(localValue, localBinding.propertyName, context, nextState);
+    }
+    const imported = findStaticImportBinding(scope.sourceFile, current.text);
+    return imported === undefined || imported.exportName === '*'
+      ? undefined
+      : resolveImportedStaticExpression(
+          imported,
+          scope,
+          context,
+          incrementStaticExpressionReadState(state),
+        );
+  }
+  if (ts.isPropertyAccessExpression(current)) {
+    if (ts.isIdentifier(current.expression)) {
+      const imported = findStaticImportBinding(scope.sourceFile, current.expression.text);
+      if (imported?.exportName === '*') {
+        return resolveImportedStaticExpression(
+          { exportName: current.name.text, moduleSpecifier: imported.moduleSpecifier },
+          scope,
+          context,
+          incrementStaticExpressionReadState(state),
+        );
+      }
+    }
+    const owner = await readStaticExpressionValue(
+      current.expression,
+      scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    return readStaticObjectProperty(
+      owner,
+      current.name.text,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+  }
+  if (ts.isElementAccessExpression(current)) {
+    const owner = await readStaticExpressionValue(
+      current.expression,
+      scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    const property = await readStaticExpressionValue(
+      current.argumentExpression,
+      scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    return typeof property === 'string'
+      ? readStaticObjectProperty(
+          owner,
+          property,
+          context,
+          incrementStaticExpressionReadState(state),
+        )
+      : undefined;
+  }
+  return undefined;
+}
+
+/** Resolves the first item/key bound by a reached map, `for...of`, or `for...in` iterator. */
+async function readStaticIteratorBindingValue(
+  expression: ts.Expression,
+  localName: string,
+  scope: StaticExpressionScope,
+  context: StaticParameterReadContext,
+  state: StaticExpressionReadState,
+): Promise<StaticResolvedExpression | undefined> {
+  let loopDepth = 0;
+  for (let current = expression.parent; !ts.isSourceFile(current); current = current.parent) {
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      const parameter = current.parameters.find((candidate) =>
+        bindingNameContainsIdentifier(candidate.name, localName),
+      );
+      if (parameter === undefined) continue;
+      if (!ts.isIdentifier(parameter.name)) return undefined;
+      const call = readOwningCollectionCall(current);
+      return call === undefined || !ts.isPropertyAccessExpression(call.expression)
+        ? undefined
+        : readFirstResolvedCollectionItem(
+            call.expression.expression,
+            scope,
+            context,
+            incrementStaticExpressionReadState(state),
+          );
+    }
+    if (!ts.isForOfStatement(current) && !ts.isForInStatement(current)) continue;
+    loopDepth += 1;
+    if (loopDepth > MAXIMUM_STATIC_LOOP_DEPTH) return undefined;
+    const loopBinding = readLoopBindingMatch(current.initializer, localName);
+    if (loopBinding === undefined) continue;
+    if (
+      loopBinding === 'unsupported' ||
+      (!isExpressionInsideCollectionPush(expression, current) &&
+        !loopContainsCollectionPush(current))
+    ) {
+      return undefined;
+    }
+    if (ts.isForOfStatement(current)) {
+      if (current.awaitModifier !== undefined) return undefined;
+      return readFirstResolvedCollectionItem(
+        current.expression,
+        scope,
+        context,
+        incrementStaticExpressionReadState(state),
+      );
+    }
+    const collection = await readStaticExpressionValue(
+      current.expression,
+      scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    const guard = readForInLiteralIncludesGuard(current, localName);
+    return readFirstStaticObjectEntry(
+      collection,
+      context,
+      incrementStaticExpressionReadState(state),
+      guard,
+    ).then((entry) => entry?.key);
+  }
+  return undefined;
+}
+
+/** Reads the first statically safe element of an array or `Object.keys(object)` collection. */
+async function readFirstResolvedCollectionItem(
+  expression: ts.Expression,
+  scope: StaticExpressionScope,
+  context: StaticParameterReadContext,
+  state: StaticExpressionReadState,
+): Promise<StaticResolvedExpression | undefined> {
+  const current = unwrapExpression(expression);
+  if (
+    ts.isCallExpression(current) &&
+    current.arguments.length === 1 &&
+    ts.isPropertyAccessExpression(current.expression) &&
+    ts.isIdentifier(current.expression.expression) &&
+    current.expression.expression.text === 'Object' &&
+    current.expression.name.text === 'keys'
+  ) {
+    const argument = current.arguments[0];
+    if (argument === undefined) return undefined;
+    const collection = await readStaticExpressionValue(
+      argument,
+      scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    return readFirstStaticObjectEntry(
+      collection,
+      context,
+      incrementStaticExpressionReadState(state),
+    ).then((entry) => entry?.key);
+  }
+  const collection = await readStaticExpressionValue(current, scope, context, state);
+  if (isResolvedStaticParameterArray(collection)) return collection[0];
+  if (!isStaticArrayReference(collection)) return undefined;
+  for (const element of collection.expression.elements.slice(0, MAXIMUM_STATIC_ARRAY_ITEMS)) {
+    if (ts.isOmittedExpression(element)) continue;
+    const item = ts.isSpreadElement(element)
+      ? await readFirstResolvedCollectionItem(
+          element.expression,
+          collection.scope,
+          context,
+          incrementStaticExpressionReadState(state),
+        )
+      : await readStaticExpressionValue(
+          element,
+          collection.scope,
+          context,
+          incrementStaticExpressionReadState(state),
+        );
+    if (item !== undefined) return item;
+  }
+  return undefined;
+}
+
+/** Returns one exact object field while following only literal spreads. */
+async function readStaticObjectProperty(
+  owner: StaticResolvedExpression | undefined,
+  propertyName: string,
+  context: StaticParameterReadContext,
+  state: StaticExpressionReadState,
+): Promise<StaticResolvedExpression | undefined> {
+  if (!isStaticObjectReference(owner)) return undefined;
+  for (const property of owner.expression.properties.slice(0, MAXIMUM_STATIC_OBJECT_PROPERTIES)) {
+    if (ts.isSpreadAssignment(property)) {
+      const spread = await readStaticExpressionValue(
+        property.expression,
+        owner.scope,
+        context,
+        incrementStaticExpressionReadState(state),
+      );
+      const spreadValue = await readStaticObjectProperty(
+        spread,
+        propertyName,
+        context,
+        incrementStaticExpressionReadState(state),
+      );
+      if (spreadValue !== undefined) return spreadValue;
+      continue;
+    }
+    const name = readStaticPropertyName(property.name);
+    if (name !== propertyName) continue;
+    const initializer = ts.isPropertyAssignment(property)
+      ? property.initializer
+      : ts.isShorthandPropertyAssignment(property)
+        ? property.name
+        : undefined;
+    return initializer === undefined
+      ? undefined
+      : readStaticExpressionValue(
+          initializer,
+          owner.scope,
+          context,
+          incrementStaticExpressionReadState(state),
+        );
+  }
+  return undefined;
+}
+
+/** Selects the first literal property and retains both its key and lazily resolved value. */
+async function readFirstStaticObjectEntry(
+  owner: StaticResolvedExpression | undefined,
+  context: StaticParameterReadContext,
+  state: StaticExpressionReadState,
+  guard?: StaticForInIncludesGuard,
+): Promise<{ readonly key: string; readonly value: StaticResolvedExpression } | undefined> {
+  if (!isStaticObjectReference(owner)) return undefined;
+  for (const property of owner.expression.properties.slice(0, MAXIMUM_STATIC_OBJECT_PROPERTIES)) {
+    if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) continue;
+    const key = readStaticPropertyName(property.name);
+    const initializer = ts.isPropertyAssignment(property) ? property.initializer : property.name;
+    if (key === undefined) continue;
+    const value = await readStaticExpressionValue(
+      initializer,
+      owner.scope,
+      context,
+      incrementStaticExpressionReadState(state),
+    );
+    if (value === undefined) continue;
+    if (guard !== undefined) {
+      const discriminator = await readStaticObjectProperty(
+        value,
+        guard.propertyName,
+        context,
+        incrementStaticExpressionReadState(state),
+      );
+      if (typeof discriminator !== 'string' || !guard.allowedValues.includes(discriminator)) {
+        continue;
+      }
+    }
+    return Object.freeze({ key, value });
+  }
+  return undefined;
+}
+
+/** Loads one exact exported initializer as an unevaluated expression reference. */
+async function resolveImportedStaticExpression(
+  binding: StaticImportBinding,
+  scope: StaticExpressionScope,
+  context: StaticParameterReadContext,
+  state: StaticExpressionReadState,
+): Promise<StaticResolvedExpression | undefined> {
+  if (scope.depth >= MAXIMUM_STATIC_IMPORT_DEPTH || binding.exportName === '*') return undefined;
+  const resolved = context.resolveModule(binding.moduleSpecifier, scope.sourcePath);
+  if (resolved === undefined) return undefined;
+  const sourcePath = path.normalize(resolved);
+  if (!isPathInsideStaticSourceBoundary(sourcePath, context.inventory, context.sourceBoundary)) {
+    return undefined;
+  }
+  const bindingKey = `import:${sourcePath}:${binding.exportName}`;
+  const nextState = visitStaticExpressionBinding(
+    state,
+    bindingKey,
+    MAXIMUM_STATIC_EXPRESSION_DEPTH,
+  );
+  if (nextState === undefined) return undefined;
+  const sourceFile = await readStaticSourceFile(sourcePath, context);
+  if (sourceFile === undefined) return undefined;
+  context.dependencies.add(sourcePath);
+  const nextScope: StaticExpressionScope = {
+    depth: scope.depth + 1,
+    sourceFile,
+    sourcePath,
+    visitedBindings: scope.visitedBindings,
+  };
+  const initializer = findLocalVariableInitializer(sourceFile, binding.exportName);
+  if (initializer !== undefined) {
+    return readStaticExpressionValue(initializer, nextScope, context, nextState);
+  }
+  const forwarded =
+    findStaticImportBinding(sourceFile, binding.exportName) ??
+    findStaticReexportBinding(sourceFile, binding.exportName);
+  return forwarded === undefined
+    ? undefined
+    : resolveImportedStaticExpression(forwarded, nextScope, context, nextState);
 }
 
 /** Accepts a callback wrapped only by syntax-transparent parentheses before `map`/`flatMap`. */
@@ -358,7 +814,9 @@ async function resolveImportedStaticCollection(
   const resolved = context.resolveModule(binding.moduleSpecifier, scope.sourcePath);
   if (resolved === undefined) return undefined;
   const sourcePath = path.normalize(resolved);
-  if (!context.inventory.has(sourcePath)) return undefined;
+  if (!isPathInsideStaticSourceBoundary(sourcePath, context.inventory, context.sourceBoundary)) {
+    return undefined;
+  }
   const sourceFile = await readStaticSourceFile(sourcePath, context);
   if (sourceFile === undefined) return undefined;
   context.dependencies.add(sourcePath);
@@ -506,49 +964,25 @@ function isStaticParameterArray(item: StaticCollectionItem): item is readonly st
   return Array.isArray(item);
 }
 
-/** Converts static property syntax without evaluating computed expressions. */
-function readStaticPropertyName(name: ts.PropertyName | undefined): string | undefined {
-  if (name === undefined) return undefined;
-  return ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)
-    ? name.text
-    : undefined;
+/** Narrows route arrays without confusing them with retained literal-array syntax. */
+function isResolvedStaticParameterArray(
+  value: StaticResolvedExpression | undefined,
+): value is readonly string[] {
+  return Array.isArray(value);
 }
 
-/** Accepts pathname-safe string/number literals and rejects arbitrary conversions. */
-function readSafeScalar(expression: ts.Expression): string | undefined {
-  const value =
-    ts.isStringLiteralLike(expression) || ts.isNumericLiteral(expression)
-      ? expression.text
-      : undefined;
-  return value !== undefined &&
-    value.length > 0 &&
-    value.length <= 64 &&
-    !/[\\/\u0000-\u001f\u007f]/u.test(value)
-    ? value
-    : undefined;
+/** Narrows an unevaluated literal array from scalar route values. */
+function isStaticArrayReference(
+  value: StaticResolvedExpression | undefined,
+): value is StaticArrayReference {
+  return typeof value === 'object' && 'kind' in value && value.kind === 'array';
 }
 
-/** Removes type-only wrappers while preserving every runtime call or property access. */
-function unwrapExpression(expression: ts.Expression): ts.Expression {
-  let current = expression;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertionExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    ts.isSatisfiesExpression(current)
-  )
-    current = current.expression;
-  return current;
-}
-
-/** Tests a standard TypeScript export modifier without accepting a later alias export. */
-function hasExportModifier(node: ts.Node): boolean {
-  return (
-    ts.canHaveModifiers(node) &&
-    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ===
-      true
-  );
+/** Narrows an unevaluated literal object from scalar route values. */
+function isStaticObjectReference(
+  value: StaticResolvedExpression | undefined,
+): value is StaticObjectReference {
+  return typeof value === 'object' && 'kind' in value && value.kind === 'object';
 }
 
 /** Parses TS/JS and JSX/TSX with parent links needed for callback-to-collection tracing. */

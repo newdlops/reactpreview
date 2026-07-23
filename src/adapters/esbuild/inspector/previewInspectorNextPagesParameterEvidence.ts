@@ -15,6 +15,7 @@ import {
   type ResolvePreviewRenderGraphModule,
 } from '../renderGraph';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
+import { isPathInsideStaticSourceBoundary } from './previewInspectorNextAppStaticSyntax';
 import {
   collectPreviewInspectorNextPagesShell,
   type PreviewInspectorNextPagesShell,
@@ -32,6 +33,8 @@ export interface RefinePreviewInspectorNextPagesShellOptions {
   readonly shell: PreviewInspectorNextPagesShell;
   readonly signal?: AbortSignal;
   readonly sourcePaths: readonly string[];
+  /** Optional trusted root for exact reached imports absent from a fast filesystem inventory. */
+  readonly staticParameterSourceBoundary?: string;
 }
 
 /** Refined shell plus the static evidence files that must participate in hot reload. */
@@ -116,6 +119,9 @@ export async function refinePreviewInspectorNextPagesShell(
     readSource: options.readSource,
     resolveModule,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.staticParameterSourceBoundary === undefined
+      ? {}
+      : { sourceBoundary: path.resolve(options.staticParameterSourceBoundary) }),
   });
   const sourceByPath = new Map(traversed.map((source) => [source.sourcePath, source]));
   const valueByParameter: Record<string, string> = {};
@@ -133,6 +139,9 @@ export async function refinePreviewInspectorNextPagesShell(
           resolveModule,
           source,
           sourceByPath,
+          ...(options.staticParameterSourceBoundary === undefined
+            ? {}
+            : { sourceBoundary: path.resolve(options.staticParameterSourceBoundary) }),
         });
         const value = record.keys[0];
         if (value === undefined) continue;
@@ -176,6 +185,7 @@ async function traversePageDependencies(options: {
   readonly readSource: ReadPreviewInspectorSource;
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly signal?: AbortSignal;
+  readonly sourceBoundary?: string;
 }): Promise<readonly TraversedSource[]> {
   const queue = [{ depth: 0, sourcePath: path.normalize(options.pagePath) }];
   const visited = new Set<string>();
@@ -197,7 +207,12 @@ async function traversePageDependencies(options: {
       const resolved = options.resolveModule(moduleSpecifier, current.sourcePath);
       if (resolved === undefined) continue;
       const normalized = path.normalize(resolved);
-      if (!options.inventory.has(normalized) || visited.has(normalized)) continue;
+      if (
+        !isPathInsideStaticSourceBoundary(normalized, options.inventory, options.sourceBoundary) ||
+        visited.has(normalized)
+      ) {
+        continue;
+      }
       queue.push({ depth: current.depth + 1, sourcePath: normalized });
     }
   }
@@ -289,6 +304,7 @@ async function readStaticRecordKeys(options: {
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly source: TraversedSource;
   readonly sourceByPath: Map<string, TraversedSource>;
+  readonly sourceBoundary?: string;
 }): Promise<{ readonly dependencyPaths: readonly string[]; readonly keys: readonly string[] }> {
   const reference = readRecordReference(options.expression, options.source.sourceFile);
   if (reference === undefined) return { dependencyPaths: [], keys: [] };
@@ -301,7 +317,9 @@ async function readStaticRecordKeys(options: {
   const resolved = options.resolveModule(reference.moduleSpecifier, options.source.sourcePath);
   if (resolved === undefined) return { dependencyPaths: [], keys: [] };
   const normalized = path.normalize(resolved);
-  if (!options.inventory.has(normalized)) return { dependencyPaths: [], keys: [] };
+  if (!isPathInsideStaticSourceBoundary(normalized, options.inventory, options.sourceBoundary)) {
+    return { dependencyPaths: [], keys: [] };
+  }
   let target = options.sourceByPath.get(normalized);
   if (target === undefined) {
     const sourceText = await options.readSource(normalized);

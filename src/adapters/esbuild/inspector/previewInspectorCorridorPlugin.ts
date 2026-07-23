@@ -35,6 +35,8 @@ interface PreviewDynamicImporterEvidence {
 
 /** Build inputs required to bound deferred project branches without touching package dependencies. */
 export interface PreviewInspectorCorridorPluginOptions {
+  /** Optional first-paint limit after which dormant lazy choices become a generated registry. */
+  readonly maximumSmallDynamicImports?: number;
   /** Static target-to-entry and mount-candidate evidence selected for this Page Inspector build. */
   readonly plan: PreviewInspectorAncestorPlan;
   /** Nearest package root used to distinguish application sources from installed dependencies. */
@@ -56,12 +58,17 @@ export function createPreviewInspectorCorridorPlugin(
 ): Plugin {
   const projectRoot = canonicalizeExistingPath(options.projectRoot);
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const maximumSmallDynamicImports = Math.max(
+    0,
+    Math.floor(options.maximumSmallDynamicImports ?? MAX_SMALL_DYNAMIC_IMPORTS),
+  );
   const contextMayCrossPackages = options.plan.contextModule !== undefined;
   const corridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
+  const corridorModuleStems = createPreviewInspectorCorridorModuleStemSet(options.plan);
   const routeParameterGroups = collectPreviewInspectorRouteParameterGroups(options.plan);
   const importerEvidenceByPath = new Map<string, Promise<PreviewDynamicImporterEvidence>>();
 
-  /** Resolves one project dynamic import once, retaining only targets outside the proven corridor. */
+  /** Keeps selected project imports and coalesces deferred branches outside the proven corridor. */
   async function resolveDeferredBranch(
     arguments_: OnResolveArgs,
   ): Promise<OnResolveResult | undefined> {
@@ -83,21 +90,23 @@ export function createPreviewInspectorCorridorPlugin(
       return undefined;
     }
     if (matchesPreviewRouteParameters(arguments_.path, routeParameterGroups)) return undefined;
+    const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
+    if (
+      corridorPaths.has(canonicalImporter) &&
+      importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path)
+    ) {
+      return undefined;
+    }
+    if (
+      importerEvidence.isBroadRegistry &&
+      !matchesPreviewCorridorModuleStem(arguments_.path, corridorModuleStems)
+    ) {
+      return createOmittedDeferredBranch();
+    }
     const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) {
-      const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
-      if (
-        corridorPaths.has(canonicalImporter) &&
-        importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path)
-      ) {
-        return undefined;
-      }
-      return importerEvidence.isBroadRegistry
-        ? {
-            namespace: INSPECTOR_CORRIDOR_NAMESPACE,
-            path: INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
-          }
-        : undefined;
+      if (!importerEvidence.isBroadRegistry) return undefined;
+      return createOmittedDeferredBranch();
     }
     const canonicalTarget = canonicalizeExistingPath(resolvedPath);
     if (
@@ -110,20 +119,14 @@ export function createPreviewInspectorCorridorPlugin(
     if (corridorPaths.has(canonicalTarget)) {
       return undefined;
     }
-    const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
     if (
-      (corridorPaths.has(canonicalImporter) &&
-        importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path)) ||
-      (!corridorPaths.has(canonicalImporter) &&
-        !importerEvidence.hasCorridorTarget &&
-        !importerEvidence.isBroadRegistry)
+      !corridorPaths.has(canonicalImporter) &&
+      !importerEvidence.hasCorridorTarget &&
+      !importerEvidence.isBroadRegistry
     ) {
       return undefined;
     }
-    return {
-      namespace: INSPECTOR_CORRIDOR_NAMESPACE,
-      path: INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
-    };
+    return createOmittedDeferredBranch();
   }
 
   /**
@@ -140,15 +143,15 @@ export function createPreviewInspectorCorridorPlugin(
       if (sourceText === undefined) {
         return {
           hasCorridorTarget: false,
-          isBroadRegistry: true,
+          // Missing or oversized source is not proof of a registry. Fail open so an authored lazy
+          // child remains exact instead of being discarded because of transient I/O evidence.
+          isBroadRegistry: false,
           renderedNextDynamicSpecifiers: new Set<string>(),
         };
       }
       const inventory = collectPreviewDynamicImportInventory(sourcePath, sourceText);
       const isBroadRegistry =
-        !inventory.reliable ||
-        inventory.truncated ||
-        inventory.specifiers.length > MAX_SMALL_DYNAMIC_IMPORTS;
+        inventory.truncated || inventory.specifiers.length > maximumSmallDynamicImports;
       const hasCorridorTarget =
         !isBroadRegistry &&
         inventory.specifiers.some((specifier) => {
@@ -198,6 +201,56 @@ export function createPreviewInspectorCorridorPlugin(
   };
 }
 
+/** Returns one stable virtual identity so thousands of discarded registry edges share output. */
+function createOmittedDeferredBranch(): OnResolveResult {
+  return {
+    namespace: INSPECTOR_CORRIDOR_NAMESPACE,
+    path: INSPECTOR_CORRIDOR_PLACEHOLDER_PATH,
+  };
+}
+
+/**
+ * Creates cheap lexical hints for the rare selected module hidden in a broad generated registry.
+ * Resolving every branch defeats the fast corridor, while resolving matching stems preserves a
+ * direct selected route even when no dynamic route parameter was statically available.
+ */
+function createPreviewInspectorCorridorModuleStemSet(
+  plan: PreviewInspectorAncestorPlan,
+): ReadonlySet<string> {
+  const stems = new Set<string>();
+  const selectedPaths = [
+    plan.root.sourcePath,
+    plan.target.sourcePath,
+    ...plan.pageCandidates.flatMap((candidate) => [
+      candidate.root.sourcePath,
+      ...(candidate.renderPath?.steps.map((step) => step.sourcePath) ?? []),
+    ]),
+    ...Object.values(plan.renderChainsByExport).flatMap((chain) =>
+      chain.paths.flatMap((candidate) => candidate.steps.map((step) => step.sourcePath)),
+    ),
+  ];
+  for (const sourcePath of selectedPaths) {
+    const extension = path.extname(sourcePath);
+    const fileStem = path.basename(sourcePath, extension).toLowerCase();
+    stems.add(
+      fileStem === 'index' ? path.basename(path.dirname(sourcePath)).toLowerCase() : fileStem,
+    );
+  }
+  return stems;
+}
+
+/** Checks only a dynamic specifier's final path segment before paying for project resolution. */
+function matchesPreviewCorridorModuleStem(
+  moduleSpecifier: string,
+  corridorModuleStems: ReadonlySet<string>,
+): boolean {
+  const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier;
+  const finalSegment = cleanSpecifier.split(/[\\/]/u).filter(Boolean).at(-1);
+  if (finalSegment === undefined) return false;
+  const extension = path.extname(finalSegment);
+  return corridorModuleStems.has(path.basename(finalSegment, extension).toLowerCase());
+}
+
 /** Reads a source only after a file-size check so resolver-time evidence remains memory-bounded. */
 async function readBoundedSource(sourcePath: string): Promise<string | undefined> {
   try {
@@ -222,17 +275,15 @@ function createPreviewInspectorCorridorPathSet(
     plan.root.sourcePath,
     plan.target.sourcePath,
     ...(plan.contextModule === undefined ? [] : plan.contextModule.importPath),
-    ...plan.dependencyPaths,
     ...plan.pageCandidates.flatMap((candidate) => [
       candidate.root.sourcePath,
-      ...candidate.dependencyPaths,
+      ...(candidate.nextAppLayoutChain?.map((layout) => layout.sourcePath) ?? []),
       ...(candidate.renderPath?.steps.map((step) => step.sourcePath) ?? []),
       ...(candidate.renderPath?.entryPoint === undefined
         ? []
         : [candidate.renderPath.entryPoint.sourcePath]),
     ]),
     ...Object.values(plan.renderChainsByExport).flatMap((renderChain) => [
-      ...renderChain.dependencyPaths,
       ...renderChain.paths.flatMap((candidate) => [
         ...candidate.steps.map((step) => step.sourcePath),
         ...(candidate.entryPoint === undefined ? [] : [candidate.entryPoint.sourcePath]),

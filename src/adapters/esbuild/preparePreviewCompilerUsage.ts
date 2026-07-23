@@ -12,8 +12,14 @@ import {
   createPreviewInspectorModuleConsumerPagePlan,
   hasPreviewInspectorCallableModuleExports,
 } from './inspector/previewInspectorModuleConsumerPagePlan';
+import { createPreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorPlan';
+import { collectPreviewInspectorFastPageCorridor } from './inspector/previewInspectorFastPageCorridor';
 import { createPreviewInspectorNextAppDirectRoutePlan } from './inspector/previewInspectorNextAppDirectRoutePlan';
 import { createPreviewInspectorNextAppModulePagePlan } from './inspector/previewInspectorNextAppModulePagePlan';
+import {
+  createPreviewInspectorNextPagesDirectRoutePlan,
+  isPreviewInspectorNextPagesDirectRoutePath,
+} from './inspector/previewInspectorNextPagesDirectRoutePlan';
 import type { PreviewProjectUsageCache } from './previewProjectUsageCache';
 import type { createPreviewStaticModuleResolver } from './previewStaticModuleResolver';
 import type { PreviewTargetUsageProps } from './previewTargetUsageProps';
@@ -70,11 +76,13 @@ export async function preparePreviewCompilerUsage(
   const signal = options.signal;
   const useFastPreparation = request.preparationMode === 'fast';
   const hasPreviewableTarget = targetSelection.targetExports.length > 0;
-  const shouldTryGenericConsumerContext =
-    !useFastPreparation &&
+  const hasGenericCallableContext =
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
     hasPreviewInspectorCallableModuleExports(request.documentPath, targetSelection.sourceText);
+  const shouldTryGenericConsumerContext = !useFastPreparation && hasGenericCallableContext;
+  const shouldTryFastGenericConsumerContext =
+    useFastPreparation && !hasPreviewableTarget && hasGenericCallableContext;
   const shouldTryNextModuleContext =
     options.projectUsesNextRuntime &&
     request.renderMode === 'page-inspector' &&
@@ -94,9 +102,30 @@ export async function preparePreviewCompilerUsage(
     !targetSelection.isImperativeEntry &&
     targetSelection.inspectorExportName === 'default' &&
     NEXT_APP_DIRECT_ROUTE_MODULE_PATTERN.test(path.basename(request.documentPath));
+  const shouldTryNextPagesDirectRouteContext =
+    useFastPreparation &&
+    options.projectUsesNextRuntime &&
+    request.renderMode === 'page-inspector' &&
+    !targetSelection.isImperativeEntry &&
+    targetSelection.inspectorExportName === 'default' &&
+    isPreviewInspectorNextPagesDirectRoutePath(request.documentPath, options.projectRoot);
+  const fastGenericExportName =
+    useFastPreparation &&
+    request.renderMode === 'page-inspector' &&
+    !targetSelection.isImperativeEntry &&
+    hasPreviewableTarget &&
+    !shouldTryDirectRouteContext
+      ? targetSelection.inspectorExportName
+      : undefined;
   if (
-    (!hasPreviewableTarget && !shouldTryModulePageContext) ||
-    (useFastPreparation && !shouldTryModulePageContext && !shouldTryDirectRouteContext)
+    (!hasPreviewableTarget &&
+      !shouldTryModulePageContext &&
+      !shouldTryFastGenericConsumerContext) ||
+    (useFastPreparation &&
+      !shouldTryModulePageContext &&
+      !shouldTryDirectRouteContext &&
+      fastGenericExportName === undefined &&
+      !shouldTryFastGenericConsumerContext)
   ) {
     return {
       implicitGlobalSourcePaths: Object.freeze([]),
@@ -116,10 +145,90 @@ export async function preparePreviewCompilerUsage(
       documentPath: request.documentPath,
       readSource: createContextSourceReader(options, snapshotSourceByPath),
       resolveModule: options.resolver.resolve,
+      ...(signal === undefined ? {} : { signal }),
       sourcePaths,
+      // The route inventory deliberately contains only page/layout convention files. Static route
+      // values may live in a sibling project module, so the parameter analyzer may follow an exact
+      // reached import inside this package while the shared reader retains the strict 4 MiB cap.
+      staticParameterSourceBoundary: options.projectRoot,
     });
     if (inspectorPlan !== undefined) {
       return createPreparedInspectorUsage(options, inspectorPlan);
+    }
+  }
+  if (shouldTryNextPagesDirectRouteContext) {
+    const snapshotSourceByPath = createSnapshotSourceMap(request);
+    const inspectorPlan = await createPreviewInspectorNextPagesDirectRoutePlan({
+      documentPath: request.documentPath,
+      projectRoot: options.projectRoot,
+      readSource: createContextSourceReader(options, snapshotSourceByPath),
+      resolveModule: options.resolver.resolve,
+      ...(signal === undefined ? {} : { signal }),
+      sourcePaths: Object.freeze([...snapshotSourceByPath.keys()]),
+      // Pages Router injects `_app` instead of importing it. Parameter evidence may similarly live
+      // behind one exact route guard import, so fast preparation admits reached package files only.
+      staticParameterSourceBoundary: options.projectRoot,
+    });
+    if (inspectorPlan !== undefined) {
+      return createPreparedInspectorUsage(options, inspectorPlan);
+    }
+  }
+  if (fastGenericExportName !== undefined || shouldTryFastGenericConsumerContext) {
+    const snapshotSourceByPath = createSnapshotSourceMap(request);
+    const readSource = createContextSourceReader(options, snapshotSourceByPath);
+    const corridor = await collectPreviewInspectorFastPageCorridor({
+      additionalSourcePaths: snapshotSourceByPath.keys(),
+      documentPath: request.documentPath,
+      projectRoot: options.projectRoot,
+      readSource,
+      resolveModule: options.resolver.resolve,
+      ...(signal === undefined ? {} : { signal }),
+      workspaceRoot: options.workspaceRoot,
+    });
+    if (corridor !== undefined) {
+      /*
+       * A nested lazy gallery registry is an import corridor, not an ordinary JSX owner. Reuse the
+       * bounded Next module planner only after the fast search proves its exact App Router page;
+       * keeping the component export as the plan target preserves Fiber highlighting and the
+       * file-component fallback while avoiding a package-wide registry traversal.
+       */
+      if (
+        corridor.nextAppPagePath !== undefined &&
+        fastGenericExportName !== undefined &&
+        options.projectUsesNextRuntime
+      ) {
+        const nextAppPlan = await createPreviewInspectorNextAppModulePagePlan({
+          componentTargetExportName: fastGenericExportName,
+          documentPath: request.documentPath,
+          readSource,
+          resolveModule: options.resolver.resolve,
+          ...(signal === undefined ? {} : { signal }),
+          sourcePaths: corridor.sourcePaths,
+        });
+        if (nextAppPlan !== undefined) return createPreparedInspectorUsage(options, nextAppPlan);
+      }
+      const inspectorPlan =
+        fastGenericExportName === undefined
+          ? await createPreviewInspectorModuleConsumerPagePlan({
+              acceptedImportSpecifiers: (target) =>
+                options.resolver.getMatchedSpecifiers(target.sourcePath),
+              documentPath: request.documentPath,
+              readSource,
+              resolveModule: options.resolver.resolve,
+              ...(signal === undefined ? {} : { signal }),
+              sourcePaths: corridor.sourcePaths,
+            })
+          : await createPreviewInspectorAncestorPlan({
+              acceptedImportSpecifiers: (target) =>
+                options.resolver.getMatchedSpecifiers(target.sourcePath),
+              documentPath: request.documentPath,
+              exportName: fastGenericExportName,
+              readSource,
+              resolveModule: options.resolver.resolve,
+              ...(signal === undefined ? {} : { signal }),
+              sourcePaths: corridor.sourcePaths,
+            });
+      if (inspectorPlan !== undefined) return createPreparedInspectorUsage(options, inspectorPlan);
     }
   }
   if (useFastPreparation) {

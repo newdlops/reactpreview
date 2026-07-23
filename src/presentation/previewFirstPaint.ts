@@ -68,7 +68,10 @@ export async function preparePreviewFirstPaint(
       },
       options.context,
     );
-    return { preparedPreview, requiresContextEnrichment: true };
+    return {
+      preparedPreview,
+      requiresContextEnrichment: preparedPreview.contextCoverage !== 'complete',
+    };
   } catch (error) {
     if (isPreviewBuildCancellation(error, options.context.signal) || isPreviewBuildStall(error)) {
       throw error;

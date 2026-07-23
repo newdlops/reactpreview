@@ -87,6 +87,28 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('page-first-paint');
   });
 
+  /** Skips a redundant full pass when the compiler already proved the authored page corridor. */
+  it('accepts a complete fast Page Inspector artifact as the final context result', async () => {
+    const execute = vi.fn<BuildPreview['execute']>(() =>
+      Promise.resolve({
+        ...createPreparedPreview('page-complete'),
+        contextCoverage: 'complete',
+      }),
+    );
+
+    const result = await preparePreviewFirstPaint({
+      buildPreview: createBuildService(execute),
+      context: {},
+      preferFast: true,
+      renderMode: 'page-inspector',
+      request: REQUEST,
+    });
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.requiresContextEnrichment).toBe(false);
+    expect(result.preparedPreview.contextCoverage).toBe('complete');
+  });
+
   /** Reuses the complete incremental path after a session has established full context once. */
   it('builds only full context for a warm session', async () => {
     const execute = vi.fn<BuildPreview['execute']>(() =>

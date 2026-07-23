@@ -221,9 +221,12 @@ describe('createPreviewRenderChainPlan', () => {
 
   /** Keeps nested HOC factories as explicit React invocation evidence on the target edge. */
   it('preserves memo and forwardRef wrappers between a component and its page owner', async () => {
+    const hocPath = `${ROOT}/hocs.tsx`;
     const ownerPath = `${ROOT}/HocPage.tsx`;
     const sources = {
       [TARGET_PATH]: 'export const SelectedPage = () => <article />;',
+      [hocPath]:
+        'export const compose = (...wrappers) => (value) => value; export const withAuth = (value) => value;',
       [ownerPath]: [
         "import { forwardRef, memo } from 'react';",
         "import { compose, withAuth } from './hocs';",
@@ -252,6 +255,7 @@ describe('createPreviewRenderChainPlan', () => {
       mode: 'forward-ref',
       sourcePath: ownerPath,
     });
+    expect(plan.paths[0]?.steps[0]?.evidenceSourcePaths).toEqual([hocPath]);
   });
 
   /** Distinguishes component, polymorphic, and render props instead of flattening them to values. */
@@ -402,6 +406,9 @@ describe('createPreviewRenderChainPlan', () => {
     expect(
       plan.paths[0]?.steps.find((step) => step.label === 'SelectedPage')?.wrapperNames,
     ).toEqual(['Layout', 'Route']);
+    expect(
+      plan.paths[0]?.steps.find((step) => step.label === 'SelectedPage')?.evidenceSourcePaths,
+    ).toEqual([LAYOUTS_PATH]);
     expect(
       plan.paths[0]?.steps.find((step) => step.label === 'publicRoutes')?.wrapperNames,
     ).toEqual(['RootLayout', 'Route']);

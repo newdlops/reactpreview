@@ -296,6 +296,27 @@ replacePreviewRuntimeListener('error', (event) => {
 });
 
 replacePreviewRuntimeListener('unhandledrejection', (event) => {
+  /*
+   * Some application libraries intentionally reject a cancelled or superseded task without an
+   * Error value. There is no stack, component, or payload path that the preview can repair in that
+   * case. Treating undefined or null as a fatal bootstrap failure replaced an otherwise valid
+   * authored page with the generic runtime diagnostic. Keep the observation in Page Inspector's
+   * bounded console, suppress the browser's duplicate unhandled-rejection report, and leave the
+   * mounted revision untouched. Non-nullish reasons still follow the existing fatal path below.
+   */
+  if (event.reason === undefined || event.reason === null) {
+    const reasonLabel = event.reason === null ? 'null' : 'undefined';
+    event.preventDefault?.();
+    recordPreviewInspectorRuntimeConsoleEntry(event.reason, {
+      details:
+        'A project promise rejected with ' + reasonLabel +
+        ' and supplied no actionable Error. React Preview kept the mounted render unchanged.',
+      level: 'warn',
+      message: 'Ignored nullish unhandled promise rejection (' + reasonLabel + ').',
+      phase: 'unhandled promise rejection',
+    });
+    return;
+  }
   showRuntimeError(event.reason, { phase: 'unhandled promise rejection' });
 });
 

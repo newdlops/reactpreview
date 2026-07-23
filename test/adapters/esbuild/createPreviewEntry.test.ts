@@ -191,6 +191,32 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('could not retire stale lazy stylesheets');
   });
 
+  /** Keeps valueless cancellation rejections observational while preserving real fatal reasons. */
+  it('does not replace the preview for nullish unhandled promise rejections', () => {
+    const entry = createPreviewEntry({
+      documentName: 'NullishPromise.tsx',
+      globalNamespaces: [],
+      renderMode: 'page-inspector',
+      setupKind: 'none',
+    });
+    const listenerStart = entry.indexOf("replacePreviewRuntimeListener('unhandledrejection'");
+    const nullishGuard = entry.indexOf(
+      'event.reason === undefined || event.reason === null',
+      listenerStart,
+    );
+    const warning = entry.indexOf("level: 'warn'", nullishGuard);
+    const earlyReturn = entry.indexOf('return;', warning);
+    const fatalFallback = entry.indexOf('showRuntimeError(event.reason', earlyReturn);
+
+    expect(listenerStart).toBeGreaterThan(-1);
+    expect(nullishGuard).toBeGreaterThan(listenerStart);
+    expect(entry.indexOf('event.preventDefault?.()', nullishGuard)).toBeGreaterThan(nullishGuard);
+    expect(warning).toBeGreaterThan(nullishGuard);
+    expect(entry).toContain('Ignored nullish unhandled promise rejection');
+    expect(earlyReturn).toBeGreaterThan(warning);
+    expect(fatalFallback).toBeGreaterThan(earlyReturn);
+  });
+
   /** Prevents a recoverable first nested-Router attempt from becoming a failed hot revision. */
   it('defers nested Router browser events to the Inspector candidate retry boundary', () => {
     const entry = createPreviewEntry({

@@ -23,6 +23,7 @@ import {
 
 const PROJECT_SOURCE_FILTER = /\.[cCmM]?[jJtT][sS][xX]?$/;
 const MAX_CONCURRENT_WORKSPACE_SOURCE_TRANSFORMS = 4;
+const MAX_CONCURRENT_FAST_WORKSPACE_SOURCE_TRANSFORMS = 32;
 
 /** Editor snapshots and transformation policy that may advance between incremental rebuilds. */
 export interface WorkspaceSourceCompilationState {
@@ -129,6 +130,9 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
   const sourceTransformGate = createPreviewBoundedWorkGate(
     MAX_CONCURRENT_WORKSPACE_SOURCE_TRANSFORMS,
   );
+  const fastSourceTransformGate = createPreviewBoundedWorkGate(
+    MAX_CONCURRENT_FAST_WORKSPACE_SOURCE_TRANSFORMS,
+  );
 
   return {
     name: 'react-preview-workspace-source',
@@ -217,9 +221,13 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         }
 
         try {
-          // Reading inside the gate prevents hundreds of queued callbacks from retaining complete
-          // source strings while they wait to enter the TypeScript AST transformation boundary.
-          return await sourceTransformGate.run(async () => {
+          // Exact preparation keeps reads inside the small AST gate so queued callbacks cannot
+          // retain hundreds of source strings. Fast preparation performs mostly native pass-through
+          // work and uses a wider bounded lane; otherwise four serialized reads dominate cold start.
+          const workGate = sourceState.transformer.usesFastPreparation
+            ? fastSourceTransformGate
+            : sourceTransformGate;
+          return await workGate.run(async () => {
             const sourceText = snapshot?.sourceText ?? (await readFile(physicalSourcePath, 'utf8'));
             const generatedFallback = preparePreviewGeneratedBarrelFallback(
               canonicalSourcePath,

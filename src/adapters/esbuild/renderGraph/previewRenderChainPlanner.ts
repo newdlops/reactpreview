@@ -625,7 +625,11 @@ function addLocalAndImportEdges(
         addGraphEdge(graph, {
           ...fact,
           childId,
-          evidenceSourcePaths: resolveWrapperSourcePaths(module, fact.wrapperNames, resolveModule),
+          evidenceSourcePaths: resolveWrapperSourcePaths(
+            module,
+            [...fact.wrapperNames, ...(fact.invocation?.factoryNames ?? [])],
+            resolveModule,
+          ),
         });
       }
     }
@@ -897,6 +901,7 @@ function freezeRenderChainCandidate(
     steps.push(
       Object.freeze({
         certainty: edge?.certainty ?? 'confirmed',
+        evidenceSourcePaths: Object.freeze([...(edge?.evidenceSourcePaths ?? [])]),
         ...(invocation === undefined
           ? {}
           : {

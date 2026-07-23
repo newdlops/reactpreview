@@ -60,6 +60,7 @@ describe('BuildPreview', () => {
         contentHash: 'abc123',
         scriptLocation: 'file:///preview/entry.js',
       },
+      contextCoverage: 'partial',
       dependencies: BUNDLE.dependencies,
       diagnostics: BUNDLE.diagnostics,
       watchDirectories: BUNDLE.watchDirectories,

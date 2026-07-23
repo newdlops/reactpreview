@@ -51,6 +51,7 @@ export class BuildPreview {
 
     const preparedPreview = {
       artifact,
+      contextCoverage: bundle.contextCoverage ?? 'partial',
       dependencies: bundle.dependencies,
       diagnostics: bundle.diagnostics,
       watchDirectories: bundle.watchDirectories,

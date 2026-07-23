@@ -11,7 +11,11 @@ import {
   collectRefinedPreviewInspectorNextAppLayoutChain,
   type RefinedPreviewInspectorNextAppLayoutChain,
 } from './previewInspectorNextAppParameterEvidence';
-import type { PreviewInspectorNextAppRouteLocation } from './previewInspectorNextAppLayoutChain';
+import {
+  collectPreviewInspectorNextAppLayoutChain,
+  type PreviewInspectorNextAppRouteLocation,
+} from './previewInspectorNextAppLayoutChain';
+import { inferPreviewInspectorNextAppTargetPathParams } from './previewInspectorNextAppTargetPathParams';
 import type { PreviewInspectorNextPagesShellRefiner } from './previewInspectorNextPagesParameterEvidence';
 import {
   collectPreviewInspectorNextPagesShell,
@@ -28,6 +32,8 @@ export interface CollectPreviewInspectorFrameworkPageShellOptions {
   /** Exact project resolver used to follow reached `generateStaticParams` collections. */
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
   readonly sourcePaths: readonly string[];
+  /** Direct selected source used only when its path mirrors a proven dynamic App route. */
+  readonly targetPath?: string;
 }
 
 /** Uniform result consumed without knowing which Next router generation supplied the shell. */
@@ -43,7 +49,24 @@ export interface PreviewInspectorFrameworkPageShell {
 export async function collectPreviewInspectorFrameworkPageShell(
   options: CollectPreviewInspectorFrameworkPageShellOptions,
 ): Promise<PreviewInspectorFrameworkPageShell> {
+  const initialNextAppShell = collectPreviewInspectorNextAppLayoutChain({
+    exportName: options.exportName,
+    pagePath: options.pagePath,
+    sourcePaths: options.sourcePaths,
+  });
+  const targetParameterValues =
+    initialNextAppShell === undefined ||
+    options.targetPath === undefined ||
+    options.targetPath === options.pagePath
+      ? undefined
+      : inferPreviewInspectorNextAppTargetPathParams({
+          routePattern: initialNextAppShell.routeLocation.pattern,
+          targetPath: options.targetPath,
+        });
   const nextAppResult = await collectRefinedPreviewInspectorNextAppLayoutChain({
+    ...(targetParameterValues === undefined
+      ? {}
+      : { dynamicParameterValues: targetParameterValues }),
     exportName: options.exportName,
     pagePath: options.pagePath,
     readSource: options.readSource,

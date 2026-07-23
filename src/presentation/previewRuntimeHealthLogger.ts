@@ -8,6 +8,7 @@ import {
   isPreviewRuntimeHealthMessage,
   readPreviewRuntimeHealthMessage,
 } from './previewRuntimeHealthProtocol';
+import { formatPreviewRuntimeHealthSummary } from './previewRuntimeHealthSummary';
 
 /** Host capabilities required to accept one Page Inspector health message. */
 export interface PreviewRuntimeHealthLogContext {
@@ -51,7 +52,12 @@ export function handlePreviewRuntimeHealthMessage(
       ...(message.runtimeVersion === undefined ? {} : { runtimeVersion: message.runtimeVersion }),
       ...message.event,
     };
-    const output = `React preview runtime health\n${JSON.stringify(record, undefined, 2)}`;
+    const summary = formatPreviewRuntimeHealthSummary(message.event);
+    const output = [
+      'React preview runtime health',
+      ...(summary === undefined ? [] : [summary, 'Structured record:']),
+      JSON.stringify(record, undefined, 2),
+    ].join('\n');
     context.log[message.event.severity](output);
   });
   runtimeHealthOutputQueue = task.catch((error: unknown) => {

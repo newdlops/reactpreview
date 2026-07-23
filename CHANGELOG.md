@@ -2,6 +2,64 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1141 - 2026-07-23
+
+- JSX를 직접 export하지 않는 HOC/factory 파일의 실제 소비 페이지를 선택할 때 폐기되는 callable 구간의
+  source evidence를 승격된 page step에 보존해 연속 권한·모드 가드를 현재 파일 경로로 인식
+- 불완전한 `index`/lazy barrel보다 구체적인 완성 page 후보를 먼저 렌더링해 대형 registry 보강과 흰 화면을 방지
+- Fiber에서 관찰한 `Navigate` 같은 runtime-only fallback 이름을 분기 목적지 근거로 사용하지 않아
+  Owner 권한 → Staff 모드처럼 중첩된 HOC 가드를 순서대로 통과
+- 효과 없는 자동 분기는 롤백·세션 제외해 반복 루프를 막고, 실제 `rtcc-poc-page`의 페이지·모달·HOC 소비
+  페이지를 각각 7–14초에 빌드해 작성된 스타일과 가시 host output을 검증
+
+## 0.1.1140 - 2026-07-23
+
+- React effect 반복 보호를 1초 누적 횟수가 아닌 한 browser frame 안의 동기 폭주로 판별해
+  `requestAnimationFrame`·상태 갱신 기반 60/120fps 애니메이션은 계속 재생하면서 무한 update loop는 격리
+- 생성 소스가 없는 `Spinner`/`Skeleton` placeholder에 project animation token 우선, namespaced
+  `infinite` keyframe fallback을 적용하고 작성된 1회 애니메이션·`animation: none`은 그대로 보존
+- 실제 Tailwind `animate-spin`과 독립 generated Skeleton을 Chromium timing으로 검증하고 frame 반복,
+  timer fallback, 동기 폭주, hot revision 및 authored override 회귀 테스트를 추가
+
+## 0.1.1139 - 2026-07-23
+
+- 직접 선택한 `examples`/`demo` 파일을 target-affinity lazy registry와 Next App Router page에 제한적으로 역연결하고 파일 경로로 동적 route parameter를 복원해 root layout·전역 CSS 안에서 현재 컴포넌트를 렌더링
+- CSS `style` 조건만 노출하는 `tw-animate-css`류 package export를 정적 manifest로 해석하고 현재 파일·하위 import의 Tailwind 후보를 우선 보존해 대형 page shell에서도 뒤쪽 utility가 8,192개 한도에 잘리지 않도록 수정
+- 체크아웃에 generated UI source가 없으면 Button, Card, field, overlay, Accordion과 table 역할에 system-color 기반 최소 의미 스타일을 적용하되 작성된 inline style과 `asChild` 자식 스타일을 우선
+- 실제 `apps/v4/examples` 표본을 약 3.7~4.9초의 complete page context와 84 KiB CSS로 복구하고 대형 lazy registry 탐색은 24/96 import·128 route-directory 상한 안에 유지
+
+## 0.1.1138 - 2026-07-23
+
+- Yarn PnP의 React-only workspace package는 동일 React 범위를 가진 application issuer에서 `react-dom` companion을 엄격히 복구하고, Next Pages fast preview는 최초 artifact부터 `_app`과 route parameter 경로를 결합
+- browser에서 도달한 `fs`/`fs/promises` 서버 helper에 host I/O를 노출하지 않는 빈 text/byte API를 제공해 Next App registry의 `replace` runtime crash를 방지
+- 값 없는 Promise rejection은 정상 mount를 깨지 않는 warning으로 격리하고, React children item은 scalar로 생성하며 hook 값이 자식 props로 전달되면 `data.data.rides.map()` 같은 제한된 후속 shape도 역전파
+- fast Page Inspector는 test/story entry를 제외하고 8개 초과 dormant lazy 선택지와 48개 초과 eager React Router registry를 page-local 경로 아래로 잘라 실제 97MB·64초 graph를 6.5MB·약 2.6초로 축소
+
+## 0.1.1137 - 2026-07-23
+
+- direct React export가 없는 JSX hook·factory를 빠른 준비 단계에서도 bounded reverse-consumer 경로로 추적해 실제 소비 컴포넌트와 page root를 렌더링하고 GraphQL document export는 대상에서 제외
+- fast first paint는 최상위 page candidate 하나만 번들링하고 대체 App/route registry는 full 보강으로 지연해 실제 `document-version-viewer.tsx`의 45초 watchdog 중단을 동일 격리 제한에서 약 3.6초 빌드로 단축
+- 생략한 후보가 있으면 context를 `partial`로 유지하고 fast 자동 후보는 full의 더 강한 application root로 승격하되 사용자가 직접 선택한 page candidate는 보강과 hot reload 뒤에도 보존
+
+## 0.1.1136 - 2026-07-23
+
+- generic React Page Inspector에서 의미 있는 ReactDOM 진입점의 forward BFS와 현재 파일 인접 owner의 bounded reverse 탐색을 만나게 해 전체 package inventory 없이 App에서 선택 export까지의 최단 import corridor를 구성
+- 확정된 page root에서 JSX 중심 DFS로 layout, header, sidebar와 page sibling을 추가해 현재 파일만 고립해서 보여주지 않고 실제 application shell 안에서 렌더링
+- page/layout 또는 semantic entry corridor가 완성된 fast artifact를 `complete`로 전달해 화면 표시 직후 동일 graph의 full enrichment와 스타일 재탐색을 반복하지 않도록 수정
+- Tailwind v4의 package-wide `@source` 탐색을 증명된 page corridor의 Oxide 후보로 제한해 작성된 theme/CSS는 유지하면서 실제 대형 Next 페이지의 첫 빌드를 약 5.1초로 단축
+
+## 0.1.1135 - 2026-07-23
+
+- fast Page Inspector의 generated lazy registry를 누락 소스 복구보다 먼저 단일 corridor 모듈로 합치고 importer별 import/export 수요를 AST 1회로 색인해 실제 3,758개 분기 Next 페이지를 45초 중단에서 약 5.6초 페이지 번들로 단축
+- `generateStaticParams`의 imported collection, awaited dynamic import, 중첩 `for...of`/`for...in`, computed lookup과 literal `includes` guard를 bounded하게 따라 `/view/new-york-v4/dashboard-01` 같은 실제 첫 경로를 루트 layout과 함께 렌더링
+- 선택 target facade를 corridor보다 우선하고 `index` target은 부모 디렉터리 stem만 보존하며 읽기 실패는 pruning 증거로 쓰지 않아 2,048개 registry 성능 경계에서도 현재 파일·레이아웃·정확한 lazy child를 유지
+
+## 0.1.1134 - 2026-07-23
+
+- 최초 fast 빌드에서 graph-wide 대형 package barrel projection을 생략하고 full 보강에서만 정확한 leaf projection을 유지해 일반 대형 React 페이지가 `bundling-modules` watchdog에 걸리던 회귀를 제거
+- 대형 barrel 리졸버를 authored workspace importer로 한정하고 importer별 AST inventory·동일 resolve/evidence Promise를 공유해 dependency-to-dependency import와 중복 선언의 TypeScript 재분석을 차단
+- fast 의존성은 비호환 resource/framework 문법만 정밀 변환하고 정적으로 닫힌 overlay는 동적 import 없는 임시 marker로 분리해 첫 화면 그래프와 메모리를 줄이되 full 페이지 컨텍스트에서 원본 컴포넌트를 복원
+
 ## 0.1.1133 - 2026-07-23
 
 - foreground·context-enrichment 빌드를 분리하고 미시작 요청을 새 워커에서 재생해 탭 간 OOM·watchdog·취소 오류 전파와 반복 보강 루프를 차단
@@ -934,67 +992,5 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
 - Inspector 배치·크기·위치·접힘 상태를 탭별 hot session과 VS Code webview state에 저장해 hot reload 및
   전체 webview 복원 뒤에도 유지
 - layout/CSS 책임을 별도 runtime source로 분리해 Inspector component tree 및 host navigation 경계와 격리
-
-## 0.1.1026 - 2026-07-17
-
-- cold fast pass에서 자동 Storybook setup과 convention watcher 수집을 실제 mount 뒤로 미루고 dynamic import를
-  단일 entry로 합쳐 최초 artifact publication의 수백 개 파일 쓰기와 깨진 선택적 setup 영향을 제거
-- route가 많은 full graph의 in-memory output/chunk 제한을 2,048개로 높이고 artifact filesystem worker를
-  16개로 확장하되 기존 32 MiB 총출력 한도와 content-addressed 경로 검증은 유지
-- 브라우저 graph가 선택적으로 노출한 `fs` 등 Node built-in을 host capability 없는 neutral CommonJS shim으로
-  바꿔 실제 Node API를 쓰지 않는 component가 module resolution 단계에서 실패하지 않도록 처리
-- 가장 가까운 monorepo package에서 `sass`를 찾아 SCSS/Sass와 CSS Modules를 컴파일하고 transitive partial을
-  hot-reload dependency로 추적하며, compiler 부재·style 오류는 component build를 막지 않는 warning으로 전환
-- 자동 Storybook graph와 target graph가 동시에 실패해도 setup-free retry를 허용해 stale preview import를
-  격리하고, target 자체 오류가 남으면 두 번째 build의 정확한 target diagnostic을 표시
-
-## 0.1.1025 - 2026-07-17
-
-- 기존 우측 floating toolbar를 Chrome DevTools Elements와 유사한 하단 dock으로 교체하고, 실제 page는
-  그대로 유지한 채 왼쪽 React component tree와 오른쪽 props/state/source 상세를 분리해 표시
-- 선택 target boundary에서 React 16-19 Fiber를 root까지 읽기 전용으로 추적해 부모·형제·자식 component를
-  수집하고 DOM host tag는 기본 tree에서 제외하며, Fiber가 없으면 정적 entry-to-target 경로를 fallback으로 표시
-- element picker가 고른 host DOM을 가장 가까운 React component로 역매핑하고 tree 선택 component의 실제
-  top-level host node를 강조하며, traversal·snapshot depth·key 수를 제한해 대형 page에서도 bounded하게 동작
-- 함수 hook/class state와 runtime props는 getter나 update queue를 실행하지 않는 read-only snapshot으로 보여주고,
-  계측된 target/root의 직렬화 가능한 props override와 remount만 기존 안전 계약으로 편집
-- JSX development source 또는 정적 render/ancestor graph가 증명한 source를 Inspector에서 열 수 있게 하고,
-  실제 source-button 클릭을 target별 HMAC과 일회성 nonce로 인증한 뒤 extension host가 현재 panel의
-  committed dependency allowlist 안 파일만 검증해 editor 위치로 이동
-
-## 0.1.1024 - 2026-07-17
-
-- 번들러가 이미 Go 네이티브 esbuild임을 유지하고, 동일한 target/runtime plan은 최대 12개의
-  `context.rebuild()` 캐시에서 parsed dependency graph를 재사용하도록 변경
-- cold preview는 도달 가능한 target graph를 먼저 게시하고 browser mount 확인 뒤 전체 entry/parent/props
-  문맥을 백그라운드에서 보강하며, 보강 실패 시 빠른 프리뷰를 유지하고 warm rebuild는 full context 한 번만 실행
-- 새 revision과 dispose가 이전 target resolution·analysis·native build를 `AbortSignal`/`context.cancel()`로
-  중단하고 debounce는 최신 요청만 남기며, publish 중 취소된 artifact lease도 즉시 반환
-- source text·module/entry/import fact를 disk mtime/size 또는 dirty snapshot SHA-256 단위로 캐시하고,
-  inventory TTL 뒤에도 파일 경로 fingerprint가 같으면 positive render/usage graph를 재사용
-- 직전 reached graph의 Router와 lexical global 계획을 기억해 정상 hot rebuild를 한 번의 native pass로 줄이고,
-  plugin별 compilation-local asset budget은 매 rebuild마다 초기화
-- entry/CSS와 `chunks/[hash].js`를 session-level content-addressed 파일로 공유하고 bundle/파일 reference count,
-  portable path+digest 충돌 검증, zero-reference URL tombstone, 최대 8개 병렬 write/delete와 partial rollback을 추가
-- setup 뒤 runtime bridge·props·target graph를 병렬 준비하고, hot reload는 새 ESM·CSS와 provider element가 모두
-  준비된 뒤에만 root를 교체해 빈 화면 구간을 줄이며 preload/빌드 실패 시 마지막 정상 프리뷰를 그대로 유지
-- CSS만 바뀐 revision도 entry query로 ESM cache를 무효화하고, same-session content-addressed URI와
-  revision/applied/retained ACK를 양쪽에서 검증해 stale 교체와 artifact lease 오판을 차단
-- export별 Suspense와 local 오류 placeholder를 복원해 한 lazy/실패 component가 나머지 gallery나 commit 확인을
-  막지 않으며, 병렬 target 평가 오류도 원래 runtime phase를 보존
-- 준비 단계별 소요 시간과 completed/failed/cancelled 결과를 구조화된 debug log로 남겨 실제 병목을 측정 가능하게 함
-
-## 0.1.1023 - 2026-07-17
-
-- 프리뷰 준비 과정을 대상 확인, 프로젝트 분석, 컴포넌트 문맥 탐색, 정적 runtime 준비, 모듈 번들링,
-  local artifact 게시, React 로딩의 7개 실제 단계로 표시하고 가짜 시간 기반 퍼센트는 사용하지 않음
-- 최초 빌드는 접근 가능한 전체 loading 문서로 단계를 갱신하고, hot reload는 기존 화면을 보존한 채
-  project CSS와 분리된 declarative Shadow DOM 상태 패널에서 진행상황과 browser bootstrap phase를 표시
-- compiler/application/presentation 경계에 optional progress observer를 추가하고 session revision을
-  extension-to-webview 메시지에서도 검증해 stale build나 이전 hot import가 최신 진행상황을 지우지 않게 함
-- `role=status`, `aria-live`, `aria-busy`, indeterminate progressbar와 reduced-motion 처리를 추가하고,
-  progress message를 bounded 구조로 검증해 DOM text만 갱신하는 no-server/CSP 정책을 유지
-- React 실제 commit 전에는 완료 표시를 숨기지 않고 completed revision을 terminal로 고정하며, 초기 ESM
-  entry가 실행 전에 실패해도 token/revision handshake와 30초 watchdog으로 영구 loading을 방지
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

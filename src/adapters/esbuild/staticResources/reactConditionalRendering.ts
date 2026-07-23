@@ -78,8 +78,8 @@ interface ReactConditionalRenderMetadata {
   readonly sourcePath: string;
   /** Nearest statically named render owner, used to attach a blocker to its tree position. */
   readonly ownerName?: string;
-  /** Optional visual-layer classification used for dormant overlay controls. */
-  readonly role?: 'overlay';
+  /** Optional render-control classification used for navigation and dormant overlay handling. */
+  readonly role?: 'navigation' | 'overlay';
   /** Branch that continues toward the selected descendant after an early render exit. */
   readonly targetBranch?: 'falsy' | 'truthy';
   /** Label rendered when the condition resolves true. */
@@ -300,6 +300,7 @@ function collectEarlyReturnGateCandidate(
     portalBindings,
   );
   const continuationLabel = `continue <${ownerName}>`;
+  const role = isNavigationBranchLabel(returnedLabel) ? ('navigation' as const) : undefined;
   return {
     condition: statement.expression,
     expressionLabel: `<${ownerName}> gate: ${statement.expression.getText(sourceFile)}`,
@@ -308,6 +309,7 @@ function collectEarlyReturnGateCandidate(
       falsyLabel: returnedBranch === 'falsy' ? returnedLabel : continuationLabel,
       kind: 'early-return',
       ownerName,
+      ...(role === undefined ? {} : { role }),
       targetBranch,
       truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
     },
@@ -837,6 +839,11 @@ function isFallbackBranchLabel(label: string): boolean {
   return /fallback|empty|error|loading|placeholder|skeleton|spinner|no[-_ ]?data|log[-_ ]?in|sign[-_ ]?in|unauthori[sz]ed|forbidden|access[-_ ]?denied|navigate|redirect/iu.test(
     label,
   );
+}
+
+/** Recognizes an exact router navigation component label already proven as returned React output. */
+function isNavigationBranchLabel(label: string): boolean {
+  return /^<(?:[$_\p{L}][$_\p{L}\p{N}]*\.)*(?:Navigate|Redirect)>$/u.test(label);
 }
 
 /** Creates an opaque, hot-reload-stable identity from source semantics and bounded occurrence order. */

@@ -524,6 +524,63 @@ describe('Preview Inspector condition runtime source', () => {
     expect(fullHarness.resolveCondition('staff-gate', true, metadata)).toBe(true);
   });
 
+  /**
+   * Continues an exact authored-page Navigate guard on its first evaluation, before its component
+   * can commit a redirect that removes the selected panel from the current router location.
+   */
+  it('synchronously preserves the selected page corridor across a proven Navigate return', () => {
+    const key = 'candidate:InvestmentContractUploadPanel';
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      activeTargetReachabilityKey: key,
+      descriptors: [{ exportName: 'InvestmentContractUploadPanel', inspector: {} }],
+      fallbackValuesEnabled: true,
+      selectedExportName: 'InvestmentContractUploadPanel',
+      selectedPageCandidate: { id: 'authored-page' },
+    });
+    const state = {
+      appliedConditions: [],
+      directTarget: false,
+      key,
+      synchronousEvidencePaths: ['/workspace/src/GuardedPage.tsx'],
+      targetExportName: 'InvestmentContractUploadPanel',
+    };
+    harness.session.targetReachabilityByKey = new Map([[key, state]]);
+    const metadata = {
+      expression: '<GuardedPage> gate: !isStaffMode',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <GuardedPage>',
+      kind: 'early-return',
+      ownerName: 'GuardedPage',
+      role: 'navigation',
+      sourcePath: '/workspace/src/GuardedPage.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<Navigate>',
+    };
+    let routerPath = '/investment-contracts';
+
+    const condition = harness.resolveCondition('staff-gate', true, metadata);
+    if (condition) routerPath = '/login';
+
+    expect(condition).toBe(false);
+    expect(routerPath).toBe('/investment-contracts');
+    expect(harness.readConditions()[0]).toMatchObject({
+      autoOverride: false,
+      effectiveEnabled: false,
+      reachabilityKey: key,
+      role: 'navigation',
+    });
+    expect(state.appliedConditions).toEqual([
+      expect.objectContaining({ enabled: false, id: 'staff-gate', synchronous: true }),
+    ]);
+
+    expect(
+      harness.resolveCondition('unrelated-gate', true, {
+        ...metadata,
+        sourcePath: '/workspace/src/UnrelatedHeader.tsx',
+      }),
+    ).toBe(true);
+  });
+
   /** Opens a directly selected Modal whose authored hidden guard would otherwise return no DOM. */
   it('automatically reveals a cold direct target overlay', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn(), {
@@ -572,6 +629,13 @@ function createConditionRuntimeHarness(
       const schedulePreviewInspectorCommitRefresh = () => undefined;
       const schedulePreviewInspectorHighlight = () => undefined;
       const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const findSelectedPreviewInspectorDescriptor = () =>
+        previewInspectorSession.descriptors?.[0];
+      const readSelectedPreviewInspectorPageCandidate = () =>
+        previewInspectorSession.selectedPageCandidate;
+      const readPreviewInspectorTargetPathEvidence = (_descriptor, _candidate, state) => ({
+        paths: new Set(state?.synchronousEvidencePaths ?? []),
+      });
       const recordedConsoleEntries = [];
       const recordPreviewInspectorConsoleEntry = (candidate) => {
         recordedConsoleEntries.push(candidate);

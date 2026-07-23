@@ -726,8 +726,8 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
-  /** A mounted HOC that returns Navigate has no host output and must not terminate target DFS. */
-  it('continues through an off-graph HOC guard until the target produces host output', () => {
+  /** An exact facade HOC can expose its redirect guard before the selected boundary ever mounts. */
+  it('continues through an off-graph facade guard while the target remains unmounted', () => {
     const context: {
       __result?: {
         readonly applied: readonly [string, boolean][];
@@ -740,7 +740,7 @@ describe('Preview Inspector target reachability runtime source', () => {
       `
         const applied = [];
         const previewInspectorSession = {
-          boundariesByExport: new Map([['Target', new Set([{}])]]),
+          boundariesByExport: new Map(),
           renderConditionOverrides: new Map(),
           renderConditions: new Map(),
           selectedExportName: 'Target',
@@ -768,7 +768,7 @@ describe('Preview Inspector target reachability runtime source', () => {
           edges: [],
           id: 'page',
           renderPath: { id: 'path', steps: [
-            { evidenceSourcePaths: ['/with-page-guard.tsx'], label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
             { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
           ] },
           root: { exportName: 'Page' },
@@ -812,7 +812,7 @@ describe('Preview Inspector target reachability runtime source', () => {
       applied: [['guard', false]],
       status: 'advancing',
       targetHasOutput: false,
-      targetMounted: true,
+      targetMounted: false,
     });
   });
 

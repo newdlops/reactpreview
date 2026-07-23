@@ -399,6 +399,26 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"falsyLabel":"continue <Application>"');
   });
 
+  /** Marks a route-mutating early return so runtime DFS can preserve the original route on pass one. */
+  it('classifies an exact Navigate return as a synchronous navigation continuation', () => {
+    const source = [
+      'export function GuardedPage({ isStaffMode }) {',
+      '  if (!isStaffMode) return <Navigate to="/login" replace />;',
+      '  return <InvestmentContractUploadPanel />;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/GuardedPage.tsx',
+      source,
+    );
+
+    expect(transformed).toContain('"fallbackBranch":"truthy"');
+    expect(transformed).toContain('"role":"navigation"');
+    expect(transformed).toContain('"targetBranch":"falsy"');
+    expect(transformed).toContain('"truthyLabel":"<Navigate>"');
+  });
+
   /** Recovers the authored owner through styling/HOC factories so descendant branches stay reachable. */
   it('instruments an early-return branch inside a styled component factory', () => {
     const source = [

@@ -1,12 +1,10 @@
 /**
  * Generates target-guided application-path traversal for React Page Inspector.
  *
- * A page can render a perfectly valid login, permission, loading, or empty branch while never
- * invoking the component selected in the editor. Error boundaries cannot classify that as failure.
- * This runtime therefore treats the wrapped target export as a reachability assertion and advances
- * one statically instrumented gate per committed pass. A preview is successful only when both the
- * authored page root and the selected target commit in the same render corridor. Direct target
- * rendering remains an explicit diagnostic mode and never masquerades as page success.
+ * A valid login, permission, loading, or empty branch can omit the component selected in the
+ * editor, so the wrapped export becomes a reachability assertion rather than an error assertion.
+ * One instrumented gate advances per commit; success requires the authored page root and selected
+ * target in one corridor. Direct rendering remains an explicit diagnostic mode.
  */
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
 import { createPreviewInspectorRequirementConvergenceRuntimeSource } from './previewInspectorRequirementConvergenceRuntimeSource';
@@ -129,6 +127,11 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   );
   const paths = new Set();
   const exactTargetNames = new Set([state.targetExportName]);
+  const exactFacadeNames =
+    previewInspectorSession.targetFacadeRuntimeOwnerNamesByExport?.get?.(state.targetExportName);
+  if (exactFacadeNames instanceof Set) {
+    for (const name of exactFacadeNames) exactTargetNames.add(name);
+  }
   const staticNames = new Set([
     state.rootName,
     state.targetExportName,
@@ -232,7 +235,7 @@ function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   if (
     ownerName.length > 0 &&
     evidence.names.has(ownerName) &&
-    !runtimeOnlyOwner &&
+    (!runtimeOnlyOwner || evidence.exactTargetNames?.has(ownerName)) &&
     (
       !evidence.ambiguousNames?.has(ownerName) ||
       evidence.exactTargetNames?.has(ownerName)
@@ -331,10 +334,8 @@ function hasMountedPreviewInspectorTarget(state) {
   return boundaries instanceof Set && boundaries.size > 0;
 }
 /**
- * Adds the actual selected export function name to static root-to-target path evidence.
- * HOC factories often disappear from import/route graphs, while their returned named function owns
- * the decisive redirect or permission gate. Only names from the exact facade component are retained;
- * arbitrary mounted siblings are never promoted to target-path evidence.
+ * Adds selected-export runtime names to root-to-target evidence. HOC factories can disappear from
+ * import graphs while returned functions own redirect gates; mounted siblings are never promoted.
  */
 function rememberPreviewInspectorTargetRuntimeOwnerNames(exportName, candidateNames) {
   initializePreviewInspectorTargetReachabilityState();
@@ -363,20 +364,21 @@ function rememberPreviewInspectorTargetRuntimeOwnerNames(exportName, candidateNa
   }
   return changed;
 }
-/** Adds the exported facade's public runtime name before its selected boundary commits. */
+/** Adds the exported facade's exact public runtime name before its selected boundary commits. */
 function rememberPreviewInspectorTargetRuntimeOwner(exportName, Component) {
-  return rememberPreviewInspectorTargetRuntimeOwnerNames(
-    exportName,
-    [Component?.displayName, Component?.name],
-  );
+  const names = [Component?.displayName, Component?.name]
+    .filter((name) => typeof name === 'string' && name.length > 0 && name.length <= 160);
+  if (!(previewInspectorSession.targetFacadeRuntimeOwnerNamesByExport instanceof Map)) {
+    previewInspectorSession.targetFacadeRuntimeOwnerNamesByExport = new Map();
+  }
+  previewInspectorSession.targetFacadeRuntimeOwnerNamesByExport.set(exportName, new Set(names));
+  return rememberPreviewInspectorTargetRuntimeOwnerNames(exportName, names);
 }
 /**
  * Reads only the single-child component chain inside the exact selected-target boundary.
  *
- * A composed HOC can have runtime owners PageComponent -> GuardedPage -> Navigate while static
- * import evidence contains only PageComponent. The chain stops at the first host node or branch,
- * never visits a sibling, and therefore cannot promote header/sidebar/formatter conditions merely
- * because they share the surrounding application page.
+ * A HOC can have owners PageComponent -> GuardedPage -> Navigate while static evidence contains
+ * only PageComponent. The walk stops at a host or branch and never promotes page siblings.
  */
 function collectPreviewInspectorTargetMountedOwnerNames(boundary) {
   const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);

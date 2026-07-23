@@ -5,6 +5,7 @@
  * host privilege. Project modules may only resolve a compiler-issued condition identity; all editing
  * and persistence functions remain lexical to the extension-owned Inspector UI.
  */
+import { createPreviewInspectorSynchronousContinuationRuntimeSource } from './previewInspectorSynchronousContinuationRuntimeSource';
 
 /**
  * Creates condition/fallback state helpers concatenated into the Page Inspector entry.
@@ -15,7 +16,10 @@
  * @returns Plain JavaScript source evaluated before dynamically imported project modules.
  */
 export function createPreviewInspectorConditionRuntimeSource(): string {
+  const synchronousContinuationRuntimeSource =
+    createPreviewInspectorSynchronousContinuationRuntimeSource();
   return String.raw`
+${synchronousContinuationRuntimeSource}
 const PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT = 512;
 const PREVIEW_INSPECTOR_RENDER_CHOICE_BRANCH_LIMIT = 32;
 const previewInspectorScheduleConditionMicrotask = typeof globalThis.queueMicrotask === 'function'
@@ -136,7 +140,7 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     ownerName: readText('ownerName'),
     sourcePath: readText('sourcePath'),
-    ...(source.role === 'overlay' ? { role: 'overlay' } : {}),
+    ...(['navigation', 'overlay'].includes(source.role) ? { role: source.role } : {}),
     ...(targetBranch === undefined ? {} : { targetBranch }),
     truthyLabel: readText('truthyLabel', 'visible'),
   };
@@ -464,6 +468,16 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     reconcilePreviewInspectorManualOverrideWithOutcome(overrides, conditionId, outcomeOverride)
   ) {
     override = undefined;
+  }
+  const synchronousContinuation = readPreviewInspectorSynchronousNavigationContinuation(
+    conditionId,
+    normalizedMetadata,
+    override ?? outcomeOverride,
+    autoOverride,
+  );
+  if (synchronousContinuation !== undefined) {
+    autoOverrides.set(conditionId, synchronousContinuation);
+    autoOverride = synchronousContinuation;
   }
   const directContinuation = readPreviewInspectorDirectContinuationOverride(
     normalizedMetadata,

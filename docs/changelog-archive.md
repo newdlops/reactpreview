@@ -2,6 +2,29 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1032 - 2026-07-17
+
+- Page Inspector의 reached workspace source에서 render-critical project hook과 `use-query-params` 호출을
+  정적으로 식별하고, 실제 non-nullish 결과는 그대로 보존하면서 Provider 예외·필수 nullish 결과만
+  사용처/이름/작성된 default 기반의 preview-only 값으로 우회하는 render circuit breaker 추가
+- Suspense thenable과 `Auto values`를 끈 상태의 예외는 원래대로 전달하고, 생성 tuple/object는 required
+  property path·호출 leaf까지 frozen shape로 만들어 fallback 직후의 연쇄 `undefined` 오류를 감소
+- Inspector에 `Fallbacks` 탭과 toolbar count를 추가해 hook, 원본 오류, source, 추론 근거와 실제 생성값을
+  `GENERATED RENDER VALUE`로 표시하고 같은 내용을 fatal error가 아닌 Console warning으로 보존
+- `rtcc-poc-page`의 `ListQueryRenderer`에서 `usePagination`, `useQueryParam`, `useQueryVar`, project `useQuery`를
+  실제 54-chunk page build로 검증하고 syntax/runtime/compiler 회귀 테스트를 추가
+
+## 0.1.1031 - 2026-07-17
+
+- Page Inspector 오른쪽에 `Console` 탭을 추가해 `console.log/info/warn/error/debug`, React render/lifecycle
+  boundary, 전역 runtime 및 unhandled promise 오류를 VS Code 개발자 도구 없이 확인하도록 구현
+- `useQueryParams must be used within a QueryParamProvider` 같은 hook/provider 실패에 export, phase,
+  React component stack과 JavaScript stack을 보존하고 실패 target의 inline placeholder 및 나머지 page는 유지
+- 원래 browser console 호출은 그대로 전달하고 동일 연속 로그는 횟수로 병합하며, 탭별 최신 250건만 메모리에
+  유지하고 level/text 필터·상세 stack 펼치기·Clear를 제공
+- console capture registry와 UI를 독립 runtime source로 분리하고 getter를 실행하지 않는 bounded argument
+  formatter, hot-reload-safe native console capture와 동작 테스트를 추가
+
 ## 0.1.1030 - 2026-07-17
 
 - Inspector에 `Payloads` 탭을 추가해 관찰된 API/GraphQL 요청, source/type 근거와 실제 전달되는 JSON을 표시

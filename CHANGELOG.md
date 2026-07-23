@@ -2,6 +2,28 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1148 - 2026-07-24
+
+- fast 패키지 barrel 최적화가 esbuild `onResolve` 안에서 같은 package root를 재해석하던 교착 경로를
+  제거하고, 기존 정적 resolver가 runtime/source entry를 증명하지 못하면 기본 번들링으로 즉시 복귀
+- JSX component prop 분석에서 lowercase helper와 ALL_CAPS query/상수를 시각 React branch로 오인하지
+  않아 페이지 경로와 패키지 수요가 실행 데이터 때문에 확장되지 않도록 제한
+- 실제 격리 워커에서 보고된 modal과 manager settings page를 각각 약 8.6초, 0개 진단으로 재검증
+
+## 0.1.1147 - 2026-07-23
+
+- fast 페이지 경로에서 정적으로 복구 가능한 프로젝트 hook을 호출부의 최소값으로 대체하고,
+  비활성 route fallback은 페이지의 1-depth 형제로 다시 묶지 않아 번들 그래프 재확장을 방지
+- `styled(Component)` selector는 원래 레이아웃 CSS와 host 위치를 유지하는 얕은 컴포넌트로 투영하고,
+  대형 package barrel은 실제 named export leaf만 읽어 512 MiB 격리 워커의 메모리·시간 사용량을 제한
+- 보고된 `rtcc-manager-settings-page.tsx`를 실제 격리 워커에서 45초 중단 없이 약 9.9초,
+  0개 진단으로 컴파일하는 회귀 검증을 추가
+
+## 0.1.1146 - 2026-07-23
+
+- `styled(callback)`·HOC 내부의 런타임 값은 보존하고 실제 JSX 자식만 1-depth projection
+- 정적 경로와 흔한 `default` export는 원본 소스가 일치할 때만 실제 mount로 판정해 target 진단을 일관되게 표시
+
 ## 0.1.1145 - 2026-07-23
 
 - fast 1-depth 페이지 보강이 같은 기능 폴더의 demo/example 소비자를 실제 제품 페이지 후보로 다시
@@ -968,28 +990,5 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
   기존 16,384개 조회·2,048개 output·32 MiB 한도는 유지
 - `rtcc-poc-page`의 Agent 문서 41개, generated icon 330개와 정확한 `ui-test-page.tsx`를 fast/full production
   compiler로 검증하고 full build 453 chunks, 4,280 dependencies, diagnostics 0건을 확인
-
-## 0.1.1032 - 2026-07-17
-
-- Page Inspector의 reached workspace source에서 render-critical project hook과 `use-query-params` 호출을
-  정적으로 식별하고, 실제 non-nullish 결과는 그대로 보존하면서 Provider 예외·필수 nullish 결과만
-  사용처/이름/작성된 default 기반의 preview-only 값으로 우회하는 render circuit breaker 추가
-- Suspense thenable과 `Auto values`를 끈 상태의 예외는 원래대로 전달하고, 생성 tuple/object는 required
-  property path·호출 leaf까지 frozen shape로 만들어 fallback 직후의 연쇄 `undefined` 오류를 감소
-- Inspector에 `Fallbacks` 탭과 toolbar count를 추가해 hook, 원본 오류, source, 추론 근거와 실제 생성값을
-  `GENERATED RENDER VALUE`로 표시하고 같은 내용을 fatal error가 아닌 Console warning으로 보존
-- `rtcc-poc-page`의 `ListQueryRenderer`에서 `usePagination`, `useQueryParam`, `useQueryVar`, project `useQuery`를
-  실제 54-chunk page build로 검증하고 syntax/runtime/compiler 회귀 테스트를 추가
-
-## 0.1.1031 - 2026-07-17
-
-- Page Inspector 오른쪽에 `Console` 탭을 추가해 `console.log/info/warn/error/debug`, React render/lifecycle
-  boundary, 전역 runtime 및 unhandled promise 오류를 VS Code 개발자 도구 없이 확인하도록 구현
-- `useQueryParams must be used within a QueryParamProvider` 같은 hook/provider 실패에 export, phase,
-  React component stack과 JavaScript stack을 보존하고 실패 target의 inline placeholder 및 나머지 page는 유지
-- 원래 browser console 호출은 그대로 전달하고 동일 연속 로그는 횟수로 병합하며, 탭별 최신 250건만 메모리에
-  유지하고 level/text 필터·상세 stack 펼치기·Clear를 제공
-- console capture registry와 UI를 독립 runtime source로 분리하고 getter를 실행하지 않는 bounded argument
-  formatter, hot-reload-safe native console capture와 동작 테스트를 추가
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

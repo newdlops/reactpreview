@@ -220,6 +220,10 @@ function createPreviewInspectorSession() {
       typeof persisted.selectedTreeNodeId === 'string' ? persisted.selectedTreeNodeId : undefined,
     treeListeners: new Set(),
     treeDirty: true,
+    userSelectedPageCandidateId:
+      typeof persisted.userSelectedPageCandidateId === 'string'
+        ? persisted.userSelectedPageCandidateId
+        : typeof persisted.selectedPageCandidateId === 'string' ? persisted.selectedPageCandidateId : '',
     version: 0,
   };
 }
@@ -237,6 +241,7 @@ previewInspectorSession.resolverPropsByExport ??= new Map();
 previewInspectorSession.renderabilityByExport ??= new Map();
 previewInspectorSession.treeListeners ??= new Set();
 previewInspectorSession.treeDirty ??= true;
+previewInspectorSession.userSelectedPageCandidateId ??= '';
 
 /** Returns a stable numeric snapshot for React.useSyncExternalStore. */
 function getPreviewInspectorVersion() {
@@ -353,8 +358,7 @@ function setPreviewInspectorDescriptors(descriptors) {
   const candidateIds = previewInspectorSession.descriptors.flatMap((descriptor) =>
     readPreviewInspectorPageCandidates(descriptor).map((candidate) => candidate.id),
   );
-  const candidateChanged = !candidateIds.includes(previewInspectorSession.selectedPageCandidateId);
-  if (candidateChanged) previewInspectorSession.selectedPageCandidateId = candidateIds[0] ?? '';
+  const candidateChanged = reconcilePreviewInspectorPageCandidateSelection(candidateIds);
   const uniqueNames = [
     ...new Set([
       ...names,

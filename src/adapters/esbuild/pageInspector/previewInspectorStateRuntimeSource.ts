@@ -110,6 +110,7 @@ function persistPreviewInspectorState() {
         selectedExportName: previewInspectorSession.selectedExportName,
         selectedPageCandidateId: previewInspectorSession.selectedPageCandidateId,
         selectedTreeNodeId: previewInspectorSession.selectedTreeNodeId,
+        userSelectedPageCandidateId: previewInspectorSession.userSelectedPageCandidateId,
       },
     });
   } catch {

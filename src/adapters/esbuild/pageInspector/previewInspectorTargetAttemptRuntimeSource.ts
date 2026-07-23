@@ -76,6 +76,36 @@ function isPreviewInspectorTargetConditionAttemptPending(state) {
   return isPreviewInspectorTargetAutoAttemptPending(state);
 }
 
+/** Reports whether a settled attempt exposed any new information for a legitimate multi-step path. */
+function hasPreviewInspectorTargetAutoAttemptEvidence(attempt, state) {
+  const blockerProgress = [
+    'changedBlockerIds',
+    'discoveredBlockerIds',
+    'resolvedBlockerIds',
+  ].some((field) => attempt?.[field] instanceof Set && attempt[field].size > 0);
+  const targetProgress = state?.targetMounted === true ||
+    state?.targetWasMounted === true ||
+    state?.targetHasOutput === true;
+  return blockerProgress || targetProgress;
+}
+
+/**
+ * Rejects one inert target-guided gate before the corridor advances.
+ *
+ * A committed React tree alone is not branch progress: if it neither changes blocker evidence nor
+ * reaches the selected boundary, retaining the override makes bounded DFS select the same dead
+ * branch again. Multi-step gates remain intact as soon as either kind of observable evidence exists.
+ */
+function rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state) {
+  if (
+    attempt?.autoMode !== 'target-guided-auto' ||
+    attempt.settledAt === undefined ||
+    hasPreviewInspectorTargetAutoAttemptEvidence(attempt, state) ||
+    typeof rollbackPreviewInspectorNoProgressAutoDecision !== 'function'
+  ) return false;
+  return rollbackPreviewInspectorNoProgressAutoDecision(attempt.traceId);
+}
+
 /** Resumes the exact corridor once after its trace has either stabilized or rolled back. */
 function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   if (
@@ -92,6 +122,7 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   if (typeof reachabilityKey !== 'string') return false;
   const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
   if (state === undefined) return false;
+  rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state);
   attempt.targetReachabilityResumeHandled = true;
   if (['page-blocked', 'reached', 'target-only'].includes(state.status)) return false;
   state.status = 'probing';

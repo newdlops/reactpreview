@@ -59,6 +59,10 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('setPropsOverride');
     expect(source).toContain('React.cloneElement(Component, props)');
     expect(source).toContain('createPreviewInspectorRootName');
+    expect(source).toContain(
+      'const candidateChanged = reconcilePreviewInspectorPageCandidateSelection(candidateIds)',
+    );
+    expect(source).toContain('typeof persisted.userSelectedPageCandidateId');
     expect(source).toContain('descriptor?.inspector === undefined');
     expect(source).toContain('PreviewInspectorDirectTarget');
     expect(source).toContain('PreviewInspectorRoutedDirectTarget');

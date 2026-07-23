@@ -31,11 +31,20 @@ export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
 const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT};
-const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_WINDOW_MS = 1_000;
+const PREVIEW_INSPECTOR_RUNTIME_EFFECT_FRAME_FALLBACK_MS = 16;
 const previewInspectorScheduleRuntimeFallbackMicrotask =
   typeof globalThis.queueMicrotask === 'function'
     ? globalThis.queueMicrotask.bind(globalThis)
     : (callback) => Promise.resolve().then(callback);
+const previewInspectorScheduleRuntimeEffectFrame =
+  typeof globalThis.requestAnimationFrame === 'function'
+    ? globalThis.requestAnimationFrame.bind(globalThis)
+    : typeof globalThis.setTimeout === 'function'
+      ? (callback) => globalThis.setTimeout(
+          callback,
+          PREVIEW_INSPECTOR_RUNTIME_EFFECT_FRAME_FALLBACK_MS,
+        )
+      : undefined;
 
 /** Lazily initializes ephemeral blocker records and stable fallback identities. */
 function initializePreviewInspectorRuntimeFallbackState() {
@@ -558,17 +567,38 @@ function createPreviewInspectorRuntimeEffectCleanup(cleanup, metadata, effectSco
 }
 
 /**
+ * Clears a completed frame's execution counter without reviving a superseded candidate/revision.
+ *
+ * Counting by animation frame, rather than wall-clock frequency, distinguishes a legitimate
+ * 60/120Hz state-driven animation from a synchronous effect/update loop that prevents the browser
+ * from reaching its next paint. The token check keeps an old frame callback from deleting a newer
+ * burst admitted under the same stable source id.
+ */
+function schedulePreviewInspectorRuntimeEffectBurstReset(metadataId, revision, frameToken) {
+  if (typeof previewInspectorScheduleRuntimeEffectFrame !== 'function') return;
+  previewInspectorScheduleRuntimeEffectFrame(() => {
+    const current = previewInspectorSession.runtimeEffectExecutionWindows?.get(metadataId);
+    if (
+      current?.revision === revision &&
+      current.frameToken === frameToken &&
+      current.isolated !== true
+    ) {
+      previewInspectorSession.runtimeEffectExecutionWindows.delete(metadataId);
+    }
+  });
+}
+
+/**
  * Stops one effect site that repeatedly completes but schedules another synchronous application
- * update. React reports this pattern only after dozens of commits, at which point the renderer can
- * already be unresponsive. The preview boundary therefore admits a generous bounded burst and then
- * isolates that source site; ordinary one-shot effects and modest lists remain unaffected.
+ * update before the browser can paint. React reports this pattern only after dozens of commits, at
+ * which point the renderer can already be unresponsive. Ordinary repeated animation effects are
+ * admitted because their counter is cleared at every browser frame boundary.
  */
 function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
   if (!readPreviewInspectorFallbackValuesEnabled()) return false;
   initializePreviewInspectorRuntimeFallbackState();
   const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
   if (metadata.id.length === 0) return false;
-  const now = Date.now();
   const revision = typeof previewEntryRevision === 'number' ? previewEntryRevision : 0;
   const previous = previewInspectorSession.runtimeEffectExecutionWindows.get(metadata.id);
   if (previous?.isolated === true && previous.revision === revision) return true;
@@ -579,14 +609,17 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
   ) {
     return false;
   }
-  const withinWindow = previous?.revision === revision &&
-    now - previous.startedAt <= PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_WINDOW_MS;
+  const withinFrame = previous?.revision === revision;
+  const frameToken = withinFrame ? previous.frameToken : Symbol(metadata.id);
   const execution = {
-    count: withinWindow ? previous.count + 1 : 1,
+    count: withinFrame ? previous.count + 1 : 1,
+    frameToken,
     isolated: false,
     revision,
-    startedAt: withinWindow ? previous.startedAt : now,
   };
+  if (!withinFrame) {
+    schedulePreviewInspectorRuntimeEffectBurstReset(metadata.id, revision, frameToken);
+  }
   if (execution.count <= PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT) {
     previewInspectorSession.runtimeEffectExecutionWindows.set(metadata.id, execution);
     return false;
@@ -597,8 +630,7 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
     metadata,
     new Error(
       'Effect executed more than ' + String(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT) +
-      ' times within ' + String(PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_WINDOW_MS) +
-      ' ms; further executions were disabled for this preview session',
+      ' times before the next browser frame; further executions were disabled for this preview session',
     ),
     'repeated effect execution',
     previewInspectorSession.runtimeFallbackScopeKey,

@@ -697,11 +697,11 @@ function isPreviewInspectorTargetGuidedConditionRejected(conditionId, reachabili
 }
 
 /**
- * Rolls back the one automatic JSX mutation causally linked to a new fatal render error.
- * Explicit user choices are never touched, and the rejected gate is remembered so the bounded DFS
- * cannot immediately recreate the same failure loop during the current candidate traversal.
+ * Rolls back one automatic JSX mutation after a fatal error or an evidence-free committed render.
+ * Explicit user choices are never touched, and the reason-tagged session rejection prevents the
+ * bounded DFS from recreating that exact failed branch during the current candidate traversal.
  */
-function rollbackPreviewInspectorFailedAutoDecision(traceId) {
+function rollbackPreviewInspectorFailedAutoDecision(traceId, rejectionReason = 'runtime-error') {
   initializePreviewInspectorConditionState();
   if (typeof traceId !== 'string') return false;
   const attempt = previewInspectorSession.renderConditionAutoAttempts.get(traceId);
@@ -722,8 +722,8 @@ function rollbackPreviewInspectorFailedAutoDecision(traceId) {
     return false;
   }
   const record = previewInspectorSession.renderConditions.get(attempt.conditionId);
-  /* Keep overlays visible when their newly exposed child fails; closing them recreates a loop. */
-  if (record?.role === 'overlay') return false;
+  /* Keep overlays visible only for child errors; a no-progress reveal must remain DFS-reversible. */
+  if (record?.role === 'overlay' && rejectionReason === 'runtime-error') return false;
   previewInspectorSession.renderConditionAutoOverrides.delete(attempt.conditionId);
   if (record !== undefined) {
     previewInspectorSession.renderConditions.set(attempt.conditionId, {
@@ -757,7 +757,7 @@ function rollbackPreviewInspectorFailedAutoDecision(traceId) {
       );
       reachability.rejectedConditions ??= [];
       if (rejectedGate !== undefined && reachability.rejectedConditions.length < 64) {
-        reachability.rejectedConditions.push({ ...rejectedGate, reason: 'runtime-error', traceId });
+        reachability.rejectedConditions.push({ ...rejectedGate, reason: rejectionReason, traceId });
       }
       reachability.status = 'recovering-after-rejected-gate';
     }
@@ -768,6 +768,7 @@ function rollbackPreviewInspectorFailedAutoDecision(traceId) {
       category: 'render-attempt',
       detail: {
         conditionId: attempt.conditionId,
+        reason: rejectionReason,
         reachabilityKey: attempt.reachabilityKey,
         traceId,
       },
@@ -777,6 +778,11 @@ function rollbackPreviewInspectorFailedAutoDecision(traceId) {
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();
   return true;
+}
+
+/** Rejects a committed JSX choice that changed neither blockers nor current-target reachability. */
+function rollbackPreviewInspectorNoProgressAutoDecision(traceId) {
+  return rollbackPreviewInspectorFailedAutoDecision(traceId, 'no-target-progress');
 }
 
 /** Clears target-guided branches for one candidate/export search without touching user choices. */

@@ -63,12 +63,23 @@ export interface TestRuntimeFallbackApi {
 export interface RuntimeFallbackFixture {
   readonly api: TestRuntimeFallbackApi;
   readonly consoleEntries: Record<string, unknown>[];
+  /** Runs the next browser-frame or timer-fallback callbacks queued by the generated runtime. */
+  flushEffectFrame(): void;
   readonly warnings: string[];
 }
 
+/** Browser scheduling variant used to exercise both requestAnimationFrame and its timer fallback. */
+export interface RuntimeFallbackFixtureOptions {
+  readonly animationFrameSupported?: boolean;
+}
+
 /** Creates the lexical browser bindings required by the generated fallback runtime. */
-export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackFixture {
+export function createRuntimeFallbackFixture(
+  enabled: boolean,
+  options: RuntimeFallbackFixtureOptions = {},
+): RuntimeFallbackFixture {
   const consoleEntries: Record<string, unknown>[] = [];
+  const effectFrameCallbacks: (() => void)[] = [];
   const warnings: string[] = [];
   const previewInspectorSession = {
     activeTargetReachabilityKey: 'page:Target',
@@ -116,6 +127,13 @@ export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackF
     },
     schedulePreviewInspectorTreeRefresh(): undefined {
       return undefined;
+    },
+    requestAnimationFrame:
+      options.animationFrameSupported === false
+        ? undefined
+        : (callback: () => void): number => effectFrameCallbacks.push(callback),
+    setTimeout(callback: () => void): number {
+      return effectFrameCallbacks.push(callback);
     },
     previewInspectorSession,
     doesSelectedPreviewInspectorPageCandidateOwnRouter(): boolean {
@@ -190,7 +208,15 @@ export function createRuntimeFallbackFixture(enabled: boolean): RuntimeFallbackF
   const api = (sandbox as typeof sandbox & { __runtimeFallbackApi?: TestRuntimeFallbackApi })
     .__runtimeFallbackApi;
   if (api === undefined) throw new Error('Generated fallback runtime did not initialize.');
-  return { api, consoleEntries, warnings };
+  return {
+    api,
+    consoleEntries,
+    flushEffectFrame(): void {
+      const pending = effectFrameCallbacks.splice(0);
+      for (const callback of pending) callback();
+    },
+    warnings,
+  };
 }
 
 /** Returns stable compiler-like metadata for one isolated hook site. */

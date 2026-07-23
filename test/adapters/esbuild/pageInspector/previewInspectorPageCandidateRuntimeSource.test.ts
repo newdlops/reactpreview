@@ -52,10 +52,24 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(result.notifications).toBe(1);
     expect(result.persisted).toBe(1);
     expect(result.scheduled).toBe(1);
+    expect(result.userSelectedId).toBe('staff-path');
     expect(result.labels).toEqual([
       '1. PublicPage › ApplicationShell › AppRouter · application root · /company/1/dashboard',
       '2. StaffPage · partial context',
     ]);
+  });
+
+  /** Promotes an automatic fast choice, but restores a user choice hidden by a bounded fast pass. */
+  it('distinguishes automatic candidate promotion from an explicit user choice', () => {
+    expect(evaluateCandidateEnrichmentSelection()).toEqual({
+      automaticFastId: 'near-target',
+      automaticFullId: 'application-root',
+      explicitFullId: 'near-target',
+      persisted: 1,
+      provisionalId: 'application-root',
+      restoredExplicitId: 'near-target',
+      userSelectedId: 'near-target',
+    });
   });
 
   /** Keeps candidate loading behind generated callbacks and reports a clear loading state. */
@@ -306,6 +320,7 @@ function evaluateCandidateSelection(candidates: readonly CandidateFixture[]): {
   readonly persisted: number;
   readonly scheduled: number;
   readonly selectedId: string;
+  readonly userSelectedId: string;
 } {
   const context: {
     __result?: ReturnType<typeof evaluateCandidateSelection>;
@@ -318,6 +333,7 @@ const descriptor = { inspector: { pageCandidates: globalThis.candidates } };
 const previewInspectorSession = {
   selectedPageCandidateId: '',
   selectedTreeNodeId: 'old-node',
+  userSelectedPageCandidateId: '',
 };
 let notifications = 0;
 let persisted = 0;
@@ -340,11 +356,70 @@ globalThis.__result = {
   persisted,
   scheduled,
   selectedId,
+  userSelectedId: previewInspectorSession.userSelectedPageCandidateId,
 };`,
     context,
   );
   if (context.__result === undefined) {
     throw new Error('Page candidate runtime did not expose its test result.');
+  }
+  return context.__result;
+}
+
+/** Runs a fast-to-full candidate sequence without loading React or application modules. */
+function evaluateCandidateEnrichmentSelection(): {
+  readonly automaticFastId: string;
+  readonly automaticFullId: string;
+  readonly explicitFullId: string;
+  readonly persisted: number;
+  readonly provisionalId: string;
+  readonly restoredExplicitId: string;
+  readonly userSelectedId: string;
+} {
+  const context: { __result?: ReturnType<typeof evaluateCandidateEnrichmentSelection> } = {};
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
+const applicationRoot = { id: 'application-root', root: { exportName: 'App' } };
+const nearTarget = { id: 'near-target', root: { exportName: 'TargetPage' } };
+let candidates = [nearTarget];
+const descriptor = { inspector: { get pageCandidates() { return candidates; } } };
+const previewInspectorSession = {
+  selectedPageCandidateId: '',
+  selectedTreeNodeId: undefined,
+  userSelectedPageCandidateId: '',
+};
+let persisted = 0;
+function findSelectedPreviewInspectorDescriptor() { return descriptor; }
+function notifyPreviewInspector() {}
+function persistPreviewInspectorState() { persisted += 1; }
+function schedulePreviewInspectorCommitRefresh() {}
+function resetPreviewInspectorTargetReachability() {}
+reconcilePreviewInspectorPageCandidateSelection(candidates.map((candidate) => candidate.id));
+const automaticFastId = previewInspectorSession.selectedPageCandidateId;
+candidates = [applicationRoot, nearTarget];
+reconcilePreviewInspectorPageCandidateSelection(candidates.map((candidate) => candidate.id));
+const automaticFullId = previewInspectorSession.selectedPageCandidateId;
+selectPreviewInspectorPageCandidate('near-target');
+const explicitFullId = previewInspectorSession.selectedPageCandidateId;
+candidates = [applicationRoot];
+reconcilePreviewInspectorPageCandidateSelection(candidates.map((candidate) => candidate.id));
+const provisionalId = previewInspectorSession.selectedPageCandidateId;
+candidates = [applicationRoot, nearTarget];
+reconcilePreviewInspectorPageCandidateSelection(candidates.map((candidate) => candidate.id));
+globalThis.__result = {
+  automaticFastId,
+  automaticFullId,
+  explicitFullId,
+  persisted,
+  provisionalId,
+  restoredExplicitId: previewInspectorSession.selectedPageCandidateId,
+  userSelectedId: previewInspectorSession.userSelectedPageCandidateId,
+};`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Page candidate enrichment runtime did not expose its test result.');
   }
   return context.__result;
 }

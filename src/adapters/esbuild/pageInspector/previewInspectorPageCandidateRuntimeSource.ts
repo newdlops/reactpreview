@@ -42,6 +42,17 @@ function readSelectedPreviewInspectorPageCandidate(descriptor) {
     candidates[0];
 }
 
+/** Promotes an automatic fast choice while retaining an exact candidate explicitly chosen by the user. */
+function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
+  const userSelection = previewInspectorSession.userSelectedPageCandidateId;
+  const nextId = typeof userSelection === 'string' && candidateIds.includes(userSelection)
+    ? userSelection
+    : candidateIds[0] ?? '';
+  if (previewInspectorSession.selectedPageCandidateId === nextId) return false;
+  previewInspectorSession.selectedPageCandidateId = nextId;
+  return true;
+}
+
 /** Reports whether the selected authored application root supplies its own Router boundary. */
 function doesSelectedPreviewInspectorPageCandidateOwnRouter() {
   if (typeof findSelectedPreviewInspectorDescriptor !== 'function') return false;
@@ -272,7 +283,12 @@ function selectPreviewInspectorPageCandidate(candidateId) {
   if (!readPreviewInspectorPageCandidates(descriptor).some((candidate) => candidate?.id === candidateId)) {
     return;
   }
-  if (previewInspectorSession.selectedPageCandidateId === candidateId) return;
+  const preferenceChanged = previewInspectorSession.userSelectedPageCandidateId !== candidateId;
+  previewInspectorSession.userSelectedPageCandidateId = candidateId;
+  if (previewInspectorSession.selectedPageCandidateId === candidateId) {
+    if (preferenceChanged) persistPreviewInspectorState();
+    return;
+  }
   resetPreviewInspectorTargetReachability();
   previewInspectorSession.selectedPageCandidateId = candidateId;
   previewInspectorSession.selectedTreeNodeId = undefined;

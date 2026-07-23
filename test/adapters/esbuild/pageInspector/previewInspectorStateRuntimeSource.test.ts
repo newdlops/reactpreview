@@ -9,6 +9,9 @@ describe('Preview Inspector state runtime source', () => {
 
     expect(source).toContain('previewInspectorSession.overridesByExport');
     expect(source).toContain('overrides,');
+    expect(source).toContain(
+      'userSelectedPageCandidateId: previewInspectorSession.userSelectedPageCandidateId',
+    );
     expect(source).not.toContain('resolverPropsByExport');
     expect(source).not.toContain('resolverPropsRevision');
   });

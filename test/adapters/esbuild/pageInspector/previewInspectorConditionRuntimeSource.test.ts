@@ -35,6 +35,7 @@ interface ConditionRuntimeHarness {
   readonly setFallbackValuesEnabled: (enabled: boolean) => void;
   readonly serializeChoiceOverrides: () => Record<string, string>;
   readonly rollbackAutoDecision: (traceId: string) => boolean;
+  readonly rollbackNoProgressAutoDecision: (traceId: string) => boolean;
 }
 
 describe('Preview Inspector condition runtime source', () => {
@@ -406,6 +407,48 @@ describe('Preview Inspector condition runtime source', () => {
     });
   });
 
+  /** Marks an inert committed branch separately so bounded DFS can select another candidate gate. */
+  it('session-rejects a target-guided condition that committed without target progress', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      expression: '<GuardedPage> gate: !permission',
+      kind: 'early-return',
+      ownerName: 'GuardedPage',
+      sourcePath: '/workspace/guarded-page.tsx',
+      targetBranch: 'falsy',
+    };
+    harness.session.activeTargetReachabilityKey = 'candidate:SelectedPanel';
+    harness.session.targetReachabilityByKey = new Map([
+      [
+        'candidate:SelectedPanel',
+        {
+          appliedConditions: [{ expression: metadata.expression, id: 'permission-gate' }],
+          status: 'advancing',
+        },
+      ],
+    ]);
+    harness.resolveCondition('permission-gate', true, metadata);
+    expect(harness.setAutoCondition('permission-gate', false)).toBe(true);
+
+    expect(harness.rollbackNoProgressAutoDecision('condition-trace-1')).toBe(true);
+    expect(harness.resolveCondition('permission-gate', true, metadata)).toBe(true);
+    expect(
+      (harness.session.targetReachabilityByKey as Map<string, Record<string, unknown>>).get(
+        'candidate:SelectedPanel',
+      ),
+    ).toMatchObject({
+      appliedConditions: [],
+      rejectedConditions: [
+        {
+          id: 'permission-gate',
+          reason: 'no-target-progress',
+          traceId: 'condition-trace-1',
+        },
+      ],
+      status: 'recovering-after-rejected-gate',
+    });
+  });
+
   /** Keeps a revealed modal mounted when its child exposes a new data/runtime failure. */
   it('does not roll back an overlay visibility decision after a descendant error', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn());
@@ -559,6 +602,7 @@ function createConditionRuntimeHarness(
         resolveCondition: resolvePreviewInspectorRenderCondition,
         resolveConditionLazy: resolvePreviewInspectorRenderConditionLazy,
         rollbackAutoDecision: rollbackPreviewInspectorFailedAutoDecision,
+        rollbackNoProgressAutoDecision: rollbackPreviewInspectorNoProgressAutoDecision,
         session: previewInspectorSession,
         setAutoCondition: setPreviewInspectorTargetGuidedConditionOverride,
         setChoice: setPreviewInspectorRenderChoiceOverride,

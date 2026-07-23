@@ -164,6 +164,114 @@ describe('Preview Inspector target attempt runtime source', () => {
     },
   );
 
+  /** Rolls back an inert committed JSX gate before resuming the same corridor's DFS. */
+  it('rejects a settled target-guided gate with no blocker or target progress', () => {
+    const context: { __result?: Record<string, unknown> } = {};
+    vm.runInNewContext(
+      `
+        let notifications = 0;
+        let rollbackCalls = 0;
+        let treeRefreshes = 0;
+        const state = {
+          key: 'candidate:Target',
+          probeRevision: 2,
+          status: 'settling-condition-attempt',
+          targetHasOutput: false,
+          targetMounted: false,
+          targetWasMounted: false,
+        };
+        const attempt = {
+          autoMode: 'target-guided-auto',
+          blocker: { id: 'dead-gate' },
+          settledAt: 100,
+          traceId: 'trace-dead-gate',
+        };
+        const previewInspectorSession = {
+          blockerTraceActiveAttempt: attempt,
+          renderConditionAutoAttempts: new Map([[
+            attempt.traceId,
+            { conditionId: 'dead-gate', reachabilityKey: state.key },
+          ]]),
+          renderConditions: new Map(),
+          targetReachabilityByKey: new Map([[state.key, state]]),
+        };
+        const rollbackPreviewInspectorNoProgressAutoDecision = (traceId) => {
+          rollbackCalls += traceId === attempt.traceId ? 1 : 100;
+          return true;
+        };
+        const notifyPreviewInspector = () => { notifications += 1; };
+        const schedulePreviewInspectorTreeRefresh = () => { treeRefreshes += 1; };
+        ${createPreviewInspectorTargetAttemptRuntimeSource()}
+        const resumed = resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt);
+        globalThis.__result = {
+          handled: attempt.targetReachabilityResumeHandled,
+          notifications,
+          probeRevision: state.probeRevision,
+          resumed,
+          rollbackCalls,
+          status: state.status,
+          treeRefreshes,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      handled: true,
+      notifications: 1,
+      probeRevision: 3,
+      resumed: true,
+      rollbackCalls: 1,
+      status: 'probing',
+      treeRefreshes: 1,
+    });
+  });
+
+  /**
+   * Retains multi-step JSX gates whenever the commit exposes blockers or reaches the target.
+   * Each signal is independently sufficient because later DFS passes may need the new evidence.
+   */
+  it.each([
+    ['changed blocker', "attempt.changedBlockerIds = new Set(['changed'])", ''],
+    ['discovered blocker', "attempt.discoveredBlockerIds = new Set(['discovered'])", ''],
+    ['resolved blocker', "attempt.resolvedBlockerIds = new Set(['resolved'])", ''],
+    ['target mount', '', 'state.targetMounted = true'],
+    ['historical target mount', '', 'state.targetWasMounted = true'],
+    ['target output', '', 'state.targetHasOutput = true'],
+  ])('preserves a settled branch with %s evidence', (_label, attemptSetup, stateSetup) => {
+    const context: { __result?: Record<string, unknown> } = {};
+    vm.runInNewContext(
+      `
+        let rollbackCalls = 0;
+        const attempt = {
+          autoMode: 'target-guided-auto',
+          settledAt: 100,
+          traceId: 'trace-progress',
+        };
+        const state = {
+          targetHasOutput: false,
+          targetMounted: false,
+          targetWasMounted: false,
+        };
+        ${attemptSetup};
+        ${stateSetup};
+        const previewInspectorSession = {};
+        const rollbackPreviewInspectorNoProgressAutoDecision = () => {
+          rollbackCalls += 1;
+          return true;
+        };
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        ${createPreviewInspectorTargetAttemptRuntimeSource()}
+        const rolledBack = rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state);
+        globalThis.__result = { rollbackCalls, rolledBack };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({ rollbackCalls: 0, rolledBack: false });
+  });
+
   /** Prevents an older condition grace timer from resuming after a newer Auto attempt takes over. */
   it('retires a superseded delayed resume without advancing the new corridor attempt', () => {
     const context: { __result?: Record<string, unknown> } = {};

@@ -10,7 +10,6 @@
  */
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
 import { createPreviewInspectorRequirementConvergenceRuntimeSource } from './previewInspectorRequirementConvergenceRuntimeSource';
-
 /**
  * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
  *
@@ -32,7 +31,6 @@ const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
 ${requirementFrontierRuntimeSource}
 ${requirementConvergenceRuntimeSource}
-
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
   if (!(previewInspectorSession.targetReachabilityByKey instanceof Map)) {
@@ -42,7 +40,6 @@ function initializePreviewInspectorTargetReachabilityState() {
     previewInspectorSession.minimumRequirementSearchByKey = new Map();
   }
 }
-
 /** Returns current-file exports that can be asserted through the generated target facade. */
 function readPreviewInspectorReachableTargetExports(descriptor) {
   const inspector = descriptor?.inspector;
@@ -149,14 +146,31 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   const pathScores = new Map();
   (state.applicationPath ?? []).forEach((name, index) => nameScores.set(name, index + 1));
   nameScores.set(state.targetExportName, 1_000);
-  for (const runtimeOwnerName of state.runtimeOwnerNames ?? []) {
-    nameScores.set(runtimeOwnerName, 900);
+  /* Runtime-only Fiber leaves locate wrapper conditions but cannot prove which branch reaches JSX. */
+  /* Module-page HOCs/hooks remain exact authored corridor evidence despite having no DOM node. */
+  const contextSourcePath = normalizePreviewInspectorReachabilityPath(
+    descriptor?.inspector?.contextModule?.sourcePath,
+  );
+  for (const rawContextPath of descriptor?.inspector?.contextModule?.importPath ?? []) {
+    const contextPath = normalizePreviewInspectorReachabilityPath(rawContextPath);
+    paths.add(contextPath);
+    if (contextPath.length > 0) {
+      pathScores.set(contextPath, Math.max(pathScores.get(contextPath) ?? 0,
+        contextPath === contextSourcePath ? 800 : 100));
+    }
   }
   for (const [index, step] of (renderPath?.steps ?? []).entries()) {
     const stepPath = normalizePreviewInspectorReachabilityPath(step?.sourcePath);
     paths.add(stepPath);
     if (stepPath.length > 0) {
       pathScores.set(stepPath, Math.max(pathScores.get(stepPath) ?? 0, 100, 800 - index));
+    }
+    for (const rawEvidencePath of step?.evidenceSourcePaths ?? []) {
+      const evidencePath = normalizePreviewInspectorReachabilityPath(rawEvidencePath);
+      paths.add(evidencePath);
+      if (evidencePath.length > 0) {
+        pathScores.set(evidencePath, Math.max(pathScores.get(evidencePath) ?? 0, 100, 800 - index));
+      }
     }
     if (typeof step?.label === 'string') {
       names.add(step.label);
@@ -266,7 +280,6 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
   if (condition?.fallbackBranch === 'falsy') return true;
   return undefined;
 }
-
 /**
  * Chooses only the first newly revealed continuation gate so each pass behaves like bounded DFS.
  * Exact facade IDs, owners, and source paths can be restricted ahead of data convergence; ordinary
@@ -350,7 +363,6 @@ function rememberPreviewInspectorTargetRuntimeOwnerNames(exportName, candidateNa
   }
   return changed;
 }
-
 /** Adds the exported facade's public runtime name before its selected boundary commits. */
 function rememberPreviewInspectorTargetRuntimeOwner(exportName, Component) {
   return rememberPreviewInspectorTargetRuntimeOwnerNames(
@@ -358,7 +370,6 @@ function rememberPreviewInspectorTargetRuntimeOwner(exportName, Component) {
     [Component?.displayName, Component?.name],
   );
 }
-
 /**
  * Reads only the single-child component chain inside the exact selected-target boundary.
  *
@@ -414,7 +425,6 @@ function rememberPreviewInspectorTargetMountedOwnerChain(exportName, boundary) {
   }
   return names;
 }
-
 /**
  * Latches a selected target commit before a redirect or navigation effect can remove its boundary.
  * A guard commonly renders Navigate, commits, and changes the MemoryRouter location well before the
@@ -429,7 +439,6 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
   if (state === undefined || state.targetExportName !== exportName) return;
   state.targetWasMounted = true;
 }
-
 /**
  * Requires the selected boundary to own connected host output and to remain error-free.
  * A HOC can mount the facade boundary and immediately return Navigate/null before invoking the
@@ -449,14 +458,12 @@ function hasPreviewInspectorTargetHostOutput(state) {
   }
   return false;
 }
-
 /** Stops automatic branch traversal while the selected target owns a contained render failure. */
 function hasPreviewInspectorTargetRenderError(state) {
   const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
   return boundaries instanceof Set &&
     [...boundaries].some((boundary) => boundary?.state?.error !== undefined);
 }
-
 /** Reports success only when the authored root and a visible selected target share one live render. */
 function hasReachedPreviewInspectorPageCorridor(state) {
   return state.directTarget !== true &&
@@ -464,7 +471,6 @@ function hasReachedPreviewInspectorPageCorridor(state) {
     state.targetMounted === true &&
     state.targetHasOutput === true;
 }
-
 /**
  * Finds only compiler-shaped values whose continuation has one generated answer. Root-only custom
  * hooks and non-GraphQL endpoints stay interactive because their payload structure is ambiguous.
@@ -494,7 +500,6 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
     .slice(0, 24);
   return { hookIds, requestIds };
 }
-
 /** Applies one newly observed hook/API batch and remounts only when that batch changed values. */
 function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state) {
   const search = readPreviewInspectorMinimumRequirementSearch(state);
@@ -594,7 +599,6 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
   schedulePreviewInspectorCommitRefresh();
   return true;
 }
-
 /**
  * Starts minimum-shape convergence without a prompt when every admitted input is compiler-proven.
  * The pass is still bounded and records its origin so user JSON remains immutable in the background.
@@ -642,7 +646,6 @@ function startPreviewInspectorDeterministicRequirementSearch(descriptor, candida
   settlePreviewInspectorMinimumRequirementSearch(state);
   return false;
 }
-
 /** Emits one warning when bounded static traversal cannot prove another page-local continuation. */
 function reportPreviewInspectorPageCorridorBlocked(state) {
   if (state.blockedWarningReported === true) return;
@@ -667,7 +670,6 @@ function reportPreviewInspectorPageCorridorBlocked(state) {
   });
   readPreviewInspectorConsolePrimitives().warn('[React Preview] ' + details);
 }
-
 /** Emits one visible warning when the user explicitly leaves authored page context. */
 function reportPreviewInspectorTargetReachabilityFallback(state) {
   if (state.warningReported === true) return;
@@ -691,7 +693,6 @@ function reportPreviewInspectorTargetReachabilityFallback(state) {
   });
   readPreviewInspectorConsolePrimitives().warn('[React Preview] ' + details);
 }
-
 /** Switches to target-only diagnostic mode only after an explicit user action. */
 function activatePreviewInspectorDirectTarget(state) {
   if (state.directTargetAvailable !== true) {
@@ -711,7 +712,6 @@ function activatePreviewInspectorDirectTarget(state) {
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
 }
-
 /** Evaluates one settled commit and advances at most one path gate. */
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
@@ -812,7 +812,6 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   }
   notifyPreviewInspector();
 }
-
 /**
  * Marks the candidate subtree as one traversal pass and checks target presence after its commit.
  * Leaving the active key set for this mounted subtree lets downstream conditions and hook/data
@@ -845,7 +844,6 @@ function PreviewInspectorTargetReachabilityProbe({
   }, [state, descriptor, candidate, probeRevision, directTarget, directTargetAvailable]);
   return children;
 }
-
 /** Collects paths exposed by the hook and request registries reached during progressive traversal. */
 function readPreviewInspectorTargetReachabilityRequiredPaths(state) {
   const paths = [];

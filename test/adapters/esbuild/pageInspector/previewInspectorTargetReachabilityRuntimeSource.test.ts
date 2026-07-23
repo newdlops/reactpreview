@@ -26,6 +26,7 @@ interface ReachabilityResult {
   readonly overlayPathLocal: boolean;
   readonly overlayTargetValue: boolean;
   readonly returnedTargetValue: boolean;
+  readonly runtimeRedirectTargetValue: boolean;
   readonly runtimeOwnerNameOnlyPathLocal: boolean;
   readonly sharedModalExactSourcePathLocal: boolean;
   readonly sharedModalNameOnlyPathLocal: boolean;
@@ -145,6 +146,10 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorDataShapePaths = () => [];
         ${createTargetReachabilityFixtureSource()}
         const descriptor = { inspector: {
+          contextModule: {
+            importPath: ['/workspace/Application.tsx', '/workspace/with-staff-page.tsx'],
+            sourcePath: '/workspace/with-staff-page.tsx',
+          },
           renderChainsByExport: { DashboardPanel: { paths: [] } },
           target: { exportName: 'DashboardPanel' },
         } };
@@ -197,7 +202,7 @@ describe('Preview Inspector target reachability runtime source', () => {
           id: 'hoc-guard',
           kind: 'early-return',
           ownerName: 'GuardedPage',
-          reachabilityDiscoveryOrder: 0,
+          reachabilityDiscoveryOrder: 2,
           reachabilityKey: state.key,
           sourcePath: '/workspace/with-staff-page.tsx',
           targetBranch: 'falsy',
@@ -214,7 +219,10 @@ describe('Preview Inspector target reachability runtime source', () => {
           ['DashboardPanel', new Set(['hoc-guard'])],
         ]);
         rememberPreviewInspectorTargetRuntimeOwner('DashboardPanel', { name: 'GuardedPage' });
-        rememberPreviewInspectorTargetRuntimeOwnerNames('DashboardPanel', ['Modal', 'PageComponent']);
+        rememberPreviewInspectorTargetRuntimeOwnerNames(
+          'DashboardPanel',
+          ['Modal', 'PageComponent', 'Navigate'],
+        );
         state.targetMounted = true;
         const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
         previewInspectorSession.renderConditions.set('unrelated-page-component', {
@@ -253,6 +261,11 @@ describe('Preview Inspector target reachability runtime source', () => {
             targetBranch: 'falsy',
             truthyLabel: '<DashboardPanel>',
           }, evidence),
+          runtimeRedirectTargetValue: readPreviewInspectorTargetConditionValue({
+            falsyLabel: 'continue <GuardedPage>',
+            targetBranch: 'falsy',
+            truthyLabel: '<Navigate>',
+          }, evidence),
           runtimeOwnerNameOnlyPathLocal: isPreviewInspectorConditionOnTargetPath({
             id: 'another-page-component-condition',
             ownerName: 'PageComponent',
@@ -288,12 +301,13 @@ describe('Preview Inspector target reachability runtime source', () => {
       blockerPath: ['Application', 'Modal', 'DashboardPanel'],
       desiredValue: false,
       expression: '<Application> gate: !session',
-      fallbackBeforeTargetMount: 'none',
+      fallbackBeforeTargetMount: '<GuardedPage> gate: !isStaffMode',
       fallbackExpression: '<GuardedPage> gate: !isStaffMode',
       key: 'application-path:DashboardPanel',
       overlayPathLocal: true,
       overlayTargetValue: true,
       returnedTargetValue: true,
+      runtimeRedirectTargetValue: false,
       runtimeOwnerNameOnlyPathLocal: false,
       sharedModalExactSourcePathLocal: true,
       sharedModalNameOnlyPathLocal: false,
@@ -754,7 +768,7 @@ describe('Preview Inspector target reachability runtime source', () => {
           edges: [],
           id: 'page',
           renderPath: { id: 'path', steps: [
-            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
+            { evidenceSourcePaths: ['/with-page-guard.tsx'], label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
             { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
           ] },
           root: { exportName: 'Page' },
@@ -782,9 +796,6 @@ describe('Preview Inspector target reachability runtime source', () => {
           targetBranch: 'falsy',
         });
         previewInspectorSession.activeTargetReachabilityKey = state.key;
-        previewInspectorSession.directTargetConditionIdsByExport = new Map([
-          ['Target', new Set(['guard'])],
-        ]);
         rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         globalThis.__result = {

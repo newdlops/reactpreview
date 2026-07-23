@@ -66,7 +66,16 @@ interface MutableLocalChoiceAggregate {
   unsafeExpanded: boolean;
 }
 
-const ROUTE_RENDER_KEYS = new Set(['component', 'element', 'lazy']);
+const ROUTE_RENDER_KEYS = new Set([
+  'component',
+  'element',
+  'errorboundary',
+  'errorelement',
+  'hydratefallback',
+  'hydratefallbackelement',
+  'lazy',
+  'pendingelement',
+]);
 
 /**
  * Collects projectable static leaf-route imports without resolving or evaluating any module.
@@ -221,7 +230,13 @@ function collectLocalChoiceAggregates(
       if (
         !ts.isIdentifier(declaration.name) ||
         declaration.initializer === undefined ||
-        !ts.isObjectLiteralExpression(declaration.initializer)
+        !ts.isObjectLiteralExpression(declaration.initializer) ||
+        /*
+         * A top-level `const route = { path, element, errorElement }` is already a complete leaf
+         * route, not a page-choice aggregate waiting for a later spread/use site. Let the ordinary
+         * route visitor inspect it immediately so every alternative render surface is bounded.
+         */
+        isLeafRouteObject(declaration.initializer)
       ) {
         continue;
       }

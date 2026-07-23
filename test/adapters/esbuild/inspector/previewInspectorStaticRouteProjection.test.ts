@@ -97,6 +97,30 @@ describe('static Page Inspector route projections', () => {
     ]);
   });
 
+  /** Treats route-local failure UI as an alternative leaf, not required application chrome. */
+  it('projects error and hydration fallback elements attached to an omitted leaf route', () => {
+    const inventory = collectPreviewStaticRouteProjectionInventory(
+      '/workspace/src/routes.tsx',
+      [
+        `import Page from './Page';`,
+        `import ErrorPage from './ErrorPage';`,
+        `import { LoadingPage } from './LoadingPage';`,
+        `export const route = {`,
+        `  path: '/page',`,
+        `  element: <Page />,`,
+        `  errorElement: <ErrorPage />,`,
+        `  hydrateFallbackElement: <LoadingPage />,`,
+        `};`,
+      ].join('\n'),
+    );
+
+    expect([...inventory.projectionsBySpecifier.keys()]).toEqual([
+      './Page',
+      './ErrorPage',
+      './LoadingPage',
+    ]);
+  });
+
   it('recognizes page maps and neutral submodules while keeping shell callbacks authentic', () => {
     const sourcePath = '/workspace/src/application.tsx';
     const inventory = collectPreviewStaticRouteProjectionInventory(

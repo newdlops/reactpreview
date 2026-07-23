@@ -89,6 +89,7 @@ export async function collectPreviewInspectorOneHopContext(
     const evidence = collectPreviewInspectorShallowVisualEvidence({
       admitVisualPath: (visualPath) =>
         !routeProjectionSpecifiers.has(visualPath.moduleSpecifier) &&
+        visualPath.relation !== 'route-alternative' &&
         !isDeferredLazyComponentChoice(visualPath) &&
         isAdmittedProjectSourcePath(
           path.normalize(visualPath.sourcePath),
@@ -113,6 +114,7 @@ export async function collectPreviewInspectorOneHopContext(
       if (
         corridorPaths.has(candidatePath) ||
         routeProjectionSpecifiers.has(visualPath.moduleSpecifier) ||
+        visualPath.relation === 'route-alternative' ||
         !isAdmittedProjectSourcePath(candidatePath, workspaceRoot, options.selectedAuxiliaryRoot)
       ) {
         continue;

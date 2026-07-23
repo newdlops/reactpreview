@@ -2,6 +2,25 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1028 - 2026-07-17
+
+- 접힌 Inspector의 Shadow DOM portal host를 viewport 전체에 고정하고 pointer input을 shell로 한정하며, 접힌
+  shell의 left/width를 숫자로 다시 계산해 이전 drawer/floating 좌표가 우측 화면 밖으로 밀어내지 못하게 수정
+- Page Inspector 첫 화면에서 독립 export fast pass를 제거하고 처음부터 실제 ancestor page root, sibling,
+  styles와 application render-chain을 포함한 full context만 커밋
+- Inspector 상단에 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE` 상태와 `App › Page › Target` 경로를 표시해
+  선택 파일이 현재 작성된 page 안에서 어떤 의미를 갖는지 명시
+- 기본 React Preview 명령과 새 패널이 필요한 Refresh를 Page Inspector로 전환하고, 기존 독립 export 렌더링은
+  `Open Current File Export Gallery` 보조 명령으로 유지
+
+## 0.1.1027 - 2026-07-17
+
+- React Page Inspector를 크기 조절식 하단·좌측·우측 drawer와 이동/크기 조절 가능한 floating 패널로 확장
+- pointer drag와 키보드 방향키를 모두 지원하고, 복원된 크기·좌표를 현재 webview viewport 안으로 제한
+- Inspector 배치·크기·위치·접힘 상태를 탭별 hot session과 VS Code webview state에 저장해 hot reload 및
+  전체 webview 복원 뒤에도 유지
+- layout/CSS 책임을 별도 runtime source로 분리해 Inspector component tree 및 host navigation 경계와 격리
+
 ## 0.1.1026 - 2026-07-17
 
 - cold fast pass에서 자동 Storybook setup과 convention watcher 수집을 실제 mount 뒤로 미루고 dynamic import를

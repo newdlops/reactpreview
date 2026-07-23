@@ -2,6 +2,28 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1143 - 2026-07-23
+
+- 최단 App-to-target 경로의 각 JSX 반환 단계에서 같은 렌더 결과에 놓인 header, sidebar,
+  wrapper와 component prop을 직접 시각 문맥으로 수집
+- 경로를 운반하는 Provider/HOC와 현재 파일의 자식은 원래 렌더링을 유지하고, 생략된 형제 루트의 다음
+  프로젝트 컴포넌트 경계만 구조 placeholder로 제한해 실제 1-depth 페이지 뼈대를 빠르게 구성
+- 정적 import, `React.lazy`, named lazy projection, `memo`, styled/HOC와 component/render/as prop을
+  동일한 얕은 문맥 증거로 처리하며 비활성 route와 다른 export/조건 결과는 제외
+- 단계별 round-robin 예약과 잘림 신호를 추가하고 실제 bundle에서 shell/target은 포함하되 deep child,
+  unused component와 49개 비활성 route가 제외되는 회귀 테스트를 추가
+
+## 0.1.1142 - 2026-07-23
+
+- fast Page Inspector가 bounded entry-to-target corridor와 정적 route projection으로 App, Router,
+  layout, header, sidebar를 보존하면서 실제 대형 모노레포 페이지를 약 5.9초에 번들링
+- 선택 경로의 `<Navigate>`/`<Redirect>` 조기 반환만 첫 렌더에서 동기적으로 통과해 Router가 대상
+  페이지를 떠나기 전에 현재 파일을 authored page 본문 안에 마운트
+- 잘린 corridor나 불완전한 runtime-global 증거는 빠른 앱 셸을 먼저 유지한 채 `partial`로 전달해
+  백그라운드 전체 문맥 보강을 생략하지 않도록 수정
+- 실제 `rtcc-poc-page`에서 헤더·사이드바·투자계약서 업로드 본문과 작성된 스타일을 함께 렌더링하고
+  3,203개 의존성, 0개 진단·브라우저 예외로 검증
+
 ## 0.1.1141 - 2026-07-23
 
 - JSX를 직접 export하지 않는 HOC/factory 파일의 실제 소비 페이지를 선택할 때 폐기되는 callable 구간의
@@ -973,24 +995,5 @@ selected export mount`로 강화하고, context strip에 `PAGE PENDING`/`PAGE DF
   탭별 webview state에 저장해 hot reload 뒤에도 유지
 - condition AST transform, condition registry/UI, Inspector persistence와 source replacement 적용을 각각 독립
   모듈로 분리해 모든 유지보수 파일의 1000줄 제한을 계속 준수
-
-## 0.1.1028 - 2026-07-17
-
-- 접힌 Inspector의 Shadow DOM portal host를 viewport 전체에 고정하고 pointer input을 shell로 한정하며, 접힌
-  shell의 left/width를 숫자로 다시 계산해 이전 drawer/floating 좌표가 우측 화면 밖으로 밀어내지 못하게 수정
-- Page Inspector 첫 화면에서 독립 export fast pass를 제거하고 처음부터 실제 ancestor page root, sibling,
-  styles와 application render-chain을 포함한 full context만 커밋
-- Inspector 상단에 `PAGE COMPONENT`/`PAGE ROOT`/`STANDALONE` 상태와 `App › Page › Target` 경로를 표시해
-  선택 파일이 현재 작성된 page 안에서 어떤 의미를 갖는지 명시
-- 기본 React Preview 명령과 새 패널이 필요한 Refresh를 Page Inspector로 전환하고, 기존 독립 export 렌더링은
-  `Open Current File Export Gallery` 보조 명령으로 유지
-
-## 0.1.1027 - 2026-07-17
-
-- React Page Inspector를 크기 조절식 하단·좌측·우측 drawer와 이동/크기 조절 가능한 floating 패널로 확장
-- pointer drag와 키보드 방향키를 모두 지원하고, 복원된 크기·좌표를 현재 webview viewport 안으로 제한
-- Inspector 배치·크기·위치·접힘 상태를 탭별 hot session과 VS Code webview state에 저장해 hot reload 및
-  전체 webview 복원 뒤에도 유지
-- layout/CSS 책임을 별도 runtime source로 분리해 Inspector component tree 및 host navigation 경계와 격리
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

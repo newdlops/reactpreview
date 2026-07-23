@@ -37,6 +37,53 @@ describe('createPreviewLargePackageBarrelPlugin', () => {
     }
   });
 
+  /** Supports legacy side-effect-free barrels only inside an explicitly selected fast corridor. */
+  it('projects exact physical leaves without a public subpath only for selected importers', async () => {
+    const fixture = await createLargeBarrelFixture({
+      directoryLeaves: true,
+      publicSubpaths: false,
+    });
+    let guardedRootResolutions = 0;
+    const resolutionProbe: Plugin = {
+      name: 'physical-large-barrel-resolution-probe',
+      setup(esbuild): void {
+        esbuild.onResolve({ filter: /^large-icon-library$/ }, (arguments_) => {
+          if ((arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD) {
+            guardedRootResolutions += 1;
+          }
+          return undefined;
+        });
+      },
+    };
+    try {
+      await writeFile(
+        fixture.entryPath,
+        [
+          `import { Icon255 } from '${PACKAGE_NAME}';`,
+          `import type { Icon001 } from '${PACKAGE_NAME}';`,
+          'globalThis.previewResult = Icon255;',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const result = await buildFixture(fixture, fixture.entryPath, {
+        allowPhysicalLeafProjection: true,
+        minimumBarrelExports: 64,
+        packageDemandSourcePaths: new Set([fixture.entryPath]),
+        pluginsBefore: [resolutionProbe],
+        selectedImporterPaths: new Set([fixture.entryPath]),
+      });
+
+      expect(executePreview(result)).toBe('icon-255');
+      expect(guardedRootResolutions).toBe(0);
+      expect(hasInput(result, 'dist/Icon255/index.js')).toBe(true);
+      expect(hasInput(result, 'dist/Icon127/index.js')).toBe(false);
+      expect(hasInput(result, 'dist/index.js')).toBe(false);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   /** Keeps syntax whose namespace semantics cannot be represented by a named deep projection. */
   it('falls back to the authored root for default, namespace, and re-export consumers', async () => {
     const fixture = await createLargeBarrelFixture();
@@ -211,6 +258,8 @@ interface OrdinaryPackageFixture extends LargeBarrelFixture {
 /** Optional package evidence variations used to exercise the optimizer's fail-closed boundaries. */
 interface LargeBarrelFixtureOptions {
   readonly ambiguousSubpath?: boolean;
+  readonly directoryLeaves?: boolean;
+  readonly publicSubpaths?: boolean;
   readonly sideEffects?: boolean;
 }
 
@@ -226,10 +275,8 @@ async function createLargeBarrelFixture(
     mkdir(distributionRoot, { recursive: true }),
     mkdir(path.dirname(entryPath), { recursive: true }),
   ]);
-  const exportMap: Record<string, unknown> = {
-    '.': './dist/index.js',
-    './*': './dist/*.js',
-  };
+  const exportMap: Record<string, unknown> = { '.': './dist/index.js' };
+  if (options.publicSubpaths !== false) exportMap['./*'] = './dist/*.js';
   if (options.ambiguousSubpath === true) exportMap['./alias/*'] = './dist/*.js';
   await writeFile(
     path.join(packageRoot, 'package.json'),
@@ -247,8 +294,11 @@ async function createLargeBarrelFixture(
   );
   await Promise.all(
     names.map(async (name, index) => {
+      const leafDirectory =
+        options.directoryLeaves === true ? path.join(distributionRoot, name) : distributionRoot;
+      await mkdir(leafDirectory, { recursive: true });
       await writeFile(
-        path.join(distributionRoot, `${name}.js`),
+        path.join(leafDirectory, options.directoryLeaves === true ? 'index.js' : `${name}.js`),
         `export default ${JSON.stringify(`icon-${index.toString().padStart(3, '0')}`)};\n`,
         'utf8',
       );
@@ -257,7 +307,10 @@ async function createLargeBarrelFixture(
   await writeFile(
     path.join(distributionRoot, 'index.js'),
     [
-      ...names.map((name) => `export { default as ${name} } from './${name}.js';`),
+      ...names.map(
+        (name) =>
+          `export { default as ${name} } from './${name}${options.directoryLeaves === true ? '' : '.js'}';`,
+      ),
       "export default 'root-default';",
     ].join('\n'),
     'utf8',
@@ -376,10 +429,18 @@ async function createNestedDependencyFixture(): Promise<OrdinaryPackageFixture> 
 
 /** Optional instrumentation injected before the optimizer in dedicated resolver-cost tests. */
 interface BuildFixtureOptions {
+  /** Enables selected-corridor physical projection for legacy side-effect-free barrels. */
+  readonly allowPhysicalLeafProjection?: boolean;
+  /** Optional lower projection floor used by the selected fast corridor. */
+  readonly minimumBarrelExports?: number;
+  /** Optional selected source roots that admit package spellings for this build. */
+  readonly packageDemandSourcePaths?: ReadonlySet<string>;
   /** Plugins that observe nested `build.resolve()` calls without claiming their requests. */
   readonly pluginsBefore?: readonly Plugin[];
   /** Optional current editor snapshot reader forwarded to the optimizer. */
   readonly readSource?: (sourcePath: string) => string | undefined;
+  /** Exact authored importers eligible for selected-corridor projection. */
+  readonly selectedImporterPaths?: ReadonlySet<string>;
 }
 
 /** Bundles entirely in memory while retaining the dependency graph for projection assertions. */
@@ -400,7 +461,33 @@ async function buildFixture(
     plugins: [
       ...(options.pluginsBefore ?? []),
       createPreviewLargePackageBarrelPlugin({
+        ...(options.allowPhysicalLeafProjection === undefined
+          ? {}
+          : { allowPhysicalLeafProjection: options.allowPhysicalLeafProjection }),
+        ...(options.minimumBarrelExports === undefined
+          ? {}
+          : { minimumBarrelExports: options.minimumBarrelExports }),
+        ...(options.packageDemandSourcePaths === undefined
+          ? {}
+          : { packageDemandSourcePaths: options.packageDemandSourcePaths }),
         ...(options.readSource === undefined ? {} : { readSource: options.readSource }),
+        ...(options.allowPhysicalLeafProjection === true
+          ? {
+              resolvePackageRoot: (packageName: string) =>
+                packageName === PACKAGE_NAME
+                  ? path.join(
+                      fixture.workspaceRoot,
+                      'node_modules',
+                      PACKAGE_NAME,
+                      'dist',
+                      'index.js',
+                    )
+                  : undefined,
+            }
+          : {}),
+        ...(options.selectedImporterPaths === undefined
+          ? {}
+          : { selectedImporterPaths: options.selectedImporterPaths }),
         workspaceRoot: fixture.workspaceRoot,
       }),
     ],

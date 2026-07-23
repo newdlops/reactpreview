@@ -22,8 +22,33 @@ const MINIMUM_LARGE_BARREL_EXPORTS = 256;
 
 /** Reads unsaved importers before using the filesystem copy. */
 export interface PreviewLargePackageBarrelPluginOptions {
+  /**
+   * Allows a side-effect-free package's exact barrel leaf when no public subpath maps to it.
+   *
+   * This is reserved for a statically selected preview corridor whose package code is local and
+   * immutable for the build; the default optimizer continues to require public export proof.
+   */
+  readonly allowPhysicalLeafProjection?: boolean;
+  /** Optional lower bound used by a selected-corridor fast build instead of the global default. */
+  readonly minimumBarrelExports?: number;
+  /**
+   * Optional selected source roots whose direct bare imports admit package names for this build.
+   *
+   * Once admitted, the package can be projected for any reached authored importer so one legacy
+   * barrel cannot re-enter through a transitive page-shell helper.
+   */
+  readonly packageDemandSourcePaths?: ReadonlySet<string>;
   /** Returns the current editor snapshot for a project source when one exists. */
   readonly readSource?: (sourcePath: string) => string | undefined;
+  /**
+   * Resolves a package root without re-entering esbuild from an onResolve callback.
+   *
+   * Selected fast corridors must provide this synchronous project resolver. If it cannot prove a
+   * runtime/source entry, optimization fails open and esbuild handles the authored root import.
+   */
+  readonly resolvePackageRoot?: (packageName: string, importerPath: string) => string | undefined;
+  /** Optional exact authored importers; other workspace files retain ordinary package resolution. */
+  readonly selectedImporterPaths?: ReadonlySet<string>;
   /** Trusted workspace used only to restore Yarn virtual importer identities. */
   readonly workspaceRoot: string;
 }
@@ -108,10 +133,23 @@ export function createPreviewLargePackageBarrelPlugin(
   options: PreviewLargePackageBarrelPluginOptions,
 ): Plugin {
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const minimumBarrelExports = Math.max(
+    1,
+    Math.floor(options.minimumBarrelExports ?? MINIMUM_LARGE_BARREL_EXPORTS),
+  );
+  const selectedImporterPaths =
+    options.selectedImporterPaths === undefined
+      ? undefined
+      : new Set([...options.selectedImporterPaths].map(sourceIdentity));
+  const packageDemandSourcePaths =
+    options.packageDemandSourcePaths === undefined
+      ? undefined
+      : new Set([...options.packageDemandSourcePaths].map(sourceIdentity));
   let demandInventoryByImporter = new Map<string, Promise<NamedImportDemandInventory>>();
   let resolutionByImport = new Map<string, Promise<OnResolveResult | undefined>>();
   let evidenceByEntry = new Map<string, Promise<LargePackageBarrelEvidence | undefined>>();
   let resolvedMappingByIdentity = new Map<string, Promise<ResolvedBarrelProjection | undefined>>();
+  let selectedPackageSpecifiersPromise: Promise<ReadonlySet<string>> | undefined;
 
   return {
     name: 'react-preview-large-package-barrel',
@@ -125,6 +163,7 @@ export function createPreviewLargePackageBarrelPlugin(
           string,
           Promise<ResolvedBarrelProjection | undefined>
         >();
+        selectedPackageSpecifiersPromise = undefined;
       });
 
       /** Replaces one safe named root import with an importer-scoped deep-subpath projection. */
@@ -132,13 +171,21 @@ export function createPreviewLargePackageBarrelPlugin(
         arguments_: OnResolveArgs,
       ): Promise<OnResolveResult | undefined> {
         if (!isEligibleRootImport(arguments_)) return undefined;
+        if (
+          packageDemandSourcePaths !== undefined &&
+          !(await readSelectedPackageSpecifiers()).has(arguments_.path)
+        ) {
+          return undefined;
+        }
         if (!mayRepresentAuthoredWorkspaceImporter(arguments_.importer, workspaceRoot)) {
           return undefined;
         }
         const importerPath = resolvePreviewYarnVirtualPath(arguments_.importer, workspaceRoot);
         if (
           importerPath === undefined ||
-          !isAuthoredWorkspaceImporter(importerPath, workspaceRoot)
+          !isAuthoredWorkspaceImporter(importerPath, workspaceRoot) ||
+          (selectedImporterPaths !== undefined &&
+            !selectedImporterPaths.has(sourceIdentity(importerPath)))
         ) {
           return undefined;
         }
@@ -151,33 +198,42 @@ export function createPreviewLargePackageBarrelPlugin(
         return await resolutionPromise;
       }
 
+      /** Reads the bounded selected corridor once and retains only its bare package spellings. */
+      async function readSelectedPackageSpecifiers(): Promise<ReadonlySet<string>> {
+        if (selectedPackageSpecifiersPromise !== undefined) {
+          return await selectedPackageSpecifiersPromise;
+        }
+        selectedPackageSpecifiersPromise = Promise.all(
+          [...(packageDemandSourcePaths ?? [])].map((sourcePath) =>
+            readNamedImportDemands(sourcePath, options.readSource),
+          ),
+        ).then((inventories) => new Set(inventories.flatMap((inventory) => [...inventory.keys()])));
+        return await selectedPackageSpecifiersPromise;
+      }
+
       /** Resolves one unique importer/package edge after its syntax demand is proven once. */
       async function resolveEligibleLargeBarrel(
         arguments_: OnResolveArgs,
         importerPath: string,
       ): Promise<OnResolveResult | undefined> {
-        const rootResolution = await build.resolve(arguments_.path, {
-          importer: arguments_.importer,
-          kind: arguments_.kind,
-          namespace: arguments_.namespace,
-          pluginData: PREVIEW_RESOLVE_GUARD,
-          resolveDir: arguments_.resolveDir,
-          with: arguments_.with,
-        });
-        if (
-          rootResolution.errors.length > 0 ||
-          rootResolution.external ||
-          rootResolution.namespace !== 'file'
-        ) {
-          return undefined;
-        }
-        const physicalEntry = resolvePreviewYarnVirtualPath(rootResolution.path, workspaceRoot);
+        const physicalEntry = await resolvePackageEntry(
+          build,
+          arguments_,
+          importerPath,
+          options.allowPhysicalLeafProjection === true,
+          options.resolvePackageRoot,
+          workspaceRoot,
+        );
         if (physicalEntry === undefined) return undefined;
         const entryIdentity = sourceIdentity(physicalEntry);
         const evidenceIdentity = `${entryIdentity}\0${arguments_.path}`;
         let evidencePromise = evidenceByEntry.get(evidenceIdentity);
         if (evidencePromise === undefined) {
-          evidencePromise = analyzeLargePackageBarrel(physicalEntry, arguments_.path);
+          evidencePromise = analyzeLargePackageBarrel(
+            physicalEntry,
+            arguments_.path,
+            minimumBarrelExports,
+          );
           evidenceByEntry.set(evidenceIdentity, evidencePromise);
         }
         const evidence = await evidencePromise;
@@ -207,6 +263,7 @@ export function createPreviewLargePackageBarrelPlugin(
                 arguments_,
                 evidence,
                 exportName,
+                options.allowPhysicalLeafProjection === true,
                 workspaceRoot,
               );
               resolvedMappingByIdentity.set(mappingIdentity, mappingPromise);
@@ -267,6 +324,52 @@ function isEligibleRootImport(arguments_: OnResolveArgs): boolean {
     arguments_.importer.length > 0 &&
     PACKAGE_ROOT_PATTERN.test(arguments_.path)
   );
+}
+
+/**
+ * Resolves one package entry without letting an optional fast-path optimization block the build.
+ *
+ * Fast Page Inspector builds use the compiler's already-cached static resolver. Calling
+ * `build.resolve()` from this plugin's own onResolve callback can wait on the outer package edge in
+ * large graphs, leaving both Node and esbuild idle until the worker watchdog fires. Full builds
+ * retain esbuild's exact condition-aware proof because their optimizer is graph-wide and strict.
+ */
+async function resolvePackageEntry(
+  build: Parameters<Plugin['setup']>[0],
+  arguments_: OnResolveArgs,
+  importerPath: string,
+  useNonRecursiveFastResolution: boolean,
+  resolvePackageRoot: PreviewLargePackageBarrelPluginOptions['resolvePackageRoot'],
+  workspaceRoot: string,
+): Promise<string | undefined> {
+  if (useNonRecursiveFastResolution) {
+    const staticallyResolvedPath = resolvePackageRoot?.(arguments_.path, importerPath);
+    if (
+      staticallyResolvedPath === undefined ||
+      /\.d\.[cm]?ts$/iu.test(staticallyResolvedPath) ||
+      !ts.sys.fileExists(staticallyResolvedPath)
+    ) {
+      return undefined;
+    }
+    return resolvePreviewYarnVirtualPath(staticallyResolvedPath, workspaceRoot);
+  }
+
+  const rootResolution = await build.resolve(arguments_.path, {
+    importer: arguments_.importer,
+    kind: arguments_.kind,
+    namespace: arguments_.namespace,
+    pluginData: PREVIEW_RESOLVE_GUARD,
+    resolveDir: arguments_.resolveDir,
+    with: arguments_.with,
+  });
+  if (
+    rootResolution.errors.length > 0 ||
+    rootResolution.external ||
+    rootResolution.namespace !== 'file'
+  ) {
+    return undefined;
+  }
+  return resolvePreviewYarnVirtualPath(rootResolution.path, workspaceRoot);
 }
 
 /**
@@ -347,12 +450,13 @@ async function readNamedImportDemands(
       ts.isStringLiteralLike(node.moduleSpecifier) &&
       PACKAGE_ROOT_PATTERN.test(node.moduleSpecifier.text)
     ) {
-      const demand = demandFor(node.moduleSpecifier.text);
       const importClause = node.importClause;
+      // Type-only declarations are erased before runtime and cannot widen package namespace demand.
+      if (importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword) return;
+      const demand = demandFor(node.moduleSpecifier.text);
       if (
         importClause === undefined ||
         importClause.name !== undefined ||
-        importClause.phaseModifier === ts.SyntaxKind.TypeKeyword ||
         importClause.namedBindings === undefined ||
         !ts.isNamedImports(importClause.namedBindings) ||
         node.attributes !== undefined
@@ -423,6 +527,7 @@ function readDynamicPackageRoot(node: ts.CallExpression): string | undefined {
 async function analyzeLargePackageBarrel(
   rootEntryPath: string,
   expectedPackageName: string,
+  minimumBarrelExports: number,
 ): Promise<LargePackageBarrelEvidence | undefined> {
   const canonicalEntry = canonicalizeExistingPath(rootEntryPath);
   const packageRecord = await findOwningPackage(canonicalEntry, expectedPackageName);
@@ -484,7 +589,7 @@ async function analyzeLargePackageBarrel(
       }
     }
   }
-  if (mappingsByName.size < MINIMUM_LARGE_BARREL_EXPORTS) return undefined;
+  if (mappingsByName.size < minimumBarrelExports) return undefined;
   return {
     mappingsByName,
     manifest: packageRecord.manifest,
@@ -531,11 +636,27 @@ function resolveBarrelLeafPath(
   moduleSpecifier: string,
   packageRoot: string,
 ): string | undefined {
-  const candidate = path.resolve(barrelDirectory, moduleSpecifier);
-  const canonicalCandidate = canonicalizeExistingPath(candidate);
-  return isPathInside(packageRoot, canonicalCandidate) && ts.sys.fileExists(canonicalCandidate)
-    ? canonicalCandidate
-    : undefined;
+  const baseCandidate = path.resolve(barrelDirectory, moduleSpecifier);
+  const candidates = [
+    baseCandidate,
+    `${baseCandidate}.js`,
+    `${baseCandidate}.mjs`,
+    `${baseCandidate}.cjs`,
+    `${baseCandidate}.jsx`,
+    `${baseCandidate}.ts`,
+    `${baseCandidate}.tsx`,
+    path.join(baseCandidate, 'index.js'),
+    path.join(baseCandidate, 'index.mjs'),
+    path.join(baseCandidate, 'index.cjs'),
+    path.join(baseCandidate, 'index.ts'),
+    path.join(baseCandidate, 'index.tsx'),
+  ];
+  for (const candidate of candidates) {
+    if (!isPathInside(packageRoot, candidate) || !ts.sys.fileExists(candidate)) continue;
+    const canonicalCandidate = canonicalizeExistingPath(candidate);
+    if (isPathInside(packageRoot, canonicalCandidate)) return canonicalCandidate;
+  }
+  return undefined;
 }
 
 /** Proves a public deep specifier whose active esbuild conditions select the exact barrel leaf. */
@@ -544,10 +665,21 @@ async function resolveBarrelProjection(
   arguments_: OnResolveArgs,
   evidence: LargePackageBarrelEvidence,
   exportName: string,
+  allowPhysicalLeafProjection: boolean,
   workspaceRoot: string,
 ): Promise<ResolvedBarrelProjection | undefined> {
   const mapping = evidence.mappingsByName.get(exportName);
   if (mapping === undefined) return undefined;
+  /*
+   * A statically selected fast corridor already proved this exact leaf through a side-effect-free
+   * root barrel and canonical package containment. Return that physical leaf immediately instead
+   * of recursively calling `build.resolve()` from the package-root onResolve callback. Esbuild can
+   * deadlock when several named exports perform those nested resolves concurrently in a large
+   * authored graph; the graph-wide optimizer below still requires public export-map proof.
+   */
+  if (allowPhysicalLeafProjection) {
+    return { ...mapping, specifier: mapping.sourcePath };
+  }
   const candidates = derivePublicDeepSpecifiers(
     arguments_.path,
     evidence.packageRoot,
@@ -578,9 +710,10 @@ async function resolveBarrelProjection(
   // the generated module deterministic, this prevents an alias export from silently becoming the
   // canonical package API when package authors expose overlapping wildcard patterns.
   const [confirmedSpecifier, duplicateSpecifier] = confirmedSpecifiers;
-  return confirmedSpecifier !== undefined && duplicateSpecifier === undefined
-    ? { ...mapping, specifier: confirmedSpecifier }
-    : undefined;
+  if (confirmedSpecifier !== undefined && duplicateSpecifier === undefined) {
+    return { ...mapping, specifier: confirmedSpecifier };
+  }
+  return undefined;
 }
 
 /** Inverts public export targets to candidate subpaths for one exact physical leaf. */

@@ -14,10 +14,7 @@ import { readdir } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
-import {
-  analyzePreviewRenderSource,
-  collectPreviewRenderModuleSpecifiers,
-} from '../renderGraph/previewRenderSourceAnalysis';
+import { analyzePreviewRenderSource } from '../renderGraph/previewRenderSourceAnalysis';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph/previewRenderGraphTypes';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
 import type { ReadPreviewInspectorSource } from './previewInspectorAncestorTypes';
@@ -27,10 +24,20 @@ import {
 } from './previewInspectorAuxiliaryNextAppRoute';
 import { findPreviewInspectorFastForwardMeeting } from './previewInspectorFastForwardSearch';
 import { analyzePreviewInspectorFastRouteRegistry } from './previewInspectorFastRouteRegistry';
+import {
+  collectPreviewInspectorFastResolvedImports,
+  isPreviewInspectorFastAuxiliarySourcePath,
+  type PreviewInspectorFastResolvedImportEdge,
+} from './previewInspectorFastResolvedImports';
 import { createPreviewInspectorFastSourceReaders } from './previewInspectorFastSourceReaders';
 import { collectPreviewInspectorOneHopContext } from './previewInspectorOneHopContext';
 import type { PreviewInspectorOneHopVisualPath } from './previewInspectorShallowVisualTypes';
 import { collectPreviewStaticRouteProjectionInventory } from './previewInspectorStaticRouteProjection';
+import {
+  analyzePreviewInspectorFastSemanticImports,
+  arePreviewInspectorFastExportDemandsCompatible,
+  type PreviewInspectorFastSemanticImport,
+} from './previewInspectorFastSemanticImports';
 
 const MAXIMUM_ENTRY_DIRECTORIES = 96;
 const MAXIMUM_ENTRY_FILES = 96;
@@ -47,15 +54,11 @@ const MAXIMUM_PAGE_SUBTREE_DEPTH = 8;
 const MAXIMUM_ONE_HOP_CONTEXT_FILES = 64;
 const MAXIMUM_FAST_DYNAMIC_IMPORTS = 8;
 const MAXIMUM_FAST_ROUTE_IMPORTS = 48;
-const MAXIMUM_TARGET_AFFINE_IMPORTS = 96;
-const MAXIMUM_AFFINITY_MATCHED_IMPORTS = 24;
 const SOURCE_FILE_PATTERN = /\.[cm]?[jt]sx?$/iu;
 const ENTRY_FILE_PATTERN =
   /^(?:app|bootstrap|client|entry|index|init|main|mount|render|renderer|root|start)(?:[-_.].*)?\.[cm]?[jt]sx?$/iu;
 const PAGE_SHELL_FILE_PATTERN =
   /(?:^|[-_.])(?:apps?|layouts?|pages?|routes?|routers?|screens?|shells?|templates?|views?)(?:[-_.]|$)/iu;
-const AUXILIARY_PATH_PATTERN =
-  /(?:^|\/)(?:__tests__|tests?|stories?|storybook|examples?|demos?|fixtures?|mocks?|playgrounds?|sandboxes?|generated|dist|build|coverage)(?:\/|$)|\.(?:stories?|spec|test)\.[cm]?[jt]sx?$/iu;
 
 /** Inputs for one bounded entry-to-target corridor discovery pass. */
 export interface CollectPreviewInspectorFastPageCorridorOptions {
@@ -95,14 +98,6 @@ export interface PreviewInspectorFastPageCorridor {
 interface ReverseFrontier {
   readonly depth: number;
   readonly sourcePath: string;
-}
-
-/** One resolved import edge retained without TypeScript nodes. */
-interface ResolvedImportEdge {
-  readonly childPath: string;
-  /** Authored literal retained so broad dynamic registries can be pruned before extra resolution. */
-  readonly moduleSpecifier: string;
-  readonly ownerPath: string;
 }
 
 /**
@@ -163,6 +158,7 @@ export async function collectPreviewInspectorFastPageCorridor(
     resolveModule: options.resolveModule,
     reverseChildByOwner: reverse.childByOwner,
     reversePaths: reverse.paths,
+    reverseRequiredExports: reverse.requiredExportsByPath,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(selectedAuxiliaryRoot === undefined ? {} : { selectedAuxiliaryRoot }),
     workspaceRoot,
@@ -311,6 +307,7 @@ async function collectReverseClosure(options: {
 }): Promise<{
   readonly childByOwner: ReadonlyMap<string, string>;
   readonly paths: ReadonlySet<string>;
+  readonly requiredExportsByPath: ReadonlyMap<string, readonly string[]>;
   readonly truncated: boolean;
 }> {
   const paths = new Set<string>([options.documentPath]);
@@ -319,10 +316,37 @@ async function collectReverseClosure(options: {
   const pending: ReverseFrontier[] = [{ depth: 0, sourcePath: options.documentPath }];
   const scannedDirectories = new Set<string>();
   const readCandidates = new Set<string>();
-  const edgesByCandidate = new Map<string, readonly ResolvedImportEdge[]>();
+  const edgesByCandidate = new Map<string, readonly PreviewInspectorFastResolvedImportEdge[]>();
   const indexedCandidates = new Set<string>();
-  const ownersByChildPath = new Map<string, ResolvedImportEdge[]>();
+  const ownersByChildPath = new Map<string, PreviewInspectorFastResolvedImportEdge[]>();
+  const requiredExportsByPath = new Map<string, readonly string[]>([
+    [options.documentPath, Object.freeze(['*'])],
+  ]);
+  const semanticEdgesByCandidate = new Map<
+    string,
+    ReturnType<typeof analyzePreviewInspectorFastSemanticImports>
+  >();
+  const sourceTextByCandidate = new Map<string, string>();
   let truncated = false;
+
+  /** Parses React/export flow only when one raw edge is about to join the target-side closure. */
+  const readSemanticEdge = (
+    edge: PreviewInspectorFastResolvedImportEdge,
+  ): PreviewInspectorFastSemanticImport | undefined => {
+    let semanticEdges = semanticEdgesByCandidate.get(edge.ownerPath);
+    if (semanticEdges === undefined) {
+      const sourceText = sourceTextByCandidate.get(edge.ownerPath);
+      const rawEdges = edgesByCandidate.get(edge.ownerPath);
+      if (sourceText === undefined || rawEdges === undefined) return undefined;
+      semanticEdges = analyzePreviewInspectorFastSemanticImports(
+        edge.ownerPath,
+        sourceText,
+        rawEdges,
+      );
+      semanticEdgesByCandidate.set(edge.ownerPath, semanticEdges);
+    }
+    return semanticEdges.find((candidate) => candidate.childPath === edge.childPath);
+  };
 
   /**
    * Connects an owner and immediately propagates through previously indexed upstream owners.
@@ -332,15 +356,29 @@ async function collectReverseClosure(options: {
    * target. Retaining child-to-owner edges turns later discoveries into a bounded fixed point
    * without rescanning a directory or rereading source.
    */
-  const connectOwner = (edge: ResolvedImportEdge): void => {
+  const connectOwner = (edge: PreviewInspectorFastResolvedImportEdge): void => {
     const childDepth = depthByPath.get(edge.childPath);
     if (childDepth === undefined || childDepth >= MAXIMUM_REVERSE_DEPTH) return;
+    const semanticEdge = readSemanticEdge(edge);
+    if (
+      semanticEdge !== undefined &&
+      !arePreviewInspectorFastExportDemandsCompatible(
+        semanticEdge.requestedExportNames,
+        requiredExportsByPath.get(edge.childPath),
+      )
+    ) {
+      return;
+    }
     const ownerDepth = childDepth + 1;
     const previousDepth = depthByPath.get(edge.ownerPath);
     if (previousDepth !== undefined && previousDepth <= ownerDepth) return;
     paths.add(edge.ownerPath);
     depthByPath.set(edge.ownerPath, ownerDepth);
     childByOwner.set(edge.ownerPath, edge.childPath);
+    requiredExportsByPath.set(
+      edge.ownerPath,
+      semanticEdge?.ownerExportNames ?? Object.freeze(['*']),
+    );
     pending.push({ depth: ownerDepth, sourcePath: edge.ownerPath });
     for (const upstreamEdge of ownersByChildPath.get(edge.ownerPath) ?? []) {
       connectOwner(upstreamEdge);
@@ -350,7 +388,7 @@ async function collectReverseClosure(options: {
   /** Indexes resolved imports once, then activates the first edge whose child already reaches target. */
   const indexCandidateEdges = (
     candidatePath: string,
-    edges: readonly ResolvedImportEdge[],
+    edges: readonly PreviewInspectorFastResolvedImportEdge[],
   ): void => {
     if (indexedCandidates.has(candidatePath)) return;
     indexedCandidates.add(candidatePath);
@@ -359,8 +397,9 @@ async function collectReverseClosure(options: {
       owners.push(edge);
       ownersByChildPath.set(edge.childPath, owners);
     }
-    const reachableEdge = edges.find((edge) => paths.has(edge.childPath));
-    if (reachableEdge !== undefined) connectOwner(reachableEdge);
+    for (const reachableEdge of edges.filter((edge) => paths.has(edge.childPath))) {
+      connectOwner(reachableEdge);
+    }
   };
 
   while (pending.length > 0 && readCandidates.size < MAXIMUM_REVERSE_FILES) {
@@ -439,7 +478,8 @@ async function collectReverseClosure(options: {
           readCandidates.add(candidatePath);
           const sourceText = await options.readSource(candidatePath);
           if (sourceText === undefined) continue;
-          edges = collectResolvedImports(
+          sourceTextByCandidate.set(candidatePath, sourceText);
+          edges = collectPreviewInspectorFastResolvedImports(
             candidatePath,
             sourceText,
             options.resolveModule,
@@ -471,7 +511,8 @@ async function collectReverseClosure(options: {
         readCandidates.add(candidatePath);
         const sourceText = await options.readSource(candidatePath);
         if (sourceText === undefined) continue;
-        edges = collectResolvedImports(
+        sourceTextByCandidate.set(candidatePath, sourceText);
+        edges = collectPreviewInspectorFastResolvedImports(
           candidatePath,
           sourceText,
           options.resolveModule,
@@ -488,7 +529,7 @@ async function collectReverseClosure(options: {
       indexCandidateEdges(candidatePath, edges);
     }
   }
-  return Object.freeze({ childByOwner, paths, truncated });
+  return Object.freeze({ childByOwner, paths, requiredExportsByPath, truncated });
 }
 
 /** Walks imports from shallow app entries and stops at the first target-side meeting point. */
@@ -500,6 +541,7 @@ async function findForwardMeeting(options: {
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly reverseChildByOwner: ReadonlyMap<string, string>;
   readonly reversePaths: ReadonlySet<string>;
+  readonly reverseRequiredExports: ReadonlyMap<string, readonly string[]>;
   readonly selectedAuxiliaryRoot?: string;
   readonly signal?: AbortSignal;
   readonly workspaceRoot: string;
@@ -532,9 +574,9 @@ async function findForwardMeeting(options: {
     getChildren: async (sourcePath) => {
       const sourceText = await options.readSource(sourcePath);
       if (sourceText === undefined) {
-        return Object.freeze({ childPaths: Object.freeze([]), truncated: false });
+        return Object.freeze({ childEdges: Object.freeze([]), truncated: false });
       }
-      const edges = collectResolvedImports(
+      const edges = collectPreviewInspectorFastResolvedImports(
         sourcePath,
         sourceText,
         options.resolveModule,
@@ -546,9 +588,22 @@ async function findForwardMeeting(options: {
             : { selectedAuxiliaryRoot: options.selectedAuxiliaryRoot }),
         },
       );
+      const boundedEdges = edges.slice(0, MAXIMUM_IMPORTS_PER_FILE);
+      const semanticEdges = analyzePreviewInspectorFastSemanticImports(
+        sourcePath,
+        sourceText,
+        boundedEdges,
+      );
       return Object.freeze({
-        childPaths: Object.freeze(
-          edges.slice(0, MAXIMUM_IMPORTS_PER_FILE).map((edge) => edge.childPath),
+        childEdges: Object.freeze(
+          semanticEdges.map((edge) =>
+            Object.freeze({
+              ownerExportNames: edge.ownerExportNames,
+              renderStrength: edge.renderStrength,
+              requestedExportNames: edge.requestedExportNames,
+              sourcePath: edge.childPath,
+            }),
+          ),
         ),
         truncated: edges.length > MAXIMUM_IMPORTS_PER_FILE,
       });
@@ -557,6 +612,7 @@ async function findForwardMeeting(options: {
     maximumFiles: MAXIMUM_FORWARD_FILES,
     reverseChildByOwner: options.reverseChildByOwner,
     reversePaths: options.reversePaths,
+    reverseRequiredExports: options.reverseRequiredExports,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     workspaceRoot: options.workspaceRoot,
   });
@@ -620,7 +676,7 @@ async function collectPageSubtree(options: {
         (match) => match[2] ?? [],
       ),
     );
-    const children = collectResolvedImports(
+    const children = collectPreviewInspectorFastResolvedImports(
       current.sourcePath,
       sourceText,
       options.resolveModule,
@@ -687,7 +743,7 @@ async function trimBroadRouteRegistryPrefix(options: {
     throwIfPreviewBuildCancelled(options.signal);
     const sourceText = await options.readSource(sourcePath);
     if (sourceText === undefined || !hasBroadRouteRegistrySyntax(sourceText)) continue;
-    const importCount = collectResolvedImports(
+    const importCount = collectPreviewInspectorFastResolvedImports(
       sourcePath,
       sourceText,
       options.resolveModule,
@@ -727,94 +783,6 @@ function hasBroadRouteRegistrySyntax(sourceText: string): boolean {
       sourceText,
     )
   );
-}
-
-/** Resolves literal imports and rejects dependencies outside the trusted authored workspace. */
-function collectResolvedImports(
-  ownerPath: string,
-  sourceText: string,
-  resolveModule: ResolvePreviewRenderGraphModule,
-  workspaceRoot: string,
-  options: {
-    readonly preferredPath?: string;
-    readonly preferredPaths?: readonly string[];
-    readonly selectedAuxiliaryRoot?: string;
-  } = {},
-): readonly ResolvedImportEdge[] {
-  const edges: ResolvedImportEdge[] = [];
-  const seen = new Set<string>();
-  const preferredPaths =
-    options.preferredPaths ?? (options.preferredPath === undefined ? [] : [options.preferredPath]);
-  const rankedSpecifiers = [...collectPreviewRenderModuleSpecifiers(ownerPath, sourceText)]
-    .map((specifier) => ({
-      score: Math.max(
-        0,
-        ...preferredPaths.map((preferredPath) =>
-          scoreModuleSpecifierAffinity(preferredPath, specifier),
-        ),
-      ),
-      specifier,
-    }))
-    .sort(
-      (left, right) => right.score - left.score || left.specifier.localeCompare(right.specifier),
-    );
-  const highestAffinity = rankedSpecifiers[0]?.score ?? 0;
-  const maximumSpecifiers =
-    highestAffinity > 0 ? MAXIMUM_AFFINITY_MATCHED_IMPORTS : MAXIMUM_TARGET_AFFINE_IMPORTS;
-  for (const { specifier } of rankedSpecifiers.slice(0, maximumSpecifiers)) {
-    const resolvedPath = resolveModule(specifier, ownerPath);
-    if (resolvedPath === undefined) continue;
-    const childPath = path.normalize(resolvedPath);
-    if (
-      seen.has(childPath) ||
-      !isProjectSourcePath(childPath, workspaceRoot) ||
-      !isAdmittedSourcePath(childPath, workspaceRoot, options.selectedAuxiliaryRoot)
-    ) {
-      continue;
-    }
-    seen.add(childPath);
-    edges.push(
-      Object.freeze({
-        childPath,
-        moduleSpecifier: specifier,
-        ownerPath: path.normalize(ownerPath),
-      }),
-    );
-  }
-  return Object.freeze(edges);
-}
-
-/**
- * Ranks literal imports before the resolver is called so a generated lazy registry remains cheap.
- *
- * Only lexical path suffixes participate: the target basename is strongest, followed by matching
- * parent segments. Unrelated specifiers preserve deterministic lexical order and are cut off before
- * thousands of sibling examples can trigger resolver work.
- */
-function scoreModuleSpecifierAffinity(
-  preferredPath: string | undefined,
-  moduleSpecifier: string,
-): number {
-  if (preferredPath === undefined) return 0;
-  const targetSegments = normalizePortablePath(preferredPath)
-    .replace(SOURCE_FILE_PATTERN, '')
-    .split('/')
-    .filter(Boolean);
-  const specifierSegments = normalizePortablePath(moduleSpecifier)
-    .replace(SOURCE_FILE_PATTERN, '')
-    .split('/')
-    .filter((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
-  let suffixMatches = 0;
-  while (
-    suffixMatches < targetSegments.length &&
-    suffixMatches < specifierSegments.length &&
-    targetSegments.at(-1 - suffixMatches) === specifierSegments.at(-1 - suffixMatches)
-  ) {
-    suffixMatches += 1;
-  }
-  const basenameMatch =
-    targetSegments.at(-1) !== undefined && targetSegments.at(-1) === specifierSegments.at(-1);
-  return Number(basenameMatch) * 10_000 + suffixMatches * 1_000;
 }
 
 /** Chooses the furthest page-like reverse owner when no conventional app entry reaches it. */
@@ -891,7 +859,7 @@ function isExpandablePageShellSource(sourcePath: string): boolean {
 function isLikelyEntryPath(sourcePath: string, projectRoot: string): boolean {
   return (
     ENTRY_FILE_PATTERN.test(path.basename(sourcePath)) &&
-    !isAuxiliarySourcePath(sourcePath, projectRoot)
+    !isPreviewInspectorFastAuxiliarySourcePath(sourcePath, projectRoot)
   );
 }
 
@@ -952,11 +920,6 @@ function isProjectSourcePath(sourcePath: string, workspaceRoot: string): boolean
   );
 }
 
-/** Applies tooling-path demotion only inside this workspace, never to an ancestor directory name. */
-function isAuxiliarySourcePath(sourcePath: string, workspaceRoot: string): boolean {
-  return AUXILIARY_PATH_PATTERN.test(normalizePortableRelativePath(workspaceRoot, sourcePath));
-}
-
 /**
  * Keeps normal tooling demotion while admitting only the selected example/demo subtree.
  *
@@ -970,7 +933,7 @@ function isAdmittedSourcePath(
   selectedAuxiliaryRoot: string | undefined,
 ): boolean {
   return (
-    !isAuxiliarySourcePath(sourcePath, workspaceRoot) ||
+    !isPreviewInspectorFastAuxiliarySourcePath(sourcePath, workspaceRoot) ||
     (selectedAuxiliaryRoot !== undefined &&
       isPathInside(path.resolve(selectedAuxiliaryRoot), path.resolve(sourcePath)))
   );

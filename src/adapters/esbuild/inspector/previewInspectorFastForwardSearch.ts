@@ -11,6 +11,7 @@
  */
 import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
+import { arePreviewInspectorFastExportDemandsCompatible } from './previewInspectorFastSemanticImports';
 
 /** One application-entry seed whose runtime mounting evidence was proven from source syntax. */
 export interface PreviewInspectorFastForwardEntry {
@@ -22,10 +23,22 @@ export interface PreviewInspectorFastForwardEntry {
 
 /** Bounded child expansion supplied by the caller's alias-aware source resolver. */
 export interface PreviewInspectorFastForwardChildren {
-  /** Resolved authored child paths in deterministic source-affinity order. */
-  readonly childPaths: readonly string[];
+  /** Export-aware authored child edges in deterministic source-affinity order. */
+  readonly childEdges: readonly PreviewInspectorFastForwardChildEdge[];
   /** True when the caller omitted additional children to enforce its own fanout budget. */
   readonly truncated: boolean;
+}
+
+/** One resolved child retaining enough static evidence to cross barrels without export aliasing. */
+export interface PreviewInspectorFastForwardChildEdge {
+  /** Public exports of the owner that can carry this child toward a render result. */
+  readonly ownerExportNames: readonly string[];
+  /** Public exports requested from the child module. */
+  readonly requestedExportNames: readonly string[];
+  /** 0 = plain/unknown, 1 = value transport, 2 = JSX/lazy/HOC/render evidence. */
+  readonly renderStrength: 0 | 1 | 2;
+  /** Absolute authored child source path. */
+  readonly sourcePath: string;
 }
 
 /** Inputs kept independent of esbuild so this graph search remains deterministic and testable. */
@@ -42,6 +55,8 @@ export interface FindPreviewInspectorFastForwardMeetingOptions {
   readonly maximumFiles: number;
   /** Target-side owner-to-child relation used to finish the joined corridor. */
   readonly reverseChildByOwner: ReadonlyMap<string, string>;
+  /** Target-side public exports that can actually reach the selected component. */
+  readonly reverseRequiredExports?: ReadonlyMap<string, readonly string[]>;
   /** Already-proven target-side closure. */
   readonly reversePaths: ReadonlySet<string>;
   /** Cancels stale editor revisions between source reads. */
@@ -63,8 +78,14 @@ export interface PreviewInspectorFastForwardMeeting {
 /** Cached priority values avoid repeating path calculations during heap comparisons. */
 interface ForwardPriority {
   readonly depth: number;
+  /** Public export identity selected by the parent edge; wildcard means conservative uncertainty. */
+  readonly demandedExportNames: readonly string[];
   readonly estimatedCost: number;
   readonly exactReverseMatch: boolean;
+  /** Plain imports are less useful than syntax-proven React render/value transport. */
+  readonly plainEdgeCount: number;
+  /** Cumulative syntax strength used only after the bounded path costs agree. */
+  readonly renderStrength: number;
   readonly semanticEntry: boolean;
   readonly sharedNamedSegments: number;
   readonly sharedPrefixSegments: number;
@@ -96,15 +117,16 @@ export async function findPreviewInspectorFastForwardMeeting(
 ): Promise<PreviewInspectorFastForwardMeeting | undefined> {
   const affinity = createReverseAffinityIndex(options);
   const pending = new ForwardCandidateHeap();
-  const pendingByPath = new Map<string, ForwardCandidate>();
+  const pendingByState = new Map<string, ForwardCandidate>();
   const visited = new Set<string>();
   let truncated = false;
 
-  /** Keeps only the strongest deferred path to one module while stale heap entries remain harmless. */
+  /** Keeps the strongest path to one module/export demand while stale heap entries stay harmless. */
   const enqueue = (candidate: ForwardCandidate): void => {
-    const existing = pendingByPath.get(candidate.sourcePath);
+    const stateKey = createCandidateStateKey(candidate);
+    const existing = pendingByState.get(stateKey);
     if (existing !== undefined && compareCandidates(existing, candidate) <= 0) return;
-    pendingByPath.set(candidate.sourcePath, candidate);
+    pendingByState.set(stateKey, candidate);
     pending.push(candidate);
   };
 
@@ -112,8 +134,11 @@ export async function findPreviewInspectorFastForwardMeeting(
     enqueue(
       createCandidate({
         affinity,
+        demandedExportNames: Object.freeze(['*']),
         depth: 0,
         forwardPath: Object.freeze([entry.sourcePath]),
+        plainEdgeCount: 0,
+        renderStrength: 0,
         semanticEntry: entry.semanticEntry,
         sourcePath: entry.sourcePath,
         workspaceRoot: options.workspaceRoot,
@@ -124,23 +149,34 @@ export async function findPreviewInspectorFastForwardMeeting(
   while (pending.size > 0 && visited.size < options.maximumFiles) {
     throwIfPreviewBuildCancelled(options.signal);
     const current = pending.pop();
+    const currentStateKey = current === undefined ? undefined : createCandidateStateKey(current);
     if (
       current === undefined ||
-      pendingByPath.get(current.sourcePath) !== current ||
-      visited.has(current.sourcePath)
+      currentStateKey === undefined ||
+      pendingByState.get(currentStateKey) !== current ||
+      visited.has(currentStateKey)
     ) {
       continue;
     }
-    pendingByPath.delete(current.sourcePath);
-    visited.add(current.sourcePath);
+    pendingByState.delete(currentStateKey);
+    visited.add(currentStateKey);
     if (options.reversePaths.has(current.sourcePath)) {
-      return Object.freeze({
-        importPath: Object.freeze(
-          joinForwardAndReversePaths(current.forwardPath, options.reverseChildByOwner),
-        ),
-        semanticEntry: current.semanticEntry,
-        truncated,
-      });
+      if (
+        arePreviewInspectorFastExportDemandsCompatible(
+          current.demandedExportNames,
+          options.reverseRequiredExports?.get(current.sourcePath),
+        )
+      ) {
+        return Object.freeze({
+          importPath: Object.freeze(
+            joinForwardAndReversePaths(current.forwardPath, options.reverseChildByOwner),
+          ),
+          semanticEntry: current.semanticEntry,
+          truncated,
+        });
+      }
+      // A different export from the same barrel cannot lead into the selected target corridor.
+      continue;
     }
     if (current.depth >= options.maximumDepth) {
       truncated = true;
@@ -149,15 +185,26 @@ export async function findPreviewInspectorFastForwardMeeting(
 
     const children = await options.getChildren(current.sourcePath);
     truncated ||= children.truncated;
-    for (const childPath of children.childPaths) {
-      if (visited.has(childPath) || current.forwardPath.includes(childPath)) continue;
+    for (const child of children.childEdges) {
+      if (
+        !arePreviewInspectorFastExportDemandsCompatible(
+          current.demandedExportNames,
+          child.ownerExportNames,
+        ) ||
+        current.forwardPath.includes(child.sourcePath)
+      ) {
+        continue;
+      }
       enqueue(
         createCandidate({
           affinity,
+          demandedExportNames: child.requestedExportNames,
           depth: current.depth + 1,
-          forwardPath: Object.freeze([...current.forwardPath, childPath]),
+          forwardPath: Object.freeze([...current.forwardPath, child.sourcePath]),
+          plainEdgeCount: current.plainEdgeCount + Number(child.renderStrength === 0),
+          renderStrength: current.renderStrength + child.renderStrength,
           semanticEntry: current.semanticEntry,
-          sourcePath: childPath,
+          sourcePath: child.sourcePath,
           workspaceRoot: options.workspaceRoot,
         }),
       );
@@ -197,8 +244,11 @@ function createReverseAffinityIndex(
 /** Calculates one A*-style score without reading or resolving any additional source. */
 function createCandidate(options: {
   readonly affinity: ReverseAffinityIndex;
+  readonly demandedExportNames: readonly string[];
   readonly depth: number;
   readonly forwardPath: readonly string[];
+  readonly plainEdgeCount: number;
+  readonly renderStrength: number;
   readonly semanticEntry: boolean;
   readonly sourcePath: string;
   readonly workspaceRoot: string;
@@ -227,9 +277,12 @@ function createCandidate(options: {
   ).length;
   return Object.freeze({
     depth: options.depth,
+    demandedExportNames: Object.freeze([...options.demandedExportNames]),
     estimatedCost: options.depth + minimumDistance,
     exactReverseMatch: options.affinity.reversePaths.has(sourcePath),
     forwardPath: options.forwardPath,
+    plainEdgeCount: options.plainEdgeCount,
+    renderStrength: options.renderStrength,
     semanticEntry: options.semanticEntry,
     sharedNamedSegments,
     sharedPrefixSegments,
@@ -280,13 +333,20 @@ function encodePathPrefix(segments: readonly string[], length: number): string {
 function compareCandidates(left: ForwardCandidate, right: ForwardCandidate): number {
   return (
     Number(right.semanticEntry) - Number(left.semanticEntry) ||
-    Number(right.exactReverseMatch) - Number(left.exactReverseMatch) ||
     left.estimatedCost - right.estimatedCost ||
     right.sharedPrefixSegments - left.sharedPrefixSegments ||
     right.sharedNamedSegments - left.sharedNamedSegments ||
+    left.plainEdgeCount - right.plainEdgeCount ||
+    Number(right.exactReverseMatch) - Number(left.exactReverseMatch) ||
+    right.renderStrength - left.renderStrength ||
     left.depth - right.depth ||
     left.sourcePath.localeCompare(right.sourcePath)
   );
+}
+
+/** Distinguishes separate public exports of one barrel while preserving a bounded visited set. */
+function createCandidateStateKey(candidate: ForwardCandidate): string {
+  return `${candidate.sourcePath}\0${[...candidate.demandedExportNames].sort().join('\0')}`;
 }
 
 /** Small binary min-heap avoids sorting the complete frontier after every graph expansion. */

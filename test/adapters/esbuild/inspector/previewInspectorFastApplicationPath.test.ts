@@ -47,7 +47,7 @@ function createResolver(sourcePaths: readonly string[]) {
 }
 
 describe('fast application page corridor', () => {
-  it('connects a lazy build target through the app router and nested company subapps', async () => {
+  it('ignores a same-barrel export shortcut and keeps the authored nested application path', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'fast-authored-app-path-'));
     temporaryRoots.push(projectRoot);
     const siblingSources = await Promise.all(
@@ -80,12 +80,18 @@ describe('fast application page corridor', () => {
             "import RootLayout from './RootLayout';",
             "import { pagesMap } from './config/pages-map';",
             "import { CompanyApp } from './company/CompanyApp';",
+            "import { ConfigPage } from './selected/pages';",
+            "import TargetDemoPage from './selected/target-demo-page';",
             ...Array.from(
               { length: 49 },
               (_, index) =>
                 `import Sibling${index.toString()} from './pages/Sibling${index.toString()}';`,
             ),
             'void pagesMap;',
+            'const routeCatalog = { config: ConfigPage };',
+            'void routeCatalog;',
+            'const auxiliaryCatalog = [TargetDemoPage];',
+            'void auxiliaryCatalog;',
             'const router = createBrowserRouter(createRoutesFromElements(',
             '<Route element={<RootLayout />}>',
             '<Route path={`${CompanyApp.basePath}/*`} element={<CompanyApp />} />',
@@ -130,7 +136,16 @@ describe('fast application page corridor', () => {
         writeSource(
           projectRoot,
           'src/legal/selected/pages/index.ts',
-          "import { lazy } from 'react'; export const UploadPage = lazy(() => import('./UploadPage'));",
+          [
+            "import { lazy } from 'react';",
+            "export const ConfigPage = lazy(() => import('./ConfigPage'));",
+            "export const UploadPage = lazy(() => import('./UploadPage'));",
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/legal/selected/pages/ConfigPage.tsx',
+          'export default function ConfigPage() { return <aside>Catalog only</aside>; }',
         ),
         writeSource(
           projectRoot,
@@ -141,6 +156,11 @@ describe('fast application page corridor', () => {
           projectRoot,
           'src/legal/selected/TargetPanel.tsx',
           'export default function TargetPanel() { return <section>Selected</section>; }',
+        ),
+        writeSource(
+          projectRoot,
+          'src/legal/selected/target-demo-page.tsx',
+          "import TargetPanel from './TargetPanel'; export default function TargetDemoPage() { return <TargetPanel />; }",
         ),
       ])),
       ...siblingSources,
@@ -166,6 +186,9 @@ describe('fast application page corridor', () => {
       'UploadPage.tsx',
       'TargetPanel.tsx',
     ]);
+    expect(corridor?.importPath).not.toContain(
+      path.join(projectRoot, 'src/legal/selected/pages/ConfigPage.tsx'),
+    );
     expect(corridor?.sourcePaths).toContain(path.join(projectRoot, 'src/legal/RootLayout.tsx'));
     expect(corridor?.sourcePaths).toContain(
       path.join(projectRoot, 'src/legal/config/pages-map.ts'),

@@ -33,5 +33,9 @@ describe('EsbuildPreviewCompiler Inspector gesture key', () => {
     } finally {
       await compiler.shutdown();
     }
-  });
+  } /*
+   * The complete suite intentionally runs many native esbuild fixtures in parallel. This test
+   * performs two real compiler passes, so allow cold CI contention without relaxing production
+   * preview watchdogs or the focused test's ordinary ~3 second runtime.
+   */, 15_000);
 });

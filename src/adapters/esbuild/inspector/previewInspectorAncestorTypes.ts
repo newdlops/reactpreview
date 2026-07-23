@@ -20,6 +20,7 @@ import type {
   PreviewInspectorNextPagesShell,
 } from './previewInspectorNextPagesShell';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
+import type { PreviewInspectorOneHopVisualPath } from './previewInspectorShallowVisualTypes';
 
 /** Importable component identity retained without loading its module in the extension host. */
 export interface PreviewInspectorComponentReference {
@@ -113,6 +114,13 @@ export interface PreviewInspectorAncestorPlan {
   readonly edges: readonly PreviewInspectorAncestorEdge[];
   /** Ranked independently selectable page contexts; the first candidate is the default. */
   readonly pageCandidates: readonly PreviewInspectorPageCandidate[];
+  /**
+   * Direct visual siblings beside the fast entry-to-target path.
+   *
+   * These roots render authentically, while the corridor plugin may replace their next project
+   * component boundary with a structural placeholder to keep first paint bounded.
+   */
+  readonly shallowVisualPaths?: readonly PreviewInspectorOneHopVisualPath[];
   /** Actual authored export imported by the Page Inspector entry. */
   readonly root: PreviewInspectorComponentReference;
   /** Props usable when a private owner prevents mounting the next outer component. */

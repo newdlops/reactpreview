@@ -7,6 +7,11 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import {
+  parsePreviewBarePackageSpecifier,
+  selectPreviewPackageStyleExport,
+  type PreviewBarePackageSpecifier,
+} from './previewCssPackageExports';
 import { isInlinePreviewAssetPath } from './previewLoaderPolicy';
 import {
   isFileBackedPreviewNamespace,
@@ -21,9 +26,6 @@ const ASSET_PLUGIN_DATA = Symbol('react-preview-asset-plugin-data');
 const MAX_INLINE_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_INLINE_ASSET_BYTES = 20 * 1024 * 1024;
 const PACKAGE_MANIFEST_NAME = 'package.json';
-
-/** Conditions esbuild activates for ESM imports in a browser bundle, plus CSS's `style`. */
-const CSS_PACKAGE_EXPORT_CONDITIONS = new Set(['browser', 'default', 'import', 'module', 'style']);
 
 /** Asset transformations that produce JavaScript modules for the browser bundle. */
 type PreviewAssetMode = 'data-url' | 'raw' | 'svg-component' | 'svg-url';
@@ -54,28 +56,12 @@ interface BoundedAssetRequest {
   readonly requiredRoot?: string;
 }
 
-/** Bare npm package identity and its corresponding package-exports subpath. */
-interface ParsedPackageSpecifier {
-  /** Unscoped or scoped package name used to locate the nearest `node_modules` directory. */
-  readonly packageName: string;
-  /** Root (`.`) or explicit package subpath (`./theme`) used to select an exports entry. */
-  readonly exportSubpath: string;
-}
-
 /** Untrusted package metadata narrowed to the fields used by CSS style resolution. */
 interface PreviewStylePackageManifest {
   /** Conditional or subpath package exports map interpreted without executing project code. */
   readonly exports?: unknown;
   /** Exact package identity guarding against an unrelated nested manifest. */
   readonly name?: unknown;
-}
-
-/** One conditional target together with proof that the `style` condition selected it. */
-interface ConditionalStyleTarget {
-  /** Package-relative export target selected in authored condition order. */
-  readonly path: string;
-  /** Whether the selected condition chain crossed an active `style` key. */
-  readonly selectedByStyle: boolean;
 }
 
 /** Active path needed when an asset is imported from the target bridge namespace. */
@@ -339,7 +325,7 @@ async function resolveCssPackageStyleImport(
   options: CssPackageStyleResolutionOptions,
 ): Promise<OnResolveResult | undefined> {
   if (options.arguments_.kind !== 'import-rule') return undefined;
-  const packageSpecifier = parseBarePackageSpecifier(options.parsedRequest.path);
+  const packageSpecifier = parsePreviewBarePackageSpecifier(options.parsedRequest.path);
   if (packageSpecifier === undefined) return undefined;
 
   const importerDirectory = selectPackageImporterDirectory(options.arguments_, options.projectRoot);
@@ -361,7 +347,7 @@ interface UncachedCssPackageStyleResolutionOptions extends CssPackageStyleResolu
   /** Filesystem directory whose Node-style package ancestry should be searched first. */
   readonly importerDirectory: string;
   /** Parsed npm identity and package-exports subpath. */
-  readonly packageSpecifier: ParsedPackageSpecifier;
+  readonly packageSpecifier: PreviewBarePackageSpecifier;
 }
 
 /** Finds the package, selects its conditional style target, and validates the resulting CSS file. */
@@ -386,7 +372,10 @@ async function resolveCssPackageStyleImportUncached(
   const manifest = await readStylePackageManifest(manifestPath);
   if (manifest?.name !== options.packageSpecifier.packageName) return undefined;
   options.registerWatchDirectory?.(packageRoot);
-  const target = selectPackageStyleExport(manifest.exports, options.packageSpecifier.exportSubpath);
+  const target = selectPreviewPackageStyleExport(
+    manifest.exports,
+    options.packageSpecifier.exportSubpath,
+  );
   if (!target?.toLowerCase().endsWith('.css')) return undefined;
   if (!target.startsWith('./') || /[?#]/u.test(target)) return undefined;
 
@@ -424,34 +413,6 @@ function selectPackageImporterDirectory(arguments_: OnResolveArgs, projectRoot: 
   if (path.isAbsolute(arguments_.resolveDir)) return arguments_.resolveDir;
   if (path.isAbsolute(arguments_.importer)) return path.dirname(arguments_.importer);
   return projectRoot;
-}
-
-/** Parses a bare npm specifier without accepting relative, absolute, URL, or malformed requests. */
-function parseBarePackageSpecifier(moduleSpecifier: string): ParsedPackageSpecifier | undefined {
-  if (
-    moduleSpecifier.length === 0 ||
-    moduleSpecifier.startsWith('.') ||
-    moduleSpecifier.startsWith('/') ||
-    moduleSpecifier.includes('\\') ||
-    /^[a-z][a-z\d+.-]*:/iu.test(moduleSpecifier)
-  ) {
-    return undefined;
-  }
-
-  const segments = moduleSpecifier.split('/');
-  const packageSegmentCount = moduleSpecifier.startsWith('@') ? 2 : 1;
-  if (
-    segments.length < packageSegmentCount ||
-    segments.slice(0, packageSegmentCount).some((segment) => segment.length === 0)
-  ) {
-    return undefined;
-  }
-  const packageName = segments.slice(0, packageSegmentCount).join('/');
-  const requestedSubpath = segments.slice(packageSegmentCount).join('/');
-  return {
-    exportSubpath: requestedSubpath.length === 0 ? '.' : `./${requestedSubpath}`,
-    packageName,
-  };
 }
 
 /** Searches ordinary nearest/hoisted `node_modules` roots without leaving package names unchecked. */
@@ -522,64 +483,6 @@ async function readStylePackageManifest(
   } catch {
     return undefined;
   }
-}
-
-/** Selects an exact package subpath before evaluating its conditional export object. */
-function selectPackageStyleExport(
-  exportsValue: unknown,
-  exportSubpath: string,
-): string | undefined {
-  let selectedValue = exportsValue;
-  if (isUnknownRecord(exportsValue)) {
-    const keys = Object.keys(exportsValue);
-    const containsSubpathKeys = keys.some((key) => key.startsWith('.'));
-    if (containsSubpathKeys) {
-      selectedValue = Object.prototype.hasOwnProperty.call(exportsValue, exportSubpath)
-        ? exportsValue[exportSubpath]
-        : undefined;
-    } else if (exportSubpath !== '.') {
-      selectedValue = undefined;
-    }
-  } else if (exportSubpath !== '.') {
-    selectedValue = undefined;
-  }
-
-  const selectedTarget = selectConditionalStyleTarget(selectedValue, false);
-  return selectedTarget?.selectedByStyle === true ? selectedTarget.path : undefined;
-}
-
-/**
- * Evaluates a bounded conditional target in authored property order using browser ESM conditions.
- * A direct string remains unclaimed because normal esbuild package resolution already handles it.
- */
-function selectConditionalStyleTarget(
-  value: unknown,
-  selectedByStyle: boolean,
-): ConditionalStyleTarget | undefined {
-  if (typeof value === 'string') return { path: value, selectedByStyle };
-  if (Array.isArray(value)) {
-    for (const candidate of value) {
-      const selected = selectConditionalStyleTarget(candidate, selectedByStyle);
-      if (selected !== undefined) return selected;
-    }
-    return undefined;
-  }
-  if (!isUnknownRecord(value)) return undefined;
-
-  for (const [condition, candidate] of Object.entries(value)) {
-    if (!CSS_PACKAGE_EXPORT_CONDITIONS.has(condition)) continue;
-    const selected = selectConditionalStyleTarget(
-      candidate,
-      selectedByStyle || condition === 'style',
-    );
-    if (selected !== undefined) return selected;
-  }
-  return undefined;
-}
-
-/** Narrows untrusted JSON values without inheriting prototype-owned package fields. */
-function isUnknownRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Reports whether a root-relative CSS `@import` needs public-directory path mapping only. */

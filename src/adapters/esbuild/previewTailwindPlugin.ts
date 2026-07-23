@@ -13,8 +13,17 @@ import type { PreviewSourceSnapshot } from '../../domain/preview';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { normalizePreviewCssFailSoftPrelude } from './previewCssFailSoftNormalization';
 import { parsePreviewCssImports } from './previewCssImportParser';
+import { resolvePreviewInstalledCssPackageStylePath } from './previewCssPackageStylePath';
 import { parsePreviewCssReferences } from './previewCssReferenceParser';
 import { runPreviewSerialWork } from './previewSerialWorkQueue';
+import { boundPreviewTailwindSourceDiscovery } from './previewTailwindBoundedSources';
+import {
+  appendPreviewTailwindInlineCandidates,
+  collectPreviewTailwindSnapshotSources,
+  scanPreviewTailwindInlineCandidates,
+  type PreviewTailwindScannerConstructor,
+  type PreviewTailwindSnapshotSource,
+} from './previewTailwindCandidates';
 import {
   createPreviewWorkspacePackageResolver,
   type PreviewWorkspacePackageResolver,
@@ -33,10 +42,6 @@ const IMPORT_SOURCE_MODIFIER_PATTERN = /\bsource\s*\(\s*(none|(["'])(.*?)\2)\s*\
 const PROJECT_SOURCE_EXTENSIONS = 'html,js,jsx,md,mdx,ts,tsx,vue,svelte';
 const MAX_DEPENDENCY_PATHS = 128;
 const MAX_EXPLICIT_SOURCE_DIRECTORIES = 16;
-const MAX_SNAPSHOT_FILES = 64;
-const MAX_SNAPSHOT_SOURCE_BYTES = 2 * 1024 * 1024;
-const MAX_INLINE_CANDIDATES = 4_096;
-const MAX_INLINE_CANDIDATE_BYTES = 128 * 1024;
 const MAX_PREFLIGHT_CSS_FILES = 32;
 const MAX_PREFLIGHT_CSS_BYTES = 2 * 1024 * 1024;
 
@@ -64,19 +69,6 @@ interface PreviewPostcssProcessor {
   process(source: string, options: { readonly from: string }): Promise<PreviewPostcssResult>;
 }
 
-/** Structural Tailwind Oxide scanner used only for dirty in-memory editor snapshots. */
-interface PreviewTailwindScanner {
-  /** Extracts Tailwind candidates from bounded source strings without filesystem traversal. */
-  scanFiles(
-    inputs: readonly { readonly content: string; readonly extension: string }[],
-  ): readonly string[];
-}
-
-/** Constructor exported by v4's Oxide dependency; receives no filesystem glob sources. */
-type PreviewTailwindScannerConstructor = new (options: {
-  readonly sources: readonly never[];
-}) => PreviewTailwindScanner;
-
 /** Loaded project implementation and the policy required to instantiate one safe processor. */
 interface PreviewTailwindImplementation {
   /** Adapter generation selected from exact installed packages. */
@@ -84,15 +76,9 @@ interface PreviewTailwindImplementation {
   /** Optional native scanner paired with the v4 adapter. */
   readonly Scanner?: PreviewTailwindScannerConstructor;
   /** Creates a processor for the current bounded dirty-source inventory. */
-  createProcessor(snapshotSources: readonly PreviewSnapshotSource[]): PreviewPostcssProcessor;
-}
-
-/** One bounded dirty source passed to native candidate extraction or legacy raw content config. */
-interface PreviewSnapshotSource {
-  /** Extension without the leading period, as expected by Tailwind scanners. */
-  readonly extension: string;
-  /** In-memory editor contents. */
-  readonly sourceText: string;
+  createProcessor(
+    snapshotSources: readonly PreviewTailwindSnapshotSource[],
+  ): PreviewPostcssProcessor;
 }
 
 /** Validated explicit `@source` paths used only as narrowly scoped watch evidence. */
@@ -123,6 +109,8 @@ interface PreviewTailwindImportFallback {
 
 /** Trusted roots and live dirty-source access used by one persistent esbuild context. */
 export interface PreviewTailwindPluginOptions {
+  /** Disables package-wide v4 scans after a complete page corridor supplied bounded sources. */
+  readonly boundedSourceDiscovery?: boolean;
   /** Nearest package boundary selected for the active preview target. */
   readonly projectRoot: string;
   /** Reads the current serialized rebuild's dirty editor overlays. */
@@ -170,7 +158,10 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           );
         }
 
-        const explicitSources = validateExplicitSources(source, sourcePath, workspaceRoot);
+        const boundedSource = options.boundedSourceDiscovery
+          ? boundPreviewTailwindSourceDiscovery(source).source
+          : source;
+        const explicitSources = validateExplicitSources(boundedSource, sourcePath, workspaceRoot);
         if (explicitSources.unsafeReason !== undefined) {
           return createFailSoftResult(source, sourcePath, loader, explicitSources.unsafeReason);
         }
@@ -181,7 +172,7 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           defaultProjectRoot,
         );
         const importPreflight = preflightCssImports(
-          source,
+          boundedSource,
           sourcePath,
           styleRoot,
           workspaceRoot,
@@ -234,23 +225,26 @@ export function createPreviewTailwindPlugin(options: PreviewTailwindPluginOption
           };
         }
 
-        const snapshots = collectSnapshotSources(
+        const snapshots = collectPreviewTailwindSnapshotSources(
           options.readSourceSnapshots?.(),
           lexicalWorkspaceRoot,
           workspaceRoot,
         );
         const inlineCandidates =
           implementation.kind === 'v4' && implementation.Scanner !== undefined
-            ? scanInlineCandidates(implementation.Scanner, snapshots)
+            ? scanPreviewTailwindInlineCandidates(implementation.Scanner, snapshots)
             : [];
         const processorSource = rewriteWorkspaceCssImportFallbacks(
-          source,
+          boundedSource,
           sourcePath,
           styleRoot,
           workspaceRoot,
           workspacePackageResolver,
         );
-        const processorInput = appendInlineCandidates(processorSource, inlineCandidates);
+        const processorInput = appendPreviewTailwindInlineCandidates(
+          processorSource,
+          inlineCandidates,
+        );
         try {
           // Esbuild may load sibling CSS files concurrently. Tailwind v4 reuses one processor per
           // package root, while each run may allocate a large candidate graph. Serializing only
@@ -489,7 +483,7 @@ function findOwningPackageManifest(
 /** Creates safe conventional legacy content roots plus bounded raw dirty-editor overlays. */
 function createLegacyContentInventory(
   styleRoot: string,
-  snapshots: readonly PreviewSnapshotSource[],
+  snapshots: readonly PreviewTailwindSnapshotSource[],
 ): readonly unknown[] {
   const directories = ['app', 'components', 'pages', 'src']
     .map((directory) => path.join(styleRoot, directory))
@@ -501,72 +495,6 @@ function createLegacyContentInventory(
       raw: snapshot.sourceText,
     })),
   ];
-}
-
-/** Selects only bounded, workspace-owned dirty source strings for candidate discovery. */
-function collectSnapshotSources(
-  snapshots: readonly PreviewSourceSnapshot[] | undefined,
-  lexicalWorkspaceRoot: string,
-  canonicalWorkspaceRoot: string,
-): readonly PreviewSnapshotSource[] {
-  if (snapshots === undefined) return [];
-  const output: PreviewSnapshotSource[] = [];
-  let totalBytes = 0;
-  for (const snapshot of snapshots.slice(0, MAX_SNAPSHOT_FILES)) {
-    const lexicalSourcePath = path.resolve(snapshot.documentPath);
-    const sourcePath = canonicalizeExistingPath(snapshot.documentPath);
-    if (
-      !isPathInside(canonicalWorkspaceRoot, sourcePath) &&
-      !isPathInside(lexicalWorkspaceRoot, lexicalSourcePath)
-    ) {
-      continue;
-    }
-    const extension = path.extname(sourcePath).slice(1).toLowerCase();
-    if (!/^(?:[cm]?[jt]sx?|html|mdx?|svelte|vue)$/u.test(extension)) continue;
-    const sourceBytes = Buffer.byteLength(snapshot.sourceText, 'utf8');
-    if (totalBytes + sourceBytes > MAX_SNAPSHOT_SOURCE_BYTES) break;
-    totalBytes += sourceBytes;
-    output.push({ extension, sourceText: snapshot.sourceText });
-  }
-  return output;
-}
-
-/** Extracts and bounds v4 candidates so unsaved class edits participate in the same rebuild. */
-function scanInlineCandidates(
-  Scanner: PreviewTailwindScannerConstructor,
-  sources: readonly PreviewSnapshotSource[],
-): readonly string[] {
-  if (sources.length === 0) return [];
-  try {
-    const scanner = new Scanner({ sources: [] });
-    const candidates = scanner.scanFiles(
-      sources.map((source) => ({ content: source.sourceText, extension: source.extension })),
-    );
-    const output: string[] = [];
-    let totalBytes = 0;
-    for (const candidate of [...new Set(candidates)].sort()) {
-      if (candidate.length === 0 || /[\u0000-\u001f\u007f\s]/u.test(candidate)) continue;
-      const candidateBytes = Buffer.byteLength(candidate, 'utf8');
-      if (
-        output.length >= MAX_INLINE_CANDIDATES ||
-        totalBytes + candidateBytes > MAX_INLINE_CANDIDATE_BYTES
-      ) {
-        break;
-      }
-      totalBytes += candidateBytes;
-      output.push(candidate);
-    }
-    return output;
-  } catch {
-    return [];
-  }
-}
-
-/** Adds one inert v4 inline source directive containing only native-scanner candidates. */
-function appendInlineCandidates(source: string, candidates: readonly string[]): string {
-  if (candidates.length === 0) return source;
-  const value = candidates.join(' ').replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-  return `${source}\n@source inline("${value}");\n`;
 }
 
 /**
@@ -676,6 +604,7 @@ function preflightCssImports(
       const importedPath = resolveImportedCssPath(
         specifier,
         current.sourcePath,
+        styleRoot,
         projectRequire,
         workspaceRoot,
         workspacePackageResolver,
@@ -735,6 +664,7 @@ function validateImportSourceModifier(
 function resolveImportedCssPath(
   specifier: string,
   importerPath: string,
+  styleRoot: string,
   projectRequire: PreviewProjectRequire,
   workspaceRoot: string,
   workspacePackageResolver: PreviewWorkspacePackageResolver,
@@ -749,6 +679,12 @@ function resolveImportedCssPath(
       ? canonicalCandidate
       : undefined;
   }
+  const packageStylePath = resolvePreviewInstalledCssPackageStylePath(cleanSpecifier, [
+    path.dirname(importerPath),
+    styleRoot,
+    workspaceRoot,
+  ]);
+  if (packageStylePath !== undefined) return packageStylePath;
   try {
     const resolved = canonicalizeExistingPath(projectRequire.resolve(cleanSpecifier));
     return CSS_FILTER.test(resolved) ? resolved : undefined;

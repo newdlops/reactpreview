@@ -61,6 +61,52 @@ describe('createPreviewTailwindPlugin', () => {
     }
   });
 
+  /** Compiles a proven page corridor without traversing broad or missing filesystem sources. */
+  it('uses bounded page and layout candidates when source discovery is constrained', async () => {
+    const workspaceRoot = await createProject('tailwind-bounded-page-');
+    const projectRoot = path.join(workspaceRoot, 'apps/web');
+    const stylesheetPath = path.join(projectRoot, 'app/globals.css');
+    await mkdir(path.dirname(stylesheetPath), { recursive: true });
+    await Promise.all([
+      writeFile(path.join(projectRoot, 'package.json'), '{"name":"web"}', 'utf8'),
+      writeFile(
+        stylesheetPath,
+        [
+          '@import "tailwindcss";',
+          '@source "../missing-generated/**/*.tsx";',
+          '@theme { --color-brand: red; }',
+        ].join('\n'),
+        'utf8',
+      ),
+      installFakePostcss(projectRoot),
+      installFakeTailwindV4(projectRoot),
+    ]);
+    const result = await build({
+      absWorkingDir: projectRoot,
+      bundle: true,
+      entryPoints: [stylesheetPath],
+      logLevel: 'silent',
+      outdir: path.join(projectRoot, 'out'),
+      plugins: [
+        createPreviewTailwindPlugin({
+          boundedSourceDiscovery: true,
+          projectRoot,
+          readSourceSnapshots: () => [
+            createSnapshot(projectRoot, 'className="dirty-page"', 'DirtyPage.tsx'),
+            createSnapshot(projectRoot, 'className="dirty-layout"', 'DirtyLayout.tsx'),
+          ],
+          workspaceRoot,
+        }),
+      ],
+      write: false,
+    });
+    const css = readCssOutput(result);
+
+    expect(css).toContain('.dirty-page');
+    expect(css).toContain('.dirty-layout');
+    expect(result.warnings).toEqual([]);
+  });
+
   /** Uses a v2/v3 package only with safe inline content instead of executing Tailwind config. */
   it('provides a configuration-free legacy PostCSS fallback', async () => {
     const projectRoot = await createProject('tailwind-v3-');
@@ -138,6 +184,27 @@ describe('createPreviewTailwindPlugin', () => {
     const result = await buildStylesheet(projectRoot, stylesheetPath, [], workspaceRoot);
 
     expect(readCssOutput(result)).toContain('.workspace-import-true');
+    expect(result.warnings).toEqual([]);
+  });
+
+  /**
+   * Mirrors CSS-only registries such as tw-animate-css, whose package root is intentionally absent
+   * from Node's JavaScript conditions. Tailwind's inert preflight must inspect the `style` target
+   * before the real v4 processor receives the same import.
+   */
+  it('preflights an installed package exposed only by its style condition', async () => {
+    const projectRoot = await createProject('tailwind-style-export-');
+    const stylesheetPath = path.join(projectRoot, 'globals.css');
+    await Promise.all([
+      writeFile(stylesheetPath, '@import "tw-animate-css";\n@tailwind utilities;', 'utf8'),
+      installFakePostcss(projectRoot),
+      installFakeTailwindV4(projectRoot),
+      installFakeCssOnlyStylePackage(projectRoot),
+    ]);
+
+    const result = await buildStylesheet(projectRoot, stylesheetPath);
+
+    expect(readCssOutput(result)).toContain('.fake-v4-generated');
     expect(result.warnings).toEqual([]);
   });
 
@@ -349,9 +416,13 @@ function readCssOutput(result: BuildResult): string {
 }
 
 /** Creates one dirty TSX snapshot whose disk file intentionally does not need to exist. */
-function createSnapshot(projectRoot: string, sourceText: string): PreviewSourceSnapshot {
+function createSnapshot(
+  projectRoot: string,
+  sourceText: string,
+  fileName = 'DirtyPreview.tsx',
+): PreviewSourceSnapshot {
   return {
-    documentPath: path.join(projectRoot, 'src/DirtyPreview.tsx'),
+    documentPath: path.join(projectRoot, 'src', fileName),
     language: 'tsx',
     sourceText,
   };
@@ -410,7 +481,7 @@ async function installFakeTailwindV4(projectRoot: string): Promise<void> {
         '    const workspaceImport = source.includes("packages/shadcn/src/tailwind.css");',
         '    const classes = inline.split(/\\s+/).filter((value) => value.includes("dirty-")).map((value) => `.${value} { display: block; }`).join("\\n");',
         '    return {',
-        '      css: `/* base:${adapterOptions.base}; inline:${inline} */\\n.fake-v4-generated,.generated,.flex,.workspace-import-${workspaceImport} { display: flex; }\\n${classes}`,',
+        '      css: `/* base:${adapterOptions.base}; inline:${inline}; bounded:${source.includes("source(none)")} */\\n.fake-v4-generated,.generated,.flex,.workspace-import-${workspaceImport} { display: flex; }\\n${classes}`,',
         '      messages: [{ type: "dependency", file: options.from }],',
         '    };',
         '  },',
@@ -474,5 +545,23 @@ async function installFakeTailwindCssStylePackage(projectRoot: string): Promise<
       'utf8',
     ),
     writeFile(path.join(packageRoot, 'index.css'), '@layer utilities {}', 'utf8'),
+  ]);
+}
+
+/** Installs a root package that CSS can resolve only when the `style` condition is active. */
+async function installFakeCssOnlyStylePackage(projectRoot: string): Promise<void> {
+  const packageRoot = path.join(projectRoot, 'node_modules/tw-animate-css');
+  await mkdir(packageRoot, { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(packageRoot, 'package.json'),
+      JSON.stringify({
+        exports: { '.': { style: './index.css' } },
+        name: 'tw-animate-css',
+        version: '1.0.0',
+      }),
+      'utf8',
+    ),
+    writeFile(path.join(packageRoot, 'index.css'), '.fake-animation { animation: none; }', 'utf8'),
   ]);
 }

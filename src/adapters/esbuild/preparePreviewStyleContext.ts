@@ -4,7 +4,7 @@
  * the main compiler focused on build orchestration and all style policy behind one module boundary.
  */
 import path from 'node:path';
-import type { PreviewBuildRequest } from '../../domain/preview';
+import type { PreviewBuildRequest, PreviewSourceSnapshot } from '../../domain/preview';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import {
   discoverPreviewDocumentShell,
@@ -19,6 +19,7 @@ import {
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
 import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
+import { collectPreviewTailwindCandidateSnapshotGraph } from './previewTailwindCandidateSnapshotGraph';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
 /** Current-source reader owned by the compiler-lifetime project analysis cache. */
@@ -46,6 +47,8 @@ export interface PreparedPreviewStyleContext {
   readonly globalStyleImports: readonly PreviewGlobalStyleImportSelection[];
   readonly portalHostIds: readonly string[];
   readonly snapshotSourceByPath: ReadonlyMap<string, string>;
+  /** Bounded page-corridor source text supplied to Tailwind without a filesystem scan. */
+  readonly tailwindCandidateSnapshots: readonly PreviewSourceSnapshot[];
   readonly themeImport?: PreviewThemeImportSelection;
 }
 
@@ -70,41 +73,53 @@ export async function preparePreviewStyleContext(
   };
   const readSource = (sourcePath: string, maximumBytes: number): Promise<string | undefined> =>
     readProjectSource({ maximumBytes, sourcePath });
-  const [themeImport, documentShellEvidence, globalStyleImports, portalHostIds] = await Promise.all(
-    [
-      options.directThemeImport ??
-        (options.inspectorDependencyPaths.length === 0
-          ? undefined
-          : selectPreviewGraphThemeImport({
-              dependencyPaths: options.inspectorDependencyPaths,
-              readSource,
-              resolveModule: options.staticModuleResolver.resolve,
-            })),
-      discoverPreviewDocumentShell({
-        projectRoot: options.projectRoot,
-        readSource,
-        workspaceRoot: options.workspaceRoot,
-      }),
-      selectPreviewGlobalStyleImports({
-        readSource: readProjectSource,
-        ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
-        resolveModule: options.staticModuleResolver.resolve,
-      }),
-      discoverPreviewPortalHostIds({
-        dependencyPaths: [
-          options.request.documentPath,
-          ...options.inspectorDependencyPaths,
-          ...options.portalHostDependencyPaths,
-        ],
-        readSource,
-      }),
-    ],
-  );
+  const [
+    themeImport,
+    documentShellEvidence,
+    globalStyleImports,
+    portalHostIds,
+    tailwindCandidateSnapshots,
+  ] = await Promise.all([
+    options.directThemeImport ??
+      (options.inspectorDependencyPaths.length === 0
+        ? undefined
+        : selectPreviewGraphThemeImport({
+            dependencyPaths: options.inspectorDependencyPaths,
+            readSource,
+            resolveModule: options.staticModuleResolver.resolve,
+          })),
+    discoverPreviewDocumentShell({
+      projectRoot: options.projectRoot,
+      readSource,
+      workspaceRoot: options.workspaceRoot,
+    }),
+    selectPreviewGlobalStyleImports({
+      readSource: readProjectSource,
+      ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
+      resolveModule: options.staticModuleResolver.resolve,
+    }),
+    discoverPreviewPortalHostIds({
+      dependencyPaths: [
+        options.request.documentPath,
+        ...options.inspectorDependencyPaths,
+        ...options.portalHostDependencyPaths,
+      ],
+      readSource,
+    }),
+    collectPreviewTailwindCandidateSnapshotGraph({
+      corridorPaths: options.inspectorDependencyPaths,
+      readSource: readProjectSource,
+      resolveModule: options.staticModuleResolver.resolve,
+      targetPath: options.request.documentPath,
+      workspaceRoot: options.workspaceRoot,
+    }),
+  ]);
   return {
     ...(documentShellEvidence === undefined ? {} : { documentShellEvidence }),
     globalStyleImports,
     portalHostIds,
     snapshotSourceByPath,
+    tailwindCandidateSnapshots,
     ...(themeImport === undefined ? {} : { themeImport }),
   };
 }

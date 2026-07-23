@@ -131,6 +131,85 @@ describe('Preview Inspector render-tree UI runtime source', () => {
     });
   });
 
+  /** Never treats an unrelated page's common `default` export spelling as current-file Fiber. */
+  it('requires authored source identity before marking a default export as mounted', () => {
+    const descriptor = {
+      inspector: {
+        pageCandidates: [],
+        renderChainsByExport: {
+          default: {
+            paths: [],
+            target: { exportName: 'default', sourcePath: '/workspace/TargetPage.tsx' },
+          },
+        },
+        target: { exportName: 'default', sourcePath: '/workspace/TargetPage.tsx' },
+      },
+    };
+    const candidate = {
+      root: { exportName: 'default', sourcePath: '/workspace/Application.tsx' },
+    };
+    const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
+    const snapshot = runtime.enrich({
+      roots: [
+        {
+          children: [],
+          exportName: 'default',
+          id: 'fallback-page',
+          kind: 'function',
+          name: 'FallbackPage',
+          source: { path: '/workspace/FallbackPage.tsx' },
+        },
+      ],
+      status: 'available',
+    });
+
+    expect(findNodeById(snapshot.roots, 'fallback-page')).not.toHaveProperty('currentFileExport');
+    expect(findNodeById(snapshot.roots, 'unmounted-export:0:default')).toMatchObject({
+      currentFileExport: true,
+      mounted: false,
+    });
+  });
+
+  /** Keeps a static target row selectable but explicitly unmounted until Fiber evidence exists. */
+  it('does not promote an authored static path target into a mounted component', () => {
+    const descriptor = {
+      inspector: {
+        pageCandidates: [],
+        renderChainsByExport: {
+          CurrentCard: {
+            paths: [],
+            target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+          },
+        },
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const candidate = {
+      root: { exportName: 'Application', sourcePath: '/workspace/Application.tsx' },
+    };
+    const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
+    const snapshot = runtime.enrich({
+      roots: [
+        {
+          children: [],
+          currentFileExport: true,
+          exportName: 'CurrentCard',
+          id: 'static-target',
+          kind: 'target',
+          name: 'CurrentCard',
+          source: { path: '/workspace/CurrentCard.tsx' },
+        },
+      ],
+      status: 'static',
+    });
+
+    expect(findNodeById(snapshot.roots, 'static-target')).toMatchObject({
+      currentFileExport: true,
+      mounted: false,
+    });
+    expect(findNode(snapshot.roots, 'Unmounted current-file exports')).toBeUndefined();
+  });
+
   /** Expands HOC factories and component-valued props into visible inert render-path boundaries. */
   it('shows HOC and component-slot transport between the page root and current file', () => {
     const descriptor = {

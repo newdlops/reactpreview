@@ -653,28 +653,54 @@ function createPreviewInspectorRenderContextNode(entry, index, children) {
   };
 }
 
-/** Marks mounted current-file exports without mutating the collector-owned Fiber snapshot. */
-function markPreviewInspectorCurrentFileExports(nodes, exports, mountedNames) {
+/**
+ * Reconciles current-file identities without converting static path evidence into a Fiber mount.
+ *
+ * @param nodes Collector-owned live or static tree records.
+ * @param exports Current editor file's component-shaped exports.
+ * @param representedNames Exports already represented by either live or static tree evidence.
+ * @param liveSnapshot Whether the collector found an actual React Fiber application slice.
+ */
+function markPreviewInspectorCurrentFileExports(
+  nodes,
+  exports,
+  representedNames,
+  liveSnapshot,
+) {
   return nodes.map((node) => {
     const matching = exports.find((item) => {
-      if (node.exportName === item.exportName) return true;
       const nodePath = normalizePreviewInspectorConditionSourcePath(node.source?.path);
-      return node.name === item.exportName && nodePath.length > 0 &&
-        typeof item.sourcePath === 'string' &&
-        matchesPreviewInspectorConditionSourcePath(nodePath, item.sourcePath);
+      const itemPath = normalizePreviewInspectorConditionSourcePath(item.sourcePath);
+      const sourceMatches = nodePath.length > 0 && itemPath.length > 0 &&
+        matchesPreviewInspectorConditionSourcePath(nodePath, itemPath);
+      if (!sourceMatches) return false;
+      /*
+       * The default export spelling appears in nearly every page module. Export spelling alone is
+       * therefore never mount evidence: exact authored source identity must agree before a live
+       * Fiber row can represent the current file. Named exports use the same rule to avoid
+       * cross-file barrel collisions.
+       */
+      return node.exportName === item.exportName || node.name === item.exportName;
     });
-    if (matching !== undefined) mountedNames.add(matching.exportName);
+    if (matching !== undefined) representedNames.add(matching.exportName);
     return {
       ...node,
-      ...(matching === undefined ? {} : { currentFileExport: true, mounted: true }),
-      children: markPreviewInspectorCurrentFileExports(node.children, exports, mountedNames),
+      ...(matching === undefined
+        ? {}
+        : { currentFileExport: true, mounted: liveSnapshot === true }),
+      children: markPreviewInspectorCurrentFileExports(
+        node.children,
+        exports,
+        representedNames,
+        liveSnapshot,
+      ),
     };
   });
 }
 
 /** Creates an explicit inventory branch for exports absent from the selected authored page path. */
-function createPreviewInspectorUnmountedExportGroup(exports, mountedNames) {
-  const missing = exports.filter((item) => !mountedNames.has(item.exportName));
+function createPreviewInspectorUnmountedExportGroup(exports, representedNames) {
+  const missing = exports.filter((item) => !representedNames.has(item.exportName));
   if (missing.length === 0) return undefined;
   return {
     children: missing.map((item, index) => ({
@@ -704,8 +730,14 @@ function enrichPreviewInspectorRenderTreeSnapshot(snapshot) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
   if (descriptor?.inspector === undefined) return snapshot;
   const exports = readPreviewInspectorCurrentFileExports(descriptor);
-  const mountedNames = new Set();
-  let roots = markPreviewInspectorCurrentFileExports(snapshot.roots, exports, mountedNames);
+  const representedNames = new Set();
+  const liveSnapshot = snapshot.status !== 'static' && snapshot.status !== 'unavailable';
+  let roots = markPreviewInspectorCurrentFileExports(
+    snapshot.roots,
+    exports,
+    representedNames,
+    liveSnapshot,
+  );
   const context = readPreviewInspectorRenderContextEntries(descriptor);
   const mountedIndex = findPreviewInspectorMountedContextIndex(context.entries, roots);
   const prefixCount = mountedIndex ?? Math.max(0, context.entries.length - 1);
@@ -713,7 +745,7 @@ function enrichPreviewInspectorRenderTreeSnapshot(snapshot) {
   for (let index = prefixCount - 1; index >= 0; index -= 1) {
     roots = [createPreviewInspectorRenderContextNode(context.entries[index], index, roots)];
   }
-  const unmountedGroup = createPreviewInspectorUnmountedExportGroup(exports, mountedNames);
+  const unmountedGroup = createPreviewInspectorUnmountedExportGroup(exports, representedNames);
   if (unmountedGroup !== undefined) roots.push(unmountedGroup);
   const expectedOutcomeExportName = readPreviewInspectorExpectedOutcomeExportName(descriptor);
   if (expectedOutcomeExportName !== undefined) {

@@ -46,6 +46,12 @@ export {
   type PreviewInspectorCorridorPluginOptions,
 } from './previewInspectorCorridorPlugin';
 export {
+  collectPreviewStaticRouteProjectionInventory,
+  createPreviewStaticRouteProjectionSource,
+  type PreviewStaticRouteProjection,
+  type PreviewStaticRouteProjectionInventory,
+} from './previewInspectorStaticRouteProjection';
+export {
   collectPreviewInspectorRenderOutcomes,
   expandPreviewInspectorRenderOutcomes,
   PREVIEW_INSPECTOR_RENDER_OUTCOME_EXPANSION_LIMITS,

@@ -59,6 +59,54 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     await expect(readFile(unrelatedPath, 'utf8')).resolves.toContain('UNRELATED_ROUTE_MARKER');
   });
 
+  /** Keeps wrapper modules that prove a render step even when they are not standalone step nodes. */
+  it('preserves render-step wrapper evidence inside a pruned dynamic registry', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const selectedPath = path.join(workspaceRoot, 'src', 'Selected.ts');
+    const wrapperPath = path.join(workspaceRoot, 'src', 'Wrapper.ts');
+    const unrelatedPath = path.join(workspaceRoot, 'src', 'Unrelated.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          `export const selected = () => import('./Selected');`,
+          `export const wrapper = () => import('./Wrapper');`,
+          `export const unrelated = () => import('./Unrelated');`,
+        ].join('\n'),
+      ),
+      writeFile(selectedPath, `export default 'SELECTED_CORRIDOR_MARKER';`),
+      writeFile(wrapperPath, `export default 'WRAPPER_EVIDENCE_MARKER';`),
+      writeFile(unrelatedPath, `export default 'UNRELATED_ROUTE_MARKER';`),
+    ]);
+    const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      format: 'esm',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          maximumSmallDynamicImports: 0,
+          plan: createCorridorPlan(entryPath, selectedPath, undefined, [wrapperPath]),
+          projectRoot: workspaceRoot,
+          resolveModule: resolver.resolve,
+          workspaceRoot,
+        }),
+      ],
+      splitting: true,
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('SELECTED_CORRIDOR_MARKER');
+    expect(source).toContain('WRAPPER_EVIDENCE_MARKER');
+    expect(source).not.toContain('UNRELATED_ROUTE_MARKER');
+  });
+
   /** Lets first paint classify a medium dormant lazy-choice list without traversing every child. */
   it('accepts a lower generated-registry threshold for bounded fast preparation', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
@@ -520,6 +568,7 @@ function createCorridorPlan(
   entryPath: string,
   selectedPath: string,
   routeParams?: Readonly<Record<string, string>>,
+  evidenceSourcePaths: readonly string[] = [],
 ): PreviewInspectorAncestorPlan {
   const target = { exportName: 'default', sourcePath: selectedPath };
   const renderPath = {
@@ -537,6 +586,7 @@ function createCorridorPlan(
         label: 'Selected',
         occurrenceStart: 0,
         sourcePath: selectedPath,
+        evidenceSourcePaths,
         wrapperNames: [],
       },
       {

@@ -2,6 +2,32 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1030 - 2026-07-17
+
+- Inspector에 `Payloads` 탭을 추가해 관찰된 API/GraphQL 요청, source/type 근거와 실제 전달되는 JSON을 표시
+- GraphQL selection·alias·fragment·list, REST TypeScript generic/interface/type alias와 필드명 의미를 합쳐
+  backend 없는 결정적 Auto payload를 만들고 모든 생성값을 `GENERATED` provenance로 구분
+- `Generate Lorem`, `Use Auto`, `Apply JSON`, `Reset override`를 추가하고 payload/Auto 설정을 탭별 저장하며,
+  변경 시 page export를 remount해 Apollo/REST hook cache가 새 값을 다시 읽도록 구현
+- global `fetch`, fetch 기반 HTTP(S)/`/api`/`/graphql` client와 정확한 `axios` import의 HTTP method를
+  no-network Response/AxiosResponse로 종료하고 imported Axios instance의 XMLHttpRequest도 같은 registry에
+  연결하되 상대 JSON/TXT/CSV fetch fixture와 임의 project method는 보존
+- source instrumentation, data registry/generator와 Payload UI를 독립 모듈로 분리하고 request·shape
+  depth/field/count, URL metadata와 prototype key를 bounded하게 처리
+
+## 0.1.1029 - 2026-07-17
+
+- Inspector toolbar에 `Main component` 버튼을 추가해 sibling, descendant 또는 조건 행을 살펴본 뒤에도 현재
+  파일의 대표 default/첫 PascalCase export와 실제 mounted target으로 즉시 복귀하도록 구현
+- reached TSX/JSX graph의 `condition && <Component />`와 JSX 삼항식을 구문으로 계측하고, 원래 truthiness를
+  기본값으로 보존하면서 component tree에서 각 조건의 visible/hidden 또는 양쪽 branch를 직접 토글하도록 추가
+- 조건 행을 JSX source가 같은 가장 가까운 React component 아래에 배치하고 source 근거가 부족하면 별도
+  `Render conditions` 그룹에 유지하며, authored/forced 상태와 fallback branch 여부를 표시
+- `Auto values` 토글로 타입·사용처에서 추론한 preview-only prop 값을 켜고 끌 수 있게 하고, 조건/자동값 선택을
+  탭별 webview state에 저장해 hot reload 뒤에도 유지
+- condition AST transform, condition registry/UI, Inspector persistence와 source replacement 적용을 각각 독립
+  모듈로 분리해 모든 유지보수 파일의 1000줄 제한을 계속 준수
+
 ## 0.1.1028 - 2026-07-17
 
 - 접힌 Inspector의 Shadow DOM portal host를 viewport 전체에 고정하고 pointer input을 shell로 한정하며, 접힌

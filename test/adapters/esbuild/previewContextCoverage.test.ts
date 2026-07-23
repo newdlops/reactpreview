@@ -75,8 +75,8 @@ describe('resolvePreviewContextCoverage', () => {
     ).toBe('partial');
   });
 
-  /** A semantic ReactDOM entry proves generic app context without requiring a URL registry. */
-  it('accepts a generic entry-connected render corridor without route metadata', () => {
+  /** A mounted application checkpoint plus ReactDOM entry proves context without a URL registry. */
+  it('accepts an entry-connected application checkpoint without route metadata', () => {
     const renderPath = Object.freeze({
       entryPoint: Object.freeze({
         kind: 'create-root' as const,
@@ -85,9 +85,25 @@ describe('resolvePreviewContextCoverage', () => {
         wrapperNames: Object.freeze(['App']),
       }),
       id: 'entry-to-target',
-      steps: Object.freeze([]),
+      steps: Object.freeze([
+        Object.freeze({
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'App',
+          occurrenceStart: 12,
+          sourcePath: '/workspace/src/App.tsx',
+          wrapperNames: Object.freeze([]),
+        }),
+      ]),
     });
-    const inspectorPlan = createPlan({ renderPath }, 'entry-connected');
+    const inspectorPlan = createPlan(
+      {
+        renderPath,
+        root: Object.freeze({ exportName: 'default', sourcePath: '/workspace/src/App.tsx' }),
+        rootStepIndex: 0,
+      },
+      'entry-connected',
+    );
 
     expect(
       resolvePreviewContextCoverage({
@@ -96,6 +112,122 @@ describe('resolvePreviewContextCoverage', () => {
         maximumPublishedPageCandidates: 1,
       }),
     ).toBe('complete');
+  });
+
+  /**
+   * A useful fast shell remains publishable after a bounded search, but incomplete graph or runtime
+   * evidence must still schedule the full-context replacement behind that first paint.
+   */
+  it('keeps an entry-connected shell partial when fast graph or global evidence is incomplete', () => {
+    const renderPath = Object.freeze({
+      entryPoint: Object.freeze({
+        kind: 'create-root' as const,
+        occurrenceStart: 42,
+        sourcePath: '/workspace/src/main.tsx',
+        wrapperNames: Object.freeze(['App']),
+      }),
+      id: 'entry-to-target',
+      steps: Object.freeze([
+        Object.freeze({
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'App',
+          occurrenceStart: 12,
+          sourcePath: '/workspace/src/App.tsx',
+          wrapperNames: Object.freeze([]),
+        }),
+      ]),
+    });
+    const inspectorPlan = createPlan(
+      {
+        renderPath,
+        root: Object.freeze({ exportName: 'default', sourcePath: '/workspace/src/App.tsx' }),
+        rootStepIndex: 0,
+      },
+      'entry-connected',
+    );
+    const baseOptions = {
+      request: REQUEST,
+      inspectorPlan,
+      maximumPublishedPageCandidates: 1,
+    } as const;
+
+    expect(resolvePreviewContextCoverage({ ...baseOptions, fastContextTruncated: true })).toBe(
+      'partial',
+    );
+    expect(
+      resolvePreviewContextCoverage({
+        ...baseOptions,
+        implicitGlobalEvidence: Object.freeze({
+          ambiguousGlobalNames: Object.freeze([]),
+          dependencyPaths: Object.freeze([]),
+          evidence: Object.freeze([]),
+          unresolvedGlobalNames: Object.freeze([]),
+          truncated: true,
+        }),
+      }),
+    ).toBe('partial');
+    expect(
+      resolvePreviewContextCoverage({
+        ...baseOptions,
+        implicitGlobalEvidence: Object.freeze({
+          ambiguousGlobalNames: Object.freeze([]),
+          dependencyPaths: Object.freeze([]),
+          evidence: Object.freeze([]),
+          unresolvedGlobalNames: Object.freeze(['dayjs']),
+          truncated: false,
+        }),
+      }),
+    ).toBe('partial');
+  });
+
+  /** A nearby consumer does not inherit completeness merely because another graph node reaches App. */
+  it('keeps an entry-connected nearby consumer partial until the App checkpoint is mounted', () => {
+    const renderPath = Object.freeze({
+      entryPoint: Object.freeze({
+        kind: 'create-root' as const,
+        occurrenceStart: 42,
+        sourcePath: '/workspace/src/main.tsx',
+        wrapperNames: Object.freeze(['App']),
+      }),
+      id: 'entry-to-target',
+      steps: Object.freeze([
+        Object.freeze({
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'FeaturePanel',
+          occurrenceStart: 8,
+          sourcePath: '/workspace/src/FeaturePanel.tsx',
+          wrapperNames: Object.freeze([]),
+        }),
+        Object.freeze({
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'App',
+          occurrenceStart: 12,
+          sourcePath: '/workspace/src/App.tsx',
+          wrapperNames: Object.freeze([]),
+        }),
+      ]),
+    });
+    const inspectorPlan = createPlan(
+      {
+        renderPath,
+        root: Object.freeze({
+          exportName: 'FeaturePage',
+          sourcePath: '/workspace/src/FeaturePage.tsx',
+        }),
+      },
+      'entry-connected',
+    );
+
+    expect(
+      resolvePreviewContextCoverage({
+        request: REQUEST,
+        inspectorPlan,
+        maximumPublishedPageCandidates: 1,
+      }),
+    ).toBe('partial');
   });
 
   /** A fast root that publishes one of several candidates must still request complete enrichment. */
@@ -108,9 +240,25 @@ describe('resolvePreviewContextCoverage', () => {
         wrapperNames: Object.freeze(['App']),
       }),
       id: 'entry-to-target',
-      steps: Object.freeze([]),
+      steps: Object.freeze([
+        Object.freeze({
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'App',
+          occurrenceStart: 12,
+          sourcePath: '/workspace/src/App.tsx',
+          wrapperNames: Object.freeze([]),
+        }),
+      ]),
     });
-    const singleCandidatePlan = createPlan({ renderPath }, 'entry-connected');
+    const singleCandidatePlan = createPlan(
+      {
+        renderPath,
+        root: Object.freeze({ exportName: 'default', sourcePath: '/workspace/src/App.tsx' }),
+        rootStepIndex: 0,
+      },
+      'entry-connected',
+    );
     const firstCandidate = singleCandidatePlan.pageCandidates[0];
     if (firstCandidate === undefined) throw new Error('Expected fixture page candidate.');
     const inspectorPlan = Object.freeze({
@@ -140,9 +288,25 @@ describe('resolvePreviewContextCoverage', () => {
         wrapperNames: Object.freeze(['App']),
       }),
       id: 'entry-to-target',
-      steps: Object.freeze([]),
+      steps: Object.freeze([
+        Object.freeze({
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'App',
+          occurrenceStart: 12,
+          sourcePath: '/workspace/src/App.tsx',
+          wrapperNames: Object.freeze([]),
+        }),
+      ]),
     });
-    const singleCandidatePlan = createPlan({ renderPath }, 'entry-connected');
+    const singleCandidatePlan = createPlan(
+      {
+        renderPath,
+        root: Object.freeze({ exportName: 'default', sourcePath: '/workspace/src/App.tsx' }),
+        rootStepIndex: 0,
+      },
+      'entry-connected',
+    );
     const firstCandidate = singleCandidatePlan.pageCandidates[0];
     if (firstCandidate === undefined) throw new Error('Expected fixture page candidate.');
     const inspectorPlan = Object.freeze({

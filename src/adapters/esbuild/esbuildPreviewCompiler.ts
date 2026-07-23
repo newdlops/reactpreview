@@ -51,7 +51,6 @@ import {
 import { createPreviewContextBridgePlugin } from './previewContextBridgePlugin';
 import { resolvePreviewContextCoverage } from './previewContextCoverage';
 import {
-  EMPTY_IMPLICIT_GLOBAL_EVIDENCE,
   EMPTY_RUNTIME_WATCH_INPUTS,
   createImplicitGlobalEvidenceCacheKey,
   createPreviewDocumentName,
@@ -64,6 +63,7 @@ import {
   type PreviewRouterBuildSelection,
 } from './previewCompilerDefaults';
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
+import { preparePreviewImplicitGlobalEvidence } from './previewFastImplicitGlobalEvidence';
 import type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
 import { createPreviewMissingSourceFallbackPlugin } from './previewMissingSourceFallbackPlugin';
@@ -245,7 +245,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ? Promise.resolve(EMPTY_RUNTIME_WATCH_INPUTS)
           : createPreviewRuntimeWatchInputs(projectRoot, canonicalWorkspaceRoot),
       ]);
-      const { packageTargetUsageProps, implicitGlobalSourcePaths } =
+      const { fastContextTruncated, packageTargetUsageProps, implicitGlobalSourcePaths } =
         await preparePreviewCompilerUsage({
           cache: this.projectUsageCache,
           projectRoot,
@@ -333,23 +333,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       } = styleContext;
       let legacyCommonJsGlobalNames: readonly string[] = [];
       let portalHostIds = styleContext.portalHostIds;
-      const implicitGlobalEvidence = useFastPreparation
-        ? EMPTY_IMPLICIT_GLOBAL_EVIDENCE
-        : await this.implicitGlobalEvidenceCache.discover({
-            cacheKey: createImplicitGlobalEvidenceCacheKey(projectRoot, request.tsconfigPath),
-            readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
-            resolveModule: staticModuleResolver.resolve,
-            signal: buildSignal,
-            snapshotSourceByPath,
-            sourcePaths:
-              request.renderMode === 'page-inspector' && targetUsageProps.dependencyPaths.length > 0
-                ? [...targetUsageProps.dependencyPaths, ...runtimeWatchInputs.dependencyPaths]
-                : implicitGlobalSourcePaths,
-          });
+      const implicitGlobalEvidence = await preparePreviewImplicitGlobalEvidence({
+        cache: this.implicitGlobalEvidenceCache,
+        cacheKey: createImplicitGlobalEvidenceCacheKey(projectRoot, request.tsconfigPath),
+        fallbackSourcePaths: implicitGlobalSourcePaths,
+        fast: useFastPreparation,
+        inspectorDependencyPaths: targetUsageProps.dependencyPaths,
+        pageInspector: request.renderMode === 'page-inspector',
+        prioritizedSourcePath: primaryRenderPath?.entryPoint?.sourcePath,
+        readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
+        resolveModule: staticModuleResolver.resolve,
+        runtimeDependencyPaths: runtimeWatchInputs.dependencyPaths,
+        signal: buildSignal,
+        snapshotSourceByPath,
+      });
       throwIfPreviewBuildCancelled(buildSignal);
       const globalBridgeEvidencePolicy =
         createPreviewGlobalPackageBridgeEvidencePolicy(implicitGlobalEvidence);
-      /** Creates one trace boundary per esbuild attempt because its resolver inventory is stateful. */
+      /** Creates one trace boundary per build because its resolver inventory is stateful. */
       const createStorybookFallbackBoundary = (
         environment: PreviewRuntimeEnvironment,
       ): PreviewSetupFallbackBoundary | undefined =>
@@ -668,11 +669,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ),
         };
       };
-      /**
-       * Rebuilds at most once for graph-proven router hooks or exact installed-package globals.
-       * Strong bootstrap/ambient bridges participate in the first build. Conservative same-name
-       * package fallback is admitted only after that reached graph proves a lexical free reference.
-       */
+      /** Rebuilds once after reached syntax proves router hooks or exact package-global references. */
       const runAdaptiveBuild = async (
         environment: PreviewRuntimeEnvironment,
         splitOutputs: boolean,
@@ -914,6 +911,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ],
         this.diagnosticEmissionCache.admitBuildWarning.bind(this.diagnosticEmissionCache),
         resolvePreviewContextCoverage({
+          fastContextTruncated,
+          implicitGlobalEvidence,
           request,
           inspectorPlan: targetUsageProps.inspectorPlan,
           maximumPublishedPageCandidates: useFastPreparation ? 1 : undefined,

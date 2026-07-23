@@ -6,9 +6,14 @@
 import path from 'node:path';
 import type { PreviewBuildRequest, PreviewContextCoverage } from '../../domain/preview';
 import type { PreviewInspectorAncestorPlan } from './inspector';
+import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
 
 /** Evidence available after target-usage planning and before bundle publication. */
 export interface ResolvePreviewContextCoverageOptions {
+  /** Bounded fast graph search omitted possible outer application context. */
+  readonly fastContextTruncated?: true | undefined;
+  /** Strong global assignments selected before bundling, including incomplete-evidence metadata. */
+  readonly implicitGlobalEvidence?: PreviewImplicitGlobalEvidenceInventory;
   /** Immutable request whose mode determines whether page context is relevant. */
   readonly request: PreviewBuildRequest;
   /** Compiler-selected ancestry and default page candidate, when static discovery succeeded. */
@@ -33,6 +38,16 @@ export function resolvePreviewContextCoverage(
   if (options.request.renderMode !== 'page-inspector') {
     return options.request.preparationMode === 'fast' ? 'partial' : 'complete';
   }
+  const globalEvidence = options.implicitGlobalEvidence;
+  if (
+    options.request.preparationMode === 'fast' &&
+    (options.fastContextTruncated === true ||
+      globalEvidence?.truncated === true ||
+      (globalEvidence?.ambiguousGlobalNames.length ?? 0) > 0 ||
+      (globalEvidence?.unresolvedGlobalNames.length ?? 0) > 0)
+  ) {
+    return 'partial';
+  }
 
   const plan = options.inspectorPlan;
   const candidate = plan?.pageCandidates[0];
@@ -46,7 +61,18 @@ export function resolvePreviewContextCoverage(
   }
 
   const renderPath = candidate.renderPath;
-  if (plan.renderChain.reachability === 'entry-connected' && renderPath?.entryPoint !== undefined) {
+  if (
+    plan.renderChain.reachability === 'entry-connected' &&
+    renderPath?.entryPoint !== undefined &&
+    candidate.rootStepIndex !== undefined
+  ) {
+    /*
+     * Entry reachability belongs to the whole target graph, not necessarily to the candidate that
+     * the generated Inspector root actually mounts. A nearby JSX consumer can finish its bounded
+     * reverse search while still omitting the App/router/layout checkpoint found on the same render
+     * path. Only a promoted render-path checkpoint has `rootStepIndex`; requiring it prevents that
+     * cheap component root from cancelling deferred full-context enrichment.
+     */
     return 'complete';
   }
 

@@ -125,8 +125,63 @@ describe('EsbuildPreviewCompiler fast generic page context', () => {
     }
   }, 15_000);
 
-  /** Renders a hook/factory module through its real consuming page instead of an empty gallery. */
-  it('bundles JSX-bearing callable exports as page render contributions', async () => {
+  /**
+   * A local consumer is a valid quick first paint, but without entry, route, or layout evidence it
+   * must remain provisional so the panel still schedules complete application-context discovery.
+   */
+  it('keeps a fast local-consumer preview provisional without page-shell evidence', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/fast-local-consumer-context-'),
+    );
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await writeFile(path.join(projectRoot, 'package.json'), '{"private":true}', 'utf8');
+      await writeSource(
+        projectRoot,
+        'src/TargetConsumer.tsx',
+        [
+          "import TargetCard from './TargetCard';",
+          'export default function TargetConsumer() {',
+          '  return <section>LOCAL_CONSUMER_MARKER<TargetCard /></section>;',
+          '}',
+        ].join('\n'),
+      );
+      const targetSource =
+        'export default function TargetCard() { return <article>LOCAL_TARGET_MARKER</article>; }';
+      const targetPath = await writeSource(projectRoot, 'src/TargetCard.tsx', targetSource);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        preparationMode: 'fast',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(javascript).toContain('LOCAL_CONSUMER_MARKER');
+      expect(javascript).toContain('LOCAL_TARGET_MARKER');
+      expect(bundle.contextCoverage).toBe('partial');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([path.join(projectRoot, 'src/TargetConsumer.tsx'), targetPath]),
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  }, 15_000);
+
+  /**
+   * Renders a hook/factory module through a useful consuming page, but keeps enrichment pending
+   * until the application checkpoint above that consumer is the actual mounted root.
+   */
+  it('keeps a callable-export consumer provisional below its application checkpoint', async () => {
     const projectRoot = await mkdtemp(
       path.join(REPOSITORY_ROOT, 'test/fixtures/fast-generic-hook-context-'),
     );
@@ -189,7 +244,7 @@ describe('EsbuildPreviewCompiler fast generic page context', () => {
         ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
       ]).toString('utf8');
 
-      expect(bundle.contextCoverage).toBe('complete');
+      expect(bundle.contextCoverage).toBe('partial');
       expect(javascript).toContain('FAST_HOOK_PAGE_MARKER');
       expect(javascript).toContain('FAST_HOOK_JSX_MARKER');
       expect(bundle.dependencies).toContain(path.join(projectRoot, 'src/CompanyPage.tsx'));

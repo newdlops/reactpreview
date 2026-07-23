@@ -144,6 +144,91 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     );
   });
 
+  /**
+   * A saturated reverse directory must not discard the useful App shell. It marks that shell as
+   * provisional so the browser can paint it immediately while full discovery runs afterward.
+   */
+  it('retains an entry-connected shell while exposing truncated fast discovery', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'prepare-fast-truncated-page-'));
+    temporaryRoots.push(projectRoot);
+    const sources = await Promise.all([
+      writeSource(
+        projectRoot,
+        'src/main.tsx',
+        [
+          "import { createRoot } from 'react-dom/client';",
+          "import App from './App';",
+          'createRoot(document.body).render(<App />);',
+        ].join('\n'),
+      ),
+      writeSource(
+        projectRoot,
+        'src/App.tsx',
+        "import Dashboard from './pages/Dashboard'; export default function App() { return <Dashboard />; }",
+      ),
+      writeSource(
+        projectRoot,
+        'src/pages/Dashboard.tsx',
+        "import CurrentCard from '../components/CurrentCard'; export default function Dashboard() { return <main><CurrentCard /></main>; }",
+      ),
+      writeSource(
+        projectRoot,
+        'src/components/CurrentCard.tsx',
+        'export default function CurrentCard() { return <article>Current file</article>; }',
+      ),
+    ]);
+    const documentPath = path.join(projectRoot, 'src/components/CurrentCard.tsx');
+    const decoySnapshots: PreviewBuildRequest['dependencySnapshots'] = Object.freeze(
+      Array.from({ length: 193 }, (_, index) =>
+        Object.freeze({
+          documentPath: path.join(projectRoot, `src/components/Decoy${index.toString()}.tsx`),
+          language: 'tsx' as const,
+          sourceText: `export default function Decoy${index.toString()}() { return null; }`,
+        }),
+      ),
+    );
+    const request: PreviewBuildRequest = {
+      dependencySnapshots: decoySnapshots,
+      documentPath,
+      language: 'tsx',
+      preparationMode: 'fast',
+      renderMode: 'page-inspector',
+      sourceText: await readFile(documentPath, 'utf8'),
+      useStorybookPreview: false,
+      workspaceRoot: projectRoot,
+    };
+    const getSourcePaths = vi.fn();
+    const sourceByPath = new Map(
+      decoySnapshots.map((snapshot) => [snapshot.documentPath, snapshot.sourceText] as const),
+    );
+    const cache = {
+      discover: vi.fn(),
+      getSourcePaths,
+      readSourceText: vi.fn(({ sourcePath }: { readonly sourcePath: string }) =>
+        Promise.resolve(sourceByPath.get(sourcePath)).then(
+          (snapshot) => snapshot ?? readFile(sourcePath, 'utf8').catch(() => undefined),
+        ),
+      ),
+    } as unknown as PreviewProjectUsageCache;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot,
+      projectUsesNextRuntime: false,
+      request,
+      resolver: createResolverStub([...sources, ...sourceByPath.keys()]),
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: projectRoot,
+    });
+
+    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(prepared.fastContextTruncated).toBe(true);
+    expect(prepared.packageTargetUsageProps.inspectorPlan?.root.sourcePath).toBe(
+      path.join(projectRoot, 'src/App.tsx'),
+    );
+  });
+
   /** Promotes a JSX-bearing hook's consuming component instead of publishing an empty gallery. */
   it('recovers a callable render contribution during fast preparation', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'prepare-fast-hook-page-'));

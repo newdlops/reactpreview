@@ -14,6 +14,7 @@ import {
 } from './inspector/previewInspectorModuleConsumerPagePlan';
 import { createPreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorPlan';
 import { collectPreviewInspectorFastPageCorridor } from './inspector/previewInspectorFastPageCorridor';
+import type { PreviewInspectorOneHopVisualPath } from './inspector/previewInspectorShallowVisualTypes';
 import { createPreviewInspectorNextAppDirectRoutePlan } from './inspector/previewInspectorNextAppDirectRoutePlan';
 import { createPreviewInspectorNextAppModulePagePlan } from './inspector/previewInspectorNextAppModulePagePlan';
 import {
@@ -58,6 +59,8 @@ export interface PreparePreviewCompilerUsageOptions {
 
 /** Initial package evidence plus the reusable inventory for implicit runtime-global discovery. */
 export interface PreparedPreviewCompilerUsage {
+  /** Bounded fast graph search omitted possible outer context and therefore needs full enrichment. */
+  readonly fastContextTruncated?: true;
   readonly implicitGlobalSourcePaths: readonly string[];
   readonly packageTargetUsageProps: PreviewTargetUsageProps;
 }
@@ -205,7 +208,14 @@ export async function preparePreviewCompilerUsage(
           ...(signal === undefined ? {} : { signal }),
           sourcePaths: corridor.sourcePaths,
         });
-        if (nextAppPlan !== undefined) return createPreparedInspectorUsage(options, nextAppPlan);
+        if (nextAppPlan !== undefined) {
+          return createPreparedInspectorUsage(
+            options,
+            nextAppPlan,
+            corridor.truncated,
+            corridor.shallowVisualPaths,
+          );
+        }
       }
       const inspectorPlan =
         fastGenericExportName === undefined
@@ -228,7 +238,14 @@ export async function preparePreviewCompilerUsage(
               ...(signal === undefined ? {} : { signal }),
               sourcePaths: corridor.sourcePaths,
             });
-      if (inspectorPlan !== undefined) return createPreparedInspectorUsage(options, inspectorPlan);
+      if (inspectorPlan !== undefined) {
+        return createPreparedInspectorUsage(
+          options,
+          inspectorPlan,
+          corridor.truncated,
+          corridor.shallowVisualPaths,
+        );
+      }
     }
   }
   if (useFastPreparation) {
@@ -353,21 +370,57 @@ function createContextSourceReader(
 function createPreparedInspectorUsage(
   options: PreparePreviewCompilerUsageOptions,
   inspectorPlan: NonNullable<PreviewTargetUsageProps['inspectorPlan']>,
+  fastContextTruncated = false,
+  shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[] = [],
 ): PreparedPreviewCompilerUsage {
-  const acceptedSpecifiers = options.resolver.getMatchedSpecifiers(inspectorPlan.target.sourcePath);
+  const preparedPlan = attachPreviewInspectorShallowVisualPaths(inspectorPlan, shallowVisualPaths);
+  const acceptedSpecifiers = options.resolver.getMatchedSpecifiers(preparedPlan.target.sourcePath);
   return {
-    implicitGlobalSourcePaths: inspectorPlan.dependencyPaths,
+    ...(fastContextTruncated ? { fastContextTruncated: true as const } : {}),
+    implicitGlobalSourcePaths: preparedPlan.dependencyPaths,
     packageTargetUsageProps: {
-      dependencyPaths: inspectorPlan.dependencyPaths,
-      inspectorPlan,
+      dependencyPaths: preparedPlan.dependencyPaths,
+      inspectorPlan: preparedPlan,
       ...(acceptedSpecifiers.length === 0
         ? {}
         : { inspectorTargetImportSpecifiers: acceptedSpecifiers }),
       parentSlicesByExport: Object.freeze({}),
       propsByExport: Object.freeze({}),
-      renderChainsByExport: inspectorPlan.renderChainsByExport,
+      renderChainsByExport: preparedPlan.renderChainsByExport,
     },
   };
+}
+
+/**
+ * Decorates only fast plans with JSON-safe shallow visual evidence and matching HMR dependencies.
+ *
+ * Full planners remain unchanged. Cloning the already frozen plan keeps the syntax collector
+ * independent from ancestor discovery while ensuring the esbuild corridor plugin receives the
+ * exact first-depth roots selected for this artifact.
+ */
+function attachPreviewInspectorShallowVisualPaths(
+  inspectorPlan: NonNullable<PreviewTargetUsageProps['inspectorPlan']>,
+  shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[],
+): NonNullable<PreviewTargetUsageProps['inspectorPlan']> {
+  if (shallowVisualPaths.length === 0) return inspectorPlan;
+  const frozenPaths = Object.freeze(
+    shallowVisualPaths.map((item) =>
+      Object.freeze({
+        ...item,
+        localEdges: Object.freeze([...item.localEdges]),
+      }),
+    ),
+  );
+  const dependencyPaths = Object.freeze(
+    [
+      ...new Set([...inspectorPlan.dependencyPaths, ...frozenPaths.map((item) => item.sourcePath)]),
+    ].sort(),
+  );
+  return Object.freeze({
+    ...inspectorPlan,
+    dependencyPaths,
+    shallowVisualPaths: frozenPaths,
+  });
 }
 
 /**

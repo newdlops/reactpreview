@@ -211,6 +211,75 @@ describe('EsbuildPreviewCompiler implicit application globals', () => {
     }
   });
 
+  /**
+   * Fast Page Inspector must scan its proven entry corridor before the first browser execution.
+   * This protects configured callable globals without restoring the full package inventory pass.
+   */
+  it('injects a proven app-entry global during fast page preparation', async () => {
+    const projectRoot = await createTemporaryProject('fast-page-bootstrap-global-preview-');
+    const sourceDirectory = path.join(projectRoot, 'src');
+    const documentPath = path.join(sourceDirectory, 'Target.tsx');
+    const pagePath = path.join(sourceDirectory, 'Page.tsx');
+    const entryPath = path.join(sourceDirectory, 'index.tsx');
+    const wrapperPath = path.join(sourceDirectory, 'decimal.ts');
+    const sourceText = 'export function Target() { return <span>{decimal(7)}</span>; }';
+    const compiler = new EsbuildPreviewCompiler();
+
+    try {
+      await mkdir(sourceDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(documentPath, sourceText, 'utf8'),
+        writeFile(
+          pagePath,
+          [
+            "import { Target } from './Target';",
+            'export default function Page() { return <main><Target /></main>; }',
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          entryPath,
+          [
+            "import { createRoot } from 'react-dom/client';",
+            "import Page from './Page';",
+            "import decimalValue from './decimal';",
+            'globalThis.decimal = decimalValue;',
+            'createRoot(document.body).render(<Page />);',
+            "throw new Error('FAST_PAGE_BOOTSTRAP_MUST_NOT_EXECUTE');",
+          ].join('\n'),
+          'utf8',
+        ),
+        writeFile(
+          wrapperPath,
+          "export default (value: number) => 'FAST_PAGE_DECIMAL_MARKER:' + value;",
+          'utf8',
+        ),
+      ]);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath,
+        language: 'tsx',
+        preparationMode: 'fast',
+        renderMode: 'page-inspector',
+        sourceText,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = decodeBundleJavascript(bundle);
+
+      expect(javascript).toContain('FAST_PAGE_DECIMAL_MARKER');
+      expect(javascript).toContain('from project bootstrap/ambient evidence');
+      expect(javascript).not.toContain('FAST_PAGE_BOOTSTRAP_MUST_NOT_EXECUTE');
+      expect(bundle.dependencies).toEqual(
+        expect.arrayContaining([entryPath, wrapperPath, pagePath, documentPath]),
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  }, 15_000);
+
   /** Rebuilds once only after the reached graph proves a free exact-name installed dependency. */
   it('injects an exact installed package for a reached free identifier', async () => {
     const projectRoot = await createTemporaryProject('package-global-preview-', {

@@ -126,6 +126,103 @@ describe('collectPreviewInspectorShallowVisualEvidence', () => {
   });
 
   /**
+   * Keeps runtime values authentic when generic JSX prop analysis places them beside components.
+   *
+   * A helper, GraphQL document, or display string can all occupy JSX expression slots. They are
+   * executable data contracts, not shallow visual branches, even when the surrounding Frame also
+   * accepts actual component-valued props.
+   */
+  it('rejects helper and constant bindings from component-prop visual evidence', () => {
+    const sourceText = [
+      "import Frame from './Frame';",
+      "import Target from './Target';",
+      "import Header from './Header';",
+      "import { getPagePath, GET_DIRECTOR_LIST, EMPTY_TEXT } from './runtime-values';",
+      'export default function Page() {',
+      '  return <Frame',
+      '    component={Target}',
+      '    headerComponent={Header}',
+      '    pathFactory={getPagePath}',
+      '    query={GET_DIRECTOR_LIST}',
+      '    emptyText={EMPTY_TEXT}',
+      '  />;',
+      '}',
+    ].join('\n');
+
+    const evidence = collectPreviewInspectorShallowVisualEvidence({
+      importerPath: '/workspace/Page.tsx',
+      ownerExportName: 'default',
+      resolveModule: createResolver({
+        './Frame': '/workspace/Frame.tsx',
+        './Header': '/workspace/Header.tsx',
+        './runtime-values': '/workspace/runtime-values.ts',
+        './Target': '/workspace/Target.tsx',
+      }),
+      selectedChildPath: '/workspace/Target.tsx',
+      sourceText,
+    });
+
+    expect(evidence.paths.map((visualPath) => visualPath.sourcePath)).toContain(
+      '/workspace/Header.tsx',
+    );
+    expect(evidence.paths.map((visualPath) => visualPath.sourcePath)).not.toContain(
+      '/workspace/runtime-values.ts',
+    );
+  });
+
+  /**
+   * Separates inactive router surfaces from ordinary component-valued layout slots.
+   *
+   * Both use JSX attributes, but only the selected route may own first-paint page context. Keeping
+   * the relation explicit also lets the one-hop collector reject the alternative before it spends
+   * a file slot or makes the package barrel optimizer admit its dependency tree.
+   */
+  it('labels and omits component props owned by an unselected route', async () => {
+    const appPath = '/workspace/App.tsx';
+    const targetPath = '/workspace/Target.tsx';
+    const errorPath = '/workspace/ErrorPage.tsx';
+    const sourceText = [
+      "import { Route, Routes } from 'react-router-dom';",
+      "import Target from './Target';",
+      "import ErrorPage from './ErrorPage';",
+      'export default function App() {',
+      '  return <Routes>',
+      '    <Route path="/target" element={<Target />} />',
+      '    <Route path="/other" element={<div />} errorElement={<ErrorPage />} />',
+      '  </Routes>;',
+      '}',
+    ].join('\n');
+    const resolver = createResolver({
+      './ErrorPage': errorPath,
+      './Target': targetPath,
+    });
+    const evidence = collectPreviewInspectorShallowVisualEvidence({
+      importerPath: appPath,
+      ownerExportName: 'default',
+      resolveModule: resolver,
+      selectedChildPath: targetPath,
+      sourceText,
+    });
+
+    expect(evidence.paths.find((visualPath) => visualPath.sourcePath === errorPath)).toMatchObject({
+      relation: 'route-alternative',
+      renderedLocalName: 'ErrorPage',
+    });
+
+    const context = await collectPreviewInspectorOneHopContext({
+      importPath: [appPath, targetPath],
+      maximumFiles: 8,
+      readSource: (sourcePath) =>
+        Promise.resolve(
+          sourcePath === appPath ? sourceText : 'export default function Target() {}',
+        ),
+      resolveModule: resolver,
+      workspaceRoot: '/workspace',
+    });
+    expect(context.sourcePaths).not.toContain(errorPath);
+  });
+
+  /**
    * Keeps route calculations executable while projecting only component-shaped route elements.
    *
    * Route factories commonly read path maps beside JSX element declarations. Those data helpers

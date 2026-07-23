@@ -142,6 +142,21 @@ interface PreviewRuntimeHookCandidate {
   /** Static fallback selected from local syntax. */
   readonly fallback: PreviewRuntimeHookFallback;
 }
+
+/**
+ * Identifies one direct imported hook call that the runtime fallback transformer can safely cut.
+ *
+ * The shallow Page Inspector corridor consumes this syntax-only evidence before bundling. Matching
+ * by both local name and source offset prevents an unrelated call in the same module from
+ * authorizing projection of a hook reference used by the selected page shell.
+ */
+export interface PreviewRuntimeHookProjectionEvidence {
+  /** Consumer-local import binding used as the direct call target. */
+  readonly localName: string;
+  /** Source offset of the exact hook identifier admitted by fallback inference. */
+  readonly occurrenceStart: number;
+}
+
 /**
  * Creates Page Inspector replacements for render-critical project and query-parameter hooks.
  *
@@ -187,6 +202,44 @@ export function createPreviewRuntimeHookReplacements(
       createRuntimeHookReplacement(sourceFile, sourcePath, sourceText, candidate, occurrence),
     ),
   );
+}
+
+/**
+ * Reports imported hook calls that have the same bounded fallback proof as runtime rewriting.
+ *
+ * Returning evidence only for direct identifiers deliberately excludes namespace calls and local
+ * hook declarations: the corridor can replace one imported ESM surface without changing the
+ * selected shell's own declarations. Parse failures and unshaped hook results fail open.
+ */
+export function collectPreviewRuntimeHookProjectionEvidence(
+  sourcePath: string,
+  sourceText: string,
+): readonly PreviewRuntimeHookProjectionEvidence[] {
+  if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) return [];
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    selectScriptKind(sourcePath),
+  );
+  if (hasParseDiagnostics(sourceFile)) return [];
+  const inventory = collectRuntimeHookInventory(sourceFile);
+  if (inventory.direct.size === 0) return [];
+  const evidence = collectRuntimeHookCandidates(sourceFile, sourceText, inventory)
+    .slice(0, MAX_HOOKS_PER_MODULE)
+    .flatMap((candidate) => {
+      const expression = unwrapExpression(candidate.call.expression);
+      return ts.isIdentifier(expression)
+        ? [
+            Object.freeze({
+              localName: expression.text,
+              occurrenceStart: expression.getStart(sourceFile),
+            }),
+          ]
+        : [];
+    });
+  return Object.freeze(evidence);
 }
 
 /** Collects eligible imported bindings, namespace bindings, and top-level local custom hooks. */

@@ -74,6 +74,14 @@ export function readPreviewRenderInvocation(
     return Object.freeze({ calleeName: 'createElement', mode: 'create-element' });
   }
 
+  if (isInsideStyledTemplateInterpolation(identifier, boundary)) {
+    return Object.freeze({
+      calleeName: 'styled',
+      factoryNames: Object.freeze(['styled']),
+      mode: 'styled',
+    });
+  }
+
   const factoryNames = collectHocFactoryNames(identifier, boundary);
   if (factoryNames.length === 0) return undefined;
   const outermostFactory = factoryNames.at(-1);
@@ -83,6 +91,45 @@ export function readPreviewRenderInvocation(
     factoryNames: Object.freeze(factoryNames),
     mode: classifyHocMode(factoryNames),
   });
+}
+
+/**
+ * Recognizes a component selector interpolated by a styled-components factory template.
+ *
+ * A component may be rendered in JSX and referenced again as `${Component}` in the same styled
+ * shell. Treating the selector as ordinary helper data made the otherwise safe shallow projection
+ * fail open and pulled the component's entire descendant graph back into fast preparation.
+ */
+function isInsideStyledTemplateInterpolation(
+  identifier: ts.Identifier,
+  boundary: ts.Node,
+): boolean {
+  let current: ts.Node = identifier;
+  while (!ts.isSourceFile(current)) {
+    if (ts.isTaggedTemplateExpression(current)) {
+      const factoryName = readStyledTagFactoryName(current.tag);
+      return factoryName === 'styled' && containsNode(current.template, identifier);
+    }
+    /*
+     * A variable initializer such as `const Shell = styled(...)\`${Child}\`` is itself the value
+     * analysis boundary. Inspect that final node before stopping; otherwise the selector looks like
+     * an unrelated ordinary read even though the complete tagged template is statically present.
+     */
+    if (current === boundary) break;
+    current = current.parent;
+  }
+  return false;
+}
+
+/** Reads `styled(Component)` and `styled.div` without admitting unrelated tagged templates. */
+function readStyledTagFactoryName(expression: ts.LeftHandSideExpression): string | undefined {
+  const current = unwrapExpression(expression);
+  if (ts.isCallExpression(current)) return readCallFactoryName(current.expression);
+  if (ts.isPropertyAccessExpression(current)) {
+    const receiver = unwrapExpression(current.expression);
+    if (ts.isIdentifier(receiver) && receiver.text === 'styled') return 'styled';
+  }
+  return readCallFactoryName(current);
 }
 
 /**
@@ -201,6 +248,16 @@ function collectHocFactoryNames(identifier: ts.Identifier, boundary: ts.Node): s
   const names: string[] = [];
   let current: ts.Node = identifier.parent;
   while (!ts.isSourceFile(current)) {
+    /*
+     * A function/class body executes after its surrounding factory call. Values read inside that
+     * body are dependencies of the authored component, not component arguments of the outer HOC.
+     * Without this boundary, `styled(() => { useData(); return <Header />; })` labels `useData`
+     * and every constant in the callback as a `styled` component, allowing a shallow build to
+     * replace runtime hooks with visual placeholders.
+     */
+    if (isNestedExecutionBoundary(current, boundary)) {
+      break;
+    }
     if (
       ts.isCallExpression(current) &&
       current.arguments.some((argument) => containsNode(argument, identifier))
@@ -220,6 +277,25 @@ function collectHocFactoryNames(identifier: ts.Identifier, boundary: ts.Node): s
     current = current.parent;
   }
   return names.slice(0, 8);
+}
+
+/**
+ * Reports a callable/class body nested below the analyzed top-level value.
+ *
+ * The boundary itself may be a function declaration whose body legitimately owns the reference,
+ * so only descendants stop upward HOC inheritance. Arrow and function expressions passed directly
+ * to `memo`, `forwardRef`, or `styled` are the important case: their internal reads must not inherit
+ * the factory call that receives the function value.
+ */
+function isNestedExecutionBoundary(current: ts.Node, boundary: ts.Node): boolean {
+  return (
+    current !== boundary &&
+    (ts.isArrowFunction(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isFunctionDeclaration(current) ||
+      ts.isClassExpression(current) ||
+      ts.isClassDeclaration(current))
+  );
 }
 
 /** Reads a stable final callee segment, including curried calls such as `connect(...)(Target)`. */

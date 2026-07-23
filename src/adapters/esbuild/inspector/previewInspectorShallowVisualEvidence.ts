@@ -24,10 +24,10 @@ import type {
   PreviewInspectorShallowVisualLocalEdgeKind,
   PreviewInspectorShallowVisualRelation,
 } from './previewInspectorShallowVisualTypes';
+import { isPreviewInspectorComponentShapedBinding } from './previewInspectorVisualBinding';
 
 const MAXIMUM_LOCAL_TRANSPORT_DEPTH = 6;
 const MAXIMUM_RAW_VISUAL_PATHS = 512;
-const COMPONENT_NAME_PATTERN = /^\p{Lu}[\p{L}\p{N}_$]*$/u;
 
 /** Inputs for resolving one corridor owner's exact selected render outcome. */
 export interface CollectPreviewInspectorShallowVisualEvidenceOptions {
@@ -178,6 +178,9 @@ export function collectPreviewInspectorShallowVisualEvidence(
       .filter((edge) => isComponentPropMode(edge.invocation?.mode))
       .map((edge) => edge.childLocalName),
   );
+  const routeAlternativeNames = new Set(
+    facts.localEdges.filter(isRouteAlternativeComponentProp).map((edge) => edge.childLocalName),
+  );
   const outcomes = analyzePreviewReactRenderOutcomes(importerPath, options.sourceText).filter(
     (plan) => options.ownerExportName === undefined || plan.exportName === options.ownerExportName,
   );
@@ -217,6 +220,7 @@ export function collectPreviewInspectorShallowVisualEvidence(
             selected,
             visualParentIds,
             componentPropNames,
+            routeAlternativeNames,
           );
           if (relation === undefined) continue;
           appendOccurrencePaths(
@@ -240,6 +244,7 @@ export function collectPreviewInspectorShallowVisualEvidence(
     componentPropsOnly: selectedOutcomeFound && !outcomeEvidenceTruncated,
     facts,
     importerPath,
+    routeAlternativeNames,
     ...(options.ownerExportName === undefined ? {} : { ownerExportName: options.ownerExportName }),
     resolveOrigins,
     selectedChildPath,
@@ -284,14 +289,16 @@ function collectLocalTransports(
   const transports = new Map<string, LocalTransport[]>();
   for (const edge of localEdges) {
     const owner = valueById.get(edge.ownerId);
-    if (owner === undefined || !COMPONENT_NAME_PATTERN.test(owner.localName)) continue;
+    if (owner === undefined || !isPreviewInspectorComponentShapedBinding(owner.localName)) {
+      continue;
+    }
     const kind = classifyLocalTransport(edge.invocation?.mode);
     const simpleAlias =
       kind === undefined &&
       edge.kind === 'value-flow' &&
       edge.invocation === undefined &&
       (localEdgesByOwner.get(edge.ownerId)?.length ?? 0) === 1 &&
-      COMPONENT_NAME_PATTERN.test(edge.childLocalName);
+      isPreviewInspectorComponentShapedBinding(edge.childLocalName);
     if (kind === undefined && !simpleAlias) continue;
     const transport: LocalTransport = Object.freeze({
       edge: Object.freeze({
@@ -353,12 +360,13 @@ function classifyVisualRelation(
   selected: VisualOccurrence,
   visualParentIds: ReadonlySet<number>,
   componentPropNames: ReadonlySet<string>,
+  routeAlternativeNames: ReadonlySet<string>,
 ): PreviewInspectorShallowVisualRelation | undefined {
   if (selected.ancestors.includes(candidate.id)) return 'wrapper';
   if (!visualParentIds.has(candidate.parentId)) return undefined;
-  return componentPropNames.has(readRootLocalName(candidate.localName))
-    ? 'component-prop'
-    : 'sibling';
+  const rootLocalName = readRootLocalName(candidate.localName);
+  if (routeAlternativeNames.has(rootLocalName)) return 'route-alternative';
+  return componentPropNames.has(rootLocalName) ? 'component-prop' : 'sibling';
 }
 
 /** Converts one candidate occurrence and each of its static/lazy origins to public path metadata. */
@@ -372,6 +380,7 @@ function appendOccurrencePaths(
   renderBoundaryStart: number,
   sourceText: string,
 ): void {
+  if (!isPreviewInspectorComponentShapedBinding(occurrence.localName)) return;
   const occurrenceStart = offsetFromLineColumn(
     sourceText,
     occurrence.node.line,
@@ -407,6 +416,8 @@ function appendOwnerFallbackPaths(options: {
   readonly importerPath: string;
   readonly ownerExportName?: string;
   readonly resolveOrigins: (localName: string) => readonly VisualOrigin[];
+  /** Component slots belonging to an inactive route choice instead of page composition. */
+  readonly routeAlternativeNames: ReadonlySet<string>;
   readonly selectedChildPath: string;
 }): void {
   const reachableOwnerIds = collectReachableOwnerIds(options.facts, options.ownerExportName);
@@ -428,13 +439,15 @@ function appendOwnerFallbackPaths(options: {
       ) {
         continue;
       }
-      const relation: PreviewInspectorShallowVisualRelation = options.componentPropNames.has(
+      const relation: PreviewInspectorShallowVisualRelation = options.routeAlternativeNames.has(
         edge.childLocalName,
       )
-        ? 'component-prop'
-        : selectedEdge.wrapperNames.includes(edge.childLocalName)
-          ? 'wrapper'
-          : 'sibling';
+        ? 'route-alternative'
+        : options.componentPropNames.has(edge.childLocalName)
+          ? 'component-prop'
+          : selectedEdge.wrapperNames.includes(edge.childLocalName)
+            ? 'wrapper'
+            : 'sibling';
       for (const origin of options.resolveOrigins(edge.childLocalName)) {
         if (origin.resolvedPath === undefined) continue;
         options.candidatePaths.push(
@@ -463,6 +476,7 @@ function isVisualRenderEdge(
   mode: PreviewRenderInvocationMode | undefined,
   childLocalName: string,
 ): boolean {
+  if (!isPreviewInspectorComponentShapedBinding(childLocalName)) return false;
   /*
    * Route factories place path builders and component elements under one configuration owner.
    * `route-branch` alone therefore proves shared control flow, not a visual React value. A route
@@ -470,7 +484,7 @@ function isVisualRenderEdge(
    * executable dependencies so their string/object contracts cannot become placeholder elements.
    */
   if (kind === 'route-branch') {
-    return isComponentShapedLocalName(childLocalName) || isComponentPropMode(mode);
+    return true;
   }
   return (
     kind === 'component-render' ||
@@ -524,15 +538,33 @@ function readRootLocalName(localName: string): string {
   return localName.split('.', 1)[0] ?? localName;
 }
 
-/** Accepts a local component or a PascalCase member reached through an imported namespace. */
-function isComponentShapedLocalName(localName: string): boolean {
-  const segments = localName.split('.');
-  return COMPONENT_NAME_PATTERN.test(segments.at(-1) ?? localName);
-}
-
 /** Recognizes component-valued JSX slots already proven by the render-graph invocation analyzer. */
 function isComponentPropMode(mode: PreviewRenderInvocationMode | undefined): boolean {
   return mode === 'component-prop' || mode === 'polymorphic-prop' || mode === 'render-prop';
+}
+
+/**
+ * Distinguishes a router-owned component slot from a normal layout composition prop.
+ *
+ * `component={Header}` on a Shell/Frame and `element={<RootLayout />}` on an ancestor route are
+ * first-depth page chrome. Only slots whose names explicitly declare an error/hydration/pending
+ * alternative are omitted here; inactive ordinary route elements are handled by the stricter
+ * leaf-route analyzer, which can distinguish a selected layout from a sibling page.
+ */
+function isRouteAlternativeComponentProp(
+  edge: ReturnType<typeof analyzePreviewRenderSource>['moduleFacts']['localEdges'][number],
+): boolean {
+  if (edge.kind !== 'route-branch' || !isComponentPropMode(edge.invocation?.mode)) return false;
+  const slotName = edge.invocation?.slotName?.toLowerCase();
+  if (
+    slotName === 'errorelement' ||
+    slotName === 'hydratefallback' ||
+    slotName === 'hydratefallbackelement' ||
+    slotName === 'pendingelement'
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Converts one-based analyzer locations to stable zero-based source offsets. */

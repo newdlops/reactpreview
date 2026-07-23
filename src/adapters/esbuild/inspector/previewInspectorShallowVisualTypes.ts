@@ -9,8 +9,14 @@
 /** How one authored module first enters a shallow visual path. */
 export type PreviewInspectorShallowVisualImportKind = 'react-lazy' | 'static';
 
-/** Visual relationship between the selected corridor child and a collected component occurrence. */
-export type PreviewInspectorShallowVisualRelation = 'component-prop' | 'sibling' | 'wrapper';
+/**
+ * Visual relationship between the selected corridor child and a collected component occurrence.
+ *
+ * Route alternatives are retained as explicit evidence so diagnostics can explain why they were
+ * omitted, while the fast artifact admits only authored siblings, wrappers, and composition slots.
+ */
+export type PreviewInspectorShallowVisualRelation =
+  'component-prop' | 'route-alternative' | 'sibling' | 'wrapper';
 
 /** Supported local component transports between an import/lazy binding and its rendered alias. */
 export type PreviewInspectorShallowVisualLocalEdgeKind = 'alias' | 'hoc' | 'memo' | 'styled';

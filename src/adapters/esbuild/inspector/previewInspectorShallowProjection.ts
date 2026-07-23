@@ -13,6 +13,8 @@ import type {
   PreviewRenderLocalEdgeFact,
   PreviewRenderModuleFacts,
 } from '../renderGraph/previewRenderModuleFacts';
+import { collectPreviewRuntimeHookProjectionEvidence } from '../staticResources/previewRuntimeHookInstrumentation';
+import { isPreviewInspectorSafeShallowVisualBinding } from './previewInspectorVisualBinding';
 
 const MAXIMUM_LOCAL_VALUE_VISITS = 128;
 
@@ -22,6 +24,13 @@ export interface PreviewInspectorShallowProjection {
   readonly exportNames: readonly string[];
   /** Authored module request used as the esbuild projection identity. */
   readonly moduleSpecifier: string;
+  /**
+   * Export spellings represented by undefined-returning hook stubs instead of host placeholders.
+   *
+   * The importer is independently rewritten with a demand-shaped runtime fallback at each of these
+   * calls. Keeping the semantic distinction here prevents a hook from becoming a React element.
+   */
+  readonly runtimeHookExportNames: readonly string[];
 }
 
 /** Bounded projection facts keyed by the importer-authored module request. */
@@ -50,6 +59,9 @@ export function collectPreviewInspectorShallowProjectionInventory(
     return freezeInventory(new Map(), false);
   }
 
+  const runtimeHookCalls = groupRuntimeHookCallsByLocalName(
+    collectPreviewRuntimeHookProjectionEvidence(sourcePath, sourceText),
+  );
   const importsByLocalName = new Map(facts.imports.map((item) => [item.localName, item]));
   const importsBySpecifier = groupImportsBySpecifier(facts.imports);
   const valuesByLocalName = new Map(facts.values.map((item) => [item.localName, item]));
@@ -61,6 +73,7 @@ export function collectPreviewInspectorShallowProjectionInventory(
     ]),
   );
   const componentLocalNamesBySpecifier = new Map<string, Set<string>>();
+  const runtimeHookLocalNamesBySpecifier = new Map<string, Set<string>>();
   const exportNamesByLazySpecifier = new Map<string, Set<string>>();
   const unsafeSpecifiers = new Set<string>();
   const pending = [...rootLocalNames];
@@ -88,9 +101,15 @@ export function collectPreviewInspectorShallowProjectionInventory(
     for (const edge of edgesByOwnerId.get(value.id) ?? []) {
       const imported = importsByLocalName.get(edge.childLocalName);
       if (imported !== undefined) {
-        if (isSupportedComponentBoundary(edge)) {
+        if (isSupportedComponentBoundary(edge, imported)) {
           appendSetValue(
             componentLocalNamesBySpecifier,
+            imported.moduleSpecifier,
+            imported.localName,
+          );
+        } else if (isSupportedRuntimeHookBoundary(edge, imported, runtimeHookCalls)) {
+          appendSetValue(
+            runtimeHookLocalNamesBySpecifier,
             imported.moduleSpecifier,
             imported.localName,
           );
@@ -107,30 +126,119 @@ export function collectPreviewInspectorShallowProjectionInventory(
 
   if (truncated) return freezeInventory(new Map(), true);
   const projections = new Map<string, PreviewInspectorShallowProjection>();
-  for (const [moduleSpecifier, componentLocalNames] of componentLocalNamesBySpecifier) {
+  const projectionSpecifiers = new Set([
+    ...componentLocalNamesBySpecifier.keys(),
+    ...runtimeHookLocalNamesBySpecifier.keys(),
+  ]);
+  for (const moduleSpecifier of projectionSpecifiers) {
+    const componentLocalNames = componentLocalNamesBySpecifier.get(moduleSpecifier) ?? new Set();
+    const runtimeHookLocalNames =
+      runtimeHookLocalNamesBySpecifier.get(moduleSpecifier) ?? new Set();
     const importedBindings = importsBySpecifier.get(moduleSpecifier) ?? [];
     if (
       unsafeSpecifiers.has(moduleSpecifier) ||
       importedBindings.length === 0 ||
       importedBindings.some(
-        (item) => item.importedName === '*' || !componentLocalNames.has(item.localName),
+        (item) =>
+          item.importedName === '*' ||
+          (!componentLocalNames.has(item.localName) && !runtimeHookLocalNames.has(item.localName)),
       )
     ) {
       continue;
     }
     const exportNames = [...new Set(importedBindings.map((item) => item.importedName))].sort();
+    const runtimeHookExportNames = [
+      ...new Set(
+        importedBindings.flatMap((item) =>
+          runtimeHookLocalNames.has(item.localName) ? [item.importedName] : [],
+        ),
+      ),
+    ].sort();
+    if (
+      importedBindings.some(
+        (item) =>
+          componentLocalNames.has(item.localName) &&
+          runtimeHookExportNames.includes(item.importedName),
+      )
+    ) {
+      continue;
+    }
     projections.set(
       moduleSpecifier,
-      Object.freeze({ exportNames: Object.freeze(exportNames), moduleSpecifier }),
+      Object.freeze({
+        exportNames: Object.freeze(exportNames),
+        moduleSpecifier,
+        runtimeHookExportNames: Object.freeze(runtimeHookExportNames),
+      }),
     );
   }
   for (const [moduleSpecifier, exportNames] of exportNamesByLazySpecifier) {
     if (unsafeSpecifiers.has(moduleSpecifier)) continue;
     const existing = projections.get(moduleSpecifier);
     const mergedNames = [...new Set([...(existing?.exportNames ?? []), ...exportNames])].sort();
+    if (
+      [...exportNames].some((exportName) => existing?.runtimeHookExportNames.includes(exportName))
+    ) {
+      projections.delete(moduleSpecifier);
+      continue;
+    }
     projections.set(
       moduleSpecifier,
-      Object.freeze({ exportNames: Object.freeze(mergedNames), moduleSpecifier }),
+      Object.freeze({
+        exportNames: Object.freeze(mergedNames),
+        moduleSpecifier,
+        runtimeHookExportNames: existing?.runtimeHookExportNames ?? Object.freeze([]),
+      }),
+    );
+  }
+  return freezeInventory(projections, false);
+}
+
+/**
+ * Finds project hook modules that may be cut throughout an exact selected corridor module.
+ *
+ * Unlike visual projection, hook projection does not remove authored DOM. Every reference to a
+ * binding must be an exact call already admitted by demand-shaped fallback instrumentation, and
+ * every runtime import from the module must satisfy the same rule. Mixed helper/hook surfaces and
+ * uninstrumented calls therefore retain their authentic graph.
+ */
+export function collectPreviewInspectorRuntimeHookProjectionInventory(
+  sourcePath: string,
+  sourceText: string,
+): PreviewInspectorShallowProjectionInventory {
+  const facts = analyzePreviewRenderSource(sourcePath, sourceText).moduleFacts;
+  const runtimeHookCalls = groupRuntimeHookCallsByLocalName(
+    collectPreviewRuntimeHookProjectionEvidence(sourcePath, sourceText),
+  );
+  if (runtimeHookCalls.size === 0) return freezeInventory(new Map(), false);
+  const importsBySpecifier = groupImportsBySpecifier(facts.imports);
+  const edgesByLocalName = groupEdgesByChildLocalName(facts.localEdges);
+  const projections = new Map<string, PreviewInspectorShallowProjection>();
+
+  for (const [moduleSpecifier, importedBindings] of importsBySpecifier) {
+    if (
+      importedBindings.length === 0 ||
+      importedBindings.some((imported) => {
+        if (imported.importedName === '*') return true;
+        const edges = edgesByLocalName.get(imported.localName) ?? [];
+        const admittedOffsets = runtimeHookCalls.get(imported.localName);
+        return (
+          edges.length === 0 ||
+          admittedOffsets === undefined ||
+          edges.some((edge) => !admittedOffsets.has(edge.occurrenceStart))
+        );
+      })
+    ) {
+      continue;
+    }
+    const exportNames = [...new Set(importedBindings.map((item) => item.importedName))].sort();
+    projections.set(
+      moduleSpecifier,
+      Object.freeze({
+        exportNames: Object.freeze(exportNames),
+        moduleSpecifier,
+        runtimeHookExportNames: Object.freeze([...exportNames]),
+      }),
     );
   }
   return freezeInventory(projections, false);
@@ -139,41 +247,66 @@ export function collectPreviewInspectorShallowProjectionInventory(
 /**
  * Emits a browser-safe ESM component surface for one intentionally bounded child graph.
  *
- * The placeholder keeps authored children flowing through component slots and emits only a tiny
- * neutral host when the projected child is otherwise empty. This preserves the shallow parent's
- * own box, spacing, classes, and styles without pretending that deeper project UI was evaluated.
+ * Component exports keep authored children flowing through a tiny neutral host. Runtime-hook
+ * exports return `undefined` so the importer-side fallback instrumentation can synthesize its
+ * exact demanded shape without bundling the hook's otherwise unbounded application graph.
  */
 export function createPreviewInspectorShallowProjectionSource(
   projection: PreviewInspectorShallowProjection,
 ): string {
-  const lines = [
-    "import * as React from 'react';",
-    'const createShallowComponent = (label) => {',
-    '  const ShallowComponent = (props) => {',
-    '    const children = props == null ? undefined : props.children;',
-    '    const hostProps = {};',
-    '    if (props != null && typeof props === "object") {',
-    '      for (const [key, value] of Object.entries(props)) {',
-    "        const hostAttribute = key === 'className' || key === 'id' || key === 'title' || key === 'role' || key === 'dir' || key === 'lang' || key === 'tabIndex' || key === 'slot' || key === 'hidden' || key.startsWith('data-') || key.startsWith('aria-');",
-    "        const hostEvent = /^on[A-Z]/u.test(key) && typeof value === 'function';",
-    '        if (hostAttribute || hostEvent) hostProps[key] = value;',
-    '      }',
-    '    }',
-    "    const authoredStyle = props != null && props.style != null && typeof props.style === 'object' && !Array.isArray(props.style) ? props.style : {};",
-    "    const fallbackStyle = children == null && hostProps.className == null ? { display: 'inline-block', minHeight: '1em', minWidth: '1em' } : {};",
-    '    const hostStyle = { ...fallbackStyle, ...authoredStyle };',
-    '    if (Object.keys(hostStyle).length > 0) hostProps.style = hostStyle;',
-    "    hostProps['data-react-preview-shallow-component'] = label;",
-    "    return React.createElement('span', hostProps, children);",
-    '  };',
-    "  Object.defineProperty(ShallowComponent, 'displayName', { value: 'PreviewShallow(' + label + ')' });",
-    '  return ShallowComponent;',
-    '};',
-  ];
+  const runtimeHookExportNames = new Set(projection.runtimeHookExportNames);
+  const componentExportNames = projection.exportNames.filter(
+    (name) => !runtimeHookExportNames.has(name),
+  );
+  const lines: string[] = [];
+  if (componentExportNames.length > 0) {
+    lines.push(
+      "import * as React from 'react';",
+      'const createShallowComponent = (label) => {',
+      "  const selectorId = 'react-preview-shallow-' + String(label).replace(/[^a-z0-9_-]+/giu, '-');",
+      '  const ShallowComponent = (props) => {',
+      '    const children = props == null ? undefined : props.children;',
+      '    const hostProps = {};',
+      '    if (props != null && typeof props === "object") {',
+      '      for (const [key, value] of Object.entries(props)) {',
+      "        const hostAttribute = key === 'className' || key === 'id' || key === 'title' || key === 'role' || key === 'dir' || key === 'lang' || key === 'tabIndex' || key === 'slot' || key === 'hidden' || key.startsWith('data-') || key.startsWith('aria-');",
+      "        const hostEvent = /^on[A-Z]/u.test(key) && typeof value === 'function';",
+      '        if (hostAttribute || hostEvent) hostProps[key] = value;',
+      '      }',
+      '    }',
+      "    const authoredStyle = props != null && props.style != null && typeof props.style === 'object' && !Array.isArray(props.style) ? props.style : {};",
+      "    const fallbackStyle = children == null && hostProps.className == null ? { display: 'inline-block', minHeight: '1em', minWidth: '1em' } : {};",
+      '    const hostStyle = { ...fallbackStyle, ...authoredStyle };',
+      '    if (Object.keys(hostStyle).length > 0) hostProps.style = hostStyle;',
+      "    hostProps.className = [hostProps.className, selectorId].filter(Boolean).join(' ');",
+      "    hostProps['data-react-preview-shallow-component'] = label;",
+      "    return React.createElement('span', hostProps, children);",
+      '  };',
+      '  Object.defineProperties(ShallowComponent, {',
+      "    displayName: { value: 'PreviewShallow(' + label + ')' },",
+      '    styledComponentId: { value: selectorId },',
+      "    toString: { value: () => '.' + selectorId },",
+      '  });',
+      '  return ShallowComponent;',
+      '};',
+    );
+  }
+  if (runtimeHookExportNames.size > 0) {
+    lines.push(
+      'const createShallowRuntimeHook = (label) => {',
+      '  const ShallowRuntimeHook = (..._arguments) => undefined;',
+      "  Object.defineProperty(ShallowRuntimeHook, 'displayName', { value: 'PreviewRuntimeHook(' + label + ')' });",
+      '  return ShallowRuntimeHook;',
+      '};',
+    );
+  }
   const namedExports = projection.exportNames.filter((name) => name !== 'default');
   if (projection.exportNames.includes('default')) {
+    const factory = runtimeHookExportNames.has('default')
+      ? 'createShallowRuntimeHook'
+      : 'createShallowComponent';
     lines.push(
-      `const ReactPreviewShallowDefault = createShallowComponent(${JSON.stringify(
+      `const ReactPreviewShallowDefault = ${factory}(${JSON.stringify(
         createProjectionLabel(projection.moduleSpecifier, 'default'),
       )});`,
       'export default ReactPreviewShallowDefault;',
@@ -181,8 +314,11 @@ export function createPreviewInspectorShallowProjectionSource(
   }
   namedExports.forEach((exportName, index) => {
     const localName = `ReactPreviewShallowNamed${index.toString()}`;
+    const factory = runtimeHookExportNames.has(exportName)
+      ? 'createShallowRuntimeHook'
+      : 'createShallowComponent';
     lines.push(
-      `const ${localName} = createShallowComponent(${JSON.stringify(
+      `const ${localName} = ${factory}(${JSON.stringify(
         createProjectionLabel(projection.moduleSpecifier, exportName),
       )});`,
       `export { ${localName} as ${exportName} };`,
@@ -228,19 +364,74 @@ function groupEdgesByOwnerId(
   return grouped;
 }
 
-/** Recognizes component identities that cross a real React render boundary. */
-function isSupportedComponentBoundary(edge: PreviewRenderLocalEdgeFact): boolean {
-  if (
-    edge.kind === 'component-render' ||
-    edge.kind === 'create-element' ||
-    edge.kind === 'route-branch'
-  ) {
+/** Groups references by imported/local binding for all-corridor hook safety checks. */
+function groupEdgesByChildLocalName(
+  edges: readonly PreviewRenderLocalEdgeFact[],
+): ReadonlyMap<string, readonly PreviewRenderLocalEdgeFact[]> {
+  const grouped = new Map<string, PreviewRenderLocalEdgeFact[]>();
+  for (const edge of edges) {
+    const items = grouped.get(edge.childLocalName) ?? [];
+    items.push(edge);
+    grouped.set(edge.childLocalName, items);
+  }
+  return grouped;
+}
+
+/** Groups compiler-admitted direct hook call offsets by their consumer-local binding. */
+function groupRuntimeHookCallsByLocalName(
+  evidence: readonly { readonly localName: string; readonly occurrenceStart: number }[],
+): ReadonlyMap<string, ReadonlySet<number>> {
+  const grouped = new Map<string, Set<number>>();
+  for (const item of evidence) {
+    const offsets = grouped.get(item.localName) ?? new Set<number>();
+    offsets.add(item.occurrenceStart);
+    grouped.set(item.localName, offsets);
+  }
+  return grouped;
+}
+
+/**
+ * Admits a project hook only when this exact call receives a demand-shaped runtime fallback.
+ *
+ * The generated hook surface returns `undefined`; the already-instrumented importer then supplies
+ * the statically inferred object, tuple, scalar, or no-op function. Exact source offsets ensure a
+ * same-named reference elsewhere in the shell cannot accidentally authorize graph pruning.
+ */
+function isSupportedRuntimeHookBoundary(
+  edge: PreviewRenderLocalEdgeFact,
+  imported: PreviewRenderImportFact,
+  runtimeHookCalls: ReadonlyMap<string, ReadonlySet<number>>,
+): boolean {
+  return runtimeHookCalls.get(imported.localName)?.has(edge.occurrenceStart) === true;
+}
+
+/**
+ * Recognizes visual component identities that may safely become shallow placeholders.
+ *
+ * Render-flow syntax is necessary but not sufficient. Providers, contexts, routers, and error
+ * boundaries are React components too, yet replacing them changes descendant runtime semantics.
+ * Component-style local names and direct React transport evidence provide a conservative,
+ * framework-general guard against projecting hooks, constants, GraphQL documents, or containers.
+ */
+function isSupportedComponentBoundary(
+  edge: PreviewRenderLocalEdgeFact,
+  imported: PreviewRenderImportFact,
+): boolean {
+  if (!isPreviewInspectorSafeShallowVisualBinding(imported.localName)) return false;
+  if (edge.kind === 'component-render' || edge.kind === 'create-element') {
     return true;
   }
+  /*
+   * Route/config declarations classify all reached values as conditional. Require separate React
+   * invocation evidence here so a route pathname, query document, or enum is not mistaken for the
+   * component that sits beside it in the same object literal.
+   */
   return (
     edge.invocation?.mode === 'component-prop' ||
+    edge.invocation?.mode === 'create-element' ||
     edge.invocation?.mode === 'forward-ref' ||
     edge.invocation?.mode === 'hoc' ||
+    edge.invocation?.mode === 'jsx' ||
     edge.invocation?.mode === 'memo' ||
     edge.invocation?.mode === 'polymorphic-prop' ||
     edge.invocation?.mode === 'render-prop' ||

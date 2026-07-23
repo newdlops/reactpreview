@@ -13,6 +13,7 @@ import {
   canonicalizeExistingPath,
   canonicalizePathThroughExistingAncestor,
 } from '../../shared/pathIdentity';
+import { createPreviewGeneratedUiSemanticStyleRuntimeSource } from './previewGeneratedUiSemanticStyles';
 import { PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
@@ -68,6 +69,14 @@ interface PreviewGeneratedUiExportRequest {
   readonly forwardsAllExports: boolean;
 }
 
+/** Mutable importer-wide request assembled during one AST traversal. */
+interface PreviewGeneratedUiMutableExportRequest {
+  /** De-duplicated source-side export names before stable sorting. */
+  readonly exportNames: Set<string>;
+  /** Set when this exact module specifier appears in an authored `export *`. */
+  forwardsAllExports: boolean;
+}
+
 /**
  * Creates a fail-closed fallback for missing generated UI source reached through tsconfig aliases.
  *
@@ -79,16 +88,18 @@ export function createPreviewGeneratedUiFallbackPlugin(
   options: PreviewGeneratedUiFallbackOptions,
 ): Plugin {
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
-  const markerByCandidate = new Map<string, PreviewGeneratedUiMarker | null>();
-  const requestByImport = new Map<string, PreviewGeneratedUiExportRequest>();
+  /** Marker discovery depends on a missing candidate's parent, not its individual leaf name. */
+  const markerByCandidateDirectory = new Map<string, PreviewGeneratedUiMarker | null>();
   const requestedExportsBySource = new Map<string, Set<string>>();
   const warnedMarkerPaths = new Set<string>();
   return {
     name: 'react-preview-generated-ui-fallback',
     setup(build): void {
+      /** Complete per-specifier demand from one importer-wide parse and traversal per rebuild. */
+      const requestByImporter = new Map<string, Map<string, PreviewGeneratedUiExportRequest>>();
       build.onStart(() => {
-        markerByCandidate.clear();
-        requestByImport.clear();
+        markerByCandidateDirectory.clear();
+        requestByImporter.clear();
         requestedExportsBySource.clear();
       });
 
@@ -123,7 +134,7 @@ export function createPreviewGeneratedUiFallbackPlugin(
                 importerPath,
                 arguments_.path,
                 options.readSource,
-                requestByImport,
+                requestByImporter,
               ).exportNames,
             ),
             requestedExportsBySource,
@@ -136,7 +147,7 @@ export function createPreviewGeneratedUiFallbackPlugin(
           importerPath,
           arguments_.path,
           options.readSource,
-          requestByImport,
+          requestByImporter,
         );
         const exportNames = new Set(request.exportNames);
         if (request.forwardsAllExports) {
@@ -149,10 +160,11 @@ export function createPreviewGeneratedUiFallbackPlugin(
         if (!isPathInside(workspaceRoot, candidatePath)) {
           return undefined;
         }
-        let marker = markerByCandidate.get(candidatePath);
+        const candidateDirectory = path.dirname(candidatePath);
+        let marker = markerByCandidateDirectory.get(candidateDirectory);
         if (marker === undefined) {
           marker = findGeneratedUiMarker(candidatePath, workspaceRoot) ?? null;
-          markerByCandidate.set(candidatePath, marker);
+          markerByCandidateDirectory.set(candidateDirectory, marker);
         }
         if (marker === null) return undefined;
         options.registerWatchDirectory?.(marker.directoryPath);
@@ -300,19 +312,27 @@ function createGeneratedUiModuleSource(
     '  return safe;',
     '};',
     'const inferHostTag = (name) => {',
-    "  if (/Button$/u.test(name)) return 'button';",
+    "  if (/(?:Button|Trigger|Close)$/u.test(name)) return 'button';",
     "  if (/(?:TextArea|Textarea)$/u.test(name)) return 'textarea';",
     "  if (/(?:Input|Checkbox|Radio)$/u.test(name)) return 'input';",
     "  if (/Label$/u.test(name)) return 'label';",
     "  if (/(?:Image|AvatarImage)$/u.test(name)) return 'img';",
     "  if (/(?:Link|Anchor)$/u.test(name)) return 'a';",
+    "  if (/Badge$/u.test(name)) return 'span';",
     "  if (/(?:Separator|Divider)$/u.test(name)) return 'hr';",
+    "  if (/Table$/u.test(name)) return 'table';",
+    "  if (/TableHeader$/u.test(name)) return 'thead';",
+    "  if (/TableBody$/u.test(name)) return 'tbody';",
+    "  if (/TableRow$/u.test(name)) return 'tr';",
+    "  if (/TableHead$/u.test(name)) return 'th';",
+    "  if (/TableCell$/u.test(name)) return 'td';",
     "  if (/List$/u.test(name)) return 'ul';",
     "  if (/ListItem$/u.test(name)) return 'li';",
     "  if (/Heading$/u.test(name)) return 'h2';",
     "  return 'div';",
     '};',
     "const readLeafName = (name) => name.split('.').at(-1) || name;",
+    ...createPreviewGeneratedUiSemanticStyleRuntimeSource(),
     'const readOverlayRootFamily = (name) => {',
     '  const leafName = readLeafName(name);',
     '  return overlayFamilies.includes(leafName) ? leafName : undefined;',
@@ -336,6 +356,14 @@ function createGeneratedUiModuleSource(
     '    const safe = safeHostProps(input);',
     '    const overlay = React.useContext(overlayContext);',
     '    const overlayPart = readOverlayPart(name);',
+    '    const children = input.children;',
+    '    const hostTag = inferHostTag(name);',
+    '    const slottedChild = input.asChild && React.isValidElement(children) ? children : undefined;',
+    '    const semanticStyle = mergeGeneratedUiSemanticStyle(',
+    '      readGeneratedUiSemanticStyle(name, hostTag),',
+    '      [slottedChild?.props?.style, input.style],',
+    '    );',
+    '    if (semanticStyle !== undefined) safe.style = semanticStyle;',
     "    safe['data-react-preview-generated-component'] = name;",
     "    safe['data-react-preview-generated-module'] = moduleLabel;",
     '    if (',
@@ -355,11 +383,9 @@ function createGeneratedUiModuleSource(
     "        if (event?.defaultPrevented !== true) overlay.onOpenChange?.(overlayPart.kind === 'trigger');",
     '      };',
     '    }',
-    '    const children = input.children;',
-    '    if (input.asChild && React.isValidElement(children)) {',
-    '      return React.cloneElement(children, safe);',
+    '    if (slottedChild !== undefined) {',
+    '      return React.cloneElement(slottedChild, safe);',
     '    }',
-    '    const hostTag = inferHostTag(name);',
     '    const hostChildren = /^(?:hr|img|input)$/u.test(hostTag) ? undefined : children;',
     '    const element = React.createElement(hostTag, safe, hostChildren);',
     '    const rootFamily = readOverlayRootFamily(name);',
@@ -442,19 +468,109 @@ function readFallbackData(value: unknown): PreviewGeneratedUiFallbackData | unde
     : undefined;
 }
 
-/** Caches one importer/specifier analysis for the duration of an esbuild rebuild. */
+/** Reads one request from an importer-wide analysis cached for the current esbuild rebuild. */
 function readRequestedExports(
   importerPath: string,
   moduleSpecifier: string,
   readSource: PreviewGeneratedUiFallbackOptions['readSource'],
-  requestByImport: Map<string, PreviewGeneratedUiExportRequest>,
+  requestByImporter: Map<string, Map<string, PreviewGeneratedUiExportRequest>>,
 ): PreviewGeneratedUiExportRequest {
-  const requestKey = `${sourceIdentity(importerPath)}\0${moduleSpecifier}`;
-  const cachedRequest = requestByImport.get(requestKey);
-  if (cachedRequest !== undefined) return cachedRequest;
-  const request = collectRequestedExports(importerPath, moduleSpecifier, readSource);
-  requestByImport.set(requestKey, request);
-  return request;
+  const importerIdentity = sourceIdentity(importerPath);
+  let requestBySpecifier = requestByImporter.get(importerIdentity);
+  if (requestBySpecifier === undefined) {
+    requestBySpecifier = collectRequestedExportsBySpecifier(importerPath, readSource);
+    requestByImporter.set(importerIdentity, requestBySpecifier);
+  }
+  return requestBySpecifier.get(moduleSpecifier) ?? { exportNames: [], forwardsAllExports: false };
+}
+
+/**
+ * Parses and traverses one importer once to index every static import and re-export specifier.
+ * Property accesses are collected by identifier during that same traversal, then associated with
+ * namespace imports afterward so valid but unusually late import declarations remain supported.
+ */
+function collectRequestedExportsBySpecifier(
+  importerPath: string,
+  readSource: PreviewGeneratedUiFallbackOptions['readSource'],
+): Map<string, PreviewGeneratedUiExportRequest> {
+  let sourceFile: ts.SourceFile;
+  try {
+    const sourceText = readSource?.(importerPath) ?? readFileSync(importerPath, 'utf8');
+    sourceFile = ts.createSourceFile(importerPath, sourceText, ts.ScriptTarget.Latest, false);
+  } catch {
+    return new Map();
+  }
+  const mutableRequestBySpecifier = new Map<string, PreviewGeneratedUiMutableExportRequest>();
+  const namespaceSpecifiersByBinding = new Map<string, Set<string>>();
+  const propertyNamesByBinding = new Map<string, Set<string>>();
+
+  /** Creates one mutable bucket for all declarations targeting an exact authored specifier. */
+  function getRequest(moduleSpecifier: string): PreviewGeneratedUiMutableExportRequest {
+    const existingRequest = mutableRequestBySpecifier.get(moduleSpecifier);
+    if (existingRequest !== undefined) return existingRequest;
+    const request = { exportNames: new Set<string>(), forwardsAllExports: false };
+    mutableRequestBySpecifier.set(moduleSpecifier, request);
+    return request;
+  }
+
+  /** Adds one value to a set-valued index without allocating duplicate buckets. */
+  function addIndexedValue(index: Map<string, Set<string>>, key: string, value: string): void {
+    const values = index.get(key) ?? new Set<string>();
+    values.add(value);
+    index.set(key, values);
+  }
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const moduleSpecifier = node.moduleSpecifier.text;
+      const request = getRequest(moduleSpecifier);
+      if (node.importClause?.name !== undefined) request.exportNames.add('default');
+      const bindings = node.importClause?.namedBindings;
+      if (bindings !== undefined && ts.isNamedImports(bindings)) {
+        for (const binding of bindings.elements) {
+          request.exportNames.add(binding.propertyName?.text ?? binding.name.text);
+        }
+      } else if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+        addIndexedValue(namespaceSpecifiersByBinding, bindings.name.text, moduleSpecifier);
+      }
+    }
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier !== undefined &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      const request = getRequest(node.moduleSpecifier.text);
+      if (node.exportClause === undefined) {
+        request.forwardsAllExports = true;
+      } else if (ts.isNamedExports(node.exportClause)) {
+        for (const binding of node.exportClause.elements) {
+          request.exportNames.add(binding.propertyName?.text ?? binding.name.text);
+        }
+      }
+    }
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+      addIndexedValue(propertyNamesByBinding, node.expression.text, node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  for (const [bindingName, moduleSpecifiers] of namespaceSpecifiersByBinding) {
+    const propertyNames = propertyNamesByBinding.get(bindingName) ?? [];
+    for (const moduleSpecifier of moduleSpecifiers) {
+      const request = getRequest(moduleSpecifier);
+      for (const propertyName of propertyNames) request.exportNames.add(propertyName);
+    }
+  }
+  return new Map(
+    [...mutableRequestBySpecifier].map(([moduleSpecifier, request]) => [
+      moduleSpecifier,
+      {
+        exportNames: [...request.exportNames].sort(),
+        forwardsAllExports: request.forwardsAllExports,
+      },
+    ]),
+  );
 }
 
 /** Limits barrel-demand tracking to explicit relative authored edges. */
@@ -467,72 +583,6 @@ function isRelativeModuleSpecifier(moduleSpecifier: string): boolean {
 function isDependencyStorePath(sourcePath: string, workspaceRoot: string): boolean {
   const segments = path.relative(workspaceRoot, sourcePath).split(path.sep);
   return segments.includes('node_modules') || segments.includes('.yarn');
-}
-
-/**
- * Collects source export names needed by one importer, including `UI.Button` namespace accesses,
- * and records whether an authored star barrel forwards the names requested by its own consumers.
- */
-function collectRequestedExports(
-  importerPath: string,
-  moduleSpecifier: string,
-  readSource: PreviewGeneratedUiFallbackOptions['readSource'],
-): PreviewGeneratedUiExportRequest {
-  let sourceText: string;
-  try {
-    sourceText = readSource?.(importerPath) ?? readFileSync(importerPath, 'utf8');
-  } catch {
-    return { exportNames: [], forwardsAllExports: false };
-  }
-  const sourceFile = ts.createSourceFile(importerPath, sourceText, ts.ScriptTarget.Latest, false);
-  const exportNames = new Set<string>();
-  let forwardsAllExports = false;
-  const namespaceBindings = new Set<string>();
-  for (const statement of sourceFile.statements) {
-    if (
-      ts.isImportDeclaration(statement) &&
-      ts.isStringLiteralLike(statement.moduleSpecifier) &&
-      statement.moduleSpecifier.text === moduleSpecifier
-    ) {
-      if (statement.importClause?.name !== undefined) exportNames.add('default');
-      const bindings = statement.importClause?.namedBindings;
-      if (bindings !== undefined && ts.isNamedImports(bindings)) {
-        for (const binding of bindings.elements) {
-          exportNames.add(binding.propertyName?.text ?? binding.name.text);
-        }
-      } else if (bindings !== undefined) {
-        namespaceBindings.add(bindings.name.text);
-      }
-    }
-    if (
-      ts.isExportDeclaration(statement) &&
-      statement.moduleSpecifier !== undefined &&
-      ts.isStringLiteralLike(statement.moduleSpecifier) &&
-      statement.moduleSpecifier.text === moduleSpecifier
-    ) {
-      if (statement.exportClause === undefined) {
-        forwardsAllExports = true;
-      } else if (ts.isNamedExports(statement.exportClause)) {
-        for (const binding of statement.exportClause.elements) {
-          exportNames.add(binding.propertyName?.text ?? binding.name.text);
-        }
-      }
-    }
-  }
-  if (namespaceBindings.size > 0) {
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isPropertyAccessExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        namespaceBindings.has(node.expression.text)
-      ) {
-        exportNames.add(node.name.text);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sourceFile);
-  }
-  return { exportNames: [...exportNames].sort(), forwardsAllExports };
 }
 
 /**

@@ -2,6 +2,90 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1043 - 2026-07-17
+
+- Page Inspector가 선택한 page 후보마다 target-facing render path의 Router 소유 여부를 별도로 기록해,
+  애플리케이션 graph 어딘가의 Router가 실제로 분리 마운트된 후보의 자동 경계를 잘못 끄지 않도록 수정
+- 선택 후보가 Router 밖에서 렌더될 때 대상 프로젝트의 `MemoryRouter`를 후보 지역 경계로 보충하고,
+  setup/상위 Router context는 render 시점에 상속하며 Router를 직접 소유한 후보에는 중첩하지 않도록 보장
+- detached 후보·기존 Router 내부 후보·Router 소유 후보가 모두 정확히 한 Router depth에서 렌더되는 회귀
+  테스트와 후보 metadata 직렬화 테스트 추가
+
+## 0.1.1042 - 2026-07-17
+
+- direct JSX parent 탐색이 private factory/route value에서 끊겨도 이미 증명된 target→entry render graph의
+  public component export를 page/form/app 체크포인트로 승격하고, 실제 page 후보와 가까운 fallback을 함께 보존
+- `React.lazy(() => import(...))`로 재노출된 default/named export를 reverse frontier로 취급해 lazy index를
+  거친 JSX caller를 찾고 각 `PAGE PATH` root만 선택 시 dynamic import하도록 유지
+- 후보 root의 다음 render-path caller에서 literal props를 수집하고 identifier parameter, local intersection,
+  `React.FC<Props>`, styled-components inline component 타입을 neutral props로 추론해 root에도 Auto values 적용
+- 작성된 parameter default는 생성값으로 덮지 않고, 필수 truthiness leaf와 callable path만 provenance가 표시된
+  정적값으로 채워 값 부재로 인한 target-local 렌더 실패를 감소
+- 대형 프로젝트의 direct JSX 역추적은 두 단계 뒤 render graph 체크포인트로 전환하고 unrelated lazy registry의
+  render facts를 분석하지 않으며 파일별 lazy facts를 캐시해 CPU·메모리 전수 재분석을 방지
+
+## 0.1.1041 - 2026-07-17
+
+- Page Inspector가 application의 모든 attribute/text mutation, scroll, resize와 1초 polling마다 React Fiber를
+  재수집하던 경로를 제거하고 실제 child-list/React commit만 component tree invalidation으로 처리
+- highlight는 animation frame의 저비용 DOM reconciliation으로 분리하고 Fiber snapshot은 cache한 뒤 최대
+  초당 4회, browser idle 구간에서만 갱신해 `Code Helper (Renderer)` CPU 폭증과 GUI starvation을 방지
+- Console/API·GraphQL request/condition/runtime fallback registry 갱신을 application-wide React store에서
+  Inspector 전용 lane으로 분리하고, 패널을 접거나 webview가 숨겨지면 tree subscription과 timer를 중단
+- burst commit 100회가 highlight frame 하나와 tree refresh 하나로 합쳐지는 scheduler 동작 및 attribute/text,
+  scroll/resize polling 회귀 방지 테스트 추가
+
+## 0.1.1040 - 2026-07-17
+
+- 한 target을 호출하는 정적 render-chain 후보별로 importable ancestor를 독립 탐색하고, 실제 mount owner가
+  다른 page context를 최대 6개까지 `pageCandidates`로 보존
+- Page Inspector context 행에 `PAGE PATH` 선택기를 추가해 entry→page root→target 흐름을 비교하고, 선택한
+  authored root의 children/sibling/component tree와 props/error boundary를 함께 재구성
+- 후보 root를 dynamic import loader 뒤에 두어 선택하지 않은 page module의 browser 평가를 미루고, 선택 id를
+  패널 webview state에 저장해 hot reload 뒤에도 같은 caller page를 유지
+- 대안 탐색이 source inventory와 frontier별 JSX/owner 분석 cache를 공유하고 같은 mount chain은 중복 제거해
+  여러 후보 지원이 저장소 재분석과 불필요한 UI 선택지를 늘리지 않도록 제한
+
+## 0.1.1038 - 2026-07-17
+
+- full ESM build가 2,048개를 넘는 lazy chunk를 만들면 실패시키는 대신 같은 graph를 자동으로 coalesced
+  local artifact로 재빌드하는 adaptive output strategy 추가
+- 일반 graph는 기존 file-level dynamic import splitting을 유지하고, oversized graph만 dynamic module의
+  실행 시점 lazy initializer를 보존한 채 per-module 파일 분할을 비활성화해 수천 번의 게시·로드 I/O를 제거
+- split output 개수를 포함한 warning diagnostic을 남기고 target/runtime별 결정을 compiler session에 bounded
+  cache하여 같은 탭의 hot reload가 실패할 split build를 반복하지 않도록 개선
+- TypeScript 정적 분석, reverse component 탐색, source transform과 esbuild orchestration을 전용 Node worker
+  thread로 이동하고 탭 전체에서 compile을 하나씩 실행하며 queued cold fast pass를 full enrichment보다 우선
+- Page Inspector도 cold direct graph를 먼저 게시하고 실제 page ancestor 문맥은 React commit 뒤 보강하도록 바꿔
+  큰 프로젝트에서 editor를 막거나 빈 화면으로 full build를 기다리지 않도록 개선
+- ancestor 탐색은 nearest package index를 먼저 사용하고 실제 sibling workspace 가능성이 있을 때만 workspace로
+  확장해 단일-app 모노레포의 중복 전체 scan을 제거
+- 깨진 자동 Storybook setup은 누락 후보/setup/config 증거가 바뀔 때까지 setup-free 결정을 재사용하고,
+  oversized-output 및 ancestor advisory도 같은 compiler session에서 한 번만 기록
+- bundle content/chunk digest를 worker에서 계산하고 `ArrayBuffer` ownership을 host로 transfer해 대형 결과의
+  복사와 extension-host 동기 hashing을 제거
+- `rtcc-public-upload-page.tsx` production probe에서 cold fast 1.56초, 최초 full 15.33초, 동일 full rebuild
+  0.72초와 full output 54개를 확인하고 반복 Storybook warning 0건을 검증
+
+## 0.1.1035 - 2026-07-17
+
+- 초기 경량 프리뷰 기준의 고정 32 MiB output 제한을 모노레포 page graph에 맞는 기본 128 MiB로 상향
+- resource-scoped `reactPreview.maxOutputSizeMiB` 설정을 추가해 프로젝트별 32–512 MiB 범위에서 조절하고,
+  설정 변경 시 고정된 preview session이 같은 대상 파일을 자동 rebuild하도록 연결
+- compiler API에서 잘못된 숫자가 들어와도 기본값 또는 512 MiB 절대 상한으로 정규화해 extension host의
+  메모리·global storage 보호를 유지하고, 실패 메시지에 실제 출력 크기와 변경할 설정을 함께 표시
+
+## 0.1.1033 - 2026-07-17
+
+- Vite의 project-root 절대 `import.meta.glob('/src/...')` 패턴을 nearest package root 기준으로 해석하고,
+  생성 import는 importer-relative specifier로 번들링하면서 앱이 읽는 object key는 원래 `/src/...`로 보존
+- 모노레포 workspace 안의 sibling으로 빠지는 `..` 및 project root 밖을 가리키는 symlink를 거부하고,
+  기존 상대 glob은 workspace 경계를 유지해 절대 패턴 지원이 filesystem 접근 범위를 넓히지 않도록 제한
+- generated icon registry처럼 256개가 넘는 유한 Vite glob은 빌드 전체 1,024개 참조 한도까지 허용하되
+  기존 16,384개 조회·2,048개 output·32 MiB 한도는 유지
+- `rtcc-poc-page`의 Agent 문서 41개, generated icon 330개와 정확한 `ui-test-page.tsx`를 fast/full production
+  compiler로 검증하고 full build 453 chunks, 4,280 dependencies, diagnostics 0건을 확인
+
 ## 0.1.1032 - 2026-07-17
 
 - Page Inspector의 reached workspace source에서 render-critical project hook과 `use-query-params` 호출을

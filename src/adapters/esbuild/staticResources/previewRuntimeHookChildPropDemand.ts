@@ -14,6 +14,10 @@ import {
   type PreviewInferredPropShape,
 } from './reactExportPropInference';
 import {
+  mergePreviewRuntimeHookChildPropShapes,
+  PreviewRuntimeHookChildTypeDemandResolver,
+} from './previewRuntimeHookChildTypeDemand';
+import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
   unwrapPreviewRuntimeExpression,
@@ -25,13 +29,20 @@ const MAX_PROP_DEMANDS = 32;
 const MAX_PROP_DEPTH = 8;
 const MAX_SOURCE_CHARACTERS = 512 * 1024;
 const SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
+const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 
 /** Operation-shaped use compatible with the hook analyzer's internal property-path contract. */
 export interface PreviewRuntimeHookChildPropUsage {
   readonly called: boolean;
+  /** Static one-item value inferred from the reached child's required collection element type. */
+  readonly collectionItemExpression?: string;
+  /** Nested child item paths surfaced in resolver diagnostics and partial-value repair. */
+  readonly collectionItemRequiredPaths?: readonly string[];
   readonly collectionProperty?: string;
   readonly names: readonly string[];
   readonly stringProperty?: string;
+  /** Static scalar required to keep a reached child's render-only branch dormant. */
+  readonly valueExpression?: string;
 }
 
 /** Child prop shapes indexed by the local JSX component binding and authored attribute name. */
@@ -39,6 +50,16 @@ export type PreviewRuntimeHookChildPropDemandCatalog = ReadonlyMap<
   string,
   ReadonlyMap<string, PreviewInferredPropShape>
 >;
+
+/** Serialized value contract inferred from an authored local or imported TypeScript type. */
+export interface PreviewRuntimeHookLocalTypeFallback {
+  /** Side-effect-free expression evaluated only inside the preview hook boundary. */
+  readonly expression: string;
+  /** Concise provenance shown when the generated value is surfaced as a blocker. */
+  readonly label: string;
+  /** Nested item properties required by the expanded type. */
+  readonly requiredPaths: readonly string[];
+}
 
 /** Minimal read-only module operations needed by the cross-component syntax catalog. */
 export interface PreviewRuntimeHookChildPropDemandOptions {
@@ -65,10 +86,12 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> | undefined
   >();
   private readonly workspaceRoot: string;
+  private readonly typeDemands: PreviewRuntimeHookChildTypeDemandResolver;
 
   /** Creates a catalog builder without executing project resolvers or configuration code. */
   public constructor(private readonly options: PreviewRuntimeHookChildPropDemandOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot);
+    this.typeDemands = new PreviewRuntimeHookChildTypeDemandResolver(options);
   }
 
   /** Resolves only component imports rendered by the current source module. */
@@ -102,6 +125,27 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     return catalog;
   }
 
+  /**
+   * Serializes a reached local type annotation through the same bounded transitive type resolver.
+   *
+   * This complements JSX prop demand for data first passed to an imported pure helper. The helper
+   * may be the first runtime reader, while an authored `Item[]` annotation already identifies the
+   * exact imported item contract without executing that helper.
+   */
+  public inferLocalTypeFallback(
+    sourcePath: string,
+    sourceText: string,
+    typeNode: ts.TypeNode,
+  ): PreviewRuntimeHookLocalTypeFallback | undefined {
+    const shape = this.typeDemands.inferLocalType(sourcePath, sourceText, typeNode);
+    if (shape === undefined) return undefined;
+    return Object.freeze({
+      expression: serializePreviewRuntimeHookChildShape(shape, 'item'),
+      label: 'generated collection item from authored type',
+      requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(shape)),
+    });
+  }
+
   /** Reads and caches one resolved component source under strict path and text-size limits. */
   private readInference(
     sourcePath: string,
@@ -112,7 +156,10 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     const inference =
       sourceText === undefined || sourceText.length > MAX_SOURCE_CHARACTERS
         ? undefined
-        : collectReactExportPropInference(normalizedPath, sourceText);
+        : mergeComponentInferences(
+            collectReactExportPropInference(normalizedPath, sourceText),
+            this.typeDemands.collect(normalizedPath, sourceText),
+          );
     this.inferenceCache.set(normalizedPath, inference);
     return inference;
   }
@@ -276,7 +323,8 @@ function readHookResultRootName(
   expression: ts.Expression,
   hookResultBindings: ReadonlySet<string>,
 ): string | undefined {
-  let current = unwrapPreviewRuntimeExpression(expression);
+  let current = unwrapRequiredCollectionCarrier(expression);
+  if (current === undefined) return undefined;
   while (ts.isPropertyAccessExpression(current)) {
     if (current.questionDotToken !== undefined) return undefined;
     current = unwrapPreviewRuntimeExpression(current.expression);
@@ -302,7 +350,8 @@ function readRequiredIdentifierPath(
   identifierName: string,
 ): readonly string[] | undefined {
   const suffix: string[] = [];
-  let current = unwrapPreviewRuntimeExpression(expression);
+  let current = unwrapRequiredCollectionCarrier(expression);
+  if (current === undefined) return undefined;
   while (ts.isPropertyAccessExpression(current)) {
     if (current.questionDotToken !== undefined) return undefined;
     suffix.unshift(current.name.text);
@@ -322,15 +371,45 @@ function appendShapeUsages(
   if (depth > MAX_PROP_DEPTH || usages.length >= MAX_PROP_DEMANDS) return;
   const names = [...sourcePath, ...relativePath];
   if (shape.kind === 'array') {
-    usages.push({ called: false, collectionProperty: 'map', names });
+    const itemExpression =
+      shape.items === undefined
+        ? undefined
+        : serializePreviewRuntimeHookChildShape(shape.items, names.at(-1) ?? 'item');
+    const itemRequiredPaths =
+      shape.items === undefined ? [] : collectPreviewRuntimeHookChildShapePaths(shape.items);
+    usages.push({
+      called: false,
+      ...(itemExpression === undefined ? {} : { collectionItemExpression: itemExpression }),
+      ...(itemRequiredPaths.length === 0
+        ? {}
+        : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
+      collectionProperty: 'map',
+      names,
+    });
     return;
   }
   if (shape.kind === 'function') {
     usages.push({ called: true, names });
     return;
   }
+  if (shape.kind === 'boolean' || shape.kind === 'null' || shape.kind === 'number') {
+    usages.push({
+      called: false,
+      names,
+      valueExpression: serializePreviewRuntimeHookChildShape(shape, names.at(-1) ?? 'value'),
+    });
+    return;
+  }
   if (shape.kind === 'string') {
-    usages.push({ called: false, names, stringProperty: 'trim' });
+    usages.push(
+      shape.value === undefined
+        ? { called: false, names, stringProperty: 'trim' }
+        : {
+            called: false,
+            names,
+            valueExpression: serializePreviewRuntimeHookChildShape(shape, names.at(-1) ?? 'value'),
+          },
+    );
     return;
   }
   if (shape.kind !== 'object' || shape.properties === undefined) return;
@@ -346,10 +425,125 @@ function deduplicateUsages(
 ): readonly PreviewRuntimeHookChildPropUsage[] {
   const retained = new Map<string, PreviewRuntimeHookChildPropUsage>();
   for (const usage of usages) {
-    const key = `${usage.names.join('.')}\u0000${usage.collectionProperty ?? usage.stringProperty ?? (usage.called ? 'call' : 'value')}`;
-    if (!retained.has(key)) retained.set(key, usage);
+    const terminalKind =
+      usage.valueExpression === undefined
+        ? (usage.collectionProperty ?? usage.stringProperty ?? (usage.called ? 'call' : 'value'))
+        : 'expression';
+    const key = `${usage.names.join('.')}\u0000${terminalKind}`;
+    const existing = retained.get(key);
+    if (existing === undefined) {
+      retained.set(key, usage);
+      continue;
+    }
+    const requiredPaths = [
+      ...new Set([
+        ...(existing.collectionItemRequiredPaths ?? []),
+        ...(usage.collectionItemRequiredPaths ?? []),
+      ]),
+    ];
+    retained.set(key, {
+      ...existing,
+      ...(existing.collectionItemExpression === undefined &&
+      usage.collectionItemExpression !== undefined
+        ? { collectionItemExpression: usage.collectionItemExpression }
+        : {}),
+      ...(requiredPaths.length === 0
+        ? {}
+        : { collectionItemRequiredPaths: Object.freeze(requiredPaths) }),
+    });
   }
   return [...retained.values()];
+}
+
+/**
+ * Peels only collection transforms that retain each element's authored identity.
+ *
+ * `filter`, `slice`, and the non-mutating ordering helpers may change membership/order but never
+ * change an item's contract. Mapping or arbitrary calls remain unsupported because propagating a
+ * child's fields through a transform would invent a relationship that syntax did not prove.
+ */
+function unwrapRequiredCollectionCarrier(expression: ts.Expression): ts.Expression | undefined {
+  let current = unwrapPreviewRuntimeExpression(expression);
+  while (ts.isCallExpression(current)) {
+    if (current.questionDotToken !== undefined) return undefined;
+    const callee = unwrapPreviewRuntimeExpression(current.expression);
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      callee.questionDotToken !== undefined ||
+      !COLLECTION_IDENTITY_METHODS.has(callee.name.text)
+    ) {
+      return undefined;
+    }
+    current = unwrapPreviewRuntimeExpression(callee.expression);
+  }
+  return current;
+}
+
+/** Merges operation-derived and recursively resolved type shapes for each exact component export. */
+function mergeComponentInferences(
+  usage: Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>>,
+  typed: Readonly<Record<string, PreviewInferredPropShape>>,
+): Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> {
+  const result: Record<string, { readonly shape: PreviewInferredPropShape }> = {};
+  for (const exportName of new Set([...Object.keys(usage), ...Object.keys(typed)])) {
+    const shape = mergePreviewRuntimeHookChildPropShapes(
+      usage[exportName]?.shape,
+      typed[exportName],
+    );
+    if (shape !== undefined) result[exportName] = Object.freeze({ shape });
+  }
+  return Object.freeze(result);
+}
+
+/** Serializes one compiler-proven child item shape into a side-effect-free frozen value. */
+function serializePreviewRuntimeHookChildShape(
+  shape: PreviewInferredPropShape,
+  propertyName: string,
+): string {
+  if (shape.kind === 'array') {
+    return shape.items === undefined
+      ? 'Object.freeze([])'
+      : `Object.freeze([${serializePreviewRuntimeHookChildShape(shape.items, propertyName)}])`;
+  }
+  if (shape.kind === 'boolean')
+    return typeof shape.value === 'boolean' ? String(shape.value) : 'false';
+  if (shape.kind === 'null') return 'null';
+  if (shape.kind === 'number')
+    return typeof shape.value === 'number' && Number.isFinite(shape.value)
+      ? String(shape.value)
+      : '0';
+  if (shape.kind === 'string')
+    return JSON.stringify(typeof shape.value === 'string' ? shape.value : propertyName);
+  if (shape.kind === 'function') return 'Object.freeze(() => undefined)';
+  if (shape.kind === 'component') return 'Object.freeze(() => null)';
+  const properties = Object.entries(shape.properties ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([name, child]) =>
+        `${JSON.stringify(name)}: ${serializePreviewRuntimeHookChildShape(child, name)}`,
+    );
+  return `Object.freeze({${properties.length === 0 ? '' : ` ${properties.join(', ')} `}})`;
+}
+
+/** Flattens nested array/item requirements into the runtime hook diagnostic path notation. */
+function collectPreviewRuntimeHookChildShapePaths(
+  shape: PreviewInferredPropShape,
+  prefix = '',
+): readonly string[] {
+  if (shape.kind === 'array') {
+    const collectionPath = prefix.length === 0 ? '<root>' : `${prefix}.map()`;
+    if (shape.items === undefined) return [collectionPath];
+    const itemPrefix = prefix.length === 0 ? '<root>' : `${prefix}[]`;
+    return [collectionPath, ...collectPreviewRuntimeHookChildShapePaths(shape.items, itemPrefix)];
+  }
+  if (shape.kind !== 'object') return prefix.length === 0 ? ['<root>'] : [prefix];
+  const paths = Object.entries(shape.properties ?? {}).flatMap(([name, child]) =>
+    collectPreviewRuntimeHookChildShapePaths(
+      child,
+      prefix.length === 0 ? name : `${prefix}.${name}`,
+    ),
+  );
+  return paths.length === 0 && prefix.length > 0 ? [prefix] : paths;
 }
 
 /** Detects a nested function parameter that replaces the analyzed hook-result identifier. */

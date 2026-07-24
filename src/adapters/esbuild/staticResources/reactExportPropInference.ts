@@ -10,6 +10,7 @@ import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 import { inferReactOverlayVisibilityProp } from './reactOverlayVisibilityInference';
+import { inferReactOverlayVisibilityNeutralValue } from './reactOverlayVisibilityNeutralValue';
 
 const MAX_COMPONENT_EXPORTS = 32;
 const MAX_LOCAL_COMPONENT_RESOLUTION_DEPTH = 12;
@@ -21,13 +22,15 @@ const STRING_METHOD_NAMES = new Set<string>(PREVIEW_STRING_ONLY_METHOD_NAMES);
 
 /** Neutral value categories understood by the generated browser materializer. */
 export type PreviewInferredPropKind =
-  'array' | 'boolean' | 'component' | 'function' | 'number' | 'object' | 'string';
+  'array' | 'boolean' | 'component' | 'function' | 'null' | 'number' | 'object' | 'string';
 
 /** JSON-safe recursive shape emitted into target and Inspector bridge descriptors. */
 export interface PreviewInferredPropShape {
+  /** Element contract for arrays when syntax or a resolved type proves its required fields. */
+  readonly items?: PreviewInferredPropShape;
   readonly kind: PreviewInferredPropKind;
   readonly properties?: Readonly<Record<string, PreviewInferredPropShape>>;
-  readonly value?: boolean | number | string;
+  readonly value?: boolean | number | string | null;
 }
 
 /** Human-readable provenance shown beside editable values in React Page Inspector. */
@@ -54,7 +57,7 @@ interface MutableShapeNode {
   children: Map<string, MutableShapeNode>;
   kind: PreviewInferredPropKind;
   source: PreviewInferredPropProvenance['source'];
-  value?: boolean | number | string;
+  value?: boolean | number | string | null;
 }
 
 /** One local identifier proven to represent a path rooted at the component's props object. */
@@ -439,6 +442,11 @@ function addOperationRequirement(
   node: ts.Expression,
 ): void {
   const parent = node.parent;
+  const overlayNeutralValue = inferReactOverlayVisibilityNeutralValue(node);
+  if (overlayNeutralValue !== undefined) {
+    requirePath(state, path_, overlayNeutralValue.kind, 'usage', overlayNeutralValue.value);
+    return;
+  }
   if (
     ((ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent)) &&
       parent.tagName === node) ||
@@ -512,7 +520,7 @@ function requirePath(
   path_: readonly string[],
   kind: PreviewInferredPropKind,
   source: PreviewInferredPropProvenance['source'],
-  value?: boolean | number | string,
+  value?: boolean | number | string | null,
 ): void {
   if (path_.length === 0 || path_.length > MAX_INFERRED_DEPTH) return;
   let current = state.root;
@@ -539,7 +547,7 @@ function mergeNodeKind(
   node: MutableShapeNode,
   kind: PreviewInferredPropKind,
   source: PreviewInferredPropProvenance['source'],
-  value?: boolean | number | string,
+  value?: boolean | number | string | null,
 ): void {
   if (node.kind === kind) {
     if (source === 'type') node.source = 'type';

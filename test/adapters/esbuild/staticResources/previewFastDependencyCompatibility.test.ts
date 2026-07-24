@@ -21,6 +21,41 @@ describe('requiresFastDependencyCompatibility', () => {
     },
   );
 
+  /** Keeps a shallow-projected hook caller on the demand-shaped runtime fallback pipeline. */
+  it('retains imported project hook calls including aliases and generic type arguments', () => {
+    expect(
+      requiresFastDependencyCompatibility(
+        [
+          `import { useQuery as readQuery } from '../use-query';`,
+          'const result = readQuery<QueryData, QueryVariables>(document);',
+        ].join('\n'),
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      requiresFastDependencyCompatibility(
+        `import useCompany from './use-company'; const company = useCompany();`,
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      requiresFastDependencyCompatibility(
+        `import * as hooks from './hooks'; const value = hooks.useCompany();`,
+        false,
+      ),
+    ).toBe(true);
+  });
+
+  /** React primitive hooks remain native fast-path source instead of triggering an AST transform. */
+  it('does not classify imported React primitive calls as project runtime boundaries', () => {
+    expect(
+      requiresFastDependencyCompatibility(
+        `import React, { useMemo, useState } from 'react'; const value = useMemo(() => 1, []);`,
+        false,
+      ),
+    ).toBe(false);
+  });
+
   /** Dynamic resource patterns still require finite filesystem expansion before esbuild runs. */
   it('retains non-native resource macros', () => {
     expect(

@@ -231,6 +231,39 @@ describe('collectReactExportPropInference', () => {
     });
   });
 
+  /**
+   * Keeps nested overlays dormant when their visibility is derived from a hook-fed prop object.
+   *
+   * A missing nullable key must become `null`, not `undefined`: `undefined !== null` would reveal
+   * every modal even though the authored hook initializes each target to `null`.
+   */
+  it('infers comparison-safe values for nested overlay visibility expressions', () => {
+    const source = [
+      'export function ManagementModals({ modals }: { modals: unknown }) {',
+      '  return <>',
+      '    <UploadModal show={modals.uploadTarget !== null} />',
+      '    <BulkModal show={modals.bulkUploadOpen} />',
+      '    <EditModal show={modals.editTarget !== null} />',
+      '    <DeleteModal show={modals.deleteTarget !== null} />',
+      '  </>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/ManagementModals.tsx', source);
+
+    expect(result.ManagementModals?.shape.properties).toEqual({
+      modals: {
+        kind: 'object',
+        properties: {
+          bulkUploadOpen: { kind: 'boolean', value: false },
+          deleteTarget: { kind: 'null' },
+          editTarget: { kind: 'null' },
+          uploadTarget: { kind: 'null' },
+        },
+      },
+    });
+  });
+
   /** Refuses imported HOC inputs and cyclic local aliases because neither proves a function body. */
   it('fails closed for external and cyclic HOC component references', () => {
     const source = [

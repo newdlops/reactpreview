@@ -145,6 +145,22 @@ describe('deferPreviewDormantOverlayImports', () => {
     expect(transformed).not.toContain('import("./AccountDialog")');
   });
 
+  /** The selected file must remain authentic even when its parent initializes the modal closed. */
+  it('never substitutes the exact Page Inspector target with a dormant placeholder', () => {
+    const source =
+      "import AccountDialog from './AccountDialog';\nexport default () => <AccountDialog open={false} />;";
+    const transformed = deferPreviewDormantOverlayImports({
+      allowProvisionalSideEffectDeferral: true,
+      preservedSourcePaths: ['/workspace/src/AccountDialog.tsx'],
+      resolver: { resolve: () => '/workspace/src/AccountDialog.tsx' },
+      sourcePath: SOURCE_PATH,
+      sourceText: source,
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    expect(transformed).toBe(source);
+  });
+
   /** Generated wrappers consume no additional physical lines before later authored statements. */
   it('preserves source line positions after a deferred import', () => {
     const source = [

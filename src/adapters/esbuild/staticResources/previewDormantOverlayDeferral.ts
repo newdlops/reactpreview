@@ -41,6 +41,14 @@ export interface PreviewDormantOverlayDeferralOptions {
   readonly allowProvisionalSideEffectDeferral?: boolean;
   /** Exact compiler resolver shared with the eventual esbuild graph. */
   readonly resolver: PreviewDormantOverlayResolver;
+  /**
+   * Exact source modules that must remain authentic even when their current visibility is false.
+   *
+   * Page Inspector supplies the selected editor target here. Its parent page may keep a modal
+   * dormant, but replacing that exact file with a fast placeholder would make the preview claim
+   * the target is mounted without ever evaluating or rendering the selected implementation.
+   */
+  readonly preservedSourcePaths?: readonly string[];
   /** Absolute source identity used for parser grammar and relative resolution. */
   readonly sourcePath: string;
   /** Current editor or filesystem source. */
@@ -354,6 +362,7 @@ function collectOverlayImportBindings(
     );
     if (
       resolvedPath === undefined ||
+      isPreservedOverlaySource(resolvedPath, options.preservedSourcePaths) ||
       (options.resolver.isSideEffectFree?.(resolvedPath) !== true &&
         options.allowProvisionalSideEffectDeferral !== true)
     ) {
@@ -389,6 +398,17 @@ function collectOverlayImportBindings(
     }
   }
   return bindings;
+}
+
+/** Compares canonical absolute identities without trusting authored import spelling. */
+function isPreservedOverlaySource(
+  resolvedPath: string,
+  preservedSourcePaths: readonly string[] | undefined,
+): boolean {
+  const normalized = path.resolve(resolvedPath);
+  return (
+    preservedSourcePaths?.some((sourcePath) => path.resolve(sourcePath) === normalized) === true
+  );
 }
 
 /** Resolves one trusted workspace source without admitting installed dependency modules. */

@@ -66,6 +66,29 @@ export function isPreviewRuntimeFunction(node: ts.Node): node is PreviewRuntimeF
   );
 }
 
+/** Detects whether a function parameter replaces a tracked hook-result or alias binding. */
+export function previewRuntimeFunctionShadowsName(
+  scope: PreviewRuntimeFunction,
+  identifierName: string,
+): boolean {
+  return scope.parameters.some((parameter) =>
+    previewRuntimeBindingContainsName(parameter.name, identifierName),
+  );
+}
+
+/** Recursively checks one parameter binding without inspecting authored default expressions. */
+export function previewRuntimeBindingContainsName(
+  binding: ts.BindingName,
+  identifierName: string,
+): boolean {
+  if (ts.isIdentifier(binding)) return binding.text === identifierName;
+  return binding.elements.some(
+    (element) =>
+      !ts.isOmittedExpression(element) &&
+      previewRuntimeBindingContainsName(element.name, identifierName),
+  );
+}
+
 /** Walks through syntax-only wrappers while retaining the original runtime expression. */
 export function unwrapPreviewRuntimeExpression(expression: ts.Expression): ts.Expression {
   let current = expression;
@@ -95,6 +118,26 @@ export function unwrapPreviewRuntimeParentExpression(expression: ts.Expression):
     current = current.parent;
   }
   return current;
+}
+
+/**
+ * Reads the binding that immediately consumes a generated function's return value.
+ *
+ * Transparent casts and parentheses are skipped, while assignments, property writes, and arbitrary
+ * callbacks are rejected. A variable declaration gives the fallback analyzer an exact array,
+ * object, or identifier contract without executing the called function or resolving project types.
+ *
+ * @param call Direct authored call whose static result demand is being inspected.
+ * @returns The declaration binding initialized by the call, or `undefined` for an opaque consumer.
+ */
+export function readPreviewRuntimeCallResultBinding(
+  call: ts.CallExpression,
+): ts.BindingName | undefined {
+  const expression = unwrapPreviewRuntimeParentExpression(call);
+  const parent = expression.parent;
+  return ts.isVariableDeclaration(parent) && parent.initializer === expression
+    ? parent.name
+    : undefined;
 }
 
 /** Reads an identifier/property callee name without evaluating computed expressions. */

@@ -61,6 +61,27 @@ export function inferReactOverlayVisibilityProp(
     : readExplicitForwardedVisibilityProp(overlayOpening, restName.text);
 }
 
+/**
+ * Reports whether one JSX attribute is the positive visibility input of an overlay-shaped tag.
+ *
+ * This is intentionally stricter than matching `open` or `show` alone. Ordinary panels frequently
+ * reuse those names, so both the attribute contract and a Modal/Dialog/Portal-like component name
+ * must agree before preview inference is allowed to choose a dormant value.
+ */
+export function isReactOverlayVisibilityJsxAttribute(attribute: ts.JsxAttribute): boolean {
+  const attributeName = attribute.name.getText();
+  if (!POSITIVE_OVERLAY_VISIBILITY_PROPS.has(normalizeVisibilityPropName(attributeName))) {
+    return false;
+  }
+  const attributes = attribute.parent;
+  const opening = attributes.parent;
+  if (!ts.isJsxOpeningElement(opening) && !ts.isJsxSelfClosingElement(opening)) return false;
+  return opening.tagName
+    .getText()
+    .split('.')
+    .some((segment) => OVERLAY_COMPONENT_NAME_PATTERN.test(segment));
+}
+
 /** Reads a stable authored owner name through the local HOC function candidate. */
 function readFunctionLikeName(functionLike: ReactOverlayFunctionLike): string | undefined {
   const name =

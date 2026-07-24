@@ -14,8 +14,19 @@ import {
   createPreviewRuntimeHookObjectRestFallback,
   readPreviewRuntimeHookBindingPropertyName,
 } from './previewRuntimeHookBindingPattern';
-import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
 import {
+  createPreviewRuntimeHookCallableFallback,
+  createPreviewRuntimeHookCallResultFallback,
+} from './previewRuntimeHookCallResult';
+import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
+import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
+import { inferPreviewRuntimeHookGuardPassFallback } from './previewRuntimeHookGuardValue';
+import {
+  readPreviewRuntimeHookAliasUsagePaths,
+  type PreviewRuntimeHookAliasUsagePath as PreviewRuntimeHookUsagePath,
+} from './previewRuntimeHookAliasUsage';
+import {
+  type PreviewRuntimeHookLocalTypeFallback,
   readPreviewRuntimeHookChildPropUsages,
   type PreviewRuntimeHookChildPropDemandCatalog,
 } from './previewRuntimeHookChildPropDemand';
@@ -44,12 +55,14 @@ import {
   selectPreviewRuntimeScriptKind as selectScriptKind,
   unwrapPreviewRuntimeExpression as unwrapExpression,
   unwrapPreviewRuntimeParentExpression as unwrapParentExpression,
+  previewRuntimeFunctionShadowsName as functionShadowsName,
 } from './previewRuntimeHookSyntax';
-import type { PreviewRuntimeFunction as RuntimeFunction } from './previewRuntimeHookSyntax';
 import {
   createPreviewRuntimeSemanticString,
   inferPreviewRuntimeSemanticFallback,
 } from './previewRuntimeHookSemantics';
+import { inferPreviewRuntimeHookSpreadItemFallback } from './previewRuntimeHookSpreadItem';
+import { createPreviewRuntimeHookUsageTreeFallback } from './previewRuntimeHookUsageTree';
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
 const MAX_METADATA_TEXT_LENGTH = 180;
@@ -70,6 +83,11 @@ const childPropDemandsBySourceFile = new WeakMap<
   ts.SourceFile,
   PreviewRuntimeHookChildPropDemandCatalog
 >();
+/** Imported/local type expansion available only during the current source transformation. */
+const localTypeFallbackBySourceFile = new WeakMap<
+  ts.SourceFile,
+  (typeNode: ts.TypeNode) => PreviewRuntimeHookLocalTypeFallback | undefined
+>();
 /** Import or local-declaration evidence for one callable custom hook binding. */
 interface PreviewRuntimeHookBinding {
   /** Authored hook name shown in Inspector diagnostics. */
@@ -77,7 +95,6 @@ interface PreviewRuntimeHookBinding {
   /** Static module specifier, or `local` for a same-module hook declaration. */
   readonly moduleSpecifier: string;
 }
-
 /** Namespace import and its static module specifier used by hook isolation policy. */
 type PreviewRuntimeHookNamespace = Readonly<{ moduleSpecifier: string }>;
 interface PreviewRuntimeHookInventory {
@@ -86,7 +103,6 @@ interface PreviewRuntimeHookInventory {
   /** Namespace import identifiers mapped to their source modules. */
   readonly namespaces: ReadonlyMap<string, PreviewRuntimeHookNamespace>;
 }
-
 /** Bounded static fallback emitted beside one hook call. */
 interface PreviewRuntimeHookFallback extends PreviewRuntimeHookArrayLengthConstraintMetadata {
   /** Human-readable inference description exposed to the user. */
@@ -104,7 +120,6 @@ interface PreviewRuntimeHookFallback extends PreviewRuntimeHookArrayLengthConstr
   /** Property paths whose absence would stop rendering at this exact hook edge. */
   readonly requiredPaths?: readonly string[];
 }
-
 /** Shared scalar/container fallback shape used while recursively walking one binding pattern. */
 interface PreviewRuntimeHookValueFallback {
   /** Side-effect-free expression evaluated only inside the preview runtime boundary. */
@@ -117,21 +132,6 @@ interface PreviewRuntimeHookValueFallback {
   readonly preserveNullish?: boolean;
   /** Paths relative to this value that local syntax proves are required. */
   readonly requiredPaths?: readonly string[];
-}
-
-/** Mutable property tree used only while serializing one identifier's required local usage. */
-interface PreviewRuntimeHookUsageNode {
-  /** Nested required properties for an object container. */
-  readonly children: Map<string, PreviewRuntimeHookUsageNode>;
-  /** Static leaf expression, omitted while the node remains an object container. */
-  expression?: string;
-}
-/** One local hook-result path plus optional collection-receiver evidence. */
-interface PreviewRuntimeHookUsagePath {
-  readonly called: boolean;
-  readonly collectionProperty?: string;
-  readonly names: readonly string[];
-  readonly stringProperty?: string;
 }
 /** Parsed hook call and inferred fallback before a stable identity is serialized. */
 interface PreviewRuntimeHookCandidate {
@@ -172,6 +172,7 @@ export function createPreviewRuntimeHookReplacements(
   sourcePath: string,
   sourceText: string,
   childPropDemands?: PreviewRuntimeHookChildPropDemandCatalog,
+  localTypeFallback?: (typeNode: ts.TypeNode) => PreviewRuntimeHookLocalTypeFallback | undefined,
 ): readonly PreviewSourceReplacement[] {
   if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) {
     return [];
@@ -188,6 +189,9 @@ export function createPreviewRuntimeHookReplacements(
   }
   if (childPropDemands !== undefined && childPropDemands.size > 0) {
     childPropDemandsBySourceFile.set(sourceFile, childPropDemands);
+  }
+  if (localTypeFallback !== undefined) {
+    localTypeFallbackBySourceFile.set(sourceFile, localTypeFallback);
   }
   const inventory = collectRuntimeHookInventory(sourceFile);
   if (inventory.direct.size === 0 && inventory.namespaces.size === 0) {
@@ -432,7 +436,7 @@ function inferRuntimeHookFallback(
       };
     }
   }
-  const propertyFallback = createDirectPropertyFallback(expression);
+  const propertyFallback = createDirectPropertyFallback(expression, sourceFile);
   if (propertyFallback !== undefined) {
     return propertyFallback;
   }
@@ -451,17 +455,28 @@ function inferRuntimeHookFallback(
 function createBindingFallback(
   binding: ts.BindingName,
   sourceFile: ts.SourceFile,
+  callResultDepth = 0,
 ): PreviewRuntimeHookValueFallback | undefined {
   if (ts.isIdentifier(binding)) {
-    const usageShape = createIdentifierUsageFallback(binding);
+    const usageShape = createIdentifierUsageFallback(binding, sourceFile, callResultDepth);
     if (usageShape !== undefined) return usageShape;
+    const semantic = inferPreviewRuntimeSemanticFallback(binding.text);
+    const guardPass =
+      semantic?.label === 'generated boolean false'
+        ? inferPreviewRuntimeHookGuardPassFallback(binding)
+        : undefined;
+    if (guardPass !== undefined) return { ...guardPass, requiredPaths: ['<root>'] };
     const compared = findComparedLiteralFallback(binding, sourceFile);
     if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
     if (directUsage?.callable === true) {
-      return { ...directUsage, requiredPaths: ['<root>()'] };
+      return createPreviewRuntimeHookCallableFallback(
+        directUsage,
+        sourceFile,
+        callResultDepth,
+        createBindingFallback,
+      );
     }
-    const semantic = inferPreviewRuntimeSemanticFallback(binding.text);
     if (semantic !== undefined) return { ...semantic, requiredPaths: ['<root>'] };
     if (directUsage !== undefined) {
       return {
@@ -485,7 +500,7 @@ function createBindingFallback(
         values.push('undefined');
         continue;
       }
-      const child = createBindingFallback(element.name, sourceFile);
+      const child = createBindingFallback(element.name, sourceFile, callResultDepth);
       const propertyName = String(index);
       values.push(readNestedPreviewRuntimeHookExpression(child, propertyName));
       if (
@@ -509,7 +524,7 @@ function createBindingFallback(
   for (const element of binding.elements) {
     if (element.dotDotDotToken !== undefined) {
       const rest = createPreviewRuntimeHookObjectRestFallback(
-        createBindingFallback(element.name, sourceFile),
+        createBindingFallback(element.name, sourceFile, callResultDepth),
       );
       if (rest.expression !== undefined) properties.push(rest.expression);
       requiredPaths.push(...rest.requiredPaths);
@@ -518,7 +533,7 @@ function createBindingFallback(
     if (element.initializer !== undefined) continue;
     const propertyName = readPreviewRuntimeHookBindingPropertyName(element);
     if (propertyName === undefined) return undefined;
-    const child = createBindingFallback(element.name, sourceFile) ?? {
+    const child = createBindingFallback(element.name, sourceFile, callResultDepth) ?? {
       expression: 'Object.freeze({})',
       label: 'static object',
     };
@@ -579,6 +594,8 @@ function prefixPreviewRuntimeHookPaths(
  */
 function createIdentifierUsageFallback(
   identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+  callResultDepth: number,
 ): PreviewRuntimeHookValueFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
@@ -596,26 +613,68 @@ function createIdentifierUsageFallback(
       const usagePath = readPreviewRuntimeHookPropertyUsage(node, identifier.text);
       if (usagePath !== undefined && usagePath.names.length > 0) {
         const collectionProperty = usagePath.names.at(-1);
-        const collection = isPreviewRuntimeHookArrayUsageProperty(collectionProperty);
+        const spreadCollection = ts.isSpreadElement(node.parent);
+        const collection =
+          spreadCollection || isPreviewRuntimeHookArrayUsageProperty(collectionProperty);
         const terminalCalled = ts.isCallExpression(node.parent) && node.parent.expression === node;
+        const callResultFallback =
+          terminalCalled && !collection && ts.isCallExpression(node.parent)
+            ? createPreviewRuntimeHookCallResultFallback(
+                node.parent,
+                sourceFile,
+                callResultDepth + 1,
+                createBindingFallback,
+              )
+            : undefined;
+        const collectionItemFallback =
+          usagePath.collectionItemType === undefined
+            ? spreadCollection
+              ? inferPreviewRuntimeHookSpreadItemFallback(node)
+              : terminalCalled
+                ? inferPreviewRuntimeArrayItemFallback(node, identifier.getSourceFile())
+                : undefined
+            : localTypeFallbackBySourceFile
+                .get(identifier.getSourceFile())
+                ?.call(undefined, usagePath.collectionItemType);
         const stringReceiver =
           terminalCalled &&
           isPreviewRuntimeHookStringUsageProperty(collectionProperty) &&
           inferPreviewRuntimeSemanticFallback(usagePath.names.at(-2) ?? identifier.text)?.label !==
             'generated object';
-        if (!usagePath.optional && collection && usagePath.names.length === 1) {
+        if (
+          !usagePath.optional &&
+          collection &&
+          !spreadCollection &&
+          usagePath.names.length === 1
+        ) {
           arrayRootEvidence.push(usagePath.names[0] ?? 'array operation');
-          const itemFallback = inferPreviewRuntimeArrayItemFallback(
-            node,
-            identifier.getSourceFile(),
-          );
-          if (itemFallback !== undefined) arrayItemFallbacks.push(itemFallback);
+          if (collectionItemFallback !== undefined) {
+            arrayItemFallbacks.push(collectionItemFallback);
+          }
         } else if (paths.length + optionalPaths.length < 64 && usagePath.names.length <= 12) {
           const target = usagePath.optional ? optionalPaths : paths;
           target.push({
             called: !collection && !stringReceiver && terminalCalled,
-            ...(collection && collectionProperty !== undefined ? { collectionProperty } : {}),
-            names: collection || stringReceiver ? usagePath.names.slice(0, -1) : usagePath.names,
+            ...(callResultFallback === undefined
+              ? {}
+              : { callResultExpression: callResultFallback.expression }),
+            ...(collectionItemFallback?.expression === undefined
+              ? {}
+              : { collectionItemExpression: collectionItemFallback.expression }),
+            ...(collectionItemFallback?.requiredPaths === undefined
+              ? {}
+              : {
+                  collectionItemRequiredPaths: Object.freeze([
+                    ...collectionItemFallback.requiredPaths,
+                  ]),
+                }),
+            ...(collection
+              ? { collectionProperty: spreadCollection ? 'spread' : (collectionProperty ?? '') }
+              : {}),
+            names:
+              (collection && !spreadCollection) || stringReceiver
+                ? usagePath.names.slice(0, -1)
+                : usagePath.names,
             ...(stringReceiver ? { stringProperty: collectionProperty ?? '' } : {}),
           });
         }
@@ -656,12 +715,29 @@ function createIdentifierUsageFallback(
   visit(owner);
   for (const usage of readPreviewRuntimeHookIdentityAliasCollectionUsages(identifier, owner))
     (usage.optional ? optionalPaths : paths).push({ called: false, ...usage });
-  paths.push(
-    ...readPreviewRuntimeHookChildPropUsages(
-      identifier,
-      childPropDemandsBySourceFile.get(identifier.getSourceFile()),
-    ),
-  );
+  paths.push(...readPreviewRuntimeHookAliasUsagePaths(identifier, owner));
+  /*
+   * A hook array may reach a child through an identity-preserving transform such as
+   * `items.filter(... )`. Such a carrier has no property-name prefix, so retain its inferred child
+   * item beside callback-derived candidates instead of trying to serialize it as an object path.
+   */
+  for (const usage of readPreviewRuntimeHookChildPropUsages(
+    identifier,
+    childPropDemandsBySourceFile.get(identifier.getSourceFile()),
+  )) {
+    if (usage.names.length === 0 && usage.collectionProperty !== undefined) {
+      arrayRootEvidence.push('child component collection prop');
+      if (usage.collectionItemExpression !== undefined) {
+        arrayItemFallbacks.push({
+          expression: usage.collectionItemExpression,
+          label: 'generated child component collection item',
+          requiredPaths: usage.collectionItemRequiredPaths ?? [],
+        });
+      }
+    } else {
+      paths.push(usage);
+    }
+  }
   if (arrayRootEvidence.length > 0) {
     const item = [...arrayItemFallbacks].sort(
       (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
@@ -678,45 +754,22 @@ function createIdentifierUsageFallback(
   }
   if (paths.length === 0 && unsafeReferences === 0) {
     if (optionalReferences === 0) return undefined;
-    const completedOptionalPaths = deduplicatePreviewRuntimeHookUsagePaths(optionalPaths);
-    const optionalRoot: PreviewRuntimeHookUsageNode = { children: new Map() };
-    for (const path_ of completedOptionalPaths) addUsagePath(optionalRoot, path_);
+    const optionalFallback = createPreviewRuntimeHookUsageTreeFallback(optionalPaths);
     return {
-      expression: serializeUsageNode(optionalRoot),
-      failurePaths: completedOptionalPaths.map(formatPreviewRuntimeHookUsagePath),
+      expression: optionalFallback.expression,
+      failurePaths: optionalFallback.requiredPaths,
       label: 'generated optional failure shape',
       preserveNullish: true,
       requiredPaths: [],
     };
   }
   if (paths.length === 0 && optionalPaths.length === 0) return undefined;
-  const completedPaths = deduplicatePreviewRuntimeHookUsagePaths([...paths, ...optionalPaths]);
-  const root: PreviewRuntimeHookUsageNode = { children: new Map() };
-  for (const path_ of completedPaths) addUsagePath(root, path_);
+  const fallback = createPreviewRuntimeHookUsageTreeFallback([...paths, ...optionalPaths]);
   return {
-    expression: serializeUsageNode(root),
+    expression: fallback.expression,
     label: 'generated required property shape',
-    requiredPaths: completedPaths.map(formatPreviewRuntimeHookUsagePath),
+    requiredPaths: fallback.requiredPaths,
   };
-}
-/** Keeps one deterministic occurrence of every demanded hook-result path. */
-function deduplicatePreviewRuntimeHookUsagePaths(
-  paths: readonly PreviewRuntimeHookUsagePath[],
-): readonly PreviewRuntimeHookUsagePath[] {
-  const retained = new Map<string, PreviewRuntimeHookUsagePath>();
-  for (const path_ of paths) {
-    const key = `${path_.names.join('.')}\u0000${path_.collectionProperty ?? path_.stringProperty ?? (path_.called ? 'call' : 'value')}`;
-    if (!retained.has(key)) retained.set(key, path_);
-  }
-  return [...retained.values()];
-}
-/** Formats receiver evidence as the authored collection access instead of a fake own method. */
-function formatPreviewRuntimeHookUsagePath(path_: PreviewRuntimeHookUsagePath): string {
-  const base = path_.names.join('.');
-  if (path_.stringProperty !== undefined) return `${base}.${path_.stringProperty}()`;
-  if (path_.collectionProperty === undefined) return base + (path_.called ? '()' : '');
-  const suffix = path_.collectionProperty + (path_.collectionProperty === 'length' ? '' : '()');
-  return base.length === 0 ? suffix : `${base}.${suffix}`;
 }
 
 /** Infers the first array-callback parameter from the fields actually read inside that callback. */
@@ -733,56 +786,6 @@ function inferPreviewRuntimeArrayItemFallback(
   const itemParameter = callback.parameters[0];
   if (itemParameter === undefined || itemParameter.dotDotDotToken !== undefined) return undefined;
   return createBindingFallback(itemParameter.name, sourceFile);
-}
-
-/** Adds one property path into a bounded shape while preserving existing deeper evidence. */
-function addUsagePath(root: PreviewRuntimeHookUsageNode, path_: PreviewRuntimeHookUsagePath): void {
-  let current = root;
-  for (const [index, propertyName] of path_.names.entries()) {
-    let child = current.children.get(propertyName);
-    if (child === undefined) {
-      child = { children: new Map() };
-      current.children.set(propertyName, child);
-    }
-    current = child;
-    if (index === path_.names.length - 1) {
-      current.expression =
-        path_.collectionProperty !== undefined
-          ? 'Object.freeze([])'
-          : path_.stringProperty !== undefined
-            ? JSON.stringify(createPreviewRuntimeSemanticString(propertyName))
-            : path_.called
-              ? 'Object.freeze(() => undefined)'
-              : (current.expression ??
-                inferPreviewRuntimeSemanticFallback(propertyName)?.expression ??
-                'Object.freeze({})');
-    }
-  }
-}
-
-/** Serializes one usage tree into deeply frozen plain containers and inferred leaves. */
-function serializeUsageNode(node: PreviewRuntimeHookUsageNode): string {
-  if (node.children.size === 0) return node.expression ?? 'Object.freeze({})';
-  const properties = [...node.children]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(
-      ([propertyName, child]) => `${JSON.stringify(propertyName)}: ${serializeUsageNode(child)}`,
-    );
-  return `Object.freeze({ ${properties.join(', ')} })`;
-}
-
-/** Detects a nested function parameter that would shadow the analyzed hook-result identifier. */
-function functionShadowsName(scope: RuntimeFunction, identifierName: string): boolean {
-  return scope.parameters.some((parameter) => bindingContainsName(parameter.name, identifierName));
-}
-
-/** Recursively checks one parameter binding without inspecting default-value expressions. */
-function bindingContainsName(binding: ts.BindingName, identifierName: string): boolean {
-  if (ts.isIdentifier(binding)) return binding.text === identifierName;
-  return binding.elements.some(
-    (element) =>
-      !ts.isOmittedExpression(element) && bindingContainsName(element.name, identifierName),
-  );
 }
 
 /** Uses a literal comparison near one identifier when semantic naming alone is inconclusive. */
@@ -855,6 +858,7 @@ function isEqualityOperator(kind: ts.SyntaxKind): boolean {
 /** Builds one nested object for a direct non-optional `useHook().field` access. */
 function createDirectPropertyFallback(
   expression: ts.Expression,
+  sourceFile: ts.SourceFile,
 ): PreviewRuntimeHookFallback | undefined {
   const properties: string[] = [];
   let current: ts.Node = expression;
@@ -865,8 +869,17 @@ function createDirectPropertyFallback(
   }
   if (properties.length === 0) return undefined;
   const called = ts.isCallExpression(current.parent) && current.parent.expression === current;
+  const callResult =
+    called && ts.isCallExpression(current.parent)
+      ? createPreviewRuntimeHookCallResultFallback(
+          current.parent,
+          sourceFile,
+          1,
+          createBindingFallback,
+        )
+      : undefined;
   let child = called
-    ? 'Object.freeze(() => undefined)'
+    ? createPreviewRuntimeCallableFallbackExpression(callResult?.expression)
     : (inferPreviewRuntimeSemanticFallback(properties.at(-1) ?? '')?.expression ??
       'Object.freeze({})');
   for (const propertyName of [...properties].reverse()) {

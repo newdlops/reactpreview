@@ -75,6 +75,169 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
 
     expect(transformed).not.toContain('data.data.rides.map()');
   });
+
+  /**
+   * Resolves an imported nested collection type and carries it through a filtering JSX carrier.
+   *
+   * This models an application shell whose navigation hook is generated in the parent while the
+   * reached child is the first module that proves which page fields are required to render.
+   */
+  it('propagates transitive imported item fields through identity-preserving collection transforms', () => {
+    const parentPath = '/workspace/Navigation.tsx';
+    const childPath = '/workspace/NavigationCategories.tsx';
+    const typesPath = '/workspace/navigation-types.ts';
+    const parentSource = [
+      `import { useNavigationData } from './use-navigation-data';`,
+      `import { NavigationCategories } from './NavigationCategories';`,
+      'export function Navigation() {',
+      '  const categories = useNavigationData();',
+      '  return <NavigationCategories categories={categories.filter(Boolean)} />;',
+      '}',
+    ].join('\n');
+    const childSource = [
+      `import type { Category } from './navigation-types';`,
+      'type Props = { categories: readonly Category[] };',
+      'export const NavigationCategories = ({ categories }: Props) => (',
+      '  <nav>{categories.map((category) => <span key={category.name}>{category.name}</span>)}</nav>',
+      ');',
+    ].join('\n');
+    const typesSource = [
+      'export type Page = { label: string; pageNameOrUrl: string; activeRoutes?: readonly (RegExp | string)[] };',
+      'export type PageGroup = { label?: string; pages: readonly Page[] };',
+      'export type Category = { name: string; icon: string; pageGroups: readonly PageGroup[] };',
+    ].join('\n');
+    const sources = new Map([
+      [childPath, childSource],
+      [typesPath, typesSource],
+    ]);
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => sources.get(sourcePath),
+      resolveModule: (moduleSpecifier, consumerPath) => {
+        if (consumerPath === parentPath && moduleSpecifier === './NavigationCategories')
+          return childPath;
+        if (consumerPath === childPath && moduleSpecifier === './navigation-types')
+          return typesPath;
+        return undefined;
+      },
+      workspaceRoot: '/workspace',
+    });
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+      ),
+    );
+
+    expect(transformed).toContain('"pageNameOrUrl": "pageNameOrUrl"');
+    expect(transformed).toContain('"pageGroups": Object.freeze([');
+    expect(transformed).toContain('"pages": Object.freeze([');
+    expect(transformed).toContain('[].pageGroups[].pages[].pageNameOrUrl');
+  });
+
+  /**
+   * Expands an imported array item annotation when the selected query value first reaches a pure
+   * helper rather than a JSX child.
+   */
+  it('propagates an imported typed collection contract into a hook fallback', () => {
+    const parentPath = '/workspace/Panel.tsx';
+    const typesPath = '/workspace/types.ts';
+    const parentSource = [
+      `import { useQuery } from './use-query';`,
+      `import { buildRows } from './build-rows';`,
+      `import type { Item } from './types';`,
+      'export function Panel() {',
+      '  const { data } = useQuery();',
+      '  const items = (data?.items ?? []) as Item[];',
+      '  const rows = buildRows(items);',
+      '  return <main>{rows.length}</main>;',
+      '}',
+    ].join('\n');
+    const typesSource = [
+      'export type Child = { id: string; label: string };',
+      'export type Item = { id: string; name: string; children: Child[] };',
+    ].join('\n');
+    const sources = new Map([
+      [parentPath, parentSource],
+      [typesPath, typesSource],
+    ]);
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => sources.get(sourcePath),
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        consumerPath === parentPath && moduleSpecifier === './types' ? typesPath : undefined,
+      workspaceRoot: '/workspace',
+    });
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+        (typeNode) => builder.inferLocalTypeFallback(parentPath, parentSource, typeNode),
+      ),
+    );
+
+    expect(transformed).toContain(
+      '"items": Object.freeze([Object.freeze({ "children": Object.freeze([',
+    );
+    expect(transformed).toContain('"id": "id"');
+    expect(transformed).toContain('"label": "label"');
+    expect(transformed).toContain('"failurePaths":["data.items[]"');
+    expect(transformed).toContain('data.items[].children[].label');
+  });
+
+  /**
+   * Propagates a reached child's dormant overlay contract into its parent hook fallback.
+   *
+   * Without these scalar leaves the generated object contains `undefined`; inequality checks such
+   * as `undefined !== null` then open every sibling modal and obscure the actual page.
+   */
+  it('keeps non-target child overlays dormant with null and false scalar values', () => {
+    const parentPath = '/workspace/ManagementPanel.tsx';
+    const childPath = '/workspace/ManagementModals.tsx';
+    const parentSource = [
+      `import { useAgreementModals } from './useAgreementModals';`,
+      `import { ManagementModals } from './ManagementModals';`,
+      'export function ManagementPanel() {',
+      '  const modals = useAgreementModals();',
+      '  const open = modals.requestUpload;',
+      '  return <ManagementModals modals={modals} />;',
+      '}',
+    ].join('\n');
+    const childSource = [
+      'export function ManagementModals({ modals }: { modals: unknown }) {',
+      '  return <>',
+      '    <UploadModal show={modals.uploadTarget !== null} />',
+      '    <BulkModal show={modals.bulkUploadOpen} />',
+      '    <EditModal show={modals.editTarget !== null} />',
+      '    <DeleteModal show={modals.deleteTarget !== null} />',
+      '  </>;',
+      '}',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === childPath ? childSource : undefined),
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './ManagementModals' ? childPath : undefined,
+      workspaceRoot: '/workspace',
+    });
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+      ),
+    );
+
+    expect(transformed).toContain('"bulkUploadOpen": false');
+    expect(transformed).toContain('"deleteTarget": null');
+    expect(transformed).toContain('"editTarget": null');
+    expect(transformed).toContain('"uploadTarget": null');
+    expect(transformed).toContain(
+      '"requiredPaths":["requestUpload","bulkUploadOpen","deleteTarget","editTarget","uploadTarget"]',
+    );
+  });
 });
 
 /** Applies source-ordered zero-width/range replacements like the shared transformer. */

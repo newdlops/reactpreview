@@ -6,11 +6,14 @@
  * nullish default, or rendering a returned scalar—without growing that analyzer to the file limit.
  */
 import ts from 'typescript';
+import { readPreviewRuntimeCallResultBinding } from './previewRuntimeHookSyntax';
 
 /** Static expression and user-facing description emitted for one proven direct use. */
 export interface PreviewRuntimeHookDirectUsageFallback {
   /** Whether local syntax proves the fallback itself must be callable. */
   readonly callable?: boolean;
+  /** Variable bindings that prove a called fallback must return a particular static shape. */
+  readonly callResultBindings?: readonly ts.BindingName[];
   /** Side-effect-free JavaScript expression evaluated only by the Inspector fallback boundary. */
   readonly expression: string;
   /** Concise explanation displayed beside the generated render value. */
@@ -38,6 +41,7 @@ export function createPreviewRuntimeHookDirectUsageFallback(
   if (owner === undefined) return undefined;
   const usage = {
     called: false,
+    callResultBindings: [] as ts.BindingName[],
     conditional: false,
     nullishDefault: false,
     rendered: false,
@@ -50,6 +54,15 @@ export function createPreviewRuntimeHookDirectUsageFallback(
       const parent = unwrapParentNode(node);
       if (ts.isCallExpression(parent) && unwrapExpression(parent.expression) === node) {
         usage.called = true;
+        const resultBinding = readPreviewRuntimeCallResultBinding(parent);
+        if (
+          resultBinding !== undefined &&
+          !usage.callResultBindings.some(
+            (candidate) => candidate.getStart() === resultBinding.getStart(),
+          )
+        ) {
+          usage.callResultBindings.push(resultBinding);
+        }
       } else if (
         ts.isBinaryExpression(parent) &&
         parent.left === node &&
@@ -73,6 +86,9 @@ export function createPreviewRuntimeHookDirectUsageFallback(
   if (usage.called) {
     return {
       callable: true,
+      ...(usage.callResultBindings.length === 0
+        ? {}
+        : { callResultBindings: Object.freeze([...usage.callResultBindings]) }),
       expression: 'Object.freeze(() => undefined)',
       label: 'generated no-op function from local call',
     };

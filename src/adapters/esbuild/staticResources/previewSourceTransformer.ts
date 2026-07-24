@@ -155,6 +155,9 @@ export class PreviewSourceTransformer {
     ) {
       sourceText = deferPreviewDormantOverlayImports({
         allowProvisionalSideEffectDeferral: true,
+        ...(this.options.documentPath === undefined
+          ? {}
+          : { preservedSourcePaths: [this.options.documentPath] }),
         resolver: this.options.implicitPackageGlobalResolver,
         sourcePath,
         sourceText,
@@ -232,11 +235,15 @@ export class PreviewSourceTransformer {
         );
       }
       if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('use')) {
+        const typeDemand = this.runtimeHookChildPropDemands;
         replacements.push(
           ...createPreviewRuntimeHookReplacements(
             sourcePath,
             sourceText,
-            this.runtimeHookChildPropDemands?.collect(sourcePath, sourceText),
+            typeDemand?.collect(sourcePath, sourceText),
+            typeDemand === undefined
+              ? undefined
+              : (typeNode) => typeDemand.inferLocalTypeFallback(sourcePath, sourceText, typeNode),
           ),
         );
       }

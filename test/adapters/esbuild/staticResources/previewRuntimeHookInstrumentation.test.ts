@@ -101,6 +101,33 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["data","fallback"]');
   });
 
+  /** Carries JSX guard demand back through an optional query field and a cached-value choice. */
+  it('infers deep requirements through a nullish domain-value alias', () => {
+    const source = [
+      `import { useQuery } from '../use-query';`,
+      'export function ApplicationLayout() {',
+      '  const { data, loading } = useQuery(DOCUMENT);',
+      '  const cachedCompany = {};',
+      '  const company = data?.companyWithDeletionStatus ?? cachedCompany;',
+      '  if (loading || !company.my.role.hasOwnerAccess) return null;',
+      '  return <main>{company.name}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/ApplicationLayout.tsx', source),
+    );
+
+    expect(transformed).toContain('"companyWithDeletionStatus": Object.freeze({');
+    expect(transformed).toContain('"my": Object.freeze({ "role": Object.freeze({');
+    expect(transformed).toContain('"hasOwnerAccess": false');
+    expect(transformed).toContain('"name": "name"');
+    expect(transformed).toContain(
+      '"requiredPaths":["data.companyWithDeletionStatus.my.role.hasOwnerAccess","data.companyWithDeletionStatus.name","data.companyWithDeletionStatus","loading"]',
+    );
+  });
+
   /** Uses the local result key instead of an arbitrary sentence for directly rendered hook text. */
   it('renders a direct generated scalar as its bounded binding key', () => {
     const source = [
@@ -162,6 +189,55 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"showCreate": Object.freeze(() => undefined)');
     expect(transformed).toContain('"renderModalForm": Object.freeze(() => undefined)');
     expect(transformed).toContain('"requiredPaths":["showCreate()","renderModalForm()"]');
+  });
+
+  /**
+   * Preserves the iterable return contract of a hook-provided function and chooses the Boolean that
+   * continues past an authored early-return guard.
+   */
+  it('infers a destructured callable result used by a render guard', () => {
+    const source = [
+      `import { usePagePermissionCheck } from './use-page-permission-check';`,
+      'export function Page() {',
+      '  const { checkPagePermission } = usePagePermissionCheck();',
+      '  const [hasPermission] = checkPagePermission({ pageNameOrUrl: "Dashboard" });',
+      '  if (!hasPermission) return <span>Denied</span>;',
+      '  return <main>Dashboard</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Page.tsx', source),
+    );
+
+    expect(transformed).toContain('"checkPagePermission": (() => {');
+    expect(transformed).toContain('const generatedCallResult = (Object.freeze([true]))');
+    expect(transformed).toContain(
+      'Symbol.for("newdlops.react-file-preview.generated-call-result")',
+    );
+    expect(transformed).toContain('"requiredPaths":["checkPagePermission()"]');
+  });
+
+  /** Applies the same iterable result inference to a method called directly from a hook result. */
+  it('infers a destructured return from a direct hook property call', () => {
+    const source = [
+      `import { useGate } from './use-gate';`,
+      'export function DirectGate() {',
+      '  const [isReady] = useGate().check();',
+      '  if (!isReady) return null;',
+      '  return <main>Ready</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/DirectGate.tsx', source),
+    );
+
+    expect(transformed).toContain('"check": (() => {');
+    expect(transformed).toContain('const generatedCallResult = (Object.freeze([true]))');
+    expect(transformed).toContain('"requiredPaths":["check()"]');
   });
 
   /** Follows required property reads so a generated object does not fail at the next access. */
@@ -232,9 +308,9 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain(
-      'Object.freeze({ "data": Object.freeze({ "pages": Object.freeze([]) }) })',
+      'Object.freeze({ "data": Object.freeze({ "pages": Object.freeze([Object.freeze({ "items": Object.freeze([]) })]) }) })',
     );
-    expect(transformed).toContain('"failurePaths":["data.pages.flatMap()"]');
+    expect(transformed).toContain('"failurePaths":["data.pages.flatMap()","data.pages[].items"]');
     expect(transformed).toContain('"requiredPaths":[]');
     expect(transformed).not.toContain('"requiredPaths":["data"]');
   });
@@ -259,9 +335,75 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/FeedbackPage.tsx', source),
     );
 
-    expect(transformed).toContain('"data": Object.freeze({ "pages": Object.freeze([]) })');
-    expect(transformed).toContain('"failurePaths":["data.pages.flatMap()"]');
+    expect(transformed).toContain(
+      '"data": Object.freeze({ "pages": Object.freeze([Object.freeze({ "items": Object.freeze([]) })]) })',
+    );
+    expect(transformed).toContain('"failurePaths":["data.pages.flatMap()","data.pages[].items"]');
     expect(transformed).toContain('"requiredPaths":["fetchNextPage()","hasNextPage"]');
+  });
+
+  /**
+   * Preserves a cross-module helper's collection contract when its query value is selected through
+   * an authored empty-array default and TypeScript array annotation.
+   */
+  it('materializes an array-valued query field before it reaches an imported helper', () => {
+    const source = [
+      `import { useQuery } from './use-query';`,
+      `import { buildRows } from './build-rows';`,
+      `import type { Item } from './types';`,
+      'export function Panel() {',
+      '  const { data } = useQuery();',
+      '  const rows = useMemo(() => {',
+      '    const items = (data?.items ?? []) as Item[];',
+      '    return buildRows(items);',
+      '  }, [data]);',
+      '  return <main>{rows.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Panel.tsx', source),
+    );
+
+    expect(transformed).toContain('"items": Object.freeze([])');
+    expect(transformed).toContain('"failurePaths":["data.items[]"]');
+  });
+
+  /**
+   * Carries callback-item demand through every nested collection instead of stopping after the
+   * first `forEach`. This mirrors navigation trees where a generated category must contain groups,
+   * pages, and route arrays before the authored shell can mount.
+   */
+  it('materializes deeply nested collection callback items for authored navigation shells', () => {
+    const source = [
+      `import { useCompanyOwnerNavigationData } from './use-company-owner-navigation-data';`,
+      'export function Navigation() {',
+      '  const navigation = useCompanyOwnerNavigationData();',
+      '  const selected = navigation.find((category) => {',
+      '    const routes: (RegExp | string)[] = [];',
+      '    category.pageGroups.forEach((group) => {',
+      '      group.pages.forEach((page) => {',
+      '        if (page.activeRoutes) routes.push(...page.activeRoutes);',
+      '      });',
+      '    });',
+      '    return routes.includes(location.pathname);',
+      '  });',
+      '  return <aside>{selected?.name}</aside>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Navigation.tsx', source),
+    );
+
+    expect(transformed).toContain(
+      'Object.freeze([Object.freeze({ "pageGroups": Object.freeze([Object.freeze({ "pages": Object.freeze([Object.freeze({ "activeRoutes": Object.freeze([new RegExp(".*")]) })]) })]) })])',
+    );
+    expect(transformed).toContain(
+      '"requiredPaths":["[].pageGroups.forEach()","[].pageGroups[].pages.forEach()","[].pageGroups[].pages[].activeRoutes[]"]',
+    );
   });
 
   /** Carries collection demand back through a pure memo identity and later object destructuring. */
@@ -659,7 +801,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
 
     expect(transformed).toContain('"template": "template"');
-    expect(transformed).toContain('"requiredPaths":["0.template","0.template.endsWith()","1()"]');
+    expect(transformed).toContain('"requiredPaths":["0.template.endsWith()","1()"]');
     expect(transformed).not.toContain('"endsWith": Object.freeze(() => undefined)');
   });
 

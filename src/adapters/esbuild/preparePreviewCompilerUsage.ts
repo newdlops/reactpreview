@@ -179,8 +179,23 @@ export async function preparePreviewCompilerUsage(
   if (fastGenericExportName !== undefined || shouldTryFastGenericConsumerContext) {
     const snapshotSourceByPath = createSnapshotSourceMap(request);
     const readSource = createContextSourceReader(options, snapshotSourceByPath);
+    /*
+     * File identities are substantially cheaper than parsing a package graph and are cached by the
+     * project usage service. Supplying this inventory lets the fast corridor test page-shaped
+     * consumers in sibling feature folders, which is required for components reused by several
+     * authored pages.
+     */
+    const packageSourcePaths = await options.cache.getSourcePaths(
+      options.workspaceRoot,
+      options.projectRoot,
+      signal,
+    );
     const corridor = await collectPreviewInspectorFastPageCorridor({
-      additionalSourcePaths: snapshotSourceByPath.keys(),
+      additionalSourcePaths: mergeInventorySnapshots(
+        packageSourcePaths,
+        snapshotSourceByPath.keys(),
+        options.workspaceRoot,
+      ),
       documentPath: request.documentPath,
       projectRoot: options.projectRoot,
       readSource,

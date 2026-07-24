@@ -61,6 +61,7 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
       return Object.freeze(component);
     }
     case 'function': return function previewAutomaticNoop() { return undefined; };
+    case 'null': return null;
     case 'number': return typeof node.value === 'number' && Number.isFinite(node.value) ? node.value : 0;
     case 'string': return typeof node.value === 'string' ? node.value : '';
     case 'object': {

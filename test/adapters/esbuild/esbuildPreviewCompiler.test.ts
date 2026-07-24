@@ -101,27 +101,27 @@ describe('EsbuildPreviewCompiler', () => {
 
   /** Applies project-source transforms to uppercase extensions accepted by the domain policy. */
   it('bundles a target with an uppercase TSX extension', async () => {
-    const temporaryDirectory = await mkdtemp(
-      path.join(PROJECT_ROOT, 'test/fixtures/uppercase-source-preview-'),
-    );
+    const fixturePrefix = path.join(PROJECT_ROOT, 'test/fixtures/uppercase-source-preview-');
+    const temporaryDirectory = await mkdtemp(fixturePrefix);
     const documentPath = path.join(temporaryDirectory, 'Preview.TSX');
     const sourceText = 'export default function Preview() { return <p>Uppercase TSX source</p>; }';
+    const compiler = new EsbuildPreviewCompiler();
 
     try {
       await writeFile(documentPath, sourceText, 'utf8');
-      const bundle = await new EsbuildPreviewCompiler().compile({
+      const bundle = await compiler.compile({
         dependencySnapshots: [],
         documentPath,
         language: 'tsx',
         sourceText,
         workspaceRoot: PROJECT_ROOT,
       });
-
       expect(decodeBundleJavascript(bundle)).toContain('Uppercase TSX source');
     } finally {
+      await compiler.shutdown();
       await rm(temporaryDirectory, { force: true, recursive: true });
     }
-  });
+  }, 15_000);
 
   /**
    * Resolves an extensionless circular import back to the same in-memory editor module.

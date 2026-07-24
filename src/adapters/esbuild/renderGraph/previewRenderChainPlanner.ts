@@ -37,47 +37,19 @@ import {
   type CollectPreviewRenderModuleSpecifiers,
   type PreviewRenderSourceAnalysis,
 } from './previewRenderSourceAnalysis';
+import type {
+  CreatePreviewRenderChainPlanOptions,
+  CreatePreviewRenderChainPlansOptions,
+} from './previewRenderChainPlannerOptions';
 
-const MAX_RENDER_CHAIN_DEPTH = 32;
-const MAX_RENDER_CHAIN_PATHS = 8;
+export type {
+  CreatePreviewRenderChainPlanOptions,
+  CreatePreviewRenderChainPlansOptions,
+} from './previewRenderChainPlannerOptions';
+
 const MAX_RENDER_CHAIN_VISITS = 4_096;
 const MAX_RENDER_GRAPH_EDGES = 32_768;
 const MAX_CONCURRENT_RENDER_SOURCE_READS = 64;
-
-/** Inputs for one target export's bounded application-entry search. */
-export interface CreatePreviewRenderChainPlanOptions {
-  /** Optional file-granular AST analyzer retained across compiler rebuilds. */
-  readonly analyzeSource?: AnalyzePreviewRenderSource;
-  /** Optional file-granular literal import collector retained across compiler rebuilds. */
-  readonly collectModuleSpecifiers?: CollectPreviewRenderModuleSpecifiers;
-  /** Current source path selected in the editor. */
-  readonly documentPath: string;
-  /** Exact runtime export to connect to one or more application entries. */
-  readonly exportName: string;
-  /** Snapshot-aware source reader shared with other preview discovery passes. */
-  readonly readSource: (sourcePath: string) => Promise<string | undefined>;
-  /** Alias/package-aware module resolver that never executes project configuration JavaScript. */
-  readonly resolveModule: ResolvePreviewRenderGraphModule;
-  /** Cancels stale entry and reverse-graph work between bounded file batches. */
-  readonly signal?: AbortSignal;
-  /** Bounded workspace or monorepo source inventory. */
-  readonly sourcePaths: readonly string[];
-}
-
-/** Inputs for discovering every explicit current-file export against one shared render graph. */
-export interface CreatePreviewRenderChainPlansOptions extends Omit<
-  CreatePreviewRenderChainPlanOptions,
-  'exportName'
-> {
-  /** Exact runtime export names admitted by the target export selector. */
-  readonly exportNames: readonly string[];
-  /**
-   * Export whose first visible page must retain exhaustive package/workspace fallback.
-   * Other exports still share every already-proven entry slice, but an unrelated orphan export
-   * cannot force a full inventory parse before the selected Inspector page is ready.
-   */
-  readonly primaryExportName?: string;
-}
 
 /** Internal graph node representing a declaration, re-export alias, or semantic entry. */
 interface RenderGraphNode {
@@ -265,6 +237,12 @@ async function createRenderChainPlansForSources(
   });
   const connectedSourcePaths = entrySelection.connectedSourcePaths;
   if (connectedSourcePaths !== undefined) {
+    if (
+      options.preservePartialConsumers === true &&
+      connectedSourcePaths.length < sourcePaths.length
+    ) {
+      return createPlansFromSelectedSources(sourcePaths, targets, false, entrySelection.truncated);
+    }
     const entryPlans = await createPlansFromSelectedSources(
       connectedSourcePaths,
       targets,
@@ -346,14 +324,14 @@ function createRenderChainPlanFromGraph(
   const targetNodeIds = graph.resolveExportNodeIds(target.sourcePath, target.exportName);
   const searchResults = targetNodeIds.map((targetNodeId) => searchRenderPaths(graph, targetNodeId));
   const rawPaths = searchResults.flatMap((result) => result.paths);
-  const truncated =
-    graph.truncated ||
-    rawPaths.length > MAX_RENDER_CHAIN_PATHS ||
-    searchResults.some((result) => result.truncated);
-  const rankedPaths = rankAndLimitPaths(rawPaths);
-  const selectedPaths = rankedPaths.some((candidate) => candidate.entryPoint !== undefined)
-    ? rankedPaths
-    : rankedPaths.slice(0, 1);
+  const truncated = graph.truncated || searchResults.some((result) => result.truncated);
+  const rankedPaths = rankRenderPaths(rawPaths);
+  /*
+   * Entry-unreachable paths are still distinct authored consumers. Route registries and framework
+   * bootstraps are sometimes outside the available static inventory, so collapsing partial paths
+   * to one would hide valid pages precisely when the selector is most useful.
+   */
+  const selectedPaths = rankedPaths;
   const paths = selectedPaths.map((rawPath) => freezeRenderChainCandidate(graph, target, rawPath));
   const entryIds = new Set(
     paths.flatMap((candidate) =>
@@ -778,92 +756,105 @@ function addGraphEdge(graph: RenderGraphIndex, edge: RenderGraphEdge): void {
   graph.edgesByChildId.set(edge.childId, existing);
 }
 
-/** Searches every bounded branch, retaining semantic entries and useful outermost partial roots. */
+/** Searches every branch iteratively, retaining entries and useful outermost partial roots. */
 function searchRenderPaths(graph: RenderGraphIndex, targetNodeId: string): RenderPathSearchResult {
   const completed: RawRenderPath[] = [];
   const partial: RawRenderPath[] = [];
+  const stack: {
+    readonly edges: readonly RenderGraphEdge[];
+    readonly nodeId: string;
+    readonly nodeIds: readonly string[];
+    readonly visited: ReadonlySet<string>;
+  }[] = [
+    {
+      edges: [],
+      nodeId: targetNodeId,
+      nodeIds: [targetNodeId],
+      visited: new Set([targetNodeId]),
+    },
+  ];
   let visitedNodeCount = 0;
   let truncated = false;
-  visit(targetNodeId, [targetNodeId], [], new Set([targetNodeId]));
+
+  /*
+   * An explicit stack avoids turning authored component depth into the JavaScript call-stack
+   * depth. No hop count truncates a valid page: only the aggregate visit budget protects the
+   * extension host from a combinatorial graph, while per-path identities terminate cycles.
+   */
+  while (stack.length > 0) {
+    if (visitedNodeCount >= MAX_RENDER_CHAIN_VISITS) {
+      truncated = true;
+      break;
+    }
+    const current = stack.pop();
+    if (current === undefined) break;
+    visitedNodeCount += 1;
+    const entryPoint = graph.entryByNodeId.get(current.nodeId);
+    if (entryPoint !== undefined) {
+      completed.push({
+        edges: current.edges,
+        entryPoint,
+        nodeIds: current.nodeIds,
+      });
+      continue;
+    }
+    const outgoing = (graph.edgesByChildId.get(current.nodeId) ?? []).filter(
+      (edge) => !current.visited.has(edge.ownerId),
+    );
+    if (outgoing.length === 0) {
+      partial.push({ edges: current.edges, nodeIds: current.nodeIds });
+      continue;
+    }
+    for (const edge of [...outgoing].reverse()) {
+      stack.push({
+        edges: [...current.edges, edge],
+        nodeId: edge.ownerId,
+        nodeIds: [...current.nodeIds, edge.ownerId],
+        visited: new Set([...current.visited, edge.ownerId]),
+      });
+    }
+  }
+
   return Object.freeze({
     paths: Object.freeze(completed.length > 0 ? completed : partial),
     truncated,
   });
-
-  /** Depth-first traversal with per-path cycle identity and fixed candidate budgets. */
-  function visit(
-    nodeId: string,
-    nodeIds: readonly string[],
-    edges: readonly RenderGraphEdge[],
-    visited: ReadonlySet<string>,
-  ): void {
-    if (completed.length >= MAX_RENDER_CHAIN_PATHS || visitedNodeCount >= MAX_RENDER_CHAIN_VISITS) {
-      truncated = true;
-      return;
-    }
-    visitedNodeCount += 1;
-    if (nodeIds.length >= MAX_RENDER_CHAIN_DEPTH) {
-      truncated = true;
-      retainPartialPath({ edges, nodeIds });
-      return;
-    }
-    const entryPoint = graph.entryByNodeId.get(nodeId);
-    if (entryPoint !== undefined) {
-      completed.push({ edges, entryPoint, nodeIds });
-      return;
-    }
-    const outgoing = (graph.edgesByChildId.get(nodeId) ?? []).filter(
-      (edge) => !visited.has(edge.ownerId),
-    );
-    if (outgoing.length === 0) {
-      retainPartialPath({ edges, nodeIds });
-      return;
-    }
-    for (const edge of outgoing) {
-      visit(
-        edge.ownerId,
-        [...nodeIds, edge.ownerId],
-        [...edges, edge],
-        new Set([...visited, edge.ownerId]),
-      );
-    }
-  }
-
-  /** Keeps a small fallback sample while traversal continues to search for semantic entries. */
-  function retainPartialPath(path_: RawRenderPath): void {
-    if (partial.length < MAX_RENDER_CHAIN_PATHS) {
-      partial.push(path_);
-    } else {
-      truncated = true;
-    }
-  }
 }
 
-/** Ranks proven entries first, demotes non-application fixtures, and bounds retained alternatives. */
-function rankAndLimitPaths(paths: readonly RawRenderPath[]): readonly RawRenderPath[] {
-  return [...paths]
-    .sort((left, right) => {
-      const entryDifference =
-        Number(right.entryPoint !== undefined) - Number(left.entryPoint !== undefined);
-      if (entryDifference !== 0) {
-        return entryDifference;
-      }
-      const fixtureDifference =
-        Number(isPreviewRenderFixturePath(left)) - Number(isPreviewRenderFixturePath(right));
-      if (fixtureDifference !== 0) {
-        return fixtureDifference;
-      }
-      const distanceDifference = left.nodeIds.length - right.nodeIds.length;
-      if (distanceDifference !== 0) {
-        return distanceDifference;
-      }
-      const sourceDifference = scoreRawPath(right) - scoreRawPath(left);
-      if (sourceDifference !== 0) {
-        return sourceDifference;
-      }
-      return serializeRawPath(left).localeCompare(serializeRawPath(right));
-    })
-    .slice(0, MAX_RENDER_CHAIN_PATHS);
+/** Ranks all unique proven entries first while demoting non-application fixture consumers. */
+function rankRenderPaths(paths: readonly RawRenderPath[]): readonly RawRenderPath[] {
+  const uniquePaths = new Map<string, RawRenderPath>();
+  for (const candidate of paths) {
+    const identity = serializeRawPath(candidate);
+    if (!uniquePaths.has(identity)) uniquePaths.set(identity, candidate);
+  }
+  const uniqueCandidates = [...uniquePaths.values()];
+  const applicationCandidates = uniqueCandidates.filter(
+    (candidate) => !isPreviewRenderFixturePath(candidate),
+  );
+  const selectableCandidates =
+    applicationCandidates.length > 0 ? applicationCandidates : uniqueCandidates;
+  return selectableCandidates.sort((left, right) => {
+    const entryDifference =
+      Number(right.entryPoint !== undefined) - Number(left.entryPoint !== undefined);
+    if (entryDifference !== 0) {
+      return entryDifference;
+    }
+    const fixtureDifference =
+      Number(isPreviewRenderFixturePath(left)) - Number(isPreviewRenderFixturePath(right));
+    if (fixtureDifference !== 0) {
+      return fixtureDifference;
+    }
+    const distanceDifference = left.nodeIds.length - right.nodeIds.length;
+    if (distanceDifference !== 0) {
+      return distanceDifference;
+    }
+    const sourceDifference = scoreRawPath(right) - scoreRawPath(left);
+    if (sourceDifference !== 0) {
+      return sourceDifference;
+    }
+    return serializeRawPath(left).localeCompare(serializeRawPath(right));
+  });
 }
 
 /** Rejects development-only callers before comparing application-path distance. */

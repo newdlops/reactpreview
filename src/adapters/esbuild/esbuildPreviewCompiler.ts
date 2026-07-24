@@ -193,6 +193,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     let acquisitionContext: PreviewMissingDependencyAcquisitionContext | undefined;
     try {
       throwIfPreviewBuildCancelled(buildSignal);
+      // Prove worker startup before filesystem-backed package/profile discovery begins.
+      context?.reportProgress?.('discovering-components');
       const canonicalWorkspaceRoot = canonicalizeExistingPath(request.workspaceRoot);
       const inspectorSourceGestureSecret =
         request.renderMode === 'page-inspector'
@@ -231,7 +233,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const inspectorExportName = targetSelection.inspectorExportName;
       const themeImport = selectPreviewThemeImport(request.sourceText);
       const useFastPreparation = request.preparationMode === 'fast';
-      context?.reportProgress?.('discovering-components');
       const [runtimeEnvironment, runtimeWatchInputs] = await Promise.all([
         resolvePreviewRuntimeEnvironment({
           ...(request.setupModulePath === undefined
@@ -547,7 +548,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     createPreviewInspectorRootPlugin({
                       displayName: path.basename(request.documentPath),
                       globalStyleImports,
-                      ...(useFastPreparation ? { maximumPageCandidates: 1 } : {}),
                       plan: inspectorPlan,
                       ...(selectedThemeImport === undefined
                         ? {}
@@ -918,7 +918,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           implicitGlobalEvidence,
           request,
           inspectorPlan: targetUsageProps.inspectorPlan,
-          maximumPublishedPageCandidates: useFastPreparation ? 1 : undefined,
+          maximumPublishedPageCandidates: undefined,
         }),
       );
       this.managedDependencyStore?.scheduleAdmission({

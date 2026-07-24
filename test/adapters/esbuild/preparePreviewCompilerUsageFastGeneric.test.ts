@@ -53,7 +53,7 @@ function createResolverStub(
 }
 
 describe('preparePreviewCompilerUsage fast generic page context', () => {
-  it('returns an entry-connected app-to-target plan without enumerating every package source', async () => {
+  it('returns an entry-connected app-to-target plan from a reusable path-only inventory', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'prepare-fast-generic-page-'));
     temporaryRoots.push(projectRoot);
     const sources = await Promise.all([
@@ -106,7 +106,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       useStorybookPreview: false,
       workspaceRoot: projectRoot,
     };
-    const getSourcePaths = vi.fn();
+    const getSourcePaths = vi.fn(() => Promise.resolve(Object.freeze(sources)));
     const cache = {
       discover: vi.fn(),
       getSourcePaths,
@@ -127,7 +127,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     });
 
     const plan = prepared.packageTargetUsageProps.inspectorPlan;
-    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(getSourcePaths).toHaveBeenCalledOnce();
     expect(plan?.renderChain.reachability).toBe('entry-connected');
     expect(plan?.renderChain.paths[0]?.entryPoint?.sourcePath).toBe(
       path.join(projectRoot, 'src/main.tsx'),
@@ -197,7 +197,9 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       useStorybookPreview: false,
       workspaceRoot: projectRoot,
     };
-    const getSourcePaths = vi.fn();
+    const getSourcePaths = vi.fn(() =>
+      Promise.resolve(Object.freeze([...sources, ...sourceByPath.keys()])),
+    );
     const sourceByPath = new Map(
       decoySnapshots.map((snapshot) => [snapshot.documentPath, snapshot.sourceText] as const),
     );
@@ -222,7 +224,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       workspaceRoot: projectRoot,
     });
 
-    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(getSourcePaths).toHaveBeenCalledOnce();
     expect(prepared.fastContextTruncated).toBe(true);
     expect(prepared.packageTargetUsageProps.inspectorPlan?.root.sourcePath).toBe(
       path.join(projectRoot, 'src/App.tsx'),
@@ -286,7 +288,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       useStorybookPreview: false,
       workspaceRoot: projectRoot,
     };
-    const getSourcePaths = vi.fn();
+    const getSourcePaths = vi.fn(() => Promise.resolve(Object.freeze(sources)));
     const cache = {
       discover: vi.fn(),
       getSourcePaths,
@@ -307,7 +309,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     });
 
     const plan = prepared.packageTargetUsageProps.inspectorPlan;
-    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(getSourcePaths).toHaveBeenCalledOnce();
     expect(plan?.contextModule?.sourcePath).toBe(documentPath);
     expect(plan?.target).toEqual({
       exportName: 'default',
@@ -378,7 +380,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       useStorybookPreview: false,
       workspaceRoot: projectRoot,
     };
-    const getSourcePaths = vi.fn();
+    const getSourcePaths = vi.fn(() => Promise.resolve(Object.freeze(sourcePaths)));
     const cache = {
       discover: vi.fn(),
       getSourcePaths,
@@ -399,7 +401,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     });
 
     const plan = prepared.packageTargetUsageProps.inspectorPlan;
-    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(getSourcePaths).toHaveBeenCalledOnce();
     expect(plan?.root).toEqual({ exportName: 'default', sourcePath: pagePath });
     expect(plan?.target).toEqual({ exportName: 'default', sourcePath: documentPath });
     expect(plan?.contextModule).toBeUndefined();

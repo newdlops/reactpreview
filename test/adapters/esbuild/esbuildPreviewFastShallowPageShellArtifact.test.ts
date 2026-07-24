@@ -1,10 +1,10 @@
 /**
- * Specifies shallow Page Inspector context at the emitted JavaScript artifact boundary.
+ * Specifies transitive VirtualPage context at the emitted JavaScript artifact boundary.
  *
  * Source-inventory tests can prove that a candidate was found, but they cannot prove that esbuild
- * avoided traversing the candidate's deeper implementation. These fixtures inspect the entry and
- * every emitted chunk together: direct page chrome must remain visible while second-hop children,
- * unused imports, and inactive route applications stay outside the first-paint artifact.
+ * followed the candidate's rendered implementation. These fixtures inspect the entry and every
+ * emitted chunk together: rendered page chrome and its transitive JSX children remain authentic,
+ * while unused imports and inactive route applications stay outside the first-paint artifact.
  */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -117,11 +117,11 @@ function createInactiveRouteSources(count: number): readonly FixtureSource[] {
 
 describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
   /**
-   * RootLayout is on the selected route corridor. Header and Sidebar are its direct JSX siblings,
-   * while Header's child is a second hop. Forty-nine inactive leaves exercise static route
-   * projection above the layout without allowing an unrelated page marker into any output chunk.
+   * RootLayout is on the selected route corridor. Header, Sidebar, and Header's child all belong to
+   * its rendered VirtualPage. Forty-nine inactive leaves exercise static route projection above the
+   * layout without allowing an unrelated page marker into any output chunk.
    */
-  it('emits direct layout chrome but omits deeper, unused, and inactive modules', async () => {
+  it('emits transitive layout chrome but omits unused and inactive modules', async () => {
     const inactiveCount = 49;
     const inactiveSources = createInactiveRouteSources(inactiveCount);
     const javascript = await compileFastPageArtifact({
@@ -211,7 +211,7 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
       target: javascript.includes('SHALLOW_TARGET_MARKER'),
       unused: javascript.includes('SHALLOW_UNUSED_MARKER'),
     }).toEqual({
-      deepChild: false,
+      deepChild: true,
       headerHost: true,
       inactiveRoute: false,
       selectedPage: true,
@@ -223,9 +223,9 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
 
   /**
    * A directly rendered React.lazy header is page chrome, not an inactive route choice. Its own
-   * implementation should be admitted shallowly without recursively admitting its child graph.
+   * rendered child graph remains authentic while a route-only lazy sibling stays omitted.
    */
-  it('keeps a direct React.lazy header shallow', async () => {
+  it('keeps a direct React.lazy header and its rendered descendants authentic', async () => {
     const javascript = await compileFastPageArtifact({
       fixtureName: 'fast-shallow-lazy-shell',
       sources: [
@@ -284,7 +284,7 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
       selectedPage: javascript.includes('SHALLOW_SELECTED_PAGE_MARKER'),
       target: javascript.includes('SHALLOW_TARGET_MARKER'),
     }).toEqual({
-      deepChild: false,
+      deepChild: true,
       headerHost: true,
       inactiveRoute: false,
       selectedPage: true,
@@ -293,10 +293,10 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
   }, 15_000);
 
   /**
-   * HOC transport changes the component value flow but not the desired artifact depth. The wrapped
-   * host component remains visible while its implementation child stays outside first paint.
+   * HOC transport changes component value flow but not VirtualPage membership. The wrapped host
+   * component and the JSX child it actually returns both remain in the first-paint artifact.
    */
-  it('keeps an HOC-wrapped header shallow', async () => {
+  it('keeps an HOC-wrapped header and its rendered descendants authentic', async () => {
     const javascript = await compileFastPageArtifact({
       fixtureName: 'fast-shallow-hoc-shell',
       sources: [
@@ -349,7 +349,7 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
       selectedPage: javascript.includes('SHALLOW_SELECTED_PAGE_MARKER'),
       target: javascript.includes('SHALLOW_TARGET_MARKER'),
     }).toEqual({
-      deepChild: false,
+      deepChild: true,
       headerHost: true,
       selectedPage: true,
       target: true,
@@ -357,10 +357,10 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
   }, 15_000);
 
   /**
-   * Component-prop transport is another direct render contract. The frame and supplied Header are
-   * first-depth page context, but Header's own child remains beyond the shallow artifact boundary.
+   * Component-prop transport is another direct render contract. The frame, supplied Header, and
+   * Header's returned JSX descendants all belong to the same transitive VirtualPage.
    */
-  it('keeps a component-prop header shallow', async () => {
+  it('keeps a component-prop header and its rendered descendants authentic', async () => {
     const javascript = await compileFastPageArtifact({
       fixtureName: 'fast-shallow-component-prop-shell',
       sources: [
@@ -412,7 +412,7 @@ describe('EsbuildPreviewCompiler shallow fast page-shell artifact', () => {
       selectedPage: javascript.includes('SHALLOW_SELECTED_PAGE_MARKER'),
       target: javascript.includes('SHALLOW_TARGET_MARKER'),
     }).toEqual({
-      deepChild: false,
+      deepChild: true,
       headerHost: true,
       selectedPage: true,
       target: true,

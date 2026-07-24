@@ -1,5 +1,5 @@
 /**
- * Verifies that framework-owned source stops before React graph discovery or package acquisition.
+ * Verifies that framework-owned source stops before React graph expansion or package acquisition.
  * The fixture mirrors the node_modules-free Solid sandbox captured in log.txt and deliberately
  * provides only inert manifest and tsconfig evidence, never a Solid compiler implementation.
  */
@@ -86,7 +86,7 @@ describe('EsbuildPreviewCompiler unsupported target runtime preflight', () => {
       expect(failure.diagnostics[0]?.notes?.join('\n')).toContain('vite-plugin-solid');
     }
     expect(acquisitionCount).toBe(0);
-    expect(progressStages).not.toContain('discovering-components');
+    expect(progressStages).toEqual(['discovering-components']);
     await expect(readFile(path.join(projectRoot, 'node_modules'))).rejects.toMatchObject({
       code: 'ENOENT',
     });

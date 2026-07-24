@@ -1,4 +1,4 @@
-/** Verifies that optional page-context inventories begin only from framework or callable evidence. */
+/** Verifies that cached path inventories do not broaden into unrelated framework/source analysis. */
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PreviewBuildRequest } from '../../../src/domain/preview';
@@ -65,8 +65,8 @@ async function prepareWithInventoryProbe(
 }
 
 describe('preparePreviewCompilerUsage inventory policy', () => {
-  /** A framework-like basename alone must not turn an ordinary React package into a Next scan. */
-  it('does not enumerate a lowercase App route filename without installed Next evidence', async () => {
+  /** A generic page may use path-only caller ranking without being classified as a Next route. */
+  it('indexes a lowercase page filename without assuming installed Next evidence', async () => {
     const request = createRequest(
       '/workspace/src/page.tsx',
       'export default function Page() { return <main>ordinary React page</main>; }',
@@ -74,11 +74,11 @@ describe('preparePreviewCompilerUsage inventory policy', () => {
 
     const getSourcePaths = await prepareWithInventoryProbe(request, false);
 
-    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(getSourcePaths).toHaveBeenCalledTimes(1);
   });
 
-  /** Next's filesystem conventions are lowercase and must not capture generic Page.tsx modules. */
-  it('does not treat an uppercase generic Page.tsx as an App Router route', async () => {
+  /** Next evidence still leaves an uppercase generic Page.tsx in the framework-neutral corridor. */
+  it('indexes an uppercase generic Page.tsx without treating it as an App Router route', async () => {
     const request = createRequest(
       '/workspace/src/Page.tsx',
       'export default function Page() { return <main>generic page</main>; }',
@@ -86,10 +86,10 @@ describe('preparePreviewCompilerUsage inventory policy', () => {
 
     const getSourcePaths = await prepareWithInventoryProbe(request, true);
 
-    expect(getSourcePaths).not.toHaveBeenCalled();
+    expect(getSourcePaths).toHaveBeenCalledTimes(1);
   });
 
-  /** Fast first paint never scans every project source merely because a helper returns JSX. */
+  /** Fast first paint indexes cached paths but never reads every source merely for returned JSX. */
   it.each([
     [
       'default JSX factory',
@@ -105,14 +105,14 @@ describe('preparePreviewCompilerUsage inventory policy', () => {
       ].join('\n'),
     ],
   ])(
-    'defers generic consumer discovery for %s during fast preparation',
+    'uses path-only generic consumer discovery for %s during fast preparation',
     async (_name, documentPath, sourceText) => {
       const getSourcePaths = await prepareWithInventoryProbe(
         createRequest(documentPath, sourceText),
         false,
       );
 
-      expect(getSourcePaths).not.toHaveBeenCalled();
+      expect(getSourcePaths).toHaveBeenCalledTimes(1);
     },
   );
 

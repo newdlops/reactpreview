@@ -122,8 +122,8 @@ describe('createPreviewRenderChainPlan', () => {
     expect(readPaths.filter((sourcePath) => sourcePath.includes('/noise/'))).toEqual([]);
   });
 
-  /** Keeps one export's depth cutoff from contaminating a short sibling export search. */
-  it('isolates bounded traversal state between exports sharing the graph', async () => {
+  /** Connects a deeply nested consumer without imposing a component-hop cutoff. */
+  it('traverses deep and shallow exports independently through the shared graph', async () => {
     const sources: Record<string, string> = {
       [TARGET_PATH]: [
         'export const Deep = () => <article>deep</article>;',
@@ -161,12 +161,46 @@ describe('createPreviewRenderChainPlan', () => {
       sourcePaths: Object.keys(sources),
     });
 
-    expect(plans.Deep).toMatchObject({
-      reachability: 'entry-unreachable',
-      stopReason: 'graph-limit',
-      truncated: true,
-    });
+    expect(plans.Deep).toMatchObject({ reachability: 'entry-connected', truncated: false });
+    expect(plans.Deep?.paths[0]?.steps).toHaveLength(36);
     expect(plans.Shallow).toMatchObject({ reachability: 'entry-connected', truncated: false });
+  });
+
+  /** Preserves more than the former eight alternatives for a component shared across real pages. */
+  it('returns every independently entry-connected consuming page', async () => {
+    const sources: Record<string, string> = {
+      [TARGET_PATH]: 'export const SharedPanel = () => <article>shared</article>;',
+    };
+    const expectedEntries: string[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      const pageName = `ConsumerPage${index.toString()}`;
+      const pagePath = `${ROOT}/${pageName}.tsx`;
+      const entryPath = `${ROOT}/entry-${index.toString()}.tsx`;
+      sources[pagePath] = [
+        "import { SharedPanel } from './pages/SelectedPage';",
+        `export const ${pageName} = () => <main><SharedPanel /></main>;`,
+      ].join('\n');
+      sources[entryPath] = [
+        "import { createRoot } from 'react-dom/client';",
+        `import { ${pageName} } from './${pageName}';`,
+        `createRoot(document.body).render(<${pageName} />);`,
+      ].join('\n');
+      expectedEntries.push(entryPath);
+    }
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'SharedPanel',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.paths).toHaveLength(expectedEntries.length);
+    expect(plan.paths.map((candidate) => candidate.entryPoint?.sourcePath).sort()).toEqual(
+      expectedEntries.sort(),
+    );
+    expect(plan).toMatchObject({ reachability: 'ambiguous', truncated: false });
   });
 
   /** Aligns the render graph with the gallery's support for anonymous default declarations. */

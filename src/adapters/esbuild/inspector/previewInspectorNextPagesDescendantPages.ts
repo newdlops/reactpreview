@@ -18,8 +18,8 @@ const NEXT_PAGES_APP_PATTERN = /^_app\.[cm]?[jt]sx?$/iu;
 export interface CollectPreviewInspectorNextPagesDescendantPagesOptions {
   /** Nearest candidate whose root may be the framework-owned `_app` module. */
   readonly base: PreviewInspectorPageCandidate;
-  /** Strict maximum number of real pages exposed in the selector. */
-  readonly maximumCount: number;
+  /** Optional caller cap; omitted by Page Inspector to preserve every authored page consumer. */
+  readonly maximumCount?: number;
   /** Cached route refiner used for dynamic pathname evidence. */
   readonly nextPagesShellRefiner: PreviewInspectorNextPagesShellRefiner;
   /** Dirty-editor-aware inert source reader used to prove default page exports. */
@@ -38,7 +38,7 @@ export async function collectPreviewInspectorNextPagesDescendantPages(
 ): Promise<readonly PreviewInspectorPageCandidate[]> {
   const appPath = path.normalize(options.base.root.sourcePath);
   if (
-    options.maximumCount <= 0 ||
+    (options.maximumCount !== undefined && options.maximumCount <= 0) ||
     options.base.root.exportName !== 'default' ||
     !NEXT_PAGES_APP_PATTERN.test(path.basename(appPath)) ||
     path.basename(path.dirname(appPath)).toLowerCase() !== 'pages'
@@ -49,7 +49,7 @@ export async function collectPreviewInspectorNextPagesDescendantPages(
   const targets = await collectPreviewInspectorNextPagesAppTargets({
     appPath,
     exportName: 'default',
-    maximumCount: options.maximumCount,
+    ...(options.maximumCount === undefined ? {} : { maximumCount: options.maximumCount }),
     readSource: options.readSource,
     sourcePaths: options.sourcePaths,
   });

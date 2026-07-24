@@ -34,8 +34,8 @@ const BROAD_MODULE_SEGMENT_PATTERN =
 export interface CollectPreviewInspectorNextAppDescendantPagesOptions {
   /** Existing nearest-owner candidate whose root may be an implicit layout or template. */
   readonly base: PreviewInspectorPageCandidate;
-  /** Maximum selectable leaves retained after deterministic nearest-page ranking. */
-  readonly maximumCount: number;
+  /** Optional caller cap; omitted by Page Inspector so every proven consuming page stays visible. */
+  readonly maximumCount?: number;
   /** Reads a bounded cost shortlist plus selected `generateStaticParams` evidence. */
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   /** Project-aware resolver for imported static route parameter registries. */
@@ -81,7 +81,7 @@ export async function collectPreviewInspectorNextAppDescendantPages(
   if (
     options.base.root.exportName !== 'default' ||
     !NEXT_APP_SHELL_PATTERN.test(path.basename(shellPath)) ||
-    options.maximumCount <= 0
+    (options.maximumCount !== undefined && options.maximumCount <= 0)
   ) {
     return Object.freeze([]);
   }
@@ -113,10 +113,14 @@ export async function collectPreviewInspectorNextAppDescendantPages(
     sourceByPath.set(normalizedPath, pending);
     return pending;
   };
+  const maximumCount =
+    options.maximumCount === undefined
+      ? nearbyEvidence.length
+      : Math.max(0, Math.floor(options.maximumCount));
   const shortlistSize = Math.min(
     nearbyEvidence.length,
     MAXIMUM_COST_SHORTLIST_SIZE,
-    Math.max(options.maximumCount, options.maximumCount * COST_SHORTLIST_MULTIPLIER),
+    Math.max(maximumCount, maximumCount * COST_SHORTLIST_MULTIPLIER),
   );
   const costedShortlist = await Promise.all(
     nearbyEvidence
@@ -134,7 +138,7 @@ export async function collectPreviewInspectorNextAppDescendantPages(
     .sort((left, right) =>
       compareCostedDescendantPages(shellDirectory, left, right, shortlistCostByPath),
     )
-    .slice(0, options.maximumCount);
+    .slice(0, maximumCount);
 
   return Object.freeze(
     await Promise.all(

@@ -86,7 +86,11 @@ describe('createPreviewInspectorRootSource', () => {
     });
 
     expect(source).toContain(
-      'load: () => import("/workspace/application/Page.tsx").then((module) => module["Page"])',
+      'load: () => Promise.all([import("/workspace/application/Page.tsx")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "Page",',
+    );
+    expect(source).toContain("import * as React from 'react';");
+    expect(source).toContain(
+      'function __reactPreviewComposeVirtualPage(modules, exportName, shellExportNames, recipe)',
     );
     expect(source).toContain(
       'directTarget: true, id: "direct-target:Target", targetExportName: "Target", load: () => import("react-preview:inspector-direct-target/Target").then((module) => module.default)',
@@ -122,7 +126,7 @@ describe('createPreviewInspectorRootSource', () => {
     });
 
     expect(source).toContain(
-      'load: () => import("react-preview:inspector-target-facade").then((module) => module["Target"])',
+      'load: () => Promise.all([import("react-preview:inspector-target-facade")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "Target",',
     );
     expect(source).toContain('"inferredPropShape":{"kind":"object"');
     expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
@@ -139,7 +143,9 @@ describe('createPreviewInspectorRootSource', () => {
       'import { theme as __reactPreviewInspectorTheme } from "/workspace/theme.ts";',
     );
     expect(source).toContain('export const previewTheme = __reactPreviewInspectorTheme;');
-    expect(source).toContain('load: () => import("/workspace/application/Page.tsx")');
+    expect(source).toContain(
+      'load: () => Promise.all([import("/workspace/application/Page.tsx")])',
+    );
   });
 
   /** Eagerly exposes only proven app-wrapper global styles for composition under the exact theme. */
@@ -183,10 +189,10 @@ describe('createPreviewInspectorRootSource', () => {
     });
 
     expect(source).toContain(
-      'import("/workspace/application/Page.tsx").then((module) => module["Page"])',
+      'Promise.all([import("/workspace/application/Page.tsx")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "Page",',
     );
     expect(source).toContain(
-      'import("/workspace/application/AlternatePage.tsx").then((module) => module["AlternatePage"])',
+      'Promise.all([import("/workspace/application/AlternatePage.tsx")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "AlternatePage",',
     );
     expect(source).not.toContain('import __reactPreviewInspectorRoot');
     expect(source).toContain(
@@ -218,6 +224,112 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('import("/workspace/application/Page.tsx")');
     expect(source).not.toContain(ALTERNATE_PAGE_PATH);
     expect(source).not.toContain('candidate-expensive-app-root');
+  });
+
+  /** Generates the live page from a concrete checkpoint while retaining the authored app root. */
+  it('publishes a static-checkpoint VirtualPage before the fast candidate cap', () => {
+    const plan = createPlan({ exportName: 'App', sourcePath: ALTERNATE_PAGE_PATH });
+    const baseCandidate = plan.pageCandidates[0];
+    if (baseCandidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const renderPath = {
+      entryPoint: {
+        kind: 'create-root' as const,
+        occurrenceStart: 1,
+        sourcePath: '/workspace/application/main.tsx',
+        wrapperNames: [],
+      },
+      id: 'target-to-entry',
+      steps: [
+        {
+          certainty: 'confirmed' as const,
+          kind: 'component-render' as const,
+          label: 'Target',
+          occurrenceStart: 1,
+          sourcePath: TARGET_PATH,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed' as const,
+          kind: 'route-branch' as const,
+          label: 'Page',
+          occurrenceStart: 2,
+          sourcePath: PAGE_PATH,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed' as const,
+          kind: 'entry-render' as const,
+          label: 'App',
+          occurrenceStart: 3,
+          sourcePath: ALTERNATE_PAGE_PATH,
+          wrapperNames: ['GlobalBoundary'],
+        },
+      ],
+    };
+    const applicationCandidate = {
+      ...baseCandidate,
+      id: 'application-root',
+      renderPath,
+      root: { exportName: 'App', sourcePath: ALTERNATE_PAGE_PATH },
+      rootOwnsRouter: true,
+      rootStepIndex: 2,
+    };
+    const pageCandidate = {
+      ...baseCandidate,
+      complete: false,
+      id: 'page-checkpoint',
+      renderPath,
+      root: { exportName: 'Page', sourcePath: PAGE_PATH },
+      rootOwnsRouter: false,
+      rootStepIndex: 1,
+      stopReason: 'render-path-checkpoint' as const,
+    };
+    const source = createPreviewInspectorRootSource({
+      maximumPageCandidates: 1,
+      plan: {
+        ...plan,
+        pageCandidates: [applicationCandidate, pageCandidate],
+        shallowVisualPaths: [
+          {
+            exportName: 'ApplicationLayout',
+            importerPath: ALTERNATE_PAGE_PATH,
+            importKind: 'static',
+            localEdges: [],
+            moduleSpecifier: './ApplicationLayout',
+            occurrenceStart: 4,
+            relation: 'wrapper',
+            renderedLocalName: 'ApplicationLayout',
+            renderBoundaryStart: 3,
+            selectedChildPath: PAGE_PATH,
+            sourcePath: '/workspace/application/ApplicationLayout.tsx',
+          },
+        ],
+      },
+    });
+
+    expect(source).toContain(
+      'Promise.all([import("/workspace/application/Page.tsx"),import("/workspace/application/ApplicationLayout.tsx")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "Page", ["ApplicationLayout"],',
+    );
+    expect(source).not.toContain(`import(${JSON.stringify(ALTERNATE_PAGE_PATH)})`);
+    expect(source).toContain('"mode":"static-page-checkpoint"');
+    expect(source).toContain(
+      '"authoredRoot":{"exportName":"App","sourcePath":"/workspace/application/AlternatePage.tsx"}',
+    );
+    expect(source).toContain(
+      '"contentRoot":{"exportName":"Page","sourcePath":"/workspace/application/Page.tsx"}',
+    );
+    expect(source).toContain('"bypassedStepCount":1');
+    expect(source).toContain(
+      'class __reactPreviewVirtualPageShellBoundary extends React.Component',
+    );
+    expect(source).toContain(
+      'return React.createElement(Shell, { children: this.props.children });',
+    );
+    expect(source).toContain('if (shellRecipe?.relation === "sibling")');
+    expect(source).toContain('} else if (shellRecipe?.relation === "owner") {');
+    expect(source).toContain('shellRecipe?.placement === "after"');
+    expect(source).toContain('this.bypassTimer = globalThis.setTimeout(() => {');
+    expect(source).toContain('}, 1800);');
   });
 
   /** Loads and composes implicit Next layouts root-to-leaf while preserving the page children. */

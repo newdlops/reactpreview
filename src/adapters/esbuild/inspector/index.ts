@@ -67,6 +67,15 @@ export {
   type PreviewInspectorRootSourceOptions,
 } from './previewInspectorRootPlugin';
 export {
+  createPreviewInspectorVirtualPageCandidates,
+  selectPreviewInspectorVirtualPageContentCandidate,
+  type PreviewInspectorVirtualPageCandidate,
+  type PreviewInspectorVirtualPageMode,
+  type PreviewInspectorVirtualPagePathStep,
+  type PreviewInspectorVirtualPageRecipe,
+  type PreviewInspectorVirtualPageShell,
+} from './previewInspectorVirtualPagePlan';
+export {
   createPreviewInspectorTargetFacadeSource,
   createPreviewInspectorTargetPlugin,
   PREVIEW_INSPECTOR_RUNTIME_SPECIFIER,

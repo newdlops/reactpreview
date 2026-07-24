@@ -71,13 +71,7 @@ export type {
   ReadPreviewInspectorAcceptedSpecifiers,
   ReadPreviewInspectorSource,
 } from './previewInspectorAncestorTypes';
-const MAX_PROJECT_ANCESTOR_DEPTH = 8;
-const MAX_LOCAL_OWNER_DEPTH = 12;
-const LARGE_PROJECT_SOURCE_THRESHOLD = 512;
-const MAX_LARGE_PROJECT_DIRECT_ANCESTOR_DEPTH = 2;
 const MAX_CONCURRENT_SOURCE_READS = 64;
-const MAX_INSPECTOR_PAGE_CANDIDATES = 6;
-const MAX_LARGE_PROJECT_PAGE_CANDIDATES = 2;
 
 /** Inputs for one bounded package-local reverse JSX owner traversal. */
 export interface CreatePreviewInspectorAncestorPlanOptions {
@@ -161,8 +155,7 @@ interface RankedInspectorUsageCandidate {
  *
  * Dynamic props and wrapper components do not block this inspector-only traversal: they will be
  * evaluated by React when the real owner export is mounted. The algorithm still fails closed on
- * private terminal owners, cycles, and fixed depth limits, and never imports application code in
- * the extension host.
+ * private terminal owners and cycles, and never imports application code in the extension host.
  *
  * @param options Selected target, package inventory, source reader, and optional alias resolver.
  * @returns Frozen ancestor plan suitable for a generated browser entry.
@@ -219,11 +212,13 @@ export async function createPreviewInspectorAncestorPlan(
     sourceFileByPath: new Map(),
     sourceTextByPath: new Map(),
   };
-  const pageCandidateLimit =
-    sourcePaths.length > LARGE_PROJECT_SOURCE_THRESHOLD
-      ? MAX_LARGE_PROJECT_PAGE_CANDIDATES
-      : MAX_INSPECTOR_PAGE_CANDIDATES;
-  const renderPaths = renderChain.paths.slice(0, pageCandidateLimit);
+  /*
+   * Every entry-connected render path is a distinct authored page possibility. In particular,
+   * shared components commonly have several legitimate consumers, so project size must never
+   * collapse the result to one or two arbitrary pages. The render graph already owns cycle and
+   * aggregate-visit protection; this layer preserves every path that survived that proof.
+   */
+  const renderPaths = renderChain.paths;
   const candidatePaths: readonly (PreviewRenderChainCandidate | undefined)[] =
     renderPaths.length > 0 ? renderPaths : [undefined];
   const discoveredCandidates: PreviewInspectorPageCandidate[] = [];
@@ -254,7 +249,6 @@ export async function createPreviewInspectorAncestorPlan(
     baseCandidates.push({ candidate, renderPath });
     const nextPagesDescendants = await collectPreviewInspectorNextPagesDescendantPages({
       base: candidate,
-      maximumCount: pageCandidateLimit,
       nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
       readSource: options.readSource,
       sourcePaths,
@@ -263,7 +257,6 @@ export async function createPreviewInspectorAncestorPlan(
     else for (const descendant of nextPagesDescendants) addCandidate(descendant);
     for (const descendant of await collectPreviewInspectorNextAppDescendantPages({
       base: candidate,
-      maximumCount: pageCandidateLimit,
       readSource: options.readSource,
       ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
       sourcePaths,
@@ -292,10 +285,7 @@ export async function createPreviewInspectorAncestorPlan(
     }
   }
 
-  const pageCandidates = rankPreviewInspectorPageCandidates(
-    discoveredCandidates,
-    pageCandidateLimit,
-  );
+  const pageCandidates = rankPreviewInspectorPageCandidates(discoveredCandidates);
 
   const primary = pageCandidates[0];
   if (primary === undefined) {
@@ -397,11 +387,12 @@ async function createInspectorPageCandidate(arguments_: {
     });
   };
 
-  const directAncestorDepth =
-    sourcePaths.length > LARGE_PROJECT_SOURCE_THRESHOLD && (renderPath?.steps.length ?? 0) > 2
-      ? MAX_LARGE_PROJECT_DIRECT_ANCESTOR_DEPTH
-      : MAX_PROJECT_ANCESTOR_DEPTH;
-  for (let depth = 0; depth < directAncestorDepth; depth += 1) {
+  /*
+   * Source inventory and reference-cycle detection already make this traversal finite. Avoiding a
+   * hop limit is important for VirtualPage: deeply nested provider/layout/HOC corridors must reach
+   * the actual application owner instead of silently stopping at an arbitrary intermediate file.
+   */
+  for (;;) {
     throwIfPreviewBuildCancelled(options.signal);
     const candidate = await findInspectorUsage({
       acceptedImportSpecifiers: options.acceptedImportSpecifiers?.(currentRoot) ?? [],
@@ -463,8 +454,6 @@ async function createInspectorPageCandidate(arguments_: {
     currentRoot = promotion.root;
     rootAutomaticProps = Object.freeze({});
   }
-
-  return finish(false, 'depth-limit');
 }
 
 /** Creates a selectable mount root from one component export proven by the full render graph. */
@@ -780,7 +769,7 @@ function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromoti
   const visitedLocalOwners = new Set<string>();
   const localOwnerNames: string[] = [];
   let currentSlice = candidate.slice;
-  for (let depth = 0; depth <= MAX_LOCAL_OWNER_DEPTH; depth += 1) {
+  for (;;) {
     const owner = currentSlice.owner;
     if (owner === null) {
       return { kind: 'stopped', stopReason: 'private-owner' };
@@ -804,11 +793,7 @@ function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromoti
         root: freezeReference(currentSlice.consumerPath, exportName),
       };
     }
-    if (
-      owner.localName === null ||
-      depth >= MAX_LOCAL_OWNER_DEPTH ||
-      visitedLocalOwners.has(owner.localName)
-    ) {
+    if (owner.localName === null || visitedLocalOwners.has(owner.localName)) {
       return { kind: 'stopped', stopReason: 'private-owner' };
     }
 
@@ -825,7 +810,6 @@ function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromoti
     }
     currentSlice = nextSlice;
   }
-  return { kind: 'stopped', stopReason: 'private-owner' };
 }
 
 /**

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createPreviewInspectorAncestorPlan } from '../../../../src/adapters/esbuild/inspector/previewInspectorAncestorPlan';
 import { collectPreviewInspectorFastPageCorridor } from '../../../../src/adapters/esbuild/inspector/previewInspectorFastPageCorridor';
 import { createPreviewInspectorNextAppModulePagePlan } from '../../../../src/adapters/esbuild/inspector/previewInspectorNextAppModulePagePlan';
 
@@ -40,6 +41,86 @@ function createFixtureResolver(sourcePaths: readonly string[]) {
 }
 
 describe('collectPreviewInspectorFastPageCorridor', () => {
+  /** Keeps distinct feature pages that independently consume one shared component. */
+  it('retains page consumers outside the selected component directory', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'fast-shared-page-corridor-'));
+    temporaryRoots.push(projectRoot);
+    const sources = await Promise.all([
+      writeSource(
+        projectRoot,
+        'src/portal/main.tsx',
+        [
+          "import { createRoot } from 'react-dom/client';",
+          "import { PublicPage } from '../features/customer/pages/PublicPage';",
+          'createRoot(document.body).render(<PublicPage />);',
+        ].join('\n'),
+      ),
+      writeSource(
+        projectRoot,
+        'src/staff/main.tsx',
+        [
+          "import { createRoot } from 'react-dom/client';",
+          "import { StaffPage } from '../features/staff/pages/StaffPage';",
+          'createRoot(document.body).render(<StaffPage />);',
+        ].join('\n'),
+      ),
+      writeSource(
+        projectRoot,
+        'src/features/customer/pages/PublicPage.tsx',
+        "import { SharedCard } from '../../../components/SharedCard'; export function PublicPage() { return <SharedCard />; }",
+      ),
+      writeSource(
+        projectRoot,
+        'src/features/staff/pages/StaffPage.tsx',
+        "import { SharedCard } from '../../../components/SharedCard'; export function StaffPage() { return <SharedCard />; }",
+      ),
+      writeSource(
+        projectRoot,
+        'src/components/SharedCard.tsx',
+        'export function SharedCard() { return <article>Shared</article>; }',
+      ),
+    ]);
+    const targetPath = path.join(projectRoot, 'src/components/SharedCard.tsx');
+
+    const corridor = await collectPreviewInspectorFastPageCorridor({
+      additionalSourcePaths: sources,
+      documentPath: targetPath,
+      projectRoot,
+      readSource: (sourcePath) => readFile(sourcePath, 'utf8').catch(() => undefined),
+      resolveModule: createFixtureResolver(sources),
+      workspaceRoot: projectRoot,
+    });
+
+    expect(
+      corridor?.importPath.map((sourcePath) => path.relative(projectRoot, sourcePath)),
+    ).toEqual([
+      'src/portal/main.tsx',
+      'src/features/customer/pages/PublicPage.tsx',
+      'src/components/SharedCard.tsx',
+    ]);
+    expect(corridor?.entryConnected).toBe(true);
+    expect(corridor?.sourcePaths).toEqual(
+      expect.arrayContaining([
+        path.join(projectRoot, 'src/features/customer/pages/PublicPage.tsx'),
+        path.join(projectRoot, 'src/features/staff/pages/StaffPage.tsx'),
+      ]),
+    );
+    const inspectorPlan = await createPreviewInspectorAncestorPlan({
+      acceptedImportSpecifiers: () => Object.freeze([]),
+      documentPath: targetPath,
+      exportName: 'SharedCard',
+      readSource: (sourcePath) => readFile(sourcePath, 'utf8').catch(() => undefined),
+      resolveModule: createFixtureResolver(sources),
+      sourcePaths: corridor?.sourcePaths ?? Object.freeze([]),
+    });
+    expect(inspectorPlan.pageCandidates.map((candidate) => candidate.root.sourcePath)).toEqual(
+      expect.arrayContaining([
+        path.join(projectRoot, 'src/features/customer/pages/PublicPage.tsx'),
+        path.join(projectRoot, 'src/features/staff/pages/StaffPage.tsx'),
+      ]),
+    );
+  });
+
   it('meets entry and target searches, then retains page-shell siblings without a package inventory', async () => {
     const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'fast-page-corridor-'));
     temporaryRoots.push(projectRoot);

@@ -69,6 +69,8 @@ export type PreviewInspectorAncestorStopReason =
 export interface PreviewInspectorPageCandidate {
   /** `true` when reverse owner discovery reached the outermost package-local usage. */
   readonly complete: boolean;
+  /** Candidate-specific selected module context when a hook/HOC feeds several page components. */
+  readonly contextModule?: PreviewInspectorModuleContextReference;
   /** Files that prove this candidate and should invalidate it during hot reload. */
   readonly dependencyPaths: readonly string[];
   /** Child-to-owner relationships specific to this caller path. */
@@ -100,6 +102,8 @@ export interface PreviewInspectorPageCandidate {
   readonly stopReason: PreviewInspectorAncestorStopReason;
   /** Primitive target props observed within this exact caller path. */
   readonly targetAutomaticProps: PreviewParentSliceStaticProps;
+  /** Candidate-specific render target promoted from a selected hook/HOC/factory module. */
+  readonly target?: PreviewInspectorComponentReference;
 }
 
 /** Immutable recipe for mounting one real ancestor and instrumenting its nested target. */

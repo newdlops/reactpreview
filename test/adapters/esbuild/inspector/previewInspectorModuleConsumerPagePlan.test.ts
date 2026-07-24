@@ -273,6 +273,55 @@ describe('createPreviewInspectorModuleConsumerPagePlan', () => {
     expect(plan?.contextModule?.sourcePath).toBe(hocPath);
   });
 
+  /** Offers every authored page when the selected HOC is reused by independent application flows. */
+  it('keeps multiple page consumers independently selectable', async () => {
+    const hocPath = '/workspace/src/guards/with-access-page.tsx';
+    const customerPagePath = '/workspace/src/customer/CustomerPage.tsx';
+    const staffPagePath = '/workspace/src/staff/StaffPage.tsx';
+    const fixture = createFixture({
+      [hocPath]: [
+        'export const withAccessPage = (Component) => {',
+        '  const GuardedPage = (props) => <Component {...props} />;',
+        '  return GuardedPage;',
+        '};',
+      ].join('\n'),
+      [customerPagePath]: [
+        "import { withAccessPage } from '../guards/with-access-page';",
+        'const CustomerPage = () => <main>customer</main>;',
+        'export default withAccessPage(CustomerPage);',
+      ].join('\n'),
+      [staffPagePath]: [
+        "import { withAccessPage } from '../guards/with-access-page';",
+        'const StaffPage = () => <main>staff</main>;',
+        'export default withAccessPage(StaffPage);',
+      ].join('\n'),
+      '/workspace/src/customer/main.tsx': [
+        "import { createRoot } from 'react-dom/client';",
+        "import CustomerPage from './CustomerPage';",
+        'createRoot(document.body).render(<CustomerPage />);',
+      ].join('\n'),
+      '/workspace/src/staff/main.tsx': [
+        "import { createRoot } from 'react-dom/client';",
+        "import StaffPage from './StaffPage';",
+        'createRoot(document.body).render(<StaffPage />);',
+      ].join('\n'),
+    });
+
+    const plan = await createPreviewInspectorModuleConsumerPagePlan({
+      documentPath: hocPath,
+      ...fixture,
+    });
+    const promotedTargets = plan?.pageCandidates.map((candidate) => candidate.target?.sourcePath);
+
+    expect(promotedTargets).toEqual(expect.arrayContaining([customerPagePath, staffPagePath]));
+    expect(plan?.pageCandidates).toHaveLength(2);
+    expect(
+      plan?.pageCandidates.every(
+        (candidate) => candidate.contextModule?.importPath.at(-1) === hocPath,
+      ),
+    ).toBe(true);
+  });
+
   /** Does not invent a page for unused hooks or similarly named non-callable configuration. */
   it('returns no plan when no exported component calls the selected module', async () => {
     const hookPath = '/workspace/src/use-unused.ts';

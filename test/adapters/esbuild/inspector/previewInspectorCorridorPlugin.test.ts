@@ -244,6 +244,179 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).toContain('ReactPreviewDeferredCorridorRoute');
   });
 
+  /** Keeps every statically rendered component authentic below a selected VirtualPage layout. */
+  it('expands transitive JSX below a VirtualPage layout', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const entryPath = path.join(sourceRoot, 'entry.tsx');
+    const pagePath = path.join(sourceRoot, 'Page.tsx');
+    const layoutPath = path.join(sourceRoot, 'ApplicationLayout.tsx');
+    const navigationPath = path.join(sourceRoot, 'PrimaryTopbar.tsx');
+    const deepItemPath = path.join(sourceRoot, 'DeepMenuItem.tsx');
+    await mkdir(sourceRoot, { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          `import Page from './Page';`,
+          `import { ApplicationLayout } from './ApplicationLayout';`,
+          `export default () => <ApplicationLayout><Page /></ApplicationLayout>;`,
+        ].join('\n'),
+      ),
+      writeFile(pagePath, `export default () => <main>PAGE_MARKER</main>;`),
+      writeFile(
+        layoutPath,
+        [
+          `import { PrimaryTopbar, useTopbarMode } from './PrimaryTopbar';`,
+          `export const ApplicationLayout = ({ children }) => {`,
+          `  const { visible } = useTopbarMode();`,
+          `  return <div>{visible && <PrimaryTopbar />}{children}</div>;`,
+          `};`,
+        ].join('\n'),
+      ),
+      writeFile(
+        navigationPath,
+        [
+          `import { DeepMenuItem } from './DeepMenuItem';`,
+          `export const useTopbarMode = () => ({ visible: true });`,
+          `export const PrimaryTopbar = () => (`,
+          `  <header>TOPBAR_DEPTH_MARKER<DeepMenuItem /></header>`,
+          `);`,
+        ].join('\n'),
+      ),
+      writeFile(deepItemPath, `export const DeepMenuItem = () => <i>DEEP_ITEM_MARKER</i>;`),
+    ]);
+    const basePlan = createCorridorPlan(entryPath, pagePath);
+    const plan: PreviewInspectorAncestorPlan = {
+      ...basePlan,
+      shallowVisualPaths: [
+        {
+          exportName: 'ApplicationLayout',
+          importerPath: entryPath,
+          importKind: 'static',
+          localEdges: [],
+          moduleSpecifier: './ApplicationLayout',
+          occurrenceStart: 0,
+          relation: 'sibling',
+          renderedLocalName: 'ApplicationLayout',
+          renderBoundaryStart: 0,
+          selectedChildPath: pagePath,
+          sourcePath: layoutPath,
+        },
+      ],
+    };
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      external: ['react', 'react/jsx-runtime'],
+      format: 'esm',
+      jsx: 'automatic',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan,
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('TOPBAR_DEPTH_MARKER');
+    expect(source).toContain('DEEP_ITEM_MARKER');
+    expect(source).not.toContain('createShallowComponent("./DeepMenuItem:DeepMenuItem")');
+    expect(source).not.toContain(
+      'createShallowComponent("./PrimaryTopbar:PrimaryTopbar,useTopbarMode")',
+    );
+    expect(source).toContain('VirtualPage component isolated');
+  });
+
+  /** Uses module/export cycle identity rather than a fixed hop count for deep component trees. */
+  it('retains a selected JSX chain deeper than the former twelve-component limit', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const entryPath = path.join(sourceRoot, 'entry.tsx');
+    const pagePath = path.join(sourceRoot, 'Page.tsx');
+    const componentPaths = Array.from({ length: 18 }, (_, index) =>
+      path.join(sourceRoot, `Layer${index.toString()}.tsx`),
+    );
+    await mkdir(sourceRoot, { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          `import Page from './Page';`,
+          `import { Layer0 } from './Layer0';`,
+          `export default () => <Layer0><Page /></Layer0>;`,
+        ].join('\n'),
+      ),
+      writeFile(pagePath, `export default () => <main>PAGE_MARKER</main>;`),
+      ...componentPaths.map((componentPath, index) => {
+        const nextIndex = index + 1;
+        return writeFile(
+          componentPath,
+          nextIndex < componentPaths.length
+            ? [
+                `import { Layer${nextIndex.toString()} } from './Layer${nextIndex.toString()}';`,
+                `export const Layer${index.toString()} = ({ children }) => (`,
+                `  <section data-layer="${index.toString()}">`,
+                `    <Layer${nextIndex.toString()}>{children}</Layer${nextIndex.toString()}>`,
+                `  </section>`,
+                `);`,
+              ].join('\n')
+            : `export const Layer${index.toString()} = ({ children }) => <article>DEEPEST_VIRTUAL_PAGE_MARKER{children}</article>;`,
+        );
+      }),
+    ]);
+    const basePlan = createCorridorPlan(entryPath, pagePath);
+    const plan: PreviewInspectorAncestorPlan = {
+      ...basePlan,
+      shallowVisualPaths: [
+        {
+          exportName: 'Layer0',
+          importerPath: entryPath,
+          importKind: 'static',
+          localEdges: [],
+          moduleSpecifier: './Layer0',
+          occurrenceStart: 0,
+          relation: 'sibling',
+          renderedLocalName: 'Layer0',
+          renderBoundaryStart: 0,
+          selectedChildPath: pagePath,
+          sourcePath: componentPaths[0] ?? '',
+        },
+      ],
+    };
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      external: ['react', 'react/jsx-runtime'],
+      format: 'esm',
+      jsx: 'automatic',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan,
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('DEEPEST_VIRTUAL_PAGE_MARKER');
+    expect(source).toContain('data-layer');
+    expect(source).not.toContain('createShallowComponent("./Layer');
+  });
+
   /**
    * Preserves a small API loader, then narrows its generated registry to the exact App Router
    * parameter tuple. Every omitted branch shares one module so split output remains bounded.

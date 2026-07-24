@@ -1,6 +1,9 @@
 /**
- * Exposes selectable authored ancestors through the existing preview target descriptor contract.
- * Candidate roots remain dynamic imports so only the chosen page branch loads in the webview.
+ * Generates executable VirtualPages from statically proven application-to-target render paths.
+ *
+ * The authored application root remains descriptor evidence, but generic projects execute the
+ * nearest concrete page checkpoint. This avoids evaluating unrelated bootstraps while preserving
+ * the route, omitted shell path, current-file instrumentation, global styles, and framework shells.
  */
 import path from 'node:path';
 import type { OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
@@ -21,6 +24,7 @@ import {
   PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY,
   PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY,
 } from '../previewNextAppNavigationRuntimeSource';
+import { createPreviewInspectorVirtualPageCandidates } from './previewInspectorVirtualPagePlan';
 
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 
@@ -41,7 +45,7 @@ export interface PreviewInspectorRootPluginOptions {
 }
 
 /**
- * Creates a virtual `react-preview:target` module importing the plan's real owner export.
+ * Creates a virtual `react-preview:target` module that emits and loads generated VirtualPages.
  *
  * `watchFiles` contains the entire selected ancestry so saved source changes trigger esbuild's
  * rebuild pipeline even before the module graph changes shape. Dirty snapshot refresh remains
@@ -106,11 +110,12 @@ export interface PreviewInspectorRootSourceOptions {
 }
 
 /**
- * Generates a descriptor and lazy loaders for every statically proven authored page candidate.
+ * Generates a descriptor and lazy loaders for every statically proven VirtualPage candidate.
  *
- * When root and target share a module, the import intentionally points at the instrumentation
- * facade. Otherwise the real ancestor imports its descendant normally and the target interceptor
- * replaces the nested target edge wherever it is resolved.
+ * When the live content root and target share a module, the import intentionally points at the
+ * instrumentation facade. Otherwise the concrete page imports its descendant normally and the
+ * target interceptor replaces the nested target edge wherever it is resolved. The application
+ * root is serialized as provenance instead of being imported merely to prove page context.
  *
  * @param options Inspector plan and optional original export display label.
  * @returns Executable ESM source satisfying the existing preview entry target contract.
@@ -119,66 +124,80 @@ export function createPreviewInspectorRootSource(
   options: PreviewInspectorRootSourceOptions,
 ): string {
   const { plan } = options;
-  const pageCandidates =
-    options.maximumPageCandidates === undefined
-      ? plan.pageCandidates
-      : plan.pageCandidates.slice(0, Math.max(1, Math.floor(options.maximumPageCandidates)));
+  const virtualPageCandidates = createPreviewInspectorVirtualPageCandidates(
+    plan.pageCandidates,
+    options.maximumPageCandidates ?? plan.pageCandidates.length,
+    plan.shallowVisualPaths ?? [],
+  );
+  const pageCandidates = virtualPageCandidates.map((candidate) => candidate.browserCandidate);
   for (const candidate of pageCandidates) {
     assertExportName(candidate.root.exportName);
   }
-  const browserCandidates = pageCandidates.map((candidate) => ({
-    complete: candidate.complete,
-    edges: candidate.edges,
-    id: candidate.id,
-    ...(candidate.renderPath === undefined ? {} : { renderPath: candidate.renderPath }),
-    root: candidate.root,
-    rootAutomaticProps: candidate.rootAutomaticProps,
-    ...(candidate.rootInference === undefined
-      ? {}
-      : {
-          rootInferredPropShape: candidate.rootInference.shape,
-          rootInferredProps: candidate.rootInference.provenance,
-        }),
-    ...(candidate.nextAppLayoutChain === undefined
-      ? {}
-      : { nextAppLayoutChain: candidate.nextAppLayoutChain }),
-    ...(candidate.nextPagesShell === undefined ? {} : { nextPagesShell: candidate.nextPagesShell }),
-    rootOwnsRouter: candidate.rootOwnsRouter,
-    ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
-    ...(candidate.routeLocation === undefined
-      ? {}
-      : {
-          routeLocation: {
-            componentName: candidate.routeLocation.componentName,
-            evidenceKind: candidate.routeLocation.evidenceKind,
-            pathname: candidate.routeLocation.pathname,
-            ...('params' in candidate.routeLocation
-              ? {
-                  params: candidate.routeLocation.params,
-                  searchParams: candidate.routeLocation.searchParams,
-                }
-              : {}),
-            pattern: candidate.routeLocation.pattern,
-            sourcePath: candidate.routeLocation.sourcePath,
-          },
-        }),
-    stopReason: candidate.stopReason,
-    targetAutomaticProps: candidate.targetAutomaticProps,
-  }));
-  const candidateDefinitions = pageCandidates.map((candidate) => {
+  for (const virtualPage of virtualPageCandidates) {
+    for (const shell of virtualPage.recipe.shells) assertExportName(shell.root.exportName);
+  }
+  const browserCandidates = virtualPageCandidates.map((virtualPage) => {
+    const { browserCandidate: candidate } = virtualPage;
+    return {
+      complete: candidate.complete,
+      ...(candidate.contextModule === undefined ? {} : { contextModule: candidate.contextModule }),
+      edges: candidate.edges,
+      id: candidate.id,
+      ...(candidate.renderPath === undefined ? {} : { renderPath: candidate.renderPath }),
+      root: candidate.root,
+      rootAutomaticProps: candidate.rootAutomaticProps,
+      ...(candidate.rootInference === undefined
+        ? {}
+        : {
+            rootInferredPropShape: candidate.rootInference.shape,
+            rootInferredProps: candidate.rootInference.provenance,
+          }),
+      ...(candidate.nextAppLayoutChain === undefined
+        ? {}
+        : { nextAppLayoutChain: candidate.nextAppLayoutChain }),
+      ...(candidate.nextPagesShell === undefined
+        ? {}
+        : { nextPagesShell: candidate.nextPagesShell }),
+      rootOwnsRouter: candidate.rootOwnsRouter,
+      ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
+      ...(candidate.routeLocation === undefined
+        ? {}
+        : {
+            routeLocation: {
+              componentName: candidate.routeLocation.componentName,
+              evidenceKind: candidate.routeLocation.evidenceKind,
+              pathname: candidate.routeLocation.pathname,
+              ...('params' in candidate.routeLocation
+                ? {
+                    params: candidate.routeLocation.params,
+                    searchParams: candidate.routeLocation.searchParams,
+                  }
+                : {}),
+              pattern: candidate.routeLocation.pattern,
+              sourcePath: candidate.routeLocation.sourcePath,
+            },
+          }),
+      stopReason: candidate.stopReason,
+      targetAutomaticProps: candidate.targetAutomaticProps,
+      ...(candidate.target === undefined ? {} : { target: candidate.target }),
+      virtualPage: virtualPage.recipe,
+    };
+  });
+  const candidateDefinitions = virtualPageCandidates.map((virtualPage) => {
+    const { browserCandidate: candidate, contentCandidate, recipe } = virtualPage;
     const rootIsTarget =
-      path.normalize(candidate.root.sourcePath) === path.normalize(plan.target.sourcePath);
+      path.normalize(contentCandidate.root.sourcePath) === path.normalize(plan.target.sourcePath);
     const rootSpecifier = rootIsTarget
       ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-      : candidate.root.sourcePath.replaceAll('\\', '/');
-    const layoutSpecifiers = candidate.nextAppLayoutChain?.map((layout) =>
+      : contentCandidate.root.sourcePath.replaceAll('\\', '/');
+    const layoutSpecifiers = contentCandidate.nextAppLayoutChain?.map((layout) =>
       path.normalize(layout.sourcePath) === path.normalize(plan.target.sourcePath)
         ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
         : layout.sourcePath.replaceAll('\\', '/'),
     );
     const nextAppRouteLocation =
-      candidate.routeLocation?.evidenceKind === 'next-app-filesystem'
-        ? candidate.routeLocation
+      contentCandidate.routeLocation?.evidenceKind === 'next-app-filesystem'
+        ? contentCandidate.routeLocation
         : undefined;
     if (nextAppRouteLocation !== undefined) {
       const imports = [rootSpecifier, ...(layoutSpecifiers ?? [])].map(
@@ -190,7 +209,7 @@ export function createPreviewInspectorRootSource(
         ', load: () => Promise.all([',
         imports.join(','),
         ']).then((modules) => __reactPreviewComposeNextAppPage(modules, ',
-        JSON.stringify(candidate.root.exportName),
+        JSON.stringify(contentCandidate.root.exportName),
         ', ',
         JSON.stringify(nextAppRouteLocation.pathname),
         ', ',
@@ -198,22 +217,24 @@ export function createPreviewInspectorRootSource(
         ', ',
         JSON.stringify(nextAppRouteLocation.searchParams),
         ', ',
-        JSON.stringify(candidate.nextAppLayoutChain?.map((layout) => layout.params) ?? []),
+        JSON.stringify(contentCandidate.nextAppLayoutChain?.map((layout) => layout.params) ?? []),
         ', ',
-        JSON.stringify(createNextAppLayoutNavigationValues(candidate)),
+        JSON.stringify(createNextAppLayoutNavigationValues(contentCandidate)),
         ', ',
-        JSON.stringify(candidate.nextAppLayoutChain?.map((layout) => layout.slotNames ?? []) ?? []),
+        JSON.stringify(
+          contentCandidate.nextAppLayoutChain?.map((layout) => layout.slotNames ?? []) ?? [],
+        ),
         ')) }',
       ].join('');
     }
-    if (candidate.nextPagesShell !== undefined) {
+    if (contentCandidate.nextPagesShell !== undefined) {
       const appIsTarget =
-        path.normalize(candidate.nextPagesShell.app.sourcePath) ===
+        path.normalize(contentCandidate.nextPagesShell.app.sourcePath) ===
         path.normalize(plan.target.sourcePath);
       const appSpecifier = appIsTarget
         ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-        : candidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
-      const syntheticPage = candidate.nextPagesShell.syntheticPage === true;
+        : contentCandidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
+      const syntheticPage = contentCandidate.nextPagesShell.syntheticPage === true;
       const imports = (syntheticPage ? [appSpecifier] : [rootSpecifier, appSpecifier]).map(
         (specifier) => `import(${JSON.stringify(specifier)})`,
       );
@@ -223,20 +244,32 @@ export function createPreviewInspectorRootSource(
         ', load: () => Promise.all([',
         imports.join(','),
         ']).then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
-        JSON.stringify(candidate.root.exportName),
+        JSON.stringify(contentCandidate.root.exportName),
         ', ',
         JSON.stringify(syntheticPage),
         ')) }',
       ].join('');
     }
+    const shellSpecifiers = recipe.shells.map((shell) =>
+      path.normalize(shell.root.sourcePath) === path.normalize(plan.target.sourcePath)
+        ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
+        : shell.root.sourcePath.replaceAll('\\', '/'),
+    );
+    const imports = [rootSpecifier, ...shellSpecifiers].map(
+      (specifier) => `import(${JSON.stringify(specifier)})`,
+    );
     return [
       '{ id: ',
       JSON.stringify(candidate.id),
-      ', load: () => import(',
-      JSON.stringify(rootSpecifier),
-      ').then((module) => module[',
-      JSON.stringify(candidate.root.exportName),
-      ']) }',
+      ', load: () => Promise.all([',
+      imports.join(','),
+      ']).then((modules) => __reactPreviewComposeVirtualPage(modules, ',
+      JSON.stringify(contentCandidate.root.exportName),
+      ', ',
+      JSON.stringify(recipe.shells.map((shell) => shell.root.exportName)),
+      ', ',
+      JSON.stringify(recipe),
+      ')) }',
     ].join('');
   });
   // Register every statically proven current-file component behind its own dynamic import. The
@@ -290,16 +323,15 @@ export function createPreviewInspectorRootSource(
   };
   const themeImport = createInspectorThemeImport(options.themeImport);
   const globalStyleImports = createInspectorGlobalStyleImports(options.globalStyleImports ?? []);
-  const requiresNextAppRuntime = pageCandidates.some(
-    (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',
+  const requiresNextAppRuntime = virtualPageCandidates.some(
+    (candidate) => candidate.contentCandidate.routeLocation?.evidenceKind === 'next-app-filesystem',
   );
-  const requiresNextPagesRuntime = pageCandidates.some(
-    (candidate) => candidate.nextPagesShell !== undefined,
+  const requiresNextPagesRuntime = virtualPageCandidates.some(
+    (candidate) => candidate.contentCandidate.nextPagesShell !== undefined,
   );
-  const requiresFrameworkReactRuntime = requiresNextAppRuntime || requiresNextPagesRuntime;
 
   return [
-    ...(requiresFrameworkReactRuntime ? ["import * as React from 'react';"] : []),
+    "import * as React from 'react';",
     ...(requiresNextPagesRuntime
       ? [
           "import __reactPreviewNextPagesRouter, { RouterContext as __reactPreviewNextPagesRouterContext } from 'next/router';",
@@ -307,6 +339,102 @@ export function createPreviewInspectorRootSource(
       : []),
     ...(themeImport.statement === undefined ? [] : [themeImport.statement]),
     ...globalStyleImports.statements,
+    '/** Mounts a concrete page checkpoint while retaining the full authored path as recipe data. */',
+    'class __reactPreviewVirtualPageContentProbe extends React.Component {',
+    '  componentDidMount() { this.props.onMount(); }',
+    '  render() { return this.props.children; }',
+    '}',
+    '/** Isolates one inferred shell and restores its child when it throws or swallows children. */',
+    'class __reactPreviewVirtualPageShellBoundary extends React.Component {',
+    '  constructor(props) {',
+    '    super(props);',
+    '    this.bypassTimer = undefined;',
+    '    this.contentMounted = false;',
+    '    this.state = { bypass: false, error: null };',
+    '  }',
+    '  static getDerivedStateFromError(error) { return { bypass: true, error }; }',
+    '  componentDidCatch(error) {',
+    '    globalThis.console?.warn?.("[React Preview] VirtualPage shell bypassed", error);',
+    '  }',
+    '  componentDidMount() {',
+    '    if (this.props.standalone) return;',
+    '    // A real shell may return null during its first generated-data pass. Keep it mounted long',
+    '    // enough for condition and payload resolution before falling back to the page body.',
+    '    this.bypassTimer = globalThis.setTimeout(() => {',
+    '      if (!this.contentMounted && !this.state.bypass) this.setState({ bypass: true });',
+    '    }, 1800);',
+    '  }',
+    '  componentWillUnmount() {',
+    '    if (this.bypassTimer !== undefined) globalThis.clearTimeout(this.bypassTimer);',
+    '  }',
+    '  render() {',
+    '    if (this.state.bypass) return this.props.children;',
+    '    const Shell = this.props.shell;',
+    '    if (this.props.standalone) {',
+    '      return React.createElement(Shell, { children: this.props.children });',
+    '    }',
+    '    const child = React.createElement(',
+    '      __reactPreviewVirtualPageContentProbe,',
+    '      { onMount: () => { this.contentMounted = true; } },',
+    '      this.props.children,',
+    '    );',
+    '    return React.createElement(Shell, { children: child });',
+    '  }',
+    '}',
+    '/** Builds one live page body plus its authored wrapper and sibling composition frame. */',
+    'function __reactPreviewComposeVirtualPage(modules, exportName, shellExportNames, recipe) {',
+    '  const Content = modules[0]?.[exportName];',
+    '  if (Content === null || (typeof Content !== "function" && typeof Content !== "object")) {',
+    '    throw new TypeError(`VirtualPage content export is unavailable: ${exportName}`);',
+    '  }',
+    '  const shells = shellExportNames.map((shellExportName, index) => {',
+    '    const shellModule = modules[index + 1];',
+    '    const Shell = shellModule?.[shellExportName] ?? shellModule?.default;',
+    '    return Shell === null || (typeof Shell !== "function" && typeof Shell !== "object")',
+    '      ? undefined',
+    '      : Shell;',
+    '  });',
+    '  function ReactPreviewVirtualPage(props) {',
+    '    let child = React.createElement(Content, Object.assign({}, props));',
+    '    for (let index = shells.length - 1; index >= 0; index -= 1) {',
+    '      const Shell = shells[index];',
+    '      if (Shell === undefined) continue;',
+    '      const shellRecipe = recipe?.shells?.[index];',
+    '      if (shellRecipe?.relation === "sibling") {',
+    '        const sibling = React.createElement(',
+    '          __reactPreviewVirtualPageShellBoundary,',
+    '          { key: shellRecipe?.root?.sourcePath ?? index, shell: Shell, standalone: true },',
+    '        );',
+    '        child = shellRecipe?.placement === "after"',
+    '          ? React.createElement(React.Fragment, null, child, sibling)',
+    '          : React.createElement(React.Fragment, null, sibling, child);',
+    '      } else if (shellRecipe?.relation === "owner") {',
+    '        // A corridor owner already imports and renders its selected inner path. Running it',
+    '        // standalone preserves the authored Header/Sidebar placement instead of waiting for a',
+    '        // children probe it may never consume; a thrown owner still falls back to `child`.',
+    '        child = React.createElement(',
+    '          __reactPreviewVirtualPageShellBoundary,',
+    '          { key: shellRecipe?.root?.sourcePath ?? index, shell: Shell, standalone: true },',
+    '          child,',
+    '        );',
+    '      } else {',
+    '        child = React.createElement(',
+    '          __reactPreviewVirtualPageShellBoundary,',
+    '          { key: shellRecipe?.root?.sourcePath ?? index, shell: Shell },',
+    '          child,',
+    '        );',
+    '      }',
+    '    }',
+    '    return child;',
+    '  }',
+    '  try {',
+    '    Object.defineProperties(ReactPreviewVirtualPage, {',
+    '      displayName: { value: `VirtualPage(${recipe?.contentRoot?.exportName ?? exportName})` },',
+    '      virtualPageRecipe: { value: Object.freeze(recipe), enumerable: false },',
+    '    });',
+    '  } catch {}',
+    '  return ReactPreviewVirtualPage;',
+    '}',
     ...(requiresNextAppRuntime
       ? [
           "import { PreviewLayoutSegmentsContext as __reactPreviewNextLayoutSegmentsContext } from 'next/navigation';",

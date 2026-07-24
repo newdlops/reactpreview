@@ -30,6 +30,9 @@ describe('createPreviewInspectorShallowProjectionSource', () => {
     expect(source).toContain("hostProps['data-react-preview-shallow-component'] = label;");
     expect(source).toContain('styledComponentId: { value: selectorId }');
     expect(source).toContain('hostProps.className, selectorId');
+    expect(source).toContain('const navigationLike =');
+    expect(source).toContain("flex: '0 0 min(14rem, 24vw)'");
+    expect(source).toContain("hostProps['aria-label'] = semanticLabel");
     expect(source).not.toContain("display: 'contents'");
   });
 

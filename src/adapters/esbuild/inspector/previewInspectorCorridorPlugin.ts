@@ -31,11 +31,22 @@ import {
   type PreviewInspectorShallowProjection,
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
+import {
+  createPreviewInspectorVirtualPageComponentSource,
+  type PreviewInspectorVirtualPageComponent,
+} from './previewInspectorVirtualPageComponentSource';
+import {
+  createPreviewInspectorVirtualPageComponentRuntimeSource,
+  PREVIEW_INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_SPECIFIER,
+} from './previewInspectorVirtualPageComponentRuntimeSource';
 
 const INSPECTOR_CORRIDOR_NAMESPACE = 'react-preview-inspector-corridor';
 const INSPECTOR_CORRIDOR_PLACEHOLDER_PATH = 'omitted-deferred-route';
 const INSPECTOR_STATIC_CORRIDOR_NAMESPACE = 'react-preview-inspector-static-corridor';
 const INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE = 'react-preview-inspector-shallow-corridor';
+const INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE = 'react-preview-inspector-virtual-page-component';
+const INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_NAMESPACE =
+  'react-preview-inspector-virtual-page-component-runtime';
 const MAX_DYNAMIC_IMPORTER_SOURCE_BYTES = 1024 * 1024;
 const MAX_SMALL_DYNAMIC_IMPORTS = 24;
 const MAX_SMALL_STATIC_ROUTE_IMPORTS = 0;
@@ -93,16 +104,21 @@ export function createPreviewInspectorCorridorPlugin(
   );
   const contextMayCrossPackages = options.plan.contextModule !== undefined;
   const exactCorridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
-  const shallowExportsByPath = collectPreviewInspectorShallowExportsByPath(options.plan);
-  const shallowVisualPaths = new Set(
-    [...shallowExportsByPath.keys()].filter((sourcePath) => !exactCorridorPaths.has(sourcePath)),
+  const initialShallowExportsByPath = collectPreviewInspectorShallowExportsByPath(options.plan);
+  const shallowExportsByPath = new Map(initialShallowExportsByPath);
+  const initialShallowVisualPaths = new Set(
+    [...initialShallowExportsByPath.keys()].filter(
+      (sourcePath) => !exactCorridorPaths.has(sourcePath),
+    ),
   );
+  const shallowVisualPaths = new Set(initialShallowVisualPaths);
   const corridorPaths = new Set([...exactCorridorPaths, ...shallowVisualPaths]);
-  const selectedPackageDemandPaths = new Set([
+  const initialSelectedPackageDemandPaths = new Set([
     ...corridorPaths,
     ...(options.plan.shallowVisualPaths?.map((item) => canonicalizeExistingPath(item.sourcePath)) ??
       []),
   ]);
+  const selectedPackageDemandPaths = new Set(initialSelectedPackageDemandPaths);
   const corridorModuleStems = createPreviewInspectorCorridorModuleStemSet(options.plan);
   const routeParameterGroups = collectPreviewInspectorRouteParameterGroups(options.plan);
   const importerEvidenceByPath = new Map<string, Promise<PreviewDynamicImporterEvidence>>();
@@ -118,13 +134,15 @@ export function createPreviewInspectorCorridorPlugin(
     string,
     Promise<PreviewInspectorShallowProjectionInventory>
   >();
+  const expandedVirtualPageComponentExports = new Set<string>();
 
   /**
-   * Stops one project-component boundary below a shallow root or one fallback-proven project hook.
+   * Follows component imports transitively below a VirtualPage root and cuts only proven hooks.
    *
-   * Visual projection remains limited to authentic shallow roots. Exact selected corridor modules
-   * may additionally cut hook-only project imports when every call has demand-shaped fallback
-   * evidence; styles, assets, helpers, mixed imports, and semantic infrastructure stay authored.
+   * Every statically rendered project component stays authentic. Each discovered module becomes a
+   * new shallow-analysis root, so traversal continues until esbuild reaches leaves or revisits the
+   * same module/export identity. Exact selected corridor modules may additionally cut hook-only
+   * project imports when every call has demand-shaped fallback evidence.
    */
   async function resolveShallowVisualChild(
     arguments_: OnResolveArgs,
@@ -148,14 +166,46 @@ export function createPreviewInspectorCorridorPlugin(
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
     const canonicalTarget = canonicalizeExistingPath(resolvedPath);
     if (
-      corridorPaths.has(canonicalTarget) ||
+      exactCorridorPaths.has(canonicalTarget) ||
       !isPathInside(workspaceRoot, canonicalTarget) ||
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
       containsDependencyDirectory(workspaceRoot, canonicalTarget)
     ) {
       return undefined;
     }
+    if (shallowVisualPaths.has(canonicalImporter) && shouldExpandVirtualPageComponent(projection)) {
+      /*
+       * The facade imports the authentic module and gives it a component-local error boundary.
+       * Registering the target as another analysis root turns esbuild's ordinary module traversal
+       * into a cycle-safe DFS without an authored-hop or component-depth limit.
+       */
+      registerTransitiveVirtualPageComponent(canonicalTarget, projection);
+      return createVirtualPageComponentFacade(canonicalTarget, projection);
+    }
+    if (corridorPaths.has(canonicalTarget)) return undefined;
     return createShallowVisualProjection(canonicalImporter, projection);
+  }
+
+  /** Merges demanded exports before recursively analyzing one authentic JSX component module. */
+  function registerTransitiveVirtualPageComponent(
+    sourcePath: string,
+    projection: PreviewInspectorShallowProjection,
+  ): void {
+    let changed = false;
+    const exportNames = new Set(shallowExportsByPath.get(sourcePath) ?? []);
+    for (const exportName of projection.exportNames) {
+      const identity = `${sourcePath}\0${exportName}`;
+      if (!expandedVirtualPageComponentExports.has(identity)) {
+        expandedVirtualPageComponentExports.add(identity);
+        changed = true;
+      }
+      exportNames.add(exportName);
+    }
+    shallowExportsByPath.set(sourcePath, exportNames);
+    shallowVisualPaths.add(sourcePath);
+    corridorPaths.add(sourcePath);
+    selectedPackageDemandPaths.add(sourcePath);
+    if (changed) shallowImporterEvidenceByPath.delete(sourcePath);
   }
 
   /** Keeps selected project imports and coalesces deferred branches outside the proven corridor. */
@@ -409,6 +459,28 @@ export function createPreviewInspectorCorridorPlugin(
     };
   }
 
+  /** Emits one authentic, independently recoverable component facade in the transitive JSX DFS. */
+  function loadVirtualPageComponent(arguments_: OnLoadArgs): OnLoadResult {
+    const component = readVirtualPageComponentPluginData(arguments_.pluginData);
+    if (component === undefined) {
+      return { errors: [{ text: 'React Preview lost VirtualPage component metadata.' }] };
+    }
+    return {
+      contents: createPreviewInspectorVirtualPageComponentSource(component),
+      loader: 'js',
+      resolveDir: path.dirname(component.sourcePath),
+    };
+  }
+
+  /** Emits the shared facade implementation once regardless of transitive component depth. */
+  function loadVirtualPageComponentRuntime(): OnLoadResult {
+    return {
+      contents: createPreviewInspectorVirtualPageComponentRuntimeSource(),
+      loader: 'js',
+      resolveDir: projectRoot,
+    };
+  }
+
   return {
     name: 'react-preview-inspector-corridor',
     setup(build): void {
@@ -430,7 +502,39 @@ export function createPreviewInspectorCorridorPlugin(
         runtimeHookImporterEvidenceByPath.clear();
         shallowImporterEvidenceByPath.clear();
         staticImporterEvidenceByPath.clear();
+        expandedVirtualPageComponentExports.clear();
+        shallowExportsByPath.clear();
+        for (const [sourcePath, exportNames] of initialShallowExportsByPath) {
+          shallowExportsByPath.set(sourcePath, new Set(exportNames));
+        }
+        shallowVisualPaths.clear();
+        for (const sourcePath of initialShallowVisualPaths) shallowVisualPaths.add(sourcePath);
+        corridorPaths.clear();
+        for (const sourcePath of exactCorridorPaths) corridorPaths.add(sourcePath);
+        for (const sourcePath of shallowVisualPaths) corridorPaths.add(sourcePath);
+        selectedPackageDemandPaths.clear();
+        for (const sourcePath of initialSelectedPackageDemandPaths) {
+          selectedPackageDemandPaths.add(sourcePath);
+        }
       });
+      build.onResolve(
+        { filter: /.*/, namespace: INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE },
+        (arguments_) => {
+          if (arguments_.path === PREVIEW_INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_SPECIFIER) {
+            return {
+              namespace: INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_NAMESPACE,
+              path: 'runtime',
+            };
+          }
+          return path.isAbsolute(arguments_.path)
+            ? {
+                namespace: 'file',
+                path: arguments_.path,
+                pluginData: PREVIEW_RESOLVE_GUARD,
+              }
+            : undefined;
+        },
+      );
       build.onResolve({ filter: /.*/ }, resolveShallowVisualChild);
       build.onResolve({ filter: /.*/ }, resolveDeferredBranch);
       build.onResolve({ filter: /.*/ }, resolveStaticRouteBranch);
@@ -443,8 +547,32 @@ export function createPreviewInspectorCorridorPlugin(
         { filter: /.*/, namespace: INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE },
         loadShallowVisualChild,
       );
+      build.onLoad(
+        { filter: /.*/, namespace: INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE },
+        loadVirtualPageComponent,
+      );
+      build.onLoad(
+        { filter: /.*/, namespace: INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_NAMESPACE },
+        loadVirtualPageComponentRuntime,
+      );
     },
   };
+}
+
+/**
+ * Selects a statically rendered component boundary for authentic VirtualPage traversal.
+ *
+ * Hook-only imports remain demand-shaped stubs and wildcard surfaces fail open because neither is
+ * a component identity. All ordinary named/default component projections are admitted regardless
+ * of semantic filename, allowing headers, sidebars, feature content, overlays, and the selected
+ * file to be represented by their authored code at any graph depth.
+ */
+function shouldExpandVirtualPageComponent(projection: PreviewInspectorShallowProjection): boolean {
+  const runtimeHookExportNames = new Set(projection.runtimeHookExportNames);
+  return (
+    !projection.exportNames.includes('*') &&
+    projection.exportNames.some((exportName) => !runtimeHookExportNames.has(exportName))
+  );
 }
 
 /** Returns one stable virtual identity so thousands of discarded registry edges share output. */
@@ -477,6 +605,29 @@ function createShallowVisualProjection(
     namespace: INSPECTOR_SHALLOW_CORRIDOR_NAMESPACE,
     path: `${importerPath}\0${projection.moduleSpecifier}`,
     pluginData: projection,
+    sideEffects: false,
+  };
+}
+
+/**
+ * Creates one stable module/export identity for an authentic transitive VirtualPage component.
+ *
+ * The identity deliberately excludes the importer. If authored modules form a render cycle,
+ * esbuild reaches the same virtual module again and closes the graph instead of generating another
+ * hop. Different demanded export sets remain distinct so named ESM surfaces stay exact.
+ */
+function createVirtualPageComponentFacade(
+  sourcePath: string,
+  projection: PreviewInspectorShallowProjection,
+): OnResolveResult {
+  const exportIdentity = [...projection.exportNames].sort().join(',');
+  return {
+    namespace: INSPECTOR_VIRTUAL_PAGE_COMPONENT_NAMESPACE,
+    path: JSON.stringify([sourcePath, exportIdentity]),
+    pluginData: {
+      projection,
+      sourcePath,
+    } satisfies PreviewInspectorVirtualPageComponent,
     sideEffects: false,
   };
 }
@@ -528,6 +679,28 @@ function readShallowProjectionPluginData(
     exportNames: Object.freeze([...value.exportNames]),
     moduleSpecifier: value.moduleSpecifier,
     runtimeHookExportNames: Object.freeze([...value.runtimeHookExportNames]),
+  };
+}
+
+/** Validates private authentic-component data before importing a project source into a facade. */
+function readVirtualPageComponentPluginData(
+  value: unknown,
+): PreviewInspectorVirtualPageComponent | undefined {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('sourcePath' in value) ||
+    typeof value.sourcePath !== 'string' ||
+    !path.isAbsolute(value.sourcePath) ||
+    !('projection' in value)
+  ) {
+    return undefined;
+  }
+  const projection = readShallowProjectionPluginData(value.projection);
+  if (projection === undefined) return undefined;
+  return {
+    projection,
+    sourcePath: value.sourcePath,
   };
 }
 

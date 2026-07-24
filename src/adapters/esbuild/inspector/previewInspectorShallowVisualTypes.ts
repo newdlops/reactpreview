@@ -53,6 +53,14 @@ export interface PreviewInspectorOneHopVisualPath {
   readonly moduleSpecifier: string;
   /** Zero-based offset of the collected JSX/component-prop occurrence. */
   readonly occurrenceStart: number;
+  /**
+   * Zero-based offset of the selected corridor-child occurrence in the same render outcome.
+   *
+   * Comparing this value with `occurrenceStart` preserves whether a visual sibling appeared before
+   * or after the live page slot. Older persisted plans may omit it; consumers must then use the
+   * conservative before-slot order.
+   */
+  readonly selectedOccurrenceStart?: number;
   /** How this occurrence contributes beside or around the selected child. */
   readonly relation: PreviewInspectorShallowVisualRelation;
   /** Local alias finally observed by the render-outcome analyzer. */

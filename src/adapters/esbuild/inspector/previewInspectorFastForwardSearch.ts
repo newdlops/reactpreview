@@ -49,8 +49,8 @@ export interface FindPreviewInspectorFastForwardMeetingOptions {
   readonly entries: readonly PreviewInspectorFastForwardEntry[];
   /** Resolves and bounds one source module's authored children. */
   readonly getChildren: (sourcePath: string) => Promise<PreviewInspectorFastForwardChildren>;
-  /** Maximum graph depth retained from any entry. */
-  readonly maximumDepth: number;
+  /** Optional compatibility bound; VirtualPage callers omit it and terminate by cycles/files. */
+  readonly maximumDepth?: number;
   /** Maximum unique files read before yielding to background enrichment. */
   readonly maximumFiles: number;
   /** Target-side owner-to-child relation used to finish the joined corridor. */
@@ -178,7 +178,7 @@ export async function findPreviewInspectorFastForwardMeeting(
       // A different export from the same barrel cannot lead into the selected target corridor.
       continue;
     }
-    if (current.depth >= options.maximumDepth) {
+    if (options.maximumDepth !== undefined && current.depth >= options.maximumDepth) {
       truncated = true;
       continue;
     }

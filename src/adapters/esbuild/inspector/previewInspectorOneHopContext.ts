@@ -234,6 +234,7 @@ function deduplicateShallowVisualPaths(
       visualPath.relation,
       visualPath.renderBoundaryStart,
       visualPath.occurrenceStart,
+      visualPath.selectedOccurrenceStart,
     ].join('\0');
     if (seen.has(key)) return false;
     seen.add(key);

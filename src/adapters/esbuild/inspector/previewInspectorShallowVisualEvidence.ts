@@ -212,6 +212,11 @@ export function collectPreviewInspectorShallowVisualEvidence(
         outcome.column,
       );
       for (const selected of selectedOccurrences) {
+        const selectedOccurrenceStart = offsetFromLineColumn(
+          options.sourceText,
+          selected.node.line,
+          selected.node.column,
+        );
         const visualParentIds = new Set([selected.parentId, ...selected.ancestors]);
         for (const occurrence of occurrences) {
           if (occurrence.id === selected.id) continue;
@@ -231,6 +236,7 @@ export function collectPreviewInspectorShallowVisualEvidence(
             importerPath,
             selectedChildPath,
             renderBoundaryStart,
+            selectedOccurrenceStart,
             options.sourceText,
           );
         }
@@ -378,6 +384,7 @@ function appendOccurrencePaths(
   importerPath: string,
   selectedChildPath: string,
   renderBoundaryStart: number,
+  selectedOccurrenceStart: number,
   sourceText: string,
 ): void {
   if (!isPreviewInspectorComponentShapedBinding(occurrence.localName)) return;
@@ -399,6 +406,7 @@ function appendOccurrencePaths(
         relation,
         renderedLocalName: occurrence.localName,
         renderBoundaryStart,
+        selectedOccurrenceStart,
         selectedChildPath,
         sourcePath: origin.resolvedPath,
       }),
@@ -461,6 +469,7 @@ function appendOwnerFallbackPaths(options: {
             relation,
             renderedLocalName: edge.childLocalName,
             renderBoundaryStart: selectedEdge.occurrenceStart,
+            selectedOccurrenceStart: selectedEdge.occurrenceStart,
             selectedChildPath: options.selectedChildPath,
             sourcePath: origin.resolvedPath,
           }),

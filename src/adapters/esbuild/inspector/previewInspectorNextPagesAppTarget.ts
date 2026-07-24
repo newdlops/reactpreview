@@ -36,8 +36,8 @@ export interface CollectPreviewInspectorNextPagesAppTargetOptions {
 
 /** Inputs for collecting several real Pages Router leaves behind one framework `_app`. */
 export interface CollectPreviewInspectorNextPagesAppTargetsOptions extends CollectPreviewInspectorNextPagesAppTargetOptions {
-  /** Strict upper bound that prevents a large pages directory from becoming an eager gallery. */
-  readonly maximumCount: number;
+  /** Optional caller cap; absent means every statically proven visual route remains selectable. */
+  readonly maximumCount?: number;
 }
 
 /** Authored page selected to supply the framework-owned `_app.Component` prop. */
@@ -85,8 +85,12 @@ export async function collectPreviewInspectorNextPagesAppTargets(
 ): Promise<readonly PreviewInspectorNextPagesAppTarget[]> {
   const appPath = path.normalize(options.appPath);
   const pagesRoot = path.dirname(appPath);
+  const maximumCount =
+    options.maximumCount === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.floor(options.maximumCount));
   if (
-    options.maximumCount <= 0 ||
+    maximumCount <= 0 ||
     options.exportName !== 'default' ||
     path.basename(pagesRoot).toLowerCase() !== 'pages' ||
     !NEXT_PAGES_APP_PATTERN.test(path.basename(appPath)) ||
@@ -117,7 +121,7 @@ export async function collectPreviewInspectorNextPagesAppTargets(
         shell,
       }),
     );
-    if (targets.length >= options.maximumCount) break;
+    if (targets.length >= maximumCount) break;
   }
 
   if (targets.length > 0) return Object.freeze(targets);

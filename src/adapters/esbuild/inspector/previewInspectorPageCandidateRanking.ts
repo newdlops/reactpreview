@@ -5,21 +5,44 @@
  */
 import path from 'node:path';
 import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorPlan';
+import { selectPreviewInspectorVirtualPageContentCandidate } from './previewInspectorVirtualPagePlan';
 
 /**
- * Orders candidates by authored page role and keeps at most `maximumCount` diverse choices.
- * Equal scores retain graph discovery order so repeated builds produce stable selector ordering.
+ * Orders candidates by authored page role and optionally keeps a caller-requested diverse subset.
+ * The default intentionally preserves every proven consuming page because a shared component has
+ * no single canonical owner. Equal scores retain discovery order for stable selector ordering.
  */
 export function rankPreviewInspectorPageCandidates(
   candidates: readonly PreviewInspectorPageCandidate[],
-  maximumCount: number,
+  maximumCount?: number,
 ): readonly PreviewInspectorPageCandidate[] {
   const ranked = candidates
     .map((candidate, discoveryIndex) => ({ candidate, discoveryIndex }))
     .sort(compareCandidates);
-  const selected = ranked.slice(0, maximumCount).map(({ candidate }) => candidate);
+  const boundedMaximum =
+    maximumCount === undefined ? ranked.length : Math.max(1, Math.floor(maximumCount));
+  const selected = ranked.slice(0, boundedMaximum).map(({ candidate }) => candidate);
+  const primary = selected[0];
+  const virtualPageContent =
+    primary === undefined
+      ? undefined
+      : selectPreviewInspectorVirtualPageContentCandidate(candidates, primary);
+  let retainedVirtualPageContent = false;
+  if (
+    virtualPageContent !== undefined &&
+    !selected.includes(virtualPageContent) &&
+    selected.length === boundedMaximum
+  ) {
+    selected[selected.length - 1] = virtualPageContent;
+    retainedVirtualPageContent = true;
+  }
   const nearest = ranked.find(({ candidate }) => candidate.rootStepIndex === undefined)?.candidate;
-  if (nearest !== undefined && !selected.includes(nearest) && selected.length === maximumCount) {
+  if (
+    !retainedVirtualPageContent &&
+    nearest !== undefined &&
+    !selected.includes(nearest) &&
+    selected.length === boundedMaximum
+  ) {
     selected[selected.length - 1] = nearest;
   }
   return Object.freeze(selected);

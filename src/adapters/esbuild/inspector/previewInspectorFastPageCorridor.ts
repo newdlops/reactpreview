@@ -23,6 +23,7 @@ import {
   findPreviewInspectorSelectedAuxiliaryRoot,
 } from './previewInspectorAuxiliaryNextAppRoute';
 import { findPreviewInspectorFastForwardMeeting } from './previewInspectorFastForwardSearch';
+import { selectPreviewInspectorFastPageConsumerPaths } from './previewInspectorFastPageCandidates';
 import { analyzePreviewInspectorFastRouteRegistry } from './previewInspectorFastRouteRegistry';
 import {
   collectPreviewInspectorFastResolvedImports,
@@ -41,16 +42,13 @@ import {
 
 const MAXIMUM_ENTRY_DIRECTORIES = 96;
 const MAXIMUM_ENTRY_FILES = 96;
-const MAXIMUM_REVERSE_DEPTH = 8;
 const MAXIMUM_REVERSE_DIRECTORIES = 48;
 const MAXIMUM_FILES_PER_REVERSE_DIRECTORY = 192;
 const MAXIMUM_REVERSE_FILES = 640;
 const MAXIMUM_FORWARD_FILES = 768;
-const MAXIMUM_FORWARD_DEPTH = 48;
 const MAXIMUM_FORWARD_AFFINITY_PATHS = 16;
 const MAXIMUM_IMPORTS_PER_FILE = 256;
 const MAXIMUM_PAGE_SUBTREE_FILES = 128;
-const MAXIMUM_PAGE_SUBTREE_DEPTH = 8;
 const MAXIMUM_ONE_HOP_CONTEXT_FILES = 64;
 const MAXIMUM_FAST_DYNAMIC_IMPORTS = 8;
 const MAXIMUM_FAST_ROUTE_IMPORTS = 48;
@@ -131,6 +129,11 @@ export async function collectPreviewInspectorFastPageCorridor(
   const snapshotPaths = [...(options.additionalSourcePaths ?? [])]
     .map((sourcePath) => path.normalize(sourcePath))
     .filter((sourcePath) => isProjectSourcePath(sourcePath, workspaceRoot));
+  const pageConsumerPaths = selectPreviewInspectorFastPageConsumerPaths(
+    snapshotPaths,
+    projectRoot,
+    documentPath,
+  );
   const entryPaths = await collectLikelyEntryPaths({
     documentPath,
     projectRoot,
@@ -147,7 +150,7 @@ export async function collectPreviewInspectorFastPageCorridor(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     snapshotPaths,
     ...(selectedAuxiliaryRoot === undefined ? {} : { selectedAuxiliaryRoot }),
-    targetedPagePaths: auxiliaryRoute?.pagePaths ?? [],
+    targetedPagePaths: [...new Set([...(auxiliaryRoute?.pagePaths ?? []), ...pageConsumerPaths])],
     workspaceRoot,
   });
   const forward = await findForwardMeeting({
@@ -211,6 +214,14 @@ export async function collectPreviewInspectorFastPageCorridor(
       [
         ...new Set([
           ...boundedPath.importPath,
+          /*
+           * The shortest meeting path determines first-paint ordering, but it is not the only
+           * authored page that may consume the selected component. Preserve the complete bounded
+           * reverse closure and every discovered semantic entry so the ordinary render planner can
+           * produce independently selectable VirtualPages for sibling consumers.
+           */
+          ...reverse.paths,
+          ...(forward?.semanticEntryPaths ?? []),
           ...subtree.sourcePaths,
           ...(auxiliaryRoute?.sourcePaths ?? []),
         ]),
@@ -358,7 +369,7 @@ async function collectReverseClosure(options: {
    */
   const connectOwner = (edge: PreviewInspectorFastResolvedImportEdge): void => {
     const childDepth = depthByPath.get(edge.childPath);
-    if (childDepth === undefined || childDepth >= MAXIMUM_REVERSE_DEPTH) return;
+    if (childDepth === undefined) return;
     const semanticEdge = readSemanticEdge(edge);
     if (
       semanticEdge !== undefined &&
@@ -402,10 +413,40 @@ async function collectReverseClosure(options: {
     }
   };
 
+  /*
+   * Page-shaped paths come from a cached identity-only inventory and are already ranked by target
+   * affinity. Index them before nearby directory scanning can consume the read budget; this is what
+   * lets one shared component retain several authored page owners in distant feature folders.
+   */
+  for (const candidatePath of options.targetedPagePaths) {
+    if (readCandidates.size >= MAXIMUM_REVERSE_FILES) {
+      truncated = true;
+      break;
+    }
+    readCandidates.add(candidatePath);
+    const sourceText = await options.readSource(candidatePath);
+    if (sourceText === undefined) continue;
+    sourceTextByCandidate.set(candidatePath, sourceText);
+    const edges = collectPreviewInspectorFastResolvedImports(
+      candidatePath,
+      sourceText,
+      options.resolveModule,
+      options.workspaceRoot,
+      {
+        preferredPath: options.documentPath,
+        ...(options.selectedAuxiliaryRoot === undefined
+          ? {}
+          : { selectedAuxiliaryRoot: options.selectedAuxiliaryRoot }),
+      },
+    );
+    edgesByCandidate.set(candidatePath, edges);
+    indexCandidateEdges(candidatePath, edges);
+  }
+
   while (pending.length > 0 && readCandidates.size < MAXIMUM_REVERSE_FILES) {
     throwIfPreviewBuildCancelled(options.signal);
     const frontier = pending.shift();
-    if (frontier === undefined || frontier.depth >= MAXIMUM_REVERSE_DEPTH) continue;
+    if (frontier === undefined) continue;
     const directories = collectSourceAncestorDirectories(
       path.dirname(frontier.sourcePath),
       options.projectRoot,
@@ -496,38 +537,6 @@ async function collectReverseClosure(options: {
         indexCandidateEdges(candidatePath, edges);
       }
     }
-    /*
-     * App Router pages may be many filesystem levels away and do not import their layouts. The
-     * target-affine route finder supplies only a handful of page candidates; re-checking their
-     * cached edges after each newly discovered registry owner avoids a full `app` inventory.
-     */
-    for (const candidatePath of options.targetedPagePaths) {
-      let edges = edgesByCandidate.get(candidatePath);
-      if (edges === undefined) {
-        if (readCandidates.size >= MAXIMUM_REVERSE_FILES) {
-          truncated = true;
-          break;
-        }
-        readCandidates.add(candidatePath);
-        const sourceText = await options.readSource(candidatePath);
-        if (sourceText === undefined) continue;
-        sourceTextByCandidate.set(candidatePath, sourceText);
-        edges = collectPreviewInspectorFastResolvedImports(
-          candidatePath,
-          sourceText,
-          options.resolveModule,
-          options.workspaceRoot,
-          {
-            preferredPath: frontier.sourcePath,
-            ...(options.selectedAuxiliaryRoot === undefined
-              ? {}
-              : { selectedAuxiliaryRoot: options.selectedAuxiliaryRoot }),
-          },
-        );
-        edgesByCandidate.set(candidatePath, edges);
-      }
-      indexCandidateEdges(candidatePath, edges);
-    }
   }
   return Object.freeze({ childByOwner, paths, requiredExportsByPath, truncated });
 }
@@ -548,6 +557,7 @@ async function findForwardMeeting(options: {
 }): Promise<
   | {
       readonly importPath: readonly string[];
+      readonly semanticEntryPaths: readonly string[];
       readonly semanticEntry: boolean;
       readonly truncated: boolean;
     }
@@ -568,7 +578,7 @@ async function findForwardMeeting(options: {
       sourcePath: entryPath,
     });
   }
-  return findPreviewInspectorFastForwardMeeting({
+  const meeting = await findPreviewInspectorFastForwardMeeting({
     documentPath: options.documentPath,
     entries,
     getChildren: async (sourcePath) => {
@@ -608,7 +618,6 @@ async function findForwardMeeting(options: {
         truncated: edges.length > MAXIMUM_IMPORTS_PER_FILE,
       });
     },
-    maximumDepth: MAXIMUM_FORWARD_DEPTH,
     maximumFiles: MAXIMUM_FORWARD_FILES,
     reverseChildByOwner: options.reverseChildByOwner,
     reversePaths: options.reversePaths,
@@ -616,9 +625,17 @@ async function findForwardMeeting(options: {
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     workspaceRoot: options.workspaceRoot,
   });
+  return meeting === undefined
+    ? undefined
+    : Object.freeze({
+        ...meeting,
+        semanticEntryPaths: Object.freeze(
+          entries.filter((entry) => entry.semanticEntry).map((entry) => entry.sourcePath),
+        ),
+      });
 }
 
-/** Adds static JSX-facing dependencies around the selected page root with a strict DFS budget. */
+/** Adds static JSX-facing dependencies around the selected page root with a file-budgeted DFS. */
 async function collectPageSubtree(options: {
   readonly importPath: readonly string[];
   readonly readSource: ReadPreviewInspectorSource;
@@ -637,39 +654,31 @@ async function collectPageSubtree(options: {
     return Object.freeze({ sourcePaths: Object.freeze([]), truncated: false });
   }
   const preferredPath = options.importPath.at(-1);
-  const pending = [{ depth: 0, sourcePath: rootPath }];
+  const pending = [rootPath];
   let truncated = false;
   while (pending.length > 0 && sourcePaths.size < MAXIMUM_PAGE_SUBTREE_FILES) {
     throwIfPreviewBuildCancelled(options.signal);
-    const current = pending.pop();
-    if (current === undefined || expandedPaths.has(current.sourcePath)) continue;
-    expandedPaths.add(current.sourcePath);
-    sourcePaths.add(current.sourcePath);
-    if (current.depth >= MAXIMUM_PAGE_SUBTREE_DEPTH) {
-      truncated = true;
-      continue;
-    }
-    const sourceText = await options.readSource(current.sourcePath);
+    const currentPath = pending.pop();
+    if (currentPath === undefined || expandedPaths.has(currentPath)) continue;
+    expandedPaths.add(currentPath);
+    sourcePaths.add(currentPath);
+    const sourceText = await options.readSource(currentPath);
     if (sourceText === undefined) {
       truncated = true;
       continue;
     }
     // One-hop modules stay authentic; only cheap planner recursion stops outside explicit shells.
-    if (
-      reservedSourcePaths.has(current.sourcePath) &&
-      !isExpandablePageShellSource(current.sourcePath)
-    ) {
+    if (reservedSourcePaths.has(currentPath) && !isExpandablePageShellSource(currentPath)) {
       continue;
     }
-    const dynamicInventory = collectPreviewDynamicImportInventory(current.sourcePath, sourceText);
+    const dynamicInventory = collectPreviewDynamicImportInventory(currentPath, sourceText);
     const broadDynamicSpecifiers =
       dynamicInventory.truncated ||
       dynamicInventory.specifiers.length > MAXIMUM_FAST_DYNAMIC_IMPORTS
         ? new Set(dynamicInventory.specifiers)
         : undefined;
     const projectedRouteSpecifiers = sourceText.includes('import')
-      ? collectPreviewStaticRouteProjectionInventory(current.sourcePath, sourceText)
-          .projectionsBySpecifier
+      ? collectPreviewStaticRouteProjectionInventory(currentPath, sourceText).projectionsBySpecifier
       : undefined;
     const sideEffectSpecifiers = new Set(
       [...sourceText.matchAll(/^\s*import\s*(["'])([^"'\r\n]+)\1\s*;?/gmu)].flatMap(
@@ -677,7 +686,7 @@ async function collectPageSubtree(options: {
       ),
     );
     const children = collectPreviewInspectorFastResolvedImports(
-      current.sourcePath,
+      currentPath,
       sourceText,
       options.resolveModule,
       options.workspaceRoot,
@@ -695,7 +704,7 @@ async function collectPageSubtree(options: {
         (broadDynamicSpecifiers?.has(edge.moduleSpecifier) === true && !corridor.has(childPath)) ||
         (projectedRouteSpecifiers?.has(edge.moduleSpecifier) === true &&
           !corridor.has(childPath)) ||
-        (corridor.has(current.sourcePath) &&
+        (corridor.has(currentPath) &&
           !corridor.has(childPath) &&
           /\.[cm]?[jt]sx$/iu.test(childPath) &&
           !reservedSourcePaths.has(childPath) &&
@@ -704,7 +713,7 @@ async function collectPageSubtree(options: {
       ) {
         continue;
       }
-      pending.push({ depth: current.depth + 1, sourcePath: childPath });
+      pending.push(childPath);
     }
   }
   if (pending.length > 0) truncated = true;

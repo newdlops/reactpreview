@@ -4,10 +4,11 @@
  * A hook module normally has no React element type that Page Inspector can mount. Its exported
  * function can still participate in rendering when a component imports and calls it, for example
  * `const { renderModal } = useModal(); return renderModal()`. This planner seeds the existing
- * syntax-only render graph with those callable exports, promotes the first statically exported
- * component on the proven call path, and delegates ordinary page ancestry to the shared planner.
- * No project function is invoked in the extension host.
+ * syntax-only render graph with those callable exports, promotes every distinct statically
+ * exported component on a proven call path, and delegates ordinary page ancestry to the shared
+ * planner. No project function is invoked in the extension host.
  */
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
@@ -64,6 +65,12 @@ interface ConsumerSeed {
   readonly path: PreviewRenderChainCandidate;
   readonly plan: PreviewRenderChainPlan;
   readonly score: number;
+}
+
+/** One promoted component plan retained with the callable path that proved its participation. */
+interface PlannedConsumer {
+  readonly plan: PreviewInspectorAncestorPlan;
+  readonly seed: ConsumerSeed;
 }
 
 /** Runtime export metadata retained without carrying TypeScript AST nodes between source reads. */
@@ -126,45 +133,35 @@ export async function createPreviewInspectorModuleConsumerPagePlan(
     documentPath,
     exportNames: callableExports.slice(0, MAXIMUM_CALLABLE_EXPORTS),
     readSource: sourceByPath,
+    preservePartialConsumers: true,
     resolveModule: options.resolveModule,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     sourcePaths,
   });
-  const seed = await selectBestConsumerSeed(plans, sourceByPath, documentPath, options.signal);
-  if (seed === undefined) return undefined;
+  const seeds = await selectConsumerSeeds(plans, sourceByPath, documentPath, options.signal);
+  if (seeds.length === 0) return undefined;
 
-  const componentRenderPlan = createComponentRenderPlan(seed);
-  const componentPlan = await createPreviewInspectorAncestorPlan({
-    ...(options.acceptedImportSpecifiers === undefined
-      ? {}
-      : { acceptedImportSpecifiers: options.acceptedImportSpecifiers }),
-    documentPath: seed.component.sourcePath,
-    exportName: seed.component.exportName,
-    readSource: sourceByPath,
-    renderChainsByExport: Object.freeze({
-      [seed.component.exportName]: componentRenderPlan,
-    }),
-    resolveModule: options.resolveModule,
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    sourcePaths,
-  });
-  throwIfPreviewBuildCancelled(options.signal);
-
-  const importPath = createPageToModuleImportPath(componentPlan, seed, documentPath);
-  const dependencyPaths = Object.freeze(
-    [...new Set([...componentPlan.dependencyPaths, ...seed.plan.dependencyPaths, ...importPath])]
-      .map((sourcePath) => path.normalize(sourcePath))
-      .sort(),
-  );
-  return Object.freeze({
-    ...componentPlan,
-    contextModule: Object.freeze({
-      evidenceKind: 'import-chain' as const,
-      importPath,
-      sourcePath: documentPath,
-    }),
-    dependencyPaths,
-  });
+  const plannedConsumers: PlannedConsumer[] = [];
+  for (const seed of seeds) {
+    throwIfPreviewBuildCancelled(options.signal);
+    const componentRenderPlan = createComponentRenderPlan(seed);
+    const componentPlan = await createPreviewInspectorAncestorPlan({
+      ...(options.acceptedImportSpecifiers === undefined
+        ? {}
+        : { acceptedImportSpecifiers: options.acceptedImportSpecifiers }),
+      documentPath: seed.component.sourcePath,
+      exportName: seed.component.exportName,
+      readSource: sourceByPath,
+      renderChainsByExport: Object.freeze({
+        [seed.component.exportName]: componentRenderPlan,
+      }),
+      resolveModule: options.resolveModule,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      sourcePaths,
+    });
+    plannedConsumers.push({ plan: componentPlan, seed });
+  }
+  return mergePlannedConsumers(plannedConsumers, documentPath);
 }
 
 /**
@@ -404,13 +401,13 @@ function containsReturnedRenderCallback(node: ts.Node): boolean {
   return found;
 }
 
-/** Finds the strongest entry/page-connected component reached from any selected callable export. */
-async function selectBestConsumerSeed(
+/** Finds every distinct exported component reached from the selected callable module. */
+async function selectConsumerSeeds(
   plans: PreviewRenderChainPlansByExport,
   readSource: ReadPreviewInspectorSource,
   documentPath: string,
   signal: AbortSignal | undefined,
-): Promise<ConsumerSeed | undefined> {
+): Promise<readonly ConsumerSeed[]> {
   const sourceInventoryByPath = new Map<string, Promise<readonly ExportedComponentValue[]>>();
   const seeds: ConsumerSeed[] = [];
   for (const [callableExportName, plan] of Object.entries(plans)) {
@@ -438,7 +435,15 @@ async function selectBestConsumerSeed(
     }
   }
   seeds.sort(compareConsumerSeeds);
-  return seeds[0];
+  const emittedComponents = new Set<string>();
+  return Object.freeze(
+    seeds.filter((seed) => {
+      const key = `${path.normalize(seed.component.sourcePath)}\0${seed.component.exportName}`;
+      if (emittedComponents.has(key)) return false;
+      emittedComponents.add(key);
+      return true;
+    }),
+  );
 }
 
 /** Maps one render-graph declaration label back to a public component export in that module. */
@@ -663,15 +668,101 @@ function preservePromotedCallableEvidence(
   ]);
 }
 
+/**
+ * Combines each promoted consumer's authentic page candidates into one lazy selector contract.
+ *
+ * The first ranked consumer remains the legacy top-level target for compatibility. Every candidate
+ * additionally carries its own promoted target and page-to-module context, allowing the browser to
+ * explain and render another page without pretending that all callers share one component owner.
+ */
+function mergePlannedConsumers(
+  consumers: readonly PlannedConsumer[],
+  documentPath: string,
+): PreviewInspectorAncestorPlan | undefined {
+  const primary = consumers[0];
+  if (primary === undefined) return undefined;
+  const multipleTargets = consumers.length > 1;
+  const pageCandidates: PreviewInspectorAncestorPlan['pageCandidates'][number][] = [];
+  const dependencies = new Set<string>([documentPath]);
+  const emittedCandidates = new Set<string>();
+
+  for (const consumer of consumers) {
+    for (const sourcePath of consumer.plan.dependencyPaths) {
+      dependencies.add(path.normalize(sourcePath));
+    }
+    for (const sourcePath of consumer.seed.plan.dependencyPaths) {
+      dependencies.add(path.normalize(sourcePath));
+    }
+    for (const candidate of consumer.plan.pageCandidates) {
+      const contextModule = Object.freeze({
+        evidenceKind: 'import-chain' as const,
+        importPath: createPageToModuleImportPath(
+          candidate.root.sourcePath,
+          consumer.seed,
+          documentPath,
+        ),
+        sourcePath: documentPath,
+      });
+      for (const sourcePath of contextModule.importPath) dependencies.add(sourcePath);
+      const identity = [
+        consumer.seed.component.sourcePath,
+        consumer.seed.component.exportName,
+        candidate.id,
+        candidate.root.sourcePath,
+        candidate.root.exportName,
+      ].join('\0');
+      if (emittedCandidates.has(identity)) continue;
+      emittedCandidates.add(identity);
+      pageCandidates.push(
+        Object.freeze({
+          ...candidate,
+          contextModule,
+          id: multipleTargets
+            ? `${candidate.id}:module-consumer:${createConsumerIdentity(consumer.seed.component)}`
+            : candidate.id,
+          target: consumer.seed.component,
+        }),
+      );
+    }
+  }
+
+  const firstCandidate = pageCandidates[0];
+  const primaryContext =
+    firstCandidate?.contextModule ??
+    Object.freeze({
+      evidenceKind: 'import-chain' as const,
+      importPath: createPageToModuleImportPath(
+        primary.plan.root.sourcePath,
+        primary.seed,
+        documentPath,
+      ),
+      sourcePath: documentPath,
+    });
+  return Object.freeze({
+    ...primary.plan,
+    contextModule: primaryContext,
+    dependencyPaths: Object.freeze([...dependencies].sort()),
+    pageCandidates: Object.freeze(pageCandidates),
+  });
+}
+
+/** Creates a short stable suffix so persisted candidate choices survive ranking changes. */
+function createConsumerIdentity(component: PreviewInspectorComponentReference): string {
+  return createHash('sha256')
+    .update(`${path.normalize(component.sourcePath)}\0${component.exportName}`)
+    .digest('hex')
+    .slice(0, 12);
+}
+
 /** Orders the static corridor from the mounted page root toward the selected source module. */
 function createPageToModuleImportPath(
-  plan: PreviewInspectorAncestorPlan,
+  rootSourcePath: string,
   seed: ConsumerSeed,
   documentPath: string,
 ): readonly string[] {
   const innerToOuter = seed.path.steps.map((step) => path.normalize(step.sourcePath));
   const rootIndex = innerToOuter.findIndex(
-    (sourcePath) => sourcePath === path.normalize(plan.root.sourcePath),
+    (sourcePath) => sourcePath === path.normalize(rootSourcePath),
   );
   const selected = rootIndex < 0 ? innerToOuter : innerToOuter.slice(0, rootIndex + 1);
   const pageToModule = [...selected].reverse();

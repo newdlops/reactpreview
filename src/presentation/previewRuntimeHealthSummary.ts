@@ -36,6 +36,11 @@ function formatPageContextSummary(detail: PreviewRuntimeHealthJson): string {
   const rootPath = readText(record?.rootSourcePath);
   const route = readText(record?.pathname) ?? '/';
   const stopReason = readText(record?.stopReason) ?? 'unknown';
+  const virtualPage = readRecord(record?.virtualPage);
+  const virtualPageMode = readText(virtualPage?.mode);
+  const authoredRoot = readRecord(virtualPage?.authoredRoot);
+  const authoredRootExport = readText(authoredRoot?.exportName);
+  const bypassedStepCount = readFiniteNumber(virtualPage?.bypassedStepCount) ?? 0;
   const applicationPath = readTextArray(record?.applicationPath);
   const alternatives = readArray(record?.candidateSummaries);
   const completeAlternatives = alternatives.filter(
@@ -46,6 +51,11 @@ function formatPageContextSummary(detail: PreviewRuntimeHealthJson): string {
     `  Candidate: ${clip(candidateId)} · stop=${clip(stopReason)} · alternatives=${candidateCount.toString()} (${completeAlternatives.toString()} complete)`,
     `  Route: ${clip(route)}`,
     ...(rootPath === undefined ? [] : [`  Root source: ${clip(rootPath)}`]),
+    ...(virtualPageMode === undefined
+      ? []
+      : [
+          `  VirtualPage: ${clip(virtualPageMode)} · authored-root=${clip(authoredRootExport ?? rootExport)} · static-shell-steps=${bypassedStepCount.toString()}`,
+        ]),
     `  Authored static path: ${formatPath(applicationPath)}`,
   ].join('\n');
 }
@@ -67,6 +77,11 @@ function formatPageCompositionSummary(detail: PreviewRuntimeHealthJson): string 
   const targetExport = readText(target?.exportName) ?? 'unknown';
   const rootExport = readText(candidate?.rootExport) ?? 'unknown';
   const stopReason = readText(candidate?.stopReason) ?? 'unknown';
+  const virtualPage = readRecord(candidate?.virtualPage);
+  const virtualPageMode = readText(virtualPage?.mode);
+  const authoredRoot = readRecord(virtualPage?.authoredRoot);
+  const authoredRootExport = readText(authoredRoot?.exportName);
+  const bypassedStepCount = readFiniteNumber(virtualPage?.bypassedStepCount) ?? 0;
   const pathname = readText(route?.pathname) ?? '/';
   const missingShellNames = readTextArray(record?.missingShellNames);
   const authoredStaticPath = readTextArray(record?.authoredStaticPath ?? record?.applicationPath);
@@ -79,6 +94,11 @@ function formatPageCompositionSummary(detail: PreviewRuntimeHealthJson): string 
   return [
     `Page composition · ${clip(targetStage)} · target=${clip(targetExport)}`,
     `  Root: ${clip(rootExport)} · stop=${clip(stopReason)} · route=${clip(pathname)}`,
+    ...(virtualPageMode === undefined
+      ? []
+      : [
+          `  VirtualPage: ${clip(virtualPageMode)} · authored-root=${clip(authoredRootExport ?? rootExport)} · static-shell-steps=${bypassedStepCount.toString()}`,
+        ]),
     `  Runtime: mounted=${mounted.toString()}/${observed.toString()} · host-output=${hostOutput.toString()} · expected=${expected.toString()} · active-blockers=${activeBlockers.toString()}`,
     `  Authored static path: ${formatPath(authoredStaticPath)}`,
     `  Observed Fiber path: ${formatPath(observedFiberPath)}`,

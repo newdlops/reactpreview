@@ -81,7 +81,11 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
       managedDependencyStoreRoot: vscode.Uri.joinPath(
         state.context.globalStorageUri,
         'dependency-store',
-        'v3',
+        /*
+         * v4 starts with the profile-coalesced admission policy. Keeping it isolated from legacy
+         * duplicate full-graph layers prevents old multi-gigabyte stores from entering startup scans.
+         */
+        'v4',
       ).fsPath,
     },
   );

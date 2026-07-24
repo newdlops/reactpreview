@@ -435,6 +435,50 @@ describe('PreviewCompilerWorkerClient', () => {
     }
   });
 
+  /**
+   * A Page Inspector graph that reaches native bundling receives the dedicated stage allowance.
+   * Repeating the same milestone cannot renew that allowance forever.
+   */
+  it('extends the default fast watchdog once for Page Inspector bundling progress', async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new FakeWorkerTransport();
+      const client = new PreviewCompilerWorkerClient('/extension/worker.js', {
+        createTransport: () => transport,
+      });
+      const compilation = client.compile({
+        ...REQUEST,
+        renderMode: 'page-inspector',
+      });
+      const capturedTimeout = compilation.catch((error: unknown) => error);
+      const settled = vi.fn();
+      void compilation.then(settled, settled);
+      const request = transport.requests[0];
+      const requestId = request?.type === 'compile' ? request.id : -1;
+      transport.respond({ id: requestId, type: 'started' });
+
+      await vi.advanceTimersByTimeAsync(44_999);
+      expect(settled).not.toHaveBeenCalled();
+      transport.respond({ id: requestId, stage: 'bundling-modules', type: 'progress' });
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(119_998);
+      expect(settled).not.toHaveBeenCalled();
+      transport.respond({ id: requestId, stage: 'bundling-modules', type: 'progress' });
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(capturedTimeout).resolves.toMatchObject({
+        elapsedMs: 164_999,
+        lastStage: 'bundling-modules',
+        name: 'PreviewBuildStalledError',
+      });
+      expect(transport.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   /** A watchdog rejects only active work and replays an untouched queued tab once. */
   it('replays queued work after another request trips the watchdog', async () => {
     vi.useFakeTimers();

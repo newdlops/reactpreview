@@ -26,6 +26,10 @@ import {
   isPreviewCompilerWorkerResponse,
   type PreviewCompilerWorkerRequest,
 } from './previewCompilerWorkerProtocol';
+import {
+  createPreviewCompilerWorkerBudget,
+  selectPreviewCompilerStageTimeoutMs,
+} from './previewCompilerWorkerBudget';
 
 /** Minimal event boundary implemented by both Node Worker and deterministic test transports. */
 export interface PreviewCompilerWorkerTransport {
@@ -49,7 +53,7 @@ export interface PreviewCompilerWorkerClientOptions {
   readonly createTransport?: () => PreviewCompilerWorkerTransport;
   /** Persistent global-storage root for cross-workspace dependency environments. */
   readonly managedDependencyStoreRoot?: string;
-  /** Test/host override for the hard per-request watchdog; production selects a bounded mode limit. */
+  /** Test/host override for the legacy fixed watchdog; production uses stage-aware budgets. */
   readonly compilationTimeoutMs?: number;
   /** Grace period after cancellation before a non-responsive worker is recycled. */
   readonly cancellationGraceMs?: number;
@@ -69,6 +73,8 @@ export interface PreviewCompilerWorkerBootstrap {
 
 /** One unresolved compile request and its thread-local callback/cancellation ownership. */
 interface PendingWorkerCompilation {
+  /** Renews inactivity time only when a distinct compiler milestone proves forward progress. */
+  readonly advanceDeadline: (stage: PreviewProgressStage) => void;
   /** Scheduling intent kept independent from fast/full graph completeness. */
   readonly buildIntent: PreviewBuildIntent;
   /** Clears the hard build watchdog after any terminal settlement. */
@@ -87,7 +93,7 @@ interface PendingWorkerCompilation {
   readonly reject: (error: Error) => void;
   /** Resolves the caller promise with transferred bytes. */
   readonly resolve: (bundle: PreviewBundle) => void;
-  /** Starts the hard deadline only after this request leaves the serialized worker queue. */
+  /** Starts active-stage and absolute deadlines after this request leaves the worker queue. */
   readonly startDeadline: () => void;
   /** Exact worker owning this request; old responses cannot affect a replacement worker. */
   readonly transport: PreviewCompilerWorkerTransport;
@@ -109,8 +115,6 @@ interface PendingCancellationAcknowledgement {
   readonly transport: PreviewCompilerWorkerTransport;
 }
 
-const DEFAULT_FAST_COMPILATION_TIMEOUT_MS = 45_000;
-const DEFAULT_FULL_COMPILATION_TIMEOUT_MS = 120_000;
 const DEFAULT_QUEUE_ACQUISITION_TIMEOUT_MS = 120_000;
 const DEFAULT_CANCELLATION_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
@@ -257,18 +261,37 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
         reject(new PreviewBuildCancelledError());
       };
       const detachAbort = attachAbortListener(context?.signal, abort);
-      const timeoutMs = selectCompilationTimeoutMs(request, this.options.compilationTimeoutMs);
-      const activationTimeoutMs = Math.max(timeoutMs, DEFAULT_QUEUE_ACQUISITION_TIMEOUT_MS);
+      const budget = createPreviewCompilerWorkerBudget(request, this.options.compilationTimeoutMs);
+      const activationTimeoutMs = Math.max(
+        budget.initialStageTimeoutMs,
+        DEFAULT_QUEUE_ACQUISITION_TIMEOUT_MS,
+      );
       const activationDeadline = setTimeout(() => {
         this.handleCompilationTimeout(id, target, activationTimeoutMs, transport);
       }, activationTimeoutMs);
       activationDeadline.unref();
-      let deadline: ReturnType<typeof setTimeout> | undefined;
+      let stageDeadline: ReturnType<typeof setTimeout> | undefined;
+      let totalDeadline: ReturnType<typeof setTimeout> | undefined;
+      const observedStages = new Set<PreviewProgressStage>();
+      const scheduleStageDeadline = (timeoutMs: number): void => {
+        if (stageDeadline !== undefined) clearTimeout(stageDeadline);
+        stageDeadline = setTimeout(() => {
+          this.handleCompilationTimeout(id, target, timeoutMs, transport);
+        }, timeoutMs);
+        stageDeadline.unref();
+      };
       const pending: PendingWorkerCompilation = {
+        advanceDeadline: (stage) => {
+          pending.startDeadline();
+          if (budget.fixed || observedStages.has(stage)) return;
+          observedStages.add(stage);
+          scheduleStageDeadline(selectPreviewCompilerStageTimeoutMs(request, budget, stage));
+        },
         buildIntent,
         clearDeadline: () => {
           clearTimeout(activationDeadline);
-          if (deadline !== undefined) clearTimeout(deadline);
+          if (stageDeadline !== undefined) clearTimeout(stageDeadline);
+          if (totalDeadline !== undefined) clearTimeout(totalDeadline);
         },
         detachAbort,
         preparationMode,
@@ -277,14 +300,17 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
         replayRequest: request,
         resolve,
         startDeadline: () => {
-          if (deadline !== undefined) return;
+          if (pending.startedAt !== undefined) return;
           clearTimeout(activationDeadline);
           pending.startedAt = Date.now();
           delete pending.replayRequest;
-          deadline = setTimeout(() => {
-            this.handleCompilationTimeout(id, target, timeoutMs, transport);
-          }, timeoutMs);
-          deadline.unref();
+          scheduleStageDeadline(budget.initialStageTimeoutMs);
+          if (!budget.fixed) {
+            totalDeadline = setTimeout(() => {
+              this.handleCompilationTimeout(id, target, budget.totalTimeoutMs, transport);
+            }, budget.totalTimeoutMs);
+            totalDeadline.unref();
+          }
         },
         target,
         transport,
@@ -415,8 +441,8 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       return;
     }
     if (message.type === 'progress') {
-      pending.startDeadline();
       pending.lastStage = message.stage;
+      pending.advanceDeadline(message.stage);
       pending.reportProgress?.(message.stage);
       return;
     }
@@ -484,7 +510,7 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
   private handleCompilationTimeout(
     requestId: number,
     target: string,
-    elapsedMs: number,
+    scheduledTimeoutMs: number,
     transport: PreviewCompilerWorkerTransport,
   ): void {
     const pending = this.pending.get(requestId);
@@ -496,6 +522,10 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     } catch {
       // Forced termination below is the authoritative recovery boundary.
     }
+    const elapsedMs =
+      pending.startedAt === undefined
+        ? scheduledTimeoutMs
+        : Math.max(1, Date.now() - pending.startedAt);
     this.recycleUnresponsiveTransport(
       new PreviewBuildStalledError(target, pending.lastStage, elapsedMs),
       transport,
@@ -802,19 +832,6 @@ function attachRequestContext(
     });
   }
   return contextual;
-}
-
-/** Chooses a hard watchdog that protects memory while allowing complete monorepo analysis. */
-function selectCompilationTimeoutMs(
-  request: PreviewBuildRequest,
-  configuredTimeoutMs: number | undefined,
-): number {
-  return normalizePositiveTimeout(
-    configuredTimeoutMs,
-    request.preparationMode === 'fast'
-      ? DEFAULT_FAST_COMPILATION_TIMEOUT_MS
-      : DEFAULT_FULL_COMPILATION_TIMEOUT_MS,
-  );
 }
 
 /** Rejects non-finite or non-positive configuration values before scheduling host timers. */

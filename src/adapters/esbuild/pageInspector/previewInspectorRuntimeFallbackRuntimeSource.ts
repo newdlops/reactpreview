@@ -830,6 +830,20 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
     });
     return completion.changed || !wasSmart || previousPathSignature !== pathSignature;
   }
+  if (hasPreviewInspectorGeneratedRuntimeOnlyNativeValue(fallback)) {
+    /*
+     * Smart Fill is JSON-editable by design, but a compiler-proven native such as RegExp carries
+     * required behavior on its prototype. The compiler fallback is already the minimum demanded
+     * shape; serializing it would turn the item into an empty object and reintroduce the blocker.
+     */
+    previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+    previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+      ...record,
+      mode: 'smart',
+    });
+    return !wasSmart || previousPathSignature !== pathSignature;
+  }
   previewInspectorSession.runtimeFallbackValues.set(
     fallbackId,
     createPreviewInspectorRuntimeFallbackSmartValue(fallback, record.requiredPaths),

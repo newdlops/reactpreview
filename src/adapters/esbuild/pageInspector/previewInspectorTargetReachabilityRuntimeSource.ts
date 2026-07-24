@@ -8,6 +8,7 @@
  */
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
 import { createPreviewInspectorRequirementConvergenceRuntimeSource } from './previewInspectorRequirementConvergenceRuntimeSource';
+import { createPreviewInspectorTargetPathEvidenceRuntimeSource } from './previewInspectorTargetPathEvidenceRuntimeSource';
 /**
  * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
  *
@@ -20,6 +21,7 @@ export function createPreviewInspectorTargetReachabilityRuntimeSource(): string 
   const requirementFrontierRuntimeSource = createPreviewInspectorRequirementFrontierRuntimeSource();
   const requirementConvergenceRuntimeSource =
     createPreviewInspectorRequirementConvergenceRuntimeSource();
+  const targetPathEvidenceRuntimeSource = createPreviewInspectorTargetPathEvidenceRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT = 2;
@@ -29,6 +31,7 @@ const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
 ${requirementFrontierRuntimeSource}
 ${requirementConvergenceRuntimeSource}
+${targetPathEvidenceRuntimeSource}
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
   if (!(previewInspectorSession.targetReachabilityByKey instanceof Map)) {
@@ -39,16 +42,18 @@ function initializePreviewInspectorTargetReachabilityState() {
   }
 }
 /** Returns current-file exports that can be asserted through the generated target facade. */
-function readPreviewInspectorReachableTargetExports(descriptor) {
+function readPreviewInspectorReachableTargetExports(descriptor, candidate) {
   const inspector = descriptor?.inspector;
   return [...new Set([
+    candidate?.target?.exportName,
     inspector?.target?.exportName,
     ...Object.keys(inspector?.renderChainsByExport ?? {}),
   ].filter((name) => typeof name === 'string' && name.length > 0))];
 }
 /** Resolves the selected current-file export without mistaking an editable ancestor root for it. */
-function readPreviewInspectorExpectedTargetExport(descriptor) {
-  const exports = readPreviewInspectorReachableTargetExports(descriptor);
+function readPreviewInspectorExpectedTargetExport(descriptor, candidate) {
+  if (typeof candidate?.target?.exportName === 'string') return candidate.target.exportName;
+  const exports = readPreviewInspectorReachableTargetExports(descriptor, candidate);
   return exports.includes(previewInspectorSession.selectedExportName)
     ? previewInspectorSession.selectedExportName
     : exports[0] ?? descriptor?.exportName ?? 'default';
@@ -56,12 +61,13 @@ function readPreviewInspectorExpectedTargetExport(descriptor) {
 /** Creates one stable traversal identity per page candidate and selected current-file export. */
 function createPreviewInspectorTargetReachabilityKey(descriptor, candidate) {
   return String(candidate?.id ?? 'nearest-authored-owner') + ':' +
-    readPreviewInspectorExpectedTargetExport(descriptor);
+    readPreviewInspectorExpectedTargetExport(descriptor, candidate);
 }
 /** Reads target-to-entry metadata for the selected export, falling back to candidate-local evidence. */
 function readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExportName) {
   const targetPlan = descriptor?.inspector?.renderChainsByExport?.[targetExportName];
   const candidatePath = candidate?.renderPath;
+  if (candidate?.target !== undefined && candidatePath !== undefined) return candidatePath;
   if (
     candidatePath !== undefined &&
     (targetPlan?.paths ?? []).some((path) => path?.id === candidatePath.id)
@@ -72,7 +78,7 @@ function readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExpor
 }
 /** Builds one mutable but bounded state record from immutable application-path evidence. */
 function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
-  const targetExportName = readPreviewInspectorExpectedTargetExport(descriptor);
+  const targetExportName = readPreviewInspectorExpectedTargetExport(descriptor, candidate);
   const renderPath = readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExportName);
   const applicationPath = [...(renderPath?.steps ?? [])]
     .reverse()
@@ -114,175 +120,6 @@ function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   }
   return state;
 }
-/** Normalizes browser/source path spellings for conservative application-path matching. */
-function normalizePreviewInspectorReachabilityPath(value) {
-  return typeof value === 'string' ? value.replaceAll('\\', '/') : '';
-}
-/** Collects source and component identities proven to lie between the root and selected target. */
-function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
-  const renderPath = readPreviewInspectorTargetRenderPath(
-    descriptor,
-    candidate,
-    state.targetExportName,
-  );
-  const paths = new Set();
-  const exactTargetNames = new Set([state.targetExportName]);
-  const exactFacadeNames =
-    previewInspectorSession.targetFacadeRuntimeOwnerNamesByExport?.get?.(state.targetExportName);
-  if (exactFacadeNames instanceof Set) {
-    for (const name of exactFacadeNames) exactTargetNames.add(name);
-  }
-  const staticNames = new Set([
-    state.rootName,
-    state.targetExportName,
-    ...(state.applicationPath ?? []),
-  ]);
-  const runtimeOwnerNames = new Set(state.runtimeOwnerNames ?? []);
-  const names = new Set([...staticNames, ...runtimeOwnerNames]);
-  const retainedConditionIds = previewInspectorSession.directTargetConditionIdsByExport?.get(
-    state.targetExportName,
-  );
-  const exactConditionIds = retainedConditionIds instanceof Set
-    ? new Set(retainedConditionIds)
-    : new Set();
-  const nameScores = new Map();
-  const pathScores = new Map();
-  (state.applicationPath ?? []).forEach((name, index) => nameScores.set(name, index + 1));
-  nameScores.set(state.targetExportName, 1_000);
-  /* Runtime-only Fiber leaves locate wrapper conditions but cannot prove which branch reaches JSX. */
-  /* Module-page HOCs/hooks remain exact authored corridor evidence despite having no DOM node. */
-  const contextSourcePath = normalizePreviewInspectorReachabilityPath(
-    descriptor?.inspector?.contextModule?.sourcePath,
-  );
-  for (const rawContextPath of descriptor?.inspector?.contextModule?.importPath ?? []) {
-    const contextPath = normalizePreviewInspectorReachabilityPath(rawContextPath);
-    paths.add(contextPath);
-    if (contextPath.length > 0) {
-      pathScores.set(contextPath, Math.max(pathScores.get(contextPath) ?? 0,
-        contextPath === contextSourcePath ? 800 : 100));
-    }
-  }
-  for (const [index, step] of (renderPath?.steps ?? []).entries()) {
-    const stepPath = normalizePreviewInspectorReachabilityPath(step?.sourcePath);
-    paths.add(stepPath);
-    if (stepPath.length > 0) {
-      pathScores.set(stepPath, Math.max(pathScores.get(stepPath) ?? 0, 100, 800 - index));
-    }
-    for (const rawEvidencePath of step?.evidenceSourcePaths ?? []) {
-      const evidencePath = normalizePreviewInspectorReachabilityPath(rawEvidencePath);
-      paths.add(evidencePath);
-      if (evidencePath.length > 0) {
-        pathScores.set(evidencePath, Math.max(pathScores.get(evidencePath) ?? 0, 100, 800 - index));
-      }
-    }
-    if (typeof step?.label === 'string') {
-      names.add(step.label);
-      if (!nameScores.has(step.label)) nameScores.set(step.label, 1);
-    }
-    for (const wrapperName of step?.wrapperNames ?? []) {
-      names.add(wrapperName);
-      if (!nameScores.has(wrapperName)) nameScores.set(wrapperName, 1);
-    }
-  }
-  for (const edge of candidate?.edges ?? []) {
-    paths.add(normalizePreviewInspectorReachabilityPath(edge?.child?.sourcePath));
-    paths.add(normalizePreviewInspectorReachabilityPath(edge?.owner?.sourcePath));
-    if (typeof edge?.child?.exportName === 'string') staticNames.add(edge.child.exportName);
-    if (typeof edge?.owner?.exportName === 'string') staticNames.add(edge.owner.exportName);
-    for (const ownerName of edge?.localOwnerNames ?? []) staticNames.add(ownerName);
-  }
-  for (const name of staticNames) names.add(name);
-  paths.delete('');
-  names.delete(undefined);
-  exactTargetNames.delete(undefined);
-  const ambiguousNames = readPreviewInspectorAmbiguousTargetOwnerNames(names);
-  return {
-    ambiguousNames,
-    exactConditionIds,
-    exactTargetNames,
-    nameScores,
-    names,
-    pathScores,
-    paths,
-    runtimeOwnerNames,
-    staticNames,
-  };
-}
-/** Scores component names embedded in one branch label against the proven root-to-target corridor. */
-function scorePreviewInspectorTargetConditionLabel(label, evidence) {
-  const normalized = String(label ?? '').replace(/[<>]/gu, '');
-  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
-  let score = 0;
-  for (const [name, nameScore] of evidence.nameScores) {
-    if (
-      evidence.ambiguousNames?.has(name) &&
-      !evidence.exactTargetNames?.has(name)
-    ) {
-      continue;
-    }
-    if (normalized === String(name) || tokens.includes(String(name))) {
-      score = Math.max(score, nameScore);
-    }
-  }
-  return score;
-}
-/** Requires a gate to belong to a statically proven path source or named path component. */
-function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
-  if (evidence.exactConditionIds?.has(condition?.id)) return true;
-  const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
-  const runtimeOnlyOwner =
-    evidence.runtimeOwnerNames?.has(ownerName) && !evidence.staticNames?.has(ownerName);
-  if (
-    ownerName.length > 0 &&
-    evidence.names.has(ownerName) &&
-    (!runtimeOnlyOwner || evidence.exactTargetNames?.has(ownerName)) &&
-    (
-      !evidence.ambiguousNames?.has(ownerName) ||
-      evidence.exactTargetNames?.has(ownerName)
-    )
-  ) {
-    return true;
-  }
-  const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
-  if (sourcePath.length === 0) return false;
-  for (const path of evidence.paths) {
-    if (path === sourcePath || path.endsWith('/' + sourcePath) || sourcePath.endsWith('/' + path)) {
-      return true;
-    }
-  }
-  /* A target-named overlay may be declared in a factory/helper file absent from import edges. */
-  return condition?.role === 'overlay' && Math.max(
-    scorePreviewInspectorTargetConditionLabel(condition?.truthyLabel, evidence),
-    scorePreviewInspectorTargetConditionLabel(condition?.falsyLabel, evidence),
-  ) > 0;
-}
-/** Selects the branch that continues toward the target using compiler-issued gate evidence only. */
-function readPreviewInspectorTargetConditionValue(condition, evidence) {
-  const truthyScore = scorePreviewInspectorTargetConditionLabel(
-    condition?.truthyLabel,
-    evidence,
-  );
-  const falsyScore = scorePreviewInspectorTargetConditionLabel(
-    condition?.falsyLabel,
-    evidence,
-  );
-  if (truthyScore !== falsyScore && Math.max(truthyScore, falsyScore) > 0) {
-    return truthyScore > falsyScore;
-  }
-  /* Visibility metadata defines truthy as visible even though both labels repeat the Modal name. */
-  if (
-    condition?.kind === 'overlay-visibility' &&
-    condition?.role === 'overlay' &&
-    Math.max(truthyScore, falsyScore) > 0
-  ) {
-    return true;
-  }
-  if (condition?.targetBranch === 'truthy') return true;
-  if (condition?.targetBranch === 'falsy') return false;
-  if (condition?.fallbackBranch === 'truthy') return false;
-  if (condition?.fallbackBranch === 'falsy') return true;
-  return undefined;
-}
 /**
  * Chooses only the first newly revealed continuation gate so each pass behaves like bounded DFS.
  * Exact facade IDs, owners, and source paths can be restricted ahead of data convergence; ordinary
@@ -304,22 +141,41 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
         !isPreviewInspectorTargetGuidedConditionRejected(condition.id, state.key)
       ),
     )
-    .map((condition) => ({
+    .map((condition) => {
+      const exactConditionLocal = evidence.exactConditionIds?.has(condition.id) === true;
+      const exactOwnerLocal =
+        evidence.exactTargetNames?.has(condition.ownerName) === true &&
+        !evidence.ambiguousNames?.has(condition.ownerName);
+      const exactSourceLocal = evidence.pathScores?.get(
+        normalizePreviewInspectorReachabilityPath(condition.sourcePath),
+      ) === 800;
+      return {
+        condition,
+        desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
+        exactOverlayTargetLocal: exactConditionLocal || exactOwnerLocal,
+        exactTargetLocal: exactConditionLocal || exactOwnerLocal || exactSourceLocal,
+        pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
+      };
+    })
+    .filter(({
       condition,
-      desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
-      exactTargetLocal: evidence.exactConditionIds?.has(condition.id) ||
-        (
-          evidence.exactTargetNames?.has(condition.ownerName) &&
-          !evidence.ambiguousNames?.has(condition.ownerName)
-        ) || evidence.pathScores?.get(
-          normalizePreviewInspectorReachabilityPath(condition.sourcePath),
-        ) === 800,
-      pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
-    }))
-    .filter(({ condition, desiredValue, exactTargetLocal, pathLocal }) =>
+      desiredValue,
+      exactOverlayTargetLocal,
+      exactTargetLocal,
+      pathLocal,
+    }) =>
       typeof desiredValue === 'boolean' &&
       condition.effectiveEnabled !== desiredValue &&
-      pathLocal && (!exactTargetOnly || exactTargetLocal),
+      pathLocal &&
+      (!exactTargetOnly || exactTargetLocal) &&
+      /*
+       * A page/source match is sufficient for ordinary continuation guards, but not for overlays.
+       * Several sibling dialogs commonly live in the same page file. Opening every one merely
+       * because that file lies on the target corridor obscures the page and can create modal loops.
+       * An overlay is automatic only when compiler evidence names its exact condition or owner;
+       * all other overlays retain their authored state and remain user-toggleable in the tree.
+       */
+      (condition.role !== 'overlay' || exactOverlayTargetLocal),
     )
     .sort((left, right) =>
       Number(right.pathLocal) - Number(left.pathLocal) ||

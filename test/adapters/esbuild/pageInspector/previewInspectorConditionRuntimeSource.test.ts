@@ -10,6 +10,7 @@ interface ConditionRuntimeHarness {
   readonly readConditions: () => readonly Record<string, unknown>[];
   readonly readConsoleEntries: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
+  readonly registerVirtualPageSource: (sourcePath: string) => boolean;
   readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
   readonly resetCondition: (conditionId: string) => void;
   readonly resetChoice: (choiceId: string) => boolean;
@@ -360,6 +361,82 @@ describe('Preview Inspector condition runtime source', () => {
     });
   });
 
+  /**
+   * Opens only the compiler-selected layout's continuation branch before asynchronous DFS begins.
+   * This preserves the authored shell around a VirtualPage body without weakening unrelated page
+   * guards or taking precedence over a user's explicit branch choice.
+   */
+  it('continues through an exact VirtualPage shell early-return guard immediately', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      descriptors: [{ inspector: {} }],
+      fallbackValuesEnabled: true,
+      selectedPageCandidate: {
+        virtualPage: {
+          shells: [
+            {
+              root: {
+                exportName: 'ApplicationLayout',
+                sourcePath: '/workspace/ApplicationLayout.tsx',
+              },
+            },
+          ],
+        },
+      },
+    });
+    const shellMetadata = {
+      expression: '<ApplicationLayout> gate: !session',
+      kind: 'early-return',
+      ownerName: 'ApplicationLayout',
+      sourcePath: '/workspace/ApplicationLayout.tsx',
+      targetBranch: 'falsy',
+    };
+
+    expect(harness.resolveCondition('shell-session', true, shellMetadata)).toBe(false);
+    expect(harness.readConditions()[0]).toMatchObject({
+      authoredEnabled: true,
+      autoOverride: false,
+      effectiveEnabled: false,
+    });
+    expect(
+      harness.resolveCondition('page-session', true, {
+        ...shellMetadata,
+        sourcePath: '/workspace/FeaturePage.tsx',
+      }),
+    ).toBe(true);
+
+    harness.setCondition('shell-session', true);
+    expect(harness.resolveCondition('shell-session', false, shellMetadata)).toBe(true);
+  });
+
+  /** Extends deterministic guard continuation through every compiler-reached JSX descendant. */
+  it('continues registered transitive VirtualPage component guards without a hop limit', () => {
+    const sourcePath = '/workspace/deep/Layer18.tsx';
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      descriptors: [{ inspector: {} }],
+      fallbackValuesEnabled: true,
+      selectedPageCandidate: {
+        id: 'candidate-a',
+        virtualPage: { shells: [] },
+      },
+    });
+    const metadata = {
+      expression: 'if (!payload) return null',
+      kind: 'early-return',
+      sourcePath,
+      targetBranch: 'falsy',
+    };
+
+    expect(harness.registerVirtualPageSource(sourcePath)).toBe(true);
+    expect(harness.registerVirtualPageSource(sourcePath)).toBe(false);
+    expect(harness.resolveCondition('deep-payload-gate', true, metadata)).toBe(false);
+
+    harness.session.selectedPageCandidate = {
+      id: 'candidate-b',
+      virtualPage: { shells: [] },
+    };
+    expect(harness.resolveCondition('other-candidate-gate', true, metadata)).toBe(true);
+  });
+
   /** Reverts only the automatic gate that causally introduced a fatal page-render failure. */
   it('rolls back and rejects a failed target-guided condition without touching user state', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn());
@@ -659,6 +736,7 @@ function createConditionRuntimeHarness(
         readConditions: readPreviewInspectorRenderConditions,
         readConsoleEntries: () => recordedConsoleEntries.slice(),
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
+        registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
         isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
         resetCondition: resetPreviewInspectorRenderConditionOverride,
         resetChoice: resetPreviewInspectorRenderChoiceOverride,

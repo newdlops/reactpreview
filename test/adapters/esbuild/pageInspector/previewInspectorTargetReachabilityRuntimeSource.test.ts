@@ -28,8 +28,10 @@ interface ReachabilityResult {
   readonly returnedTargetValue: boolean;
   readonly runtimeRedirectTargetValue: boolean;
   readonly runtimeOwnerNameOnlyPathLocal: boolean;
+  readonly siblingOverlaySelection: string;
   readonly sharedModalExactSourcePathLocal: boolean;
   readonly sharedModalNameOnlyPathLocal: boolean;
+  readonly targetOverlaySelection: string;
   readonly targetNameOnlyPathLocal: boolean;
   readonly targetSourceScore: number;
   readonly targetExportName: string;
@@ -82,7 +84,6 @@ describe('Preview Inspector target reachability runtime source', () => {
       `,
       context,
     );
-
     expect(context.__result).toEqual({
       firstNames: ['PageComponent', 'GuardedPage', 'Navigate'],
       notifications: 1,
@@ -225,6 +226,24 @@ describe('Preview Inspector target reachability runtime source', () => {
         );
         state.targetMounted = true;
         const fallbackNext = selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+        previewInspectorSession.renderConditions.delete('hoc-guard');
+        const overlayConditionBase = {
+          effectiveEnabled: false, kind: 'overlay-visibility',
+          reachabilityKey: state.key, role: 'overlay', targetBranch: 'truthy',
+        };
+        previewInspectorSession.renderConditions.set('sibling-overlay', {
+          ...overlayConditionBase, id: 'sibling-overlay', ownerName: 'DeleteModal',
+          reachabilityDiscoveryOrder: 3, sourcePath: '/workspace/Dashboard.tsx',
+        });
+        previewInspectorSession.renderConditions.set('target-overlay', {
+          ...overlayConditionBase, id: 'target-overlay', ownerName: 'DashboardPanel',
+          reachabilityDiscoveryOrder: 4, sourcePath: '/workspace/modal-factory.tsx',
+        });
+        const targetOverlaySelection =
+          selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none';
+        previewInspectorSession.renderConditions.delete('target-overlay');
+        const siblingOverlaySelection =
+          selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none';
         previewInspectorSession.renderConditions.set('unrelated-page-component', {
           id: 'unrelated-page-component',
           ownerName: 'PageComponent',
@@ -271,6 +290,7 @@ describe('Preview Inspector target reachability runtime source', () => {
             ownerName: 'PageComponent',
             sourcePath: '/workspace/another-unrelated-page.tsx',
           }, evidence),
+          siblingOverlaySelection,
           sharedModalExactSourcePathLocal: isPreviewInspectorConditionOnTargetPath({
             ownerName: 'Modal',
             sourcePath: '/workspace/Dashboard.tsx',
@@ -281,6 +301,7 @@ describe('Preview Inspector target reachability runtime source', () => {
             sourcePath: '/workspace/unrelated-document-preview-modal.tsx',
             truthyLabel: 'visible <Modal>',
           }, evidence),
+          targetOverlaySelection,
           targetNameOnlyPathLocal: isPreviewInspectorConditionOnTargetPath({
             ownerName: 'DashboardPanel',
             sourcePath: '/workspace/generated-target-facade.tsx',
@@ -309,8 +330,10 @@ describe('Preview Inspector target reachability runtime source', () => {
       returnedTargetValue: true,
       runtimeRedirectTargetValue: false,
       runtimeOwnerNameOnlyPathLocal: false,
+      siblingOverlaySelection: 'none',
       sharedModalExactSourcePathLocal: true,
       sharedModalNameOnlyPathLocal: false,
+      targetOverlaySelection: 'target-overlay',
       targetNameOnlyPathLocal: true,
       targetSourceScore: 800,
       targetExportName: 'DashboardPanel',
@@ -422,7 +445,6 @@ describe('Preview Inspector target reachability runtime source', () => {
       `,
       context,
     );
-
     expect(context.__result?.hookIds).toEqual(['target-hook', 'page-hook']);
     expect(context.__result?.hookIds).not.toContain('passive-hook');
     expect(context.__result?.hookIds).not.toContain('opaque-hook');
@@ -521,7 +543,6 @@ describe('Preview Inspector target reachability runtime source', () => {
       `,
       context,
     );
-
     expect(context.__result).toEqual({
       calls: ['runtime:page:Target', 'data:page:Target', 'persist', 'notify', 'tree', 'commit'],
       dataRevision: 3,
@@ -622,7 +643,6 @@ describe('Preview Inspector target reachability runtime source', () => {
       `,
       context,
     );
-
     expect(context.__result).toEqual({
       applied: [['target-guard', true]],
       commitCount: 2,
@@ -710,7 +730,6 @@ describe('Preview Inspector target reachability runtime source', () => {
       `,
       context,
     );
-
     expect(context.__result).toEqual({
       calls: [
         'runtime:page:Target:true',
@@ -807,7 +826,6 @@ describe('Preview Inspector target reachability runtime source', () => {
       `,
       context,
     );
-
     expect(context.__result).toEqual({
       applied: [['guard', false]],
       status: 'advancing',

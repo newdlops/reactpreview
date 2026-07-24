@@ -19,6 +19,16 @@ const PREVIEW_INSPECTOR_STRUCTURE_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_CHILD_ELEMENT_LIMIT = 32;
 const previewInspectorOverlayNamePattern =
   /(?:modal|dialog|drawer|popover|popper|overlay|portal|sheet|lightbox|tooltip|toast|dropdown|menu)$/iu;
+const previewInspectorFiberOverlayVisibilityPropNames = [
+  'anchorEl',
+  'hidden',
+  'isOpen',
+  'isShown',
+  'isVisible',
+  'open',
+  'show',
+  'visible',
+];
 
 /** Detects the isolated Inspector host or shadow root without excluding application portals. */
 function isPreviewInspectorUiContainer(value) {
@@ -108,9 +118,73 @@ function preservesPreviewInspectorChildrenTransparently(fiber) {
   return false;
 }
 
-/** Assigns a stable visual role without changing the component tree's authored ownership. */
+/** Reports an own visibility control without executing a project getter or proxy-like accessor. */
+function hasPreviewInspectorOverlayVisibilityProp(fiber) {
+  const props = readPreviewInspectorOwnData(fiber, 'memoizedProps');
+  if (props === null || (typeof props !== 'object' && typeof props !== 'function')) return false;
+  return previewInspectorFiberOverlayVisibilityPropNames.some((propertyName) => {
+    const descriptor = Object.getOwnPropertyDescriptor(props, propertyName);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return false;
+    if (propertyName === 'anchorEl') return true;
+    return typeof descriptor.value === 'boolean';
+  });
+}
+
+/** Reads semantic dialog evidence from one host Fiber without consulting computed layout styles. */
+function hasPreviewInspectorOverlayHostSemantics(fiber) {
+  const hostType = readPreviewInspectorOwnData(fiber, 'type');
+  const stateNode = readPreviewInspectorOwnData(fiber, 'stateNode');
+  const localName =
+    typeof hostType === 'string'
+      ? hostType.toLocaleLowerCase()
+      : typeof readPreviewInspectorOwnData(stateNode, 'localName') === 'string'
+        ? readPreviewInspectorOwnData(stateNode, 'localName').toLocaleLowerCase()
+        : '';
+  if (localName === 'dialog') return true;
+  try {
+    const role = stateNode?.getAttribute?.('role');
+    if (role === 'dialog' || role === 'alertdialog') return true;
+    return stateNode?.getAttribute?.('aria-modal') === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Confirms a name-based candidate with a bounded live portal or semantic dialog descendant.
+ *
+ * Component names are weak evidence: Menu, Sheet, or Overlay can be ordinary inline layout
+ * components. Runtime evidence turns the static hint into a role without forcing a style/layout
+ * read, while a dormant controlled overlay is still recognized from its own visibility prop.
+ */
+function hasPreviewInspectorOverlayRuntimeEvidence(fiber) {
+  if (hasPreviewInspectorOverlayVisibilityProp(fiber)) return true;
+  const pending = [readPreviewInspectorFiberLink(fiber, 'child')];
+  const visited = new Set();
+  while (pending.length > 0 && visited.size < PREVIEW_INSPECTOR_CHILD_ELEMENT_LIMIT * 2) {
+    const current = pending.shift();
+    if (current === undefined || visited.has(current)) continue;
+    visited.add(current);
+    const kind = classifyPreviewInspectorFiber(current);
+    if (kind === 'portal' && !isPreviewInspectorOwnedPortalFiber(current)) return true;
+    if (kind === 'host' && hasPreviewInspectorOverlayHostSemantics(current)) return true;
+    pending.push(
+      readPreviewInspectorFiberLink(current, 'child'),
+      readPreviewInspectorFiberLink(current, 'sibling'),
+    );
+  }
+  return false;
+}
+
+/** Assigns a stable visual role from strong runtime evidence without changing authored ownership. */
 function readPreviewInspectorFiberStructureRole(fiber, kind, name) {
-  if (kind === 'portal' || previewInspectorOverlayNamePattern.test(name)) return 'overlay';
+  if (kind === 'portal') return 'overlay';
+  if (
+    previewInspectorOverlayNamePattern.test(String(name ?? '')) &&
+    hasPreviewInspectorOverlayRuntimeEvidence(fiber)
+  ) {
+    return 'overlay';
+  }
   if (preservesPreviewInspectorChildrenTransparently(fiber)) return 'transparent-wrapper';
   return undefined;
 }

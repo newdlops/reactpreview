@@ -136,6 +136,42 @@ describe('Preview Inspector generated collection repair', () => {
     });
   });
 
+  /** Replaces a shallow-hook item placeholder with a typed inert RegExp required by route code. */
+  it('preserves generated native collection items instead of flattening their prototype', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const routePattern = new RegExp('.*');
+
+    const resolved = fixture.api.resolve(
+      () => [{ activeRoutes: [Object.freeze({})] }],
+      () => [{ activeRoutes: [routePattern] }],
+      {
+        ...createMetadata(),
+        requiredPaths: ['[].activeRoutes[]'],
+      },
+    ) as { activeRoutes: RegExp[] }[];
+
+    expect(resolved[0]?.activeRoutes[0]).toBe(routePattern);
+    expect(resolved[0]?.activeRoutes[0]?.test('/company/1/directors')).toBe(true);
+    expect(fixture.api.read()[0]).toMatchObject({
+      generatedPaths: ['0.activeRoutes.0'],
+      reason: 'partial',
+    });
+
+    fixture.api.smart('hook-1');
+    const afterSmartFill = fixture.api.resolve(
+      () => [{ activeRoutes: [Object.freeze({})] }],
+      () => [{ activeRoutes: [new RegExp('ignored')] }],
+      {
+        ...createMetadata(),
+        requiredPaths: ['[].activeRoutes[]'],
+      },
+    ) as { activeRoutes: RegExp[] }[];
+
+    expect(afterSmartFill[0]?.activeRoutes[0]).toBe(routePattern);
+    expect(afterSmartFill[0]?.activeRoutes[0]?.test('/company/1/directors')).toBe(true);
+    expect(fixture.api.read()[0]).toMatchObject({ mode: 'smart' });
+  });
+
   /** Keeps a valid authored count so the preview never overwrites usable application state. */
   it('preserves a valid selector count in an Array-length corridor', () => {
     const fixture = createRuntimeFallbackFixture(true);

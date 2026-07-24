@@ -7,6 +7,11 @@ import { createPreviewInspectorPageCandidateRuntimeSource } from '../../../../sr
 /** Minimal serializable candidate shape used by the generated runtime's pure selection helpers. */
 interface CandidateFixture {
   readonly complete?: boolean;
+  readonly contextModule?: {
+    readonly evidenceKind: string;
+    readonly importPath: readonly string[];
+    readonly sourcePath: string;
+  };
   readonly id: string;
   readonly renderPath?: {
     readonly entryPoint?: { readonly sourcePath: string };
@@ -21,6 +26,7 @@ interface CandidateFixture {
   readonly rootOwnsRouter?: boolean;
   readonly routeLocation?: { readonly pathname: string };
   readonly stopReason?: string;
+  readonly target?: { readonly exportName: string; readonly sourcePath: string };
 }
 
 describe('Preview Inspector page-candidate runtime source', () => {
@@ -61,7 +67,21 @@ describe('Preview Inspector page-candidate runtime source', () => {
     ]);
   });
 
-  /** Promotes an automatic fast choice, but restores a user choice hidden by a bounded fast pass. */
+  /** Keeps the promoted component and hook/HOC context attached to the selected caller page. */
+  it('reads target and module context from the selected page candidate', () => {
+    expect(evaluateCandidateOwnedContext()).toEqual({
+      contextSourcePath: '/workspace/shared/use-shared-card.ts',
+      importPath: [
+        '/workspace/staff/StaffPage.tsx',
+        '/workspace/staff/StaffCardOwner.tsx',
+        '/workspace/shared/use-shared-card.ts',
+      ],
+      targetExportName: 'StaffCardOwner',
+      targetSourcePath: '/workspace/staff/StaffCardOwner.tsx',
+    });
+  });
+
+  /** Promotes a changed automatic choice, but restores a temporarily unavailable user choice. */
   it('distinguishes automatic candidate promotion from an explicit user choice', () => {
     expect(evaluateCandidateEnrichmentSelection()).toEqual({
       automaticFastId: 'near-target',
@@ -369,6 +389,84 @@ globalThis.__result = {
   );
   if (context.__result === undefined) {
     throw new Error('Page candidate runtime did not expose its test result.');
+  }
+  return context.__result;
+}
+
+/** Selects a secondary page and reads the candidate-local target/context rather than plan defaults. */
+function evaluateCandidateOwnedContext(): {
+  readonly contextSourcePath: string;
+  readonly importPath: readonly string[];
+  readonly targetExportName: string;
+  readonly targetSourcePath: string;
+} {
+  const candidates: readonly CandidateFixture[] = [
+    {
+      contextModule: {
+        evidenceKind: 'import-chain',
+        importPath: [
+          '/workspace/customer/PublicPage.tsx',
+          '/workspace/customer/PublicCardOwner.tsx',
+          '/workspace/shared/use-shared-card.ts',
+        ],
+        sourcePath: '/workspace/shared/use-shared-card.ts',
+      },
+      id: 'public-path',
+      root: { exportName: 'PublicPage', sourcePath: '/workspace/customer/PublicPage.tsx' },
+      target: {
+        exportName: 'PublicCardOwner',
+        sourcePath: '/workspace/customer/PublicCardOwner.tsx',
+      },
+    },
+    {
+      contextModule: {
+        evidenceKind: 'import-chain',
+        importPath: [
+          '/workspace/staff/StaffPage.tsx',
+          '/workspace/staff/StaffCardOwner.tsx',
+          '/workspace/shared/use-shared-card.ts',
+        ],
+        sourcePath: '/workspace/shared/use-shared-card.ts',
+      },
+      id: 'staff-path',
+      root: { exportName: 'StaffPage', sourcePath: '/workspace/staff/StaffPage.tsx' },
+      target: {
+        exportName: 'StaffCardOwner',
+        sourcePath: '/workspace/staff/StaffCardOwner.tsx',
+      },
+    },
+  ];
+  const context: {
+    __result?: ReturnType<typeof evaluateCandidateOwnedContext>;
+    candidates: readonly CandidateFixture[];
+  } = { candidates };
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
+const descriptor = {
+  inspector: {
+    contextModule: {
+      evidenceKind: 'import-chain',
+      importPath: ['/workspace/legacy.tsx'],
+      sourcePath: '/workspace/legacy.tsx',
+    },
+    pageCandidates: globalThis.candidates,
+    target: { exportName: 'LegacyTarget', sourcePath: '/workspace/legacy.tsx' },
+  },
+};
+const previewInspectorSession = { selectedPageCandidateId: 'staff-path' };
+const moduleContext = readSelectedPreviewInspectorModuleContext(descriptor);
+const target = readSelectedPreviewInspectorCandidateTarget(descriptor);
+globalThis.__result = {
+  contextSourcePath: moduleContext.sourcePath,
+  importPath: moduleContext.importPath,
+  targetExportName: target.exportName,
+  targetSourcePath: target.sourcePath,
+};`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Candidate-owned context runtime did not expose its test result.');
   }
   return context.__result;
 }

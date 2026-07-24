@@ -14,6 +14,7 @@ import { createPreviewInspectorCompanionRuntimeSource } from './previewInspector
 import { createPreviewInspectorConsoleRuntimeSource } from './previewInspectorConsoleRuntimeSource';
 import { createPreviewInspectorDataRuntimeSource } from './previewInspectorDataRuntimeSource';
 import { createPreviewInspectorDeferredUiTriggerRuntimeSource } from './previewInspectorDeferredUiTriggerRuntimeSource';
+import { createPreviewInspectorDiagnosticsRuntimeSource } from './previewInspectorDiagnosticsRuntimeSource';
 import { createPreviewInspectorDevtoolsUiRuntimeSource } from './previewInspectorDevtoolsUiRuntimeSource';
 import { createPreviewInspectorElementVisibilityRuntimeSource } from './previewInspectorElementVisibilityRuntimeSource';
 import { createPreviewInspectorGraphqlDocumentRuntimeSource } from './previewInspectorGraphqlDocumentRuntimeSource';
@@ -56,6 +57,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const consoleRuntimeSource = createPreviewInspectorConsoleRuntimeSource();
   const dataRuntimeSource = createPreviewInspectorDataRuntimeSource();
   const deferredUiTriggerRuntimeSource = createPreviewInspectorDeferredUiTriggerRuntimeSource();
+  const diagnosticsRuntimeSource = createPreviewInspectorDiagnosticsRuntimeSource();
   const devtoolsUiRuntimeSource = createPreviewInspectorDevtoolsUiRuntimeSource();
   const elementVisibilityRuntimeSource = createPreviewInspectorElementVisibilityRuntimeSource();
   const fiberRuntimeSource = createPreviewInspectorFiberRuntimeSource();
@@ -176,6 +178,8 @@ ${graphqlDocumentRuntimeSource}
 ${smartPropsRuntimeSource}
 
 ${refreshRuntimeSource}
+
+${diagnosticsRuntimeSource}
 
 /** Creates mutable session data once per pinned webview, not once per emitted bundle revision. */
 function createPreviewInspectorSession() {
@@ -938,6 +942,7 @@ const previewInspectorApi = {
   TargetRenderer: PreviewInspectorTargetRenderer,
   collectTree: collectPreviewInspectorTreeSnapshot,
   createPageCandidateElement: createPreviewInspectorPageCandidateElement,
+  getDiagnostics: readPreviewInspectorSerializableDiagnostics,
   getSnapshot() {
     return {
       highlightEnabled: previewInspectorSession.highlightEnabled,
@@ -947,6 +952,7 @@ const previewInspectorApi = {
   },
   registerTargetElement: registerPreviewInspectorTargetElement,
   registerTargetRenderability: registerPreviewInspectorTargetRenderability,
+  registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
   registerDeferredUiTrigger: registerPreviewInspectorDeferredUiTrigger,
   registerDeferredUiTriggerMetadata: registerPreviewInspectorDeferredUiTriggerMetadata,
   previewAxiosRequest: previewInspectorAxiosRequest,

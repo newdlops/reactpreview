@@ -81,7 +81,10 @@ function readPreviewInspectorTreeNodeRole(node, isCondition, isBlocking, isCurre
     const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
       ? findSelectedPreviewInspectorDescriptor()
       : undefined;
-    return descriptor?.inspector?.contextModule === undefined
+    const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
+      ? readSelectedPreviewInspectorModuleContext(descriptor)
+      : descriptor?.inspector?.contextModule;
+    return moduleContext === undefined
       ? { key: 'target', label: 'CURRENT FILE' }
       : { key: 'target', label: 'PAGE ROOT' };
   }

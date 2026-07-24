@@ -161,6 +161,34 @@ describe('Preview Inspector component-tree condition switch', () => {
     expect(invokeClick(resetButton)).toEqual({ prevented: true, stopped: true });
     expect(runtime.readResets()).toEqual(['runtime-panel']);
   });
+
+  /** Lets users dismiss compiler-discovered overlays directly from their component-tree row. */
+  it('renders a reached overlay as a visible-hidden switch', () => {
+    const runtime = evaluateTreeSwitchRuntime();
+    const element = runtime.render(
+      conditionNode(
+        {
+          effectiveEnabled: true,
+          expression: 'deleteModal.open',
+          id: 'delete-overlay',
+          kind: 'overlay-visibility',
+          reached: true,
+          role: 'overlay',
+        },
+        'delete-overlay',
+      ),
+    );
+    const switchButton = element.children[0] as TestElement;
+
+    expect(switchButton.props).toMatchObject({
+      'aria-checked': true,
+      role: 'switch',
+      title: 'Show or hide this overlay without changing its source',
+    });
+    expect(switchButton.children).toEqual(['Visible']);
+    invokeClick(switchButton);
+    expect(runtime.readToggles()).toEqual(['delete-overlay']);
+  });
 });
 
 /** Creates the tree pseudo-node shape consumed by the compact row control. */

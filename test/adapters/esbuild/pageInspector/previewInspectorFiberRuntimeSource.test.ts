@@ -236,9 +236,11 @@ describe('preview Inspector Fiber runtime source', () => {
     const childType = namedComponent('WrappedPage');
     const child = createFiber(0, childType);
     const modal = createFiber(0, namedComponent('DeleteModal'));
+    modal.memoizedProps = { open: false };
+    const inlineMenu = createFiber(0, namedComponent('NavigationMenu'));
     const wrapper = createFiber(0, namedComponent('ApplicationProviders'));
     wrapper.memoizedProps = { children: { type: childType } };
-    connectChildren(wrapper, [child, modal]);
+    connectChildren(wrapper, [child, modal, inlineMenu]);
     const boundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
     connectChildren(boundary, [wrapper]);
 
@@ -251,6 +253,7 @@ describe('preview Inspector Fiber runtime source', () => {
       overlayState: 'dormant',
       role: 'overlay',
     });
+    expect(findTreeNode(snapshot.roots, 'NavigationMenu')).not.toHaveProperty('role');
   });
 
   /** Connects a picked nested DOM host to its nearest authored component and filters disconnects. */

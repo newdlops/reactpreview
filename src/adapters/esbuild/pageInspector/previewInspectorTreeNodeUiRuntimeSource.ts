@@ -122,17 +122,21 @@ function createPreviewInspectorTreeRowSourceAttributes(source) {
 }
 
 /**
- * Renders one logical-AND control directly in its component-tree row.
+ * Renders one Boolean JSX or overlay control directly in its component-tree row.
  *
  * The button stops only the row click; the tree viewport's capture handler still records both scroll
  * axes before a condition remounts the page. A source-proven but short-circuited guard stays visible
  * and disabled until its preceding guard allows JavaScript to evaluate the live resolver.
  */
 function PreviewInspectorComponentTreeConditionSwitch({ node }) {
-  if (!isPreviewInspectorConditionNode(node) || node.condition?.kind !== 'logical-and') {
+  const condition = node?.condition;
+  const overlay = condition?.role === 'overlay';
+  if (
+    !isPreviewInspectorConditionNode(node) ||
+    (condition?.kind !== 'logical-and' && !overlay)
+  ) {
     return null;
   }
-  const condition = node.condition;
   const reached = condition.reached !== false && typeof node.conditionId === 'string';
   const enabled = reached && condition.effectiveEnabled === true;
   const overridden = reached && (
@@ -161,11 +165,17 @@ function PreviewInspectorComponentTreeConditionSwitch({ node }) {
         },
         role: 'switch',
         title: reached
-          ? 'Toggle this JSX logical-AND condition'
+          ? overlay
+            ? 'Show or hide this overlay without changing its source'
+            : 'Toggle this JSX logical-AND condition'
           : 'Not reached yet; enable the preceding JSX switch first',
         type: 'button',
       },
-      reached ? enabled ? 'On' : 'Off' : 'Wait',
+      reached
+        ? overlay
+          ? enabled ? 'Visible' : 'Hidden'
+          : enabled ? 'On' : 'Off'
+        : 'Wait',
     ),
     overridden
       ? React.createElement(
@@ -319,7 +329,11 @@ function PreviewInspectorComponentTreeNode({
         ? React.createElement(
             'span',
             { className: 'rpi-badge rpi-export-badge' },
-            findSelectedPreviewInspectorDescriptor()?.inspector?.contextModule === undefined
+            (typeof readSelectedPreviewInspectorModuleContext === 'function'
+              ? readSelectedPreviewInspectorModuleContext(
+                  findSelectedPreviewInspectorDescriptor(),
+                )
+              : findSelectedPreviewInspectorDescriptor()?.inspector?.contextModule) === undefined
               ? 'current file export'
               : 'consuming page root',
           )

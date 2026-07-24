@@ -290,6 +290,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         ? candidate.rootStepIndex
         : '[unknown]',
       stopReason: candidate?.stopReason ?? 'none',
+      virtualPage: candidate?.virtualPage,
     },
     ...(evidenceSourcePath === undefined
       ? {}

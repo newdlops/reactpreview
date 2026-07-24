@@ -96,6 +96,49 @@ function isPreviewInspectorGeneratedEmptyPlainRecord(value) {
 }
 
 /**
+ * Admits inert native values whose prototype supplies the behavior required by authored code.
+ *
+ * A RegExp generated from a local RegExp-or-string array annotation cannot be represented as a
+ * plain record: copying it to an empty object removes test() and moves the failure downstream.
+ * Limit this escape hatch to RegExp, which is deterministic, synchronous, and has no I/O surface.
+ */
+function isPreviewInspectorGeneratedSafeNativeValue(value) {
+  try {
+    return value instanceof RegExp || Object.prototype.toString.call(value) === '[object RegExp]';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detects a compiler-owned native value that cannot survive the editable JSON Smart-fill format.
+ *
+ * Traversal accepts only arrays and plain records, reads data descriptors without invoking getters,
+ * and shares the ordinary generated-value budgets. Callers can retain the already-minimal compiler
+ * value while still marking its blocker frontier as settled.
+ */
+function hasPreviewInspectorGeneratedRuntimeOnlyNativeValue(value, state = { nodes: 0 }, depth = 0) {
+  if (
+    depth > PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT ||
+    state.nodes >= PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT
+  ) {
+    return false;
+  }
+  state.nodes += 1;
+  if (isPreviewInspectorGeneratedSafeNativeValue(value)) return true;
+  if (!Array.isArray(value) && !isPreviewInspectorGeneratedPlainRecord(value)) return false;
+  const descriptors = readPreviewInspectorGeneratedValueDescriptors(value);
+  if (descriptors === undefined) return false;
+  return Reflect.ownKeys(descriptors).some((propertyName) => {
+    if (propertyName === 'length') return false;
+    const descriptor = descriptors[propertyName];
+    return descriptor !== undefined &&
+      Object.prototype.hasOwnProperty.call(descriptor, 'value') &&
+      hasPreviewInspectorGeneratedRuntimeOnlyNativeValue(descriptor.value, state, depth + 1);
+  });
+}
+
+/**
  * Detects a syntax-generated receiver placeholder such as an object with a filter callback. It does
  * not represent application data: the called built-in method proves that the receiver is an Array,
  * and keeping the placeholder merely postpones failure until project code invokes the method.
@@ -366,7 +409,11 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
   if (
     authoredIsNeutralEmptyRecord &&
     generated !== null &&
-    (generatedIsArray || generatedType !== 'object')
+    (
+      generatedIsArray ||
+      generatedType !== 'object' ||
+      isPreviewInspectorGeneratedSafeNativeValue(generated)
+    )
   ) {
     /*
      * Static Redux and Context bridges represent every registered path as an empty container before

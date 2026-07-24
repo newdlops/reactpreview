@@ -42,6 +42,18 @@ function readSelectedPreviewInspectorPageCandidate(descriptor) {
     candidates[0];
 }
 
+/** Returns the candidate-local hook/HOC context before the legacy plan-wide fallback. */
+function readSelectedPreviewInspectorModuleContext(descriptor) {
+  return readSelectedPreviewInspectorPageCandidate(descriptor)?.contextModule ??
+    descriptor?.inspector?.contextModule;
+}
+
+/** Returns the component promoted for this caller path before the legacy primary target. */
+function readSelectedPreviewInspectorCandidateTarget(descriptor) {
+  return readSelectedPreviewInspectorPageCandidate(descriptor)?.target ??
+    descriptor?.inspector?.target;
+}
+
 /** Promotes an automatic fast choice while retaining an exact candidate explicitly chosen by the user. */
 function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
   const userSelection = previewInspectorSession.userSelectedPageCandidateId;
@@ -195,7 +207,7 @@ function readPreviewInspectorRenderScenario() {
   const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
     ? findSelectedPreviewInspectorDescriptor()
     : undefined;
-  if (descriptor?.inspector?.contextModule !== undefined) return 'authored-page';
+  if (readSelectedPreviewInspectorModuleContext(descriptor) !== undefined) return 'authored-page';
   return previewInspectorSession.renderScenario === 'file-components'
     ? 'file-components'
     : 'authored-page';
@@ -207,7 +219,10 @@ function setPreviewInspectorRenderScenario(nextScenario) {
   const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
     ? findSelectedPreviewInspectorDescriptor()
     : undefined;
-  if (nextScenario === 'file-components' && descriptor?.inspector?.contextModule !== undefined) {
+  if (
+    nextScenario === 'file-components' &&
+    readSelectedPreviewInspectorModuleContext(descriptor) !== undefined
+  ) {
     return;
   }
   if (readPreviewInspectorRenderScenario() === nextScenario) return;
@@ -241,6 +256,7 @@ function readSelectedPreviewInspectorInferredProps(exportName) {
 /** Produces a concise candidate label without exposing absolute local filesystem paths. */
 function formatPreviewInspectorPageCandidate(candidate, index) {
   const rootName = candidate?.root?.exportName ?? 'default';
+  const virtualPageMode = candidate?.virtualPage?.mode;
   const names = [];
   const steps = candidate?.renderPath?.steps ?? [];
   const rootStepIndex = Number.isInteger(candidate?.rootStepIndex)
@@ -270,10 +286,12 @@ function formatPreviewInspectorPageCandidate(candidate, index) {
   const routeLabel = routePath === undefined
     ? ''
     : ' · ' + (routePath.length > 64 ? '…' + routePath.slice(-63) : routePath);
+  const compositionLabel = typeof virtualPageMode === 'string' ? ' · VirtualPage' : '';
   return String(index + 1) + '. ' + pathLabel +
     (candidate?.complete === true && entryConnected
       ? ' · application root'
-      : entryConnected ? ' · application path' : ' · partial context') + routeLabel;
+      : entryConnected ? ' · application path' : ' · partial context') +
+    compositionLabel + routeLabel;
 }
 
 /**
@@ -305,6 +323,7 @@ function createPreviewInspectorPageCandidateHealthSummary(candidate) {
       wrappers: (step?.wrapperNames ?? []).slice(0, 8),
     })),
     stepsOmitted: Math.max(0, (renderPath?.steps?.length ?? 0) - steps.length),
+    virtualPage: candidate?.virtualPage,
   };
 }
 
@@ -557,6 +576,7 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
         routeInferred: typeof routeLocation?.pathname === 'string',
         stopReason: candidate?.stopReason ?? 'unknown',
         targetExport: reachability.targetExportName,
+        virtualPage: candidate?.virtualPage,
       },
       event: 'page-context-selected',
     });

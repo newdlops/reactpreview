@@ -17,7 +17,10 @@ export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
 /** Formats whether the selected authored page and current-file target share one committed render. */
 function formatPreviewInspectorPageCorridorStatus(reachability) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
-  const moduleContext = findSelectedPreviewInspectorDescriptor()?.inspector?.contextModule;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
+    ? readSelectedPreviewInspectorModuleContext(descriptor)
+    : descriptor?.inspector?.contextModule;
   if (
     reachability?.status === 'reached' &&
     reachability?.targetMounted === true &&
@@ -68,7 +71,9 @@ function revealPreviewInspectorMissingTargetOutput() {
 /** Converts internal corridor state into one plain-language status and recommended next action. */
 function readPreviewInspectorFriendlyPageStatus(reachability) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
-  const moduleContext = descriptor?.inspector?.contextModule;
+  const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
+    ? readSelectedPreviewInspectorModuleContext(descriptor)
+    : descriptor?.inspector?.contextModule;
   if (readPreviewInspectorRenderScenario() === 'file-components') {
     return {
       action: 'Return to page flow',
@@ -190,7 +195,9 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
 function PreviewInspectorRenderScenarioSelect() {
   const scenario = readPreviewInspectorRenderScenario();
   const descriptor = findSelectedPreviewInspectorDescriptor();
-  const moduleContext = descriptor?.inspector?.contextModule;
+  const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
+    ? readSelectedPreviewInspectorModuleContext(descriptor)
+    : descriptor?.inspector?.contextModule;
   return React.createElement(
     'label',
     {
@@ -220,7 +227,9 @@ function PreviewInspectorRenderScenarioSelect() {
 function PreviewInspectorFriendlyGuide({ reachability }) {
   const status = readPreviewInspectorFriendlyPageStatus(reachability);
   const descriptor = findSelectedPreviewInspectorDescriptor();
-  const moduleContext = descriptor?.inspector?.contextModule;
+  const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
+    ? readSelectedPreviewInspectorModuleContext(descriptor)
+    : descriptor?.inspector?.contextModule;
   const legend = [
     ['component', 'C', 'Component'],
     ['target', '◎', moduleContext === undefined ? 'Current file' : 'Consuming page'],
@@ -274,6 +283,7 @@ function PreviewInspectorPageCandidateSelect({ descriptor }) {
   const candidates = readPreviewInspectorPageCandidates(descriptor);
   const selected = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (candidates.length === 0) return null;
+  const selectedIndex = Math.max(0, candidates.findIndex((candidate) => candidate?.id === selected?.id));
   const reachability = readPreviewInspectorTargetReachabilityState(descriptor, selected);
   const scenario = readPreviewInspectorRenderScenario();
   return React.createElement(
@@ -289,7 +299,13 @@ function PreviewInspectorPageCandidateSelect({ descriptor }) {
           ? 'Choose which authored caller path should construct the visible page.'
           : 'Only one mountable authored caller path was proven.',
       },
-      React.createElement('span', { className: 'rpi-context-badge' }, 'PAGE PATH'),
+      React.createElement(
+        'span',
+        { className: 'rpi-context-badge' },
+        candidates.length > 1
+          ? 'PAGE PATH ' + String(selectedIndex + 1) + '/' + String(candidates.length)
+          : 'PAGE PATH',
+      ),
       React.createElement(
         'select',
         {

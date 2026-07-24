@@ -28,9 +28,12 @@ function readPreviewInspectorPageContext() {
       kind: 'standalone',
     };
   }
-  if (inspector.contextModule !== undefined) {
-    const importPath = Array.isArray(inspector.contextModule.importPath)
-      ? inspector.contextModule.importPath
+  const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
+    ? readSelectedPreviewInspectorModuleContext(descriptor)
+    : descriptor?.inspector?.contextModule;
+  if (moduleContext !== undefined) {
+    const importPath = Array.isArray(moduleContext.importPath)
+      ? moduleContext.importPath
       : [];
     const names = importPath.map((sourcePath) => String(sourcePath)
       .replaceAll('\\', '/').split('/').at(-1)?.replace(/\.[^.]+$/u, ''));

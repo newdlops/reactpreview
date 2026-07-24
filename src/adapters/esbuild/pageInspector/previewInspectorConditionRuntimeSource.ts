@@ -6,6 +6,7 @@
  * and persistence functions remain lexical to the extension-owned Inspector UI.
  */
 import { createPreviewInspectorSynchronousContinuationRuntimeSource } from './previewInspectorSynchronousContinuationRuntimeSource';
+import { createPreviewInspectorVirtualPageConditionRuntimeSource } from './previewInspectorVirtualPageConditionRuntimeSource';
 
 /**
  * Creates condition/fallback state helpers concatenated into the Page Inspector entry.
@@ -18,8 +19,11 @@ import { createPreviewInspectorSynchronousContinuationRuntimeSource } from './pr
 export function createPreviewInspectorConditionRuntimeSource(): string {
   const synchronousContinuationRuntimeSource =
     createPreviewInspectorSynchronousContinuationRuntimeSource();
+  const virtualPageConditionRuntimeSource =
+    createPreviewInspectorVirtualPageConditionRuntimeSource();
   return String.raw`
 ${synchronousContinuationRuntimeSource}
+${virtualPageConditionRuntimeSource}
 const PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT = 512;
 const PREVIEW_INSPECTOR_RENDER_CHOICE_BRANCH_LIMIT = 32;
 const previewInspectorScheduleConditionMicrotask = typeof globalThis.queueMicrotask === 'function'
@@ -468,6 +472,15 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     reconcilePreviewInspectorManualOverrideWithOutcome(overrides, conditionId, outcomeOverride)
   ) {
     override = undefined;
+  }
+  const virtualPageShellContinuation = readPreviewInspectorVirtualPageShellContinuation(
+    normalizedMetadata,
+    override ?? outcomeOverride,
+    autoOverride,
+  );
+  if (virtualPageShellContinuation !== undefined) {
+    autoOverrides.set(conditionId, virtualPageShellContinuation);
+    autoOverride = virtualPageShellContinuation;
   }
   const synchronousContinuation = readPreviewInspectorSynchronousNavigationContinuation(
     conditionId,

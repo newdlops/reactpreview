@@ -62,6 +62,89 @@ describe('PreviewManagedDependencyStore', () => {
     await secondStore.shutdown();
   });
 
+  /**
+   * Foreground compilation must never join an optional package-copy task. A throwing thenable makes
+   * accidental Promise assimilation deterministic without relying on a timing-sensitive timeout.
+   */
+  it('prepares from committed layers without awaiting a pending background admission', async () => {
+    const fixture = await createFixture();
+    const projectRoot = await createProject(fixture.rootPath, 'non-blocking-prepare', {
+      'shared-package': '1.0.0',
+    });
+    const store = new PreviewManagedDependencyStore({ rootPath: fixture.storeRoot });
+    const initialEnvironment = await store.prepare(projectRoot);
+    const profileFingerprint = initialEnvironment.profile?.fingerprint;
+    expect(profileFingerprint).toBeDefined();
+
+    const pendingAdmissions = (
+      store as unknown as {
+        readonly pendingAdmissions: Map<string, Promise<void>>;
+      }
+    ).pendingAdmissions;
+    pendingAdmissions.set(profileFingerprint ?? '', {
+      then: () => {
+        throw new Error('Foreground prepare joined a background cache admission.');
+      },
+    } as unknown as Promise<void>);
+
+    await expect(store.prepare(projectRoot)).resolves.toMatchObject({
+      profile: { fingerprint: profileFingerprint },
+    });
+    pendingAdmissions.clear();
+    await store.shutdown();
+  });
+
+  /** A later target must not copy a second byte variant into an already occupied package slot. */
+  it('admits only package slots missing from the committed profile layers', async () => {
+    const fixture = await createFixture();
+    const dependencies = { 'shared-package': '1.0.0' };
+    const installedProject = await createProject(
+      fixture.rootPath,
+      'incremental-slot-source',
+      dependencies,
+    );
+    const packageRoot = await writePackage(
+      path.join(installedProject, 'node_modules'),
+      'shared-package',
+      '1.0.0',
+      'export const marker = "first-reached-bytes";',
+    );
+    const firstStore = new PreviewManagedDependencyStore({ rootPath: fixture.storeRoot });
+    const firstEnvironment = await firstStore.prepare(installedProject);
+    firstStore.scheduleAdmission({
+      dependencyPaths: [path.join(packageRoot, 'index.js')],
+      profile: firstEnvironment.profile,
+      workspaceRoot: installedProject,
+    });
+    await firstStore.shutdown();
+
+    await writeFile(
+      path.join(packageRoot, 'index.js'),
+      'export const marker = "later-local-bytes";',
+      'utf8',
+    );
+    const secondStore = new PreviewManagedDependencyStore({ rootPath: fixture.storeRoot });
+    const secondEnvironment = await secondStore.prepare(installedProject);
+    secondStore.scheduleAdmission({
+      dependencyPaths: [path.join(packageRoot, 'index.js')],
+      profile: secondEnvironment.profile,
+      workspaceRoot: installedProject,
+    });
+    await secondStore.shutdown();
+
+    const emptyProject = await createProject(
+      fixture.rootPath,
+      'incremental-slot-consumer',
+      dependencies,
+    );
+    const selectingStore = new PreviewManagedDependencyStore({ rootPath: fixture.storeRoot });
+    const selectedEnvironment = await selectingStore.prepare(emptyProject);
+    const output = await bundleMarker(emptyProject, selectedEnvironment.nodeModulesPaths);
+    expect(output).toContain('first-reached-bytes');
+    expect(output).not.toContain('later-local-bytes');
+    await selectingStore.shutdown();
+  });
+
   /** Combines independently reached packages as immutable layers under one exact lock profile. */
   it('adds later package layers without hiding packages learned by an earlier target', async () => {
     const fixture = await createFixture();

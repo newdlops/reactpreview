@@ -21,6 +21,7 @@ import {
   collectPreviewManagedPackageCopies,
   copyPreviewManagedPackages,
   verifyPreviewManagedPackages,
+  type PreviewManagedPackageCopy,
   type PreviewManagedPackageCopyResult,
   type PreviewManagedPackageIdentity,
 } from './previewManagedDependencyAdmission';
@@ -132,6 +133,10 @@ export class PreviewManagedDependencyStore {
   private readonly pendingAdmissions = new Map<string, Promise<void>>();
   private readonly pendingAcquisitions = new Map<string, Promise<boolean>>();
   private readonly successfulAcquisitions = new Set<string>();
+  /** Verified portable package slots suppress duplicate full-graph copies across preview targets. */
+  private readonly admittedPackageSlotsByProfile = new Map<string, Set<string>>();
+  /** Package-tree copies are serialized so multiple preview tabs cannot multiply disk pressure. */
+  private admissionQueue: Promise<void> = Promise.resolve();
   private readonly lockedDependencyAcquirer: typeof acquirePreviewLockedDependencies;
   private readonly rootPath: string;
   private seedRuntimePromise: Promise<readonly PreviewBundledReactRuntime[]> | undefined;
@@ -155,13 +160,12 @@ export class PreviewManagedDependencyStore {
   ): Promise<PreviewManagedDependencyEnvironment> {
     if (this.disposed) return EMPTY_MANAGED_ENVIRONMENT;
     const profile = await readPreviewDependencyProfile(projectRoot, workspaceRoot);
-    if (profile !== undefined) {
-      await Promise.all(
-        [...this.pendingAdmissions.entries()]
-          .filter(([taskIdentity]) => taskIdentity.startsWith(`${profile.fingerprint}:`))
-          .map(([, task]) => task),
-      );
-    }
+    /*
+     * Reached-package admission is optional cache warming, not a compilation prerequisite.
+     * A staging layer is invisible until its atomic COMMITTED marker is published, so joining a
+     * pending copy here only makes the foreground preview wait for work it can already satisfy from
+     * the project installation. The next prepare naturally observes a completed immutable layer.
+     */
     const cachedNodeModulesPaths =
       profile?.hasReusableLockEvidence !== true
         ? Object.freeze([])
@@ -206,16 +210,15 @@ export class PreviewManagedDependencyStore {
     if (this.disposed || !profile?.hasReusableLockEvidence) {
       return;
     }
-    const taskIdentity = createAdmissionTaskIdentity(
-      profile.fingerprint,
-      admission.dependencyPaths,
-    );
+    const taskIdentity = profile.fingerprint;
     if (this.pendingAdmissions.has(taskIdentity)) return;
-    const task = this.admit(admission)
+    const task = this.admissionQueue
+      .then(async () => this.admit(admission))
       .catch(() => undefined)
       .finally(() => {
         this.pendingAdmissions.delete(taskIdentity);
       });
+    this.admissionQueue = task;
     this.pendingAdmissions.set(taskIdentity, task);
   }
 
@@ -279,9 +282,9 @@ export class PreviewManagedDependencyStore {
   private async admit(admission: PreviewManagedDependencyAdmission): Promise<void> {
     const profile = admission.profile;
     if (!profile?.hasReusableLockEvidence) return;
-    const copies = await collectPreviewManagedPackageCopies(
-      admission.dependencyPaths,
-      admission.workspaceRoot,
+    const copies = selectUncachedManagedPackageCopies(
+      await collectPreviewManagedPackageCopies(admission.dependencyPaths, admission.workspaceRoot),
+      this.admittedPackageSlotsByProfile.get(profile.fingerprint) ?? new Set<string>(),
     );
     if (copies.length === 0) return;
 
@@ -300,7 +303,14 @@ export class PreviewManagedDependencyStore {
       ) {
         return;
       }
-      await this.publishStagedLayer(profile, result, stagingPath, 'reached');
+      if (await this.publishStagedLayer(profile, result, stagingPath, 'reached')) {
+        const admittedSlots =
+          this.admittedPackageSlotsByProfile.get(profile.fingerprint) ?? new Set<string>();
+        for (const packageIdentity of result.packages) {
+          admittedSlots.add(createManagedPackageSlotKey(packageIdentity.relativePath));
+        }
+        this.admittedPackageSlotsByProfile.set(profile.fingerprint, admittedSlots);
+      }
     } finally {
       await rm(stagingPath, { force: true, recursive: true }).catch(() => undefined);
     }
@@ -411,6 +421,14 @@ export class PreviewManagedDependencyStore {
         coverage: layer.manifest.coverage,
         packages: layer.manifest.packages,
       })),
+    );
+    this.admittedPackageSlotsByProfile.set(
+      profile.fingerprint,
+      new Set(
+        compatibleLayers.flatMap(({ manifest }) =>
+          manifest.packages.map(({ relativePath }) => createManagedPackageSlotKey(relativePath)),
+        ),
+      ),
     );
     const now = new Date();
     await Promise.all(
@@ -576,17 +594,40 @@ function createLayerFingerprint(profileFingerprint: string, contentDigest: strin
     .digest('hex');
 }
 
-/** Deduplicates only the same reached graph, allowing later targets to contribute new layers. */
-function createAdmissionTaskIdentity(
-  profileFingerprint: string,
-  dependencyPaths: readonly string[],
-): string {
-  const reachedGraphDigest = createHash('sha256')
-    .update(
-      JSON.stringify([...new Set(dependencyPaths.map((value) => path.resolve(value)))].sort()),
-    )
-    .digest('hex');
-  return `${profileFingerprint}:${reachedGraphDigest}`;
+/**
+ * Retains uncached package slots plus any nested owner packages needed to preserve a valid npm tree.
+ * Top-level packages already present in an immutable layer are omitted, preventing each component
+ * target from copying the same application dependency closure into another large layer.
+ */
+function selectUncachedManagedPackageCopies(
+  copies: readonly PreviewManagedPackageCopy[],
+  admittedSlots: ReadonlySet<string>,
+): readonly PreviewManagedPackageCopy[] {
+  const requiredSlots = new Set<string>();
+  for (const copy of copies) {
+    const slot = createManagedPackageSlotKey(copy.targetRelativePath);
+    if (admittedSlots.has(slot)) continue;
+    requiredSlots.add(slot);
+
+    let ownerPath = copy.targetRelativePath;
+    for (;;) {
+      const segments = ownerPath.split(path.sep);
+      const nestedModulesIndex = segments.lastIndexOf('node_modules');
+      if (nestedModulesIndex < 0) break;
+      ownerPath = segments.slice(0, nestedModulesIndex).join(path.sep);
+      requiredSlots.add(createManagedPackageSlotKey(ownerPath));
+    }
+  }
+  return Object.freeze(
+    copies.filter((copy) =>
+      requiredSlots.has(createManagedPackageSlotKey(copy.targetRelativePath)),
+    ),
+  );
+}
+
+/** Normalizes one portable npm destination for case-insensitive duplicate suppression. */
+function createManagedPackageSlotKey(relativePath: string): string {
+  return relativePath.normalize('NFC').toLowerCase();
 }
 
 /** Deduplicates one exact lock profile and stable unresolved package-root batch. */

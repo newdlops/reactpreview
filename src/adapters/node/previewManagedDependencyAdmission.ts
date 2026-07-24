@@ -11,6 +11,7 @@ const NODE_MODULES_SEGMENT = 'node_modules';
 const MAX_ADMITTED_BYTES = 256 * 1024 * 1024;
 const MAX_ADMITTED_FILES = 40_000;
 const MAX_ADMITTED_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_DISCOVERY_CONCURRENCY = 16;
 const PACKAGE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+].+)?$/u;
 const SENSITIVE_PACKAGE_FILE_PATTERN = /^(?:\.env(?:\..*)?|\.npmrc|\.yarnrc(?:\..*)?)$/iu;
 
@@ -73,6 +74,11 @@ interface PreviewManagedPackageDescriptor {
   readonly version: string;
 }
 
+/** One lexically deduplicated package root plus a real esbuild input proving that it was reached. */
+interface PreviewManagedPackageCandidate extends PreviewManagedPackageCopy {
+  readonly evidencePath: string;
+}
+
 /** Mutable budget shared by every source or staged package in one environment. */
 interface CopyBudget {
   bytes: number;
@@ -108,25 +114,34 @@ export async function collectPreviewManagedPackageCopies(
     return Object.freeze([]);
   }
 
-  const copyByTarget = new Map<string, PreviewManagedPackageCopy>();
+  /*
+   * A large bundle commonly contributes thousands of files but only hundreds of package roots.
+   * Collapse those paths before realpath/lstat work; validating every file repeated the same package
+   * ancestry walk and allowed background cache warming to dominate the next foreground compile.
+   */
+  const candidateByTarget = new Map<string, PreviewManagedPackageCandidate>();
   for (const dependencyPath of dependencyPaths) {
-    const copy = await locatePortablePackageCopy(
-      dependencyPath,
-      lexicalWorkspaceRoot,
-      canonicalWorkspaceRoot,
-    );
-    if (copy === undefined) continue;
-    const existing = copyByTarget.get(copy.targetRelativePath);
-    if (existing !== undefined && existing.sourceRoot !== copy.sourceRoot) {
+    const candidate = locatePortablePackageCandidate(dependencyPath, lexicalWorkspaceRoot);
+    if (candidate === undefined) continue;
+    const existing = candidateByTarget.get(candidate.targetRelativePath);
+    if (existing !== undefined && existing.sourceRoot !== candidate.sourceRoot) {
       return Object.freeze([]);
     }
-    copyByTarget.set(copy.targetRelativePath, copy);
+    candidateByTarget.set(candidate.targetRelativePath, existing ?? candidate);
   }
+
+  const copies = (
+    await validatePortablePackageCandidates(
+      [...candidateByTarget.values()],
+      lexicalWorkspaceRoot,
+      canonicalWorkspaceRoot,
+    )
+  ).filter((copy): copy is PreviewManagedPackageCopy => copy !== undefined);
 
   // Parent packages must be copied before their separately reached nested dependencies. Parent
   // copies exclude their own node_modules tree, so the two destinations never overlap.
   return Object.freeze(
-    [...copyByTarget.values()].sort((left, right) => {
+    copies.sort((left, right) => {
       const depthDifference =
         countPathSegments(left.targetRelativePath) - countPathSegments(right.targetRelativePath);
       return (
@@ -317,12 +332,42 @@ export async function verifyPreviewManagedPackages(
   });
 }
 
-/** Maps one input to its deepest ordinary package root and portable nested npm location. */
-async function locatePortablePackageCopy(
-  dependencyPath: string,
+/**
+ * Validates package roots through a small worker pool instead of opening every package ancestry at
+ * once. Large application graphs may still contain hundreds of unique packages after file-level
+ * deduplication, so unbounded `Promise.all` would trade CPU latency for filesystem queue pressure.
+ */
+async function validatePortablePackageCandidates(
+  candidates: readonly PreviewManagedPackageCandidate[],
   lexicalWorkspaceRoot: string,
   canonicalWorkspaceRoot: string,
-): Promise<PreviewManagedPackageCopy | undefined> {
+): Promise<readonly (PreviewManagedPackageCopy | undefined)[]> {
+  const results = candidates.map((): PreviewManagedPackageCopy | undefined => undefined);
+  let nextIndex = 0;
+  const workerCount = Math.min(MAX_DISCOVERY_CONCURRENCY, candidates.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < candidates.length) {
+        const candidateIndex = nextIndex;
+        nextIndex += 1;
+        const candidate = candidates[candidateIndex];
+        if (candidate === undefined) continue;
+        results[candidateIndex] = await validatePortablePackageCandidate(
+          candidate,
+          lexicalWorkspaceRoot,
+          canonicalWorkspaceRoot,
+        );
+      }
+    }),
+  );
+  return results;
+}
+
+/** Maps one input to its deepest lexical package root without touching the filesystem. */
+function locatePortablePackageCandidate(
+  dependencyPath: string,
+  lexicalWorkspaceRoot: string,
+): PreviewManagedPackageCandidate | undefined {
   const absolutePath = path.resolve(dependencyPath);
   if (!isPathInside(lexicalWorkspaceRoot, absolutePath)) return undefined;
   const workspaceRelativePath = path.relative(lexicalWorkspaceRoot, absolutePath);
@@ -345,14 +390,26 @@ async function locatePortablePackageCopy(
   if (targetSegments.length === 0 || targetSegments.some((segment) => segment.length === 0)) {
     return undefined;
   }
-  if (!(await hasOrdinaryDirectoryAncestry(lexicalWorkspaceRoot, lexicalPackageRoot))) {
+  return Object.freeze({
+    evidencePath: absolutePath,
+    sourceRoot: lexicalPackageRoot,
+    targetRelativePath: path.join(...targetSegments),
+  });
+}
+
+/** Verifies one deduplicated package root and its representative reached input exactly once. */
+async function validatePortablePackageCandidate(
+  candidate: PreviewManagedPackageCandidate,
+  lexicalWorkspaceRoot: string,
+  canonicalWorkspaceRoot: string,
+): Promise<PreviewManagedPackageCopy | undefined> {
+  if (!(await hasOrdinaryDirectoryAncestry(lexicalWorkspaceRoot, candidate.sourceRoot))) {
     return undefined;
   }
-
   try {
     const [canonicalPackageRoot, canonicalDependencyPath] = await Promise.all([
-      realpath(lexicalPackageRoot),
-      realpath(absolutePath),
+      realpath(candidate.sourceRoot),
+      realpath(candidate.evidencePath),
     ]);
     if (
       !isPathInside(canonicalWorkspaceRoot, canonicalPackageRoot) ||
@@ -362,7 +419,7 @@ async function locatePortablePackageCopy(
     }
     return Object.freeze({
       sourceRoot: canonicalPackageRoot,
-      targetRelativePath: path.join(...targetSegments),
+      targetRelativePath: candidate.targetRelativePath,
     });
   } catch {
     return undefined;

@@ -2,6 +2,67 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1060 - 2026-07-19
+
+- HOC export의 Inspector boundary만 mount되고 내부 guard가 `Navigate`/`null`을 반환한 상태를 성공으로 오판하지
+  않도록, page root와 선택 target이 실제 host output을 함께 commit해야 target 도달로 판정
+- reverse caller graph에 나타나지 않는 HOC guard도 같은 live reachability pass의 compiler-proven continuation이면
+  bounded DFS 후보로 사용해 로그인/권한 wrapper 뒤의 실제 current-file component까지 자동 진행
+- `fallback: null`/`error: null`처럼 branch를 비활성화하는 명시적 중립값을 lorem scalar로 바꾸지 않고,
+  더 깊은 object/array/callable path가 증명된 경우에만 필요한 형태를 보완
+- Auto hook/API 값처럼 이미 통과된 보조값과 단순히 꺼진 JSX condition을 wireframe의 빨간 blocker에서 제외하고,
+  실제 미해결 render stop만 `!` marker로 표시
+- 동일한 DOM 사각형을 공유하는 HOC/styled/Fiber ownership을 의미 있는 React component 하나로 합치고 generic wrapper,
+  중복 배경, 상단 route chip을 제거해 wireframe 아래 실제 페이지와 current-file highlight가 가려지지 않도록 개선
+- `rtcc-poc-page`의 `investment-contract-analysis-page.tsx`를 2,213개 의존성의 full page context로 직접 검증해
+  guard 자동 통과 후 breadcrumb, page title, status panel과 정적 payload file list가 commit되는 것을 확인
+
+## 0.1.1059 - 2026-07-18
+
+- Components tree의 root/nested list를 intrinsic `max-content` 폭으로 유지하고 row를 줄바꿈하지 않게 바꿔,
+  깊은 component 경로도 옆으로 눌리지 않고 Inspector pane 안에서 가로 스크롤 가능
+- hook 결과를 구조 분해한 뒤 직접 호출하거나 JSX event/callback prop으로 전달하는 사용처를 함수 요구로 판별해
+  `showCreate()`, `renderModalForm()`, `getRootProps()` 같은 callable 최소값을 문자열·빈 객체 대신 no-op 함수로 생성
+- `Find minimum requirements`가 현재 관찰값만 한 번 채우지 않고 새 branch에서 드러난 hook/API field를 최대 8개
+  batch까지 제한적으로 수렴하며, pass 수·발견 path 수·종료 상태를 Path blocker 상세 화면에 표시
+- 이미 같은 Smart hook/API 값이 적용된 pass는 변경으로 계산하지 않아 불필요한 remount와 Inspector/renderer CPU 갱신을 방지
+
+## 0.1.1058 - 2026-07-18
+
+- Inspector에 `VIEW` 선택기를 추가해 기본 `Page flow (as authored)`와 명시적
+  `File components (all exports)`를 전환하고 선택을 preview tab별로 유지
+- Page flow는 화면의 문구·status code·component 이름으로 정상/오류를 추측하지 않고 로그인, 빈 화면, fallback,
+  오류 화면까지 작성된 경로의 실제 결과로 그대로 보존
+- 현재 파일의 모든 정적으로 증명된 component export를 export별 dynamic import, Suspense, error boundary로 격리해
+  하나가 load/render에 실패해도 나머지 component를 순서대로 확인할 수 있는 중립 overview 추가
+- page root는 정상 commit됐지만 현재 파일이 mount되지 않은 경우를 `TARGET ABSENT` 흐름 결과로 구분하고,
+  실제 runtime/value blocker와 혼동하지 않도록 다른 Page path 또는 File components 비교 행동을 안내
+
+## 0.1.1057 - 2026-07-18
+
+- 별도 Inspector shell을 CSS inline-size container로 만들고 toolbar/status/page selector/tree row/tab/action을
+  폭에 따라 줄바꿈하며, 760px 이하에서는 workbench를 1열로 전환해 작은 editor group에서도 가로로 이탈하지 않게 개선
+- hook blocker에 `Smart fill minimum`을 추가해 inferred fallback 전체를 복사하지 않고 실제 required property path만
+  생성하며, 기존 사용자 JSON은 보존한 채 data descriptor로 확인한 scalar 타입·callable과 `items[]`의 한 항목만 보완
+- GraphQL/REST Payload에 `GENERATED · SMART MINIMUM` 모드를 추가해 selection/type shape의 필드와 list 한 항목만
+  생성하고, 사용자 JSON이 있으면 유지·보완한 `USER + SMART MINIMUM`으로 Lorem·기존 Auto와 provenance를 분리
+- contained target error의 Smart fill은 관찰된/사용자 props를 보존하며 오류가 증명한 누락 path만 합성하고,
+  page-path Smart fill은 같은 corridor의 hook/API blocker를 batch로 최소화한 뒤 통과한 branch gate를 유지해 재시도
+
+## 0.1.1056 - 2026-07-18
+
+- Inspector 상단에 `Preparing page context`/`Page rendering is blocked`/`Page context is ready` 상태 카드와
+  `Fix next blocker`/`Reveal current file`/`Return to page` 다음 행동을 표시
+- tree 바로 위에 `Component`, `Current file`, `Page path`, `Condition`, `Preview value`, `Blocks rendering`
+  범례를 항상 노출하고 모든 tree row에도 `COMPONENT`/`CURRENT FILE`/`PAGE PATH`/`CONDITION`/
+  `PREVIEW VALUE`/`BLOCKER` 역할 문자를 직접 표시
+- condition, 이미 Auto/manual 값으로 통과한 hook/API, 실제 render stop을 같은 blocker로 칠하던 UX를 분리해
+  노란 condition, 파란 preview value, 붉은 active blocker로 구분하고 색상 외 icon·label·설명도 함께 제공
+- active blocker 행에는 `BLOCKS PAGE · CLICK TO FIX`를 표시하고 상세 화면 첫 부분에서 중단 이유와 Auto/JSON/
+  retry를 이용한 다음 행동을 쉬운 문장으로 설명
+- `Flow`/`Blocker` 탭과 단계 상태를 `Fix blockers`/`Fix blocker`, `Fix this first`, `Blocked by an earlier step`,
+  `Show next fix`처럼 행동 중심 용어로 변경하고 generated runtime의 구문 회귀 테스트를 추가
+
 ## 0.1.1055 - 2026-07-18
 
 - Page Inspector의 성공 조건을 단순 target boundary mount에서 `authored page root commit + 같은 렌더의

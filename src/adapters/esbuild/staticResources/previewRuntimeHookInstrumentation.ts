@@ -19,7 +19,10 @@ import {
   createPreviewRuntimeHookCallResultFallback,
 } from './previewRuntimeHookCallResult';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
-import { createPreviewRuntimeHookDirectUsageFallback } from './previewRuntimeHookDirectUsage';
+import {
+  createPreviewRuntimeHookDirectUsageFallback,
+  isPreviewRuntimeHookCallableJsxValue,
+} from './previewRuntimeHookDirectUsage';
 import { inferPreviewRuntimeHookGuardPassFallback } from './previewRuntimeHookGuardValue';
 import {
   readPreviewRuntimeHookAliasUsagePaths,
@@ -36,6 +39,7 @@ import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComp
 import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
 import { readPreviewRuntimeHookIdentityAliasCollectionUsages } from './previewRuntimeHookIdentityAliases';
+import { inferPreviewRuntimeLocalHelperArrayItemFallback } from './previewRuntimeHookLocalHelperItem';
 import {
   readPreviewRuntimeQueryParamDefaultExpression,
   readPreviewRuntimeQueryStatesDefaults,
@@ -617,6 +621,7 @@ function createIdentifierUsageFallback(
         const collection =
           spreadCollection || isPreviewRuntimeHookArrayUsageProperty(collectionProperty);
         const terminalCalled = ts.isCallExpression(node.parent) && node.parent.expression === node;
+        const terminalCallable = terminalCalled || isPreviewRuntimeHookCallableJsxValue(node);
         const callResultFallback =
           terminalCalled && !collection && ts.isCallExpression(node.parent)
             ? createPreviewRuntimeHookCallResultFallback(
@@ -654,7 +659,7 @@ function createIdentifierUsageFallback(
         } else if (paths.length + optionalPaths.length < 64 && usagePath.names.length <= 12) {
           const target = usagePath.optional ? optionalPaths : paths;
           target.push({
-            called: !collection && !stringReceiver && terminalCalled,
+            called: !collection && !stringReceiver && terminalCallable,
             ...(callResultFallback === undefined
               ? {}
               : { callResultExpression: callResultFallback.expression }),
@@ -773,20 +778,15 @@ function createIdentifierUsageFallback(
 }
 
 /** Infers the first array-callback parameter from the fields actually read inside that callback. */
-function inferPreviewRuntimeArrayItemFallback(
+const inferPreviewRuntimeArrayItemFallback = (
   propertyAccess: ts.PropertyAccessExpression,
   sourceFile: ts.SourceFile,
-): PreviewRuntimeHookValueFallback | undefined {
-  const call = propertyAccess.parent;
-  if (!ts.isCallExpression(call) || call.expression !== propertyAccess) return undefined;
-  const callbackArgument = call.arguments[0];
-  if (callbackArgument === undefined) return undefined;
-  const callback = unwrapExpression(callbackArgument);
-  if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) return undefined;
-  const itemParameter = callback.parameters[0];
-  if (itemParameter === undefined || itemParameter.dotDotDotToken !== undefined) return undefined;
-  return createBindingFallback(itemParameter.name, sourceFile);
-}
+): PreviewRuntimeHookValueFallback | undefined =>
+  inferPreviewRuntimeLocalHelperArrayItemFallback(
+    propertyAccess,
+    sourceFile,
+    createBindingFallback,
+  );
 
 /** Uses a literal comparison near one identifier when semantic naming alone is inconclusive. */
 function findComparedLiteralFallback(

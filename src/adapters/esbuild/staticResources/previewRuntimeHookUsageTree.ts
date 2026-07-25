@@ -148,6 +148,16 @@ function addUsagePath(
   root: PreviewRuntimeHookUsageNode,
   path_: PreviewRuntimeHookAliasUsagePath,
 ): void {
+  if (path_.names.length === 0) {
+    /*
+     * A value-choice alias can preserve the hook root itself:
+     * `const data = hookResult || {}; data.map(...)`.
+     * There is no property segment to enter in that case, but the collection/call evidence still
+     * constrains the root value. Dropping it serializes `{}` and merely moves failure to `.map()`.
+     */
+    root.expression = createUsagePathExpression(path_, 'value', root.expression);
+    return;
+  }
   let current = root;
   for (const [index, propertyName] of path_.names.entries()) {
     let child = current.children.get(propertyName);
@@ -157,20 +167,30 @@ function addUsagePath(
     }
     current = child;
     if (index !== path_.names.length - 1) continue;
-    current.expression =
-      path_.valueExpression ??
-      (path_.collectionProperty !== undefined
-        ? path_.collectionItemExpression === undefined
-          ? 'Object.freeze([])'
-          : `Object.freeze([${path_.collectionItemExpression}])`
-        : path_.stringProperty !== undefined
-          ? JSON.stringify(createPreviewRuntimeSemanticString(propertyName))
-          : path_.called
-            ? createPreviewRuntimeCallableFallbackExpression(path_.callResultExpression)
-            : (current.expression ??
-              inferPreviewRuntimeSemanticFallback(propertyName)?.expression ??
-              'Object.freeze({})'));
+    current.expression = createUsagePathExpression(path_, propertyName, current.expression);
   }
+}
+
+/** Chooses the strongest terminal expression for one normalized usage path. */
+function createUsagePathExpression(
+  path_: PreviewRuntimeHookAliasUsagePath,
+  semanticName: string,
+  existingExpression?: string,
+): string {
+  return (
+    path_.valueExpression ??
+    (path_.collectionProperty !== undefined
+      ? path_.collectionItemExpression === undefined
+        ? 'Object.freeze([])'
+        : `Object.freeze([${path_.collectionItemExpression}])`
+      : path_.stringProperty !== undefined
+        ? JSON.stringify(createPreviewRuntimeSemanticString(semanticName))
+        : path_.called
+          ? createPreviewRuntimeCallableFallbackExpression(path_.callResultExpression)
+          : (existingExpression ??
+            inferPreviewRuntimeSemanticFallback(semanticName)?.expression ??
+            'Object.freeze({})'))
+  );
 }
 
 /** Creates a short stable string leaf without exposing arbitrary application text. */

@@ -49,7 +49,9 @@ export function inferPreviewRuntimeHookGuardPassFallback(
   const value = [...demandedValues][0] ?? false;
   return {
     expression: String(value),
+    kind: 'boolean',
     label: `generated Boolean ${String(value)} to continue past an early return`,
+    value,
   };
 }
 

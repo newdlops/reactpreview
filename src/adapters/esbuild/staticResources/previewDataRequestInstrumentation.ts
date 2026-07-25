@@ -47,6 +47,8 @@ interface PreviewDataRequestMetadata {
   readonly method: string;
   /** Authored function or component that directly initiated the request. */
   readonly ownerName?: string;
+  /** Fetch body conversion proven from `.json()` or `.text()` consumption in the same flow. */
+  readonly responseBodyKind?: 'json' | 'text';
   /** Inferred payload type tree. */
   readonly shape: PreviewDataShape;
   /** Absolute source identity retained inside the local webview. */
@@ -204,6 +206,7 @@ function createPreviewDataRequestReplacement(
     call.arguments.length <= 2
   ) {
     const responseType = findFetchResponseType(call);
+    const responseBodyKind = findFetchResponseBodyKind(call);
     const fetchMethod = readStaticFetchMethod(call.arguments[1]);
     const metadata = createRequestMetadata(
       call,
@@ -214,6 +217,7 @@ function createPreviewDataRequestReplacement(
       responseType,
       inventory,
       call.arguments[1] === undefined || fetchMethod !== undefined,
+      responseBodyKind,
     );
     const argumentsText = call.arguments.map((argument) => argument.getText(sourceFile));
     return {
@@ -270,6 +274,7 @@ function createRequestMetadata(
   responseType: ts.TypeNode | undefined,
   inventory: PreviewDataSourceInventory,
   includeStaticIdentity = true,
+  responseBodyKind?: 'json' | 'text',
 ): PreviewDataRequestMetadata {
   const location = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
   const url = endpoint === undefined ? undefined : readStaticEndpoint(endpoint);
@@ -301,9 +306,54 @@ function createRequestMetadata(
     line: location.line + 1,
     method,
     ...(ownerName === undefined ? {} : { ownerName }),
+    ...(responseBodyKind === undefined ? {} : { responseBodyKind }),
     shape,
     sourcePath: path.normalize(sourcePath),
   };
+}
+
+/**
+ * Reads the unique Fetch body conversion in the containing statement.
+ *
+ * Promise callbacks such as `fetch(url).then((response) => response.text())` remain inside that
+ * statement. If both JSON and text consumers occur, the analyzer leaves the response unspecified
+ * rather than choosing an incompatible body for one branch.
+ */
+function findFetchResponseBodyKind(call: ts.CallExpression): 'json' | 'text' | undefined {
+  let boundary: ts.Node = call;
+  while (!ts.isStatement(boundary) && !ts.isSourceFile(boundary)) boundary = boundary.parent;
+  const kinds = new Set<'json' | 'text'>();
+  const visit = (node: ts.Node, responseBinding?: string): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      (node.expression.name.text === 'json' || node.expression.name.text === 'text') &&
+      (responseBinding === undefined ||
+        (ts.isIdentifier(node.expression.expression) &&
+          node.expression.expression.text === responseBinding))
+    ) {
+      kinds.add(node.expression.name.text);
+    }
+    ts.forEachChild(node, (child) => {
+      visit(child, responseBinding);
+    });
+  };
+  visit(boundary);
+  let ancestor: ts.Node = call;
+  while (!ts.isStatement(ancestor) && !ts.isSourceFile(ancestor)) {
+    ancestor = ancestor.parent;
+    if (
+      ts.isVariableDeclaration(ancestor) &&
+      ts.isIdentifier(ancestor.name) &&
+      ancestor.initializer !== undefined
+    ) {
+      let scope: ts.Node = boundary;
+      while (!ts.isBlock(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
+      visit(scope, ancestor.name.text);
+      break;
+    }
+  }
+  return kinds.size === 1 ? [...kinds][0] : undefined;
 }
 
 /** Finds the nearest authored function so a request blocker can stay on its component path. */

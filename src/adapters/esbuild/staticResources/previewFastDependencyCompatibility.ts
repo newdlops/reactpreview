@@ -29,6 +29,8 @@ const NATIVE_HOOK_MODULES = new Set([
 const CUSTOM_HOOK_NAME_PATTERN = /^use[A-Z0-9_$][A-Za-z0-9_$]*$/u;
 const IMPORT_DECLARATION_PATTERN =
   /\bimport\s+(?:type\s+)?([\s\S]{1,480}?)\s+from\s+(['"])([^'"]+)\2/gu;
+const STATIC_RENDER_ASSET_PATTERN =
+  /(?:\b(?:background(?:Image)?|href|icon|image(?:Url)?|poster|src(?:Set)?|xlinkHref)\s*(?:=|:)\s*(?:\{?\s*)?["'`]|\b[A-Za-z_$][\w$]*(?:asset|avatar|background|icon|image|img|logo|poster|src|url|uri)\s*=\s*["'`])/iu;
 
 /**
  * Returns whether one reached dependency needs preview-specific source rewriting in a fast build.
@@ -43,6 +45,7 @@ export function requiresFastDependencyCompatibility(
     sourceText.includes('import.meta.glob') ||
     sourceText.includes('require.context') ||
     (sourceText.includes('new URL') && sourceText.includes('import.meta.url')) ||
+    STATIC_RENDER_ASSET_PATTERN.test(sourceText) ||
     /\bimport\s*\(\s*(?!["'])/u.test(sourceText) ||
     /\brequire\s*\(\s*(?!["'])/u.test(sourceText)
   ) {

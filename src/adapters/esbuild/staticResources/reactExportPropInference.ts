@@ -1,15 +1,16 @@
 /**
  * Infers bounded preview-only prop values from exported component syntax and direct value usage.
- * The analysis never resolves or executes project modules. It materializes only containers needed
- * to evaluate proven property paths plus neutral primitives/functions justified by local types or
- * operations, leaving final unknown leaves absent so ordinary falsey UI branches remain natural.
+ * It never executes project modules and materializes only syntax-proven containers, primitives, and
+ * functions; unproven leaves stay absent so ordinary falsey UI branches remain natural.
  */
 import path from 'node:path';
 import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
+import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 import { inferReactOverlayVisibilityProp } from './reactOverlayVisibilityInference';
+import { inferReactOverlayVisibilityTypeProp } from './reactOverlayVisibilityTypeInference';
 import { inferReactOverlayVisibilityNeutralValue } from './reactOverlayVisibilityNeutralValue';
 
 const MAX_COMPONENT_EXPORTS = 32;
@@ -161,7 +162,7 @@ function inferComponentProps(
   );
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
-  addOverlayVisibilityRequirement(component, state);
+  addOverlayVisibilityRequirement(component, state, sourceFile);
   if (state.root.children.size === 0) {
     return undefined;
   }
@@ -178,8 +179,16 @@ function inferComponentProps(
 function addOverlayVisibilityRequirement(
   component: ExportedComponentFunction,
   state: InferenceState,
+  sourceFile: ts.SourceFile,
 ): void {
-  const propName = inferReactOverlayVisibilityProp(component.functionLike, component.exportName);
+  const propName =
+    inferReactOverlayVisibilityProp(component.functionLike, component.exportName) ??
+    inferReactOverlayVisibilityTypeProp(
+      component.functionLike,
+      component.exportName,
+      component.contextualPropsType,
+      sourceFile,
+    );
   if (propName !== undefined) requirePath(state, [propName], 'boolean', 'usage', true);
 }
 
@@ -467,7 +476,10 @@ function addOperationRequirement(
     parent.operator === ts.SyntaxKind.ExclamationToken &&
     parent.operand === node
   ) {
-    requirePath(state, path_, 'boolean', 'usage', false);
+    /* Negation proves truthiness, not Boolean type. Preserve a semantic URL/data value so an exact
+     * target can pass `if (!value) return null` instead of receiving a self-defeating `false`. */
+    const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
+    requirePath(state, path_, semantic?.kind ?? 'boolean', 'usage', semantic?.value ?? false);
     return;
   }
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node) {
@@ -491,7 +503,54 @@ function addOperationRequirement(
     (ts.isSpreadElement(parent) && ts.isArrayLiteralExpression(parent.parent))
   ) {
     requirePath(state, path_, 'array', 'usage');
+    return;
   }
+  if (
+    path_.length > 1 &&
+    !hasPreviewInferredPropTerminal(state, path_) &&
+    isReactRenderedValueExpression(node)
+  ) {
+    const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
+    if (semantic !== undefined) {
+      requirePath(state, path_, semantic.kind, 'usage', semantic.value);
+    }
+  }
+}
+
+/** Reports whether type or prior operation evidence already owns the final prop-path value kind. */
+function hasPreviewInferredPropTerminal(state: InferenceState, path_: readonly string[]): boolean {
+  let current = state.root;
+  for (const propertyName of path_) {
+    const child = current.children.get(propertyName);
+    if (child === undefined) return false;
+    current = child;
+  }
+  return current.kind !== 'object' || current.children.size > 0;
+}
+
+/**
+ * Reports whether one prop-derived value reaches JSX output. Semantic keys may seed that leaf while
+ * syntax-only wrappers are skipped without following calls or changing unrelated control flow.
+ */
+function isReactRenderedValueExpression(node: ts.Expression): boolean {
+  let current: ts.Expression = node;
+  let parent = current.parent;
+  while (
+    ts.isParenthesizedExpression(parent) ||
+    ts.isAsExpression(parent) ||
+    ts.isSatisfiesExpression(parent) ||
+    ts.isNonNullExpression(parent) ||
+    ts.isTypeAssertionExpression(parent)
+  ) {
+    current = parent;
+    parent = current.parent;
+  }
+  if (!ts.isJsxExpression(parent) || parent.expression !== current) return false;
+  return (
+    ts.isJsxAttribute(parent.parent) ||
+    ts.isJsxElement(parent.parent) ||
+    ts.isJsxFragment(parent.parent)
+  );
 }
 
 /** Finds the shallowest optional receiver so neutral props preserve authored short-circuiting. */

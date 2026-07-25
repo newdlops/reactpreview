@@ -10,8 +10,12 @@
 export interface PreviewRuntimeSemanticFallback {
   /** Side-effect-free JavaScript expression evaluated only by the Page Inspector boundary. */
   readonly expression: string;
+  /** Data family shared with component-prop inference without evaluating the expression text. */
+  readonly kind: 'array' | 'boolean' | 'function' | 'null' | 'number' | 'object' | 'string';
   /** Concise generated-value description displayed in blocker diagnostics. */
   readonly label: string;
+  /** Optional JSON-safe scalar retained when the semantic fallback has one stable literal value. */
+  readonly value?: boolean | number | string | null;
 }
 
 /** Infers a static scalar, collection, object, or no-op function from a semantic local name. */
@@ -25,12 +29,14 @@ export function inferPreviewRuntimeSemanticFallback(
   if (/^(?:is|matches)(?:large|wide|desktop)/u.test(normalized)) {
     return {
       expression: `(typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) >= 1024)`,
+      kind: 'boolean',
       label: 'generated viewport match',
     };
   }
   if (/^(?:is|matches)(?:small|narrow|mobile)/u.test(normalized)) {
     return {
       expression: `(typeof globalThis !== 'undefined' && Number(globalThis.innerWidth) < 768)`,
+      kind: 'boolean',
       label: 'generated viewport match',
     };
   }
@@ -40,7 +46,12 @@ export function inferPreviewRuntimeSemanticFallback(
       normalized,
     )
   ) {
-    return { expression: 'false', label: 'generated boolean false' };
+    return {
+      expression: 'false',
+      kind: 'boolean',
+      label: 'generated boolean false',
+      value: false,
+    };
   }
   if (
     /^(?:set|on|handle|toggle|open|close|submit|refetch|refresh|mutate|dispatch|navigate|reset|update|remove|add)(?=[A-Z0-9_$]|$)/u.test(
@@ -48,39 +59,55 @@ export function inferPreviewRuntimeSemanticFallback(
     ) ||
     /(?:handler|callback)$/u.test(normalized)
   ) {
-    return { expression: 'Object.freeze(() => undefined)', label: 'generated no-op function' };
+    return {
+      expression: 'Object.freeze(() => undefined)',
+      kind: 'function',
+      label: 'generated no-op function',
+    };
   }
   if (
     /(?:items|rows|list|options|results|nodes|edges|records|files|users|companies)$/u.test(
       normalized,
     )
   ) {
-    return { expression: 'Object.freeze([])', label: 'generated empty list' };
+    return { expression: 'Object.freeze([])', kind: 'array', label: 'generated empty list' };
   }
   if (
     /(?:count|total|index|length|size|page|amount|rate|percent|number|seconds|milliseconds|durationms|timestamp)$/u.test(
       normalized,
     )
   ) {
-    return { expression: '0', label: 'generated number 0' };
+    return { expression: '0', kind: 'number', label: 'generated number 0', value: 0 };
   }
   if (
     /(?:props|context|form|data|filter|params|state|values|config|settings|location|router|navigation|user|company|fragment)$/u.test(
       normalized,
     )
   ) {
-    return { expression: 'Object.freeze({})', label: 'generated object' };
+    return { expression: 'Object.freeze({})', kind: 'object', label: 'generated object' };
   }
   if (/(?:fallback|element|component|children|content)$/u.test(normalized)) {
-    return { expression: 'null', label: 'generated empty render value' };
+    return {
+      expression: 'null',
+      kind: 'null',
+      label: 'generated empty render value',
+      value: null,
+    };
   }
   if (/(?:error|exception)$/u.test(normalized)) {
-    return { expression: 'null', label: 'generated empty error value' };
+    return {
+      expression: 'null',
+      kind: 'null',
+      label: 'generated empty error value',
+      value: null,
+    };
   }
   if (/(?:search|query)$/u.test(normalized)) {
     return {
       expression: JSON.stringify(createPreviewRuntimeSemanticString(semanticName)),
+      kind: 'string',
       label: 'generated key text',
+      value: createPreviewRuntimeSemanticString(semanticName),
     };
   }
   if (
@@ -90,7 +117,9 @@ export function inferPreviewRuntimeSemanticFallback(
   ) {
     return {
       expression: JSON.stringify(createPreviewRuntimeSemanticString(semanticName)),
+      kind: 'string',
       label: 'generated key text',
+      value: createPreviewRuntimeSemanticString(semanticName),
     };
   }
   return undefined;

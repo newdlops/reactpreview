@@ -45,6 +45,16 @@ function readPreviewAutomaticPropEntries(value) {
   }
 }
 
+/** Detects the empty plain record emitted by a missing parent hook, Context, or request payload. */
+function isPreviewAutomaticNeutralEmptyRecord(value) {
+  if (!isPreviewAutomaticPropRecord(value)) return false;
+  try {
+    return Reflect.ownKeys(Object.getOwnPropertyDescriptors(value)).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Materializes one validated shape node under fixed depth and aggregate node budgets. */
 function materializePreviewAutomaticPropNode(node, budget, depth) {
   if (
@@ -84,9 +94,41 @@ function materializePreviewAutomaticProps(shape) {
   return isPreviewAutomaticPropRecord(value) ? value : {};
 }
 
-/** Recursively overlays one authored layer while retaining only its missing inferred branches. */
-function overlayPreviewAutomaticPropValue(inferredValue, authoredValue, budget, depth) {
+/**
+ * Recursively overlays one authored layer while retaining only its missing inferred branches.
+ *
+ * The first automatic layer can be parent props produced by another preview fallback. When local
+ * component syntax proves an Array/scalar/function contract, a neutral empty record from that layer
+ * is not meaningful authored data and must not replace the type-correct inferred value. Later setup,
+ * resolver, and user layers remain authoritative so explicit Inspector edits are still observable.
+ */
+function overlayPreviewAutomaticPropValue(
+  inferredValue,
+  authoredValue,
+  budget,
+  depth,
+  repairNeutralPlaceholder,
+  repairNullishPlaceholder,
+) {
   if (authoredValue === undefined) return inferredValue;
+  if (
+    repairNullishPlaceholder === true &&
+    authoredValue === null &&
+    inferredValue !== undefined &&
+    inferredValue !== null
+  ) return inferredValue;
+  const inferredType = typeof inferredValue;
+  if (
+    repairNeutralPlaceholder === true &&
+    isPreviewAutomaticNeutralEmptyRecord(authoredValue) &&
+    (
+      Array.isArray(inferredValue) ||
+      inferredType === 'boolean' ||
+      inferredType === 'function' ||
+      inferredType === 'number' ||
+      inferredType === 'string'
+    )
+  ) return inferredValue;
   if (
     !isPreviewAutomaticPropRecord(inferredValue) ||
     !isPreviewAutomaticPropRecord(authoredValue) ||
@@ -96,20 +138,56 @@ function overlayPreviewAutomaticPropValue(inferredValue, authoredValue, budget, 
   const result = { ...inferredValue };
   for (const [name, value] of readPreviewAutomaticPropEntries(authoredValue)) {
     if (blockedPreviewAutomaticPropNames.has(name)) continue;
-    result[name] = overlayPreviewAutomaticPropValue(result[name], value, budget, depth + 1);
+    result[name] = overlayPreviewAutomaticPropValue(
+      result[name],
+      value,
+      budget,
+      depth + 1,
+      repairNeutralPlaceholder,
+      repairNullishPlaceholder,
+    );
   }
   return result;
 }
 
-/** Materializes inferred props and overlays each lower-to-higher-priority authored prop record. */
-function createPreviewPropsFromLayers(shape, ...layers) {
+/**
+ * Materializes inferred props and overlays each lower-to-higher-priority authored prop record.
+ *
+ * Only the first layer can be an automatically observed parent-prop snapshot. Subsequent layers are
+ * explicit setup/export/Inspector values and therefore keep normal JavaScript overwrite semantics.
+ */
+function createPreviewPropsFromLayersWithPolicy(shape, repairFirstNullishPlaceholder, layers) {
   let result = materializePreviewAutomaticProps(shape);
-  for (const layer of layers) {
+  for (const [layerIndex, layer] of layers.entries()) {
     if (isPreviewAutomaticPropRecord(layer)) {
-      result = overlayPreviewAutomaticPropValue(result, layer, { nodes: 0 }, 0);
+      result = overlayPreviewAutomaticPropValue(
+        result,
+        layer,
+        { nodes: 0 },
+        0,
+        shape !== undefined && shape !== null && layerIndex === 0,
+        repairFirstNullishPlaceholder === true && layerIndex === 0,
+      );
     }
   }
   return result;
+}
+
+/** Preserves authored null sentinels for ordinary roots, setup values, and user-edited props. */
+function createPreviewPropsFromLayers(shape, ...layers) {
+  return createPreviewPropsFromLayersWithPolicy(shape, false, layers);
+}
+
+/**
+ * Repairs an automatic parent's null sentinel only for the exact selected component boundary.
+ *
+ * Page Inspector may force that component's local non-null prop gate so the selected file becomes
+ * visible. In that narrow case retaining the parent's dormant null while forcing the branch creates
+ * an impossible authored state. Local prop-shape evidence supplies the smallest coherent value;
+ * later resolver and user layers remain authoritative and may explicitly restore null.
+ */
+function createPreviewTargetPropsFromLayers(shape, ...layers) {
+  return createPreviewPropsFromLayersWithPolicy(shape, true, layers);
 }
 `;
 }

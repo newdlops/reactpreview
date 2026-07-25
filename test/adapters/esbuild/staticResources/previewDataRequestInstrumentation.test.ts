@@ -27,6 +27,22 @@ describe('instrumentPreviewDataRequests', () => {
     expect(transformed).toContain('"salary":{"kind":"number"}');
     expect(transformed).toContain('"evidence":"TypeScript: Employee"');
     expect(transformed).toContain('"ownerName":"loadEmployees"');
+    expect(transformed).toContain('"responseBodyKind":"json"');
+  });
+
+  /** Marks promise-chain text consumers so document viewers receive a renderable body, not JSON. */
+  it('records compiler-proven fetch text consumption', () => {
+    const source = [
+      'export function loadDocument(url) {',
+      '  return fetch(url).then((response) => response.text()).then((html) =>',
+      '    html.replace("</head>", "<style></style></head>"));',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentPreviewDataRequests('/workspace/document-viewer.tsx', source);
+
+    expect(transformed).toContain('"responseBodyKind":"text"');
+    expect(transformed).toContain('"ownerName":"loadDocument"');
   });
 
   /** Avoids rewriting similarly named project clients and any module that shadows global fetch. */

@@ -23,6 +23,16 @@ const POSITIVE_OVERLAY_VISIBILITY_PROPS = new Set([
   'visible',
 ]);
 
+/** Reports whether a component/export label conventionally owns portal or overlay visibility. */
+export function isReactOverlayComponentName(value: string): boolean {
+  return OVERLAY_COMPONENT_NAME_PATTERN.test(value);
+}
+
+/** Reports whether one public prop name conventionally controls positive overlay visibility. */
+export function isReactOverlayVisibilityPropName(value: string): boolean {
+  return POSITIVE_OVERLAY_VISIBILITY_PROPS.has(normalizeVisibilityPropName(value));
+}
+
 /** Function-like component body accepted without invoking TypeScript's type checker. */
 export type ReactOverlayFunctionLike =
   ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
@@ -38,14 +48,13 @@ export function inferReactOverlayVisibilityProp(
   exportName: string,
 ): string | undefined {
   const ownerName = readFunctionLikeName(functionLike) ?? exportName;
-  if (!OVERLAY_COMPONENT_NAME_PATTERN.test(ownerName)) return undefined;
+  if (!isReactOverlayComponentName(ownerName)) return undefined;
   const parameter = functionLike.parameters[0];
   if (parameter === undefined || !ts.isObjectBindingPattern(parameter.name)) return undefined;
   const explicitPaths = parameter.name.elements.flatMap((element) => {
     if (element.dotDotDotToken !== undefined) return [];
     const propertyName = readBindingPropertyName(element);
-    return propertyName !== undefined &&
-      POSITIVE_OVERLAY_VISIBILITY_PROPS.has(normalizeVisibilityPropName(propertyName))
+    return propertyName !== undefined && isReactOverlayVisibilityPropName(propertyName)
       ? [propertyName]
       : [];
   });
@@ -70,7 +79,7 @@ export function inferReactOverlayVisibilityProp(
  */
 export function isReactOverlayVisibilityJsxAttribute(attribute: ts.JsxAttribute): boolean {
   const attributeName = attribute.name.getText();
-  if (!POSITIVE_OVERLAY_VISIBILITY_PROPS.has(normalizeVisibilityPropName(attributeName))) {
+  if (!isReactOverlayVisibilityPropName(attributeName)) {
     return false;
   }
   const attributes = attribute.parent;
@@ -79,7 +88,7 @@ export function isReactOverlayVisibilityJsxAttribute(attribute: ts.JsxAttribute)
   return opening.tagName
     .getText()
     .split('.')
-    .some((segment) => OVERLAY_COMPONENT_NAME_PATTERN.test(segment));
+    .some((segment) => isReactOverlayComponentName(segment));
 }
 
 /** Reads a stable authored owner name through the local HOC function candidate. */
@@ -113,7 +122,7 @@ function findForwardedOverlayOpening(
       const opening = node.parent.parent;
       if (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) {
         const tag = opening.tagName.getText();
-        if (tag.split('.').some((segment) => OVERLAY_COMPONENT_NAME_PATTERN.test(segment))) {
+        if (tag.split('.').some((segment) => isReactOverlayComponentName(segment))) {
           selected = opening;
           return;
         }
@@ -139,7 +148,7 @@ function readExplicitForwardedVisibilityProp(
     const initializer = property.initializer;
     if (initializer === undefined || !ts.isJsxExpression(initializer)) return [];
     const attributeName = property.name.getText();
-    if (!POSITIVE_OVERLAY_VISIBILITY_PROPS.has(normalizeVisibilityPropName(attributeName))) {
+    if (!isReactOverlayVisibilityPropName(attributeName)) {
       return [];
     }
     const expression = initializer.expression;

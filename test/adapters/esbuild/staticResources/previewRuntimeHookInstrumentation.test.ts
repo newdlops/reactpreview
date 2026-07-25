@@ -191,6 +191,25 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["showCreate()","renderModalForm()"]');
   });
 
+  /** Treats a property-shaped hook result passed to a JSX event prop as a deferred function call. */
+  it('infers deep JSX event properties as callable fallback values', () => {
+    const source = [
+      `import { useAgreementModals } from './use-agreement-modals';`,
+      'export function Panel() {',
+      '  const modals = useAgreementModals();',
+      '  return <Button onClick={modals.requestBulkUpload}>Upload</Button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Panel.tsx', source),
+    );
+
+    expect(transformed).toContain('"requestBulkUpload": Object.freeze(() => undefined)');
+    expect(transformed).toContain('"requiredPaths":["requestBulkUpload()"]');
+  });
+
   /**
    * Preserves the iterable return contract of a hook-provided function and chooses the Boolean that
    * continues past an authored early-return guard.
@@ -404,6 +423,37 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain(
       '"requiredPaths":["[].pageGroups.forEach()","[].pageGroups[].pages.forEach()","[].pageGroups[].pages[].activeRoutes[]"]',
     );
+  });
+
+  /**
+   * Carries collection-item demand through a uniquely declared same-file formatter/helper call.
+   */
+  it('materializes fields read by a local helper invoked from an array callback', () => {
+    const source = [
+      `import { useAppContext } from './use-app-context';`,
+      'function getCompanyLink(company) {',
+      '  const { my: { role: { hasOwnerAccess } } } = company;',
+      '  return hasOwnerAccess ? company.id : company.shortName;',
+      '}',
+      'export function CompanyList() {',
+      '  const { companies } = useAppContext();',
+      '  return <nav>{companies.map((company) => (',
+      '    <a href={getCompanyLink(company)}>{company.name}</a>',
+      '  ))}</nav>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/CompanyList.tsx', source),
+    );
+
+    expect(transformed).toContain(
+      'Object.freeze(Object.assign({}, Object.freeze({ "name": "name" }), Object.freeze({ "id": "preview-id", "my": Object.freeze({ "role": Object.freeze({ "hasOwnerAccess": false }) })',
+    );
+    expect(transformed).toContain('"id": "preview-id"');
+    expect(transformed).toContain('"shortName": "shortName"');
+    expect(transformed).toContain('"companies.[].my.role.hasOwnerAccess"');
   });
 
   /** Carries collection demand back through a pure memo identity and later object destructuring. */
@@ -622,6 +672,26 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('Object.freeze(["button"])');
     expect(transformed).toContain('"requiredPaths":["[]"]');
     expect(transformed).not.toContain('Object.freeze({ id: "preview-id", name: "name" })');
+  });
+
+  /** Retains root collection demand through a value-choice alias instead of emitting an empty object. */
+  it('infers an array root through a nullish or fallback alias', () => {
+    const source = [
+      `import { useRows } from './use-rows';`,
+      'export function RowList() {',
+      '  const response = useRows();',
+      '  const data = response || {};',
+      '  return data.map((row) => <span>{String(row)}</span>);',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/RowList.tsx', source),
+    );
+
+    expect(transformed).toContain('() => (Object.freeze([]))');
+    expect(transformed).toContain('"requiredPaths":["map()"]');
   });
 
   /** Reuses authored Nuqs parser defaults so registry-backed query values stay in their domain. */

@@ -3,6 +3,22 @@ import { requiresFastDependencyCompatibility } from '../../../../src/adapters/es
 
 /** Verifies the provisional native-parser boundary remains fast without dropping mount contracts. */
 describe('requiresFastDependencyCompatibility', () => {
+  /** Keeps literal render assets on the exact source path so public URLs become bundle imports. */
+  it('retains static JSX and variable render asset values during fast preparation', () => {
+    expect(
+      requiresFastDependencyCompatibility(
+        'export const Logo = () => <img src="/logo.png" />;',
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      requiresFastDependencyCompatibility(
+        'const companyLogoUrl = "/logo.png"; export const Logo = () => <img src={companyLogoUrl} />;',
+        false,
+      ),
+    ).toBe(true);
+  });
+
   /** Plain TSX and literal lazy imports are native esbuild inputs and need no preview AST pass. */
   it('passes ordinary component dependencies through', () => {
     expect(

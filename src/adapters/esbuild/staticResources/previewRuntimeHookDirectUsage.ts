@@ -118,6 +118,18 @@ function isCallableJsxAttribute(node: ts.Node): boolean {
   return /^(?:on[A-Z0-9_$]|render[A-Z0-9_$])/u.test(node.name.text);
 }
 
+/**
+ * Reports whether an expression is supplied to a React event/render callback attribute.
+ *
+ * Property-shaped hook results such as `modal.open` do not contain an authored call expression,
+ * but React will call them later. Exposing this syntax fact lets deep hook fallback generation emit
+ * a no-op function instead of an object that would fail only after the user clicks the preview.
+ */
+export function isPreviewRuntimeHookCallableJsxValue(expression: ts.Expression): boolean {
+  const parent = unwrapParentNode(expression);
+  return ts.isJsxExpression(parent) && isCallableJsxAttribute(parent.parent);
+}
+
 /** Recognizes React's explicit `children` prop as rendered content rather than an opaque prop. */
 function isChildrenJsxAttribute(node: ts.Node): boolean {
   return ts.isJsxAttribute(node) && ts.isIdentifier(node.name) && node.name.text === 'children';

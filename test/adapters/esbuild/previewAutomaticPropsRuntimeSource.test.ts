@@ -75,4 +75,59 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
 
     expect(context.result).toEqual({ getterCalls: 0, value: '' });
   });
+
+  /**
+   * Keeps a locally proven Array prop when an ancestor's generated payload supplied a neutral `{}`.
+   */
+  it('repairs a neutral parent placeholder with the inferred component prop kind', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { data: { kind: 'array' } } };",
+        'const automatic = createPreviewPropsFromLayers(shape, { data: {} });',
+        'const overridden = createPreviewPropsFromLayers(shape, { data: {} }, { data: { manual: true } });',
+        'globalThis.result = {',
+        '  automaticIsArray: Array.isArray(automatic.data),',
+        '  mappedLength: automatic.data.map(String).length,',
+        '  manual: overridden.data.manual,',
+        '};',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({
+      automaticIsArray: true,
+      manual: true,
+      mappedLength: 0,
+    });
+  });
+
+  /**
+   * Repairs a dormant parent's null only at the exact selected target whose local guard is forced.
+   */
+  it('materializes a coherent selected-target prop while preserving ordinary explicit null', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { file: { kind: 'object', properties: { documentId: { kind: 'string', value: 'documentId' } } } } };",
+        'const ordinary = createPreviewPropsFromLayers(shape, { file: null });',
+        'const selected = createPreviewTargetPropsFromLayers(shape, { file: null });',
+        'const overridden = createPreviewTargetPropsFromLayers(shape, { file: null }, { file: null });',
+        'globalThis.result = {',
+        '  ordinary: ordinary.file,',
+        '  selectedDocumentId: selected.file.documentId,',
+        '  overridden: overridden.file,',
+        '};',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({
+      ordinary: null,
+      overridden: null,
+      selectedDocumentId: 'documentId',
+    });
+  });
 });

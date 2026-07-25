@@ -3,6 +3,80 @@ import { describe, expect, it } from 'vitest';
 import { collectReactExportPropInference } from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
 
 describe('collectReactExportPropInference', () => {
+  /**
+   * Retains the non-null object branch needed when Inspector reveals an authored dormant target.
+   */
+  it('infers a guarded nullable object prop for exact-target materialization', () => {
+    const source = [
+      'interface PreviewFile { documentId: string; fileName: string; }',
+      'export function DocumentModal({ file }: { file: PreviewFile | null }) {',
+      '  if (file == null) return null;',
+      '  return <form key={file.documentId}>{file.fileName}</form>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/DocumentModal.tsx', source);
+
+    expect(result.DocumentModal?.shape).toEqual({
+      kind: 'object',
+      properties: {
+        file: {
+          kind: 'object',
+          properties: {
+            documentId: { kind: 'string' },
+            fileName: { kind: 'string' },
+          },
+        },
+      },
+    });
+  });
+
+  /**
+   * Keeps locally observable prop requirements when a component intersects them with an imported
+   * overlay contract. The unresolved Pick branch must not discard the guarded object receiver, and
+   * an exact visibility key named by Pick remains a safe direct-preview choice.
+   */
+  it('infers guarded data and visibility through an imported overlay prop intersection', () => {
+    const source = [
+      "import { Modal } from './modal';",
+      "import type { ModalProps } from './modal';",
+      "import type { PreviewFile } from './file';",
+      'type DocumentModalProps = Pick<ModalProps, "onClose" | "show"> & {',
+      '  companyId: string;',
+      '  file: PreviewFile | null;',
+      '  onSaved: () => void;',
+      '};',
+      'export const DocumentModal = ({',
+      '  companyId, file, onSaved, ...modalProps',
+      '}: DocumentModalProps) => {',
+      '  if (file == null) return null;',
+      '  return (',
+      '    <Modal {...modalProps}>',
+      '      <form key={file.documentId} data-company={companyId}>',
+      '        <span>{file.fileName}</span>',
+      '        <button onClick={onSaved}>Save</button>',
+      '      </form>',
+      '    </Modal>',
+      '  );',
+      '};',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/DocumentModal.tsx', source);
+
+    expect(result.DocumentModal?.shape.properties).toMatchObject({
+      companyId: { kind: 'string' },
+      file: {
+        kind: 'object',
+        properties: {
+          documentId: { kind: 'string', value: 'preview-id' },
+          fileName: { kind: 'string', value: 'fileName' },
+        },
+      },
+      onSaved: { kind: 'function' },
+      show: { kind: 'boolean', value: true },
+    });
+  });
+
   /** Builds the minimum Formik-like containers needed by the reported `.value` failure. */
   it('infers nested receiver objects and callback no-op functions from direct usage', () => {
     const source = [
@@ -129,6 +203,39 @@ describe('collectReactExportPropInference', () => {
       variant: { kind: 'string', value: 'create' },
     });
     expect(result.Form?.shape.properties).not.toHaveProperty('optional');
+  });
+
+  /**
+   * Treats JavaScript truthiness as a value-family constraint rather than always inventing Boolean.
+   *
+   * The imported prop decorator intentionally remains unresolved. The selected URL's own name and
+   * `if (!selectedUrl) return null` usage are sufficient to create the non-empty string needed by
+   * exact-target null repair, matching styled viewers that fetch and render an iframe document.
+   */
+  it('infers a non-empty semantic URL through a styled target truthiness guard', () => {
+    const source = [
+      "import styled from 'styled-components';",
+      "import type { PropsWithClassName } from './typing';",
+      'type ViewerProps = { selectedUrl: string | null; height: number };',
+      'export const DocumentVersionViewer = styled((',
+      '  { className, selectedUrl, height }: PropsWithClassName<ViewerProps>,',
+      ') => {',
+      '  useEffect(() => { if (!selectedUrl) return; fetch(selectedUrl); }, [selectedUrl]);',
+      '  if (!selectedUrl) return null;',
+      '  return <iframe className={className} data-height={height} src={selectedUrl} />;',
+      '})`height: ${(props) => props.height}px;`;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/DocumentVersionViewer.tsx', source);
+
+    expect(result.DocumentVersionViewer?.shape.properties).toMatchObject({
+      selectedUrl: { kind: 'string', value: 'selectedUrl' },
+    });
+    expect(result.DocumentVersionViewer?.provenance).toContainEqual({
+      kind: 'string',
+      path: 'selectedUrl',
+      source: 'usage',
+    });
   });
 
   /** Carries a local component contract through nested styled/memo/forwardRef wrappers. */

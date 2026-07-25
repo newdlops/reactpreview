@@ -51,6 +51,7 @@ import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import { requiresFastDependencyCompatibility } from './previewFastDependencyCompatibility';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
+import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
 import {
   createDynamicTemplateDiscoveryPatterns,
   createDynamicTemplateLoaderProperties,
@@ -173,6 +174,16 @@ export class PreviewSourceTransformer {
     const analysis = new StaticSourceAnalysis(sourcePath, sourceText);
     const bindings = new PreviewSourceBindingAllocator(analysis);
     const allocate = (kind: string): string => bindings.next(kind);
+    const staticRenderAssets = await createPreviewStaticRenderAssetTransform({
+      bindings,
+      projectRoot: this.options.projectRoot,
+      sourceAnalysis: analysis,
+      sourcePath,
+      sourceText,
+      workspaceRoot: this.options.workspaceRoot,
+    });
+    generatedImports.push(...staticRenderAssets.imports);
+    replacements.push(...staticRenderAssets.replacements);
     if (isPathInside(this.options.workspaceRoot, sourcePath)) {
       const reactJsxNamespaceImport = createPreviewReactJsxNamespaceCompatibilityImport(
         analysis,

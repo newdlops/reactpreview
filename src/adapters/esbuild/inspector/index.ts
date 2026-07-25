@@ -67,6 +67,10 @@ export {
   type PreviewInspectorRootSourceOptions,
 } from './previewInspectorRootPlugin';
 export {
+  collectPreviewInspectorRenderBootstrapSlice,
+  type PreviewInspectorRenderBootstrapSlice,
+} from './previewInspectorRenderBootstrapSlice';
+export {
   createPreviewInspectorVirtualPageCandidates,
   selectPreviewInspectorVirtualPageContentCandidate,
   type PreviewInspectorVirtualPageCandidate,

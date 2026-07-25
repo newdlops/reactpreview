@@ -31,6 +31,7 @@ import {
   type PreviewInspectorShallowProjection,
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
+import { hasPreviewInspectorStaticRenderDataHook } from './previewInspectorStaticRenderDataHook';
 import {
   createPreviewInspectorVirtualPageComponentSource,
   type PreviewInspectorVirtualPageComponent,
@@ -134,6 +135,7 @@ export function createPreviewInspectorCorridorPlugin(
     string,
     Promise<PreviewInspectorShallowProjectionInventory>
   >();
+  const staticRenderDataHookEvidenceByPath = new Map<string, Promise<boolean>>();
   const expandedVirtualPageComponentExports = new Set<string>();
 
   /**
@@ -171,6 +173,18 @@ export function createPreviewInspectorCorridorPlugin(
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
       containsDependencyDirectory(workspaceRoot, canonicalTarget)
     ) {
+      return undefined;
+    }
+    if (
+      shallowVisualPaths.has(canonicalImporter) &&
+      (await shouldRetainStaticRenderDataHook(canonicalTarget, projection))
+    ) {
+      /*
+       * Navigation, tab, and column hooks often contain the page detail as authored static records.
+       * Keep that one module authentic, then reuse normal shallow traversal to cut its nested
+       * network/session hooks. Returning undefined lets ordinary esbuild resolution load the file.
+       */
+      registerTransitiveVirtualPageComponent(canonicalTarget, projection);
       return undefined;
     }
     if (shallowVisualPaths.has(canonicalImporter) && shouldExpandVirtualPageComponent(projection)) {
@@ -418,6 +432,38 @@ export function createPreviewInspectorCorridorPlugin(
     return pending;
   }
 
+  /**
+   * Proves that a hook-only child owns substantial authored UI data worth retaining verbatim.
+   *
+   * A mixed component/hook surface follows normal component DFS. A hook-only surface is read once,
+   * and only syntax-proven catalogs pass; ordinary API, permission, state, and session hooks remain
+   * demand-shaped projections.
+   */
+  function shouldRetainStaticRenderDataHook(
+    sourcePath: string,
+    projection: PreviewInspectorShallowProjection,
+  ): Promise<boolean> {
+    if (
+      projection.exportNames.length === 0 ||
+      projection.runtimeHookExportNames.length !== projection.exportNames.length
+    ) {
+      return Promise.resolve(false);
+    }
+    const existing = staticRenderDataHookEvidenceByPath.get(sourcePath);
+    if (existing !== undefined) return existing;
+    const pending = readBoundedSource(sourcePath).then(
+      (sourceText) =>
+        sourceText !== undefined &&
+        hasPreviewInspectorStaticRenderDataHook(
+          sourcePath,
+          sourceText,
+          projection.runtimeHookExportNames,
+        ),
+    );
+    staticRenderDataHookEvidenceByPath.set(sourcePath, pending);
+    return pending;
+  }
+
   /** Emits one shared side-effect-free module for every unselected generated route branch. */
   function loadDeferredBranch(arguments_: OnLoadArgs): OnLoadResult {
     if (arguments_.path !== INSPECTOR_CORRIDOR_PLACEHOLDER_PATH) {
@@ -501,6 +547,7 @@ export function createPreviewInspectorCorridorPlugin(
         importerEvidenceByPath.clear();
         runtimeHookImporterEvidenceByPath.clear();
         shallowImporterEvidenceByPath.clear();
+        staticRenderDataHookEvidenceByPath.clear();
         staticImporterEvidenceByPath.clear();
         expandedVirtualPageComponentExports.clear();
         shallowExportsByPath.clear();

@@ -132,6 +132,23 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
   });
 
+  /** Evaluates a proven dependency registry before any selected page module can initialize. */
+  it('sequences a render bootstrap ahead of the lazy VirtualPage graph', () => {
+    const source = createPreviewInspectorRootSource({
+      plan: createPlan({ exportName: 'Page', sourcePath: PAGE_PATH }),
+      renderBootstrapSpecifiersByCandidateId: {
+        'candidate-page': 'react-preview:inspector-render-bootstrap/candidate-page',
+      },
+    });
+
+    expect(source).toContain(
+      'load: () => import("react-preview:inspector-render-bootstrap/candidate-page").then(() => Promise.all([import("/workspace/application/Page.tsx")])).then((modules) => __reactPreviewComposeVirtualPage',
+    );
+    expect(source.indexOf('inspector-render-bootstrap')).toBeLessThan(
+      source.indexOf('Promise.all([import("/workspace/application/Page.tsx")])'),
+    );
+  });
+
   /** Imports only the exact static theme eagerly while retaining every authored page root lazily. */
   it('exposes a page-corridor theme before lazy candidate rendering begins', () => {
     const source = createPreviewInspectorRootSource({

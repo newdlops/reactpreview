@@ -5,8 +5,9 @@
  * nearest concrete page checkpoint. This avoids evaluating unrelated bootstraps while preserving
  * the route, omitted shell path, current-file instrumentation, global styles, and framework shells.
  */
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
+import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import {
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
   PREVIEW_TARGET_SPECIFIER,
@@ -24,9 +25,22 @@ import {
   PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY,
   PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY,
 } from '../previewNextAppNavigationRuntimeSource';
+import {
+  collectPreviewInspectorRenderBootstrapSlice,
+  type PreviewInspectorRenderBootstrapSlice,
+} from './previewInspectorRenderBootstrapSlice';
 import { createPreviewInspectorVirtualPageCandidates } from './previewInspectorVirtualPagePlan';
 
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
+const INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE = 'react-preview-inspector-render-bootstrap';
+const INSPECTOR_RENDER_BOOTSTRAP_SPECIFIER_PREFIX = 'react-preview:inspector-render-bootstrap/';
+
+/** One candidate-scoped virtual module containing a safe entry registration slice. */
+interface PreviewInspectorRenderBootstrapModule {
+  readonly candidateId: string;
+  readonly slice: PreviewInspectorRenderBootstrapSlice;
+  readonly specifier: string;
+}
 
 /** Inputs required to expose one inspector plan as a preview target descriptor. */
 export interface PreviewInspectorRootPluginOptions {
@@ -38,6 +52,8 @@ export interface PreviewInspectorRootPluginOptions {
   readonly maximumPageCandidates?: number;
   /** Bounded real-owner plan produced from current editor-or-disk source. */
   readonly plan: PreviewInspectorAncestorPlan;
+  /** Supplies unsaved entry snapshots before the plugin falls back to bounded disk reads. */
+  readonly readSource?: (sourcePath: string) => string | undefined;
   /** Neutral target props inferred without evaluating the selected project module. */
   readonly targetInference?: PreviewInferredExportProps;
   /** Exact page-corridor theme imported before any lazy authored root begins rendering. */
@@ -57,6 +73,14 @@ export interface PreviewInspectorRootPluginOptions {
 export function createPreviewInspectorRootPlugin(
   options: PreviewInspectorRootPluginOptions,
 ): Plugin {
+  const renderBootstrapModules = collectRenderBootstrapModules(options);
+  const renderBootstrapBySpecifier = new Map(
+    renderBootstrapModules.map((module) => [module.specifier, module]),
+  );
+  const renderBootstrapSpecifiersByCandidateId = Object.fromEntries(
+    renderBootstrapModules.map((module) => [module.candidateId, module.specifier]),
+  );
+
   /** Resolves only the target specifier already imported by the generated browser entry. */
   function resolveInspectorRoot(arguments_: OnResolveArgs): OnResolveResult | undefined {
     return arguments_.path === PREVIEW_TARGET_SPECIFIER
@@ -76,6 +100,7 @@ export function createPreviewInspectorRootPlugin(
           ? {}
           : { maximumPageCandidates: options.maximumPageCandidates }),
         plan: options.plan,
+        renderBootstrapSpecifiersByCandidateId,
         ...(options.targetInference === undefined
           ? {}
           : { targetInference: options.targetInference }),
@@ -87,16 +112,134 @@ export function createPreviewInspectorRootPlugin(
     };
   }
 
+  /** Resolves only render-bootstrap modules proven and generated for this exact build plan. */
+  function resolveRenderBootstrap(arguments_: OnResolveArgs): OnResolveResult | undefined {
+    return renderBootstrapBySpecifier.has(arguments_.path)
+      ? { namespace: INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE, path: arguments_.path }
+      : undefined;
+  }
+
+  /** Loads one dependency-only registration slice before its selected page modules evaluate. */
+  function loadRenderBootstrap(arguments_: OnLoadArgs): OnLoadResult | undefined {
+    const module = renderBootstrapBySpecifier.get(arguments_.path);
+    if (module === undefined) return undefined;
+    return {
+      contents: module.slice.source,
+      loader: 'ts',
+      resolveDir: path.dirname(module.slice.sourcePath),
+      watchFiles: [module.slice.sourcePath],
+    };
+  }
+
   return {
     name: 'react-preview-inspector-root',
     setup(build): void {
       build.onResolve({ filter: /^react-preview:target$/ }, resolveInspectorRoot);
+      build.onResolve(
+        { filter: /^react-preview:inspector-render-bootstrap\// },
+        resolveRenderBootstrap,
+      );
       build.onLoad(
         { filter: /^selected-ancestor-root$/, namespace: PREVIEW_INSPECTOR_ROOT_NAMESPACE },
         loadInspectorRoot,
       );
+      build.onLoad(
+        { filter: /.*/, namespace: INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE },
+        loadRenderBootstrap,
+      );
     },
   };
+}
+
+/**
+ * Builds candidate-scoped render bootstraps without importing or evaluating an application entry.
+ *
+ * The same entry slice is parsed once and can back several independently selectable page paths.
+ * A slice is omitted when the entry is already one of the modules loaded for the page, because its
+ * top-level registration will naturally run and repeating it can break single-registration APIs.
+ */
+function collectRenderBootstrapModules(
+  options: PreviewInspectorRootPluginOptions,
+): readonly PreviewInspectorRenderBootstrapModule[] {
+  const virtualPages = createPreviewInspectorVirtualPageCandidates(
+    options.plan.pageCandidates,
+    options.maximumPageCandidates ?? options.plan.pageCandidates.length,
+    options.plan.shallowVisualPaths ?? [],
+  );
+  const sliceBySourcePath = new Map<string, PreviewInspectorRenderBootstrapSlice | null>();
+  const modules: PreviewInspectorRenderBootstrapModule[] = [];
+  for (const virtualPage of virtualPages) {
+    const entrySourcePath = virtualPage.authoredCandidate.renderPath?.entryPoint?.sourcePath;
+    if (entrySourcePath === undefined || pageLoadsSourcePath(virtualPage, entrySourcePath))
+      continue;
+    const canonicalEntryPath = path.normalize(entrySourcePath);
+    let slice = sliceBySourcePath.get(canonicalEntryPath);
+    if (slice === undefined) {
+      const sourceText = readRenderBootstrapSource(options, entrySourcePath);
+      slice =
+        sourceText === undefined
+          ? null
+          : (collectPreviewInspectorRenderBootstrapSlice(entrySourcePath, sourceText) ?? null);
+      sliceBySourcePath.set(canonicalEntryPath, slice);
+    }
+    if (slice === null) continue;
+    const candidateId = virtualPage.browserCandidate.id;
+    modules.push(
+      Object.freeze({
+        candidateId,
+        slice,
+        specifier: `${INSPECTOR_RENDER_BOOTSTRAP_SPECIFIER_PREFIX}${encodeURIComponent(candidateId)}`,
+      }),
+    );
+  }
+  return Object.freeze(modules);
+}
+
+/** Returns true when page composition already imports the entry and will execute it exactly once. */
+function pageLoadsSourcePath(
+  virtualPage: ReturnType<typeof createPreviewInspectorVirtualPageCandidates>[number],
+  sourcePath: string,
+): boolean {
+  const canonicalSourcePath = path.normalize(sourcePath);
+  const loadedPaths = [
+    virtualPage.contentCandidate.root.sourcePath,
+    ...(virtualPage.contentCandidate.nextAppLayoutChain?.map((layout) => layout.sourcePath) ?? []),
+    ...(virtualPage.contentCandidate.nextPagesShell === undefined
+      ? []
+      : [virtualPage.contentCandidate.nextPagesShell.app.sourcePath]),
+    ...virtualPage.recipe.shells.map((shell) => shell.root.sourcePath),
+  ];
+  return loadedPaths.some((loadedPath) => path.normalize(loadedPath) === canonicalSourcePath);
+}
+
+/** Reads an unsaved snapshot first, then performs one bounded worker-side disk read as fallback. */
+function readRenderBootstrapSource(
+  options: PreviewInspectorRootPluginOptions,
+  sourcePath: string,
+): string | undefined {
+  const snapshot = options.readSource?.(sourcePath);
+  if (snapshot !== undefined) return snapshot;
+  try {
+    return readFileSync(sourcePath, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Creates a lazy module promise that initializes its render dependency registry before page code.
+ *
+ * Dynamic sequencing matters: putting the bootstrap and page imports in the same `Promise.all`
+ * would allow component module evaluation to race ahead of the registration it depends on.
+ */
+function createCandidateModuleImportPromise(
+  importExpressions: readonly string[],
+  renderBootstrapSpecifier: string | undefined,
+): string {
+  const pagePromise = `Promise.all([${importExpressions.join(',')}])`;
+  return renderBootstrapSpecifier === undefined
+    ? pagePromise
+    : `import(${JSON.stringify(renderBootstrapSpecifier)}).then(() => ${pagePromise})`;
 }
 
 /** Pure source generator inputs used by plugin and bridge contract tests. */
@@ -105,6 +248,7 @@ export interface PreviewInspectorRootSourceOptions {
   readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
   readonly maximumPageCandidates?: number;
   readonly plan: PreviewInspectorAncestorPlan;
+  readonly renderBootstrapSpecifiersByCandidateId?: Readonly<Record<string, string>>;
   readonly targetInference?: PreviewInferredExportProps;
   readonly themeImport?: PreviewThemeImportSelection;
 }
@@ -199,6 +343,7 @@ export function createPreviewInspectorRootSource(
       contentCandidate.routeLocation?.evidenceKind === 'next-app-filesystem'
         ? contentCandidate.routeLocation
         : undefined;
+    const renderBootstrapSpecifier = options.renderBootstrapSpecifiersByCandidateId?.[candidate.id];
     if (nextAppRouteLocation !== undefined) {
       const imports = [rootSpecifier, ...(layoutSpecifiers ?? [])].map(
         (specifier) => `import(${JSON.stringify(specifier)})`,
@@ -206,9 +351,9 @@ export function createPreviewInspectorRootSource(
       return [
         '{ id: ',
         JSON.stringify(candidate.id),
-        ', load: () => Promise.all([',
-        imports.join(','),
-        ']).then((modules) => __reactPreviewComposeNextAppPage(modules, ',
+        ', load: () => ',
+        createCandidateModuleImportPromise(imports, renderBootstrapSpecifier),
+        '.then((modules) => __reactPreviewComposeNextAppPage(modules, ',
         JSON.stringify(contentCandidate.root.exportName),
         ', ',
         JSON.stringify(nextAppRouteLocation.pathname),
@@ -241,9 +386,9 @@ export function createPreviewInspectorRootSource(
       return [
         '{ id: ',
         JSON.stringify(candidate.id),
-        ', load: () => Promise.all([',
-        imports.join(','),
-        ']).then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
+        ', load: () => ',
+        createCandidateModuleImportPromise(imports, renderBootstrapSpecifier),
+        '.then((modules) => __reactPreviewComposeNextPagesPage(modules, ',
         JSON.stringify(contentCandidate.root.exportName),
         ', ',
         JSON.stringify(syntheticPage),
@@ -261,9 +406,9 @@ export function createPreviewInspectorRootSource(
     return [
       '{ id: ',
       JSON.stringify(candidate.id),
-      ', load: () => Promise.all([',
-      imports.join(','),
-      ']).then((modules) => __reactPreviewComposeVirtualPage(modules, ',
+      ', load: () => ',
+      createCandidateModuleImportPromise(imports, renderBootstrapSpecifier),
+      '.then((modules) => __reactPreviewComposeVirtualPage(modules, ',
       JSON.stringify(contentCandidate.root.exportName),
       ', ',
       JSON.stringify(recipe.shells.map((shell) => shell.root.exportName)),

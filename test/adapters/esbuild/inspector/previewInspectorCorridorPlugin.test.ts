@@ -335,6 +335,118 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).toContain('VirtualPage component isolated');
   });
 
+  /**
+   * Keeps authored navigation/tab records while still cutting the data hook's nested runtime edge.
+   */
+  it('retains a static render-data hook below a VirtualPage shell', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const entryPath = path.join(sourceRoot, 'entry.tsx');
+    const pagePath = path.join(sourceRoot, 'Page.tsx');
+    const layoutPath = path.join(sourceRoot, 'ApplicationLayout.tsx');
+    const navigationPath = path.join(sourceRoot, 'PrimaryNavigation.tsx');
+    const navigationDataPath = path.join(sourceRoot, 'useNavigationData.ts');
+    const permissionPath = path.join(sourceRoot, 'usePermission.ts');
+    await mkdir(sourceRoot, { recursive: true });
+    await Promise.all([
+      writeFile(
+        entryPath,
+        [
+          `import Page from './Page';`,
+          `import { ApplicationLayout } from './ApplicationLayout';`,
+          `export default () => <ApplicationLayout><Page /></ApplicationLayout>;`,
+        ].join('\n'),
+      ),
+      writeFile(pagePath, `export default () => <main>PAGE_MARKER</main>;`),
+      writeFile(
+        layoutPath,
+        [
+          `import { PrimaryNavigation } from './PrimaryNavigation';`,
+          `export const ApplicationLayout = ({ children }) => (`,
+          `  <div><PrimaryNavigation />{children}</div>`,
+          `);`,
+        ].join('\n'),
+      ),
+      writeFile(
+        navigationPath,
+        [
+          `import { useNavigationData } from './useNavigationData';`,
+          `export const PrimaryNavigation = () => {`,
+          `  const items = useNavigationData();`,
+          `  return <aside>{items.map((item) => <a key={item.name}>{item.label}</a>)}</aside>;`,
+          `};`,
+        ].join('\n'),
+      ),
+      writeFile(
+        navigationDataPath,
+        [
+          `import { usePermission } from './usePermission';`,
+          `export const useNavigationData = () => {`,
+          `  const allowed = usePermission();`,
+          `  return [`,
+          `    { name: 'home', label: 'NAV_HOME_DETAIL' },`,
+          `    { name: 'reports', label: 'NAV_REPORT_DETAIL' },`,
+          `    allowed && { name: 'admin', label: 'NAV_ADMIN_DETAIL' },`,
+          `  ].filter(Boolean);`,
+          `};`,
+        ].join('\n'),
+      ),
+      writeFile(
+        permissionPath,
+        [
+          `export const usePermission = () => {`,
+          `  globalThis.permissionMarker = 'EXPENSIVE_PERMISSION_MARKER';`,
+          `  return true;`,
+          `};`,
+        ].join('\n'),
+      ),
+    ]);
+    const basePlan = createCorridorPlan(entryPath, pagePath);
+    const plan: PreviewInspectorAncestorPlan = {
+      ...basePlan,
+      shallowVisualPaths: [
+        {
+          exportName: 'ApplicationLayout',
+          importerPath: entryPath,
+          importKind: 'static',
+          localEdges: [],
+          moduleSpecifier: './ApplicationLayout',
+          occurrenceStart: 0,
+          relation: 'sibling',
+          renderedLocalName: 'ApplicationLayout',
+          renderBoundaryStart: 0,
+          selectedChildPath: pagePath,
+          sourcePath: layoutPath,
+        },
+      ],
+    };
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      entryPoints: [entryPath],
+      external: ['react', 'react/jsx-runtime'],
+      format: 'esm',
+      jsx: 'automatic',
+      outdir: path.join(workspaceRoot, 'out'),
+      plugins: [
+        createPreviewInspectorCorridorPlugin({
+          plan,
+          projectRoot: workspaceRoot,
+          resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+          workspaceRoot,
+        }),
+      ],
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+    expect(source).toContain('NAV_HOME_DETAIL');
+    expect(source).toContain('NAV_REPORT_DETAIL');
+    expect(source).toContain('NAV_ADMIN_DETAIL');
+    expect(source).not.toContain('EXPENSIVE_PERMISSION_MARKER');
+  });
+
   /** Uses module/export cycle identity rather than a fixed hop count for deep component trees. */
   it('retains a selected JSX chain deeper than the former twelve-component limit', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));

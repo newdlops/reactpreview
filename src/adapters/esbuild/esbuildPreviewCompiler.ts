@@ -469,6 +469,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               ...(inspectorPlan === undefined
                 ? []
                 : [
+                    // A context module describes reachability, not the exact selected export's prop
+                    // contract. Retain that inference so forced nullable guards stay coherent.
                     createPreviewInspectorTargetPlugin({
                       ...(targetUsageProps.inspectorTargetImportSpecifiers === undefined
                         ? {}
@@ -478,9 +480,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                           }),
                       documentPath: inspectorPlan.target.sourcePath,
                       exportNames: Object.keys(inspectorPlan.renderChainsByExport),
-                      ...(inspectorPlan.contextModule === undefined
-                        ? { inferredPropsByExport }
-                        : {}),
+                      inferredPropsByExport,
                       originalHasDefaultExport: Object.keys(
                         inspectorPlan.renderChainsByExport,
                       ).includes('default'),
@@ -490,8 +490,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       optimizeSelectedPackageBarrels: useFastPreparation,
                       plan: inspectorPlan,
                       projectRoot,
-                      readSource: (sourcePath) =>
-                        snapshotSourceByPath.get(path.normalize(sourcePath)),
+                      readSource: (p) => snapshotSourceByPath.get(path.normalize(p)),
                       resolveModule: staticModuleResolver.resolve,
                       workspaceRoot: canonicalWorkspaceRoot,
                     }),
@@ -552,8 +551,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       ...(selectedThemeImport === undefined
                         ? {}
                         : { themeImport: selectedThemeImport }),
-                      ...(inspectorPlan.contextModule !== undefined ||
-                      inferredPropsByExport[inspectorPlan.target.exportName] === undefined
+                      readSource: (p) => snapshotSourceByPath.get(path.normalize(p)),
+                      ...(inferredPropsByExport[inspectorPlan.target.exportName] === undefined
                         ? {}
                         : {
                             targetInference: inferredPropsByExport[inspectorPlan.target.exportName],

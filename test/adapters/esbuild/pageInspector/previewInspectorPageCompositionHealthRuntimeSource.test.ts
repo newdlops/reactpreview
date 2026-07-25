@@ -14,7 +14,11 @@ interface PageCompositionRecord {
     readonly authoredStaticPath: readonly string[];
     readonly blockerSummary: {
       readonly active: number;
-      readonly items: readonly { readonly name: string; readonly ownerPath: string }[];
+      readonly items: readonly {
+        readonly kind: string;
+        readonly name: string;
+        readonly ownerPath: string;
+      }[];
     };
     readonly candidate: { readonly complete: boolean; readonly rootExport: string };
     readonly missingShellNames: readonly string[];
@@ -26,8 +30,12 @@ interface PageCompositionRecord {
       readonly mounted: number;
     };
     readonly targetState: {
+      readonly errorMessage?: string;
+      readonly errorOwner?: string;
       readonly hasOutput: boolean;
+      readonly outputKind: string;
       readonly pageRootCommitted: boolean;
+      readonly reachabilityHasOutput: boolean;
       readonly stage: string;
     };
     readonly treeRows: readonly {
@@ -184,11 +192,92 @@ describe('Preview Inspector page-composition health runtime source', () => {
     });
     expect(second.digest).toBe(first.digest);
   });
+
+  /** Wrapper/error DOM growth cannot count as selected-file output without a current-file Fiber. */
+  it('demotes reachability-only host success to candidate output', () => {
+    const runtime = createPageCompositionFixture();
+    const health = runtime.create({
+      hostNodesById: new Map([['fallback', [{ isConnected: true }]]]),
+      roots: [
+        {
+          children: [],
+          id: 'fallback',
+          kind: 'component',
+          mounted: true,
+          name: 'ErrorStatus',
+        },
+      ],
+    });
+
+    expect(health.detail.targetState).toMatchObject({
+      hasOutput: false,
+      reachabilityHasOutput: true,
+      stage: 'candidate-output',
+    });
+    expect(health.detail.blockerSummary).toMatchObject({
+      active: 1,
+      items: [
+        expect.objectContaining({
+          kind: 'target-reachability',
+          name: 'Candidate output is not the current file · TargetPanel',
+        }),
+      ],
+    });
+    expect(health.detail.observedFiberPath).toEqual(['ErrorStatus']);
+    expect(health.detail.statusCounts.currentFileMounted).toBe(0);
+  });
+
+  /** Runtime fallback diagnostics retain the original component owner and causal error text. */
+  it('records fallback output and its original error owner as an active blocker', () => {
+    const runtime = createPageCompositionFixture({
+      targetOutputError: {
+        message: 'Error: Unreachable',
+        ownerName: 'FiStaManagementApp',
+        phase: 'unhandled browser error',
+      },
+      targetOutputKind: 'fallback-output',
+      targetHasOutput: false,
+    });
+    const health = runtime.create({
+      hostNodesById: new Map([['error-page', [{ isConnected: true }]]]),
+      roots: [
+        {
+          children: [],
+          id: 'error-page',
+          kind: 'component',
+          mounted: true,
+          name: 'ErrorPage',
+        },
+      ],
+    });
+
+    expect(health.detail.targetState).toMatchObject({
+      errorMessage: 'Error: Unreachable',
+      errorOwner: 'FiStaManagementApp',
+      hasOutput: false,
+      outputKind: 'fallback-output',
+      stage: 'fallback-output',
+    });
+    expect(health.detail.blockerSummary).toMatchObject({
+      active: 1,
+      items: [
+        expect.objectContaining({
+          name: 'Error fallback shown instead · TargetPanel',
+          ownerPath: 'FiStaManagementApp',
+        }),
+      ],
+    });
+  });
 });
 
 /** Evaluates generated page-composition source against one deterministic page candidate. */
-function createPageCompositionFixture(): PageCompositionFixture {
-  const context: { __runtime?: PageCompositionFixture } = {};
+function createPageCompositionFixture(
+  reachabilityOverrides: Record<string, unknown> = {},
+): PageCompositionFixture {
+  const context: {
+    __reachability: Record<string, unknown>;
+    __runtime?: PageCompositionFixture;
+  } = { __reachability: reachabilityOverrides };
   vm.runInNewContext(
     `
       const candidate = {
@@ -218,6 +307,7 @@ function createPageCompositionFixture(): PageCompositionFixture {
         targetHasOutput: true,
         targetMounted: true,
         targetWasMounted: true,
+        ...globalThis.__reachability,
       };
       const records = [];
       const findSelectedPreviewInspectorDescriptor = () => descriptor;

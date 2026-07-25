@@ -21,6 +21,8 @@ interface RuntimeHealthMessage {
 interface RuntimeHealthFixture {
   readonly error: (entry: Record<string, unknown>) => void;
   readonly messages: RuntimeHealthMessage[];
+  readonly reachability: Record<string, unknown>;
+  readonly readTargetError: (exportName: string) => Record<string, unknown> | undefined;
   readonly record: (candidate: Record<string, unknown>) => string | undefined;
 }
 
@@ -198,6 +200,32 @@ describe('Preview Inspector runtime health source', () => {
 
     expect(runtime.messages).toEqual([]);
   });
+
+  /** A root render error invalidates stale reached output and retains its first component owner. */
+  it('demotes reached output to a fallback blocker with original owner evidence', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.error({
+      componentStack: 'at FiStaManagementApp\n at GlobalErrorBoundary',
+      exportName: 'Header',
+      level: 'error',
+      message: 'Error: Unreachable',
+      phase: 'unhandled browser error',
+      source: 'preview-runtime',
+    });
+
+    expect(runtime.reachability).toMatchObject({
+      status: 'runtime-error-output',
+      targetHasOutput: false,
+      targetOutputKind: 'fallback-output',
+      targetOutputRecoveryPending: true,
+    });
+    expect(runtime.readTargetError('Header')).toMatchObject({
+      message: 'Error: Unreachable',
+      ownerName: 'FiStaManagementApp',
+      phase: 'unhandled browser error',
+      source: 'preview-runtime',
+    });
+  });
 });
 
 /** Evaluates generated source with inert session, revision, and postMessage primitives. */
@@ -206,9 +234,15 @@ function createRuntimeHealthFixture(): RuntimeHealthFixture {
   vm.runInNewContext(
     `
       const previewEntryRevision = 3;
+      const reachability = {
+        status: 'reached',
+        targetExportName: 'Header',
+        targetHasOutput: true,
+      };
       const previewInspectorSession = {
         selectedExportName: 'Header',
         selectedPageCandidateId: 'app-path',
+        targetReachabilityByKey: new Map([['target', reachability]]),
       };
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const messages = [];
@@ -227,6 +261,8 @@ function createRuntimeHealthFixture(): RuntimeHealthFixture {
       globalThis.__runtime = {
         error: recordPreviewInspectorRuntimeHealthError,
         messages,
+        reachability,
+        readTargetError: readPreviewInspectorRuntimeHealthTargetError,
         record: recordPreviewInspectorRuntimeHealth,
       };
     `,

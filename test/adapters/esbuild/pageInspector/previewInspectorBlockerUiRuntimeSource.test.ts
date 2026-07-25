@@ -258,6 +258,37 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(wrapperNode.name).toBe('Fallback shown instead · default');
     expect(wrapperText).toContain('ran · fallback visible instead');
 
+    const errorFallbackBlocker = {
+      ...blocker,
+      targetOutputError: {
+        message: 'Error: Unreachable',
+        ownerName: 'FiStaManagementApp',
+      },
+      targetOutputKind: 'fallback-output',
+    };
+    const errorFallbackNode = runtime.createReachabilityNode(errorFallbackBlocker);
+    const errorFallbackText = collectRenderedText(
+      runtime.renderReachabilityDetail({ node: { blocker: errorFallbackBlocker } }),
+    ).join(' ');
+    expect(errorFallbackNode).toMatchObject({
+      name: 'Error fallback shown instead · default',
+      props: {
+        targetOutputError: 'Error: Unreachable',
+        targetOutputErrorOwner: 'FiStaManagementApp',
+      },
+    });
+    expect(runtime.isBlocking(errorFallbackNode)).toBe(true);
+    expect(errorFallbackText).toContain(
+      'Original render error in FiStaManagementApp: Error: Unreachable',
+    );
+
+    const candidateNode = runtime.createReachabilityNode({
+      ...blocker,
+      targetOutputKind: 'candidate-output',
+    });
+    expect(candidateNode.name).toBe('Candidate output is not the current file · default');
+    expect(runtime.isBlocking(candidateNode)).toBe(true);
+
     const deferredBlocker = { ...blocker, targetDeferredCallbackPending: true };
     const deferredNode = runtime.createReachabilityNode(deferredBlocker);
     const deferredText = collectRenderedText(

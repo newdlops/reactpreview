@@ -24,7 +24,7 @@ interface CandidateFixture {
   readonly root: { readonly exportName: string; readonly sourcePath: string };
   readonly rootStepIndex?: number;
   readonly rootOwnsRouter?: boolean;
-  readonly routeLocation?: { readonly pathname: string };
+  readonly routeLocation?: { readonly componentName?: string; readonly pathname: string };
   readonly stopReason?: string;
   readonly target?: { readonly exportName: string; readonly sourcePath: string };
 }
@@ -64,6 +64,29 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(result.labels).toEqual([
       '1. PublicPage › ApplicationShell › AppRouter · application root · /company/1/dashboard',
       '2. StaffPage · partial context',
+    ]);
+  });
+
+  /** Names a concrete child page when the selectable root is a Provider/Routes owner. */
+  it('labels a route-factory child view beside its browser path', () => {
+    const candidates: readonly CandidateFixture[] = [
+      {
+        complete: true,
+        id: 'feature-settings',
+        renderPath: {
+          entryPoint: { sourcePath: '/workspace/main.tsx' },
+          steps: [{ label: 'FeatureApp' }],
+        },
+        root: { exportName: 'FeatureApp', sourcePath: '/workspace/FeatureApp.tsx' },
+        routeLocation: {
+          componentName: 'SettingsPage',
+          pathname: '/workspace/1/feature/settings',
+        },
+      },
+    ];
+
+    expect(evaluateCandidateSelection(candidates).labels).toEqual([
+      '1. FeatureApp · application root · view SettingsPage · /workspace/1/feature/settings',
     ]);
   });
 
@@ -118,6 +141,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('applicationPath: (reachability.applicationPath ?? []).slice(0, 32)');
     expect(source).toContain('candidateSummaries');
     expect(source).toContain('candidatesOmitted');
+    expect(source).toContain('routeComponentName: candidate?.routeLocation?.componentName');
     expect(source).toContain("stopReason: candidate?.stopReason ?? 'unknown'");
     expect(source).toContain("evidenceKind: routeLocation?.evidenceKind ?? 'none'");
     expect(source).toContain('nextAppLayoutPaths: (candidate?.nextAppLayoutChain ?? [])');
@@ -135,6 +159,20 @@ describe('Preview Inspector page-candidate runtime source', () => {
     );
     expect(source).toContain('doesSelectedPreviewInspectorPageCandidateOwnRouter');
     expect(source).toContain('previewInspectorSession.selectedPageCandidateId = candidateId');
+    expect(source).toContain('function readPreviewInspectorRouteBranches');
+    expect(source).toContain('function selectPreviewInspectorRouteBranch');
+    expect(source).toContain("type: 'react-preview-inspector-route-selected'");
+  });
+
+  /** Organizes a large App route inventory into searchable folders instead of one flat selector. */
+  it('generates a bounded hierarchical route explorer', () => {
+    const source = createPreviewInspectorPageCandidateUiRuntimeSource();
+
+    expect(source).toContain('function PreviewInspectorRouteExplorer');
+    expect(source).toContain('function collectPreviewInspectorRouteCommonPrefix');
+    expect(source).toContain('Filter paths or components');
+    expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT = 80');
+    expect(source).toContain('React.createElement(PreviewInspectorRouteExplorer, { descriptor })');
   });
 
   /** Strips only a proven app-module mount prefix and leaves direct component routes untouched. */

@@ -141,18 +141,101 @@ function readPreviewInspectorLiveTargetOutputNames(boundary) {
   return names;
 }
 
+/** Proves that the boundary's first committed Fiber owns the exact React element it was given. */
+function hasPreviewInspectorExactTargetFiberOwnership(boundary) {
+  const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
+  const childFiber = readPreviewInspectorFiberLink(boundaryFiber, 'child');
+  const boundaryProps = readPreviewInspectorOwnData(boundary, 'props');
+  const childElement = readPreviewInspectorOwnData(boundaryProps, 'children');
+  const expectedType = readPreviewInspectorOwnData(childElement, 'type');
+  if (childFiber === undefined || expectedType === undefined) return false;
+  return readPreviewInspectorOwnData(childFiber, 'elementType') === expectedType ||
+    readPreviewInspectorOwnData(childFiber, 'type') === expectedType;
+}
+
+/** Recognizes concrete loading/error UI, excluding passive error boundaries around healthy output. */
+function hasPreviewInspectorFallbackLikeTargetOutput(liveNames) {
+  return [...liveNames].some((name) =>
+    /(?:ErrorFallback|ErrorPage|ErrorStatus|FallbackPage|Loading|LoadingPage|Loader|NotFoundStatus|Progress|Skeleton|Spinner)$/u.test(
+      name,
+    ),
+  );
+}
+
+/** Records one non-success host-output classification for tree, blocker, and health diagnostics. */
+function rejectPreviewInspectorTargetOutput(state, kind, error) {
+  state.targetOutputKind = kind;
+  state.targetOutputError = error;
+  state.targetOutputRecoveryPending = error !== undefined;
+  return false;
+}
+
+/**
+ * Guarantees one post-grace recheck when a healthy exact Fiber appears immediately after an error.
+ *
+ * A commit can precede the short error-settlement window. Without this timer no later React commit
+ * is guaranteed, leaving valid authored output permanently classified as a fallback.
+ */
+function schedulePreviewInspectorTargetOutputRecovery(state, error, errorAge) {
+  const token = String(error?.eventId ?? error?.timestamp ?? error?.message ?? 'runtime-error');
+  if (state.targetOutputRecoveryToken === token && state.targetOutputRecoveryTimer !== undefined) {
+    return;
+  }
+  if (state.targetOutputRecoveryTimer !== undefined) {
+    clearTimeout(state.targetOutputRecoveryTimer);
+  }
+  state.targetOutputRecoveryToken = token;
+  state.targetOutputRecoveryTimer = setTimeout(() => {
+    state.targetOutputRecoveryTimer = undefined;
+    state.targetOutputRecoveryToken = undefined;
+    if (typeof schedulePreviewInspectorCommitRefresh === 'function') {
+      schedulePreviewInspectorCommitRefresh();
+    }
+    if (typeof schedulePreviewInspectorTreeRefresh === 'function') {
+      schedulePreviewInspectorTreeRefresh();
+    }
+  }, Math.max(1, 321 - Math.max(0, errorAge)));
+}
+
+/** Promotes target output and releases a stale root error only after authored output is proven. */
+function acceptPreviewInspectorTargetOutput(state) {
+  if (state.targetOutputRecoveryTimer !== undefined) {
+    clearTimeout(state.targetOutputRecoveryTimer);
+    state.targetOutputRecoveryTimer = undefined;
+  }
+  state.targetOutputRecoveryToken = undefined;
+  state.targetOutputKind = 'target-output';
+  state.targetOutputError = undefined;
+  state.targetOutputRecoveryPending = false;
+  if (typeof clearPreviewInspectorRuntimeHealthTargetError === 'function') {
+    clearPreviewInspectorRuntimeHealthTargetError(state.targetExportName);
+  }
+  return true;
+}
+
 /** Reports whether a target owns both DOM and the authored JSX below any wrapper-only root. */
 function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
   const expected = readPreviewInspectorExpectedTargetOutput(state);
+  const activeError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
+    ? readPreviewInspectorRuntimeHealthTargetError(state.targetExportName)
+    : undefined;
+  const exactFiberOwnership = hasPreviewInspectorExactTargetFiberOwnership(boundary);
   if (expected.hasIntentionalEmpty) {
+    if (activeError !== undefined) {
+      return rejectPreviewInspectorTargetOutput(state, 'fallback-output', activeError);
+    }
     state.targetRenderedEmpty = true;
-    return true;
+    return acceptPreviewInspectorTargetOutput(state);
   }
   const needsLiveNames = expected.deferredNames.size > 0 ||
-    (expected.hasEvidence && expected.hasJsx && !expected.hasIntrinsicJsx);
+    (expected.hasEvidence && expected.hasJsx && !expected.hasIntrinsicJsx) ||
+    activeError !== undefined ||
+    !expected.hasEvidence;
   const liveNames = needsLiveNames ? readPreviewInspectorLiveTargetOutputNames(boundary) : new Set();
   const hasAnyHostOutput = collectPreviewInspectorFiberElements(boundary).length > 0;
   if (hasAnyHostOutput) state.targetHasAnyHostOutput = true;
+  const fallbackLikeOutput = hasPreviewInspectorFallbackLikeTargetOutput(liveNames);
+  let resolved = false;
   if (expected.deferredNames.size > 0) {
     const hasIndependentOutput = [...expected.independentNames].some((name) => liveNames.has(name));
     const namedCallbackInvoked = [...expected.deferredNames]
@@ -169,19 +252,56 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     state.targetDeferredCallbackPending ||=
       callbackRequired && hasLiveDeferredReceiver && !callbackInvoked;
     if (!callbackRequired || callbackInvoked) state.targetDeferredCallbackPending = false;
-    if (hasIndependentOutput) return hasAnyHostOutput;
-    if (callbackRequired && !callbackInvoked) return false;
+    if (hasIndependentOutput) resolved = hasAnyHostOutput;
+    if (callbackRequired && !callbackInvoked) {
+      return rejectPreviewInspectorTargetOutput(
+        state,
+        fallbackLikeOutput || activeError !== undefined ? 'fallback-output' : 'candidate-output',
+        activeError,
+      );
+    }
   }
-  if (!hasAnyHostOutput) return false;
-  if (!expected.hasEvidence) return true;
-  if (!expected.hasJsx) return false;
-  if (expected.hasIntrinsicJsx) return true;
-  if (expected.deferredNames.size > 0) return true;
-  const requiredNames = expected.descendantNames.size > 0
-    ? expected.descendantNames
-    : expected.rootNames;
-  if (requiredNames.size === 0) return true;
-  return [...requiredNames].some((name) => liveNames.has(name));
+  if (!hasAnyHostOutput) {
+    state.targetOutputKind = 'none';
+    state.targetOutputRecoveryPending = false;
+    return false;
+  }
+  if (!resolved) {
+    if (!expected.hasEvidence) {
+      resolved = exactFiberOwnership && !fallbackLikeOutput;
+    } else if (!expected.hasJsx) {
+      resolved = false;
+    } else if (expected.hasIntrinsicJsx || expected.deferredNames.size > 0) {
+      resolved = true;
+    } else {
+      const requiredNames = expected.descendantNames.size > 0
+        ? expected.descendantNames
+        : expected.rootNames;
+      resolved = requiredNames.size === 0 ||
+        [...requiredNames].some((name) => liveNames.has(name));
+    }
+  }
+  if (!exactFiberOwnership) {
+    return rejectPreviewInspectorTargetOutput(state, 'candidate-output', activeError);
+  }
+  if (!resolved) {
+    return rejectPreviewInspectorTargetOutput(
+      state,
+      fallbackLikeOutput || activeError !== undefined ? 'fallback-output' : 'candidate-output',
+      activeError,
+    );
+  }
+  if (activeError !== undefined) {
+    const errorAge = Date.now() - Number(activeError.timestamp ?? Date.now());
+    if (errorAge < 320) {
+      schedulePreviewInspectorTargetOutputRecovery(state, activeError, errorAge);
+      return rejectPreviewInspectorTargetOutput(state, 'fallback-output', activeError);
+    }
+    if (fallbackLikeOutput) {
+      return rejectPreviewInspectorTargetOutput(state, 'fallback-output', activeError);
+    }
+  }
+  return acceptPreviewInspectorTargetOutput(state);
 }
 `;
 }

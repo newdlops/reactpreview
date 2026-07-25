@@ -182,6 +182,57 @@ function createPreviewInspectorRuntimeHealthErrorKey(entry) {
   ].join(':');
 }
 
+/** Extracts the first project-facing component label without trusting stack object accessors. */
+function readPreviewInspectorRuntimeHealthErrorOwner(entry, componentStack) {
+  const stackOwner = /^\s*at\s+([^\s(]+)/mu.exec(componentStack)?.[1];
+  if (typeof stackOwner === 'string' && stackOwner.length > 0) {
+    return stackOwner.slice(0, 240);
+  }
+  if (typeof entry?.exportName === 'string' && entry.exportName.length > 0) {
+    return entry.exportName.slice(0, 240);
+  }
+  return String(previewInspectorSession.selectedExportName ?? 'selected target').slice(0, 240);
+}
+
+/** Returns the retained root failure for this exact candidate/export render revision. */
+function readPreviewInspectorRuntimeHealthTargetError(exportName) {
+  initializePreviewInspectorRuntimeHealthState();
+  return previewInspectorSession.runtimeHealthRootErrors.get(
+    createPreviewInspectorRuntimeHealthErrorKey({ exportName }),
+  );
+}
+
+/** Clears a root failure only after exact authored target output has replaced its fallback. */
+function clearPreviewInspectorRuntimeHealthTargetError(exportName) {
+  initializePreviewInspectorRuntimeHealthState();
+  return previewInspectorSession.runtimeHealthRootErrors.delete(
+    createPreviewInspectorRuntimeHealthErrorKey({ exportName }),
+  );
+}
+
+/** Demotes a previously reached page when a later runtime error invalidates its visible output. */
+function demotePreviewInspectorReachedTargetAfterRuntimeError(exportName, errorRecord) {
+  const states = previewInspectorSession.targetReachabilityByKey;
+  if (!(states instanceof Map)) return;
+  let changed = false;
+  for (const state of states.values()) {
+    if (state?.targetExportName !== exportName) continue;
+    state.targetHasOutput = false;
+    state.targetOutputError = errorRecord;
+    state.targetOutputKind = 'fallback-output';
+    state.targetOutputRecoveryPending = true;
+    if (state.status === 'reached') state.status = 'runtime-error-output';
+    changed = true;
+  }
+  if (!changed) return;
+  if (typeof schedulePreviewInspectorTreeRefresh === 'function') {
+    schedulePreviewInspectorTreeRefresh();
+  }
+  if (typeof schedulePreviewInspectorCommitRefresh === 'function') {
+    schedulePreviewInspectorCommitRefresh();
+  }
+}
+
 /** Reports root, cascade, and error-fallback failures without claiming heuristic certainty. */
 function recordPreviewInspectorRuntimeHealthError(entry) {
   const rawMessage = String(entry?.message ?? '[Runtime error]');
@@ -211,6 +262,10 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
   // one commit. Keep the first causal record instead of serializing the same stack two to four times.
   if (repeatsRecentRoot) return;
   const componentStack = typeof entry.componentStack === 'string' ? entry.componentStack : '';
+  const ownerName = readPreviewInspectorRuntimeHealthErrorOwner(entry, componentStack);
+  const targetExportName = typeof entry?.exportName === 'string' && entry.exportName.length > 0
+    ? entry.exportName
+    : String(previewInspectorSession.selectedExportName ?? '');
   const hasFallbackEvidence = source === 'runtime-fallback' ||
     /(?:ErrorBoundary|ErrorStatus|Fallback|NotFoundStatus)/u.test(componentStack);
   const followsRoot = !isStyledComponentsInstanceWarning && previousRoot !== undefined &&
@@ -239,8 +294,26 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
     event,
     parentEventId,
   });
+  if (followsRoot && hasFallbackEvidence && previousRoot !== undefined) {
+    previewInspectorSession.runtimeHealthRootErrors.set(key, {
+      ...previousRoot,
+      fallbackEventId: eventId,
+      fallbackOwnerName: ownerName,
+      fallbackTimestamp: now,
+    });
+  }
   if (!isStyledComponentsInstanceWarning && !followsRoot && eventId !== undefined) {
-    previewInspectorSession.runtimeHealthRootErrors.set(key, { eventId, message, timestamp: now });
+    const errorRecord = {
+      componentStack: componentStack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT),
+      eventId,
+      message,
+      ownerName,
+      phase: typeof entry.phase === 'string' ? entry.phase.slice(0, 240) : undefined,
+      source,
+      timestamp: now,
+    };
+    previewInspectorSession.runtimeHealthRootErrors.set(key, errorRecord);
+    demotePreviewInspectorReachedTargetAfterRuntimeError(targetExportName, errorRecord);
     if (previewInspectorSession.runtimeHealthRootErrors.size > PREVIEW_INSPECTOR_HEALTH_ERROR_ROOT_LIMIT) {
       previewInspectorSession.runtimeHealthRootErrors.delete(
         previewInspectorSession.runtimeHealthRootErrors.keys().next().value,

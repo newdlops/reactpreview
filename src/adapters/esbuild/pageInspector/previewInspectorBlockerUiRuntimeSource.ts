@@ -6,6 +6,7 @@
  * source-backed React owner so users can see where rendering would have stopped and can choose an
  * explicit JSON value or the extension's bounded Auto inference.
  */
+import { createPreviewInspectorTargetReachabilityDetailRuntimeSource } from './previewInspectorTargetReachabilityDetailRuntimeSource';
 
 /**
  * Creates browser source that enriches a component tree and renders blocker-specific controls.
@@ -189,13 +190,14 @@ function createPreviewInspectorTargetFailureTreeNode(failure) {
     state: undefined,
   };
 }
-
 /** Represents a page corridor that has not produced connected output for the selected export. */
 function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
   const mountedWithoutOutput = blocker.targetMounted === true && blocker.targetHasOutput !== true;
   const deferredCallbackPending = mountedWithoutOutput &&
     blocker.targetDeferredCallbackPending === true;
   const wrapperHostOnly = mountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
+  const errorFallbackOutput = blocker.targetOutputKind === 'fallback-output';
+  const candidateOutput = blocker.targetOutputKind === 'candidate-output';
   return {
     blocker,
     blockerId: blocker.id,
@@ -203,7 +205,11 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
     children: [],
     id: blocker.id,
     kind: 'blocker',
-    name: (deferredCallbackPending
+    name: (errorFallbackOutput
+      ? 'Error fallback shown instead · '
+      : candidateOutput
+        ? 'Candidate output is not the current file · '
+        : deferredCallbackPending
       ? 'Render callback is waiting · '
       : wrapperHostOnly
       ? 'Fallback shown instead · '
@@ -215,16 +221,19 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
       requiredPaths: blocker.requiredPaths,
       status: blocker.status,
       targetDeferredCallbackPending: deferredCallbackPending,
+      targetOutputError: blocker.targetOutputError?.message,
+      targetOutputErrorOwner: blocker.targetOutputError?.ownerName,
+      targetOutputKind: blocker.targetOutputKind,
     },
     source: createPreviewInspectorBlockerSource(blocker),
     state: {
       directTarget: blocker.directTarget,
       targetHasOutput: blocker.targetHasOutput,
       targetMounted: blocker.targetMounted,
+      targetOutputKind: blocker.targetOutputKind,
     },
   };
 }
-
 /** Collects mounted/static components while excluding inert context and pseudo-node groups. */
 function collectPreviewInspectorBlockerOwners(nodes, owners = [], depth = 0) {
   for (const node of nodes) {
@@ -431,13 +440,11 @@ function attachPreviewInspectorBlockersToSnapshot(snapshot) {
   }
   return enrichedSnapshot;
 }
-
 /** Reports whether selection should open blocker controls instead of ordinary component props. */
 function isPreviewInspectorBlockerNode(node) {
   return isPreviewInspectorConditionNode(node) ||
     (node?.kind === 'blocker' && typeof node.blockerKind === 'string');
 }
-
 /** Reports whether an editable pseudo-node currently stops the selected page instead of assisting it. */
 function isPreviewInspectorBlockingNode(node) {
   if (isPreviewInspectorConditionNode(node)) return node?.blocksCurrentTarget === true;
@@ -455,12 +462,12 @@ function isPreviewInspectorBlockingNode(node) {
     return node.blocker?.mode === 'seed' && !usefulPayload;
   }
   if (node?.blockerKind === 'target-reachability') {
-    return node.blocker?.directTarget === true || node.blocker?.exhausted === true ||
+    return ['candidate-output', 'fallback-output'].includes(node.blocker?.targetOutputKind) ||
+      node.blocker?.directTarget === true || node.blocker?.exhausted === true ||
       node.blocker?.status === 'page-blocked';
   }
   return node?.blockerKind === 'target-error' || node?.blockerKind === 'runtime-global';
 }
-
 /** Collects only active render stops for the friendly page-status summary. */
 function readPreviewInspectorActiveBlockerSummary() {
   const nodes = [
@@ -474,7 +481,6 @@ function readPreviewInspectorActiveBlockerSummary() {
   const active = nodes.filter(isPreviewInspectorBlockingNode);
   return { active, count: active.length, first: active[0] };
 }
-
 /** Produces the compact status badge shown directly beside one blocker tree row. */
 function formatPreviewInspectorBlockerBadge(node) {
   if (isPreviewInspectorConditionNode(node)) {
@@ -819,131 +825,7 @@ function PreviewInspectorRuntimeGlobalFailureDetail({ node }) {
   );
 }
 
-/** Explains a logical path blocker and exposes retry/direct-target recovery without hiding context. */
-function PreviewInspectorTargetReachabilityDetail({ node }) {
-  const blocker = node.blocker;
-  const direct = blocker.directTarget === true;
-  const pageCommitted = blocker.pageRootCommitted === true && !direct;
-  const targetMounted = blocker.targetMounted === true;
-  const targetHasOutput = blocker.targetHasOutput === true;
-  const targetMountedWithoutOutput = targetMounted && !targetHasOutput;
-  const deferredCallbackPending = targetMountedWithoutOutput &&
-    blocker.targetDeferredCallbackPending === true;
-  const wrapperHostOnly = targetMountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
-  const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
-  const minimumSearch = blocker.minimumRequirementSearch;
-  const resolving = blocker.status === 'settling-auto-attempt' || minimumSearch?.status === 'searching';
-  const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status);
-  const invisibleExplanation = deferredCallbackPending
-    ? 'This file is waiting for its parent to call the render callback.'
-    : wrapperHostOnly
-      ? 'A wrapper or fallback is visible instead of this file’s authored content.'
-      : 'This file ran, but the current branch produced no visible element.';
-  const searchStatusLabel = minimumSearch?.status === 'cycle-detected'
-    ? 'stopped: the same values repeated'
-    : minimumSearch?.status === 'limit-reached'
-      ? 'stopped: pass limit reached'
-      : minimumSearch?.status === 'settled' ? 'finished' : minimumSearch?.status;
-  return React.createElement(
-    'div',
-    { className: 'rpi-detail-content' },
-    React.createElement(
-      'div',
-      { className: 'rpi-error', role: 'alert' },
-      circuitOpen
-        ? minimumSearch.status === 'cycle-detected'
-          ? 'Automatic search stopped because it kept generating the same preview values.' +
-            (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
-          : 'Automatic search stopped after its safe pass limit.' +
-            (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
-        : direct
-          ? 'File-only view is active. Return to the page to inspect the real layout.'
-          : pageCommitted
-            ? targetMountedWithoutOutput
-              ? invisibleExplanation
-              : 'The page loaded, but this path did not use ' + blocker.targetExportName + '.'
-            : 'The page is still loading.',
-    ),
-    React.createElement('div', { className: 'rpi-note' },
-      'Page: ' + blocker.rootName + ' · ' + (pageCommitted ? 'loaded' : 'still loading')),
-    React.createElement('div', { className: 'rpi-note' },
-      'Current file: ' + blocker.targetExportName + ' · ' +
-      (targetMountedWithoutOutput
-        ? deferredCallbackPending
-          ? 'connected · waiting for parent callback'
-          : wrapperHostOnly
-          ? 'ran · fallback visible instead'
-          : 'ran · no visible element'
-        : targetMounted
-          ? 'visible'
-          : 'not used on this path')),
-    React.createElement('div', { className: 'rpi-note' },
-      'Page path: ' + blocker.applicationPath.join(' > ')),
-    blocker.appliedConditions.length > 0
-      ? React.createElement('div', { className: 'rpi-note' },
-          'Conditions automatically used for this path: ' + blocker.appliedConditions
-            .map((condition) => condition.expression + ' = ' + String(condition.enabled))
-            .join(', '))
-      : React.createElement('div', { className: 'rpi-note' },
-          targetMountedWithoutOutput
-            ? deferredCallbackPending
-              ? 'Next likely cause: the parent needs data before it calls this render callback.'
-              : 'Next likely cause: an OFF condition, missing data, or a child that intentionally returns nothing.'
-            : 'No login, session, or permission condition has been proven for this path yet.'),
-    requiredPathSummary.totalCount > 0
-      ? React.createElement('div', { className: 'rpi-note' },
-          'Possible data needed next (' +
-          String(requiredPathSummary.totalCount) + '): ' +
-          requiredPathSummary.visiblePaths.join(', ') +
-          (requiredPathSummary.remainingCount > 0
-            ? ' · +' + String(requiredPathSummary.remainingCount) + ' more'
-            : ''))
-      : React.createElement('div', { className: 'rpi-note' },
-          'No required data field has been observed yet. More fields appear as additional branches run.'),
-    minimumSearch === undefined
-      ? undefined
-      : React.createElement('div', { className: 'rpi-note' },
-          'Automatic requirement search: pass ' + String(minimumSearch.pass) + ' of ' +
-          String(PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) + ' · ' +
-          searchStatusLabel + ' · ' + String(minimumSearch.observedPathCount) +
-          ' possible field(s) seen.' +
-          (minimumSearch.cycleLength > 0
-            ? ' Repeated cycle length: ' + String(minimumSearch.cycleLength) + '.'
-            : '')),
-    React.createElement(
-      'div',
-      { className: 'rpi-actions' },
-      React.createElement(
-        PreviewInspectorDevtoolsButton,
-        {
-          disabled: resolving,
-          onClick: () => smartFillPreviewInspectorTargetApplicationPath(blocker),
-          title: 'Follow newly revealed hook and backend fields in bounded passes, fill their minimum shape, and retry the authored page',
-        },
-        resolving ? 'Searching…' : 'Auto-find missing values',
-      ),
-      React.createElement(
-        PreviewInspectorDevtoolsButton,
-        {
-          onClick: direct
-            ? returnPreviewInspectorToPageContext
-            : retryPreviewInspectorTargetApplicationPath,
-        },
-        direct ? 'Return to page' : 'Try page again',
-      ),
-      React.createElement(
-        PreviewInspectorDevtoolsButton,
-        {
-          disabled: direct || blocker.directTargetAvailable !== true,
-          onClick: showPreviewInspectorTargetDirectly,
-        },
-        'Show file by itself',
-      ),
-    ),
-    React.createElement('div', { className: 'rpi-note' },
-      'Preview values never change source code or backend data. Your manual condition and payload choices stay in control.'),
-  );
-}
+${createPreviewInspectorTargetReachabilityDetailRuntimeSource()}
 
 /** Routes one selected tree blocker to its condition, payload, hook, or contained-error editor. */
 function PreviewInspectorBlockerDetail({ node }) {

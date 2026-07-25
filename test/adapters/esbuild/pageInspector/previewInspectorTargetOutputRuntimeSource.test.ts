@@ -6,20 +6,26 @@ import { createPreviewInspectorTargetOutputRuntimeSource } from '../../../../src
 /** Minimal synthetic Fiber used to express component ownership without mounting React. */
 interface TestFiber {
   readonly child?: TestFiber;
+  readonly elementType?: object;
   readonly kind: string;
   readonly name: string;
   readonly sibling?: TestFiber;
+  readonly type?: object;
 }
 
 /** Observable reachability state retained after one target-output evaluation. */
 interface TestTargetOutputState {
   readonly targetDeferredCallbackPending?: boolean;
   readonly targetExportName: string;
+  readonly targetOutputError?: { readonly message: string; readonly ownerName?: string };
+  readonly targetOutputKind?: string;
 }
 
 /** Result and diagnostic state produced by one selected-outcome evaluation. */
 interface TestTargetOutputEvaluation {
+  readonly clearedErrors: number;
   readonly resolved: boolean;
+  readonly scheduledRecoveryMs: number | undefined;
   readonly state: TestTargetOutputState;
 }
 
@@ -28,6 +34,13 @@ function evaluateResolvedOutput(
   componentTree: readonly Record<string, unknown>[],
   liveChild: TestFiber | undefined,
   options: {
+    readonly activeError?: {
+      readonly eventId?: string;
+      readonly message: string;
+      readonly ownerName?: string;
+      readonly timestamp: number;
+    };
+    readonly exactOwnership?: boolean;
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
@@ -47,11 +60,25 @@ function evaluateResolvedOutput(
     __host: boolean;
     __includePlan: boolean;
     __liveChild: TestFiber | undefined;
+    __activeError:
+      | {
+          readonly eventId?: string;
+          readonly message: string;
+          readonly ownerName?: string;
+          readonly timestamp: number;
+        }
+      | undefined;
+    __cleared: number;
+    __exactOwnership: boolean;
     __outcome: typeof outcome;
     __result?: boolean;
+    __scheduled?: { readonly delay: number };
     __selected: boolean;
     __state?: TestTargetOutputState;
   } = {
+    __activeError: options.activeError,
+    __cleared: 0,
+    __exactOwnership: options.exactOwnership !== false,
     __host: options.host !== false,
     __includePlan: options.includePlan !== false,
     __liveChild: liveChild,
@@ -62,6 +89,12 @@ function evaluateResolvedOutput(
     `
       const outcome = globalThis.__outcome;
       const liveChild = globalThis.__liveChild;
+      const targetType = {};
+      const targetFiber = liveChild === undefined ? undefined : {
+        ...liveChild,
+        elementType: globalThis.__exactOwnership ? targetType : {},
+        type: globalThis.__exactOwnership ? targetType : {},
+      };
       const descriptor = { inspector: { renderOutcomesByExport: {
         default: globalThis.__includePlan ? { outcomes: [outcome] } : undefined,
       } } };
@@ -70,14 +103,31 @@ function evaluateResolvedOutput(
         globalThis.__selected ? outcome : undefined;
       const readPreviewInspectorBoundaryFiber = (boundary) => boundary.fiber;
       const readPreviewInspectorFiberLink = (fiber, name) => fiber?.[name];
+      const readPreviewInspectorOwnData = (value, key) => value?.[key];
       const classifyPreviewInspectorFiber = (fiber) => fiber?.kind ?? 'other';
       const namePreviewInspectorFiber = (fiber) => fiber?.name ?? 'Anonymous';
       const isPreviewInspectorOwnedFiber = () => false;
       const collectPreviewInspectorFiberElements = (boundary) => boundary.host ? [{}] : [];
+      const readPreviewInspectorRuntimeHealthTargetError = () => globalThis.__activeError;
+      const clearPreviewInspectorRuntimeHealthTargetError = () => {
+        globalThis.__activeError = undefined;
+        globalThis.__cleared += 1;
+      };
+      const schedulePreviewInspectorCommitRefresh = () => undefined;
+      const schedulePreviewInspectorTreeRefresh = () => undefined;
+      const setTimeout = (_callback, delay) => {
+        globalThis.__scheduled = { delay };
+        return 1;
+      };
+      const clearTimeout = () => undefined;
       ${createPreviewInspectorTargetOutputRuntimeSource()}
       const state = { targetExportName: 'default' };
       globalThis.__result = hasPreviewInspectorResolvedTargetOutput(
-        { fiber: { child: liveChild }, host: globalThis.__host },
+        {
+          fiber: { child: targetFiber },
+          host: globalThis.__host,
+          props: { children: { type: targetType } },
+        },
         state,
       );
       globalThis.__state = state;
@@ -85,7 +135,12 @@ function evaluateResolvedOutput(
     context,
   );
   if (context.__state === undefined) throw new Error('Target output state was not captured.');
-  return { resolved: context.__result === true, state: context.__state };
+  return {
+    clearedErrors: context.__cleared,
+    resolved: context.__result === true,
+    scheduledRecoveryMs: context.__scheduled?.delay,
+    state: context.__state,
+  };
 }
 
 /** Evaluates one selected outcome when a test needs only its ready/not-ready decision. */
@@ -93,6 +148,13 @@ function hasResolvedOutput(
   componentTree: readonly Record<string, unknown>[],
   liveChild: TestFiber | undefined,
   options: {
+    readonly activeError?: {
+      readonly eventId?: string;
+      readonly message: string;
+      readonly ownerName?: string;
+      readonly timestamp: number;
+    };
+    readonly exactOwnership?: boolean;
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
@@ -256,9 +318,90 @@ describe('Preview Inspector target output runtime source', () => {
     );
   });
 
-  /** Preserves ordinary host semantics when older descriptors contain no outcome evidence. */
-  it('falls back to connected host output when no static outcome plan exists', () => {
-    expect(hasResolvedOutput([], undefined, { includePlan: false })).toBe(true);
+  /** Older descriptors still require exact selected-boundary Fiber ownership before host success. */
+  it('accepts connected host output without a plan only for the exact target Fiber', () => {
+    const live = { kind: 'function', name: 'Target' };
+    expect(hasResolvedOutput([], live, { includePlan: false })).toBe(true);
+    expect(
+      hasResolvedOutput([], live, {
+        exactOwnership: false,
+        includePlan: false,
+      }),
+    ).toBe(false);
     expect(hasResolvedOutput([], undefined, { host: false, includePlan: false })).toBe(false);
+  });
+
+  /** A committed application error page cannot turn target reachability green as its DOM grows. */
+  it('classifies error fallback DOM separately and retains its original owner', () => {
+    const error = {
+      eventId: 'runtime-health-1',
+      message: 'Error: Unreachable',
+      ownerName: 'FiStaManagementApp',
+      timestamp: Date.now() - 1_000,
+    };
+    const evaluation = evaluateResolvedOutput(
+      [{ children: [], name: 'MainPanel' }],
+      {
+        child: { kind: 'function', name: 'ErrorStatus' },
+        kind: 'function',
+        name: 'FiStaManagementApp',
+      },
+      { activeError: error },
+    );
+
+    expect(evaluation.resolved).toBe(false);
+    expect(evaluation.state.targetOutputKind).toBe('fallback-output');
+    expect(evaluation.state.targetOutputError).toMatchObject({
+      message: 'Error: Unreachable',
+      ownerName: 'FiStaManagementApp',
+    });
+    expect(evaluation.clearedErrors).toBe(0);
+  });
+
+  /** A new healthy exact commit is rechecked after the short error settlement grace. */
+  it('schedules a bounded recovery check for exact healthy output after a fresh error', () => {
+    const evaluation = evaluateResolvedOutput(
+      [{ children: [], name: 'MainPanel' }],
+      {
+        child: { kind: 'function', name: 'MainPanel' },
+        kind: 'function',
+        name: 'FiStaManagementApp',
+      },
+      {
+        activeError: {
+          eventId: 'runtime-health-2',
+          message: 'Error: transient',
+          timestamp: Date.now(),
+        },
+      },
+    );
+
+    expect(evaluation.resolved).toBe(false);
+    expect(evaluation.state.targetOutputKind).toBe('fallback-output');
+    expect(evaluation.scheduledRecoveryMs).toBeGreaterThan(0);
+    expect(evaluation.scheduledRecoveryMs).toBeLessThanOrEqual(321);
+  });
+
+  /** Exact authored output clears a settled root error only after fallback components disappear. */
+  it('promotes late exact target Fiber output and clears the stale root error', () => {
+    const evaluation = evaluateResolvedOutput(
+      [{ children: [], name: 'MainPanel' }],
+      {
+        child: { kind: 'function', name: 'MainPanel' },
+        kind: 'function',
+        name: 'FiStaManagementApp',
+      },
+      {
+        activeError: {
+          eventId: 'runtime-health-3',
+          message: 'Error: recovered',
+          timestamp: Date.now() - 1_000,
+        },
+      },
+    );
+
+    expect(evaluation.resolved).toBe(true);
+    expect(evaluation.state.targetOutputKind).toBe('target-output');
+    expect(evaluation.clearedErrors).toBe(1);
   });
 });

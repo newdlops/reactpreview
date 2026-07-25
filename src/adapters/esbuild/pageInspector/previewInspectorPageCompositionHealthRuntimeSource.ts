@@ -227,10 +227,17 @@ function summarizePreviewInspectorPageCompositionTree(snapshot) {
   };
 }
 
-/** Classifies the selected target's commit/mount/output phase for one-line log scanning. */
-function readPreviewInspectorCompositionTargetStage(reachability) {
+/** Classifies output only after reachability and the collected tree prove current-file Fiber. */
+function readPreviewInspectorCompositionTargetStage(reachability, tree) {
+  if (reachability?.targetOutputKind === 'fallback-output') return 'fallback-output';
+  if (reachability?.targetOutputKind === 'candidate-output') return 'candidate-output';
+  const ownsObservedFiber = tree?.counts?.currentFileMounted > 0 &&
+    Array.isArray(tree?.observedFiberPath) &&
+    tree.observedFiberPath.length > 0;
   if (reachability?.directTarget === true) return 'direct-target-fallback';
-  if (reachability?.targetHasOutput === true) return 'target-output';
+  if (reachability?.targetHasOutput === true) {
+    return ownsObservedFiber ? 'target-output' : 'candidate-output';
+  }
   if (reachability?.targetMounted === true || reachability?.targetWasMounted === true) {
     return 'target-mounted-no-output';
   }
@@ -257,6 +264,11 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     ? readPreviewInspectorTargetReachabilityState(descriptor, candidate)
     : undefined;
   const tree = summarizePreviewInspectorPageCompositionTree(snapshot);
+  const targetStage = readPreviewInspectorCompositionTargetStage(reachability, tree);
+  const retainedTargetError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
+    ? readPreviewInspectorRuntimeHealthTargetError(reachability?.targetExportName)
+    : undefined;
+  const targetOutputError = reachability?.targetOutputError ?? retainedTargetError;
   const applicationPath = (Array.isArray(reachability?.applicationPath)
     ? reachability.applicationPath
     : []).filter((name) => typeof name === 'string' && name.length > 0).slice(0, 24);
@@ -271,13 +283,34 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     : typeof candidate?.root?.sourcePath === 'string'
       ? candidate.root.sourcePath
       : undefined;
+  const requiresOutputBlocker = ['candidate-output', 'fallback-output'].includes(targetStage);
+  const hasOutputBlocker = tree.blockerItems.some((item) =>
+    item.active === true && item.kind === 'target-reachability',
+  );
+  const outputBlockerItem = requiresOutputBlocker && !hasOutputBlocker
+    ? {
+        active: true,
+        kind: 'target-reachability',
+        name: (targetStage === 'fallback-output'
+          ? 'Error fallback shown instead · '
+          : 'Candidate output is not the current file · ') +
+          String(reachability?.targetExportName ?? descriptor?.exportName ?? 'default'),
+        ownerPath: String(targetOutputError?.ownerName ?? '').slice(0, 1_200),
+      }
+    : undefined;
+  const blockerItems = [
+    ...tree.blockerItems,
+    ...(outputBlockerItem === undefined ? [] : [outputBlockerItem]),
+  ].slice(0, PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT);
   const detail = {
     applicationPath,
     authoredStaticPath: applicationPath,
     blockerSummary: {
-      active: tree.counts.activeBlockers + tree.counts.blockingConditions,
-      items: tree.blockerItems,
-      total: tree.counts.blockers + tree.counts.conditions,
+      active: tree.counts.activeBlockers + tree.counts.blockingConditions +
+        (outputBlockerItem === undefined ? 0 : 1),
+      items: blockerItems,
+      total: tree.counts.blockers + tree.counts.conditions +
+        (outputBlockerItem === undefined ? 0 : 1),
     },
     candidate: {
       candidateCount: candidates.length,
@@ -310,13 +343,27 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         descriptor?.inspector?.target?.exportName ??
         descriptor?.exportName ??
         'default',
-      hasOutput: reachability?.targetHasOutput === true,
+      errorMessage: typeof targetOutputError?.message === 'string'
+        ? targetOutputError.message.slice(0, 1_200)
+        : undefined,
+      errorOwner: typeof targetOutputError?.ownerName === 'string'
+        ? targetOutputError.ownerName.slice(0, 240)
+        : undefined,
+      errorPhase: typeof targetOutputError?.phase === 'string'
+        ? targetOutputError.phase.slice(0, 240)
+        : undefined,
+      fallbackOwner: typeof targetOutputError?.fallbackOwnerName === 'string'
+        ? targetOutputError.fallbackOwnerName.slice(0, 240)
+        : undefined,
+      hasOutput: targetStage === 'target-output',
       mounted: reachability?.targetMounted === true,
+      outputKind: reachability?.targetOutputKind ?? 'none',
       pageRootCommitted: reachability?.pageRootCommitted === true,
+      reachabilityHasOutput: reachability?.targetHasOutput === true,
       renderScenario: typeof readPreviewInspectorRenderScenario === 'function'
         ? readPreviewInspectorRenderScenario()
         : 'authored-page',
-      stage: readPreviewInspectorCompositionTargetStage(reachability),
+      stage: targetStage,
       status: reachability?.status ?? 'untracked',
       wasMounted: reachability?.targetWasMounted === true,
     },
@@ -331,8 +378,10 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     detail.route.pathname,
     detail.targetState.stage,
     detail.targetState.status,
+    detail.targetState.errorOwner,
+    detail.targetState.errorMessage,
     tree.rows.map((row) => [row.name, row.state]),
-    tree.blockerItems.map((item) => [item.name, item.active]),
+    blockerItems.map((item) => [item.name, item.active]),
     missingPathNames,
     tree.observedFiberPath,
   ]);

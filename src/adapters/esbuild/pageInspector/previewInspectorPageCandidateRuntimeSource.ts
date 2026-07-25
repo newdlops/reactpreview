@@ -35,6 +35,41 @@ function readPreviewInspectorPageCandidates(descriptor) {
   }];
 }
 
+/** Returns lightweight route metadata independently from the one branch admitted to the bundle. */
+function readPreviewInspectorRouteBranches(descriptor) {
+  if (
+    previewInspectorSession.pendingRouteBranchRevision !== undefined &&
+    previewInspectorSession.pendingRouteBranchRevision !== previewEntryRevision
+  ) {
+    previewInspectorSession.pendingRouteBranchId = undefined;
+    previewInspectorSession.pendingRouteBranchRevision = undefined;
+  }
+  const branches = descriptor?.inspector?.routeBranches;
+  return Array.isArray(branches) ? branches : [];
+}
+
+/** Requests a fresh branch-scoped bundle after preserving the current preview until it is ready. */
+function selectPreviewInspectorRouteBranch(branch) {
+  if (
+    typeof branch?.id !== 'string' ||
+    !Array.isArray(branch.selectionPath) ||
+    typeof previewInspectorPostHostMessage !== 'function'
+  ) {
+    return;
+  }
+  if (branch.id === findSelectedPreviewInspectorDescriptor()?.inspector?.selectedRouteBranchId) {
+    return;
+  }
+  previewInspectorSession.pendingRouteBranchId = branch.id;
+  previewInspectorSession.pendingRouteBranchRevision = previewEntryRevision;
+  notifyPreviewInspector();
+  previewInspectorPostHostMessage({
+    runtimeRevision: previewEntryRevision,
+    selectionPath: branch.selectionPath,
+    type: 'react-preview-inspector-route-selected',
+  });
+}
+
 /** Resolves the persisted candidate id against the current descriptor after every hot rebuild. */
 function readSelectedPreviewInspectorPageCandidate(descriptor) {
   const candidates = readPreviewInspectorPageCandidates(descriptor);
@@ -283,6 +318,14 @@ function formatPreviewInspectorPageCandidate(candidate, index) {
   const routePath = typeof candidate?.routeLocation?.pathname === 'string'
     ? candidate.routeLocation.pathname
     : undefined;
+  const routeComponentName = typeof candidate?.routeLocation?.componentName === 'string'
+    ? candidate.routeLocation.componentName
+    : undefined;
+  const routeChoiceLabel = routeComponentName === undefined ||
+    routeComponentName === rootName ||
+    names.includes(routeComponentName)
+    ? ''
+    : ' · view ' + routeComponentName;
   const routeLabel = routePath === undefined
     ? ''
     : ' · ' + (routePath.length > 64 ? '…' + routePath.slice(-63) : routePath);
@@ -291,7 +334,7 @@ function formatPreviewInspectorPageCandidate(candidate, index) {
     (candidate?.complete === true && entryConnected
       ? ' · application root'
       : entryConnected ? ' · application path' : ' · partial context') +
-    compositionLabel + routeLabel;
+    compositionLabel + routeChoiceLabel + routeLabel;
 }
 
 /**
@@ -315,6 +358,7 @@ function createPreviewInspectorPageCandidateHealthSummary(candidate) {
     rootStepIndex: Number.isInteger(candidate?.rootStepIndex)
       ? candidate.rootStepIndex
       : undefined,
+    routeComponentName: candidate?.routeLocation?.componentName,
     routePathname: candidate?.routeLocation?.pathname,
     stopReason: candidate?.stopReason ?? 'unknown',
     steps: steps.map((step) => ({

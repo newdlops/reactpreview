@@ -348,6 +348,8 @@ function hasPreviewInspectorTargetHostOutput(state) {
   const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
   state.targetHasAnyHostOutput = false;
   state.targetDeferredCallbackPending = false;
+  state.targetOutputKind = 'none';
+  state.targetOutputRecoveryPending = false;
   state.targetRenderedEmpty = false;
   if (!(boundaries instanceof Set)) return false;
   for (const boundary of boundaries) {

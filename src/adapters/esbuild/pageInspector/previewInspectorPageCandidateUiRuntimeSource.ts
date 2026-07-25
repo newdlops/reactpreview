@@ -3,6 +3,7 @@
  * Keeping this presentation fragment separate lets the main DevTools source stay below the
  * project's 1000-line file limit while candidate discovery and loading remain runtime concerns.
  */
+import { createPreviewInspectorRouteExplorerUiRuntimeSource } from './previewInspectorRouteExplorerUiRuntimeSource';
 
 /**
  * Creates a native, keyboard-accessible selector for authored page-root candidates.
@@ -13,7 +14,10 @@
  * @returns Plain JavaScript source consumed by the Inspector DevTools source generator.
  */
 export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
+  const routeExplorerSource = createPreviewInspectorRouteExplorerUiRuntimeSource();
   return String.raw`
+${routeExplorerSource}
+
 /** Formats page visibility with labels that describe what the user can actually see. */
 function formatPreviewInspectorPageCorridorStatus(reachability) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
@@ -75,9 +79,15 @@ function revealPreviewInspectorMissingTargetOutput() {
 /** Converts internal corridor state into one plain-language status and recommended next action. */
 function readPreviewInspectorFriendlyPageStatus(reachability) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
+  const selectedCandidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
     ? readSelectedPreviewInspectorModuleContext(descriptor)
     : descriptor?.inspector?.contextModule;
+  const routeChoiceName = typeof selectedCandidate?.routeLocation?.componentName === 'string' &&
+    selectedCandidate.routeLocation.componentName !== descriptor?.inspector?.target?.exportName
+    ? selectedCandidate.routeLocation.componentName
+    : undefined;
+  const routeChoicePath = selectedCandidate?.routeLocation?.pathname;
   if (readPreviewInspectorRenderScenario() === 'file-components') {
     return {
       action: 'Return to page flow',
@@ -95,14 +105,20 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
     const deferredCallbackPending = reachability?.targetDeferredCallbackPending === true;
     const wrapperHostOnly = reachability?.targetHasAnyHostOutput === true;
     return {
-      action: moduleContext !== undefined
+      action: routeChoiceName !== undefined
+        ? 'Inspect selected page'
+        : moduleContext !== undefined
         ? 'Find page requirement'
         : deferredCallbackPending
           ? 'Find callback requirement'
           : wrapperHostOnly
             ? 'Find replaced content'
             : 'Find what hides it',
-      description: moduleContext !== undefined
+      description: routeChoiceName !== undefined
+        ? 'This file owns the Provider and Routes. It ran successfully, but the selected child page ' +
+          routeChoiceName + ' at ' + String(routeChoicePath ?? '/') +
+          ' produced no visible element. Choose another Page path above or inspect this page’s first condition.'
+        : moduleContext !== undefined
         ? 'The page used this module, but the selected branch contains no visible element. Open the nearest condition or missing value.'
         : deferredCallbackPending
           ? 'This file is available as render content, but its parent has not called it. Open the value or condition that enables the callback.'
@@ -115,19 +131,25 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
       steps: [
         { label: 'Page loaded', state: 'done' },
         {
-          label: moduleContext !== undefined
+          label: routeChoiceName !== undefined
+            ? 'Router ran'
+            : moduleContext !== undefined
             ? 'Module used'
             : deferredCallbackPending ? 'File connected' : 'File ran',
           state: 'done',
         },
         {
-          label: deferredCallbackPending
+          label: routeChoiceName !== undefined
+            ? 'Selected page hidden'
+            : deferredCallbackPending
             ? 'Callback waiting'
             : wrapperHostOnly ? 'Fallback shown' : 'Nothing visible',
           state: 'blocked',
         },
       ],
-      title: moduleContext !== undefined
+      title: routeChoiceName !== undefined
+        ? 'The selected page route is not visible'
+        : moduleContext !== undefined
         ? 'This module’s page has no visible content'
         : deferredCallbackPending
           ? 'Waiting for the parent to render this file'
@@ -336,6 +358,7 @@ function PreviewInspectorPageCandidateSelect({ descriptor }) {
     undefined,
     React.createElement(PreviewInspectorRenderScenarioSelect),
     React.createElement(PreviewInspectorFriendlyGuide, { reachability }),
+    React.createElement(PreviewInspectorRouteExplorer, { descriptor }),
     React.createElement(
       'label',
       {

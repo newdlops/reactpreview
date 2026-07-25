@@ -299,6 +299,33 @@ describe('PreviewPanelSession displayed Inspector revision', () => {
     ]);
     fixture.session.dispose();
   });
+
+  /** Carries a current browser route choice into only this pinned panel's next immutable request. */
+  it('rebuilds the selected hierarchical application path', async () => {
+    const execute = vi
+      .fn<PreviewBuildService['execute']>()
+      .mockResolvedValueOnce(createPreparedPreview('root-route'))
+      .mockResolvedValueOnce(createPreparedPreview('selected-route'));
+    const fixture = createFixture(execute);
+    await startReadyInitialRuntime(fixture, 'root-route');
+    const selectionPath = [
+      { componentName: 'FeatureApp', pattern: '/feature/*' },
+      { componentName: 'SettingsPage', pattern: '/feature/settings' },
+    ];
+
+    fixture.panel.emitMessage({
+      runtimeRevision: 1,
+      selectionPath,
+      type: 'react-preview-inspector-route-selected',
+    });
+    await settleAsyncWork();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[1]?.[0]).toMatchObject({
+      inspectorRouteSelection: selectionPath,
+    });
+    fixture.session.dispose();
+  });
 });
 
 /** Observable collaborators returned for one real panel-session fixture. */

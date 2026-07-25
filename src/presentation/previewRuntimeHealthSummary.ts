@@ -13,6 +13,7 @@ import type {
 
 const MAXIMUM_SUMMARY_PATH_ITEMS = 12;
 const MAXIMUM_SUMMARY_TREE_ROWS = 16;
+const MAXIMUM_SUMMARY_BLOCKER_ROWS = 4;
 const MAXIMUM_SUMMARY_TEXT_LENGTH = 240;
 
 /** Builds a human-readable prefix for page-context and page-composition events. */
@@ -72,9 +73,14 @@ function formatPageCompositionSummary(detail: PreviewRuntimeHealthJson): string 
   const observed = readFiniteNumber(counts?.observed) ?? 0;
   const hostOutput = readFiniteNumber(counts?.hostOutput) ?? 0;
   const expected = readFiniteNumber(counts?.expected) ?? 0;
+  const currentFileMounted = readFiniteNumber(counts?.currentFileMounted) ?? 0;
   const activeBlockers = readFiniteNumber(blockers?.active) ?? 0;
   const targetStage = readText(target?.stage) ?? 'untracked';
   const targetExport = readText(target?.exportName) ?? 'unknown';
+  const targetOutputKind = readText(target?.outputKind) ?? 'none';
+  const reachabilityHasOutput = target?.reachabilityHasOutput === true;
+  const errorOwner = readText(target?.errorOwner);
+  const errorMessage = readText(target?.errorMessage);
   const rootExport = readText(candidate?.rootExport) ?? 'unknown';
   const stopReason = readText(candidate?.stopReason) ?? 'unknown';
   const virtualPage = readRecord(candidate?.virtualPage);
@@ -88,6 +94,9 @@ function formatPageCompositionSummary(detail: PreviewRuntimeHealthJson): string 
   const observedFiberPath = readTextArray(record?.observedFiberPath);
   const treeRows = readArray(record?.treeRows).slice(0, MAXIMUM_SUMMARY_TREE_ROWS);
   const treeLines = treeRows.flatMap(formatTreeRow);
+  const blockerLines = readArray(blockers?.items)
+    .slice(0, MAXIMUM_SUMMARY_BLOCKER_ROWS)
+    .flatMap(formatBlockerRow);
   const treeTruncated =
     record?.treeRowsTruncated === true ||
     readArray(record?.treeRows).length > MAXIMUM_SUMMARY_TREE_ROWS;
@@ -99,14 +108,28 @@ function formatPageCompositionSummary(detail: PreviewRuntimeHealthJson): string 
       : [
           `  VirtualPage: ${clip(virtualPageMode)} · authored-root=${clip(authoredRootExport ?? rootExport)} · static-shell-steps=${bypassedStepCount.toString()}`,
         ]),
-    `  Runtime: mounted=${mounted.toString()}/${observed.toString()} · host-output=${hostOutput.toString()} · expected=${expected.toString()} · active-blockers=${activeBlockers.toString()}`,
+    `  Runtime: mounted=${mounted.toString()}/${observed.toString()} · current-file-mounted=${currentFileMounted.toString()} · host-output=${hostOutput.toString()} · expected=${expected.toString()} · active-blockers=${activeBlockers.toString()}`,
+    `  Target proof: reachability-host-claim=${String(reachabilityHasOutput)} · output-kind=${clip(targetOutputKind)} · observed-current-file-fiber=${String(currentFileMounted > 0)}`,
+    ...(errorMessage === undefined
+      ? []
+      : [`  Output blocker: ${clip(errorOwner ?? 'unknown owner')} · ${clip(errorMessage)}`]),
     `  Authored static path: ${formatPath(authoredStaticPath)}`,
     `  Observed Fiber path: ${formatPath(observedFiberPath)}`,
     `  Missing from live tree: ${formatPath(missingShellNames)}`,
+    ...(blockerLines.length === 0 ? [] : ['  Active blocker locations:', ...blockerLines]),
     '  Component tree:',
     ...(treeLines.length === 0 ? ['    (no tree rows observed)'] : treeLines),
     ...(treeTruncated ? ['    … additional tree rows remain in the structured record'] : []),
   ].join('\n');
+}
+
+/** Renders one active blocker with its tree owner so failures remain spatial instead of aggregated. */
+function formatBlockerRow(value: PreviewRuntimeHealthJson): readonly string[] {
+  const blocker = readRecord(value);
+  if (blocker?.active !== true) return [];
+  const name = readText(blocker.name) ?? 'Unnamed blocker';
+  const ownerPath = readText(blocker.ownerPath);
+  return [`    [!] ${clip(name)}${ownerPath === undefined ? '' : ` · at ${clip(ownerPath)}`}`];
 }
 
 /** Renders one bounded pre-order row with an explicit live/expected/blocking state marker. */

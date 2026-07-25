@@ -43,6 +43,20 @@ export interface PreviewSourceSnapshot {
 }
 
 /**
+ * One statically proven router branch selected in the Page Inspector route explorer.
+ *
+ * A complete selection is an ordered path because a route can mount another router owner. Keeping
+ * only public component and route identities prevents browser messages from choosing filesystem
+ * modules directly; the compiler resolves every step again against current authored evidence.
+ */
+export interface PreviewInspectorRouteSelectionStep {
+  /** Component/page identity exposed by JSX, a page map, or an inert route catalog. */
+  readonly componentName: string;
+  /** Absolute authored route pattern before neutral dynamic values are materialized. */
+  readonly pattern: string;
+}
+
+/**
  * Immutable snapshot of the active editor at the moment a preview build starts.
  * `sourceText` deliberately comes from the editor rather than disk so unsaved changes are visible.
  */
@@ -64,6 +78,13 @@ export interface PreviewBuildRequest {
   readonly maxOutputMebibytes?: number;
   /** Direct reachable graph for first paint, or complete application-context discovery. */
   readonly preparationMode?: PreviewPreparationMode;
+  /**
+   * Ordered router branches selected in Page Inspector.
+   *
+   * The extension host accepts this only from its bounded route-selection protocol. Compiler-side
+   * analysis must still match every step to static source evidence before importing a module.
+   */
+  readonly inspectorRouteSelection?: readonly PreviewInspectorRouteSelectionStep[];
   /** Component gallery by default, or an opt-in actual-parent page inspector. */
   readonly renderMode?: PreviewRenderMode;
   /** Complete current editor contents, including unsaved changes. */

@@ -48,7 +48,18 @@ describe('Preview runtime health summary', () => {
       createEvent('page-composition-snapshot', {
         applicationPath: ['Application', 'DashboardPage', 'TargetPanel'],
         authoredStaticPath: ['Application', 'DashboardPage', 'TargetPanel'],
-        blockerSummary: { active: 1, items: [], total: 1 },
+        blockerSummary: {
+          active: 1,
+          items: [
+            {
+              active: true,
+              kind: 'target-reachability',
+              name: 'Error fallback shown instead · TargetPanel',
+              ownerPath: 'Application > GlobalErrorBoundary > FiStaManagementApp',
+            },
+          ],
+          total: 1,
+        },
         candidate: {
           complete: true,
           rootExport: 'Application',
@@ -57,10 +68,20 @@ describe('Preview runtime health summary', () => {
         missingShellNames: ['DashboardPage'],
         observedFiberPath: ['Application', 'FallbackPage'],
         route: { pathname: '/dashboard' },
-        statusCounts: { expected: 1, hostOutput: 1, mounted: 2, observed: 4 },
+        statusCounts: {
+          currentFileMounted: 0,
+          expected: 1,
+          hostOutput: 1,
+          mounted: 2,
+          observed: 4,
+        },
         targetState: {
+          errorMessage: 'Error: Unreachable',
+          errorOwner: 'FiStaManagementApp',
           exportName: 'TargetPanel',
-          stage: 'page-committed-target-absent',
+          outputKind: 'fallback-output',
+          reachabilityHasOutput: true,
+          stage: 'fallback-output',
         },
         treeRows: [
           {
@@ -86,7 +107,13 @@ describe('Preview runtime health summary', () => {
       }),
     );
 
-    expect(summary).toContain('page-committed-target-absent');
+    expect(summary).toContain('fallback-output');
+    expect(summary).toContain('current-file-mounted=0');
+    expect(summary).toContain('reachability-host-claim=true');
+    expect(summary).toContain('Output blocker: FiStaManagementApp · Error: Unreachable');
+    expect(summary).toContain(
+      'Error fallback shown instead · TargetPanel · at Application > GlobalErrorBoundary',
+    );
     expect(summary).toContain('Observed Fiber path: Application > FallbackPage');
     expect(summary).toContain('Missing from live tree: DashboardPage');
     expect(summary).toContain('[+] Application · mounted-output');

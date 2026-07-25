@@ -1,6 +1,6 @@
 /** Owns one pinned panel whose target, builds, leases, and focus state never leak to another tab. */
 import * as vscode from 'vscode';
-import type { PreparedPreview } from '../domain/preview';
+import type { PreparedPreview, PreviewInspectorRouteSelectionStep } from '../domain/preview';
 import { isPreviewBuildCancellation } from '../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../domain/previewProgress';
 import { canonicalizeExistingPath, createExistingPathIdentitySet } from '../shared/pathIdentity';
@@ -8,6 +8,7 @@ import type { PreviewTargetIssue, ResolvedPreviewTarget } from './activePreviewT
 import { describeBuildFailure, formatDiagnostic } from './previewFailure';
 import { PreviewContextEnrichmentCoordinator } from './previewContextEnrichment';
 import { createPreviewPanelTitle } from './previewPanelTitle';
+import { PreviewPanelRouteSelection } from './previewPanelRouteSelection';
 import { PreviewPerformanceTrace } from './previewPerformanceTrace';
 import { preparePreviewFirstPaint } from './previewFirstPaint';
 import {
@@ -29,10 +30,10 @@ import type {
 } from './previewPanelSessionState';
 import type { PreviewPanelSessionOptions } from './previewPanelSessionTypes';
 import {
-  createPreviewSiblingResourceUri,
   disposePreviewResources,
   isPreviewPathInside,
   rememberPreviewFailureDependencies,
+  replacePreviewDirectoryWatchers,
 } from './previewPanelSessionUtilities';
 import { createPreviewHtml } from './webview/previewHtml';
 export type {
@@ -55,6 +56,8 @@ export class PreviewPanelSession implements vscode.Disposable {
   private disposalNotified = false;
   private displayedRuntimeRevision = 0;
   private hasCompleteContext = false;
+  /** Root-to-leaf route path selected independently for this pinned Inspector tab. */
+  private readonly inspectorRouteSelection = new PreviewPanelRouteSelection();
   private readonly inspectorSourceDecoration = new PreviewInspectorSourceDecoration();
   private readonly inspectorSourceGesture = new PreviewInspectorGestureGate();
   private readonly panelDisposables: vscode.Disposable[] = [];
@@ -101,6 +104,13 @@ export class PreviewPanelSession implements vscode.Disposable {
           );
           this.renderProgress(revision, target.documentName, 'ready');
         },
+        reportSuppressed: (target, revision, retryAfterMs) => {
+          const retryMinutes = Math.max(1, Math.ceil(retryAfterMs / 60_000));
+          this.options.log.info(
+            `Full React preview context enrichment skipped for an unchanged graph after a prior resource stall. Fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}; retry window: approximately ${retryMinutes.toString()} minute(s). Edit the target or a captured dependency to retry immediately.`,
+          );
+          this.renderProgress(revision, target.documentName, 'ready');
+        },
       },
       renderMode: options.renderMode,
     });
@@ -111,22 +121,18 @@ export class PreviewPanelSession implements vscode.Disposable {
       options.panel.webview.onDidReceiveMessage(this.handleWebviewMessage.bind(this)),
     );
   }
-
   /** Immutable URI captured when this preview panel was created. */
   public get documentUri(): vscode.Uri {
     return this.options.initialTarget.documentUri;
   }
-
   /** Whether this panel currently owns editor focus. */
   public get isActive(): boolean {
     return !this.disposed && this.options.panel.active;
   }
-
   /** Starts the first build from the exact target snapshot validated before panel creation. */
   public start(): void {
     this.scheduleRefresh(true, this.options.initialTarget);
   }
-
   /** Rebuilds this session's pinned file immediately without consulting another editor. */
   public refresh(): void {
     this.scheduleRefresh(true);
@@ -298,7 +304,8 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.clearBuildExecution(requestedRevision);
       return;
     }
-    this.options.panel.title = createPreviewPanelTitle(target.request.documentPath);
+    const buildTarget = this.inspectorRouteSelection.applyTo(target);
+    this.options.panel.title = createPreviewPanelTitle(buildTarget.request.documentPath);
     let contextEnrichmentPending = false;
     try {
       const firstPaint = await preparePreviewFirstPaint({
@@ -311,7 +318,7 @@ export class PreviewPanelSession implements vscode.Disposable {
         },
         preferFast: !this.hasCompleteContext,
         renderMode: this.options.renderMode,
-        request: target.request,
+        request: buildTarget.request,
       });
       const preparedPreview = firstPaint.preparedPreview;
       if (!this.isCurrentRevision(requestedRevision)) {
@@ -331,7 +338,7 @@ export class PreviewPanelSession implements vscode.Disposable {
               (pending) => pending.nextArtifactHash === artifactHash,
             );
           this.contextEnrichment.schedule(
-            target,
+            buildTarget,
             artifactHash,
             requestedRevision,
             signal,
@@ -605,6 +612,7 @@ export class PreviewPanelSession implements vscode.Disposable {
         log: this.options.log,
         panelViewColumn: this.options.panel.viewColumn,
         pinnedDocumentUri: this.documentUri,
+        selectRoute: this.selectInspectorRoute.bind(this),
         sourceDecoration: this.inspectorSourceDecoration,
         targetPath: this.targetPath,
       })
@@ -672,6 +680,19 @@ export class PreviewPanelSession implements vscode.Disposable {
     if (settlesWithoutNavigation) {
       this.contextEnrichment.settle(pending.nextArtifactHash, settlementRevision);
     }
+  }
+
+  /**
+   * Rebuilds only when the browser chooses a different statically offered route hierarchy.
+   *
+   * Route exploration is a full-context operation: running another direct fast pass would first
+   * discard the hierarchy the user just selected and then repeat background enrichment.
+   */
+  private selectInspectorRoute(selectionPath: readonly PreviewInspectorRouteSelectionStep[]): void {
+    if (!this.inspectorRouteSelection.replace(selectionPath)) return;
+    this.hasCompleteContext = true;
+    this.contextEnrichment.cancel();
+    this.scheduleRefresh(true);
   }
 
   /** Reconciles artifact ownership after browser application, retained failure, or navigation. */
@@ -765,44 +786,15 @@ export class PreviewPanelSession implements vscode.Disposable {
    * @param nextDirectories Canonical discovery roots from the newly committed bundle.
    */
   private replaceDirectoryWatchers(nextDirectories: ReadonlySet<string>): void {
-    for (const [directoryPath, disposables] of this.directoryWatcherDisposables) {
-      if (nextDirectories.has(directoryPath)) {
-        continue;
-      }
-      disposePreviewResources(disposables);
-      this.directoryWatcherDisposables.delete(directoryPath);
-    }
-
-    for (const directoryPath of nextDirectories) {
-      if (this.directoryWatcherDisposables.has(directoryPath)) {
-        continue;
-      }
-
-      let newDisposables: vscode.Disposable[] = [];
-      try {
-        const directoryUri = createPreviewSiblingResourceUri(this.documentUri, directoryPath);
-        const watcher = vscode.workspace.createFileSystemWatcher(
-          new vscode.RelativePattern(directoryUri, '**/*'),
-        );
-        const handleResource = this.handleWatchedResourceChanged.bind(this);
-        newDisposables = [watcher];
-        newDisposables.push(watcher.onDidChange(handleResource));
-        newDisposables.push(watcher.onDidCreate(handleResource));
-        newDisposables.push(watcher.onDidDelete(handleResource));
-        this.directoryWatcherDisposables.set(directoryPath, newDisposables);
-      } catch (error) {
-        disposePreviewResources(newDisposables);
-        this.options.log.debug(
-          `Could not watch React preview resource directory ${directoryPath}.`,
-          error,
-        );
-      }
-    }
-  }
-
-  /** Routes one filesystem watcher event through the same dependency-directory containment policy. */
-  private handleWatchedResourceChanged(resource: vscode.Uri): void {
-    this.refreshForDocument(resource.fsPath);
+    replacePreviewDirectoryWatchers({
+      directories: nextDirectories,
+      disposablesByPath: this.directoryWatcherDisposables,
+      log: this.options.log,
+      onResource: (resource) => {
+        this.refreshForDocument(resource.fsPath);
+      },
+      pinnedUri: this.documentUri,
+    });
   }
 
   /**
@@ -960,7 +952,6 @@ export class PreviewPanelSession implements vscode.Disposable {
     if (this.disposalNotified) {
       return;
     }
-
     this.disposalNotified = true;
     this.options.callbacks.onDidDispose(this);
   }

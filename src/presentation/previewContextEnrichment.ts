@@ -8,6 +8,10 @@ import type { BuildPreview } from '../application/buildPreview';
 import type { PreparedPreview, PreviewRenderMode } from '../domain/preview';
 import { isPreviewBuildCancellation, isPreviewBuildStall } from '../domain/previewBuildExecution';
 import type { ResolvedPreviewTarget } from './activePreviewTarget';
+import {
+  sharedPreviewContextEnrichmentBackoff,
+  type PreviewContextEnrichmentBackoff,
+} from './previewContextEnrichmentBackoff';
 
 /** Deferred full build waiting for the corresponding fast artifact to settle in the browser. */
 interface PendingPreviewContextEnrichment {
@@ -37,6 +41,12 @@ export interface PreviewContextEnrichmentCallbacks {
   readonly isCurrent: (revision: number) => boolean;
   /** Records a non-fatal enrichment failure while the fast preview remains visible. */
   readonly reportFailure: (error: unknown, target: ResolvedPreviewTarget, revision: number) => void;
+  /** Explains why an unchanged graph was not submitted to the isolated compiler again. */
+  readonly reportSuppressed?: (
+    target: ResolvedPreviewTarget,
+    revision: number,
+    retryAfterMs: number,
+  ) => void;
 }
 
 /** Dependencies and immutable rendering policy for one panel-local coordinator. */
@@ -47,16 +57,19 @@ export interface PreviewContextEnrichmentOptions {
   readonly callbacks: PreviewContextEnrichmentCallbacks;
   /** Rendering mode retained from panel creation. */
   readonly renderMode: PreviewRenderMode;
+  /** Process-shared production backoff or an isolated deterministic test cache. */
+  readonly backoff?: PreviewContextEnrichmentBackoff;
 }
 
 /** Coordinates exactly one replaceable deferred full-context pass per preview session. */
 export class PreviewContextEnrichmentCoordinator {
-  /** One deterministic failure skipped once; the following explicit refresh may try again. */
-  private failedResourceBackoff: { readonly resourceIdentity: string } | undefined;
+  private readonly backoff: PreviewContextEnrichmentBackoff;
   private pending: PendingPreviewContextEnrichment | undefined;
 
   /** Creates a coordinator around explicit application and presentation boundaries. */
-  public constructor(private readonly options: PreviewContextEnrichmentOptions) {}
+  public constructor(private readonly options: PreviewContextEnrichmentOptions) {
+    this.backoff = options.backoff ?? sharedPreviewContextEnrichmentBackoff;
+  }
 
   /**
    * Replaces any older pending pass and optionally starts immediately for an already-mounted tree.
@@ -74,11 +87,11 @@ export class PreviewContextEnrichmentCoordinator {
     signal: AbortSignal,
     awaitsRuntimeSettlement: boolean,
   ): void {
+    this.pending = undefined;
     const resourceIdentity = createEnrichmentResourceIdentity(target);
-    if (this.failedResourceBackoff?.resourceIdentity === resourceIdentity) {
-      // Skip one identical deterministic retry, then clear the marker. This breaks immediate
-      // refresh loops even when worker-local entry credentials changed the fast artifact hash.
-      this.failedResourceBackoff = undefined;
+    const decision = this.backoff.check(resourceIdentity);
+    if (!decision.allowed) {
+      this.options.callbacks.reportSuppressed?.(target, revision, decision.retryAfterMs);
       this.options.callbacks.complete(revision);
       return;
     }
@@ -124,7 +137,7 @@ export class PreviewContextEnrichmentCoordinator {
           }
           try {
             this.options.callbacks.commit(pending.target, preparedPreview, pending.revision);
-            this.failedResourceBackoff = undefined;
+            this.backoff.recordSuccess(pending.resourceIdentity);
             return;
           } catch (error) {
             await this.options.buildPreview.releaseArtifact(preparedPreview.artifact.contentHash);
@@ -148,9 +161,7 @@ export class PreviewContextEnrichmentCoordinator {
         this.options.callbacks.isCurrent(pending.revision)
       ) {
         if (isDeterministicEnrichmentStall(error)) {
-          this.failedResourceBackoff = {
-            resourceIdentity: pending.resourceIdentity,
-          };
+          this.backoff.recordFailure(pending.resourceIdentity);
         }
         this.options.callbacks.reportFailure(error, pending.target, pending.revision);
       }
@@ -193,6 +204,10 @@ function createEnrichmentResourceIdentity(target: ResolvedPreviewTarget): string
   update(request.tsconfigPath ?? '');
   update(request.maxOutputMebibytes?.toString() ?? '');
   update(request.useStorybookPreview === true ? 'storybook:on' : 'storybook:off');
+  for (const routeStep of request.inspectorRouteSelection ?? []) {
+    update(routeStep.componentName);
+    update(routeStep.pattern);
+  }
   for (const snapshot of request.dependencySnapshots) {
     update(snapshot.documentPath);
     update(snapshot.language);

@@ -6,6 +6,7 @@
  * its own parser and least-privilege filesystem boundary.
  */
 import type * as vscode from 'vscode';
+import type { PreviewInspectorRouteSelectionStep } from '../domain/preview';
 import { handlePreviewBlockerTraceMessage } from './previewBlockerTraceLogger';
 import { handlePreviewRuntimeHealthMessage } from './previewRuntimeHealthLogger';
 import {
@@ -18,6 +19,10 @@ import {
   readPreviewInspectorBranchSourceDecorationRequest,
   readPreviewInspectorSourceSelectionRequest,
 } from './previewInspectorProtocol';
+import {
+  isPreviewInspectorRouteSelectionMessage,
+  readPreviewInspectorRouteSelectionRequest,
+} from './previewInspectorRouteSelectionProtocol';
 import type { PreviewInspectorSourceDecoration } from './previewInspectorSourceDecoration';
 
 /** Combined panel state required by blocker tracing and signed source navigation. */
@@ -30,6 +35,8 @@ export interface PreviewInspectorHostMessageContext extends PreviewInspectorSour
   readonly targetPath: string;
   /** Full log surface narrows independently inside each protocol handler. */
   readonly log: vscode.LogOutputChannel;
+  /** Schedules a branch-scoped rebuild after current-revision protocol validation. */
+  readonly selectRoute?: (selectionPath: readonly PreviewInspectorRouteSelectionStep[]) => void;
 }
 
 /**
@@ -43,6 +50,15 @@ export function handlePreviewInspectorHostMessage(
   value: unknown,
   context: PreviewInspectorHostMessageContext,
 ): boolean {
+  if (isPreviewInspectorRouteSelectionMessage(value)) {
+    const request = readPreviewInspectorRouteSelectionRequest(value);
+    if (request?.runtimeRevision !== context.currentRuntimeRevision) {
+      context.log.debug('Ignored a malformed or stale React Inspector route selection message.');
+    } else {
+      context.selectRoute?.(request.selectionPath);
+    }
+    return true;
+  }
   if (isPreviewInspectorBranchSourceDecorationMessage(value)) {
     const request = readPreviewInspectorBranchSourceDecorationRequest(value);
     if (request === undefined) {

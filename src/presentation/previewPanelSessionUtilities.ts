@@ -34,6 +34,59 @@ export function disposePreviewResources(disposables: readonly vscode.Disposable[
   }
 }
 
+/** Inputs for reconciling one panel's directory-scoped hot-reload watchers. */
+export interface ReplacePreviewDirectoryWatchersOptions {
+  /** Newly committed resource-discovery roots. */
+  readonly directories: ReadonlySet<string>;
+  /** Session-owned watcher groups keyed by their canonical directory path. */
+  readonly disposablesByPath: Map<string, vscode.Disposable[]>;
+  /** Output channel used only for recoverable watcher construction failures. */
+  readonly log: vscode.LogOutputChannel;
+  /** Receives changed, created, and deleted resources through one panel-local policy callback. */
+  readonly onResource: (resource: vscode.Uri) => void;
+  /** Pinned URI whose remote scheme and authority must be preserved. */
+  readonly pinnedUri: vscode.Uri;
+}
+
+/**
+ * Reconciles filesystem watchers without coupling watcher lifecycle to the panel build controller.
+ *
+ * Every removed directory is disposed first. Newly added roots share one callback across change,
+ * create, and delete events so the caller remains responsible for dependency containment policy.
+ */
+export function replacePreviewDirectoryWatchers(
+  options: ReplacePreviewDirectoryWatchersOptions,
+): void {
+  for (const [directoryPath, disposables] of options.disposablesByPath) {
+    if (options.directories.has(directoryPath)) continue;
+    disposePreviewResources(disposables);
+    options.disposablesByPath.delete(directoryPath);
+  }
+  for (const directoryPath of options.directories) {
+    if (options.disposablesByPath.has(directoryPath)) continue;
+    let newDisposables: vscode.Disposable[] = [];
+    try {
+      const directoryUri = createPreviewSiblingResourceUri(options.pinnedUri, directoryPath);
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(directoryUri, '**/*'),
+      );
+      newDisposables = [
+        watcher,
+        watcher.onDidChange(options.onResource),
+        watcher.onDidCreate(options.onResource),
+        watcher.onDidDelete(options.onResource),
+      ];
+      options.disposablesByPath.set(directoryPath, newDisposables);
+    } catch (error) {
+      disposePreviewResources(newDisposables);
+      options.log.debug(
+        `Could not watch React preview resource directory ${directoryPath}.`,
+        error,
+      );
+    }
+  }
+}
+
 /** Adds compiler diagnostic source locations so fixing a failed import retries the owning panel. */
 export function rememberPreviewFailureDependencies(
   dependencies: Set<string>,

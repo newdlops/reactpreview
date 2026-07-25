@@ -36,6 +36,46 @@ beforeEach(() => {
 });
 
 describe('handlePreviewInspectorHostMessage source selection', () => {
+  /** Rebuilds only for a route hierarchy offered by the currently committed runtime revision. */
+  it('routes a current hierarchical application path selection', () => {
+    const { context, selectRoute } = createContext();
+    const selectionPath = [
+      { componentName: 'CompanyApp', pattern: '/company/:companyId/*' },
+      { componentName: 'SettingsPage', pattern: '/company/:companyId/settings' },
+    ];
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        {
+          runtimeRevision: 12,
+          selectionPath,
+          type: 'react-preview-inspector-route-selected',
+        },
+        context,
+      ),
+    ).toBe(true);
+    expect(selectRoute).toHaveBeenCalledWith(selectionPath);
+    expect(handlerState.health).not.toHaveBeenCalled();
+  });
+
+  /** Consumes a stale route click without allowing an old webview to replace the new branch. */
+  it('rejects a stale hierarchical application path selection', () => {
+    const { context, debug, selectRoute } = createContext();
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        {
+          runtimeRevision: 11,
+          selectionPath: [{ componentName: 'OldPage', pattern: '/old' }],
+          type: 'react-preview-inspector-route-selected',
+        },
+        context,
+      ),
+    ).toBe(true);
+    expect(selectRoute).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('stale'));
+  });
+
   /** Routes a valid passive JSX branch inventory before any unrelated runtime protocol. */
   it('routes branch source decorations to the panel-owned decoration service', () => {
     const { context, decorateBranches } = createContext();
@@ -125,6 +165,7 @@ interface TestPreviewInspectorHostMessageContext {
   readonly debug: ReturnType<typeof vi.fn>;
   readonly decorateBranches: ReturnType<typeof vi.fn>;
   readonly select: ReturnType<typeof vi.fn>;
+  readonly selectRoute: ReturnType<typeof vi.fn>;
 }
 
 /** Creates the smallest structurally complete host context used by protocol routing tests. */
@@ -132,6 +173,7 @@ function createContext(): TestPreviewInspectorHostMessageContext {
   const debug = vi.fn();
   const decorateBranches = vi.fn();
   const select = vi.fn();
+  const selectRoute = vi.fn();
   const context = {
     currentRuntimeRevision: 12,
     dependencyPaths: new Set([SOURCE_PATH]),
@@ -140,11 +182,12 @@ function createContext(): TestPreviewInspectorHostMessageContext {
     log: { debug, info: vi.fn() } as unknown as PreviewInspectorHostMessageContext['log'],
     panelViewColumn: undefined,
     pinnedDocumentUri: {} as PreviewInspectorHostMessageContext['pinnedDocumentUri'],
+    selectRoute,
     sourceDecoration: {
       decorateBranches,
       select,
     } as unknown as PreviewInspectorHostMessageContext['sourceDecoration'],
     targetPath: SOURCE_PATH,
   };
-  return { context, debug, decorateBranches, select };
+  return { context, debug, decorateBranches, select, selectRoute };
 }

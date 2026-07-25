@@ -11,6 +11,7 @@ import {
   PreviewContextEnrichmentCoordinator,
   type PreviewContextEnrichmentCallbacks,
 } from '../../src/presentation/previewContextEnrichment';
+import { PreviewContextEnrichmentBackoff } from '../../src/presentation/previewContextEnrichmentBackoff';
 
 describe('PreviewContextEnrichmentCoordinator', () => {
   /** Starts only after the exact fast artifact and revision settle in the browser. */
@@ -63,7 +64,7 @@ describe('PreviewContextEnrichmentCoordinator', () => {
     expect(fixture.callbacks.reportFailure).not.toHaveBeenCalled();
   });
 
-  /** An identical expensive graph is not allowed to restart the compiler after a resource stall. */
+  /** An identical expensive graph stays suppressed throughout the bounded retry window. */
   it('suppresses repeated full enrichment for the same stalled source revision', async () => {
     const failure = new PreviewBuildStalledError(
       TARGET.request.documentPath,
@@ -87,8 +88,37 @@ describe('PreviewContextEnrichmentCoordinator', () => {
 
     fixture.coordinator.schedule(TARGET, 'third-fast', 12, new AbortController().signal, false);
     await vi.waitFor(() => {
-      expect(fixture.execute).toHaveBeenCalledTimes(2);
+      expect(fixture.callbacks.complete).toHaveBeenCalledWith(12);
     });
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.callbacks.reportSuppressed).toHaveBeenCalledTimes(2);
+  });
+
+  /** Reopening a panel reuses process-local backoff for the same exact source fingerprint. */
+  it('suppresses unchanged enrichment across coordinator instances', async () => {
+    const backoff = new PreviewContextEnrichmentBackoff();
+    const first = createFixture({
+      backoff,
+      failure: new PreviewBuildStalledError(
+        TARGET.request.documentPath,
+        'bundling-modules',
+        45_000,
+        'memory',
+      ),
+    });
+    first.coordinator.schedule(TARGET, 'first-fast', 40, new AbortController().signal, false);
+    await vi.waitFor(() => {
+      expect(first.callbacks.reportFailure).toHaveBeenCalledOnce();
+    });
+
+    const reopened = createFixture({ backoff });
+    reopened.coordinator.schedule(TARGET, 'reopened-fast', 41, new AbortController().signal, false);
+    await vi.waitFor(() => {
+      expect(reopened.callbacks.reportSuppressed).toHaveBeenCalledOnce();
+    });
+
+    expect(reopened.execute).not.toHaveBeenCalled();
+    expect(reopened.callbacks.complete).toHaveBeenCalledWith(41);
   });
 
   /** Native esbuild service loss receives the same one-refresh protection as worker heap failure. */
@@ -251,6 +281,7 @@ interface EnrichmentFixture {
 
 /** Optional result and ownership controls for a coordinator fixture. */
 interface EnrichmentFixtureOptions {
+  readonly backoff?: PreviewContextEnrichmentBackoff;
   readonly current?: boolean;
   readonly failure?: Error;
   readonly failureSequence?: readonly (Error | undefined)[];
@@ -273,8 +304,10 @@ function createFixture(options: EnrichmentFixtureOptions = {}): EnrichmentFixtur
     complete: vi.fn(),
     isCurrent: vi.fn(() => options.current ?? true),
     reportFailure: vi.fn(),
+    reportSuppressed: vi.fn(),
   };
   const coordinator = new PreviewContextEnrichmentCoordinator({
+    backoff: options.backoff ?? new PreviewContextEnrichmentBackoff(),
     buildPreview: {
       execute,
       releaseArtifact,

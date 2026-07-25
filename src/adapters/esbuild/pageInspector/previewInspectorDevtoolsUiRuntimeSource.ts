@@ -8,6 +8,7 @@
  */
 import { createPreviewInspectorLayoutRuntimeSource } from './previewInspectorLayoutRuntimeSource';
 import { createPreviewInspectorNavigationUiRuntimeSource } from './previewInspectorNavigationUiRuntimeSource';
+import { createPreviewInspectorJsxScenarioUiRuntimeSource } from './previewInspectorJsxScenarioUiRuntimeSource';
 import { createPreviewInspectorConditionUiRuntimeSource } from './previewInspectorConditionUiRuntimeSource';
 import { createPreviewInspectorComponentDebuggerUiRuntimeSource } from './previewInspectorComponentDebuggerUiRuntimeSource';
 import { createPreviewInspectorConsoleUiRuntimeSource } from './previewInspectorConsoleUiRuntimeSource';
@@ -19,6 +20,7 @@ import { createPreviewInspectorPageCompositionHealthRuntimeSource } from './prev
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
+import { createPreviewInspectorSelectionDetailUiRuntimeSource } from './previewInspectorSelectionDetailUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 import { createPreviewInspectorTreeScrollRuntimeSource } from './previewInspectorTreeScrollRuntimeSource';
 import { createPreviewInspectorTreeNodeUiRuntimeSource } from './previewInspectorTreeNodeUiRuntimeSource';
@@ -41,6 +43,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const dataUiRuntimeSource = createPreviewInspectorDataUiRuntimeSource();
   const deferredUiTriggerUiRuntimeSource = createPreviewInspectorDeferredUiTriggerUiRuntimeSource();
   const hiddenElementsUiRuntimeSource = createPreviewInspectorHiddenElementsUiRuntimeSource();
+  const jsxScenarioUiRuntimeSource = createPreviewInspectorJsxScenarioUiRuntimeSource();
   const layoutRuntimeSource = createPreviewInspectorLayoutRuntimeSource();
   const navigationUiRuntimeSource = createPreviewInspectorNavigationUiRuntimeSource();
   const pageCandidateUiRuntimeSource = createPreviewInspectorPageCandidateUiRuntimeSource();
@@ -49,6 +52,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
+  const selectionDetailUiRuntimeSource = createPreviewInspectorSelectionDetailUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   const treeScrollRuntimeSource = createPreviewInspectorTreeScrollRuntimeSource();
   const treeNodeUiRuntimeSource = createPreviewInspectorTreeNodeUiRuntimeSource();
@@ -70,6 +74,8 @@ ${pageCandidateUiRuntimeSource}
 ${runtimeFallbackUiRuntimeSource}
 ${renderTreeUiRuntimeSource}
 ${blockerUiRuntimeSource}
+${selectionDetailUiRuntimeSource}
+${jsxScenarioUiRuntimeSource}
 ${navigationUiRuntimeSource}
 ${wireframeUiRuntimeSource}
 ${pageCompositionHealthRuntimeSource}
@@ -323,10 +329,22 @@ function publishPreviewInspectorSourceSelection(source) {
   }
 }
 
-/** Commits tree selection, cancels picker hover, and makes a mounted host visible by highlight. */
-function selectPreviewInspectorUiNode(node) {
+/**
+ * Commits a UI selection, cancels picker hover, and optionally opens its full-width detail section.
+ *
+ * Current-file navigation may opt out because that action explicitly promises to reveal the row in
+ * the Components section rather than immediately replacing it with details.
+ */
+function selectPreviewInspectorUiNode(node, openDetails = true) {
   previewInspectorSession.selectedTreeNodeId = node.id;
   previewInspectorSession.explicitTreeSelectionId = node.id;
+  previewInspectorDevtoolsSessionState.detailsTab =
+    isPreviewInspectorBlockerNode(node) ||
+    isPreviewInspectorDeferredUiTriggerNode(node) ||
+    isPreviewInspectorRenderChoiceNode(node)
+      ? 'blocker'
+      : 'component';
+  if (openDetails) requestPreviewInspectorWorkbenchTab('details');
   publishPreviewInspectorSourceSelection(node?.source);
   previewInspectorSession.pickerCandidate = undefined;
   previewInspectorSession.pickerEnabled = false;
@@ -387,7 +405,7 @@ function usePreviewInspectorTreeRefresh(enabled) {
 }
 
 /** Creates one reusable toolbar button with native disabled, expanded, and pressed semantics. */
-function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, expanded, onClick, pressed, sourceOpen, title }) {
+function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, expanded, onClick, pressed, sourceHighlight, sourceOpen, title }) {
   const companionSourcePath = companionSource?.path ?? companionSource?.sourcePath;
   return React.createElement(
     'button',
@@ -399,6 +417,7 @@ function PreviewInspectorDevtoolsButton({ children, companionSource, disabled, e
       'data-rpi-source-line': sourceOpen === true ? companionSource?.line : undefined,
       'data-rpi-source-offset': sourceOpen === true ? companionSource?.occurrenceStart : undefined,
       'data-rpi-source-path': sourceOpen === true ? companionSourcePath : undefined,
+      'data-react-preview-source-highlight': sourceHighlight === true ? 'true' : undefined,
       'data-react-preview-source-open': sourceOpen === true ? 'true' : undefined,
       disabled: disabled === true,
       onClick,
@@ -477,7 +496,7 @@ function revealPreviewInspectorTreeRow(treeViewport, row) {
 }
 
 /** Renders the searchable React Components pane and owns only visual expansion state. */
-function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }) {
+function PreviewInspectorComponentsPane({ node, roots, selectedId, status, truncated }) {
   const [query, setQuery] = React.useState(() => previewInspectorDevtoolsSessionState.query);
   const [expandedIds, setExpandedIds] = React.useState(() =>
     expandPreviewInspectorUiSelection(
@@ -531,8 +550,13 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
     setExpandedIds(expanded);
   }, [query]);
   return React.createElement(
-    'section',
-    { 'aria-label': 'Page component tree', className: 'rpi-pane' },
+    'div',
+    {
+      'aria-labelledby': 'rpi-navigation-tab-tree',
+      className: 'rpi-primary-panel',
+      id: 'rpi-navigation-panel-tree',
+      role: 'tabpanel',
+    },
     React.createElement(
       'div',
       { className: 'rpi-pane-heading' },
@@ -556,32 +580,61 @@ function PreviewInspectorComponentsPane({ roots, selectedId, status, truncated }
     ),
     React.createElement(
       'div',
-      {
-        className: 'rpi-tree-scroll',
-        'data-rpi-scroll-key': 'components-tree',
-        onKeyDown: handlePreviewInspectorTreeKeyDown,
-        onPointerDownCapture: (event) => {
-          const row = event.target?.closest?.('[data-react-preview-tree-row]');
-          if (row === null || row === undefined) return;
-          capturePreviewInspectorTreeSelectionScroll(treeScrollRef.current);
+      { className: 'rpi-components-body' },
+      React.createElement(
+        'div',
+        {
+          className: 'rpi-tree-scroll',
+          'data-rpi-scroll-key': 'components-tree',
+          onKeyDown: handlePreviewInspectorTreeKeyDown,
+          onPointerDownCapture: (event) => {
+            const row = event.target?.closest?.('[data-react-preview-tree-row]');
+            if (row === null || row === undefined) return;
+            capturePreviewInspectorTreeSelectionScroll(treeScrollRef.current);
+          },
+          onScroll: () => rememberPreviewInspectorTreeScrollPosition(treeScrollRef.current),
+          ref: treeScrollRef,
         },
-        onScroll: () => rememberPreviewInspectorTreeScrollPosition(treeScrollRef.current),
-        ref: treeScrollRef,
-      },
-      filteredRoots.length === 0
-        ? React.createElement('div', { className: 'rpi-empty' }, 'No matching React components.')
-        : React.createElement(
-            'ul',
-            { 'aria-label': 'Mounted React component tree', className: 'rpi-tree', role: 'tree' },
-            filteredRoots.map((node) => React.createElement(PreviewInspectorComponentTreeNode, {
-              expandedIds,
-              focusableId,
-              key: node.id,
-              node,
-              selectedId,
-              setExpandedIds,
-            })),
+        filteredRoots.length === 0
+          ? React.createElement('div', { className: 'rpi-empty' }, 'No matching React components.')
+          : React.createElement(
+              'ul',
+              { 'aria-label': 'Mounted React component tree', className: 'rpi-tree', role: 'tree' },
+              filteredRoots.map((treeNode) => React.createElement(
+                PreviewInspectorComponentTreeNode,
+                {
+                  expandedIds,
+                  focusableId,
+                  key: treeNode.id,
+                  node: treeNode,
+                  selectedId,
+                  setExpandedIds,
+                },
+              )),
+            ),
+      ),
+      React.createElement(
+        'section',
+        { 'aria-label': 'Selected component details', className: 'rpi-tree-selection-detail' },
+        React.createElement(
+          'div',
+          { className: 'rpi-tree-selection-heading' },
+          React.createElement('span', { className: 'rpi-pane-title' }, 'Selection details'),
+          React.createElement(
+            'span',
+            { className: 'rpi-meta', title: formatPreviewInspectorSelectionHeading(node) },
+            formatPreviewInspectorSelectionHeading(node),
           ),
+        ),
+        React.createElement(
+          'div',
+          {
+            className: 'rpi-tree-selection-scroll',
+            'data-rpi-scroll-key': 'components-selection-detail',
+          },
+          React.createElement(PreviewInspectorSelectedNodeDetail, { node }),
+        ),
+      ),
     ),
   );
 }
@@ -642,81 +695,71 @@ function PreviewInspectorSourceDetail({ node }) {
   );
 }
 
-/** Renders one tree-selected blocker/choice editor or the selected-component debugger and console. */
-function PreviewInspectorDetailsPane({ node }) {
-  const blockerSelected = isPreviewInspectorBlockerNode(node);
-  const deferredUiTriggerSelected = isPreviewInspectorDeferredUiTriggerNode(node);
-  const renderChoiceSelected = isPreviewInspectorRenderChoiceNode(node);
-  const renderControlSelected = blockerSelected || deferredUiTriggerSelected || renderChoiceSelected;
-  const initialDetailsTab = renderControlSelected
-    ? 'blocker'
-    : previewInspectorDevtoolsSessionState.detailsTab === 'console' ? 'console' : 'component';
-  const [detailsTab, setDetailsTab] = React.useState(initialDetailsTab);
-  React.useEffect(() => {
-    const nextTab = renderControlSelected
-      ? 'blocker'
-      : detailsTab === 'blocker' ? 'component' : detailsTab;
-    previewInspectorDevtoolsSessionState.detailsTab = nextTab;
-    setDetailsTab(nextTab);
-    persistPreviewInspectorState();
-  }, [node?.id, renderControlSelected]);
-  const tabs = [
-    [renderControlSelected ? 'blocker' : 'component', renderChoiceSelected
-      ? 'Render choice'
-      : deferredUiTriggerSelected
-        ? 'Deferred UI'
-        : blockerSelected ? 'Fix selected blocker' : 'Component debugger'],
-    ['console', 'Console (' + String(readPreviewInspectorConsoleEntries().length) + ')'],
-  ];
+/**
+ * Renders one full-width selected-node or Console section.
+ *
+ * The section selector lives at workbench level, so this pane deliberately has no competing outer
+ * tab strip. Component-specific Props/State/Source/Payload tabs remain local to the debugger.
+ */
+function PreviewInspectorDetailsPane({ node, view }) {
+  const renderControlSelected = isPreviewInspectorSelectionRenderControl(node);
+  const consoleView = view === 'console';
+  const panelId = consoleView ? 'console' : 'details';
+  const scrollRef = React.useRef(null);
+  React.useLayoutEffect(() => {
+    const viewport = scrollRef.current;
+    const stateKey = consoleView ? 'consoleScrollTop' : 'detailsScrollTop';
+    if (viewport !== null) {
+      viewport.scrollTop = normalizePreviewInspectorTreeScrollCoordinate(
+        previewInspectorDevtoolsSessionState[stateKey],
+      );
+    }
+    return () => {
+      if (viewport !== null) {
+        previewInspectorDevtoolsSessionState[stateKey] =
+          normalizePreviewInspectorTreeScrollCoordinate(viewport.scrollTop);
+      }
+    };
+  }, [consoleView]);
+  const heading = consoleView ? 'Console' : formatPreviewInspectorSelectionHeading(node);
   return React.createElement(
-    'section',
-    { 'aria-label': 'Component details', className: 'rpi-pane' },
+    'div',
+    {
+      'aria-labelledby': 'rpi-navigation-tab-' + panelId,
+      className: 'rpi-primary-panel',
+      id: 'rpi-navigation-panel-' + panelId,
+      role: 'tabpanel',
+    },
     React.createElement(
       'div',
       { className: 'rpi-pane-heading' },
-      React.createElement('span', { className: 'rpi-pane-title' }, node?.name ?? 'Component details'),
-      React.createElement(
-        'div',
-        { 'aria-label': 'Component detail views', className: 'rpi-tabs', role: 'tablist' },
-        tabs.map(([id, label]) => React.createElement(
-          'button',
-          {
-            'aria-controls': 'react-preview-details-' + id + '-panel',
-            'aria-selected': detailsTab === id,
-            className: 'rpi-tab',
-            id: 'react-preview-details-' + id + '-tab',
-            key: id,
-            onClick: () => {
-              previewInspectorDevtoolsSessionState.detailsTab = id;
-              setDetailsTab(id);
-              persistPreviewInspectorState();
-            },
-            role: 'tab',
-            type: 'button',
-          },
-          label,
-        )),
-      ),
+      React.createElement('span', { className: 'rpi-pane-title', title: heading }, heading),
+      consoleView
+        ? React.createElement(
+            'span',
+            { className: 'rpi-meta' },
+            String(readPreviewInspectorConsoleEntries().length) + ' captured message(s)',
+          )
+        : React.createElement(
+            'span',
+            { className: 'rpi-meta' },
+            renderControlSelected ? 'Rendering control' : 'Selected React component',
+          ),
     ),
     React.createElement(
       'div',
       {
-        'aria-labelledby': 'react-preview-details-' + detailsTab + '-tab',
         className: 'rpi-detail-scroll',
-        id: 'react-preview-details-' + detailsTab + '-panel',
-        role: 'tabpanel',
+        onScroll: () => {
+          const stateKey = consoleView ? 'consoleScrollTop' : 'detailsScrollTop';
+          previewInspectorDevtoolsSessionState[stateKey] =
+            normalizePreviewInspectorTreeScrollCoordinate(scrollRef.current?.scrollTop);
+        },
+        ref: scrollRef,
       },
-      detailsTab === 'blocker' && renderControlSelected
-        ? deferredUiTriggerSelected
-          ? React.createElement(PreviewInspectorDeferredUiTriggerDetail, { node })
-          : renderChoiceSelected
-          ? React.createElement(PreviewInspectorConditionDetail, { node })
-          : React.createElement(PreviewInspectorBlockerDetail, { node })
-        : detailsTab === 'console'
-          ? React.createElement(PreviewInspectorConsoleDetail)
-          : node === undefined
-            ? React.createElement('div', { className: 'rpi-empty' }, 'Select a React component to debug it.')
-            : React.createElement(PreviewInspectorComponentDebuggerDetail, { node }),
+      consoleView
+        ? React.createElement(PreviewInspectorConsoleDetail)
+        : React.createElement(PreviewInspectorSelectedNodeDetail, { node }),
     ),
   );
 }
@@ -724,6 +767,7 @@ function PreviewInspectorDetailsPane({ node }) {
 /** Renders the picker/highlight toolbar inside a resizable drawer or movable floating shell. */
 function PreviewInspectorToolbar() {
   usePreviewInspectorStore();
+  usePreviewInspectorJsxScenarioSourceDecorations();
   React.useEffect(schedulePreviewInspectorCompanionSnapshot);
   const [collapsed, setCollapsed] = React.useState(
     () => previewInspectorDevtoolsSessionState.collapsed,
@@ -886,12 +930,12 @@ function PreviewInspectorToolbar() {
         'div',
         { className: 'rpi-workbench' },
         React.createElement(PreviewInspectorNavigationPane, {
+          node: selectedNode,
           roots: snapshot.roots,
           selectedId,
           status: snapshot.status,
           truncated: snapshot.truncated,
         }),
-        React.createElement(PreviewInspectorDetailsPane, { node: selectedNode }),
       ),
     ),
   );

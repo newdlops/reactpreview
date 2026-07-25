@@ -24,6 +24,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("value: 'floating' }, 'Floating'");
     expect(source).toContain("'.rpi-workbench{display:grid");
     expect(source).toContain(
+      "'.rpi-workbench{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)",
+    );
+    expect(source).not.toContain('grid-template-columns:minmax(0,.9fr) minmax(0,1.35fr)');
+    expect(source).toContain(
       '\'.rpi-shell[data-react-preview-companion-source="true"]{display:none!important}\'',
     );
     expect(source).toContain('container-name:rpi-inspector;container-type:inline-size');
@@ -34,6 +38,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible)');
     expect(source).toContain('style: createPreviewInspectorShellStyle(layout, collapsed)');
     expect(source).toContain('ref: setPreviewInspectorCompanionShell');
+    expect(source).toContain('usePreviewInspectorJsxScenarioSourceDecorations();');
     expect(source).toContain('React.useEffect(schedulePreviewInspectorCompanionSnapshot)');
     expect(source).toContain('createPreviewInspectorPageCompositionHealthSnapshot(snapshot)');
     expect(source).toContain(
@@ -50,13 +55,23 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'Wireframe'");
     expect(source).toContain('function PreviewInspectorWireframeLayer');
     expect(source).toContain('function PreviewInspectorNavigationPane');
-    expect(source).toContain('return React.createElement(PreviewInspectorComponentsPane');
+    expect(source).toContain("'JSX scenarios'");
+    expect(source).toContain("'Components'");
+    expect(source).toContain("'Inspect selection'");
+    expect(source).toContain('React.createElement(PreviewInspectorJsxScenarioPane');
+    expect(source).toContain('React.createElement(PreviewInspectorComponentsPane');
+    expect(source).toContain("view: 'details'");
+    expect(source).toContain("view: 'console'");
+    expect(source).toContain("role: 'tablist'");
     expect(source).not.toContain("['blockers', 'Preview setup']");
     expect(source).not.toContain('React.createElement(PreviewInspectorRenderFlowDetail');
     expect(source).not.toContain('createPreviewInspectorRenderFlow(snapshot)');
     expect(source).toContain("['blocker', 'component', 'console']");
     expect(source).toContain('React.createElement(PreviewInspectorComponentDebuggerDetail');
-    expect(source).toContain("blockerSelected ? 'Fix selected blocker' : 'Component debugger'");
+    expect(source).toContain("'Blocker · ' + String(node?.name ?? '')");
+    expect(source).toContain('function PreviewInspectorSelectedNodeDetail');
+    expect(source).toContain("'aria-label': 'Selected component details'");
+    expect(source).toContain('selectPreviewInspectorUiNode(node, false)');
     expect(source).not.toContain('PreviewInspectorFlowchart');
     expect(source).not.toContain('PreviewInspectorSimpleResolver');
     expect(source).toContain("'aria-label': 'React page layout wireframe'");
@@ -117,18 +132,29 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('() => previewInspectorDevtoolsSessionState.query');
   });
 
-  /** Keeps resolution controls owner-local and excludes the retired graph/setup navigation state. */
-  it('renders tree-selected blocker details without composing a graph resolver', () => {
+  /** Reuses one selected-node editor both inside Components and in the optional full-width tab. */
+  it('keeps tree-selected details in Components while preserving the shared detail workbench', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
     const detailsStart = source.indexOf('function PreviewInspectorDetailsPane');
     const toolbarStart = source.indexOf('function PreviewInspectorToolbar');
     const detailsSource = source.slice(detailsStart, toolbarStart);
 
-    expect(detailsSource).toContain('function PreviewInspectorDetailsPane({ node })');
-    expect(detailsSource).toContain('React.createElement(PreviewInspectorBlockerDetail, { node })');
-    expect(source).toContain(
-      'React.createElement(PreviewInspectorDetailsPane, { node: selectedNode })',
+    expect(detailsSource).toContain('function PreviewInspectorDetailsPane({ node, view })');
+    expect(detailsSource).toContain(
+      'React.createElement(PreviewInspectorSelectedNodeDetail, { node })',
     );
+    expect(source).toContain('React.createElement(PreviewInspectorBlockerDetail, { node })');
+    expect(source).toContain("className: 'rpi-components-body'");
+    expect(source).toContain("'data-rpi-scroll-key': 'components-tree'");
+    expect(source).toContain("'data-rpi-scroll-key': 'components-selection-detail'");
+    expect(source).toContain(
+      "React.createElement(PreviewInspectorDetailsPane, { node, view: 'details' })",
+    );
+    expect(source).toContain(
+      "React.createElement(PreviewInspectorDetailsPane, { node, view: 'console' })",
+    );
+    expect(detailsSource).not.toContain("'aria-label': 'Component detail views'");
+    expect(source).toContain("requestPreviewInspectorWorkbenchTab('details')");
     expect(source).not.toContain('readPreviewInspectorNavigationTab');
     expect(source).not.toContain('blockerFlowAdvancedOpen');
     expect(source).not.toContain('selectedBlockerFlowNodeId');
@@ -243,7 +269,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(runtime.findByExport([wrong, exact], 'Target')?.id).toBe('current-target');
   });
 
-  /** Keeps the left pane component-only, searchable, accessible, and keyboard navigable. */
+  /** Keeps the second primary tab searchable, accessible, and keyboard navigable as a tree. */
   it('emits an ARIA React component tree with filtering and directional keys', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
 
@@ -390,6 +416,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     });
 
     expect(runtime.readSession()).toMatchObject({
+      devtoolsState: {
+        detailsTab: 'component',
+        navigationTab: 'details',
+      },
       explicitTreeSelectionId: 'fiber:panel',
       highlightEnabled: true,
       pickerCandidate: undefined,
@@ -414,6 +444,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     });
 
     expect(runtime.readSession()).toMatchObject({
+      devtoolsState: {
+        detailsTab: 'component',
+        navigationTab: 'details',
+      },
       explicitTreeSelectionId: 'route:context',
       highlightEnabled: false,
       pickerCandidate: undefined,
@@ -527,6 +561,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
       'previewInspectorSourceNavigation.openSource(source, event.nativeEvent, event.currentTarget)',
     );
     expect(source).toContain("'data-react-preview-source-open': sourceOpen === true ? 'true'");
+    expect(source).toContain(
+      "'data-react-preview-source-highlight': sourceHighlight === true ? 'true'",
+    );
     expect(source).toContain("'data-rpi-source-path': sourceOpen === true ? companionSourcePath");
     expect(source).toContain('companionSource: source');
     expect(source).toContain('sourceOpen: true');

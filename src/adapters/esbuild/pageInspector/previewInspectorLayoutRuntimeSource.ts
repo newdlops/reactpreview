@@ -26,7 +26,7 @@ const previewInspectorDevtoolsCss = [
   'background:var(--vscode-editor-background,#1e1e1e);border:1px solid var(--rpi-border);',
   'box-shadow:0 8px 28px rgba(0,0,0,.38);color:var(--vscode-editor-foreground,#ddd);',
   'container-name:rpi-inspector;container-type:inline-size;display:grid;font:12px/1.4 var(--vscode-font-family,sans-serif);',
-  'max-width:calc(100vw - 16px);min-width:0;',
+  'grid-template-rows:auto auto minmax(0,1fr);max-height:calc(100dvh - 16px);max-width:calc(100vw - 16px);min-width:0;',
   'overflow:hidden;pointer-events:auto;position:fixed;z-index:2147483647}',
   '.rpi-shell[data-react-preview-companion-source="true"]{display:none!important}',
   '.rpi-shell[data-dock="floating"]{border-radius:5px}',
@@ -79,18 +79,52 @@ const previewInspectorDevtoolsCss = [
   '.rpi-legend-item[data-role="target"]{color:var(--vscode-charts-yellow,#facc15)}',
   '.rpi-candidate-select{align-items:center;display:flex;flex-wrap:wrap;gap:7px;grid-column:1/-1;max-width:100%;min-width:0}',
   '.rpi-candidate-select .rpi-context-badge{flex:0 1 auto;grid-row:auto}.rpi-candidate-select .rpi-select{flex:1 1 220px;max-width:min(360px,100%);width:100%}',
-  '.rpi-workbench{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.35fr);max-width:100%;min-height:0;min-width:0;overflow:hidden}',
-  '.rpi-shell:is([data-dock="left"],[data-dock="right"]) .rpi-workbench{grid-template-columns:1fr;',
-  'grid-template-rows:minmax(180px,.9fr) minmax(240px,1.2fr)}',
+  '.rpi-workbench{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr);max-width:100%;min-height:0;min-width:0;overflow:hidden}',
   '.rpi-pane{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0}',
   '.rpi-pane+.rpi-pane{border-left:1px solid var(--rpi-border)}',
   '.rpi-shell:is([data-dock="left"],[data-dock="right"]) .rpi-pane+.rpi-pane{border-left:0;border-top:1px solid var(--rpi-border)}',
+  '.rpi-navigation-pane{overflow:hidden}.rpi-primary-panel{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0;overflow:hidden}',
   '.rpi-pane-heading{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
   'border-bottom:1px solid var(--rpi-border);display:flex;flex-wrap:wrap;gap:7px;max-width:100%;min-height:31px;min-width:0;padding:4px 7px}',
+  '.rpi-navigation-heading{padding:0 5px}.rpi-navigation-tabs{flex-basis:100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin}',
+  '.rpi-navigation-tabs>.rpi-tab{flex:1 0 110px;font-weight:650;text-align:center}',
   '.rpi-pane-title{font-size:11px;font-weight:650;letter-spacing:.04em;max-width:100%;overflow:hidden;text-overflow:ellipsis;text-transform:uppercase;white-space:nowrap}',
   '.rpi-search{min-width:80px;padding:2px 6px;width:100%}',
+  '.rpi-components-body{display:grid;grid-template-rows:minmax(72px,3fr) minmax(72px,2fr);min-height:0;min-width:0;overflow:hidden}',
   '.rpi-tree-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
-  '.rpi-detail-scroll{min-height:0;overflow:auto}',
+  '.rpi-tree-selection-detail{border-top:1px solid var(--rpi-border);display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;min-width:0;overflow:hidden}',
+  '.rpi-tree-selection-heading{align-items:center;background:var(--vscode-sideBarSectionHeader-background,rgba(128,128,128,.08));',
+  'display:flex;gap:7px;min-height:27px;min-width:0;padding:3px 7px}.rpi-tree-selection-heading>.rpi-meta{margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-tree-selection-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:6px 7px}',
+  '.rpi-scenario-heading>.rpi-meta{margin-left:auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-scenario-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
+  '.rpi-scenario-table{border-collapse:separate;border-spacing:0;min-width:900px;width:100%}',
+  '.rpi-scenario-table th{background:var(--vscode-sideBar-background,#252526);border-bottom:1px solid var(--rpi-border);',
+  'color:var(--rpi-muted);font-size:9px;letter-spacing:.04em;padding:6px 7px;position:sticky;text-align:left;text-transform:uppercase;top:0;z-index:1}',
+  '.rpi-scenario-table td{border-bottom:1px solid color-mix(in srgb,var(--rpi-border) 68%,transparent);padding:7px;vertical-align:top}',
+  '.rpi-scenario-table tbody tr:hover{background:var(--vscode-list-hoverBackground,#2a2d2e)}',
+  '.rpi-scenario-table tbody tr[data-reached="false"]{opacity:.66}',
+  '.rpi-scenario-table tbody tr[data-lineage-blocked="true"]{background:color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 7%,transparent)}',
+  '.rpi-scenario-expression{display:grid;gap:3px;min-width:270px;max-width:460px}',
+  '.rpi-scenario-lineage{align-items:stretch;display:flex;min-width:0}',
+  '.rpi-scenario-lineage-guide{border-left:1px solid color-mix(in srgb,var(--vscode-charts-yellow,#cca700) 58%,var(--rpi-border));',
+  'box-sizing:border-box;flex:0 0 13px;min-height:34px}',
+  '.rpi-scenario-lineage-marker{color:var(--vscode-charts-yellow,#cca700);flex:0 0 17px;font-size:12px;font-weight:800;line-height:17px;text-align:center}',
+  '.rpi-scenario-lineage-marker[data-root="true"]{font-size:8px}',
+  '.rpi-scenario-lineage-content{display:grid;gap:2px;min-width:0}',
+  '.rpi-scenario-lineage-summary{color:var(--rpi-muted);font-size:9px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.rpi-scenario-expression-button{background:transparent;border:0;color:inherit;cursor:pointer;font:11px/1.35 var(--vscode-editor-font-family,monospace);',
+  'max-width:100%;overflow-wrap:anywhere;padding:0;text-align:left}.rpi-scenario-expression-button:disabled{cursor:default;opacity:1}',
+  '.rpi-scenario-expression-button:not(:disabled):hover{text-decoration:underline}',
+  '.rpi-scenario-branch{max-width:260px;min-width:130px;overflow-wrap:anywhere}',
+  '.rpi-scenario-state{border:1px solid currentColor;border-radius:8px;display:inline-block;font-size:9px;font-weight:800;line-height:15px;',
+  'min-width:38px;padding:0 5px;text-align:center}.rpi-scenario-state[data-enabled="true"]{color:var(--vscode-testing-iconPassed,#73c991)}',
+  '.rpi-scenario-state[data-enabled="false"][data-reached="true"]{color:var(--vscode-charts-yellow,#cca700)}',
+  '.rpi-scenario-state[data-reached="false"]{color:var(--rpi-muted)}',
+  '.rpi-scenario-table tr[data-lineage-blocked="true"] .rpi-scenario-state{color:var(--vscode-errorForeground,#f48771)}',
+  '.rpi-scenario-mode{color:var(--rpi-muted);display:block;font-size:9px;margin-top:3px}',
+  '.rpi-scenario-actions{min-width:176px;white-space:nowrap}.rpi-scenario-actions>.rpi-button{margin:0 3px 3px 0;min-width:42px}',
+  '.rpi-detail-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
   '.rpi-tree,.rpi-tree-group{box-sizing:border-box;list-style:none;margin:0;min-width:100%;width:max-content}',
   '.rpi-tree{padding:4px 0}',
   '.rpi-tree-group{padding-left:15px}',
@@ -220,7 +254,13 @@ const previewInspectorDevtoolsCss = [
   '.rpi-move-handle{background:transparent;border:0;color:var(--rpi-muted);cursor:move;display:none;font-size:16px;',
   'height:25px;line-height:20px;padding:0 4px;touch-action:none;user-select:none}',
   '.rpi-shell[data-dock="floating"] .rpi-move-handle{display:block}',
-  '@container rpi-inspector (max-width:759px){.rpi-workbench{grid-template-columns:1fr;grid-template-rows:minmax(140px,.8fr) minmax(0,1fr)}',
+  // A wrapped toolbar or page breadcrumb can consume most of a short/narrow viewport. Retaining a
+  // real workbench floor makes its own tree/detail scroller reachable; the shell becomes the final
+  // vertical fallback only when the three grid rows cannot fit together.
+  '@media(max-height:560px){.rpi-shell{grid-template-rows:auto auto minmax(clamp(120px,45dvh,260px),1fr);',
+  'overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
+  '.rpi-workbench{min-height:clamp(120px,45dvh,260px)}}',
+  '@container rpi-inspector (max-width:759px){.rpi-workbench{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr)}',
   '.rpi-pane+.rpi-pane{border-left:0;border-top:1px solid var(--rpi-border)}.rpi-select{max-width:min(180px,100%)}',
   '.rpi-friendly-status{grid-template-columns:26px minmax(0,1fr) auto}.rpi-friendly-status>.rpi-button{grid-column:1/-1;justify-self:start}',
   '.rpi-node-role{flex-basis:58px}',
@@ -231,6 +271,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-friendly-status{grid-template-columns:24px minmax(0,1fr)}.rpi-friendly-status>.rpi-context-badge,.rpi-friendly-status>.rpi-button{grid-column:1/-1;justify-self:start}',
   '.rpi-candidate-select{align-items:stretch;display:grid;grid-template-columns:1fr}.rpi-candidate-select .rpi-context-badge{justify-self:start}',
   '.rpi-candidate-select .rpi-select{max-width:100%;width:100%}.rpi-pane-heading>.rpi-search,.rpi-pane-heading>.rpi-tabs{flex-basis:100%}',
+  '.rpi-scenario-heading>.rpi-meta{flex-basis:100%;margin-left:0}',
   '.rpi-tree-group{padding-left:8px}.rpi-node-role{display:none}.rpi-row-action{flex:1 1 100%;margin-left:33px}.rpi-actions>.rpi-button{flex:1 1 auto}',
   '.rpi-tree-condition-controls{flex:0 0 auto;margin-left:auto}.rpi-tree-condition-controls>.rpi-row-action{flex:0 0 auto;margin-left:0}',
   '.rpi-blocker-help{grid-template-columns:24px minmax(0,1fr);padding:7px}',
@@ -259,6 +300,16 @@ previewInspectorDevtoolsSessionState.query =
   typeof previewInspectorDevtoolsSessionState.query === 'string'
     ? previewInspectorDevtoolsSessionState.query
     : '';
+previewInspectorDevtoolsSessionState.navigationTab =
+  ['scenarios', 'tree', 'details', 'console'].includes(
+    previewInspectorDevtoolsSessionState.navigationTab,
+  )
+    ? previewInspectorDevtoolsSessionState.navigationTab
+    : previewInspectorDevtoolsSessionState.navigationTab === 'components'
+      ? 'tree'
+      : previewInspectorDevtoolsSessionState.navigationTab === 'blockers'
+        ? 'details'
+        : 'scenarios';
 Object.assign(
   previewInspectorDevtoolsSessionState,
   normalizePreviewInspectorLayout(previewInspectorDevtoolsSessionState),

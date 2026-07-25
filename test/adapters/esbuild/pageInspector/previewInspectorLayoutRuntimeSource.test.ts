@@ -17,6 +17,22 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('max-width:none;min-height:27px;min-width:360px');
   });
 
+  /** Keeps a usable content viewport after wrapped chrome consumes a compact display's height. */
+  it('provides a shell scroll fallback without removing section-owned scrolling', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain('grid-template-rows:auto auto minmax(0,1fr)');
+    expect(source).toContain('max-height:calc(100dvh - 16px)');
+    expect(source).toContain(
+      '@media(max-height:560px){.rpi-shell{grid-template-rows:auto auto minmax(clamp(120px,45dvh,260px),1fr)',
+    );
+    expect(source).toContain('overflow-x:hidden;overflow-y:auto');
+    expect(source).toContain('.rpi-workbench{min-height:clamp(120px,45dvh,260px)}');
+    expect(source).toContain(
+      '.rpi-detail-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
+    );
+  });
+
   /** Makes collapse state legible without consuming excessive width in a docked tree. */
   it('uses a visible disclosure target and colors the expanded state', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();
@@ -39,6 +55,16 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain(
       '.rpi-tree-condition-controls{flex:0 0 auto;margin-left:auto}.rpi-tree-condition-controls>.rpi-row-action{flex:0 0 auto;margin-left:0}',
     );
+  });
+
+  /** Makes current-file switch dominance visible without replacing the table's scroll boundary. */
+  it('styles nested JSX scenario guides and blocked descendants', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain('.rpi-scenario-lineage-guide');
+    expect(source).toContain('.rpi-scenario-lineage-summary');
+    expect(source).toContain('tr[data-lineage-blocked="true"]');
+    expect(source).toContain('.rpi-scenario-scroll{min-height:0;min-width:0;overflow:auto');
   });
 
   /** Removes every graph/setup stylesheet while preserving owner-local blocker detail styling. */

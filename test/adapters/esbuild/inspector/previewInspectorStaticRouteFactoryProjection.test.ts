@@ -90,6 +90,74 @@ describe('static component-factory route projection', () => {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
   });
+
+  /**
+   * A router-owner target has no child page in its reverse component path. The selected route
+   * location therefore becomes the only proof that its page module belongs to the live corridor.
+   */
+  it('keeps the selected route-choice module when the target is the factory owner', async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'react-preview-static-route-owner-'),
+    );
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const entryPath = path.join(sourceRoot, 'ApplicationRegistry.tsx');
+    const selectedPagePath = path.join(sourceRoot, 'pages', 'SelectedPage.tsx');
+    const siblingPages = Array.from({ length: 16 }, (_, index) => ({
+      importName: `SiblingPage${index.toString()}`,
+      sourcePath: path.join(sourceRoot, 'pages', `SiblingPage${index.toString()}.tsx`),
+    }));
+
+    try {
+      await Promise.all([
+        mkdir(path.join(sourceRoot, 'pages'), { recursive: true }),
+        mkdir(path.join(sourceRoot, 'shell'), { recursive: true }),
+        mkdir(path.join(sourceRoot, 'subapps'), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFactoryRegistry(entryPath, siblingPages),
+        writeFactory(sourceRoot),
+        writeFile(
+          selectedPagePath,
+          'export default function SelectedPage() { return <main>SELECTED_ROUTE_CHOICE_MARKER</main>; }',
+        ),
+        ...siblingPages.map(({ importName, sourcePath }, index) =>
+          writeFile(
+            sourcePath,
+            `export default function ${importName}() { return <main>OWNER_SIBLING_MARKER_${index.toString()}</main>; }`,
+          ),
+        ),
+        writeShellModules(sourceRoot),
+        writeSubApplicationModules(sourceRoot),
+      ]);
+
+      const result = await build({
+        absWorkingDir: workspaceRoot,
+        bundle: true,
+        entryPoints: [entryPath],
+        external: ['react/jsx-runtime'],
+        format: 'esm',
+        outdir: path.join(workspaceRoot, 'out'),
+        plugins: [
+          createPreviewInspectorCorridorPlugin({
+            maximumSmallStaticRouteImports: 8,
+            plan: createFactoryOwnerRouteChoicePlan(entryPath, selectedPagePath),
+            projectRoot: workspaceRoot,
+            resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+            workspaceRoot,
+          }),
+        ],
+        splitting: true,
+        write: false,
+      });
+      const bundledSource = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+
+      expect(bundledSource).toContain('SELECTED_ROUTE_CHOICE_MARKER');
+      expect(bundledSource).not.toContain('OWNER_SIBLING_MARKER_');
+      expect(bundledSource).toContain('__react-preview-omitted__');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });
 
 /** Writes the broad registry whose object page choices are safe to project independently. */
@@ -260,6 +328,75 @@ function createFactoryCorridorPlan(
     root: { exportName: 'default', sourcePath: entryPath },
     rootAutomaticProps: {},
     rootOwnsRouter: false,
+    stopReason: 'root-reached' as const,
+    targetAutomaticProps: {},
+  };
+  return {
+    ...pageCandidate,
+    pageCandidates: [pageCandidate],
+    renderChain,
+    renderChainsByExport: { default: renderChain },
+    target,
+  };
+}
+
+/**
+ * Creates a factory-owner plan whose selected page is proven only by route-location metadata.
+ *
+ * This mirrors an editor selection on the upper `Provider + Routes` component: its authored render
+ * path contains the factory owner, while the Page-path selector supplies the concrete child module.
+ */
+function createFactoryOwnerRouteChoicePlan(
+  entryPath: string,
+  selectedPagePath: string,
+): PreviewInspectorAncestorPlan {
+  const target = { exportName: 'default', sourcePath: entryPath };
+  const renderPath = {
+    entryPoint: {
+      kind: 'create-root' as const,
+      occurrenceStart: 0,
+      sourcePath: entryPath,
+      wrapperNames: [],
+    },
+    id: 'factory-owner-path',
+    steps: [
+      {
+        certainty: 'confirmed' as const,
+        kind: 'entry-render' as const,
+        label: 'ApplicationRegistry',
+        occurrenceStart: 0,
+        sourcePath: entryPath,
+        wrapperNames: [],
+      },
+    ],
+  };
+  const routeLocation = {
+    componentExportName: 'default',
+    componentName: 'SelectedPage',
+    componentSourcePath: selectedPagePath,
+    dependencyPaths: [entryPath, selectedPagePath],
+    evidenceKind: 'route-catalog' as const,
+    pathname: '/workspace',
+    pattern: '/workspace',
+    sourcePath: entryPath,
+  };
+  const renderChain = {
+    dependencyPaths: [entryPath],
+    paths: [renderPath],
+    reachability: 'entry-connected' as const,
+    target,
+    truncated: false,
+  };
+  const pageCandidate = {
+    complete: true,
+    dependencyPaths: [entryPath, selectedPagePath],
+    edges: [],
+    id: 'factory-owner-route-choice',
+    renderPath,
+    root: target,
+    rootAutomaticProps: {},
+    rootOwnsRouter: true,
+    routeLocation,
     stopReason: 'root-reached' as const,
     targetAutomaticProps: {},
   };

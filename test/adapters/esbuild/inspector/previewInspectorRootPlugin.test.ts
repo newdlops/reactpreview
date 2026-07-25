@@ -120,6 +120,34 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('export const previewGlobalStyles = Object.freeze([]);');
   });
 
+  /** Publishes public route hierarchy metadata without leaking compiler-only component paths. */
+  it('serializes route branches without their local source paths', () => {
+    const basePlan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...basePlan,
+        routeBranches: [
+          {
+            childState: 'leaf',
+            componentName: 'SettingsPage',
+            depth: 0,
+            id: 'route-settings',
+            pathname: '/settings',
+            pattern: '/settings',
+            selectionPath: [{ componentName: 'SettingsPage', pattern: '/settings' }],
+            sourcePath: '/private/workspace/SettingsPage.tsx',
+          },
+        ],
+        selectedRouteBranchId: 'route-settings',
+      },
+      targetInference: { provenance: [], shape: { kind: 'object', properties: {} } },
+    });
+
+    expect(source).toContain('"routeBranches":[{"childState":"leaf"');
+    expect(source).toContain('"selectedRouteBranchId":"route-settings"');
+    expect(source).not.toContain('/private/workspace/SettingsPage.tsx');
+  });
+
   /** Uses the direct facade when the target itself is the best importable mount root. */
   it('keeps direct-root target instrumentation active', () => {
     const source = createPreviewInspectorRootSource({

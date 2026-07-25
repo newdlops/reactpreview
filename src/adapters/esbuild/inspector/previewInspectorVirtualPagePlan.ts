@@ -171,7 +171,13 @@ function createBrowserCandidate(
   contentCandidate: PreviewInspectorPageCandidate,
 ): PreviewInspectorPageCandidate {
   const renderPath = authoredCandidate.renderPath ?? contentCandidate.renderPath;
-  const routeLocation = contentCandidate.routeLocation ?? authoredCandidate.routeLocation;
+  /*
+   * A route-factory owner can share one executable checkpoint across several child paths. The
+   * authored candidate carries the user's exact route choice, while the selected content checkpoint
+   * may be the first same-path candidate chosen only for dependency safety. Preserve authored route
+   * identity so switching the Inspector selector changes MemoryRouter rather than only its label.
+   */
+  const routeLocation = authoredCandidate.routeLocation ?? contentCandidate.routeLocation;
   return Object.freeze({
     ...contentCandidate,
     id: authoredCandidate.id,
@@ -541,6 +547,8 @@ function createVirtualPageEmissionKey(
     authoredCandidate.renderPath?.id ?? authoredCandidate.id,
     path.normalize(contentCandidate.root.sourcePath),
     contentCandidate.root.exportName,
+    authoredCandidate.routeLocation?.componentName ?? '',
+    authoredCandidate.routeLocation?.pattern ?? '',
   ].join('\0');
 }
 

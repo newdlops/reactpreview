@@ -1,0 +1,234 @@
+/** Verifies large, nested application route discovery without bundling unselected page modules. */
+import { describe, expect, it } from 'vitest';
+import {
+  collectPreviewInspectorDirectRouteChoices,
+  collectPreviewInspectorRouteBranchPlan,
+} from '../../../../src/adapters/esbuild/inspector';
+import type { PreviewRenderChainPlan } from '../../../../src/adapters/esbuild/renderGraph';
+
+const APP_PATH = '/workspace/src/App.tsx';
+const ROUTER_PATH = '/workspace/src/router.tsx';
+const FEATURE_PATH = '/workspace/src/feature/FeatureApp.tsx';
+const FEATURE_ROUTER_PATH = '/workspace/src/feature/router.tsx';
+const SETTINGS_PATH = '/workspace/src/feature/SettingsPage.tsx';
+const DASHBOARD_PATH = '/workspace/src/feature/DashboardPage.tsx';
+const ABOUT_PATH = '/workspace/src/AboutPage.tsx';
+
+/** Creates an entry-connected App target without involving filesystem discovery. */
+function createAppRenderChain(): PreviewRenderChainPlan {
+  return {
+    dependencyPaths: [APP_PATH],
+    paths: [
+      {
+        entryPoint: {
+          kind: 'create-root',
+          occurrenceStart: 1,
+          sourcePath: APP_PATH,
+          wrapperNames: [],
+        },
+        id: 'app-entry',
+        steps: [
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'App',
+            occurrenceStart: 10,
+            sourcePath: APP_PATH,
+            wrapperNames: [],
+          },
+        ],
+      },
+    ],
+    reachability: 'entry-connected',
+    target: { exportName: 'default', sourcePath: APP_PATH },
+    truncated: false,
+  };
+}
+
+/** Builds the nested RouterProvider fixture shared by metadata and branch tests. */
+function createNestedRouterSources(): Readonly<Record<string, string>> {
+  return {
+    [APP_PATH]: [
+      'import { RouterProvider } from "react-router-dom";',
+      'import { router } from "./router";',
+      'export default function App() { return <RouterProvider router={router} />; }',
+    ].join('\n'),
+    [ROUTER_PATH]: [
+      'import { createBrowserRouter } from "react-router-dom";',
+      'import FeatureApp from "./feature/FeatureApp";',
+      'import AboutPage from "./AboutPage";',
+      'export const router = createBrowserRouter([',
+      '  { path: "/feature/*", element: <FeatureApp /> },',
+      '  { path: "/about", element: <AboutPage /> },',
+      ']);',
+    ].join('\n'),
+    [FEATURE_PATH]: [
+      'import { RouterProvider } from "react-router-dom";',
+      'import { featureRouter } from "./router";',
+      'export default function FeatureApp() {',
+      '  return <RouterProvider router={featureRouter} />;',
+      '}',
+    ].join('\n'),
+    [FEATURE_ROUTER_PATH]: [
+      'import { createMemoryRouter } from "react-router-dom";',
+      'import SettingsPage from "./SettingsPage";',
+      'import DashboardPage from "./DashboardPage";',
+      'export const featureRouter = createMemoryRouter([',
+      '  { path: "settings", element: <SettingsPage /> },',
+      '  { path: "dashboard", element: <DashboardPage /> },',
+      ']);',
+    ].join('\n'),
+    [SETTINGS_PATH]: 'export default function SettingsPage() { return <main>settings</main>; }',
+    [DASHBOARD_PATH]: 'export default function DashboardPage() { return <main>home</main>; }',
+    [ABOUT_PATH]: 'export default function AboutPage() { return <main>about</main>; }',
+  };
+}
+
+/** Resolves only the literal module specifiers authored by the fixture. */
+function resolveFixtureModule(moduleSpecifier: string, consumerPath: string): string | undefined {
+  const key = `${consumerPath}\0${moduleSpecifier}`;
+  return new Map([
+    [`${APP_PATH}\0./router`, ROUTER_PATH],
+    [`${ROUTER_PATH}\0./feature/FeatureApp`, FEATURE_PATH],
+    [`${ROUTER_PATH}\0./AboutPage`, ABOUT_PATH],
+    [`${FEATURE_PATH}\0./router`, FEATURE_ROUTER_PATH],
+    [`${FEATURE_ROUTER_PATH}\0./SettingsPage`, SETTINGS_PATH],
+    [`${FEATURE_ROUTER_PATH}\0./DashboardPage`, DASHBOARD_PATH],
+  ]).get(key);
+}
+
+describe('preview Inspector hierarchical route branches', () => {
+  it('indexes hundreds of object routes as inert metadata', async () => {
+    const pageImports = Array.from(
+      { length: 320 },
+      (_value, index) => `import Page${index.toString()} from "./pages/Page${index.toString()}";`,
+    );
+    const routeRecords = Array.from(
+      { length: 320 },
+      (_value, index) =>
+        `{ path: "/area/${index.toString()}", element: <Page${index.toString()} /> },`,
+    );
+    const sourceText = [
+      'import { createBrowserRouter } from "react-router-dom";',
+      ...pageImports,
+      'export const router = createBrowserRouter([',
+      ...routeRecords,
+      ']);',
+    ].join('\n');
+
+    const inventory = await collectPreviewInspectorDirectRouteChoices({
+      readSource: () => Promise.resolve(undefined),
+      resolveModule: (moduleSpecifier) => `/workspace/src/${moduleSpecifier.slice(2)}.tsx`,
+      sourcePath: ROUTER_PATH,
+      sourceText,
+    });
+
+    expect(inventory.choices).toHaveLength(320);
+    expect(inventory.dependencyPaths).toEqual([ROUTER_PATH]);
+    expect(inventory.choices[319]).toMatchObject({
+      componentName: 'Page319',
+      pattern: '/area/319',
+    });
+  });
+
+  it('follows an imported RouterProvider config and recursively selects one nested leaf', async () => {
+    const sources = createNestedRouterSources();
+    const readPaths: string[] = [];
+    const plan = await collectPreviewInspectorRouteBranchPlan({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => {
+        readPaths.push(sourcePath);
+        return Promise.resolve(sources[sourcePath]);
+      },
+      renderChain: createAppRenderChain(),
+      resolveModule: resolveFixtureModule,
+      selection: [
+        { componentName: 'FeatureApp', pattern: '/feature/*' },
+        { componentName: 'SettingsPage', pattern: '/feature/settings' },
+      ],
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.activeLocation).toMatchObject({
+      componentExportName: 'default',
+      componentName: 'SettingsPage',
+      componentSourcePath: SETTINGS_PATH,
+      componentSourcePaths: [FEATURE_PATH, SETTINGS_PATH],
+      pathname: '/feature/settings',
+      pattern: '/feature/settings',
+    });
+    expect(plan.branches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ componentName: 'FeatureApp', depth: 0, pattern: '/feature/*' }),
+        expect.objectContaining({ componentName: 'AboutPage', depth: 0, pattern: '/about' }),
+        expect.objectContaining({
+          componentName: 'SettingsPage',
+          depth: 1,
+          pattern: '/feature/settings',
+        }),
+        expect.objectContaining({
+          componentName: 'DashboardPage',
+          depth: 1,
+          pattern: '/feature/dashboard',
+        }),
+      ]),
+    );
+    expect(plan.dependencyPaths).toContain(ROUTER_PATH);
+    expect(plan.dependencyPaths).toContain(FEATURE_ROUTER_PATH);
+    expect(plan.dependencyPaths).toContain(SETTINGS_PATH);
+    expect(plan.dependencyPaths).not.toContain(ABOUT_PATH);
+    expect(plan.dependencyPaths).not.toContain(DASHBOARD_PATH);
+    expect(readPaths).not.toContain(ABOUT_PATH);
+    expect(readPaths).not.toContain(DASHBOARD_PATH);
+  });
+
+  /** Follows a router whose descriptor array is itself imported from a separate metadata module. */
+  it('reads an imported route descriptor aggregate without reading its page module', async () => {
+    const configPath = '/workspace/src/config-router.tsx';
+    const routesPath = '/workspace/src/routes.tsx';
+    const pagePath = '/workspace/src/ImportedRoutesPage.tsx';
+    const sources: Readonly<Record<string, string>> = {
+      [APP_PATH]: [
+        'import { RouterProvider } from "react-router-dom";',
+        'import { router } from "./config-router";',
+        'export default function App() { return <RouterProvider router={router} />; }',
+      ].join('\n'),
+      [configPath]: [
+        'import { createBrowserRouter } from "react-router-dom";',
+        'import routes from "./routes";',
+        'export const router = createBrowserRouter(routes);',
+      ].join('\n'),
+      [routesPath]: [
+        'import ImportedRoutesPage from "./ImportedRoutesPage";',
+        'export default [{ path: "/imported-routes", element: <ImportedRoutesPage /> }];',
+      ].join('\n'),
+      [pagePath]: 'export default function ImportedRoutesPage() { return <main>imported</main>; }',
+    };
+    const readPaths: string[] = [];
+    const inventory = await collectPreviewInspectorDirectRouteChoices({
+      readSource: (sourcePath) => {
+        readPaths.push(sourcePath);
+        return Promise.resolve(sources[sourcePath]);
+      },
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        new Map([
+          [`${APP_PATH}\0./config-router`, configPath],
+          [`${configPath}\0./routes`, routesPath],
+          [`${routesPath}\0./ImportedRoutesPage`, pagePath],
+        ]).get(`${consumerPath}\0${moduleSpecifier}`),
+      sourcePath: APP_PATH,
+      sourceText: sources[APP_PATH],
+    });
+
+    expect(inventory.choices).toEqual([
+      expect.objectContaining({
+        componentName: 'ImportedRoutesPage',
+        pattern: '/imported-routes',
+        reference: { exportName: 'default', sourcePath: pagePath },
+      }),
+    ]);
+    expect(inventory.dependencyPaths).toEqual([APP_PATH, configPath, routesPath].sort());
+    expect(readPaths).not.toContain(pagePath);
+  });
+});

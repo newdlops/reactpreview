@@ -13,9 +13,26 @@ export {
 } from './previewInspectorAncestorPlan';
 export {
   collectPreviewInspectorRouteLocation,
+  collectPreviewInspectorRouteLocationInventory,
   type CollectPreviewInspectorRouteLocationOptions,
   type PreviewInspectorRouteLocation,
+  type PreviewInspectorRouteLocationInventory,
 } from './previewInspectorRouteLocation';
+export {
+  collectPreviewInspectorRouteBranchPlan,
+  type CollectPreviewInspectorRouteBranchPlanOptions,
+  type PreviewInspectorRouteBranch,
+  type PreviewInspectorRouteBranchPlan,
+} from './previewInspectorRouteBranchPlan';
+export {
+  collectPreviewInspectorDirectRouteChoices,
+  collectPreviewInspectorDirectRouteChoicesFromSource,
+  type CollectPreviewInspectorDirectRouteChoicesFromSourceOptions,
+  type CollectPreviewInspectorDirectRouteChoicesOptions,
+  type PreviewInspectorDirectRouteChoice,
+  type PreviewInspectorDirectRouteChoiceInventory,
+  type PreviewInspectorDirectRouteComponentReference,
+} from './previewInspectorDirectRouteChoices';
 export {
   collectPreviewInspectorNextAppLayoutChain,
   type CollectPreviewInspectorNextAppLayoutChainOptions,

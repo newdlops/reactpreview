@@ -9,6 +9,7 @@
  * imports, attributes, shadowed bindings, and ambiguous uses fail open.
  */
 import ts from 'typescript';
+import { readPreviewInspectorStaticAbsolutePathArgument } from './previewInspectorRouteFactory';
 
 /** One importer-local module edge whose runtime bindings can share an inert route projection. */
 export interface PreviewStaticRouteProjection {
@@ -520,14 +521,8 @@ function visitComponentChoiceFactory(
   visit: (node: ts.Node, routeRenderPosition?: boolean) => void,
   markSubmoduleChoice: (identifier: ts.Identifier, basePath: string) => void,
 ): boolean {
-  const basePath = node.arguments[0];
-  if (
-    basePath === undefined ||
-    !ts.isStringLiteralLike(basePath) ||
-    !basePath.text.startsWith('/')
-  ) {
-    return false;
-  }
+  const basePath = readPreviewInspectorStaticAbsolutePathArgument(node, node.getSourceFile());
+  if (basePath === undefined) return false;
   const shellCallbackIndex = node.arguments.findIndex(
     (argument) => isFunctionLikeArgument(argument) && containsJsxSyntax(argument),
   );
@@ -556,7 +551,7 @@ function visitComponentChoiceFactory(
   node.arguments.forEach((argument, index) => {
     if (collectionIndexSet.has(index)) visitComponentChoiceCollection(argument, visit);
     else if (submoduleCollectionIndexSet.has(index) && ts.isArrayLiteralExpression(argument)) {
-      visitSubmoduleCollection(argument, basePath.text, visit, markSubmoduleChoice);
+      visitSubmoduleCollection(argument, basePath, visit, markSubmoduleChoice);
     } else {
       visit(argument, false);
     }

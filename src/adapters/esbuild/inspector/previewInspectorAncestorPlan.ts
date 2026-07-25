@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import type { PreviewInspectorRouteSelectionStep } from '../../../domain/preview';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
 import {
   analyzePreviewLocalParentSlices,
@@ -48,10 +49,9 @@ import {
   type PreviewInspectorSourcePromiseCache,
 } from './previewInspectorRenderPathRoots';
 import { rankPreviewInspectorPageCandidates } from './previewInspectorPageCandidateRanking';
-import {
-  collectPreviewInspectorRouteLocation,
-  type PreviewInspectorRouteLocation,
-} from './previewInspectorRouteLocation';
+import { collectPreviewInspectorRouteBranchPlan } from './previewInspectorRouteBranchPlan';
+import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
+import { expandPreviewInspectorRouteChoiceCandidates } from './previewInspectorRouteChoiceCandidates';
 import type {
   PreviewInspectorAncestorEdge,
   PreviewInspectorAncestorPlan,
@@ -89,6 +89,8 @@ export interface CreatePreviewInspectorAncestorPlanOptions {
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
   /** Optional shared-index result for all current-file exports; avoids rebuilding the graph here. */
   readonly renderChainsByExport?: PreviewRenderChainPlansByExport;
+  /** User-selected nested route path, revalidated against current source before one leaf is bundled. */
+  readonly routeSelection?: readonly PreviewInspectorRouteSelectionStep[];
   /** Cancels stale ancestor and render-chain discovery between bounded source batches. */
   readonly signal?: AbortSignal;
   /** Bounded nearest-package or monorepo-package inventory in any order. */
@@ -188,17 +190,18 @@ export async function createPreviewInspectorAncestorPlan(
     ...Object.values(renderChainsByExport).flatMap((plan) => plan.dependencyPaths),
     ...renderOutcomeAnalysis.dependencyPaths,
   ]);
-  const routeLocation = await collectPreviewInspectorRouteLocation({
+  const routeBranchPlan = await collectPreviewInspectorRouteBranchPlan({
     documentPath: target.sourcePath,
     exportName: target.exportName,
     readSource: options.readSource,
     ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     renderChain,
+    ...(options.routeSelection === undefined ? {} : { selection: options.routeSelection }),
     sourcePaths,
   });
-  for (const dependencyPath of routeLocation?.dependencyPaths ?? []) {
+  const routeLocation = routeBranchPlan.activeLocation ?? routeBranchPlan.primary;
+  for (const dependencyPath of routeBranchPlan.dependencyPaths)
     sharedDependencies.add(dependencyPath);
-  }
   const planningContext: InspectorUsagePlanningContext = {
     inferenceByReference: new Map(),
     nextPagesShellRefiner: createPreviewInspectorNextPagesShellRefiner({
@@ -285,7 +288,12 @@ export async function createPreviewInspectorAncestorPlan(
     }
   }
 
-  const pageCandidates = rankPreviewInspectorPageCandidates(discoveredCandidates);
+  const pageCandidates = rankPreviewInspectorPageCandidates(
+    expandPreviewInspectorRouteChoiceCandidates(
+      discoveredCandidates,
+      routeBranchPlan.activeLocation === undefined ? [] : [routeBranchPlan.activeLocation],
+    ),
+  );
 
   const primary = pageCandidates[0];
   if (primary === undefined) {
@@ -306,6 +314,10 @@ export async function createPreviewInspectorAncestorPlan(
     renderChain,
     renderChainsByExport,
     renderOutcomesByExport,
+    routeBranches: routeBranchPlan.branches,
+    ...(routeBranchPlan.selectedBranchId === undefined
+      ? {}
+      : { selectedRouteBranchId: routeBranchPlan.selectedBranchId }),
     stopReason: primary.stopReason,
     target,
     targetAutomaticProps: primary.targetAutomaticProps,

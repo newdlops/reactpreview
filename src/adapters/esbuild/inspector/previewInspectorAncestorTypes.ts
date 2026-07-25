@@ -20,6 +20,7 @@ import type {
   PreviewInspectorNextPagesShell,
 } from './previewInspectorNextPagesShell';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
+import type { PreviewInspectorRouteBranch } from './previewInspectorRouteBranchPlan';
 import type { PreviewInspectorOneHopVisualPath } from './previewInspectorShallowVisualTypes';
 
 /** Importable component identity retained without loading its module in the extension host. */
@@ -135,6 +136,10 @@ export interface PreviewInspectorAncestorPlan {
   readonly renderChainsByExport: PreviewRenderChainPlansByExport;
   /** Static JSX return alternatives keyed by the selected file's exact runtime export names. */
   readonly renderOutcomesByExport?: Readonly<Record<string, PreviewReactRenderOutcomePlan>>;
+  /** Lightweight hierarchical route metadata; only the selected branch is present in candidates. */
+  readonly routeBranches?: readonly PreviewInspectorRouteBranch[];
+  /** Opaque branch currently admitted to the live bundle corridor. */
+  readonly selectedRouteBranchId?: string;
   /** Stable explanation shown when the ancestry is necessarily partial. */
   readonly stopReason: PreviewInspectorAncestorStopReason;
   /** Original selected export that nested instrumentation must intercept. */

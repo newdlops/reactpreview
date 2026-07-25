@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   collectPreviewInspectorRouteLocation,
+  collectPreviewInspectorRouteLocationInventory,
   type CollectPreviewInspectorRouteLocationOptions,
 } from '../../../../src/adapters/esbuild/inspector';
 import type { PreviewRenderChainPlan } from '../../../../src/adapters/esbuild/renderGraph';
@@ -190,8 +191,9 @@ describe('collectPreviewInspectorRouteLocation', () => {
       [TARGET_PATH]:
         'export default function InvestmentContractAnalysisPage() { return <main />; }',
       [routesPath]: [
+        'const FEATURE_BASE_PATH = "/company/:companyId(\\\\d+)/contracts";',
         'export const FeatureApp = createAppModule(',
-        '  "/company/:companyId(\\\\d+)/contracts",',
+        '  FEATURE_BASE_PATH,',
         '  {},',
         '  [],',
         '  () => <Routes>',
@@ -211,6 +213,210 @@ describe('collectPreviewInspectorRouteLocation', () => {
       pathname: '/company/1/contracts/analysis-preview',
       pattern: '/company/:companyId(\\d+)/contracts/analysis-preview',
       sourcePath: routesPath,
+    });
+  });
+
+  /**
+   * Expands a selected Provider/Routes factory owner into its catalog-backed visible page paths.
+   *
+   * The fixture mirrors the generic contract where a factory receives an absolute base, page-map
+   * object, submodule array, and JSX wrapper callback; no factory implementation is executed.
+   */
+  it('collects selectable page paths owned by a route factory', async () => {
+    const routerPath = '/workspace/application/src/feature/feature-app.tsx';
+    const dashboardPath = '/workspace/application/src/feature/dashboard-page.tsx';
+    const settingsPath = '/workspace/application/src/feature/settings-page.tsx';
+    const renderChain = createRenderChain(APP_PATH, routerPath, 'FeatureApp');
+    const sources = {
+      [routerPath]: [
+        'import { DashboardPage } from "./dashboard-page";',
+        'import { SettingsPage as LazySettingsPage } from "./settings-page";',
+        'const FEATURE_BASE_PATH = "/workspace/:workspaceId(\\\\d+)/feature";',
+        'const featurePages = { DashboardPage, SettingsPage: LazySettingsPage };',
+        'export const FeatureApp = createAppModule(',
+        '  FEATURE_BASE_PATH,',
+        '  featurePages,',
+        '  [],',
+        '  ({ pageRoutes, subModuleRoutes }) => (',
+        '    <Provider><Routes>{pageRoutes}{subModuleRoutes}</Routes></Provider>',
+        '  ),',
+        ');',
+      ].join('\n'),
+      [dashboardPath]: 'export function DashboardPage() { return <main />; }',
+      [settingsPath]: 'export function SettingsPage() { return <main />; }',
+      [APP_PATH]:
+        '<Routes><Route path="/workspace/:workspaceId/*" element={<FeatureApp />} /></Routes>',
+      [PAGE_MAP_PATH]: 'import pages from "./pages.json"; export const pageMap = pages;',
+      [PAGE_CATALOG_PATH]: JSON.stringify({
+        workspace: {
+          ':workspaceId(\\d+)': {
+            feature: {
+              index: 'DashboardPage',
+              settings: 'SettingsPage',
+            },
+          },
+        },
+      }),
+    };
+
+    const inventory = await collectPreviewInspectorRouteLocationInventory({
+      ...createOptions(sources, renderChain),
+      exportName: 'FeatureApp',
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './dashboard-page'
+          ? dashboardPath
+          : moduleSpecifier === './settings-page'
+            ? settingsPath
+            : undefined,
+    });
+
+    expect(inventory.primary).toMatchObject({
+      componentName: 'FeatureApp',
+      pathname: '/workspace/1/feature',
+    });
+    expect(inventory.choices).toEqual([
+      expect.objectContaining({
+        componentExportName: 'DashboardPage',
+        componentName: 'DashboardPage',
+        componentSourcePath: dashboardPath,
+        pathname: '/workspace/1/feature',
+        pattern: '/workspace/:workspaceId(\\d+)/feature',
+      }),
+      expect.objectContaining({
+        componentExportName: 'SettingsPage',
+        componentName: 'SettingsPage',
+        componentSourcePath: settingsPath,
+        pathname: '/workspace/1/feature/settings',
+        pattern: '/workspace/:workspaceId(\\d+)/feature/settings',
+      }),
+    ]);
+    expect(inventory.choices[0]?.dependencyPaths).toContain(dashboardPath);
+    expect(inventory.choices[1]?.dependencyPaths).toContain(settingsPath);
+  });
+
+  /** A direct default-exported factory has no local owner name but still owns selectable pages. */
+  it('collects route choices from a default-exported factory expression', async () => {
+    const routerPath = '/workspace/application/src/feature/default-feature-app.tsx';
+    const dashboardPath = '/workspace/application/src/feature/dashboard-page.tsx';
+    const renderChain = createRenderChain(APP_PATH, routerPath, 'DefaultFeatureApp');
+    const sources = {
+      [routerPath]: [
+        'import DashboardPage from "./dashboard-page";',
+        'export default createAppModule(',
+        '  "/workspace/:workspaceId(\\\\d+)/feature",',
+        '  { DashboardPage },',
+        '  [],',
+        '  ({ pageRoutes }) => <Routes>{pageRoutes}</Routes>,',
+        ');',
+      ].join('\n'),
+      [dashboardPath]: 'export default function DashboardPage() { return <main />; }',
+      [APP_PATH]:
+        '<Routes><Route path="/workspace/:workspaceId/*" element={<DefaultFeatureApp />} /></Routes>',
+      [PAGE_MAP_PATH]: 'import pages from "./pages.json"; export const pageMap = pages;',
+      [PAGE_CATALOG_PATH]: JSON.stringify({
+        workspace: {
+          ':workspaceId(\\d+)': {
+            feature: {
+              index: 'DashboardPage',
+            },
+          },
+        },
+      }),
+    };
+
+    const inventory = await collectPreviewInspectorRouteLocationInventory({
+      ...createOptions(sources, renderChain),
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './dashboard-page' ? dashboardPath : undefined,
+    });
+
+    expect(inventory.choices).toEqual([
+      expect.objectContaining({
+        componentName: 'DashboardPage',
+        componentSourcePath: dashboardPath,
+        pathname: '/workspace/1/feature',
+      }),
+    ]);
+  });
+
+  /**
+   * Uses a nested module's own base path when neither a JSON catalog nor an outer wildcard names
+   * the selected descendant export directly.
+   */
+  it('promotes descendant factory base evidence when a catalog has no direct target leaf', async () => {
+    const targetPath = '/workspace/application/src/modules/nested-panel.tsx';
+    const nestedModulePath = '/workspace/application/src/modules/nested-module.tsx';
+    const catalogMapPath = '/workspace/application/src/modules/pages-map.ts';
+    const catalogPath = '/workspace/application/src/modules/pages.json';
+    const baseRenderChain = createRenderChain(nestedModulePath, targetPath, 'NestedPanel');
+    const basePath = baseRenderChain.paths[0];
+    if (basePath === undefined) throw new Error('The route fixture requires one render path.');
+    const renderChain: PreviewRenderChainPlan = {
+      ...baseRenderChain,
+      dependencyPaths: [APP_PATH, nestedModulePath, targetPath],
+      paths: [
+        {
+          ...basePath,
+          steps: [
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'NestedPanel',
+              occurrenceStart: 10,
+              sourcePath: targetPath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'NestedModule',
+              occurrenceStart: 20,
+              sourcePath: nestedModulePath,
+              wrapperNames: [],
+            },
+            {
+              certainty: 'confirmed',
+              kind: 'component-render',
+              label: 'ApplicationRouter',
+              occurrenceStart: 30,
+              sourcePath: APP_PATH,
+              wrapperNames: [],
+            },
+          ],
+        },
+      ],
+    };
+    const sources = {
+      [targetPath]: 'export function NestedPanel() { return <section />; }',
+      [nestedModulePath]: [
+        'const NESTED_BASE_PATH = "/workspace/:workspaceId/tools";',
+        'export const NestedModule = defineFeatureModule(',
+        '  NESTED_BASE_PATH,',
+        '  {},',
+        '  [],',
+        '  ({ pageRoutes }) => <Shell>{pageRoutes}</Shell>,',
+        ');',
+      ].join('\n'),
+      [APP_PATH]: [
+        '<Routes>',
+        '  <Route path="/*" element={<NestedModule />} />',
+        '</Routes>',
+      ].join('\n'),
+      [catalogMapPath]: 'import pages from "./pages.json"; export default pages;',
+      [catalogPath]: JSON.stringify({ workspace: { index: 'WorkspaceHomePage' } }),
+    };
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toEqual({
+      componentName: 'NestedModule',
+      dependencyPaths: [APP_PATH, nestedModulePath].sort(),
+      evidenceKind: 'route-jsx',
+      pathname: '/workspace/preview/tools',
+      pattern: '/workspace/:workspaceId/tools',
+      sourcePath: nestedModulePath,
     });
   });
 

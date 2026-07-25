@@ -133,8 +133,9 @@ describe('static Page Inspector route projections', () => {
         `import Layout from './Layout';`,
         `import Provider from './Provider';`,
         `import { createApplication } from './factory';`,
+        `const APPLICATION_BASE_PATH = '/base';`,
         `export const app = createApplication(`,
-        `  '/base',`,
+        `  APPLICATION_BASE_PATH,`,
         `  { PageOne, second: PageTwo, ...GroupedPages },`,
         `  [SubApplication],`,
         `  ({ pageRoutes }) => <Provider><Layout>{pageRoutes}</Layout></Provider>,`,
@@ -153,6 +154,29 @@ describe('static Page Inspector route projections', () => {
     });
     expect(inventory.projectionsBySpecifier.has('./Layout')).toBe(false);
     expect(inventory.projectionsBySpecifier.has('./Provider')).toBe(false);
+  });
+
+  /** Fails open when an identifier path is mutable or declared after the factory call. */
+  it('rejects unsafe identifier aliases for a factory base path', () => {
+    const inventory = collectPreviewStaticRouteProjectionInventory(
+      '/workspace/src/application.tsx',
+      [
+        `import MutablePage from './MutablePage';`,
+        `import LatePage from './LatePage';`,
+        `let mutableBasePath = '/mutable';`,
+        `const mutableApp = createApplication(`,
+        `  mutableBasePath, { MutablePage }, [],`,
+        `  ({ pageRoutes }) => <Layout>{pageRoutes}</Layout>,`,
+        `);`,
+        `const lateApp = createApplication(`,
+        `  lateBasePath, { LatePage }, [],`,
+        `  ({ pageRoutes }) => <Layout>{pageRoutes}</Layout>,`,
+        `);`,
+        `const lateBasePath = '/late';`,
+      ].join('\n'),
+    );
+
+    expect(inventory.projectionsBySpecifier.size).toBe(0);
   });
 
   it('follows route-only local page groups without retaining every grouped page graph', () => {

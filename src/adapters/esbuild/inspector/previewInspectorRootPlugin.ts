@@ -456,7 +456,21 @@ export function createPreviewInspectorRootSource(
       renderChain: plan.renderChain,
       renderChainsByExport: plan.renderChainsByExport,
       renderOutcomesByExport: plan.renderOutcomesByExport ?? {},
+      routeBranches:
+        plan.routeBranches?.map((branch) => ({
+          childState: branch.childState,
+          componentName: branch.componentName,
+          depth: branch.depth,
+          id: branch.id,
+          ...(branch.parentId === undefined ? {} : { parentId: branch.parentId }),
+          pathname: branch.pathname,
+          pattern: branch.pattern,
+          selectionPath: branch.selectionPath,
+        })) ?? [],
       root: plan.root,
+      ...(plan.selectedRouteBranchId === undefined
+        ? {}
+        : { selectedRouteBranchId: plan.selectedRouteBranchId }),
       stopReason: plan.stopReason,
       target: plan.target,
       targetAutomaticProps: plan.targetAutomaticProps,

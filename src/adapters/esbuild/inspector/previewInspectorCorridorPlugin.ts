@@ -17,7 +17,10 @@ import { PREVIEW_RESOLVE_GUARD } from '../previewPluginProtocol';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
 import { collectRenderedNextDynamicSpecifiers } from '../staticResources/previewNextDynamicInstrumentation';
-import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
+import type {
+  PreviewInspectorAncestorPlan,
+  PreviewInspectorPageCandidate,
+} from './previewInspectorAncestorPlan';
 import {
   collectPreviewStaticRouteProjectionInventory,
   createPreviewStaticRouteProjectionSource,
@@ -773,6 +776,7 @@ function createPreviewInspectorCorridorModuleStemSet(
     plan.target.sourcePath,
     ...plan.pageCandidates.flatMap((candidate) => [
       candidate.root.sourcePath,
+      ...collectPreviewInspectorRouteComponentSourcePaths(candidate),
       ...(candidate.renderPath?.steps.flatMap((step) => [
         step.sourcePath,
         ...(step.evidenceSourcePaths ?? []),
@@ -858,6 +862,7 @@ function createPreviewInspectorCorridorPathSet(
     ...(plan.contextModule === undefined ? [] : plan.contextModule.importPath),
     ...plan.pageCandidates.flatMap((candidate) => [
       candidate.root.sourcePath,
+      ...collectPreviewInspectorRouteComponentSourcePaths(candidate),
       ...(candidate.nextAppLayoutChain?.map((layout) => layout.sourcePath) ?? []),
       ...(candidate.renderPath?.steps.flatMap((step) => [
         step.sourcePath,
@@ -881,6 +886,26 @@ function createPreviewInspectorCorridorPathSet(
       .map((item) => item.sourcePath) ?? []),
   ]);
   return new Set([...sourcePaths].map(canonicalizeExistingPath));
+}
+
+/** Reads a generic route-factory page module while ignoring framework route-location variants. */
+function collectPreviewInspectorRouteComponentSourcePaths(
+  candidate: PreviewInspectorPageCandidate,
+): readonly string[] {
+  const routeLocation = candidate.routeLocation;
+  if (
+    routeLocation === undefined ||
+    !('componentSourcePath' in routeLocation) ||
+    typeof routeLocation.componentSourcePath !== 'string'
+  ) {
+    return [];
+  }
+  const recursivePathValue: unknown =
+    'componentSourcePaths' in routeLocation ? routeLocation.componentSourcePaths : undefined;
+  const recursivePaths = Array.isArray(recursivePathValue)
+    ? recursivePathValue.filter((item: unknown): item is string => typeof item === 'string')
+    : [];
+  return [...new Set([routeLocation.componentSourcePath, ...recursivePaths])];
 }
 
 /**

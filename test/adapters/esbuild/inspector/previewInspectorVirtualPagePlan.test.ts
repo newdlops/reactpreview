@@ -6,6 +6,7 @@ import {
   createPreviewInspectorVirtualPageCandidates,
   selectPreviewInspectorVirtualPageContentCandidate,
 } from '../../../../src/adapters/esbuild/inspector/previewInspectorVirtualPagePlan';
+import { expandPreviewInspectorRouteChoiceCandidates } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteChoiceCandidates';
 import type { PreviewInspectorOneHopVisualPath } from '../../../../src/adapters/esbuild/inspector/previewInspectorShallowVisualTypes';
 
 const TARGET_PATH = '/workspace/features/TargetPanel.tsx';
@@ -636,6 +637,59 @@ describe('PreviewInspectorVirtualPagePlan', () => {
 
     expect(selected?.contentCandidate).toBe(nextPage);
     expect(selected?.recipe.mode).toBe('next-app-filesystem');
+  });
+
+  /** Keeps every route-factory page choice while collapsing redundant roots on the same path. */
+  it('emits one selectable VirtualPage per route choice', () => {
+    const application = createCandidate({
+      complete: true,
+      id: 'application-root',
+      root: { exportName: 'FeatureApp', sourcePath: APP_PATH },
+      rootOwnsRouter: false,
+      rootStepIndex: 2,
+      stopReason: 'root-reached',
+    });
+    const checkpoint = createCandidate({
+      id: 'feature-checkpoint',
+      root: { exportName: 'FeatureApp', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+    });
+    const routeChoices = [
+      {
+        componentName: 'DashboardPage',
+        dependencyPaths: ['/workspace/pages.json'],
+        evidenceKind: 'route-catalog' as const,
+        pathname: '/workspace/1/feature',
+        pattern: '/workspace/:workspaceId(\\d+)/feature',
+        sourcePath: '/workspace/pages.json',
+      },
+      {
+        componentName: 'SettingsPage',
+        dependencyPaths: ['/workspace/pages.json'],
+        evidenceKind: 'route-catalog' as const,
+        pathname: '/workspace/1/feature/settings',
+        pattern: '/workspace/:workspaceId(\\d+)/feature/settings',
+        sourcePath: '/workspace/pages.json',
+      },
+    ];
+    const expanded = expandPreviewInspectorRouteChoiceCandidates(
+      [application, checkpoint],
+      routeChoices,
+    );
+
+    const virtualPages = createPreviewInspectorVirtualPageCandidates(expanded);
+
+    expect(virtualPages).toHaveLength(2);
+    expect(
+      virtualPages.map((candidate) => ({
+        componentName: candidate.browserCandidate.routeLocation?.componentName,
+        pathname: candidate.browserCandidate.routeLocation?.pathname,
+      })),
+    ).toEqual([
+      { componentName: 'DashboardPage', pathname: '/workspace/1/feature' },
+      { componentName: 'SettingsPage', pathname: '/workspace/1/feature/settings' },
+    ]);
+    expect(virtualPages[0]?.browserCandidate.dependencyPaths).toContain('/workspace/pages.json');
   });
 
   /** Falls back to the authored root when no shared static render path proves a safer body. */

@@ -20,6 +20,7 @@ import type {
   PreviewInspectorNextPagesShell,
 } from './previewInspectorNextPagesShell';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
+import type { PreviewInspectorRouteBranch } from './previewInspectorRouteBranchPlan';
 import type {
   PreviewInspectorAncestorEdge,
   PreviewInspectorAncestorPlan,
@@ -88,6 +89,8 @@ export interface FreezePreviewInspectorAncestorPlanOptions {
   readonly renderChain: PreviewRenderChainPlan;
   readonly renderChainsByExport: PreviewRenderChainPlansByExport;
   readonly renderOutcomesByExport: Readonly<Record<string, PreviewReactRenderOutcomePlan>>;
+  readonly routeBranches?: readonly PreviewInspectorRouteBranch[];
+  readonly selectedRouteBranchId?: string;
   readonly stopReason: PreviewInspectorAncestorStopReason;
   readonly target: PreviewInspectorComponentReference;
   readonly targetAutomaticProps: PreviewParentSliceStaticProps;
@@ -108,6 +111,12 @@ export function freezePreviewInspectorAncestorPlan(
     renderChain: options.renderChain,
     renderChainsByExport: options.renderChainsByExport,
     renderOutcomesByExport: options.renderOutcomesByExport,
+    ...(options.routeBranches === undefined
+      ? {}
+      : { routeBranches: Object.freeze([...options.routeBranches]) }),
+    ...(options.selectedRouteBranchId === undefined
+      ? {}
+      : { selectedRouteBranchId: options.selectedRouteBranchId }),
     stopReason: options.stopReason,
     target: options.target,
     targetAutomaticProps: options.targetAutomaticProps,

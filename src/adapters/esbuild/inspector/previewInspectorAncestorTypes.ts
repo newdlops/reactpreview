@@ -97,6 +97,12 @@ export interface PreviewInspectorPageCandidate {
     | PreviewInspectorRouteLocation
     | PreviewInspectorNextAppRouteLocation
     | PreviewInspectorNextPagesRouteLocation;
+  /** Compiler-proven app-module prefix used only when this exact mounted root owns it. */
+  readonly routeMountBasePath?: string;
+  /** Bounded route-slot count retained for runtime diagnostics. */
+  readonly routeSlotCount?: number;
+  /** Whether the matched route owner exposes a wildcard fallback. */
+  readonly wildcardFallbackPresent?: boolean;
   /** Render-step index used to explain path-derived roots in the browser selector. */
   readonly rootStepIndex?: number;
   /** Honest reason an incomplete candidate could not be promoted farther. */

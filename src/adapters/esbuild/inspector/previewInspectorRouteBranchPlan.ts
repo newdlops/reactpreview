@@ -51,6 +51,12 @@ export interface PreviewInspectorRouteBranchPlan {
   readonly branches: readonly PreviewInspectorRouteBranch[];
   /** Route owner/catalog files that should invalidate hierarchy metadata during hot reload. */
   readonly dependencyPaths: readonly string[];
+  /** Outermost importable route owner needed to preserve nested Router params/providers. */
+  readonly executionRoot?: {
+    readonly basePattern: string;
+    readonly exportName: string;
+    readonly sourcePath: string;
+  };
   /** Historical direct location for non-router targets and route-owner diagnostics. */
   readonly primary?: PreviewInspectorRouteLocation;
   /** Opaque active branch identity serialized beside browser route metadata. */
@@ -203,6 +209,15 @@ export async function collectPreviewInspectorRouteBranchPlan(
     ...(activeWithCorridor === undefined ? {} : { activeLocation: activeWithCorridor }),
     branches: Object.freeze(branches.map(freezeRouteBranch)),
     dependencyPaths: Object.freeze([...dependencies].sort()),
+    ...(activeWithCorridor?.routeMounts?.[0] === undefined
+      ? {}
+      : {
+          executionRoot: Object.freeze({
+            basePattern: activeWithCorridor.routeMounts[0].basePath,
+            exportName: activeWithCorridor.routeMounts[0].exportName,
+            sourcePath: activeWithCorridor.routeMounts[0].sourcePath,
+          }),
+        }),
     ...(primary === undefined ? {} : { primary }),
     ...(parentBranch === undefined ? {} : { selectedBranchId: parentBranch.id }),
   });
@@ -226,16 +241,38 @@ function composeNestedRouteChoice(
     child.pattern === parentBase ||
     child.pattern.startsWith(`${parentBase}/`)
   ) {
-    return child;
+    return withComposedRouteMounts(parent, child);
   }
   const childSuffix = child.pattern === '/' ? '' : child.pattern.replace(/^\/+/u, '');
   const pattern = normalizePreviewInspectorRoutePattern(`${parentBase}/${childSuffix}`);
-  if (pattern === undefined) return child;
-  return Object.freeze({
-    ...child,
-    pathname: materializePreviewInspectorRoutePattern(pattern),
-    pattern,
-  });
+  if (pattern === undefined) return withComposedRouteMounts(parent, child);
+  return withComposedRouteMounts(
+    parent,
+    Object.freeze({
+      ...child,
+      pathname: materializePreviewInspectorRoutePattern(pattern),
+      pattern,
+    }),
+  );
+}
+
+/** Combines outer and inner app-module mounts without exposing duplicate owner contracts. */
+function withComposedRouteMounts(
+  parent: PreviewInspectorRouteLocation,
+  child: PreviewInspectorRouteLocation,
+): PreviewInspectorRouteLocation {
+  const mounts = [...(parent.routeMounts ?? []), ...(child.routeMounts ?? [])];
+  if (mounts.length === 0) return child;
+  const unique = mounts.filter(
+    (mount, index, values) =>
+      values.findIndex(
+        (candidate) =>
+          candidate.sourcePath === mount.sourcePath &&
+          candidate.exportName === mount.exportName &&
+          candidate.basePath === mount.basePath,
+      ) === index,
+  );
+  return Object.freeze({ ...child, routeMounts: Object.freeze(unique) });
 }
 
 /** Keeps route catalogs/owners hot without treating every unselected page module as a dependency. */

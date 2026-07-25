@@ -303,6 +303,13 @@ export function createPreviewInspectorRootSource(
         ? {}
         : { nextPagesShell: candidate.nextPagesShell }),
       rootOwnsRouter: candidate.rootOwnsRouter,
+      ...(candidate.routeMountBasePath === undefined
+        ? {}
+        : {
+            routeMountBasePath: candidate.routeMountBasePath,
+            routeSlotCount: candidate.routeSlotCount ?? 0,
+            wildcardFallbackPresent: candidate.wildcardFallbackPresent === true,
+          }),
       ...(candidate.rootStepIndex === undefined ? {} : { rootStepIndex: candidate.rootStepIndex }),
       ...(candidate.routeLocation === undefined
         ? {}
@@ -560,6 +567,16 @@ export function createPreviewInspectorRootSource(
     '    .join("");',
     '  return inferredName || "Page";',
     '}',
+    '/** Copies inert route metadata without invoking getters or reading prototypes. */',
+    'function __reactPreviewCopyVirtualPageRouteStatics(target, source) {',
+    '  for (const key of ["basePath", "allPages", "pageNames"]) {',
+    '    try {',
+    '      const descriptor = Object.getOwnPropertyDescriptor(source, key);',
+    '      if (descriptor === undefined || !Object.prototype.hasOwnProperty.call(descriptor, "value")) continue;',
+    '      Object.defineProperty(target, key, descriptor);',
+    '    } catch {}',
+    '  }',
+    '}',
     '/** Builds one live page body plus its authored wrapper and sibling composition frame. */',
     'function __reactPreviewComposeVirtualPage(modules, exportName, shellExportNames, recipe) {',
     '  const Content = modules[0]?.[exportName];',
@@ -606,6 +623,7 @@ export function createPreviewInspectorRootSource(
     '    }',
     '    return child;',
     '  }',
+    '  __reactPreviewCopyVirtualPageRouteStatics(ReactPreviewVirtualPage, Content);',
     '  try {',
     '    Object.defineProperties(ReactPreviewVirtualPage, {',
     '      displayName: { value: `PagePreview(${__reactPreviewReadPageName(recipe, exportName)})` },',

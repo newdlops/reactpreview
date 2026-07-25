@@ -16,8 +16,10 @@ import {
   type PreviewInspectorDirectRouteComponentReference,
 } from './previewInspectorDirectRouteChoices';
 import { collectPreviewInspectorRouteFactoryEvidence } from './previewInspectorRouteFactory';
+import { collectPreviewInspectorRouteFactoryManifest } from './previewInspectorRouteFactoryManifest';
 import {
   collectPreviewInspectorRouteFactoryChoices,
+  type PreviewInspectorRouteFactoryOwnerEvidence,
   type PreviewInspectorRouteChoiceReference,
 } from './previewInspectorRouteFactoryChoices';
 import {
@@ -62,9 +64,20 @@ export interface PreviewInspectorRouteLocation {
   readonly dependencyPaths: readonly string[];
   /** Browser-ready path with every dynamic segment replaced by a neutral preview value. */
   readonly pathname: string;
+  /** Outer-to-inner app-module mounts that own this selected route, when syntax proves them. */
+  readonly routeMounts?: readonly PreviewInspectorRouteMountEvidence[];
   /** Authored route pattern before neutral dynamic values were substituted. */
   readonly pattern: string;
   /** Absolute authored source that should invalidate this inference during hot reload. */
+  readonly sourcePath: string;
+}
+
+/** One immutable app-module mount used to localize a directly mounted route owner. */
+export interface PreviewInspectorRouteMountEvidence {
+  readonly basePath: string;
+  readonly exportName: string;
+  readonly hasWildcardFallback: boolean;
+  readonly routeSlotCount: number;
   readonly sourcePath: string;
 }
 
@@ -80,6 +93,10 @@ export interface PreviewInspectorRouteLocationInventory {
   readonly primary?: PreviewInspectorRouteLocation;
   /** Mutually exclusive visible pages rendered below the selected Provider/Routes owner. */
   readonly choices: readonly PreviewInspectorRouteLocation[];
+  /** Number of literal wildcard fallbacks retained as non-selectable metadata. */
+  readonly fallbackCount: number;
+  /** True when a factory was proven but one or more generated choices lack safe path evidence. */
+  readonly unresolvedFactoryRoutes: boolean;
 }
 
 /** Inputs kept independent from the ancestor planner so route inference is unit-testable. */
@@ -128,7 +145,9 @@ export async function collectPreviewInspectorRouteLocationInventory(
   const sourceCache = new Map<string, Promise<string | undefined>>();
   const targetText = await readCachedSource(options.documentPath, options.readSource, sourceCache);
   const targetIdentities = collectTargetIdentities(options, targetText);
-  if (targetIdentities.length === 0) return { choices: Object.freeze([]) };
+  if (targetIdentities.length === 0) {
+    return { choices: Object.freeze([]), fallbackCount: 0, unresolvedFactoryRoutes: false };
+  }
   const directChoiceInventory = await collectPreviewInspectorDirectRouteChoices({
     readSource: options.readSource,
     ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
@@ -144,6 +163,56 @@ export async function collectPreviewInspectorRouteLocationInventory(
     sourceText: targetText,
     targetIdentities: selectedTargetIdentitySet,
   });
+  const factoryManifest = await collectPreviewInspectorRouteFactoryManifest({
+    exportName: options.exportName,
+    readSource: (sourcePath) => readCachedSource(sourcePath, options.readSource, sourceCache),
+    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    sourcePath: options.documentPath,
+    sourceText: targetText,
+  });
+  if (factoryManifest !== undefined && factoryManifest.routes.length > 0) {
+    const locations = factoryManifest.routes.map((route) =>
+      Object.freeze({
+        ...(route.componentExportName === undefined
+          ? {}
+          : { componentExportName: route.componentExportName }),
+        componentName: route.componentName,
+        ...(route.componentSourcePath === undefined
+          ? {}
+          : { componentSourcePath: route.componentSourcePath }),
+        dependencyPaths: Object.freeze(
+          [
+            ...new Set([
+              ...factoryManifest.dependencies,
+              ...(route.componentSourcePath === undefined ? [] : [route.componentSourcePath]),
+            ]),
+          ].sort(),
+        ),
+        evidenceKind: 'route-catalog' as const,
+        pathname: materializeRoutePattern(
+          route.absolutePattern,
+          factoryManifest.routes.map((entry) => entry.absolutePattern),
+        ),
+        routeMounts: Object.freeze([
+          Object.freeze({
+            basePath: factoryManifest.basePattern,
+            exportName: factoryManifest.ownerExportName,
+            hasWildcardFallback: factoryManifest.fallbacks.length > 0,
+            routeSlotCount: factoryManifest.routeSlotCount,
+            sourcePath: factoryManifest.ownerSourcePath,
+          }),
+        ]),
+        pattern: route.absolutePattern,
+        sourcePath: factoryManifest.ownerSourcePath,
+      }),
+    );
+    return Object.freeze({
+      ...(locations[0] === undefined ? {} : { primary: locations[0] }),
+      choices: Object.freeze(locations),
+      fallbackCount: factoryManifest.fallbacks.length,
+      unresolvedFactoryRoutes: factoryManifest.unresolvedChoiceNames.length > 0,
+    });
+  }
   const factoryChoices = factoryChoiceInventory.choices;
   const choiceComponentNames = [
     ...new Set([
@@ -287,6 +356,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
     freezeRouteLocation(
       candidate,
       factoryChoiceReferences,
+      factoryChoiceInventory.owner,
       directReferences,
       supportingSourcePaths,
       catalogImportersByPath,
@@ -300,6 +370,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
           primary: freezeRouteLocation(
             primaryCandidate,
             factoryChoiceReferences,
+            factoryChoiceInventory.owner,
             directReferences,
             supportingSourcePaths,
             catalogImportersByPath,
@@ -307,6 +378,8 @@ export async function collectPreviewInspectorRouteLocationInventory(
           ),
         }),
     choices: Object.freeze(choices),
+    fallbackCount: 0,
+    unresolvedFactoryRoutes: false,
   });
 }
 
@@ -314,6 +387,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
 function freezeRouteLocation(
   candidate: RouteLocationCandidate,
   choiceReferences: ReadonlyMap<string, PreviewInspectorRouteChoiceReference>,
+  factoryOwner: PreviewInspectorRouteFactoryOwnerEvidence | undefined,
   directReferences: ReadonlyMap<string, PreviewInspectorDirectRouteComponentReference>,
   supportingSourcePaths: ReadonlySet<string>,
   catalogImportersByPath: ReadonlyMap<string, ReadonlySet<string>>,
@@ -346,6 +420,22 @@ function freezeRouteLocation(
     ),
     evidenceKind: candidate.evidenceKind,
     pathname: materializeRoutePattern(candidate.pattern, routePatterns),
+    ...(factoryOwner === undefined ||
+    ((candidate.componentName !== factoryOwner.exportName ||
+      path.normalize(candidate.sourcePath) !== path.normalize(factoryOwner.sourcePath)) &&
+      !choiceReferences.has(candidate.componentName))
+      ? {}
+      : {
+          routeMounts: Object.freeze([
+            Object.freeze({
+              basePath: factoryOwner.basePath,
+              exportName: factoryOwner.exportName,
+              hasWildcardFallback: factoryOwner.hasWildcardFallback,
+              routeSlotCount: factoryOwner.routeSlotCount,
+              sourcePath: factoryOwner.sourcePath,
+            }),
+          ]),
+        }),
     pattern: candidate.pattern,
     sourcePath: candidate.sourcePath,
   });

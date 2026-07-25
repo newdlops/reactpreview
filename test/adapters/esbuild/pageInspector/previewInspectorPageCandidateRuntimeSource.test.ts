@@ -172,6 +172,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('function collectPreviewInspectorRouteCommonPrefix');
     expect(source).toContain('Filter paths or components');
     expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT = 80');
+    expect(source).toContain("'data-rpi-scroll-key': 'route-browser'");
+    expect(source).toContain("'data-rpi-scroll-transaction': 'route-selection:' + branch.id");
+    expect(source).toContain("'data-rpi-scroll-transaction-state': pending");
     expect(source).toContain('React.createElement(PreviewInspectorRouteExplorer, { descriptor })');
   });
 

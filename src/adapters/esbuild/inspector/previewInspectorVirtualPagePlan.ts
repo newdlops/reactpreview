@@ -145,6 +145,8 @@ export function selectPreviewInspectorVirtualPageContentCandidate(
   authoredCandidate: PreviewInspectorPageCandidate,
 ): PreviewInspectorPageCandidate {
   if (isFrameworkComposedCandidate(authoredCandidate)) return authoredCandidate;
+  const routeOwner = selectPreviewInspectorRouteOwnerCandidate(candidates, authoredCandidate);
+  if (routeOwner !== undefined) return routeOwner;
   const renderPathId = authoredCandidate.renderPath?.id;
   if (renderPathId === undefined) return authoredCandidate;
   const samePathCandidates = candidates.filter(
@@ -165,6 +167,29 @@ export function selectPreviewInspectorVirtualPageContentCandidate(
   );
 }
 
+/**
+ * Pins a nested factory page to its outermost importable route owner when that owner is already a
+ * proven authored candidate. Mounting a leaf directly drops parent Route params and providers.
+ */
+function selectPreviewInspectorRouteOwnerCandidate(
+  candidates: readonly PreviewInspectorPageCandidate[],
+  authoredCandidate: PreviewInspectorPageCandidate,
+): PreviewInspectorPageCandidate | undefined {
+  const location = authoredCandidate.routeLocation;
+  if (location === undefined || !('routeMounts' in location) || location.routeMounts.length === 0) {
+    return undefined;
+  }
+  for (const mount of location.routeMounts) {
+    const candidate = candidates.find(
+      (item) =>
+        path.normalize(item.root.sourcePath) === path.normalize(mount.sourcePath) &&
+        item.root.exportName === mount.exportName,
+    );
+    if (candidate !== undefined) return candidate;
+  }
+  return undefined;
+}
+
 /** Creates browser metadata using the live content root while preserving authored path identity. */
 function createBrowserCandidate(
   authoredCandidate: PreviewInspectorPageCandidate,
@@ -178,12 +203,46 @@ function createBrowserCandidate(
    * identity so switching the Inspector selector changes MemoryRouter rather than only its label.
    */
   const routeLocation = authoredCandidate.routeLocation ?? contentCandidate.routeLocation;
+  const routeMount = selectPreviewInspectorRouteMount(routeLocation, contentCandidate.root);
   return Object.freeze({
     ...contentCandidate,
     id: authoredCandidate.id,
     ...(renderPath === undefined ? {} : { renderPath }),
     ...(routeLocation === undefined ? {} : { routeLocation }),
+    ...(routeMount === undefined
+      ? {}
+      : {
+          routeMountBasePath: routeMount.basePath,
+          routeSlotCount: routeMount.routeSlotCount,
+          wildcardFallbackPresent: routeMount.hasWildcardFallback,
+        }),
   });
+}
+
+/**
+ * Selects the deepest factory mount owned by the exact VirtualPage content root.
+ *
+ * Route metadata for a leaf can contain several outer modules, but only a source-and-export match
+ * may localize a directly mounted component; any mismatch intentionally leaves Router input whole.
+ */
+function selectPreviewInspectorRouteMount(
+  routeLocation: PreviewInspectorPageCandidate['routeLocation'],
+  contentRoot: PreviewInspectorPageCandidate['root'],
+):
+  | {
+      readonly basePath: string;
+      readonly hasWildcardFallback: boolean;
+      readonly routeSlotCount: number;
+    }
+  | undefined {
+  if (routeLocation === undefined || !('routeMounts' in routeLocation)) return undefined;
+  const mounts = routeLocation.routeMounts;
+  const contentPath = path.normalize(contentRoot.sourcePath);
+  return mounts.find(
+    (mount) =>
+      path.normalize(mount.sourcePath) === contentPath &&
+      mount.exportName === contentRoot.exportName,
+  );
 }
 
 /** Serializes the outer path skipped by the live page checkpoint. */

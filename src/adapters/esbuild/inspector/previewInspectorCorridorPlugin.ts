@@ -31,7 +31,7 @@ import {
   type PreviewInspectorShallowProjection,
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
-import { hasPreviewInspectorStaticRenderDataHook } from './previewInspectorStaticRenderDataHook';
+import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthoredHookLogic';
 import {
   createPreviewInspectorVirtualPageComponentSource,
   type PreviewInspectorVirtualPageComponent,
@@ -107,6 +107,7 @@ export function createPreviewInspectorCorridorPlugin(
   const exactCorridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
   const initialShallowExportsByPath = collectPreviewInspectorShallowExportsByPath(options.plan);
   const shallowExportsByPath = new Map(initialShallowExportsByPath);
+  const shallowRuntimeHookExportsByPath = new Map<string, Set<string>>();
   const initialShallowVisualPaths = new Set(
     [...initialShallowExportsByPath.keys()].filter(
       (sourcePath) => !exactCorridorPaths.has(sourcePath),
@@ -135,16 +136,17 @@ export function createPreviewInspectorCorridorPlugin(
     string,
     Promise<PreviewInspectorShallowProjectionInventory>
   >();
-  const staticRenderDataHookEvidenceByPath = new Map<string, Promise<boolean>>();
-  const expandedVirtualPageComponentExports = new Set<string>();
+  const authoredHookEvidenceByPath = new Map<string, Promise<boolean>>();
+  const expandedVirtualPageModuleExports = new Set<string>();
 
   /**
    * Follows component imports transitively below a VirtualPage root and cuts only proven hooks.
    *
    * Every statically rendered project component stays authentic. Each discovered module becomes a
    * new shallow-analysis root, so traversal continues until esbuild reaches leaves or revisits the
-   * same module/export identity. Exact selected corridor modules may additionally cut hook-only
-   * project imports when every call has demand-shaped fallback evidence.
+   * same module/export identity. Exact selected corridor modules cut only direct hook pass-through
+   * leaves; hooks with authored state, branching, defaults, or value transforms become recursive
+   * roots whose own data/effect leaves are classified on the next edge.
    */
   async function resolveShallowVisualChild(
     arguments_: OnResolveArgs,
@@ -175,16 +177,13 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    if (
-      shallowVisualPaths.has(canonicalImporter) &&
-      (await shouldRetainStaticRenderDataHook(canonicalTarget, projection))
-    ) {
+    if (await shouldRetainAuthoredHookLogic(canonicalTarget, projection)) {
       /*
-       * Navigation, tab, and column hooks often contain the page detail as authored static records.
-       * Keep that one module authentic, then reuse normal shallow traversal to cut its nested
-       * network/session hooks. Returning undefined lets ordinary esbuild resolution load the file.
+       * Keep authored state, defaults, branching, and value transforms, then analyze this module as
+       * another DFS root. Its direct data/effect hook leaves can still become generated projections
+       * without erasing the JavaScript logic that produces the component-facing return value.
        */
-      registerTransitiveVirtualPageComponent(canonicalTarget, projection);
+      registerTransitiveVirtualPageModule(canonicalTarget, projection);
       return undefined;
     }
     if (shallowVisualPaths.has(canonicalImporter) && shouldExpandVirtualPageComponent(projection)) {
@@ -193,7 +192,7 @@ export function createPreviewInspectorCorridorPlugin(
        * Registering the target as another analysis root turns esbuild's ordinary module traversal
        * into a cycle-safe DFS without an authored-hop or component-depth limit.
        */
-      registerTransitiveVirtualPageComponent(canonicalTarget, projection);
+      registerTransitiveVirtualPageModule(canonicalTarget, projection);
       return createVirtualPageComponentFacade(canonicalTarget, projection);
     }
     if (corridorPaths.has(canonicalTarget)) return undefined;
@@ -201,21 +200,26 @@ export function createPreviewInspectorCorridorPlugin(
   }
 
   /** Merges demanded exports before recursively analyzing one authentic JSX component module. */
-  function registerTransitiveVirtualPageComponent(
+  function registerTransitiveVirtualPageModule(
     sourcePath: string,
     projection: PreviewInspectorShallowProjection,
   ): void {
     let changed = false;
     const exportNames = new Set(shallowExportsByPath.get(sourcePath) ?? []);
+    const runtimeHookExportNames = new Set(shallowRuntimeHookExportsByPath.get(sourcePath) ?? []);
     for (const exportName of projection.exportNames) {
       const identity = `${sourcePath}\0${exportName}`;
-      if (!expandedVirtualPageComponentExports.has(identity)) {
-        expandedVirtualPageComponentExports.add(identity);
+      if (!expandedVirtualPageModuleExports.has(identity)) {
+        expandedVirtualPageModuleExports.add(identity);
         changed = true;
       }
       exportNames.add(exportName);
     }
+    for (const exportName of projection.runtimeHookExportNames) {
+      runtimeHookExportNames.add(exportName);
+    }
     shallowExportsByPath.set(sourcePath, exportNames);
+    shallowRuntimeHookExportsByPath.set(sourcePath, runtimeHookExportNames);
     shallowVisualPaths.add(sourcePath);
     corridorPaths.add(sourcePath);
     selectedPackageDemandPaths.add(sourcePath);
@@ -398,6 +402,8 @@ export function createPreviewInspectorCorridorPlugin(
     const existing = shallowImporterEvidenceByPath.get(sourcePath);
     if (existing !== undefined) return existing;
     const rootExportNames = shallowExportsByPath.get(sourcePath) ?? new Set(['default']);
+    const rootRuntimeHookExportNames =
+      shallowRuntimeHookExportsByPath.get(sourcePath) ?? new Set<string>();
     const pending = readBoundedSource(sourcePath).then((sourceText) =>
       sourceText === undefined
         ? {
@@ -408,6 +414,7 @@ export function createPreviewInspectorCorridorPlugin(
             sourcePath,
             sourceText,
             rootExportNames,
+            rootRuntimeHookExportNames,
           ),
     );
     shallowImporterEvidenceByPath.set(sourcePath, pending);
@@ -433,13 +440,13 @@ export function createPreviewInspectorCorridorPlugin(
   }
 
   /**
-   * Proves that a hook-only child owns substantial authored UI data worth retaining verbatim.
+   * Keeps custom-hook JavaScript when syntax proves it constructs the component-facing value.
    *
-   * A mixed component/hook surface follows normal component DFS. A hook-only surface is read once,
-   * and only syntax-proven catalogs pass; ordinary API, permission, state, and session hooks remain
-   * demand-shaped projections.
+   * Direct pass-through hook leaves remain projectable. The retained module is registered as a
+   * recursive shallow root so imported backend/session/effect leaves are still bounded one level
+   * deeper instead of pulling the entire application graph back into the preview.
    */
-  function shouldRetainStaticRenderDataHook(
+  function shouldRetainAuthoredHookLogic(
     sourcePath: string,
     projection: PreviewInspectorShallowProjection,
   ): Promise<boolean> {
@@ -449,18 +456,18 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return Promise.resolve(false);
     }
-    const existing = staticRenderDataHookEvidenceByPath.get(sourcePath);
+    const existing = authoredHookEvidenceByPath.get(sourcePath);
     if (existing !== undefined) return existing;
     const pending = readBoundedSource(sourcePath).then(
       (sourceText) =>
         sourceText !== undefined &&
-        hasPreviewInspectorStaticRenderDataHook(
+        hasPreviewInspectorAuthoredHookLogic(
           sourcePath,
           sourceText,
           projection.runtimeHookExportNames,
         ),
     );
-    staticRenderDataHookEvidenceByPath.set(sourcePath, pending);
+    authoredHookEvidenceByPath.set(sourcePath, pending);
     return pending;
   }
 
@@ -547,10 +554,11 @@ export function createPreviewInspectorCorridorPlugin(
         importerEvidenceByPath.clear();
         runtimeHookImporterEvidenceByPath.clear();
         shallowImporterEvidenceByPath.clear();
-        staticRenderDataHookEvidenceByPath.clear();
+        authoredHookEvidenceByPath.clear();
         staticImporterEvidenceByPath.clear();
-        expandedVirtualPageComponentExports.clear();
+        expandedVirtualPageModuleExports.clear();
         shallowExportsByPath.clear();
+        shallowRuntimeHookExportsByPath.clear();
         for (const [sourcePath, exportNames] of initialShallowExportsByPath) {
           shallowExportsByPath.set(sourcePath, new Set(exportNames));
         }

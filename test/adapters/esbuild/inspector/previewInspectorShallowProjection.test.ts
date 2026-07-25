@@ -80,6 +80,21 @@ describe('collectPreviewInspectorRuntimeHookProjectionInventory', () => {
 });
 
 describe('collectPreviewInspectorShallowProjectionInventory', () => {
+  /** Carries hook identity and aliases through a retained barrel to the concrete child module. */
+  it('projects a demanded runtime-hook re-export as the next recursive edge', () => {
+    const inventory = collectPreviewInspectorShallowProjectionInventory(
+      '/workspace/src/hooks.ts',
+      `export { useVisibleRows as useRows } from './use-visible-rows';`,
+      new Set(['useRows']),
+      new Set(['useRows']),
+    );
+
+    expect(inventory.projectionsBySpecifier.get('./use-visible-rows')).toMatchObject({
+      exportNames: ['useVisibleRows'],
+      runtimeHookExportNames: ['useVisibleRows'],
+    });
+  });
+
   /**
    * Keeps styled callback dependencies authentic while bounding only visual descendants.
    *

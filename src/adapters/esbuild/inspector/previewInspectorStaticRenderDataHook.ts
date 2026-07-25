@@ -59,13 +59,6 @@ export function hasPreviewInspectorStaticRenderDataHook(
   sourceText: string,
   exportNames: readonly string[],
 ): boolean {
-  const demandedExports = [...new Set(exportNames)];
-  if (
-    demandedExports.length === 0 ||
-    demandedExports.some((exportName) => !/^use[A-Z0-9_$]/u.test(exportName))
-  ) {
-    return false;
-  }
   const sourceFile = ts.createSourceFile(
     sourcePath,
     sourceText,
@@ -73,6 +66,26 @@ export function hasPreviewInspectorStaticRenderDataHook(
     true,
     readScriptKind(sourcePath),
   );
+  return hasPreviewInspectorStaticRenderDataHookInSourceFile(sourceFile, exportNames);
+}
+
+/**
+ * Reuses an already parsed source file when the generic authored-hook policy checks this catalog.
+ *
+ * @param sourceFile Inert TypeScript syntax tree owned by the current build evidence cache.
+ * @param exportNames Exact runtime hook exports demanded by the retained visual component.
+ */
+export function hasPreviewInspectorStaticRenderDataHookInSourceFile(
+  sourceFile: ts.SourceFile,
+  exportNames: readonly string[],
+): boolean {
+  const demandedExports = [...new Set(exportNames)];
+  if (
+    demandedExports.length === 0 ||
+    demandedExports.some((exportName) => !/^use[A-Z0-9_$]/u.test(exportName))
+  ) {
+    return false;
+  }
   const functionsByExport = collectExportedHookFunctions(sourceFile);
   return demandedExports.some((exportName) => {
     const hookFunction = functionsByExport.get(exportName);

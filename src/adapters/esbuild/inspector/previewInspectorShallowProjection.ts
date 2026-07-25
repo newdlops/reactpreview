@@ -52,11 +52,17 @@ export function collectPreviewInspectorShallowProjectionInventory(
   sourcePath: string,
   sourceText: string,
   rootExportNames: ReadonlySet<string>,
+  rootRuntimeHookExportNames: ReadonlySet<string> = new Set(),
 ): PreviewInspectorShallowProjectionInventory {
   const facts = analyzePreviewRenderSource(sourcePath, sourceText).moduleFacts;
+  const rootReexportProjections = collectRootReexportProjections(
+    facts,
+    rootExportNames,
+    rootRuntimeHookExportNames,
+  );
   const rootLocalNames = collectRootLocalNames(facts, rootExportNames);
   if (rootLocalNames.length === 0) {
-    return freezeInventory(new Map(), false);
+    return freezeInventory(rootReexportProjections, false);
   }
 
   const runtimeHookCalls = groupRuntimeHookCallsByLocalName(
@@ -125,7 +131,7 @@ export function collectPreviewInspectorShallowProjectionInventory(
   }
 
   if (truncated) return freezeInventory(new Map(), true);
-  const projections = new Map<string, PreviewInspectorShallowProjection>();
+  const projections = new Map(rootReexportProjections);
   const projectionSpecifiers = new Set([
     ...componentLocalNamesBySpecifier.keys(),
     ...runtimeHookLocalNamesBySpecifier.keys(),
@@ -360,6 +366,62 @@ function collectRootLocalNames(
     rootExportNames.has(item.exportName) && item.localName !== undefined ? [item.localName] : [],
   );
   return Object.freeze([...new Set(localNames)]);
+}
+
+/**
+ * Converts an authentic barrel into the next exact component/hook edge of the recursive DFS.
+ *
+ * Named re-exports preserve aliases. One wildcard source is unambiguous and can forward demanded
+ * names directly; multiple wildcard sources fail open because selecting one would guess ownership.
+ */
+function collectRootReexportProjections(
+  facts: PreviewRenderModuleFacts,
+  rootExportNames: ReadonlySet<string>,
+  rootRuntimeHookExportNames: ReadonlySet<string>,
+): ReadonlyMap<string, PreviewInspectorShallowProjection> {
+  const exportNamesBySpecifier = new Map<string, Set<string>>();
+  const hookNamesBySpecifier = new Map<string, Set<string>>();
+  const wildcardFacts = facts.exports.filter(
+    (item) => item.wildcard && item.moduleSpecifier !== undefined,
+  );
+  for (const item of facts.exports) {
+    if (
+      item.moduleSpecifier === undefined ||
+      item.wildcard ||
+      !rootExportNames.has(item.exportName)
+    ) {
+      continue;
+    }
+    const forwardedName = item.reexportedName ?? item.exportName;
+    appendSetValue(exportNamesBySpecifier, item.moduleSpecifier, forwardedName);
+    if (rootRuntimeHookExportNames.has(item.exportName)) {
+      appendSetValue(hookNamesBySpecifier, item.moduleSpecifier, forwardedName);
+    }
+  }
+  if (wildcardFacts.length === 1) {
+    const moduleSpecifier = wildcardFacts[0]?.moduleSpecifier;
+    if (moduleSpecifier !== undefined) {
+      for (const exportName of rootExportNames) {
+        if (exportName === 'default') continue;
+        appendSetValue(exportNamesBySpecifier, moduleSpecifier, exportName);
+        if (rootRuntimeHookExportNames.has(exportName)) {
+          appendSetValue(hookNamesBySpecifier, moduleSpecifier, exportName);
+        }
+      }
+    }
+  }
+  return new Map(
+    [...exportNamesBySpecifier].map(([moduleSpecifier, exportNames]) => [
+      moduleSpecifier,
+      Object.freeze({
+        exportNames: Object.freeze([...exportNames].sort()),
+        moduleSpecifier,
+        runtimeHookExportNames: Object.freeze(
+          [...(hookNamesBySpecifier.get(moduleSpecifier) ?? [])].sort(),
+        ),
+      }),
+    ]),
+  );
 }
 
 /** Groups import facts without retaining parser nodes or source text. */

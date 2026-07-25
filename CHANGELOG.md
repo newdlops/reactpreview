@@ -2,6 +2,75 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1187 - 2026-07-25
+
+- Inspector controls를 위로 줄인 뒤 다른 영역의 현재 높이가 controls의 새 상한으로 고정되어 다시 아래로
+  늘릴 수 없던 clamp를 수정하고, 인접 영역의 최소 가시 높이만 예약해 양방향 재조절을 보장
+- renderer와 별도 Inspector 탭에 축소 후 재확장 회귀 테스트 추가
+
+## 0.1.1186 - 2026-07-25
+
+- accordion 헤더에서 resize 동작을 분리해 `헤더 → 콘텐츠 → 하단 핸들` 순서로 배치하고, Inspector controls,
+  Page context 및 component tree 영역을 각 영역의 실제 아래 경계에서 넓히거나 줄일 수 있도록 수정
+- renderer와 별도 Inspector 탭 모두 9px 하단 separator, 접기 전용 헤더, 키보드 조절·초기화·scroll 보존을 공유
+
+## 0.1.1185 - 2026-07-25
+
+- Page context의 배지·경로·상태·보기·페이지 선택기를 각각 독립적인 intrinsic row로 고정해, 좁거나 높이를
+  줄인 Inspector에서도 항목이 같은 grid row에 겹치지 않고 영역 내부에서 스크롤되도록 수정
+
+## 0.1.1184 - 2026-07-25
+
+- `Inspector controls`와 `Page context` accordion 제목이 자신이 제어하는 내용 아래에 놓여 다음 구역의
+  제목처럼 보이고 좁은 Inspector에서 문맥 정보가 겹치던 grid 순서를 `제목 → 내용`으로 교정
+- renderer와 별도 Inspector 탭의 5행 grid를 같은 순서로 맞추고 접기·높이 복원·작은 화면 workbench 최소
+  높이 동작을 유지하는 DOM 순서 회귀 테스트 추가
+
+## 0.1.1183 - 2026-07-25
+
+- Inspector control, page context, component tree/선택 상세의 세 가로 경계를 disclosure button과 drag rail이
+  결합된 accordion으로 바꿔 각 구역을 독립적으로 접고 펼치면서 높이도 계속 조절할 수 있도록 개선
+- 접힌 rail을 drag하거나 키보드로 조절하면 자동으로 펼치고 마지막 확장 높이를 복원하며, 접힘·높이 상태와
+  scroll을 preview 및 별도 Inspector 탭에서 독립적으로 보존
+
+## 0.1.1182 - 2026-07-25
+
+- Inspector의 toolbar 아래와 page context 아래에도 전체 폭 높이 조절 핸들을 추가해, 화면에 보이는 세 가로
+  경계를 모두 직접 드래그할 수 있도록 확장
+- 작은 화면에서 다른 header와 component workbench의 최소 높이를 예약하고, 별도 Inspector 탭의 inert snapshot에도
+  같은 키보드·double-click reset·탭별 높이 저장 동작을 연결
+
+## 0.1.1181 - 2026-07-25
+
+- Components 트리와 선택 상세 사이에 세로 분할 핸들을 추가하고, Source·State·Payload·fallback 카드마다
+  독립적인 높이 조절 핸들을 제공해 필요한 영역을 직접 넓히거나 줄일 수 있도록 개선
+- 드래그 중 React 재렌더 없이 local CSS 높이만 갱신하고, 키보드·double-click reset·최소 높이 clamp를 지원하며
+  preview와 별도 Inspector 탭의 크기를 각각 저장해 snapshot 교체와 hot reload 뒤에도 유지
+
+## 0.1.1180 - 2026-07-25
+
+- page catalog와 JSX render callback을 서로 다른 인자로 받는 route factory를 정적으로 연결해, 선택 페이지의
+  route 주입·Provider·Layout을 소유한 가장 가까운 실제 App owner를 VirtualPage 셸로 실행
+- render-prop 반환 JSX를 일반 component prop으로 평탄화해 `children is not a function`이 발생하고 Header·Bottom
+  navigation이 사라지던 문제를 수정하며, 바깥 application bootstrap은 계속 실행하지 않는 회귀 테스트 추가
+
+## 0.1.1179 - 2026-07-25
+
+- route factory·page catalog의 서로 배타적인 페이지 export를 일반 JSX sibling으로 합성하지 않고 각각의
+  `PAGE PATH` 후보로 유지해 한 프리뷰 안에 여러 페이지가 `VirtualPage`로 이어지던 문제 수정
+- 선택 페이지의 Header·Navigation·PageAction 같은 실제 chrome은 유지하면서 다른 `*Page`/`*Screen`/`*View`
+  endpoint만 제외하는 일반화된 합성 규칙과 route-catalog 회귀 테스트 추가
+- 합성 루트 하나만 `PagePreview(페이지명)`으로 표시하고 하위 격리 facade는 authored component 이름을 보존해
+  컴포넌트 트리에서 페이지 경계와 실제 자식 컴포넌트를 명확하게 구분
+
+## 0.1.1178 - 2026-07-25
+
+- `mounted`, `host output`, `target corridor` 같은 React 내부 진단어를 화면에서 제거하고 현재 파일 상태를
+  `Page loaded → File ran → Nothing visible`의 3단계 visibility path와 `NOT VISIBLE` 상태로 설명
+- render callback 대기, wrapper/fallback 대체, 현재 branch의 빈 반환을 서로 다른 상태·행동으로 분류해
+  가장 가까운 원인을 찾는 버튼과 상세 패널이 동일한 사용자 용어를 사용하도록 개선
+- 자동 최소값 탐색, 재시도, 파일 단독 보기와 page-path 이탈 상태의 버튼·트리 badge·문서를 행동 중심 문구로 정리
+
 ## 0.1.1177 - 2026-07-25
 
 - fallback shape가 있다는 이유만으로 `useXXX` custom hook 전체를 no-op projection하던 정책을 반환 값 흐름
@@ -926,60 +995,5 @@ subsequent-error` 시간순 trace로 기록하고, 한 Auto/Smart 시도와 그 
   확장 호스트에서 읽어 trace에 첨부하고, graph 밖 경로·malformed/unbounded webview payload는 소스 읽기 전에 차단
 - 동일 tree snapshot과 반복 오류를 fingerprint로 합치고 source 읽기/pretty JSON 출력을 비동기 직렬화 lane에서 처리해
   project render와 VS Code UI thread를 막지 않으며, Inspector Console에 trace 확인 위치와 검색 marker를 안내
-
-## 0.1.1065 - 2026-07-19
-
-- 별도 React Page Inspector 탭의 Components tree와 Details 사이에 드래그 가능한 splitter를 추가해 두 영역의
-  크기를 사용자가 직접 조절하고, double-click으로 현재 방향의 기본 비율을 복원하도록 개선
-- 760px 이상에서는 좌우, 좁은 editor group에서는 상하 splitter로 자동 전환하며 두 방향의 비율을 독립적으로
-  VS Code webview state에 저장해 탭 reload와 snapshot 교체 후에도 사용자가 정한 크기를 유지
-- separator에 ARIA orientation/value를 제공하고 방향키, `Shift+방향키`, `Home`/`End` 조작을 지원하며 양쪽 pane의
-  최소 가시 크기를 현재 workbench 크기에 맞춰 clamp해 화면 밖으로 밀려나지 않도록 제한
-- pane drag를 companion 문서의 local grid update로 처리해 hidden project renderer에 pointer event나 React remount를
-  전달하지 않고, Inspector 크기 조절 중 preview CPU와 snapshot traffic이 증가하지 않도록 격리
-
-## 0.1.1064 - 2026-07-19
-
-- `Fix blocker`가 관찰한 prop의 중간 container가 `null`이어도 same-file type/receiver inference의 가장 깊은
-  증명 leaf까지 최소 구조를 다시 만들고, 사용자가 지정한 non-null 값은 그대로 유지하도록 Smart merge를 보완
-- `reading 'value'` 같은 짧은 오류뿐 아니라 `props.field.value.address.split()` 같은 receiver 경로도 component의
-  외부 prop path와 정렬하며, UI provenance 제한과 별개로 전체 inferred shape를 bounded scan해 누락을 방지
-- 오류가 실제 dereference 실패를 증명한 Smart prop path에서는 blocking null scalar도 타입 호환 값으로 교체하되,
-  일반 Auto fallback의 authored null/falsey branch 보존 정책은 바꾸지 않도록 completion 정책을 분리
-- 이름 기반 fallback에서 `address`를 `add...` callback으로 오판하던 접두사 검사를 camelCase/snake_case 경계로
-  제한하고, 실제 호출 또는 함수 타입이 증명된 prop만 no-op callback으로 materialize하도록 정교화
-
-## 0.1.1063 - 2026-07-19
-
-- `Fix blocker`의 props 편집기가 target의 첫 commit 전에 실패하면 `{}`로 시작하던 경로를 제거하고, export의
-  same-file type/receiver 사용, 부모 JSX literal, 마지막 관찰값과 사용자 override를 합친 Smart prop 초안을 제공
-- `reading 'value'`처럼 runtime 오류가 짧은 property만 알려줘도 inference provenance의 suffix와 결합해
-  `field.value` 같은 증명된 전체 prop path에 최소값을 채우고, 근거 없는 중첩 위치는 임의로 추측하지 않도록 제한
-- 함수형 prop을 JSON에서 제거하지 않고 `[Preview no-op function]`으로 표시·저장한 뒤 project render 경계에서만
-  inert callback으로 복원해, callback-only props도 빈 객체로 보이거나 reload 후 사라지지 않도록 개선
-- nested target의 inferred shape를 page descriptor에도 보존해 실제 React base-prop 등록 effect가 commit되기 전에도
-  `Smart fill props`와 `Smart fill and retry`가 같은 descriptor-backed 최소값을 사용할 수 있게 통합
-
-## 0.1.1062 - 2026-07-19
-
-- Page Inspector의 전역 graph Router와 선택 page candidate의 지역 Router가 동시에 합성될 수 있던 경로를 제거해,
-  각 candidate가 `rootOwnsRouter`와 실제 상위 context를 기준으로 정확히 한 경계만 선택하도록 수정
-- `react-router-dom`뿐 아니라 `react-router` core entry의 consumer/provider import도 graph 및 candidate-local
-  ownership 근거에 포함해 custom app Router의 정적 감지 범위를 확장
-- custom wrapper/re-export 때문에 내부 Router를 정적으로 증명하지 못한 경우에도 nested-`<Router>` invariant만
-  candidate 경계에서 포착해 추론한 MemoryRouter를 제거하고 같은 authored candidate를 즉시 다시 렌더링
-
-## 0.1.1061 - 2026-07-19
-
-- 실제 port나 backend process 없이 Fetch·Axios·XMLHttpRequest·Apollo 요청을 한 broker로 종료하는 탭 내부
-  Virtual Backend를 추가하고, method·정규화 resource URL·redacted body/query fingerprint로 요청 variant를 구분
-- REST GET 결과를 canonical resource로 유지하며 POST/PATCH/PUT/DELETE를 이후 GET에 반영하고, React remount나
-  StrictMode 재실행에서 같은 POST fingerprint가 중복 row를 계속 추가하지 않도록 mutation 결과를 안정적으로 재사용
-- GraphQL operation/variables별 fixture 상태를 격리하고 기존 selection/alias/fragment 및 TypeScript response shape
-  inference를 Virtual Backend의 결정적 Auto/Lorem/Smart payload seed로 재사용
-- Payloads 탭에서 요청별 Success/Empty data/HTTP error, 대표 error status와 지연 시간을 선택하고 ephemeral resource
-  state 또는 response scenario를 독립적으로 초기화하며, request field와 resource identity를 함께 표시
-- compiler가 직접 증명하지 못한 fetch client도 HTTP(S), `/v1` 같은 상대 backend 후보를 전역 경계에서 차단하되
-  `./`·`../` JSON/TXT/CSV fixture는 기존 local fetch로 유지하고 credential property는 fingerprint 전에 redaction
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

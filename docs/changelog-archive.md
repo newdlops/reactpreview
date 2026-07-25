@@ -2,6 +2,61 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1065 - 2026-07-19
+
+- 별도 React Page Inspector 탭의 Components tree와 Details 사이에 드래그 가능한 splitter를 추가해 두 영역의
+  크기를 사용자가 직접 조절하고, double-click으로 현재 방향의 기본 비율을 복원하도록 개선
+- 760px 이상에서는 좌우, 좁은 editor group에서는 상하 splitter로 자동 전환하며 두 방향의 비율을 독립적으로
+  VS Code webview state에 저장해 탭 reload와 snapshot 교체 후에도 사용자가 정한 크기를 유지
+- separator에 ARIA orientation/value를 제공하고 방향키, `Shift+방향키`, `Home`/`End` 조작을 지원하며 양쪽 pane의
+  최소 가시 크기를 현재 workbench 크기에 맞춰 clamp해 화면 밖으로 밀려나지 않도록 제한
+- pane drag를 companion 문서의 local grid update로 처리해 hidden project renderer에 pointer event나 React remount를
+  전달하지 않고, Inspector 크기 조절 중 preview CPU와 snapshot traffic이 증가하지 않도록 격리
+
+## 0.1.1064 - 2026-07-19
+
+- `Fix blocker`가 관찰한 prop의 중간 container가 `null`이어도 same-file type/receiver inference의 가장 깊은
+  증명 leaf까지 최소 구조를 다시 만들고, 사용자가 지정한 non-null 값은 그대로 유지하도록 Smart merge를 보완
+- `reading 'value'` 같은 짧은 오류뿐 아니라 `props.field.value.address.split()` 같은 receiver 경로도 component의
+  외부 prop path와 정렬하며, UI provenance 제한과 별개로 전체 inferred shape를 bounded scan해 누락을 방지
+- 오류가 실제 dereference 실패를 증명한 Smart prop path에서는 blocking null scalar도 타입 호환 값으로 교체하되,
+  일반 Auto fallback의 authored null/falsey branch 보존 정책은 바꾸지 않도록 completion 정책을 분리
+- 이름 기반 fallback에서 `address`를 `add...` callback으로 오판하던 접두사 검사를 camelCase/snake_case 경계로
+  제한하고, 실제 호출 또는 함수 타입이 증명된 prop만 no-op callback으로 materialize하도록 정교화
+
+## 0.1.1063 - 2026-07-19
+
+- `Fix blocker`의 props 편집기가 target의 첫 commit 전에 실패하면 `{}`로 시작하던 경로를 제거하고, export의
+  same-file type/receiver 사용, 부모 JSX literal, 마지막 관찰값과 사용자 override를 합친 Smart prop 초안을 제공
+- `reading 'value'`처럼 runtime 오류가 짧은 property만 알려줘도 inference provenance의 suffix와 결합해
+  `field.value` 같은 증명된 전체 prop path에 최소값을 채우고, 근거 없는 중첩 위치는 임의로 추측하지 않도록 제한
+- 함수형 prop을 JSON에서 제거하지 않고 `[Preview no-op function]`으로 표시·저장한 뒤 project render 경계에서만
+  inert callback으로 복원해, callback-only props도 빈 객체로 보이거나 reload 후 사라지지 않도록 개선
+- nested target의 inferred shape를 page descriptor에도 보존해 실제 React base-prop 등록 effect가 commit되기 전에도
+  `Smart fill props`와 `Smart fill and retry`가 같은 descriptor-backed 최소값을 사용할 수 있게 통합
+
+## 0.1.1062 - 2026-07-19
+
+- Page Inspector의 전역 graph Router와 선택 page candidate의 지역 Router가 동시에 합성될 수 있던 경로를 제거해,
+  각 candidate가 `rootOwnsRouter`와 실제 상위 context를 기준으로 정확히 한 경계만 선택하도록 수정
+- `react-router-dom`뿐 아니라 `react-router` core entry의 consumer/provider import도 graph 및 candidate-local
+  ownership 근거에 포함해 custom app Router의 정적 감지 범위를 확장
+- custom wrapper/re-export 때문에 내부 Router를 정적으로 증명하지 못한 경우에도 nested-`<Router>` invariant만
+  candidate 경계에서 포착해 추론한 MemoryRouter를 제거하고 같은 authored candidate를 즉시 다시 렌더링
+
+## 0.1.1061 - 2026-07-19
+
+- 실제 port나 backend process 없이 Fetch·Axios·XMLHttpRequest·Apollo 요청을 한 broker로 종료하는 탭 내부
+  Virtual Backend를 추가하고, method·정규화 resource URL·redacted body/query fingerprint로 요청 variant를 구분
+- REST GET 결과를 canonical resource로 유지하며 POST/PATCH/PUT/DELETE를 이후 GET에 반영하고, React remount나
+  StrictMode 재실행에서 같은 POST fingerprint가 중복 row를 계속 추가하지 않도록 mutation 결과를 안정적으로 재사용
+- GraphQL operation/variables별 fixture 상태를 격리하고 기존 selection/alias/fragment 및 TypeScript response shape
+  inference를 Virtual Backend의 결정적 Auto/Lorem/Smart payload seed로 재사용
+- Payloads 탭에서 요청별 Success/Empty data/HTTP error, 대표 error status와 지연 시간을 선택하고 ephemeral resource
+  state 또는 response scenario를 독립적으로 초기화하며, request field와 resource identity를 함께 표시
+- compiler가 직접 증명하지 못한 fetch client도 HTTP(S), `/v1` 같은 상대 backend 후보를 전역 경계에서 차단하되
+  `./`·`../` JSON/TXT/CSV fixture는 기존 local fetch로 유지하고 credential property는 fingerprint 전에 redaction
+
 ## 0.1.1060 - 2026-07-19
 
 - HOC export의 Inspector boundary만 mount되고 내부 guard가 `Navigate`/`null`을 반환한 상태를 성공으로 오판하지

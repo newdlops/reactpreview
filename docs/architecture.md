@@ -201,6 +201,10 @@ bundle은 renderer에서만 평가합니다. renderer의 isolated Shadow DOM wor
 HTML/CSS snapshot만 companion으로 전달하고, companion은 opaque control ID를 가진 click/input/change/keyboard
 action만 원래 renderer로 돌려보냅니다. renderer를 닫으면 companion도 폐기하지만 companion만 닫으면 preview,
 artifact lease와 hot reload session은 계속 유지됩니다.
+Toolbar, page context, component tree/selection detail 경계는 disclosure button과 horizontal separator를 한
+accordion row로 합성합니다. renderer에서는 React 재렌더 없이 extension-owned DOM과 CSS grid variable만
+변경하고, companion은 같은 control을 local controller로 다시 연결합니다. 마지막 확장 높이와 접힘 상태는
+각 문서의 bounded state map에 따로 저장되므로 snapshot 교체가 tree scroll을 초기화하지 않습니다.
 
 문서 편집·저장 이벤트는 모든 session에 전달되지만 각 session은 자신의 대상, 마지막 의존 그래프,
 정적 패턴 watch directory에 포함된 경우만 rebuild를 예약합니다. Refresh는 포커스된 프리뷰를 먼저,
@@ -312,7 +316,7 @@ candidate가 만든 fallback/error/empty UI까지 변경 없이 유지하고, �
 사용하지 않습니다. `file-components`는 `renderChainsByExport`로 증명된 현재 파일 export마다 tree-shakeable direct
 specifier를 등록하되 사용자가 view를 선택하기 전에는 평가하지 않습니다. 선택 뒤에도 export별 dynamic import,
 Suspense와 error boundary를 사용해 한 module/render 실패가 sibling export overview를 제거하지 않습니다.
-page root만 commit되고 target이 없는 상태는 application error가 아니라 `TARGET ABSENT` flow outcome으로 표시하며,
+page root만 로드되고 현재 파일이 없는 상태는 application error가 아니라 `NOT ON THIS PATH` flow outcome으로 표시하며,
 실제 exception/value blocker 판정과 분리합니다.
 
 Inspector presentation은 모든 pseudo-node를 가장 가까운 source-backed component 소유 경로에 붙입니다.
@@ -427,6 +431,14 @@ descriptor/page/export 변경 시 폐기됩니다.
 도입하지 않습니다. target facade가 등록한 같은 파일의 모든 live boundary는 한 application slice로 합치고 각
 노드에 current-file export identity를 부여합니다. 현재 page candidate에서 실행되지 않은 direct component
 export는 `Unmounted current-file exports` branch로 보존해 정적 경로와 live 위치의 차이를 숨기지 않습니다.
+VirtualPage planner는 route factory와 page catalog의 competing page candidate를 선택 페이지의 visual sibling에서
+제외하고 각각 독립된 `PAGE PATH`로 유지합니다. exact candidate identity를 우선하고 re-export 경계에서는 final
+`Page`/`Screen`/`View` role만 endpoint로 보므로 PageHeader·PageAction 같은 chrome은 유지됩니다. 합성 boundary
+하나만 `PagePreview` identity를 가지며 per-component isolation facade는 authored display name을 보존합니다.
+route factory의 page catalog와 JSX callback이 다른 argument에 있으면 shallow evidence가 selected route edge와
+`render-prop` invocation을 같은 owner에 연결합니다. VirtualPage는 그중 target에 가장 가까운 corridor owner만
+실행해 factory-injected route, function children, Provider와 Layout을 보존하며, 더 바깥 app bootstrap은
+checkpoint 밖에 둡니다.
 
 `previewInspectorBlockerUiRuntimeSource`는 condition에 더해 target 미도달 path blocker, render-only hook fallback,
 no-network data request와 target-local contained error를 compiler가 기록한 owner name, source path/line,
@@ -601,6 +613,12 @@ column/row ratio를 별도 webview state로 유지하고 CSS grid
 custom property만 갱신하므로 pointer drag가 companion protocol이나 project runtime으로 전달되지 않습니다. live
 workbench 크기에서 양쪽 pane minimum을 다시 계산하고 ResizeObserver, keyboard ARIA value와 double-click reset을
 같은 bounded ratio 함수로 통합합니다.
+`previewInspectorSectionResizeUiRuntimeSource`는 Components 내부의 tree/선택 상세 행과 component debugger의
+각 source card뿐 아니라 shell의 toolbar/page-context 행에도 수평 separator를 합성합니다. pointer move는 React
+state를 거치지 않고 해당 grid variable 또는 card height만 변경하며,
+`previewInspectorCompanionInnerResizeScript`가 sanitizer로 복사된 resize ID를 이용해
+별도 Inspector 탭에서도 동일한 조작을 local DOM에 다시 연결합니다. 두 runtime은 finite 값·128개 identity·현재
+viewport 최소/최대 높이로 상태를 제한하고 hot reload/snapshot 교체 뒤 독립적으로 복원합니다.
 companion document는 tree, detail, console 등 모든 named scroll viewport의 마지막 정상 좌표를 snapshot 교체 전에
 캡처하고 DOM 교체·splitter 설치·layout 안정화 뒤 다시 복원합니다. 사용자 조작 직후 잠시 짧아진 intermediate
 snapshot의 clamp 값은 안정 좌표를 덮지 않으며, 명시적인 picker/wireframe/current-file reveal만 Components viewport를

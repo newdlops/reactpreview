@@ -42,6 +42,12 @@ re-export, route 배열·router 객체와 조건부 app map의 값 흐름을 따
 서로 다른 page root로 이어지는 호출 경로가 여러 개이면 Inspector의 `PAGE PATH` 선택기에 후보를 보존합니다.
 후보를 바꾸면 선택한 authored root와 그 children/sibling graph만 브라우저에서 지연 로드해 같은 대상이
 각 final page 안에서 차지하는 위치를 비교할 수 있습니다.
+route factory나 page catalog의 같은 object/callback에 여러 페이지가 등록되어 있어도 그 endpoint들을 한 화면의
+sibling으로 쌓지 않습니다. 선택한 페이지 하나만 `PagePreview(페이지명)` 합성 루트가 되고, 다른 endpoint는
+별도의 `PAGE PATH` 후보로 남으며 Header·Navigation·PageAction 같은 비페이지 chrome만 현재 frame에 유지됩니다.
+페이지 catalog와 JSX render callback이 서로 다른 factory 인자로 전달되면 선택 페이지와 callback layout을 함께
+소유한 가장 가까운 App owner를 그대로 실행합니다. 따라서 factory가 주입한 route와 function children 계약은
+보존하면서 더 바깥쪽 인증 bootstrap이나 전체 application entry는 계속 우회합니다.
 직접 JSX owner가 route 배열이나 component factory에서 끊겨도 render graph가 증명한 lazy wrapper,
 form/page/App export를 마운트 체크포인트로 승격하므로 가까운 fallback과 최종 페이지 후보를 함께 비교합니다.
 
@@ -162,6 +168,12 @@ component 소유 범위로 보여줍니다. 별도 탭을
 스크롤로 탐색하므로 하위 component가 옆으로 납작해지지 않습니다. Components/Details 경계는 직접 drag할 수
 있고 넓은 화면의 좌우 비율과 좁은 화면의 상하 비율을 탭별로 따로 기억합니다. separator에 focus한 뒤 방향키로
 미세 조절하거나 `Shift+방향키`로 크게 조절할 수 있으며, double-click하면 현재 방향의 기본 비율로 돌아갑니다.
+Components 내부의 tree/선택 상세 경계와 Source·State·Payload·fallback 카드 하단에도 세로 높이 핸들이 있습니다.
+상단 control, 페이지 문맥, 선택 상세 경계는 `▾ 구역 이름`과 drag rail을 합친 accordion입니다. 이름을 누르면
+해당 구역만 접거나 펼치고, rail을 드래그하거나 위/아래 방향키로 조절하며 double-click하면 자동 높이로
+돌아갑니다. 접힌 rail을 drag하거나 방향키로 조절하면 구역을 먼저 펼치며 마지막 확장 높이를 복원합니다.
+접힘과 높이는 Inspector 탭별로 독립 저장되고, 작은 화면에서는 Components workbench의 최소 높이와 각 구역의
+내부 스크롤을 유지해 내용이 화면 밖으로 밀리지 않습니다.
 일반 tree 행, inline switch, 상세 editor, toolbar와 select를 조작해도 별도 Inspector 탭의 tree/detail/console 및
 문서 가로·세로 스크롤을 유지합니다. `Pick on page`, Wireframe marker,
 `Current file`처럼 사용자가 위치 이동을 명시한 작업만 조상 행을 펼치고 정확한 React 행을 tree viewport 안으로
@@ -172,8 +184,8 @@ Pick hover 후보를 해제하고 `Highlight`를 자동으로 켜 실제 페이�
 화면 영역을 강조하지 않으며, 정적으로 추정한 소스 위치는 실선 대신 추정 스타일로 구분합니다.
 
 Inspector 상단은 현재 결과를 `Preparing page context`, `Page rendering is blocked`, `Page context is ready`,
-`Rendered flow does not contain the current file`, `Current-file component overview`, `Target-only view` 중 하나로
-설명합니다. page root가 commit됐지만 target이 없는 경우는 오류로 단정하지 않고 `TARGET ABSENT`로 표시하며,
+`Rendered flow does not contain the current file`, `Current-file component overview`, `File-only view` 중 하나로
+설명합니다. 페이지가 현재 파일을 사용하지 않은 경우는 오류로 단정하지 않고 `NOT ON THIS PATH`로 표시하며,
 다른 `PAGE PATH` 또는 `File components` 비교를 안내합니다. 준비가 필요한 경우에는 첫 blocker가 있는 tree 경로,
 성공한 page에는 `Reveal current file` 행동을 제공합니다. tree 범례와 각 행의 고정 역할 label은 일반 `COMPONENT`, 선택 파일의 `CURRENT FILE`, 실행하지 않은
 `PAGE PATH`, 사용자가 바꿀 수 있는 `CONDITION`, 확장이 이미 보완한 `PREVIEW VALUE`, 실제 렌더를 중단하는
@@ -290,15 +302,15 @@ early return과 fallback condition을 바깥쪽부터 한 단계씩 통과합니
 일치해야 합니다. 자동으로 선택한
 gate가 다음 commit에서 새 fatal 오류를 만들면 그 gate만 authored 값으로 되돌리고 현재 후보에서는 재선택하지
 않습니다. 이때 해당 export 오류 경계도 함께 remount해 rollback된 authored branch가 즉시 다시 표시됩니다.
-`Find minimum requirements`는 이 corridor에서 관찰된 hook과 backend payload를 최소 shape로 바꾸고, 다시 열린
+`Auto-find missing values`는 이 page path에서 관찰된 hook과 backend payload를 최소 shape로 바꾸고, 다시 열린
 branch에서 새로 드러난 required field를 최대 8회의 bounded pass로 이어서 채웁니다. 실제 새 값이 추가된
 pass에서만 remount하며 pass 수와 발견 property 수를 상세 화면에 표시합니다. 앞선 DFS에서 증명한
 로그인/session/permission branch 선택과 사용자 값은 유지합니다. 각 pass는 이전 render trace가 정착된 뒤에만
 진행되고 동일 semantic state 또는 A→B→A 진동이 다시 나타나면 자동 회로가 열려 page를 그대로 유지합니다.
-누적 pass 상한과 cycle 상태는 자동 probe가 초기화하지 않으며, 사용자가 `Retry page corridor`나
-`Find minimum requirements`를 명시적으로 선택한 경우에만 해당 corridor의 탐색 예산을 새로 시작합니다.
-`Target-only diagnostic`은 Router·Theme·provider·no-network 경계 안에서 selected export만 확인하는 명시적
-진단 모드이고 page 성공으로 계산되지 않습니다. `Return to page context`로 같은 page corridor로 돌아갑니다.
+누적 pass 상한과 cycle 상태는 자동 probe가 초기화하지 않으며, 사용자가 `Try page again`이나
+`Auto-find missing values`를 명시적으로 선택한 경우에만 해당 page path의 탐색 예산을 새로 시작합니다.
+`Show file by itself`는 Router·Theme·provider·no-network 경계 안에서 selected export만 확인하는 명시적
+진단 모드이고 page 성공으로 계산되지 않습니다. `Return to page`로 같은 page path로 돌아갑니다.
 
 Inspector highlight는 application DOM에 붙은 CSS outline만 animation frame에서 조정하며 scroll·resize나
 attribute/text animation마다 React tree를 다시 읽지 않습니다. 실제 React commit 또는 child-list 변화가
@@ -335,8 +347,8 @@ attribute/text animation마다 React tree를 다시 읽지 않습니다. 실제 
   삼항식, ReactDOM Portal branch와 Modal 계열의
   `open`/`visible`/`hidden` prop 또는 early-null guard 조건 행을 클릭해 분기를 반전하거나,
   상세 패널에서 truthy/falsy/fallback branch와 `Use authored value`를 명시적으로 선택
-- 정상 commit됐지만 target이 없는 `Path blocker`에서 자동 통과한 로그인/session gate와 downstream payload
-  property를 확인하고 `Find minimum requirements`, `Retry page corridor` 또는 `Target-only diagnostic`을 선택
+- 정상 로드됐지만 현재 파일을 사용하지 않은 `Path blocker`에서 자동 통과한 로그인/session gate와 downstream
+  payload property를 확인하고 `Auto-find missing values`, `Try page again` 또는 `Show file by itself`을 선택
 - 선택 component를 명시적으로 remount해 local state를 초기 상태로 되돌리기
 - JSX development metadata 또는 정적 graph가 증명한 component source를 VS Code editor에서 열기
 

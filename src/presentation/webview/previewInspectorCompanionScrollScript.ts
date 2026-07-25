@@ -30,8 +30,13 @@ const PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS =
   ${PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS};
 const previewInspectorCompanionScrollFallbackRegions = Object.freeze([
   ['.rpi-shell', 'inspector-shell'],
+  ['.rpi-toolbar', 'inspector-toolbar'],
+  ['.rpi-page-context', 'page-context'],
+  ['.rpi-route-browser', 'route-browser'],
+  ['.rpi-navigation-tabs', 'workbench-tabs'],
   ['.rpi-scenario-scroll', 'jsx-scenarios'],
   ['.rpi-tree-scroll', 'components-tree'],
+  ['.rpi-tree-selection-scroll', 'components-selection-detail'],
   ['.rpi-detail-scroll', 'component-details'],
   ['.rpi-console-list', 'component-console'],
   ['textarea.rpi-json', 'component-json-editor'],
@@ -44,6 +49,7 @@ const previewInspectorCompanionScrollState = {
   frame: undefined,
   holding: false,
   initialized: false,
+  interactionKey: undefined,
   regionByKey: new Map(),
   revision: 0,
   secondFrame: undefined,
@@ -140,12 +146,46 @@ function captureCompanionScrollSnapshot() {
 }
 
 /**
- * Freezes the exact visible coordinates before an interaction is relayed to the hidden authority.
- * A short release timer prevents a no-op remote control from leaving the ledger permanently held.
+ * Reads a long-running interaction identity minted by the Inspector source.
+ *
+ * Most controls settle in the next React commit. Route selection is different because it compiles
+ * a new branch before the authoritative DOM changes. Its identity keeps the original coordinates
+ * authoritative until that exact route reports completion, regardless of compilation duration.
  */
-function rememberCompanionScrollBeforeInteraction() {
+function readCompanionScrollInteraction(control) {
+  const key = control?.getAttribute?.('data-rpi-scroll-transaction');
+  const state = control?.getAttribute?.('data-rpi-scroll-transaction-state');
+  if (
+    typeof key !== 'string' ||
+    key.length === 0 ||
+    key.length > 512 ||
+    state !== 'available'
+  ) {
+    return undefined;
+  }
+  return key;
+}
+
+/** Reports whether the latest mirrored DOM completed the held interaction transaction. */
+function isCompanionScrollInteractionComplete(key) {
+  if (typeof key !== 'string') return true;
+  const controls = [...(mirror.querySelectorAll?.('[data-rpi-scroll-transaction]') ?? [])];
+  return controls.some((control) =>
+    control.getAttribute?.('data-rpi-scroll-transaction') === key &&
+    control.getAttribute?.('data-rpi-scroll-transaction-state') === 'complete',
+  );
+}
+
+/**
+ * Freezes the exact visible coordinates before an interaction is relayed to the hidden authority.
+ * Ordinary controls release after quiet time. A route-selection transaction remains held across
+ * every intermediate snapshot until the selected branch is installed or another click supersedes it.
+ */
+function rememberCompanionScrollBeforeInteraction(control) {
   rememberCurrentCompanionScrollPositions();
   previewInspectorCompanionScrollState.holding = true;
+  previewInspectorCompanionScrollState.interactionKey =
+    readCompanionScrollInteraction(control);
   if (previewInspectorCompanionScrollState.settleTimer !== undefined) {
     clearTimeout(previewInspectorCompanionScrollState.settleTimer);
   }
@@ -153,6 +193,15 @@ function rememberCompanionScrollBeforeInteraction() {
   previewInspectorCompanionScrollState.settleTimer = setTimeout(() => {
     if (previewInspectorCompanionScrollState.revision !== revision) return;
     previewInspectorCompanionScrollState.settleTimer = undefined;
+    if (
+      previewInspectorCompanionScrollState.interactionKey !== undefined &&
+      !isCompanionScrollInteractionComplete(
+        previewInspectorCompanionScrollState.interactionKey,
+      )
+    ) {
+      return;
+    }
+    previewInspectorCompanionScrollState.interactionKey = undefined;
     previewInspectorCompanionScrollState.holding = false;
     rememberMissingCompanionScrollRegions();
   }, PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS);
@@ -230,6 +279,15 @@ function scheduleCompanionScrollRestoration(snapshot, afterRestore) {
   previewInspectorCompanionScrollState.settleTimer = setTimeout(() => {
     if (previewInspectorCompanionScrollState.revision !== revision) return;
     previewInspectorCompanionScrollState.settleTimer = undefined;
+    if (
+      previewInspectorCompanionScrollState.interactionKey !== undefined &&
+      !isCompanionScrollInteractionComplete(
+        previewInspectorCompanionScrollState.interactionKey,
+      )
+    ) {
+      return;
+    }
+    previewInspectorCompanionScrollState.interactionKey = undefined;
     if (typeof afterRestore === 'function') rememberCompanionScrollRegion('components-tree');
     rememberMissingCompanionScrollRegions();
     previewInspectorCompanionScrollState.holding = false;

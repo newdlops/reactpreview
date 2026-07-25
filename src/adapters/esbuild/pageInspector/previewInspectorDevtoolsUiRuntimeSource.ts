@@ -843,6 +843,7 @@ function PreviewInspectorToolbar() {
           {
             'aria-label': 'React Page Inspector tools',
             className: 'rpi-toolbar',
+            'data-rpi-scroll-key': 'inspector-toolbar',
             id: 'rpi-toolbar-section',
             role: 'toolbar',
           },
@@ -949,6 +950,7 @@ function PreviewInspectorToolbar() {
             'aria-label': 'Rendered page component context',
             className: 'rpi-page-context',
             'data-context-kind': pageContext.kind,
+            'data-rpi-scroll-key': 'page-context',
             id: 'rpi-page-context-section',
             title: pageContext.breadcrumb + ' · ' + pageContext.detail,
           },

@@ -24,6 +24,7 @@ describe('Preview Inspector navigation UI runtime source', () => {
       'function PreviewInspectorNavigationPane({ node, roots, selectedId, status, truncated })',
     );
     expect(source).toContain("role: 'tablist'");
+    expect(source).toContain("'data-rpi-scroll-key': 'workbench-tabs'");
     expect(source).toContain("'JSX scenarios'");
     expect(source).toContain("'Components'");
     expect(source).toContain("'Inspect selection'");

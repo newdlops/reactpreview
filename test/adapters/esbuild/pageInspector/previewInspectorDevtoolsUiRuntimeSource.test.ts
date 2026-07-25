@@ -33,6 +33,9 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain('container-name:rpi-inspector;container-type:inline-size');
     expect(source).toContain('@container rpi-inspector (max-width:759px)');
     expect(source).toContain('@container rpi-inspector (max-width:460px)');
+    expect(source).toContain("'data-rpi-scroll-key': 'inspector-toolbar'");
+    expect(source).toContain("'data-rpi-scroll-key': 'page-context'");
+    expect(source).toContain("'data-rpi-scroll-key': 'workbench-tabs'");
     expect(source).toContain('display:flex;flex-wrap:wrap;gap:6px;max-width:100%');
     expect(source).toContain("'data-collapsed': collapsed");
     expect(source).toContain('usePreviewInspectorTreeRefresh(!collapsed || wireframeVisible)');
@@ -169,7 +172,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
       toolbarSource.indexOf("className: 'rpi-page-context'"),
     );
     expect(source).toContain(
-      'grid-template-rows:minmax(72px,var(--rpi-primary-section-height,3fr)) 9px 28px minmax(72px,2fr)',
+      'grid-template-rows:minmax(0,var(--rpi-primary-section-height,3fr)) 9px 28px minmax(0,2fr)',
     );
     expect(source).toContain(
       'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(0,1fr)',

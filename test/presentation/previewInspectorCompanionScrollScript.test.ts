@@ -16,8 +16,8 @@ interface ScrollRegion {
 /** Test-only API exposed from the generated companion script. */
 interface CompanionScrollRuntime {
   capture(): { readonly regions: readonly { key: string; left: number; top: number }[] };
-  readState(): { readonly holding: boolean };
-  rememberInteraction(): void;
+  readState(): { readonly holding: boolean; readonly interactionKey?: string };
+  rememberInteraction(control?: ScrollRegion): void;
   runFrames(): void;
   runTimers(): void;
   schedule(snapshot: unknown): void;
@@ -97,6 +97,61 @@ describe('Preview Inspector companion scroll script', () => {
     expect(readRegion(snapshot, 'component-json-view-1')?.top).toBe(20);
     expect(readRegion(snapshot, 'component-json-view-2')?.top).toBe(40);
   });
+
+  /**
+   * Keeps the route browser and its page-context parent at their exact coordinates while a selected
+   * branch compiles through any number of intermediate snapshots.
+   */
+  it('holds named route scroll regions until the selected route transaction completes', () => {
+    const pageContext = createScrollRegion(['.rpi-page-context'], 4, 310);
+    const routeBrowser = createScrollRegion(['.rpi-route-browser'], 65, 520);
+    const routeControl = createScrollRegion(['[data-rpi-scroll-transaction]'], 0, 0);
+    routeControl.setAttribute('data-rpi-scroll-transaction', 'route-selection:reports');
+    routeControl.setAttribute('data-rpi-scroll-transaction-state', 'available');
+    const fixture = evaluateCompanionScrollRuntime([pageContext, routeBrowser, routeControl]);
+
+    fixture.runtime.rememberInteraction(routeControl);
+    expect(fixture.runtime.readState()).toMatchObject({
+      holding: true,
+      interactionKey: 'route-selection:reports',
+    });
+    expect(readRegion(fixture.runtime.capture(), 'page-context')?.top).toBe(310);
+    expect(readRegion(fixture.runtime.capture(), 'route-browser')).toMatchObject({
+      left: 65,
+      top: 520,
+    });
+
+    const pendingContext = createScrollRegion(['.rpi-page-context'], 0, 0);
+    const pendingBrowser = createScrollRegion(['.rpi-route-browser'], 0, 0);
+    const pendingControl = createScrollRegion(['[data-rpi-scroll-transaction]'], 0, 0);
+    pendingControl.setAttribute('data-rpi-scroll-transaction', 'route-selection:reports');
+    pendingControl.setAttribute('data-rpi-scroll-transaction-state', 'pending');
+    fixture.setRegions([pendingContext, pendingBrowser, pendingControl]);
+    fixture.runtime.schedule(fixture.runtime.capture());
+    fixture.runtime.runFrames();
+    fixture.runtime.runTimers();
+
+    expect(pendingContext.scrollTop).toBe(310);
+    expect(pendingBrowser).toMatchObject({ scrollLeft: 65, scrollTop: 520 });
+    expect(fixture.runtime.readState().holding).toBe(true);
+
+    const finalContext = createScrollRegion(['.rpi-page-context'], 0, 0);
+    const finalBrowser = createScrollRegion(['.rpi-route-browser'], 0, 0);
+    const finalControl = createScrollRegion(['[data-rpi-scroll-transaction]'], 0, 0);
+    finalControl.setAttribute('data-rpi-scroll-transaction', 'route-selection:reports');
+    finalControl.setAttribute('data-rpi-scroll-transaction-state', 'complete');
+    fixture.setRegions([finalContext, finalBrowser, finalControl]);
+    fixture.runtime.schedule(fixture.runtime.capture());
+    fixture.runtime.runFrames();
+    fixture.runtime.runTimers();
+
+    expect(finalContext.scrollTop).toBe(310);
+    expect(finalBrowser).toMatchObject({ scrollLeft: 65, scrollTop: 520 });
+    expect(fixture.runtime.readState()).toMatchObject({
+      holding: false,
+      interactionKey: undefined,
+    });
+  });
 });
 
 /** Finds one serializable named region without depending on cross-realm object prototypes. */
@@ -142,6 +197,11 @@ function evaluateCompanionScrollRuntime(initialRegions: ScrollRegion[]): {
       if (selector === '[data-rpi-scroll-key]') {
         return regions.filter((region) => region.getAttribute('data-rpi-scroll-key') !== null);
       }
+      if (selector === '[data-rpi-scroll-transaction]') {
+        return regions.filter(
+          (region) => region.getAttribute('data-rpi-scroll-transaction') !== null,
+        );
+      }
       return regions.filter((region) => region.selectors.includes(selector));
     },
   };
@@ -178,7 +238,10 @@ function evaluateCompanionScrollRuntime(initialRegions: ScrollRegion[]): {
       ${createPreviewInspectorCompanionScrollScript()}
       globalThis.__runtime = {
         capture: captureCompanionScrollSnapshot,
-        readState: () => ({ holding: previewInspectorCompanionScrollState.holding }),
+        readState: () => ({
+          holding: previewInspectorCompanionScrollState.holding,
+          interactionKey: previewInspectorCompanionScrollState.interactionKey,
+        }),
         rememberInteraction: rememberCompanionScrollBeforeInteraction,
         runFrames: () => {
           while (frames.size > 0) {

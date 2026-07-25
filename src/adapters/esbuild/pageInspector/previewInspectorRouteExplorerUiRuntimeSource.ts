@@ -60,6 +60,10 @@ function PreviewInspectorRouteBranchButton({ branch, commonPrefix, selected }) {
       className: 'rpi-route-item' +
         (selected ? ' is-selected' : '') +
         (pending ? ' is-pending' : ''),
+      'data-rpi-scroll-transaction': 'route-selection:' + branch.id,
+      'data-rpi-scroll-transaction-state': pending
+        ? 'pending'
+        : selected ? 'complete' : 'available',
       disabled: pending,
       key: branch.id,
       onClick: activate,
@@ -146,7 +150,7 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
     ),
     React.createElement(
       'div',
-      { className: 'rpi-route-browser' },
+      { className: 'rpi-route-browser', 'data-rpi-scroll-key': 'route-browser' },
       React.createElement('input', {
         'aria-label': 'Filter application routes',
         className: 'rpi-search',

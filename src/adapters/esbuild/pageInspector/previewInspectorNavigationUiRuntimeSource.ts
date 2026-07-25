@@ -89,6 +89,7 @@ function PreviewInspectorNavigationPane({ node, roots, selectedId, status, trunc
         {
           'aria-label': 'React Page Inspector sections',
           className: 'rpi-tabs rpi-navigation-tabs',
+          'data-rpi-scroll-key': 'workbench-tabs',
           onKeyDown: handlePreviewInspectorWorkbenchTabKeyDown,
           role: 'tablist',
         },

@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import ts from 'typescript';
+import { createPreviewDeferredUiPropFlowAnalyzer } from './previewDeferredUiPropFlow';
 import type { PreviewSourceReplacement } from './previewSourceReplacement';
 
 const PREVIEW_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
@@ -138,6 +139,7 @@ function collectDeferredUiTriggerCandidates(
   sourcePath: string,
 ): readonly DeferredUiTriggerCandidate[] {
   const candidates: DeferredUiTriggerCandidate[] = [];
+  const propFlowAnalyzer = createPreviewDeferredUiPropFlowAnalyzer(sourceFile);
   /** Visits source order so the bounded inventory remains deterministic across builds. */
   function visit(node: ts.Node): void {
     if (ts.isJsxAttribute(node) && isReactEventAttribute(node)) {
@@ -146,7 +148,7 @@ function collectDeferredUiTriggerCandidates(
         initializer !== undefined && ts.isJsxExpression(initializer)
           ? initializer.expression
           : undefined;
-      const evidence =
+      const directEvidence =
         expression === undefined
           ? undefined
           : findImperativeVisibilityEvidence(
@@ -156,6 +158,9 @@ function collectDeferredUiTriggerCandidates(
               0,
               'event',
             );
+      const evidence =
+        directEvidence ??
+        (expression === undefined ? undefined : propFlowAnalyzer.find(expression));
       if (expression !== undefined && evidence !== undefined) {
         candidates.push({
           expression,

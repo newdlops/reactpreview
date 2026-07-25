@@ -21,6 +21,7 @@ import {
   isPreviewReactCreateElementCall,
   type PreviewReactRenderTerminalEvidence,
 } from './previewReactRenderTerminal';
+import { createPreviewReactOverlayActivationReplacements } from './previewReactOverlayActivation';
 import { instrumentReactArrayIndexRendering } from './reactArrayIndexRendering';
 import { instrumentReactSwitchRendering } from './reactSwitchRendering';
 
@@ -105,6 +106,20 @@ interface ReactConditionalRenderCandidate {
   >;
   /** Whether a negative prop such as `hidden` must invert the visible-state resolver result. */
   readonly negateRuntimeResult?: boolean;
+  /** Direct overlay result whose visual props must follow an explicitly revealed mount gate. */
+  readonly overlayActivationTerminal?: ts.Expression;
+}
+
+/** Condition replacement plus the identity required by an optional overlay-terminal wrapper. */
+interface PreparedReactConditionalRenderReplacement {
+  readonly conditionId: string;
+  /** Inert compiler evidence later emitted in one module-level registration batch. */
+  readonly definition: {
+    readonly id: string;
+    readonly metadata: ReactConditionalRenderMetadata;
+  };
+  readonly overlayActivationTerminal?: ts.Expression;
+  readonly replacement: PreviewReactConditionalReplacement;
 }
 
 /**
@@ -115,13 +130,17 @@ interface ReactConditionalRenderCandidate {
  *
  * @param sourcePath Absolute workspace source path used for identity and parser grammar.
  * @param sourceText Source after other non-overlapping compatibility rewrites have completed.
+ * @param definitionRegistrations Optional mutable output for inert metadata-only registrations.
  * @returns Instrumented source, or the original source when no supported condition was proven.
  */
 export function instrumentReactConditionalRendering(
   sourcePath: string,
   sourceText: string,
+  definitionRegistrations?: string[],
 ): string {
-  if (!isJavaScriptLikeSource(sourcePath) || !mayContainReactRenderSyntax(sourceText)) {
+  if (!isJavaScriptLikeSource(sourcePath)) return sourceText;
+  if (!mayContainReactRenderSyntax(sourceText)) {
+    definitionRegistrations?.push(createConditionalRenderDefinitionsRegistration(sourcePath, []));
     return sourceText;
   }
   const arrayInstrumentedSource = instrumentReactArrayIndexRendering(sourcePath, sourceText);
@@ -129,7 +148,10 @@ export function instrumentReactConditionalRendering(
     sourcePath,
     arrayInstrumentedSource,
   );
-  if (!mayContainConditionalJsx(switchInstrumentedSource)) return switchInstrumentedSource;
+  if (!mayContainConditionalJsx(switchInstrumentedSource)) {
+    definitionRegistrations?.push(createConditionalRenderDefinitionsRegistration(sourcePath, []));
+    return switchInstrumentedSource;
+  }
   const sourceFile = ts.createSourceFile(
     sourcePath,
     switchInstrumentedSource,
@@ -145,11 +167,38 @@ export function instrumentReactConditionalRendering(
     sourceFile,
     collectReactDomPortalBindings(sourceFile),
   ).slice(0, MAX_CONDITIONS_PER_MODULE);
-  const replacements = selectOutermostPreviewReactConditionalReplacements(
-    candidates.map((candidate, index) =>
-      createConditionalRenderReplacement(sourceFile, sourcePath, candidate, index),
+  const prepared = candidates.map((candidate, index) =>
+    createConditionalRenderReplacement(sourceFile, sourcePath, candidate, index),
+  );
+  const selectedConditionReplacements = selectOutermostPreviewReactConditionalReplacements(
+    prepared.map((item) => item.replacement),
+  );
+  const selectedConditionReplacementSet = new Set(selectedConditionReplacements);
+  const selectedDefinitions = prepared
+    .filter((item) => selectedConditionReplacementSet.has(item.replacement))
+    .map((item) => item.definition);
+  if (definitionRegistrations !== undefined) {
+    definitionRegistrations.push(
+      createConditionalRenderDefinitionsRegistration(sourcePath, selectedDefinitions),
+    );
+  }
+  const overlayReplacements = createPreviewReactOverlayActivationReplacements(
+    sourceFile,
+    prepared.flatMap((item) =>
+      item.overlayActivationTerminal === undefined
+        ? []
+        : [
+            {
+              conditionId: item.conditionId,
+              terminal: item.overlayActivationTerminal,
+            },
+          ],
     ),
   );
+  const replacements = selectOutermostPreviewReactConditionalReplacements([
+    ...selectedConditionReplacements,
+    ...overlayReplacements,
+  ]);
   return applyPreviewReactConditionalReplacements(switchInstrumentedSource, replacements);
 }
 
@@ -173,6 +222,7 @@ function collectConditionalRenderCandidates(
     isAdditionalTerminal: (expression) =>
       isReactDomPortalCall(expression, portalBindings) || isJsxRouteEntryExpression(expression),
   });
+  const invokedLocalRenderFunctions = terminalAnalyzer.collectInvokedLocalRenderFunctions();
   /** Visits syntax in source order while retaining nested independent branch controls. */
   function visit(node: ts.Node): void {
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
@@ -183,7 +233,12 @@ function collectConditionalRenderCandidates(
       if (overlayGuard !== undefined) {
         candidates.push(overlayGuard);
       } else {
-        const earlyReturnGate = collectEarlyReturnGateCandidate(node, sourceFile, portalBindings);
+        const earlyReturnGate = collectEarlyReturnGateCandidate(
+          node,
+          sourceFile,
+          portalBindings,
+          invokedLocalRenderFunctions,
+        );
         if (earlyReturnGate !== undefined) candidates.push(earlyReturnGate);
       }
     }
@@ -218,6 +273,10 @@ function collectConditionalRenderCandidates(
             ...(role === undefined ? {} : { role }),
             truthyLabel,
           },
+          ...(role !== undefined &&
+          isOverlayReactRenderExpression(logicalAnd.terminal, sourceFile, portalBindings)
+            ? { overlayActivationTerminal: logicalAnd.terminal }
+            : {}),
         });
       }
     } else if (ts.isConditionalExpression(node) && hasRuntimeFunction) {
@@ -266,11 +325,18 @@ function collectEarlyReturnGateCandidate(
   statement: ts.IfStatement,
   sourceFile: ts.SourceFile,
   portalBindings: ReactDomPortalBindings,
+  invokedLocalRenderFunctions: ReadonlySet<ts.Node>,
 ): ReactConditionalRenderCandidate | undefined {
   const owner = findNearestOverlayRuntimeFunction(statement);
   const ownerName =
     owner === undefined ? undefined : readOverlayRuntimeFunctionName(owner, sourceFile);
-  if (ownerName === undefined || !/^[$_\p{Lu}]/u.test(ownerName)) return undefined;
+  if (
+    ownerName === undefined ||
+    (!/^[$_\p{Lu}]/u.test(ownerName) &&
+      (owner === undefined || !invokedLocalRenderFunctions.has(owner)))
+  ) {
+    return undefined;
+  }
   const thenRender = readSingleReturnedRenderExpression(statement.thenStatement, portalBindings);
   const elseRender =
     statement.elseStatement === undefined
@@ -556,7 +622,7 @@ function createConditionalRenderReplacement(
   sourcePath: string,
   candidate: ReactConditionalRenderCandidate,
   occurrence: number,
-): PreviewReactConditionalReplacement {
+): PreparedReactConditionalRenderReplacement {
   const start = candidate.condition.getStart(sourceFile);
   const end = candidate.condition.end;
   const authoredExpression = sourceFile.text.slice(start, end);
@@ -590,10 +656,26 @@ function createConditionalRenderReplacement(
       ? `${apiExpression}.resolveRenderConditionLazy(${JSON.stringify(conditionId)}, () => ${authoredValueExpression}, ${JSON.stringify(metadata)})`
       : `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, ${authoredValueExpression}, ${JSON.stringify(metadata)})`;
   return {
-    end,
-    replacement: candidate.negateRuntimeResult === true ? `!(${resolverCall})` : resolverCall,
-    start,
+    conditionId,
+    definition: { id: conditionId, metadata },
+    ...(candidate.overlayActivationTerminal === undefined
+      ? {}
+      : { overlayActivationTerminal: candidate.overlayActivationTerminal }),
+    replacement: {
+      end,
+      replacement: candidate.negateRuntimeResult === true ? `!(${resolverCall})` : resolverCall,
+      start,
+    },
   };
+}
+
+/** Emits one inert module batch so hot edits can replace stale short-circuited definitions. */
+function createConditionalRenderDefinitionsRegistration(
+  sourcePath: string,
+  definitions: readonly PreparedReactConditionalRenderReplacement['definition'][],
+): string {
+  const api = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
+  return `try { ${api}?.registerRenderConditionDefinitions?.(${JSON.stringify(path.normalize(sourcePath))}, ${JSON.stringify(definitions)}); } catch { /* Inspector registration must not break the authored module. */ }`;
 }
 
 /** Returns whether one expression directly represents a JSX element or fragment after wrappers. */

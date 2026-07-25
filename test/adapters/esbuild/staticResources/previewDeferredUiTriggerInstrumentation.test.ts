@@ -56,6 +56,56 @@ describe('instrumentPreviewDeferredUiTriggers', () => {
     expect(instrumentation.registrations[0]).toContain('"ownerName":"Panel"');
   });
 
+  /** Follows a click callback through local component props to a stateful modal controller. */
+  it('traces an event through nested JSX callback props before registering deferred UI', () => {
+    const source = [
+      'export const FileList = ({ companyId }) => {',
+      '  const [infoFile, setInfoFile] = useState(null);',
+      '  const [infoModalProps, infoModalActions] = useModalActions();',
+      '  const openInfoModal = companyId != null ? (file) => {',
+      '    setInfoFile(file);',
+      '    infoModalActions.show();',
+      '  } : undefined;',
+      '  return <>',
+      '    <FileSection onOpenInfoModal={openInfoModal} />',
+      '    <DocumentInfoModal {...infoModalProps} file={infoFile} />',
+      '  </>;',
+      '};',
+      'const FileSection = ({ onOpenInfoModal }) => (',
+      '  <FileRow file={{ id: "preview" }} onOpenInfoModal={onOpenInfoModal} />',
+      ');',
+      'const FileRow = ({ file, onOpenInfoModal }) => (',
+      '  <Button onClick={() => onOpenInfoModal(file)}>Open</Button>',
+      ');',
+    ].join('\n');
+
+    const instrumentation = instrumentPreviewDeferredUiTriggers(SOURCE_PATH, source);
+
+    expect(instrumentation.replacements).toHaveLength(1);
+    expect(instrumentation.registrations).toHaveLength(1);
+    expect(instrumentation.registrations[0]).toContain('"eventName":"onClick"');
+    expect(instrumentation.registrations[0]).toContain('"methodName":"show"');
+    expect(instrumentation.registrations[0]).toContain('"ownerName":"FileRow"');
+    expect(instrumentation.registrations[0]).toContain('"invocationSafe":true');
+  });
+
+  /** Refuses one source event when different parent call sites activate different UI controllers. */
+  it('declines ambiguous callback-prop corridors', () => {
+    const source = [
+      'export function Page({ modal, drawer }) {',
+      '  return <>',
+      '    <Forward activate={() => modal.show()} />',
+      '    <Forward activate={() => drawer.open()} />',
+      '  </>;',
+      '}',
+      'const Forward = ({ activate }) => <button onClick={() => activate()}>Open</button>;',
+    ].join('\n');
+
+    const instrumentation = instrumentPreviewDeferredUiTriggers(SOURCE_PATH, source);
+
+    expect(instrumentation).toEqual({ registrations: [], replacements: [] });
+  });
+
   it('follows only immutable aliases and declines reassigned function declarations', () => {
     const source = [
       'export function Panel({ modal, drawer }) {',

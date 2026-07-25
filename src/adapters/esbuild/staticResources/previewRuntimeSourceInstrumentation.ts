@@ -20,6 +20,8 @@ import { instrumentReactConditionalRendering } from './reactConditionalRendering
 export interface PreviewRuntimeSourceInstrumentationOptions {
   /** Wraps React effects with the render-only side-effect boundary. */
   readonly isolateEffects: boolean;
+  /** Emits metadata for every condition in the selected editor file before branch execution. */
+  readonly registerConditionDefinitions?: boolean;
   /** Enables JSX branches, deferred UI discovery, and async client-component isolation. */
   readonly renderConditions: boolean;
 }
@@ -45,14 +47,15 @@ export function instrumentPreviewRuntimeSource(
     sourceText,
     selectCompatiblePreviewSourceReplacements(deferred.replacements),
   );
+  const conditionRegistrations = options.registerConditionDefinitions === false ? undefined : [];
   const conditionSource = options.renderConditions
-    ? instrumentReactConditionalRendering(sourcePath, deferredSource)
+    ? instrumentReactConditionalRendering(sourcePath, deferredSource, conditionRegistrations)
     : deferredSource;
   const effectSource = options.isolateEffects
     ? instrumentPreviewReactEffects(sourcePath, conditionSource)
     : conditionSource;
   return {
-    registrations: deferred.registrations,
+    registrations: [...deferred.registrations, ...(conditionRegistrations ?? [])],
     source: options.renderConditions
       ? isolatePreviewAsyncReactComponents(sourcePath, effectSource)
       : effectSource,

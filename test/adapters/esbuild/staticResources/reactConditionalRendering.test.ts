@@ -29,7 +29,8 @@ describe('React conditional rendering instrumentation', () => {
       '}',
     ].join('\n');
 
-    const transformed = instrumentReactConditionalRendering(sourcePath, source);
+    const definitions: string[] = [];
+    const transformed = instrumentReactConditionalRendering(sourcePath, source, definitions);
 
     expect(readRenderConditionCalls(transformed)).toHaveLength(2);
     expect(transformed).toContain(
@@ -45,6 +46,57 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"falsyLabel":"<LoadingFallback>"');
     expect(transformed).toContain('"kind":"ternary"');
     expect(transformed).toContain('"truthyLabel":"<Content>"');
+    expect(definitions).toHaveLength(1);
+    expect(
+      definitions.every((definition) => definition.includes('registerRenderConditionDefinition')),
+    ).toBe(true);
+    expect(definitions).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('"authoredExpression":"visible"'),
+        expect.stringContaining('"authoredExpression":"ready"'),
+      ]),
+    );
+  });
+
+  /**
+   * Registers controls inside a collection callback even when an earlier empty-list return prevents
+   * the callback and its nested status/modal branches from executing during the first preview pass.
+   */
+  it('pre-registers mapping-card branches hidden behind an empty collection return', () => {
+    const source = [
+      'export function MappingCard({ files }) {',
+      '  const rows = files.map((file) => ({ file, status: file.status }));',
+      '  const isExpanded = rows.length > 0;',
+      '  const [infoTarget, setInfoTarget] = useState(null);',
+      '  if (rows.length === 0) return null;',
+      '  return <Card>',
+      '    {isExpanded && <Rows>{rows.map(({ file, status }) => <Row>',
+      '      {status === "done" ? <Done /> : <Warning />}',
+      '      {status === "needsEdit" && <EditBadge />}',
+      '      <button onClick={() => setInfoTarget(file)}>Edit</button>',
+      '    </Row>)}</Rows>}',
+      '    <DocumentInfoModal show={infoTarget != null} file={infoTarget} />',
+      '  </Card>;',
+      '}',
+    ].join('\n');
+    const definitions: string[] = [];
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/MappingCard.tsx',
+      source,
+      definitions,
+    );
+    const definitionSource = definitions.join('\n');
+
+    expect(readRenderConditionCalls(transformed).length).toBeGreaterThanOrEqual(5);
+    expect(definitionSource).toContain('"authoredExpression":"rows.length === 0"');
+    expect(definitionSource).toContain('"authoredExpression":"isExpanded"');
+    expect(definitionSource).toContain('"authoredExpression":"status === \\"done\\""');
+    expect(definitionSource).toContain('"authoredExpression":"status === \\"needsEdit\\""');
+    expect(definitionSource).toContain('"authoredExpression":"infoTarget != null"');
+    expect(
+      definitions.every((definition) => definition.includes('registerRenderConditionDefinition')),
+    ).toBe(true);
   });
 
   /** Retains direct Fragment children so DFS can choose a gate leading to the selected component. */
@@ -354,6 +406,28 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"truthyLabel":"<CompanyRegisterModal>"');
   });
 
+  /** Connects a revealed mount gate to a modal whose hook spread still carries dormant props. */
+  it('wraps a directly gated overlay with its shared activation condition identities', () => {
+    const source = [
+      'export function FileList({ companyId }) {',
+      '  const [file] = useState(null);',
+      '  const [modalProps] = useModalActions();',
+      '  return companyId != null && (',
+      '    <DocumentInfoModal {...modalProps} companyId={companyId} file={file} />',
+      '  );',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/src/FileList.tsx', source);
+
+    expect(readRenderConditionCalls(transformed)).toHaveLength(1);
+    expect(transformed).toContain('.resolveOverlayActivationRenderValue([');
+    expect(transformed).toContain(
+      '(<DocumentInfoModal {...modalProps} companyId={companyId} file={file} />)',
+    );
+    expect(transformed).toContain('"kind":"logical-and","role":"overlay"');
+  });
+
   /** Makes an overlay component's early null return visible without changing its authored default. */
   it('instruments a modal-local hidden guard as visible-state control', () => {
     const source = [
@@ -397,6 +471,36 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"ownerName":"Application"');
     expect(transformed).toContain('"targetBranch":"falsy"');
     expect(transformed).toContain('"falsyLabel":"continue <Application>"');
+  });
+
+  /** Exposes guarded branches inside a local helper only when JSX actually invokes that helper. */
+  it('instruments early returns in an invoked lowercase local render function', () => {
+    const source = [
+      'export function ManagementPage({ loading, empty, unrelated }) {',
+      '  const unusedHelper = () => {',
+      '    if (unrelated) return <UnusedFallback />;',
+      '    return <UnusedContent />;',
+      '  };',
+      '  const renderMainArea = () => {',
+      '    if (loading) return <PageLoader />;',
+      '    if (empty) return <EmptyStatus />;',
+      '    return <ManagementGrid />;',
+      '  };',
+      '  return <Shell>{renderMainArea()}</Shell>;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/ManagementPage.tsx',
+      source,
+    );
+
+    expect(readRenderConditionCalls(transformed)).toHaveLength(2);
+    expect(readAuthoredExpressions(transformed)).toEqual(['loading', 'empty']);
+    expect(transformed).toContain('"ownerName":"renderMainArea"');
+    expect(transformed).toContain('"truthyLabel":"<PageLoader>"');
+    expect(transformed).toContain('"truthyLabel":"<EmptyStatus>"');
+    expect(transformed).not.toContain('"ownerName":"unusedHelper"');
   });
 
   /** Marks a route-mutating early return so runtime DFS can preserve the original route on pass one. */

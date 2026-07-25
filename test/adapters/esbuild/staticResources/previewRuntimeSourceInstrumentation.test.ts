@@ -18,7 +18,14 @@ describe('instrumentPreviewRuntimeSource', () => {
       renderConditions: true,
     });
 
-    expect(result.registrations).toEqual(authoredDeferred.registrations);
+    expect(result.registrations).toEqual(
+      expect.arrayContaining([...authoredDeferred.registrations]),
+    );
+    expect(
+      result.registrations.some((registration) =>
+        registration.includes('registerRenderConditionDefinition'),
+      ),
+    ).toBe(true);
     expect(result.registrations[0]).toContain('"line":2');
     expect(result.registrations[0]).toContain('"invocationSafe":true');
     expect(result.source).toContain('.resolveRenderConditionLazy(');
@@ -52,7 +59,14 @@ describe('instrumentPreviewRuntimeSource', () => {
     expect(result.source).toContain('throw record.promise');
     expect(result.source).toContain('.resolveRenderConditionLazy(');
     expect(result.source).toContain('.registerDeferredUiTrigger?.(');
-    expect(result.registrations).toEqual(authoredDeferred.registrations);
+    expect(result.registrations).toEqual(
+      expect.arrayContaining([...authoredDeferred.registrations]),
+    );
+    expect(
+      result.registrations.some((registration) =>
+        registration.includes('registerRenderConditionDefinition'),
+      ),
+    ).toBe(true);
     expect(result.registrations[0]).toContain('"line":6');
   });
 
@@ -66,5 +80,19 @@ describe('instrumentPreviewRuntimeSource', () => {
     });
 
     expect(result.source).toBe(source);
+  });
+
+  /** Avoids duplicating condition metadata across every dependency in a large authored page graph. */
+  it('can instrument dependency conditions without registering unreached scenario definitions', () => {
+    const source = 'export const DependencyPanel = ({ open }) => open && <Panel />;';
+
+    const result = instrumentPreviewRuntimeSource('/workspace/src/DependencyPanel.tsx', source, {
+      isolateEffects: false,
+      registerConditionDefinitions: false,
+      renderConditions: true,
+    });
+
+    expect(result.source).toContain('.resolveRenderConditionLazy(');
+    expect(result.registrations).toEqual([]);
   });
 });

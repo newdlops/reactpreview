@@ -30,6 +30,7 @@ import {
   isPreviewComponentName as isComponentName,
   isPreviewEmptyRenderExpression as isEmptyRenderExpression,
   isPreviewJavaScriptLikeSource as isJavaScriptLikeSource,
+  isPreviewReactCreateElementCall as isReactCreateElementCall,
   isPreviewRenderFunction as isRenderFunction,
   readPreviewRenderLocation as readLocation,
   readPreviewSwitchLiteral as readSwitchLiteral,
@@ -37,6 +38,7 @@ import {
   unwrapPreviewRenderExpression as unwrapExpression,
 } from './previewReactRenderOutcomeSyntax';
 import type { PreviewRenderFunction as RenderFunction } from './previewReactRenderOutcomeSyntax';
+import { readPreviewReactCollectionRenderReturns } from './previewReactCollectionRenderReturns';
 import {
   collectPreviewComponentNames,
   collectPreviewJsxNestedRenderExpressions,
@@ -690,6 +692,20 @@ function expandNestedExpression(
       : expandNestedExpression(returned, state, depth + 1, visitedBindings, true);
   }
   if (ts.isCallExpression(expression)) {
+    const collectionReturns = readPreviewReactCollectionRenderReturns(expression, state.bindings);
+    if (collectionReturns !== undefined) {
+      return collectionReturns
+        .flatMap((returned) =>
+          expandNestedExpression(
+            returned,
+            state,
+            depth + 1,
+            visitedBindings,
+            allowComponentReference,
+          ),
+        )
+        .slice(0, MAX_OUTCOMES_PER_EXPORT);
+    }
     const localRenderCall = readPreviewSafeLocalRenderCall(
       expression,
       state.bindings,
@@ -975,16 +991,4 @@ function collectCreateElementComponentTree(
   if (name === undefined || (!isComponentName(name) && !name.includes('.'))) return [];
   const location = readLocation(sourceFile, typeArgument);
   return [{ children: [], column: location.column, line: location.line, name }];
-}
-
-/** Reports whether an expression is a conventional React element factory call. */
-function isReactCreateElementCall(expression: ts.Expression): expression is ts.CallExpression {
-  if (!ts.isCallExpression(expression)) return false;
-  const callee = expression.expression;
-  return (
-    (ts.isPropertyAccessExpression(callee) &&
-      callee.name.text === 'createElement' &&
-      callee.expression.getText().endsWith('React')) ||
-    (ts.isIdentifier(callee) && callee.text === 'createElement')
-  );
 }

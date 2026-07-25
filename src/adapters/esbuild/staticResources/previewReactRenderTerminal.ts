@@ -8,7 +8,9 @@
  * ambiguous, cyclic, spread, or dynamically called values.
  */
 import ts from 'typescript';
+import { readPreviewLocalRenderControlFlowExpression } from './previewReactLocalRenderCalls';
 import { expandPreviewReactLogicalAndExpression } from './previewReactLogicalAnd';
+import type { PreviewRenderFunction } from './previewReactRenderOutcomeSyntax';
 
 const MAX_RENDER_TERMINAL_DEPTH = 16;
 const MAX_RENDER_TERMINAL_LEAVES = 16;
@@ -17,15 +19,14 @@ const MAX_RENDER_TERMINAL_LEAVES = 16;
 export interface PreviewReactRenderTerminalEvidence {
   /** Direct render leaves in authored evaluation order, bounded for labels and overlay inference. */
   readonly terminals: readonly ts.Expression[];
+  /** Local render helpers proven to contribute those leaves to an authored React return path. */
+  readonly localRenderFunctions?: readonly PreviewRenderFunction[];
 }
 
 /** Extension points for exact terminals such as ReactDOM portals and JSX route records. */
 export interface PreviewReactRenderTerminalOptions {
   readonly isAdditionalTerminal?: (expression: ts.Expression) => boolean;
 }
-
-type PreviewRenderFunction =
-  ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
 
 type PreviewLexicalBinding =
   | { readonly kind: 'expression'; readonly node: ts.Expression; readonly start: number }
@@ -46,6 +47,8 @@ interface PreviewLexicalBindingIndex {
 /** Public analyzer surface reused for every logical guard in one parsed module. */
 export interface PreviewReactRenderTerminalAnalyzer {
   readonly analyze: (expression: ts.Expression) => PreviewReactRenderTerminalEvidence | undefined;
+  /** Returns lowercase/local helper functions that are actually invoked from an authored JSX path. */
+  readonly collectInvokedLocalRenderFunctions: () => ReadonlySet<PreviewRenderFunction>;
 }
 
 /** Removes syntax-only wrappers before classifying a terminal or resolving an alias. */
@@ -61,6 +64,21 @@ function unwrapPreviewReactRenderTerminal(expression: ts.Expression): ts.Express
     current = current.expression;
   }
   return current;
+}
+
+/** Accepts only local helpers whose invocation contract requires no invented runtime behavior. */
+function isPreviewSynchronousZeroArgumentRenderFunction(
+  functionLike: PreviewRenderFunction,
+): boolean {
+  if (functionLike.body === undefined || functionLike.parameters.length !== 0) return false;
+  const isAsync =
+    ts.canHaveModifiers(functionLike) &&
+    ts.getModifiers(functionLike)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword);
+  if (isAsync) return false;
+  return !(
+    (ts.isFunctionDeclaration(functionLike) || ts.isFunctionExpression(functionLike)) &&
+    functionLike.asteriskToken !== undefined
+  );
 }
 
 /** Reports a conventional React element factory without accepting arbitrary project calls. */
@@ -206,7 +224,7 @@ function resolvePreviewLexicalBinding(
 }
 
 /** Reads every callback return without crossing into a nested function. */
-function collectPreviewRenderCallbackReturns(
+export function collectPreviewRenderCallbackReturns(
   callback: PreviewRenderFunction,
 ): readonly ts.Expression[] {
   if (callback.body === undefined) return [];
@@ -224,6 +242,27 @@ function collectPreviewRenderCallbackReturns(
   return returns;
 }
 
+/** Proves that a direct return belongs to a conventionally named React component function. */
+function isPreviewComponentOwnedReturn(statement: ts.ReturnStatement): boolean {
+  let current = statement.parent;
+  while (!ts.isSourceFile(current)) {
+    if (ts.isFunctionLike(current)) {
+      let name: string | undefined;
+      if (
+        (ts.isFunctionDeclaration(current) || ts.isFunctionExpression(current)) &&
+        current.name !== undefined
+      ) {
+        name = current.name.text;
+      } else if (ts.isVariableDeclaration(current.parent) && ts.isIdentifier(current.parent.name)) {
+        name = current.parent.name.text;
+      }
+      return name !== undefined && /^[$_\p{Lu}]/u.test(name);
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
 /** Creates one bounded analyzer with lexical bindings indexed once for the parsed module. */
 export function createPreviewReactRenderTerminalAnalyzer(
   sourceFile: ts.SourceFile,
@@ -236,14 +275,64 @@ export function createPreviewReactRenderTerminalAnalyzer(
     records: readonly (PreviewReactRenderTerminalEvidence | undefined)[],
   ): PreviewReactRenderTerminalEvidence | undefined => {
     const terminals: ts.Expression[] = [];
+    const localRenderFunctions: PreviewRenderFunction[] = [];
     for (const record of records) {
       for (const terminal of record?.terminals ?? []) {
         if (!terminals.includes(terminal) && terminals.length < MAX_RENDER_TERMINAL_LEAVES) {
           terminals.push(terminal);
         }
       }
+      for (const functionLike of record?.localRenderFunctions ?? []) {
+        if (!localRenderFunctions.includes(functionLike)) localRenderFunctions.push(functionLike);
+      }
     }
-    return terminals.length === 0 ? undefined : { terminals };
+    return terminals.length === 0
+      ? undefined
+      : {
+          ...(localRenderFunctions.length === 0 ? {} : { localRenderFunctions }),
+          terminals,
+        };
+  };
+
+  /**
+   * Resolves one direct zero-argument local render call through immutable identifier aliases.
+   *
+   * Imported/member calls remain opaque, and the visited-node set prevents recursive helper aliases
+   * from expanding indefinitely. The function body is still syntax; it is never invoked here.
+   */
+  const resolveLocalRenderFunction = (
+    expression_: ts.Expression,
+    visitedBindings: ReadonlySet<ts.Node>,
+    depth: number,
+  ):
+    | {
+        readonly functionLike: PreviewRenderFunction;
+        readonly visitedBindings: ReadonlySet<ts.Node>;
+      }
+    | undefined => {
+    if (depth > MAX_RENDER_TERMINAL_DEPTH) return undefined;
+    const expression = unwrapPreviewReactRenderTerminal(expression_);
+    if (!ts.isIdentifier(expression)) return undefined;
+    const binding = resolvePreviewLexicalBinding(expression, bindings);
+    if (binding === undefined || binding.kind === 'opaque' || visitedBindings.has(binding.node)) {
+      return undefined;
+    }
+    const nextVisited = new Set(visitedBindings);
+    nextVisited.add(binding.node);
+    if (binding.kind === 'function') {
+      return isPreviewSynchronousZeroArgumentRenderFunction(binding.node)
+        ? { functionLike: binding.node, visitedBindings: nextVisited }
+        : undefined;
+    }
+    const value = unwrapPreviewReactRenderTerminal(binding.node);
+    if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+      return isPreviewSynchronousZeroArgumentRenderFunction(value)
+        ? { functionLike: value, visitedBindings: nextVisited }
+        : undefined;
+    }
+    return ts.isIdentifier(value)
+      ? resolveLocalRenderFunction(value, nextVisited, depth + 1)
+      : undefined;
   };
 
   /** Recursively follows only syntax whose resulting value can carry proven React output. */
@@ -289,6 +378,33 @@ export function createPreviewReactRenderTerminalAnalyzer(
     }
     if (
       ts.isCallExpression(expression) &&
+      expression.arguments.length === 0 &&
+      expression.questionDotToken === undefined
+    ) {
+      const resolved = resolveLocalRenderFunction(
+        expression.expression,
+        visitedBindings,
+        depth + 1,
+      );
+      if (resolved !== undefined) {
+        const returned = readPreviewLocalRenderControlFlowExpression(
+          resolved.functionLike,
+          MAX_RENDER_TERMINAL_DEPTH - depth,
+        );
+        const evidence =
+          returned === undefined
+            ? undefined
+            : analyze(returned, resolved.visitedBindings, depth + 1);
+        if (evidence !== undefined) {
+          return {
+            localRenderFunctions: [...(evidence.localRenderFunctions ?? []), resolved.functionLike],
+            terminals: evidence.terminals,
+          };
+        }
+      }
+    }
+    if (
+      ts.isCallExpression(expression) &&
       ts.isPropertyAccessExpression(expression.expression) &&
       (expression.expression.name.text === 'map' || expression.expression.name.text === 'flatMap')
     ) {
@@ -319,7 +435,43 @@ export function createPreviewReactRenderTerminalAnalyzer(
     return undefined;
   };
 
+  /**
+   * Finds local render helpers only where authored React output actually consumes their result.
+   *
+   * JSX child expressions are strong evidence. Direct component returns are also admitted, while JSX
+   * attribute callbacks and returns from lowercase event/data helpers remain excluded.
+   */
+  const collectInvokedLocalRenderFunctions = (): ReadonlySet<PreviewRenderFunction> => {
+    const invoked = new Set<PreviewRenderFunction>();
+    const visit = (node: ts.Node): void => {
+      let expression: ts.Expression | undefined;
+      if (
+        ts.isJsxExpression(node) &&
+        node.expression !== undefined &&
+        !ts.isJsxAttribute(node.parent)
+      ) {
+        expression = node.expression;
+      } else if (
+        ts.isReturnStatement(node) &&
+        node.expression !== undefined &&
+        isPreviewComponentOwnedReturn(node)
+      ) {
+        expression = node.expression;
+      }
+      if (expression !== undefined) {
+        const evidence = analyze(expression, new Set(), 0);
+        for (const functionLike of evidence?.localRenderFunctions ?? []) {
+          invoked.add(functionLike);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return invoked;
+  };
+
   return {
     analyze: (expression) => analyze(expression, new Set(), 0),
+    collectInvokedLocalRenderFunctions,
   };
 }

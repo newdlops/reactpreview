@@ -102,6 +102,25 @@ export function isPreviewComponentName(name: string): boolean {
   return /^[$_\p{Lu}]/u.test(name);
 }
 
+/**
+ * Recognizes conventional `React.createElement` and imported `createElement` calls.
+ *
+ * This remains syntax-only: aliases or arbitrary functions named by computed properties are not
+ * accepted because proving their React identity would require module execution or type resolution.
+ */
+export function isPreviewReactCreateElementCall(
+  expression: ts.Expression,
+): expression is ts.CallExpression {
+  if (!ts.isCallExpression(expression)) return false;
+  const callee = expression.expression;
+  return (
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === 'createElement' &&
+      callee.expression.getText().endsWith('React')) ||
+    (ts.isIdentifier(callee) && callee.text === 'createElement')
+  );
+}
+
 /** Reports whether a declaration carries the `export` keyword. */
 export function hasPreviewExportModifier(node: ts.Node): boolean {
   return ts.canHaveModifiers(node)

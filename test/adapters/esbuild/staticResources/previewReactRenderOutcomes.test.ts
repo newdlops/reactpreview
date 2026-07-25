@@ -356,6 +356,95 @@ describe('React render outcome analysis', () => {
     );
   });
 
+  /** Folds guarded local returns and JSX receivers into the same authored page render path. */
+  it('expands multi-return local render helpers alongside assigned JSX receivers', () => {
+    const source = [
+      'export function Page({ loading, empty }) {',
+      '  const paginationControls = <Pagination />;',
+      '  const renderMainArea = () => {',
+      '    if (loading) return <PageLoader />;',
+      '    if (empty) return <EmptyStatus />;',
+      '    return <ManagementGrid />;',
+      '  };',
+      '  return <Shell>{paginationControls}{renderMainArea()}</Shell>;',
+      '}',
+    ].join('\n');
+
+    const outcomes = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source)[0]
+      ?.outcomes;
+
+    expect(outcomes).toHaveLength(3);
+    expect(outcomes?.map((outcome) => outcome.componentNames)).toEqual([
+      ['Shell', 'Pagination', 'PageLoader'],
+      ['Shell', 'Pagination', 'EmptyStatus'],
+      ['Shell', 'Pagination', 'ManagementGrid'],
+    ]);
+    expect(
+      outcomes?.map((outcome) =>
+        outcome.conditions.map(({ branch, expression }) => ({ branch, expression })),
+      ),
+    ).toEqual([
+      [{ branch: 'truthy', expression: 'loading' }],
+      [
+        { branch: 'falsy', expression: 'loading' },
+        { branch: 'truthy', expression: 'empty' },
+      ],
+      [
+        { branch: 'falsy', expression: 'loading' },
+        { branch: 'falsy', expression: 'empty' },
+      ],
+    ]);
+  });
+
+  /**
+   * Preserves conditions authored inside a collection callback even when preview data is empty.
+   *
+   * Dashboard/card components commonly return null for an empty list and place their useful JSX
+   * behind both an expansion switch and rows.map(...). Static callback expansion lets the scenario
+   * UI queue those nested switches before a generated row has reached the runtime.
+   */
+  it('expands nested map callback choices under their authored parent switch', () => {
+    const source = [
+      'export function MappingCard({ rows, isExpanded }) {',
+      '  if (rows.length === 0) return null;',
+      '  return <Card>',
+      '    {isExpanded && <Rows>',
+      '      {rows.map(({ status }) => <Row>',
+      '        {status === "done" ? <Done /> : <Warning />}',
+      '        {status === "needsEdit" && <EditBadge />}',
+      '      </Row>)}',
+      '    </Rows>}',
+      '  </Card>;',
+      '}',
+    ].join('\n');
+
+    const outcomes = analyzePreviewReactRenderOutcomes('/workspace/src/MappingCard.tsx', source)[0]
+      ?.outcomes;
+    const completedWithEdit = outcomes?.find(
+      (outcome) =>
+        outcome.componentNames.includes('Done') && outcome.componentNames.includes('EditBadge'),
+    );
+
+    expect(completedWithEdit?.componentNames).toEqual(['Card', 'Rows', 'Row', 'Done', 'EditBadge']);
+    expect(
+      completedWithEdit?.conditions.map(({ branch, expression }) => ({ branch, expression })),
+    ).toEqual([
+      { branch: 'falsy', expression: 'rows.length === 0' },
+      { branch: 'truthy', expression: 'isExpanded' },
+      { branch: 'truthy', expression: 'status === "done"' },
+      { branch: 'truthy', expression: 'status === "needsEdit"' },
+    ]);
+    expect(
+      outcomes?.some(
+        (outcome) =>
+          outcome.componentNames.includes('Warning') &&
+          outcome.conditions.some(
+            ({ branch, expression }) => expression === 'status === "done"' && branch === 'falsy',
+          ),
+      ),
+    ).toBe(true);
+  });
+
   /** Declines helpers whose runtime contract or body could execute work beyond returning JSX. */
   it('leaves argument, async, generator, mutable, and side-effectful helper calls unknown', () => {
     const source = [

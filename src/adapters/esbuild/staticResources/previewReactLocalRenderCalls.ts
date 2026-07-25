@@ -3,11 +3,11 @@
  *
  * Render helpers such as `const renderBody = () => <Body />` are ordinary JavaScript calls, so a
  * JSX-only tree walk cannot see their output. This module follows only immutable, zero-argument,
- * synchronous helpers with a concise body or one `return` statement. It never executes workspace
- * code, resolves imports, invents arguments, or crosses a statement that could perform side effects.
+ * synchronous helpers whose body consists of render returns and side-effect-free `if` branches. It
+ * never executes workspace code, resolves imports, invents arguments, or crosses an effectful
+ * statement.
  */
 import ts from 'typescript';
-import { readPreviewRenderFunctionReturnExpression } from './previewReactRenderOutcomeComponents';
 import {
   isPreviewEmptyRenderExpression,
   isPreviewRenderFunction,
@@ -38,6 +38,11 @@ export type PreviewLocalRenderCallResolution =
 
 /** Internal validation result used while following helper-to-helper return chains. */
 type SafeExpressionResult = { readonly kind: 'bounded' } | { readonly kind: 'safe' | 'unsafe' };
+
+/** Internal result distinguishes a valid fallthrough path from unsupported statement syntax. */
+type PreviewRenderControlFlowResult =
+  | { readonly expression: ts.Expression; readonly kind: 'expression' }
+  | { readonly kind: 'fallthrough' | 'unsupported' };
 
 /** Collects module declarations while retaining mutability evidence for conservative call handling. */
 export function collectPreviewModuleRenderBindings(
@@ -126,8 +131,8 @@ function shadowPreviewLocalBindingName(
  * Resolves one direct local call without executing it or guessing an argument contract.
  *
  * Optional calls, member calls, imported functions, async/generator functions, parameters, and
- * multi-statement bodies all remain unknown. A bounded validation pass also rejects concise comma or
- * call expressions that could run effects before producing JSX.
+ * effectful statements all remain unknown. A bounded validation pass also rejects concise comma or
+ * imported call expressions that could run effects before producing JSX.
  */
 export function readPreviewSafeLocalRenderCall(
   call: ts.CallExpression,
@@ -148,8 +153,13 @@ export function readPreviewSafeLocalRenderCall(
     maximumDepth,
   );
   if (resolved.kind !== 'resolved') return resolved;
-  if (!isSafePreviewLocalRenderFunction(resolved.functionLike)) return { kind: 'unsupported' };
-  const expression = readPreviewRenderFunctionReturnExpression(resolved.functionLike);
+  if (!isSafePreviewLocalRenderFunctionShape(resolved.functionLike)) {
+    return { kind: 'unsupported' };
+  }
+  const expression = readPreviewLocalRenderControlFlowExpression(
+    resolved.functionLike,
+    maximumDepth - depth,
+  );
   if (expression === undefined) return { kind: 'unsupported' };
   const validation = validatePreviewLocalRenderExpression(
     expression,
@@ -202,8 +212,8 @@ function resolvePreviewLocalRenderFunction(
   return resolvePreviewLocalRenderFunction(value, bindings, nextVisited, depth + 1, maximumDepth);
 }
 
-/** Rejects every callable shape that can suspend, yield, consume arguments, or execute statements. */
-function isSafePreviewLocalRenderFunction(functionLike: PreviewRenderFunction): boolean {
+/** Rejects every callable shape that can suspend, yield, or require invented arguments. */
+function isSafePreviewLocalRenderFunctionShape(functionLike: PreviewRenderFunction): boolean {
   if (functionLike.parameters.length !== 0) return false;
   const asyncFunction =
     ts.canHaveModifiers(functionLike) &&
@@ -215,10 +225,113 @@ function isSafePreviewLocalRenderFunction(functionLike: PreviewRenderFunction): 
   ) {
     return false;
   }
+  return functionLike.body !== undefined;
+}
+
+/**
+ * Folds a render-only local function into one expression without executing project JavaScript.
+ *
+ * A sequence such as `if (loading) return <Loader />; if (empty) return <Empty />; return <Grid />`
+ * becomes an equivalent nested conditional expression. Original guard and return expressions remain
+ * attached to the parsed source so condition IDs, editor locations, and JSX ownership stay exact.
+ * Any declaration, loop, mutation, try/catch, throw, or expression statement fails closed.
+ */
+export function readPreviewLocalRenderControlFlowExpression(
+  functionLike: PreviewRenderFunction,
+  maximumDepth: number,
+): ts.Expression | undefined {
   const body = functionLike.body;
-  if (body === undefined || !ts.isBlock(body)) return body !== undefined;
-  const statement = body.statements[0];
-  return body.statements.length === 1 && statement !== undefined && ts.isReturnStatement(statement);
+  if (body === undefined) return undefined;
+  if (!ts.isBlock(body)) return body;
+  const result = foldPreviewRenderStatements(
+    body.statements,
+    0,
+    { kind: 'fallthrough' },
+    0,
+    Math.max(0, maximumDepth),
+  );
+  return result.kind === 'expression' ? result.expression : undefined;
+}
+
+/** Folds one statement sequence while preserving the expression reached by normal fallthrough. */
+function foldPreviewRenderStatements(
+  statements: readonly ts.Statement[],
+  index: number,
+  continuation: PreviewRenderControlFlowResult,
+  depth: number,
+  maximumDepth: number,
+): PreviewRenderControlFlowResult {
+  if (depth > maximumDepth) return { kind: 'unsupported' };
+  const statement = statements[index];
+  if (statement === undefined) return continuation;
+  if (ts.isReturnStatement(statement)) {
+    return {
+      expression:
+        statement.expression ?? ts.factory.createVoidExpression(ts.factory.createNumericLiteral(0)),
+      kind: 'expression',
+    };
+  }
+  const remaining = foldPreviewRenderStatements(
+    statements,
+    index + 1,
+    continuation,
+    depth + 1,
+    maximumDepth,
+  );
+  if (remaining.kind === 'unsupported') return remaining;
+  if (ts.isEmptyStatement(statement)) return remaining;
+  if (ts.isBlock(statement)) {
+    return foldPreviewRenderStatements(statement.statements, 0, remaining, depth + 1, maximumDepth);
+  }
+  if (!ts.isIfStatement(statement)) return { kind: 'unsupported' };
+  if (!isPreviewSideEffectFreeGuard(statement.expression, depth + 1, maximumDepth)) {
+    return { kind: 'unsupported' };
+  }
+  const truthy = foldPreviewRenderBranch(
+    statement.thenStatement,
+    remaining,
+    depth + 1,
+    maximumDepth,
+  );
+  const falsy =
+    statement.elseStatement === undefined
+      ? remaining
+      : foldPreviewRenderBranch(statement.elseStatement, remaining, depth + 1, maximumDepth);
+  if (truthy.kind === 'unsupported' || falsy.kind === 'unsupported') {
+    return { kind: 'unsupported' };
+  }
+  if (truthy.kind === 'fallthrough' && falsy.kind === 'fallthrough') {
+    return { kind: 'fallthrough' };
+  }
+  return {
+    expression: ts.factory.createConditionalExpression(
+      statement.expression,
+      ts.factory.createToken(ts.SyntaxKind.QuestionToken),
+      materializePreviewRenderFlow(truthy),
+      ts.factory.createToken(ts.SyntaxKind.ColonToken),
+      materializePreviewRenderFlow(falsy),
+    ),
+    kind: 'expression',
+  };
+}
+
+/** Folds a single `if` branch and resumes at the surrounding statement continuation. */
+function foldPreviewRenderBranch(
+  statement: ts.Statement,
+  continuation: PreviewRenderControlFlowResult,
+  depth: number,
+  maximumDepth: number,
+): PreviewRenderControlFlowResult {
+  return ts.isBlock(statement)
+    ? foldPreviewRenderStatements(statement.statements, 0, continuation, depth, maximumDepth)
+    : foldPreviewRenderStatements([statement], 0, continuation, depth, maximumDepth);
+}
+
+/** Represents a valid no-return branch as React's ordinary empty `undefined` output. */
+function materializePreviewRenderFlow(result: PreviewRenderControlFlowResult): ts.Expression {
+  return result.kind === 'expression'
+    ? result.expression
+    : ts.factory.createVoidExpression(ts.factory.createNumericLiteral(0));
 }
 
 /** Validates render-only return syntax and recursively proves nested zero-argument local helpers. */

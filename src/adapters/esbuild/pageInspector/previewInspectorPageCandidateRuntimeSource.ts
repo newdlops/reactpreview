@@ -107,6 +107,20 @@ function doesSelectedPreviewInspectorPageCandidateOwnRouter() {
   return readSelectedPreviewInspectorPageCandidate(descriptor)?.rootOwnsRouter === true;
 }
 
+/** Validates an inert compiler or runtime base path before it can affect Router state. */
+function normalizePreviewInspectorRouteMountBasePath(value) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 512 ||
+    !value.startsWith('/') ||
+    /[?#]/u.test(value)
+  ) {
+    return undefined;
+  }
+  return value.length > 1 ? value.replace(/\/+$/u, '') : value;
+}
+
 /** Reads an app-module base path only from a bounded own data property, never from a getter. */
 function readPreviewInspectorPageRootBasePath(rootValue) {
   if ((typeof rootValue !== 'object' && typeof rootValue !== 'function') || rootValue === null) {
@@ -117,19 +131,35 @@ function readPreviewInspectorPageRootBasePath(rootValue) {
     const value = descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value')
       ? descriptor.value
       : undefined;
-    if (
-      typeof value !== 'string' ||
-      value.length === 0 ||
-      value.length > 512 ||
-      !value.startsWith('/') ||
-      /[?#]/u.test(value)
-    ) {
-      return undefined;
-    }
-    return value.length > 1 ? value.replace(/\/+$/u, '') : value;
+    return normalizePreviewInspectorRouteMountBasePath(value);
   } catch {
     return undefined;
   }
+}
+
+/** Localizes one concrete pathname through static or constrained dynamic route-owner segments. */
+function localizePreviewInspectorRouteMountPathname(basePattern, pathname) {
+  if (typeof basePattern !== 'string' || typeof pathname !== 'string' || /[?#]/u.test(pathname)) {
+    return undefined;
+  }
+  const baseSegments = basePattern.split('/').filter(Boolean);
+  const pathnameSegments = pathname.split('/').filter(Boolean);
+  if (pathnameSegments.length < baseSegments.length) return undefined;
+  for (let index = 0; index < baseSegments.length; index += 1) {
+    const pattern = baseSegments[index] ?? '';
+    const concrete = pathnameSegments[index] ?? '';
+    const parameter = /^:([$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}]*)(?:\((.*)\))?\??$/u.exec(pattern);
+    if (parameter === null) {
+      if (pattern !== concrete) return undefined;
+      continue;
+    }
+    if (/\\d|\[0-9\]|digit/iu.test(parameter[2] ?? '') && !/^\d+$/u.test(concrete)) {
+      return undefined;
+    }
+    if (concrete.length === 0) return undefined;
+  }
+  const remainder = pathnameSegments.slice(baseSegments.length);
+  return remainder.length === 0 ? '/' : '/' + remainder.join('/');
 }
 
 /**
@@ -147,16 +177,11 @@ function createPreviewInspectorCandidateInitialEntry(candidate, rootValue, direc
   ) {
     return pathname;
   }
-  const basePath = readPreviewInspectorPageRootBasePath(rootValue);
-  if (
-    basePath === undefined ||
-    basePath === '/' ||
-    (pathname !== basePath && !pathname.startsWith(basePath + '/'))
-  ) {
-    return pathname;
-  }
-  const localPathname = pathname.slice(basePath.length);
-  return localPathname.length === 0 ? '/' : localPathname;
+  const basePath =
+    readPreviewInspectorPageRootBasePath(rootValue) ??
+    normalizePreviewInspectorRouteMountBasePath(candidate?.routeMountBasePath);
+  if (basePath === undefined || basePath === '/') return pathname;
+  return localizePreviewInspectorRouteMountPathname(basePath, pathname) ?? pathname;
 }
 
 const previewInspectorNextPagesRouterStateSymbol = Symbol.for(
@@ -610,6 +635,16 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
           .filter((sourcePath) => typeof sourcePath === 'string'),
         nextPagesAppPath: candidate?.nextPagesShell?.app?.sourcePath,
         pathname: routeLocation?.pathname ?? '/',
+        routeBasePathSource:
+          readPreviewInspectorPageRootBasePath(loadState.value) !== undefined
+            ? 'runtime-static'
+            : normalizePreviewInspectorRouteMountBasePath(candidate?.routeMountBasePath) !== undefined
+              ? 'compiler-evidence'
+              : 'none',
+        routeMountBasePath: normalizePreviewInspectorRouteMountBasePath(candidate?.routeMountBasePath),
+        routePathnameBeforeLocalization: routeLocation?.pathname ?? '/',
+        routeSlotCount: Number.isSafeInteger(candidate?.routeSlotCount) ? candidate.routeSlotCount : 0,
+        wildcardFallbackPresent: candidate?.wildcardFallbackPresent === true,
         requestedRouterPathname: candidateInitialEntry ?? '/',
         routePattern: routeLocation?.pattern,
         routerPathname: candidateInitialEntry ?? '/',

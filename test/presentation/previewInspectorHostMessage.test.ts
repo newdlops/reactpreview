@@ -36,6 +36,22 @@ beforeEach(() => {
 });
 
 describe('handlePreviewInspectorHostMessage source selection', () => {
+  /** Routes a valid passive JSX branch inventory before any unrelated runtime protocol. */
+  it('routes branch source decorations to the panel-owned decoration service', () => {
+    const { context, decorateBranches } = createContext();
+    const message = {
+      runtimeRevision: 12,
+      sequence: 2,
+      sources: [{ column: 4, line: 7, sourcePath: SOURCE_PATH }],
+      type: 'react-preview-inspector-branch-sources',
+    };
+
+    expect(handlePreviewInspectorHostMessage(message, context)).toBe(true);
+    expect(decorateBranches).toHaveBeenCalledWith(message, context);
+    expect(handlerState.health).not.toHaveBeenCalled();
+    expect(handlerState.navigation).not.toHaveBeenCalled();
+  });
+
   /** Delegates validated source metadata and the complete current session context synchronously. */
   it('routes a located tree selection to the decoration service', () => {
     const { context, select } = createContext();
@@ -107,12 +123,14 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
 interface TestPreviewInspectorHostMessageContext {
   readonly context: PreviewInspectorHostMessageContext;
   readonly debug: ReturnType<typeof vi.fn>;
+  readonly decorateBranches: ReturnType<typeof vi.fn>;
   readonly select: ReturnType<typeof vi.fn>;
 }
 
 /** Creates the smallest structurally complete host context used by protocol routing tests. */
 function createContext(): TestPreviewInspectorHostMessageContext {
   const debug = vi.fn();
+  const decorateBranches = vi.fn();
   const select = vi.fn();
   const context = {
     currentRuntimeRevision: 12,
@@ -123,9 +141,10 @@ function createContext(): TestPreviewInspectorHostMessageContext {
     panelViewColumn: undefined,
     pinnedDocumentUri: {} as PreviewInspectorHostMessageContext['pinnedDocumentUri'],
     sourceDecoration: {
+      decorateBranches,
       select,
     } as unknown as PreviewInspectorHostMessageContext['sourceDecoration'],
     targetPath: SOURCE_PATH,
   };
-  return { context, debug, select };
+  return { context, debug, decorateBranches, select };
 }

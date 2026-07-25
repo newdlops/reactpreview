@@ -29,6 +29,8 @@ const PREVIEW_INSPECTOR_COMPANION_SCROLL_REGION_LIMIT =
 const PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS =
   ${PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS};
 const previewInspectorCompanionScrollFallbackRegions = Object.freeze([
+  ['.rpi-shell', 'inspector-shell'],
+  ['.rpi-scenario-scroll', 'jsx-scenarios'],
   ['.rpi-tree-scroll', 'components-tree'],
   ['.rpi-detail-scroll', 'component-details'],
   ['.rpi-console-list', 'component-console'],

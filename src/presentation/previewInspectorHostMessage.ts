@@ -13,7 +13,9 @@ import {
   type PreviewInspectorSourceNavigationContext,
 } from './previewInspectorSourceNavigation';
 import {
+  isPreviewInspectorBranchSourceDecorationMessage,
   isPreviewInspectorSourceSelectionMessage,
+  readPreviewInspectorBranchSourceDecorationRequest,
   readPreviewInspectorSourceSelectionRequest,
 } from './previewInspectorProtocol';
 import type { PreviewInspectorSourceDecoration } from './previewInspectorSourceDecoration';
@@ -41,6 +43,15 @@ export function handlePreviewInspectorHostMessage(
   value: unknown,
   context: PreviewInspectorHostMessageContext,
 ): boolean {
+  if (isPreviewInspectorBranchSourceDecorationMessage(value)) {
+    const request = readPreviewInspectorBranchSourceDecorationRequest(value);
+    if (request === undefined) {
+      context.log.debug('Ignored a malformed React Inspector branch decoration message.');
+    } else {
+      context.sourceDecoration.decorateBranches(request, context);
+    }
+    return true;
+  }
   if (isPreviewInspectorSourceSelectionMessage(value)) {
     const request = readPreviewInspectorSourceSelectionRequest(value);
     if (request === undefined) {

@@ -24,15 +24,29 @@ interface CompanionScrollRuntime {
 }
 
 describe('Preview Inspector companion scroll script', () => {
-  /** Keeps tree, detail, console, and JSON positions through a short incomplete snapshot sequence. */
+  /** Keeps shell, scenarios, tree, detail, console, and JSON through replacement snapshots. */
   it('retains named regions until consecutive replacement snapshots settle', () => {
+    const shell = createScrollRegion(['.rpi-shell'], 0, 110);
+    const scenarios = createScrollRegion(['.rpi-scenario-scroll'], 75, 330);
     const tree = createScrollRegion(['.rpi-tree-scroll'], 30, 420);
     const details = createScrollRegion(['.rpi-detail-scroll'], 0, 260);
     const consoleList = createScrollRegion(['.rpi-console-list'], 5, 180);
     const jsonEditor = createScrollRegion(['textarea.rpi-json'], 12, 90);
-    const fixture = evaluateCompanionScrollRuntime([tree, details, consoleList, jsonEditor]);
+    const fixture = evaluateCompanionScrollRuntime([
+      shell,
+      scenarios,
+      tree,
+      details,
+      consoleList,
+      jsonEditor,
+    ]);
 
     fixture.runtime.rememberInteraction();
+    expect(readRegion(fixture.runtime.capture(), 'inspector-shell')?.top).toBe(110);
+    expect(readRegion(fixture.runtime.capture(), 'jsx-scenarios')).toMatchObject({
+      left: 75,
+      top: 330,
+    });
     expect(readRegion(fixture.runtime.capture(), 'components-tree')).toEqual({
       key: 'components-tree',
       left: 30,
@@ -56,13 +70,16 @@ describe('Preview Inspector companion scroll script', () => {
     expect(shortTree.scrollTop).toBe(420);
     expect(shortDetails.scrollTop).toBe(260);
 
+    const finalScenarios = createScrollRegion(['.rpi-scenario-scroll'], 0, 0);
     const finalTree = createScrollRegion(['.rpi-tree-scroll'], 0, 0);
     const finalDetails = createScrollRegion(['.rpi-detail-scroll'], 0, 0);
-    fixture.setRegions([finalTree, finalDetails]);
+    fixture.setRegions([finalScenarios, finalTree, finalDetails]);
     fixture.runtime.schedule(fixture.runtime.capture());
     fixture.runtime.runFrames();
     fixture.runtime.runTimers();
 
+    expect(finalScenarios.scrollLeft).toBe(75);
+    expect(finalScenarios.scrollTop).toBe(330);
     expect(finalTree.scrollTop).toBe(420);
     expect(finalDetails.scrollTop).toBe(260);
     expect(fixture.runtime.readState().holding).toBe(false);

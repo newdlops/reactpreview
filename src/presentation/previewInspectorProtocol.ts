@@ -9,6 +9,8 @@ import { isPreviewSourcePath } from '../domain/previewTarget';
 const MAX_INSPECTOR_SOURCE_PATH_LENGTH = 16_384;
 const MAX_INSPECTOR_SOURCE_COORDINATE = 10_000_000;
 const MAX_INSPECTOR_SELECTION_SEQUENCE = 10_000_000;
+/** Bounds passive JSX branch marks emitted by one preview runtime revision. */
+export const MAX_INSPECTOR_BRANCH_SOURCE_DECORATIONS = 256;
 const INSPECTOR_GESTURE_NONCE_PATTERN = /^[a-f0-9]{32}$/u;
 const INSPECTOR_GESTURE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
@@ -62,6 +64,30 @@ export interface PreviewInspectorSourceSelectionLocationRequest extends PreviewI
 /** Selection protocol accepted by the non-focusing editor decoration service. */
 export type PreviewInspectorSourceSelectionRequest =
   PreviewInspectorSourceSelectionClearRequest | PreviewInspectorSourceSelectionLocationRequest;
+
+/** One source-backed Boolean JSX decision rendered as a passive editor annotation. */
+export interface PreviewInspectorBranchSourceLocation {
+  /** Optional one-based source column retained for an accurate hover anchor. */
+  readonly column?: number;
+  /** Optional one-based source line for the condition expression. */
+  readonly line?: number;
+  /** Optional zero-based source offset used when line metadata is unavailable. */
+  readonly occurrenceStart?: number;
+  /** Absolute React source path retained by the selected-file scenario model. */
+  readonly sourcePath: string;
+}
+
+/** Validated bounded inventory used to paint all current-file ON/OFF decisions at once. */
+export interface PreviewInspectorBranchSourceDecorationRequest {
+  /** Runtime revision whose authored source produced these locations. */
+  readonly runtimeRevision: number;
+  /** Monotonic branch-inventory sequence independent from tree selection ordering. */
+  readonly sequence: number;
+  /** At most the compiler-owned JSX scenario limit of source-backed decisions. */
+  readonly sources: readonly PreviewInspectorBranchSourceLocation[];
+  /** Exact passive-decoration protocol discriminator. */
+  readonly type: 'react-preview-inspector-branch-sources';
+}
 
 /**
  * Parses one structured-clone value without trusting browser-provided paths or coordinates.
@@ -136,6 +162,79 @@ export function isPreviewInspectorSourceSelectionMessage(value: unknown): boolea
     !Array.isArray(value) &&
     (value as Record<string, unknown>).type === 'react-preview-inspector-source-selected'
   );
+}
+
+/** Reports whether untrusted traffic claims the passive JSX branch-decoration protocol. */
+export function isPreviewInspectorBranchSourceDecorationMessage(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).type === 'react-preview-inspector-branch-sources'
+  );
+}
+
+/**
+ * Parses a bounded branch inventory without opening editors or resolving filesystem paths.
+ *
+ * Every retained item needs an exact absolute React source plus either a one-based line or a
+ * zero-based occurrence offset. The panel later applies its committed dependency-graph allowlist.
+ *
+ * @param value Untrusted structured-clone value from the preview runtime.
+ * @returns Frozen branch inventory, including an empty list that explicitly clears old marks.
+ */
+export function readPreviewInspectorBranchSourceDecorationRequest(
+  value: unknown,
+): PreviewInspectorBranchSourceDecorationRequest | undefined {
+  if (!isPreviewInspectorBranchSourceDecorationMessage(value)) return undefined;
+  const message = value as Record<string, unknown>;
+  const runtimeRevision = message.runtimeRevision;
+  const sequence = message.sequence;
+  const sources = message.sources;
+  if (
+    !Number.isSafeInteger(runtimeRevision) ||
+    (runtimeRevision as number) < 0 ||
+    !Number.isSafeInteger(sequence) ||
+    (sequence as number) <= 0 ||
+    (sequence as number) > MAX_INSPECTOR_SELECTION_SEQUENCE ||
+    !Array.isArray(sources) ||
+    sources.length > MAX_INSPECTOR_BRANCH_SOURCE_DECORATIONS
+  ) {
+    return undefined;
+  }
+  const normalizedSources: PreviewInspectorBranchSourceLocation[] = [];
+  for (const value of sources) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+    const source = value as Record<string, unknown>;
+    const sourcePath = source.sourcePath;
+    const line = source.line;
+    const column = source.column;
+    const occurrenceStart = source.occurrenceStart;
+    if (
+      !isInspectorSourcePath(sourcePath) ||
+      !isOptionalInspectorSourceCoordinate(line) ||
+      !isOptionalInspectorSourceCoordinate(column) ||
+      !isOptionalInspectorSourceOffset(occurrenceStart) ||
+      (column !== undefined && line === undefined) ||
+      (line === undefined && occurrenceStart === undefined)
+    ) {
+      return undefined;
+    }
+    normalizedSources.push(
+      Object.freeze({
+        ...(column === undefined ? {} : { column }),
+        ...(line === undefined ? {} : { line }),
+        ...(occurrenceStart === undefined ? {} : { occurrenceStart }),
+        sourcePath,
+      }),
+    );
+  }
+  return Object.freeze({
+    runtimeRevision: runtimeRevision as number,
+    sequence: sequence as number,
+    sources: Object.freeze(normalizedSources),
+    type: 'react-preview-inspector-branch-sources',
+  });
 }
 
 /**

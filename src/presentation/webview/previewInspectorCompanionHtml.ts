@@ -123,13 +123,17 @@ export function createPreviewInspectorCompanionHtml(
           ':host{display:block;height:100%}',
           '.rpi-shell[data-react-preview-companion-source="true"]{',
           'border:0!important;box-shadow:none!important;display:grid!important;',
-          'grid-template-rows:auto auto minmax(0,1fr)!important;height:100%!important;',
+          'grid-template-rows:auto auto minmax(clamp(120px,45dvh,360px),1fr)!important;height:100%!important;',
           'inset:auto!important;max-width:100%!important;min-width:0!important;position:relative!important;',
+          'overflow:auto!important;overscroll-behavior:contain;scrollbar-gutter:stable;',
           'transform:none!important;width:100%!important}',
           '.rpi-shell[data-collapsed="true"] .rpi-page-context{display:grid!important}',
           '.rpi-shell[data-collapsed="true"] .rpi-workbench{display:grid!important}',
           '.rpi-page-context,.rpi-workbench,.rpi-pane,.rpi-pane-heading{max-width:100%!important;min-width:0!important}',
-          '.rpi-workbench{min-height:0!important;overflow:hidden!important}',
+          // Wrapped controls may consume nearly the whole editor height on a compact display. A
+          // bounded workbench floor keeps the active section visible and lets the shell itself
+          // scroll when the toolbar, context, and workbench cannot all fit in one viewport.
+          '.rpi-workbench{min-height:clamp(120px,45dvh,360px)!important;overflow:hidden!important}',
           '.rpi-workbench[data-rpi-pane-axis="columns"]{grid-template-columns:',
           'minmax(0,var(--rpi-pane-first-size,52%)) 9px minmax(0,1fr)!important;',
           'grid-template-rows:minmax(0,1fr)!important}',
@@ -305,7 +309,14 @@ export function createPreviewInspectorCompanionHtml(
         // before posting instead of relying on the ordinary remote-control path below.
         if (control.matches('[data-react-preview-source-open="true"]')) {
           rememberCompanionScrollBeforeInteraction();
-          if (postSourceClick(control)) return;
+          const opened = postSourceClick(control);
+          if (
+            opened &&
+            control.matches('[data-react-preview-source-highlight="true"]')
+          ) {
+            postControlEvent(control, 'click');
+          }
+          if (opened) return;
         }
         postControlEvent(control, 'click');
       });

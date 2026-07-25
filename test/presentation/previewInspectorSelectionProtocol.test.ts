@@ -6,7 +6,9 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  isPreviewInspectorBranchSourceDecorationMessage,
   isPreviewInspectorSourceSelectionMessage,
+  readPreviewInspectorBranchSourceDecorationRequest,
   readPreviewInspectorSourceSelectionRequest,
 } from '../../src/presentation/previewInspectorProtocol';
 
@@ -106,5 +108,66 @@ describe('readPreviewInspectorSourceSelectionRequest', () => {
       }),
     ).toBe(true);
     expect(isPreviewInspectorSourceSelectionMessage({ type: 'other' })).toBe(false);
+  });
+});
+
+describe('readPreviewInspectorBranchSourceDecorationRequest', () => {
+  /** Preserves a bounded current-file branch inventory and accepts an explicit empty clear. */
+  it('accepts source-backed JSX branch locations', () => {
+    const message = {
+      runtimeRevision: 9,
+      sequence: 3,
+      sources: [
+        { column: 7, line: 12, sourcePath: SOURCE_PATH },
+        { occurrenceStart: 44, sourcePath: SOURCE_PATH },
+      ],
+      type: 'react-preview-inspector-branch-sources',
+    };
+
+    expect(readPreviewInspectorBranchSourceDecorationRequest(message)).toEqual(message);
+    expect(
+      readPreviewInspectorBranchSourceDecorationRequest({
+        runtimeRevision: 9,
+        sequence: 4,
+        sources: [],
+        type: 'react-preview-inspector-branch-sources',
+      }),
+    ).toEqual({
+      runtimeRevision: 9,
+      sequence: 4,
+      sources: [],
+      type: 'react-preview-inspector-branch-sources',
+    });
+  });
+
+  /** Rejects unlocated, relative, oversized, and malformed claimed branch inventories. */
+  it.each([
+    {
+      runtimeRevision: 9,
+      sequence: 1,
+      sources: [{ sourcePath: SOURCE_PATH }],
+      type: 'react-preview-inspector-branch-sources',
+    },
+    {
+      runtimeRevision: 9,
+      sequence: 1,
+      sources: [{ line: 1, sourcePath: 'relative.tsx' }],
+      type: 'react-preview-inspector-branch-sources',
+    },
+    {
+      runtimeRevision: 9,
+      sequence: 1,
+      sources: Array.from({ length: 257 }, () => ({ line: 1, sourcePath: SOURCE_PATH })),
+      type: 'react-preview-inspector-branch-sources',
+    },
+    {
+      runtimeRevision: 9,
+      sequence: 1,
+      sources: 'invalid',
+      type: 'react-preview-inspector-branch-sources',
+    },
+  ])('rejects malformed branch inventory %#', (message) => {
+    expect(readPreviewInspectorBranchSourceDecorationRequest(message)).toBeUndefined();
+    expect(isPreviewInspectorBranchSourceDecorationMessage(message)).toBe(true);
   });
 });

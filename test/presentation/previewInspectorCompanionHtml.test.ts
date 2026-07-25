@@ -42,7 +42,14 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain(".replace(/@import[^;]*(?:;|$)/giu, '')");
     expect(html).toContain('data-react-preview-companion-source="true"');
     expect(html).toContain('display:grid!important');
+    expect(html).toContain(
+      'grid-template-rows:auto auto minmax(clamp(120px,45dvh,360px),1fr)!important',
+    );
     expect(html).toContain('max-width:100%!important;min-width:0!important');
+    expect(html).toContain('overflow:auto!important;overscroll-behavior:contain');
+    expect(html).toContain(
+      '.rpi-workbench{min-height:clamp(120px,45dvh,360px)!important;overflow:hidden!important}',
+    );
     expect(html).toContain('overflow:hidden!important');
     expect(html).toContain('&lt;Unsafe&gt;.tsx');
   });
@@ -102,6 +109,8 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('function readCompanionScrollRegionKey(viewport)');
     expect(html).toContain('function readCompanionScrollRegions()');
     expect(html).toContain("mirror.querySelectorAll?.('[data-rpi-scroll-key]')");
+    expect(html).toContain("['.rpi-shell', 'inspector-shell']");
+    expect(html).toContain("['.rpi-scenario-scroll', 'jsx-scenarios']");
     expect(html).toContain("['.rpi-tree-scroll', 'components-tree']");
     expect(html).toContain("['.rpi-detail-scroll', 'component-details']");
     expect(html).toContain("['.rpi-console-list', 'component-console']");
@@ -109,6 +118,8 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('previewInspectorCompanionScrollState.regionByKey');
     expect(html).toContain('rememberCompanionScrollBeforeInteraction();');
     expect(html).toContain('if (control.matches(\'[data-react-preview-source-open="true"]\'))');
+    expect(html).toContain('control.matches(\'[data-react-preview-source-highlight="true"]\')');
+    expect(html).toContain("postControlEvent(control, 'click');");
     expect(html).toContain('scheduleCompanionScrollRestoration(');
     expect(html).toContain('PREVIEW_INSPECTOR_COMPANION_SCROLL_SETTLE_MS');
     expect(html).toContain('controlScrollLeft');

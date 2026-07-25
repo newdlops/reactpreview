@@ -6,7 +6,10 @@
 import path from 'node:path';
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import * as vscode from 'vscode';
-import type { PreviewInspectorSourceSelectionRequest } from '../../src/presentation/previewInspectorProtocol';
+import type {
+  PreviewInspectorBranchSourceDecorationRequest,
+  PreviewInspectorSourceSelectionRequest,
+} from '../../src/presentation/previewInspectorProtocol';
 import {
   PreviewInspectorSourceDecoration,
   type PreviewInspectorSourceDecorationContext,
@@ -43,7 +46,7 @@ vi.mock('vscode', () => {
   }
 
   return {
-    OverviewRulerLane: { Center: 2 },
+    OverviewRulerLane: { Center: 2, Right: 4 },
     Position: FakePosition,
     Range: FakeRange,
     ThemeColor: FakeThemeColor,
@@ -103,6 +106,40 @@ describe('PreviewInspectorSourceDecoration', () => {
     expect(decorationCall?.[0]).toBe(approximate.type);
     expect(decoration?.hoverMessage).toContain('inferred');
     expect(decoration?.range.start).toMatchObject({ character: 2, line: 1 });
+  });
+
+  /** Paints all unique current-file JSX decisions yellow without opening or revealing the editor. */
+  it('decorates source-backed ON/OFF branches as passive whole-line marks', () => {
+    const branch = createDecorationType('branch');
+    vscodeState.createDecorationType.mockReturnValue(branch.type);
+    const editor = createEditor(SOURCE_PATH, ['first', 'second condition', 'third']);
+    vscodeState.visibleTextEditors.push(editor.editor);
+    const service = new PreviewInspectorSourceDecoration();
+    const request: PreviewInspectorBranchSourceDecorationRequest = {
+      runtimeRevision: 5,
+      sequence: 1,
+      sources: [
+        { column: 3, line: 2, sourcePath: SOURCE_PATH },
+        { column: 3, line: 2, sourcePath: SOURCE_PATH },
+        { occurrenceStart: 1, sourcePath: SOURCE_PATH },
+      ],
+      type: 'react-preview-inspector-branch-sources',
+    };
+
+    service.decorateBranches(request, createContext());
+
+    const style = vscodeState.createDecorationType.mock.calls[0]?.[0] as
+      vscode.DecorationRenderOptions | undefined;
+    const backgroundColor = style?.backgroundColor as { readonly id?: string } | undefined;
+    expect(backgroundColor?.id).toBe('editor.findMatchHighlightBackground');
+    expect(style?.isWholeLine).toBe(true);
+    expect(style?.overviewRulerLane).toBe(4);
+    const decorationCall = editor.setDecorations.mock.calls[0];
+    const decorations = decorationCall?.[1] as readonly vscode.DecorationOptions[] | undefined;
+    expect(decorationCall?.[0]).toBe(branch.type);
+    expect(decorations).toHaveLength(2);
+    expect(decorations?.[0]?.hoverMessage).toContain('JSX ON/OFF branch');
+    expect(decorations?.[0]?.range.start).toMatchObject({ character: 2, line: 1 });
   });
 
   /** Rejects stale revision and reordered messages without replacing the current source mark. */

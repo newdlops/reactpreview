@@ -1,7 +1,8 @@
 /**
  * Produces complete, reloadable webview documents for loading, success, and failure states.
  * All dynamic text and URI values are escaped, scripts are external ESM files, and the CSP blocks
- * network connections, frames, workers, forms, inline scripts, and dynamic code evaluation.
+ * active network connections, frames, workers, forms, inline scripts, and dynamic code evaluation.
+ * Passive HTTPS images remain available because authored page visuals often live on a CDN.
  */
 import type { PreviewProgressStage } from '../../domain/previewProgress';
 import {
@@ -63,7 +64,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
     "default-src 'none'",
     `script-src ${cspSource}`,
     `style-src ${cspSource} 'unsafe-inline'`,
-    `img-src ${cspSource} data: blob:`,
+    `img-src ${cspSource} data: blob: https:`,
     `font-src ${cspSource} data:`,
     "connect-src 'none'",
     `media-src ${cspSource} data: blob:`,

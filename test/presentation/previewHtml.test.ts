@@ -19,6 +19,7 @@ describe('createPreviewHtml', () => {
     });
 
     expect(html).toContain(`script-src ${CSP_SOURCE}`);
+    expect(html).toContain(`img-src ${CSP_SOURCE} data: blob: https:`);
     expect(html).toContain('connect-src &#39;none&#39;');
     expect(html).toContain('worker-src &#39;none&#39;');
     expect(html).not.toContain('unsafe-eval');

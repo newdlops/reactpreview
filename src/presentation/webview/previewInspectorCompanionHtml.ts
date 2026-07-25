@@ -127,7 +127,7 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-shell[data-react-preview-companion-source="true"]{',
           'border:0!important;box-shadow:none!important;display:grid!important;',
           'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px ',
-          'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(clamp(120px,45dvh,360px),1fr)!important;',
+          'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(0,1fr)!important;',
           'height:100%!important;',
           'inset:auto!important;max-width:100%!important;min-width:0!important;position:relative!important;',
           'overflow:auto!important;overscroll-behavior:contain;scrollbar-gutter:stable;',
@@ -143,7 +143,7 @@ export function createPreviewInspectorCompanionHtml(
           // Wrapped controls may consume nearly the whole editor height on a compact display. A
           // bounded workbench floor keeps the active section visible and lets the shell itself
           // scroll when the toolbar, context, and workbench cannot all fit in one viewport.
-          '.rpi-workbench{min-height:clamp(120px,45dvh,360px)!important;overflow:hidden!important}',
+          '.rpi-workbench{min-height:0!important;overflow:hidden!important}',
           '.rpi-workbench[data-rpi-pane-axis="columns"]{grid-template-columns:',
           'minmax(0,var(--rpi-pane-first-size,52%)) 9px minmax(0,1fr)!important;',
           'grid-template-rows:minmax(0,1fr)!important}',
@@ -163,6 +163,7 @@ export function createPreviewInspectorCompanionHtml(
           '.rpi-pane-resize-handle:hover,.rpi-pane-resize-handle[data-dragging="true"]{',
           'background:color-mix(in srgb,var(--vscode-focusBorder,#007fd4) 18%,transparent)}',
           '.rpi-pane-resize-handle:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4);outline-offset:-1px}',
+          '.rpi-toolbar,.rpi-page-context,.rpi-route-browser,.rpi-navigation-tabs,',
           '.rpi-tree-scroll,.rpi-detail-scroll,.rpi-console-list,.rpi-json{overflow-anchor:none!important}',
           '.rpi-wireframe-layer,.rpi-resize-handle,.rpi-move-handle{display:none!important}',
           '.rpi-toolbar select[aria-label="Inspector position"]{display:none!important}',
@@ -297,7 +298,7 @@ export function createPreviewInspectorCompanionHtml(
       function postControlEvent(control, eventType, key) {
         const remoteId = control?.getAttribute?.('data-rpi-remote-id');
         if (remoteId === null || remoteId === undefined) return;
-        rememberCompanionScrollBeforeInteraction();
+        rememberCompanionScrollBeforeInteraction(control);
         const message = {
           eventType,
           remoteId,
@@ -319,7 +320,7 @@ export function createPreviewInspectorCompanionHtml(
         // Source navigation leaves this editor tab immediately, so capture its current position
         // before posting instead of relying on the ordinary remote-control path below.
         if (control.matches('[data-react-preview-source-open="true"]')) {
-          rememberCompanionScrollBeforeInteraction();
+          rememberCompanionScrollBeforeInteraction(control);
           const opened = postSourceClick(control);
           if (
             opened &&

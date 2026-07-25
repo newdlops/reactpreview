@@ -23,12 +23,12 @@ const PREVIEW_INSPECTOR_COMPANION_INNER_LAYOUT_VERSION = 3;
 const PREVIEW_INSPECTOR_COMPANION_INNER_BOUNDARY_SIZE = 37;
 const PREVIEW_INSPECTOR_COMPANION_INNER_STEP = 16;
 const PREVIEW_INSPECTOR_COMPANION_CARD_MIN_HEIGHT = 56;
-const PREVIEW_INSPECTOR_COMPANION_CARD_MAX_HEIGHT = 4096;
-const PREVIEW_INSPECTOR_COMPANION_SECTION_MIN_HEIGHT = 72;
+const PREVIEW_INSPECTOR_COMPANION_CARD_MAX_HEIGHT = Number.MAX_SAFE_INTEGER;
+const PREVIEW_INSPECTOR_COMPANION_SECTION_MIN_HEIGHT = 0;
 const PREVIEW_INSPECTOR_COMPANION_SECTION_DEFAULT_RATIO = 0.6;
 const PREVIEW_INSPECTOR_COMPANION_TOOLBAR_MIN_HEIGHT = 36;
 const PREVIEW_INSPECTOR_COMPANION_CONTEXT_MIN_HEIGHT = 72;
-const PREVIEW_INSPECTOR_COMPANION_WORKBENCH_MIN_HEIGHT = 120;
+const PREVIEW_INSPECTOR_COMPANION_WORKBENCH_MIN_HEIGHT = 0;
 const PREVIEW_INSPECTOR_COMPANION_INNER_STATE_LIMIT = 128;
 
 /** Accepts only bounded opaque IDs emitted by the renderer-side resize components. */
@@ -61,20 +61,20 @@ function normalizePreviewInspectorCompanionCardHeight(
 function normalizePreviewInspectorCompanionShellRegionHeight(
   value,
   minimum,
-  maximum = 4096,
+  maximum = Number.MAX_SAFE_INTEGER,
 ) {
   if (!Number.isFinite(value)) return undefined;
   const safeMinimum = Number.isFinite(minimum) ? Math.max(1, minimum) : 1;
   const safeMaximum = Number.isFinite(maximum)
     ? Math.max(safeMinimum, maximum)
-    : 4096;
-  return Math.round(Math.min(4096, safeMaximum, Math.max(safeMinimum, value)));
+    : Number.MAX_SAFE_INTEGER;
+  return Math.round(Math.min(Number.MAX_SAFE_INTEGER, safeMaximum, Math.max(safeMinimum, value)));
 }
 
 /** Keeps both sides of the component-tree splitter reachable. */
 function normalizePreviewInspectorCompanionSectionRatio(value, fallback = 0.6) {
   const candidate = Number.isFinite(value) ? value : fallback;
-  return Math.min(0.85, Math.max(0.15, candidate));
+  return Math.min(1, Math.max(0, candidate));
 }
 
 /** Copies a bounded set of finite persisted values into a prototype-safe map. */
@@ -165,9 +165,10 @@ function readPreviewInspectorCompanionCardMaximum(card) {
     : Number.isFinite(mirrorHeight) && mirrorHeight > 0
       ? mirrorHeight - 48
       : PREVIEW_INSPECTOR_COMPANION_CARD_MAX_HEIGHT;
-  return Math.min(
+  return Math.max(
+    PREVIEW_INSPECTOR_COMPANION_CARD_MIN_HEIGHT,
+    available,
     PREVIEW_INSPECTOR_COMPANION_CARD_MAX_HEIGHT,
-    Math.max(PREVIEW_INSPECTOR_COMPANION_CARD_MIN_HEIGHT, available),
   );
 }
 
@@ -241,7 +242,7 @@ function readPreviewInspectorCompanionShellRegion(shell, regionName) {
 /** Reserves enough vertical space for the other header region and component workbench. */
 function readPreviewInspectorCompanionShellRegionMaximum(shell, regionName, minimum) {
   const shellHeight = Number(shell?.clientHeight);
-  if (!Number.isFinite(shellHeight) || shellHeight <= 0) return 4096;
+  if (!Number.isFinite(shellHeight) || shellHeight <= 0) return Number.MAX_SAFE_INTEGER;
   const otherMinimum = regionName === 'toolbar'
     ? PREVIEW_INSPECTOR_COMPANION_CONTEXT_MIN_HEIGHT
     : PREVIEW_INSPECTOR_COMPANION_TOOLBAR_MIN_HEIGHT;

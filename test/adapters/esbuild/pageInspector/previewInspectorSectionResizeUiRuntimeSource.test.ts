@@ -181,19 +181,19 @@ describe('Page Inspector inner section resize runtime source', () => {
     expect(runtime.state.collapsedSections.context).toBe(false);
   });
 
-  /** Keeps restored card values finite and prevents polluted or unbounded persisted state. */
+  /** Keeps restored card values finite and prevents polluted persisted state without a UI height cap. */
   it('normalizes persisted card heights and split ratios', () => {
     const runtime = evaluateSectionResizeHelpers();
 
     expect(runtime.normalizeCardHeight(undefined)).toBeUndefined();
     expect(runtime.normalizeCardHeight(12)).toBe(56);
     expect(runtime.normalizeCardHeight(900, 320)).toBe(320);
-    expect(runtime.normalizeCardHeight(50_000)).toBe(4096);
-    expect(runtime.normalizeRatio(-1)).toBe(0.15);
-    expect(runtime.normalizeRatio(2)).toBe(0.85);
+    expect(runtime.normalizeCardHeight(50_000)).toBe(50_000);
+    expect(runtime.normalizeRatio(-1)).toBe(0);
+    expect(runtime.normalizeRatio(2)).toBe(1);
     expect(runtime.normalizeShellHeight(12, 36)).toBe(36);
     expect(runtime.normalizeShellHeight(900, 72, 420)).toBe(420);
-    expect(runtime.state.cardHeights).toMatchObject({ huge: 4096, valid: 180 });
+    expect(runtime.state.cardHeights).toMatchObject({ huge: 50_000, valid: 180 });
     expect(runtime.state.cardHeights).not.toHaveProperty('invalid');
     expect(runtime.state.collapsedSections).toMatchObject({ context: true });
     expect(runtime.state.collapsedSections).not.toHaveProperty('invalid');

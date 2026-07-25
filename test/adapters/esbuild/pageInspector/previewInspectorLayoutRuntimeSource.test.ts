@@ -28,9 +28,7 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain(
       '@media(max-height:560px){.rpi-shell{grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px ',
     );
-    expect(source).toContain(
-      'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(clamp(120px,45dvh,260px),1fr)',
-    );
+    expect(source).toContain('minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(0,1fr)');
     expect(source).toContain('.rpi-section-accordion-toggle');
     expect(source).toContain('.rpi-shell-section-height-handle');
     expect(source).toContain(
@@ -42,7 +40,7 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('.rpi-components-body>.rpi-section-height-handle{grid-row:2}');
     expect(source).toContain('height:9px;min-height:9px');
     expect(source).toContain('overflow-x:hidden;overflow-y:auto');
-    expect(source).toContain('.rpi-workbench{min-height:clamp(120px,45dvh,260px)}');
+    expect(source).toContain('.rpi-workbench{min-height:0}');
     expect(source).toContain(
       '.rpi-detail-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
     );

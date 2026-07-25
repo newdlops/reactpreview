@@ -48,7 +48,7 @@ describe('Preview Inspector companion inner resize script', () => {
     expect(() => new vm.Script(createPreviewInspectorCompanionInnerResizeScript())).not.toThrow();
   });
 
-  /** Restores only finite bounded values and applies them to inert mirrored elements. */
+  /** Restores finite values and applies them to inert mirrored elements without artificial size caps. */
   it('normalizes, applies, and retains card and section dimensions', () => {
     const { runtime } = evaluateInnerResizeRuntime({
       cardHeights: { invalid: 'large', source: 220 },
@@ -62,8 +62,8 @@ describe('Preview Inspector companion inner resize script', () => {
 
     expect(runtime.normalizeCard(10)).toBe(56);
     expect(runtime.normalizeCard(900, 300)).toBe(300);
-    expect(runtime.normalizeRatio(-1)).toBe(0.15);
-    expect(runtime.normalizeRatio(2)).toBe(0.85);
+    expect(runtime.normalizeRatio(-1)).toBe(0);
+    expect(runtime.normalizeRatio(2)).toBe(1);
     expect(runtime.readState().cardHeights).toMatchObject({ source: 220 });
     expect(runtime.readState().cardHeights).not.toHaveProperty('invalid');
     expect(runtime.readState().collapsedSections).toMatchObject({ context: true });

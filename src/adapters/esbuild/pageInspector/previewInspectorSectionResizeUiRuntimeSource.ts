@@ -23,14 +23,14 @@ export function createPreviewInspectorSectionResizeUiRuntimeSource(): string {
 const PREVIEW_INSPECTOR_INNER_RESIZE_STEP = 16;
 const PREVIEW_INSPECTOR_INNER_BOUNDARY_SIZE = 37;
 const PREVIEW_INSPECTOR_CARD_MIN_HEIGHT = 56;
-const PREVIEW_INSPECTOR_CARD_MAX_HEIGHT = 4096;
-const PREVIEW_INSPECTOR_SECTION_MIN_HEIGHT = 72;
+const PREVIEW_INSPECTOR_CARD_MAX_HEIGHT = Number.MAX_SAFE_INTEGER;
+const PREVIEW_INSPECTOR_SECTION_MIN_HEIGHT = 0;
 const PREVIEW_INSPECTOR_SECTION_DEFAULT_RATIO = 0.6;
-const PREVIEW_INSPECTOR_SECTION_MIN_RATIO = 0.15;
-const PREVIEW_INSPECTOR_SECTION_MAX_RATIO = 0.85;
+const PREVIEW_INSPECTOR_SECTION_MIN_RATIO = 0;
+const PREVIEW_INSPECTOR_SECTION_MAX_RATIO = 1;
 const PREVIEW_INSPECTOR_SHELL_TOOLBAR_MIN_HEIGHT = 36;
 const PREVIEW_INSPECTOR_SHELL_CONTEXT_MIN_HEIGHT = 72;
-const PREVIEW_INSPECTOR_SHELL_WORKBENCH_MIN_HEIGHT = 120;
+const PREVIEW_INSPECTOR_SHELL_WORKBENCH_MIN_HEIGHT = 0;
 const PREVIEW_INSPECTOR_RESIZE_STATE_LIMIT = 128;
 let previewInspectorActiveInnerResizeGesture;
 
@@ -61,13 +61,13 @@ function normalizePreviewInspectorCardHeight(
 }
 
 /** Clamps one shell-region height while allowing the toolbar's smaller intrinsic minimum. */
-function normalizePreviewInspectorShellRegionHeight(value, minimum, maximum = 4096) {
+function normalizePreviewInspectorShellRegionHeight(value, minimum, maximum = Number.MAX_SAFE_INTEGER) {
   if (!Number.isFinite(value)) return undefined;
   const safeMinimum = Number.isFinite(minimum) ? Math.max(1, minimum) : 1;
   const safeMaximum = Number.isFinite(maximum)
     ? Math.max(safeMinimum, maximum)
-    : 4096;
-  return Math.round(Math.min(4096, safeMaximum, Math.max(safeMinimum, value)));
+    : Number.MAX_SAFE_INTEGER;
+  return Math.round(Math.min(Number.MAX_SAFE_INTEGER, safeMaximum, Math.max(safeMinimum, value)));
 }
 
 /** Clamps one restored section ratio so both adjacent regions remain reachable. */
@@ -141,9 +141,10 @@ function readPreviewInspectorCardMaximumHeight(card) {
     : Number.isFinite(browserHeight) && browserHeight > 0
       ? browserHeight - 48
       : PREVIEW_INSPECTOR_CARD_MAX_HEIGHT;
-  return Math.min(
+  return Math.max(
+    PREVIEW_INSPECTOR_CARD_MIN_HEIGHT,
+    availableHeight,
     PREVIEW_INSPECTOR_CARD_MAX_HEIGHT,
-    Math.max(PREVIEW_INSPECTOR_CARD_MIN_HEIGHT, availableHeight),
   );
 }
 
@@ -239,7 +240,7 @@ function readPreviewInspectorShellRegionDefinition(shell, regionName) {
 /** Keeps the resized top region from consuming the remaining component workbench. */
 function readPreviewInspectorShellRegionMaximumHeight(shell, regionName, minimum) {
   const shellHeight = Number(shell?.clientHeight);
-  if (!Number.isFinite(shellHeight) || shellHeight <= 0) return 4096;
+  if (!Number.isFinite(shellHeight) || shellHeight <= 0) return Number.MAX_SAFE_INTEGER;
   const otherMinimum = regionName === 'toolbar'
     ? PREVIEW_INSPECTOR_SHELL_CONTEXT_MIN_HEIGHT
     : PREVIEW_INSPECTOR_SHELL_TOOLBAR_MIN_HEIGHT;

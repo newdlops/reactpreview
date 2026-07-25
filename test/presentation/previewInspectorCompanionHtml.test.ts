@@ -46,14 +46,12 @@ describe('Preview Inspector companion HTML', () => {
       'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px',
     );
     expect(html).toContain(
-      'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(clamp(120px,45dvh,360px),1fr)!important',
+      'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(0,1fr)!important',
     );
     expect(html).toContain('data-rpi-context-collapsed');
     expect(html).toContain('max-width:100%!important;min-width:0!important');
     expect(html).toContain('overflow:auto!important;overscroll-behavior:contain');
-    expect(html).toContain(
-      '.rpi-workbench{min-height:clamp(120px,45dvh,360px)!important;overflow:hidden!important}',
-    );
+    expect(html).toContain('.rpi-workbench{min-height:0!important;overflow:hidden!important}');
     expect(html).toContain('overflow:hidden!important');
     expect(html).toContain('&lt;Unsafe&gt;.tsx');
   });
@@ -121,13 +119,16 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('function readCompanionScrollRegions()');
     expect(html).toContain("mirror.querySelectorAll?.('[data-rpi-scroll-key]')");
     expect(html).toContain("['.rpi-shell', 'inspector-shell']");
+    expect(html).toContain("['.rpi-page-context', 'page-context']");
+    expect(html).toContain("['.rpi-route-browser', 'route-browser']");
     expect(html).toContain("['.rpi-scenario-scroll', 'jsx-scenarios']");
     expect(html).toContain("['.rpi-tree-scroll', 'components-tree']");
     expect(html).toContain("['.rpi-detail-scroll', 'component-details']");
     expect(html).toContain("['.rpi-console-list', 'component-console']");
     expect(html).toContain("['textarea.rpi-json', 'component-json-editor']");
     expect(html).toContain('previewInspectorCompanionScrollState.regionByKey');
-    expect(html).toContain('rememberCompanionScrollBeforeInteraction();');
+    expect(html).toContain('rememberCompanionScrollBeforeInteraction(control);');
+    expect(html).toContain('function isCompanionScrollInteractionComplete(key)');
     expect(html).toContain('if (control.matches(\'[data-react-preview-source-open="true"]\'))');
     expect(html).toContain('control.matches(\'[data-react-preview-source-highlight="true"]\')');
     expect(html).toContain("postControlEvent(control, 'click');");

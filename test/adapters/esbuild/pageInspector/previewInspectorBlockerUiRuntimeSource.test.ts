@@ -134,11 +134,11 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain("'Apply pass value'");
     expect(source).toContain("'Smart fill minimum'");
     expect(source).toContain("'Smart fill and retry'");
-    expect(source).toContain("'Find minimum requirements'");
-    expect(source).toContain("'Minimum requirement search: pass '");
+    expect(source).toContain("'Auto-find missing values'");
+    expect(source).toContain("'Automatic requirement search: pass '");
     expect(source).toContain('PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT');
     expect(source).toContain("['cycle-detected', 'limit-reached']");
-    expect(source).toContain("resolving ? 'Resolving…' : 'Find minimum requirements'");
+    expect(source).toContain("resolving ? 'Searching…' : 'Auto-find missing values'");
     expect(source).toContain("'Auto pass'");
     expect(source).toContain('setPreviewInspectorRuntimeFallbackOverride');
     expect(source).toContain('smartFillPreviewInspectorRuntimeFallback');
@@ -150,13 +150,11 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(source).toContain('creates one item only when a demanded path enters a list');
     expect(source).toContain("blockerKind: 'target-error'");
     expect(source).toContain("blockerKind: 'target-reachability'");
-    expect(source).toContain('Payload properties discovered downstream (');
+    expect(source).toContain('Possible data needed next (');
     expect(source).toContain('PREVIEW_INSPECTOR_REQUIRED_PATH_SUMMARY_LIMIT = 10');
-    expect(source).toContain("'mounted · no host output'");
+    expect(source).toContain("'ran · no visible element'");
     expect(source).toContain('Rendering stops at this point in the component tree.');
-    expect(source).toContain(
-      'The authored page rendered without mounting this current-file component.',
-    );
+    expect(source).toContain('This page path did not use the current file.');
     expect(source).toContain("helpKind = 'flow-outcome'");
     expect(source).toContain('React Preview supplied a local preview value here.');
     expect(source).toContain('This child overlay is explicitly forced OFF.');
@@ -243,12 +241,12 @@ describe('Preview Inspector blocker UI runtime source', () => {
       ' ',
     );
 
-    expect(treeNode.name).toBe('Target produced no host output · default');
+    expect(treeNode.name).toBe('No visible element · default');
     expect(summary).toMatchObject({ remainingCount: 4, totalCount: 14 });
     expect(summary.visiblePaths).toHaveLength(10);
-    expect(text).toContain('mounted · no host output');
-    expect(text).toContain('The selected target is mounted, but its authored JSX is still absent.');
-    expect(text).toContain('Payload properties discovered downstream (14):');
+    expect(text).toContain('ran · no visible element');
+    expect(text).toContain('This file ran, but the current branch produced no visible element.');
+    expect(text).toContain('Possible data needed next (14):');
     expect(text).toContain('· +4 more');
     expect(text).not.toContain('usePreview.value10');
 
@@ -257,18 +255,18 @@ describe('Preview Inspector blocker UI runtime source', () => {
     const wrapperText = collectRenderedText(
       runtime.renderReachabilityDetail({ node: { blocker: wrapperBlocker } }),
     ).join(' ');
-    expect(wrapperNode.name).toBe('Target authored JSX absent · default');
-    expect(wrapperText).toContain('wrapper/fallback host only · authored JSX absent');
+    expect(wrapperNode.name).toBe('Fallback shown instead · default');
+    expect(wrapperText).toContain('ran · fallback visible instead');
 
     const deferredBlocker = { ...blocker, targetDeferredCallbackPending: true };
     const deferredNode = runtime.createReachabilityNode(deferredBlocker);
     const deferredText = collectRenderedText(
       runtime.renderReachabilityDetail({ node: { blocker: deferredBlocker } }),
     ).join(' ');
-    expect(deferredNode.name).toBe('Render callback not invoked · default');
-    expect(deferredText).toContain('mounted · render callback pending');
-    expect(deferredText).toContain('receiver has not invoked the authored render callback');
-    expect(deferredText).toContain('receiver must obtain its minimum payload');
+    expect(deferredNode.name).toBe('Render callback is waiting · default');
+    expect(deferredText).toContain('connected · waiting for parent callback');
+    expect(deferredText).toContain('waiting for its parent to call the render callback');
+    expect(deferredText).toContain('parent needs data before it calls this render callback');
   });
 });
 

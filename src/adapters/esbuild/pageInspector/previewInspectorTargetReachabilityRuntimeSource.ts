@@ -581,7 +581,7 @@ function reportPreviewInspectorTargetReachabilityFallback(state) {
     state.appliedConditions.length > 0
       ? 'Auto-passed gates: ' + state.appliedConditions.map((gate) => gate.expression).join(', ')
       : 'No additional statically proven gate was available.',
-    'Target-only diagnostic mode preserves generated providers and payloads, but is not a successful page preview.',
+    'Show file by itself preserves preview providers and data, but it is not the real page layout.',
   ].join('\n');
   recordPreviewInspectorConsoleEntry({
     details,

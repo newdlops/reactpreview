@@ -379,7 +379,7 @@ function PreviewInspectorComponentTreeNode({
             'BLOCKS PAGE · CLICK TO FIX')
         : isFlowOutcome
           ? React.createElement('span', { className: 'rpi-badge rpi-flow-outcome-badge' },
-              'AUTHORED FLOW · TARGET ABSENT')
+              'AUTHORED FLOW · NOT ON THIS PATH')
         : isAssisted
           ? React.createElement('span', { className: 'rpi-badge rpi-assisted-badge' },
               'PAGE CAN CONTINUE')

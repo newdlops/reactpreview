@@ -191,8 +191,8 @@ describe('Preview Inspector page-candidate runtime source', () => {
     });
   });
 
-  /** Keeps invocation and connected host output as separate user-facing page states. */
-  it('labels a mounted target without host output as TARGET EMPTY', () => {
+  /** Explains an invoked-but-invisible file as a three-step visibility path. */
+  it('labels a reached file with no visible element in user language', () => {
     expect(
       evaluatePageCandidateUiStatus({
         pageRootCommitted: true,
@@ -201,11 +201,14 @@ describe('Preview Inspector page-candidate runtime source', () => {
         targetMounted: true,
       }),
     ).toEqual({
-      action: 'Inspect missing output',
-      badge: 'TARGET EMPTY',
+      action: 'Find what hides it',
+      badge: 'NOT VISIBLE',
+      description:
+        'The page reached this file, but its current branch returned no visible element. Common causes are an OFF condition, missing data, or an intentional null return.',
       revealed: 'target-reachability:fixture',
       selected: 'target-reachability:fixture',
-      title: 'Current file mounted without output',
+      steps: ['Page loaded', 'File ran', 'Nothing visible'],
+      title: 'This file ran, but nothing is visible',
     });
     expect(
       evaluatePageCandidateUiStatus({
@@ -216,8 +219,24 @@ describe('Preview Inspector page-candidate runtime source', () => {
         targetMounted: true,
       }),
     ).toMatchObject({
-      badge: 'TARGET EMPTY',
-      title: 'Current file stopped at wrapper or fallback output',
+      action: 'Find replaced content',
+      badge: 'FALLBACK SHOWN',
+      steps: ['Page loaded', 'File ran', 'Fallback shown'],
+      title: 'A fallback is shown instead of this file',
+    });
+    expect(
+      evaluatePageCandidateUiStatus({
+        pageRootCommitted: true,
+        status: 'resolver-cycle-detected',
+        targetDeferredCallbackPending: true,
+        targetHasOutput: false,
+        targetMounted: true,
+      }),
+    ).toMatchObject({
+      action: 'Find callback requirement',
+      badge: 'CALLBACK WAITING',
+      steps: ['Page loaded', 'File connected', 'Callback waiting'],
+      title: 'Waiting for the parent to render this file',
     });
     expect(
       evaluatePageCandidateUiStatus({
@@ -226,7 +245,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
         targetHasOutput: false,
         targetMounted: false,
       }),
-    ).toMatchObject({ badge: 'TARGET ABSENT' });
+    ).toMatchObject({ badge: 'NOT ON THIS PATH' });
     expect(
       evaluatePageCandidateUiStatus({
         pageRootCommitted: true,
@@ -242,8 +261,10 @@ describe('Preview Inspector page-candidate runtime source', () => {
 function evaluatePageCandidateUiStatus(reachability: Record<string, unknown>): {
   readonly action?: string;
   readonly badge: string;
+  readonly description: string;
   readonly revealed?: string;
   readonly selected?: string;
+  readonly steps?: readonly string[];
   readonly title: string;
 } {
   const context: {
@@ -279,12 +300,14 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
 function requestPreviewInspectorTreeReveal(nodeId) { revealed = nodeId; }
 function selectPreviewInspectorUiNode(node) { selected = node.id; }
 const status = readPreviewInspectorFriendlyPageStatus(globalThis.reachability);
-if (status.action === 'Inspect missing output') status.onAction();
+if (status.onAction === revealPreviewInspectorMissingTargetOutput) status.onAction();
 globalThis.__result = {
   action: status.action,
   badge: formatPreviewInspectorPageCorridorStatus(globalThis.reachability),
+  description: status.description,
   revealed,
   selected,
+  steps: status.steps?.map((step) => step.label),
   title: status.title,
 };`,
     context,

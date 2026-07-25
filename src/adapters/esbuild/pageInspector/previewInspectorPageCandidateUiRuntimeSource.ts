@@ -14,7 +14,7 @@
  */
 export function createPreviewInspectorPageCandidateUiRuntimeSource(): string {
   return String.raw`
-/** Formats whether the selected authored page and current-file target share one committed render. */
+/** Formats page visibility with labels that describe what the user can actually see. */
 function formatPreviewInspectorPageCorridorStatus(reachability) {
   if (readPreviewInspectorRenderScenario() === 'file-components') return 'FILE COMPONENTS';
   const descriptor = findSelectedPreviewInspectorDescriptor();
@@ -26,17 +26,21 @@ function formatPreviewInspectorPageCorridorStatus(reachability) {
     reachability?.targetMounted === true &&
     reachability?.targetHasOutput === true
   ) return 'PAGE READY';
-  if (reachability?.directTarget === true) return 'TARGET ONLY';
-  if (reachability?.status === 'advancing') return 'FINDING TARGET';
+  if (reachability?.directTarget === true) return 'FILE ONLY';
+  if (reachability?.status === 'advancing') return 'FINDING FILE';
   if (
     reachability?.pageRootCommitted === true &&
     reachability?.targetMounted === true &&
     reachability?.targetHasOutput !== true
-  ) return moduleContext === undefined ? 'TARGET EMPTY' : 'PAGE EMPTY';
-  if (reachability?.pageRootCommitted === true && reachability?.targetMounted !== true) {
-    return moduleContext === undefined ? 'TARGET ABSENT' : 'PAGE ABSENT';
+  ) {
+    if (reachability?.targetDeferredCallbackPending === true) return 'CALLBACK WAITING';
+    if (reachability?.targetHasAnyHostOutput === true) return 'FALLBACK SHOWN';
+    return moduleContext === undefined ? 'NOT VISIBLE' : 'PAGE NOT VISIBLE';
   }
-  if (reachability?.pageRootCommitted === true) return 'VERIFYING TARGET';
+  if (reachability?.pageRootCommitted === true && reachability?.targetMounted !== true) {
+    return moduleContext === undefined ? 'NOT ON THIS PATH' : 'PAGE PATH SKIPPED';
+  }
+  if (reachability?.pageRootCommitted === true) return 'CHECKING FILE';
   return 'LOADING PAGE';
 }
 
@@ -88,22 +92,48 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
   const mountedWithoutOutput = reachability?.pageRootCommitted === true &&
     reachability?.targetMounted === true && reachability?.targetHasOutput !== true;
   if (mountedWithoutOutput) {
+    const deferredCallbackPending = reachability?.targetDeferredCallbackPending === true;
     const wrapperHostOnly = reachability?.targetHasAnyHostOutput === true;
     return {
-      action: 'Inspect missing output',
+      action: moduleContext !== undefined
+        ? 'Find page requirement'
+        : deferredCallbackPending
+          ? 'Find callback requirement'
+          : wrapperHostOnly
+            ? 'Find replaced content'
+            : 'Find what hides it',
       description: moduleContext !== undefined
-        ? 'The consuming page mounted without connected host output. Inspect its first requirement; the selected module supplies page values and is not expected to own a DOM boundary.'
+        ? 'The page used this module, but the selected branch contains no visible element. Open the nearest condition or missing value.'
+        : deferredCallbackPending
+          ? 'This file is available as render content, but its parent has not called it. Open the value or condition that enables the callback.'
         : wrapperHostOnly
-          ? 'The current-file export mounted, but only a wrapper or fallback reached the DOM. Inspect the missing authored JSX and its first requirement in the component tree.'
-          : 'The current-file export was invoked inside the authored page, but its exact boundary has no connected host output. Inspect its first blocker or condition in the component tree.',
+          ? 'A wrapper or fallback is visible instead of this file’s authored content. Open the nearest condition or missing value that selected the fallback.'
+          : 'The page reached this file, but its current branch returned no visible element. Common causes are an OFF condition, missing data, or an intentional null return.',
       icon: '!',
       kind: 'blocked',
       onAction: revealPreviewInspectorMissingTargetOutput,
+      steps: [
+        { label: 'Page loaded', state: 'done' },
+        {
+          label: moduleContext !== undefined
+            ? 'Module used'
+            : deferredCallbackPending ? 'File connected' : 'File ran',
+          state: 'done',
+        },
+        {
+          label: deferredCallbackPending
+            ? 'Callback waiting'
+            : wrapperHostOnly ? 'Fallback shown' : 'Nothing visible',
+          state: 'blocked',
+        },
+      ],
       title: moduleContext !== undefined
-        ? 'Consuming page mounted without output'
+        ? 'This module’s page has no visible content'
+        : deferredCallbackPending
+          ? 'Waiting for the parent to render this file'
         : wrapperHostOnly
-          ? 'Current file stopped at wrapper or fallback output'
-          : 'Current file mounted without output',
+          ? 'A fallback is shown instead of this file'
+          : 'This file ran, but nothing is visible',
     };
   }
   const renderedWithoutTarget = reachability?.pageRootCommitted === true &&
@@ -137,7 +167,7 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
       icon: '◎',
       kind: 'diagnostic',
       onAction: returnPreviewInspectorToPageContext,
-      title: 'Target-only view',
+      title: 'File-only view',
     };
   }
   if (blockers.count > 0 || reachability?.status === 'page-blocked') {
@@ -250,6 +280,21 @@ function PreviewInspectorFriendlyGuide({ reachability }) {
         { className: 'rpi-friendly-status-copy' },
         React.createElement('strong', undefined, status.title),
         React.createElement('span', undefined, status.description),
+        status.steps === undefined
+          ? undefined
+          : React.createElement(
+              'span',
+              { 'aria-label': 'Visibility path', className: 'rpi-friendly-status-steps' },
+              status.steps.map((step, index) => React.createElement(
+                'span',
+                {
+                  'data-state': step.state,
+                  key: step.label,
+                  className: 'rpi-friendly-status-step',
+                },
+                (index === 0 ? '' : '→ ') + step.label,
+              )),
+            ),
       ),
       React.createElement(
         'span',

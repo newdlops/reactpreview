@@ -21,16 +21,45 @@ describe('Preview Inspector layout runtime source', () => {
   it('provides a shell scroll fallback without removing section-owned scrolling', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();
 
-    expect(source).toContain('grid-template-rows:auto auto minmax(0,1fr)');
+    expect(source).toContain(
+      'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(0,1fr)',
+    );
     expect(source).toContain('max-height:calc(100dvh - 16px)');
     expect(source).toContain(
-      '@media(max-height:560px){.rpi-shell{grid-template-rows:auto auto minmax(clamp(120px,45dvh,260px),1fr)',
+      '@media(max-height:560px){.rpi-shell{grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px ',
     );
+    expect(source).toContain(
+      'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(clamp(120px,45dvh,260px),1fr)',
+    );
+    expect(source).toContain('.rpi-section-accordion-toggle');
+    expect(source).toContain('.rpi-shell-section-height-handle');
+    expect(source).toContain(
+      '.rpi-shell>.rpi-shell-section-height-handle[data-rpi-shell-region="toolbar"]{grid-row:3}',
+    );
+    expect(source).toContain(
+      '.rpi-shell>.rpi-shell-section-height-handle[data-rpi-shell-region="context"]{grid-row:6}',
+    );
+    expect(source).toContain('.rpi-components-body>.rpi-section-height-handle{grid-row:2}');
+    expect(source).toContain('height:9px;min-height:9px');
     expect(source).toContain('overflow-x:hidden;overflow-y:auto');
     expect(source).toContain('.rpi-workbench{min-height:clamp(120px,45dvh,260px)}');
     expect(source).toContain(
       '.rpi-detail-scroll{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}',
     );
+  });
+
+  /** Prevents page identity, status, and candidate controls from sharing an implicit grid row. */
+  it('stacks every page-context item in its own intrinsic row', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain(
+      'display:grid;gap:6px;grid-auto-flow:row;grid-auto-rows:max-content;grid-template-columns:minmax(0,1fr)',
+    );
+    expect(source).toContain(
+      '.rpi-page-context>*{grid-column:1!important;grid-row:auto!important;max-width:100%;min-width:0}',
+    );
+    expect(source).toContain('align-content:start;align-items:start');
+    expect(source).not.toContain('font-weight:700;grid-row:1/3');
   });
 
   /** Makes collapse state legible without consuming excessive width in a docked tree. */

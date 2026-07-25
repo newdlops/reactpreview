@@ -20,6 +20,7 @@ import { createPreviewInspectorPageCompositionHealthRuntimeSource } from './prev
 import { createPreviewInspectorBlockerUiRuntimeSource } from './previewInspectorBlockerUiRuntimeSource';
 import { createPreviewInspectorRenderTreeUiRuntimeSource } from './previewInspectorRenderTreeUiRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackUiRuntimeSource } from './previewInspectorRuntimeFallbackUiRuntimeSource';
+import { createPreviewInspectorSectionResizeUiRuntimeSource } from './previewInspectorSectionResizeUiRuntimeSource';
 import { createPreviewInspectorSelectionDetailUiRuntimeSource } from './previewInspectorSelectionDetailUiRuntimeSource';
 import { createPreviewInspectorStructureUiRuntimeSource } from './previewInspectorStructureUiRuntimeSource';
 import { createPreviewInspectorTreeScrollRuntimeSource } from './previewInspectorTreeScrollRuntimeSource';
@@ -52,6 +53,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const blockerUiRuntimeSource = createPreviewInspectorBlockerUiRuntimeSource();
   const renderTreeUiRuntimeSource = createPreviewInspectorRenderTreeUiRuntimeSource();
   const runtimeFallbackUiRuntimeSource = createPreviewInspectorRuntimeFallbackUiRuntimeSource();
+  const sectionResizeUiRuntimeSource = createPreviewInspectorSectionResizeUiRuntimeSource();
   const selectionDetailUiRuntimeSource = createPreviewInspectorSelectionDetailUiRuntimeSource();
   const structureUiRuntimeSource = createPreviewInspectorStructureUiRuntimeSource();
   const treeScrollRuntimeSource = createPreviewInspectorTreeScrollRuntimeSource();
@@ -60,6 +62,7 @@ export function createPreviewInspectorDevtoolsUiRuntimeSource(): string {
   const wireframeUiRuntimeSource = createPreviewInspectorWireframeUiRuntimeSource();
   return String.raw`
 ${layoutRuntimeSource}
+${sectionResizeUiRuntimeSource}
 ${treeScrollRuntimeSource}
 
 ${structureUiRuntimeSource}
@@ -613,9 +616,16 @@ function PreviewInspectorComponentsPane({ node, roots, selectedId, status, trunc
               )),
             ),
       ),
+      React.createElement(PreviewInspectorSectionHeightHandle, {
+        resizeId: 'components-tree-and-selection',
+      }),
       React.createElement(
         'section',
-        { 'aria-label': 'Selected component details', className: 'rpi-tree-selection-detail' },
+        {
+          'aria-label': 'Selected component details',
+          className: 'rpi-tree-selection-detail',
+          id: 'rpi-selection-details-section',
+        },
         React.createElement(
           'div',
           { className: 'rpi-tree-selection-heading' },
@@ -671,8 +681,8 @@ function PreviewInspectorSourceDetail({ node }) {
     'div',
     { className: 'rpi-detail-content' },
     React.createElement(
-      'div',
-      { className: 'rpi-source-card' },
+      PreviewInspectorResizableCard,
+      { resizeId: 'component-source:' + String(node?.id ?? 'selection') },
       React.createElement('strong', undefined, formatPreviewInspectorUiSource(source)),
       React.createElement('div', { className: 'rpi-note' }, source === undefined
         ? 'The component collector did not provide a source location.'
@@ -821,110 +831,134 @@ function PreviewInspectorToolbar() {
         updateLayout,
       }),
       React.createElement(
-        'div',
-        { 'aria-label': 'React Page Inspector tools', className: 'rpi-toolbar', role: 'toolbar' },
-        React.createElement(PreviewInspectorMoveHandle, {
-          layout,
-          persistLayout,
-          updateLayout,
-        }),
-        React.createElement('span', { className: 'rpi-title' }, 'React Page Inspector'),
+        PreviewInspectorShellRegionHeightHandle,
+        {
+          contentId: 'rpi-toolbar-section',
+          label: 'Inspector controls',
+          regionName: 'toolbar',
+          resizeId: 'shell-toolbar',
+        },
         React.createElement(
-          PreviewInspectorDevtoolsButton,
+          'div',
           {
-            disabled: mainComponentName === undefined,
-            onClick: selectPreviewInspectorMainComponent,
-            title: "Go to the current file's main component",
+            'aria-label': 'React Page Inspector tools',
+            className: 'rpi-toolbar',
+            id: 'rpi-toolbar-section',
+            role: 'toolbar',
           },
-          'Current file',
-        ),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => setPreviewInspectorPickerEnabled(!previewInspectorSession.pickerEnabled),
-            pressed: previewInspectorSession.pickerEnabled,
-            title: 'Pick a rendered element',
-          },
-          previewInspectorSession.pickerEnabled ? 'Cancel pick' : 'Pick on page',
-        ),
-        React.createElement(PreviewInspectorHiddenElementControls),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => setPreviewInspectorHighlightEnabled(!previewInspectorSession.highlightEnabled),
-            pressed: previewInspectorSession.highlightEnabled,
-            title: 'Toggle selected target highlight',
-          },
-          'Highlight',
-        ),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => {
-              const next = !wireframeVisible;
-              previewInspectorDevtoolsSessionState.wireframeVisible = next;
-              setWireframeVisible(next);
-              persistPreviewInspectorState();
+          React.createElement(PreviewInspectorMoveHandle, {
+            layout,
+            persistLayout,
+            updateLayout,
+          }),
+          React.createElement('span', { className: 'rpi-title' }, 'React Page Inspector'),
+          React.createElement(
+            PreviewInspectorDevtoolsButton,
+            {
+              disabled: mainComponentName === undefined,
+              onClick: selectPreviewInspectorMainComponent,
+              title: "Go to the current file's main component",
             },
-            pressed: wireframeVisible,
-            title: 'Toggle the full-page React component placement wireframe',
-          },
-          'Wireframe',
-        ),
-        React.createElement('select', {
-          'aria-label': 'Instrumented target export',
-          className: 'rpi-select',
-          onChange: (event) => selectPreviewInspectorExport(event.target.value),
-          value: previewInspectorSession.selectedExportName,
-        }, previewInspectorSession.descriptorNames.map((name) => React.createElement(
-          'option',
-          { key: name, value: name },
-          formatPreviewInspectorEntryName(name),
-        ))),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            disabled: !editable,
-            onClick: () => remountPreviewInspectorExport(selectedNode.exportName),
-            title: editable ? 'Remount the instrumented component' : 'Only instrumented targets can remount',
-          },
-          'Remount',
-        ),
-        React.createElement('span', { className: 'rpi-meta', title: previewInspectorSession.highlightStatus }, previewInspectorSession.highlightStatus),
-        React.createElement('span', { className: 'rpi-spacer' }),
-        React.createElement(PreviewInspectorLayoutSelect, {
-          layout,
-          persistLayout,
-          updateLayout,
-        }),
-        React.createElement(
-          PreviewInspectorDevtoolsButton,
-          {
-            onClick: () => setCollapsed((current) => {
-              const next = !current;
-              previewInspectorDevtoolsSessionState.collapsed = next;
-              persistPreviewInspectorState();
-              return next;
-            }),
-            title: collapsed ? 'Expand inspector' : 'Collapse inspector',
-          },
-          collapsed ? 'Expand' : 'Collapse',
+            'Current file',
+          ),
+          React.createElement(
+            PreviewInspectorDevtoolsButton,
+            {
+              onClick: () => setPreviewInspectorPickerEnabled(!previewInspectorSession.pickerEnabled),
+              pressed: previewInspectorSession.pickerEnabled,
+              title: 'Pick a rendered element',
+            },
+            previewInspectorSession.pickerEnabled ? 'Cancel pick' : 'Pick on page',
+          ),
+          React.createElement(PreviewInspectorHiddenElementControls),
+          React.createElement(
+            PreviewInspectorDevtoolsButton,
+            {
+              onClick: () => setPreviewInspectorHighlightEnabled(!previewInspectorSession.highlightEnabled),
+              pressed: previewInspectorSession.highlightEnabled,
+              title: 'Toggle selected target highlight',
+            },
+            'Highlight',
+          ),
+          React.createElement(
+            PreviewInspectorDevtoolsButton,
+            {
+              onClick: () => {
+                const next = !wireframeVisible;
+                previewInspectorDevtoolsSessionState.wireframeVisible = next;
+                setWireframeVisible(next);
+                persistPreviewInspectorState();
+              },
+              pressed: wireframeVisible,
+              title: 'Toggle the full-page React component placement wireframe',
+            },
+            'Wireframe',
+          ),
+          React.createElement('select', {
+            'aria-label': 'Instrumented target export',
+            className: 'rpi-select',
+            onChange: (event) => selectPreviewInspectorExport(event.target.value),
+            value: previewInspectorSession.selectedExportName,
+          }, previewInspectorSession.descriptorNames.map((name) => React.createElement(
+            'option',
+            { key: name, value: name },
+            formatPreviewInspectorEntryName(name),
+          ))),
+          React.createElement(
+            PreviewInspectorDevtoolsButton,
+            {
+              disabled: !editable,
+              onClick: () => remountPreviewInspectorExport(selectedNode.exportName),
+              title: editable ? 'Remount the instrumented component' : 'Only instrumented targets can remount',
+            },
+            'Remount',
+          ),
+          React.createElement('span', { className: 'rpi-meta', title: previewInspectorSession.highlightStatus }, previewInspectorSession.highlightStatus),
+          React.createElement('span', { className: 'rpi-spacer' }),
+          React.createElement(PreviewInspectorLayoutSelect, {
+            layout,
+            persistLayout,
+            updateLayout,
+          }),
+          React.createElement(
+            PreviewInspectorDevtoolsButton,
+            {
+              onClick: () => setCollapsed((current) => {
+                const next = !current;
+                previewInspectorDevtoolsSessionState.collapsed = next;
+                persistPreviewInspectorState();
+                return next;
+              }),
+              title: collapsed ? 'Expand inspector' : 'Collapse inspector',
+            },
+            collapsed ? 'Expand' : 'Collapse',
+          ),
         ),
       ),
       React.createElement(
-        'div',
+        PreviewInspectorShellRegionHeightHandle,
         {
-          'aria-label': 'Rendered page component context',
-          className: 'rpi-page-context',
-          'data-context-kind': pageContext.kind,
-          title: pageContext.breadcrumb + ' · ' + pageContext.detail,
+          contentId: 'rpi-page-context-section',
+          label: 'Page context',
+          regionName: 'context',
+          resizeId: 'shell-page-context',
         },
-        React.createElement('span', { className: 'rpi-context-badge' }, pageContext.badge),
-        React.createElement('span', { className: 'rpi-context-path' }, pageContext.breadcrumb),
-        React.createElement('span', { className: 'rpi-context-detail' }, pageContext.detail),
-        React.createElement(PreviewInspectorPageCandidateSelect, {
-          descriptor: findSelectedPreviewInspectorDescriptor(),
-        }),
+        React.createElement(
+          'div',
+          {
+            'aria-label': 'Rendered page component context',
+            className: 'rpi-page-context',
+            'data-context-kind': pageContext.kind,
+            id: 'rpi-page-context-section',
+            title: pageContext.breadcrumb + ' · ' + pageContext.detail,
+          },
+          React.createElement('span', { className: 'rpi-context-badge' }, pageContext.badge),
+          React.createElement('span', { className: 'rpi-context-path' }, pageContext.breadcrumb),
+          React.createElement('span', { className: 'rpi-context-detail' }, pageContext.detail),
+          React.createElement(PreviewInspectorPageCandidateSelect, {
+            descriptor: findSelectedPreviewInspectorDescriptor(),
+          }),
+        ),
       ),
       React.createElement(
         'div',
@@ -953,11 +987,9 @@ function PreviewPageInspectorShell({ descriptors, children }) {
     };
   }, [descriptors, portalHost]);
   const toolbar = React.createElement(PreviewInspectorToolbar);
+  const portalRoot = portalHost.__reactPreviewInspectorPortalRoot ?? portalHost;
   const portal = typeof ReactDOMNamespace.createPortal === 'function'
-    ? ReactDOMNamespace.createPortal(
-        toolbar,
-        portalHost.__reactPreviewInspectorPortalRoot ?? portalHost,
-      )
+    ? ReactDOMNamespace.createPortal(toolbar, portalRoot)
     : null;
   return React.createElement(React.Fragment, undefined, children, portal);
 }

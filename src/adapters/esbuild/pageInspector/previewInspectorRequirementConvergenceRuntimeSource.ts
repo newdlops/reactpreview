@@ -190,7 +190,7 @@ function stopPreviewInspectorRequirementConvergence(state, search, status, cycle
       'Passes: ' + String(convergence.totalPasses) + '/' +
         String(PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT),
       cycleLength > 0 ? 'Detected cycle length: ' + String(cycleLength) : '',
-      'Use Retry page corridor or Find minimum requirements to explicitly start a fresh search.',
+      'Use Try page again or Auto-find missing values to explicitly start a fresh search.',
     ].filter(Boolean).join('\n');
     if (typeof recordPreviewInspectorConsoleEntry === 'function') {
       recordPreviewInspectorConsoleEntry({

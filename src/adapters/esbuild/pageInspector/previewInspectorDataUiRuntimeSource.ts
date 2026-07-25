@@ -182,8 +182,8 @@ function PreviewInspectorDataDetail({ requestId, requestIds } = {}) {
           React.Fragment,
           undefined,
           React.createElement(
-            'div',
-            { className: 'rpi-source-card' },
+            PreviewInspectorResizableCard,
+            { resizeId: 'backend-request:' + String(selectedRequest.id) },
             React.createElement(
               'strong',
               undefined,
@@ -285,8 +285,12 @@ function PreviewInspectorDataDetail({ requestId, requestIds } = {}) {
           ),
           resourceStateDiffers
             ? React.createElement(
-                'details',
-                { className: 'rpi-source-card', open: true },
+                PreviewInspectorResizableCard,
+                {
+                  as: 'details',
+                  open: true,
+                  resizeId: 'backend-resource:' + String(selectedRequest.id),
+                },
                 React.createElement('summary', undefined, 'Current virtual resource response'),
                 React.createElement(
                   'pre',

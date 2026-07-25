@@ -47,6 +47,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("event: 'page-composition-snapshot'");
     expect(source).toContain('function PreviewInspectorResizeHandle');
     expect(source).toContain('function PreviewInspectorMoveHandle');
+    expect(source).toContain('function PreviewInspectorSectionHeightHandle');
+    expect(source).toContain('function PreviewInspectorShellRegionHeightHandle');
+    expect(source).toContain('function PreviewInspectorCardHeightHandle');
+    expect(source).toContain('function PreviewInspectorResizableCard');
     expect(source).toContain('beginPreviewInspectorLayoutPointerGesture');
     expect(source).toContain('const pageContext = readPreviewInspectorPageContext()');
     expect(source).toContain('title: "Go to the current file\'s main component"');
@@ -110,8 +114,10 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'File components (all exports)'");
     expect(source).toContain("'Current-file component overview'");
     expect(source).toContain("'FILE COMPONENTS'");
-    expect(source).toContain("'TARGET ABSENT'");
-    expect(source).toContain("'TARGET EMPTY'");
+    expect(source).toContain("'NOT ON THIS PATH'");
+    expect(source).toContain("'NOT VISIBLE'");
+    expect(source).toContain("'CALLBACK WAITING'");
+    expect(source).toContain("'Visibility path'");
     expect(source).toContain("'Rendered flow does not contain the current file'");
     expect(source).toContain('React Preview does not classify this application outcome.');
     expect(source).toContain("'aria-label': 'Inspector tree legend'");
@@ -137,6 +143,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     const source = createPreviewInspectorDevtoolsUiRuntimeSource();
     const detailsStart = source.indexOf('function PreviewInspectorDetailsPane');
     const toolbarStart = source.indexOf('function PreviewInspectorToolbar');
+    const toolbarSource = source.slice(toolbarStart);
     const detailsSource = source.slice(detailsStart, toolbarStart);
 
     expect(detailsSource).toContain('function PreviewInspectorDetailsPane({ node, view })');
@@ -147,6 +154,30 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("className: 'rpi-components-body'");
     expect(source).toContain("'data-rpi-scroll-key': 'components-tree'");
     expect(source).toContain("'data-rpi-scroll-key': 'components-selection-detail'");
+    expect(source).toContain("resizeId: 'components-tree-and-selection'");
+    expect(source).toContain("resizeId: 'shell-toolbar'");
+    expect(source).toContain("resizeId: 'shell-page-context'");
+    expect(source).toContain("regionName: 'toolbar'");
+    expect(source).toContain("regionName: 'context'");
+    expect(source).toContain("label: 'Inspector controls'");
+    expect(source).toContain("label: 'Page context'");
+    expect(source).toContain("id: 'rpi-selection-details-section'");
+    expect(toolbarSource.indexOf("label: 'Inspector controls'")).toBeLessThan(
+      toolbarSource.indexOf("className: 'rpi-toolbar'"),
+    );
+    expect(toolbarSource.indexOf("label: 'Page context'")).toBeLessThan(
+      toolbarSource.indexOf("className: 'rpi-page-context'"),
+    );
+    expect(source).toContain(
+      'grid-template-rows:minmax(72px,var(--rpi-primary-section-height,3fr)) 9px 28px minmax(72px,2fr)',
+    );
+    expect(source).toContain(
+      'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(0,1fr)',
+    );
+    expect(source).toContain("resizeId: 'component-source:'");
+    expect(source).toContain("resizeId: 'render-condition:'");
+    expect(source).toContain("resizeId: 'backend-request:'");
+    expect(source).toContain("resizeId: 'runtime-fallback:'");
     expect(source).toContain(
       "React.createElement(PreviewInspectorDetailsPane, { node, view: 'details' })",
     );
@@ -294,7 +325,7 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("label: 'COMPONENT'");
     expect(source).toContain("label: 'BLOCKER'");
     expect(source).toContain("'BLOCKS PAGE · CLICK TO FIX'");
-    expect(source).toContain("'AUTHORED FLOW · TARGET ABSENT'");
+    expect(source).toContain("'AUTHORED FLOW · NOT ON THIS PATH'");
     expect(source).toContain("label: 'FLOW OUTCOME'");
     expect(source).toContain('rpi-flow-outcome-row');
     expect(source).toContain('isPreviewInspectorBlockingNode(node)');

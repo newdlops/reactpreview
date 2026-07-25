@@ -44,8 +44,8 @@ function PreviewInspectorRuntimeFallbackDetail() {
             : 'Render-only fallbacks are off; authored runtime failures are preserved.',
         )
       : fallbacks.map((fallback) => React.createElement(
-          'div',
-          { className: 'rpi-source-card', key: fallback.id },
+          PreviewInspectorResizableCard,
+          { key: fallback.id, resizeId: 'runtime-fallback:' + String(fallback.id) },
           React.createElement(
             'strong',
             undefined,

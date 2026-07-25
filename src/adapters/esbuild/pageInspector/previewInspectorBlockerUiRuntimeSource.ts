@@ -204,10 +204,10 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
     id: blocker.id,
     kind: 'blocker',
     name: (deferredCallbackPending
-      ? 'Render callback not invoked · '
+      ? 'Render callback is waiting · '
       : wrapperHostOnly
-      ? 'Target authored JSX absent · '
-      : mountedWithoutOutput ? 'Target produced no host output · ' : 'Target not reached · ') +
+      ? 'Fallback shown instead · '
+      : mountedWithoutOutput ? 'No visible element · ' : 'Current file not used · ') +
         blocker.targetExportName,
     props: {
       applicationPath: blocker.applicationPath,
@@ -514,6 +514,8 @@ function PreviewInspectorBlockerGuide({ node }) {
   const blocking = isPreviewInspectorBlockingNode(node);
   const targetAbsent = node?.blockerKind === 'target-reachability' &&
     node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
+  const targetInvisible = node?.blockerKind === 'target-reachability' &&
+    node?.blocker?.targetMounted === true && node?.blocker?.targetHasOutput !== true;
   const runtimeGlobal = node?.blockerKind === 'runtime-global';
   let detail = 'The page can continue, but you can inspect or replace the generated value below.';
   let helpKind = 'assisted';
@@ -543,7 +545,20 @@ function PreviewInspectorBlockerGuide({ node }) {
     detail = 'This may be a valid application outcome. Compare another Page path, inspect File components, or provide path values when static evidence is sufficient.';
     helpKind = 'flow-outcome';
     icon = '↳';
-    title = 'The authored page rendered without mounting this current-file component.';
+    title = 'This page path did not use the current file.';
+  } else if (targetInvisible) {
+    const callbackWaiting = node.blocker?.targetDeferredCallbackPending === true;
+    const fallbackShown = node.blocker?.targetHasAnyHostOutput === true;
+    detail = callbackWaiting
+      ? 'The parent has this file as render content, but has not called it yet. Find the value or condition that enables the callback.'
+      : fallbackShown
+        ? 'A wrapper or fallback is visible instead. Find the condition or missing value that selects the authored content.'
+        : 'This file ran, but the current branch returned no visible element. Check the nearest OFF condition, missing value, or null return.';
+    helpKind = 'blocking';
+    icon = '!';
+    title = callbackWaiting
+      ? 'Waiting for the parent to render this file.'
+      : fallbackShown ? 'A fallback is visible instead of this file.' : 'This file is not visible yet.';
   } else if (blocking) {
     detail = 'Use Smart fill to add only proven missing values, or enter a value below; the page remounts after applying it.';
     helpKind = 'blocking';
@@ -819,6 +834,16 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const minimumSearch = blocker.minimumRequirementSearch;
   const resolving = blocker.status === 'settling-auto-attempt' || minimumSearch?.status === 'searching';
   const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status);
+  const invisibleExplanation = deferredCallbackPending
+    ? 'This file is waiting for its parent to call the render callback.'
+    : wrapperHostOnly
+      ? 'A wrapper or fallback is visible instead of this file’s authored content.'
+      : 'This file ran, but the current branch produced no visible element.';
+  const searchStatusLabel = minimumSearch?.status === 'cycle-detected'
+    ? 'stopped: the same values repeated'
+    : minimumSearch?.status === 'limit-reached'
+      ? 'stopped: pass limit reached'
+      : minimumSearch?.status === 'settled' ? 'finished' : minimumSearch?.status;
   return React.createElement(
     'div',
     { className: 'rpi-detail-content' },
@@ -827,73 +852,61 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
       { className: 'rpi-error', role: 'alert' },
       circuitOpen
         ? minimumSearch.status === 'cycle-detected'
-          ? 'Automatic resolution stopped because the same generated requirement state repeated.' +
-            (targetMountedWithoutOutput
-              ? deferredCallbackPending
-                ? ' The selected target is mounted, but its receiver has not invoked the authored render callback.'
-                : ' The selected target is mounted, but its authored JSX is still absent.'
-              : '')
-          : 'Automatic resolution stopped at its bounded pass limit.' +
-            (targetMountedWithoutOutput
-              ? deferredCallbackPending
-                ? ' The selected target is mounted, but its receiver has not invoked the authored render callback.'
-                : ' The selected target is mounted, but its authored JSX is still absent.'
-              : '')
+          ? 'Automatic search stopped because it kept generating the same preview values.' +
+            (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
+          : 'Automatic search stopped after its safe pass limit.' +
+            (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
         : direct
-          ? 'Target-only diagnostic mode is active; authored page context is not successful.'
+          ? 'File-only view is active. Return to the page to inspect the real layout.'
           : pageCommitted
             ? targetMountedWithoutOutput
-              ? deferredCallbackPending
-                ? 'The selected target mounted, but its receiver has not invoked the authored render callback.'
-                : wrapperHostOnly
-                ? 'The selected target mounted and produced wrapper or fallback DOM, but its authored JSX subtree is absent.'
-                : 'The selected target mounted in the authored page, but produced no host output.'
-              : 'The authored page committed, but never mounted ' + blocker.targetExportName + '.'
-            : 'The authored page root has not committed yet.',
+              ? invisibleExplanation
+              : 'The page loaded, but this path did not use ' + blocker.targetExportName + '.'
+            : 'The page is still loading.',
     ),
     React.createElement('div', { className: 'rpi-note' },
-      'Page root: ' + blocker.rootName + ' · ' + (pageCommitted ? 'committed' : 'not committed')),
+      'Page: ' + blocker.rootName + ' · ' + (pageCommitted ? 'loaded' : 'still loading')),
     React.createElement('div', { className: 'rpi-note' },
-      'Selected target: ' + blocker.targetExportName + ' · ' +
+      'Current file: ' + blocker.targetExportName + ' · ' +
       (targetMountedWithoutOutput
         ? deferredCallbackPending
-          ? 'mounted · render callback pending'
+          ? 'connected · waiting for parent callback'
           : wrapperHostOnly
-          ? 'mounted · wrapper/fallback host only · authored JSX absent'
-          : 'mounted · no host output'
+          ? 'ran · fallback visible instead'
+          : 'ran · no visible element'
         : targetMounted
-          ? 'mounted · host output connected'
-          : 'not mounted')),
+          ? 'visible'
+          : 'not used on this path')),
     React.createElement('div', { className: 'rpi-note' },
-      'Application path: ' + blocker.applicationPath.join(' > ')),
+      'Page path: ' + blocker.applicationPath.join(' > ')),
     blocker.appliedConditions.length > 0
       ? React.createElement('div', { className: 'rpi-note' },
-          'DFS pass gates: ' + blocker.appliedConditions
+          'Conditions automatically used for this path: ' + blocker.appliedConditions
             .map((condition) => condition.expression + ' = ' + String(condition.enabled))
             .join(', '))
       : React.createElement('div', { className: 'rpi-note' },
           targetMountedWithoutOutput
             ? deferredCallbackPending
-              ? 'The receiver must obtain its minimum payload before it can invoke the current file render callback.'
-              : 'No target-local Boolean gate has been applied yet; a child render contract or payload may be the next requirement.'
-            : 'No statically proven login/session/permission gate has been passed yet.'),
+              ? 'Next likely cause: the parent needs data before it calls this render callback.'
+              : 'Next likely cause: an OFF condition, missing data, or a child that intentionally returns nothing.'
+            : 'No login, session, or permission condition has been proven for this path yet.'),
     requiredPathSummary.totalCount > 0
       ? React.createElement('div', { className: 'rpi-note' },
-          'Payload properties discovered downstream (' +
+          'Possible data needed next (' +
           String(requiredPathSummary.totalCount) + '): ' +
           requiredPathSummary.visiblePaths.join(', ') +
           (requiredPathSummary.remainingCount > 0
             ? ' · +' + String(requiredPathSummary.remainingCount) + ' more'
             : ''))
       : React.createElement('div', { className: 'rpi-note' },
-          'Downstream payload fields will appear here as each additional branch is reached.'),
+          'No required data field has been observed yet. More fields appear as additional branches run.'),
     minimumSearch === undefined
       ? undefined
       : React.createElement('div', { className: 'rpi-note' },
-          'Minimum requirement search: pass ' + String(minimumSearch.pass) + '/' +
+          'Automatic requirement search: pass ' + String(minimumSearch.pass) + ' of ' +
           String(PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT) + ' · ' +
-          minimumSearch.status + ' · ' + String(minimumSearch.observedPathCount) +
-          ' required path(s) observed.' +
+          searchStatusLabel + ' · ' + String(minimumSearch.observedPathCount) +
+          ' possible field(s) seen.' +
           (minimumSearch.cycleLength > 0
             ? ' Repeated cycle length: ' + String(minimumSearch.cycleLength) + '.'
             : '')),
@@ -907,7 +920,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
           onClick: () => smartFillPreviewInspectorTargetApplicationPath(blocker),
           title: 'Follow newly revealed hook and backend fields in bounded passes, fill their minimum shape, and retry the authored page',
         },
-        resolving ? 'Resolving…' : 'Find minimum requirements',
+        resolving ? 'Searching…' : 'Auto-find missing values',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
@@ -916,7 +929,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
             ? returnPreviewInspectorToPageContext
             : retryPreviewInspectorTargetApplicationPath,
         },
-        direct ? 'Return to page context' : 'Retry page corridor',
+        direct ? 'Return to page' : 'Try page again',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
@@ -924,11 +937,11 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
           disabled: direct || blocker.directTargetAvailable !== true,
           onClick: showPreviewInspectorTargetDirectly,
         },
-        'Target-only diagnostic',
+        'Show file by itself',
       ),
     ),
     React.createElement('div', { className: 'rpi-note' },
-      'Automatic values are preview-only. Explicit condition and payload edits still take precedence over DFS inference.'),
+      'Preview values never change source code or backend data. Your manual condition and payload choices stay in control.'),
   );
 }
 

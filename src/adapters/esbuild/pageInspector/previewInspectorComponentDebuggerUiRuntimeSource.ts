@@ -129,8 +129,8 @@ function PreviewInspectorComponentRenderStateControl({ node }) {
   const targetGuided = typeof condition?.autoOverride === 'boolean';
   const effective = condition?.effectiveEnabled === true;
   return React.createElement(
-    'div',
-    { className: 'rpi-source-card' },
+    PreviewInspectorResizableCard,
+    { resizeId: 'render-condition:' + String(condition?.id ?? node?.id ?? 'condition') },
     React.createElement('strong', undefined, condition?.expression ?? 'Conditional render'),
     React.createElement(
       'div',
@@ -236,8 +236,8 @@ function PreviewInspectorComponentRenderStateDetail({ node, scope }) {
           { key: conditionNode.id, node: conditionNode },
         )),
     hiddenElements.map((summary) => React.createElement(
-      'div',
-      { className: 'rpi-source-card', key: summary.id },
+      PreviewInspectorResizableCard,
+      { key: summary.id, resizeId: 'hidden-host:' + String(summary.id) },
       React.createElement('strong', undefined, 'Hidden host · ' + summary.label),
       React.createElement(
         'div',
@@ -271,8 +271,8 @@ function PreviewInspectorComponentSourceEvidenceDetail({ node, scope }) {
     { className: 'rpi-detail-content' },
     React.createElement(PreviewInspectorSourceDetail, { node }),
     React.createElement(
-      'div',
-      { className: 'rpi-source-card' },
+      PreviewInspectorResizableCard,
+      { resizeId: 'component-ownership:' + String(node?.id ?? 'selection') },
       React.createElement('strong', undefined, 'Component ownership evidence'),
       React.createElement('div', { className: 'rpi-note' }, 'Tree identity: ' + String(node?.id ?? 'unknown')),
       React.createElement('div', { className: 'rpi-note' }, 'Runtime name: ' + String(node?.name ?? 'unknown')),

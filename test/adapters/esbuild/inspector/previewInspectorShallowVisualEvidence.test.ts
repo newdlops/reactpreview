@@ -120,8 +120,60 @@ describe('collectPreviewInspectorShallowVisualEvidence', () => {
     expect(
       evidence.paths.find((visualPath) => visualPath.sourcePath === '/workspace/Header.tsx'),
     ).toMatchObject({
+      invocation: { mode: 'component-prop', slotName: 'headerComponent' },
       relation: 'component-prop',
       renderedLocalName: 'Header',
+    });
+  });
+
+  /**
+   * Preserves the render-callback transport used by route factories.
+   *
+   * The callback's returned layout cannot be mounted as a normal `children` node: the factory must
+   * execute so it can inject its page routes and supply the callback function expected by data
+   * boundaries. VirtualPage planning consumes this exact evidence to retain that authentic owner.
+   */
+  it('marks route-factory callback layouts as render-prop evidence', () => {
+    const sourceText = [
+      "import { createAppModule } from './createAppModule';",
+      "import QueryRenderer from './QueryRenderer';",
+      "import PortalLayout from './PortalLayout';",
+      "import TargetPage from './TargetPage';",
+      "import { Route } from 'react-router-dom';",
+      'export const PortalApp = createAppModule(',
+      "  '/portal',",
+      '  { TargetPage },',
+      '  [],',
+      '  ({ pageRoutes }) => (',
+      '    <QueryRenderer>',
+      '      {() => <PortalLayout>{pageRoutes}<Route path="*" /></PortalLayout>}',
+      '    </QueryRenderer>',
+      '  ),',
+      ');',
+    ].join('\n');
+
+    const evidence = collectPreviewInspectorShallowVisualEvidence({
+      importerPath: '/workspace/PortalApp.tsx',
+      ownerExportName: 'PortalApp',
+      resolveModule: createResolver({
+        './PortalLayout': '/workspace/PortalLayout.tsx',
+        './QueryRenderer': '/workspace/QueryRenderer.tsx',
+        './TargetPage': '/workspace/TargetPage.tsx',
+      }),
+      selectedChildPath: '/workspace/TargetPage.tsx',
+      sourceText,
+    });
+
+    expect(
+      evidence.paths.find((visualPath) => visualPath.sourcePath === '/workspace/PortalLayout.tsx'),
+    ).toMatchObject({
+      invocation: {
+        calleeName: 'QueryRenderer',
+        mode: 'render-prop',
+        slotName: 'children',
+      },
+      relation: 'component-prop',
+      renderedLocalName: 'PortalLayout',
     });
   });
 

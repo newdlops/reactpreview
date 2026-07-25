@@ -92,6 +92,11 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain(
       'function __reactPreviewComposeVirtualPage(modules, exportName, shellExportNames, recipe)',
     );
+    expect(source).toContain('function __reactPreviewReadPageName(recipe, exportName)');
+    expect(source).toContain(
+      'displayName: { value: `PagePreview(${__reactPreviewReadPageName(recipe, exportName)})` }',
+    );
+    expect(source).not.toContain('displayName: { value: `VirtualPage(');
     expect(source).toContain(
       'directTarget: true, id: "direct-target:Target", targetExportName: "Target", load: () => import("react-preview:inspector-direct-target/Target").then((module) => module.default)',
     );

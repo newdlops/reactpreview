@@ -245,6 +245,134 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     ]);
   });
 
+  /**
+   * Route factories commonly keep many mutually exclusive page endpoints in one object/callback.
+   * Their imports share an owner with genuine page chrome, so exact candidate identity and the
+   * final semantic role must prevent alternate pages from becoming simultaneous visual siblings.
+   */
+  it('keeps page chrome but excludes competing endpoints from a route catalog', () => {
+    const application = createCandidate({
+      complete: true,
+      id: 'application-root',
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootStepIndex: 2,
+      stopReason: 'root-reached',
+    });
+    const selectedPage = createCandidate({
+      id: 'selected-page',
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+    });
+    const reportsPath = '/workspace/pages/reports.tsx';
+    const reportsPage = createCandidate({
+      id: 'reports-page',
+      root: { exportName: 'Reports', sourcePath: reportsPath },
+      rootStepIndex: 1,
+    });
+    const visualPath = (
+      exportName: string,
+      sourcePath: string,
+      occurrenceStart: number,
+    ): PreviewInspectorOneHopVisualPath => ({
+      exportName,
+      importerPath: APP_PATH,
+      importKind: 'static',
+      localEdges: [],
+      moduleSpecifier: `./${exportName}`,
+      occurrenceStart,
+      relation: 'sibling',
+      renderedLocalName: exportName,
+      renderBoundaryStart: 10,
+      selectedChildPath: PAGE_PATH,
+      selectedOccurrenceStart: 50,
+      sourcePath,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(
+      [application, selectedPage, reportsPage],
+      1,
+      [
+        visualPath('PrimaryNavigation', '/workspace/application/PrimaryNavigation.tsx', 20),
+        visualPath('Reports', reportsPath, 30),
+        visualPath('UserSettingsPage', '/workspace/pages/user-settings.tsx', 40),
+        visualPath('PageAction', '/workspace/application/PageAction.tsx', 60),
+      ],
+    );
+
+    expect(virtualPage?.recipe.shells.map((shell) => shell.root.exportName)).toEqual([
+      'PrimaryNavigation',
+      'PageAction',
+    ]);
+  });
+
+  /**
+   * A route factory may receive its selected page and JSX-producing layout callback separately.
+   * The callback owner must run intact so injected routes and function-child contracts survive.
+   */
+  it('promotes the nearest route-factory render callback into an authentic owner shell', () => {
+    const factoryPath = '/workspace/application/PortalApp.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'route-factory-corridor',
+      steps: [
+        readRenderPathStep(0),
+        readRenderPathStep(1),
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'PortalApp',
+          occurrenceStart: 25,
+          sourcePath: factoryPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(2),
+      ],
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'application-with-route-factory',
+      renderPath,
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootStepIndex: 3,
+      stopReason: 'root-reached',
+    });
+    const page = createCandidate({
+      id: 'page-inside-route-factory',
+      renderPath,
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates([application, page], 1, [
+      {
+        exportName: 'PortalLayout',
+        importerPath: factoryPath,
+        importKind: 'static',
+        invocation: {
+          calleeName: 'QueryRenderer',
+          mode: 'render-prop',
+          slotName: 'children',
+        },
+        localEdges: [],
+        moduleSpecifier: './PortalLayout',
+        occurrenceStart: 40,
+        relation: 'component-prop',
+        renderedLocalName: 'PortalLayout',
+        renderBoundaryStart: 20,
+        selectedChildPath: PAGE_PATH,
+        sourcePath: '/workspace/application/PortalLayout.tsx',
+      },
+    ]);
+
+    expect(virtualPage?.recipe.shells).toEqual([
+      {
+        importerPath: factoryPath,
+        relation: 'owner',
+        root: { exportName: 'PortalApp', sourcePath: factoryPath },
+      },
+    ]);
+  });
+
   /** Rejects mutually exclusive route-layout siblings instead of stacking every catalog branch. */
   it('omits ambiguous sibling layouts owned by the same route catalog', () => {
     const application = createCandidate({

@@ -216,7 +216,11 @@ function findCorridorOwnerExportName(
  * and make esbuild traverse an inactive page graph during first paint.
  */
 function isDeferredLazyComponentChoice(visualPath: PreviewInspectorOneHopVisualPath): boolean {
-  return visualPath.importKind === 'react-lazy' && visualPath.relation === 'component-prop';
+  return (
+    visualPath.importKind === 'react-lazy' &&
+    visualPath.relation === 'component-prop' &&
+    visualPath.invocation?.mode !== 'render-prop'
+  );
 }
 
 /** Removes duplicate evidence caused by equivalent outcomes or repeated sibling occurrences. */
@@ -232,6 +236,9 @@ function deduplicateShallowVisualPaths(
       visualPath.exportName,
       visualPath.renderedLocalName,
       visualPath.relation,
+      visualPath.invocation?.mode,
+      visualPath.invocation?.calleeName,
+      visualPath.invocation?.slotName,
       visualPath.renderBoundaryStart,
       visualPath.occurrenceStart,
       visualPath.selectedOccurrenceStart,

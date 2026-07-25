@@ -109,7 +109,12 @@ export function createPreviewInspectorVirtualPageCandidates(
       candidates,
       authoredCandidate,
     );
-    const recipe = createVirtualPageRecipe(authoredCandidate, contentCandidate, shallowVisualPaths);
+    const recipe = createVirtualPageRecipe(
+      authoredCandidate,
+      contentCandidate,
+      shallowVisualPaths,
+      candidates,
+    );
     const emittedKey = createVirtualPageEmissionKey(authoredCandidate, contentCandidate);
     if (emittedKeys.has(emittedKey)) continue;
     emittedKeys.add(emittedKey);
@@ -180,6 +185,7 @@ function createVirtualPageRecipe(
   authoredCandidate: PreviewInspectorPageCandidate,
   contentCandidate: PreviewInspectorPageCandidate,
   shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[],
+  pageCandidates: readonly PreviewInspectorPageCandidate[],
 ): PreviewInspectorVirtualPageRecipe {
   const authoredStepIndex = authoredCandidate.rootStepIndex;
   const contentStepIndex = contentCandidate.rootStepIndex;
@@ -206,7 +212,12 @@ function createVirtualPageRecipe(
   const mode = readVirtualPageMode(authoredCandidate, contentCandidate);
   const shells =
     mode === 'static-page-checkpoint'
-      ? collectVirtualPageShells(omittedOuterPath, contentCandidate, shallowVisualPaths)
+      ? collectVirtualPageShells(
+          omittedOuterPath,
+          contentCandidate,
+          shallowVisualPaths,
+          pageCandidates,
+        )
       : Object.freeze([]);
   return Object.freeze({
     authoredRoot: authoredCandidate.root,
@@ -233,13 +244,29 @@ function collectVirtualPageShells(
   omittedOuterPath: readonly PreviewInspectorVirtualPagePathStep[],
   contentCandidate: PreviewInspectorPageCandidate,
   shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[],
+  pageCandidates: readonly PreviewInspectorPageCandidate[],
 ): readonly PreviewInspectorVirtualPageShell[] {
   const outerIndexBySource = new Map(
     omittedOuterPath.map((step, index) => [path.normalize(step.sourcePath), index]),
   );
-  const ownerSteps = omittedOuterPath.filter(isVirtualPageOwnerStep);
+  const callbackOwnerStep = findNearestVirtualPageRenderCallbackOwner(
+    omittedOuterPath,
+    shallowVisualPaths,
+  );
+  const ownerSteps = omittedOuterPath.filter(
+    (step) => isVirtualPageOwnerStep(step) || step === callbackOwnerStep,
+  );
   const ownerSourcePaths = new Set(ownerSteps.map((step) => path.normalize(step.sourcePath)));
   const contentPath = path.normalize(contentCandidate.root.sourcePath);
+  const competingPageRootKeys = new Set(
+    pageCandidates
+      .filter(
+        (candidate) =>
+          path.normalize(candidate.root.sourcePath) !== contentPath ||
+          candidate.root.exportName !== contentCandidate.root.exportName,
+      )
+      .map((candidate) => createVirtualPageRootKey(candidate.root)),
+  );
   const ambiguousFrameImporters = collectAmbiguousVisualFrameImporters(
     shallowVisualPaths,
     outerIndexBySource,
@@ -262,6 +289,18 @@ function collectVirtualPageShells(
        * imports outside the owner would duplicate navigation and headers around its child slot.
        */
       if (ownerSourcePaths.has(path.normalize(visualPath.importerPath))) return false;
+      /*
+       * Route factories and page catalogs often expose every page component through one callback or
+       * object owner. In incomplete syntax evidence those mutually exclusive entries can look like
+       * ordinary siblings. A VirtualPage may retain Header/Sidebar siblings, but it must never stack
+       * another page endpoint beside the selected page; that endpoint remains a separate candidate.
+       */
+      if (
+        visualPath.relation === 'sibling' &&
+        isCompetingVisualPageSibling(visualPath, competingPageRootKeys)
+      ) {
+        return false;
+      }
       if (
         visualPath.relation !== 'wrapper' &&
         ambiguousFrameImporters.has(path.normalize(visualPath.importerPath))
@@ -339,10 +378,87 @@ function collectVirtualPageShells(
   return Object.freeze(shells);
 }
 
+/** Creates one normalized component identity for route-page de-duplication. */
+function createVirtualPageRootKey(root: PreviewInspectorPageCandidate['root']): string {
+  return `${path.normalize(root.sourcePath)}\0${root.exportName}`;
+}
+
+/**
+ * Identifies a mutually exclusive page endpoint without confusing PageHeader or PageAction chrome.
+ *
+ * Exact candidate identity is the strongest evidence. The suffix fallback covers lazy/barrel route
+ * catalogs where the checkpoint points at a concrete implementation but one-hop evidence still
+ * references the named re-export. Only sibling relations use this rule; a page-shaped component
+ * proven to wrap the selected child remains authored composition.
+ */
+function isCompetingVisualPageSibling(
+  visualPath: PreviewInspectorOneHopVisualPath,
+  competingPageRootKeys: ReadonlySet<string>,
+): boolean {
+  if (
+    competingPageRootKeys.has(
+      createVirtualPageRootKey({
+        exportName: visualPath.exportName,
+        sourcePath: visualPath.sourcePath,
+      }),
+    )
+  ) {
+    return true;
+  }
+  const sourceStem = path.basename(visualPath.sourcePath).replace(/\.[^.]+$/u, '');
+  return [visualPath.exportName, visualPath.renderedLocalName, sourceStem].some(
+    hasPageEndpointSuffix,
+  );
+}
+
+/** Matches only a final page-role word so PageHeader, PageAction, and PageLayout remain visible. */
+function hasPageEndpointSuffix(identity: string): boolean {
+  const separated = identity
+    .replace(/([\p{Ll}\d])(\p{Lu})/gu, '$1 $2')
+    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, '$1 $2');
+  const finalToken = separated
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .at(-1);
+  return finalToken === 'page' || finalToken === 'screen' || finalToken === 'view';
+}
+
 /** Recognizes corridor components safe and useful enough to execute as complete page owners. */
 function isVirtualPageOwnerStep(step: PreviewInspectorVirtualPagePathStep): boolean {
   const tokens = tokenizeComponentIdentity(`${step.label} ${path.basename(step.sourcePath)}`);
   return hasAnyToken(tokens, ['layout', 'shell', 'frame', 'scaffold', 'chrome']);
+}
+
+/**
+ * Finds the nearest route-factory owner whose callback returns the page's authentic visual frame.
+ *
+ * Some application factories receive their page catalog in one argument and a JSX-producing
+ * callback in another. Static one-hop evidence then sees the selected page and callback layout as
+ * component slots owned by the same exported value. Flattening those slots loses injected routes
+ * and passes a ReactNode where receivers expect `children()`; executing the exact corridor owner
+ * preserves both contracts. Only the innermost proven owner is selected so outer app bootstraps do
+ * not re-enter expensive or unrelated route registries.
+ */
+function findNearestVirtualPageRenderCallbackOwner(
+  omittedOuterPath: readonly PreviewInspectorVirtualPagePathStep[],
+  visualPaths: readonly PreviewInspectorOneHopVisualPath[],
+): PreviewInspectorVirtualPagePathStep | undefined {
+  const renderCallbackImporters = new Set(
+    visualPaths
+      .filter(
+        (visualPath) =>
+          visualPath.relation === 'component-prop' && visualPath.invocation?.mode === 'render-prop',
+      )
+      .map((visualPath) => path.normalize(visualPath.importerPath)),
+  );
+  return [...omittedOuterPath]
+    .reverse()
+    .find(
+      (step) =>
+        step.kind === 'route-branch' &&
+        renderCallbackImporters.has(path.normalize(step.sourcePath)),
+    );
 }
 
 /**

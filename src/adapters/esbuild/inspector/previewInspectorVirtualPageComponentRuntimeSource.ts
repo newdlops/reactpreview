@@ -34,6 +34,9 @@ const renderableObjectTypes = new Set([
   Symbol.for('react.memo'),
 ]);
 
+/** React wrapper names that reveal implementation mechanics instead of the authored component. */
+const unhelpfulComponentNames = new Set(['Component', 'ForwardRef', 'Memo', 'default']);
+
 /** Registers an authentic source before its first render-condition lookup. */
 export function registerVirtualPageSource(sourcePath) {
   globalThis[inspectorApiKey]?.registerVirtualPageSource?.(sourcePath);
@@ -58,6 +61,32 @@ function copyComponentStatics(source, target) {
       // Frozen framework component objects may reject optional metadata forwarding.
     }
   }
+}
+
+/**
+ * Preserves the authored component identity in the tree instead of labeling every isolated facade
+ * as another VirtualPage. Named components win; named exports come next; default anonymous exports
+ * receive a readable PascalCase name derived from their source file.
+ */
+function readVirtualPageComponentName(Component, exportName, sourcePath) {
+  const authoredName = typeof Component?.displayName === 'string' && Component.displayName.length > 0
+    ? Component.displayName
+    : typeof Component?.name === 'string' && Component.name.length > 0
+      ? Component.name
+      : undefined;
+  if (authoredName !== undefined && !unhelpfulComponentNames.has(authoredName)) return authoredName;
+  if (exportName !== 'default') return exportName;
+  const pathSegments = String(sourcePath).split(String.fromCharCode(92)).join('/').split('/');
+  const fileName = pathSegments.at(-1) ?? '';
+  const sourceStem = fileName.replace(/\\.[^.]+$/u, '') === 'index'
+    ? (pathSegments.at(-2) ?? 'AuthoredComponent')
+    : fileName.replace(/\\.[^.]+$/u, '');
+  const inferredName = sourceStem
+    .split(/[^A-Za-z0-9_$]+/u)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join('');
+  return inferredName || 'AuthoredComponent';
 }
 
 /** Keeps one failed descendant local and leaves a visible, inspectable page-region marker. */
@@ -126,8 +155,15 @@ export function createVirtualPageComponent(Component, exportName, sourcePath) {
       authoredElement,
     );
   });
-  VirtualPageComponent.displayName = 'VirtualPage(' + exportName + ')';
   copyComponentStatics(Component, VirtualPageComponent);
+  VirtualPageComponent.displayName = readVirtualPageComponentName(Component, exportName, sourcePath);
+  try {
+    Object.defineProperty(VirtualPageComponent, 'reactPreviewFacadeKind', {
+      configurable: false,
+      enumerable: false,
+      value: 'virtual-page-component-isolation',
+    });
+  } catch {}
   return VirtualPageComponent;
 }
 `;

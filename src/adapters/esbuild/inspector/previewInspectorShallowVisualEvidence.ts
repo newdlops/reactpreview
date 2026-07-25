@@ -10,6 +10,7 @@
 import path from 'node:path';
 import { analyzePreviewRenderSource } from '../renderGraph/previewRenderSourceAnalysis';
 import type {
+  PreviewRenderInvocation,
   PreviewRenderInvocationMode,
   ResolvePreviewRenderGraphModule,
 } from '../renderGraph/previewRenderGraphTypes';
@@ -178,6 +179,11 @@ export function collectPreviewInspectorShallowVisualEvidence(
       .filter((edge) => isComponentPropMode(edge.invocation?.mode))
       .map((edge) => edge.childLocalName),
   );
+  const componentPropInvocationByName = new Map(
+    facts.localEdges
+      .filter((edge) => isComponentPropMode(edge.invocation?.mode) && edge.invocation !== undefined)
+      .map((edge) => [edge.childLocalName, edge.invocation] as const),
+  );
   const routeAlternativeNames = new Set(
     facts.localEdges.filter(isRouteAlternativeComponentProp).map((edge) => edge.childLocalName),
   );
@@ -238,6 +244,10 @@ export function collectPreviewInspectorShallowVisualEvidence(
             renderBoundaryStart,
             selectedOccurrenceStart,
             options.sourceText,
+            relation === 'component-prop'
+              ? (componentPropInvocationByName.get(occurrence.localName) ??
+                  componentPropInvocationByName.get(readRootLocalName(occurrence.localName)))
+              : undefined,
           );
         }
       }
@@ -386,6 +396,7 @@ function appendOccurrencePaths(
   renderBoundaryStart: number,
   selectedOccurrenceStart: number,
   sourceText: string,
+  invocation: PreviewRenderInvocation | undefined,
 ): void {
   if (!isPreviewInspectorComponentShapedBinding(occurrence.localName)) return;
   const occurrenceStart = offsetFromLineColumn(
@@ -400,6 +411,7 @@ function appendOccurrencePaths(
         exportName: origin.exportName,
         importerPath,
         importKind: origin.importKind,
+        ...(invocation === undefined ? {} : { invocation: freezeVisualInvocation(invocation) }),
         localEdges: origin.localEdges,
         moduleSpecifier: origin.moduleSpecifier,
         occurrenceStart,
@@ -463,6 +475,9 @@ function appendOwnerFallbackPaths(options: {
             exportName: origin.exportName,
             importerPath: options.importerPath,
             importKind: origin.importKind,
+            ...(edge.invocation === undefined
+              ? {}
+              : { invocation: freezeVisualInvocation(edge.invocation) }),
             localEdges: origin.localEdges,
             moduleSpecifier: origin.moduleSpecifier,
             occurrenceStart: edge.occurrenceStart,
@@ -547,6 +562,16 @@ function readRootLocalName(localName: string): string {
   return localName.split('.', 1)[0] ?? localName;
 }
 
+/** Copies invocation metadata so published shallow evidence never retains analyzer-owned arrays. */
+function freezeVisualInvocation(invocation: PreviewRenderInvocation): PreviewRenderInvocation {
+  return Object.freeze({
+    ...invocation,
+    ...(invocation.factoryNames === undefined
+      ? {}
+      : { factoryNames: Object.freeze([...invocation.factoryNames]) }),
+  });
+}
+
 /** Recognizes component-valued JSX slots already proven by the render-graph invocation analyzer. */
 function isComponentPropMode(mode: PreviewRenderInvocationMode | undefined): boolean {
   return mode === 'component-prop' || mode === 'polymorphic-prop' || mode === 'render-prop';
@@ -621,6 +646,9 @@ function deduplicateVisualPaths(
       visualPath.exportName,
       visualPath.renderedLocalName,
       visualPath.relation,
+      visualPath.invocation?.mode,
+      visualPath.invocation?.calleeName,
+      visualPath.invocation?.slotName,
       visualPath.renderBoundaryStart,
       visualPath.occurrenceStart,
     ].join('\0');

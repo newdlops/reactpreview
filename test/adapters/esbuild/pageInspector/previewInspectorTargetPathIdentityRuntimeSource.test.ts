@@ -17,16 +17,20 @@ describe('Preview Inspector target path identity runtime source', () => {
         ${createPreviewInspectorTargetPathIdentityRuntimeSource()}
         const names = new Set(['Drawer', 'PageComponent', 'Styled(Modal)']);
         const singleton = readPreviewInspectorAmbiguousTargetOwnerNames(names);
+        const singletonRepeated = readPreviewInspectorRepeatedTargetOwnerNames(names);
         previewInspectorSession.renderConditions.set('page-b', {
           id: 'page-b',
           ownerName: 'PageComponent',
           sourcePath: '/b.tsx',
         });
         const repeated = readPreviewInspectorAmbiguousTargetOwnerNames(names);
+        const repeatedOnly = readPreviewInspectorRepeatedTargetOwnerNames(names);
         globalThis.__result = {
           drawer: singleton.has('Drawer'),
           pageSingleton: singleton.has('PageComponent'),
           pageRepeated: repeated.has('PageComponent'),
+          pageRepeatedOnly: repeatedOnly.has('PageComponent'),
+          pageSingletonRepeated: singletonRepeated.has('PageComponent'),
           styledModal: singleton.has('Styled(Modal)'),
         };
       `,
@@ -36,7 +40,9 @@ describe('Preview Inspector target path identity runtime source', () => {
     expect(context.__result).toEqual({
       drawer: true,
       pageRepeated: true,
+      pageRepeatedOnly: true,
       pageSingleton: false,
+      pageSingletonRepeated: false,
       styledModal: true,
     });
   });

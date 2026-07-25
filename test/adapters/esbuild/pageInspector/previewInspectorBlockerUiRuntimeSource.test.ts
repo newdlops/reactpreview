@@ -159,6 +159,9 @@ describe('Preview Inspector blocker UI runtime source', () => {
     );
     expect(source).toContain("helpKind = 'flow-outcome'");
     expect(source).toContain('React Preview supplied a local preview value here.');
+    expect(source).toContain('This child overlay is explicitly forced OFF.');
+    expect(source).toContain('React Preview is retrying its visible branch');
+    expect(source).toContain('A manual OFF switch keeps the current-file overlay dormant.');
     expect(source).toContain('readPreviewInspectorActiveBlockerSummary');
   });
 

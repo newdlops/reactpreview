@@ -260,9 +260,9 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     expect(collapsedValues).toEqual([false]);
     expect(runtime.readSession()).toMatchObject({
       collapsed: false,
+      navigationTab: 'tree',
       treeRevealRevision: 1,
     });
-    expect(runtime.readSession()).not.toHaveProperty('navigationTab');
     expect(runtime.readSession()).not.toHaveProperty('selectedBlockerFlowNodeId');
     expect(hostMessages).toEqual([{ type: 'react-preview-inspector-companion-reveal' }]);
     expect(runtime.consumeReveal(blocker.id)).toBe(true);
@@ -276,6 +276,7 @@ describe('Preview Inspector wireframe UI runtime source', () => {
     expect(PREVIEW_INSPECTOR_WIREFRAME_ITEM_LIMIT).toBe(160);
     expect(PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT).toBe(768);
     expect(source).toContain('function PreviewInspectorWireframeLayer');
+    expect(source).toContain("requestPreviewInspectorWorkbenchTab('tree')");
     expect(source).toContain("'data-react-preview-wireframe-blocker': item.node.id");
     expect(source).toContain('onSelectBlocker(item.node)');
     expect(source).toContain("'!',");

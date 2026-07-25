@@ -296,7 +296,7 @@ function selectPreviewInspectorMainComponent() {
   const currentFileNode = findPreviewInspectorUiNodeByExport(snapshot.roots, exportName);
   if (currentFileNode !== undefined) {
     requestPreviewInspectorTreeReveal(currentFileNode.id);
-    selectPreviewInspectorUiNode(currentFileNode);
+    selectPreviewInspectorUiNode(currentFileNode, false);
     return;
   }
   requestPreviewInspectorTreeReveal();

@@ -859,6 +859,7 @@ function setPreviewInspectorRenderConditionOverride(conditionId, enabled) {
       effectiveEnabled: enabled,
     });
   }
+  if (typeof resumePreviewInspectorTargetReachabilityAfterManualCondition === 'function') resumePreviewInspectorTargetReachabilityAfterManualCondition(conditionId);
   previewInspectorSession.renderConditionRevision += 1;
   persistPreviewInspectorState();
   notifyPreviewInspector();
@@ -885,6 +886,7 @@ function resetPreviewInspectorRenderConditionOverride(conditionId) {
       effectiveEnabled: record.authoredEnabled,
     });
   }
+  if (typeof resumePreviewInspectorTargetReachabilityAfterManualCondition === 'function') resumePreviewInspectorTargetReachabilityAfterManualCondition(conditionId);
   previewInspectorSession.renderConditionRevision += 1;
   persistPreviewInspectorState();
   notifyPreviewInspector();

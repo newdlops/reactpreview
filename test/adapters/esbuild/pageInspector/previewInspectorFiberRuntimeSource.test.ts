@@ -287,6 +287,50 @@ describe('preview Inspector Fiber runtime source', () => {
     expect(snapshot.visitedCount).toBeLessThanOrEqual(PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT);
   });
 
+  /**
+   * Reserves the selected live component when a wide earlier sibling list consumes the UI budget.
+   */
+  it('keeps an exact mounted target visible beyond the general tree node limit', () => {
+    const runtime = evaluateFiberRuntime();
+    const targetHost = createHostElement();
+    const target = createFiber(0, namedComponent('SelectedCard'));
+    connectChildren(target, [createFiber(5, 'section', targetHost)]);
+    const targetBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    connectChildren(targetBoundary, [target]);
+    const page = createFiber(0, namedComponent('DashboardPage'));
+    connectChildren(page, [
+      ...createSiblingFibers(PREVIEW_INSPECTOR_TREE_NODE_LIMIT + 4),
+      targetBoundary,
+    ]);
+    const exportBoundary = createFiber(1, namedComponent('PreviewPageInspectorExportBoundary'));
+    connectChildren(exportBoundary, [page]);
+
+    const snapshot = runtime.collect(
+      [{ boundary: { _reactInternals: targetBoundary }, exportName: 'SelectedCard' }],
+      undefined,
+      {
+        descriptor: {
+          inspector: {
+            root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+            target: { exportName: 'SelectedCard', sourcePath: '/workspace/SelectedCard.tsx' },
+          },
+        },
+      },
+    );
+
+    const selected = runtime.select(snapshot, snapshot.selectedId ?? '');
+    expect(snapshot.status).toBe('partial');
+    expect(snapshot.truncated).toBe(true);
+    expect(selected?.node).toMatchObject({
+      currentFileExport: true,
+      exportName: 'SelectedCard',
+      kind: 'target',
+      mounted: true,
+      source: { sourcePath: '/workspace/SelectedCard.tsx' },
+    });
+    expect(selected?.hostNodes).toEqual([targetHost]);
+  });
+
   /** Stops immediately when a stale/private Fiber sibling link points back to an earlier record. */
   it('terminates a cyclic sibling list without blocking the renderer thread', () => {
     const runtime = evaluateFiberRuntime();

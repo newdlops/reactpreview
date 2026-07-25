@@ -525,10 +525,15 @@ function PreviewInspectorBlockerGuide({ node }) {
     icon = '!';
     title = 'A required runtime/compiler binding is unavailable.';
   } else if (condition && blocking) {
-    detail = 'This hidden overlay contains the selected file. React Preview will choose its visible branch automatically unless a manual branch override prevents it.';
+    const manuallyDormant = node.condition?.override === false;
+    detail = manuallyDormant
+      ? 'This child overlay is explicitly forced OFF. Turn this exact overlay switch ON, or choose Use authored value, to reveal the selected file.'
+      : 'A parent switch revealed this hidden overlay. React Preview is retrying its visible branch along the selected page path; you can also turn this exact child switch ON.';
     helpKind = 'blocking';
     icon = '!';
-    title = 'A dormant overlay blocks the current-file component.';
+    title = manuallyDormant
+      ? 'A manual OFF switch keeps the current-file overlay dormant.'
+      : 'A child overlay on the current-file path is still dormant.';
   } else if (condition) {
     detail = 'Choose a branch below. This changes only the pinned preview.';
     helpKind = 'condition';

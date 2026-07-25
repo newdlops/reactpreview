@@ -24,13 +24,8 @@ function isPreviewInspectorSharedOwnerName(value) {
     /(?:Boundary|Container|Dialog|Drawer|Modal|Popover|Portal|Provider|Wrapper)$/u.test(name);
 }
 
-/**
- * Marks generic names and runtime owners emitted from multiple source files as name-ambiguous.
- * Unknown source locations use the compiler condition ID so two unlocated siblings cannot be
- * collapsed into a false single-owner proof.
- */
-function readPreviewInspectorAmbiguousTargetOwnerNames(names) {
-  const ambiguous = new Set([...names].filter(isPreviewInspectorSharedOwnerName));
+/** Groups reached owner names by source without conflating generic naming with real duplication. */
+function readPreviewInspectorTargetOwnerSourceKeys(names) {
   const sourceKeysByName = new Map();
   for (const condition of previewInspectorSession.renderConditions?.values?.() ?? []) {
     const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
@@ -43,9 +38,27 @@ function readPreviewInspectorAmbiguousTargetOwnerNames(names) {
     const sourcePath = normalizePreviewInspectorReachabilityPath(condition?.sourcePath);
     sourceKeys.add(sourcePath.length > 0 ? sourcePath : 'condition:' + String(condition?.id ?? ''));
   }
-  for (const [ownerName, sourceKeys] of sourceKeysByName) {
-    if (sourceKeys.size > 1) ambiguous.add(ownerName);
+  return sourceKeysByName;
+}
+
+/** Returns owners proven at multiple sources so corridor name matching cannot pick a sibling. */
+function readPreviewInspectorRepeatedTargetOwnerNames(names) {
+  const repeated = new Set();
+  for (const [ownerName, sourceKeys] of readPreviewInspectorTargetOwnerSourceKeys(names)) {
+    if (sourceKeys.size > 1) repeated.add(ownerName);
   }
+  return repeated;
+}
+
+/**
+ * Marks generic names and runtime owners emitted from multiple source files as name-ambiguous.
+ * Unknown source locations use the compiler condition ID so two unlocated siblings cannot be
+ * collapsed into a false single-owner proof.
+ */
+function readPreviewInspectorAmbiguousTargetOwnerNames(names) {
+  const ambiguous = new Set([...names].filter(isPreviewInspectorSharedOwnerName));
+  const repeated = readPreviewInspectorRepeatedTargetOwnerNames(names);
+  for (const ownerName of repeated) ambiguous.add(ownerName);
   return ambiguous;
 }
 `;

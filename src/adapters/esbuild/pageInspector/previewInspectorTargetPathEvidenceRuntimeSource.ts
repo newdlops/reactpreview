@@ -41,6 +41,12 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   ]);
   const runtimeOwnerNames = new Set(state.runtimeOwnerNames ?? []);
   const names = new Set([...staticNames, ...runtimeOwnerNames]);
+  /*
+   * These names come from the selected root-to-target render path itself. They are stronger than
+   * page-local source membership and can therefore identify an ancestor overlay without admitting
+   * an unrelated sibling dialog declared in the same file.
+   */
+  const corridorOwnerNames = new Set(state.applicationPath ?? []);
   const retainedConditionIds = previewInspectorSession.directTargetConditionIdsByExport?.get(
     state.targetExportName,
   );
@@ -114,17 +120,37 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
   names.delete(undefined);
   exactTargetNames.delete(undefined);
   const ambiguousNames = readPreviewInspectorAmbiguousTargetOwnerNames(names);
+  const repeatedOwnerNames = readPreviewInspectorRepeatedTargetOwnerNames(names);
   return {
     ambiguousNames,
+    corridorOwnerNames,
     exactConditionIds,
     exactTargetNames,
     nameScores,
     names,
     pathScores,
     paths,
+    repeatedOwnerNames,
     runtimeOwnerNames,
     staticNames,
   };
+}
+
+/**
+ * Proves that one overlay is either the exact target or an unambiguous owner on its render corridor.
+ *
+ * Same-file evidence alone is intentionally insufficient because a page commonly declares several
+ * sibling dialogs. A corridor owner, however, is one of the component names retained by the chosen
+ * root-to-target render path, so making its visible branch active advances that selected path.
+ */
+function isPreviewInspectorExactTargetOverlayCondition(condition, evidence) {
+  if (condition?.role !== 'overlay') return false;
+  if (evidence.exactConditionIds?.has(condition?.id)) return true;
+  const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
+  if (ownerName.length === 0) return false;
+  if (evidence.exactTargetNames?.has(ownerName)) return true;
+  return evidence.corridorOwnerNames?.has(ownerName) &&
+    !evidence.repeatedOwnerNames?.has(ownerName);
 }
 /** Scores component names embedded in one branch label against the proven root-to-target corridor. */
 function scorePreviewInspectorTargetConditionLabel(label, evidence) {

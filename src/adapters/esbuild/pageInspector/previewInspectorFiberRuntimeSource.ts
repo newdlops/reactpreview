@@ -8,6 +8,7 @@
  * depending on React's private objects.
  */
 import { createPreviewInspectorFiberStructureRuntimeSource } from './previewInspectorFiberStructureRuntimeSource';
+import { createPreviewInspectorFiberTargetReservationRuntimeSource } from './previewInspectorFiberTargetReservationRuntimeSource';
 
 /** Maximum private Fiber records inspected during one component-tree snapshot. */
 export const PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT = 4096;
@@ -31,6 +32,8 @@ export const PREVIEW_INSPECTOR_TREE_NODE_LIMIT = 512;
  */
 export function createPreviewInspectorFiberRuntimeSource(): string {
   const structureRuntimeSource = createPreviewInspectorFiberStructureRuntimeSource();
+  const targetReservationRuntimeSource =
+    createPreviewInspectorFiberTargetReservationRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT = ${PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT};
 const PREVIEW_INSPECTOR_TREE_NODE_LIMIT = ${PREVIEW_INSPECTOR_TREE_NODE_LIMIT};
@@ -59,6 +62,7 @@ const previewInspectorOwnedComponentNames = new Set([
 ]);
 
 ${structureRuntimeSource}
+${targetReservationRuntimeSource}
 
 /** Reads only an own data descriptor and deliberately declines accessors and inherited getters. */
 function readPreviewInspectorOwnData(value, propertyName) {
@@ -797,7 +801,7 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
   for (const entry of normalizePreviewInspectorBoundaryEntries(boundaries)) {
     const boundaryFiber = readPreviewInspectorBoundaryFiber(entry.boundary);
     if (boundaryFiber === undefined) continue;
-    boundaryFibers.push({ exportName: entry.exportName, fiber: boundaryFiber });
+    boundaryFibers.push({ boundary: entry.boundary, exportName: entry.exportName, fiber: boundaryFiber });
     const sliceFiber = findPreviewInspectorApplicationSliceFiber(boundaryFiber);
     if (sliceFiber === undefined || seenSlices.has(sliceFiber)) continue;
     seenSlices.add(sliceFiber);
@@ -820,28 +824,16 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
     truncated ||= staticTree.truncated;
   }
 
-  /** Finds the first displayed descendant below one target boundary for initial selection. */
-  function findTargetNodeId(boundaryFiber) {
-    const pending = [readPreviewInspectorFiberLink(boundaryFiber, 'child')];
-    const seen = new Set();
-    while (pending.length > 0 && seen.size < PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT) {
-      const fiber = pending.shift();
-      if (fiber === undefined || seen.has(fiber)) continue;
-      seen.add(fiber);
-      const nodeId = nodeIdByFiber.get(fiber);
-      if (nodeId !== undefined) return nodeId;
-      pending.push(
-        readPreviewInspectorFiberLink(fiber, 'child'),
-        readPreviewInspectorFiberLink(fiber, 'sibling'),
-      );
-    }
-    return undefined;
-  }
-
   const editableIdentities = readPreviewInspectorEditableExportIdentities(options);
   const targetNodeIds = boundaryFibers.map((entry, index) => ({
     exportName: entry.exportName ?? editableIdentities.targetNames[index] ?? editableIdentities.targetName,
-    id: findTargetNodeId(entry.fiber),
+    id: reservePreviewInspectorTargetNode(
+      entry,
+      entry.exportName ?? editableIdentities.targetNames[index] ?? editableIdentities.targetName,
+      index,
+      { hostNodesById, nodeById, nodeIdByFiber, nodeIdByHost, parentIdById, roots },
+      options,
+    ),
   }));
   const defaultSelectedId = targetNodeIds.find((entry) => entry.id !== undefined)?.id;
   const rootNode = roots[0];

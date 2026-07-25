@@ -16,9 +16,14 @@
  */
 export function createPreviewInspectorTreeNodeUiRuntimeSource(): string {
   return String.raw`
+/** Selects a row without replacing the Components tab that owns its stable scroll viewport. */
+function selectPreviewInspectorTreeRow(node) {
+  selectPreviewInspectorUiNode(node, false);
+}
+
 /** Selects one export row, admits its host outline, and lets the pane expand/scroll it into view. */
 function revealPreviewInspectorCurrentFileExport(node) {
-  selectPreviewInspectorUiNode(node);
+  selectPreviewInspectorTreeRow(node);
   if (previewInspectorSession.highlightEnabled !== true) {
     setPreviewInspectorHighlightEnabled(true);
   } else {
@@ -272,7 +277,7 @@ function PreviewInspectorComponentTreeNode({
         'data-tree-role': role.key,
         'data-react-preview-tree-row': node.id,
         ...createPreviewInspectorTreeRowSourceAttributes(node.source),
-        onClick: () => selectPreviewInspectorUiNode(node),
+        onClick: () => selectPreviewInspectorTreeRow(node),
         onDoubleClick: toggle,
         role: 'treeitem',
         tabIndex: node.id === focusableId ? 0 : -1,

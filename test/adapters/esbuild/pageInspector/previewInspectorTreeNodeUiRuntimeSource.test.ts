@@ -17,8 +17,13 @@ interface TreeSwitchRuntime {
   readonly expectedTitle: (node: Record<string, unknown>) => string;
   readonly presenceBadge: (node: Record<string, unknown>) => string | undefined;
   readonly readResets: () => readonly string[];
+  readonly readSelections: () => readonly {
+    readonly nodeId: string;
+    readonly openDetails: boolean;
+  }[];
   readonly readToggles: () => readonly string[];
   readonly render: (node: Record<string, unknown>) => TestElement;
+  readonly selectRow: (node: Record<string, unknown>) => void;
   readonly sourceAttributes: (source: Record<string, unknown>) => Record<string, unknown>;
 }
 
@@ -31,6 +36,17 @@ describe('Preview Inspector component-tree condition switch', () => {
       "'data-react-preview-tree-toggle-control': hasChildren ? node.id : undefined",
     );
     expect(source).toContain("hasChildren ? (expanded ? '▼' : '▶') : ''");
+  });
+
+  /** Keeps every ordinary row selection inside Components, including condition and blocker rows. */
+  it('selects a tree row without requesting the full-width blocker detail tab', () => {
+    const runtime = evaluateTreeSwitchRuntime();
+
+    runtime.selectRow({ id: 'render-blocker:missing-value', kind: 'blocker' });
+
+    expect(runtime.readSelections()).toEqual([
+      { nodeId: 'render-blocker:missing-value', openDetails: false },
+    ]);
   });
 
   /** Labels statically known callback output as pending rather than as a mounted component. */
@@ -236,7 +252,11 @@ function evaluateTreeSwitchRuntime(): TreeSwitchRuntime {
       };
       const toggles = [];
       const resets = [];
+      const selections = [];
       const isPreviewInspectorConditionNode = (node) => node?.kind === 'condition';
+      const selectPreviewInspectorUiNode = (node, openDetails) => {
+        selections.push({ nodeId: node.id, openDetails });
+      };
       const togglePreviewInspectorRenderCondition = (id) => toggles.push(id);
       const resetPreviewInspectorRenderConditionOverride = (id) => resets.push(id);
       ${createPreviewInspectorTreeNodeUiRuntimeSource()}
@@ -246,8 +266,10 @@ function evaluateTreeSwitchRuntime(): TreeSwitchRuntime {
         expectedTitle: formatPreviewInspectorExpectedEvidenceTitle,
         presenceBadge: readPreviewInspectorTreePresenceBadge,
         readResets: () => [...resets],
+        readSelections: () => [...selections],
         readToggles: () => [...toggles],
         render: (node) => PreviewInspectorComponentTreeConditionSwitch({ node }),
+        selectRow: selectPreviewInspectorTreeRow,
         sourceAttributes: createPreviewInspectorTreeRowSourceAttributes,
       };
     `,

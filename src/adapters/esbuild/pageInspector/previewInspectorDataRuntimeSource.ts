@@ -9,6 +9,7 @@ import { createPreviewInspectorGraphqlShapeRuntimeSource } from './previewInspec
 import { createPreviewInspectorDataBooleanRuntimeSource } from './previewInspectorDataBooleanRuntimeSource';
 import { createPreviewInspectorDataIdentityRuntimeSource } from './previewInspectorDataIdentityRuntimeSource';
 import { createPreviewInspectorDataReachabilityRuntimeSource } from './previewInspectorDataReachabilityRuntimeSource';
+import { createPreviewInspectorFetchResponseRuntimeSource } from './previewInspectorFetchResponseRuntimeSource';
 import { createPreviewInspectorVirtualBackendRuntimeSource } from './previewInspectorVirtualBackendRuntimeSource';
 import { createPreviewInspectorXmlHttpRequestRuntimeSource } from './previewInspectorXmlHttpRequestRuntimeSource';
 
@@ -25,6 +26,7 @@ export function createPreviewInspectorDataRuntimeSource(): string {
   const booleanRuntimeSource = createPreviewInspectorDataBooleanRuntimeSource();
   const identityRuntimeSource = createPreviewInspectorDataIdentityRuntimeSource();
   const reachabilityRuntimeSource = createPreviewInspectorDataReachabilityRuntimeSource();
+  const fetchResponseRuntimeSource = createPreviewInspectorFetchResponseRuntimeSource();
   const virtualBackendRuntimeSource = createPreviewInspectorVirtualBackendRuntimeSource();
   const xmlHttpRequestRuntimeSource = createPreviewInspectorXmlHttpRequestRuntimeSource();
   return String.raw`
@@ -840,32 +842,7 @@ function createPreviewInspectorVirtualBackendErrorPayload(result, kind) {
     : { error: message, preview: true, status: result.status };
 }
 
-/** Creates a standards-shaped in-memory fetch response with no transport side effects. */
-function createPreviewInspectorFetchResponse(payload, method, status = 200) {
-  const bodyForbidden = method === 'HEAD' || [204, 205, 304].includes(status);
-  const body = bodyForbidden ? null : JSON.stringify(payload);
-  const successful = status >= 200 && status < 300;
-  const statusText = successful ? 'OK' : 'Virtual Backend Error';
-  if (typeof globalThis.Response === 'function') {
-    return new globalThis.Response(body, {
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'x-react-preview': 'virtual-backend',
-      },
-      status,
-      statusText,
-    });
-  }
-  return {
-    clone() { return createPreviewInspectorFetchResponse(payload, method, status); },
-    headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : null },
-    json: async () => payload,
-    ok: successful,
-    status,
-    statusText,
-    text: async () => body ?? '',
-  };
-}
+${fetchResponseRuntimeSource}
 
 /** Handles compiler-instrumented and third-party fetch calls through the editable data registry. */
 async function previewInspectorFetch(input, init, compilerMetadata) {
@@ -900,7 +877,13 @@ async function previewInspectorFetch(input, init, compilerMetadata) {
     : metadata.kind === 'graphql'
       ? { data: result.payload }
       : result.payload;
-  return createPreviewInspectorFetchResponse(wirePayload, method, result.status);
+  return createPreviewInspectorFetchResponse(
+    wirePayload,
+    method,
+    result.status,
+    metadata.responseBodyKind,
+    url,
+  );
 }
 
 /** Returns the subset of AxiosResponse commonly consumed by React application code. */

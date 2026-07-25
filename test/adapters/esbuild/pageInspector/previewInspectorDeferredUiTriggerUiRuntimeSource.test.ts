@@ -32,7 +32,7 @@ describe('Preview Inspector deferred UI trigger UI runtime source', () => {
     const pageSource = createPreviewPageInspectorRuntimeSource();
 
     expect(devtoolsSource).toContain('PreviewInspectorDeferredUiTriggerDetail');
-    expect(devtoolsSource).toContain("? 'Deferred UI'");
+    expect(devtoolsSource).toContain("'Deferred UI · ' + String(node?.name ?? '')");
     expect(treeSource).toContain('PreviewInspectorDeferredUiTriggerRowAction');
     expect(pageSource).toContain(
       'registerDeferredUiTrigger: registerPreviewInspectorDeferredUiTrigger',

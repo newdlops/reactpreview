@@ -777,7 +777,7 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
   rememberPreviewInspectorTargetRuntimeOwner(exportName, Component);
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
   const automaticTargetProps = React.useMemo(
-    () => createPreviewPropsFromLayers(
+    () => createPreviewTargetPropsFromLayers(
       fallbackValuesEnabled ? metadata?.inferredPropShape : undefined,
       targetProps,
     ),

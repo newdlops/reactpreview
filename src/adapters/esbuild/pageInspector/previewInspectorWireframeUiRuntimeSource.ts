@@ -30,6 +30,11 @@ let previewInspectorTreeRevealRequest;
 
 /** Marks an explicit navigation action for one unfiltered, expanded Components-tree reveal. */
 function requestPreviewInspectorTreeReveal(nodeId) {
+  if (typeof requestPreviewInspectorWorkbenchTab === 'function') {
+    requestPreviewInspectorWorkbenchTab('tree');
+  } else {
+    previewInspectorDevtoolsSessionState.navigationTab = 'tree';
+  }
   previewInspectorTreeRevealRequest =
     typeof nodeId === 'string' && nodeId.length > 0 ? nodeId : true;
   previewInspectorDevtoolsSessionState.treeRevealRevision =

@@ -41,6 +41,47 @@ function initializePreviewInspectorTargetReachabilityState() {
     previewInspectorSession.minimumRequirementSearchByKey = new Map();
   }
 }
+
+/**
+ * Starts a new bounded convergence epoch after one explicit user branch change.
+ *
+ * A previously dormant parent can reveal new overlay props and conditions after the original DFS
+ * has exhausted its one-shot visibility probe. Retaining automatic values and decision history
+ * avoids oscillation, while reopening the probe and rejection frontier lets newly reachable
+ * descendants participate in the next committed render.
+ */
+function resumePreviewInspectorTargetReachabilityAfterManualCondition(conditionId) {
+  initializePreviewInspectorTargetReachabilityState();
+  const condition = previewInspectorSession.renderConditions?.get?.(conditionId);
+  const activeKey = previewInspectorSession.activeTargetReachabilityKey;
+  const conditionKey = typeof condition?.reachabilityKey === 'string'
+    ? condition.reachabilityKey
+    : undefined;
+  const key = conditionKey !== undefined &&
+    previewInspectorSession.targetReachabilityByKey.has(conditionKey)
+    ? conditionKey
+    : typeof activeKey === 'string' ? activeKey : undefined;
+  if (key === undefined) return false;
+  const state = previewInspectorSession.targetReachabilityByKey.get(key);
+  if (state === undefined) return false;
+  state.attempt = 0;
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.overlayVisibilityAttempted = false;
+  state.status = 'probing-after-manual-condition';
+  state.probeRevision = (Number.isSafeInteger(state.probeRevision) ? state.probeRevision : 0) + 1;
+  previewInspectorSession.renderConditionRejectedAutoOverridesByKey?.delete?.(key);
+  previewInspectorSession.renderConditionAutoAttempts?.clear?.();
+  const search = previewInspectorSession.minimumRequirementSearchByKey?.get?.(key);
+  if (
+    search !== undefined &&
+    search.status !== 'searching' &&
+    search.pass < PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT
+  ) {
+    search.status = 'searching';
+  }
+  return true;
+}
 /** Returns current-file exports that can be asserted through the generated target facade. */
 function readPreviewInspectorReachableTargetExports(descriptor, candidate) {
   const inspector = descriptor?.inspector;
@@ -152,7 +193,8 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
       return {
         condition,
         desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
-        exactOverlayTargetLocal: exactConditionLocal || exactOwnerLocal,
+        exactOverlayTargetLocal:
+          isPreviewInspectorExactTargetOverlayCondition(condition, evidence),
         exactTargetLocal: exactConditionLocal || exactOwnerLocal || exactSourceLocal,
         pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
       };
@@ -172,8 +214,8 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
        * A page/source match is sufficient for ordinary continuation guards, but not for overlays.
        * Several sibling dialogs commonly live in the same page file. Opening every one merely
        * because that file lies on the target corridor obscures the page and can create modal loops.
-       * An overlay is automatic only when compiler evidence names its exact condition or owner;
-       * all other overlays retain their authored state and remain user-toggleable in the tree.
+       * An overlay is automatic only when compiler evidence names its exact condition, target, or
+       * unambiguous root-to-target corridor owner; all others remain user-toggleable in the tree.
        */
       (condition.role !== 'overlay' || exactOverlayTargetLocal),
     )

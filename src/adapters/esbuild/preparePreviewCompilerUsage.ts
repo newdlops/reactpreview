@@ -250,6 +250,9 @@ export async function preparePreviewCompilerUsage(
               exportName: fastGenericExportName,
               readSource,
               resolveModule: options.resolver.resolve,
+              ...(request.inspectorRouteSelection === undefined
+                ? {}
+                : { routeSelection: request.inspectorRouteSelection }),
               ...(signal === undefined ? {} : { signal }),
               sourcePaths: corridor.sourcePaths,
             });
@@ -341,6 +344,9 @@ export async function preparePreviewCompilerUsage(
         ...(targetSelection.inspectorExportName === undefined
           ? {}
           : { inspectorExportName: targetSelection.inspectorExportName }),
+        ...(request.inspectorRouteSelection === undefined
+          ? {}
+          : { routeSelection: request.inspectorRouteSelection }),
         projectRoot: options.projectRoot,
         ...(signal === undefined ? {} : { signal }),
         snapshots: request.dependencySnapshots,

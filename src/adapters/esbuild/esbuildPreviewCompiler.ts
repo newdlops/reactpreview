@@ -286,6 +286,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           exports: targetExports,
           inspectorExportName,
           projectRoot: canonicalWorkspaceRoot,
+          ...(request.inspectorRouteSelection === undefined
+            ? {}
+            : { routeSelection: request.inspectorRouteSelection }),
           signal: buildSignal,
           snapshots: request.dependencySnapshots,
           sourceText: targetSelection.sourceText,
@@ -970,14 +973,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   }
   /**
    * Prevents new builds and stops esbuild's shared native service during extension deactivation.
-   * Any in-flight build rejects and is discarded by the controller's revision guard.
    */
   public dispose(): void {
     void this.shutdown();
   }
   /**
    * Stops esbuild's native service and exposes a promise for orderly extension deactivation.
-   * Repeated calls return one promise so explicit shutdown and context disposal remain idempotent.
    * @returns Promise resolved after esbuild confirms that its shared service has stopped.
    */
   public shutdown(): Promise<void> {

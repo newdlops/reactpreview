@@ -35,11 +35,11 @@ import {
 } from './previewRuntimeHookChildPropDemand';
 import { applyPreviewRuntimeHookArrayLengthConstraints } from './previewRuntimeHookArrayLengthConstraints';
 import type { PreviewRuntimeHookArrayLengthConstraintMetadata } from './previewRuntimeHookArrayLengthConstraints';
-import { createPreviewComparisonFalseExpression } from './previewRuntimeHookComparison';
 import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
 import { readPreviewRuntimeHookIdentityAliasCollectionUsages } from './previewRuntimeHookIdentityAliases';
 import { inferPreviewRuntimeLocalHelperArrayItemFallback } from './previewRuntimeHookLocalHelperItem';
+import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import {
   readPreviewRuntimeQueryParamDefaultExpression,
   readPreviewRuntimeQueryStatesDefaults,
@@ -61,10 +61,7 @@ import {
   unwrapPreviewRuntimeParentExpression as unwrapParentExpression,
   previewRuntimeFunctionShadowsName as functionShadowsName,
 } from './previewRuntimeHookSyntax';
-import {
-  createPreviewRuntimeSemanticString,
-  inferPreviewRuntimeSemanticFallback,
-} from './previewRuntimeHookSemantics';
+import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import { inferPreviewRuntimeHookSpreadItemFallback } from './previewRuntimeHookSpreadItem';
 import { createPreviewRuntimeHookUsageTreeFallback } from './previewRuntimeHookUsageTree';
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
@@ -470,7 +467,7 @@ function createBindingFallback(
         ? inferPreviewRuntimeHookGuardPassFallback(binding)
         : undefined;
     if (guardPass !== undefined) return { ...guardPass, requiredPaths: ['<root>'] };
-    const compared = findComparedLiteralFallback(binding, sourceFile);
+    const compared = inferPreviewRuntimeHookLocalScalarFallback(binding, sourceFile);
     if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
     if (directUsage?.callable === true) {
@@ -787,73 +784,6 @@ const inferPreviewRuntimeArrayItemFallback = (
     sourceFile,
     createBindingFallback,
   );
-
-/** Uses a literal comparison near one identifier when semantic naming alone is inconclusive. */
-function findComparedLiteralFallback(
-  identifier: ts.Identifier,
-  sourceFile: ts.SourceFile,
-): { readonly expression: string; readonly label: string } | undefined {
-  const owner = findNearestRuntimeFunction(identifier);
-  if (owner === undefined) return undefined;
-  let result: { readonly expression: string; readonly label: string } | undefined;
-  const visit = (node: ts.Node): void => {
-    if (result !== undefined || (node !== owner && isRuntimeFunction(node))) return;
-    if (ts.isBinaryExpression(node) && isEqualityOperator(node.operatorToken.kind)) {
-      const other = readComparedExpression(node, identifier.text);
-      if (other !== undefined && isStaticComparableExpression(other)) {
-        result = {
-          expression: createPreviewComparisonFalseExpression(
-            createPreviewRuntimeSemanticString(identifier.text),
-            other,
-            node.operatorToken.kind,
-            sourceFile,
-          ),
-          label: 'generated comparison-safe value',
-        };
-        return;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(owner);
-  return result;
-}
-
-/** Returns the opposite side of an equality when one side is the requested local identifier. */
-function readComparedExpression(
-  expression: ts.BinaryExpression,
-  identifierName: string,
-): ts.Expression | undefined {
-  const left = unwrapExpression(expression.left);
-  const right = unwrapExpression(expression.right);
-  if (ts.isIdentifier(left) && left.text === identifierName) return right;
-  if (ts.isIdentifier(right) && right.text === identifierName) return left;
-  return undefined;
-}
-
-/** Admits only literals and enum-like property accesses that cannot call project code. */
-function isStaticComparableExpression(expression: ts.Expression): boolean {
-  return (
-    ts.isStringLiteral(expression) ||
-    ts.isNumericLiteral(expression) ||
-    expression.kind === ts.SyntaxKind.TrueKeyword ||
-    expression.kind === ts.SyntaxKind.FalseKeyword ||
-    (ts.isPropertyAccessExpression(expression) &&
-      expression.questionDotToken === undefined &&
-      ts.isIdentifier(expression.expression) &&
-      /^[A-Z]/u.test(expression.expression.text))
-  );
-}
-
-/** Recognizes equality operators suitable for a deterministic compared-value fallback. */
-function isEqualityOperator(kind: ts.SyntaxKind): boolean {
-  return (
-    kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-    kind === ts.SyntaxKind.EqualsEqualsToken ||
-    kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-    kind === ts.SyntaxKind.ExclamationEqualsToken
-  );
-}
 
 /** Builds one nested object for a direct non-optional `useHook().field` access. */
 function createDirectPropertyFallback(

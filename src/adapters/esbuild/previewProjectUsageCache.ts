@@ -372,9 +372,16 @@ function createUsageResultKey(options: PreviewProjectUsageDiscoveryOptions): str
     .join('|');
   const climbKey = options.climbParentSlices === false ? 'direct-only' : 'cross-module';
   const inspectorKey = options.inspectorExportName ?? 'no-inspector-root';
+  const routeSelectionKey =
+    options.routeSelection
+      ?.map(
+        (step) =>
+          `${step.componentName.length.toString()}:${step.componentName}${step.pattern.length.toString()}:${step.pattern}`,
+      )
+      .join('|') ?? 'default-route';
   const tsconfigKey =
     options.tsconfigPath === undefined ? 'nearest-config' : path.normalize(options.tsconfigPath);
-  return `${createPackageCacheKey(options.workspaceRoot, options.projectRoot)}\0${path.normalize(options.documentPath)}\0${exportKey}\0${climbKey}\0${inspectorKey}\0${tsconfigKey}`;
+  return `${createPackageCacheKey(options.workspaceRoot, options.projectRoot)}\0${path.normalize(options.documentPath)}\0${exportKey}\0${climbKey}\0${inspectorKey}\0${routeSelectionKey}\0${tsconfigKey}`;
 }
 
 /** Hashes current editor text without embedding every hot revision into the bounded map key. */

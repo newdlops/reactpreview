@@ -5,7 +5,10 @@
  */
 import { open, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { PreviewSourceSnapshot } from '../../domain/preview';
+import type {
+  PreviewInspectorRouteSelectionStep,
+  PreviewSourceSnapshot,
+} from '../../domain/preview';
 import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
 import { createPreviewInspectorAncestorPlan, type PreviewInspectorAncestorPlan } from './inspector';
 import {
@@ -81,6 +84,8 @@ export interface PreviewTargetUsagePropsOptions {
   readonly exports: readonly PreviewTargetExportSlot[];
   /** Exact explicit export used to find one real page root; omitted outside Inspector mode. */
   readonly inspectorExportName?: string;
+  /** Selected nested router path, matched only against static route evidence. */
+  readonly routeSelection?: readonly PreviewInspectorRouteSelectionStep[];
   /** Nearest package root bounding reverse usage discovery inside a larger workspace. */
   readonly projectRoot: string;
   /** Cancels stale package scans at directory, source-batch, and graph-traversal boundaries. */
@@ -305,6 +310,9 @@ export async function discoverPreviewTargetUsageProps(
           readSource: readCachedUsageSource,
           resolveModule: moduleResolver.resolve,
           renderChainsByExport,
+          ...(options.routeSelection === undefined
+            ? {}
+            : { routeSelection: options.routeSelection }),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
           sourcePaths: [...sourcePaths, boundary.documentPath],
         });

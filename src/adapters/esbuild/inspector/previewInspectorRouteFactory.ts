@@ -21,9 +21,23 @@ export interface PreviewInspectorRouteFactoryEvidence {
   readonly basePath: string;
   /** Page-map keys and submodule bindings offered as mutually exclusive route choices. */
   readonly choices: readonly PreviewInspectorRouteFactoryChoiceEvidence[];
+  /** Statically proven callback bindings inserted directly beneath a Routes boundary. */
+  readonly routeSlots: readonly PreviewInspectorRouteFactorySlotEvidence[];
+  /** Whether the same Routes boundary contains a literal wildcard fallback. */
+  readonly hasWildcardFallback: boolean;
   /** Local variable receiving the factory result, when the assignment is direct and named. */
   readonly componentName?: string;
   /** Stable source offset used to keep diagnostics deterministic. */
+  readonly occurrenceStart: number;
+}
+
+/** One destructured factory callback value consumed as a direct Route child expression. */
+export interface PreviewInspectorRouteFactorySlotEvidence {
+  /** Local identifier referenced by the JSX expression. */
+  readonly localName: string;
+  /** Property name from the callback's first destructured parameter. */
+  readonly propertyName: string;
+  /** Stable JSX expression offset for deterministic diagnostics. */
   readonly occurrenceStart: number;
 }
 
@@ -51,9 +65,12 @@ export function collectPreviewInspectorRouteFactoryEvidence(
       const basePath = readPreviewInspectorRouteFactoryBasePath(node, sourceFile);
       if (basePath !== undefined) {
         const componentName = readDirectFactoryResultName(node);
+        const renderContract = readRouteFactoryRenderContract(node, sourceFile);
         evidence.push({
           basePath,
           choices: readRouteFactoryChoices(node, sourceFile),
+          hasWildcardFallback: renderContract.hasWildcardFallback,
+          routeSlots: renderContract.routeSlots,
           ...(componentName === undefined ? {} : { componentName }),
           occurrenceStart: node.getStart(sourceFile),
         });
@@ -63,6 +80,102 @@ export function collectPreviewInspectorRouteFactoryEvidence(
   };
   visit(sourceFile);
   return Object.freeze(evidence);
+}
+
+/**
+ * Finds callback bindings that are demonstrably supplied to a local Routes element.
+ *
+ * The reader stays syntax-only: it follows neither callback values nor component implementations,
+ * so executable route configuration remains outside extension-host analysis.
+ */
+function readRouteFactoryRenderContract(
+  callExpression: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+): {
+  readonly routeSlots: readonly PreviewInspectorRouteFactorySlotEvidence[];
+  readonly hasWildcardFallback: boolean;
+} {
+  const callback = callExpression.arguments
+    .slice(3)
+    .find(
+      (argument): argument is ts.ArrowFunction | ts.FunctionExpression =>
+        ts.isArrowFunction(argument) || ts.isFunctionExpression(argument),
+    );
+  const parameter = callback?.parameters[0];
+  if (
+    callback === undefined ||
+    parameter === undefined ||
+    !ts.isObjectBindingPattern(parameter.name)
+  ) {
+    return Object.freeze({ hasWildcardFallback: false, routeSlots: Object.freeze([]) });
+  }
+  const bindings = new Map<string, string>();
+  for (const element of parameter.name.elements) {
+    if (!ts.isIdentifier(element.name)) continue;
+    const propertyName =
+      element.propertyName === undefined
+        ? element.name.text
+        : readStaticPropertyName(element.propertyName);
+    if (propertyName !== undefined) bindings.set(element.name.text, propertyName);
+  }
+  const slots: PreviewInspectorRouteFactorySlotEvidence[] = [];
+  let hasWildcardFallback = false;
+  const inspectRoutes = (node: ts.Node): void => {
+    if (ts.isJsxElement(node) && readJsxTagName(node.openingElement.tagName) === 'Routes') {
+      for (const child of node.children) {
+        if (
+          ts.isJsxExpression(child) &&
+          child.expression !== undefined &&
+          ts.isIdentifier(child.expression)
+        ) {
+          const propertyName = bindings.get(child.expression.text);
+          if (propertyName !== undefined) {
+            slots.push(
+              Object.freeze({
+                localName: child.expression.text,
+                occurrenceStart: child.getStart(sourceFile),
+                propertyName,
+              }),
+            );
+          }
+        }
+        if (ts.isJsxElement(child) && readJsxTagName(child.openingElement.tagName) === 'Route') {
+          hasWildcardFallback ||= child.openingElement.attributes.properties.some(
+            isWildcardRoutePathAttribute,
+          );
+        }
+        if (ts.isJsxSelfClosingElement(child) && readJsxTagName(child.tagName) === 'Route') {
+          hasWildcardFallback ||= child.attributes.properties.some(isWildcardRoutePathAttribute);
+        }
+      }
+    }
+    ts.forEachChild(node, inspectRoutes);
+  };
+  inspectRoutes(callback.body);
+  const routeSlots = slots
+    .filter(
+      (slot, index, values) =>
+        values.findIndex((value) => value.occurrenceStart === slot.occurrenceStart) === index,
+    )
+    .sort((left, right) => left.occurrenceStart - right.occurrenceStart);
+  return Object.freeze({ hasWildcardFallback, routeSlots: Object.freeze(routeSlots) });
+}
+
+/** Reads the terminal tag spelling without resolving JSX component values. */
+function readJsxTagName(tagName: ts.JsxTagNameExpression): string {
+  return tagName.getText().split('.').at(-1) ?? '';
+}
+
+/** Accepts only a literal `path="*"` attribute on a Route element. */
+function isWildcardRoutePathAttribute(attribute: ts.JsxAttributeLike): boolean {
+  return (
+    ts.isJsxAttribute(attribute) &&
+    ts.isIdentifier(attribute.name) &&
+    attribute.name.text === 'path' &&
+    attribute.initializer !== undefined &&
+    ts.isStringLiteral(attribute.initializer) &&
+    attribute.initializer.text === '*'
+  );
 }
 
 /**

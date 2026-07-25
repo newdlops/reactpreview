@@ -11,6 +11,7 @@ import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import {
   collectPreviewInspectorRouteFactoryEvidence,
   type PreviewInspectorRouteFactoryChoiceEvidence,
+  type PreviewInspectorRouteFactoryEvidence,
 } from './previewInspectorRouteFactory';
 
 /** Resolved runtime module for one route-catalog component identity. */
@@ -21,10 +22,26 @@ export interface PreviewInspectorRouteChoiceReference {
   readonly sourcePath: string;
 }
 
+/** Route-owner metadata retained without importing or evaluating the generated application. */
+export interface PreviewInspectorRouteFactoryOwnerEvidence {
+  /** Absolute module mount path proven by the factory's first argument. */
+  readonly basePath: string;
+  /** Selected factory export that owns this route collection. */
+  readonly exportName: string;
+  /** Whether the wrapper exposes a literal wildcard fallback below its route slots. */
+  readonly hasWildcardFallback: boolean;
+  /** Number of statically proven variable Route slots in the wrapper callback. */
+  readonly routeSlotCount: number;
+  /** Source module containing the selected factory call. */
+  readonly sourcePath: string;
+}
+
 /** Immutable factory choices plus references available without executing project code. */
 export interface PreviewInspectorRouteFactoryChoiceInventory {
   /** Page-map keys and submodule values owned by the selected factory export. */
   readonly choices: readonly PreviewInspectorRouteFactoryChoiceEvidence[];
+  /** Selected factory's inert mount contract, when one was statically proven. */
+  readonly owner?: PreviewInspectorRouteFactoryOwnerEvidence;
   /** Imported module reference keyed by route-catalog component name. */
   readonly references: ReadonlyMap<string, PreviewInspectorRouteChoiceReference>;
 }
@@ -60,21 +77,37 @@ export function collectPreviewInspectorRouteFactoryChoices(
     true,
     options.sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  const factories = collectPreviewInspectorRouteFactoryEvidence(sourceFile).filter(
+    (factory) =>
+      factory.componentName !== undefined && options.targetIdentities.has(factory.componentName),
+  );
   const choices = Object.freeze(
-    collectPreviewInspectorRouteFactoryEvidence(sourceFile)
-      .filter(
-        (factory) =>
-          factory.componentName !== undefined &&
-          options.targetIdentities.has(factory.componentName),
-      )
+    factories
       .flatMap((factory) => factory.choices)
       .filter(
         (choice, index, values) =>
           values.findIndex((item) => item.componentName === choice.componentName) === index,
       ),
   );
+  const ownerFactory = factories.find(
+    (
+      factory,
+    ): factory is PreviewInspectorRouteFactoryEvidence & { readonly componentName: string } =>
+      factory.componentName !== undefined,
+  );
   return Object.freeze({
     choices,
+    ...(ownerFactory === undefined
+      ? {}
+      : {
+          owner: Object.freeze({
+            basePath: ownerFactory.basePath,
+            exportName: ownerFactory.componentName,
+            hasWildcardFallback: ownerFactory.hasWildcardFallback,
+            routeSlotCount: ownerFactory.routeSlots.length,
+            sourcePath: path.normalize(options.sourcePath),
+          }),
+        }),
     references: collectRouteFactoryChoiceReferences(options, sourceFile, choices),
   });
 }

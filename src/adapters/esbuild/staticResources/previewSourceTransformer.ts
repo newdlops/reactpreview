@@ -48,7 +48,7 @@ import {
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
-import { requiresFastDependencyCompatibility } from './previewFastDependencyCompatibility';
+import { canUsePreviewFastDependencyPassThrough } from './previewFastDependencyPassThroughPolicy';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
 import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
@@ -166,7 +166,7 @@ export class PreviewSourceTransformer {
       });
     }
     const initialWatchDirectories = new Set(this.watchDirectories);
-    if (this.canUseFastDependencyPassThrough(sourcePath, sourceText)) {
+    if (canUsePreviewFastDependencyPassThrough(sourcePath, sourceText, this.options)) {
       return { contents: sourceText, watchDirectories: [] };
     }
     const replacements: PreviewSourceReplacement[] = [];
@@ -351,6 +351,9 @@ export class PreviewSourceTransformer {
         : compatibilitySource;
     const runtimeSource = instrumentPreviewRuntimeSource(sourcePath, dataBoundarySource, {
       isolateEffects: this.options.instrumentRuntimeEffectIsolation === true,
+      registerConditionDefinitions:
+        this.options.documentPath === undefined ||
+        path.normalize(sourcePath) === path.normalize(this.options.documentPath),
       renderConditions: this.options.instrumentRenderConditions === true,
     });
     generatedImports.push(...runtimeSource.registrations);
@@ -395,23 +398,6 @@ export class PreviewSourceTransformer {
       consumesRouter: this.routerConsumerDetected,
       ownsRouter: this.routerProviderDetected,
     };
-  }
-
-  /**
-   * Leaves ordinary fast descendants to esbuild's native parser instead of allocating several
-   * TypeScript trees per module. The selected target, provider definitions, framework adapters,
-   * and non-native resource expressions still use the complete compatibility pipeline. Full
-   * preparation never enters this path and therefore remains the exact Inspector artifact.
-   */
-  private canUseFastDependencyPassThrough(sourcePath: string, sourceText: string): boolean {
-    if (this.options.fastPreparation !== true) return false;
-    if (
-      this.options.documentPath !== undefined &&
-      path.normalize(sourcePath) === path.normalize(this.options.documentPath)
-    ) {
-      return false;
-    }
-    return !requiresFastDependencyCompatibility(sourceText, this.options.projectUsesNextRuntime);
   }
 
   /** Transforms one Vite glob call into a deterministic lazy or eager object literal. */

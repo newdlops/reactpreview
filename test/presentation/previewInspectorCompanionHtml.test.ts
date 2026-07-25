@@ -43,8 +43,12 @@ describe('Preview Inspector companion HTML', () => {
     expect(html).toContain('data-react-preview-companion-source="true"');
     expect(html).toContain('display:grid!important');
     expect(html).toContain(
-      'grid-template-rows:auto auto minmax(clamp(120px,45dvh,360px),1fr)!important',
+      'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px',
     );
+    expect(html).toContain(
+      'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(clamp(120px,45dvh,360px),1fr)!important',
+    );
+    expect(html).toContain('data-rpi-context-collapsed');
     expect(html).toContain('max-width:100%!important;min-width:0!important');
     expect(html).toContain('overflow:auto!important;overscroll-behavior:contain');
     expect(html).toContain(
@@ -70,6 +74,13 @@ describe('Preview Inspector companion HTML', () => {
       "handle.setAttribute('aria-label', 'Resize Components and Details panes')",
     );
     expect(html).toContain('installPreviewInspectorCompanionPaneResize();');
+    expect(html).toContain('installPreviewInspectorCompanionInnerResize();');
+    expect(html).toContain(
+      "PREVIEW_INSPECTOR_COMPANION_INNER_STATE_KEY = 'reactPreviewInspectorInnerLayout'",
+    );
+    expect(html).toContain("mirror.querySelectorAll('.rpi-card-height-handle')");
+    expect(html).toContain("mirror.querySelectorAll('.rpi-section-height-handle')");
+    expect(html).toContain("mirror.querySelectorAll('.rpi-shell-section-height-handle')");
     expect(html).not.toContain('installPreviewInspectorCompanionFlowchartViewport();');
     expect(html).toContain('data-rpi-flow-resolver-collapsed="true"');
     expect(html).toContain('new ResizeObserver(refresh)');

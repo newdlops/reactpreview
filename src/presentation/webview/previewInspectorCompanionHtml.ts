@@ -4,6 +4,7 @@
  * content, applies VS Code-native styling, and forwards only explicit form/tree interactions.
  */
 import { createPreviewInspectorCompanionPaneResizeScript } from './previewInspectorCompanionPaneResizeScript';
+import { createPreviewInspectorCompanionInnerResizeScript } from './previewInspectorCompanionInnerResizeScript';
 import { createPreviewInspectorCompanionScrollScript } from './previewInspectorCompanionScrollScript';
 
 /** Complete state needed to render one independently reloadable Inspector companion document. */
@@ -25,6 +26,7 @@ export interface PreviewInspectorCompanionHtmlOptions {
 export function createPreviewInspectorCompanionHtml(
   options: PreviewInspectorCompanionHtmlOptions,
 ): string {
+  const innerResizeScript = createPreviewInspectorCompanionInnerResizeScript();
   const paneResizeScript = createPreviewInspectorCompanionPaneResizeScript();
   const scrollScript = createPreviewInspectorCompanionScrollScript();
   const csp = [
@@ -88,6 +90,7 @@ export function createPreviewInspectorCompanionHtml(
       let latestSequence = 0;
 
       ${paneResizeScript}
+      ${innerResizeScript}
       ${scrollScript}
 
       /** Removes executable or resource-loading markup before a preview mirror reaches the DOM. */
@@ -123,12 +126,19 @@ export function createPreviewInspectorCompanionHtml(
           ':host{display:block;height:100%}',
           '.rpi-shell[data-react-preview-companion-source="true"]{',
           'border:0!important;box-shadow:none!important;display:grid!important;',
-          'grid-template-rows:auto auto minmax(clamp(120px,45dvh,360px),1fr)!important;height:100%!important;',
+          'grid-template-rows:28px minmax(0,var(--rpi-toolbar-section-height,auto)) 9px 28px ',
+          'minmax(0,var(--rpi-context-section-height,auto)) 9px minmax(clamp(120px,45dvh,360px),1fr)!important;',
+          'height:100%!important;',
           'inset:auto!important;max-width:100%!important;min-width:0!important;position:relative!important;',
           'overflow:auto!important;overscroll-behavior:contain;scrollbar-gutter:stable;',
           'transform:none!important;width:100%!important}',
           '.rpi-shell[data-collapsed="true"] .rpi-page-context{display:grid!important}',
           '.rpi-shell[data-collapsed="true"] .rpi-workbench{display:grid!important}',
+          '.rpi-shell[data-collapsed="true"]>.rpi-shell-section-accordion{display:grid!important}',
+          '.rpi-shell[data-collapsed="true"]>.rpi-shell-section-height-handle{display:block!important}',
+          '.rpi-shell[data-react-preview-companion-source="true"]>.rpi-toolbar{grid-row:2!important}',
+          '.rpi-shell[data-rpi-toolbar-collapsed="true"]>.rpi-toolbar,',
+          '.rpi-shell[data-rpi-context-collapsed="true"]>.rpi-page-context{display:none!important}',
           '.rpi-page-context,.rpi-workbench,.rpi-pane,.rpi-pane-heading{max-width:100%!important;min-width:0!important}',
           // Wrapped controls may consume nearly the whole editor height on a compact display. A
           // bounded workbench floor keeps the active section visible and lets the shell itself
@@ -237,6 +247,7 @@ export function createPreviewInspectorCompanionHtml(
         status.hidden = true;
         mirror.hidden = false;
         installPreviewInspectorCompanionPaneResize();
+        installPreviewInspectorCompanionInnerResize();
         restoreControlFocus(
           activeId,
           selectionStart,

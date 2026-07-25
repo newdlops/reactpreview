@@ -2,6 +2,35 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1190 - 2026-07-25
+
+- `App.tsx`처럼 수백 경로를 소유한 파일은 모든 경로를 컴포넌트 모듈 없이 메타데이터로 색인하고, 공통 경로
+  폴더·breadcrumb·검색 UI에서 선택한 한 가지 branch만 재분석·번들링하도록 변경
+- `RouterProvider`가 다른 파일의 router 또는 route descriptor 배열만 감싸는 중간 모듈을 재귀적으로 따라가,
+  실제 leaf 페이지가 나올 때까지 경로를 합성하고 선택되지 않은 형제 페이지는 읽거나 번들 corridor에 포함하지 않음
+- route 선택 메시지를 현재 runtime revision과 정적 component/path chain으로 검증하고 pinned 탭별 선택을 보존하며,
+  320개 경로·중첩 RouterProvider·import된 route 배열·형제 모듈 미로딩 회귀 테스트 추가
+
+## 0.1.1189 - 2026-07-25
+
+- `Provider > Suspense > Routes > {pageRoutes}`처럼 화면을 직접 만들지 않는 상위 route-factory export를
+  빈 컴포넌트로 처리하지 않고, page map·submodule 인자와 route catalog를 연결해 실제 자식 페이지 경로 선택지를 생성
+- 선택한 페이지마다 정확한 pathname으로 MemoryRouter를 다시 구성하고 해당 page module만 빠른 번들 corridor에
+  보존해, 대형 eager route registry를 모두 묶지 않으면서도 경로 선택 시 실제 화면이 나타나도록 개선
+- Page path 선택기에 자식 컴포넌트명을 표시하고, 선택한 route가 비어 있을 때 props 부족으로 오인하지 않도록
+  다른 경로 선택 또는 해당 자식의 첫 조건 확인을 안내하며 named/default factory export 회귀 테스트 추가
+
+## 0.1.1188 - 2026-07-25
+
+- 같은 파일의 상수로 선언한 base path를 route factory 인자까지 안전하게 추적하고, factory 결과를 소유한
+  module/HOC를 페이지 후보로 승격해 중첩 route의 실제 pathname과 application shell을 복구
+- hook 값이 로컬 helper의 switch·비교·문자열 union·Boolean 분기를 통과하는 호출 흐름을 제한된 깊이로 분석해,
+  빈 객체 대신 현재 JSX 경로에 도달하는 최소 scalar 조합을 자동 생성
+- error/loading fallback이나 인접 후보 DOM을 현재 파일의 출력으로 오인하지 않도록 정확한 React Fiber 소유권을
+  확인하고, 원래 runtime error와 blocker owner를 Inspector 및 진단 로그에 유지
+- 동일한 context enrichment가 memory/watchdog stall 뒤 반복 실행되지 않도록 resource identity별 지수 backoff를
+  추가하고, 대상 또는 의존성 변경 시에는 즉시 새 분석을 허용
+
 ## 0.1.1187 - 2026-07-25
 
 - Inspector controls를 위로 줄인 뒤 다른 영역의 현재 높이가 controls의 새 상한으로 고정되어 다시 아래로
@@ -954,46 +983,5 @@
 - esbuild의 aggregate entry CSS를 즉시 연결하지 않고 dynamic-import 경계별 static CSS ownership을 metadata로
   복구해 unopened route, editor, modal의 전역 selector가 현재 페이지를 오염하지 않도록 변경하고, hot reload가
   commit되면 이전 revision의 lazy stylesheet를 정리
-
-## 0.1.1075 - 2026-07-19
-
-- Page Inspector가 파일의 PascalCase/기본 export 중 실제 React component·element만 gallery에 남기고 GraphQL
-  `DocumentNode`, Fragment 상수, Context 같은 비시각 export는 렌더 대상으로 선택하지 않도록 수정
-- GraphQL Code Generator의 `getFragmentData(document, carrier)` 호출을 정적으로 식별해 실제 carrier가 비어 있어도
-  fragment selection에 필요한 최소 필드를 Auto 값으로 복구하고, 공용 `useQuery` wrapper blocker를 document와 ID
-  variable별로 분리해 서로 다른 요청 payload가 덮어쓰지 않도록 개선
-- Context 이름의 project hook도 일반 runtime circuit breaker의 정밀한 사용처 추론을 이용하며, React
-  `ComponentType`/`ElementType` prop과 JSX tag prop은 callback과 구분된 null-rendering placeholder로 보존해
-  `<Icon />` 같은 필수 시각 prop이 `undefined`로 전체 export를 중단하지 않도록 보완
-- TypeScript resolver가 `Buffer` 같은 package global을 `.d.ts`로 찾았을 때 인접한 JS/MJS/CJS 구현을 주입해
-  declaration-only 빈 namespace와 Node builtin shim 대신 실제 browser polyfill API를 사용하도록 수정
-- 대형 저장소의 entry-path 탐색을 중복 없는 우선순위 heap과 공통-root canonical identity로 바꾸고, 고정된 Page
-  Inspector 경로 밖의 project-owned lazy route만 inert module로 치환해 실제 rtcc benchmark의 결과물을
-  71.8MB/1,484 chunks에서 23.8MB/456 chunks로 줄이고 전체 준비 시간을 약 90초에서 약 41초로 단축
-- 내부 theme/setup resolver probe는 lazy-route 경계에서 제외하고, 종료된 Auto 시도에 뒤늦은 오류가 잘못
-  귀속되지 않도록 blocker trace의 causal window를 바로잡음
-
-## 0.1.1074 - 2026-07-19
-
-- Yarn PnP 같은 workspace 주입 CommonJS resolver가 VS Code의 conditional `require`를 거부해 확장 자체가
-  활성화되지 않던 경로를 ESM extension-host entry로 분리하고, ESM 확장을 지원하는 VS Code 1.100을 최소
-  버전으로 명시
-- public command 네 개를 compiler·cache·panel보다 먼저 등록하고 무거운 서비스는 첫 trusted command까지
-  지연해 adapter 초기화 실패가 불명확한 `command not found`로 축약되지 않도록 개선
-- Restricted Mode에서는 명령과 Workspace Trust 안내만 제공하고, 사용자가 신뢰하기 전에는 workspace 번들링과
-  실행을 시작하지 않으며 초기화 실패 시 `React Preview` Output channel로 바로 이동하는 선택지를 제공
-- VSIX에서 이전 CommonJS host artifact와 로컬 진단 `log.txt`를 제외해 잘못된 entry 혼입과 사용자 로그 배포를
-  방지
-
-## 0.1.1066 - 2026-07-19
-
-- Page Inspector blocker를 현재 상태가 아닌 `blocker-discovered → auto-selection → render-result →
-subsequent-error` 시간순 trace로 기록하고, 한 Auto/Smart 시도와 그 뒤의 blocker 변화·오류에 같은 trace ID를 부여
-- hook fallback, Virtual Backend Auto/Smart/Lorem payload, target-guided JSX gate, 최소 page-path DFS와 target prop
-  Smart fill이 선택한 mode·생성 property path·bounded JSON 값을 구조화해 `React Preview` Output channel에 자동 출력
-- blocker의 source path/line/offset이 마지막 정상 bundle dependency graph에 포함될 때만 해당 줄 전후의 authored source를
-  확장 호스트에서 읽어 trace에 첨부하고, graph 밖 경로·malformed/unbounded webview payload는 소스 읽기 전에 차단
-- 동일 tree snapshot과 반복 오류를 fingerprint로 합치고 source 읽기/pretty JSON 출력을 비동기 직렬화 lane에서 처리해
-  project render와 VS Code UI thread를 막지 않으며, Inspector Console에 trace 확인 위치와 검색 marker를 안내
 
 초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

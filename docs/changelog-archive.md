@@ -2,6 +2,47 @@
 
 현재 `CHANGELOG.md`의 1,000줄 제한을 지키기 위해 오래된 변경 기록을 이 문서에 보관합니다.
 
+## 0.1.1075 - 2026-07-19
+
+- Page Inspector가 파일의 PascalCase/기본 export 중 실제 React component·element만 gallery에 남기고 GraphQL
+  `DocumentNode`, Fragment 상수, Context 같은 비시각 export는 렌더 대상으로 선택하지 않도록 수정
+- GraphQL Code Generator의 `getFragmentData(document, carrier)` 호출을 정적으로 식별해 실제 carrier가 비어 있어도
+  fragment selection에 필요한 최소 필드를 Auto 값으로 복구하고, 공용 `useQuery` wrapper blocker를 document와 ID
+  variable별로 분리해 서로 다른 요청 payload가 덮어쓰지 않도록 개선
+- Context 이름의 project hook도 일반 runtime circuit breaker의 정밀한 사용처 추론을 이용하며, React
+  `ComponentType`/`ElementType` prop과 JSX tag prop은 callback과 구분된 null-rendering placeholder로 보존해
+  `<Icon />` 같은 필수 시각 prop이 `undefined`로 전체 export를 중단하지 않도록 보완
+- TypeScript resolver가 `Buffer` 같은 package global을 `.d.ts`로 찾았을 때 인접한 JS/MJS/CJS 구현을 주입해
+  declaration-only 빈 namespace와 Node builtin shim 대신 실제 browser polyfill API를 사용하도록 수정
+- 대형 저장소의 entry-path 탐색을 중복 없는 우선순위 heap과 공통-root canonical identity로 바꾸고, 고정된 Page
+  Inspector 경로 밖의 project-owned lazy route만 inert module로 치환해 실제 rtcc benchmark의 결과물을
+  71.8MB/1,484 chunks에서 23.8MB/456 chunks로 줄이고 전체 준비 시간을 약 90초에서 약 41초로 단축
+- 내부 theme/setup resolver probe는 lazy-route 경계에서 제외하고, 종료된 Auto 시도에 뒤늦은 오류가 잘못
+  귀속되지 않도록 blocker trace의 causal window를 바로잡음
+
+## 0.1.1074 - 2026-07-19
+
+- Yarn PnP 같은 workspace 주입 CommonJS resolver가 VS Code의 conditional `require`를 거부해 확장 자체가
+  활성화되지 않던 경로를 ESM extension-host entry로 분리하고, ESM 확장을 지원하는 VS Code 1.100을 최소
+  버전으로 명시
+- public command 네 개를 compiler·cache·panel보다 먼저 등록하고 무거운 서비스는 첫 trusted command까지
+  지연해 adapter 초기화 실패가 불명확한 `command not found`로 축약되지 않도록 개선
+- Restricted Mode에서는 명령과 Workspace Trust 안내만 제공하고, 사용자가 신뢰하기 전에는 workspace 번들링과
+  실행을 시작하지 않으며 초기화 실패 시 `React Preview` Output channel로 바로 이동하는 선택지를 제공
+- VSIX에서 이전 CommonJS host artifact와 로컬 진단 `log.txt`를 제외해 잘못된 entry 혼입과 사용자 로그 배포를
+  방지
+
+## 0.1.1066 - 2026-07-19
+
+- Page Inspector blocker를 현재 상태가 아닌 `blocker-discovered → auto-selection → render-result →
+subsequent-error` 시간순 trace로 기록하고, 한 Auto/Smart 시도와 그 뒤의 blocker 변화·오류에 같은 trace ID를 부여
+- hook fallback, Virtual Backend Auto/Smart/Lorem payload, target-guided JSX gate, 최소 page-path DFS와 target prop
+  Smart fill이 선택한 mode·생성 property path·bounded JSON 값을 구조화해 `React Preview` Output channel에 자동 출력
+- blocker의 source path/line/offset이 마지막 정상 bundle dependency graph에 포함될 때만 해당 줄 전후의 authored source를
+  확장 호스트에서 읽어 trace에 첨부하고, graph 밖 경로·malformed/unbounded webview payload는 소스 읽기 전에 차단
+- 동일 tree snapshot과 반복 오류를 fingerprint로 합치고 source 읽기/pretty JSON 출력을 비동기 직렬화 lane에서 처리해
+  project render와 VS Code UI thread를 막지 않으며, Inspector Console에 trace 확인 위치와 검색 marker를 안내
+
 ## 0.1.1065 - 2026-07-19
 
 - 별도 React Page Inspector 탭의 Components tree와 Details 사이에 드래그 가능한 splitter를 추가해 두 영역의

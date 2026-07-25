@@ -2,6 +2,21 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## 0.1.1192 - 2026-07-26
+
+- Inspector 내부 resize handle의 15~~85% 비율 제한과 4096px 카드 높이 상한을 제거해 트리·상세·카드·상단
+  영역을 0~~100% 및 필요한 콘텐츠 높이까지 자유롭게 조절할 수 있도록 변경
+- preview와 별도 Inspector 탭의 grid 최소 높이·workbench 예약을 동일하게 풀어 핸들이 실제 영역 경계까지
+  이동하도록 맞추고, 접기/복원·키보드 조절·scroll 보존 동작은 유지
+
+## 0.1.1191 - 2026-07-25
+
+- Route browser, Page context, toolbar, workbench tab처럼 각각 독립적으로 스크롤되는 Inspector 영역에
+  안정적인 scroll identity를 부여해 클릭과 inert snapshot 교체 뒤에도 가로·세로 좌표를 그대로 복원
+- route 선택은 일반 UI의 짧은 안정화 시간과 분리해, 선택한 branch의 새 번들이 실제 적용될 때까지 원래
+  스크롤 좌표를 유지하고 브라우저 scroll anchoring이 중간 DOM을 기준으로 위치를 바꾸지 않도록 개선
+- 느린 route compilation 중간 snapshot과 최종 선택 snapshot을 재현하는 scroll transaction 회귀 테스트 추가
+
 ## 0.1.1190 - 2026-07-25
 
 - `App.tsx`처럼 수백 경로를 소유한 파일은 모든 경로를 컴포넌트 모듈 없이 메타데이터로 색인하고, 공통 경로
@@ -972,8 +987,7 @@
 
 ## 0.1.1076 - 2026-07-19
 
-- Page Inspector의 lazy page root가 열리기 전에 전체 render corridor의 styled-components theme import를
-  canonical module identity로 합쳐 정확한 프로젝트 theme를 주입하고, 구조적 fallback token이 원본 theme를
+- Page Inspector의 lazy page root가 열리기 전에 전체 render corridor의 styled-components theme import를 canonical module identity로 합쳐 정확한 프로젝트 theme를 주입하고, 구조적 fallback token이 원본 theme를
   덮거나 `spacing` 같은 함수형 token을 값으로 오인하던 스타일 손상을 방지
 - 프로덕션 `index.html`에서 정적으로 증명된 `html`/`body`/mount root의 class, lang, dir, id, style, data 속성을
   webview 문서 셸에 복원해 `body.body` 같은 전역 reset과 앱의 root selector가 동일하게 동작하도록 개선
@@ -983,5 +997,4 @@
 - esbuild의 aggregate entry CSS를 즉시 연결하지 않고 dynamic-import 경계별 static CSS ownership을 metadata로
   복구해 unopened route, editor, modal의 전역 selector가 현재 페이지를 오염하지 않도록 변경하고, hot reload가
   commit되면 이전 revision의 lazy stylesheet를 정리
-
-초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.
+  초기 변경 기록은 [변경 기록 보관 문서](docs/changelog-archive.md)에 있습니다.

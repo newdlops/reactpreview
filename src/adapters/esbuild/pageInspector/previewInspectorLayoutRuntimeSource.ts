@@ -121,6 +121,7 @@ const previewInspectorDevtoolsCss = [
   'min-width:38px;padding:0 5px;text-align:center}.rpi-scenario-state[data-enabled="true"]{color:var(--vscode-testing-iconPassed,#73c991)}',
   '.rpi-scenario-state[data-enabled="false"][data-reached="true"]{color:var(--vscode-charts-yellow,#cca700)}',
   '.rpi-scenario-state[data-reached="false"]{color:var(--rpi-muted)}',
+  '.rpi-scenario-state[data-pending="true"]{color:var(--vscode-charts-blue,#75beff)}',
   '.rpi-scenario-table tr[data-lineage-blocked="true"] .rpi-scenario-state{color:var(--vscode-errorForeground,#f48771)}',
   '.rpi-scenario-mode{color:var(--rpi-muted);display:block;font-size:9px;margin-top:3px}',
   '.rpi-scenario-actions{min-width:176px;white-space:nowrap}.rpi-scenario-actions>.rpi-button{margin:0 3px 3px 0;min-width:42px}',

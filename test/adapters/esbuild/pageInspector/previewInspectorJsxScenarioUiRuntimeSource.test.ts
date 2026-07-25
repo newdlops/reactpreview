@@ -29,8 +29,10 @@ describe('Preview Inspector JSX scenario UI runtime source', () => {
     expect(source).toContain("'Switch lineage / JSX condition'");
     expect(source).toContain("'OFF renders'");
     expect(source).toContain("'ON renders'");
-    expect(source).toContain('setPreviewInspectorRenderConditionOverride(scenario.id, false)');
-    expect(source).toContain('setPreviewInspectorRenderConditionOverride(scenario.id, true)');
+    expect(source).toContain('function applyPreviewInspectorJsxScenarioOverride(');
+    expect(source).toContain(
+      'setPreviewInspectorRenderConditionOverride(decision.condition.id, decision.enabled)',
+    );
     expect(source).toContain('resetPreviewInspectorRenderConditionOverride(scenario.id)');
     expect(source).toContain("'No Boolean JSX branches were found in the selected file.'");
     expect(source).toContain('function usePreviewInspectorJsxScenarioSourceDecorations()');
@@ -63,6 +65,7 @@ describe('Preview Inspector JSX scenario UI runtime source', () => {
     expect(records[1]).toMatchObject({
       effectiveEnabled: false,
       expression: 'showDetails',
+      id: 'definition-details',
       lineageBlocked: false,
       lineageDepth: 1,
       lineageParentExpression: 'loaded',
@@ -90,6 +93,44 @@ describe('Preview Inspector JSX scenario UI runtime source', () => {
       lineageBlockedByExpression: 'loaded',
       lineageParentRequiredEnabled: true,
     });
+  });
+
+  /** One nested choice queues its conservative outer requirements before the requested value. */
+  it('applies statically proven parent switches outermost-first for an unreached scenario', () => {
+    const context: {
+      __decisions?: readonly { readonly enabled: boolean; readonly id: string }[];
+    } = {};
+    vm.runInNewContext(
+      `
+        const decisions = [];
+        const setPreviewInspectorRenderConditionOverride = (id, enabled) => {
+          decisions.push({ enabled, id });
+        };
+        ${createPreviewInspectorJsxScenarioUiRuntimeSource()}
+        const outer = { id: 'outer-id', lineageId: 'outer' };
+        const middle = {
+          id: 'middle-id',
+          lineageId: 'middle',
+          lineageParentId: 'outer',
+          lineageParentRequiredEnabled: false,
+        };
+        const selected = {
+          id: 'selected-id',
+          lineageId: 'selected',
+          lineageParentId: 'middle',
+          lineageParentRequiredEnabled: true,
+        };
+        applyPreviewInspectorJsxScenarioOverride([outer, middle, selected], selected, true);
+        globalThis.__decisions = decisions;
+      `,
+      context,
+    );
+
+    expect(context.__decisions).toEqual([
+      { enabled: false, id: 'outer-id' },
+      { enabled: true, id: 'middle-id' },
+      { enabled: true, id: 'selected-id' },
+    ]);
   });
 });
 
@@ -225,36 +266,52 @@ function evaluateJsxScenarioRecords(loadedEnabled = true): readonly JsxScenarioR
           truthyLabel: '<Page>',
         },
       ];
+      const conditionDefinitions = [
+        {
+          authoredExpression: 'showDetails',
+          column: 3,
+          effectiveEnabled: false,
+          expression: 'showDetails',
+          falsyLabel: 'hidden',
+          id: 'definition-details',
+          kind: 'logical-and',
+          line: 20,
+          reached: false,
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: '<Details>',
+        },
+        {
+          authoredExpression: 'standalone',
+          column: 3,
+          effectiveEnabled: false,
+          expression: 'standalone',
+          falsyLabel: 'hidden',
+          id: 'definition-standalone',
+          kind: 'logical-and',
+          line: 30,
+          reached: false,
+          sourcePath: '/workspace/Page.tsx',
+          truthyLabel: '<Standalone>',
+        },
+      ];
       const readPreviewInspectorSelectedRenderOutcomePlan = () => ({
         outcomes,
         sourcePath: '/workspace/Page.tsx',
       });
       const readPreviewInspectorStaticRenderOutcomes = () => outcomes;
       const readPreviewInspectorRenderConditions = () => runtimeConditions;
-      const readPreviewInspectorLogicalSwitchRecords = () => [
+      const readPreviewInspectorControllableRenderConditions = () => [
+        ...conditionDefinitions,
+        ...runtimeConditions,
+      ];
+      const readPreviewInspectorLogicalSwitchRecords = (_outcomes, conditions) => [
         {
+          ...conditions.find((condition) => condition.line === 20),
           conditionTreeId: 'logical-and:details',
-          effectiveEnabled: false,
-          expression: 'showDetails',
-          falsyLabel: 'hidden',
-          kind: 'logical-and',
-          line: 20,
-          column: 3,
-          reached: false,
-          sourcePath: '/workspace/Page.tsx',
-          truthyLabel: '<Details>',
         },
         {
+          ...conditions.find((condition) => condition.line === 30),
           conditionTreeId: 'logical-and:standalone',
-          effectiveEnabled: false,
-          expression: 'standalone',
-          falsyLabel: 'hidden',
-          kind: 'logical-and',
-          line: 30,
-          column: 3,
-          reached: false,
-          sourcePath: '/workspace/Page.tsx',
-          truthyLabel: '<Standalone>',
         },
       ];
       ${createPreviewInspectorJsxScenarioUiRuntimeSource()}

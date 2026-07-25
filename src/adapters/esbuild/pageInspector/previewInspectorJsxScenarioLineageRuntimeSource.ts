@@ -220,8 +220,11 @@ function attachPreviewInspectorJsxScenarioLineage(outcomes, records) {
     nextVisiting.add(id);
     const inherited = findBlockedAncestor(relation.id, nextVisiting);
     if (inherited !== undefined) return inherited;
-    const parentReached = parent.reached !== false && typeof parent.id === 'string';
-    return !parentReached || (parent.effectiveEnabled === true) !== relation.requiredEnabled
+    const parentAvailable = (
+      parent.reached !== false ||
+      typeof parent.override === 'boolean'
+    ) && typeof parent.id === 'string';
+    return !parentAvailable || (parent.effectiveEnabled === true) !== relation.requiredEnabled
       ? parent
       : undefined;
   };

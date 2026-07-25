@@ -8,6 +8,7 @@
 import { createPreviewInspectorGeneratedValueRuntimeSource } from './previewInspectorGeneratedValueRuntimeSource';
 import { createPreviewInspectorBlockerValueRuntimeSource } from './previewInspectorBlockerValueRuntimeSource';
 import { createPreviewInspectorHookGraphqlRuntimeSource } from './previewInspectorHookGraphqlRuntimeSource';
+import { createPreviewInspectorOverlayActivationRuntimeSource } from './previewInspectorOverlayActivationRuntimeSource';
 
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
 export const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = 256;
@@ -27,6 +28,7 @@ export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
   const generatedValueRuntimeSource = createPreviewInspectorGeneratedValueRuntimeSource();
   const blockerValueRuntimeSource = createPreviewInspectorBlockerValueRuntimeSource();
   const hookGraphqlRuntimeSource = createPreviewInspectorHookGraphqlRuntimeSource();
+  const overlayActivationRuntimeSource = createPreviewInspectorOverlayActivationRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
@@ -89,6 +91,8 @@ function initializePreviewInspectorRuntimeFallbackState() {
 ${generatedValueRuntimeSource}
 
 ${blockerValueRuntimeSource}
+
+${overlayActivationRuntimeSource}
 
 ${hookGraphqlRuntimeSource}
 

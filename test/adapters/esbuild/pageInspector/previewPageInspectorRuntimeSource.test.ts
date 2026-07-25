@@ -95,6 +95,9 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain(
       'resolveRenderConditionLazy: resolvePreviewInspectorRenderConditionLazy',
     );
+    expect(source).toContain(
+      'resolveOverlayActivationRenderValue: resolvePreviewInspectorOverlayActivationRenderValue',
+    );
     expect(source).toContain('resolveRenderChoice: resolvePreviewInspectorRenderChoice');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain(

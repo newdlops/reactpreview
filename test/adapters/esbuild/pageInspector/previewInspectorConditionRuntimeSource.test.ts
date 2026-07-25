@@ -8,9 +8,14 @@ interface ConditionRuntimeHarness {
   readonly rememberDirectOwner: (exportName: string, ownerName: string) => void;
   readonly readChoices: () => readonly Record<string, unknown>[];
   readonly readConditions: () => readonly Record<string, unknown>[];
+  readonly readControllableConditions: () => readonly Record<string, unknown>[];
   readonly readConsoleEntries: () => readonly Record<string, unknown>[];
   readonly readFallbackValuesEnabled: () => boolean;
   readonly registerVirtualPageSource: (sourcePath: string) => boolean;
+  readonly registerDefinitions: (
+    sourcePath: string,
+    candidates: readonly Record<string, unknown>[],
+  ) => boolean;
   readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
   readonly resetCondition: (conditionId: string) => void;
   readonly resetChoice: (choiceId: string) => boolean;
@@ -80,6 +85,81 @@ describe('Preview Inspector condition runtime source', () => {
     });
     expect(harness.getRevision()).toBe(3);
     expect(persist).toHaveBeenCalledTimes(3);
+  });
+
+  /** Queues a manual branch before short-circuiting allows the authored expression to execute. */
+  it('controls a compiler-registered condition before its first runtime evaluation', () => {
+    const persist = vi.fn();
+    const harness = createConditionRuntimeHarness({}, persist);
+    const metadata = {
+      authoredExpression: 'rows.length > 0',
+      column: 8,
+      expression: 'rows.length > 0',
+      expressionFingerprint: 'b'.repeat(64),
+      falsyLabel: 'hidden <Rows>',
+      kind: 'logical-and',
+      line: 42,
+      sourcePath: '/workspace/MappingCard.tsx',
+      truthyLabel: '<Rows>',
+    };
+
+    expect(
+      harness.registerDefinitions('/workspace/MappingCard.tsx', [{ id: 'rows-visible', metadata }]),
+    ).toBe(true);
+    expect(harness.readConditions()).toEqual([]);
+    expect(harness.readControllableConditions()[0]).toMatchObject({
+      effectiveEnabled: false,
+      id: 'rows-visible',
+      reached: false,
+    });
+
+    harness.setCondition('rows-visible', true);
+    expect(harness.readControllableConditions()[0]).toMatchObject({
+      effectiveEnabled: true,
+      override: true,
+      reached: false,
+    });
+    expect(harness.resolveCondition('rows-visible', false, metadata)).toBe(true);
+    expect(harness.readControllableConditions()[0]).toMatchObject({
+      effectiveEnabled: true,
+      override: true,
+      reached: true,
+    });
+    expect(harness.getRevision()).toBe(1);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  /** A hot source batch removes definitions that disappeared without touching another module. */
+  it('replaces one source definition batch and drops stale scenario controls', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const createCandidate = (id: string, line: number): Record<string, unknown> => ({
+      id,
+      metadata: {
+        authoredExpression: id,
+        expression: id,
+        kind: 'logical-and',
+        line,
+        sourcePath: '/workspace/MappingCard.tsx',
+      },
+    });
+
+    expect(
+      harness.registerDefinitions('/workspace/MappingCard.tsx', [
+        createCandidate('first', 10),
+        createCandidate('removed', 20),
+      ]),
+    ).toBe(true);
+    expect(harness.readControllableConditions().map((condition) => condition.id)).toEqual([
+      'first',
+      'removed',
+    ]);
+
+    expect(
+      harness.registerDefinitions('/workspace/MappingCard.tsx', [createCandidate('first', 10)]),
+    ).toBe(true);
+    expect(harness.readControllableConditions().map((condition) => condition.id)).toEqual([
+      'first',
+    ]);
   });
 
   /** Presents logical JSX guards as switches without coercing their authored JavaScript values. */
@@ -734,8 +814,10 @@ function createConditionRuntimeHarness(
         },
         readChoices: readPreviewInspectorRenderChoices,
         readConditions: readPreviewInspectorRenderConditions,
+        readControllableConditions: readPreviewInspectorControllableRenderConditions,
         readConsoleEntries: () => recordedConsoleEntries.slice(),
         readFallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled,
+        registerDefinitions: registerPreviewInspectorRenderConditionDefinitions,
         registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
         isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
         resetCondition: resetPreviewInspectorRenderConditionOverride,

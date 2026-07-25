@@ -83,7 +83,7 @@ function createPreviewInspectorConditionTreeNode(condition) {
     blocksCurrentTarget,
     children: [],
     condition,
-    conditionId: reached ? condition.id : undefined,
+    conditionId: typeof condition.id === 'string' ? condition.id : undefined,
     exportName: undefined,
     id: 'render-condition:' + (condition.conditionTreeId ?? condition.id),
     kind: 'condition',
@@ -223,13 +223,17 @@ function appendPreviewInspectorAssignedConditions(nodes, assignments) {
 /** Adds every evaluated JSX condition to its component or a clearly labeled unowned tree group. */
 function attachPreviewInspectorConditionsToSnapshot(snapshot) {
   const runtimeConditions = readPreviewInspectorRenderConditions();
+  const controllableConditions =
+    typeof readPreviewInspectorControllableRenderConditions === 'function'
+      ? readPreviewInspectorControllableRenderConditions()
+      : runtimeConditions;
   const conditions = [
-    ...runtimeConditions.filter((condition) => condition?.kind !== 'logical-and'),
+    ...controllableConditions.filter((condition) => condition?.kind !== 'logical-and'),
     ...readPreviewInspectorLogicalSwitchRecords(
       typeof readPreviewInspectorStaticRenderOutcomes === 'function'
         ? readPreviewInspectorStaticRenderOutcomes()
         : [],
-      runtimeConditions,
+      controllableConditions,
     ),
     ...readPreviewInspectorRenderChoices(),
   ];
@@ -313,6 +317,7 @@ function PreviewInspectorConditionDetail({ node }) {
   }
   const condition = node.condition;
   const reached = condition.reached !== false && typeof condition.id === 'string';
+  const controllable = typeof condition.id === 'string';
   const enabled = condition.effectiveEnabled === true;
   const forced = typeof condition.override === 'boolean';
   const targetGuided = typeof condition.autoOverride === 'boolean';
@@ -359,19 +364,20 @@ function PreviewInspectorConditionDetail({ node }) {
             'button',
             {
               'aria-checked': enabled,
-              'aria-disabled': !reached,
+              'aria-disabled': !controllable,
               className: 'rpi-button',
-              disabled: !reached,
-              onClick: () => reached && setPreviewInspectorRenderConditionOverride(condition.id, !enabled),
+              disabled: !controllable,
+              onClick: () => controllable &&
+                setPreviewInspectorRenderConditionOverride(condition.id, !enabled),
               role: 'switch',
               title: reached
                 ? 'Toggle this logical-AND JSX branch'
-                : 'Not reached yet; enable the preceding logical-AND switch first',
+                : 'Queue this branch; it will apply when preceding JSX switches are enabled',
               type: 'button',
             },
-            reached
+            reached || typeof condition.override === 'boolean'
               ? enabled ? 'On · ' + condition.truthyLabel : 'Off · ' + condition.falsyLabel
-              : 'Not reached yet',
+              : 'Queue branch',
           )
         : React.createElement(
             React.Fragment,
@@ -398,7 +404,7 @@ function PreviewInspectorConditionDetail({ node }) {
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          disabled: !reached || (!forced && !targetGuided),
+          disabled: !controllable || (!forced && !targetGuided),
           onClick: () => resetPreviewInspectorRenderConditionOverride(condition.id),
           title: 'Follow the authored runtime value again',
         },

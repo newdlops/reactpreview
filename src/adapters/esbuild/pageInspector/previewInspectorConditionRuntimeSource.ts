@@ -6,6 +6,7 @@
  * and persistence functions remain lexical to the extension-owned Inspector UI.
  */
 import { createPreviewInspectorSynchronousContinuationRuntimeSource } from './previewInspectorSynchronousContinuationRuntimeSource';
+import { createPreviewInspectorConditionDefinitionRuntimeSource } from './previewInspectorConditionDefinitionRuntimeSource';
 import { createPreviewInspectorVirtualPageConditionRuntimeSource } from './previewInspectorVirtualPageConditionRuntimeSource';
 
 /**
@@ -19,10 +20,12 @@ import { createPreviewInspectorVirtualPageConditionRuntimeSource } from './previ
 export function createPreviewInspectorConditionRuntimeSource(): string {
   const synchronousContinuationRuntimeSource =
     createPreviewInspectorSynchronousContinuationRuntimeSource();
+  const conditionDefinitionRuntimeSource = createPreviewInspectorConditionDefinitionRuntimeSource();
   const virtualPageConditionRuntimeSource =
     createPreviewInspectorVirtualPageConditionRuntimeSource();
   return String.raw`
 ${synchronousContinuationRuntimeSource}
+${conditionDefinitionRuntimeSource}
 ${virtualPageConditionRuntimeSource}
 const PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT = 512;
 const PREVIEW_INSPECTOR_RENDER_CHOICE_BRANCH_LIMIT = 32;
@@ -846,7 +849,7 @@ function clearPreviewInspectorTargetGuidedConditionOverrides(reachabilityKey) {
 /** Forces one branch, remounting the authored page so memoized owners also observe the decision. */
 function setPreviewInspectorRenderConditionOverride(conditionId, enabled) {
   initializePreviewInspectorConditionState();
-  if (!previewInspectorSession.renderConditions.has(conditionId) || typeof enabled !== 'boolean') {
+  if (!isPreviewInspectorKnownRenderCondition(conditionId) || typeof enabled !== 'boolean') {
     return;
   }
   const previous = previewInspectorSession.renderConditionOverrides.get(conditionId);

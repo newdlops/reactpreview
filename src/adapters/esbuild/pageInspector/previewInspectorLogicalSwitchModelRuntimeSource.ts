@@ -101,10 +101,12 @@ function collectPreviewInspectorStaticLogicalSwitches(outcomes) {
   return switches;
 }
 
-/** Combines one static guard with its optional live condition without fabricating editability. */
+/** Combines one static guard with its optional live or compiler-registered condition control. */
 function createPreviewInspectorLogicalSwitchRecord(entry, runtime) {
   const source = runtime ?? entry.condition;
-  const reached = runtime !== undefined && typeof runtime.id === 'string' && runtime.id.length > 0;
+  const controllable = runtime !== undefined &&
+    typeof runtime.id === 'string' && runtime.id.length > 0;
+  const reached = controllable && runtime.reached !== false;
   const expression = typeof source?.expression === 'string' && source.expression.length > 0
     ? source.expression
     : 'JSX visibility';
@@ -113,13 +115,13 @@ function createPreviewInspectorLogicalSwitchRecord(entry, runtime) {
     authoredEnabled: reached ? runtime.authoredEnabled === true : undefined,
     autoOverride: reached ? runtime.autoOverride : undefined,
     conditionTreeId: 'logical-and:' + entry.guardKey,
-    effectiveEnabled: reached ? runtime.effectiveEnabled === true : false,
+    effectiveEnabled: controllable ? runtime.effectiveEnabled === true : false,
     expression,
     falsyLabel: typeof runtime?.falsyLabel === 'string' ? runtime.falsyLabel : 'hidden',
-    id: reached ? runtime.id : undefined,
+    id: controllable ? runtime.id : undefined,
     kind: 'logical-and',
     ownerName: runtime?.ownerName ?? entry.ownerName,
-    override: reached ? runtime.override : undefined,
+    override: controllable ? runtime.override : undefined,
     reached,
     truthyLabel: typeof runtime?.truthyLabel === 'string' && runtime.truthyLabel.length > 0
       ? runtime.truthyLabel

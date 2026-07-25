@@ -2,8 +2,8 @@
  * Generates the current-file JSX ON/OFF scenario table shown by React Page Inspector.
  *
  * The table is a projection of compiler-owned return outcomes and the live condition registry. It
- * never evaluates project expressions: static conditions remain visible while short-circuited, and
- * only conditions that the instrumented application has reached receive editable ON/OFF controls.
+ * never evaluates project expressions: compiler-registered conditions remain controllable while
+ * short-circuited, and queued choices take effect when their authored parent path becomes reachable.
  */
 import { createPreviewInspectorJsxScenarioLineageRuntimeSource } from './previewInspectorJsxScenarioLineageRuntimeSource';
 
@@ -110,7 +110,7 @@ function collectPreviewInspectorStaticJsxScenarioGroups(outcomes) {
   return groups;
 }
 
-/** Joins a static decision to its live editable registry record using exact source evidence. */
+/** Joins a static decision to its live or compiler-registered control using exact source evidence. */
 function findPreviewInspectorJsxScenarioRuntimeCondition(condition, runtimeConditions, matchedIds) {
   const runtime = runtimeConditions.find((candidate) =>
     candidate?.kind !== 'logical-and' &&
@@ -121,15 +121,15 @@ function findPreviewInspectorJsxScenarioRuntimeCondition(condition, runtimeCondi
   return runtime;
 }
 
-/** Creates one normalized table row without inventing editability for an unreached expression. */
+/** Creates one normalized row while keeping evaluated and queued values visibly distinct. */
 function createPreviewInspectorJsxScenarioRecord(options) {
   const runtime = options.runtime;
   const source = runtime ??
     (typeof readPreviewInspectorRenderOutcomeConditionSource === 'function'
       ? readPreviewInspectorRenderOutcomeConditionSource(options.condition)
       : options.condition ?? {});
-  const reached = runtime !== undefined &&
-    typeof runtime.id === 'string' && runtime.id.length > 0;
+  const controllable = typeof runtime?.id === 'string' && runtime.id.length > 0;
+  const reached = controllable && runtime.reached !== false;
   const expression = typeof runtime?.expression === 'string' && runtime.expression.length > 0
     ? runtime.expression
     : typeof options.condition?.expression === 'string' && options.condition.expression.length > 0
@@ -140,14 +140,14 @@ function createPreviewInspectorJsxScenarioRecord(options) {
     authoredEnabled: reached ? runtime.authoredEnabled === true : undefined,
     autoOverride: reached ? runtime.autoOverride : undefined,
     conditionTreeId: runtime?.conditionTreeId ?? 'scenario:' + options.key,
-    effectiveEnabled: reached ? runtime.effectiveEnabled === true : false,
+    effectiveEnabled: controllable ? runtime.effectiveEnabled === true : false,
     expression,
     falsyLabel: typeof runtime?.falsyLabel === 'string' && runtime.falsyLabel.length > 0
       ? runtime.falsyLabel
       : options.falsyLabels.join(' / ') || 'false branch',
-    id: reached ? runtime.id : undefined,
+    id: controllable ? runtime.id : undefined,
     kind: runtime?.kind ?? options.condition?.kind ?? 'condition',
-    override: reached ? runtime.override : undefined,
+    override: controllable ? runtime.override : undefined,
     reached,
     role: runtime?.role,
     sourcePath: runtime?.sourcePath ?? source.sourcePath ?? options.condition?.sourcePath,
@@ -167,12 +167,16 @@ function collectPreviewInspectorJsxScenarioRecords() {
   const runtimeConditions = typeof readPreviewInspectorRenderConditions === 'function'
     ? readPreviewInspectorRenderConditions()
     : [];
+  const controllableConditions =
+    typeof readPreviewInspectorControllableRenderConditions === 'function'
+      ? readPreviewInspectorControllableRenderConditions()
+      : runtimeConditions;
   const matchedRuntimeIds = new Set();
   const records = [];
   for (const group of collectPreviewInspectorStaticJsxScenarioGroups(outcomes).values()) {
     const runtime = findPreviewInspectorJsxScenarioRuntimeCondition(
       group.condition,
-      runtimeConditions,
+      controllableConditions,
       matchedRuntimeIds,
     );
     records.push(createPreviewInspectorJsxScenarioRecord({
@@ -181,13 +185,13 @@ function collectPreviewInspectorJsxScenarioRecords() {
     }));
   }
   const logicalSwitches = typeof readPreviewInspectorLogicalSwitchRecords === 'function'
-    ? readPreviewInspectorLogicalSwitchRecords(outcomes, runtimeConditions)
-    : runtimeConditions.filter((condition) => condition?.kind === 'logical-and');
+    ? readPreviewInspectorLogicalSwitchRecords(outcomes, controllableConditions)
+    : controllableConditions.filter((condition) => condition?.kind === 'logical-and');
   for (const condition of logicalSwitches) {
     if (typeof condition?.id === 'string') matchedRuntimeIds.add(condition.id);
     records.push(condition);
   }
-  for (const condition of runtimeConditions) {
+  for (const condition of controllableConditions) {
     if (
       condition?.kind === 'logical-and' ||
       typeof condition?.id !== 'string' ||
@@ -198,7 +202,7 @@ function collectPreviewInspectorJsxScenarioRecords() {
     records.push({
       ...condition,
       conditionTreeId: condition.conditionTreeId ?? 'runtime:' + condition.id,
-      reached: true,
+      reached: condition.reached !== false,
     });
   }
   const unique = [];
@@ -318,17 +322,57 @@ function findPreviewInspectorJsxScenarioTreeNode(nodes, scenario) {
 
 /** Formats one table mode without conflating target-guided values with explicit user choices. */
 function describePreviewInspectorJsxScenarioMode(scenario) {
+  if (scenario?.reached === false && typeof scenario?.override === 'boolean') return 'manual · pending';
   if (scenario?.reached === false || typeof scenario?.id !== 'string') return 'waiting';
   if (typeof scenario.override === 'boolean') return 'manual';
   if (typeof scenario.autoOverride === 'boolean') return 'automatic';
   return 'authored';
 }
 
+/**
+ * Queues the selected branch plus every statically proven parent value needed to reach it.
+ *
+ * Parent relations contain only conservative dominance evidence. Applying them outermost-first lets
+ * one click reveal a nested collection callback or short-circuited JSX over successive remounts.
+ */
+function applyPreviewInspectorJsxScenarioOverride(scenarios, scenario, enabled) {
+  const byLineageId = new Map(
+    (Array.isArray(scenarios) ? scenarios : []).map((candidate) => [
+      candidate.lineageId,
+      candidate,
+    ]),
+  );
+  const decisions = [];
+  const visiting = new Set();
+  let current = scenario;
+  while (
+    typeof current?.lineageParentId === 'string' &&
+    !visiting.has(current.lineageParentId) &&
+    decisions.length < PREVIEW_INSPECTOR_JSX_SCENARIO_LIMIT
+  ) {
+    visiting.add(current.lineageParentId);
+    const parent = byLineageId.get(current.lineageParentId);
+    if (parent === undefined) break;
+    decisions.unshift({
+      condition: parent,
+      enabled: current.lineageParentRequiredEnabled !== false,
+    });
+    current = parent;
+  }
+  decisions.push({ condition: scenario, enabled });
+  for (const decision of decisions) {
+    if (typeof decision.condition?.id !== 'string') continue;
+    setPreviewInspectorRenderConditionOverride(decision.condition.id, decision.enabled);
+  }
+}
+
 /** Renders one scenario with explicit OFF/ON values and a reversible authored-value action. */
-function PreviewInspectorJsxScenarioRow({ roots, scenario }) {
+function PreviewInspectorJsxScenarioRow({ roots, scenario, scenarios }) {
   const reached = scenario.reached !== false && typeof scenario.id === 'string';
+  const controllable = typeof scenario.id === 'string';
   const lineageBlocked = scenario.lineageBlocked === true;
-  const enabled = reached && !lineageBlocked && scenario.effectiveEnabled === true;
+  const pending = !reached && typeof scenario.override === 'boolean';
+  const enabled = controllable && scenario.effectiveEnabled === true;
   const overridden = typeof scenario.override === 'boolean' ||
     typeof scenario.autoOverride === 'boolean';
   const selectScenario = () => {
@@ -371,6 +415,7 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario }) {
     {
       'data-lineage-blocked': lineageBlocked,
       'data-lineage-depth': lineageDepth,
+      'data-pending': pending,
       'data-reached': reached,
       'data-scenario-enabled': enabled,
     },
@@ -437,9 +482,12 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario }) {
         {
           className: 'rpi-scenario-state',
           'data-enabled': enabled,
+          'data-pending': pending,
           'data-reached': reached,
         },
-        lineageBlocked ? 'BLOCKED' : reached ? enabled ? 'ON' : 'OFF' : 'WAIT',
+        pending
+          ? enabled ? 'QUEUED ON' : 'QUEUED OFF'
+          : lineageBlocked ? 'BLOCKED' : reached ? enabled ? 'ON' : 'OFF' : 'WAIT',
       ),
       React.createElement(
         'span',
@@ -453,31 +501,31 @@ function PreviewInspectorJsxScenarioRow({ roots, scenario }) {
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          disabled: !reached || lineageBlocked,
-          onClick: () => setPreviewInspectorRenderConditionOverride(scenario.id, false),
-          pressed: reached && !enabled,
-          title: lineageBlocked
-            ? 'Set the required parent switch first'
-            : reached ? 'Force the OFF JSX branch' : 'A preceding condition must run first',
+          disabled: !controllable,
+          onClick: () => applyPreviewInspectorJsxScenarioOverride(scenarios, scenario, false),
+          pressed: controllable && !enabled && (reached || pending),
+          title: reached
+            ? 'Force the OFF JSX branch'
+            : 'Queue this branch and every required parent switch',
         },
         'Off',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          disabled: !reached || lineageBlocked,
-          onClick: () => setPreviewInspectorRenderConditionOverride(scenario.id, true),
-          pressed: reached && enabled,
-          title: lineageBlocked
-            ? 'Set the required parent switch first'
-            : reached ? 'Force the ON JSX branch' : 'A preceding condition must run first',
+          disabled: !controllable,
+          onClick: () => applyPreviewInspectorJsxScenarioOverride(scenarios, scenario, true),
+          pressed: controllable && enabled,
+          title: reached
+            ? 'Force the ON JSX branch'
+            : 'Queue this branch and every required parent switch',
         },
         'On',
       ),
       React.createElement(
         PreviewInspectorDevtoolsButton,
         {
-          disabled: !reached || !overridden,
+          disabled: !controllable || !overridden,
           onClick: () => resetPreviewInspectorRenderConditionOverride(scenario.id),
           title: 'Follow the authored JavaScript value again',
         },
@@ -585,6 +633,7 @@ function PreviewInspectorJsxScenarioPane({ roots }) {
                 key: scenario.conditionTreeId ?? scenario.id,
                 roots,
                 scenario,
+                scenarios,
               })),
             ),
           ),

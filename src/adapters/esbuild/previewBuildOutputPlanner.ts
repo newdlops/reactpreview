@@ -47,8 +47,16 @@ export interface PreviewBuildOutputPlannerOptions {
   readonly metafile: Metafile;
   /** Complete in-memory outputs returned with `write: false`. */
   readonly outputFiles: readonly OutputFile[];
-  /** Exact virtual `sourcefile` value used for the generated preview entry. */
-  readonly virtualEntryName: string;
+  /** Main generated entry plus package-only entry points that must never be published. */
+  readonly outputSelection: PreviewBuildOutputSelection;
+}
+
+/** Explicit output roots selected by the entry strategy that created this esbuild invocation. */
+export interface PreviewBuildOutputSelection {
+  /** Exact metafile entryPoint identity for browser code that the artifact loader executes. */
+  readonly mainEntryPoint: string;
+  /** Exact package-only entryPoint identities retained solely to form a shared runtime chunk. */
+  readonly ignoredEntryPoints: readonly string[];
 }
 
 /** Policy or consistency error raised before any generated artifact can reach global storage. */
@@ -108,7 +116,14 @@ export function planPreviewBuildOutputs(
   );
   assertCompleteOutputJoin(outputByIdentity, metadataByIdentity);
 
-  const entryMetadata = selectEntryMetadata(metadataByIdentity, options.virtualEntryName);
+  const entryMetadata = selectEntryMetadata(
+    metadataByIdentity,
+    options.outputSelection.mainEntryPoint,
+  );
+  const ignoredEntryMetadata = selectIgnoredEntryMetadata(
+    metadataByIdentity,
+    options.outputSelection,
+  );
   const entryOutput = requireJoinedOutput(outputByIdentity, entryMetadata);
   if (!isJavaScriptOutput(entryOutput.relativePath)) {
     throw new PreviewBuildOutputPlannerError(
@@ -128,6 +143,11 @@ export function planPreviewBuildOutputs(
     entryMetadata.metadata,
   );
   const joinedOutputs = createJoinedOutputs(metadataByIdentity, outputByIdentity);
+  const reachableOutputPaths = collectReachableOutputPaths(
+    entryMetadata.metadataPath,
+    joinedOutputs,
+  );
+  assertReachableOutputs(joinedOutputs, reachableOutputPaths, entryMetadata, ignoredEntryMetadata);
   const lazyStylePlan = planPreviewLazyStyleOutputs(
     entryMetadata.metadataPath,
     joinedOutputs,
@@ -137,6 +157,7 @@ export function planPreviewBuildOutputs(
     .filter(
       (output) =>
         output.metadataPath !== entryMetadata.metadataPath &&
+        reachableOutputPaths.has(output.metadataPath) &&
         isJavaScriptOutput(output.relativePath),
     )
     .map((output) => createAuxiliaryJavaScriptOutput(output, lazyStylePlan?.modulePrefix))
@@ -303,10 +324,10 @@ function assertCompleteOutputJoin(
 /** Selects exactly one JavaScript output whose metadata points to the generated virtual entry. */
 function selectEntryMetadata(
   metadataByIdentity: ReadonlyMap<string, PlannedMetadataOutput>,
-  virtualEntryName: string,
+  mainEntryPoint: string,
 ): PlannedMetadataOutput {
   const candidates = [...metadataByIdentity.values()].filter(
-    (output) => output.metadata.entryPoint === virtualEntryName,
+    (output) => output.metadata.entryPoint === mainEntryPoint,
   );
   if (candidates.length !== 1) {
     const emittedEntryPoints = [...metadataByIdentity.values()]
@@ -314,14 +335,134 @@ function selectEntryMetadata(
       .filter((entryPoint): entryPoint is string => entryPoint !== undefined)
       .sort();
     throw new PreviewBuildOutputPlannerError(
-      `Preview build must contain exactly one output for virtual entry ${JSON.stringify(virtualEntryName)}; found ${candidates.length.toString()} among ${JSON.stringify(emittedEntryPoints)}.`,
+      `Preview build must contain exactly one output for main entry ${JSON.stringify(mainEntryPoint)}; found ${candidates.length.toString()} among ${JSON.stringify(emittedEntryPoints)}.`,
     );
   }
   const entry = candidates[0];
   if (entry === undefined) {
-    throw new PreviewBuildOutputPlannerError('Preview build produced no virtual entry output.');
+    throw new PreviewBuildOutputPlannerError('Preview build produced no main entry output.');
   }
   return entry;
+}
+
+/** Validates package-only roots so an anchor can neither own CSS nor become a second app entry. */
+function selectIgnoredEntryMetadata(
+  metadataByIdentity: ReadonlyMap<string, PlannedMetadataOutput>,
+  selection: PreviewBuildOutputSelection,
+): readonly PlannedMetadataOutput[] {
+  const uniqueIgnored = new Set(selection.ignoredEntryPoints);
+  if (
+    uniqueIgnored.size !== selection.ignoredEntryPoints.length ||
+    uniqueIgnored.has(selection.mainEntryPoint)
+  ) {
+    throw new PreviewBuildOutputPlannerError(
+      'Preview output entry selection contains duplicate roots.',
+    );
+  }
+  const selected: PlannedMetadataOutput[] = [];
+  for (const ignoredEntryPoint of uniqueIgnored) {
+    const candidates = [...metadataByIdentity.values()].filter(
+      (output) => output.metadata.entryPoint === ignoredEntryPoint,
+    );
+    if (candidates.length !== 1) {
+      throw new PreviewBuildOutputPlannerError(
+        `Preview build must contain exactly one ignored entry ${JSON.stringify(ignoredEntryPoint)}.`,
+      );
+    }
+    const candidate = candidates[0];
+    if (candidate === undefined || !isJavaScriptOutput(requireOutputRelativePath(candidate))) {
+      throw new PreviewBuildOutputPlannerError(
+        `Preview ignored entry must emit JavaScript: ${ignoredEntryPoint}`,
+      );
+    }
+    if (candidate.metadata.cssBundle !== undefined) {
+      throw new PreviewBuildOutputPlannerError(
+        `Preview ignored entry must not emit CSS: ${ignoredEntryPoint}`,
+      );
+    }
+    selected.push(candidate);
+  }
+  return selected;
+}
+
+/** Extracts a relative output path for an error before joined output construction is available. */
+function requireOutputRelativePath(output: PlannedMetadataOutput): string {
+  return path.basename(output.metadataPath);
+}
+
+/** Follows esbuild output-import edges from the executable main entry. */
+function collectReachableOutputPaths(
+  mainOutputPath: string,
+  outputs: readonly PreviewJoinedBuildOutput[],
+): ReadonlySet<string> {
+  const byPath = new Map(outputs.map((output) => [output.metadataPath, output]));
+  const reached = new Set<string>();
+  const pending = [mainOutputPath];
+  while (pending.length > 0) {
+    const currentPath = pending.pop();
+    if (currentPath === undefined || reached.has(currentPath)) continue;
+    reached.add(currentPath);
+    const output = byPath.get(currentPath);
+    if (output === undefined) continue;
+    for (const import_ of output.metadata.imports) {
+      const importedPath = resolveOutputImportPath(currentPath, import_.path, byPath);
+      if (importedPath !== undefined && !reached.has(importedPath)) pending.push(importedPath);
+    }
+  }
+  return reached;
+}
+
+/** Resolves metafile import path spelling without interpreting external package imports as outputs. */
+function resolveOutputImportPath(
+  importerPath: string,
+  importedPath: string,
+  byPath: ReadonlyMap<string, PreviewJoinedBuildOutput>,
+): string | undefined {
+  if (byPath.has(importedPath)) return importedPath;
+  const resolved = path.posix.normalize(
+    path.posix.join(path.posix.dirname(importerPath), importedPath),
+  );
+  return byPath.has(resolved) ? resolved : undefined;
+}
+
+/** Prevents anchor-only or disconnected artifacts from being published with executable preview code. */
+function assertReachableOutputs(
+  outputs: readonly PreviewJoinedBuildOutput[],
+  reached: ReadonlySet<string>,
+  mainEntry: PlannedMetadataOutput,
+  ignoredEntries: readonly PlannedMetadataOutput[],
+): void {
+  const ignoredPaths = new Set(ignoredEntries.map((entry) => entry.metadataPath));
+  for (const ignoredEntry of ignoredEntries) {
+    if (reached.has(ignoredEntry.metadataPath)) {
+      throw new PreviewBuildOutputPlannerError(
+        'Preview main entry must not import the runtime anchor.',
+      );
+    }
+    if (
+      ignoredEntry.metadata.imports.some(
+        (import_) =>
+          resolveOutputImportPath(
+            ignoredEntry.metadataPath,
+            import_.path,
+            new Map(outputs.map((output) => [output.metadataPath, output])),
+          ) === mainEntry.metadataPath,
+      )
+    ) {
+      throw new PreviewBuildOutputPlannerError(
+        'Preview runtime anchor must not import the main entry.',
+      );
+    }
+  }
+  for (const output of outputs) {
+    if (output.metadataPath === mainEntry.metadataPath || ignoredPaths.has(output.metadataPath))
+      continue;
+    if (isJavaScriptOutput(output.relativePath) && !reached.has(output.metadataPath)) {
+      throw new PreviewBuildOutputPlannerError(
+        `Preview build contains an output not reachable from the main entry: ${output.relativePath}`,
+      );
+    }
+  }
 }
 
 /** Returns the in-memory output paired with one already validated metadata output. */

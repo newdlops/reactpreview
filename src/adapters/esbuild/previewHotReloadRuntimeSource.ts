@@ -35,6 +35,7 @@ function createPreviewHotRuntime() {
     reloadQueue: Promise.resolve(),
     requestSequence: 0,
     root: undefined,
+    activeStyleSheetBoundary: undefined,
     vscodeApi,
   };
 }
@@ -286,6 +287,7 @@ async function applyHotReloadMessage(message) {
     }
     await preparedEntry.preparationPromise;
     if (!isLatestHotReloadRequest(message)) {
+      await preparedEntry.dispose?.();
       reportHotReloadOutcome(message, {
         applied: false,
         ready: false,
@@ -300,6 +302,12 @@ async function applyHotReloadMessage(message) {
       previewHotRuntime.root.unmount();
       previewHotRuntime.root = undefined;
     }
+    try {
+      previewHotRuntime.activeStyleSheetBoundary?.dispose?.();
+    } catch (cleanupError) {
+      console.warn('React Preview could not dispose the previous styled-components target.', cleanupError);
+    }
+    previewHotRuntime.activeStyleSheetBoundary = undefined;
     mountNode.replaceChildren();
     stylesheetPreparation.commit();
     const activationOutcome = await preparedEntry.activate();
@@ -322,11 +330,18 @@ async function applyHotReloadMessage(message) {
         previewHotRuntime.root.unmount();
         previewHotRuntime.root = undefined;
       }
+      try {
+        previewHotRuntime.activeStyleSheetBoundary?.dispose?.();
+      } catch (cleanupError) {
+        console.warn('React Preview could not dispose the failed styled-components target.', cleanupError);
+      }
+      previewHotRuntime.activeStyleSheetBoundary = undefined;
       showRuntimeError(error, {
         forceReplace: true,
         phase: 'hot reload module replacement',
       });
     } else {
+      await previewHotRuntime.preparedEntry?.dispose?.();
       console.error('React Preview retained the previous render after preparation failed.', error);
     }
     reportHotReloadOutcome(message, {

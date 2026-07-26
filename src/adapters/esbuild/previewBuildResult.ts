@@ -18,7 +18,10 @@ import {
   normalizePreviewOutputMebibytes,
   resolvePreviewOutputLimitBytes,
 } from '../../domain/previewOutputPolicy';
-import { planPreviewBuildOutputs } from './previewBuildOutputPlanner';
+import {
+  planPreviewBuildOutputs,
+  type PreviewBuildOutputSelection,
+} from './previewBuildOutputPlanner';
 import { selectReportablePreviewBuildWarnings } from './previewBuildWarningPolicy';
 import {
   PREVIEW_ASSET_NAMESPACE,
@@ -28,12 +31,15 @@ import {
   PREVIEW_FORMIK_BRIDGE_NAMESPACE,
   PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE,
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
+  PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE,
+  PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE,
   PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
   PREVIEW_INSPECTOR_TARGET_NAMESPACE,
   PREVIEW_NODE_BUILTIN_NAMESPACE,
   PREVIEW_REDUX_BRIDGE_NAMESPACE,
   PREVIEW_ROUTER_BRIDGE_NAMESPACE,
   PREVIEW_SETUP_BRIDGE_NAMESPACE,
+  PREVIEW_STYLE_SHEET_MANAGER_NAMESPACE,
   PREVIEW_SNAPSHOT_NAMESPACE,
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
   PREVIEW_THEME_BRIDGE_NAMESPACE,
@@ -66,6 +72,10 @@ export async function createPreviewBundle(
   additionalDependencies: readonly string[] = [],
   admitBuildWarning: (message: Message) => boolean = () => true,
   contextCoverage: PreviewContextCoverage = 'partial',
+  outputSelection: PreviewBuildOutputSelection = {
+    ignoredEntryPoints: [],
+    mainEntryPoint: VIRTUAL_ENTRY_NAME,
+  },
 ): Promise<PreviewBundle> {
   assertOutputSize(result.outputFiles, request.maxOutputMebibytes);
   const reportableBuildWarnings = await selectReportablePreviewBuildWarnings(
@@ -77,7 +87,7 @@ export async function createPreviewBundle(
     absoluteWorkingDirectory: request.workspaceRoot,
     metafile: result.metafile,
     outputFiles: result.outputFiles,
-    virtualEntryName: VIRTUAL_ENTRY_NAME,
+    outputSelection,
   });
   const baseBundle = {
     chunks: [...outputPlan.auxiliaryJavaScript, ...outputPlan.auxiliaryStylesheets].sort(
@@ -167,6 +177,8 @@ export function collectPreviewBuildDependencies(
         !inputPath.startsWith(`${PREVIEW_FORMIK_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_INSPECTOR_ROOT_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_INSPECTOR_RUNTIME_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_INSPECTOR_TARGET_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_NODE_BUILTIN_NAMESPACE}:`) &&
@@ -175,6 +187,7 @@ export function collectPreviewBuildDependencies(
         !inputPath.startsWith(`${PREVIEW_THEME_BRIDGE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_THEME_CANDIDATE_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_SETUP_BRIDGE_NAMESPACE}:`) &&
+        !inputPath.startsWith(`${PREVIEW_STYLE_SHEET_MANAGER_NAMESPACE}:`) &&
         !inputPath.startsWith(`${PREVIEW_TARGET_BRIDGE_NAMESPACE}:`),
     )
     .map((inputPath) => {

@@ -4,6 +4,7 @@
  * the compilation-scoped source transformer advance through one explicit mutable state boundary.
  */
 import { context, type BuildContext, type BuildOptions, type BuildResult } from 'esbuild';
+import type { PreviewCompilerNativeBuildActivity } from '../../domain/previewCompilerActivity';
 import {
   createPreviewSassPlugin,
   type PreviewSassBoundary,
@@ -14,10 +15,6 @@ import {
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
 
-// A native context retains the complete parsed graph plus plugin-local Tailwind and MDX caches.
-// Two entries preserve hot reload across the active tab pair without multiplying large-repo memory.
-const MAX_INCREMENTAL_BUILD_CONTEXTS = 2;
-
 /** Exact esbuild result contract consumed by the preview output planner. */
 export type PreviewIncrementalBuildResult = BuildResult<{ metafile: true; write: false }>;
 
@@ -27,10 +24,16 @@ export type PreviewIncrementalBuildOptions = BuildOptions & {
   readonly write: false;
 };
 
+/** Native context transition telemetry; compiler code supplies the safe graph summary separately. */
+export type PreviewIncrementalBuildActivityReporter = (
+  activity: Pick<PreviewCompilerNativeBuildActivity, 'contextAction' | 'phase'>,
+) => void;
+
 /** One rebuild request carrying immutable plan identity and current editor state. */
 export interface PreviewIncrementalBuildRequest {
   /** Abort signal owned by the current panel revision. */
   readonly signal?: AbortSignal;
+  readonly reportActivity?: PreviewIncrementalBuildActivityReporter;
   /** Stable digest of target, runtime, plugin, and virtual-module options. */
   readonly contextKey: string;
   /** Current snapshots and fresh transformer used only by this serialized rebuild. */
@@ -71,6 +74,8 @@ export class PreviewIncrementalBuildCache {
   /** Detached LRU and one-shot disposals that shutdown must await before stopping esbuild. */
   private readonly disposalPromises = new Set<Promise<void>>();
   private readonly entries = new Map<string, Promise<CachedBuildContext>>();
+  /** Serializes every physical context create/rebuild/dispose transition. */
+  private contextTransition: Promise<void> = Promise.resolve();
   /** Storybook builds use isolated contexts but still participate in orderly shutdown. */
   private readonly oneShotBuilds = new Set<Promise<PreviewIncrementalBuildResult>>();
   private shutdownPromise: Promise<void> | undefined;
@@ -86,36 +91,73 @@ export class PreviewIncrementalBuildCache {
   ): Promise<PreviewIncrementalBuildResult> {
     throwIfIncrementalBuildCacheClosed(this.closed);
     throwIfPreviewBuildAborted(request.signal);
-    const entry = await this.getOrCreateEntry(request);
-    throwIfIncrementalBuildCacheClosed(this.closed);
-    throwIfPreviewBuildAborted(request.signal);
-    const operation = entry.queue.then(async () => {
+    return this.enqueueContextTransition(async () => {
+      throwIfIncrementalBuildCacheClosed(this.closed);
       throwIfPreviewBuildAborted(request.signal);
-      entry.sourceState.update(request.sourceCompilation);
-      const cancelCurrentBuild = (): void => {
-        void entry.buildContext.cancel();
-      };
-      request.signal?.addEventListener('abort', cancelCurrentBuild, { once: true });
-      try {
-        const result = await entry.buildContext.rebuild();
+      const entry = await this.getOrCreateEntry(request);
+      throwIfIncrementalBuildCacheClosed(this.closed);
+      throwIfPreviewBuildAborted(request.signal);
+      const operation = entry.queue.then(async () => {
+        request.reportActivity?.({ contextAction: 'reuse', phase: 'rebuilding' });
         throwIfPreviewBuildAborted(request.signal);
-        request.captureSassState?.(
-          entry.sassBoundary?.getDependencyPaths() ?? [],
-          entry.sassBoundary?.getWatchDirectories() ?? [],
-        );
-        return result;
-      } catch (error) {
-        throwIfPreviewBuildAborted(request.signal);
-        throw error;
-      } finally {
-        request.signal?.removeEventListener('abort', cancelCurrentBuild);
-      }
+        entry.sourceState.update(request.sourceCompilation);
+        const cancelCurrentBuild = (): void => void entry.buildContext.cancel();
+        request.signal?.addEventListener('abort', cancelCurrentBuild, { once: true });
+        try {
+          const result = await entry.buildContext.rebuild();
+          throwIfPreviewBuildAborted(request.signal);
+          request.captureSassState?.(
+            entry.sassBoundary?.getDependencyPaths() ?? [],
+            entry.sassBoundary?.getWatchDirectories() ?? [],
+          );
+          request.reportActivity?.({ contextAction: 'reuse', phase: 'processing-output' });
+          return result;
+        } catch (error) {
+          throwIfPreviewBuildAborted(request.signal);
+          throw error;
+        } finally {
+          request.signal?.removeEventListener('abort', cancelCurrentBuild);
+        }
+      });
+      entry.queue = operation.then(
+        () => undefined,
+        () => undefined,
+      );
+      return operation;
+    }).catch(async (error: unknown) => {
+      // A failed native rebuild can retain a partially parsed graph and plugin caches. Dispose it
+      // before exposing the rejection so the next foreground attempt always starts clean.
+      await this.evict(request.contextKey, {
+        contextAction: 'dispose',
+        ...(request.reportActivity === undefined ? {} : { reportActivity: request.reportActivity }),
+      });
+      throw error;
     });
-    entry.queue = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return operation;
+  }
+
+  /**
+   * Removes one reusable native context after queued work has settled.
+   *
+   * Corrective/adaptive builds call this before changing a broad graph plan; removing the map entry
+   * first ensures a concurrent later request receives a fresh context instead of the retiring one.
+   */
+  public async evict(
+    contextKey: string,
+    options: {
+      readonly contextAction: 'dispose' | 'replace';
+      readonly reportActivity?: PreviewIncrementalBuildActivityReporter;
+    } = { contextAction: 'dispose' },
+  ): Promise<void> {
+    await this.enqueueContextTransition(async () => {
+      const entry = this.entries.get(contextKey);
+      if (entry === undefined) return;
+      this.entries.delete(contextKey);
+      options.reportActivity?.({
+        contextAction: options.contextAction,
+        phase: 'retiring-previous-context',
+      });
+      await disposeCachedBuildContext(entry);
+    });
   }
 
   /**
@@ -126,10 +168,17 @@ export class PreviewIncrementalBuildCache {
   public buildOnce(
     options: PreviewIncrementalBuildOptions,
     signal?: AbortSignal,
+    reportActivity?: PreviewIncrementalBuildActivityReporter,
   ): Promise<PreviewIncrementalBuildResult> {
     throwIfIncrementalBuildCacheClosed(this.closed);
     throwIfPreviewBuildAborted(signal);
-    const operation = rebuildOneShotContext(options, signal, () => this.closed);
+    const operation = this.enqueueContextTransition(async () => {
+      await this.retireAllEntries();
+      reportActivity?.({ contextAction: 'one-shot', phase: 'creating-context' });
+      const result = await rebuildOneShotContext(options, signal, () => this.closed);
+      reportActivity?.({ contextAction: 'one-shot', phase: 'processing-output' });
+      return result;
+    });
     this.oneShotBuilds.add(operation);
     void operation.then(
       () => this.oneShotBuilds.delete(operation),
@@ -144,25 +193,25 @@ export class PreviewIncrementalBuildCache {
       return this.shutdownPromise;
     }
     this.closed = true;
-    const entries = [...this.entries.values()];
-    this.entries.clear();
-    for (const entry of entries) {
-      this.trackDisposal(disposeCachedBuildContext(entry));
-    }
+    const retire = this.enqueueContextTransition(() => this.retireAllEntries());
     const activeOneShotBuilds = [...this.oneShotBuilds].map((operation) =>
       operation.then(
         () => undefined,
         () => undefined,
       ),
     );
-    this.shutdownPromise = Promise.all([...this.disposalPromises, ...activeOneShotBuilds]).then(
-      () => undefined,
-    );
+    this.shutdownPromise = Promise.all([
+      retire,
+      ...this.disposalPromises,
+      ...activeOneShotBuilds,
+    ]).then(() => undefined);
     return this.shutdownPromise;
   }
 
   /** Returns an LRU-refreshed entry promise or installs one new native context. */
-  private getOrCreateEntry(request: PreviewIncrementalBuildRequest): Promise<CachedBuildContext> {
+  private async getOrCreateEntry(
+    request: PreviewIncrementalBuildRequest,
+  ): Promise<CachedBuildContext> {
     throwIfIncrementalBuildCacheClosed(this.closed);
     const cached = this.entries.get(request.contextKey);
     if (cached !== undefined) {
@@ -171,9 +220,14 @@ export class PreviewIncrementalBuildCache {
       return cached;
     }
 
+    await this.retireAllEntries(request.reportActivity);
+    throwIfIncrementalBuildCacheClosed(this.closed);
+    throwIfPreviewBuildAborted(request.signal);
+
     const sourceState = new MutableWorkspaceSourceState(request.sourceCompilation);
     const sassBoundary =
       request.sassOptions === undefined ? undefined : createPreviewSassPlugin(request.sassOptions);
+    request.reportActivity?.({ contextAction: 'create', phase: 'creating-context' });
     const created = context(request.createOptions(sourceState, sassBoundary)).then(
       (buildContext): CachedBuildContext => ({
         buildContext,
@@ -188,23 +242,29 @@ export class PreviewIncrementalBuildCache {
         this.entries.delete(request.contextKey);
       }
     });
-    this.trimOldestEntries();
     return created;
   }
 
   /** Evicts least-recently-used contexts without interrupting their current rebuild. */
-  private trimOldestEntries(): void {
-    while (this.entries.size > MAX_INCREMENTAL_BUILD_CONTEXTS) {
-      const oldestKey = this.entries.keys().next().value;
-      if (oldestKey === undefined) {
-        return;
-      }
-      const oldest = this.entries.get(oldestKey);
-      this.entries.delete(oldestKey);
-      if (oldest !== undefined) {
-        this.trackDisposal(disposeCachedBuildContext(oldest));
-      }
+  private async retireAllEntries(
+    reportActivity?: PreviewIncrementalBuildActivityReporter,
+  ): Promise<void> {
+    const entries = [...this.entries.values()];
+    this.entries.clear();
+    for (const entry of entries) {
+      reportActivity?.({ contextAction: 'dispose', phase: 'retiring-previous-context' });
+      await disposeCachedBuildContext(entry);
     }
+  }
+
+  /** Serializes native context transitions so stale rebuilds cannot observe partial state. */
+  private enqueueContextTransition<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.contextTransition.then(operation, operation);
+    this.contextTransition = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Retains an asynchronous cleanup until shutdown has either captured or observed its settlement. */

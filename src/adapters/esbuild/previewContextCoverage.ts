@@ -11,6 +11,8 @@ import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGl
 /** Evidence available after target-usage planning and before bundle publication. */
 export interface ResolvePreviewContextCoverageOptions {
   /** Bounded fast graph search omitted possible outer application context. */
+  readonly contextDiscoveryTruncated?: true | undefined;
+  /** @deprecated Compatibility for callers compiled before selected-corridor terminology. */
   readonly fastContextTruncated?: true | undefined;
   /** Strong global assignments selected before bundling, including incomplete-evidence metadata. */
   readonly implicitGlobalEvidence?: PreviewImplicitGlobalEvidenceInventory;
@@ -41,7 +43,9 @@ export function resolvePreviewContextCoverage(
   const globalEvidence = options.implicitGlobalEvidence;
   if (
     options.request.preparationMode === 'fast' &&
-    (options.fastContextTruncated === true ||
+    (options.contextDiscoveryTruncated === true ||
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy input remains accepted.
+      options.fastContextTruncated === true ||
       globalEvidence?.truncated === true ||
       (globalEvidence?.ambiguousGlobalNames.length ?? 0) > 0 ||
       (globalEvidence?.unresolvedGlobalNames.length ?? 0) > 0)

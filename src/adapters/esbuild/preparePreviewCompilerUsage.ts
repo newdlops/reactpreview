@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import type { PreviewBuildRequest } from '../../domain/preview';
+import type { PreviewCompilerDiscoveryScope } from './previewPreparationPolicy';
 import { EMPTY_TARGET_USAGE_PROPS } from './previewCompilerDefaults';
 import type { PreviewCompilerTargetSelection } from './previewImperativeEntryTarget';
 import {
@@ -39,6 +40,7 @@ type PreviewCompilerStaticModuleResolver = ReturnType<typeof createPreviewStatic
 export interface PreparePreviewCompilerUsageOptions {
   /** Compiler-lifetime inventory and source analysis cache. */
   readonly cache: PreviewProjectUsageCache;
+  readonly discoveryScope?: PreviewCompilerDiscoveryScope;
   /** Cancels stale inventory, source, and import-path work with the compiler's combined signal. */
   readonly signal?: AbortSignal;
   /** Nearest package root selected for the current editor module. */
@@ -60,6 +62,8 @@ export interface PreparePreviewCompilerUsageOptions {
 /** Initial package evidence plus the reusable inventory for implicit runtime-global discovery. */
 export interface PreparedPreviewCompilerUsage {
   /** Bounded fast graph search omitted possible outer context and therefore needs full enrichment. */
+  readonly contextDiscoveryTruncated?: true;
+  /** @deprecated Use contextDiscoveryTruncated. */
   readonly fastContextTruncated?: true;
   readonly implicitGlobalSourcePaths: readonly string[];
   readonly packageTargetUsageProps: PreviewTargetUsageProps;
@@ -78,14 +82,17 @@ export async function preparePreviewCompilerUsage(
   const { request, targetSelection } = options;
   const signal = options.signal;
   const useFastPreparation = request.preparationMode === 'fast';
+  const selectedCorridor =
+    (options.discoveryScope ?? (useFastPreparation ? 'selected-corridor' : 'workspace')) ===
+    'selected-corridor';
   const hasPreviewableTarget = targetSelection.targetExports.length > 0;
   const hasGenericCallableContext =
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
     hasPreviewInspectorCallableModuleExports(request.documentPath, targetSelection.sourceText);
-  const shouldTryGenericConsumerContext = !useFastPreparation && hasGenericCallableContext;
+  const shouldTryGenericConsumerContext = !selectedCorridor && hasGenericCallableContext;
   const shouldTryFastGenericConsumerContext =
-    useFastPreparation && !hasPreviewableTarget && hasGenericCallableContext;
+    selectedCorridor && !hasPreviewableTarget && hasGenericCallableContext;
   const shouldTryNextModuleContext =
     options.projectUsesNextRuntime &&
     request.renderMode === 'page-inspector' &&
@@ -99,21 +106,21 @@ export async function preparePreviewCompilerUsage(
     !NEXT_APP_DIRECT_ROUTE_MODULE_PATTERN.test(path.basename(request.documentPath));
   const shouldTryModulePageContext = shouldTryNextModuleContext || shouldTryGenericConsumerContext;
   const shouldTryDirectRouteContext =
-    useFastPreparation &&
+    selectedCorridor &&
     options.projectUsesNextRuntime &&
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
     targetSelection.inspectorExportName === 'default' &&
     NEXT_APP_DIRECT_ROUTE_MODULE_PATTERN.test(path.basename(request.documentPath));
   const shouldTryNextPagesDirectRouteContext =
-    useFastPreparation &&
+    selectedCorridor &&
     options.projectUsesNextRuntime &&
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
     targetSelection.inspectorExportName === 'default' &&
     isPreviewInspectorNextPagesDirectRoutePath(request.documentPath, options.projectRoot);
   const fastGenericExportName =
-    useFastPreparation &&
+    selectedCorridor &&
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
     hasPreviewableTarget &&
@@ -124,7 +131,7 @@ export async function preparePreviewCompilerUsage(
     (!hasPreviewableTarget &&
       !shouldTryModulePageContext &&
       !shouldTryFastGenericConsumerContext) ||
-    (useFastPreparation &&
+    (selectedCorridor &&
       !shouldTryModulePageContext &&
       !shouldTryDirectRouteContext &&
       fastGenericExportName === undefined &&
@@ -266,7 +273,7 @@ export async function preparePreviewCompilerUsage(
       }
     }
   }
-  if (useFastPreparation) {
+  if (selectedCorridor) {
     return {
       implicitGlobalSourcePaths: Object.freeze([]),
       packageTargetUsageProps: EMPTY_TARGET_USAGE_PROPS,
@@ -391,13 +398,15 @@ function createContextSourceReader(
 function createPreparedInspectorUsage(
   options: PreparePreviewCompilerUsageOptions,
   inspectorPlan: NonNullable<PreviewTargetUsageProps['inspectorPlan']>,
-  fastContextTruncated = false,
+  contextDiscoveryTruncated = false,
   shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[] = [],
 ): PreparedPreviewCompilerUsage {
   const preparedPlan = attachPreviewInspectorShallowVisualPaths(inspectorPlan, shallowVisualPaths);
   const acceptedSpecifiers = options.resolver.getMatchedSpecifiers(preparedPlan.target.sourcePath);
   return {
-    ...(fastContextTruncated ? { fastContextTruncated: true as const } : {}),
+    ...(contextDiscoveryTruncated
+      ? { contextDiscoveryTruncated: true as const, fastContextTruncated: true as const }
+      : {}),
     implicitGlobalSourcePaths: preparedPlan.dependencyPaths,
     packageTargetUsageProps: {
       dependencyPaths: preparedPlan.dependencyPaths,

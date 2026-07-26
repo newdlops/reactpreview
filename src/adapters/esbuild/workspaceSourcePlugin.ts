@@ -29,6 +29,8 @@ const MAX_CONCURRENT_FAST_WORKSPACE_SOURCE_TRANSFORMS = 32;
 export interface WorkspaceSourceCompilationState {
   /** Optional pre-transform source adaptation advanced atomically with editor snapshots. */
   readonly prepareSource?: (sourcePath: string, sourceText: string) => string;
+  /** Opaque per-revision runtime identity advanced atomically with sources and transforms. */
+  readonly runtimeInstanceKey: string;
   /** Active document followed by any dirty dependency candidates. */
   readonly snapshots: readonly PreviewSourceSnapshot[];
   /** Per-build bounded transformer for framework resource syntax. */
@@ -55,12 +57,14 @@ export type WorkspaceSourcePluginOptions = {
 export class MutableWorkspaceSourceState {
   private currentSnapshots: readonly PreviewSourceSnapshot[] = [];
   private currentPrepareSource: WorkspaceSourceCompilationState['prepareSource'];
+  private currentRuntimeInstanceKey: string;
   private snapshotByCanonicalPath = new Map<string, PreviewSourceSnapshot>();
   private snapshotByLexicalPath = new Map<string, PreviewSourceSnapshot>();
   private currentTransformer: PreviewSourceTransformer;
 
   /** Creates state initialized for the first context rebuild. */
   public constructor(compilation: WorkspaceSourceCompilationState) {
+    this.currentRuntimeInstanceKey = compilation.runtimeInstanceKey;
     this.currentTransformer = compilation.transformer;
     this.update(compilation);
   }
@@ -78,6 +82,11 @@ export class MutableWorkspaceSourceState {
   /** Current source adaptation associated with the same revision as snapshots and transformer. */
   public get prepareSource(): WorkspaceSourceCompilationState['prepareSource'] {
     return this.currentPrepareSource;
+  }
+
+  /** Opaque generated-runtime identity for the currently serialized rebuild. */
+  public get runtimeInstanceKey(): string {
+    return this.currentRuntimeInstanceKey;
   }
 
   /**
@@ -99,6 +108,7 @@ export class MutableWorkspaceSourceState {
     this.snapshotByCanonicalPath = nextCanonical;
     this.snapshotByLexicalPath = nextLexical;
     this.currentPrepareSource = compilation.prepareSource;
+    this.currentRuntimeInstanceKey = compilation.runtimeInstanceKey;
     this.currentSnapshots = Object.freeze([...compilation.snapshots]);
     this.currentTransformer = compilation.transformer;
   }

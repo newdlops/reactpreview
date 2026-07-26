@@ -7,6 +7,7 @@ import type { PreviewRenderMode } from '../../domain/preview';
 import { createPreviewAutomaticPropsRuntimeSource } from './previewAutomaticPropsRuntimeSource';
 import { createPreviewBrowserProcessRuntimeSource } from './previewBrowserProcessRuntimeSource';
 import type { PreviewDocumentShell } from './previewDocumentShell';
+import { createPreviewExportGalleryRuntimeSource } from './previewExportGalleryRuntimeSource';
 import { createPreviewDocumentShellRuntimeSource } from './previewDocumentShellRuntimeSource';
 import { PREVIEW_LAZY_STYLE_LOADER_SYMBOL } from './previewLazyStyleOutputs';
 import { createPreviewPageInspectorRuntimeSource } from './pageInspector/previewPageInspectorRuntimeSource';
@@ -24,6 +25,7 @@ import {
   PREVIEW_REDUX_SPECIFIER,
   PREVIEW_ROUTER_SPECIFIER,
   PREVIEW_SETUP_SPECIFIER,
+  PREVIEW_STYLE_SHEET_MANAGER_SPECIFIER,
   PREVIEW_TARGET_SPECIFIER,
   PREVIEW_THEME_SPECIFIER,
 } from './previewPluginProtocol';
@@ -57,6 +59,8 @@ export interface PreviewEntryOptions {
   readonly reactDomRootKind?: PreviewReactDomRootKind;
   /** Determines whether standard Storybook decorators and parameters should be applied. */
   readonly setupKind: PreviewEntrySetupKind;
+  /** Enables the compiler-provided virtual StyleSheetManager plan module. */
+  readonly styleSheetManagerPlanEnabled?: boolean;
 }
 
 /**
@@ -84,6 +88,10 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedReduxSpecifier = JSON.stringify(PREVIEW_REDUX_SPECIFIER);
   const encodedRouterSpecifier = JSON.stringify(PREVIEW_ROUTER_SPECIFIER);
   const encodedSetupSpecifier = JSON.stringify(PREVIEW_SETUP_SPECIFIER);
+  const encodedStyleSheetManagerSpecifier = JSON.stringify(PREVIEW_STYLE_SHEET_MANAGER_SPECIFIER);
+  const encodedStyleSheetManagerPlanEnabled = JSON.stringify(
+    options.styleSheetManagerPlanEnabled === true,
+  );
   const encodedTargetSpecifier = JSON.stringify(PREVIEW_TARGET_SPECIFIER);
   const encodedThemeSpecifier = JSON.stringify(PREVIEW_THEME_SPECIFIER);
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
@@ -98,6 +106,11 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   );
   const progressRuntimeSource = createPreviewProgressRuntimeSource();
   const storybookRuntimeSource = createPreviewStorybookRuntimeSource();
+  const exportGalleryRuntimeSource = createPreviewExportGalleryRuntimeSource({
+    renderMode,
+    setupKind: options.setupKind,
+    storybookRuntimeSource,
+  });
   const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
   const reactDomRootSource = createPreviewReactDomRootRuntimeSource({
     requiresReactDomNamespace: renderMode === 'page-inspector',
@@ -378,69 +391,7 @@ class PreviewRenderedCommitSignal extends React.Component {
   }
 }
 
-/** Isolates one export so a broken component cannot remove later gallery entries. */
-class PreviewExportErrorBoundary extends React.Component {
-  /** Creates an export boundary with no captured error. */
-  constructor(props) {
-    super(props);
-    this.state = { componentStack: '', error: undefined, resetKey: props.resetKey };
-  }
-
-  /** Clears a captured export error without key-remounting a healthy authored page subtree. */
-  static getDerivedStateFromProps(props, state) {
-    if (props.resetKey === state.resetKey) return null;
-    return { componentStack: '', error: undefined, resetKey: props.resetKey };
-  }
-
-  /** Stores the render or lifecycle error captured from this one export. */
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-
-  /** Stores the component path for the exact gallery export that failed. */
-  componentDidCatch(error, errorInfo) {
-    rememberCapturedReactError(error);
-    const componentStack = errorInfo?.componentStack;
-    if (typeof componentStack === 'string' && componentStack !== this.state.componentStack) {
-      this.setState({ componentStack });
-    }
-    const details = describeRuntimeError(error, {
-      componentStack,
-      exportName: this.props.exportName,
-      parentSlice: this.props.parentSlice,
-      phase: 'React export render or lifecycle',
-    });
-    recordPreviewInspectorRuntimeConsoleEntry(error, {
-      componentStack,
-      details,
-      exportName: this.props.exportName,
-      phase: 'React export render or lifecycle',
-      source: 'react-boundary',
-    });
-    console.warn(
-      'React Preview isolated one failed export and kept the remaining preview mounted.\\n' +
-        details,
-    );
-  }
-
-  /** Renders a compact local placeholder; complete diagnostics remain available as a warning. */
-  render() {
-    if (this.state.error !== undefined) {
-      return React.createElement(
-        'react-preview-inline-error',
-        { className: 'react-preview-export-error', role: 'status' },
-        React.createElement('strong', undefined, 'Static preview placeholder'),
-        React.createElement(
-          'span',
-          undefined,
-          String(this.props.exportName ?? 'default') + ': ' +
-            createRuntimeErrorHeadline(this.state.error),
-        ),
-      );
-    }
-    return this.props.children;
-  }
-}
+${exportGalleryRuntimeSource}
 
 /** Finds an own or inherited global descriptor without invoking an accessor setter. */
 function findGlobalPropertyDescriptor(propertyName) {
@@ -512,6 +463,26 @@ function readSetupMember(setupModule, memberName) {
   return defaultSetup !== null && typeof defaultSetup === 'object'
     ? defaultSetup[memberName]
     : undefined;
+}
+
+/** Reads setup data without invoking a project-owned accessor. */
+function readSetupDataMember(setupModule, memberName) {
+  const namedDescriptor = Object.getOwnPropertyDescriptor(setupModule, memberName);
+  if (namedDescriptor !== undefined) {
+    return 'value' in namedDescriptor
+      ? { status: 'value', value: namedDescriptor.value }
+      : { status: 'unsafe' };
+  }
+  const defaultDescriptor = Object.getOwnPropertyDescriptor(setupModule, 'default');
+  if (defaultDescriptor === undefined) return { status: 'absent' };
+  if (!('value' in defaultDescriptor)) return { status: 'unsafe' };
+  const defaultSetup = defaultDescriptor.value;
+  if (defaultSetup === null || typeof defaultSetup !== 'object') return { status: 'absent' };
+  const memberDescriptor = Object.getOwnPropertyDescriptor(defaultSetup, memberName);
+  if (memberDescriptor === undefined) return { status: 'absent' };
+  return 'value' in memberDescriptor
+    ? { status: 'value', value: memberDescriptor.value }
+    : { status: 'unsafe' };
 }
 
 /** Produces serializable component props from the optional project setup contract. */
@@ -589,158 +560,6 @@ function selectReactLikePreviewDescriptors(descriptors) {
     : [];
 }
 
-${storybookRuntimeSource}
-
-/** Renders one descriptor behind a local Suspense fallback so siblings remain independently visible. */
-function PreviewExportRenderer({ descriptor, previewConfig, setupModule, sharedProps, storyContext }) {
-  if (${encodedRenderMode} === 'page-inspector') {
-    usePreviewInspectorStore();
-  }
-  if (!isReactLikePreviewValue(descriptor.value)) {
-    throw new TypeError(
-      'Export "' + descriptor.exportName + '" is not a renderable React component or element.',
-    );
-  }
-  const fallbackValuesEnabled = ${encodedRenderMode} !== 'page-inspector' ||
-    readPreviewInspectorFallbackValuesEnabled();
-  const targetProps = createExportProps(
-    setupModule,
-    descriptor.exportName,
-    sharedProps,
-    fallbackValuesEnabled ? descriptor.automaticProps : undefined,
-    fallbackValuesEnabled ? descriptor.inferredPropShape : undefined,
-  );
-  const rendered = ${encodedRenderMode} === 'page-inspector'
-    ? React.createElement(PreviewPageInspectorRootRenderer, {
-        descriptor,
-        previewConfig,
-        storyContext,
-        targetProps,
-        useStorybook: ${encodedSetupKind} === 'storybook',
-      })
-    : ${encodedSetupKind} === 'storybook'
-      ? React.createElement(StorybookPreviewRoot, {
-          PreviewTarget: descriptor.value,
-          previewConfig,
-          storyContext: { ...storyContext, args: targetProps },
-          targetProps,
-        })
-      : createTargetElement(descriptor.value, targetProps);
-  const suspenseFallback = React.createElement(
-    'div',
-    { className: 'react-preview-suspense-placeholder', role: 'status' },
-    'Loading ' + String(descriptor.displayName ?? descriptor.exportName) + '…',
-  );
-  return React.createElement(React.Suspense, { fallback: suspenseFallback }, rendered);
-}
-
-/** Displays every selected export in bridge order with labels that never wrap target DOM. */
-function PreviewExportGallery({ descriptors, previewConfig, setupModule, sharedProps, storyContext }) {
-  if (!Array.isArray(descriptors) || descriptors.length === 0) {
-    return React.createElement(
-      'p',
-      { className: 'react-preview-empty-gallery' },
-      'This file has no direct default or PascalCase component exports to preview.',
-    );
-  }
-  if (${encodedRenderMode} === 'page-inspector') {
-    return React.createElement(
-      React.Fragment,
-      undefined,
-      descriptors.map((descriptor, index) =>
-        React.createElement(
-          PreviewPageInspectorExportBoundary,
-          {
-            descriptor,
-            key: descriptor.exportName + ':' + index.toString(),
-          },
-          React.createElement(PreviewExportRenderer, {
-            descriptor,
-            previewConfig,
-            setupModule,
-            sharedProps,
-            storyContext: {
-              ...storyContext,
-              id: 'react-file-preview-' + index.toString(),
-              name: descriptor.displayName,
-            },
-          }),
-        ),
-      ),
-    );
-  }
-  return React.createElement(
-    'div',
-    { className: 'react-preview-gallery' },
-    descriptors.map((descriptor, index) => {
-      const runtimeName = descriptor.parentSlice === undefined
-        ? typeof descriptor.value === 'function'
-          ? descriptor.value.displayName ?? descriptor.value.name
-          : descriptor.value?.displayName
-        : undefined;
-      const baseLabel = descriptor.displayName === 'default' && runtimeName
-        ? 'default · ' + runtimeName
-        : descriptor.displayName;
-      const inferredValueCount = Array.isArray(descriptor.inferredProps)
-        ? descriptor.inferredProps.length
-        : 0;
-      const label = inferredValueCount > 0
-        ? baseLabel + ' · ' + String(inferredValueCount) + ' auto value(s)'
-        : baseLabel;
-      const exportStoryContext = {
-        ...storyContext,
-        id: 'react-file-preview-' + index.toString(),
-        name: label,
-      };
-      return React.createElement(
-        React.Fragment,
-        { key: descriptor.exportName + ':' + index.toString() },
-        React.createElement(
-          'div',
-          { className: 'react-preview-export-label' },
-          label,
-        ),
-        React.createElement(
-          PreviewExportErrorBoundary,
-          { exportName: descriptor.exportName, parentSlice: descriptor.parentSlice },
-          React.createElement(PreviewExportRenderer, {
-            descriptor,
-            previewConfig,
-            setupModule,
-            sharedProps,
-            storyContext: exportStoryContext,
-          }),
-        ),
-      );
-    }),
-  );
-}
-
-/** Reuses Storybook Apollo addon parameters without loading its manager or server runtime. */
-function applyStorybookParameterProviders(previewElement, parameters) {
-  const apolloOptions = parameters?.apolloClient;
-  const MockedProvider = apolloOptions?.MockedProvider;
-  if (MockedProvider === undefined || MockedProvider === null) {
-    return previewElement;
-  }
-
-  const {
-    MockedProvider: _ignoredProvider,
-    globalMocks = [],
-    mocks = [],
-    ...providerProps
-  } = apolloOptions;
-  const combinedMocks = [
-    ...(Array.isArray(globalMocks) ? globalMocks : []),
-    ...(Array.isArray(mocks) ? mocks : []),
-  ];
-  return React.createElement(
-    MockedProvider,
-    { ...providerProps, mocks: combinedMocks },
-    previewElement,
-  );
-}
-
 /** Runs project bootstrap and prepares a provider-wrapped element without replacing the visible root. */
 async function preparePreviewElement() {
   enterRuntimePhase('initialize safe browser globals');
@@ -749,6 +568,7 @@ async function preparePreviewElement() {
 
   enterRuntimePhase('load preview setup module');
   const setupBridge = await import(${encodedSetupSpecifier});
+  const styledComponentsSetup = readSetupDataMember(setupBridge, 'styledComponentsPreview');
   const setupModule = setupBridge.default ?? {};
   const setupContext = {
     documentName: ${encodedDocumentName},
@@ -769,6 +589,7 @@ async function preparePreviewElement() {
     reduxBridge,
     routerBridge,
     themeBridge,
+    styleSheetManagerPlanModule,
     targetProps,
     previewModule,
   ] = await Promise.all([
@@ -778,6 +599,12 @@ async function preparePreviewElement() {
     tagPreviewRuntimePhase(import(${encodedReduxSpecifier}), 'load automatic Redux bridge'),
     tagPreviewRuntimePhase(import(${encodedRouterSpecifier}), 'load automatic Router bridge'),
     tagPreviewRuntimePhase(import(${encodedThemeSpecifier}), 'load automatic Theme bridge'),
+    ${encodedStyleSheetManagerPlanEnabled} && styledComponentsSetup.status === 'absent'
+      ? tagPreviewRuntimePhase(
+          import(${encodedStyleSheetManagerSpecifier}),
+          'load StyleSheetManager plan',
+        )
+      : Promise.resolve(undefined),
     tagPreviewRuntimePhase(createTargetProps(setupModule, setupContext), 'create static preview props'),
     tagPreviewRuntimePhase(
       import(${encodedTargetSpecifier}),
@@ -890,13 +717,28 @@ async function preparePreviewElement() {
     );
   }
   preparedPreviewInspectorTargets = previewTargets;
-  return previewElement;
+  enterRuntimePhase('compose styled-components StyleSheetManager boundary');
+  const styleSheetBoundary = themeBridge.preparePreviewStyleSheetBoundary({
+    configuration: styledComponentsSetup.status === 'value' ? styledComponentsSetup.value : undefined,
+    configurationStatus: styledComponentsSetup.status,
+    plan: styleSheetManagerPlanModule?.previewStyleSheetManagerPlan,
+    renderMode: setupContext.renderMode,
+    revision: previewEntryRevision,
+  });
+  registerPreviewRuntimeCapability('StyleSheetManager', {
+    readPreviewRuntimeStatus: () => styleSheetBoundary.readStatus(),
+  });
+  return Object.freeze({
+    previewElement: styleSheetBoundary.createElement(previewElement),
+    styleSheetBoundary,
+  });
 }
 
 /** Atomically mounts one fully prepared element and resolves only after React's commit sentinel. */
-async function activatePreparedPreview(previewElement) {
+async function activatePreparedPreview(preparedPreview) {
   previewActivationStarted = true;
   enterRuntimePhase('commit React root');
+  preparedPreview.styleSheetBoundary.activate();
   const previewRoot = createPreviewRoot(mountNode, {
     /** Preserves the last component stack when even the root diagnostic boundary cannot recover. */
     onUncaughtError(error, errorInfo) {
@@ -915,10 +757,11 @@ async function activatePreparedPreview(previewElement) {
     },
   });
   previewHotRuntime.root = previewRoot;
+  previewHotRuntime.activeStyleSheetBoundary = preparedPreview.styleSheetBoundary;
   const commitAwarePreviewElement = React.createElement(
     React.Fragment,
     undefined,
-    previewElement,
+    preparedPreview.previewElement,
     React.createElement(PreviewRenderedCommitSignal),
   );
   if (${encodedRenderMode} === 'page-inspector') {
@@ -941,6 +784,7 @@ function completePreviewCommit(outcome = 'ready') {
   previewCommitCompleted = true;
   completePreviewProgress(previewEntryRevision);
   try {
+    previewHotRuntime.activeStyleSheetBoundary?.commit?.();
     globalThis[Symbol.for(${JSON.stringify(PREVIEW_LAZY_STYLE_LOADER_SYMBOL)})]?.commit?.();
   } catch (error) {
     console.warn('React Preview could not retire stale lazy stylesheets.', error);
@@ -950,7 +794,14 @@ function completePreviewCommit(outcome = 'ready') {
     return;
   }
   try {
+    const pageExecutionCandidateId = preparedPreviewInspectorTargets.find(
+      (descriptor) => typeof descriptor?.inspector?.pageExecutionCandidateId === 'string',
+    )?.inspector?.pageExecutionCandidateId;
     previewHotRuntime.vscodeApi?.postMessage({
+      ...(pageExecutionCandidateId === undefined
+        ? {}
+        : { pageExecutionCandidateId }),
+      pageApplicationPhase: outcome === 'failed' ? 'page-failed' : 'page-applied',
       revision: previewRuntimeRevision,
       ...(typeof previewRuntimeToken === 'string' && previewRuntimeToken.length > 0
         ? { token: previewRuntimeToken }
@@ -974,6 +825,14 @@ const preparedPreviewEntry = {
   },
   preparationPromise: previewPreparationPromise,
   revision: previewEntryRevision,
+  async dispose() {
+    try {
+      const preparedPreview = await previewPreparationPromise;
+      if (!previewActivationStarted) preparedPreview.styleSheetBoundary.dispose();
+    } catch {
+      // A rejected preparation owns no completed boundary to dispose.
+    }
+  },
 };
 previewHotRuntime.preparedEntry = preparedPreviewEntry;
 const previewBootstrapPromise = previewEntryRevision === 0

@@ -25,6 +25,12 @@ export const PREVIEW_INSPECTOR_TARGET_NAMESPACE = 'react-preview-inspector-targe
 /** Namespace used by the small browser runtime imported only from Inspector target facades. */
 export const PREVIEW_INSPECTOR_RUNTIME_NAMESPACE = 'react-preview-page-inspector-runtime';
 
+/** Namespace used by the generated bounded Page Execution Slice entry. */
+export const PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE = 'react-preview-inspector-page-execution';
+
+/** Namespace used by virtual selected-export and local-component Page Execution surfaces. */
+export const PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE = 'react-preview-page-execution';
+
 /** Namespace used by lexical inject modules that expose statically proven project globals. */
 export const PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE = 'react-preview-global-package-bridge';
 
@@ -69,6 +75,16 @@ export const PREVIEW_THEME_BRIDGE_NAMESPACE = 'react-preview-theme-bridge';
 
 /** Stable virtual import specifier used to load the structural fallback theme boundary. */
 export const PREVIEW_THEME_SPECIFIER = 'react-preview:theme';
+
+/** Namespace used by the optional styled-components StyleSheetManager boundary module. */
+export const PREVIEW_STYLE_SHEET_MANAGER_NAMESPACE = 'react-preview-style-sheet-manager';
+
+/** Stable virtual import specifier emitted by the preview entry for the manager boundary. */
+export const PREVIEW_STYLE_SHEET_MANAGER_SPECIFIER = 'react-preview:style-sheet-manager';
+
+/** Prefix for private runtime imports that retain exact authored manager binding identity. */
+export const PREVIEW_STYLE_SHEET_MANAGER_BINDING_SPECIFIER_PREFIX =
+  'react-preview:style-sheet-manager-binding/';
 
 /** Namespace used to canonicalize a reached theme request without evaluating the theme module. */
 export const PREVIEW_THEME_CANDIDATE_NAMESPACE = 'react-preview-theme-candidate';

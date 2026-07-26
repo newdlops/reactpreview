@@ -19,7 +19,17 @@ const EXCLUDED_DIRECTORY_NAMES = new Set([
   'dist',
   'node_modules',
 ]);
-const EXCLUDED_FILE_NAMES = new Set(['.DS_Store']);
+const EXCLUDED_FILE_NAMES = new Set([
+  '.DS_Store',
+  // The user explicitly permits implementation blueprints to exceed the source-file limit.
+  'plan1.md',
+  'plan2.md',
+  'plan3.md',
+  'plan4.md',
+  'plan5.md',
+  'plan6.md',
+  'plan7.md',
+]);
 const BINARY_FILE_EXTENSIONS = new Set([
   '.avif',
   '.gif',

@@ -40,6 +40,11 @@ re-export, route 배열·router 객체와 조건부 app map의 값 흐름을 따
 발견한 entry는 구조와 HMR 근거일 뿐 실행하지 않으므로 인증 bootstrap, API client와 전체 route table은
 웹뷰에 들어오지 않습니다. 독립 export gallery는 이 실제 page composition과 분리된 보조 모드입니다.
 서로 다른 page root로 이어지는 호출 경로가 여러 개이면 Inspector의 `PAGE PATH` 선택기에 후보를 보존합니다.
+
+fast/corridor Inspector는 선택한 route/page의 한 `Page Execution` slice만 bundle합니다. app entry, route
+registry, loader/action은 실행하지 않으며 Next layout과 Pages Router `_app`은 선택 page와 정적 route 값으로만
+조합합니다. export/local-HOC slice가 project wrapper나 초기화 코드를 우회해야 하면 필요한 Provider·상태는
+setup 또는 preview harness로 명시하세요. `full` mode는 이 자동 예산을 적용하지 않는 compatibility mode입니다.
 후보를 바꾸면 선택한 authored root와 그 children/sibling graph만 브라우저에서 지연 로드해 같은 대상이
 각 final page 안에서 차지하는 위치를 비교할 수 있습니다.
 route factory나 page catalog의 같은 object/callback에 여러 페이지가 등록되어 있어도 그 endpoint들을 한 화면의
@@ -450,6 +455,7 @@ Codespaces에서는 확장이 원격 호스트에 설치되므로 해당 운영�
   Node worker thread에서 실행합니다. 여러 탭의 graph는 하나씩 처리해 peak memory를 제한하고, 기다리는 cold
   fast pass는 queued full enrichment보다 먼저 실행합니다. 완성된 byte buffer는 복사하지 않고 host로 이전하며
   content digest도 worker에서 계산합니다.
+- Route/Page 선택의 fast artifact는 브라우저가 실제로 적용한 뒤에만 선택 상태를 commit합니다. hot reload가 이전 tree를 유지하면 `Preparing…`을 즉시 해제하고 optional corridor enrichment를 실행하지 않습니다. 자동 fast/corridor preparation은 native bundling 전에 고정 graph budget을 검사해 초과 graph를 재시도하지 않고 마지막 fast preview를 유지합니다.
 - 현재 파일과 도달 가능한 dirty 참조 파일의 저장 전 내용은 esbuild overlay가 우선 사용합니다.
 - 모든 preview mode는 대상에서 가장 가까운 `package.json`을 모노레포 package 경계로 선택하고,
   최초 빌드에서 그 경계 안의
@@ -661,6 +667,9 @@ Codespaces에서는 확장이 원격 호스트에 설치되므로 해당 운영�
   scenario와 메모리 REST CRUD resource
 - 활성 파일 또는 도달 가능한 styled-components 자식이 직접 참조한 실제 theme의 자동 재사용,
   alias/상대 경로의 resolved-file 병합, 지연 import, 누락 token/helper fallback과 setup별 exact theme/비활성화
+- target package가 소유한 `styled-components` v5/v6의 단일 runtime, automatic
+  `ThemeProvider`/`createGlobalStyle`/`StyleSheetManager` 경계와 revision 사이 shared singleton; omitted outer
+  manager의 안전하게 증명된 props 또는 setup override는 [프로젝트 setup](docs/project-setup.md)에서 조정
 - 프로젝트 React Redux를 사용하는 selector-derived inert state skeleton과 setup별 exact static
   state/비활성화
 - 프로젝트 Formik consumer/provider inventory, no-submit 정적 form boundary와 setup별 bounded
@@ -679,6 +688,7 @@ Codespaces에서는 확장이 원격 호스트에 설치되므로 해당 운영�
 초기 버전에서 의도적으로 지원하지 않는 항목:
 
 - Next.js SSR/RSC와 서버 전용 모듈
+- `styled-components/native`, SSR stylesheet 추출과 native style runtime
 - Vite, Webpack, Babel 플러그인이나 프로젝트 빌드 명령 재사용
 - Less, project-authored Tailwind/PostCSS config·plugin 실행과 SVGR 고급 변환 옵션·인라인 SVG DOM 조작
 - 유한한 정적 접두사 없이 런타임에만 결정되는 경로 import와 alias/bare glob

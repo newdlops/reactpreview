@@ -10,26 +10,21 @@ React File Preview는 “현재 파일을 서버 없이 즉시 확인한다”�
 - 저장하지 않은 현재 문서가 저장된 파일보다 우선한다.
 - 워크스페이스 코드는 신뢰 확인 뒤 격리된 웹뷰에서만 실행한다.
 - 컴파일 실패가 마지막 성공 생성물을 부분적으로 덮어쓰지 않는다.
+- Route/Page 선택은 prepared artifact 시점이 아니라 브라우저가 새 React tree를 적용한 terminal acknowledgement에서만 commit한다. 이전 tree가 retained되거나 runtime 적용이 실패하면 선택과 `Preparing…` 상태를 즉시 rollback하며 context enrichment를 시작하지 않는다.
+- automatic fast/corridor Page Inspector build는 native esbuild 전에 선택된 실행 plan의 deterministic authored frontier를 계산한다. fixed module/edge/source-byte/package demand budget을 넘으면 worker 재시작 없이 `graph-budget`으로 끝내고 마지막 fast artifact를 유지한다.
 - 비동기 빌드 결과는 최신 revision일 때만 화면에 반영한다.
 - 프리뷰 패널은 생성 시 선택한 문서 URI를 닫힐 때까지 바꾸지 않는다.
 - 패널 포커스와 활성 editor 변경만으로는 빌드하거나 대상을 다시 선택하지 않는다.
 - 동적 리소스 정적 발견은 유한한 상대 경로와 명시적인 탐색 한도 안에서만 수행한다.
-- 활성 export와 구문으로 증명된 parent render slice에서 도달 가능한 정적 import graph만
-  컴포넌트·스타일·asset 수집의 기준으로 사용한다.
-- 보조 component-gallery mode의 parent slice는 target까지의 JSX 한 갈래만 합성하며 parent owner 함수와 sibling
-  JSX는 실행하지 않는다.
-- 기본 Page Inspector는 workspace-bounded syntax/module resolution으로 증명된 actual ancestor export를
-  root로 실행한다. 실제 app entry와 구조 경로는 정적으로 찾되 entry 자체나 업무 route loader는 실행하지
-  않으며, 모드를 해당 패널에 고정한다.
-- 작성자가 둔 dynamic import 경계는 full context의 local ESM chunk로 보존하고, 모든 mode의 cold fast
-  pass는 publication 왕복을 줄이기 위해 단일 ESM entry로 합친다. 정적 import 의미는 바꾸지 않는다.
+- 활성 export와 구문으로 증명된 parent render slice에서 도달 가능한 정적 import graph만 컴포넌트·스타일·asset 수집의 기준으로 사용한다.
+- 보조 component-gallery mode의 parent slice는 target까지의 JSX 한 갈래만 합성하며 parent owner 함수와 sibling JSX는 실행하지 않는다.
+- 기본 Page Inspector는 workspace-bounded syntax/module resolution으로 증명된 actual ancestor export를 root로 실행한다. 실제 app entry와 구조 경로는 정적으로 찾되 entry 자체나 업무 route loader는 실행하지 않으며, 모드를 해당 패널에 고정한다.
+- 작성자가 둔 dynamic import 경계는 full context의 local ESM chunk로 보존하고, 모든 mode의 cold fast pass는 publication 왕복을 줄이기 위해 단일 ESM entry로 합친다. 정적 import 의미는 바꾸지 않는다.
 - 활성 파일의 component-shaped direct export는 소스 순서를 보존해 각각 독립적으로 렌더링한다.
-- 자동 Provider와 Context default는 프로젝트 package identity와 bounded syntax로 증명되는 최소 구조만
-  사용하고 앱 route·state 의미는 만들지 않는다.
-- runtime 진단은 backend나 문서 조회 없이 원래 오류와 경계 결정을 보존하고 프로젝트 CSS로부터
-  읽을 수 있는 표시를 격리한다.
-- preview webview와 실행된 프로젝트 코드는 외부 network capability를 갖지 않는다. Extension worker의
-  outbound 요청은 지원되는 npm/Yarn lock evidence가 exact public package를 증명한 복원으로 제한한다.
+- 자동 Provider와 Context default는 프로젝트 package identity와 bounded syntax로 증명되는 최소 구조만 사용하고 앱 route·state 의미는 만들지 않는다.
+- `styled-components`는 target package가 소유한 v5/v6 runtime 하나만 사용한다. 선택된 outer render corridor의 정적으로 증명된 `StyleSheetManager` plan은 immutable JSON-like 값으로 동결하며, revision마다 분리된 style target을 사용하고 package runtime chunk는 revision 사이 공유한다.
+- runtime 진단은 backend나 문서 조회 없이 원래 오류와 경계 결정을 보존하고 프로젝트 CSS로부터 읽을 수 있는 표시를 격리한다.
+- preview webview와 실행된 프로젝트 코드는 외부 network capability를 갖지 않는다. Extension worker의 outbound 요청은 지원되는 npm/Yarn lock evidence가 exact public package를 증명한 복원으로 제한한다.
 
 ## 계층과 의존 방향
 
@@ -46,10 +41,7 @@ React File Preview는 “현재 파일을 서버 없이 즉시 확인한다”�
 | `types`            | asset import용 compile-time ambient 선언                | 런타임 의존성 없음                           |
 | `extension.ts`     | 객체 생성, 의존성 연결, 명령 등록                       | 모든 외부 계층                               |
 
-의존성은 안쪽을 향합니다. `shared`는 어떤 계층도 알지 못하는 최소 기술 도구이고, `domain`과
-`application`은 VS Code와 esbuild를 알지 못합니다. `presentation`도 구체 adapter를 직접 만들지
-않으며 `extension.ts`에서 주입받습니다. ESLint의 `no-restricted-imports` 규칙이 주요 역방향
-import를 차단합니다. `types`는 import를 실행하지 않는 ambient 선언만 둡니다.
+의존성은 안쪽을 향합니다. `shared`는 어떤 계층도 알지 못하는 최소 기술 도구이고, `domain`과 `application`은 VS Code와 esbuild를 알지 못합니다. `presentation`도 구체 adapter를 직접 만들지 않으며 `extension.ts`에서 주입받습니다. ESLint의 `no-restricted-imports` 규칙이 주요 역방향 import를 차단합니다. `types`는 import를 실행하지 않는 ambient 선언만 둡니다.
 
 ## 빌드 흐름
 
@@ -120,9 +112,11 @@ import를 차단합니다. `types`는 import를 실행하지 않는 ambient 선�
     symbol state를 통해 hot entry가 같은 fallback을 재사용하며 Node I/O나 native API는 추가하지 않습니다.
     reached package의 `fs` 같은 Node built-in은 callable neutral CommonJS proxy로 연결되어 resolution만
     만족하고 모든 호출은 `undefined`를 반환하므로 host capability를 노출하지 않습니다.
-11. esbuild가 `platform: browser`, `format: esm`, `write: false`, `jsxDev: true`로 Export Gallery fast pass는
-    `splitting: false` 단일 entry를, Page Inspector를 포함한 full pass는 `splitting: true`로 원래 dynamic
-    import 경계의 `chunks/[hash].js`와 선택적 집계 CSS를 메모리에 만듭니다. 동일 target/runtime plan은 native
+11. esbuild가 `platform: browser`, `format: esm`, `write: false`, `jsxDev: true`로 build합니다. styled-components
+    runtime이 없으면 단일 main entry를 유지하고, 있으면 main entry와 runtime anchor를 split해 React,
+    ReactDOM, styled-components singleton만 shared chunk에 둡니다. anchor는 project provider·theme·setup·target을
+    import하지 않으며 output planner는 anchor 자체를 게시하지 않습니다. authored dynamic import 경계는
+    `chunks/[hash].js`와 선택적 집계 CSS로 유지됩니다. 동일 target/runtime plan은 native
     `context.rebuild()`가 parsed graph를
     재사용하고 editor snapshot과
     compilation-local transformer만 명시적 mutable boundary로 교체합니다. nested lazy tree는 export별
@@ -138,6 +132,33 @@ import를 차단합니다. `types`는 import를 실행하지 않는 ambient 선�
     현재 tree와 lease를 유지하고, 교체 뒤 오류·메시지 전달 실패·30초 timeout은 전체 HTML로 복구합니다. 다음
     compile 자체가 실패해도 현재 정상 문서를 파괴하지 않습니다. 이 경로는 서버 없는 rebuild/remount이며
     React Fast Refresh state 보존을 제공하지 않습니다.
+
+## styled-components style boundary
+
+Page Inspector는 mounted root 바깥의 선택된 authored render corridor만 분석합니다. selector는 exact `styled-components` import/require identity와 제한된 literal props만 받아 frozen plan을 만들며, package manifest 증명·분석 budget·모호성은 plan의 bounded evidence/ignored reason으로 남깁니다. workspace 전체를 검색하거나 source의 local runtime 값을 실행하지 않습니다.
+
+```text
+static selected outer corridor
+  -> frozen manager plan
+  -> browser config virtual module
+  -> revision-owned style target
+  -> StyleSheetManager
+  -> automatic/project providers
+  -> selected page/component
+```
+
+browser boundary는 activation 전에는 detached `<div>` style target만 만들고, activation 때 `document.head`에 붙입니다. target은 가장 바깥 generated manager만 받고 dispose는 정확히 그 node만 제거합니다. setup의 `styledComponentsPreview=false`는 generated manager만 끄며 ThemeProvider 계약은 바꾸지 않습니다. setup object, authored plan, synthetic empty manager, package/export 부재 identity의 precedence는 runtime에서 검증하고 getter·prototype·target/sheet/nonce 같은 unsafe configuration은 실행하지 않습니다.
+
+hot replacement는 다음 lifecycle을 지킵니다. preparation이 stale하거나 실패하면 이전 root와 target을
+그대로 유지하고, activation 뒤 오류가 나면 새 root/target만 정리한 뒤 기존 오류 경로로 전환합니다.
+
+```text
+prepare detached target
+  -> unmount old root
+  -> dispose old target
+  -> activate new target
+  -> render/commit
+```
 
 store는 bundle/shared-file reference mutation을 하나의 Promise queue에서 직렬화하되 독립적인 directory,
 write, delete는 최대 16개 비동기 filesystem operation으로 처리합니다. portable path와 full byte digest가 다르면 과거 URL까지
@@ -305,11 +326,9 @@ Next `loading/error/not-found`는 선택 module 자체를 target으로 유지한
 `PreviewRenderMode`는 command가 panel session을 만들 때 선택하고, session이 고정 URI를 다시 해석하는 모든
 수동·자동 rebuild request에 같은 값을 복사합니다. 따라서 같은 파일의 component gallery와 Inspector를
 동시에 열어도 한 패널의 refresh가 다른 패널의 root 선택이나 상태를 바꾸지 않습니다.
+브라우저 runtime의 page corridor는 selected candidate subtree를 host element 없는 commit boundary로 감싸고, 별도의 target facade boundary와 함께 상태를 기록합니다. 성공은 두 boundary가 direct-target 전환 없이 같은 candidate render에서 살아 있을 때만 성립합니다. bounded gate DFS가 소진되어도 candidate root는 유지되며, target-only module은 명시적 진단 선택에만 지연 로드되고 blocker resolution에는 포함되지 않습니다.
 
-브라우저 runtime의 page corridor는 selected candidate subtree를 host element 없는 commit boundary로 감싸고,
-별도의 target facade boundary와 함께 상태를 기록합니다. 성공은 두 boundary가 direct-target 전환 없이 같은
-candidate render에서 살아 있을 때만 성립합니다. bounded gate DFS가 소진되어도 candidate root는 유지되며,
-target-only module은 명시적 진단 선택에만 지연 로드되고 blocker resolution에는 포함되지 않습니다.
+automatic fast/corridor build는 descriptor가 보존하는 넓은 analysis path를 그대로 import하지 않는다. compiler는 선택 route/page의 `Page Execution` 후보를 fidelity 순서로 probe하고, soft budget 안의 가장 바깥 후보(없으면 hard budget 안의 후보) 하나만 frozen frontier와 함께 bundle한다. app entry, route registry, loader/action은 evidence·watch 입력일 뿐 automatic executable input이 아니다. Next의 선택 layout과 `_app`은 선택 page에 대한 정확한 children/`Component` edge 및 정적 pathname/params만으로 조합한다. selected-export 또는 local HOC slice는 같은 파일의 필요한 lexical closure만 virtual surface로 만들고 외부 project HOC, mutable module bootstrap, 알아낼 수 없는 provider/state를 자동으로 재현하지 않으므로 이 계약은 setup 또는 preview harness가 명시해야 한다. explicit `full` mode는 automatic frontier를 적용하지 않는 compatibility mode이며, automatic slice의 안전한 대체물이 아니다.
 
 렌더 관점은 project 의미를 추측하지 않는 두 개의 명시적 scenario로 나뉩니다. 기본 `authored-page`는 선택한
 candidate가 만든 fallback/error/empty UI까지 변경 없이 유지하고, 화면 문자열이나 component 이름을 분류 근거로

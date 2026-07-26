@@ -2,27 +2,27 @@
 
 이 프로젝트는 사용자에게 영향을 주는 변경을 이 문서에 기록합니다.
 
+## Unreleased
+- Page Inspector automatic fast/corridor build가 app entry·route registry·loader/action을 실행하지 않고 선택 route/page의 bounded Page Execution slice와 Frontier v2만 bundle하도록 변경. selected-export/local-HOC slice, Next layout 및 Pages Router `_app → Component` 조합을 frozen execution plan에 연결하고, soft budget 안에서는 target-only보다 높은 page fidelity를 우선 선택
+- target package가 소유한 styled-components v5/v6 runtime을 preview revision 사이 단일 shared chunk로 재사용하고, automatic ThemeProvider·GlobalStyle·StyleSheetManager 경계를 추가
+- 선택된 Page Inspector outer corridor의 안전하게 증명된 StyleSheetManager props와 setup의 `styledComponentsPreview` override를 지원하며, revision-owned detached style target을 hot replacement에 맞춰 activate/commit/dispose
+- `styled-components/native`, SSR stylesheet 추출, `target`/`sheet`/`nonce` setup props는 지원하지 않아 browser preview 경계를 유지
+
 ## 0.1.1192 - 2026-07-26
 
-- Inspector 내부 resize handle의 15~~85% 비율 제한과 4096px 카드 높이 상한을 제거해 트리·상세·카드·상단
-  영역을 0~~100% 및 필요한 콘텐츠 높이까지 자유롭게 조절할 수 있도록 변경
-- preview와 별도 Inspector 탭의 grid 최소 높이·workbench 예약을 동일하게 풀어 핸들이 실제 영역 경계까지
-  이동하도록 맞추고, 접기/복원·키보드 조절·scroll 보존 동작은 유지
+- Inspector 내부 resize handle의 15~~85% 비율 제한과 4096px 카드 높이 상한을 제거해 트리·상세·카드·상단 영역을 0~~100% 및 필요한 콘텐츠 높이까지 자유롭게 조절할 수 있도록 변경
+- preview와 별도 Inspector 탭의 grid 최소 높이·workbench 예약을 동일하게 풀어 핸들이 실제 영역 경계까지 이동하도록 맞추고, 접기/복원·키보드 조절·scroll 보존 동작은 유지
 
 ## 0.1.1191 - 2026-07-25
 
-- Route browser, Page context, toolbar, workbench tab처럼 각각 독립적으로 스크롤되는 Inspector 영역에
-  안정적인 scroll identity를 부여해 클릭과 inert snapshot 교체 뒤에도 가로·세로 좌표를 그대로 복원
-- route 선택은 일반 UI의 짧은 안정화 시간과 분리해, 선택한 branch의 새 번들이 실제 적용될 때까지 원래
-  스크롤 좌표를 유지하고 브라우저 scroll anchoring이 중간 DOM을 기준으로 위치를 바꾸지 않도록 개선
+- Route browser, Page context, toolbar, workbench tab처럼 각각 독립적으로 스크롤되는 Inspector 영역에 안정적인 scroll identity를 부여해 클릭과 inert snapshot 교체 뒤에도 가로·세로 좌표를 그대로 복원
+- route 선택은 일반 UI의 짧은 안정화 시간과 분리해, 선택한 branch의 새 번들이 실제 적용될 때까지 원래 스크롤 좌표를 유지하고 브라우저 scroll anchoring이 중간 DOM을 기준으로 위치를 바꾸지 않도록 개선
 - 느린 route compilation 중간 snapshot과 최종 선택 snapshot을 재현하는 scroll transaction 회귀 테스트 추가
 
 ## 0.1.1190 - 2026-07-25
 
-- `App.tsx`처럼 수백 경로를 소유한 파일은 모든 경로를 컴포넌트 모듈 없이 메타데이터로 색인하고, 공통 경로
-  폴더·breadcrumb·검색 UI에서 선택한 한 가지 branch만 재분석·번들링하도록 변경
-- `RouterProvider`가 다른 파일의 router 또는 route descriptor 배열만 감싸는 중간 모듈을 재귀적으로 따라가,
-  실제 leaf 페이지가 나올 때까지 경로를 합성하고 선택되지 않은 형제 페이지는 읽거나 번들 corridor에 포함하지 않음
+- `App.tsx`처럼 수백 경로를 소유한 파일은 모든 경로를 컴포넌트 모듈 없이 메타데이터로 색인하고, 공통 경로 폴더·breadcrumb·검색 UI에서 선택한 한 가지 branch만 재분석·번들링하도록 변경
+- `RouterProvider`가 다른 파일의 router 또는 route descriptor 배열만 감싸는 중간 모듈을 재귀적으로 따라가, 실제 leaf 페이지가 나올 때까지 경로를 합성하고 선택되지 않은 형제 페이지는 읽거나 번들 corridor에 포함하지 않음
 - route 선택 메시지를 현재 runtime revision과 정적 component/path chain으로 검증하고 pinned 탭별 선택을 보존하며,
   320개 경로·중첩 RouterProvider·import된 route 배열·형제 모듈 미로딩 회귀 테스트 추가
 

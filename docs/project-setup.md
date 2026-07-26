@@ -240,6 +240,12 @@ reload 뒤 다시 적용됩니다. 다만 hot reload는 프로젝트 React root�
 보존하지 않습니다. Inspector는 app entry, route table, backend나 개발 서버를 추가로 실행하지 않고
 웹뷰 CSP도 모든 외부 연결을 계속 차단합니다.
 
+automatic fast/corridor Page Inspector는 선택 page/route surface의 bounded slice만 실행합니다. selected export나
+local HOC slice가 project HOC·mutable bootstrap·인증 state를 우회한 경우에는 이를 추측해 복원하지 않습니다.
+그 wrapper나 state가 화면 계약에 필요하면 이 setup의 `PreviewProviders`/`previewProps` 또는 작은 preview harness로
+명시하세요. `full` mode는 automatic frontier projection을 생략하는 compatibility mode이므로, slice 누락을 숨기기
+위한 기본 해법으로 사용하지 않습니다.
+
 초기 preview와 Inspector 준비 화면은 `resolving target → analyzing project → discovering components →
 preparing runtime → bundling → publishing → loading` 순서의 실제 경계를 표시합니다. 준비가 끝난 기존 탭의
 hot reload에서는 작성된 화면을 가리지 않는 작은 Shadow DOM 상태 패널을 사용합니다. 연속 편집으로 새
@@ -348,7 +354,7 @@ export const apolloPreview = {
 프로젝트의 `PreviewProviders`가 자체 Apollo client를 제공한다면 그 Provider가 자동 outer Provider보다
 가까워 정상적으로 우선합니다. 자동 계층이 필요 없으면 `export const apolloPreview = false`로 끕니다.
 
-## styled-components theme 프리뷰
+## styled-components theme와 StyleSheetManager 프리뷰
 
 대상 package에서 `styled-components`를 찾으면 확장은 같은 package 인스턴스의 `ThemeProvider`를
 자동 사용합니다. 활성 파일뿐 아니라 활성 export에서 정적으로 도달한 자식·손자 소스가
@@ -377,6 +383,53 @@ setup의 값은 자동 발견 theme보다 우선하며 clone하거나 token을 �
 Storybook decorator 안의 실제 ThemeProvider는 target에 더 가까우므로 자동 outer Provider보다
 우선합니다. styled-components를 쓰지만 자동 경계가 필요 없으면 `export const themePreview = false`로
 끕니다.
+
+target package에 `styled-components` v5 또는 v6가 있으면 preview는 같은 package 인스턴스를 한 번만
+사용해 automatic `ThemeProvider`, `createGlobalStyle`, `StyleSheetManager`를 구성합니다. 선택된 Page
+Inspector outer render corridor에 있는 manager만 정적으로 다시 만들며, 확실하지 않은 표현식·spread·local
+값은 실행하지 않고 빈 synthetic manager로 안전하게 내려갑니다. Component Gallery에는 page corridor가
+없으므로 synthetic manager만 사용합니다. `styled-components/native`와 SSR stylesheet 추출은 지원하지
+않습니다.
+
+setup은 generated manager를 다음 exact API로 조정할 수 있습니다.
+
+```ts
+type StyledComponentsPreviewConfiguration =
+  | false
+  | {
+      readonly disableCSSOMInjection?: boolean;
+      readonly disableVendorPrefixes?: boolean;
+      readonly enableVendorPrefixes?: boolean;
+      readonly shouldForwardProp?: (propName: string, target: unknown) => boolean;
+      readonly stylisPlugins?: readonly ((...args: unknown[]) => unknown)[];
+    };
+
+export const styledComponentsPreview: StyledComponentsPreviewConfiguration;
+```
+
+예를 들어 browser에서만 동작하고 network를 사용하지 않는 helper는 다음처럼 설정합니다.
+
+```tsx
+import isPropValid from '@emotion/is-prop-valid';
+import rtlPlugin from 'stylis-plugin-rtl';
+
+export const styledComponentsPreview = {
+  shouldForwardProp(propName, target) {
+    return typeof target === 'string' ? isPropValid(propName) : true;
+  },
+  stylisPlugins: [rtlPlugin],
+};
+```
+
+setup 코드는 trusted workspace의 browser runtime에서 실행됩니다. `target`, `sheet`, `nonce`는 preview가
+받지 않으며, generated manager만 끄려면 `export const styledComponentsPreview = false`를 사용합니다.
+이는 `themePreview`와 독립적이므로 `themePreview = false`는 manager를 끄지 않고,
+`styledComponentsPreview = false`는 ThemeProvider를 끄지 않습니다. `PreviewProviders` 안에 작성한 실제
+`StyleSheetManager`는 target에 더 가까우므로 automatic outer manager보다 우선합니다.
+
+vendor-prefix 옵션은 package major에 맞춰 사용하세요. v5에서는 `disableVendorPrefixes`, v6에서는
+`enableVendorPrefixes`를 사용합니다. 둘을 동시에 지정하면 preview는 추측하지 않고 generated manager의
+안전한 fallback을 사용합니다.
 
 ## React Redux 정적 프리뷰
 

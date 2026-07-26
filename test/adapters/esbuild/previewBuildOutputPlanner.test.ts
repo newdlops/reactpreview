@@ -61,7 +61,7 @@ describe('planPreviewBuildOutputs', () => {
         absoluteWorkingDirectory: fixtureDirectory,
         metafile: result.metafile,
         outputFiles: result.outputFiles,
-        virtualEntryName: VIRTUAL_ENTRY_NAME,
+        outputSelection: { ignoredEntryPoints: [], mainEntryPoint: VIRTUAL_ENTRY_NAME },
       });
 
       expect(new TextDecoder().decode(plan.entryJavaScript)).toMatch(
@@ -132,7 +132,7 @@ describe('planPreviewBuildOutputs', () => {
         absoluteWorkingDirectory: fixtureDirectory,
         metafile: result.metafile,
         outputFiles: result.outputFiles,
-        virtualEntryName: VIRTUAL_ENTRY_NAME,
+        outputSelection: { ignoredEntryPoints: [], mainEntryPoint: VIRTUAL_ENTRY_NAME },
       });
       const stylesheets = plan.auxiliaryStylesheets.map((output) =>
         new TextDecoder().decode(output.contents),
@@ -166,6 +166,28 @@ describe('planPreviewBuildOutputs', () => {
       'chunks/z-last.js',
     ]);
     expect(plan.auxiliaryStylesheets).toEqual([]);
+  });
+
+  it('omits the package-only runtime anchor while retaining only main-reachable chunks', () => {
+    const fixture = createDirectPlannerFixture(['entry.js', 'styled-runtime-anchor.js']);
+    const entry = requireMetadataOutput(fixture.metafile.outputs['out/entry.js']);
+    const anchor = requireMetadataOutput(fixture.metafile.outputs['out/styled-runtime-anchor.js']);
+    const plan = planPreviewBuildOutputs({
+      ...fixture,
+      metafile: createMetafile({
+        'out/entry.js': { ...entry, imports: [] },
+        'out/styled-runtime-anchor.js': {
+          ...anchor,
+          entryPoint: 'react-preview:runtime-anchor',
+        },
+      }),
+      outputSelection: {
+        ignoredEntryPoints: ['react-preview:runtime-anchor'],
+        mainEntryPoint: VIRTUAL_ENTRY_NAME,
+      },
+    });
+
+    expect(plan.auxiliaryJavaScript).toEqual([]);
   });
 
   /** Rejects duplicate bytes for one artifact identity before a store can overwrite a chunk. */
@@ -294,6 +316,11 @@ function createDirectPlannerFixture(
         relativePath === 'entry.js' || relativePath.endsWith('/entry.js')
           ? VIRTUAL_ENTRY_NAME
           : undefined,
+        relativePath === 'entry.js'
+          ? relativePaths
+              .filter((candidate) => candidate !== 'entry.js' && candidate.endsWith('.js'))
+              .map((candidate) => `./${candidate}`)
+          : [],
       ),
     ]),
   );
@@ -302,7 +329,7 @@ function createDirectPlannerFixture(
     absoluteWorkingDirectory,
     metafile: createMetafile(outputs),
     outputFiles,
-    virtualEntryName: VIRTUAL_ENTRY_NAME,
+    outputSelection: { ignoredEntryPoints: [], mainEntryPoint: VIRTUAL_ENTRY_NAME },
   };
 }
 
@@ -329,11 +356,14 @@ function createRawOutputFile(outputPath: string, source: string): OutputFile {
 }
 
 /** Creates minimal output metadata with an optional virtual entry identity. */
-function createMetadataOutput(entryPoint: string | undefined): Metafile['outputs'][string] {
+function createMetadataOutput(
+  entryPoint: string | undefined,
+  importPaths: readonly string[] = [],
+): Metafile['outputs'][string] {
   return {
     bytes: 1,
     exports: [],
-    imports: [],
+    imports: importPaths.map((path) => ({ external: false, kind: 'import-statement', path })),
     inputs: {},
     ...(entryPoint === undefined ? {} : { entryPoint }),
   };

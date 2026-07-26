@@ -1,7 +1,4 @@
-/**
- * Verifies that fast VirtualPage compilation keeps every proven authored consumer of a shared
- * component instead of publishing only the highest-ranked page.
- */
+/** Verifies that fast VirtualPage compilation executes only the selected authored consumer. */
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,8 +35,8 @@ function decodeCompleteArtifact(bundle: {
 }
 
 describe('EsbuildPreviewCompiler shared-component page candidates', () => {
-  /** Publishes both real pages during fast preparation and leaves browser selection lazy. */
-  it('keeps independently selectable pages that consume the same component', async () => {
+  /** Retains alternatives as metadata but imports only one executable page corridor per build. */
+  it('keeps alternate pages descriptor-only when they consume the same component', async () => {
     const fixtureParent = path.join(REPOSITORY_ROOT, '.tmp');
     await mkdir(fixtureParent, { recursive: true });
     const projectRoot = await mkdtemp(path.join(fixtureParent, 'multiple-page-candidates-'));
@@ -136,7 +133,7 @@ describe('EsbuildPreviewCompiler shared-component page candidates', () => {
       const javascript = decodeCompleteArtifact(bundle);
 
       expect(javascript).toContain('PUBLIC_PAGE_MARKER');
-      expect(javascript).toContain('STAFF_PAGE_MARKER');
+      expect(javascript).not.toContain('STAFF_PAGE_MARKER');
       expect(javascript).toContain('SHARED_CARD_MARKER');
       expect(javascript).toContain(publicPagePath);
       expect(javascript).toContain(staffPagePath);

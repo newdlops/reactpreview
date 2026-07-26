@@ -225,6 +225,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
     });
 
     expect(getSourcePaths).toHaveBeenCalledOnce();
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- verifies legacy compatibility.
     expect(prepared.fastContextTruncated).toBe(true);
     expect(prepared.packageTargetUsageProps.inspectorPlan?.root.sourcePath).toBe(
       path.join(projectRoot, 'src/App.tsx'),

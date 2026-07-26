@@ -169,6 +169,7 @@ async function buildFileFixture(
 /** Workspace loader configured with the same transform boundary used by the compiler. */
 function createWorkspacePlugin(workspaceRoot: string): Plugin {
   return createWorkspaceSourcePlugin({
+    runtimeInstanceKey: 'test-runtime',
     snapshots: [],
     transformer: new PreviewSourceTransformer({ projectRoot: workspaceRoot, workspaceRoot }),
     workspaceRoot,

@@ -206,6 +206,7 @@ async function buildPeerFixture(
         fixture.allowPhysicalDependency,
       ),
       createWorkspaceSourcePlugin({
+        runtimeInstanceKey: 'test-runtime',
         snapshots: [],
         transformer: new PreviewSourceTransformer({
           projectRoot: fixture.applicationRoot,

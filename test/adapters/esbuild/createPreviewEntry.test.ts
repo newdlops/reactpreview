@@ -244,7 +244,10 @@ describe('createPreviewEntry', () => {
     });
 
     const prepareStart = entry.indexOf('async function preparePreviewElement()');
-    const prepareEnd = entry.indexOf('\n}', entry.indexOf('return previewElement;', prepareStart));
+    const prepareEnd = entry.indexOf(
+      '\n}\n\n/** Atomically mounts one fully prepared element',
+      prepareStart,
+    );
     const activationStart = entry.indexOf('async function activatePreparedPreview', prepareEnd);
     const scopeActivation = entry.indexOf(
       'preparePreviewInspectorRuntimeFallbackScope(previewTargets)',

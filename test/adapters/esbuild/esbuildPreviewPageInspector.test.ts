@@ -427,8 +427,8 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
     }
   });
 
-  /** Bundles alternative callers as independently activated roots inside one bounded artifact. */
-  it('keeps mount-distinct caller pages selectable in coalesced inspector output', async () => {
+  /** Emits only the selected caller corridor; alternate candidates remain descriptor-only. */
+  it('keeps alternate caller pages out of the executable inspector artifact', async () => {
     const projectRoot = await mkdtemp(
       path.join(REPOSITORY_ROOT, 'test/fixtures/page-inspector-candidates-'),
     );
@@ -480,11 +480,9 @@ describe('EsbuildPreviewCompiler Page Inspector', () => {
         ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
       ]).toString('utf8');
 
-      expect(bundle.chunks).toHaveLength(0);
-      expect(entryJavascript).toContain('PUBLIC_PAGE_CONTEXT');
-      expect(entryJavascript).toContain('STAFF_PAGE_CONTEXT');
+      expect(entryJavascript.length).toBeGreaterThan(0);
       expect(allJavascript).toContain('PUBLIC_PAGE_CONTEXT');
-      expect(allJavascript).toContain('STAFF_PAGE_CONTEXT');
+      expect(allJavascript).not.toContain('STAFF_PAGE_CONTEXT');
       expect(allJavascript).toContain('Authored page caller path');
       expect(allJavascript).toContain('PublicPage');
       expect(allJavascript).toContain('StaffPage');

@@ -148,8 +148,8 @@ describe('PreviewIncrementalBuildCache', () => {
     expect(second.dispose).toHaveBeenCalledOnce();
   });
 
-  /** Evicts the oldest parsed graph before an arbitrary number of preview tabs can accumulate it. */
-  it('retains at most two incompatible native contexts', async () => {
+  /** Evicts every prior parsed graph before another page path can multiply native memory. */
+  it('retains at most one incompatible native context', async () => {
     const first = createNativeContext();
     const second = createNativeContext();
     const third = createNativeContext();
@@ -168,12 +168,11 @@ describe('PreviewIncrementalBuildCache', () => {
     }
     await vi.waitFor(() => {
       expect(first.dispose).toHaveBeenCalledOnce();
+      expect(second.dispose).toHaveBeenCalledOnce();
     });
-    expect(second.dispose).not.toHaveBeenCalled();
     expect(third.dispose).not.toHaveBeenCalled();
 
     await cache.shutdown();
-    expect(second.dispose).toHaveBeenCalledOnce();
     expect(third.dispose).toHaveBeenCalledOnce();
   });
 
@@ -209,7 +208,7 @@ describe('PreviewIncrementalBuildCache', () => {
   });
 
   /** Prevents a context whose asynchronous creation crosses shutdown from ever starting a build. */
-  it('disposes a context that finishes creation after the cache closes', async () => {
+  it('does not create a context when shutdown wins before its serialized transition starts', async () => {
     const native = createNativeContext();
     let resolveContext:
       ((context: BuildContext<PreviewIncrementalBuildOptions>) => void) | undefined;
@@ -231,7 +230,7 @@ describe('PreviewIncrementalBuildCache', () => {
     await expect(operation).rejects.toMatchObject({ name: 'AbortError' });
     await shutdown;
     expect(native.rebuild).not.toHaveBeenCalled();
-    expect(native.dispose).toHaveBeenCalledOnce();
+    expect(native.dispose).not.toHaveBeenCalled();
   });
 });
 
@@ -271,6 +270,7 @@ function createBuildOptions(): PreviewIncrementalBuildOptions {
 /** Creates current editor state with a fresh per-build source transformer. */
 function createCompilation(sourceText: string): WorkspaceSourceCompilationState {
   return {
+    runtimeInstanceKey: 'test-runtime',
     snapshots: [
       {
         documentPath: '/workspace/src/Target.tsx',

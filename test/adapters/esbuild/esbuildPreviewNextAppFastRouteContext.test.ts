@@ -248,7 +248,7 @@ describe('EsbuildPreviewCompiler fast Next App route context', () => {
       const enrichedJavaScript = readBundleJavaScript(enrichedBundle);
 
       expect(enrichedJavaScript).toContain('FAST_NEAREST_PAGE');
-      expect(enrichedJavaScript).toContain('UNSELECTED_NESTED_PAGE');
+      expect(enrichedJavaScript).not.toContain('UNSELECTED_NESTED_PAGE');
     } finally {
       await compiler.shutdown();
       await rm(projectRoot, { force: true, recursive: true });

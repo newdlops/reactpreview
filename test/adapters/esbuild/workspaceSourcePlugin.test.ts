@@ -34,6 +34,7 @@ describe('createWorkspaceSourcePlugin', () => {
         plugins: [
           createVirtualResolutionPlugin(virtualPath),
           createWorkspaceSourcePlugin({
+            runtimeInstanceKey: 'test-runtime',
             snapshots: [],
             transformer: new PreviewSourceTransformer({
               projectRoot: workspaceRoot,
@@ -90,6 +91,7 @@ describe('createWorkspaceSourcePlugin', () => {
         plugins: [
           createPeerBoundVirtualResolutionPlugin(virtualIndex),
           createWorkspaceSourcePlugin({
+            runtimeInstanceKey: 'test-runtime',
             snapshots: [],
             transformer: new PreviewSourceTransformer({
               projectRoot: workspaceRoot,

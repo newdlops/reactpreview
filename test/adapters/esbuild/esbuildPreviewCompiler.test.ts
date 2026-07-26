@@ -1,7 +1,4 @@
-/**
- * Exercises the real runtime compiler against project React, TSX, CSS, and unsaved source text.
- * These tests ensure the no-server build path works before a VS Code extension host is involved.
- */
+/** Exercises the real compiler against project React, TSX, CSS, and unsaved source text. */
 import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +48,7 @@ describe('EsbuildPreviewCompiler', () => {
     expect(reportedStages).toEqual([
       'discovering-components',
       'preparing-runtime',
+      'analyzing-project',
       'bundling-modules',
     ]);
   }, 10_000);

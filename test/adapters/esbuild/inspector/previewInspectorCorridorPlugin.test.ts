@@ -846,6 +846,40 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       }),
     ).rejects.toThrow('Could not resolve "./Sibling"');
   });
+
+  it('rejects an authored static import that is absent from a frozen bundle frontier', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
+    const unexpectedPath = path.join(workspaceRoot, 'src', 'Unexpected.ts');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await Promise.all([
+      writeFile(entryPath, `import { unexpected } from './Unexpected'; export default unexpected;`),
+      writeFile(unexpectedPath, `export const unexpected = 'UNPLANNED_AUTHORED_MARKER';`),
+    ]);
+
+    await expect(
+      build({
+        absWorkingDir: workspaceRoot,
+        bundle: true,
+        entryPoints: [entryPath],
+        format: 'esm',
+        logLevel: 'silent',
+        outdir: path.join(workspaceRoot, 'out'),
+        plugins: [
+          createPreviewInspectorCorridorPlugin({
+            frozenAuthenticSourcePaths: [entryPath],
+            plan: createCorridorPlan(entryPath, entryPath),
+            projectRoot: workspaceRoot,
+            resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
+            workspaceRoot,
+          }),
+        ],
+        write: false,
+      }),
+    ).rejects.toThrow(
+      'React Preview frontier mismatch: ./Unexpected escaped the planned authored bundle.',
+    );
+  });
 });
 
 /** Creates the minimum immutable plan whose entry and selected module form the allowed corridor. */

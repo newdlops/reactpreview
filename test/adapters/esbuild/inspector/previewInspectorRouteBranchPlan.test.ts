@@ -183,6 +183,30 @@ describe('preview Inspector hierarchical route branches', () => {
     expect(readPaths).not.toContain(DASHBOARD_PATH);
   });
 
+  it('reports the effective leaf when selecting an already-active parent resolves its default child', async () => {
+    const sources = createNestedRouterSources();
+    const plan = await collectPreviewInspectorRouteBranchPlan({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createAppRenderChain(),
+      resolveModule: resolveFixtureModule,
+      selection: [{ componentName: 'FeatureApp', pattern: '/feature/*' }],
+      sourcePaths: Object.keys(sources),
+    });
+
+    const featureBranch = plan.branches.find(
+      (branch) => branch.componentName === 'FeatureApp' && branch.pattern === '/feature/*',
+    );
+    const effectiveLeaf = plan.branches.find((branch) => branch.id === plan.selectedBranchId);
+
+    expect(plan.selectionResolution).toBe('exact');
+    expect(featureBranch).toMatchObject({ childState: 'expanded' });
+    expect(effectiveLeaf).toMatchObject({ depth: 1, parentId: featureBranch?.id });
+    expect(plan.selectedBranchId).toBe(effectiveLeaf?.id);
+    expect(plan.selectedBranchId).not.toBe(featureBranch?.id);
+  });
+
   /** Follows a router whose descriptor array is itself imported from a separate metadata module. */
   it('reads an imported route descriptor aggregate without reading its page module', async () => {
     const configPath = '/workspace/src/config-router.tsx';

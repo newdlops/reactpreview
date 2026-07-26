@@ -219,8 +219,8 @@ describe('createPreviewInspectorRootSource', () => {
     );
   });
 
-  /** Emits every alternative behind its own dynamic import and keeps the first path as metadata. */
-  it('keeps alternative authored page roots lazy and independently selectable', () => {
+  /** Keeps alternate roots as inert metadata so esbuild receives one executable page graph. */
+  it('emits only the selected authored page root while retaining alternate metadata', () => {
     const primaryPlan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
     const primaryCandidate = primaryPlan.pageCandidates[0];
     if (primaryCandidate === undefined) throw new Error('Primary candidate fixture is missing.');
@@ -241,14 +241,38 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain(
       'Promise.all([import("/workspace/application/Page.tsx")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "Page",',
     );
-    expect(source).toContain(
-      'Promise.all([import("/workspace/application/AlternatePage.tsx")]).then((modules) => __reactPreviewComposeVirtualPage(modules, "AlternatePage",',
-    );
+    expect(source).not.toContain('import("/workspace/application/AlternatePage.tsx")');
     expect(source).not.toContain('import __reactPreviewInspectorRoot');
     expect(source).toContain(
       'api.createPageCandidateElement(__reactPreviewInspectorCandidates, props)',
     );
     expect(source).toContain('"id":"candidate-alternate"');
+    expect(source).toContain('"executablePageCandidateId":"candidate-page"');
+  });
+
+  /** Rebuilds one narrow graph when the user chooses a different caller path. */
+  it('emits the requested alternate page root and not the previous default', () => {
+    const primaryPlan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const primaryCandidate = primaryPlan.pageCandidates[0];
+    if (primaryCandidate === undefined) throw new Error('Primary candidate fixture is missing.');
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...primaryPlan,
+        pageCandidates: [
+          primaryCandidate,
+          {
+            ...primaryCandidate,
+            id: 'candidate-alternate',
+            root: { exportName: 'AlternatePage', sourcePath: ALTERNATE_PAGE_PATH },
+          },
+        ],
+      },
+      selectedPageCandidateId: 'candidate-alternate',
+    });
+
+    expect(source).toContain('import("/workspace/application/AlternatePage.tsx")');
+    expect(source).not.toContain('import("/workspace/application/Page.tsx")');
+    expect(source).toContain('"executablePageCandidateId":"candidate-alternate"');
   });
 
   /** Keeps cold fast bundles from eagerly traversing alternate app roots in coalesced output. */

@@ -123,6 +123,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
 
     expect(source).toContain('function PreviewInspectorPageCandidateLoader');
     expect(source).toContain('function PreviewInspectorAuthoredPageLoader');
+    expect(source).toContain('function requestPreviewInspectorPageExecutionRetry');
+    expect(source).toContain("type: 'react-preview-inspector-page-execution-retry'");
+    expect(source).toContain('pageExecutionRetryRevision === previewEntryRevision');
     expect(source).toContain('return definition.load();');
     expect(source).toContain('Loading authored page context…');
     expect(source).toContain('createPreviewCandidateRouterElement(rootElement');
@@ -162,6 +165,14 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('function readPreviewInspectorRouteBranches');
     expect(source).toContain('function selectPreviewInspectorRouteBranch');
     expect(source).toContain("type: 'react-preview-inspector-route-selected'");
+    expect(source).toContain(
+      'previewInspectorSession.pendingRouteSelectionPath = branch.selectionPath',
+    );
+    expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS = 10 * 60 * 1000');
+    expect(source).toContain('Route preparation is taking longer than expected. Retry when ready.');
+    expect(source).toContain(
+      'previewInspectorSession.lastRequestedRouteSelectionPath = branch.selectionPath',
+    );
   });
 
   /** Organizes a large App route inventory into searchable folders instead of one flat selector. */
@@ -176,6 +187,31 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain("'data-rpi-scroll-transaction': 'route-selection:' + branch.id");
     expect(source).toContain("'data-rpi-scroll-transaction-state': pending");
     expect(source).toContain('React.createElement(PreviewInspectorRouteExplorer, { descriptor })');
+    expect(source).toContain('function previewInspectorRouteSelectionPathStartsWith');
+    expect(source).toContain(
+      'previewInspectorRouteSelectionPathStartsWith(selectedBranch?.selectionPath, pendingSelectionPath)',
+    );
+    expect(source).toContain("'No application routes match this filter.'");
+    expect(source).toContain("'Retry route'");
+    expect(source).toContain("autoComplete: 'off'");
+    expect(source).toContain("name: 'route-filter'");
+    expect(source).toContain("' · default child'");
+    expect(source).toContain(
+      'const visibleChildFolders = [...childFolderCounts].slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);',
+    );
+    expect(source).toContain(
+      'const visibleImmediateBranches = immediateBranches.slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);',
+    );
+  });
+
+  it('emits syntactically valid route-selection runtime for the browser', () => {
+    expect(
+      () =>
+        new vm.Script(
+          createPreviewInspectorPageCandidateRuntimeSource() +
+            createPreviewInspectorPageCandidateUiRuntimeSource(),
+        ),
+    ).not.toThrow();
   });
 
   /** Strips only a proven app-module mount prefix and leaves direct component routes untouched. */

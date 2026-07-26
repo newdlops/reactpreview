@@ -1,23 +1,26 @@
-/**
- * Combines factory-call choices, the factory implementation contract, and reachable JSON catalogs.
- *
- * The collector is intentionally a bridge between small syntax readers. A missing proof yields an
- * unresolved choice, never a wildcard fallback or an eagerly evaluated project module.
- */
+/** Builds a complete, non-executing route-choice manifest for one factory export. */
 import path from 'node:path';
 import ts from 'typescript';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { collectPreviewInspectorRouteFactoryCatalog } from './previewInspectorRouteFactoryCatalog';
 import { resolvePreviewInspectorRouteFactoryDefinition } from './previewInspectorRouteFactoryDefinition';
-import { collectPreviewInspectorRouteFactoryChoices } from './previewInspectorRouteFactoryChoices';
+import {
+  collectPreviewInspectorRouteFactoryChoices,
+  createPreviewInspectorRouteFactoryChoiceKey,
+} from './previewInspectorRouteFactoryChoices';
+import { resolvePreviewInspectorRouteFactoryOwner } from './previewInspectorRouteFactoryOwner';
 import type {
   PreviewInspectorFactoryFallbackEntry,
   PreviewInspectorFactoryRouteEntry,
+  PreviewInspectorFactoryRouteOption,
   PreviewInspectorRouteFactoryManifest,
 } from './previewInspectorRouteFactoryManifestTypes';
 import { relativizePreviewInspectorRoutePattern } from './previewInspectorRoutePatternMatch';
 
-/** Builds one route manifest for the selected factory export, or returns undefined when not a factory. */
+/**
+ *
+ */
+/** Collects every factory choice before classifying safely resolved routes. */
 export async function collectPreviewInspectorRouteFactoryManifest(options: {
   readonly exportName: string;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
@@ -26,39 +29,32 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
   readonly sourceText: string | undefined;
 }): Promise<PreviewInspectorRouteFactoryManifest | undefined> {
   if (options.sourceText === undefined) return undefined;
-  const sourceFile = parseSource(options.sourcePath, options.sourceText);
-  const identities = new Set([options.exportName]);
-  const inventory = collectPreviewInspectorRouteFactoryChoices({
+  const sourceFile = parse(options.sourcePath, options.sourceText);
+  const choices = collectPreviewInspectorRouteFactoryChoices({
     ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     sourcePath: options.sourcePath,
     sourceText: options.sourceText,
-    targetIdentities: identities,
+    targetIdentities: new Set([options.exportName]),
   });
-  const owner = inventory.owner;
-  if (owner === undefined) return undefined;
-  const callExpression = findOwnerFactoryCall(sourceFile, owner.exportName);
-  if (callExpression === undefined) return undefined;
+  const owner = choices.owner;
+  const call = owner === undefined ? undefined : findExportCall(sourceFile, owner.exportName);
+  if (owner === undefined || call === undefined) return undefined;
   const definition = await resolvePreviewInspectorRouteFactoryDefinition({
-    callExpression,
+    callExpression: call,
     readSource: options.readSource,
     ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     sourceFile,
     sourcePath: options.sourcePath,
   });
-  const dependencies = new Set<string>([
+  const dependencies = new Set([
     path.normalize(options.sourcePath),
     ...(definition?.dependencyPaths ?? []),
   ]);
-  const pageChoices = inventory.choices.filter(
-    (choice) =>
-      choice.localName !== undefined &&
-      !isSubmoduleChoice(choice.componentName, callExpression, sourceFile),
-  );
-  const submoduleChoices = inventory.choices.filter((choice) => !pageChoices.includes(choice));
+  const pageChoices = choices.choices.filter((choice) => choice.kind === 'page');
   const catalog =
     definition?.catalogBindingName === undefined
       ? undefined
-      : await collectCatalogFromDependencies(
+      : await collectCatalog(
           definition.dependencyPaths,
           definition.catalogBindingName,
           new Set(pageChoices.map((choice) => choice.componentName)),
@@ -67,69 +63,88 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
   for (const dependency of catalog?.dependencyPaths ?? [])
     dependencies.add(path.normalize(dependency));
   const routes: PreviewInspectorFactoryRouteEntry[] = [];
+  const routeOptions: PreviewInspectorFactoryRouteOption[] = [];
   const unresolved = new Set<string>();
-  for (const choice of pageChoices) {
-    const pattern = catalog?.patternsByComponentName.get(choice.componentName)?.[0];
-    const relative =
-      pattern === undefined
-        ? undefined
-        : relativizePreviewInspectorRoutePattern(owner.basePath, pattern);
-    if (pattern === undefined || relative === undefined) {
+  for (const choice of choices.choices) {
+    const reference =
+      choices.references.get(createPreviewInspectorRouteFactoryChoiceKey(choice)) ??
+      choices.references.get(choice.componentName);
+    if (definition === undefined) {
       unresolved.add(choice.componentName);
+      routeOptions.push(freezeOption(choice, 'factory-contract-unresolved'));
       continue;
     }
-    const reference = inventory.references.get(choice.componentName);
-    routes.push(
-      Object.freeze({
-        absolutePattern: pattern,
-        ...(reference === undefined
-          ? {}
-          : {
-              componentExportName: reference.exportName,
-              componentSourcePath: reference.sourcePath,
-            }),
-        componentName: choice.componentName,
-        kind: 'page',
-        relativeRouterPattern: relative,
-      }),
-    );
-  }
-  for (const choice of submoduleChoices) {
-    const reference = inventory.references.get(choice.componentName);
-    const basePattern =
-      reference === undefined
-        ? undefined
-        : await readImportedFactoryBase(
-            reference.sourcePath,
-            reference.exportName,
-            options.readSource,
-          );
-    const relative =
-      basePattern === undefined
-        ? undefined
-        : relativizePreviewInspectorRoutePattern(owner.basePath, basePattern);
-    if (basePattern === undefined || relative === undefined) {
-      unresolved.add(choice.componentName);
+    if (choice.kind === 'page') {
+      const patterns = catalog?.patternsByComponentName.get(choice.componentName);
+      if (patterns === undefined || patterns.length === 0) {
+        unresolved.add(choice.componentName);
+        routeOptions.push(freezeOption(choice, 'catalog-unresolved'));
+        continue;
+      }
+      for (const pattern of patterns) {
+        const relative = relativizePreviewInspectorRoutePattern(owner.basePath, pattern);
+        if (relative === undefined) {
+          unresolved.add(choice.componentName);
+          routeOptions.push(freezeOption(choice, 'catalog-unresolved'));
+          continue;
+        }
+        const route = Object.freeze({
+          absolutePattern: pattern,
+          ...(reference === undefined
+            ? {}
+            : {
+                componentExportName: reference.exportName,
+                componentSourcePath: reference.sourcePath,
+              }),
+          componentName: choice.componentName,
+          kind: 'page' as const,
+          relativeRouterPattern: relative,
+        });
+        routes.push(route);
+        routeOptions.push(freezeOption(choice, 'selectable', route));
+      }
       continue;
     }
-    routes.push(
-      Object.freeze({
-        absolutePattern: basePattern,
-        componentExportName: reference?.exportName ?? 'default',
-        componentName: choice.componentName,
-        componentSourcePath: reference?.sourcePath ?? '',
-        kind: 'submodule',
-        relativeRouterPattern: relative.length === 0 ? '*' : `${relative}/*`,
-      }),
-    );
+    if (reference === undefined) {
+      unresolved.add(choice.componentName);
+      routeOptions.push(freezeOption(choice, 'component-unresolved'));
+      continue;
+    }
+    const nested = await resolvePreviewInspectorRouteFactoryOwner({
+      exportName: reference.exportName,
+      readSource: options.readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+      sourcePath: reference.sourcePath,
+    });
+    const relative =
+      nested === undefined
+        ? undefined
+        : relativizePreviewInspectorRoutePattern(owner.basePath, nested.basePattern);
+    if (nested === undefined || relative === undefined) {
+      unresolved.add(choice.componentName);
+      routeOptions.push(freezeOption(choice, 'submodule-base-unresolved'));
+      continue;
+    }
+    for (const dependency of nested.dependencyPaths) dependencies.add(path.normalize(dependency));
+    const route = Object.freeze({
+      absolutePattern: nested.basePattern,
+      componentExportName: reference.exportName,
+      componentName: choice.componentName,
+      componentSourcePath: reference.sourcePath,
+      kind: 'submodule' as const,
+      relativeRouterPattern: relative.length === 0 ? '*' : `${relative}/*`,
+    });
+    routes.push(route);
+    routeOptions.push(freezeOption(choice, 'selectable', route));
   }
   const fallbacks = owner.hasWildcardFallback
-    ? Object.freeze(readLiteralFallbacks(callExpression, sourceFile))
+    ? Object.freeze(readFallbacks(call, sourceFile))
     : Object.freeze([]);
   return Object.freeze({
     basePattern: owner.basePath,
-    dependencies: Object.freeze([...dependencies]),
+    dependencies: Object.freeze([...dependencies].sort()),
     fallbacks,
+    options: Object.freeze(routeOptions.sort((a, b) => a.occurrenceStart - b.occurrenceStart)),
     ownerExportName: owner.exportName,
     ownerSourcePath: owner.sourcePath,
     routes: Object.freeze(routes),
@@ -138,78 +153,107 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
   });
 }
 
-/** Attempts catalog lookup from each proven dependency because a curry closes over caller bindings. */
-async function collectCatalogFromDependencies(
+/**
+ *
+ */
+/** Freezes one visible route option without exposing parser nodes. */
+function freezeOption(
+  choice: { componentName: string; kind: 'page' | 'submodule'; occurrenceStart: number },
+  availability: PreviewInspectorFactoryRouteOption['availability'],
+  route?: PreviewInspectorFactoryRouteEntry,
+): PreviewInspectorFactoryRouteOption {
+  return Object.freeze({
+    availability,
+    componentName: choice.componentName,
+    kind: choice.kind,
+    occurrenceStart: choice.occurrenceStart,
+    ...(route === undefined ? {} : { route }),
+  });
+}
+
+/**
+ *
+ */
+/** Merges every bounded catalog result because curry closures can originate in several modules. */
+async function collectCatalog(
   dependencies: readonly string[],
-  bindingName: string,
+  catalogBindingName: string,
   expectedComponentNames: ReadonlySet<string>,
   options: Parameters<typeof collectPreviewInspectorRouteFactoryManifest>[0],
 ): Promise<Awaited<ReturnType<typeof collectPreviewInspectorRouteFactoryCatalog>> | undefined> {
-  for (const dependency of dependencies) {
+  let result: Awaited<ReturnType<typeof collectPreviewInspectorRouteFactoryCatalog>> | undefined;
+  for (const sourcePath of dependencies) {
     const catalog = await collectPreviewInspectorRouteFactoryCatalog({
-      catalogBindingName: bindingName,
+      catalogBindingName,
       expectedComponentNames,
+      maximumModules: 12,
       readSource: options.readSource,
       ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      sourcePath: dependency,
+      sourcePath,
     });
-    if (catalog.patternsByComponentName.size > 0) return catalog;
+    if (catalog.patternsByComponentName.size === 0) continue;
+    if (result === undefined) result = catalog;
+    else {
+      const patterns = new Map(result.patternsByComponentName);
+      for (const [name, values] of catalog.patternsByComponentName)
+        patterns.set(
+          name,
+          Object.freeze([
+            ...(patterns.get(name) ?? []),
+            ...values.filter((value) => !(patterns.get(name) ?? []).includes(value)),
+          ]),
+        );
+      result = Object.freeze({
+        dependencyPaths: Object.freeze([
+          ...new Set([...result.dependencyPaths, ...catalog.dependencyPaths]),
+        ]),
+        patternsByComponentName: patterns,
+      });
+    }
   }
-  return undefined;
+  return result;
 }
 
-/** Separates second-call-argument pages from third-call-argument submodule values by source syntax. */
-function isSubmoduleChoice(
-  name: string,
-  call: ts.CallExpression,
-  sourceFile: ts.SourceFile,
-): boolean {
-  const argument = call.arguments[2];
-  if (argument === undefined) return false;
-  return argument.getText(sourceFile).includes(name);
-}
-
-/** Reads a submodule's own factory base from a direct exported route-factory assignment. */
-async function readImportedFactoryBase(
-  sourcePath: string,
-  exportName: string,
-  readSource: (sourcePath: string) => Promise<string | undefined>,
-): Promise<string | undefined> {
-  const sourceText = await readSource(sourcePath);
-  if (sourceText === undefined) return undefined;
-  const sourceFile = parseSource(sourcePath, sourceText);
-  const initializer = findExportInitializer(sourceFile, exportName);
-  if (initializer === undefined || !ts.isCallExpression(initializer)) return undefined;
-  const argument = initializer.arguments[0];
-  return argument !== undefined && ts.isStringLiteralLike(argument) && argument.text.startsWith('/')
-    ? argument.text
-    : undefined;
-}
-
-/** Locates the selected export's direct factory call without descending into unrelated declarations. */
-function findOwnerFactoryCall(
+/**
+ *
+ */
+/** Finds the exact direct factory invocation assigned to one exported owner. */
+function findExportCall(
   sourceFile: ts.SourceFile,
   exportName: string,
 ): ts.CallExpression | undefined {
-  const initializer = findExportInitializer(sourceFile, exportName);
-  return initializer !== undefined && ts.isCallExpression(initializer) ? initializer : undefined;
+  let expression: ts.Expression | undefined;
+  for (const statement of sourceFile.statements) {
+    if (exportName === 'default' && ts.isExportAssignment(statement))
+      expression = statement.expression;
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations)
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === exportName)
+        expression = declaration.initializer;
+  }
+  return expression !== undefined && ts.isCallExpression(unwrap(expression))
+    ? (unwrap(expression) as ts.CallExpression)
+    : undefined;
 }
 
-/** Reads literal wildcard elements for diagnostics while keeping them out of ordinary routes. */
-function readLiteralFallbacks(
+/**
+ *
+ */
+/** Retains literal wildcard diagnostics separately from normal selectable routes. */
+function readFallbacks(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
 ): PreviewInspectorFactoryFallbackEntry[] {
-  const result: PreviewInspectorFactoryFallbackEntry[] = [];
+  const fallbacks: PreviewInspectorFactoryFallbackEntry[] = [];
   const visit = (node: ts.Node): void => {
-    const route = ts.isJsxElement(node)
+    const opening = ts.isJsxElement(node)
       ? node.openingElement
       : ts.isJsxSelfClosingElement(node)
         ? node
         : undefined;
     if (
-      route?.tagName.getText(sourceFile) === 'Route' &&
-      route.attributes.properties.some(
+      opening?.tagName.getText(sourceFile) === 'Route' &&
+      opening.attributes.properties.some(
         (attribute) =>
           ts.isJsxAttribute(attribute) &&
           ts.isIdentifier(attribute.name) &&
@@ -219,10 +263,9 @@ function readLiteralFallbacks(
           attribute.initializer.text === '*',
       )
     ) {
-      const text = route.getText(sourceFile);
-      const match = /element=\{<([$_\p{L}][$_\p{L}\p{N}]*)/u.exec(text);
+      const match = /element=\{<([$_\p{L}][$_\p{L}\p{N}]*)/u.exec(opening.getText(sourceFile));
       if (match?.[1] !== undefined)
-        result.push(
+        fallbacks.push(
           Object.freeze({
             componentName: match[1],
             occurrenceStart: node.getStart(sourceFile),
@@ -233,36 +276,35 @@ function readLiteralFallbacks(
     ts.forEachChild(node, visit);
   };
   visit(call);
-  return result;
+  return fallbacks;
 }
 
-/** Finds an export assignment or exported const initializer by public binding name. */
-function findExportInitializer(
-  sourceFile: ts.SourceFile,
-  exportName: string,
-): ts.Expression | undefined {
-  for (const statement of sourceFile.statements) {
-    if (exportName === 'default' && ts.isExportAssignment(statement)) return statement.expression;
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (
-        ts.isIdentifier(declaration.name) &&
-        declaration.name.text === exportName &&
-        declaration.initializer !== undefined
-      )
-        return declaration.initializer;
-    }
-  }
-  return undefined;
-}
-
-/** Parses source snapshot text without building a TypeScript program. */
-function parseSource(sourcePath: string, sourceText: string): ts.SourceFile {
+/**
+ *
+ */
+/** Parses one snapshot without creating a TypeScript program. */
+function parse(sourcePath: string, text: string): ts.SourceFile {
   return ts.createSourceFile(
     sourcePath,
-    sourceText,
+    text,
     ts.ScriptTarget.Latest,
     true,
     sourcePath.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+}
+/**
+ *
+ */
+/** Removes type-only expression wrappers. */
+function unwrap(expression: ts.Expression): ts.Expression {
+  let value = expression;
+  while (
+    ts.isParenthesizedExpression(value) ||
+    ts.isAsExpression(value) ||
+    ts.isSatisfiesExpression(value) ||
+    ts.isNonNullExpression(value) ||
+    ts.isTypeAssertionExpression(value)
+  )
+    value = value.expression;
+  return value;
 }

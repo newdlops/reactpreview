@@ -49,25 +49,46 @@ function formatPreviewInspectorExplorerBranch(branch, commonPrefix) {
     ' · ' + String(branch?.componentName ?? 'route');
 }
 
+/** Returns true when a rebuilt effective route keeps every segment explicitly selected by the user. */
+function previewInspectorRouteSelectionPathStartsWith(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected) || expected.length > actual.length) {
+    return false;
+  }
+  return expected.every((step, index) =>
+    step?.componentName === actual[index]?.componentName && step?.pattern === actual[index]?.pattern,
+  );
+}
+
 /** Renders one branch button and delegates compilation only after explicit selection. */
 function PreviewInspectorRouteBranchButton({ branch, commonPrefix, selected }) {
   const pending = previewInspectorSession.pendingRouteBranchId === branch.id;
-  const activate = () => selectPreviewInspectorRouteBranch(branch);
+  const failed = previewInspectorSession.pendingRouteError?.branchId === branch.id;
+  const selectable = branch.selectable !== false;
+  const activate = selectable ? () => selectPreviewInspectorRouteBranch(branch) : undefined;
+  const reasonLabels = {
+    'catalog-unresolved': 'Catalog path unresolved',
+    'component-unresolved': 'Component module unresolved',
+    'submodule-base-unresolved': 'Nested route base unresolved',
+    'factory-contract-unresolved': 'Factory route contract unresolved',
+  };
   return React.createElement(
     'button',
     {
       'aria-current': selected ? 'page' : undefined,
       className: 'rpi-route-item' +
         (selected ? ' is-selected' : '') +
-        (pending ? ' is-pending' : ''),
+        (pending ? ' is-pending' : '') +
+        (failed ? ' is-error' : ''),
       'data-rpi-scroll-transaction': 'route-selection:' + branch.id,
       'data-rpi-scroll-transaction-state': pending
         ? 'pending'
         : selected ? 'complete' : 'available',
-      disabled: pending,
+      disabled: pending || !selectable,
       key: branch.id,
       onClick: activate,
-      title: String(branch.pathname ?? branch.pattern ?? ''),
+      title: selectable
+        ? String(branch.pathname ?? branch.pattern ?? '')
+        : (reasonLabels[branch.availability] ?? 'Route unresolved'),
       type: 'button',
     },
     React.createElement(
@@ -78,13 +99,31 @@ function PreviewInspectorRouteBranchButton({ branch, commonPrefix, selected }) {
     React.createElement(
       'span',
       { className: 'rpi-route-label' },
-      formatPreviewInspectorExplorerBranch(branch, commonPrefix),
+      selectable
+        ? formatPreviewInspectorExplorerBranch(branch, commonPrefix)
+        : String(branch.componentName ?? 'route'),
     ),
     pending
-      ? React.createElement('span', { className: 'rpi-route-state' }, 'Preparing…')
+      ? React.createElement(
+          'span',
+          { 'aria-live': 'polite', className: 'rpi-route-state', 'data-state': 'pending' },
+          'Preparing…',
+        )
+      : failed
+        ? React.createElement(
+            'span',
+            { className: 'rpi-route-state', 'data-state': 'error', role: 'status' },
+            'Retry route',
+          )
       : selected
-        ? React.createElement('span', { className: 'rpi-route-state' }, 'Active')
-        : undefined,
+        ? React.createElement('span', { className: 'rpi-route-state', 'data-state': 'active' }, 'Active')
+        : !selectable
+          ? React.createElement(
+              'span',
+              { className: 'rpi-route-state' },
+              reasonLabels[branch.availability] ?? 'Needs analysis',
+            )
+          : undefined,
   );
 }
 
@@ -105,12 +144,24 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
     );
   }, [commonPrefixKey]);
   React.useEffect(() => {
-    if (selectedId === previewInspectorSession.pendingRouteBranchId) {
-      previewInspectorSession.pendingRouteBranchId = undefined;
-      previewInspectorSession.pendingRouteBranchRevision = undefined;
+    const selectedBranch = branches.find((branch) => branch.id === selectedId);
+    const pendingSelectionPath = previewInspectorSession.pendingRouteSelectionPath;
+    if (
+      selectedId === previewInspectorSession.pendingRouteBranchId ||
+      previewInspectorRouteSelectionPathStartsWith(selectedBranch?.selectionPath, pendingSelectionPath)
+    ) {
+      clearPreviewInspectorPendingRouteSelection();
+      notifyPreviewInspector();
     }
-  }, [selectedId]);
-  if (branches.length === 0) return null;
+  }, [branches, selectedId]);
+  if (branches.length === 0) {
+    return React.createElement(
+      'section',
+      { className: 'rpi-route-explorer rpi-route-explorer-empty' },
+      React.createElement('span', { className: 'rpi-context-badge' }, 'APPLICATION ROUTE'),
+      React.createElement('span', { className: 'rpi-note' }, 'No application routes found'),
+    );
+  }
   const normalizedQuery = query.trim().toLowerCase();
   const matchingBranches =
     normalizedQuery.length === 0
@@ -132,20 +183,34 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
     childFolderCounts.set(segment, (childFolderCounts.get(segment) ?? 0) + 1);
   }
   const selectedBranch = branches.find((branch) => branch.id === selectedId);
+  const requestedSelectionPath = previewInspectorSession.lastRequestedRouteSelectionPath;
+  const selectedDefaultChild =
+    descriptor?.inspector?.routeSelectionResolution === 'exact' &&
+    previewInspectorRouteSelectionPathStartsWith(selectedBranch?.selectionPath, requestedSelectionPath) &&
+    selectedBranch.selectionPath.length > requestedSelectionPath.length;
   const visibleSearchMatches = matchingBranches.slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
+  const visibleChildFolders = [...childFolderCounts].slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
+  const visibleImmediateBranches = immediateBranches.slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
+  const routeError = previewInspectorSession.pendingRouteError;
   return React.createElement(
     'details',
-    { className: 'rpi-route-explorer' },
+    { 'aria-busy': previewInspectorSession.pendingRouteBranchId !== undefined, className: 'rpi-route-explorer', open: true },
     React.createElement(
       'summary',
       { className: 'rpi-route-summary' },
       React.createElement('span', { className: 'rpi-context-badge' }, 'ROUTES ' + String(branches.length)),
       React.createElement(
         'span',
-        { className: 'rpi-route-summary-label' },
+        {
+          className: 'rpi-route-summary-label',
+          title: selectedDefaultChild
+            ? 'The selected router opened its default child route.'
+            : undefined,
+        },
         selectedBranch === undefined
           ? 'Choose an application path'
-          : selectedBranch.componentName + ' · ' + selectedBranch.pathname,
+          : selectedBranch.componentName + ' · ' + selectedBranch.pathname +
+            (selectedDefaultChild ? ' · default child' : ''),
       ),
     ),
     React.createElement(
@@ -153,17 +218,33 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
       { className: 'rpi-route-browser', 'data-rpi-scroll-key': 'route-browser' },
       React.createElement('input', {
         'aria-label': 'Filter application routes',
+        autoComplete: 'off',
         className: 'rpi-search',
+        name: 'route-filter',
         onChange: (event) => setQuery(event.target.value),
         placeholder: 'Filter paths or components',
+        spellCheck: false,
         type: 'search',
         value: query,
       }),
+      routeError === undefined
+        ? undefined
+        : React.createElement(
+            'div',
+            { className: 'rpi-note rpi-route-error', role: 'status' },
+            routeError.message,
+          ),
       normalizedQuery.length > 0
         ? React.createElement(
             'div',
             { className: 'rpi-route-list' },
-            visibleSearchMatches.map((branch) =>
+            visibleSearchMatches.length === 0
+              ? React.createElement(
+                  'div',
+                  { className: 'rpi-note rpi-route-empty', role: 'status' },
+                  'No application routes match this filter.',
+                )
+              : visibleSearchMatches.map((branch) =>
               React.createElement(PreviewInspectorRouteBranchButton, {
                 branch,
                 commonPrefix,
@@ -199,10 +280,11 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
                 React.createElement(
                   'button',
                   {
-                    className: 'rpi-route-crumb',
+                  className: 'rpi-route-crumb',
                     key: folder.slice(0, commonPrefix.length + relativeIndex + 1).join('/'),
                     onClick: () =>
                       setFolder(folder.slice(0, commonPrefix.length + relativeIndex + 1)),
+                    title: segment,
                     type: 'button',
                   },
                   segment,
@@ -212,13 +294,14 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
             React.createElement(
               'div',
               { className: 'rpi-route-folders' },
-              [...childFolderCounts].map(([segment, count]) =>
+              visibleChildFolders.map(([segment, count]) =>
                 React.createElement(
                   'button',
                   {
-                    className: 'rpi-route-folder',
+                  className: 'rpi-route-folder',
                     key: segment,
                     onClick: () => setFolder([...folder, segment]),
+                    title: segment,
                     type: 'button',
                   },
                   React.createElement('span', { 'aria-hidden': true }, '▸'),
@@ -227,10 +310,18 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
                 ),
               ),
             ),
+            childFolderCounts.size > visibleChildFolders.length
+              ? React.createElement(
+                  'div',
+                  { className: 'rpi-note' },
+                  'Showing the first ' + String(visibleChildFolders.length) +
+                    ' folders. Filter routes to find another path.',
+                )
+              : undefined,
             React.createElement(
               'div',
               { className: 'rpi-route-list' },
-              immediateBranches.map((branch) =>
+              visibleImmediateBranches.map((branch) =>
                 React.createElement(PreviewInspectorRouteBranchButton, {
                   branch,
                   commonPrefix,
@@ -239,6 +330,14 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
                 }),
               ),
             ),
+            immediateBranches.length > visibleImmediateBranches.length
+              ? React.createElement(
+                  'div',
+                  { className: 'rpi-note' },
+                  'Showing the first ' + String(visibleImmediateBranches.length) +
+                    ' routes. Filter routes to find another path.',
+                )
+              : undefined,
           ),
     ),
   );

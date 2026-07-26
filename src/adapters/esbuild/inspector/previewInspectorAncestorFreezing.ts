@@ -90,6 +90,7 @@ export interface FreezePreviewInspectorAncestorPlanOptions {
   readonly renderChainsByExport: PreviewRenderChainPlansByExport;
   readonly renderOutcomesByExport: Readonly<Record<string, PreviewReactRenderOutcomePlan>>;
   readonly routeBranches?: readonly PreviewInspectorRouteBranch[];
+  readonly routeSelectionResolution?: 'automatic' | 'exact' | 'fallback';
   readonly selectedRouteBranchId?: string;
   readonly stopReason: PreviewInspectorAncestorStopReason;
   readonly target: PreviewInspectorComponentReference;
@@ -117,6 +118,9 @@ export function freezePreviewInspectorAncestorPlan(
     ...(options.selectedRouteBranchId === undefined
       ? {}
       : { selectedRouteBranchId: options.selectedRouteBranchId }),
+    ...(options.routeSelectionResolution === undefined
+      ? {}
+      : { routeSelectionResolution: options.routeSelectionResolution }),
     stopReason: options.stopReason,
     target: options.target,
     targetAutomaticProps: options.targetAutomaticProps,

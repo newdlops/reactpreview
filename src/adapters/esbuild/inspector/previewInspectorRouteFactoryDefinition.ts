@@ -248,10 +248,7 @@ function findObjectPassedToIdentifier(
     if (found !== undefined) return;
     if (
       ts.isCallExpression(node) &&
-      node.arguments.some((argument) => {
-        const value = unwrap(argument);
-        return ts.isIdentifier(value) && value.text === identifier;
-      })
+      node.arguments.some((argument) => expressionContainsWrapperParameter(argument, identifier, 0))
     ) {
       const object =
         node.arguments.find((argument): argument is ts.ObjectLiteralExpression =>
@@ -268,6 +265,31 @@ function findObjectPassedToIdentifier(
   };
   visit(body);
   return found;
+}
+
+/** Accepts only transparent fallback expressions such as `Component || DefaultWrapper`. */
+function expressionContainsWrapperParameter(
+  expression: ts.Expression,
+  parameterName: string,
+  depth: number,
+): boolean {
+  if (depth > 6) return false;
+  const value = unwrap(expression);
+  if (ts.isIdentifier(value)) return value.text === parameterName;
+  if (
+    ts.isBinaryExpression(value) &&
+    (value.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      value.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return (
+      expressionContainsWrapperParameter(value.left, parameterName, depth + 1) ||
+      expressionContainsWrapperParameter(value.right, parameterName, depth + 1)
+    );
+  }
+  return ts.isConditionalExpression(value)
+    ? expressionContainsWrapperParameter(value.whenTrue, parameterName, depth + 1) ||
+        expressionContainsWrapperParameter(value.whenFalse, parameterName, depth + 1)
+    : false;
 }
 
 /** Recognizes immutable generated page/submodule `.map` values in a wrapper props object. */

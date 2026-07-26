@@ -146,6 +146,8 @@ export interface PreviewInspectorAncestorPlan {
   readonly routeBranches?: readonly PreviewInspectorRouteBranch[];
   /** Opaque branch currently admitted to the live bundle corridor. */
   readonly selectedRouteBranchId?: string;
+  /** Compiler resolution result for the route-selection request that produced this plan. */
+  readonly routeSelectionResolution?: 'automatic' | 'exact' | 'fallback';
   /** Stable explanation shown when the ancestry is necessarily partial. */
   readonly stopReason: PreviewInspectorAncestorStopReason;
   /** Original selected export that nested instrumentation must intercept. */

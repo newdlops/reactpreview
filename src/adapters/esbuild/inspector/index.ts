@@ -87,6 +87,64 @@ export {
   collectPreviewInspectorRenderBootstrapSlice,
   type PreviewInspectorRenderBootstrapSlice,
 } from './previewInspectorRenderBootstrapSlice';
+export { createPreviewInspectorExecutablePlan } from './previewInspectorExecutablePlan';
+export {
+  freezePreviewInspectorPageExecutionPlan,
+  type PreviewInspectorMountSurface,
+  type PreviewInspectorMountSurfaceStrategy,
+  type PreviewInspectorPageCompositionEdge,
+  type PreviewInspectorPageCompositionMode,
+  type PreviewInspectorPageExecutionAlternativeSummary,
+  type PreviewInspectorPageExecutionCandidate,
+  type PreviewInspectorPageExecutionPlan,
+  type PreviewInspectorPageFidelity,
+  type PreviewInspectorPagePathSegment,
+  type PreviewInspectorPagePathSegmentRole,
+  type PreviewInspectorRouteExecutionMount,
+  type PreviewInspectorRouteExecutionRecipe,
+  type PreviewInspectorRouteRuntimeKind,
+} from './previewInspectorPageExecutionTypes';
+export {
+  createPreviewInspectorPagePathSegments,
+  type CreatePreviewInspectorPagePathSegmentsOptions,
+} from './previewInspectorPagePathSegments';
+export {
+  createPreviewInspectorPageExecutionCandidates,
+  type CreatePreviewInspectorPageExecutionCandidatesOptions,
+} from './previewInspectorPageExecutionCandidates';
+export {
+  createEligiblePreviewInspectorPageExecutionCandidates,
+  preparePreviewInspectorPageExecutionSelection,
+  type PreparedPreviewInspectorPageExecutionSelection,
+  type PreparePreviewInspectorPageExecutionSelectionOptions,
+  type PreviewInspectorFrontierSourceKind,
+  type PreviewInspectorPageFrontierDisposition,
+} from './previewInspectorPageFrontier';
+export {
+  createPreviewInspectorSelectedExportSlice,
+  createPreviewInspectorLocalComponentSlice,
+  type CreatePreviewInspectorSelectedExportSliceOptions,
+  type PreviewInspectorMountSurfaceSlice,
+  type PreviewInspectorMountSurfaceSliceFailureReason,
+  type PreviewInspectorMountSurfaceSliceResult,
+} from './previewInspectorMountSurfaceSlice';
+export {
+  createPreviewInspectorPageExecutionPlugin,
+  createPreviewInspectorPageSurfaceSpecifier,
+  PREVIEW_INSPECTOR_PAGE_SURFACE_SPECIFIER_PREFIX,
+  type PreviewInspectorPageExecutionPluginOptions,
+  type PreviewInspectorPageExecutionPluginSurface,
+  type PreviewInspectorPageExecutionSurfaceLoad,
+} from './previewInspectorPageExecutionPlugin';
+export { createPreviewInspectorPageExecutionBuildPlugin } from './previewInspectorPageExecutionBuildPlugin';
+export {
+  createPreviewInspectorPageExecutionSource,
+  type CreatePreviewInspectorPageExecutionSourceOptions,
+} from './previewInspectorPageExecutionSource';
+export {
+  selectPreviewInspectorExecutableCandidate,
+  type PreviewInspectorExecutableCandidateSelection,
+} from './previewInspectorExecutableCandidateSelection';
 export {
   createPreviewInspectorVirtualPageCandidates,
   selectPreviewInspectorVirtualPageContentCandidate,

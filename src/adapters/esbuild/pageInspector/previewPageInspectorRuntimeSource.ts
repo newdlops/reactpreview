@@ -1,11 +1,3 @@
-/**
- * Generates the browser-owned React Page Inspector runtime.
- *
- * The emitted source deliberately keeps inspector chrome outside the rendered application and
- * locates inspected host nodes without inserting marker elements into the application DOM. This
- * preserves table/list/SVG semantics as well as structural selectors such as `:first-child`.
- * A global Symbol protocol lets target facades register before or below an actual ancestor root.
- */
 import { createPreviewInspectorFiberRuntimeSource } from './previewInspectorFiberRuntimeSource';
 import { createPreviewInspectorChainRuntimeSource } from './previewInspectorChainRuntimeSource';
 import { createPreviewInspectorBlockerTraceRuntimeSource } from './previewInspectorBlockerTraceRuntimeSource';
@@ -33,22 +25,9 @@ import { createPreviewInspectorTargetPathIdentityRuntimeSource } from './preview
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackScopeRuntimeSource } from './previewInspectorRuntimeFallbackScopeRuntimeSource';
 import { createPreviewInspectorSmartPropsRuntimeSource } from './previewInspectorSmartPropsRuntimeSource';
-
-/** Global symbol description shared with the separately bundled target-facade runtime. */
 export const PREVIEW_PAGE_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
-
-/** Attribute placed only on Inspector-owned UI hosts so picker events ignore extension chrome. */
 export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
-
-/**
- * Creates runtime source inserted into the generated browser entry in Page Inspector mode.
- *
- * Expected bindings in the generated entry are `React`, `ReactDOMNamespace`, `mountNode`, and
- * `previewHotRuntime`. Keeping those imports in the entry guarantees one project-owned React
- * instance and lets the session survive cache-busted hot-module replacements.
- *
- * @returns Plain JavaScript source safe to concatenate into the esbuild stdin entry.
- */
+/** Internal helper. */
 export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: string): string {
   const chainRuntimeSource = createPreviewInspectorChainRuntimeSource();
   const blockerTraceRuntimeSource = createPreviewInspectorBlockerTraceRuntimeSource();
@@ -85,8 +64,6 @@ const PREVIEW_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
 const PREVIEW_INSPECTOR_STATE_KEY = 'reactFilePreviewPageInspector';
 const PREVIEW_INSPECTOR_SOURCE_GESTURE_SECRET = ${encodedSourceGestureSecret};
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
-
-/** Captures browser primitives before dynamically imported project modules can replace them. */
 const previewInspectorSourceCrypto = (() => {
   const cryptoObject = globalThis.crypto;
   const subtle = cryptoObject?.subtle;
@@ -134,54 +111,29 @@ const previewInspectorSourceEventConstructor = globalThis.Event;
 const previewInspectorConsumedSourceEvents = new WeakSet();
 const previewInspectorPostHostMessage =
   previewHotRuntime.vscodeApi?.postMessage?.bind(previewHotRuntime.vscodeApi);
-
 ${runtimeCorrelationSource}
-
 ${fiberRuntimeSource}
-
 ${deferredUiTriggerRuntimeSource}
-
 ${elementVisibilityRuntimeSource}
-
 ${chainRuntimeSource}
-
 ${pageCandidateRuntimeSource}
-
 ${stateRuntimeSource}
-
 ${dataRuntimeSource}
-
 ${renderOutcomeRuntimeSource}
-
 ${conditionRuntimeSource}
-
 ${targetOutputRuntimeSource}
-
 ${targetReachabilityRuntimeSource}
-
 ${targetPathIdentityRuntimeSource}
-
 ${targetAttemptRuntimeSource}
-
 ${blockerTraceRuntimeSource}
-
 ${runtimeHealthSource}
-
 ${consoleRuntimeSource}
-
 ${runtimeFallbackRuntimeSource}
-
 ${runtimeFallbackScopeRuntimeSource}
-
 ${graphqlDocumentRuntimeSource}
-
 ${smartPropsRuntimeSource}
-
 ${refreshRuntimeSource}
-
 ${diagnosticsRuntimeSource}
-
-/** Creates mutable session data once per pinned webview, not once per emitted bundle revision. */
 function createPreviewInspectorSession() {
   const persisted = readPersistedPreviewInspectorState();
   const persistedOverrides =
@@ -204,12 +156,22 @@ function createPreviewInspectorSession() {
     highlightStatus: 'Waiting for the inspected component to render.',
     listeners: new Set(),
     manualElementsByExport: new Map(),
+    lastRequestedRouteSelectionPath: undefined,
     overridesByExport: new Map(
       persistedOverrides.filter(([, value]) => value !== null && typeof value === 'object'),
     ),
     instanceEpochByExport: new Map(),
     pickerCandidate: undefined,
     pickerEnabled: false,
+    pendingRouteBranchId: undefined,
+    pendingRouteInteractionId: undefined,
+    pendingRouteBranchRevision: undefined,
+    pendingRouteError: undefined,
+    pendingRouteSelectionPath: undefined,
+    pendingRouteTimeout: undefined,
+    pendingPageCandidateId: undefined,
+    pendingPageCandidateInteractionId: undefined,
+    pendingPageCandidateRevision: undefined,
     propsRevisionByExport: new Map(),
     renderabilityByExport: new Map(),
     resolverPropsByExport: new Map(),
@@ -229,13 +191,31 @@ function createPreviewInspectorSession() {
         ? persisted.userSelectedPageCandidateId
         : typeof persisted.selectedPageCandidateId === 'string' ? persisted.selectedPageCandidateId : '',
     version: 0,
+    interactionSequence: 0,
   };
 }
-
 const previewInspectorSession =
   previewHotRuntime.inspectorSession ?? createPreviewInspectorSession();
 previewHotRuntime.inspectorSession = previewInspectorSession;
 previewInspectorSession.instanceEpochByExport ??= new Map();
+previewInspectorSession.lastRequestedRouteSelectionPath ??= undefined;
+previewInspectorSession.pendingRouteBranchId ??= undefined;
+previewInspectorSession.pendingRouteInteractionId ??= undefined;
+previewInspectorSession.pendingRouteBranchRevision ??= undefined;
+previewInspectorSession.pendingRouteError ??= undefined;
+previewInspectorSession.pendingRouteSelectionPath ??= undefined;
+previewInspectorSession.pendingRouteTimeout ??= undefined;
+previewInspectorSession.pendingPageCandidateId ??= undefined;
+previewInspectorSession.pendingPageCandidateInteractionId ??= undefined;
+previewInspectorSession.pendingPageCandidateRevision ??= undefined;
+previewInspectorSession.interactionSequence ??= 0;
+previewInspectorSession.selectionStatusHandler = handlePreviewInspectorSelectionStatus;
+if (!previewInspectorSession.selectionStatusListenerInstalled) {
+  previewInspectorSession.selectionStatusListenerInstalled = true;
+  window.addEventListener('message', (event) =>
+    previewHotRuntime.inspectorSession?.selectionStatusHandler?.(event.data),
+  );
+}
 if (previewInspectorSession.resolverPropsRevision !== previewEntryRevision) {
   /* Automatic overlay props belong only to one built source revision, never persisted user state. */
   previewInspectorSession.resolverPropsByExport = new Map();
@@ -246,19 +226,13 @@ previewInspectorSession.renderabilityByExport ??= new Map();
 previewInspectorSession.treeListeners ??= new Set();
 previewInspectorSession.treeDirty ??= true;
 previewInspectorSession.userSelectedPageCandidateId ??= '';
-
-/** Returns a stable numeric snapshot for React.useSyncExternalStore. */
 function getPreviewInspectorVersion() {
   return previewInspectorSession.version;
 }
-
-/** Subscribes a mounted inspector component and returns its exact cleanup operation. */
 function subscribePreviewInspector(listener) {
   previewInspectorSession.listeners.add(listener);
   return () => previewInspectorSession.listeners.delete(listener);
 }
-
-/** Subscribes with public hooks available in React 16.8+ without requiring React 18 APIs. */
 function usePreviewInspectorStore() {
   const [, setVersion] = React.useState(getPreviewInspectorVersion);
   React.useEffect(
@@ -266,22 +240,12 @@ function usePreviewInspectorStore() {
     [],
   );
 }
-
-/** Notifies controls and inspected targets after one semantic session change. */
 function notifyPreviewInspector() {
   previewInspectorSession.version += 1;
   for (const listener of [...previewInspectorSession.listeners]) {
     listener();
   }
 }
-
-/**
- * Removes runtime-proven data exports from component controls without mutating application values.
- *
- * Static analysis intentionally fails open around unfamiliar factories. The target facade reports
- * the evaluated value here, letting GraphQL documents and route metadata keep their exact identity
- * while preventing a persisted Inspector selection from waiting for a boundary they cannot mount.
- */
 function registerPreviewInspectorTargetRenderability(exportName, renderable) {
   if (typeof exportName !== 'string' || exportName.length === 0 || typeof renderable !== 'boolean') {
     return;
@@ -320,9 +284,6 @@ function registerPreviewInspectorTargetRenderability(exportName, renderable) {
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
 }
-
-
-/** Updates the export inventory while retaining a valid user selection across hot reloads. */
 function setPreviewInspectorDescriptors(descriptors) {
   const replacingExistingDescriptors =
     Array.isArray(previewInspectorSession.descriptors) &&
@@ -400,18 +361,12 @@ function setPreviewInspectorDescriptors(descriptors) {
   }
   schedulePreviewInspectorCommitRefresh();
 }
-
-/** Creates a collision-resistant toolbar identity for editable actual-parent root props. */
 function createPreviewInspectorRootName(root) {
   return '@root:' + String(root?.sourcePath ?? '') + ':' + String(root?.exportName ?? 'default');
 }
-
-/** Keeps filesystem identity private while labeling target and actual-parent choices clearly. */
 function formatPreviewInspectorEntryName(name) {
   return name.startsWith('@root:') ? 'Root · ' + (name.split(':').at(-1) || 'default') : 'Target · ' + name;
 }
-
-/** Finds descriptor metadata for a selected target, actual root, or render-chain export identity. */
 function findSelectedPreviewInspectorDescriptor() {
   const selectedName = previewInspectorSession.selectedExportName;
   return previewInspectorSession.descriptors.find((descriptor) => {
@@ -423,8 +378,6 @@ function findSelectedPreviewInspectorDescriptor() {
       Object.hasOwn(inspector?.renderChainsByExport ?? {}, selectedName);
   }) ?? previewInspectorSession.descriptors[0];
 }
-
-/** Collects the current bounded live tree while retaining host indexes only inside the webview. */
 function collectPreviewInspectorTreeSnapshot() {
   if (
     previewInspectorSession.treeDirty !== true &&
@@ -477,8 +430,6 @@ function collectPreviewInspectorTreeSnapshot() {
   previewInspectorSession.treeDirty = false;
   return snapshot;
 }
-
-/** Notifies tree subscribers only from the rate-limited Inspector refresh lane. */
 function notifyPreviewInspectorTreeSubscribers() {
   for (const listener of [...previewInspectorSession.treeListeners]) {
     try {
@@ -488,8 +439,6 @@ function notifyPreviewInspectorTreeSubscribers() {
     }
   }
 }
-
-/** Subscribes the DevTools tree to coalesced React commit and DOM mutation refreshes. */
 function subscribePreviewInspectorTree(listener) {
   if (typeof listener !== 'function') return () => undefined;
   previewInspectorSession.treeListeners.add(listener);
@@ -497,8 +446,6 @@ function subscribePreviewInspectorTree(listener) {
     previewInspectorSession.treeListeners.delete(listener);
   };
 }
-
-/** Selects a collected node, re-resolving an export identity when structural Fiber IDs changed. */
 function selectPreviewInspectorTreeNode(nodeId, expectedExportName) {
   if (typeof nodeId !== 'string' || nodeId.length === 0) return;
   const snapshot = collectPreviewInspectorTreeSnapshot();
@@ -524,8 +471,6 @@ function selectPreviewInspectorTreeNode(nodeId, expectedExportName) {
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorHighlight();
 }
-
-/** Encodes bytes as unpadded base64url without exposing the private HMAC key. */
 function encodePreviewInspectorSourceToken(bytes) {
   const cryptoBridge = previewInspectorSourceCrypto;
   if (cryptoBridge === undefined) return undefined;
@@ -533,8 +478,6 @@ function encodePreviewInspectorSourceToken(bytes) {
   for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
   return cryptoBridge.encodeBase64(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
 }
-
-/** Signs the exact path, coordinates, and one-shot nonce selected by a trusted source-button click. */
 async function signPreviewInspectorSourceMessage(message, gestureNonce) {
   const cryptoBridge = previewInspectorSourceCrypto;
   if (cryptoBridge === undefined) return undefined;
@@ -559,8 +502,6 @@ async function signPreviewInspectorSourceMessage(message, gestureNonce) {
     return undefined;
   }
 }
-
-/** Creates one cryptographically random nonce that the host will consume only once. */
 function createPreviewInspectorSourceNonce() {
   const cryptoBridge = previewInspectorSourceCrypto;
   if (cryptoBridge === undefined) return undefined;
@@ -568,8 +509,6 @@ function createPreviewInspectorSourceNonce() {
   cryptoBridge.getRandomValues(bytes);
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
-
-/** Sends source coordinates only after consuming an actual click on the bound Inspector UI button. */
 async function openPreviewInspectorTreeSource(source, nativeEvent, sourceButton) {
   if (
     typeof previewInspectorSourceEventConstructor !== 'function' ||
@@ -597,8 +536,6 @@ async function openPreviewInspectorTreeSource(source, nativeEvent, sourceButton)
   if (gestureToken === undefined) return;
   previewInspectorPostHostMessage?.({ ...message, gestureNonce, gestureToken });
 }
-
-/** Registers the latest real props observed at one wrapped target invocation. */
 function registerPreviewInspectorBaseProps(exportName, props) {
   if (typeof exportName !== 'string' || exportName.length === 0) {
     return;
@@ -622,8 +559,6 @@ function registerPreviewInspectorBaseProps(exportName, props) {
   }
   schedulePreviewInspectorTreeRefresh();
 }
-
-/** Selects which wrapped target the toolbar edits and highlights. */
 function selectPreviewInspectorExport(exportName) {
   if (
     typeof exportName !== 'string' ||
@@ -640,12 +575,6 @@ function selectPreviewInspectorExport(exportName) {
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
 }
-
-/**
- * Stores a JSON-safe prop override and optionally leaves persistence/notification to a batch. A
- * non-committing write still advances the input revision so the batch's one notification can retry
- * a failed boundary without replacing a healthy component instance.
- */
 function setPreviewInspectorPropsOverride(exportName, value, commit = true) {
   if (typeof exportName !== 'string' || exportName.length === 0) {
     return false;
@@ -664,12 +593,6 @@ function setPreviewInspectorPropsOverride(exportName, value, commit = true) {
   }
   return true;
 }
-
-/**
- * Stores one revision-local automatic prop layer below explicit user JSON.
- * The map is intentionally absent from webview persistence and is reset only by a new built entry;
- * ordinary condition/data refreshes therefore cannot close and recreate an already revealed modal.
- */
 function setPreviewInspectorResolverPropsOverride(exportName, value, commit = true) {
   if (typeof exportName !== 'string' || exportName.length === 0) return false;
   const serializedValue = copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
@@ -685,21 +608,11 @@ function setPreviewInspectorResolverPropsOverride(exportName, value, commit = tr
   }
   return true;
 }
-
-/** Removes every user override and refreshes the export from its observed page props. */
 function resetPreviewInspectorPropsOverride(exportName) {
   previewInspectorSession.overridesByExport.delete(exportName);
   refreshPreviewInspectorExport(exportName, false);
   persistPreviewInspectorState();
 }
-
-/**
- * Advances input state for one export without changing the identity of a healthy target subtree.
- * Error boundaries observe this revision so generated props, payloads, or conditions can retry an
- * already failed component while Router, modal, portal, and hook state remain intact on success.
- * An active matching DFS state receives one probe revision in the same notification transaction;
- * no timer or follow-up refresh is created here, so a persistent error cannot self-poll.
- */
 function refreshPreviewInspectorExport(exportName, persist = true) {
   const currentRevision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
   previewInspectorSession.propsRevisionByExport.set(exportName, currentRevision + 1);
@@ -716,19 +629,11 @@ function refreshPreviewInspectorExport(exportName, persist = true) {
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();
 }
-
-/**
- * Honors the user's explicit Remount action by changing only the inspected target element key.
- * The accompanying input refresh clears a captured target/export error, but the authored page root
- * and its Router/provider/portal owners retain their existing React identities.
- */
 function remountPreviewInspectorExport(exportName, persist = true) {
   const currentEpoch = previewInspectorSession.instanceEpochByExport.get(exportName) ?? 0;
   previewInspectorSession.instanceEpochByExport.set(exportName, currentEpoch + 1);
   refreshPreviewInspectorExport(exportName, persist);
 }
-
-/** Adds a boundary instance without exposing React's private Fiber fields. */
 function registerPreviewInspectorBoundary(exportName, boundary) {
   const boundaries = previewInspectorSession.boundariesByExport.get(exportName) ?? new Set();
   boundaries.add(boundary);
@@ -742,8 +647,6 @@ function registerPreviewInspectorBoundary(exportName, boundary) {
     schedulePreviewInspectorCommitRefresh();
   };
 }
-
-/** Creates an isolated portal host whose fixed toolbar never wraps or sizes the application page. */
 function createPreviewInspectorPortalHost() {
   const portalHost = document.createElement('react-preview-inspector-host');
   portalHost.setAttribute(PREVIEW_INSPECTOR_UI_ATTRIBUTE, 'toolbar');
@@ -760,17 +663,12 @@ function createPreviewInspectorPortalHost() {
   document.body?.append(portalHost);
   return portalHost;
 }
-
 ${targetBoundaryRuntimeSource}
-
-/** Creates an inspected element while allowing modules to export an element instance directly. */
 function createPreviewInspectorElement(Component, props) {
   return React.isValidElement(Component)
     ? React.cloneElement(Component, props)
     : React.createElement(Component, props);
 }
-
-/** Renders a facade target with live props and an explicit-remount key scoped to that target only. */
 function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
@@ -817,15 +715,7 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
     }),
   );
 }
-
-/**
- * Carries cold direct-target metadata without manufacturing a new component type on each store
- * notification. The provider is extension-owned, hostless, and disappears once ancestry analysis
- * replaces the cold descriptor with an authored-page candidate.
- */
 const PreviewInspectorDirectTargetContext = React.createContext(undefined);
-
-/** Renders one cold direct target through a module-stable component identity. */
 function PreviewInspectorDirectTarget(targetProps) {
   const definition = React.useContext(PreviewInspectorDirectTargetContext);
   return React.createElement(PreviewInspectorTargetRenderer, {
@@ -835,16 +725,12 @@ function PreviewInspectorDirectTarget(targetProps) {
     targetProps,
   });
 }
-
-/** Keeps the temporary direct target behind the same context-aware Router bridge as page roots. */
 function PreviewInspectorRoutedDirectTarget(targetProps) {
   return createPreviewCandidateRouterElement(
     React.createElement(PreviewInspectorDirectTarget, targetProps),
     { ownsRouter: false },
   );
 }
-
-/** Applies editable props to the real authored ancestor while retaining its complete page tree. */
 function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyContext, targetProps, useStorybook }) {
   usePreviewInspectorStore();
   if (descriptor?.inspector === undefined) {
@@ -900,12 +786,6 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
         key: candidateKey,
       });
 }
-
-/**
- * Resets a captured ancestor error when inputs change without remounting a healthy authored page.
- * The stable candidate key preserves Router, modal, and provider state; resetKey is observed only by
- * the error boundary and therefore retries a failed subtree without recreating successful portals.
- */
 function PreviewPageInspectorExportBoundary({ descriptor, children }) {
   usePreviewInspectorStore();
   const inspectedExportName =
@@ -931,13 +811,9 @@ function PreviewPageInspectorExportBoundary({ descriptor, children }) {
     children,
   );
 }
-
-/** Keeps privileged editor navigation lexical to extension-owned UI code, outside the facade API. */
 const previewInspectorSourceNavigation = Object.freeze({
   openSource: openPreviewInspectorTreeSource,
 });
-
-/** Exposes only stable, non-host-privileged operations to generated target facade modules. */
 const previewInspectorApi = {
   TargetRenderer: PreviewInspectorTargetRenderer,
   collectTree: collectPreviewInspectorTreeSnapshot,
@@ -990,11 +866,8 @@ registerPreviewRuntimeCapability('Render isolation', {
 registerPreviewRuntimeCapability('GraphQL documents', {
   readPreviewRuntimeStatus: readPreviewInspectorGraphqlDocumentStatus,
 });
-
 ${companionRuntimeSource}
-
 ${propsUiRuntimeSource}
-
 ${devtoolsUiRuntimeSource}
 `;
 }

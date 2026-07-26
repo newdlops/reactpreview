@@ -23,6 +23,9 @@ const previewInspectorRuntimeHealthEvents = new Set([
   'runtime-error-fallback',
   'runtime-error-root',
   'styled-components-instance-warning',
+  'styled-components-boundary-composed',
+  'styled-components-configuration-partial',
+  'styled-components-style-commit',
   'theme-boundary-composed',
   'theme-token-repaired',
 ]);
@@ -98,7 +101,8 @@ function readPreviewInspectorRuntimeHealthSeverity(event) {
   return event === 'graphql-interpolation-repaired' ||
     event === 'runtime-effect-isolated' ||
     event === 'theme-token-repaired' ||
-    event === 'styled-components-instance-warning'
+    event === 'styled-components-instance-warning' ||
+    event === 'styled-components-configuration-partial'
     ? 'warn'
     : 'info';
 }

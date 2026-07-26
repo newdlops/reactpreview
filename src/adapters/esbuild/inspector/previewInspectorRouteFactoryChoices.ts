@@ -42,8 +42,15 @@ export interface PreviewInspectorRouteFactoryChoiceInventory {
   readonly choices: readonly PreviewInspectorRouteFactoryChoiceEvidence[];
   /** Selected factory's inert mount contract, when one was statically proven. */
   readonly owner?: PreviewInspectorRouteFactoryOwnerEvidence;
-  /** Imported module reference keyed by route-catalog component name. */
+  /** Imported module reference keyed by an exact factory choice occurrence. */
   readonly references: ReadonlyMap<string, PreviewInspectorRouteChoiceReference>;
+}
+
+/** Prevents duplicate component values in different route slots from overwriting each other. */
+export function createPreviewInspectorRouteFactoryChoiceKey(
+  choice: PreviewInspectorRouteFactoryChoiceEvidence,
+): string {
+  return [choice.kind, choice.componentName, String(choice.occurrenceStart)].join('\0');
 }
 
 /** Inputs remain parser-only and accept the caller's package-aware resolver as a capability. */
@@ -81,14 +88,7 @@ export function collectPreviewInspectorRouteFactoryChoices(
     (factory) =>
       factory.componentName !== undefined && options.targetIdentities.has(factory.componentName),
   );
-  const choices = Object.freeze(
-    factories
-      .flatMap((factory) => factory.choices)
-      .filter(
-        (choice, index, values) =>
-          values.findIndex((item) => item.componentName === choice.componentName) === index,
-      ),
-  );
+  const choices = Object.freeze(factories.flatMap((factory) => factory.choices));
   const ownerFactory = factories.find(
     (
       factory,
@@ -158,13 +158,13 @@ function collectRouteFactoryChoiceReferences(
     if (imported === undefined) continue;
     const resolved = options.resolveModule(imported.moduleSpecifier, options.sourcePath);
     if (resolved === undefined) continue;
-    references.set(
-      choice.componentName,
-      Object.freeze({
-        exportName: imported.exportName,
-        sourcePath: path.normalize(resolved),
-      }),
-    );
+    const reference = Object.freeze({
+      exportName: imported.exportName,
+      sourcePath: path.normalize(resolved),
+    });
+    references.set(createPreviewInspectorRouteFactoryChoiceKey(choice), reference);
+    /* A name key keeps existing consumers compatible; exact occurrence keys remain authoritative. */
+    if (!references.has(choice.componentName)) references.set(choice.componentName, reference);
   }
   return references;
 }

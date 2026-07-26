@@ -45,8 +45,12 @@ export interface PreviewInspectorRouteFactorySlotEvidence {
 export interface PreviewInspectorRouteFactoryChoiceEvidence {
   /** Page-map key or submodule name used by route catalogs and Inspector labels. */
   readonly componentName: string;
+  /** Factory argument position; never inferred from source text. */
+  readonly kind: 'page' | 'submodule';
   /** Imported/local value rendered for that key; absent for executable or computed expressions. */
   readonly localName?: string;
+  /** Stable source order for duplicate values used at different paths. */
+  readonly occurrenceStart: number;
 }
 
 /**
@@ -193,16 +197,28 @@ function readRouteFactoryChoices(
 ): readonly PreviewInspectorRouteFactoryChoiceEvidence[] {
   const choices: PreviewInspectorRouteFactoryChoiceEvidence[] = [];
   const visited = new Set<ts.Expression>();
-  const add = (componentName: string | undefined, localName?: string): void => {
+  const add = (
+    componentName: string | undefined,
+    mode: 'pages' | 'submodules',
+    occurrenceStart: number,
+    localName?: string,
+  ): void => {
     if (
       componentName !== undefined &&
       /^[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*$/u.test(componentName) &&
-      !choices.some((choice) => choice.componentName === componentName) &&
+      !choices.some(
+        (choice) =>
+          choice.componentName === componentName &&
+          choice.kind === (mode === 'pages' ? 'page' : 'submodule') &&
+          choice.occurrenceStart === occurrenceStart,
+      ) &&
       choices.length < MAXIMUM_ROUTE_FACTORY_CHOICES
     ) {
       choices.push(
         Object.freeze({
           componentName,
+          kind: mode === 'pages' ? 'page' : 'submodule',
+          occurrenceStart,
           ...(localName === undefined ? {} : { localName }),
         }),
       );
@@ -218,7 +234,9 @@ function readRouteFactoryChoices(
     if (ts.isIdentifier(unwrapped)) {
       const aggregate = readPriorTopLevelConstInitializer(unwrapped, sourceFile);
       if (aggregate === undefined) {
-        if (mode === 'submodules') add(unwrapped.text, unwrapped.text);
+        if (mode === 'submodules') {
+          add(unwrapped.text, mode, unwrapped.getStart(sourceFile), unwrapped.text);
+        }
       } else {
         visit(aggregate, mode);
       }
@@ -227,13 +245,15 @@ function readRouteFactoryChoices(
     if (mode === 'pages' && ts.isObjectLiteralExpression(unwrapped)) {
       for (const property of unwrapped.properties) {
         if (ts.isShorthandPropertyAssignment(property)) {
-          add(property.name.text, property.name.text);
+          add(property.name.text, mode, property.getStart(sourceFile), property.name.text);
           continue;
         }
         if (ts.isPropertyAssignment(property)) {
           const value = unwrapExpression(property.initializer);
           add(
             readStaticPropertyName(property.name),
+            mode,
+            property.getStart(sourceFile),
             ts.isIdentifier(value) ? value.text : undefined,
           );
           continue;

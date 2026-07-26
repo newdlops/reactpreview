@@ -315,6 +315,9 @@ export async function createPreviewInspectorAncestorPlan(
     renderChainsByExport,
     renderOutcomesByExport,
     routeBranches: routeBranchPlan.branches,
+    ...(routeBranchPlan.selectionResolution === undefined
+      ? {}
+      : { routeSelectionResolution: routeBranchPlan.selectionResolution }),
     ...(routeBranchPlan.selectedBranchId === undefined
       ? {}
       : { selectedRouteBranchId: routeBranchPlan.selectedBranchId }),

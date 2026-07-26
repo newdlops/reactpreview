@@ -17,6 +17,7 @@ import {
 } from './previewInspectorDirectRouteChoices';
 import { collectPreviewInspectorRouteFactoryEvidence } from './previewInspectorRouteFactory';
 import { collectPreviewInspectorRouteFactoryManifest } from './previewInspectorRouteFactoryManifest';
+import type { PreviewInspectorFactoryRouteAvailability } from './previewInspectorRouteFactoryManifestTypes';
 import {
   collectPreviewInspectorRouteFactoryChoices,
   type PreviewInspectorRouteFactoryOwnerEvidence,
@@ -97,6 +98,14 @@ export interface PreviewInspectorRouteLocationInventory {
   readonly fallbackCount: number;
   /** True when a factory was proven but one or more generated choices lack safe path evidence. */
   readonly unresolvedFactoryRoutes: boolean;
+  /** Names retained when a factory exposed choices but their path proof is incomplete. */
+  readonly unresolvedFactoryOptionNames?: readonly string[];
+  /** Structured disabled choices for the route explorer; no source text is exposed. */
+  readonly unresolvedFactoryOptions?: readonly {
+    readonly availability: Exclude<PreviewInspectorFactoryRouteAvailability, 'selectable'>;
+    readonly componentName: string;
+    readonly kind: 'page' | 'submodule';
+  }[];
 }
 
 /** Inputs kept independent from the ancestor planner so route inference is unit-testable. */
@@ -170,8 +179,8 @@ export async function collectPreviewInspectorRouteLocationInventory(
     sourcePath: options.documentPath,
     sourceText: targetText,
   });
-  if (factoryManifest !== undefined && factoryManifest.routes.length > 0) {
-    const locations = factoryManifest.routes.map((route) =>
+  const manifestLocations =
+    factoryManifest?.routes.map((route) =>
       Object.freeze({
         ...(route.componentExportName === undefined
           ? {}
@@ -205,14 +214,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
         pattern: route.absolutePattern,
         sourcePath: factoryManifest.ownerSourcePath,
       }),
-    );
-    return Object.freeze({
-      ...(locations[0] === undefined ? {} : { primary: locations[0] }),
-      choices: Object.freeze(locations),
-      fallbackCount: factoryManifest.fallbacks.length,
-      unresolvedFactoryRoutes: factoryManifest.unresolvedChoiceNames.length > 0,
-    });
-  }
+    ) ?? [];
   const factoryChoices = factoryChoiceInventory.choices;
   const choiceComponentNames = [
     ...new Set([
@@ -352,7 +354,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
           item.sourcePath === candidate.sourcePath,
       ) === index,
   );
-  const choices = choiceCandidates.map((candidate) =>
+  const inferredChoices = choiceCandidates.map((candidate) =>
     freezeRouteLocation(
       candidate,
       factoryChoiceReferences,
@@ -363,23 +365,59 @@ export async function collectPreviewInspectorRouteLocationInventory(
       routePatterns,
     ),
   );
+  const choices = Object.freeze(
+    [...manifestLocations, ...inferredChoices].filter(
+      (choice, index, values) =>
+        values.findIndex(
+          (other) =>
+            other.componentName === choice.componentName && other.pattern === choice.pattern,
+        ) === index,
+    ),
+  );
+  const inferredPrimary =
+    primaryCandidate === undefined
+      ? undefined
+      : freezeRouteLocation(
+          primaryCandidate,
+          factoryChoiceReferences,
+          factoryChoiceInventory.owner,
+          directReferences,
+          supportingSourcePaths,
+          catalogImportersByPath,
+          routePatterns,
+        );
+  const primary =
+    manifestLocations.find((choice) => targetIdentitySet.has(choice.componentName)) ??
+    inferredPrimary ??
+    choices[0];
   return Object.freeze({
-    ...(primaryCandidate === undefined
+    ...(primary === undefined
       ? {}
       : {
-          primary: freezeRouteLocation(
-            primaryCandidate,
-            factoryChoiceReferences,
-            factoryChoiceInventory.owner,
-            directReferences,
-            supportingSourcePaths,
-            catalogImportersByPath,
-            routePatterns,
+          primary,
+        }),
+    choices,
+    fallbackCount: factoryManifest?.fallbacks.length ?? 0,
+    unresolvedFactoryRoutes: (factoryManifest?.unresolvedChoiceNames.length ?? 0) > 0,
+    ...(factoryManifest === undefined
+      ? {}
+      : {
+          unresolvedFactoryOptionNames: factoryManifest.unresolvedChoiceNames,
+          unresolvedFactoryOptions: Object.freeze(
+            factoryManifest.options
+              .filter((option) => option.availability !== 'selectable')
+              .map((option) =>
+                Object.freeze({
+                  availability: option.availability as Exclude<
+                    PreviewInspectorFactoryRouteAvailability,
+                    'selectable'
+                  >,
+                  componentName: option.componentName,
+                  kind: option.kind,
+                }),
+              ),
           ),
         }),
-    choices: Object.freeze(choices),
-    fallbackCount: 0,
-    unresolvedFactoryRoutes: false,
   });
 }
 

@@ -6,7 +6,6 @@
  * branch, and automatically descends through router-only modules until a renderable leaf is found.
  * It never imports or executes application code in the extension host.
  */
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { PreviewInspectorRouteSelectionStep } from '../../../domain/preview';
 import type { PreviewRenderChainPlan, ResolvePreviewRenderGraphModule } from '../renderGraph';
@@ -18,11 +17,18 @@ import {
   materializePreviewInspectorRoutePattern,
   normalizePreviewInspectorRoutePattern,
 } from './previewInspectorRoutePattern';
+import { createPreviewInspectorRouteBranchId } from './previewInspectorRouteBranchIdentity';
 
 const MAXIMUM_ROUTE_OWNER_DEPTH = 8;
 
 /** Browser-safe hierarchy record for one statically proven route choice. */
 export interface PreviewInspectorRouteBranch {
+  /** A disabled branch remains visible when static route proof is incomplete. */
+  readonly availability?:
+    | 'catalog-unresolved'
+    | 'component-unresolved'
+    | 'submodule-base-unresolved'
+    | 'factory-contract-unresolved';
   /** Whether the selected analysis path proved children, proved a leaf, or has not inspected it. */
   readonly childState: 'expanded' | 'leaf' | 'unknown';
   /** Public component/export identity rendered by this branch. */
@@ -39,6 +45,8 @@ export interface PreviewInspectorRouteBranch {
   readonly pattern: string;
   /** Full compiler-verifiable branch chain sent back when the user chooses this item. */
   readonly selectionPath: readonly PreviewInspectorRouteSelectionStep[];
+  /** Only selectable branches can produce a route-selection protocol payload. */
+  readonly selectable?: boolean;
   /** Resolved page/router module retained only by compiler-side corridor planning. */
   readonly sourcePath?: string;
 }
@@ -61,6 +69,8 @@ export interface PreviewInspectorRouteBranchPlan {
   readonly primary?: PreviewInspectorRouteLocation;
   /** Opaque active branch identity serialized beside browser route metadata. */
   readonly selectedBranchId?: string;
+  /** Explains whether the requested route was accepted or the deterministic default was used. */
+  readonly selectionResolution?: 'automatic' | 'exact' | 'fallback';
 }
 
 /** Inputs reuse the existing route analyzer and package-bounded source resolver. */
@@ -83,6 +93,7 @@ export interface CollectPreviewInspectorRouteBranchPlanOptions {
 
 /** Mutable branch record used only while a selected nested owner is being inspected. */
 interface MutableRouteBranch {
+  readonly availability?: PreviewInspectorRouteBranch['availability'];
   childState: PreviewInspectorRouteBranch['childState'];
   readonly componentName: string;
   readonly depth: number;
@@ -91,6 +102,7 @@ interface MutableRouteBranch {
   readonly pathname: string;
   readonly pattern: string;
   readonly selectionPath: readonly PreviewInspectorRouteSelectionStep[];
+  readonly selectable: boolean;
   readonly sourcePath?: string;
 }
 
@@ -114,6 +126,7 @@ export async function collectPreviewInspectorRouteBranchPlan(
   let parentBranch: MutableRouteBranch | undefined;
   let primary: PreviewInspectorRouteLocation | undefined;
   let selectionPath: readonly PreviewInspectorRouteSelectionStep[] = Object.freeze([]);
+  let selectionResolution: PreviewInspectorRouteBranchPlan['selectionResolution'];
 
   for (let depth = 0; depth < MAXIMUM_ROUTE_OWNER_DEPTH; depth += 1) {
     const ownerIdentity = `${ownerPath}\0${ownerExportName}`;
@@ -142,20 +155,45 @@ export async function collectPreviewInspectorRouteBranchPlan(
         ? inventory.choices
         : inventory.choices.map((choice) => composeNestedRouteChoice(parentLocation, choice));
     collectRouteMetadataDependencies(levelChoices, dependencies);
+    for (const unresolved of inventory.unresolvedFactoryOptions ?? []) {
+      const unresolvedPath = Object.freeze([
+        ...selectionPath,
+        Object.freeze({ componentName: unresolved.componentName, pattern: '<unresolved>' }),
+      ]);
+      branches.push({
+        availability: unresolved.availability,
+        childState: 'unknown',
+        componentName: unresolved.componentName,
+        depth,
+        id: createPreviewInspectorRouteBranchId(unresolvedPath),
+        ...(parentBranch === undefined ? {} : { parentId: parentBranch.id }),
+        pathname: '',
+        pattern: '<unresolved>',
+        selectable: false,
+        selectionPath: Object.freeze([]),
+      });
+    }
     if (levelChoices.length === 0) {
       if (parentBranch !== undefined) parentBranch.childState = 'leaf';
       break;
     }
 
     const desired = options.selection?.[depth];
-    const selected =
-      (desired === undefined
+    const requested =
+      desired === undefined
         ? undefined
         : levelChoices.find(
             (choice) =>
               choice.componentName === desired.componentName && choice.pattern === desired.pattern,
-          )) ?? selectDefaultRouteChoice(levelChoices, inventory.primary);
+          );
+    const selected = requested ?? selectDefaultRouteChoice(levelChoices, inventory.primary);
     if (selected === undefined) break;
+    if (selectionResolution === undefined) {
+      selectionResolution =
+        desired === undefined ? 'automatic' : requested === undefined ? 'fallback' : 'exact';
+    } else if (desired !== undefined && requested === undefined) {
+      selectionResolution = 'fallback';
+    }
     const levelBranches = levelChoices.map((choice) => {
       const nextSelectionPath = Object.freeze([
         ...selectionPath,
@@ -165,10 +203,11 @@ export async function collectPreviewInspectorRouteBranchPlan(
         childState: 'unknown',
         componentName: choice.componentName,
         depth,
-        id: createRouteBranchId(nextSelectionPath),
+        id: createPreviewInspectorRouteBranchId(nextSelectionPath),
         ...(parentBranch === undefined ? {} : { parentId: parentBranch.id }),
         pathname: choice.pathname,
         pattern: choice.pattern,
+        selectable: true,
         selectionPath: nextSelectionPath,
         ...(choice.componentSourcePath === undefined
           ? {}
@@ -220,6 +259,7 @@ export async function collectPreviewInspectorRouteBranchPlan(
         }),
     ...(primary === undefined ? {} : { primary }),
     ...(parentBranch === undefined ? {} : { selectedBranchId: parentBranch.id }),
+    ...(selectionResolution === undefined ? {} : { selectionResolution }),
   });
 }
 
@@ -315,21 +355,10 @@ function countRouteSegments(pattern: string): number {
   return pattern.split('/').filter(Boolean).length;
 }
 
-/** Produces a short opaque ID from public route identities without embedding a local source path. */
-function createRouteBranchId(selectionPath: readonly PreviewInspectorRouteSelectionStep[]): string {
-  const hash = createHash('sha256');
-  for (const step of selectionPath) {
-    hash.update(step.componentName);
-    hash.update('\0');
-    hash.update(step.pattern);
-    hash.update('\0');
-  }
-  return `route-${hash.digest('hex').slice(0, 20)}`;
-}
-
 /** Freezes nested selection arrays so cache entries cannot be mutated by later planning passes. */
 function freezeRouteBranch(branch: MutableRouteBranch): PreviewInspectorRouteBranch {
   return Object.freeze({
+    ...(branch.availability === undefined ? {} : { availability: branch.availability }),
     childState: branch.childState,
     componentName: branch.componentName,
     depth: branch.depth,
@@ -342,6 +371,7 @@ function freezeRouteBranch(branch: MutableRouteBranch): PreviewInspectorRouteBra
         Object.freeze({ componentName: step.componentName, pattern: step.pattern }),
       ),
     ),
+    selectable: branch.selectable,
     ...(branch.sourcePath === undefined ? {} : { sourcePath: branch.sourcePath }),
   });
 }

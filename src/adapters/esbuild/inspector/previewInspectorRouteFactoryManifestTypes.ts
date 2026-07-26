@@ -8,6 +8,14 @@
 /** Distinguishes direct page entries from nested application-module entries. */
 export type PreviewInspectorFactoryRouteKind = 'page' | 'submodule';
 
+/** Why a visible factory choice cannot yet become a selectable browser route. */
+export type PreviewInspectorFactoryRouteAvailability =
+  | 'selectable'
+  | 'catalog-unresolved'
+  | 'component-unresolved'
+  | 'submodule-base-unresolved'
+  | 'factory-contract-unresolved';
+
 /** One renderable, non-fallback route recovered from a factory call. */
 export interface PreviewInspectorFactoryRouteEntry {
   /** Catalog/factory pattern with authored parameter constraints preserved. */
@@ -22,6 +30,15 @@ export interface PreviewInspectorFactoryRouteEntry {
   readonly kind: PreviewInspectorFactoryRouteKind;
   /** Constraint-free pattern passed to the owning React Router. */
   readonly relativeRouterPattern: string;
+}
+
+/** All choices survive analysis, including choices whose safe path proof is incomplete. */
+export interface PreviewInspectorFactoryRouteOption {
+  readonly availability: PreviewInspectorFactoryRouteAvailability;
+  readonly componentName: string;
+  readonly kind: PreviewInspectorFactoryRouteKind;
+  readonly occurrenceStart: number;
+  readonly route?: PreviewInspectorFactoryRouteEntry;
 }
 
 /** Literal wildcard fallback retained for diagnostics but excluded from normal route choices. */
@@ -48,6 +65,8 @@ export interface PreviewInspectorRouteFactoryManifest {
   readonly ownerSourcePath: string;
   /** Renderable resolved page/submodule choices in source order. */
   readonly routes: readonly PreviewInspectorFactoryRouteEntry[];
+  /** Complete choice set. `routes` is retained for compiler callers that only accept selectable paths. */
+  readonly options: readonly PreviewInspectorFactoryRouteOption[];
   /** Number of callback values proven to be inserted beneath Routes. */
   readonly routeSlotCount: number;
   /** Choice names whose path/component evidence could not be safely joined. */

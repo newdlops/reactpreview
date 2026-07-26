@@ -21,7 +21,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
   readonly dependencyPaths: readonly string[];
   readonly patternsByComponentName: ReadonlyMap<string, readonly string[]>;
 }> {
-  const maximumModules = options.maximumModules ?? 8;
+  const maximumModules = options.maximumModules ?? 12;
   const dependencies = new Set<string>();
   const patterns = new Map<string, string[]>();
   const visited = new Set<string>();
@@ -46,7 +46,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
   };
 
   const walk = async (sourcePath: string, requestedName?: string): Promise<void> => {
-    if (visited.size >= maximumModules || edges >= 64) return;
+    if (visited.size >= maximumModules || edges >= 96) return;
     const normalizedPath = path.normalize(sourcePath);
     const key = `${normalizedPath}\0${requestedName ?? '*'}`;
     if (visited.has(key)) return;
@@ -70,6 +70,20 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
       normalizedPath.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
     const imports = collectImports(sourceFile);
+    const initializer =
+      requestedName === undefined ? undefined : findLocalInitializer(sourceFile, requestedName);
+    /* Same-file immutable data is always followed before imports.  Real route maps commonly use
+       `const a = helper(raw); export const b = helper(a)`, where no imported symbol names `a`. */
+    if (initializer !== undefined) {
+      for (const identifier of collectIdentifiers(initializer)) {
+        if (edges >= 96) break;
+        const local = findLocalInitializer(sourceFile, identifier);
+        if (local !== undefined && identifier !== requestedName) {
+          edges += 1;
+          await walk(normalizedPath, identifier);
+        }
+      }
+    }
     const requestedImports =
       requestedName === undefined
         ? imports
@@ -78,16 +92,14 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
               binding.localName === requestedName || binding.exportName === requestedName,
           );
     for (const binding of requestedImports) {
-      if (edges >= 64 || options.resolveModule === undefined) break;
+      if (edges >= 96 || options.resolveModule === undefined) break;
       edges += 1;
       const resolved = options.resolveModule(binding.moduleSpecifier, normalizedPath);
       if (resolved !== undefined) await walk(resolved, binding.exportName);
     }
-    const initializer =
-      requestedName === undefined ? undefined : findLocalInitializer(sourceFile, requestedName);
     if (initializer !== undefined) {
       for (const identifier of collectIdentifiers(initializer)) {
-        if (edges >= 64) break;
+        if (edges >= 96) break;
         edges += 1;
         const binding = imports.find((candidate) => candidate.localName === identifier);
         if (binding === undefined || options.resolveModule === undefined) continue;

@@ -1,3 +1,4 @@
+/* eslint-disable jsdoc/require-jsdoc */
 /**
  * Prunes unrelated project-owned route branches from a statically proven Page Inspector corridor.
  *
@@ -35,6 +36,8 @@ import {
   type PreviewInspectorShallowProjectionInventory,
 } from './previewInspectorShallowProjection';
 import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthoredHookLogic';
+import { createPreviewInspectorPackageDemandPathSet } from './previewInspectorPackageDemand';
+import { registerPreviewInspectorBundleFrontierGuard } from './previewInspectorBundleFrontierGuard';
 import {
   createPreviewInspectorVirtualPageComponentSource,
   type PreviewInspectorVirtualPageComponent,
@@ -57,42 +60,28 @@ const MAX_SMALL_STATIC_ROUTE_IMPORTS = 0;
 const MINIMUM_SELECTED_PACKAGE_BARREL_EXPORTS = 64;
 const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 
-/** Bounded syntax facts used to distinguish a helper loader from a generated route registry. */
 interface PreviewDynamicImporterEvidence {
-  /** True when a small registry directly declares a path already selected by static analysis. */
   readonly hasCorridorTarget: boolean;
-  /** Large/truncated registries are narrowed to a selected route instead of bundled wholesale. */
   readonly isBroadRegistry: boolean;
-  /** Page-local `next/dynamic` requests whose bindings are visibly mounted in JSX. */
   readonly renderedNextDynamicSpecifiers: ReadonlySet<string>;
 }
 
-/** Build inputs required to bound deferred project branches without touching package dependencies. */
 export interface PreviewInspectorCorridorPluginOptions {
-  /** Optional first-paint limit after which dormant lazy choices become a generated registry. */
+  readonly frozenAuthenticSourcePaths?: readonly string[];
+  readonly packageDemandSourcePaths?: readonly string[];
   readonly maximumSmallDynamicImports?: number;
-  /** Optional first-paint limit after which proven eager leaf routes use inert projections. */
   readonly maximumSmallStaticRouteImports?: number;
-  /** Enables direct leaf projection only for package roots imported by the selected fast corridor. */
+  readonly maximumTransitiveVisualModules?: number;
+  readonly maximumTransitiveVisualDepth?: number;
+  readonly maximumPackageDemandPaths?: number;
   readonly optimizeSelectedPackageBarrels?: boolean;
-  /** Static target-to-entry and mount-candidate evidence selected for this Page Inspector build. */
   readonly plan: PreviewInspectorAncestorPlan;
-  /** Nearest package root used to distinguish application sources from installed dependencies. */
   readonly projectRoot: string;
-  /** Reads the current dirty editor source before falling back to the filesystem. */
   readonly readSource?: (sourcePath: string) => string | undefined;
-  /** Existing compiler-owned resolver; reusing it avoids recursive esbuild resolution per route. */
   readonly resolveModule: ResolvePreviewRenderGraphModule;
-  /** Trusted VS Code workspace that must contain every intercepted project source. */
   readonly workspaceRoot: string;
 }
 
-/**
- * Creates one esbuild boundary that keeps only dynamically imported authored corridor modules.
- *
- * @param options Inspector plan plus trusted package/workspace bounds.
- * @returns Build-scoped plugin; omitted modules are never evaluated by the extension or webview.
- */
 export function createPreviewInspectorCorridorPlugin(
   options: PreviewInspectorCorridorPluginOptions,
 ): Plugin {
@@ -106,7 +95,23 @@ export function createPreviewInspectorCorridorPlugin(
     0,
     Math.floor(options.maximumSmallStaticRouteImports ?? MAX_SMALL_STATIC_ROUTE_IMPORTS),
   );
+  const maximumTransitiveVisualModules = Math.max(
+    0,
+    Math.floor(options.maximumTransitiveVisualModules ?? Number.POSITIVE_INFINITY),
+  );
+  const maximumTransitiveVisualDepth = Math.max(
+    0,
+    Math.floor(options.maximumTransitiveVisualDepth ?? Number.POSITIVE_INFINITY),
+  );
+  const maximumPackageDemandPaths = Math.max(
+    0,
+    Math.floor(options.maximumPackageDemandPaths ?? Number.POSITIVE_INFINITY),
+  );
   const contextMayCrossPackages = options.plan.contextModule !== undefined;
+  // prettier-ignore
+  const frozenAuthenticSourcePaths = new Set((options.frozenAuthenticSourcePaths ?? []).map((sourcePath) => canonicalizeExistingPath(sourcePath)));
+  const usesFrozenAuthenticFrontier = options.frozenAuthenticSourcePaths !== undefined;
+  // Frozen membership guards emission; broader evidence only recognizes page-chrome projections.
   const exactCorridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
   const initialShallowExportsByPath = collectPreviewInspectorShallowExportsByPath(options.plan);
   const shallowExportsByPath = new Map(initialShallowExportsByPath);
@@ -117,12 +122,23 @@ export function createPreviewInspectorCorridorPlugin(
     ),
   );
   const shallowVisualPaths = new Set(initialShallowVisualPaths);
-  const corridorPaths = new Set([...exactCorridorPaths, ...shallowVisualPaths]);
-  const initialSelectedPackageDemandPaths = new Set([
-    ...corridorPaths,
-    ...(options.plan.shallowVisualPaths?.map((item) => canonicalizeExistingPath(item.sourcePath)) ??
-      []),
+  const shallowVisualDepthByPath = new Map(
+    [...initialShallowVisualPaths].map((sourcePath) => [sourcePath, 1]),
+  );
+  const corridorPaths = new Set([
+    ...exactCorridorPaths,
+    ...shallowVisualPaths,
+    ...frozenAuthenticSourcePaths,
   ]);
+  const initialSelectedPackageDemandPaths = createPreviewInspectorPackageDemandPathSet(
+    options.packageDemandSourcePaths ?? [
+      ...corridorPaths,
+      ...(options.plan.shallowVisualPaths?.map((item) =>
+        canonicalizeExistingPath(item.sourcePath),
+      ) ?? []),
+    ],
+    maximumPackageDemandPaths,
+  );
   const selectedPackageDemandPaths = new Set(initialSelectedPackageDemandPaths);
   const corridorModuleStems = createPreviewInspectorCorridorModuleStemSet(options.plan);
   const routeParameterGroups = collectPreviewInspectorRouteParameterGroups(options.plan);
@@ -142,15 +158,6 @@ export function createPreviewInspectorCorridorPlugin(
   const authoredHookEvidenceByPath = new Map<string, Promise<boolean>>();
   const expandedVirtualPageModuleExports = new Set<string>();
 
-  /**
-   * Follows component imports transitively below a VirtualPage root and cuts only proven hooks.
-   *
-   * Every statically rendered project component stays authentic. Each discovered module becomes a
-   * new shallow-analysis root, so traversal continues until esbuild reaches leaves or revisits the
-   * same module/export identity. Exact selected corridor modules cut only direct hook pass-through
-   * leaves; hooks with authored state, branching, defaults, or value transforms become recursive
-   * roots whose own data/effect leaves are classified on the next edge.
-   */
   async function resolveShallowVisualChild(
     arguments_: OnResolveArgs,
   ): Promise<OnResolveResult | undefined> {
@@ -180,13 +187,18 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
+    if (usesFrozenAuthenticFrontier) {
+      return frozenAuthenticSourcePaths.has(canonicalTarget)
+        ? undefined
+        : createShallowVisualProjection(canonicalImporter, projection);
+    }
     if (await shouldRetainAuthoredHookLogic(canonicalTarget, projection)) {
       /*
        * Keep authored state, defaults, branching, and value transforms, then analyze this module as
        * another DFS root. Its direct data/effect hook leaves can still become generated projections
        * without erasing the JavaScript logic that produces the component-facing return value.
        */
-      registerTransitiveVirtualPageModule(canonicalTarget, projection);
+      registerTransitiveVirtualPageModule(canonicalImporter, canonicalTarget, projection);
       return undefined;
     }
     if (shallowVisualPaths.has(canonicalImporter) && shouldExpandVirtualPageComponent(projection)) {
@@ -195,18 +207,20 @@ export function createPreviewInspectorCorridorPlugin(
        * Registering the target as another analysis root turns esbuild's ordinary module traversal
        * into a cycle-safe DFS without an authored-hop or component-depth limit.
        */
-      registerTransitiveVirtualPageModule(canonicalTarget, projection);
+      if (!registerTransitiveVirtualPageModule(canonicalImporter, canonicalTarget, projection)) {
+        return createShallowVisualProjection(canonicalImporter, projection);
+      }
       return createVirtualPageComponentFacade(canonicalTarget, projection);
     }
     if (corridorPaths.has(canonicalTarget)) return undefined;
     return createShallowVisualProjection(canonicalImporter, projection);
   }
 
-  /** Merges demanded exports before recursively analyzing one authentic JSX component module. */
   function registerTransitiveVirtualPageModule(
+    importerPath: string,
     sourcePath: string,
     projection: PreviewInspectorShallowProjection,
-  ): void {
+  ): boolean {
     let changed = false;
     const exportNames = new Set(shallowExportsByPath.get(sourcePath) ?? []);
     const runtimeHookExportNames = new Set(shallowRuntimeHookExportsByPath.get(sourcePath) ?? []);
@@ -221,15 +235,28 @@ export function createPreviewInspectorCorridorPlugin(
     for (const exportName of projection.runtimeHookExportNames) {
       runtimeHookExportNames.add(exportName);
     }
+    const depth = (shallowVisualDepthByPath.get(importerPath) ?? 0) + 1;
+    if (
+      (!shallowVisualPaths.has(sourcePath) &&
+        shallowVisualPaths.size >= maximumTransitiveVisualModules) ||
+      depth > maximumTransitiveVisualDepth
+    )
+      return false;
     shallowExportsByPath.set(sourcePath, exportNames);
     shallowRuntimeHookExportsByPath.set(sourcePath, runtimeHookExportNames);
     shallowVisualPaths.add(sourcePath);
+    shallowVisualDepthByPath.set(sourcePath, depth);
     corridorPaths.add(sourcePath);
-    selectedPackageDemandPaths.add(sourcePath);
+    if (
+      options.packageDemandSourcePaths === undefined &&
+      selectedPackageDemandPaths.size < maximumPackageDemandPaths
+    ) {
+      selectedPackageDemandPaths.add(sourcePath);
+    }
     if (changed) shallowImporterEvidenceByPath.delete(sourcePath);
+    return true;
   }
 
-  /** Keeps selected project imports and coalesces deferred branches outside the proven corridor. */
   async function resolveDeferredBranch(
     arguments_: OnResolveArgs,
   ): Promise<OnResolveResult | undefined> {
@@ -377,7 +404,6 @@ export function createPreviewInspectorCorridorPlugin(
     return pending;
   }
 
-  /** Parses one reached eager registry once per rebuild and retains only inert syntax facts. */
   function readStaticImporterEvidence(
     sourcePath: string,
   ): Promise<PreviewStaticRouteProjectionInventory> {
@@ -398,7 +424,6 @@ export function createPreviewInspectorCorridorPlugin(
     return pending;
   }
 
-  /** Parses one retained shallow root once and scopes child projection to its selected exports. */
   function readShallowImporterEvidence(
     sourcePath: string,
   ): Promise<PreviewInspectorShallowProjectionInventory> {
@@ -566,10 +591,14 @@ export function createPreviewInspectorCorridorPlugin(
           shallowExportsByPath.set(sourcePath, new Set(exportNames));
         }
         shallowVisualPaths.clear();
+        shallowVisualDepthByPath.clear();
         for (const sourcePath of initialShallowVisualPaths) shallowVisualPaths.add(sourcePath);
+        for (const sourcePath of initialShallowVisualPaths)
+          shallowVisualDepthByPath.set(sourcePath, 1);
         corridorPaths.clear();
         for (const sourcePath of exactCorridorPaths) corridorPaths.add(sourcePath);
         for (const sourcePath of shallowVisualPaths) corridorPaths.add(sourcePath);
+        for (const sourcePath of frozenAuthenticSourcePaths) corridorPaths.add(sourcePath);
         selectedPackageDemandPaths.clear();
         for (const sourcePath of initialSelectedPackageDemandPaths) {
           selectedPackageDemandPaths.add(sourcePath);
@@ -593,6 +622,13 @@ export function createPreviewInspectorCorridorPlugin(
             : undefined;
         },
       );
+      if (usesFrozenAuthenticFrontier) {
+        registerPreviewInspectorBundleFrontierGuard(build, {
+          authenticSourcePaths: frozenAuthenticSourcePaths,
+          resolveModule: options.resolveModule,
+          workspaceRoot,
+        });
+      }
       build.onResolve({ filter: /.*/ }, resolveShallowVisualChild);
       build.onResolve({ filter: /.*/ }, resolveDeferredBranch);
       build.onResolve({ filter: /.*/ }, resolveStaticRouteBranch);
@@ -959,8 +995,6 @@ function isPathInside(rootPath: string, candidatePath: string): boolean {
 
 /** Leaves installed or vendored dependency graphs under their normal package runtime semantics. */
 function containsDependencyDirectory(rootPath: string, candidatePath: string): boolean {
-  return path
-    .relative(rootPath, candidatePath)
-    .split(path.sep)
-    .some((segment) => segment === 'node_modules');
+  // prettier-ignore
+  return path.relative(rootPath, candidatePath).split(path.sep).some((segment) => segment === 'node_modules');
 }

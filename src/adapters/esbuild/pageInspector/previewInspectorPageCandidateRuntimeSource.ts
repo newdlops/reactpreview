@@ -41,17 +41,56 @@ function readPreviewInspectorRouteBranches(descriptor) {
     previewInspectorSession.pendingRouteBranchRevision !== undefined &&
     previewInspectorSession.pendingRouteBranchRevision !== previewEntryRevision
   ) {
-    previewInspectorSession.pendingRouteBranchId = undefined;
-    previewInspectorSession.pendingRouteBranchRevision = undefined;
+    clearPreviewInspectorPendingRouteSelection();
+  }
+  if (previewInspectorSession.pendingRouteError?.revision !== previewEntryRevision) {
+    previewInspectorSession.pendingRouteError = undefined;
   }
   const branches = descriptor?.inspector?.routeBranches;
   return Array.isArray(branches) ? branches : [];
+}
+
+const PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Clears a settled route request and its bounded watchdog without affecting the visible preview. */
+function clearPreviewInspectorPendingRouteSelection() {
+  if (previewInspectorSession.pendingRouteTimeout !== undefined) {
+    clearTimeout(previewInspectorSession.pendingRouteTimeout);
+  }
+  previewInspectorSession.pendingRouteBranchId = undefined;
+  previewInspectorSession.pendingRouteInteractionId = undefined;
+  previewInspectorSession.pendingRouteBranchRevision = undefined;
+  previewInspectorSession.pendingRouteSelectionPath = undefined;
+  previewInspectorSession.pendingRouteTimeout = undefined;
+}
+
+/** Makes a delayed compiler hand-off recoverable instead of leaving a disabled route control forever. */
+function beginPreviewInspectorPendingRouteSelection(branch) {
+  clearPreviewInspectorPendingRouteSelection();
+  previewInspectorSession.pendingRouteBranchId = branch.id;
+  previewInspectorSession.pendingRouteInteractionId =
+    'route:' + String(previewEntryRevision) + ':' + String(++previewInspectorSession.interactionSequence);
+  previewInspectorSession.pendingRouteBranchRevision = previewEntryRevision;
+  previewInspectorSession.pendingRouteSelectionPath = branch.selectionPath;
+  previewInspectorSession.lastRequestedRouteSelectionPath = branch.selectionPath;
+  previewInspectorSession.pendingRouteError = undefined;
+  previewInspectorSession.pendingRouteTimeout = setTimeout(() => {
+    if (previewInspectorSession.pendingRouteBranchId !== branch.id) return;
+    clearPreviewInspectorPendingRouteSelection();
+    previewInspectorSession.pendingRouteError = {
+      branchId: branch.id,
+      message: 'Route preparation is taking longer than expected. Retry when ready.',
+      revision: previewEntryRevision,
+    };
+    notifyPreviewInspector();
+  }, PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS);
 }
 
 /** Requests a fresh branch-scoped bundle after preserving the current preview until it is ready. */
 function selectPreviewInspectorRouteBranch(branch) {
   if (
     typeof branch?.id !== 'string' ||
+    branch?.selectable === false ||
     !Array.isArray(branch.selectionPath) ||
     typeof previewInspectorPostHostMessage !== 'function'
   ) {
@@ -60,10 +99,11 @@ function selectPreviewInspectorRouteBranch(branch) {
   if (branch.id === findSelectedPreviewInspectorDescriptor()?.inspector?.selectedRouteBranchId) {
     return;
   }
-  previewInspectorSession.pendingRouteBranchId = branch.id;
-  previewInspectorSession.pendingRouteBranchRevision = previewEntryRevision;
+  beginPreviewInspectorPendingRouteSelection(branch);
   notifyPreviewInspector();
   previewInspectorPostHostMessage({
+    branchId: branch.id,
+    interactionId: previewInspectorSession.pendingRouteInteractionId,
     runtimeRevision: previewEntryRevision,
     selectionPath: branch.selectionPath,
     type: 'react-preview-inspector-route-selected',
@@ -89,8 +129,15 @@ function readSelectedPreviewInspectorCandidateTarget(descriptor) {
     descriptor?.inspector?.target;
 }
 
-/** Promotes an automatic fast choice while retaining an exact candidate explicitly chosen by the user. */
+/** Reconciles browser state with the single caller path actually compiled into this artifact. */
 function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const executableCandidateId = descriptor?.inspector?.executablePageCandidateId;
+  if (typeof executableCandidateId === 'string' && candidateIds.includes(executableCandidateId)) {
+    if (previewInspectorSession.selectedPageCandidateId === executableCandidateId) return false;
+    previewInspectorSession.selectedPageCandidateId = executableCandidateId;
+    return true;
+  }
   const userSelection = previewInspectorSession.userSelectedPageCandidateId;
   const nextId = typeof userSelection === 'string' && candidateIds.includes(userSelection)
     ? userSelection
@@ -405,6 +452,25 @@ function selectPreviewInspectorPageCandidate(candidateId) {
   }
   const preferenceChanged = previewInspectorSession.userSelectedPageCandidateId !== candidateId;
   previewInspectorSession.userSelectedPageCandidateId = candidateId;
+  const executableCandidateId = descriptor?.inspector?.executablePageCandidateId;
+  if (
+    candidateId !== executableCandidateId &&
+    typeof previewInspectorPostHostMessage === 'function'
+  ) {
+    previewInspectorSession.pendingPageCandidateId = candidateId;
+    previewInspectorSession.pendingPageCandidateInteractionId =
+      'page:' + String(previewEntryRevision) + ':' + String(++previewInspectorSession.interactionSequence);
+    previewInspectorSession.pendingPageCandidateRevision = previewEntryRevision;
+    if (preferenceChanged) persistPreviewInspectorState();
+    notifyPreviewInspector();
+    previewInspectorPostHostMessage({
+      candidateId,
+      interactionId: previewInspectorSession.pendingPageCandidateInteractionId,
+      runtimeRevision: previewEntryRevision,
+      type: 'react-preview-inspector-page-candidate-selected',
+    });
+    return;
+  }
   if (previewInspectorSession.selectedPageCandidateId === candidateId) {
     if (preferenceChanged) persistPreviewInspectorState();
     return;
@@ -415,6 +481,47 @@ function selectPreviewInspectorPageCandidate(candidateId) {
   persistPreviewInspectorState();
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();
+}
+
+/** Applies host transaction outcomes without treating a new entry module as proof of success. */
+function handlePreviewInspectorSelectionStatus(message) {
+  if (message?.type === 'react-preview-inspector-route-selection-status') {
+    if (message.interactionId !== previewInspectorSession.pendingRouteInteractionId) return;
+    if (message.status === 'committed') {
+      clearPreviewInspectorPendingRouteSelection();
+      previewInspectorSession.pendingRouteError = undefined;
+    } else if (
+      message.status === 'failed' ||
+      message.status === 'cancelled' ||
+      message.status === 'rejected'
+    ) {
+      const branchId = previewInspectorSession.pendingRouteBranchId;
+      clearPreviewInspectorPendingRouteSelection();
+      previewInspectorSession.pendingRouteError = {
+        branchId,
+        message: 'Route preparation could not be applied. Retry route.',
+        revision: previewEntryRevision,
+      };
+    }
+    notifyPreviewInspector();
+    return;
+  }
+  if (message?.type !== 'react-preview-inspector-page-candidate-selection-status') return;
+  if (message.interactionId !== previewInspectorSession.pendingPageCandidateInteractionId) return;
+  if (message.status === 'committed') {
+    previewInspectorSession.pendingPageCandidateId = undefined;
+    previewInspectorSession.pendingPageCandidateInteractionId = undefined;
+    previewInspectorSession.pendingPageCandidateRevision = undefined;
+  } else if (
+    message.status === 'failed' ||
+    message.status === 'cancelled' ||
+    message.status === 'rejected'
+  ) {
+    previewInspectorSession.pendingPageCandidateId = undefined;
+    previewInspectorSession.pendingPageCandidateInteractionId = undefined;
+    previewInspectorSession.pendingPageCandidateRevision = undefined;
+  }
+  notifyPreviewInspector();
 }
 
 /**
@@ -500,6 +607,37 @@ function usePreviewInspectorLazyDefinition(definition, loadContext) {
     return () => { active = false; };
   }, [definition, loadPreparationKey]);
   return loadState;
+}
+
+/** Requests at most one host-owned inner Page Execution retry after a selected module load fails. */
+function requestPreviewInspectorPageExecutionRetry(descriptor, candidate) {
+  const inspector = descriptor?.inspector;
+  const currentId = inspector?.pageExecutionCandidateId;
+  const alternatives = Array.isArray(inspector?.pageExecutionCandidates)
+    ? inspector.pageExecutionCandidates
+    : [];
+  const currentIndex = alternatives.findIndex((item) => item?.id === currentId);
+  const next = currentIndex < 0 ? undefined : alternatives.slice(currentIndex + 1).find(
+    (item) => typeof item?.id === 'string' && item.id !== currentId,
+  );
+  if (
+    typeof candidate?.id !== 'string' ||
+    typeof next?.id !== 'string' ||
+    previewInspectorSession.pageExecutionRetryRevision === previewEntryRevision ||
+    typeof previewInspectorPostHostMessage !== 'function'
+  ) {
+    return false;
+  }
+  previewInspectorSession.pageExecutionRetryRevision = previewEntryRevision;
+  previewInspectorPostHostMessage({
+    candidateId: candidate.id,
+    executionCandidateId: next.id,
+    interactionId: 'execution:' + String(previewEntryRevision) + ':' +
+      String(++previewInspectorSession.interactionSequence),
+    runtimeRevision: previewEntryRevision,
+    type: 'react-preview-inspector-page-execution-retry',
+  });
+  return true;
 }
 
 /** Re-throws a rejected dynamic import inside the nearest per-export React error boundary. */
@@ -667,7 +805,10 @@ function PreviewInspectorAuthoredPageLoader({ candidate, definitions, descriptor
       directTarget ? 'Loading selected component fallback…' : 'Loading authored page context…',
     );
   }
-  if (loadState.status === 'failed') throw loadState.error;
+  if (loadState.status === 'failed') {
+    requestPreviewInspectorPageExecutionRetry(descriptor, candidate);
+    throw loadState.error;
+  }
   const rootElement = createPreviewInspectorElement(
     loadState.value,
     directTarget ? (candidate?.targetAutomaticProps ?? {}) : targetProps,

@@ -10,7 +10,9 @@ import type { ResolvedPreviewTarget } from './activePreviewTarget';
 
 /** Session-local value object for a root-to-leaf route selection. */
 export class PreviewPanelRouteSelection {
-  private steps: readonly PreviewInspectorRouteSelectionStep[] | undefined;
+  private committedSteps: readonly PreviewInspectorRouteSelectionStep[] | undefined;
+  private hasPendingSelection = false;
+  private pendingSteps: readonly PreviewInspectorRouteSelectionStep[] | undefined;
 
   /**
    * Adds the current selection to a freshly resolved immutable target.
@@ -19,12 +21,13 @@ export class PreviewPanelRouteSelection {
    * @returns The original target when no route was chosen, otherwise a request copy with the route.
    */
   public applyTo(target: ResolvedPreviewTarget): ResolvedPreviewTarget {
-    if (this.steps === undefined) return target;
+    const steps = this.hasPendingSelection ? this.pendingSteps : this.committedSteps;
+    if (steps === undefined) return target;
     return {
       ...target,
       request: {
         ...target.request,
-        inspectorRouteSelection: this.steps,
+        inspectorRouteSelection: steps,
       },
     };
   }
@@ -35,24 +38,51 @@ export class PreviewPanelRouteSelection {
    * @param selectionPath Protocol-validated public component/path identities.
    * @returns `true` only when a rebuild must select a different route branch.
    */
-  public replace(selectionPath: readonly PreviewInspectorRouteSelectionStep[]): boolean {
+  public begin(selectionPath: readonly PreviewInspectorRouteSelectionStep[]): boolean {
     const normalized = Object.freeze(
       selectionPath.map((step) =>
         Object.freeze({ componentName: step.componentName, pattern: step.pattern }),
       ),
     );
-    if (routeSelectionsAreEqual(this.steps, normalized)) return false;
-    this.steps = normalized.length === 0 ? undefined : normalized;
+    const next = normalized.length === 0 ? undefined : normalized;
+    if (
+      routeSelectionsAreEqual(
+        this.hasPendingSelection ? this.pendingSteps : this.committedSteps,
+        next,
+      )
+    )
+      return false;
+    this.pendingSteps = next;
+    this.hasPendingSelection = true;
     return true;
+  }
+
+  /** Promotes the route used by a successful prepared preview to the durable panel selection. */
+  public commit(): void {
+    if (!this.hasPendingSelection) return;
+    this.committedSteps = this.pendingSteps;
+    this.pendingSteps = undefined;
+    this.hasPendingSelection = false;
+  }
+
+  /** Discards a failed or cancelled request so the last visible route remains retryable. */
+  public rollback(): void {
+    this.pendingSteps = undefined;
+    this.hasPendingSelection = false;
+  }
+
+  /** Whether a browser interaction is still building or applying an uncommitted route. */
+  public get isPendingSelection(): boolean {
+    return this.hasPendingSelection;
   }
 }
 
 /** Compares two bounded public route chains without relying on mutable array identity. */
 function routeSelectionsAreEqual(
   left: readonly PreviewInspectorRouteSelectionStep[] | undefined,
-  right: readonly PreviewInspectorRouteSelectionStep[],
+  right: readonly PreviewInspectorRouteSelectionStep[] | undefined,
 ): boolean {
-  if (left === undefined) return right.length === 0;
+  if (left === undefined || right === undefined) return left === right;
   if (left.length !== right.length) return false;
   return right.every((step, index) => {
     const leftStep = left[index];

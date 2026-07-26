@@ -10,10 +10,17 @@ import type { PreviewInspectorRouteSelectionStep } from '../domain/preview';
 const MAXIMUM_ROUTE_SELECTION_DEPTH = 8;
 const MAXIMUM_ROUTE_COMPONENT_NAME_LENGTH = 256;
 const MAXIMUM_ROUTE_PATTERN_LENGTH = 2_048;
+const MAXIMUM_INTERACTION_ID_LENGTH = 128;
 const COMPONENT_NAME_PATTERN = /^[$_\p{L}][$_\u200C\u200D\p{ID_Continue}]*$/u;
+const INTERACTION_ID_PATTERN = /^route:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/u;
+const ROUTE_BRANCH_ID_PATTERN = /^route-[a-f0-9]{20}$/u;
 
 /** Bounded request accepted from one committed Page Inspector runtime. */
 export interface PreviewInspectorRouteSelectionRequest {
+  /** Public branch identity emitted by the descriptor that offered this path. */
+  readonly branchId: string;
+  /** Browser-generated id correlating this request with later terminal host status. */
+  readonly interactionId: string;
   /** Runtime revision that rendered the offered route hierarchy. */
   readonly runtimeRevision: number;
   /** Ordered root-to-leaf static identities; an empty path restores automatic default selection. */
@@ -43,9 +50,17 @@ export function readPreviewInspectorRouteSelectionRequest(
 ): PreviewInspectorRouteSelectionRequest | undefined {
   if (!isPreviewInspectorRouteSelectionMessage(value)) return undefined;
   const message = value as Record<string, unknown>;
+  const branchId = message.branchId;
+  const interactionId = message.interactionId;
   const runtimeRevision = message.runtimeRevision;
   const selectionPath = message.selectionPath;
   if (
+    typeof branchId !== 'string' ||
+    !ROUTE_BRANCH_ID_PATTERN.test(branchId) ||
+    typeof interactionId !== 'string' ||
+    interactionId.length === 0 ||
+    interactionId.length > MAXIMUM_INTERACTION_ID_LENGTH ||
+    !INTERACTION_ID_PATTERN.test(interactionId) ||
     typeof runtimeRevision !== 'number' ||
     !Number.isSafeInteger(runtimeRevision) ||
     runtimeRevision < 0 ||
@@ -79,6 +94,8 @@ export function readPreviewInspectorRouteSelectionRequest(
     normalized.push(Object.freeze({ componentName, pattern }));
   }
   return Object.freeze({
+    branchId,
+    interactionId,
     runtimeRevision,
     selectionPath: Object.freeze(normalized),
     type: 'react-preview-inspector-route-selected',

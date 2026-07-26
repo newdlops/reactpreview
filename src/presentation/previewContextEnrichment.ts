@@ -13,7 +13,7 @@ import {
   type PreviewContextEnrichmentBackoff,
 } from './previewContextEnrichmentBackoff';
 
-/** Deferred full build waiting for the corresponding fast artifact to settle in the browser. */
+/** Deferred selected-corridor build waiting for the corresponding fast artifact to settle. */
 interface PendingPreviewContextEnrichment {
   /** Fast artifact whose runtime acknowledgement unlocks the full pass. */
   readonly artifactHash: string;
@@ -29,9 +29,9 @@ interface PendingPreviewContextEnrichment {
 
 /** Integration callbacks that keep VS Code and panel state outside this orchestration helper. */
 export interface PreviewContextEnrichmentCallbacks {
-  /** Clears revision-owned execution state after the full pass settles. */
+  /** Clears revision-owned execution state after the corridor pass settles. */
   readonly complete: (revision: number) => void;
-  /** Commits one complete artifact after the fast browser revision has rendered. */
+  /** Commits one selected-corridor artifact after the fast browser revision has rendered. */
   readonly commit: (
     target: ResolvedPreviewTarget,
     preview: PreparedPreview,
@@ -61,8 +61,9 @@ export interface PreviewContextEnrichmentOptions {
   readonly backoff?: PreviewContextEnrichmentBackoff;
 }
 
-/** Coordinates exactly one replaceable deferred full-context pass per preview session. */
+/** Coordinates exactly one replaceable deferred selected-corridor pass per preview session. */
 export class PreviewContextEnrichmentCoordinator {
+  private activeController: AbortController | undefined;
   private readonly backoff: PreviewContextEnrichmentBackoff;
   private pending: PendingPreviewContextEnrichment | undefined;
 
@@ -101,7 +102,43 @@ export class PreviewContextEnrichmentCoordinator {
     }
   }
 
-  /** Starts the deferred full pass only for the exact fast artifact and owning revision. */
+  /** Starts selected-corridor work only after the fast artifact has been acknowledged by Chromium. */
+  public startAfterCommittedFast(
+    target: ResolvedPreviewTarget,
+    artifactHash: string,
+    revision: number,
+    signal: AbortSignal,
+  ): void {
+    if (artifactHash.length === 0) return;
+    this.cancel();
+    const resourceIdentity = createEnrichmentResourceIdentity(target);
+    const decision = this.backoff.check(resourceIdentity);
+    if (!decision.allowed) {
+      this.options.callbacks.reportSuppressed?.(target, revision, decision.retryAfterMs);
+      this.options.callbacks.complete(revision);
+      return;
+    }
+    const controller = new AbortController();
+    const abort = (): void => {
+      controller.abort();
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    this.activeController = controller;
+    const pending: PendingPreviewContextEnrichment = {
+      artifactHash,
+      resourceIdentity,
+      revision,
+      signal: controller.signal,
+      target,
+    };
+    void this.run(pending).finally(() => {
+      if (this.activeController === controller) this.activeController = undefined;
+      signal.removeEventListener('abort', abort);
+    });
+  }
+
+  /** Starts the deferred corridor pass only for the exact fast artifact and owning revision. */
   public settle(artifactHash: string, revision: number): void {
     const pending = this.pending;
     if (pending?.artifactHash !== artifactHash || pending.revision !== revision) {
@@ -114,9 +151,11 @@ export class PreviewContextEnrichmentCoordinator {
   /** Drops a not-yet-started pass when a refresh, timeout, or panel disposal supersedes it. */
   public cancel(): void {
     this.pending = undefined;
+    this.activeController?.abort();
+    this.activeController = undefined;
   }
 
-  /** Builds, validates revision ownership, and commits one non-blocking full-context artifact. */
+  /** Builds, validates revision ownership, and commits one non-blocking corridor artifact. */
   private async run(pending: PendingPreviewContextEnrichment): Promise<void> {
     try {
       let schedulerRetryCount = 0;
@@ -126,7 +165,7 @@ export class PreviewContextEnrichmentCoordinator {
             {
               ...pending.target.request,
               buildIntent: 'context-enrichment',
-              preparationMode: 'full',
+              preparationMode: 'corridor',
               renderMode: this.options.renderMode,
             },
             { signal: pending.signal },
@@ -192,6 +231,11 @@ function createEnrichmentResourceIdentity(target: ResolvedPreviewTarget): string
     request.dependencySnapshots.every((snapshot) =>
       isExactDocumentVersion(snapshot.documentVersion),
     );
+  update('context-enrichment:corridor:v2');
+  update('bundle-frontier-format:v1');
+  update(
+    'corridor-policy:exact128,optional96,support160,total256,edges384,depth32,bytes16777216,package128,bare64,style256',
+  );
   update(usesEditorVersions ? 'editor-version-identity:v1' : 'source-text-identity:v1');
   update(request.documentPath);
   update(
@@ -204,6 +248,7 @@ function createEnrichmentResourceIdentity(target: ResolvedPreviewTarget): string
   update(request.tsconfigPath ?? '');
   update(request.maxOutputMebibytes?.toString() ?? '');
   update(request.useStorybookPreview === true ? 'storybook:on' : 'storybook:off');
+  update(request.inspectorPageCandidateId ?? '');
   for (const routeStep of request.inspectorRouteSelection ?? []) {
     update(routeStep.componentName);
     update(routeStep.pattern);
@@ -229,6 +274,9 @@ function isExactDocumentVersion(value: number | undefined): value is number {
 function isDeterministicEnrichmentStall(error: unknown): boolean {
   return (
     isPreviewBuildStall(error) &&
-    (error.reason === 'memory' || error.reason === 'native-service' || error.reason === 'watchdog')
+    (error.reason === 'graph-budget' ||
+      error.reason === 'memory' ||
+      error.reason === 'native-service' ||
+      error.reason === 'watchdog')
   );
 }

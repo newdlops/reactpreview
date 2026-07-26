@@ -6,7 +6,6 @@
  * its own parser and least-privilege filesystem boundary.
  */
 import type * as vscode from 'vscode';
-import type { PreviewInspectorRouteSelectionStep } from '../domain/preview';
 import { handlePreviewBlockerTraceMessage } from './previewBlockerTraceLogger';
 import { handlePreviewRuntimeHealthMessage } from './previewRuntimeHealthLogger';
 import {
@@ -22,8 +21,18 @@ import {
 import {
   isPreviewInspectorRouteSelectionMessage,
   readPreviewInspectorRouteSelectionRequest,
+  type PreviewInspectorRouteSelectionRequest,
 } from './previewInspectorRouteSelectionProtocol';
+import {
+  isPreviewInspectorPageCandidateSelectionMessage,
+  readPreviewInspectorPageCandidateSelectionRequest,
+  type PreviewInspectorPageCandidateSelectionRequest,
+} from './previewInspectorPageCandidateSelectionProtocol';
 import type { PreviewInspectorSourceDecoration } from './previewInspectorSourceDecoration';
+import {
+  readPreviewInspectorPageExecutionRetryRequest,
+  type PreviewInspectorPageExecutionRetryRequest,
+} from './previewInspectorPageExecutionRetryProtocol';
 
 /** Combined panel state required by blocker tracing and signed source navigation. */
 export interface PreviewInspectorHostMessageContext extends PreviewInspectorSourceNavigationContext {
@@ -36,7 +45,11 @@ export interface PreviewInspectorHostMessageContext extends PreviewInspectorSour
   /** Full log surface narrows independently inside each protocol handler. */
   readonly log: vscode.LogOutputChannel;
   /** Schedules a branch-scoped rebuild after current-revision protocol validation. */
-  readonly selectRoute?: (selectionPath: readonly PreviewInspectorRouteSelectionStep[]) => void;
+  readonly selectRoute?: (request: PreviewInspectorRouteSelectionRequest) => void;
+  /** Schedules a build containing only the browser-selected page candidate. */
+  readonly selectPageCandidate?: (request: PreviewInspectorPageCandidateSelectionRequest) => void;
+  /** Schedules one compiler-owned inner Page Execution retry. */
+  readonly selectPageExecutionRetry?: (request: PreviewInspectorPageExecutionRetryRequest) => void;
 }
 
 /**
@@ -50,12 +63,30 @@ export function handlePreviewInspectorHostMessage(
   value: unknown,
   context: PreviewInspectorHostMessageContext,
 ): boolean {
+  const executionRetry = readPreviewInspectorPageExecutionRetryRequest(value);
+  if (executionRetry !== undefined) {
+    if (executionRetry.runtimeRevision !== context.currentRuntimeRevision) {
+      context.log.debug('Ignored a stale React Inspector Page Execution retry request.');
+    } else {
+      context.selectPageExecutionRetry?.(executionRetry);
+    }
+    return true;
+  }
+  if (isPreviewInspectorPageCandidateSelectionMessage(value)) {
+    const request = readPreviewInspectorPageCandidateSelectionRequest(value);
+    if (request?.runtimeRevision !== context.currentRuntimeRevision) {
+      context.log.debug('Ignored a malformed or stale React Inspector page candidate selection.');
+    } else {
+      context.selectPageCandidate?.(request);
+    }
+    return true;
+  }
   if (isPreviewInspectorRouteSelectionMessage(value)) {
     const request = readPreviewInspectorRouteSelectionRequest(value);
     if (request?.runtimeRevision !== context.currentRuntimeRevision) {
       context.log.debug('Ignored a malformed or stale React Inspector route selection message.');
     } else {
-      context.selectRoute?.(request.selectionPath);
+      context.selectRoute?.(request);
     }
     return true;
   }

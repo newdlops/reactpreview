@@ -213,7 +213,9 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
       expect(fixture.panel.html).not.toContain('Preview runtime did not start');
 
       fixture.session.dispose();
-      expect(fixture.releaseArtifact).toHaveBeenCalledTimes(2);
+      expect(fixture.releaseArtifact).toHaveBeenCalledTimes(
+        messageType === 'react-preview-runtime-failed' ? 1 : 2,
+      );
     },
   );
 });

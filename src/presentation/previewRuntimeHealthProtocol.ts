@@ -30,6 +30,9 @@ const HEALTH_EVENTS = new Set<PreviewRuntimeHealthEventKind>([
   'runtime-error-fallback',
   'runtime-error-root',
   'styled-components-instance-warning',
+  'styled-components-boundary-composed',
+  'styled-components-configuration-partial',
+  'styled-components-style-commit',
   'theme-boundary-composed',
   'theme-token-repaired',
 ]);
@@ -47,6 +50,9 @@ export type PreviewRuntimeHealthEventKind =
   | 'runtime-error-fallback'
   | 'runtime-error-root'
   | 'styled-components-instance-warning'
+  | 'styled-components-boundary-composed'
+  | 'styled-components-configuration-partial'
+  | 'styled-components-style-commit'
   | 'theme-boundary-composed'
   | 'theme-token-repaired';
 

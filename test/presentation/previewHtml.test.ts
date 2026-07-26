@@ -106,6 +106,21 @@ describe('createPreviewHtml', () => {
     expect(html).not.toContain(attack);
     expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
   });
+
+  /** Exposes only a nonce-authorized opaque action when the host marked an error recoverable. */
+  it('renders a CSP-safe retry action for recoverable bootstrap failures', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      kind: 'error',
+      message: 'The runtime did not start.',
+      retry: { revision: 9, token: '9.1.token' },
+      title: 'Preview runtime did not start',
+    });
+
+    expect(html).toContain('Retry preview');
+    expect(html).toContain('data-react-preview-retry-token="9.1.token"');
+    expect(html).toContain('&#39;nonce-991token&#39;');
+    expect(html).toContain("type: 'react-preview-retry'");
+  });
 });
 
 /**

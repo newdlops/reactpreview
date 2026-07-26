@@ -4,7 +4,12 @@
  * ancestry is then enriched only after the browser has acknowledged that useful first paint.
  */
 import type { BuildPreview } from '../application/buildPreview';
-import type { PreparedPreview, PreviewBuildRequest, PreviewRenderMode } from '../domain/preview';
+import type {
+  PreparedPreview,
+  PreviewBuildRequest,
+  PreviewPreparationMode,
+  PreviewRenderMode,
+} from '../domain/preview';
 import {
   isPreviewBuildCancellation,
   isPreviewBuildStall,
@@ -30,14 +35,16 @@ export interface PreviewFirstPaintOptions {
   readonly context: PreviewBuildExecutionContext;
   /** Rendering surface selected when the panel was opened. */
   readonly renderMode: PreviewRenderMode;
-  /** Whether this session still needs a cold direct-graph first paint before full rebuild reuse. */
-  readonly preferFast: boolean;
+  /** Automatic surfaces may use only fast or selected-corridor preparation. */
+  readonly preparationMode?: Extract<PreviewPreparationMode, 'fast' | 'corridor'>;
+  /** @deprecated Use preparationMode; retained only for extension compatibility. */
+  readonly preferFast?: boolean;
   /** Latest source snapshot for the panel's pinned target. */
   readonly request: PreviewBuildRequest;
 }
 
 /**
- * Publishes a fast cold artifact before deferred context, or reuses full preparation once warm.
+ * Publishes the selected automatic policy. Fast failures receive one selected-corridor fallback.
  * Cancellation is never converted into fallback work because a newer revision already owns the UI.
  *
  * @param options Build service, immutable source request, render mode, and execution context.
@@ -46,12 +53,16 @@ export interface PreviewFirstPaintOptions {
 export async function preparePreviewFirstPaint(
   options: PreviewFirstPaintOptions,
 ): Promise<PreviewFirstPaintResult> {
-  if (!options.preferFast) {
+  // Reflect preserves the deprecated compatibility field without making new code depend on it.
+  const legacyPreferFast = Reflect.get(options, 'preferFast');
+  const preparationMode =
+    options.preparationMode ?? (legacyPreferFast === false ? 'corridor' : 'fast');
+  if (preparationMode === 'corridor') {
     const preparedPreview = await options.buildPreview.execute(
       {
         ...options.request,
         buildIntent: 'foreground',
-        preparationMode: 'full',
+        preparationMode: 'corridor',
         renderMode: options.renderMode,
       },
       options.context,
@@ -70,7 +81,7 @@ export async function preparePreviewFirstPaint(
     );
     return {
       preparedPreview,
-      requiresContextEnrichment: preparedPreview.contextCoverage !== 'complete',
+      requiresContextEnrichment: true,
     };
   } catch (error) {
     if (isPreviewBuildCancellation(error, options.context.signal) || isPreviewBuildStall(error)) {
@@ -80,7 +91,7 @@ export async function preparePreviewFirstPaint(
       {
         ...options.request,
         buildIntent: 'foreground',
-        preparationMode: 'full',
+        preparationMode: 'corridor',
         renderMode: options.renderMode,
       },
       options.context,

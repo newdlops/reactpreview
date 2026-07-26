@@ -131,6 +131,7 @@ vi.mock('vscode', () => {
 /** Mutable webview panel that exposes browser messages without automatically settling revisions. */
 class RevisionPanel {
   public active = false;
+  public deliverMessages = true;
   public title = 'React Preview';
   private readonly disposeListeners: (() => void)[] = [];
   private readonly messageListeners: ((message: unknown) => void)[] = [];
@@ -148,7 +149,7 @@ class RevisionPanel {
       if ((message as { readonly type?: unknown } | null)?.type === 'react-preview-hot-reload') {
         this.hotReloadMessages.push(message as Record<string, unknown>);
       }
-      return Promise.resolve(true);
+      return Promise.resolve(this.deliverMessages);
     }),
   };
 
@@ -278,6 +279,31 @@ describe('PreviewPanelSession displayed Inspector revision', () => {
     fixture.session.dispose();
   });
 
+  it('does not start selected-context enrichment after a retained route replacement', async () => {
+    const execute = vi
+      .fn<PreviewBuildService['execute']>()
+      .mockResolvedValueOnce(createPreparedPreview('old'))
+      .mockResolvedValueOnce(createPreparedPreview('selected-route'));
+    const fixture = createFixture(execute);
+    await startReadyInitialRuntime(fixture, 'old');
+
+    fixture.panel.emitMessage({
+      branchId: 'route-0123456789abcdef0123',
+      interactionId: 'route:1:retained',
+      runtimeRevision: 1,
+      selectionPath: [{ componentName: 'SettingsPage', pattern: '/settings' }],
+      type: 'react-preview-inspector-route-selected',
+    });
+    await settleAsyncWork();
+    expect(fixture.panel.hotReloadMessages).toHaveLength(1);
+
+    fixture.panel.emitMessage(createHotReloadAcknowledgement(fixture.panel, false));
+    await settleAsyncWork();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    fixture.session.dispose();
+  });
+
   /** Rebuilding identical bytes changes host progress only, not the revision embedded in Chromium. */
   it('retains the actual browser revision across a same-hash rebuild', async () => {
     const fixture = createFixture(
@@ -314,6 +340,8 @@ describe('PreviewPanelSession displayed Inspector revision', () => {
     ];
 
     fixture.panel.emitMessage({
+      branchId: 'route-0123456789abcdef0123',
+      interactionId: 'route:1:1',
       runtimeRevision: 1,
       selectionPath,
       type: 'react-preview-inspector-route-selected',

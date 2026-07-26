@@ -4,6 +4,8 @@
  * prevents browser acknowledgements from mutating artifact leases before all fields are validated.
  */
 
+import type { PreviewPreparedApplicationOrigin } from './previewPreparedApplication';
+
 /** Exact browser outcome accepted for one pending hot-reload revision. */
 export interface PreviewHotReloadAcknowledgement {
   /** Whether the newly imported revision replaced the mounted React tree. */
@@ -20,10 +22,14 @@ export interface PreviewHotReloadAcknowledgement {
 
 /** Artifact leases and fallback metadata retained while one browser replacement is pending. */
 export interface PendingPreviewHotReload {
+  /** Opaque application identity used to settle only its browser outcome. */
+  readonly applicationId: string;
   /** Complete latest document used when replacement already disturbed the preceding React root. */
   readonly fallbackHtml: string;
   /** New artifact whose complete HTML may replace the document after a delivery failure. */
   readonly nextArtifactHash: string;
+  /** Foreground or background work that owns this browser application. */
+  readonly origin: PreviewPreparedApplicationOrigin;
   /** Previous lease; mutable only when a failed intermediate revision is removed from the chain. */
   previousArtifactHash: string;
   /** Complete-document startup token used by the navigation fallback. */

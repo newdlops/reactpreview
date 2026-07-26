@@ -47,6 +47,13 @@ export interface ErrorPreviewState {
   readonly message: string;
   /** Short error heading. */
   readonly title: string;
+  /** Optional host-authorized retry action for transient build or bootstrap failures. */
+  readonly retry?: {
+    /** Current panel revision that owns this action. */
+    readonly revision: number;
+    /** Opaque host-generated action token. */
+    readonly token: string;
+  };
 }
 
 /** Every complete state that can replace the preview webview document. */
@@ -60,9 +67,11 @@ export type PreviewHtmlState = ErrorPreviewState | LoadingPreviewState | ReadyPr
  * @returns Complete HTML assigned to `Webview.html`.
  */
 export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): string {
+  const retryNonce =
+    state.kind === 'error' && state.retry !== undefined ? createRetryNonce(state) : undefined;
   const csp = [
     "default-src 'none'",
-    `script-src ${cspSource}`,
+    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}`,
     `style-src ${cspSource} 'unsafe-inline'`,
     `img-src ${cspSource} data: blob: https:`,
     `font-src ${cspSource} data:`,
@@ -112,7 +121,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   ${createStylesheetElement(state)}
 </head>
 <body data-react-preview-state="${state.kind}">
-  ${createBody(state)}
+  ${createBody(state, retryNonce)}
 </body>
 </html>`;
 }
@@ -147,7 +156,7 @@ function createStylesheetElement(state: PreviewHtmlState): string {
  * @param state Current preview UI state.
  * @returns HTML fragment whose dynamic values have already been escaped.
  */
-function createBody(state: PreviewHtmlState): string {
+function createBody(state: PreviewHtmlState, retryNonce: string | undefined): string {
   switch (state.kind) {
     case 'loading': {
       const progress = createPreviewProgressSnapshot(state.stage);
@@ -164,10 +173,12 @@ function createBody(state: PreviewHtmlState): string {
     }
     case 'error': {
       const details = state.details === undefined ? '' : `<pre>${escapeHtml(state.details)}</pre>`;
+      const retry = state.retry === undefined ? '' : createRetryAction(state.retry, retryNonce);
       return `<main class="react-preview-status">
   <h1>${escapeHtml(state.title)}</h1>
   <p>${escapeHtml(state.message)}</p>
   ${details}
+  ${retry}
 </main>`;
     }
     case 'ready':
@@ -175,6 +186,37 @@ function createBody(state: PreviewHtmlState): string {
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
 <script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
+}
+
+/** Creates a host-only recovery button whose inline handler is authorized by a unique CSP nonce. */
+function createRetryAction(
+  retry: NonNullable<ErrorPreviewState['retry']>,
+  nonce: string | undefined,
+): string {
+  if (nonce === undefined) return '';
+  const token = escapeHtml(retry.token);
+  return `<button type="button" data-react-preview-retry data-react-preview-retry-token="${token}" data-react-preview-retry-revision="${retry.revision.toString()}">Retry preview</button>
+<script nonce="${nonce}">
+  (() => {
+    const button = document.querySelector('[data-react-preview-retry]');
+    if (!(button instanceof HTMLButtonElement)) return;
+    button.addEventListener('click', () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Retrying…';
+      const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
+      vscode?.postMessage({ type: 'react-preview-retry', token: button.dataset.reactPreviewRetryToken, revision: Number(button.dataset.reactPreviewRetryRevision) });
+    });
+  })();
+</script>`;
+}
+
+/** Derives a CSP-safe opaque nonce from values already private to this one error document. */
+function createRetryNonce(state: ErrorPreviewState): string {
+  const retry = state.retry;
+  if (retry === undefined) return '';
+  return `${retry.revision.toString(36)}${retry.token.replace(/[^A-Za-z0-9]/gu, '').slice(0, 24)}`;
 }
 
 /** Encodes optional startup correlation data without supplying it to project component props. */

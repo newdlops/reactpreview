@@ -47,6 +47,8 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(
       handlePreviewInspectorHostMessage(
         {
+          branchId: 'route-0123456789abcdef0123',
+          interactionId: 'route:12:1',
           runtimeRevision: 12,
           selectionPath,
           type: 'react-preview-inspector-route-selected',
@@ -54,8 +56,37 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
         context,
       ),
     ).toBe(true);
-    expect(selectRoute).toHaveBeenCalledWith(selectionPath);
+    expect(selectRoute).toHaveBeenCalledWith({
+      branchId: 'route-0123456789abcdef0123',
+      interactionId: 'route:12:1',
+      runtimeRevision: 12,
+      selectionPath,
+      type: 'react-preview-inspector-route-selected',
+    });
     expect(handlerState.health).not.toHaveBeenCalled();
+  });
+
+  /** Rebuilds one active candidate while keeping all alternate candidates descriptor-only. */
+  it('routes a current page candidate selection', () => {
+    const { context, selectPageCandidate } = createContext();
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        {
+          candidateId: 'page:settings-1',
+          interactionId: 'page:12:1',
+          runtimeRevision: 12,
+          type: 'react-preview-inspector-page-candidate-selected',
+        },
+        context,
+      ),
+    ).toBe(true);
+    expect(selectPageCandidate).toHaveBeenCalledWith({
+      candidateId: 'page:settings-1',
+      interactionId: 'page:12:1',
+      runtimeRevision: 12,
+      type: 'react-preview-inspector-page-candidate-selected',
+    });
   });
 
   /** Consumes a stale route click without allowing an old webview to replace the new branch. */
@@ -65,6 +96,8 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(
       handlePreviewInspectorHostMessage(
         {
+          branchId: 'route-0123456789abcdef0123',
+          interactionId: 'route:11:1',
           runtimeRevision: 11,
           selectionPath: [{ componentName: 'OldPage', pattern: '/old' }],
           type: 'react-preview-inspector-route-selected',
@@ -166,6 +199,7 @@ interface TestPreviewInspectorHostMessageContext {
   readonly decorateBranches: ReturnType<typeof vi.fn>;
   readonly select: ReturnType<typeof vi.fn>;
   readonly selectRoute: ReturnType<typeof vi.fn>;
+  readonly selectPageCandidate: ReturnType<typeof vi.fn>;
 }
 
 /** Creates the smallest structurally complete host context used by protocol routing tests. */
@@ -174,6 +208,7 @@ function createContext(): TestPreviewInspectorHostMessageContext {
   const decorateBranches = vi.fn();
   const select = vi.fn();
   const selectRoute = vi.fn();
+  const selectPageCandidate = vi.fn();
   const context = {
     currentRuntimeRevision: 12,
     dependencyPaths: new Set([SOURCE_PATH]),
@@ -183,11 +218,12 @@ function createContext(): TestPreviewInspectorHostMessageContext {
     panelViewColumn: undefined,
     pinnedDocumentUri: {} as PreviewInspectorHostMessageContext['pinnedDocumentUri'],
     selectRoute,
+    selectPageCandidate,
     sourceDecoration: {
       decorateBranches,
       select,
     } as unknown as PreviewInspectorHostMessageContext['sourceDecoration'],
     targetPath: SOURCE_PATH,
   };
-  return { context, debug, decorateBranches, select, selectRoute };
+  return { context, debug, decorateBranches, select, selectRoute, selectPageCandidate };
 }

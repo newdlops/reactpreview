@@ -15,7 +15,7 @@ import { PreviewContextEnrichmentBackoff } from '../../src/presentation/previewC
 
 describe('PreviewContextEnrichmentCoordinator', () => {
   /** Starts only after the exact fast artifact and revision settle in the browser. */
-  it('gates a full build on the matching runtime acknowledgement', async () => {
+  it('gates a corridor build on the matching runtime acknowledgement', async () => {
     const fixture = createFixture();
     const signal = new AbortController().signal;
 
@@ -30,10 +30,40 @@ describe('PreviewContextEnrichmentCoordinator', () => {
     });
 
     expect(fixture.execute.mock.calls[0]?.[0]).toMatchObject({
-      preparationMode: 'full',
+      preparationMode: 'corridor',
       renderMode: 'page-inspector',
     });
     expect(fixture.callbacks.complete).toHaveBeenCalledWith(4);
+  });
+
+  /** A newer foreground revision aborts the actual child build, not only an unstarted queue item. */
+  it('aborts a running committed-fast enrichment when cancelled', async () => {
+    let observedSignal: AbortSignal | undefined;
+    const execute = vi.fn((_request: unknown, context: { readonly signal?: AbortSignal }) => {
+      observedSignal = context.signal;
+      return new Promise<PreparedPreview>(() => undefined);
+    });
+    const callbacks = {
+      commit: vi.fn(),
+      complete: vi.fn(),
+      isCurrent: vi.fn(() => true),
+      reportFailure: vi.fn(),
+      reportSuppressed: vi.fn(),
+    };
+    const coordinator = new PreviewContextEnrichmentCoordinator({
+      buildPreview: { execute, releaseArtifact: vi.fn(() => Promise.resolve()) },
+      callbacks,
+      renderMode: 'page-inspector',
+      backoff: new PreviewContextEnrichmentBackoff(),
+    });
+
+    coordinator.startAfterCommittedFast(TARGET, 'fast', 5, new AbortController().signal);
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    coordinator.cancel();
+
+    expect(observedSignal?.aborted).toBe(true);
   });
 
   /** Keeps the fast tree and reports only a warning callback when full discovery fails. */
@@ -243,7 +273,7 @@ describe('PreviewContextEnrichmentCoordinator', () => {
     expect(fixture.execute).toHaveBeenCalledTimes(2);
     expect(fixture.execute.mock.calls[0]?.[0]).toMatchObject({
       buildIntent: 'context-enrichment',
-      preparationMode: 'full',
+      preparationMode: 'corridor',
     });
   });
 

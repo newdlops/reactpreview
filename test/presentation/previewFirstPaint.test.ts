@@ -26,7 +26,7 @@ describe('preparePreviewFirstPaint', () => {
     const result = await preparePreviewFirstPaint({
       buildPreview: createBuildService(execute),
       context: {},
-      preferFast: true,
+      preparationMode: 'fast',
       renderMode: 'component',
       request: REQUEST,
     });
@@ -41,8 +41,8 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('fast');
   });
 
-  /** Converts a genuine component-gallery fast-build failure into one complete initial build. */
-  it('falls back to full preparation when the direct graph cannot compile', async () => {
+  /** Converts a genuine component-gallery fast-build failure into one selected-corridor build. */
+  it('falls back to corridor preparation when the direct graph cannot compile', async () => {
     const execute = vi
       .fn<BuildPreview['execute']>()
       .mockRejectedValueOnce(new Error('fast graph unavailable'))
@@ -51,14 +51,14 @@ describe('preparePreviewFirstPaint', () => {
     const result = await preparePreviewFirstPaint({
       buildPreview: createBuildService(execute),
       context: {},
-      preferFast: true,
+      preparationMode: 'fast',
       renderMode: 'component',
       request: REQUEST,
     });
 
     expect(execute.mock.calls.map(([request]) => request.preparationMode)).toEqual([
       'fast',
-      'full',
+      'corridor',
     ]);
     expect(result.requiresContextEnrichment).toBe(false);
     expect(result.preparedPreview.artifact.contentHash).toBe('full');
@@ -73,7 +73,7 @@ describe('preparePreviewFirstPaint', () => {
     const result = await preparePreviewFirstPaint({
       buildPreview: createBuildService(execute),
       context: {},
-      preferFast: true,
+      preparationMode: 'fast',
       renderMode: 'page-inspector',
       request: REQUEST,
     });
@@ -87,8 +87,8 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('page-first-paint');
   });
 
-  /** Skips a redundant full pass when the compiler already proved the authored page corridor. */
-  it('accepts a complete fast Page Inspector artifact as the final context result', async () => {
+  /** Always schedules corridor validation after fast Page Inspector paint. */
+  it('keeps complete fast Page Inspector coverage eligible for corridor enrichment', async () => {
     const execute = vi.fn<BuildPreview['execute']>(() =>
       Promise.resolve({
         ...createPreparedPreview('page-complete'),
@@ -99,18 +99,18 @@ describe('preparePreviewFirstPaint', () => {
     const result = await preparePreviewFirstPaint({
       buildPreview: createBuildService(execute),
       context: {},
-      preferFast: true,
+      preparationMode: 'fast',
       renderMode: 'page-inspector',
       request: REQUEST,
     });
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(result.requiresContextEnrichment).toBe(false);
+    expect(result.requiresContextEnrichment).toBe(true);
     expect(result.preparedPreview.contextCoverage).toBe('complete');
   });
 
-  /** Reuses the complete incremental path after a session has established full context once. */
-  it('builds only full context for a warm session', async () => {
+  /** Reuses selected-corridor preparation after a session has established corridor context. */
+  it('builds only corridor context for a warm session', async () => {
     const execute = vi.fn<BuildPreview['execute']>(() =>
       Promise.resolve(createPreparedPreview('warm')),
     );
@@ -118,7 +118,7 @@ describe('preparePreviewFirstPaint', () => {
     const result = await preparePreviewFirstPaint({
       buildPreview: createBuildService(execute),
       context: {},
-      preferFast: false,
+      preparationMode: 'corridor',
       renderMode: 'component',
       request: REQUEST,
     });
@@ -126,7 +126,7 @@ describe('preparePreviewFirstPaint', () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
       buildIntent: 'foreground',
-      preparationMode: 'full',
+      preparationMode: 'corridor',
     });
     expect(result.requiresContextEnrichment).toBe(false);
   });
@@ -143,7 +143,7 @@ describe('preparePreviewFirstPaint', () => {
       preparePreviewFirstPaint({
         buildPreview: createBuildService(execute),
         context: { signal: controller.signal },
-        preferFast: true,
+        preparationMode: 'fast',
         renderMode: 'component',
         request: REQUEST,
       }),
@@ -163,7 +163,7 @@ describe('preparePreviewFirstPaint', () => {
       preparePreviewFirstPaint({
         buildPreview: createBuildService(execute),
         context: {},
-        preferFast: true,
+        preparationMode: 'fast',
         renderMode: 'page-inspector',
         request: REQUEST,
       }),

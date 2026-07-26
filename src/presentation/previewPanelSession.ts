@@ -1,6 +1,6 @@
-/** Owns one pinned panel whose target, builds, leases, and focus state never leak to another tab. */
+/* eslint-disable jsdoc/require-jsdoc */
 import * as vscode from 'vscode';
-import type { PreparedPreview, PreviewInspectorRouteSelectionStep } from '../domain/preview';
+import type { PreparedPreview } from '../domain/preview';
 import { isPreviewBuildCancellation } from '../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../domain/previewProgress';
 import { canonicalizeExistingPath, createExistingPathIdentitySet } from '../shared/pathIdentity';
@@ -9,19 +9,29 @@ import { describeBuildFailure, formatDiagnostic } from './previewFailure';
 import { PreviewContextEnrichmentCoordinator } from './previewContextEnrichment';
 import { createPreviewPanelTitle } from './previewPanelTitle';
 import { PreviewPanelRouteSelection } from './previewPanelRouteSelection';
+import { PreviewPanelPageCandidateSelection } from './previewPanelPageCandidateSelection';
+import { PreviewPanelRetryController } from './previewPanelRetryController';
+import { PreviewPanelPreparationState } from './previewPanelPreparationState';
+import { PreviewPanelInspectorSelectionController } from './previewPanelInspectorSelectionController';
 import { PreviewPerformanceTrace } from './previewPerformanceTrace';
 import { preparePreviewFirstPaint } from './previewFirstPaint';
-import {
-  createHotReloadScriptUri,
-  readPreviewHotReloadAcknowledgement,
-  type PendingPreviewHotReload,
-} from './previewHotReloadProtocol';
+import { createHotReloadScriptUri, type PendingPreviewHotReload } from './previewHotReloadProtocol';
+import { handlePreviewPanelRuntimeAcknowledgement } from './previewPanelRuntimeAcknowledgement';
+import { readPreviewRetryRequest } from './previewRetryProtocol';
 import type { PreviewInspectorCompanionOpenSourceRequest } from './previewInspectorCompanionProtocol';
 import { handlePreviewInspectorHostMessage } from './previewInspectorHostMessage';
 import { handlePreviewInspectorCompanionSourceNavigation } from './previewInspectorSourceNavigation';
 import { PreviewInspectorSourceDecoration } from './previewInspectorSourceDecoration';
 import { PreviewInspectorGestureGate } from './previewInspectorGestureGate';
 import { createPreviewProgressMessage } from './previewProgress';
+import type {
+  PreviewPreparedApplicationHandle,
+  PreviewPreparedApplicationOrigin,
+} from './previewPreparedApplication';
+import type { PreviewInspectorPageCandidateSelectionRequest } from './previewInspectorPageCandidateSelectionProtocol';
+import type { PreviewInspectorPageExecutionRetryRequest } from './previewInspectorPageExecutionRetryProtocol';
+import type { PreviewInspectorRouteSelectionRequest } from './previewInspectorRouteSelectionProtocol';
+import type { PreviewInspectorSelectionStatusMessage } from './previewInspectorSelectionStatusProtocol';
 import { PreviewProgressGate } from './previewProgressGate';
 import type {
   ActivePreviewBuildExecution,
@@ -42,9 +52,8 @@ export type {
   PreviewPanelSessionCallbacks,
   PreviewPanelSessionOptions,
 } from './previewPanelSessionTypes';
-/** A single React preview tab pinned to one file for its complete lifetime. */
+// prettier-ignore
 export class PreviewPanelSession implements vscode.Disposable {
-  /** Canonical target identity used to route editor changes from the manager. */
   public readonly targetPath: string;
   private artifactHash: string | undefined;
   private activeBuildExecution: ActivePreviewBuildExecution | undefined;
@@ -55,25 +64,30 @@ export class PreviewPanelSession implements vscode.Disposable {
   private disposed = false;
   private disposalNotified = false;
   private displayedRuntimeRevision = 0;
-  private hasCompleteContext = false;
-  /** Root-to-leaf route path selected independently for this pinned Inspector tab. */
+  private readonly preparationState = new PreviewPanelPreparationState();
   private readonly inspectorRouteSelection = new PreviewPanelRouteSelection();
+  private readonly inspectorPageCandidateSelection = new PreviewPanelPageCandidateSelection();
+  private readonly inspectorSelection = new PreviewPanelInspectorSelectionController();
   private readonly inspectorSourceDecoration = new PreviewInspectorSourceDecoration();
   private readonly inspectorSourceGesture = new PreviewInspectorGestureGate();
   private readonly panelDisposables: vscode.Disposable[] = [];
   private readonly pendingHotReloads = new Map<string, PendingPreviewHotReload>();
+  private readonly pendingContextEnrichmentInputs = new Map<
+    string,
+    {
+      readonly artifactHash: string;
+      readonly signal: AbortSignal;
+      readonly target: ResolvedPreviewTarget;
+    }
+  >();
   private readonly performanceTrace: PreviewPerformanceTrace;
   private readonly progressGate = new PreviewProgressGate();
   private pendingInitialRuntime: PendingPreviewInitialRuntime | undefined;
+  private readonly retryController = new PreviewPanelRetryController();
   private pendingSameArtifactRevision: PendingSamePreviewArtifactRevision | undefined;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private revision = 0;
   private hotReloadSequence = 0;
-  /**
-   * Captures the immutable target and subscribes only to events emitted by this panel.
-   *
-   * @param options Explicit dependencies and initial target snapshot.
-   */
   public constructor(private readonly options: PreviewPanelSessionOptions) {
     this.targetPath = canonicalizeExistingPath(options.initialTarget.request.documentPath);
     this.dependencies = createExistingPathIdentitySet([options.initialTarget.request.documentPath]);
@@ -85,31 +99,27 @@ export class PreviewPanelSession implements vscode.Disposable {
       callbacks: {
         complete: this.clearBuildExecution.bind(this),
         commit: (target, preview, revision) => {
-          this.renderProgress(revision, target.documentName, 'loading-preview');
-          this.commitPreparedPreview(target.documentName, preview, revision);
-          this.hasCompleteContext = true;
+          const handle = this.commitPreparedPreview(target.documentName, preview, revision, {
+            kind: 'context-enrichment',
+            owningRevision: revision,
+          });
+          if (handle.disposition === 'already-displayed') this.preparationState.markCorridorCommitted();
         },
         isCurrent: this.isCurrentRevision.bind(this),
         reportFailure: (error, target, revision) => {
           const failure = describeBuildFailure(error);
           this.options.log.warn(
-            `Full React preview context enrichment failed; fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}`,
+            `Selected-context React preview enrichment failed; fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}`,
             error,
           );
           this.performanceTrace.finish('failed', revision);
-          rememberPreviewFailureDependencies(
-            this.dependencies,
-            error,
-            target.request.workspaceRoot,
-          );
-          this.renderProgress(revision, target.documentName, 'ready');
+          rememberPreviewFailureDependencies(this.dependencies, error, target.request.workspaceRoot);
         },
         reportSuppressed: (target, revision, retryAfterMs) => {
           const retryMinutes = Math.max(1, Math.ceil(retryAfterMs / 60_000));
           this.options.log.info(
-            `Full React preview context enrichment skipped for an unchanged graph after a prior resource stall. Fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}; retry window: approximately ${retryMinutes.toString()} minute(s). Edit the target or a captured dependency to retry immediately.`,
+            `Selected-context React preview enrichment skipped for an unchanged graph after a prior resource stall. Fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}; retry window: approximately ${retryMinutes.toString()} minute(s). Edit the target or a captured dependency to retry immediately.`,
           );
-          this.renderProgress(revision, target.documentName, 'ready');
         },
       },
       renderMode: options.renderMode,
@@ -121,66 +131,37 @@ export class PreviewPanelSession implements vscode.Disposable {
       options.panel.webview.onDidReceiveMessage(this.handleWebviewMessage.bind(this)),
     );
   }
-  /** Immutable URI captured when this preview panel was created. */
   public get documentUri(): vscode.Uri {
     return this.options.initialTarget.documentUri;
   }
-  /** Whether this panel currently owns editor focus. */
   public get isActive(): boolean {
     return !this.disposed && this.options.panel.active;
   }
-  /** Starts the first build from the exact target snapshot validated before panel creation. */
   public start(): void {
     this.scheduleRefresh(true, this.options.initialTarget);
   }
-  /** Rebuilds this session's pinned file immediately without consulting another editor. */
   public refresh(): void {
     this.scheduleRefresh(true);
   }
-
-  /**
-   * Schedules a debounced rebuild only when a changed file belongs to this session's graph.
-   *
-   * @param documentPath Filesystem path emitted by a VS Code document event.
-   * @returns `true` when this session accepted the event.
-   */
   public refreshForDocument(documentPath: string): boolean {
     const canonicalDocumentPath = canonicalizeExistingPath(documentPath);
-    const belongsToWatchedDirectory = [...this.dependencyDirectories].some((directoryPath) =>
-      isPreviewPathInside(directoryPath, canonicalDocumentPath),
-    );
-    if (
-      this.disposed ||
-      (!this.dependencies.has(canonicalDocumentPath) && !belongsToWatchedDirectory)
-    ) {
+    const belongsToWatchedDirectory = [...this.dependencyDirectories].some((directoryPath) => isPreviewPathInside(directoryPath, canonicalDocumentPath));
+    if (this.disposed || (!this.dependencies.has(canonicalDocumentPath) && !belongsToWatchedDirectory)) {
       return false;
     }
-
     this.inspectorSourceDecoration.invalidateDocument(canonicalDocumentPath);
     this.scheduleRefresh(false);
     return true;
   }
-
-  /** Schedules a normal rebuild after resource-scoped compiler configuration changes. */
   public refreshForConfiguration(): void {
     this.scheduleRefresh(false);
   }
-
-  /**
-   * Reports whether a source-editor command refers to this immutable target.
-   *
-   * @param documentPath Candidate active editor path.
-   * @returns `true` only for this panel's original target identity.
-   */
   public targetsDocument(documentPath: string): boolean {
     return this.targetPath === canonicalizeExistingPath(documentPath);
   }
-  /** Reapplies a pending tree-source mark after VS Code changes the visible code editors. */
   public refreshInspectorSourceDecoration(editors: readonly vscode.TextEditor[]): void {
     this.inspectorSourceDecoration.applyVisibleEditors(editors);
   }
-
-  /** Opens one real companion-tab source click only inside this session's committed bundle graph. */
   public openInspectorCompanionSource(request: PreviewInspectorCompanionOpenSourceRequest): void {
     handlePreviewInspectorCompanionSourceNavigation(request, {
       dependencyPaths: this.dependencies,
@@ -191,64 +172,45 @@ export class PreviewPanelSession implements vscode.Disposable {
       pinnedDocumentUri: this.documentUri,
     });
   }
-
-  /** Invalidates work, closes this panel, releases its artifact lease, and removes listeners. */
   public dispose(): void {
     if (this.disposed) {
       return;
     }
-
     this.finishDisposal();
     this.options.panel.dispose();
     this.notifyDisposed();
   }
-
-  /**
-   * Assigns a session-local revision and starts it immediately or after the configured debounce.
-   *
-   * @param immediate Whether to bypass the editor-change delay.
-   * @param capturedTarget Optional open-time target that avoids a second active-editor lookup.
-   */
-  private scheduleRefresh(immediate: boolean, capturedTarget?: ResolvedPreviewTarget): void {
+  private scheduleRefresh(immediate: boolean, capturedTarget?: ResolvedPreviewTarget, preservesInspectorSelection = false): void {
     if (this.disposed) {
       return;
     }
-
+    if (!preservesInspectorSelection) {
+      const cancelled = this.inspectorSelection.cancelForRefresh('cancelled-by-refresh', this.displayedRuntimeRevision);
+      if (cancelled?.status !== undefined) this.publishInspectorSelectionStatuses([cancelled.status]);
+      this.inspectorRouteSelection.rollback();
+      this.inspectorPageCandidateSelection.rollback();
+      this.preparationState.rollbackSelection();
+    }
     this.cancelActiveBuild();
     this.performanceTrace.finish('cancelled');
     this.clearRefreshTimer();
     const requestedRevision = ++this.revision;
     const controller = new AbortController();
     this.activeBuildExecution = { controller, revision: requestedRevision };
-    this.renderProgress(
-      requestedRevision,
-      capturedTarget?.documentName ?? this.options.initialTarget.documentName,
-      'resolving-target',
-    );
+    this.renderProgress(requestedRevision, capturedTarget?.documentName ?? this.options.initialTarget.documentName, 'resolving-target');
+    this.publishInspectorSelectionStatuses(this.inspectorSelection.reportProgress(requestedRevision, 'resolving-target', this.displayedRuntimeRevision));
     if (immediate) {
       void this.rebuild(requestedRevision, controller.signal, capturedTarget);
       return;
     }
-
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
       void this.rebuild(requestedRevision, controller.signal);
     }, this.getUpdateDelay());
   }
-
-  /**
-   * Resolves and builds exactly one pinned target revision, then commits only if it remains current.
-   *
-   * @param requestedRevision Session-local revision captured before asynchronous work starts.
-   * @param signal Cancellation signal aborted as soon as a newer refresh supersedes this revision.
-   * @param capturedTarget Optional target already resolved at panel creation.
-   */
-  private async rebuild(
-    requestedRevision: number,
-    signal: AbortSignal,
-    capturedTarget?: ResolvedPreviewTarget,
-  ): Promise<void> {
+  private async rebuild(requestedRevision: number, signal: AbortSignal, capturedTarget?: ResolvedPreviewTarget): Promise<void> {
     let target: PreviewTargetIssue | ResolvedPreviewTarget;
+    let awaitingBrowserApplication = false;
     try {
       target = capturedTarget ?? (await this.options.resolveTarget(this.documentUri, signal));
     } catch (error) {
@@ -260,13 +222,11 @@ export class PreviewPanelSession implements vscode.Disposable {
         this.clearBuildExecution(requestedRevision);
         return;
       }
-
       this.options.log.error('React preview target resolution failed.', error);
       this.performanceTrace.finish('failed', requestedRevision);
       this.renderTargetIssue(
         {
-          message:
-            'The pinned source file could not be reopened. Check the file and refresh this preview.',
+          message: 'The pinned source file could not be reopened. Check the file and refresh this preview.',
           title: 'Preview target unavailable',
         },
         requestedRevision,
@@ -274,24 +234,20 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.clearBuildExecution(requestedRevision);
       return;
     }
-
     if (!this.isCurrentRevision(requestedRevision)) {
       this.clearBuildExecution(requestedRevision);
       return;
     }
-
     if (signal.aborted) {
       this.clearBuildExecution(requestedRevision);
       return;
     }
-
     if ('title' in target) {
       this.performanceTrace.finish('failed', requestedRevision);
       this.renderTargetIssue(target, requestedRevision);
       this.clearBuildExecution(requestedRevision);
       return;
     }
-
     if (!this.targetsDocument(target.request.documentPath)) {
       this.performanceTrace.finish('failed', requestedRevision);
       this.renderTargetIssue(
@@ -304,9 +260,9 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.clearBuildExecution(requestedRevision);
       return;
     }
-    const buildTarget = this.inspectorRouteSelection.applyTo(target);
+    const routeTarget = this.inspectorRouteSelection.applyTo(target);
+    const buildTarget = this.inspectorRouteSelection.isPendingSelection ? routeTarget : this.inspectorPageCandidateSelection.applyTo(routeTarget);
     this.options.panel.title = createPreviewPanelTitle(buildTarget.request.documentPath);
-    let contextEnrichmentPending = false;
     try {
       const firstPaint = await preparePreviewFirstPaint({
         buildPreview: this.options.buildPreview,
@@ -316,36 +272,39 @@ export class PreviewPanelSession implements vscode.Disposable {
           },
           signal,
         },
-        preferFast: !this.hasCompleteContext,
+        preparationMode: this.preparationState.current,
         renderMode: this.options.renderMode,
         request: buildTarget.request,
       });
       const preparedPreview = firstPaint.preparedPreview;
       if (!this.isCurrentRevision(requestedRevision)) {
         this.releaseArtifact(preparedPreview.artifact.contentHash);
+        this.inspectorRouteSelection.rollback();
+        this.preparationState.rollbackSelection();
         return;
       }
-
       try {
         this.renderProgress(requestedRevision, target.documentName, 'loading-preview');
-        this.commitPreparedPreview(target.documentName, preparedPreview, requestedRevision);
-        if (firstPaint.requiresContextEnrichment) {
-          contextEnrichmentPending = true;
-          const artifactHash = preparedPreview.artifact.contentHash;
-          const awaitsRuntimeSettlement =
-            this.pendingInitialRuntime?.artifactHash === artifactHash ||
-            [...this.pendingHotReloads.values()].some(
-              (pending) => pending.nextArtifactHash === artifactHash,
-            );
-          this.contextEnrichment.schedule(
-            buildTarget,
-            artifactHash,
-            requestedRevision,
-            signal,
-            awaitsRuntimeSettlement,
-          );
+        const interactionId = this.inspectorSelection.currentBuildRevision() === requestedRevision ? this.inspectorSelection.currentInteractionId() : undefined;
+        const origin: PreviewPreparedApplicationOrigin = {
+          buildRevision: requestedRevision,
+          ...(interactionId === undefined ? {} : { interactionId }),
+          kind: 'foreground',
+          requiresContextEnrichment: firstPaint.requiresContextEnrichment,
+        };
+        const handle = this.commitPreparedPreview(target.documentName, preparedPreview, requestedRevision, origin);
+        this.bindPreparedForegroundApplication(handle, origin);
+        if (handle.disposition === 'already-displayed') {
+          this.settlePreparedApplication(handle.applicationId, origin, requestedRevision);
         } else {
-          this.hasCompleteContext = true;
+          awaitingBrowserApplication = true;
+          if (origin.requiresContextEnrichment) {
+            this.pendingContextEnrichmentInputs.set(handle.applicationId, {
+              artifactHash: preparedPreview.artifact.contentHash,
+              signal,
+              target: buildTarget,
+            });
+          }
         }
       } catch (error) {
         this.releaseArtifact(preparedPreview.artifact.contentHash);
@@ -353,73 +312,60 @@ export class PreviewPanelSession implements vscode.Disposable {
       }
     } catch (error) {
       if (isPreviewBuildCancellation(error, signal)) {
+        this.inspectorRouteSelection.rollback();
+        this.preparationState.rollbackSelection();
         return;
       }
       if (!this.isCurrentRevision(requestedRevision)) {
+        this.inspectorRouteSelection.rollback();
+        this.preparationState.rollbackSelection();
         return;
       }
-
       const failure = describeBuildFailure(error);
       this.options.log.error(
         `React preview build failed; retaining the last good preview. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}`,
         error,
       );
       this.performanceTrace.finish('failed', requestedRevision);
+      this.rollbackInspectorSelection(requestedRevision, 'build-failed');
       rememberPreviewFailureDependencies(this.dependencies, error, target.request.workspaceRoot);
-      const errorState = {
-        kind: 'error' as const,
-        message: failure.message,
-        title: 'Preview build failed',
-      };
       if (this.artifactHash === undefined) {
-        this.options.panel.webview.html = createPreviewHtml(
-          this.options.panel.webview.cspSource,
-          failure.details === undefined ? errorState : { ...errorState, details: failure.details },
+        this.renderRetryableError(
+          {
+            message: failure.message,
+            title: 'Preview build failed',
+            ...(failure.details === undefined ? {} : { details: failure.details }),
+          },
+          requestedRevision,
         );
       } else {
         this.renderProgress(requestedRevision, target.documentName, 'ready');
       }
     } finally {
-      if (!contextEnrichmentPending) {
-        this.clearBuildExecution(requestedRevision);
-      }
+      if (!awaitingBrowserApplication) this.clearBuildExecution(requestedRevision);
     }
   }
-
-  /**
-   * Updates this panel, replaces its dependency graph, and transfers its artifact lease.
-   *
-   * @param documentName Stable workspace-relative name shown in the ready state.
-   * @param preparedPreview Published browser artifact and compiler metadata.
-   * @param requestedRevision Current session revision used by retained progress and reload messages.
-   */
   private commitPreparedPreview(
     documentName: string,
     preparedPreview: PreparedPreview,
     requestedRevision: number,
-  ): void {
-    const nextDependencies = createExistingPathIdentitySet([
-      this.targetPath,
-      ...preparedPreview.dependencies,
-    ]);
+    origin: PreviewPreparedApplicationOrigin = {
+      buildRevision: requestedRevision,
+      kind: 'foreground',
+      requiresContextEnrichment: false,
+    },
+  ): PreviewPreparedApplicationHandle {
+    this.retryController.clear();
+    const nextDependencies = createExistingPathIdentitySet([this.targetPath, ...preparedPreview.dependencies]);
     this.inspectorSourceGesture.configure(preparedPreview.inspectorSourceGestureSecret);
-    const nextDependencyDirectories = new Set(
-      preparedPreview.watchDirectories.map(canonicalizeExistingPath),
-    );
+    const nextDependencyDirectories = new Set(preparedPreview.watchDirectories.map(canonicalizeExistingPath));
     for (const diagnostic of preparedPreview.diagnostics) {
       this.options.log.warn(formatDiagnostic(diagnostic));
     }
-
-    const scriptUri = this.options.panel.webview
-      .asWebviewUri(vscode.Uri.parse(preparedPreview.artifact.scriptLocation, true))
-      .toString(true);
+    const scriptUri = this.options.panel.webview.asWebviewUri(vscode.Uri.parse(preparedPreview.artifact.scriptLocation, true)).toString(true);
     const stylesheetLocation = preparedPreview.artifact.stylesheetLocation;
     const stylesheetUri =
-      stylesheetLocation === undefined
-        ? undefined
-        : this.options.panel.webview
-            .asWebviewUri(vscode.Uri.parse(stylesheetLocation, true))
-            .toString(true);
+      stylesheetLocation === undefined ? undefined : this.options.panel.webview.asWebviewUri(vscode.Uri.parse(stylesheetLocation, true)).toString(true);
     const baseState = {
       documentName,
       kind: 'ready' as const,
@@ -444,44 +390,44 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.releaseArtifact(preparedPreview.artifact.contentHash);
       const awaitsSharedRuntime =
         this.pendingInitialRuntime?.artifactHash === previousArtifactHash ||
-        [...this.pendingHotReloads.values()].some(
-          (pending) => pending.nextArtifactHash === previousArtifactHash,
-        );
+        [...this.pendingHotReloads.values()].some((pending) => pending.nextArtifactHash === previousArtifactHash);
       if (awaitsSharedRuntime) {
+        const sharedInitialRuntime = this.pendingInitialRuntime?.artifactHash === previousArtifactHash ? this.pendingInitialRuntime : undefined;
+        const sharedApplication =
+          sharedInitialRuntime ?? [...this.pendingHotReloads.values()].find((pending) => pending.nextArtifactHash === previousArtifactHash);
+        if (sharedApplication === undefined) throw new Error('Missing shared preview application.');
         this.pendingSameArtifactRevision = {
+          applicationId: sharedApplication.applicationId,
           artifactHash: previousArtifactHash,
           documentName,
+          origin,
           revision: requestedRevision,
+        };
+        return {
+          applicationId: sharedApplication.applicationId,
+          disposition: sharedInitialRuntime === undefined ? 'awaiting-hot-reload' : 'awaiting-runtime',
         };
       } else {
         this.renderProgress(requestedRevision, documentName, 'ready', nextHtml);
       }
-      return;
+      return {
+        applicationId: `displayed:${previousArtifactHash}`,
+        disposition: 'already-displayed',
+      };
     }
     const hotScriptUri =
-      previousArtifactHash === undefined
-        ? undefined
-        : createHotReloadScriptUri(
-            scriptUri,
-            requestedRevision,
-            preparedPreview.artifact.contentHash,
-          );
-
+      previousArtifactHash === undefined ? undefined : createHotReloadScriptUri(scriptUri, requestedRevision, preparedPreview.artifact.contentHash);
     if (previousArtifactHash === undefined) {
       // Do not accept the incoming lease until VS Code accepts the initial complete document.
       this.options.panel.webview.html = nextHtml;
-      this.startInitialRuntimeWatchdog(
-        preparedPreview.artifact.contentHash,
-        baseState.runtimeToken,
-        requestedRevision,
-      );
+      this.startInitialRuntimeWatchdog(preparedPreview.artifact.contentHash, baseState.runtimeToken, requestedRevision, origin);
     }
     this.dependencies = nextDependencies;
     this.dependencyDirectories = nextDependencyDirectories;
     this.artifactHash = preparedPreview.artifact.contentHash;
     this.replaceDirectoryWatchers(nextDependencyDirectories);
     if (previousArtifactHash !== undefined && hotScriptUri !== undefined) {
-      this.postHotReload(
+      const applicationId = this.postHotReload(
         previousArtifactHash,
         preparedPreview.artifact.contentHash,
         hotScriptUri,
@@ -489,14 +435,12 @@ export class PreviewPanelSession implements vscode.Disposable {
         nextHtml,
         requestedRevision,
         baseState.runtimeToken,
+        origin,
       );
+      return { applicationId, disposition: 'awaiting-hot-reload' };
     }
+    return { applicationId: baseState.runtimeToken, disposition: 'awaiting-runtime' };
   }
-
-  /**
-   * Sends a cache-busted ESM/CSS replacement while retaining the current webview document.
-   * The previous artifact lease remains valid until the browser acknowledges import completion.
-   */
   private postHotReload(
     previousArtifactHash: string,
     nextArtifactHash: string,
@@ -505,21 +449,23 @@ export class PreviewPanelSession implements vscode.Disposable {
     fallbackHtml: string,
     requestedRevision: number,
     runtimeToken: string,
-  ): void {
+    origin: PreviewPreparedApplicationOrigin,
+  ): string {
     this.hotReloadSequence += 1;
     const token = `${this.hotReloadSequence.toString()}:${nextArtifactHash}`;
     const timeout = setTimeout(() => {
       this.finishHotReload(token, fallbackHtml, 'navigate');
     }, 30_000);
     this.pendingHotReloads.set(token, {
+      applicationId: token,
       fallbackHtml,
       nextArtifactHash,
+      origin,
       previousArtifactHash,
       runtimeRevision: requestedRevision,
       runtimeToken,
       timeout,
     });
-
     let delivery: Thenable<boolean>;
     try {
       delivery = this.options.panel.webview.postMessage({
@@ -532,7 +478,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     } catch (error) {
       this.options.log.debug('Could not post a React preview hot reload message.', error);
       this.finishHotReload(token, fallbackHtml, 'undelivered');
-      return;
+      return token;
     }
     void Promise.resolve(delivery).then(
       (delivered) => {
@@ -545,22 +491,14 @@ export class PreviewPanelSession implements vscode.Disposable {
         this.finishHotReload(token, fallbackHtml, 'undelivered');
       },
     );
+    return token;
   }
-
-  /** Shows monotonic preparation while hot builds preserve the mounted React tree and status UI. */
-  private renderProgress(
-    requestedRevision: number,
-    documentName: string,
-    stage: PreviewProgressStage,
-    fallbackHtml?: string,
-  ): void {
-    if (
-      !this.isCurrentRevision(requestedRevision) ||
-      !this.progressGate.accept(requestedRevision, stage)
-    ) {
+  private renderProgress(requestedRevision: number, documentName: string, stage: PreviewProgressStage, fallbackHtml?: string): void {
+    if (!this.isCurrentRevision(requestedRevision) || !this.progressGate.accept(requestedRevision, stage)) {
       return;
     }
     this.performanceTrace.transition(requestedRevision, documentName, stage);
+    this.publishInspectorSelectionStatuses(this.inspectorSelection.reportProgress(requestedRevision, stage, this.displayedRuntimeRevision));
     if (this.artifactHash === undefined) {
       if (stage === 'ready') {
         return;
@@ -577,9 +515,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       return;
     }
     try {
-      const delivery = this.options.panel.webview.postMessage(
-        createPreviewProgressMessage(stage, requestedRevision),
-      );
+      const delivery = this.options.panel.webview.postMessage(createPreviewProgressMessage(stage, requestedRevision));
       void Promise.resolve(delivery).then(
         (delivered) => {
           if (!delivered && fallbackHtml !== undefined) {
@@ -600,9 +536,12 @@ export class PreviewPanelSession implements vscode.Disposable {
       }
     }
   }
-
-  /** Accepts only acknowledgement messages emitted by the generated preview hot runtime. */
   private handleWebviewMessage(message: unknown): void {
+    const retry = readPreviewRetryRequest(message);
+    if (retry !== undefined) {
+      this.handleRetryRequest(retry);
+      return;
+    }
     if (
       handlePreviewInspectorHostMessage(message, {
         currentRuntimeRevision: this.displayedRuntimeRevision,
@@ -613,138 +552,231 @@ export class PreviewPanelSession implements vscode.Disposable {
         panelViewColumn: this.options.panel.viewColumn,
         pinnedDocumentUri: this.documentUri,
         selectRoute: this.selectInspectorRoute.bind(this),
+        selectPageCandidate: this.selectInspectorPageCandidate.bind(this),
+        selectPageExecutionRetry: this.selectInspectorPageExecutionRetry.bind(this),
         sourceDecoration: this.inspectorSourceDecoration,
         targetPath: this.targetPath,
       })
     ) {
       return;
     }
-    if (
-      typeof message === 'object' &&
-      message !== null &&
-      'type' in message &&
-      (message.type === 'react-preview-runtime-ready' ||
-        message.type === 'react-preview-runtime-failed') &&
-      'token' in message &&
-      typeof message.token === 'string' &&
-      message.token === this.pendingInitialRuntime?.runtimeToken &&
-      'revision' in message &&
-      typeof message.revision === 'number' &&
-      Number.isSafeInteger(message.revision) &&
-      message.revision === this.pendingInitialRuntime.revision
-    ) {
-      const settledRuntime = this.pendingInitialRuntime;
-      const settlementRevision = this.resolveRuntimeSettlementRevision(
-        settledRuntime.artifactHash,
-        settledRuntime.revision,
-        message.type === 'react-preview-runtime-ready',
-      );
-      this.performanceTrace.finish(
-        message.type === 'react-preview-runtime-ready' ? 'completed' : 'failed',
-        settlementRevision,
-      );
-      this.clearInitialRuntimeWatchdog();
-      this.contextEnrichment.settle(settledRuntime.artifactHash, settlementRevision);
+    void handlePreviewPanelRuntimeAcknowledgement(message, {
+      cancelContextEnrichment: this.contextEnrichment.cancel.bind(this.contextEnrichment),
+      clearInitialRuntimeWatchdog: this.clearInitialRuntimeWatchdog.bind(this),
+      documentName: this.options.initialTarget.documentName,
+      failPreparedApplication: this.failPreparedApplication.bind(this),
+      finishHotReload: this.finishHotReload.bind(this),
+      finishTrace: this.performanceTrace.finish.bind(this.performanceTrace),
+      getInitialRuntime: () => this.pendingInitialRuntime,
+      getPendingHotReload: (token) => this.pendingHotReloads.get(token),
+      getSameArtifactRevision: () => this.pendingSameArtifactRevision,
+      releaseCurrentArtifact: this.releaseCurrentArtifact.bind(this),
+      renderReady: (revision, documentName) => { this.renderProgress(revision, documentName, 'ready'); },
+      renderRetryableRuntimeFailure: (revision) =>
+        { this.renderRetryableError(
+          {
+            message: 'The generated preview runtime failed before it could render. Retry this preview.',
+            title: 'Preview runtime failed',
+          },
+          revision,
+        ); },
+      resolveSettlementRevision: this.resolveRuntimeSettlementRevision.bind(this),
+      setDisplayedRuntimeRevision: (revision) => {
+        this.displayedRuntimeRevision = revision;
+      },
+      settlePreparedApplication: this.settlePreparedApplication.bind(this),
+    });
+  }
+  private selectInspectorRoute(request: PreviewInspectorRouteSelectionRequest): void {
+    const admission = this.inspectorSelection.beginRoute(request, this.revision + 1);
+    this.publishInspectorSelectionStatuses(admission.statuses);
+    if (!admission.shouldBuild) return;
+    if (!this.inspectorRouteSelection.begin(request.selectionPath)) {
+      this.rollbackInspectorSelection(this.revision + 1, 'already-active');
       return;
     }
-    const acknowledgement = readPreviewHotReloadAcknowledgement(message);
-    if (acknowledgement === undefined) {
+    this.preparationState.beginSelection();
+    this.contextEnrichment.cancel();
+    this.scheduleRefresh(true, undefined, true);
+  }
+  private bindPreparedForegroundApplication(handle: PreviewPreparedApplicationHandle, origin: PreviewPreparedApplicationOrigin): void {
+    if (origin.kind !== 'foreground' || origin.interactionId === undefined) return;
+    const binding = this.inspectorSelection.bindPreparedApplication(origin.buildRevision, handle.applicationId, this.displayedRuntimeRevision);
+    if (binding.status !== undefined) this.publishInspectorSelectionStatuses([binding.status]);
+  }
+  private settlePreparedApplication(applicationId: string, origin: PreviewPreparedApplicationOrigin, displayedRevision: number): void {
+    if (origin.kind === 'context-enrichment') {
+      this.preparationState.markCorridorCommitted();
+      this.renderProgress(displayedRevision, this.options.initialTarget.documentName, 'ready');
       return;
     }
-    const pending = this.pendingHotReloads.get(acknowledgement.token);
-    if (acknowledgement.revision !== pending?.runtimeRevision) {
-      return;
+    if (origin.interactionId !== undefined) {
+      const terminal = this.inspectorSelection.commitApplication(applicationId, displayedRevision);
+      if (terminal.committed) {
+        if (this.inspectorRouteSelection.isPendingSelection) {
+          this.inspectorRouteSelection.commit();
+          this.inspectorPageCandidateSelection.clear();
+        } else {
+          this.inspectorPageCandidateSelection.commit();
+        }
+        this.preparationState.commitSelection();
+      }
+      if (terminal.status !== undefined) this.publishInspectorSelectionStatuses([terminal.status]);
+    } else {
+      this.inspectorRouteSelection.commit();
+      this.inspectorPageCandidateSelection.commit();
+      this.preparationState.commitSelection();
     }
-    if (acknowledgement.applied) this.displayedRuntimeRevision = pending.runtimeRevision;
-    const settlesWithoutNavigation = acknowledgement.applied || acknowledgement.retainedPrevious;
-    const settlementRevision = settlesWithoutNavigation
-      ? this.resolveRuntimeSettlementRevision(
-          pending.nextArtifactHash,
-          pending.runtimeRevision,
-          acknowledgement.applied,
-        )
-      : pending.runtimeRevision;
-    this.performanceTrace.finish(
-      acknowledgement.applied ? 'completed' : 'failed',
-      settlementRevision,
-    );
-    this.finishHotReload(
-      acknowledgement.token,
-      acknowledgement.applied ? undefined : pending.fallbackHtml,
-      acknowledgement.retainedPrevious
-        ? 'retained'
-        : acknowledgement.applied
-          ? 'applied'
-          : 'navigate',
-    );
-    if (settlesWithoutNavigation) {
-      this.contextEnrichment.settle(pending.nextArtifactHash, settlementRevision);
+    this.renderProgress(displayedRevision, this.options.initialTarget.documentName, 'ready');
+    const enrichmentInput = this.pendingContextEnrichmentInputs.get(applicationId);
+    this.pendingContextEnrichmentInputs.delete(applicationId);
+    this.clearBuildExecution(origin.buildRevision);
+    if (origin.requiresContextEnrichment && enrichmentInput !== undefined && this.isCurrentRevision(origin.buildRevision)) {
+      this.contextEnrichment.startAfterCommittedFast(enrichmentInput.target, enrichmentInput.artifactHash, origin.buildRevision, enrichmentInput.signal);
     }
   }
-
-  /**
-   * Rebuilds only when the browser chooses a different statically offered route hierarchy.
-   *
-   * Route exploration is a full-context operation: running another direct fast pass would first
-   * discard the hierarchy the user just selected and then repeat background enrichment.
-   */
-  private selectInspectorRoute(selectionPath: readonly PreviewInspectorRouteSelectionStep[]): void {
-    if (!this.inspectorRouteSelection.replace(selectionPath)) return;
-    this.hasCompleteContext = true;
+  private failPreparedApplication(
+    applicationId: string,
+    origin: PreviewPreparedApplicationOrigin,
+    reason: import('./previewInspectorSelectionStatusProtocol').PreviewInspectorSelectionFailureReason,
+    displayedRevision: number,
+  ): void {
+    if (origin.kind === 'context-enrichment') {
+      this.renderProgress(displayedRevision, this.options.initialTarget.documentName, 'ready');
+      return;
+    }
+    this.pendingContextEnrichmentInputs.delete(applicationId);
+    this.clearBuildExecution(origin.buildRevision);
+    this.rollbackInspectorSelection(origin.buildRevision, reason, applicationId, displayedRevision);
+  }
+  private rollbackInspectorSelection(
+    buildRevision: number,
+    reason: import('./previewInspectorSelectionStatusProtocol').PreviewInspectorSelectionFailureReason,
+    applicationId?: string,
+    displayedRevision = this.displayedRuntimeRevision,
+  ): void {
+    const terminal =
+      applicationId === undefined
+        ? this.inspectorSelection.failBuild(buildRevision, reason, displayedRevision)
+        : this.inspectorSelection.failApplication(applicationId, reason, displayedRevision);
+    this.inspectorRouteSelection.rollback();
+    this.inspectorPageCandidateSelection.rollback();
+    this.preparationState.rollbackSelection();
+    if (terminal.status !== undefined) this.publishInspectorSelectionStatuses([terminal.status]);
+  }
+  private publishInspectorSelectionStatuses(statuses: readonly PreviewInspectorSelectionStatusMessage[]): void {
+    for (const status of statuses) {
+      try {
+        void this.options.panel.webview.postMessage(status);
+      } catch (error) {
+        this.options.log.debug('Could not post React Inspector selection status.', error);
+      }
+    }
+  }
+  private selectInspectorPageCandidate(request: PreviewInspectorPageCandidateSelectionRequest): void {
+    const admission = this.inspectorSelection.beginPageCandidate(request, this.revision + 1);
+    this.publishInspectorSelectionStatuses(admission.statuses);
+    if (!admission.shouldBuild) return;
+    if (!this.inspectorPageCandidateSelection.begin(request.candidateId)) {
+      this.rollbackInspectorSelection(this.revision + 1, 'already-active');
+      return;
+    }
+    this.preparationState.beginSelection();
     this.contextEnrichment.cancel();
+    this.scheduleRefresh(true, undefined, true);
+  }
+  private selectInspectorPageExecutionRetry(
+    request: PreviewInspectorPageExecutionRetryRequest,
+  ): void {
+    if (this.inspectorPageCandidateSelection.current() !== request.candidateId) return;
+    const admission = this.inspectorSelection.beginPageCandidate(
+      {
+        candidateId: request.candidateId,
+        interactionId: request.interactionId,
+        runtimeRevision: request.runtimeRevision,
+        type: 'react-preview-inspector-page-candidate-selected',
+      },
+      this.revision + 1,
+    );
+    this.publishInspectorSelectionStatuses(admission.statuses);
+    if (!admission.shouldBuild) return;
+    if (!this.inspectorPageCandidateSelection.beginExecutionCandidate(request.executionCandidateId)) {
+      this.rollbackInspectorSelection(this.revision + 1, 'already-active');
+      return;
+    }
+    this.preparationState.beginSelection();
+    this.contextEnrichment.cancel();
+    this.scheduleRefresh(true, undefined, true);
+  }
+  private handleRetryRequest(retry: { readonly revision: number; readonly token: string }): void {
+    if (this.disposed || !this.retryController.accept(retry)) {
+      this.options.log.debug('Ignored a stale or malformed React preview retry request.');
+      return;
+    }
+    // Retry starts from the narrow fast pass; selected-context enrichment can resume after commit.
+    this.preparationState.resetForRetry();
     this.scheduleRefresh(true);
   }
-
-  /** Reconciles artifact ownership after browser application, retained failure, or navigation. */
-  private finishHotReload(
-    token: string,
-    fallbackHtml: string | undefined,
-    outcome: 'applied' | 'navigate' | 'retained' | 'undelivered',
-  ): void {
+  private renderRetryableError(errorState: { readonly details?: string; readonly message: string; readonly title: string }, revision: number): void {
+    const retry = this.retryController.create(revision);
+    try {
+      this.options.panel.webview.html = createPreviewHtml(this.options.panel.webview.cspSource, {
+        kind: 'error',
+        message: errorState.message,
+        retry,
+        title: errorState.title,
+        ...(errorState.details === undefined ? {} : { details: errorState.details }),
+      });
+    } catch (error) {
+      this.options.log.debug('Could not render a retryable React preview error.', error);
+    }
+  }
+  private finishHotReload(token: string, fallbackHtml: string | undefined, outcome: 'applied' | 'navigate' | 'retained' | 'undelivered'): void {
     const pending = this.pendingHotReloads.get(token);
     if (pending === undefined) {
       return;
     }
     this.pendingHotReloads.delete(token);
     clearTimeout(pending.timeout);
-    if (
-      outcome === 'retained' ||
-      (outcome === 'undelivered' && this.artifactHash !== pending.nextArtifactHash)
-    ) {
+    const retainedPriorTree = outcome === 'retained' || (outcome === 'undelivered' && this.artifactHash !== pending.nextArtifactHash);
+    if (retainedPriorTree) {
       this.retainPreviousHotReloadArtifact(pending);
+      if (outcome === 'undelivered') {
+        this.contextEnrichment.cancel();
+        this.failPreparedApplication(
+          pending.applicationId,
+          pending.origin,
+          'message-undelivered',
+          pending.runtimeRevision,
+        );
+        this.renderProgress(pending.runtimeRevision, this.options.initialTarget.documentName, 'ready');
+      }
       return;
     }
     const shouldReplaceDocument =
-      (outcome === 'navigate' || outcome === 'undelivered') &&
-      fallbackHtml !== undefined &&
-      !this.disposed &&
-      this.artifactHash === pending.nextArtifactHash;
+      (outcome === 'navigate' || outcome === 'undelivered') && fallbackHtml !== undefined && !this.disposed && this.artifactHash === pending.nextArtifactHash;
     if (shouldReplaceDocument) {
       try {
         this.options.panel.webview.html = fallbackHtml;
-        this.startInitialRuntimeWatchdog(
-          pending.nextArtifactHash,
-          pending.runtimeToken,
-          pending.runtimeRevision,
-        );
+        this.startInitialRuntimeWatchdog(pending.nextArtifactHash, pending.runtimeToken, pending.runtimeRevision, pending.origin, pending.applicationId);
       } catch (error) {
         this.options.log.debug('Could not fall back from React preview hot reload.', error);
         this.retainPreviousHotReloadArtifact(pending);
+        this.contextEnrichment.cancel();
+        this.failPreparedApplication(
+          pending.applicationId,
+          pending.origin,
+          outcome === 'undelivered' ? 'message-undelivered' : 'hot-reload-timeout',
+          pending.runtimeRevision,
+        );
+        this.renderProgress(pending.runtimeRevision, this.options.initialTarget.documentName, 'ready');
         return;
       }
     }
     this.releaseArtifact(pending.previousArtifactHash);
   }
-
-  /**
-   * Rolls a failed prepared revision out of an in-flight artifact chain without double-releasing a
-   * lease. A direct successor inherits the last displayed predecessor; otherwise ownership moves
-   * back to the predecessor only when this failed revision is still the session's newest artifact.
-   */
   private retainPreviousHotReloadArtifact(pending: PendingPreviewHotReload): void {
-    const successor = [...this.pendingHotReloads.values()].find(
-      (candidate) => candidate.previousArtifactHash === pending.nextArtifactHash,
-    );
+    const successor = [...this.pendingHotReloads.values()].find((candidate) => candidate.previousArtifactHash === pending.nextArtifactHash);
     if (successor !== undefined) {
       successor.previousArtifactHash = pending.previousArtifactHash;
       this.releaseArtifact(pending.nextArtifactHash);
@@ -757,19 +789,9 @@ export class PreviewPanelSession implements vscode.Disposable {
     }
     this.releaseArtifact(pending.previousArtifactHash);
   }
-
-  /** Maps a shared older browser request onto the newest revision waiting for identical bytes. */
-  private resolveRuntimeSettlementRevision(
-    artifactHash: string,
-    fallbackRevision: number,
-    ready: boolean,
-  ): number {
+  private resolveRuntimeSettlementRevision(artifactHash: string, fallbackRevision: number, ready: boolean): number {
     const pending = this.pendingSameArtifactRevision;
-    if (
-      pending?.artifactHash !== artifactHash ||
-      !this.isCurrentRevision(pending.revision) ||
-      this.artifactHash !== artifactHash
-    ) {
+    if (pending?.artifactHash !== artifactHash || !this.isCurrentRevision(pending.revision) || this.artifactHash !== artifactHash) {
       return fallbackRevision;
     }
     this.pendingSameArtifactRevision = undefined;
@@ -778,13 +800,6 @@ export class PreviewPanelSession implements vscode.Disposable {
     }
     return pending.revision;
   }
-
-  /**
-   * Reconciles filesystem watchers so glob additions, deletions, renames, and external writes rebuild
-   * only the session whose static discovery root contains the changed resource.
-   *
-   * @param nextDirectories Canonical discovery roots from the newly committed bundle.
-   */
   private replaceDirectoryWatchers(nextDirectories: ReadonlySet<string>): void {
     replacePreviewDirectoryWatchers({
       directories: nextDirectories,
@@ -796,13 +811,6 @@ export class PreviewPanelSession implements vscode.Disposable {
       pinnedUri: this.documentUri,
     });
   }
-
-  /**
-   * Shows a pinned-target validation error and releases bytes no longer referenced by the panel.
-   *
-   * @param issue Recoverable target resolution failure.
-   * @param requestedRevision Revision whose retained progress indicator must be closed.
-   */
   private renderTargetIssue(issue: PreviewTargetIssue, requestedRevision: number): void {
     if (this.artifactHash !== undefined) {
       this.options.log.warn(`${issue.title}: ${issue.message} Last good preview retained.`);
@@ -816,54 +824,45 @@ export class PreviewPanelSession implements vscode.Disposable {
     });
     this.releaseCurrentArtifact();
   }
-
-  /** Handles user-driven panel closure without affecting any sibling preview session. */
   private handlePanelDisposed(): void {
     this.finishDisposal();
     this.notifyDisposed();
   }
-
-  /** Updates focus bookkeeping only; changing webview visibility never starts a build. */
   private handleViewStateChanged(): void {
     if (this.isActive) {
       this.options.callbacks.onDidFocus(this);
     }
   }
-
-  /** Returns whether an asynchronous result still belongs to this live session revision. */
   private isCurrentRevision(requestedRevision: number): boolean {
     return !this.disposed && requestedRevision === this.revision;
   }
-
-  /** Aborts and forgets the previously scheduled or running build before accepting newer work. */
   private cancelActiveBuild(): void {
     const activeBuild = this.activeBuildExecution;
     this.activeBuildExecution = undefined;
     this.contextEnrichment.cancel();
     this.pendingSameArtifactRevision = undefined;
+    this.pendingContextEnrichmentInputs.clear();
     activeBuild?.controller.abort();
   }
-
-  /** Clears the controller only when completion belongs to the same active session revision. */
   private clearBuildExecution(requestedRevision: number): void {
     if (this.activeBuildExecution?.revision === requestedRevision) {
       this.activeBuildExecution = undefined;
     }
   }
-
-  /** Reads the resource-scoped debounce setting for this pinned target. */
   private getUpdateDelay(): number {
-    const configuredDelay = vscode.workspace
-      .getConfiguration('reactPreview', this.documentUri)
-      .get<number>('updateDelay', 300);
+    const configuredDelay = vscode.workspace.getConfiguration('reactPreview', this.documentUri).get<number>('updateDelay', 300);
     return Math.min(2000, Math.max(100, configuredDelay));
   }
-
-  /** Starts a bounded wait for an entry module that can fail before its own error UI executes. */
   private startInitialRuntimeWatchdog(
     artifactHash: string,
     runtimeToken: string,
     revision: number,
+    origin: PreviewPreparedApplicationOrigin = {
+      buildRevision: revision,
+      kind: 'foreground',
+      requiresContextEnrichment: false,
+    },
+    applicationId = runtimeToken,
   ): void {
     this.displayedRuntimeRevision = revision;
     this.clearInitialRuntimeWatchdog();
@@ -880,24 +879,31 @@ export class PreviewPanelSession implements vscode.Disposable {
       }
       this.pendingInitialRuntime = undefined;
       this.contextEnrichment.cancel();
+      this.failPreparedApplication(applicationId, origin, 'runtime-timeout', revision);
       this.clearBuildExecution(this.revision);
       this.performanceTrace.finish('failed', revision);
+      this.releaseCurrentArtifact();
       try {
-        this.options.panel.webview.html = createPreviewHtml(this.options.panel.webview.cspSource, {
-          kind: 'error',
-          message:
-            'The generated browser modules did not start. Refresh after checking the webview console and local dependencies.',
-          title: 'Preview runtime did not start',
-        });
+        this.renderRetryableError(
+          {
+            message: 'The generated browser modules did not start. Retry after checking the webview console and local dependencies.',
+            title: 'Preview runtime did not start',
+          },
+          revision,
+        );
       } catch (error) {
         this.options.log.debug('Could not render the React preview startup timeout.', error);
       }
-      this.releaseCurrentArtifact();
     }, 30_000);
-    this.pendingInitialRuntime = { artifactHash, revision, runtimeToken, timeout };
+    this.pendingInitialRuntime = {
+      applicationId,
+      artifactHash,
+      origin,
+      revision,
+      runtimeToken,
+      timeout,
+    };
   }
-
-  /** Clears a full-document startup timer after the generated entry reports ready or failed. */
   private clearInitialRuntimeWatchdog(): void {
     if (this.pendingInitialRuntime === undefined) {
       return;
@@ -905,8 +911,6 @@ export class PreviewPanelSession implements vscode.Disposable {
     clearTimeout(this.pendingInitialRuntime.timeout);
     this.pendingInitialRuntime = undefined;
   }
-
-  /** Reloads a same-hash document only when its terminal progress message was not delivered. */
   private replaceWithProgressFallback(requestedRevision: number, fallbackHtml: string): void {
     if (!this.isCurrentRevision(requestedRevision) || this.artifactHash === undefined) {
       return;
@@ -919,21 +923,16 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.options.log.debug('Could not recover an undelivered React preview status.', error);
     }
   }
-
-  /** Cancels this session's pending debounce timer. */
   private clearRefreshTimer(): void {
     if (this.refreshTimer !== undefined) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
     }
   }
-
-  /** Marks the session disposed, invalidates builds, and releases owned resources exactly once. */
   private finishDisposal(): void {
     if (this.disposed) {
       return;
     }
-
     this.disposed = true;
     this.cancelActiveBuild();
     this.performanceTrace.finish('cancelled');
@@ -946,8 +945,6 @@ export class PreviewPanelSession implements vscode.Disposable {
     this.directoryWatcherDisposables.clear();
     this.releaseCurrentArtifact();
   }
-
-  /** Notifies the manager once regardless of whether code or the user closed the panel. */
   private notifyDisposed(): void {
     if (this.disposalNotified) {
       return;
@@ -955,11 +952,10 @@ export class PreviewPanelSession implements vscode.Disposable {
     this.disposalNotified = true;
     this.options.callbacks.onDidDispose(this);
   }
-
-  /** Releases displayed and in-flight hot-reload artifact leases and clears local ownership. */
   private releaseCurrentArtifact(): void {
     this.clearInitialRuntimeWatchdog();
     this.pendingSameArtifactRevision = undefined;
+    this.retryController.clear();
     const contentHash = this.artifactHash;
     this.artifactHash = undefined;
     if (contentHash !== undefined) {
@@ -971,12 +967,6 @@ export class PreviewPanelSession implements vscode.Disposable {
     }
     this.pendingHotReloads.clear();
   }
-
-  /**
-   * Returns one artifact lease and logs an unexpected storage failure without an unhandled promise.
-   *
-   * @param contentHash Published content digest no longer owned by this session.
-   */
   private releaseArtifact(contentHash: string): void {
     try {
       void this.options.buildPreview.releaseArtifact(contentHash).catch((error: unknown) => {

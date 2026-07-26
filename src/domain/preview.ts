@@ -11,7 +11,7 @@ export type PreviewSourceLanguage = 'js' | 'jsx' | 'ts' | 'tsx';
 export type PreviewRenderMode = 'component' | 'page-inspector';
 
 /** Two-phase preparation policy used to minimize time to the first rendered component. */
-export type PreviewPreparationMode = 'fast' | 'full';
+export type PreviewPreparationMode = 'fast' | 'corridor' | 'full';
 
 /**
  * Compiler-owned statement about whether one artifact contains the selected file's authored page
@@ -85,6 +85,21 @@ export interface PreviewBuildRequest {
    * analysis must still match every step to static source evidence before importing a module.
    */
   readonly inspectorRouteSelection?: readonly PreviewInspectorRouteSelectionStep[];
+  /**
+   * Stable Page Inspector candidate identity selected by the user.
+   *
+   * Candidate metadata is intentionally collected for every proven caller path, but the compiler
+   * executes and bundles only this one page root. Omitting the value selects the highest-ranked
+   * current candidate without making every alternative `import()` part of the esbuild graph.
+   */
+  readonly inspectorPageCandidateId?: string;
+  /**
+   * Compiler-owned Page Execution Slice identity selected for one bounded retry.
+   *
+   * This is never a browser-provided path: the compiler resolves it only against candidates it
+   * recreated from current static evidence for the already-selected page candidate.
+   */
+  readonly inspectorPageExecutionCandidateId?: string;
   /** Component gallery by default, or an opt-in actual-parent page inspector. */
   readonly renderMode?: PreviewRenderMode;
   /** Complete current editor contents, including unsaved changes. */

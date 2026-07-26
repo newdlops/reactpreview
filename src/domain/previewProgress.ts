@@ -1,3 +1,5 @@
+import type { PreviewCompilerActivity } from './previewCompilerActivity';
+
 /**
  * Defines the framework-neutral preparation stages emitted while one immutable preview revision is
  * resolved, analyzed, bundled, published, and mounted. The model contains no UI strings or VS Code
@@ -24,4 +26,7 @@ export const PREVIEW_PROGRESS_STAGES = Object.freeze([
 export type PreviewProgressStage = (typeof PREVIEW_PROGRESS_STAGES)[number];
 
 /** Optional observer used to report preparation without coupling work to a particular UI. */
-export type PreviewProgressReporter = (stage: PreviewProgressStage) => void;
+export type PreviewProgressReporter = (
+  stage: PreviewProgressStage,
+  activity?: PreviewCompilerActivity,
+) => void;

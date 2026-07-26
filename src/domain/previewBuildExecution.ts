@@ -4,6 +4,7 @@
  * lets VS Code sessions, compiler adapters, and tests cooperate without importing one another.
  */
 import type { PreviewProgressReporter, PreviewProgressStage } from './previewProgress';
+import type { PreviewCompilerActivity } from './previewCompilerActivity';
 
 /** Optional controls attached to one immutable preview build without changing its source request. */
 export interface PreviewBuildExecutionContext {
@@ -41,7 +42,7 @@ export class PreviewBuildCancelledError extends Error {
 
 /** Resource boundary that prevented a background compilation from completing normally. */
 export type PreviewBuildStallReason =
-  'cancel-timeout' | 'memory' | 'native-service' | 'queue-capacity' | 'watchdog';
+  'cancel-timeout' | 'graph-budget' | 'memory' | 'native-service' | 'queue-capacity' | 'watchdog';
 
 /**
  * Domain error raised when a background compiler stops making a bounded build complete.
@@ -55,6 +56,7 @@ export class PreviewBuildStalledError extends Error {
     public readonly lastStage: PreviewProgressStage | undefined,
     public readonly elapsedMs: number,
     public readonly reason: PreviewBuildStallReason = 'watchdog',
+    public readonly activity?: PreviewCompilerActivity,
   ) {
     const stageMessage = lastStage === undefined ? 'before its first milestone' : `at ${lastStage}`;
     super(createPreviewBuildStallMessage(reason, target, stageMessage, elapsedMs));
@@ -74,6 +76,9 @@ function createPreviewBuildStallMessage(
   }
   if (reason === 'memory') {
     return `Background React preview compilation exceeded its isolated memory budget ${stageMessage} for ${target}. The compiler worker was restarted before the process could exhaust system memory.`;
+  }
+  if (reason === 'graph-budget') {
+    return `Selected-context React preview compilation was skipped before native bundling because the authored module frontier exceeded its fixed graph budget for ${target}. The last fast preview remains available until its inputs change.`;
   }
   if (reason === 'native-service') {
     return `The isolated esbuild service stopped ${stageMessage} for ${target}. The build was not retried with the same graph so system memory can recover.`;

@@ -280,6 +280,7 @@ async function executeReachableThemeFixture(projectRoot: string, source: string)
       createPreviewThemeBridgePlugin({ projectRoot }),
       createPreviewThemeCandidatePlugin(),
       createWorkspaceSourcePlugin({
+        runtimeInstanceKey: 'test-runtime',
         snapshots: [],
         transformer,
         workspaceRoot: projectRoot,

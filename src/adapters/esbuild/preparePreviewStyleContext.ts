@@ -5,6 +5,7 @@
  */
 import path from 'node:path';
 import type { PreviewBuildRequest, PreviewSourceSnapshot } from '../../domain/preview';
+import type { PreviewPreparationPolicy } from './previewPreparationPolicy';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import {
   discoverPreviewDocumentShell,
@@ -19,6 +20,12 @@ import {
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
 import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 import type { PreviewStaticModuleResolver } from './previewStaticModuleResolver';
+import { discoverPreviewStyledComponentsAvailability } from './previewStyledComponentsAvailability';
+import {
+  selectPreviewStyleSheetManagerPlan,
+  type PreviewMountedRootReference,
+} from './previewStyleSheetManagerSelection';
+import type { PreviewStyledComponentsPlan } from './previewStyledComponentsPlan';
 import { collectPreviewTailwindCandidateSnapshotGraph } from './previewTailwindCandidateSnapshotGraph';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
@@ -31,9 +38,12 @@ export type ReadPreviewStyleContextSource = (
 export interface PreparePreviewStyleContextOptions {
   readonly directThemeImport?: PreviewThemeImportSelection;
   readonly inspectorDependencyPaths: readonly string[];
+  /** Exact Inspector root; absent for component gallery where a synthetic boundary is used. */
+  readonly mountedRoot?: PreviewMountedRootReference;
   /** Reached source graph inspected for exact ReactDOM portal host requirements. */
   readonly portalHostDependencyPaths: readonly string[];
   readonly projectRoot: string;
+  readonly styleEvidence?: PreviewPreparationPolicy['styleEvidence'];
   readonly readSource: ReadPreviewStyleContextSource;
   readonly renderPath?: PreviewRenderChainCandidate;
   readonly request: PreviewBuildRequest;
@@ -47,6 +57,8 @@ export interface PreparedPreviewStyleContext {
   readonly globalStyleImports: readonly PreviewGlobalStyleImportSelection[];
   readonly portalHostIds: readonly string[];
   readonly snapshotSourceByPath: ReadonlyMap<string, string>;
+  /** Immutable styled-components boundary plan shared by entry generation and the compiler. */
+  readonly styledComponentsPlan: PreviewStyledComponentsPlan;
   /** Bounded page-corridor source text supplied to Tailwind without a filesystem scan. */
   readonly tailwindCandidateSnapshots: readonly PreviewSourceSnapshot[];
   readonly themeImport?: PreviewThemeImportSelection;
@@ -73,13 +85,11 @@ export async function preparePreviewStyleContext(
   };
   const readSource = (sourcePath: string, maximumBytes: number): Promise<string | undefined> =>
     readProjectSource({ maximumBytes, sourcePath });
-  const [
-    themeImport,
-    documentShellEvidence,
-    globalStyleImports,
-    portalHostIds,
-    tailwindCandidateSnapshots,
-  ] = await Promise.all([
+  const availabilityPromise = discoverPreviewStyledComponentsAvailability({
+    importerPath: options.mountedRoot?.sourcePath ?? options.request.documentPath,
+    resolveModule: options.staticModuleResolver.resolve,
+  });
+  const [themeImport, documentShellEvidence, globalStyleImports, availability] = await Promise.all([
     options.directThemeImport ??
       (options.inspectorDependencyPaths.length === 0
         ? undefined
@@ -98,27 +108,46 @@ export async function preparePreviewStyleContext(
       ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
       resolveModule: options.staticModuleResolver.resolve,
     }),
-    discoverPreviewPortalHostIds({
-      dependencyPaths: [
-        options.request.documentPath,
-        ...options.inspectorDependencyPaths,
-        ...options.portalHostDependencyPaths,
-      ],
-      readSource,
-    }),
-    collectPreviewTailwindCandidateSnapshotGraph({
-      corridorPaths: options.inspectorDependencyPaths,
-      readSource: readProjectSource,
-      resolveModule: options.staticModuleResolver.resolve,
-      targetPath: options.request.documentPath,
-      workspaceRoot: options.workspaceRoot,
-    }),
+    availabilityPromise,
   ]);
+  const styledComponentsPlan = await selectPreviewStyleSheetManagerPlan({
+    availability,
+    ...(options.mountedRoot === undefined ? {} : { mountedRoot: options.mountedRoot }),
+    readSource,
+    ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
+    resolveModule: options.staticModuleResolver.resolve,
+  });
+  // Critical first paint preserves direct theme, document shell, and page-corridor global styles.
+  // Portal traversal and recursive Tailwind snapshots can touch hundreds of modules, so they run
+  // only in the deferred full pass after a browser artifact has committed.
+  const [portalHostIds, tailwindCandidateSnapshots] =
+    (options.styleEvidence ??
+      (options.request.preparationMode === 'fast' ? 'critical' : 'workspace-complete')) ===
+    'critical'
+      ? ([[], []] as const)
+      : await Promise.all([
+          discoverPreviewPortalHostIds({
+            dependencyPaths: [
+              options.request.documentPath,
+              ...options.inspectorDependencyPaths,
+              ...options.portalHostDependencyPaths,
+            ],
+            readSource,
+          }),
+          collectPreviewTailwindCandidateSnapshotGraph({
+            corridorPaths: options.inspectorDependencyPaths,
+            readSource: readProjectSource,
+            resolveModule: options.staticModuleResolver.resolve,
+            targetPath: options.request.documentPath,
+            workspaceRoot: options.workspaceRoot,
+          }),
+        ]);
   return {
     ...(documentShellEvidence === undefined ? {} : { documentShellEvidence }),
     globalStyleImports,
     portalHostIds,
     snapshotSourceByPath,
+    styledComponentsPlan,
     tailwindCandidateSnapshots,
     ...(themeImport === undefined ? {} : { themeImport }),
   };

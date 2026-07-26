@@ -4,9 +4,12 @@
  * overlay fills missing paths with neutral CSS-safe tokens. Explicit setup themes bypass the
  * overlay, and absent themes still receive an inert fallback instead of a runtime exception.
  */
+import { createPreviewStyleSheetManagerRuntimeSource } from './previewStyleSheetManagerRuntimeSource';
 
 /** Resolved project module required to build the optional theme preview boundary. */
 export interface PreviewThemeRuntimeSourceOptions {
+  /** Opaque revision salt that prevents mutable generated state from entering a shared chunk. */
+  readonly runtimeInstanceKey?: string;
   /** Absolute browser-resolved entry for the target project's styled-components package. */
   readonly styledComponentsModulePath: string;
   /** Canonical package condition shared by generated provider and project consumers. */
@@ -26,9 +29,15 @@ export function createPreviewThemeRuntimeSource(options: PreviewThemeRuntimeSour
   const encodedResolutionKind = JSON.stringify(
     options.styledComponentsResolutionKind ?? 'import-statement',
   );
+  const encodedRuntimeInstanceKey = JSON.stringify(options.runtimeInstanceKey ?? 'initial');
   return `
 import * as React from 'react';
 import * as StyledComponents from ${encodedModulePath};
+
+const previewRuntimeInstanceMarker = Object.freeze({ ['opaque-key']: ${encodedRuntimeInstanceKey} });
+const previewRuntimeInstanceMarkerSet = new WeakSet([previewRuntimeInstanceMarker]);
+
+${createPreviewStyleSheetManagerRuntimeSource()}
 
 const previewStyledComponentsModulePath = ${encodedModulePath};
 const previewStyledComponentsResolutionKind = ${encodedResolutionKind};

@@ -19,6 +19,8 @@ const THEME_BRIDGE_DATA_KIND = 'react-preview-theme-bridge-data';
 export interface PreviewThemeBridgePluginOptions {
   /** Nearest package root from which the target itself resolves styled-components. */
   readonly projectRoot: string;
+  /** Reads the current incremental revision salt without capturing an obsolete source state. */
+  readonly readRuntimeInstanceKey?: () => string;
 }
 
 /** Serializable metadata carried from optional package resolution into virtual-module loading. */
@@ -115,6 +117,11 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
               "export function resolvePreviewThemeValue() { return ''; }",
               'export async function resolvePreviewTheme(options) { return options?.discoveredTheme; }',
               'export function createThemePreviewElement(children) { return children; }',
+              'export function preparePreviewStyleSheetBoundary() {',
+              "  const status = 'unavailable: styled-components was not resolved from the target project';",
+              '  return Object.freeze({ activate() {}, commit() {}, createElement: (children) => children, dispose() {}, readStatus: () => status });',
+              '}',
+              "export function readPreviewStyleSheetRuntimeStatus() { return 'unavailable: styled-components was not resolved from the target project'; }",
               '/** Describes why the automatic theme boundary is unavailable. */',
               "export function readPreviewRuntimeStatus() { return 'unavailable: styled-components was not resolved from the target project'; }",
             ].join('\n'),
@@ -124,6 +131,9 @@ export function createPreviewThemeBridgePlugin(options: PreviewThemeBridgePlugin
 
         return {
           contents: createPreviewThemeRuntimeSource({
+            ...(options.readRuntimeInstanceKey === undefined
+              ? {}
+              : { runtimeInstanceKey: options.readRuntimeInstanceKey() }),
             styledComponentsModulePath: pluginData.styledComponentsModulePath,
             styledComponentsResolutionKind:
               pluginData.styledComponentsResolutionKind ?? 'import-statement',

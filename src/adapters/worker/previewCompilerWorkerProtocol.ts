@@ -17,6 +17,7 @@ import {
   type PreviewBuildStallReason,
 } from '../../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
+import type { PreviewCompilerActivity } from '../../domain/previewCompilerActivity';
 
 /** Starts one immutable compilation in the background worker. */
 export interface PreviewCompilerWorkerCompileRequest {
@@ -50,6 +51,8 @@ export type PreviewCompilerWorkerRequest =
 
 /** Reports one monotonic compiler milestone without moving callbacks across threads. */
 export interface PreviewCompilerWorkerProgressResponse {
+  /** Optional bounded compiler activity; it does not advance the watchdog by itself. */
+  readonly activity?: PreviewCompilerActivity;
   /** Owning compile request identity. */
   readonly id: number;
   /** Domain progress stage rendered by the pinned panel. */
@@ -84,6 +87,8 @@ export interface PreviewCompilerWorkerSerializedError {
   readonly kind: 'cancelled' | 'compilation' | 'stalled' | 'unexpected';
   /** Last worker milestone retained when a host watchdog produced the failure. */
   readonly lastStage?: PreviewProgressStage;
+  /** Last bounded compiler activity observed before a watchdog/resource failure. */
+  readonly activity?: PreviewCompilerActivity;
   /** Human-readable error message. */
   readonly message: string;
   /** Original error name used only for diagnostics. */
@@ -152,6 +157,9 @@ export function serializePreviewCompilerWorkerError(
       ...(isPreviewBuildStall(error) && error.lastStage !== undefined
         ? { lastStage: error.lastStage }
         : {}),
+      ...(isPreviewBuildStall(error) && error.activity !== undefined
+        ? { activity: error.activity }
+        : {}),
       message: error instanceof Error ? error.message : String(error),
       name: error instanceof Error ? error.name : 'PreviewBuildStalledError',
       stallReason: isPreviewBuildStall(error) ? error.reason : 'native-service',
@@ -195,6 +203,7 @@ export function deserializePreviewCompilerWorkerError(
       serialized.lastStage,
       serialized.elapsedMs ?? 0,
       serialized.stallReason ?? 'watchdog',
+      serialized.activity,
     );
     if (serialized.stack !== undefined) stalled.stack = serialized.stack;
     return stalled;

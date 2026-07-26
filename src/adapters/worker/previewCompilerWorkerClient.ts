@@ -21,6 +21,7 @@ import {
   type PreviewBuildStallReason,
 } from '../../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
+import type { PreviewCompilerActivity } from '../../domain/previewCompilerActivity';
 import {
   deserializePreviewCompilerWorkerError,
   isPreviewCompilerWorkerResponse,
@@ -83,6 +84,7 @@ interface PendingWorkerCompilation {
   readonly detachAbort: () => void;
   /** Last compiler milestone retained for actionable watchdog diagnostics. */
   lastStage?: PreviewProgressStage;
+  lastActivity?: PreviewCompilerActivity | undefined;
   /** Optional progress callback retained only on the extension-host side. */
   readonly reportProgress?: PreviewBuildExecutionContext['reportProgress'];
   /** Request retained only until start so untouched queued work can survive worker recycling. */
@@ -118,10 +120,10 @@ interface PendingCancellationAcknowledgement {
 const DEFAULT_QUEUE_ACQUISITION_TIMEOUT_MS = 120_000;
 const DEFAULT_CANCELLATION_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
-const DEFAULT_IDLE_WORKER_TIMEOUT_MS = 30_000;
-const DEFAULT_WORKER_MEMORY_LIMIT_MB = 512;
-const DEFAULT_ESBUILD_PARALLELISM = '4';
-const DEFAULT_ESBUILD_MEMORY_LIMIT = '384MiB';
+const DEFAULT_IDLE_WORKER_TIMEOUT_MS = 15_000;
+const DEFAULT_WORKER_MEMORY_LIMIT_MB = 384;
+const DEFAULT_ESBUILD_PARALLELISM = '2';
+const DEFAULT_ESBUILD_MEMORY_LIMIT = '256MiB';
 
 /** Wraps Node's EventEmitter-style Worker API in the narrow transport boundary. */
 class NodePreviewCompilerWorkerTransport implements PreviewCompilerWorkerTransport {
@@ -442,8 +444,10 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     }
     if (message.type === 'progress') {
       pending.lastStage = message.stage;
+      pending.lastActivity = message.activity;
       pending.advanceDeadline(message.stage);
-      pending.reportProgress?.(message.stage);
+      if (message.activity === undefined) pending.reportProgress?.(message.stage);
+      else pending.reportProgress?.(message.stage, message.activity);
       return;
     }
     this.pending.delete(message.id);
@@ -527,7 +531,13 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
         ? scheduledTimeoutMs
         : Math.max(1, Date.now() - pending.startedAt);
     this.recycleUnresponsiveTransport(
-      new PreviewBuildStalledError(target, pending.lastStage, elapsedMs),
+      new PreviewBuildStalledError(
+        target,
+        pending.lastStage,
+        elapsedMs,
+        'watchdog',
+        pending.lastActivity,
+      ),
       transport,
     );
   }
@@ -793,6 +803,7 @@ function createRequestScopedStall(
     pending.lastStage,
     elapsedMs,
     reason,
+    pending.lastActivity,
   ) as PreviewBuildStalledError & { readonly preparationMode: PreviewPreparationMode };
   Object.defineProperty(stalled, 'preparationMode', {
     enumerable: true,

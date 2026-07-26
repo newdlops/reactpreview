@@ -20,10 +20,13 @@ export interface PreviewCompilerWorkerBudget {
 }
 
 const FAST_STAGE_TIMEOUT_MS = 45_000;
+const CORRIDOR_STAGE_TIMEOUT_MS = 60_000;
 const FULL_STAGE_TIMEOUT_MS = 120_000;
 const FAST_PAGE_BUNDLING_TIMEOUT_MS = 120_000;
+const CORRIDOR_PAGE_BUNDLING_TIMEOUT_MS = 120_000;
 const FULL_PAGE_BUNDLING_TIMEOUT_MS = 240_000;
 const FAST_PAGE_TOTAL_TIMEOUT_MS = 180_000;
+const CORRIDOR_PAGE_TOTAL_TIMEOUT_MS = 180_000;
 const FULL_PAGE_TOTAL_TIMEOUT_MS = 360_000;
 
 /**
@@ -45,16 +48,23 @@ export function createPreviewCompilerWorkerBudget(
       totalTimeoutMs: configured,
     });
   }
-  const fast = request.preparationMode === 'fast';
-  const initialStageTimeoutMs = fast ? FAST_STAGE_TIMEOUT_MS : FULL_STAGE_TIMEOUT_MS;
+  const mode = request.preparationMode ?? 'full';
+  const initialStageTimeoutMs =
+    mode === 'fast'
+      ? FAST_STAGE_TIMEOUT_MS
+      : mode === 'corridor'
+        ? CORRIDOR_STAGE_TIMEOUT_MS
+        : FULL_STAGE_TIMEOUT_MS;
   const pageInspector = request.renderMode === 'page-inspector';
   return Object.freeze({
     fixed: false,
     initialStageTimeoutMs,
     totalTimeoutMs: pageInspector
-      ? fast
+      ? mode === 'fast'
         ? FAST_PAGE_TOTAL_TIMEOUT_MS
-        : FULL_PAGE_TOTAL_TIMEOUT_MS
+        : mode === 'corridor'
+          ? CORRIDOR_PAGE_TOTAL_TIMEOUT_MS
+          : FULL_PAGE_TOTAL_TIMEOUT_MS
       : initialStageTimeoutMs,
   });
 }
@@ -75,7 +85,9 @@ export function selectPreviewCompilerStageTimeoutMs(
   }
   return request.preparationMode === 'fast'
     ? FAST_PAGE_BUNDLING_TIMEOUT_MS
-    : FULL_PAGE_BUNDLING_TIMEOUT_MS;
+    : request.preparationMode === 'corridor'
+      ? CORRIDOR_PAGE_BUNDLING_TIMEOUT_MS
+      : FULL_PAGE_BUNDLING_TIMEOUT_MS;
 }
 
 /** Rejects non-finite and non-positive overrides instead of accidentally disabling isolation. */

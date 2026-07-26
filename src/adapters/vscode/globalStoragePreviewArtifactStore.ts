@@ -16,9 +16,7 @@ import {
   type PlannedPreviewArtifactFile,
   type PreviewArtifactLayout,
 } from './previewArtifactLayout';
-
-/** Reduces local and remote publication round trips without opening unbounded filesystem work. */
-const MAX_PARALLEL_ARTIFACT_IO = 16;
+import { selectPreviewArtifactIoConcurrency } from './previewArtifactIoPolicy';
 
 /** One portable path identity retained as a live file record or session-long URL tombstone. */
 interface SharedArtifactFileRecord {
@@ -190,9 +188,10 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     }
 
     const directories = collectParentDirectories(files);
+    const maximumConcurrency = selectPreviewArtifactIoConcurrency(files);
     const directoryResult = await runBoundedOperations(
       directories,
-      MAX_PARALLEL_ARTIFACT_IO,
+      maximumConcurrency,
       async (pathSegments) => {
         await vscode.workspace.fs.createDirectory(
           vscode.Uri.joinPath(this.resourceRoot, ...pathSegments),
@@ -204,14 +203,10 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
     }
 
     const writtenFiles: PlannedPreviewArtifactFile[] = [];
-    const writeResult = await runBoundedOperations(
-      files,
-      MAX_PARALLEL_ARTIFACT_IO,
-      async (file) => {
-        await vscode.workspace.fs.writeFile(this.createFileUri(file.relativePath), file.contents);
-        writtenFiles.push(file);
-      },
-    );
+    const writeResult = await runBoundedOperations(files, maximumConcurrency, async (file) => {
+      await vscode.workspace.fs.writeFile(this.createFileUri(file.relativePath), file.contents);
+      writtenFiles.push(file);
+    });
     return writeResult.error === undefined
       ? { writtenFiles }
       : { error: writeResult.error, writtenFiles };
@@ -333,7 +328,7 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
 
   /** Deletes shared files concurrently while converting cleanup failures into diagnostics. */
   private async deleteFiles(files: readonly PublishedArtifactFileIdentity[]): Promise<void> {
-    await runBoundedOperations(files, MAX_PARALLEL_ARTIFACT_IO, async (file) => {
+    await runBoundedOperations(files, 8, async (file) => {
       const fileUri = this.createFileUri(file.relativePath);
       try {
         await vscode.workspace.fs.delete(fileUri, { recursive: false, useTrash: false });

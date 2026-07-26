@@ -9,6 +9,10 @@ import {
   PreviewBuildCancelledError,
   PreviewBuildStalledError,
 } from '../../domain/previewBuildExecution';
+import {
+  createPreviewCompilerFrontierPolicy,
+  exceedsPreviewCompilerFrontier,
+} from '../../domain/previewCompilerFrontier';
 import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
 import { attachPreviewArtifactMetadata } from '../vscode/previewArtifactLayout';
 import {
@@ -234,8 +238,32 @@ export class PreviewCompilerWorkerServer {
     try {
       this.port.postMessage({ id: queued.message.id, type: 'started' });
       const compiledBundle = await this.compiler.compile(queued.message.request, {
-        reportProgress: (stage) => {
-          this.port.postMessage({ id: queued.message.id, stage, type: 'progress' });
+        reportProgress: (stage, activity) => {
+          if (
+            (activity?.kind === 'bundle-frontier' && activity.phase === 'rejected') ||
+            (activity?.kind === 'graph-plan' &&
+              (activity.frontier?.rejected === true ||
+                exceedsPreviewCompilerFrontier(
+                  activity,
+                  createPreviewCompilerFrontierPolicy(
+                    queued.message.request.preparationMode ?? 'full',
+                  ),
+                )))
+          ) {
+            throw new PreviewBuildStalledError(
+              queued.message.request.documentPath,
+              stage,
+              0,
+              'graph-budget',
+              activity,
+            );
+          }
+          this.port.postMessage({
+            ...(activity === undefined ? {} : { activity }),
+            id: queued.message.id,
+            stage,
+            type: 'progress',
+          });
         },
         signal: controller.signal,
       });

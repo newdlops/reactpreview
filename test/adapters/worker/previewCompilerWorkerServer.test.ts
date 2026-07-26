@@ -228,6 +228,69 @@ describe('PreviewCompilerWorkerServer', () => {
     expect(capacityFailures).toHaveLength(1);
     expect(capacityFailures[0]).toMatchObject({ id: 9 });
   });
+
+  it('fails an already oversized automatic graph before native bundling can continue', async () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+    port.request(createCompileRequest(1, 'fast'));
+
+    expect(() =>
+      compiler.calls[0]?.context?.reportProgress?.('analyzing-project', {
+        analysisCandidateCount: 1,
+        corridorSourceCount: 513,
+        dependencySnapshotCount: 0,
+        discoveryScope: 'selected-corridor',
+        discoveryTruncated: false,
+        executableCandidateCount: 1,
+        kind: 'graph-plan',
+        preparationMode: 'fast',
+        styleSnapshotCount: 0,
+      }),
+    ).toThrow('fixed graph budget');
+
+    compiler.calls[0]?.deferred.resolve(createBundle(1));
+    await waitForMicrotasks();
+  });
+
+  it('turns a rejected frozen frontier into graph-budget without restarting the worker', async () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+    port.request(createCompileRequest(1, 'fast'));
+
+    expect(() =>
+      compiler.calls[0]?.context?.reportProgress?.('analyzing-project', {
+        analysisCandidateCount: 1,
+        authoredEdgeCount: 257,
+        corridorSourceCount: 2,
+        dependencySnapshotCount: 0,
+        discoveryScope: 'selected-corridor',
+        discoveryTruncated: false,
+        exactModuleCount: 2,
+        executableCandidateCount: 1,
+        frontierSourceBytes: 1024,
+        kind: 'bundle-frontier',
+        maximumDepth: 1,
+        optionalComponentCount: 0,
+        packageDemandSourceCount: 1,
+        phase: 'rejected',
+        preparationMode: 'fast',
+        projectedEdgeCount: 0,
+        styleSnapshotCount: 0,
+        supportModuleCount: 0,
+        totalAuthoredModuleCount: 2,
+        truncated: true,
+        truncationReasons: ['authored-edge-count'],
+      }),
+    ).toThrow('fixed graph budget');
+
+    compiler.calls[0]?.deferred.resolve(createBundle(1));
+    await waitForMicrotasks();
+    expect(compiler.shutdown).not.toHaveBeenCalled();
+  });
 });
 
 /** Creates one immutable worker compile request. */

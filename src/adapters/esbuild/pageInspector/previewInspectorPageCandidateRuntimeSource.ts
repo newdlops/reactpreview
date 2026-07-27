@@ -58,6 +58,7 @@ function clearPreviewInspectorPendingRouteSelection() {
     clearTimeout(previewInspectorSession.pendingRouteTimeout);
   }
   previewInspectorSession.pendingRouteBranchId = undefined;
+  previewInspectorSession.pendingRouteBuildRevision = undefined;
   previewInspectorSession.pendingRouteInteractionId = undefined;
   previewInspectorSession.pendingRouteBranchRevision = undefined;
   previewInspectorSession.pendingRouteSelectionPath = undefined;
@@ -485,8 +486,31 @@ function selectPreviewInspectorPageCandidate(candidateId) {
 
 /** Applies host transaction outcomes without treating a new entry module as proof of success. */
 function handlePreviewInspectorSelectionStatus(message) {
+  if (message?.type === 'react-preview-progress') {
+    if (
+      previewInspectorSession.pendingRouteBranchId !== undefined &&
+      Number.isSafeInteger(message.revision) &&
+      previewInspectorSession.pendingRouteBuildRevision === undefined &&
+      message.complete !== true
+    ) {
+      previewInspectorSession.pendingRouteBuildRevision = message.revision;
+    }
+    if (
+      message.complete === true &&
+      message.stage === 'ready' &&
+      message.revision === previewInspectorSession.pendingRouteBuildRevision
+    ) {
+      clearPreviewInspectorPendingRouteSelection();
+      previewInspectorSession.pendingRouteError = undefined;
+      notifyPreviewInspector();
+    }
+    return;
+  }
   if (message?.type === 'react-preview-inspector-route-selection-status') {
     if (message.interactionId !== previewInspectorSession.pendingRouteInteractionId) return;
+    if (Number.isSafeInteger(message.buildRevision)) {
+      previewInspectorSession.pendingRouteBuildRevision = message.buildRevision;
+    }
     if (message.status === 'committed') {
       clearPreviewInspectorPendingRouteSelection();
       previewInspectorSession.pendingRouteError = undefined;

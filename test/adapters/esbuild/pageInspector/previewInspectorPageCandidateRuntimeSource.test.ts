@@ -168,6 +168,10 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain(
       'previewInspectorSession.pendingRouteSelectionPath = branch.selectionPath',
     );
+    expect(source).toContain(
+      'previewInspectorSession.pendingRouteBuildRevision = message.revision',
+    );
+    expect(source).toContain("message?.type === 'react-preview-progress'");
     expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS = 10 * 60 * 1000');
     expect(source).toContain('Route preparation is taking longer than expected. Retry when ready.');
     expect(source).toContain(
@@ -181,6 +185,10 @@ describe('Preview Inspector page-candidate runtime source', () => {
 
     expect(source).toContain('function PreviewInspectorRouteExplorer');
     expect(source).toContain('function collectPreviewInspectorRouteCommonPrefix');
+    expect(source).toContain('function createPreviewInspectorRouteBranchIndex');
+    expect(source).toContain('function collectPreviewInspectorRouteOwnerTrail');
+    expect(source).toContain('function PreviewInspectorRouteOwnerFolderButton');
+    expect(source).toContain('branch.parentId === ownerId');
     expect(source).toContain('Filter paths or components');
     expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT = 80');
     expect(source).toContain("'data-rpi-scroll-key': 'route-browser'");
@@ -212,6 +220,16 @@ describe('Preview Inspector page-candidate runtime source', () => {
             createPreviewInspectorPageCandidateUiRuntimeSource(),
         ),
     ).not.toThrow();
+  });
+
+  /** A matching host-ready milestone clears a route transaction even if its terminal status was lost. */
+  it('uses the matching ready revision as a terminal route-selection fallback', () => {
+    expect(evaluateRouteSelectionReadyFallback()).toEqual({
+      afterAccepted: 'route-selected',
+      afterStaleReady: 'route-selected',
+      afterMatchingReady: undefined,
+      notifications: 2,
+    });
   });
 
   /** Strips only a proven app-module mount prefix and leaves direct component routes untouched. */
@@ -652,6 +670,64 @@ globalThis.__result = {
   );
   if (context.__result === undefined) {
     throw new Error('Page candidate route helper did not expose its test result.');
+  }
+  return context.__result;
+}
+
+/** Exercises the generated progress fallback without loading React or a project route module. */
+function evaluateRouteSelectionReadyFallback(): {
+  readonly afterAccepted: string | undefined;
+  readonly afterMatchingReady: string | undefined;
+  readonly afterStaleReady: string | undefined;
+  readonly notifications: number;
+} {
+  const context: {
+    __result?: ReturnType<typeof evaluateRouteSelectionReadyFallback>;
+  } = {};
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
+const previewInspectorSession = {
+  pendingRouteBranchId: 'route-selected',
+  pendingRouteBuildRevision: undefined,
+  pendingRouteInteractionId: 'route:7:1',
+  pendingRouteSelectionPath: [{ componentName: 'SelectedPage', pattern: '/selected' }],
+  pendingRouteTimeout: undefined,
+};
+let notifications = 0;
+function notifyPreviewInspector() { notifications += 1; }
+handlePreviewInspectorSelectionStatus({
+  branchId: 'route-selected',
+  buildRevision: 8,
+  displayedRuntimeRevision: 7,
+  interactionId: 'route:7:1',
+  status: 'accepted',
+  type: 'react-preview-inspector-route-selection-status',
+});
+const afterAccepted = previewInspectorSession.pendingRouteBranchId;
+handlePreviewInspectorSelectionStatus({
+  complete: true,
+  revision: 7,
+  stage: 'ready',
+  type: 'react-preview-progress',
+});
+const afterStaleReady = previewInspectorSession.pendingRouteBranchId;
+handlePreviewInspectorSelectionStatus({
+  complete: true,
+  revision: 8,
+  stage: 'ready',
+  type: 'react-preview-progress',
+});
+globalThis.__result = {
+  afterAccepted,
+  afterMatchingReady: previewInspectorSession.pendingRouteBranchId,
+  afterStaleReady,
+  notifications,
+};`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Route ready fallback did not expose its test result.');
   }
   return context.__result;
 }

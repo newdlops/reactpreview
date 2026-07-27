@@ -59,6 +59,42 @@ function previewInspectorRouteSelectionPathStartsWith(actual, expected) {
   );
 }
 
+/** Indexes compiler-proven parent identities without deriving hierarchy from display path strings. */
+function createPreviewInspectorRouteBranchIndex(branches) {
+  return new Map(branches.map((branch) => [branch.id, branch]));
+}
+
+/** Returns expanded route-owner folders from the explorer root to the currently opened owner. */
+function collectPreviewInspectorRouteOwnerTrail(ownerId, branchById) {
+  const trail = [];
+  const visited = new Set();
+  let currentId = ownerId;
+  while (typeof currentId === 'string' && !visited.has(currentId)) {
+    visited.add(currentId);
+    const branch = branchById.get(currentId);
+    if (branch === undefined) break;
+    trail.unshift(branch);
+    currentId = branch.parentId;
+  }
+  return trail;
+}
+
+/** Opens an already analyzed nested route owner without scheduling another compiler transaction. */
+function PreviewInspectorRouteOwnerFolderButton({ branch, childCount, onOpen }) {
+  return React.createElement(
+    'button',
+    {
+      className: 'rpi-route-folder',
+      onClick: onOpen,
+      title: String(branch.pathname ?? branch.pattern ?? branch.componentName ?? ''),
+      type: 'button',
+    },
+    React.createElement('span', { 'aria-hidden': true }, '▸'),
+    React.createElement('span', undefined, String(branch.componentName ?? 'route')),
+    React.createElement('span', { className: 'rpi-route-count' }, String(childCount)),
+  );
+}
+
 /** Renders one branch button and delegates compilation only after explicit selection. */
 function PreviewInspectorRouteBranchButton({ branch, commonPrefix, selected }) {
   const pending = previewInspectorSession.pendingRouteBranchId === branch.id;
@@ -130,18 +166,30 @@ function PreviewInspectorRouteBranchButton({ branch, commonPrefix, selected }) {
 /** Renders a path-folder browser whose visible DOM stays small even for thousands of route records. */
 function PreviewInspectorRouteExplorer({ descriptor }) {
   const branches = readPreviewInspectorRouteBranches(descriptor);
-  const commonPrefix = React.useMemo(
-    () => collectPreviewInspectorRouteCommonPrefix(branches),
+  const branchById = React.useMemo(
+    () => createPreviewInspectorRouteBranchIndex(branches),
     [branches],
   );
-  const commonPrefixKey = commonPrefix.join('/');
   const selectedId = descriptor?.inspector?.selectedRouteBranchId;
+  const selectedBranch = branchById.get(selectedId);
+  const [ownerId, setOwnerId] = React.useState(selectedBranch?.parentId);
+  const levelBranches = branches.filter((branch) => branch.parentId === ownerId);
+  const commonPrefix = React.useMemo(
+    () => collectPreviewInspectorRouteCommonPrefix(levelBranches),
+    [branches, ownerId],
+  );
+  const commonPrefixKey = String(ownerId ?? 'root') + ':' + commonPrefix.join('/');
   const [folder, setFolder] = React.useState(commonPrefix);
   const [query, setQuery] = React.useState('');
   React.useEffect(() => {
-    setFolder((current) =>
-      previewInspectorRouteStartsWith(current, commonPrefix) ? current : commonPrefix,
-    );
+    setOwnerId((current) => {
+      const selectedCandidate = branchById.get(selectedId);
+      if (selectedCandidate !== undefined) return selectedCandidate.parentId;
+      return current === undefined || branchById.has(current) ? current : undefined;
+    });
+  }, [branches, selectedId]);
+  React.useEffect(() => {
+    setFolder(commonPrefix);
   }, [commonPrefixKey]);
   React.useEffect(() => {
     const selectedBranch = branches.find((branch) => branch.id === selectedId);
@@ -170,7 +218,7 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
           [branch.componentName, branch.pathname, branch.pattern]
             .some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery)),
         );
-  const folderRoutes = branches
+  const folderRoutes = levelBranches
     .map((branch) => ({ branch, segments: splitPreviewInspectorExplorerRoute(branch.pattern) }))
     .filter((item) => previewInspectorRouteStartsWith(item.segments, folder));
   const immediateBranches = folderRoutes
@@ -182,7 +230,12 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
     if (segment === undefined) continue;
     childFolderCounts.set(segment, (childFolderCounts.get(segment) ?? 0) + 1);
   }
-  const selectedBranch = branches.find((branch) => branch.id === selectedId);
+  const directChildCounts = new Map();
+  for (const branch of branches) {
+    if (branch.parentId === undefined) continue;
+    directChildCounts.set(branch.parentId, (directChildCounts.get(branch.parentId) ?? 0) + 1);
+  }
+  const ownerTrail = collectPreviewInspectorRouteOwnerTrail(ownerId, branchById);
   const requestedSelectionPath = previewInspectorSession.lastRequestedRouteSelectionPath;
   const selectedDefaultChild =
     descriptor?.inspector?.routeSelectionResolution === 'exact' &&
@@ -192,6 +245,22 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
   const visibleChildFolders = [...childFolderCounts].slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
   const visibleImmediateBranches = immediateBranches.slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
   const routeError = previewInspectorSession.pendingRouteError;
+  const renderVisibleBranch = (branch) => {
+    const childCount = directChildCounts.get(branch.id) ?? 0;
+    return branch.childState === 'expanded' && childCount > 0
+      ? React.createElement(PreviewInspectorRouteOwnerFolderButton, {
+          branch,
+          childCount,
+          key: branch.id,
+          onOpen: () => setOwnerId(branch.id),
+        })
+      : React.createElement(PreviewInspectorRouteBranchButton, {
+          branch,
+          commonPrefix,
+          key: branch.id,
+          selected: branch.id === selectedId,
+        });
+  };
   return React.createElement(
     'details',
     { 'aria-busy': previewInspectorSession.pendingRouteBranchId !== undefined, className: 'rpi-route-explorer', open: true },
@@ -244,14 +313,7 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
                   { className: 'rpi-note rpi-route-empty', role: 'status' },
                   'No application routes match this filter.',
                 )
-              : visibleSearchMatches.map((branch) =>
-              React.createElement(PreviewInspectorRouteBranchButton, {
-                branch,
-                commonPrefix,
-                key: branch.id,
-                selected: branch.id === selectedId,
-              }),
-            ),
+              : visibleSearchMatches.map(renderVisibleBranch),
             matchingBranches.length > visibleSearchMatches.length
               ? React.createElement(
                   'div',
@@ -269,12 +331,25 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
               { className: 'rpi-route-breadcrumbs' },
               React.createElement(
                 'button',
-                {
-                  className: 'rpi-route-crumb',
-                  onClick: () => setFolder(commonPrefix),
-                  type: 'button',
-                },
-                '/',
+                  {
+                    className: 'rpi-route-crumb',
+                    onClick: () => setOwnerId(undefined),
+                    type: 'button',
+                  },
+                  '/',
+                ),
+              ownerTrail.map((owner) =>
+                React.createElement(
+                  'button',
+                  {
+                    className: 'rpi-route-crumb',
+                    key: owner.id,
+                    onClick: () => setOwnerId(owner.id),
+                    title: owner.pathname ?? owner.pattern ?? owner.componentName,
+                    type: 'button',
+                  },
+                  owner.componentName,
+                ),
               ),
               folder.slice(commonPrefix.length).map((segment, relativeIndex) =>
                 React.createElement(
@@ -321,14 +396,7 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
             React.createElement(
               'div',
               { className: 'rpi-route-list' },
-              visibleImmediateBranches.map((branch) =>
-                React.createElement(PreviewInspectorRouteBranchButton, {
-                  branch,
-                  commonPrefix,
-                  key: branch.id,
-                  selected: branch.id === selectedId,
-                }),
-              ),
+              visibleImmediateBranches.map(renderVisibleBranch),
             ),
             immediateBranches.length > visibleImmediateBranches.length
               ? React.createElement(

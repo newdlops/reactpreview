@@ -164,6 +164,7 @@ function createPreviewInspectorSession() {
     pickerCandidate: undefined,
     pickerEnabled: false,
     pendingRouteBranchId: undefined,
+    pendingRouteBuildRevision: undefined,
     pendingRouteInteractionId: undefined,
     pendingRouteBranchRevision: undefined,
     pendingRouteError: undefined,
@@ -200,6 +201,7 @@ previewHotRuntime.inspectorSession = previewInspectorSession;
 previewInspectorSession.instanceEpochByExport ??= new Map();
 previewInspectorSession.lastRequestedRouteSelectionPath ??= undefined;
 previewInspectorSession.pendingRouteBranchId ??= undefined;
+previewInspectorSession.pendingRouteBuildRevision ??= undefined;
 previewInspectorSession.pendingRouteInteractionId ??= undefined;
 previewInspectorSession.pendingRouteBranchRevision ??= undefined;
 previewInspectorSession.pendingRouteError ??= undefined;

@@ -7,7 +7,10 @@
  */
 import type { PreviewInspectorRouteSelectionStep } from '../domain/preview';
 
-const MAXIMUM_ROUTE_SELECTION_DEPTH = 8;
+// This is a hostile-message envelope, not a compiler graph budget. Authored route analysis itself
+// descends until a leaf or source-identity cycle; 256 steps prevents pathological structured-clone
+// traffic without truncating realistic nested applications.
+const MAXIMUM_ROUTE_SELECTION_DEPTH = 256;
 const MAXIMUM_ROUTE_COMPONENT_NAME_LENGTH = 256;
 const MAXIMUM_ROUTE_PATTERN_LENGTH = 2_048;
 const MAXIMUM_INTERACTION_ID_LENGTH = 128;

@@ -66,6 +66,32 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(handlerState.health).not.toHaveBeenCalled();
   });
 
+  /** The protocol envelope must not reintroduce the former eight-owner compiler graph budget. */
+  it('accepts a deeply nested compiler-proven route selection path', () => {
+    const { context, selectRoute } = createContext();
+    const selectionPath = Array.from({ length: 12 }, (_value, index) => ({
+      componentName: `Owner${index.toString()}`,
+      pattern: `/${Array.from(
+        { length: index + 1 },
+        (_segment, segmentIndex) => `level-${segmentIndex.toString()}`,
+      ).join('/')}`,
+    }));
+
+    expect(
+      handlePreviewInspectorHostMessage(
+        {
+          branchId: 'route-0123456789abcdef0123',
+          interactionId: 'route:12:deep',
+          runtimeRevision: 12,
+          selectionPath,
+          type: 'react-preview-inspector-route-selected',
+        },
+        context,
+      ),
+    ).toBe(true);
+    expect(selectRoute).toHaveBeenCalledWith(expect.objectContaining({ selectionPath }));
+  });
+
   /** Rebuilds one active candidate while keeping all alternate candidates descriptor-only. */
   it('routes a current page candidate selection', () => {
     const { context, selectPageCandidate } = createContext();

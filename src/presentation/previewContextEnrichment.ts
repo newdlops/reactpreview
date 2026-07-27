@@ -274,7 +274,7 @@ function isExactDocumentVersion(value: number | undefined): value is number {
 function isDeterministicEnrichmentStall(error: unknown): boolean {
   return (
     isPreviewBuildStall(error) &&
-    (error.reason === 'graph-budget' ||
+    (error.reason === 'frontier-mismatch' ||
       error.reason === 'memory' ||
       error.reason === 'native-service' ||
       error.reason === 'watchdog')

@@ -10,22 +10,13 @@ export interface PreviewInspectorRuntimeImportEdge {
   readonly typeOnly: false;
 }
 
-/** Reasons that may safely replace an optional component edge with an existing projection. */
+/** Structural failures that may safely replace an optional edge with an existing projection. */
 export type PreviewInspectorFrontierProjectionReason = Extract<
   PreviewCompilerFrontierReason,
-  | 'optional-component-count'
-  | 'optional-support-count'
-  | 'authored-edge-count'
-  | 'component-depth'
-  | 'total-module-count'
-  | 'source-byte-count'
-  | 'single-source-bytes'
-  | 'package-demand-count'
-  | 'bare-package-count'
-  | 'style-asset-count'
+  'exact-source-unreadable' | 'source-parse-failure' | 'slice-unavailable'
 >;
 
-/** Immutable representation consumed by a bounded corridor plugin. */
+/** Immutable representation consumed by the frozen-frontier corridor plugin. */
 export interface PreviewInspectorBundleFrontier {
   readonly authenticComponentExports: readonly PreviewInspectorFrontierComponentExports[];
   readonly authenticSourcePaths: readonly string[];

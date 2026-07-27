@@ -27,7 +27,10 @@ describe('verifyPreviewInspectorBundleFrontierMetafile', () => {
     } catch (error) {
       caught = error;
     }
-    expect(caught).toMatchObject({ reason: 'graph-budget', target: '/workspace/src/Target.tsx' });
+    expect(caught).toMatchObject({
+      reason: 'frontier-mismatch',
+      target: '/workspace/src/Target.tsx',
+    });
   });
 
   it('accepts authored frontier inputs and excludes installed dependencies from the assertion', () => {
@@ -69,7 +72,7 @@ describe('verifyPreviewInspectorBundleFrontierMetafile', () => {
     };
     expect(() => {
       verifyPreviewInspectorBundleFrontierMetafile(options);
-    }).toThrow('fixed graph budget');
+    }).toThrow('outside its verified module frontier');
     expect(() => {
       verifyPreviewInspectorBundleFrontierMetafile({
         ...options,
@@ -122,7 +125,7 @@ describe('verifyPreviewInspectorBundleFrontierMetafile', () => {
     }
 
     expect(Object.keys(result.metafile.inputs)).toContain('src/Escaped.ts');
-    expect(caught).toMatchObject({ reason: 'graph-budget', target: targetPath });
+    expect(caught).toMatchObject({ reason: 'frontier-mismatch', target: targetPath });
   });
 });
 
@@ -138,6 +141,7 @@ function bundleActivity(): PreviewCompilerBundleFrontierActivity {
     exactModuleCount: 1,
     executableCandidateCount: 1 as const,
     frontierSourceBytes: 20,
+    graphAdmission: 'unbounded',
     kind: 'bundle-frontier' as const,
     maximumDepth: 0,
     optionalComponentCount: 0,

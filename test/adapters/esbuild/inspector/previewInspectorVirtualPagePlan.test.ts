@@ -692,6 +692,40 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     expect(virtualPages[0]?.browserCandidate.dependencyPaths).toContain('/workspace/pages.json');
   });
 
+  /** Executes a statically resolved route leaf instead of invoking its application Router owner. */
+  it('promotes a resolved descendant route page when reverse ancestry contains only the app root', () => {
+    const application = createCandidate({
+      complete: true,
+      id: 'application-root',
+      root: { exportName: 'Application', sourcePath: APP_PATH },
+      rootOwnsRouter: true,
+      rootStepIndex: 2,
+      stopReason: 'root-reached',
+    });
+    const routeLocation = {
+      componentExportName: 'DashboardPage',
+      componentName: 'DashboardPage',
+      componentSourcePath: PAGE_PATH,
+      dependencyPaths: [APP_PATH, PAGE_PATH],
+      evidenceKind: 'route-jsx' as const,
+      pathname: '/dashboard',
+      pattern: '/dashboard',
+      sourcePath: APP_PATH,
+    };
+
+    const expanded = expandPreviewInspectorRouteChoiceCandidates([application], [routeLocation]);
+
+    expect(expanded).toHaveLength(1);
+    expect(expanded[0]).toMatchObject({
+      complete: true,
+      edges: [],
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootOwnsRouter: false,
+      routeLocation,
+      stopReason: 'render-path-checkpoint',
+    });
+  });
+
   /** Falls back to the authored root when no shared static render path proves a safer body. */
   it('retains an independently discovered authored candidate', () => {
     const standalone = createCandidate({

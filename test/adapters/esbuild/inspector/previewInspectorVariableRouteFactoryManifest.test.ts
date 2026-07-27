@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { collectPreviewInspectorRouteFactoryManifest } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteFactoryManifest';
 import { collectPreviewInspectorRouteFactoryCatalog } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteFactoryCatalog';
 import { resolvePreviewInspectorRouteFactoryDefinition } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteFactoryDefinition';
+import { isPreviewInspectorSelectableFactoryRouteOption } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteFactoryManifestTypes';
 import ts from 'typescript';
 
 const root = '/workspace/src';
@@ -29,7 +30,7 @@ const sources: Record<string, string> = {
     'import { ListPage } from "./list-page";',
     'import { CreatePage } from "./create-page";',
     'import { ManagementApp } from "./management-app";',
-    'export const SectionApp = createSectionModule("/section", { ListPage, CreatePage }, [ManagementApp], ({ generatedPages, generatedModules }) => <Routes>{generatedPages}{generatedModules}<Route path="*" element={<NotFound />} /></Routes>);',
+    'export const SectionApp = createSectionModule("/section", { ListPage, CreatePage, NoCatalogPage }, [ManagementApp, MissingApp], ({ generatedPages, generatedModules }) => <Routes>{generatedPages}{generatedModules}<Route path="*" element={<NotFound />} /></Routes>);',
   ].join('\n'),
   [`${root}/create-section-module.ts`]: [
     'import { createSectionModuleBase } from "./create-section-module-base";',
@@ -44,7 +45,14 @@ const sources: Record<string, string> = {
     'import pages from "./pages.json";',
     'export const pageNamePathMap = invert(pages);',
   ].join('\n'),
-  [`${root}/pages.json`]: JSON.stringify({ section: { index: 'ListPage', create: 'CreatePage' } }),
+  [`${root}/pages.json`]: JSON.stringify({
+    section: {
+      index: 'ListPage',
+      create: 'CreatePage',
+      missing: 'MissingPage',
+      alternate: 'ListPage',
+    },
+  }),
   [`${root}/list-page.tsx`]: 'export const ListPage = () => <div />;',
   [`${root}/create-page.tsx`]: 'export const CreatePage = () => <div />;',
   [`${root}/management-app.tsx`]:
@@ -91,11 +99,14 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
       resolveModule,
       sourcePath: `${root}/create-section-module.ts`,
     });
-    expect(catalog.patternsByComponentName.get('ListPage')).toEqual(['/section']);
+    expect(catalog.patternsByComponentName.get('ListPage')).toEqual([
+      '/section',
+      '/section/alternate',
+    ]);
     expect(catalog.patternsByComponentName.get('CreatePage')).toEqual(['/section/create']);
   });
 
-  it('joins a curried factory catalog and keeps wildcard fallbacks outside routes', async () => {
+  it('projects selectable choices into ordered routes while retaining unresolved diagnostics', async () => {
     const sourcePath = `${root}/section-app.tsx`;
     const manifest = await collectPreviewInspectorRouteFactoryManifest({
       exportName: 'SectionApp',
@@ -106,11 +117,42 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
     });
 
     expect(manifest).toMatchObject({ basePattern: '/section', routeSlotCount: 2 });
+    expect(manifest?.options.map((option) => [option.componentName, option.availability])).toEqual([
+      ['ListPage', 'selectable'],
+      ['ListPage', 'selectable'],
+      ['CreatePage', 'selectable'],
+      ['NoCatalogPage', 'catalog-unresolved'],
+      ['ManagementApp', 'selectable'],
+      ['MissingApp', 'component-unresolved'],
+    ]);
+    const selectableRoutes = manifest?.options
+      .filter(isPreviewInspectorSelectableFactoryRouteOption)
+      .map((option) => option.route);
+    expect(selectableRoutes).toEqual(manifest?.routes);
+    const unavailableOptions = manifest?.options.filter(
+      (option) => option.availability !== 'selectable',
+    );
+    expect(unavailableOptions).toEqual([
+      expect.objectContaining({
+        componentName: 'NoCatalogPage',
+        availability: 'catalog-unresolved',
+      }),
+      expect.objectContaining({
+        componentName: 'MissingApp',
+        availability: 'component-unresolved',
+      }),
+    ]);
+    expect(unavailableOptions?.every((option) => !Object.hasOwn(option, 'route'))).toBe(true);
     expect(manifest?.routes).toEqual([
       expect.objectContaining({
         componentName: 'ListPage',
         absolutePattern: '/section',
         relativeRouterPattern: '',
+      }),
+      expect.objectContaining({
+        componentName: 'ListPage',
+        absolutePattern: '/section/alternate',
+        relativeRouterPattern: 'alternate',
       }),
       expect.objectContaining({
         componentName: 'CreatePage',
@@ -126,6 +168,6 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
     expect(manifest?.fallbacks).toEqual([
       expect.objectContaining({ componentName: 'NotFound', pattern: '*' }),
     ]);
-    expect(manifest?.unresolvedChoiceNames).toEqual([]);
+    expect(manifest?.unresolvedChoiceNames).toEqual(['NoCatalogPage', 'MissingApp']);
   });
 });

@@ -21,7 +21,7 @@ export interface VerifyPreviewInspectorBundleFrontierMetafileOptions {
   readonly workspaceRoot: string;
 }
 
-/** Fails closed when a successful bounded build exposes a new authored esbuild input. */
+/** Fails closed when a successful frozen-frontier build exposes a new authored esbuild input. */
 export function verifyPreviewInspectorBundleFrontierMetafile(
   options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
 ): void {
@@ -46,7 +46,9 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
 /** Requires every generated execution surface to survive output tree-shaking and composition. */
 function hasExecutionSurface(
   options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
-  surface: NonNullable<VerifyPreviewInspectorBundleFrontierMetafileOptions['executionSurfaces']>[number],
+  surface: NonNullable<
+    VerifyPreviewInspectorBundleFrontierMetafileOptions['executionSurfaces']
+  >[number],
 ): boolean {
   if (
     surface.strategy === 'selected-export-slice' ||
@@ -62,13 +64,15 @@ function hasExecutionSurface(
   });
 }
 
-/** Reports one uniform bounded failure without disclosing candidate paths or virtual identifiers. */
-function throwFrontierMismatch(options: VerifyPreviewInspectorBundleFrontierMetafileOptions): never {
+/** Reports one consistency failure without disclosing candidate paths or virtual identifiers. */
+function throwFrontierMismatch(
+  options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
+): never {
   throw new PreviewBuildStalledError(
     options.target,
     'bundling-modules',
     0,
-    'graph-budget',
+    'frontier-mismatch',
     options.activity,
   );
 }

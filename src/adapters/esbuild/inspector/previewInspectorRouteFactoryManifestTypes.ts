@@ -32,13 +32,33 @@ export interface PreviewInspectorFactoryRouteEntry {
   readonly relativeRouterPattern: string;
 }
 
-/** All choices survive analysis, including choices whose safe path proof is incomplete. */
-export interface PreviewInspectorFactoryRouteOption {
-  readonly availability: PreviewInspectorFactoryRouteAvailability;
+/** Fields shared by every visible factory choice. */
+interface PreviewInspectorFactoryRouteOptionBase {
   readonly componentName: string;
   readonly kind: PreviewInspectorFactoryRouteKind;
   readonly occurrenceStart: number;
-  readonly route?: PreviewInspectorFactoryRouteEntry;
+}
+
+/** A factory choice whose static evidence proves a renderable route. */
+export interface PreviewInspectorSelectableFactoryRouteOption extends PreviewInspectorFactoryRouteOptionBase {
+  readonly availability: 'selectable';
+  readonly route: PreviewInspectorFactoryRouteEntry;
+}
+
+/** A visible choice whose static route proof is incomplete. */
+export interface PreviewInspectorUnavailableFactoryRouteOption extends PreviewInspectorFactoryRouteOptionBase {
+  readonly availability: Exclude<PreviewInspectorFactoryRouteAvailability, 'selectable'>;
+}
+
+/** All choices survive analysis, including choices whose safe path proof is incomplete. */
+export type PreviewInspectorFactoryRouteOption =
+  PreviewInspectorSelectableFactoryRouteOption | PreviewInspectorUnavailableFactoryRouteOption;
+
+/** Narrows a visible choice to one that has a statically renderable route. */
+export function isPreviewInspectorSelectableFactoryRouteOption(
+  option: PreviewInspectorFactoryRouteOption,
+): option is PreviewInspectorSelectableFactoryRouteOption {
+  return option.availability === 'selectable';
 }
 
 /** Literal wildcard fallback retained for diagnostics but excluded from normal route choices. */

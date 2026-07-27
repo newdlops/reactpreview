@@ -799,6 +799,49 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).not.toContain('direct-target:*');
   });
 
+  /** A detached leaf slice must not materialize the complete selected app in dormant chunks. */
+  it('omits direct target loaders beside a frozen route-page execution slice', () => {
+    const plan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const browserCandidate = plan.pageCandidates[0];
+    if (browserCandidate === undefined) throw new Error('Expected one page candidate.');
+    const source = createPreviewInspectorRootSource({
+      pageExecutionCandidate: {
+        browserCandidate,
+        compositionEdges: [],
+        criticalSurfaces: [
+          {
+            bypassedWrapperNames: [],
+            exportName: 'InlineLayout',
+            id: 'layout',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: TARGET_PATH,
+            strategy: 'selected-export-slice',
+            watchSourcePaths: [TARGET_PATH],
+          },
+          {
+            bypassedWrapperNames: [],
+            exportName: 'Page',
+            id: 'page',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: PAGE_PATH,
+            strategy: 'authentic-module-export',
+            watchSourcePaths: [PAGE_PATH],
+          },
+        ],
+        evidenceSourcePaths: [],
+        fidelity: 'page-authentic',
+        id: 'frozen-route-page',
+        optionalSurfaces: [],
+        watchSourcePaths: [TARGET_PATH, PAGE_PATH],
+      },
+      plan,
+    });
+
+    expect(source).toContain('react-preview:inspector-page-execution');
+    expect(source).not.toContain('direct-target:Target');
+    expect(source).not.toContain('react-preview:inspector-direct-target/Target');
+  });
+
   /**
    * Parses the emitted descriptor JSON to prove static JSX choices cross the extension-host to
    * webview boundary with condition, source, and component-tree evidence intact.

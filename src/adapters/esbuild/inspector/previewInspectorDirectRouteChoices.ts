@@ -13,9 +13,12 @@ import {
   normalizePreviewInspectorRoutePattern as normalizeRoutePattern,
 } from './previewInspectorRoutePattern';
 import { readPreviewInspectorRouteFactoryBasePath } from './previewInspectorRouteFactory';
+import {
+  collectPreviewInspectorRouteElementPath,
+  type PreviewInspectorRouteElementIdentity,
+} from './previewInspectorRouteElementPath';
 
 const MAXIMUM_DIRECT_ROUTE_CHOICES = 4_096;
-const MAXIMUM_ROUTER_DELEGATE_MODULES = 16;
 const REACT_ROUTER_PACKAGE_PATTERN = /^(?:@remix-run\/react|react-router(?:-dom)?)$/u;
 const ROUTER_DESCRIPTOR_EXPORTS = new Set([
   'createBrowserRouter',
@@ -36,12 +39,20 @@ export interface PreviewInspectorDirectRouteComponentReference {
 export interface PreviewInspectorDirectRouteChoice {
   /** Component label shown in the route explorer. */
   readonly componentName: string;
+  /** Resolved outer-to-inner JSX components authored directly in the route element. */
+  readonly elementPath?: readonly PreviewInspectorDirectRouteElementComponent[];
   /** Optional page module retained only after this choice becomes active. */
   readonly reference?: PreviewInspectorDirectRouteComponentReference;
   /** Normalized authored route pattern. */
   readonly pattern: string;
   /** Router source that provided this exact path. */
   readonly sourcePath: string;
+}
+
+/** One component in an inline route element, including its optional exact source identity. */
+export interface PreviewInspectorDirectRouteElementComponent {
+  readonly componentName: string;
+  readonly reference?: PreviewInspectorDirectRouteComponentReference;
 }
 
 /** Standard route choices plus router configuration files needed for hot reload. */
@@ -114,12 +125,9 @@ export async function collectPreviewInspectorDirectRouteChoices(
   const queuedItems = new Set<string>();
   const queue: RouteModuleWorkItem[] = [];
   enqueue(options.sourcePath, options.sourceText);
-  let processedItems = 0;
-
-  while (queue.length > 0 && processedItems < MAXIMUM_ROUTER_DELEGATE_MODULES) {
+  while (queue.length > 0) {
     const workItem = queue.shift();
     if (workItem === undefined) break;
-    processedItems += 1;
     const sourcePath = path.normalize(workItem.sourcePath);
     const sourceText = workItem.sourceText ?? (await options.readSource(sourcePath));
     if (sourceText === undefined) continue;
@@ -511,13 +519,27 @@ function addExpressionChoice(
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
 ): void {
   if (expression === undefined) return;
-  const identity = readComponentIdentity(expression, parsed);
+  const identities = collectPreviewInspectorRouteElementPath(expression, parsed.sourceFile);
+  const identity = identities.at(-1);
   if (identity === undefined) return;
   const pattern = normalizeRoutePattern(rawPattern);
   if (pattern === undefined) return;
   const reference = resolveComponentReference(identity, parsed, sourcePath, resolveModule);
+  const elementPath = identities.map((candidate) => {
+    const candidateReference = resolveComponentReference(
+      candidate,
+      parsed,
+      sourcePath,
+      resolveModule,
+    );
+    return Object.freeze({
+      componentName: candidate.componentName,
+      ...(candidateReference === undefined ? {} : { reference: candidateReference }),
+    });
+  });
   addChoice(choices, {
     componentName: identity.componentName,
+    elementPath: Object.freeze(elementPath),
     pattern,
     ...(reference === undefined ? {} : { reference }),
     sourcePath,
@@ -552,70 +574,9 @@ function addDynamicImportChoice(
   });
 }
 
-/** Component spelling plus importer-local binding used to resolve its source module. */
-interface ComponentIdentity {
-  readonly componentName: string;
-  readonly exportName?: string;
-  readonly localName: string;
-}
-
-/** Reads JSX, identifier, member, createElement, and render-callback component expressions. */
-function readComponentIdentity(
-  expression: ts.Expression,
-  parsed: ParsedRouteModule,
-): ComponentIdentity | undefined {
-  const value = unwrapExpression(expression);
-  if (ts.isJsxElement(value) || ts.isJsxSelfClosingElement(value)) {
-    const opening = ts.isJsxElement(value) ? value.openingElement : value;
-    return readTagComponentIdentity(opening.tagName);
-  }
-  if (ts.isIdentifier(value) && /^[A-Z_$]/u.test(value.text)) {
-    return { componentName: value.text, localName: value.text };
-  }
-  if (ts.isPropertyAccessExpression(value)) {
-    return readMemberComponentIdentity(value);
-  }
-  if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
-    if (ts.isExpression(value.body)) return readComponentIdentity(value.body, parsed);
-    for (const statement of value.body.statements) {
-      if (ts.isReturnStatement(statement) && statement.expression !== undefined) {
-        const identity = readComponentIdentity(statement.expression, parsed);
-        if (identity !== undefined) return identity;
-      }
-    }
-  }
-  if (ts.isCallExpression(value) && value.arguments[0] !== undefined) {
-    const callee = value.expression.getText(parsed.sourceFile).split('.').at(-1);
-    if (callee === 'createElement') return readComponentIdentity(value.arguments[0], parsed);
-  }
-  return undefined;
-}
-
-/** Reads a JSX tag while preserving namespace-import member exports. */
-function readTagComponentIdentity(tagName: ts.JsxTagNameExpression): ComponentIdentity | undefined {
-  if (ts.isIdentifier(tagName) && /^[A-Z_$]/u.test(tagName.text)) {
-    return { componentName: tagName.text, localName: tagName.text };
-  }
-  return ts.isPropertyAccessExpression(tagName) ? readMemberComponentIdentity(tagName) : undefined;
-}
-
-/** Maps `Screens.Home` to the namespace binding plus exact `Home` export. */
-function readMemberComponentIdentity(
-  expression: ts.PropertyAccessExpression,
-): ComponentIdentity | undefined {
-  let root: ts.Expression = expression.expression;
-  while (ts.isPropertyAccessExpression(root)) root = root.expression;
-  if (!ts.isIdentifier(root) || !/^[A-Z_$]/u.test(expression.name.text)) return undefined;
-  return {
-    componentName: expression.name.text,
-    exportName: expression.name.text,
-    localName: root.text,
-  };
-}
-
 /** Resolves direct imports, namespace members, lazy bindings, or same-file component declarations. */
 function resolveComponentReference(
-  identity: ComponentIdentity,
+  identity: PreviewInspectorRouteElementIdentity,
   parsed: ParsedRouteModule,
   sourcePath: string,
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
@@ -882,6 +843,20 @@ function addChoice(
   choices.push(
     Object.freeze({
       componentName: choice.componentName,
+      ...(choice.elementPath === undefined
+        ? {}
+        : {
+            elementPath: Object.freeze(
+              choice.elementPath.map((component) =>
+                Object.freeze({
+                  componentName: component.componentName,
+                  ...(component.reference === undefined
+                    ? {}
+                    : { reference: Object.freeze(component.reference) }),
+                }),
+              ),
+            ),
+          }),
       pattern: choice.pattern,
       ...(choice.reference === undefined ? {} : { reference: Object.freeze(choice.reference) }),
       sourcePath: path.normalize(choice.sourcePath),

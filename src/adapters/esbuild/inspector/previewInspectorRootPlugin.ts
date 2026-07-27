@@ -37,10 +37,10 @@ import {
   registerPreviewInspectorPageExecutionEntryPlugin,
 } from './previewInspectorPageExecutionEntryPlugin';
 import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
+import { canBundlePreviewInspectorDirectTargetDefinitions } from './previewInspectorDirectTargetBundling';
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 const INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE = 'react-preview-inspector-render-bootstrap';
 const INSPECTOR_RENDER_BOOTSTRAP_SPECIFIER_PREFIX = 'react-preview:inspector-render-bootstrap/';
-
 /** One candidate-scoped virtual module containing a safe entry registration slice. */
 interface PreviewInspectorRenderBootstrapModule {
   readonly candidateId: string;
@@ -98,9 +98,9 @@ export function createPreviewInspectorRootPlugin(
         ...(options.maximumPageCandidates === undefined
           ? {}
           : { maximumPageCandidates: options.maximumPageCandidates }),
-        ...(options.pageExecutionCandidate === undefined
-          ? {}
-          : { pageExecutionCandidate: options.pageExecutionCandidate }),
+        // prettier-ignore
+        ...(options.pageExecutionCandidate === undefined ? {} : { pageExecutionCandidate: options.pageExecutionCandidate }),
+        // prettier-ignore
         ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates }),
         plan: options.plan,
         renderBootstrapSpecifiersByCandidateId,
@@ -435,7 +435,8 @@ export function createPreviewInspectorRootSource(
   // browser invokes these loaders only for the explicit file-component overview; authored page
   // flow still mounts one selected caller path and preserves its exact UI.
   const directTargetExportNames =
-    plan.contextModule === undefined
+    plan.contextModule === undefined &&
+    canBundlePreviewInspectorDirectTargetDefinitions(options.pageExecutionCandidate, plan.target)
       ? [...new Set([plan.target.exportName, ...Object.keys(plan.renderChainsByExport)])]
       : [];
   for (const exportName of directTargetExportNames) assertExportName(exportName);
@@ -470,9 +471,9 @@ export function createPreviewInspectorRootSource(
       ...(executableCandidate === undefined
         ? {}
         : { executablePageCandidateId: executableCandidate.active.browserCandidate.id }),
-      ...(options.pageExecutionCandidate === undefined
-        ? {}
-        : { pageExecutionCandidateId: options.pageExecutionCandidate.id }),
+      // prettier-ignore
+      ...(options.pageExecutionCandidate === undefined ? {} : { pageExecutionCandidateId: options.pageExecutionCandidate.id }),
+      // prettier-ignore
       ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates.map((candidate) => ({ fidelity: candidate.fidelity, id: candidate.id })) }),
       ...(executableCandidate?.requestedCandidateWasUnavailable === true
         ? { requestedPageCandidateUnavailable: true }

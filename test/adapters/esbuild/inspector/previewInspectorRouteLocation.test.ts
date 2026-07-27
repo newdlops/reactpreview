@@ -93,7 +93,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
   });
 
   /** Supports ordinary nested React Router JSX when a project has no static JSON route map. */
-  it('joins nested JSX Route paths and uses a visible neutral string parameter', async () => {
+  it('joins nested JSX Route paths and materializes semantic identifier parameters', async () => {
     const routesPath = '/workspace/application/src/routes.tsx';
     const sources = {
       [TARGET_PATH]: 'export function InvestmentContractAnalysisPage() { return <main />; }',
@@ -113,7 +113,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
 
     expect(location).toMatchObject({
       evidenceKind: 'route-jsx',
-      pathname: '/workspace/preview/analysis',
+      pathname: '/workspace/1/analysis',
       pattern: '/workspace/:workspaceId/analysis',
       sourcePath: routesPath,
     });
@@ -178,7 +178,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
 
     expect(location).toMatchObject({
       componentName: 'ViewCareGoal',
-      pathname: '/patients/preview/care-goals/preview',
+      pathname: '/patients/1/care-goals/1',
       pattern: '/patients/:id/care-goals/:careGoalId',
       sourcePath: routesPath,
     });
@@ -226,13 +226,18 @@ describe('collectPreviewInspectorRouteLocation', () => {
     const routerPath = '/workspace/application/src/feature/feature-app.tsx';
     const dashboardPath = '/workspace/application/src/feature/dashboard-page.tsx';
     const settingsPath = '/workspace/application/src/feature/settings-page.tsx';
+    const layoutPath = '/workspace/application/src/feature/feature-layout.tsx';
     const renderChain = createRenderChain(APP_PATH, routerPath, 'FeatureApp');
     const sources = {
       [routerPath]: [
         'import { DashboardPage } from "./dashboard-page";',
         'import { SettingsPage as LazySettingsPage } from "./settings-page";',
+        'import { FeatureLayout } from "./feature-layout";',
         'const FEATURE_BASE_PATH = "/workspace/:workspaceId(\\\\d+)/feature";',
-        'const featurePages = { DashboardPage, SettingsPage: LazySettingsPage };',
+        'const featurePages = {',
+        '  DashboardPage: compose(FeatureLayout, DashboardPage),',
+        '  SettingsPage: LazySettingsPage,',
+        '};',
         'export const FeatureApp = createAppModule(',
         '  FEATURE_BASE_PATH,',
         '  featurePages,',
@@ -244,6 +249,8 @@ describe('collectPreviewInspectorRouteLocation', () => {
       ].join('\n'),
       [dashboardPath]: 'export function DashboardPage() { return <main />; }',
       [settingsPath]: 'export function SettingsPage() { return <main />; }',
+      [layoutPath]:
+        'export function FeatureLayout({ children }) { return <section>{children}</section>; }',
       [APP_PATH]:
         '<Routes><Route path="/workspace/:workspaceId/*" element={<FeatureApp />} /></Routes>',
       [PAGE_MAP_PATH]: 'import pages from "./pages.json"; export const pageMap = pages;',
@@ -267,7 +274,9 @@ describe('collectPreviewInspectorRouteLocation', () => {
           ? dashboardPath
           : moduleSpecifier === './settings-page'
             ? settingsPath
-            : undefined,
+            : moduleSpecifier === './feature-layout'
+              ? layoutPath
+              : undefined,
     });
 
     expect(inventory.primary).toMatchObject({
@@ -279,6 +288,13 @@ describe('collectPreviewInspectorRouteLocation', () => {
         componentExportName: 'DashboardPage',
         componentName: 'DashboardPage',
         componentSourcePath: dashboardPath,
+        elementWrappers: [
+          {
+            componentName: 'FeatureLayout',
+            exportName: 'FeatureLayout',
+            sourcePath: layoutPath,
+          },
+        ],
         pathname: '/workspace/1/feature',
         pattern: '/workspace/:workspaceId(\\d+)/feature',
       }),
@@ -414,7 +430,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
       componentName: 'NestedModule',
       dependencyPaths: [APP_PATH, nestedModulePath].sort(),
       evidenceKind: 'route-jsx',
-      pathname: '/workspace/preview/tools',
+      pathname: '/workspace/1/tools',
       pattern: '/workspace/:workspaceId/tools',
       sourcePath: nestedModulePath,
     });
@@ -479,7 +495,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
     );
 
     expect(location).toMatchObject({
-      pathname: '/workspace/preview/dashboard',
+      pathname: '/workspace/1/dashboard',
       pattern: '/workspace/:workspaceId/*',
       sourcePath: APP_PATH,
     });

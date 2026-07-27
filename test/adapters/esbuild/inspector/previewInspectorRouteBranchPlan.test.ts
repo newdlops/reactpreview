@@ -207,6 +207,148 @@ describe('preview Inspector hierarchical route branches', () => {
     expect(plan.selectedBranchId).not.toBe(featureBranch?.id);
   });
 
+  /** Treats inline element layouts as composition and exposes only the terminal page as a leaf. */
+  it('follows a wrapped route element to its actual page component', async () => {
+    const layoutPath = '/workspace/src/RouteLayout.tsx';
+    const pagePath = '/workspace/src/SelectedPage.tsx';
+    const sources: Readonly<Record<string, string>> = {
+      [APP_PATH]: [
+        'import { createBrowserRouter, RouterProvider } from "react-router-dom";',
+        'import RouteLayout from "./RouteLayout";',
+        'import SelectedPage from "./SelectedPage";',
+        'const router = createBrowserRouter([',
+        '  { path: "/selected", element: <RouteLayout><SelectedPage /></RouteLayout> },',
+        ']);',
+        'export default function App() { return <RouterProvider router={router} />; }',
+      ].join('\n'),
+      [layoutPath]: [
+        'export default function RouteLayout({ children }) {',
+        '  return <section data-layout="route">{children}</section>;',
+        '}',
+      ].join('\n'),
+      [pagePath]: 'export default function SelectedPage() { return <main>selected</main>; }',
+    };
+    const resolveModule = (moduleSpecifier: string, consumerPath: string): string | undefined =>
+      new Map([
+        [`${APP_PATH}\0./RouteLayout`, layoutPath],
+        [`${APP_PATH}\0./SelectedPage`, pagePath],
+      ]).get(`${consumerPath}\0${moduleSpecifier}`);
+
+    const inventory = await collectPreviewInspectorDirectRouteChoices({
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      resolveModule,
+      sourcePath: APP_PATH,
+      sourceText: sources[APP_PATH],
+    });
+    const plan = await collectPreviewInspectorRouteBranchPlan({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createAppRenderChain(),
+      resolveModule,
+      selection: [{ componentName: 'SelectedPage', pattern: '/selected' }],
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(inventory.choices).toEqual([
+      expect.objectContaining({
+        componentName: 'SelectedPage',
+        elementPath: [
+          {
+            componentName: 'RouteLayout',
+            reference: { exportName: 'default', sourcePath: layoutPath },
+          },
+          {
+            componentName: 'SelectedPage',
+            reference: { exportName: 'default', sourcePath: pagePath },
+          },
+        ],
+        pattern: '/selected',
+        reference: { exportName: 'default', sourcePath: pagePath },
+      }),
+    ]);
+    expect(plan.activeLocation).toMatchObject({
+      componentExportName: 'default',
+      componentName: 'SelectedPage',
+      componentSourcePath: pagePath,
+      elementWrappers: [
+        {
+          componentName: 'RouteLayout',
+          exportName: 'default',
+          sourcePath: layoutPath,
+        },
+      ],
+      pathname: '/selected',
+    });
+    expect(plan.branches).toEqual([
+      expect.objectContaining({
+        childState: 'leaf',
+        componentName: 'SelectedPage',
+        depth: 0,
+        pattern: '/selected',
+      }),
+    ]);
+    expect(plan.branches.some((branch) => branch.componentName === 'RouteLayout')).toBe(false);
+  });
+
+  /** Route-owner analysis is cycle-bounded, not cut off by the former eight-level graph budget. */
+  it('continues through more than eight nested route owners until the first leaf page', async () => {
+    const ownerCount = 12;
+    const ownerPaths = Array.from(
+      { length: ownerCount },
+      (_value, index) => `/workspace/src/Owner${index.toString()}.tsx`,
+    );
+    const sources: Record<string, string> = {
+      [APP_PATH]: [
+        'import { useRoutes } from "react-router-dom";',
+        'import Owner0 from "./Owner0";',
+        'export default function App() {',
+        '  return useRoutes([{ path: "/level-0/*", element: <Owner0 /> }]);',
+        '}',
+      ].join('\n'),
+    };
+    const resolutions = new Map<string, string>([[`${APP_PATH}\0./Owner0`, ownerPaths[0] ?? '']]);
+    for (let index = 0; index < ownerCount; index += 1) {
+      const ownerPath = ownerPaths[index];
+      if (ownerPath === undefined) continue;
+      const nextPath = ownerPaths[index + 1];
+      if (nextPath === undefined) {
+        sources[ownerPath] =
+          'export default function Owner11() { return <main>terminal page</main>; }';
+        continue;
+      }
+      const nextName = `Owner${(index + 1).toString()}`;
+      sources[ownerPath] = [
+        'import { useRoutes } from "react-router-dom";',
+        `import ${nextName} from "./${nextName}";`,
+        `export default function Owner${index.toString()}() {`,
+        `  return useRoutes([{ path: "level-${(index + 1).toString()}/*", element: <${nextName} /> }]);`,
+        '}',
+      ].join('\n');
+      resolutions.set(`${ownerPath}\0./${nextName}`, nextPath);
+    }
+
+    const plan = await collectPreviewInspectorRouteBranchPlan({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createAppRenderChain(),
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        resolutions.get(`${consumerPath}\0${moduleSpecifier}`),
+      sourcePaths: Object.keys(sources),
+    });
+    const selected = plan.branches.find((branch) => branch.id === plan.selectedBranchId);
+
+    expect(plan.branches).toHaveLength(ownerCount);
+    expect(selected).toMatchObject({
+      childState: 'leaf',
+      componentName: 'Owner11',
+      depth: ownerCount - 1,
+    });
+    expect(selected?.selectionPath).toHaveLength(ownerCount);
+    expect(plan.activeLocation?.componentSourcePath).toBe(ownerPaths.at(-1));
+  });
+
   /** Follows a router whose descriptor array is itself imported from a separate metadata module. */
   it('reads an imported route descriptor aggregate without reading its page module', async () => {
     const configPath = '/workspace/src/config-router.tsx';

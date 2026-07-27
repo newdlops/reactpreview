@@ -9,10 +9,13 @@ import {
   createPreviewInspectorRouteFactoryChoiceKey,
 } from './previewInspectorRouteFactoryChoices';
 import { resolvePreviewInspectorRouteFactoryOwner } from './previewInspectorRouteFactoryOwner';
+import { isPreviewInspectorSelectableFactoryRouteOption } from './previewInspectorRouteFactoryManifestTypes';
 import type {
   PreviewInspectorFactoryFallbackEntry,
   PreviewInspectorFactoryRouteEntry,
   PreviewInspectorFactoryRouteOption,
+  PreviewInspectorSelectableFactoryRouteOption,
+  PreviewInspectorUnavailableFactoryRouteOption,
   PreviewInspectorRouteFactoryManifest,
 } from './previewInspectorRouteFactoryManifestTypes';
 import { relativizePreviewInspectorRoutePattern } from './previewInspectorRoutePatternMatch';
@@ -62,7 +65,6 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
         );
   for (const dependency of catalog?.dependencyPaths ?? [])
     dependencies.add(path.normalize(dependency));
-  const routes: PreviewInspectorFactoryRouteEntry[] = [];
   const routeOptions: PreviewInspectorFactoryRouteOption[] = [];
   const unresolved = new Set<string>();
   for (const choice of choices.choices) {
@@ -100,8 +102,7 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
           kind: 'page' as const,
           relativeRouterPattern: relative,
         });
-        routes.push(route);
-        routeOptions.push(freezeOption(choice, 'selectable', route));
+        routeOptions.push(freezeSelectableOption(choice, route));
       }
       continue;
     }
@@ -134,9 +135,11 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
       kind: 'submodule' as const,
       relativeRouterPattern: relative.length === 0 ? '*' : `${relative}/*`,
     });
-    routes.push(route);
-    routeOptions.push(freezeOption(choice, 'selectable', route));
+    routeOptions.push(freezeSelectableOption(choice, route));
   }
+  const manifestOptions = Object.freeze(
+    routeOptions.sort((a, b) => a.occurrenceStart - b.occurrenceStart),
+  );
   const fallbacks = owner.hasWildcardFallback
     ? Object.freeze(readFallbacks(call, sourceFile))
     : Object.freeze([]);
@@ -144,10 +147,14 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
     basePattern: owner.basePath,
     dependencies: Object.freeze([...dependencies].sort()),
     fallbacks,
-    options: Object.freeze(routeOptions.sort((a, b) => a.occurrenceStart - b.occurrenceStart)),
+    options: manifestOptions,
     ownerExportName: owner.exportName,
     ownerSourcePath: owner.sourcePath,
-    routes: Object.freeze(routes),
+    routes: Object.freeze(
+      manifestOptions
+        .filter(isPreviewInspectorSelectableFactoryRouteOption)
+        .map((option) => option.route),
+    ),
     routeSlotCount: owner.routeSlotCount,
     unresolvedChoiceNames: Object.freeze([...unresolved]),
   });
@@ -159,15 +166,27 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
 /** Freezes one visible route option without exposing parser nodes. */
 function freezeOption(
   choice: { componentName: string; kind: 'page' | 'submodule'; occurrenceStart: number },
-  availability: PreviewInspectorFactoryRouteOption['availability'],
-  route?: PreviewInspectorFactoryRouteEntry,
-): PreviewInspectorFactoryRouteOption {
+  availability: PreviewInspectorUnavailableFactoryRouteOption['availability'],
+): PreviewInspectorUnavailableFactoryRouteOption {
   return Object.freeze({
     availability,
     componentName: choice.componentName,
     kind: choice.kind,
     occurrenceStart: choice.occurrenceStart,
-    ...(route === undefined ? {} : { route }),
+  });
+}
+
+/** Freezes one visible choice with a statically renderable route. */
+function freezeSelectableOption(
+  choice: { componentName: string; kind: 'page' | 'submodule'; occurrenceStart: number },
+  route: PreviewInspectorFactoryRouteEntry,
+): PreviewInspectorSelectableFactoryRouteOption {
+  return Object.freeze({
+    availability: 'selectable',
+    componentName: choice.componentName,
+    kind: choice.kind,
+    occurrenceStart: choice.occurrenceStart,
+    route,
   });
 }
 

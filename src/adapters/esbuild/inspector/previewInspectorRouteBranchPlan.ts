@@ -19,8 +19,6 @@ import {
 } from './previewInspectorRoutePattern';
 import { createPreviewInspectorRouteBranchId } from './previewInspectorRouteBranchIdentity';
 
-const MAXIMUM_ROUTE_OWNER_DEPTH = 8;
-
 /** Browser-safe hierarchy record for one statically proven route choice. */
 export interface PreviewInspectorRouteBranch {
   /** A disabled branch remains visible when static route proof is incomplete. */
@@ -39,7 +37,7 @@ export interface PreviewInspectorRouteBranch {
   readonly id: string;
   /** Parent route identity when this choice belongs to a nested router module. */
   readonly parentId?: string;
-  /** Browser-ready path with neutral values substituted for dynamic parameters. */
+  /** Browser-ready path with constraint-compatible values substituted for dynamic parameters. */
   readonly pathname: string;
   /** Authored absolute route pattern. */
   readonly pattern: string;
@@ -128,7 +126,7 @@ export async function collectPreviewInspectorRouteBranchPlan(
   let selectionPath: readonly PreviewInspectorRouteSelectionStep[] = Object.freeze([]);
   let selectionResolution: PreviewInspectorRouteBranchPlan['selectionResolution'];
 
-  for (let depth = 0; depth < MAXIMUM_ROUTE_OWNER_DEPTH; depth += 1) {
+  for (let depth = 0; ; depth += 1) {
     const ownerIdentity = `${ownerPath}\0${ownerExportName}`;
     if (visitedOwners.has(ownerIdentity)) break;
     visitedOwners.add(ownerIdentity);
@@ -296,14 +294,13 @@ function composeNestedRouteChoice(
   );
 }
 
-/** Combines outer and inner app-module mounts without exposing duplicate owner contracts. */
+/** Combines outer and inner route ownership plus inline JSX wrappers without duplicate contracts. */
 function withComposedRouteMounts(
   parent: PreviewInspectorRouteLocation,
   child: PreviewInspectorRouteLocation,
 ): PreviewInspectorRouteLocation {
   const mounts = [...(parent.routeMounts ?? []), ...(child.routeMounts ?? [])];
-  if (mounts.length === 0) return child;
-  const unique = mounts.filter(
+  const uniqueMounts = mounts.filter(
     (mount, index, values) =>
       values.findIndex(
         (candidate) =>
@@ -312,7 +309,21 @@ function withComposedRouteMounts(
           candidate.basePath === mount.basePath,
       ) === index,
   );
-  return Object.freeze({ ...child, routeMounts: Object.freeze(unique) });
+  const wrappers = [...(parent.elementWrappers ?? []), ...(child.elementWrappers ?? [])];
+  const uniqueWrappers = wrappers.filter(
+    (wrapper, index, values) =>
+      values.findIndex(
+        (candidate) =>
+          candidate.sourcePath === wrapper.sourcePath &&
+          candidate.exportName === wrapper.exportName,
+      ) === index,
+  );
+  if (uniqueMounts.length === 0 && uniqueWrappers.length === 0) return child;
+  return Object.freeze({
+    ...child,
+    ...(uniqueWrappers.length === 0 ? {} : { elementWrappers: Object.freeze(uniqueWrappers) }),
+    ...(uniqueMounts.length === 0 ? {} : { routeMounts: Object.freeze(uniqueMounts) }),
+  });
 }
 
 /** Keeps route catalogs/owners hot without treating every unselected page module as a dependency. */

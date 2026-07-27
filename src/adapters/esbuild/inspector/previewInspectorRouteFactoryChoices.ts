@@ -18,7 +18,16 @@ import {
 export interface PreviewInspectorRouteChoiceReference {
   /** Public ESM name requested by the factory module. */
   readonly exportName: string;
+  /** Exact outer-to-inner component wrappers retained by a static factory composition call. */
+  readonly elementWrappers?: readonly PreviewInspectorRouteChoiceWrapperReference[];
   /** Authored source resolved through the package-aware module resolver. */
+  readonly sourcePath: string;
+}
+
+/** One resolved component argument composed around a factory page choice. */
+export interface PreviewInspectorRouteChoiceWrapperReference {
+  readonly componentName: string;
+  readonly exportName: string;
   readonly sourcePath: string;
 }
 
@@ -154,17 +163,43 @@ function collectRouteFactoryChoiceReferences(
   const references = new Map<string, PreviewInspectorRouteChoiceReference>();
   for (const choice of choices) {
     if (choice.localName === undefined) continue;
-    const imported = importByLocalName.get(choice.localName);
-    if (imported === undefined) continue;
-    const resolved = options.resolveModule(imported.moduleSpecifier, options.sourcePath);
-    if (resolved === undefined) continue;
+    const resolvedChoice = resolveImportedBinding(choice.localName);
+    if (resolvedChoice === undefined) continue;
+    const elementWrappers = (choice.wrapperLocalNames ?? []).flatMap((localName) => {
+      const resolvedWrapper = resolveImportedBinding(localName);
+      return resolvedWrapper === undefined
+        ? []
+        : [
+            Object.freeze({
+              componentName: localName,
+              exportName: resolvedWrapper.exportName,
+              sourcePath: resolvedWrapper.sourcePath,
+            }),
+          ];
+    });
     const reference = Object.freeze({
-      exportName: imported.exportName,
-      sourcePath: path.normalize(resolved),
+      exportName: resolvedChoice.exportName,
+      ...(elementWrappers.length === 0 ? {} : { elementWrappers: Object.freeze(elementWrappers) }),
+      sourcePath: resolvedChoice.sourcePath,
     });
     references.set(createPreviewInspectorRouteFactoryChoiceKey(choice), reference);
     /* A name key keeps existing consumers compatible; exact occurrence keys remain authoritative. */
     if (!references.has(choice.componentName)) references.set(choice.componentName, reference);
   }
   return references;
+
+  /** Resolves one direct importer-local component binding without loading its module. */
+  function resolveImportedBinding(
+    localName: string,
+  ): { readonly exportName: string; readonly sourcePath: string } | undefined {
+    const imported = importByLocalName.get(localName);
+    if (imported === undefined) return undefined;
+    const resolved = options.resolveModule?.(imported.moduleSpecifier, options.sourcePath);
+    return resolved === undefined
+      ? undefined
+      : Object.freeze({
+          exportName: imported.exportName,
+          sourcePath: path.normalize(resolved),
+        });
+  }
 }

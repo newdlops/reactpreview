@@ -19,7 +19,6 @@ import { selectPreviewInspectorExecutableCandidate } from './previewInspectorExe
 export function createPreviewInspectorExecutablePlan(
   plan: PreviewInspectorAncestorPlan,
   selectedPageCandidateId: string | undefined,
-  maximumShallowVisualPaths?: number,
 ): PreviewInspectorAncestorPlan {
   const candidates = createPreviewInspectorVirtualPageCandidates(
     plan.pageCandidates,
@@ -49,11 +48,9 @@ export function createPreviewInspectorExecutablePlan(
       ...(step.evidenceSourcePaths ?? []),
     ]) ?? []),
   ]);
-  const shallowVisualPaths = plan.shallowVisualPaths
-    ?.filter(
-      (item) => corridorPaths.has(item.importerPath) || corridorPaths.has(item.selectedChildPath),
-    )
-    .slice(0, maximumShallowVisualPaths);
+  const shallowVisualPaths = plan.shallowVisualPaths?.filter(
+    (item) => corridorPaths.has(item.importerPath) || corridorPaths.has(item.selectedChildPath),
+  );
   return Object.freeze({
     ...plan,
     complete: active.complete,

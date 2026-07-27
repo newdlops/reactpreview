@@ -167,7 +167,7 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     expect(Object.isFrozen(result.frontier)).toBe(true);
   });
 
-  it('follows only the requested branch of a star-export barrel', async () => {
+  it('admits every runtime star-export branch that esbuild may evaluate', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const barrelPath = '/workspace/ui/index.ts';
@@ -216,13 +216,63 @@ describe('preparePreviewInspectorBundleFrontier', () => {
 
     expect(result.rejected).toBe(false);
     expect(result.frontier.authenticSourcePaths).toEqual(
-      [barrelPath, desiredPath, targetPath].sort(),
+      [barrelPath, desiredPath, dormantPath, targetPath].sort(),
     );
-    expect(result.frontier.authenticSourcePaths).not.toContain(dormantPath);
-    expect(result.frontier.summary.authoredEdgeCount).toBe(2);
+    expect(result.frontier.summary.authoredEdgeCount).toBe(3);
   });
 
-  it('projects deterministic optional overflow instead of rejecting the selected frontier', async () => {
+  it('admits an unrequested named re-export because its module can contribute runtime code', async () => {
+    const workspaceRoot = '/workspace';
+    const targetPath = '/workspace/Target.tsx';
+    const barrelPath = '/workspace/ui/index.ts';
+    const selectedPath = '/workspace/ui/Selected.tsx';
+    const runtimePath = '/workspace/ui/runtime.ts';
+    const sources = new Map<string, string>([
+      [targetPath, "import { Selected } from './ui'; export const Target = Selected;"],
+      [
+        barrelPath,
+        "export { Selected } from './Selected'; export { RUNTIME_VALUE } from './runtime';",
+      ],
+      [selectedPath, 'export const Selected = null;'],
+      [runtimePath, 'globalThis.__runtimeEvaluated = true; export const RUNTIME_VALUE = 1;'],
+    ]);
+    const plan = {
+      edges: [],
+      pageCandidates: [
+        { dependencyPaths: [], edges: [], root: { exportName: 'Target', sourcePath: targetPath } },
+      ],
+      root: { exportName: 'Target', sourcePath: targetPath },
+      target: { exportName: 'Target', sourcePath: targetPath },
+    } as unknown as PreviewInspectorAncestorPlan;
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+    const result = await preparePreviewInspectorBundleFrontier({
+      plan,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) => {
+        const relative = path.resolve(path.dirname(importer), specifier);
+        return sources.has(relative)
+          ? relative
+          : sources.has(path.join(relative, 'index.ts'))
+            ? path.join(relative, 'index.ts')
+            : sources.has(`${relative}.ts`)
+              ? `${relative}.ts`
+              : sources.has(`${relative}.tsx`)
+                ? `${relative}.tsx`
+                : undefined;
+      },
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticSourcePaths).toEqual(
+      [barrelPath, runtimePath, selectedPath, targetPath].sort(),
+    );
+    expect(result.frontier.summary.authoredEdgeCount).toBe(3);
+  });
+
+  it('admits every optional visual identity without a component-count budget', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const sources = new Map<string, string>([[targetPath, 'export const Target = null;']]);
@@ -255,23 +305,18 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
     const result = await preparePreviewInspectorBundleFrontier({
       plan,
-      policy: { ...policy, maximumOptionalComponentIdentityCount: 48 },
+      policy,
       readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
       resolveModule: () => undefined,
       workspaceRoot,
     });
 
     expect(result.rejected).toBe(false);
-    expect(result.frontier.summary.optionalComponentCount).toBe(48);
-    expect(result.frontier.projectedEdges).toEqual([
-      expect.objectContaining({
-        moduleSpecifier: './Component48',
-        reason: 'optional-component-count',
-      }),
-    ]);
+    expect(result.frontier.summary.optionalComponentCount).toBe(49);
+    expect(result.frontier.projectedEdges).toEqual([]);
   });
 
-  it('projects an optional component when its complete static support closure exceeds the budget', async () => {
+  it('admits a complete optional support closure without a support-module budget', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const componentPath = '/workspace/Component.tsx';
@@ -308,7 +353,7 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
     const result = await preparePreviewInspectorBundleFrontier({
       plan,
-      policy: { ...policy, maximumOptionalSupportModuleCount: 96 },
+      policy,
       readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
       resolveModule: (specifier, importer) =>
         specifier.startsWith('.')
@@ -318,14 +363,10 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     });
 
     expect(result.rejected).toBe(false);
-    expect(result.frontier.authenticSourcePaths).toEqual([targetPath]);
-    expect(result.frontier.summary.supportModuleCount).toBe(0);
-    expect(result.frontier.projectedEdges).toEqual([
-      expect.objectContaining({
-        moduleSpecifier: './Component.tsx',
-        reason: 'optional-support-count',
-      }),
-    ]);
+    expect(result.frontier.authenticSourcePaths).toHaveLength(99);
+    expect(result.frontier.authenticSourcePaths).toContain(componentPath);
+    expect(result.frontier.summary.supportModuleCount).toBe(97);
+    expect(result.frontier.projectedEdges).toEqual([]);
   });
 
   it('keeps a statically imported rendered child inside its optional admission transaction', async () => {
@@ -370,7 +411,7 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
     const result = await preparePreviewInspectorBundleFrontier({
       plan,
-      policy: { ...policy, maximumOptionalSupportModuleCount: 96 },
+      policy,
       readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
       resolveModule: (specifier, importer) => {
         const extension = specifier.endsWith('.tsx') ? '' : '.ts';
@@ -380,16 +421,12 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     });
 
     expect(result.rejected).toBe(false);
-    expect(result.frontier.summary.supportModuleCount).toBe(0);
-    expect(result.frontier.projectedEdges).toEqual([
-      expect.objectContaining({
-        moduleSpecifier: './Component.tsx',
-        reason: 'optional-support-count',
-      }),
-    ]);
+    expect(result.frontier.authenticSourcePaths).toHaveLength(99);
+    expect(result.frontier.summary.supportModuleCount).toBe(97);
+    expect(result.frontier.projectedEdges).toEqual([]);
   });
 
-  it('admits corridor components through depth 32 and projects the 33rd incoming edge', async () => {
+  it('admits a deep corridor component chain without a component-depth budget', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const sources = new Map<string, string>([[targetPath, 'export const Target = null;']]);
@@ -430,7 +467,7 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     if (policy === undefined) throw new Error('Expected the automatic corridor frontier policy.');
     const result = await preparePreviewInspectorBundleFrontier({
       plan,
-      policy: { ...policy, maximumComponentDepth: 32 },
+      policy,
       readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
       resolveModule: (specifier, importer) => {
         const resolved = path.resolve(path.dirname(importer), specifier);
@@ -440,15 +477,13 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     });
 
     expect(result.rejected).toBe(false);
-    expect(result.frontier.summary.maximumDepth).toBe(32);
+    expect(result.frontier.summary.maximumDepth).toBe(33);
     expect(result.frontier.authenticSourcePaths).toContain(componentPaths[31]);
-    expect(result.frontier.authenticSourcePaths).not.toContain(componentPaths[32]);
-    expect(result.frontier.projectedEdges).toEqual([
-      expect.objectContaining({ moduleSpecifier: './C32.tsx', reason: 'component-depth' }),
-    ]);
+    expect(result.frontier.authenticSourcePaths).toContain(componentPaths[32]);
+    expect(result.frontier.projectedEdges).toEqual([]);
   });
 
-  it('admits 96 corridor optional identities and projects the 97th deterministically', async () => {
+  it('admits every corridor optional identity without an identity-count budget', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const sources = new Map<string, string>([[targetPath, 'export const Target = null;']]);
@@ -481,20 +516,15 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     if (policy === undefined) throw new Error('Expected the automatic corridor frontier policy.');
     const result = await preparePreviewInspectorBundleFrontier({
       plan,
-      policy: { ...policy, maximumOptionalComponentIdentityCount: 96 },
+      policy,
       readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
       resolveModule: () => undefined,
       workspaceRoot,
     });
 
     expect(result.rejected).toBe(false);
-    expect(result.frontier.summary.optionalComponentCount).toBe(96);
-    expect(result.frontier.projectedEdges).toEqual([
-      expect.objectContaining({
-        moduleSpecifier: './Component96',
-        reason: 'optional-component-count',
-      }),
-    ]);
+    expect(result.frontier.summary.optionalComponentCount).toBe(97);
+    expect(result.frontier.projectedEdges).toEqual([]);
   });
 
   it('admits a Page Execution optional surface transaction without reopening broad plan evidence', async () => {
@@ -504,7 +534,10 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     const helperPath = '/workspace/optional-helper.ts';
     const sources = new Map<string, string>([
       [targetPath, 'export const Target = () => null;'],
-      [optionalPath, "import { helper } from './optional-helper'; export default function Optional() { return helper; }"],
+      [
+        optionalPath,
+        "import { helper } from './optional-helper'; export default function Optional() { return helper; }",
+      ],
       [helperPath, 'export const helper = null;'],
     ]);
     const plan = {

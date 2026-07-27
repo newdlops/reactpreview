@@ -71,9 +71,6 @@ export interface PreviewInspectorCorridorPluginOptions {
   readonly packageDemandSourcePaths?: readonly string[];
   readonly maximumSmallDynamicImports?: number;
   readonly maximumSmallStaticRouteImports?: number;
-  readonly maximumTransitiveVisualModules?: number;
-  readonly maximumTransitiveVisualDepth?: number;
-  readonly maximumPackageDemandPaths?: number;
   readonly optimizeSelectedPackageBarrels?: boolean;
   readonly plan: PreviewInspectorAncestorPlan;
   readonly projectRoot: string;
@@ -95,18 +92,6 @@ export function createPreviewInspectorCorridorPlugin(
     0,
     Math.floor(options.maximumSmallStaticRouteImports ?? MAX_SMALL_STATIC_ROUTE_IMPORTS),
   );
-  const maximumTransitiveVisualModules = Math.max(
-    0,
-    Math.floor(options.maximumTransitiveVisualModules ?? Number.POSITIVE_INFINITY),
-  );
-  const maximumTransitiveVisualDepth = Math.max(
-    0,
-    Math.floor(options.maximumTransitiveVisualDepth ?? Number.POSITIVE_INFINITY),
-  );
-  const maximumPackageDemandPaths = Math.max(
-    0,
-    Math.floor(options.maximumPackageDemandPaths ?? Number.POSITIVE_INFINITY),
-  );
   const contextMayCrossPackages = options.plan.contextModule !== undefined;
   // prettier-ignore
   const frozenAuthenticSourcePaths = new Set((options.frozenAuthenticSourcePaths ?? []).map((sourcePath) => canonicalizeExistingPath(sourcePath)));
@@ -122,9 +107,6 @@ export function createPreviewInspectorCorridorPlugin(
     ),
   );
   const shallowVisualPaths = new Set(initialShallowVisualPaths);
-  const shallowVisualDepthByPath = new Map(
-    [...initialShallowVisualPaths].map((sourcePath) => [sourcePath, 1]),
-  );
   const corridorPaths = new Set([
     ...exactCorridorPaths,
     ...shallowVisualPaths,
@@ -137,7 +119,6 @@ export function createPreviewInspectorCorridorPlugin(
         canonicalizeExistingPath(item.sourcePath),
       ) ?? []),
     ],
-    maximumPackageDemandPaths,
   );
   const selectedPackageDemandPaths = new Set(initialSelectedPackageDemandPaths);
   const corridorModuleStems = createPreviewInspectorCorridorModuleStemSet(options.plan);
@@ -235,22 +216,11 @@ export function createPreviewInspectorCorridorPlugin(
     for (const exportName of projection.runtimeHookExportNames) {
       runtimeHookExportNames.add(exportName);
     }
-    const depth = (shallowVisualDepthByPath.get(importerPath) ?? 0) + 1;
-    if (
-      (!shallowVisualPaths.has(sourcePath) &&
-        shallowVisualPaths.size >= maximumTransitiveVisualModules) ||
-      depth > maximumTransitiveVisualDepth
-    )
-      return false;
     shallowExportsByPath.set(sourcePath, exportNames);
     shallowRuntimeHookExportsByPath.set(sourcePath, runtimeHookExportNames);
     shallowVisualPaths.add(sourcePath);
-    shallowVisualDepthByPath.set(sourcePath, depth);
     corridorPaths.add(sourcePath);
-    if (
-      options.packageDemandSourcePaths === undefined &&
-      selectedPackageDemandPaths.size < maximumPackageDemandPaths
-    ) {
+    if (options.packageDemandSourcePaths === undefined) {
       selectedPackageDemandPaths.add(sourcePath);
     }
     if (changed) shallowImporterEvidenceByPath.delete(sourcePath);
@@ -591,10 +561,7 @@ export function createPreviewInspectorCorridorPlugin(
           shallowExportsByPath.set(sourcePath, new Set(exportNames));
         }
         shallowVisualPaths.clear();
-        shallowVisualDepthByPath.clear();
         for (const sourcePath of initialShallowVisualPaths) shallowVisualPaths.add(sourcePath);
-        for (const sourcePath of initialShallowVisualPaths)
-          shallowVisualDepthByPath.set(sourcePath, 1);
         corridorPaths.clear();
         for (const sourcePath of exactCorridorPaths) corridorPaths.add(sourcePath);
         for (const sourcePath of shallowVisualPaths) corridorPaths.add(sourcePath);

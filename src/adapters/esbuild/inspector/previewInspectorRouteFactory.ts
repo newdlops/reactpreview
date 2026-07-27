@@ -51,6 +51,8 @@ export interface PreviewInspectorRouteFactoryChoiceEvidence {
   readonly localName?: string;
   /** Stable source order for duplicate values used at different paths. */
   readonly occurrenceStart: number;
+  /** Direct outer-to-inner component arguments composed around the selected page binding. */
+  readonly wrapperLocalNames?: readonly string[];
 }
 
 /**
@@ -202,6 +204,7 @@ function readRouteFactoryChoices(
     mode: 'pages' | 'submodules',
     occurrenceStart: number,
     localName?: string,
+    wrapperLocalNames?: readonly string[],
   ): void => {
     if (
       componentName !== undefined &&
@@ -220,6 +223,9 @@ function readRouteFactoryChoices(
           kind: mode === 'pages' ? 'page' : 'submodule',
           occurrenceStart,
           ...(localName === undefined ? {} : { localName }),
+          ...(wrapperLocalNames === undefined || wrapperLocalNames.length === 0
+            ? {}
+            : { wrapperLocalNames: Object.freeze([...wrapperLocalNames]) }),
         }),
       );
     }
@@ -250,11 +256,16 @@ function readRouteFactoryChoices(
         }
         if (ts.isPropertyAssignment(property)) {
           const value = unwrapExpression(property.initializer);
+          const componentName = readStaticPropertyName(property.name);
+          const composition = ts.isIdentifier(value)
+            ? undefined
+            : readComposedRouteChoicePath(value, componentName);
           add(
-            readStaticPropertyName(property.name),
+            componentName,
             mode,
             property.getStart(sourceFile),
-            ts.isIdentifier(value) ? value.text : undefined,
+            ts.isIdentifier(value) ? value.text : composition?.localName,
+            composition?.wrapperLocalNames,
           );
           continue;
         }
@@ -273,6 +284,50 @@ function readRouteFactoryChoices(
   visit(callExpression.arguments[1], 'pages');
   visit(callExpression.arguments[2], 'submodules');
   return Object.freeze(choices);
+}
+
+/**
+ * Recovers one exact page binding from an inert wrapper-composition call.
+ *
+ * Route maps commonly wrap a page as `Page: compose(Layout, Page)`. The call is never evaluated;
+ * only direct PascalCase identifier arguments are inspected. An exact object-key match is
+ * unambiguous, while a single component argument also supports aliased page keys. Multiple
+ * non-matching component arguments fail closed because their wrapper/leaf order is unknown.
+ */
+function readComposedRouteChoicePath(
+  expression: ts.Expression,
+  componentName: string | undefined,
+): { readonly localName: string; readonly wrapperLocalNames: readonly string[] } | undefined {
+  if (!ts.isCallExpression(expression)) return undefined;
+  const candidates: string[] = [];
+  const collect = (candidate: ts.Expression): void => {
+    const value = unwrapExpression(candidate);
+    if (ts.isIdentifier(value)) {
+      if (/^[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*$/u.test(value.text)) {
+        candidates.push(value.text);
+      }
+      return;
+    }
+    if (!ts.isCallExpression(value)) return;
+    for (const argument of value.arguments) collect(argument);
+  };
+  for (const argument of expression.arguments) collect(argument);
+  const exactIndexes = candidates.flatMap((candidate, index) =>
+    candidate === componentName ? [index] : [],
+  );
+  if (exactIndexes.length === 1) {
+    const leafIndex = exactIndexes[0];
+    const localName = leafIndex === undefined ? undefined : candidates[leafIndex];
+    if (leafIndex === undefined || localName === undefined) return undefined;
+    return Object.freeze({
+      localName,
+      wrapperLocalNames: Object.freeze([...new Set(candidates.slice(0, leafIndex))]),
+    });
+  }
+  const uniqueCandidates = [...new Set(candidates)];
+  return uniqueCandidates.length === 1 && uniqueCandidates[0] !== undefined
+    ? Object.freeze({ localName: uniqueCandidates[0], wrapperLocalNames: Object.freeze([]) })
+    : undefined;
 }
 
 /** Reads an identifier/string object key while rejecting computed route catalog identities. */

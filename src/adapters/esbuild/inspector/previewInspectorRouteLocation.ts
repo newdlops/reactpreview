@@ -4,7 +4,8 @@
  * A detached application shell mounted under MemoryRouter at `/` often renders its login, error,
  * or index branch even though the target page is present deeper in that shell. This analyzer reads
  * only authored syntax and route-catalog JSON; it never imports a router, executes configuration,
- * or starts the application. Dynamic parameters receive obvious neutral preview values.
+ * or starts the application. Dynamic parameters receive deterministic constraint-compatible
+ * preview values.
  */
 import path from 'node:path';
 import ts from 'typescript';
@@ -13,6 +14,7 @@ import { collectPreviewRenderModuleFacts } from '../renderGraph/previewRenderMod
 import {
   collectPreviewInspectorDirectRouteChoices,
   collectPreviewInspectorDirectRouteChoicesFromSource,
+  type PreviewInspectorDirectRouteChoice,
   type PreviewInspectorDirectRouteComponentReference,
 } from './previewInspectorDirectRouteChoices';
 import { collectPreviewInspectorRouteFactoryEvidence } from './previewInspectorRouteFactory';
@@ -63,7 +65,9 @@ export interface PreviewInspectorRouteLocation {
   readonly evidenceKind: 'route-catalog' | 'route-jsx';
   /** Every source whose route pattern participated in the materialized browser pathname. */
   readonly dependencyPaths: readonly string[];
-  /** Browser-ready path with every dynamic segment replaced by a neutral preview value. */
+  /** Inline layout/provider components authored around the selected terminal route page. */
+  readonly elementWrappers?: readonly PreviewInspectorRouteElementWrapperEvidence[];
+  /** Browser-ready path with every dynamic segment replaced by a deterministic preview value. */
   readonly pathname: string;
   /** Outer-to-inner app-module mounts that own this selected route, when syntax proves them. */
   readonly routeMounts?: readonly PreviewInspectorRouteMountEvidence[];
@@ -79,6 +83,13 @@ export interface PreviewInspectorRouteMountEvidence {
   readonly exportName: string;
   readonly hasWildcardFallback: boolean;
   readonly routeSlotCount: number;
+  readonly sourcePath: string;
+}
+
+/** One exact outer-to-inner component wrapper authored in a selected route element. */
+export interface PreviewInspectorRouteElementWrapperEvidence {
+  readonly componentName: string;
+  readonly exportName: string;
   readonly sourcePath: string;
 }
 
@@ -180,8 +191,10 @@ export async function collectPreviewInspectorRouteLocationInventory(
     sourceText: targetText,
   });
   const manifestLocations =
-    factoryManifest?.routes.map((route) =>
-      Object.freeze({
+    factoryManifest?.routes.map((route) => {
+      const factoryReference = factoryChoiceInventory.references.get(route.componentName);
+      const elementWrappers = factoryReference?.elementWrappers ?? [];
+      return Object.freeze({
         ...(route.componentExportName === undefined
           ? {}
           : { componentExportName: route.componentExportName }),
@@ -194,9 +207,13 @@ export async function collectPreviewInspectorRouteLocationInventory(
             ...new Set([
               ...factoryManifest.dependencies,
               ...(route.componentSourcePath === undefined ? [] : [route.componentSourcePath]),
+              ...elementWrappers.map((wrapper) => wrapper.sourcePath),
             ]),
           ].sort(),
         ),
+        ...(elementWrappers.length === 0
+          ? {}
+          : { elementWrappers: Object.freeze(elementWrappers) }),
         evidenceKind: 'route-catalog' as const,
         pathname: materializeRoutePattern(
           route.absolutePattern,
@@ -213,8 +230,8 @@ export async function collectPreviewInspectorRouteLocationInventory(
         ]),
         pattern: route.absolutePattern,
         sourcePath: factoryManifest.ownerSourcePath,
-      }),
-    ) ?? [];
+      });
+    }) ?? [];
   const factoryChoices = factoryChoiceInventory.choices;
   const choiceComponentNames = [
     ...new Set([
@@ -256,7 +273,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
     ]),
   ];
   const candidates: RouteLocationCandidate[] = [];
-  const directReferences = new Map<string, PreviewInspectorDirectRouteComponentReference>();
+  const directChoicesByKey = new Map<string, PreviewInspectorDirectRouteChoice>();
   const routePatterns: string[] = [];
   const supportingSourcePaths = new Set<string>();
   const catalogPaths = new Set<string>();
@@ -275,9 +292,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
       const identityOrder = identities.indexOf(choice.componentName);
       addSupportingRoutePattern(routePatterns, choice.pattern);
       if (identityOrder < 0) continue;
-      if (choice.reference !== undefined) {
-        directReferences.set(createDirectRouteReferenceKey(choice), choice.reference);
-      }
+      directChoicesByKey.set(createDirectRouteReferenceKey(choice), choice);
       addRouteCandidate(candidates, {
         componentName: choice.componentName,
         documentPath: options.documentPath,
@@ -359,7 +374,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
       candidate,
       factoryChoiceReferences,
       factoryChoiceInventory.owner,
-      directReferences,
+      directChoicesByKey,
       supportingSourcePaths,
       catalogImportersByPath,
       routePatterns,
@@ -381,7 +396,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
           primaryCandidate,
           factoryChoiceReferences,
           factoryChoiceInventory.owner,
-          directReferences,
+          directChoicesByKey,
           supportingSourcePaths,
           catalogImportersByPath,
           routePatterns,
@@ -408,10 +423,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
               .filter((option) => option.availability !== 'selectable')
               .map((option) =>
                 Object.freeze({
-                  availability: option.availability as Exclude<
-                    PreviewInspectorFactoryRouteAvailability,
-                    'selectable'
-                  >,
+                  availability: option.availability,
                   componentName: option.componentName,
                   kind: option.kind,
                 }),
@@ -426,14 +438,25 @@ function freezeRouteLocation(
   candidate: RouteLocationCandidate,
   choiceReferences: ReadonlyMap<string, PreviewInspectorRouteChoiceReference>,
   factoryOwner: PreviewInspectorRouteFactoryOwnerEvidence | undefined,
-  directReferences: ReadonlyMap<string, PreviewInspectorDirectRouteComponentReference>,
+  directChoicesByKey: ReadonlyMap<string, PreviewInspectorDirectRouteChoice>,
   supportingSourcePaths: ReadonlySet<string>,
   catalogImportersByPath: ReadonlyMap<string, ReadonlySet<string>>,
   routePatterns: readonly string[],
 ): PreviewInspectorRouteLocation {
-  const componentReference =
-    directReferences.get(createDirectRouteReferenceKey(candidate)) ??
-    choiceReferences.get(candidate.componentName);
+  const directChoice = directChoicesByKey.get(createDirectRouteReferenceKey(candidate));
+  const factoryReference = choiceReferences.get(candidate.componentName);
+  const componentReference = directChoice?.reference ?? factoryReference;
+  const elementWrappers = [
+    ...collectDirectRouteElementWrappers(directChoice, componentReference),
+    ...(factoryReference?.elementWrappers ?? []),
+  ].filter(
+    (wrapper, index, values) =>
+      values.findIndex(
+        (candidate) =>
+          path.normalize(candidate.sourcePath) === path.normalize(wrapper.sourcePath) &&
+          candidate.exportName === wrapper.exportName,
+      ) === index,
+  );
   const selectedCatalogImporters =
     candidate.evidenceKind === 'route-catalog'
       ? (catalogImportersByPath.get(candidate.sourcePath) ?? [])
@@ -451,12 +474,14 @@ function freezeRouteLocation(
         ...new Set([
           candidate.sourcePath,
           ...(componentReference === undefined ? [] : [componentReference.sourcePath]),
+          ...elementWrappers.map((wrapper) => wrapper.sourcePath),
           ...supportingSourcePaths,
           ...selectedCatalogImporters,
         ]),
       ].sort(),
     ),
     evidenceKind: candidate.evidenceKind,
+    ...(elementWrappers.length === 0 ? {} : { elementWrappers: Object.freeze(elementWrappers) }),
     pathname: materializeRoutePattern(candidate.pattern, routePatterns),
     ...(factoryOwner === undefined ||
     ((candidate.componentName !== factoryOwner.exportName ||
@@ -476,6 +501,41 @@ function freezeRouteLocation(
         }),
     pattern: candidate.pattern,
     sourcePath: candidate.sourcePath,
+  });
+}
+
+/** Keeps only resolved outer components before the selected terminal route page. */
+function collectDirectRouteElementWrappers(
+  choice: PreviewInspectorDirectRouteChoice | undefined,
+  selectedReference: PreviewInspectorDirectRouteComponentReference | undefined,
+): PreviewInspectorRouteElementWrapperEvidence[] {
+  if (choice?.elementPath === undefined || selectedReference === undefined) return [];
+  let selectedIndex = -1;
+  for (let index = choice.elementPath.length - 1; index >= 0; index -= 1) {
+    const reference = choice.elementPath[index]?.reference;
+    if (
+      reference?.sourcePath === selectedReference.sourcePath &&
+      reference.exportName === selectedReference.exportName
+    ) {
+      selectedIndex = index;
+      break;
+    }
+  }
+  if (selectedIndex <= 0) return [];
+  const identities = new Set<string>();
+  return choice.elementPath.slice(0, selectedIndex).flatMap((component) => {
+    const reference = component.reference;
+    if (reference === undefined) return [];
+    const identity = `${path.normalize(reference.sourcePath)}\0${reference.exportName}`;
+    if (identities.has(identity)) return [];
+    identities.add(identity);
+    return [
+      Object.freeze({
+        componentName: component.componentName,
+        exportName: reference.exportName,
+        sourcePath: path.normalize(reference.sourcePath),
+      }),
+    ];
   });
 }
 

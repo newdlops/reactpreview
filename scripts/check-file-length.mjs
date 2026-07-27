@@ -29,6 +29,7 @@ const EXCLUDED_FILE_NAMES = new Set([
   'plan5.md',
   'plan6.md',
   'plan7.md',
+  'plan8.md',
 ]);
 const BINARY_FILE_EXTENSIONS = new Set([
   '.avif',

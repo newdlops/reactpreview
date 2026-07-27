@@ -8,6 +8,7 @@ import {
   type PreviewBundle,
   type PreviewDiagnostic,
 } from '../../domain/preview';
+// prettier-ignore
 import { throwIfPreviewBuildCancelled, type PreviewBuildExecutionContext } from '../../domain/previewBuildExecution';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import {
@@ -19,7 +20,8 @@ import { findPreviewDependencySpecifier } from '../node/previewDependencyProfile
 import { createPreviewEntry } from './createPreviewEntry';
 // prettier-ignore
 import { createEligiblePreviewInspectorPageExecutionCandidates, createPreviewInspectorExecutablePlan, createPreviewInspectorPageExecutionBuildPlugin, createPreviewInspectorRootPlugin, createPreviewInspectorTargetPlugin } from './inspector';
-import { createPreviewInspectorCorridorPlugin } from './inspector/previewInspectorCorridorPlugin'; import { preparePreviewInspectorBundleExecution } from './preparePreviewInspectorBundleExecution';
+import { createPreviewInspectorCorridorPlugin } from './inspector/previewInspectorCorridorPlugin';
+import { preparePreviewInspectorBundleExecution } from './preparePreviewInspectorBundleExecution';
 import { createInspectorSourceGestureSecret } from './previewInspectorSourceGestureSecret';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
 // prettier-ignore
@@ -62,8 +64,7 @@ import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependency
 import { createPreviewImportMetaEnvironment } from './previewPublicEnvironment';
 import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
 import { preparePreviewCompilerUsage } from './preparePreviewCompilerUsage';
-// prettier-ignore
-import { createPreviewFrontierActivity, createPreviewPreparationPolicy } from './previewPreparationPolicy';
+import { createPreviewPreparationPolicy } from './previewPreparationPolicy';
 import { createPreviewInspectorFallbackDiagnostics } from './previewInspectorFallbackDiagnostic';
 import {
   mergePreviewPortalHostIds,
@@ -79,6 +80,7 @@ import { collectPreviewNextRuntimeEvidence as findNext } from './previewNextRunt
 import { findPreviewProjectRoot } from './previewProjectRoot';
 import { PreviewProjectUsageCache } from './previewProjectUsageCache';
 import { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
+import { collectPreviewInspectorRuntimeCompanionPaths } from './previewImplicitGlobalRuntimeCompanions';
 import {
   PreviewIncrementalBuildCache,
   type PreviewIncrementalBuildOptions,
@@ -271,9 +273,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         staticModuleResolver,
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      const activeInspectorPlan = targetUsageProps.inspectorPlan === undefined ? undefined : createPreviewInspectorExecutablePlan(targetUsageProps.inspectorPlan, request.inspectorPageCandidateId, policy.frontierPolicy?.maximumOptionalComponentIdentityCount);
+      // prettier-ignore
+      const activeInspectorPlan = targetUsageProps.inspectorPlan === undefined ? undefined : createPreviewInspectorExecutablePlan(targetUsageProps.inspectorPlan, request.inspectorPageCandidateId);
+      // prettier-ignore
       const pageExecutionCandidates = activeInspectorPlan === undefined ? [] : createEligiblePreviewInspectorPageExecutionCandidates(targetUsageProps.inspectorPlan ?? activeInspectorPlan, request.inspectorPageCandidateId, request.inspectorPageExecutionCandidateId);
       let activePageExecutionCandidate = pageExecutionCandidates[0];
+      // prettier-ignore
       const primaryRenderPath = activeInspectorPlan?.pageCandidates[0]?.renderPath ?? targetUsageProps.inspectorPlan?.renderChain.paths[0] ?? (inspectorExportName === undefined ? undefined : targetUsageProps.renderChainsByExport?.[inspectorExportName]?.paths[0]);
       const activeInspectorDependencyPaths = activeInspectorPlan?.dependencyPaths ?? [];
       const styleContext = await preparePreviewStyleContext({
@@ -324,22 +329,28 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         signal: buildSignal,
         snapshotSourceByPath,
       });
-      const frontierActivity = createPreviewFrontierActivity(policy, activeInspectorDependencyPaths.length);
+      const globalBridgeEvidencePolicy =
+        createPreviewGlobalPackageBridgeEvidencePolicy(implicitGlobalEvidence);
+      // prettier-ignore
+      const runtimeCompanionSourcePaths = collectPreviewInspectorRuntimeCompanionPaths({ globalBridgePolicy: globalBridgeEvidencePolicy, globalStyleImports, resolveModule: staticModuleResolver.resolve, ...(selectedThemeImport === undefined ? {} : { themeImport: selectedThemeImport }), themeImporterPath: request.documentPath });
       const preparedBundleExecution = await preparePreviewInspectorBundleExecution({
         analysisCandidateCount: targetUsageProps.inspectorPlan?.pageCandidates.length ?? 0,
-        additionalCriticalSourcePaths: implicitGlobalEvidence.dependencyPaths,
+        runtimeCompanionSourcePaths,
         corridorSourceCount: activeInspectorDependencyPaths.length,
         dependencySnapshotCount: request.dependencySnapshots.length,
         discoveryTruncated: contextDiscoveryTruncated === true,
         executablePlan: activeInspectorPlan,
+        // prettier-ignore
         ...(activeInspectorPlan === undefined ? {} : { executionCandidates: pageExecutionCandidates }),
         policy,
+        // prettier-ignore
         readSource: async (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)) ?? this.projectUsageCache.readSourceText({ maximumBytes: 1024 * 1024, sourcePath }),
         resolveModule: staticModuleResolver.resolve,
         styleSnapshotCount: styleContext.tailwindCandidateSnapshots.length,
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      activePageExecutionCandidate = preparedBundleExecution?.executionCandidate ?? activePageExecutionCandidate;
+      activePageExecutionCandidate =
+        preparedBundleExecution?.executionCandidate ?? activePageExecutionCandidate;
       context?.reportProgress?.('analyzing-project', {
         analysisCandidateCount: targetUsageProps.inspectorPlan?.pageCandidates.length ?? 0,
         corridorSourceCount: activeInspectorDependencyPaths.length,
@@ -347,7 +358,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         discoveryScope: policy.discoveryScope,
         discoveryTruncated: contextDiscoveryTruncated === true,
         executableCandidateCount: activeInspectorPlan === undefined ? 0 : 1,
-        ...(frontierActivity === undefined ? {} : { frontier: frontierActivity }),
         kind: 'graph-plan',
         preparationMode: policy.mode,
         styleSnapshotCount: styleContext.tailwindCandidateSnapshots.length,
@@ -357,8 +367,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         preparedBundleExecution.throwIfRejected(request.documentPath);
       }
       throwIfPreviewBuildCancelled(buildSignal);
-      const globalBridgeEvidencePolicy =
-        createPreviewGlobalPackageBridgeEvidencePolicy(implicitGlobalEvidence);
       const createStorybookFallbackBoundary = (
         environment: PreviewRuntimeEnvironment,
       ): PreviewSetupFallbackBoundary | undefined =>
@@ -395,7 +403,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         const sourceTransformer = new PreviewSourceTransformer({
           deferDormantOverlayImports: policy.deferDormantOverlayImports,
           documentPath: canonicalizeExistingPath(request.documentPath),
-          fastPreparation: policy.useFastSourceCompatibility,
+          selectiveDependencyPassThrough: policy.selectiveDependencyPassThrough,
           implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
           implicitPackageGlobalResolver: staticModuleResolver,
           instrumentDataRequests: request.renderMode === 'page-inspector',
@@ -532,16 +540,6 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       ...(policy.maximumSmallDynamicImports === undefined
                         ? {}
                         : { maximumSmallDynamicImports: policy.maximumSmallDynamicImports }),
-                      ...(policy.frontierPolicy === undefined
-                        ? {}
-                        : {
-                            maximumPackageDemandPaths:
-                              policy.frontierPolicy.maximumPackageDemandSourceCount,
-                            maximumTransitiveVisualDepth:
-                              policy.frontierPolicy.maximumComponentDepth,
-                            maximumTransitiveVisualModules:
-                              policy.frontierPolicy.maximumOptionalComponentIdentityCount,
-                          }),
                       ...(preparedBundleExecution === undefined
                         ? {}
                         : {
@@ -559,7 +557,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                     }),
                   ]),
               createPreviewMissingSourceFallbackPlugin({
-                fastPreparation: policy.useFastSourceCompatibility,
+                selectedCorridorPreparation: policy.discoveryScope === 'selected-corridor',
                 readSource: (sourcePath) => snapshotSourceByPath.get(path.normalize(sourcePath)),
                 registerWatchDirectory: transformer.registerWatchDirectory.bind(transformer),
                 staticModuleResolver,
@@ -574,7 +572,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               createPreviewFormikBridgePlugin({ projectRoot }),
               createPreviewReduxBridgePlugin({ projectRoot }),
               createPreviewRouterBridgePlugin({
+                // prettier-ignore
                 automaticallyWrap: activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v5' || activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v6' ? false : routerSelection.automaticallyWrap,
+                // prettier-ignore
                 enabled: activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v5' || activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v6' ? false : routerSelection.enabled,
                 nextAppEnabled:
                   inspectorPlan?.pageCandidates.some(

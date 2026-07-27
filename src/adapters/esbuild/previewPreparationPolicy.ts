@@ -1,13 +1,9 @@
-/**
- * Defines the fixed graph-cost contract for each preview preparation mode.
- * Keeping this decision in one pure module prevents individual compiler branches from drifting.
- */
+/** Defines automatic preparation behavior while leaving graph size to worker resource isolation. */
 import type { PreviewBuildRequest, PreviewPreparationMode } from '../../domain/preview';
 import {
   createPreviewCompilerFrontierPolicy,
   type PreviewCompilerFrontierPolicy,
 } from '../../domain/previewCompilerFrontier';
-import type { PreviewCompilerFrontierActivity } from '../../domain/previewCompilerActivity';
 
 export type PreviewCompilerDiscoveryScope = 'selected-corridor' | 'workspace';
 
@@ -23,7 +19,8 @@ export interface PreviewPreparationPolicy {
   readonly optimizeSelectedPackageBarrels: boolean;
   readonly runtimeEvidence: 'critical' | 'complete';
   readonly styleEvidence: 'critical' | 'selected-complete' | 'workspace-complete';
-  readonly useFastSourceCompatibility: boolean;
+  /** Lets dependency modules with no preview-sensitive syntax pass directly to esbuild. */
+  readonly selectiveDependencyPassThrough: boolean;
 }
 
 /** Returns the immutable policy for a request; omitted mode preserves the legacy full contract. */
@@ -45,7 +42,7 @@ export function createPreviewPreparationPolicy(
       optimizeSelectedPackageBarrels: true,
       runtimeEvidence: 'critical',
       styleEvidence: 'critical',
-      useFastSourceCompatibility: true,
+      selectiveDependencyPassThrough: true,
     };
   }
   if (mode === 'corridor') {
@@ -62,7 +59,7 @@ export function createPreviewPreparationPolicy(
       optimizeSelectedPackageBarrels: true,
       runtimeEvidence: 'complete',
       styleEvidence: 'selected-complete',
-      useFastSourceCompatibility: false,
+      selectiveDependencyPassThrough: false,
     };
   }
   return {
@@ -75,21 +72,6 @@ export function createPreviewPreparationPolicy(
     optimizeSelectedPackageBarrels: false,
     runtimeEvidence: 'complete',
     styleEvidence: 'workspace-complete',
-    useFastSourceCompatibility: false,
-  };
-}
-
-/** Projects one automatic policy into bounded graph-plan telemetry. */
-export function createPreviewFrontierActivity(
-  policy: PreviewPreparationPolicy,
-  corridorSourceCount: number,
-): PreviewCompilerFrontierActivity | undefined {
-  const frontier = policy.frontierPolicy;
-  if (frontier === undefined) return undefined;
-  const rejected = corridorSourceCount > frontier.maximumTotalAuthoredModuleCount;
-  return {
-    maximumTotalModules: frontier.maximumTotalAuthoredModuleCount,
-    reasons: rejected ? ['exact-module-count'] : [],
-    rejected,
+    selectiveDependencyPassThrough: false,
   };
 }

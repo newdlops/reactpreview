@@ -13,8 +13,8 @@ import { createPreviewWorkspacePackageSourceFallbackPlugin } from './previewWork
 
 /** Trusted services shared by the narrowly scoped missing-source adapters. */
 export interface PreviewMissingSourceFallbackOptions {
-  /** Omits graph-wide optimizers while producing the provisional first paint. */
-  readonly fastPreparation?: boolean;
+  /** Omits graph-wide optimizers already replaced by the exact selected-corridor projection. */
+  readonly selectedCorridorPreparation?: boolean;
   /** Reads unsaved editor snapshots before falling back to the importing file on disk. */
   readonly readSource?: (sourcePath: string) => string | undefined;
   /** Registers existing parents so generated output appearing later triggers hot reload. */
@@ -45,7 +45,7 @@ export function createPreviewMissingSourceFallbackPlugin(
           : { registerWatchDirectory: options.registerWatchDirectory }),
         workspaceRoot: options.workspaceRoot,
       };
-      if (options.fastPreparation !== true) {
+      if (options.selectedCorridorPreparation !== true) {
         void createPreviewLargePackageBarrelPlugin({
           ...(options.readSource === undefined ? {} : { readSource: options.readSource }),
           workspaceRoot: options.workspaceRoot,

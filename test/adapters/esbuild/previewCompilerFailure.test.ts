@@ -3,7 +3,7 @@ import { resolvePreviewCompilerFailure } from '../../../src/adapters/esbuild/pre
 import { PreviewBuildStalledError } from '../../../src/domain/previewBuildExecution';
 
 describe('resolvePreviewCompilerFailure', () => {
-  it('converts a frozen-frontier guard error to graph-budget without dependency recovery', async () => {
+  it('converts a frozen-frontier guard error to frontier-mismatch without dependency recovery', async () => {
     const tryAcquireMissingDependencies = vi.fn(() => Promise.resolve(false));
 
     await expect(
@@ -23,13 +23,13 @@ describe('resolvePreviewCompilerFailure', () => {
         tryAcquireMissingDependencies,
       }),
     ).rejects.toMatchObject({
-      reason: 'graph-budget',
+      reason: 'frontier-mismatch',
       target: '/workspace/Target.tsx',
     });
     expect(tryAcquireMissingDependencies).not.toHaveBeenCalled();
   });
 
-  it('preserves a post-build frontier verifier graph-budget activity', async () => {
+  it('preserves a post-build frontier verifier mismatch activity', async () => {
     const activity = {
       analysisCandidateCount: 1,
       authoredEdgeCount: 2,
@@ -40,6 +40,7 @@ describe('resolvePreviewCompilerFailure', () => {
       exactModuleCount: 1,
       executableCandidateCount: 1 as const,
       frontierSourceBytes: 32,
+      graphAdmission: 'unbounded' as const,
       kind: 'bundle-frontier' as const,
       maximumDepth: 1,
       optionalComponentCount: 1,
@@ -57,7 +58,7 @@ describe('resolvePreviewCompilerFailure', () => {
       '/workspace/Target.tsx',
       'bundling-modules',
       0,
-      'graph-budget',
+      'frontier-mismatch',
       activity,
     );
 

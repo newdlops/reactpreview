@@ -231,10 +231,11 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
         }
 
         try {
-          // Exact preparation keeps reads inside the small AST gate so queued callbacks cannot
-          // retain hundreds of source strings. Fast preparation performs mostly native pass-through
-          // work and uses a wider bounded lane; otherwise four serialized reads dominate cold start.
-          const workGate = sourceState.transformer.usesFastPreparation
+          // Workspace-complete preparation keeps reads inside the small AST gate so queued callbacks
+          // cannot retain hundreds of source strings. Selected-corridor preparation performs mostly
+          // native pass-through work and uses a wider bounded lane; otherwise four serialized reads
+          // dominate cold start.
+          const workGate = sourceState.transformer.usesSelectiveDependencyPassThrough
             ? fastSourceTransformGate
             : sourceTransformGate;
           return await workGate.run(async () => {

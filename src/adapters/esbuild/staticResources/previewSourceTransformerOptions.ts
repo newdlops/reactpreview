@@ -9,8 +9,8 @@ import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver
 export interface PreviewSourceTransformerOptions {
   /** Removes proven false-state overlays from fast builds behind visible provisional markers. */
   readonly deferDormantOverlayImports?: boolean;
-  /** Uses a target-focused compatibility pass before exact full-context enrichment replaces it. */
-  readonly fastPreparation?: boolean;
+  /** Lets selected-corridor dependencies with no preview-sensitive syntax use esbuild directly. */
+  readonly selectiveDependencyPassThrough?: boolean;
   /** Active editor target whose direct component exports may receive bounded prop defaults. */
   readonly documentPath?: string;
   /** Exact dependency/global names worth checking in modules esbuild actually reaches. */

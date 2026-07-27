@@ -8,6 +8,7 @@ describe('createPreviewPreparationPolicy', () => {
       discoveryScope: 'selected-corridor',
       maximumSmallDynamicImports: 8,
       runtimeEvidence: 'critical',
+      selectiveDependencyPassThrough: true,
       styleEvidence: 'critical',
     });
   });
@@ -16,8 +17,8 @@ describe('createPreviewPreparationPolicy', () => {
     expect(createPreviewPreparationPolicy({ preparationMode: 'corridor' })).toMatchObject({
       collectRuntimeWatchInputs: true,
       discoveryScope: 'selected-corridor',
+      selectiveDependencyPassThrough: false,
       styleEvidence: 'selected-complete',
-      useFastSourceCompatibility: false,
     });
   });
 

@@ -1,5 +1,5 @@
 /**
- * Exercises the fast/full large-package barrel policy through real esbuild builds.
+ * Exercises the selected-corridor/workspace large-package barrel policy through real esbuild builds.
  * The fixture intentionally crosses the production optimizer's 256-export threshold so the test
  * catches both accidental fast-path registration and accidental full-path projection removal.
  */
@@ -23,28 +23,29 @@ interface PreparationPolicyFixture {
 
 describe('large-package barrel preparation policy', () => {
   /**
-   * Fast preparation must preserve the authentic package root so first paint avoids graph-wide
-   * projection work. Full preparation may project exact leaves, but it must preserve semantics.
+   * Selected-corridor preparation preserves the authentic package root because its own exact
+   * package-demand projection already controls graph reachability. Workspace-complete preparation
+   * may project exact leaves, but it must preserve semantics.
    */
-  it('uses the authentic root in fast builds and exact projections in full builds', async () => {
+  it('uses the authentic root in corridor builds and exact projections in workspace builds', async () => {
     const fixture = await createPreparationPolicyFixture();
     try {
-      const [fastResult, fullResult] = await Promise.all([
+      const [corridorResult, workspaceResult] = await Promise.all([
         buildFixture(fixture, true),
         buildFixture(fixture, false),
       ]);
 
-      const fastValue = executePreview(fastResult);
-      const fullValue = executePreview(fullResult);
+      const corridorValue = executePreview(corridorResult);
+      const workspaceValue = executePreview(workspaceResult);
 
-      expect(fastValue).toEqual(['icon-000', 'icon-255']);
-      expect(fullValue).toEqual(fastValue);
-      expect(hasInput(fastResult, 'dist/index.js')).toBe(true);
-      expect(hasInput(fastResult, 'dist/Icon127.js')).toBe(true);
-      expect(hasInput(fullResult, 'dist/index.js')).toBe(false);
-      expect(hasInput(fullResult, 'dist/Icon000.js')).toBe(true);
-      expect(hasInput(fullResult, 'dist/Icon255.js')).toBe(true);
-      expect(hasInput(fullResult, 'dist/Icon127.js')).toBe(false);
+      expect(corridorValue).toEqual(['icon-000', 'icon-255']);
+      expect(workspaceValue).toEqual(corridorValue);
+      expect(hasInput(corridorResult, 'dist/index.js')).toBe(true);
+      expect(hasInput(corridorResult, 'dist/Icon127.js')).toBe(true);
+      expect(hasInput(workspaceResult, 'dist/index.js')).toBe(false);
+      expect(hasInput(workspaceResult, 'dist/Icon000.js')).toBe(true);
+      expect(hasInput(workspaceResult, 'dist/Icon255.js')).toBe(true);
+      expect(hasInput(workspaceResult, 'dist/Icon127.js')).toBe(false);
     } finally {
       await fixture.dispose();
     }
@@ -53,7 +54,7 @@ describe('large-package barrel preparation policy', () => {
 
 /**
  * Creates a side-effect-free package whose root barrel has enough direct exports to activate the
- * full optimizer. Every leaf is real because the fast build must resolve the authored root graph.
+ * broad optimizer. Every leaf is real because the corridor build resolves the authored root graph.
  */
 async function createPreparationPolicyFixture(): Promise<PreparationPolicyFixture> {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-barrel-policy-'));
@@ -120,7 +121,7 @@ async function createPreparationPolicyFixture(): Promise<PreparationPolicyFixtur
 /** Runs the production fallback composition with only its preparation policy varied. */
 async function buildFixture(
   fixture: PreparationPolicyFixture,
-  fastPreparation: boolean,
+  selectedCorridorPreparation: boolean,
 ): Promise<BuildResult> {
   return await build({
     absWorkingDir: fixture.workspaceRoot,
@@ -129,11 +130,14 @@ async function buildFixture(
     format: 'cjs',
     logLevel: 'silent',
     metafile: true,
-    outdir: path.join(fixture.workspaceRoot, fastPreparation ? '.preview-fast' : '.preview-full'),
+    outdir: path.join(
+      fixture.workspaceRoot,
+      selectedCorridorPreparation ? '.preview-corridor' : '.preview-workspace',
+    ),
     platform: 'browser',
     plugins: [
       createPreviewMissingSourceFallbackPlugin({
-        fastPreparation,
+        selectedCorridorPreparation,
         staticModuleResolver: {
           resolve: () => undefined,
           resolveMissingPathAliasCandidate: () => undefined,

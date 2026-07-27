@@ -48,7 +48,7 @@ import {
   type PreviewSourceReplacement,
 } from './previewSourceReplacement';
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
-import { canUsePreviewFastDependencyPassThrough } from './previewFastDependencyPassThroughPolicy';
+import { canPassThroughPreviewDependency } from './previewDependencyPassThroughPolicy';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
 import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
 import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
@@ -132,9 +132,9 @@ export class PreviewSourceTransformer {
         : undefined;
   }
 
-  /** Reports whether this transformer owns a provisional first-paint compilation. */
-  public get usesFastPreparation(): boolean {
-    return this.options.fastPreparation === true;
+  /** Reports whether this transformer can cheaply pass through ordinary corridor dependencies. */
+  public get usesSelectiveDependencyPassThrough(): boolean {
+    return this.options.selectiveDependencyPassThrough === true;
   }
 
   /**
@@ -166,7 +166,7 @@ export class PreviewSourceTransformer {
       });
     }
     const initialWatchDirectories = new Set(this.watchDirectories);
-    if (canUsePreviewFastDependencyPassThrough(sourcePath, sourceText, this.options)) {
+    if (canPassThroughPreviewDependency(sourcePath, sourceText, this.options)) {
       return { contents: sourceText, watchDirectories: [] };
     }
     const replacements: PreviewSourceReplacement[] = [];

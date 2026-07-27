@@ -25,13 +25,13 @@ function createRecordingBuild(): {
   return { build, loadNamespaces };
 }
 
-/** Verifies the latency-critical first paint and exact enrichment use distinct safe policies. */
+/** Verifies selected-corridor and workspace-complete builds use distinct safe policies. */
 describe('createPreviewMissingSourceFallbackPlugin', () => {
-  /** Fast preparation must not scan every package-root import before esbuild can tree-shake it. */
-  it('omits the graph-wide large-barrel optimizer from provisional preparation', () => {
+  /** Selected-corridor preparation already owns exact package-demand projection. */
+  it('omits the graph-wide large-barrel optimizer from selected-corridor preparation', () => {
     const recording = createRecordingBuild();
     void createPreviewMissingSourceFallbackPlugin({
-      fastPreparation: true,
+      selectedCorridorPreparation: true,
       staticModuleResolver: {
         resolve: () => undefined,
         resolveMissingPathAliasCandidate: () => undefined,
@@ -42,11 +42,11 @@ describe('createPreviewMissingSourceFallbackPlugin', () => {
     expect(recording.loadNamespaces).not.toContain(LARGE_BARREL_NAMESPACE);
   });
 
-  /** Full enrichment retains exact large-barrel projection for genuinely oversized packages. */
-  it('retains the large-barrel optimizer for full preparation', () => {
+  /** Workspace-complete preparation retains broad projection for genuinely oversized packages. */
+  it('retains the large-barrel optimizer for workspace-complete preparation', () => {
     const recording = createRecordingBuild();
     void createPreviewMissingSourceFallbackPlugin({
-      fastPreparation: false,
+      selectedCorridorPreparation: false,
       staticModuleResolver: {
         resolve: () => undefined,
         resolveMissingPathAliasCandidate: () => undefined,

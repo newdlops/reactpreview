@@ -1,5 +1,8 @@
 /** Prepares the frozen automatic Inspector frontier before native esbuild begins. */
-import type { PreviewCompilerBundleFrontierActivity } from '../../domain/previewCompilerActivity';
+import type {
+  PreviewCompilerBundleFrontierActivity,
+  PreviewCompilerGraphPlanActivity,
+} from '../../domain/previewCompilerActivity';
 import { PreviewBuildStalledError } from '../../domain/previewBuildExecution';
 import type { PreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorPlan';
 import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
@@ -18,7 +21,7 @@ export interface PreparedPreviewInspectorBundleExecution {
 }
 
 export interface PreparePreviewInspectorBundleExecutionOptions {
-  readonly additionalCriticalSourcePaths?: readonly string[];
+  readonly runtimeCompanionSourcePaths?: readonly string[];
   readonly analysisCandidateCount: number;
   readonly corridorSourceCount: number;
   readonly dependencySnapshotCount: number;
@@ -38,44 +41,53 @@ export async function preparePreviewInspectorBundleExecution(
 ): Promise<PreparedPreviewInspectorBundleExecution | undefined> {
   if (options.policy.frontierPolicy === undefined || options.executablePlan === undefined)
     return undefined;
-  // The automatic compiler always supplies this array. An empty result means no bounded Page
+  // The automatic compiler always supplies this array. An empty result means no Page
   // Execution Slice was proven (including an invalid persisted retry id), so never revive v1's
   // broad descriptor inventory as an implicit fallback.
   if (options.executionCandidates?.length === 0) {
+    const activity: PreviewCompilerGraphPlanActivity = {
+      analysisCandidateCount: options.analysisCandidateCount,
+      corridorSourceCount: options.corridorSourceCount,
+      dependencySnapshotCount: options.dependencySnapshotCount,
+      discoveryScope: 'selected-corridor',
+      discoveryTruncated: options.discoveryTruncated,
+      executableCandidateCount: 0,
+      kind: 'graph-plan',
+      preparationMode: options.policy.mode,
+      styleSnapshotCount: options.styleSnapshotCount,
+    };
     throw new PreviewBuildStalledError(
       options.executablePlan.target.sourcePath,
       'analyzing-project',
       0,
-      'graph-budget',
+      'candidate-unavailable',
+      activity,
     );
   }
-  const selection = options.executionCandidates === undefined
-    ? undefined
-    : await preparePreviewInspectorPageExecutionSelection({
+  const selectionResult =
+    options.executionCandidates === undefined
+      ? undefined
+      : await preparePreviewInspectorPageExecutionSelection({
           candidates: options.executionCandidates,
-          ...(options.additionalCriticalSourcePaths === undefined
+          ...(options.runtimeCompanionSourcePaths === undefined
             ? {}
-            : { additionalCriticalSourcePaths: options.additionalCriticalSourcePaths }),
+            : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
           plan: options.executablePlan,
           policy: options.policy.frontierPolicy,
           readSource: options.readSource,
           resolveModule: options.resolveModule,
           workspaceRoot: options.workspaceRoot,
         });
-  // An automatic candidate set may be non-empty while every critical closure exceeds the hard
-  // envelope. It must end before native bundling, never fall through to v1 broad evidence.
-  if (options.executionCandidates !== undefined && selection === undefined) {
-    throw new PreviewBuildStalledError(
-      options.executablePlan.target.sourcePath,
-      'analyzing-project',
-      0,
-      'graph-budget',
-    );
-  }
-  const prepared = selection?.prepared ?? (await preparePreviewInspectorBundleFrontier({
-      ...(options.additionalCriticalSourcePaths === undefined
+  const selection = selectionResult?.kind === 'selected' ? selectionResult : undefined;
+  const rejectedSelection = selectionResult?.kind === 'rejected' ? selectionResult : undefined;
+  const pageExecutionCandidate =
+    selection === undefined ? rejectedSelection?.candidate : selection.executionPlan.candidate;
+  const prepared =
+    selectionResult?.prepared ??
+    (await preparePreviewInspectorBundleFrontier({
+      ...(options.runtimeCompanionSourcePaths === undefined
         ? {}
-        : { additionalCriticalSourcePaths: options.additionalCriticalSourcePaths }),
+        : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
       plan: options.executablePlan,
       policy: options.policy.frontierPolicy,
       readSource: options.readSource,
@@ -93,6 +105,7 @@ export async function preparePreviewInspectorBundleExecution(
     exactModuleCount: summary.exactModuleCount,
     executableCandidateCount: 1,
     frontierSourceBytes: summary.sourceBytes,
+    graphAdmission: 'unbounded',
     kind: 'bundle-frontier',
     maximumDepth: summary.maximumDepth,
     optionalComponentCount: summary.optionalComponentCount,
@@ -105,21 +118,14 @@ export async function preparePreviewInspectorBundleExecution(
     totalAuthoredModuleCount: summary.totalAuthoredModuleCount,
     truncated: prepared.rejected,
     truncationReasons: summary.truncationReasons,
-    ...(selection === undefined
+    ...(pageExecutionCandidate === undefined
       ? {}
       : {
           pageExecution: {
-            candidateFidelity: selection.executionPlan.candidate.fidelity,
-            candidateId: selection.executionPlan.candidate.id,
-            disposition: selection.disposition,
-            hardMaximumAuthoredEdges: options.policy.frontierPolicy.maximumAuthoredImportEdgeCount,
-            hardMaximumAuthoredModules:
-              options.policy.frontierPolicy.maximumTotalAuthoredModuleCount,
-            selectedCriticalSurfaceCount: selection.executionPlan.candidate.criticalSurfaces.length,
-            softMaximumAuthoredEdges:
-              options.policy.frontierPolicy.softMaximumAuthoredImportEdgeCount,
-            softMaximumAuthoredModules:
-              options.policy.frontierPolicy.softMaximumTotalAuthoredModuleCount,
+            candidateFidelity: pageExecutionCandidate.fidelity,
+            candidateId: pageExecutionCandidate.id,
+            disposition: selectionResult?.disposition ?? 'rejected-structural',
+            selectedCriticalSurfaceCount: pageExecutionCandidate.criticalSurfaces.length,
           },
         }),
   };
@@ -133,7 +139,7 @@ export async function preparePreviewInspectorBundleExecution(
           target,
           'analyzing-project',
           0,
-          'graph-budget',
+          'candidate-unavailable',
           activity,
         );
     },

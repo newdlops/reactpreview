@@ -30,7 +30,7 @@ export async function resolvePreviewCompilerFailure(
   if (isPreviewBuildCancellation(error, buildSignal)) throw error;
   if (error instanceof PreviewBuildStalledError) throw error;
   if (isPreviewInspectorFrontierMismatch(error)) {
-    throw new PreviewBuildStalledError(options.target, 'bundling-modules', 0, 'graph-budget');
+    throw new PreviewBuildStalledError(options.target, 'bundling-modules', 0, 'frontier-mismatch');
   }
   if (
     !options.dependencyAcquisitionAttempted &&
@@ -47,7 +47,7 @@ export async function resolvePreviewCompilerFailure(
   throw new PreviewCompilationError(`Preview build failed: ${summary}`, diagnostics, error);
 }
 
-/** Maps a frozen-frontier guard violation to a recoverable worker graph-budget boundary. */
+/** Maps a frozen-frontier guard violation to a typed consistency failure. */
 function isPreviewInspectorFrontierMismatch(error: unknown): boolean {
   return (
     isBuildFailure(error) &&

@@ -1,8 +1,7 @@
 /**
- * Selects dependency sources that still need the exact compatibility pipeline during provisional
- * first paint. Ordinary TSX can remain on esbuild's native parser, while project runtime boundaries
- * and non-native resource expressions must keep their preview instrumentation before full context
- * enrichment replaces the artifact.
+ * Selects dependency sources that still need the exact compatibility pipeline during automatic
+ * selected-corridor preparation. Ordinary modules can remain on esbuild's native parser, while
+ * project runtime boundaries and non-native resource expressions retain preview instrumentation.
  */
 
 /** Runtime/provider syntax whose omission can prevent the provisional component tree from mounting. */
@@ -33,11 +32,11 @@ const STATIC_RENDER_ASSET_PATTERN =
   /(?:\b(?:background(?:Image)?|href|icon|image(?:Url)?|poster|src(?:Set)?|xlinkHref)\s*(?:=|:)\s*(?:\{?\s*)?["'`]|\b[A-Za-z_$][\w$]*(?:asset|avatar|background|icon|image|img|logo|poster|src|url|uri)\s*=\s*["'`])/iu;
 
 /**
- * Returns whether one reached dependency needs preview-specific source rewriting in a fast build.
+ * Returns whether one reached dependency needs preview-specific source rewriting.
  * The check intentionally uses bounded lexical evidence; false positives cost one exact transform,
  * whereas a false negative could omit a provider, data fallback, or finite resource expansion.
  */
-export function requiresFastDependencyCompatibility(
+export function requiresPreviewDependencyCompatibility(
   sourceText: string,
   projectUsesNextRuntime: boolean | undefined,
 ): boolean {

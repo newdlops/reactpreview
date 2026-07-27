@@ -21,6 +21,7 @@ import type {
   PreviewInspectorPageFidelity,
   PreviewInspectorRouteExecutionRecipe,
 } from './previewInspectorPageExecutionTypes';
+import { collectPreviewInspectorRouteParameterValues } from './previewInspectorRoutePattern';
 
 export interface CreatePreviewInspectorPageExecutionCandidatesOptions {
   readonly plan: PreviewInspectorAncestorPlan;
@@ -46,9 +47,14 @@ export function createPreviewInspectorPageExecutionCandidates(
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
-  const routeSurfaces = createRouteSurfaces(browserCandidate);
+  const detachedRouteLeaf = isDetachedRouteLeaf(browserCandidate, options.plan.target);
+  const routeSurfaces = detachedRouteLeaf
+    ? Object.freeze([])
+    : createRouteSurfaces(browserCandidate);
+  const routeElementSurfaces = createRouteElementSurfaces(browserCandidate);
   const frameworkSurfaces = createFrameworkSurfaces(browserCandidate);
   const shellSurfaces = createShellSurfaces(virtualPage);
+  const contextualTargetSurfaces = detachedRouteLeaf ? [] : [targetSurface];
   const frameworkEdges = createFrameworkCompositionEdges(
     browserCandidate,
     frameworkSurfaces,
@@ -66,8 +72,15 @@ export function createPreviewInspectorPageExecutionCandidates(
   const routeRecipe = createRouteRecipe(browserCandidate, routeSurfaces, pageSurface);
   const shellEdges = createShellCompositionEdges(virtualPage, shellSurfaces, pageSurface);
   const outerPageSurface = readOuterPageSurface(shellSurfaces, shellEdges, pageSurface);
-  const routeEdges = createRouteCompositionEdges(routeSurfaces, outerPageSurface);
-  const pageTargetEdge = createPageTargetEdge(pageSurface, targetSurface);
+  const routeElementEdges = createRouteElementCompositionEdges(
+    routeElementSurfaces,
+    outerPageSurface,
+  );
+  const routeElementRoot = routeElementSurfaces[0] ?? outerPageSurface;
+  const routeEdges = createRouteCompositionEdges(routeSurfaces, routeElementRoot);
+  const pageTargetEdge = detachedRouteLeaf
+    ? undefined
+    : createPageTargetEdge(pageSurface, targetSurface);
   const slicedShellEdges = createShellCompositionEdges(
     virtualPage,
     shellSurfaces,
@@ -78,14 +91,29 @@ export function createPreviewInspectorPageExecutionCandidates(
     slicedShellEdges,
     pageSlicedSurface,
   );
-  const slicedRouteEdges = createRouteCompositionEdges(routeSurfaces, slicedOuterPageSurface);
-  const slicedPageTargetEdge = createPageTargetEdge(pageSlicedSurface, targetSurface);
+  const slicedRouteElementEdges = createRouteElementCompositionEdges(
+    routeElementSurfaces,
+    slicedOuterPageSurface,
+  );
+  const slicedRouteElementRoot = routeElementSurfaces[0] ?? slicedOuterPageSurface;
+  const slicedRouteEdges = createRouteCompositionEdges(routeSurfaces, slicedRouteElementRoot);
+  const slicedPageTargetEdge = detachedRouteLeaf
+    ? undefined
+    : createPageTargetEdge(pageSlicedSurface, targetSurface);
   const localShellEdges =
     pageLocalSurface === undefined
       ? []
       : createShellCompositionEdges(virtualPage, shellSurfaces, pageLocalSurface);
-  const localPageTargetEdge =
+  const localOuterPageSurface =
     pageLocalSurface === undefined
+      ? undefined
+      : readOuterPageSurface(shellSurfaces, localShellEdges, pageLocalSurface);
+  const localRouteElementEdges =
+    localOuterPageSurface === undefined
+      ? []
+      : createRouteElementCompositionEdges(routeElementSurfaces, localOuterPageSurface);
+  const localPageTargetEdge =
+    pageLocalSurface === undefined || detachedRouteLeaf
       ? undefined
       : createPageTargetEdge(pageLocalSurface, targetSurface);
   const evidenceSourcePaths = Object.freeze(
@@ -96,6 +124,7 @@ export function createPreviewInspectorPageExecutionCandidates(
       ...new Set([
         ...evidenceSourcePaths,
         ...routeSurfaces.flatMap((surface) => surface.watchSourcePaths),
+        ...routeElementSurfaces.flatMap((surface) => surface.watchSourcePaths),
         ...shellSurfaces.flatMap((surface) => surface.watchSourcePaths),
         ...pageSurface.watchSourcePaths,
         ...targetSurface.watchSourcePaths,
@@ -109,16 +138,18 @@ export function createPreviewInspectorPageExecutionCandidates(
         browserCandidate,
         compositionEdges: [
           ...routeEdges,
+          ...routeElementEdges,
           ...frameworkEdges,
           ...shellEdges,
           ...(pageTargetEdge === undefined ? [] : [pageTargetEdge]),
         ],
         criticalSurfaces: deduplicateSurfaces([
           ...routeSurfaces,
+          ...routeElementSurfaces,
           ...frameworkSurfaces,
           ...shellSurfaces,
           pageSurface,
-          targetSurface,
+          ...contextualTargetSurfaces,
         ]),
         evidenceSourcePaths,
         fidelity: 'route-page-authentic',
@@ -131,16 +162,18 @@ export function createPreviewInspectorPageExecutionCandidates(
         browserCandidate,
         compositionEdges: [
           ...slicedRouteEdges,
+          ...slicedRouteElementEdges,
           ...slicedFrameworkEdges,
           ...slicedShellEdges,
           ...(slicedPageTargetEdge === undefined ? [] : [slicedPageTargetEdge]),
         ],
         criticalSurfaces: deduplicateSurfaces([
           ...routeSurfaces,
+          ...routeElementSurfaces,
           ...frameworkSurfaces,
           ...shellSurfaces,
           pageSlicedSurface,
-          targetSurface,
+          ...contextualTargetSurfaces,
         ]),
         evidenceSourcePaths,
         fidelity: 'route-page-sliced',
@@ -154,6 +187,7 @@ export function createPreviewInspectorPageExecutionCandidates(
   // share a module/export identity.
   if (
     !isSameSurface(pageSurface, targetSurface) ||
+    routeElementSurfaces.length > 0 ||
     frameworkSurfaces.length > 0 ||
     shellSurfaces.length > 0
   ) {
@@ -161,18 +195,21 @@ export function createPreviewInspectorPageExecutionCandidates(
       createCandidate({
         browserCandidate,
         compositionEdges: [
+          ...routeElementEdges,
           ...frameworkEdges,
           ...shellEdges,
           ...(pageTargetEdge === undefined ? [] : [pageTargetEdge]),
         ],
         criticalSurfaces: deduplicateSurfaces([
+          ...routeElementSurfaces,
           ...frameworkSurfaces,
           ...shellSurfaces,
           pageSurface,
-          targetSurface,
+          ...contextualTargetSurfaces,
         ]),
         evidenceSourcePaths,
         fidelity: 'page-authentic',
+        ...(routeRecipe === undefined ? {} : { routeRecipe }),
         watchSourcePaths,
       }),
     );
@@ -180,13 +217,20 @@ export function createPreviewInspectorPageExecutionCandidates(
       createCandidate({
         browserCandidate,
         compositionEdges: [
+          ...slicedRouteElementEdges,
           ...slicedFrameworkEdges,
           ...slicedShellEdges,
           ...(slicedPageTargetEdge === undefined ? [] : [slicedPageTargetEdge]),
         ],
-        criticalSurfaces: deduplicateSurfaces([...shellSurfaces, pageSlicedSurface, targetSurface]),
+        criticalSurfaces: deduplicateSurfaces([
+          ...routeElementSurfaces,
+          ...shellSurfaces,
+          pageSlicedSurface,
+          ...contextualTargetSurfaces,
+        ]),
         evidenceSourcePaths,
         fidelity: 'page-sliced',
+        ...(routeRecipe === undefined ? {} : { routeRecipe }),
         watchSourcePaths,
       }),
     );
@@ -195,18 +239,21 @@ export function createPreviewInspectorPageExecutionCandidates(
         createCandidate({
           browserCandidate,
           compositionEdges: [
+            ...localRouteElementEdges,
             ...localFrameworkEdges,
             ...localShellEdges,
             ...(localPageTargetEdge === undefined ? [] : [localPageTargetEdge]),
           ],
           criticalSurfaces: deduplicateSurfaces([
+            ...routeElementSurfaces,
             ...shellSurfaces,
             ...frameworkSurfaces,
             pageLocalSurface,
-            targetSurface,
+            ...contextualTargetSurfaces,
           ]),
           evidenceSourcePaths,
           fidelity: 'target-contextual',
+          ...(routeRecipe === undefined ? {} : { routeRecipe }),
           watchSourcePaths,
         }),
       );
@@ -219,6 +266,7 @@ export function createPreviewInspectorPageExecutionCandidates(
       criticalSurfaces: [targetSurface],
       evidenceSourcePaths,
       fidelity: 'target-only',
+      ...(routeRecipe === undefined ? {} : { routeRecipe }),
       watchSourcePaths: targetSurface.watchSourcePaths,
     }),
   );
@@ -413,6 +461,23 @@ function createRouteSurfaces(
   );
 }
 
+/** Converts inline `<Layout><Page /></Layout>` route composition into isolated wrapper slices. */
+function createRouteElementSurfaces(
+  candidate: PreviewInspectorPageCandidate,
+): readonly PreviewInspectorMountSurface[] {
+  const location = candidate.routeLocation;
+  const wrappers =
+    location !== undefined && 'elementWrappers' in location ? (location.elementWrappers ?? []) : [];
+  return deduplicateSurfaces(
+    wrappers.map((wrapper) =>
+      createSelectedExportSurface(
+        { exportName: wrapper.exportName, sourcePath: wrapper.sourcePath },
+        'route-element',
+      ),
+    ),
+  );
+}
+
 /** Retains only framework-mandated implicit layouts or `_app` surfaces for legacy composition. */
 function createFrameworkSurfaces(
   candidate: PreviewInspectorPageCandidate,
@@ -537,6 +602,41 @@ function readOuterPageSurface(
   return shellSurfaces.find((surface) => !childSurfaceIds.has(surface.id)) ?? pageSurface;
 }
 
+/** Composes statically authored inline route wrappers through the same `children` slots they used. */
+function createRouteElementCompositionEdges(
+  surfaces: readonly PreviewInspectorMountSurface[],
+  pageSurface: PreviewInspectorMountSurface,
+): readonly PreviewInspectorPageCompositionEdge[] {
+  return Object.freeze(
+    surfaces.map((surface, index) =>
+      Object.freeze({
+        childSurfaceId: surfaces[index + 1]?.id ?? pageSurface.id,
+        mode: 'children-slot' as const,
+        parentSurfaceId: surface.id,
+        placementIndex: index,
+      }),
+    ),
+  );
+}
+
+/** Identifies a route page discovered below the selected router owner, not around the editor target. */
+function isDetachedRouteLeaf(
+  candidate: PreviewInspectorPageCandidate,
+  target: PreviewInspectorComponentReference,
+): boolean {
+  const location = candidate.routeLocation;
+  if (location === undefined || !('componentSourcePath' in location)) {
+    return false;
+  }
+  const leafExportName = location.componentExportName ?? 'default';
+  return (
+    path.normalize(candidate.root.sourcePath) === path.normalize(location.componentSourcePath) &&
+    candidate.root.exportName === leafExportName &&
+    (path.normalize(candidate.root.sourcePath) !== path.normalize(target.sourcePath) ||
+      candidate.root.exportName !== target.exportName)
+  );
+}
+
 /** Keeps one source/export identity in the execution import list. */
 function deduplicateSurfaces(
   surfaces: readonly PreviewInspectorMountSurface[],
@@ -561,7 +661,7 @@ function createRouteRecipe(
   if (location === undefined) return undefined;
   const routeRuntime = readRouteRuntime(location);
   const mounts =
-    'routeMounts' in location
+    'routeMounts' in location && routeSurfaces.length > 0
       ? (location.routeMounts ?? []).map((mount, index) =>
           Object.freeze({
             basePath: mount.basePath,
@@ -578,8 +678,14 @@ function createRouteRecipe(
     kind: routeRuntime.kind,
     loaderPolicy: 'never-execute',
     mounts: Object.freeze(mounts),
-    params: Object.freeze('params' in location ? { ...location.params } : {}),
+    params: Object.freeze(
+      'params' in location
+        ? { ...location.params }
+        : collectPreviewInspectorRouteParameterValues(location.pattern, location.pathname),
+    ),
+    pattern: location.pattern,
     pathname: location.pathname,
+    rootOwnsRouter: candidate.rootOwnsRouter,
     ...(routeRuntime.routerModuleSpecifier === undefined
       ? {}
       : { routerModuleSpecifier: routeRuntime.routerModuleSpecifier }),
@@ -599,9 +705,14 @@ function readRouteRuntime(
     return { kind: 'next-pages' };
   const sources = [
     location.sourcePath,
-    ...('routeMounts' in location ? (location.routeMounts ?? []).map((mount) => mount.sourcePath) : []),
+    ...('routeMounts' in location
+      ? (location.routeMounts ?? []).map((mount) => mount.sourcePath)
+      : []),
   ];
-  const sourceText = sources.map(readSource).filter((value): value is string => value !== undefined).join('\n');
+  const sourceText = sources
+    .map(readSource)
+    .filter((value): value is string => value !== undefined)
+    .join('\n');
   const routerModuleSpecifier = /from\s*['"]react-router-dom['"]/u.test(sourceText)
     ? 'react-router-dom'
     : /from\s*['"]react-router['"]/u.test(sourceText)
@@ -657,6 +768,7 @@ function createCandidate(options: {
     options.browserCandidate.id,
     options.fidelity,
     options.criticalSurfaces,
+    options.routeRecipe,
   );
   return Object.freeze({
     browserCandidate: options.browserCandidate,
@@ -694,9 +806,17 @@ function createCandidateId(
   browserCandidateId: string,
   fidelity: PreviewInspectorPageFidelity,
   surfaces: readonly PreviewInspectorMountSurface[],
+  routeRecipe?: PreviewInspectorRouteExecutionRecipe,
 ): string {
   return createHash('sha256')
-    .update([browserCandidateId, fidelity, ...surfaces.map((surface) => surface.id)].join('\0'))
+    .update(
+      [
+        browserCandidateId,
+        fidelity,
+        ...surfaces.map((surface) => surface.id),
+        routeRecipe === undefined ? '' : JSON.stringify(routeRecipe),
+      ].join('\0'),
+    )
     .digest('hex')
     .slice(0, 24);
 }

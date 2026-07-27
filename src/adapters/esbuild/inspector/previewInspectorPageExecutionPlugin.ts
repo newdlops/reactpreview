@@ -26,8 +26,8 @@ export interface PreviewInspectorPageExecutionPluginOptions {
 
 /** A result captured during virtual source generation for planner diagnostics and tests. */
 export interface PreviewInspectorPageExecutionSurfaceLoad {
+  readonly failed: boolean;
   readonly surfaceId: string;
-  readonly usedFallback: boolean;
   readonly failureReason?: PreviewInspectorMountSurfaceSliceFailureReason;
 }
 
@@ -75,7 +75,7 @@ export function createPreviewInspectorPageExecutionPlugin(
               sourceText,
             });
     if (result?.kind === 'success') {
-      loads.push(Object.freeze({ surfaceId: surface.id, usedFallback: false }));
+      loads.push(Object.freeze({ failed: false, surfaceId: surface.id }));
       return {
         contents: result.slice.contents,
         loader: surface.sourcePath.toLowerCase().endsWith('x') ? 'tsx' : 'ts',
@@ -85,18 +85,17 @@ export function createPreviewInspectorPageExecutionPlugin(
     }
     loads.push(
       Object.freeze({
+        failed: true,
         ...(result?.kind === 'failure' ? { failureReason: result.reason } : {}),
         surfaceId: surface.id,
-        usedFallback: true,
       }),
     );
-    const fallbackSource =
-      surface.exportName === 'default'
-        ? `import __surface from ${JSON.stringify(surface.sourcePath)};\nexport default __surface;`
-        : `import { ${surface.exportName} as __surface } from ${JSON.stringify(surface.sourcePath)};\nexport { __surface as ${surface.exportName} };`;
     return {
-      contents: fallbackSource,
-      loader: 'js',
+      errors: [
+        {
+          text: `Unable to create the frozen Page Execution slice for ${surface.id}${result?.kind === 'failure' ? ` (${result.reason})` : ''}.`,
+        },
+      ],
       resolveDir: path.dirname(surface.sourcePath),
       watchFiles: [surface.sourcePath],
     };

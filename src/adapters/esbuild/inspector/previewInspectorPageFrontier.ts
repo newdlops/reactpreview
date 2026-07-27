@@ -16,11 +16,10 @@ import type {
 
 export type PreviewInspectorFrontierSourceKind =
   'critical-surface' | 'critical-support' | 'optional-surface' | 'optional-support';
-export type PreviewInspectorPageFrontierDisposition =
-  'accepted-soft' | 'accepted-hard' | 'rejected-hard';
+export type PreviewInspectorPageFrontierDisposition = 'accepted-unbounded' | 'rejected-structural';
 
 export interface PreparePreviewInspectorPageExecutionSelectionOptions {
-  readonly additionalCriticalSourcePaths?: readonly string[];
+  readonly runtimeCompanionSourcePaths?: readonly string[];
   readonly candidates: readonly PreviewInspectorPageExecutionCandidate[];
   readonly plan: PreviewInspectorAncestorPlan;
   readonly policy: PreviewCompilerFrontierPolicy;
@@ -30,12 +29,24 @@ export interface PreparePreviewInspectorPageExecutionSelectionOptions {
 }
 
 export interface PreparedPreviewInspectorPageExecutionSelection {
-  readonly disposition: PreviewInspectorPageFrontierDisposition;
+  readonly kind: 'selected';
+  readonly disposition: 'accepted-unbounded';
   readonly executionPlan: PreviewInspectorPageExecutionPlan;
   readonly prepared: PreparedPreviewInspectorBundleFrontier;
 }
 
-/** Returns every bounded route/page candidate; framework recipes are composed by Page Execution. */
+/** Retains the smallest invalid candidate so terminal diagnostics include real frontier counters. */
+export interface RejectedPreviewInspectorPageExecutionSelection {
+  readonly candidate: PreviewInspectorPageExecutionCandidate;
+  readonly disposition: 'rejected-structural';
+  readonly kind: 'rejected';
+  readonly prepared: PreparedPreviewInspectorBundleFrontier;
+}
+
+export type PreviewInspectorPageExecutionSelection =
+  PreparedPreviewInspectorPageExecutionSelection | RejectedPreviewInspectorPageExecutionSelection;
+
+/** Returns every route/page candidate; framework recipes are composed by Page Execution. */
 export function createEligiblePreviewInspectorPageExecutionCandidates(
   plan: PreviewInspectorAncestorPlan,
   selectedPageCandidateId: string | undefined,
@@ -45,48 +56,67 @@ export function createEligiblePreviewInspectorPageExecutionCandidates(
     plan,
     ...(selectedPageCandidateId === undefined ? {} : { selectedPageCandidateId }),
   });
-  return selectedExecutionCandidateId === undefined
-    ? candidates
-    : candidates.filter((candidate) => candidate.id === selectedExecutionCandidateId);
+  if (selectedExecutionCandidateId === undefined) return candidates;
+  const requested = candidates.filter((candidate) => candidate.id === selectedExecutionCandidateId);
+  // Candidate ids include the frozen source/frontier identity and legitimately go stale after an
+  // edit.  A stale retry must degrade to deterministic automatic selection, never masquerade as
+  // an empty candidate failure.
+  return requested.length === 0 ? candidates : requested;
 }
 
-/** Probes a bounded ordered candidate list; filesystem timing never affects the tie-break. */
+/** Probes the ordered candidate list; filesystem timing never affects the tie-break. */
 export async function preparePreviewInspectorPageExecutionSelection(
   options: PreparePreviewInspectorPageExecutionSelectionOptions,
-): Promise<PreparedPreviewInspectorPageExecutionSelection | undefined> {
-  const maximum = options.policy.mode === 'fast' ? 8 : 12;
+): Promise<PreviewInspectorPageExecutionSelection | undefined> {
+  const sourceTextByPath = new Map<string, Promise<string | undefined>>();
+  const readSharedSource = (sourcePath: string): Promise<string | undefined> => {
+    const cached = sourceTextByPath.get(sourcePath);
+    if (cached !== undefined) return cached;
+    const read = options.readSource(sourcePath);
+    sourceTextByPath.set(sourcePath, read);
+    return read;
+  };
   const probes: {
     candidate: PreviewInspectorPageExecutionCandidate;
     disposition: PreviewInspectorPageFrontierDisposition;
     prepared: PreparedPreviewInspectorBundleFrontier;
   }[] = [];
-  for (const candidate of options.candidates.slice(0, maximum)) {
+  for (const candidate of options.candidates) {
     const prepared = await preparePreviewInspectorBundleFrontier({
-      ...(options.additionalCriticalSourcePaths === undefined
+      ...(options.runtimeCompanionSourcePaths === undefined
         ? {}
-        : { additionalCriticalSourcePaths: options.additionalCriticalSourcePaths }),
+        : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
       executionCandidate: candidate,
       plan: options.plan,
       policy: options.policy,
-      readSource: options.readSource,
+      readSource: readSharedSource,
       resolveModule: options.resolveModule,
       workspaceRoot: options.workspaceRoot,
     });
     probes.push({
       candidate,
-      disposition: prepared.rejected ? 'rejected-hard' : readDisposition(prepared, options.policy),
+      disposition: prepared.rejected ? 'rejected-structural' : 'accepted-unbounded',
       prepared,
     });
   }
-  const selected =
-    selectHighestFidelity(probes, 'accepted-soft') ??
-    selectHighestFidelity(probes, 'accepted-hard');
-  if (selected === undefined) return undefined;
+  const selected = probes
+    .filter((probe) => probe.disposition === 'accepted-unbounded')
+    .sort(compareProbe)[0];
+  if (selected === undefined) {
+    const rejected = [...probes].sort(compareRejectedProbe)[0];
+    if (rejected === undefined) return undefined;
+    return Object.freeze({
+      candidate: rejected.candidate,
+      disposition: 'rejected-structural',
+      kind: 'rejected',
+      prepared: rejected.prepared,
+    });
+  }
   const alternatives = probes.map((probe) => ({
     candidateId: probe.candidate.id,
     fidelity: probe.candidate.fidelity,
-    ...(probe.disposition === 'rejected-hard'
-      ? { reason: probe.prepared.frontier.summary.truncationReasons[0] ?? 'rejected-hard' }
+    ...(probe.disposition === 'rejected-structural'
+      ? { reason: probe.prepared.frontier.summary.truncationReasons[0] ?? 'rejected-structural' }
       : {}),
   }));
   const executionPlan: PreviewInspectorPageExecutionPlan = Object.freeze({
@@ -102,23 +132,11 @@ export async function preparePreviewInspectorPageExecutionSelection(
     version: 2,
   });
   return Object.freeze({
-    disposition: selected.disposition,
+    disposition: 'accepted-unbounded',
     executionPlan,
+    kind: 'selected',
     prepared: selected.prepared,
   });
-}
-
-function readDisposition(
-  prepared: PreparedPreviewInspectorBundleFrontier,
-  policy: PreviewCompilerFrontierPolicy,
-): PreviewInspectorPageFrontierDisposition {
-  const summary = prepared.frontier.summary;
-  return summary.totalAuthoredModuleCount <= policy.softMaximumTotalAuthoredModuleCount &&
-    summary.exactModuleCount <= policy.softMaximumExactModuleCount &&
-    summary.authoredEdgeCount <= policy.softMaximumAuthoredImportEdgeCount &&
-    summary.sourceBytes <= policy.softMaximumTotalSourceBytes
-    ? 'accepted-soft'
-    : 'accepted-hard';
 }
 
 function compareProbe(
@@ -143,23 +161,27 @@ function compareProbe(
   );
 }
 
-/** Applies the documented two-pass policy: soft envelope first, then hard compatibility. */
-function selectHighestFidelity(
-  probes: readonly {
+/** Chooses the most compact rejected candidate for terminal telemetry. */
+function compareRejectedProbe(
+  left: {
     candidate: PreviewInspectorPageExecutionCandidate;
-    disposition: PreviewInspectorPageFrontierDisposition;
     prepared: PreparedPreviewInspectorBundleFrontier;
-  }[],
-  disposition: Extract<PreviewInspectorPageFrontierDisposition, 'accepted-soft' | 'accepted-hard'>,
-):
-  | {
-      candidate: PreviewInspectorPageExecutionCandidate;
-      disposition: PreviewInspectorPageFrontierDisposition;
-      prepared: PreparedPreviewInspectorBundleFrontier;
-    }
-  | undefined {
-  return probes.filter((probe) => probe.disposition === disposition).sort(compareProbe)[0];
+  },
+  right: {
+    candidate: PreviewInspectorPageExecutionCandidate;
+    prepared: PreparedPreviewInspectorBundleFrontier;
+  },
+): number {
+  return (
+    left.prepared.frontier.summary.totalAuthoredModuleCount -
+      right.prepared.frontier.summary.totalAuthoredModuleCount ||
+    left.prepared.frontier.summary.authoredEdgeCount -
+      right.prepared.frontier.summary.authoredEdgeCount ||
+    fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
+    left.candidate.id.localeCompare(right.candidate.id)
+  );
 }
+
 function fidelityPriority(value: PreviewInspectorPageFidelity): number {
   return [
     'route-page-authentic',

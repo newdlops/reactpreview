@@ -95,7 +95,11 @@ export interface PreviewInspectorRouteExecutionRecipe {
   readonly loaderPolicy: 'never-execute';
   readonly mounts: readonly PreviewInspectorRouteExecutionMount[];
   readonly params: Readonly<Record<string, string | readonly string[]>>;
+  /** Authored selected-route pattern retained so generated routers can populate `useParams()`. */
+  readonly pattern: string;
   readonly pathname: string;
+  /** Prevents generated route execution from nesting a MemoryRouter around an authored router root. */
+  readonly rootOwnsRouter: boolean;
   /** The selected route's project-owned React Router package, when a mini tree is used. */
   readonly routerModuleSpecifier?: 'react-router' | 'react-router-dom';
   readonly searchParams: Readonly<Record<string, string | readonly string[]>>;

@@ -2,13 +2,15 @@
 /** Generates an exact-edge Page Execution Slice React root. */
 import { createPreviewInspectorPageSurfaceSpecifier } from './previewInspectorPageExecutionPlugin';
 import { PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER } from './previewInspectorTargetPlugin';
-import { PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY } from '../previewNextAppNavigationRuntimeSource';
+import {
+  PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER,
+  shouldInstallPreviewInspectorPageRouteStatePrelude,
+} from './previewInspectorPageRouteStatePrelude';
 import { createPreviewInspectorRouteExecutionRuntimeSource } from './previewInspectorRouteExecutionRuntimeSource';
 import type {
   PreviewInspectorMountSurface,
   PreviewInspectorPageCompositionEdge,
   PreviewInspectorPageExecutionCandidate,
-  PreviewInspectorRouteExecutionRecipe,
 } from './previewInspectorPageExecutionTypes';
 
 export interface CreatePreviewInspectorPageExecutionSourceOptions {
@@ -95,80 +97,19 @@ export function createPreviewInspectorPageExecutionSource(
             .map((surfaceId) => localById.get(surfaceId))
             .filter((local): local is string => local !== undefined),
         });
-  const genericRoute = routeRecipe?.kind === 'generic-memory-location' ? routeRecipe : undefined;
-  const nextRoute =
-    routeRecipe?.kind === 'next-app' || routeRecipe?.kind === 'next-pages'
-      ? routeRecipe
-      : undefined;
-  const routeElement =
-    routerRuntime !== undefined
-      ? routerRuntime.routeElement
-      : genericRoute !== undefined
-      ? `React.createElement(PreviewInspectorRouteLocation, { pathname: ${JSON.stringify(genericRoute.pathname)}, search: ${JSON.stringify(createSearch(genericRoute.searchParams))} }, ${renderedRoot})`
-      : nextRoute?.kind === 'next-app'
-        ? `React.createElement(PreviewInspectorNextAppRoute, null, ${renderedRoot})`
-        : nextRoute?.kind === 'next-pages'
-          ? `React.createElement(PreviewInspectorNextPagesRoute, null, ${renderedRoot})`
-          : renderedRoot;
+  const routeStatePrelude = shouldInstallPreviewInspectorPageRouteStatePrelude(routeRecipe);
+  const routeElement = routerRuntime !== undefined ? routerRuntime.routeElement : renderedRoot;
   return [
     "import React from 'react';",
+    ...(routeStatePrelude
+      ? [`import ${JSON.stringify(PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER)};`]
+      : []),
     ...imports,
     ...(routerRuntime?.imports ?? []),
-    ...(genericRoute === undefined
-      ? []
-      : [
-          'function PreviewInspectorRouteLocation({ children, pathname, search }) {',
-          '  React.useLayoutEffect(() => {',
-          '    const next = pathname + search;',
-          '    if (globalThis.location?.pathname + globalThis.location?.search !== next) {',
-          '      globalThis.history?.replaceState?.(globalThis.history.state, "", next);',
-          '      globalThis.dispatchEvent?.(new PopStateEvent("popstate"));',
-          '    }',
-          '  }, [pathname, search]);',
-          '  return children;',
-          '}',
-        ]),
-    ...(nextRoute === undefined ? [] : createNextRouteRuntime(nextRoute)),
     'export default function PreviewInspectorPageExecution() {',
     `  return ${routeElement};`,
     '}',
   ].join('\n');
-}
-
-/** Installs exactly the selected framework route state; it never evaluates a Next registry. */
-function createNextRouteRuntime(recipe: PreviewInspectorRouteExecutionRecipe): readonly string[] {
-  if (recipe.kind === 'next-app') {
-    return [
-      `const previewNextAppRouteStateSymbol = Symbol.for(${JSON.stringify(PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY)});`,
-      'function PreviewInspectorNextAppRoute({ children }) {',
-      `  globalThis[previewNextAppRouteStateSymbol] = Object.freeze({ initialSignature: JSON.stringify([${JSON.stringify(recipe.pathname)}, ${JSON.stringify(recipe.params)}, ${JSON.stringify(recipe.searchParams)}]), params: Object.freeze(${JSON.stringify(recipe.params)}), pathname: ${JSON.stringify(recipe.pathname)}, revision: 0, searchParams: Object.freeze(${JSON.stringify(recipe.searchParams)}) });`,
-      '  return children;',
-      '}',
-    ];
-  }
-  return [
-    "const previewNextPagesRouteStateSymbol = Symbol.for('newdlops.react-file-preview.next-pages-router-state');",
-    'function PreviewInspectorNextPagesRoute({ children }) {',
-    `  globalThis[previewNextPagesRouteStateSymbol] = Object.freeze({ pathname: ${JSON.stringify(recipe.pathname)}, pattern: ${JSON.stringify(recipe.mounts[0]?.pattern ?? recipe.pathname)} });`,
-    '  return children;',
-    '}',
-  ];
-}
-
-/** Serializes only static route query values; loader and action data are never materialized. */
-function createSearch(searchParams: Readonly<Record<string, string | readonly string[]>>): string {
-  const query = new URLSearchParams();
-  for (const key of Object.keys(searchParams).sort((left, right) => left.localeCompare(right))) {
-    const value: string | readonly string[] | undefined = searchParams[key];
-    if (value === undefined) continue;
-    if (typeof value === 'string') {
-      query.append(key, value);
-      continue;
-    }
-    for (const item of value) query.append(key, item);
-  }
-  const serialized = query.toString();
-  return serialized.length === 0 ? '' : `?${serialized}`;
 }
 
 function createSurfaceImport(

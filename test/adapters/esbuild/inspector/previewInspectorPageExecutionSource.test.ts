@@ -99,7 +99,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
         loaderPolicy: 'never-execute',
         mounts: [],
         params: {},
+        pattern: '/orders/:id',
         pathname: '/orders/42',
+        rootOwnsRouter: false,
         searchParams: { filter: ['open', 'mine'] },
       },
     } as unknown as PreviewInspectorPageExecutionCandidate;
@@ -109,10 +111,8 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       target: { exportName: 'default', sourcePath: '/workspace/Page.tsx' },
     });
 
-    expect(source).toContain('PreviewInspectorRouteLocation');
-    expect(source).toContain('history?.replaceState');
-    expect(source).toContain('/orders/42');
-    expect(source).toContain('?filter=open&filter=mine');
+    expect(source).toContain('react-preview:inspector-page-route-state');
+    expect(source).not.toContain('useLayoutEffect');
     expect(source).not.toContain('loader(');
     expect(source).not.toContain('action(');
   });
@@ -153,7 +153,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
         loaderPolicy: 'never-execute',
         mounts: [],
         params: { id: '42' },
+        pattern: '/products/[id]',
         pathname: '/products/42',
+        rootOwnsRouter: false,
         searchParams: {},
       },
     } as unknown as PreviewInspectorPageExecutionCandidate;
@@ -163,10 +165,9 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       target: { exportName: 'default', sourcePath: '/workspace/pages/products/[id].tsx' },
     });
 
-    expect(source).toContain('previewNextPagesRouteStateSymbol');
+    expect(source).toContain('react-preview:inspector-page-route-state');
     expect(source).toContain('"Component": () => React.createElement(Surface1, null)');
     expect(source).toContain('"pageProps": {}');
-    expect(source).toContain('/products/42');
     expect(source).not.toContain('route registry');
   });
 
@@ -174,13 +175,43 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     const candidate = {
       compositionEdges: [],
       criticalSurfaces: [
-        { bypassedWrapperNames: [], exportName: 'default', id: 'layout', omittedTopLevelEffectCount: 0, sourcePath: '/workspace/Layout.tsx', strategy: 'authentic-module-export', watchSourcePaths: [] },
-        { bypassedWrapperNames: [], exportName: 'default', id: 'page', omittedTopLevelEffectCount: 0, sourcePath: '/workspace/Page.tsx', strategy: 'authentic-module-export', watchSourcePaths: [] },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'layout',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/Layout.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/Page.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
       ],
       routeRecipe: {
-        kind: 'react-router-v6', loaderPolicy: 'never-execute', params: {}, pathname: '/orders/42', searchParams: {},
+        kind: 'react-router-v6',
+        loaderPolicy: 'never-execute',
+        params: {},
+        pattern: '/orders/:id',
+        pathname: '/orders/42',
+        rootOwnsRouter: false,
+        searchParams: {},
         routerModuleSpecifier: 'react-router',
-        mounts: [{ basePath: '/', childSurfaceId: 'page', hasWildcardFallback: false, parentSurfaceId: 'layout', pattern: '/orders/:id' }],
+        mounts: [
+          {
+            basePath: '/',
+            childSurfaceId: 'page',
+            hasWildcardFallback: false,
+            parentSurfaceId: 'layout',
+            pattern: '/orders/:id',
+          },
+        ],
       },
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
@@ -195,5 +226,103 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     expect(source).toContain('React.createElement(Routes, null');
     expect(source).not.toContain('RouteRegistry');
     expect(source).not.toContain('loader:');
+  });
+
+  it('places an inline route wrapper and leaf page inside exactly one generated Router', () => {
+    const candidate = {
+      browserCandidate: { id: 'selected-leaf' },
+      compositionEdges: [
+        {
+          childSurfaceId: 'page',
+          mode: 'children-slot',
+          parentSurfaceId: 'layout',
+          placementIndex: 0,
+        },
+      ],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'layout',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/RouteLayout.tsx',
+          strategy: 'selected-export-slice',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/SelectedPage.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      routeRecipe: {
+        kind: 'react-router-v6',
+        loaderPolicy: 'never-execute',
+        mounts: [],
+        params: { selectedId: '42' },
+        pattern: '/selected/:selectedId(\\d+)',
+        pathname: '/selected/42',
+        rootOwnsRouter: false,
+        routerModuleSpecifier: 'react-router-dom',
+        searchParams: { tab: 'details' },
+      },
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      target: { exportName: 'Target', sourcePath: '/workspace/App.tsx' },
+    });
+
+    expect(source).toContain(
+      'element: React.createElement(Surface0, null, React.createElement(Surface1, null))',
+    );
+    expect(source).toContain('initialEntries: ["/selected/42?tab=details"]');
+    expect(source).toContain('path: "/selected/:selectedId"');
+    expect(source).not.toContain('index: true');
+    expect(source.match(/React\.createElement\(MemoryRouter/gu)).toHaveLength(1);
+    expect(source).not.toContain('RouterProvider');
+    expect(source).not.toContain('react-preview:inspector-target-facade');
+  });
+
+  it('does not nest a generated MemoryRouter around an authored React Router root', () => {
+    const candidate = {
+      compositionEdges: [],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'app',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/App.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      routeRecipe: {
+        kind: 'react-router-v6',
+        loaderPolicy: 'never-execute',
+        mounts: [],
+        params: {},
+        pattern: '/selected',
+        pathname: '/selected',
+        rootOwnsRouter: true,
+        routerModuleSpecifier: 'react-router-dom',
+        searchParams: {},
+      },
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      target: { exportName: 'default', sourcePath: '/workspace/App.tsx' },
+    });
+
+    expect(source).toContain('react-preview:inspector-page-route-state');
+    expect(source).toContain('return React.createElement(Surface0, null)');
+    expect(source).not.toContain('MemoryRouter');
+    expect(source).not.toContain('React.createElement(Routes');
   });
 });

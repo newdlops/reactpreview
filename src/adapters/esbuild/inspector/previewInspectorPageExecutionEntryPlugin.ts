@@ -3,9 +3,14 @@ import path from 'node:path';
 import type { PluginBuild } from 'esbuild';
 import { PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE } from '../previewPluginProtocol';
 import { createPreviewInspectorPageExecutionSource } from './previewInspectorPageExecutionSource';
+import {
+  PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER,
+  createPreviewInspectorPageRouteStatePreludeSource,
+} from './previewInspectorPageRouteStatePrelude';
 import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
 
 export const PREVIEW_INSPECTOR_PAGE_EXECUTION_SPECIFIER = 'react-preview:inspector-page-execution';
+export { PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER };
 
 export interface PreviewInspectorPageExecutionEntryPluginOptions {
   readonly candidate?: PreviewInspectorPageExecutionCandidate;
@@ -24,6 +29,11 @@ export function registerPreviewInspectorPageExecutionEntryPlugin(
       ? { namespace: PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE, path: 'selected-page-execution' }
       : undefined,
   );
+  build.onResolve({ filter: /^react-preview:inspector-page-route-state$/ }, (arguments_) =>
+    arguments_.path === PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER
+      ? { namespace: PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE, path: 'selected-page-route-state' }
+      : undefined,
+  );
   build.onLoad(
     { filter: /^selected-page-execution$/, namespace: PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE },
     () => ({
@@ -36,4 +46,21 @@ export function registerPreviewInspectorPageExecutionEntryPlugin(
       watchFiles: [...candidate.watchSourcePaths],
     }),
   );
+  const routeStatePrelude = createPreviewInspectorPageRouteStatePreludeSource(
+    candidate.routeRecipe,
+  );
+  if (routeStatePrelude !== undefined) {
+    build.onLoad(
+      {
+        filter: /^selected-page-route-state$/,
+        namespace: PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE,
+      },
+      () => ({
+        contents: routeStatePrelude,
+        loader: 'js',
+        resolveDir: path.dirname(options.target.sourcePath),
+        watchFiles: [...candidate.watchSourcePaths],
+      }),
+    );
+  }
 }

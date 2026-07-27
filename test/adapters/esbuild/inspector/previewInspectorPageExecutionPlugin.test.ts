@@ -39,4 +39,25 @@ describe('createPreviewInspectorPageExecutionPlugin', () => {
     expect(output).not.toContain('Huge');
     expect(output).not.toContain('Unrelated');
   });
+
+  it('fails closed when a selected surface cannot be sliced', async () => {
+    await expect(
+      build({
+        bundle: true,
+        logLevel: 'silent',
+        plugins: [
+          createPreviewInspectorPageExecutionPlugin({
+            readSource: () => 'export const Other = 1;',
+            surfaces: [{ exportName: 'Missing', id: 'missing', sourcePath: '/workspace/Views.ts' }],
+          }),
+        ],
+        stdin: {
+          contents: `import { Missing } from ${JSON.stringify(createPreviewInspectorPageSurfaceSpecifier('missing'))}; console.log(Missing);`,
+          loader: 'js',
+          resolveDir: '/workspace',
+        },
+        write: false,
+      }),
+    ).rejects.toThrow('Unable to create the frozen Page Execution slice');
+  });
 });

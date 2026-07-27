@@ -42,7 +42,13 @@ export class PreviewBuildCancelledError extends Error {
 
 /** Resource boundary that prevented a background compilation from completing normally. */
 export type PreviewBuildStallReason =
-  'cancel-timeout' | 'graph-budget' | 'memory' | 'native-service' | 'queue-capacity' | 'watchdog';
+  | 'cancel-timeout'
+  | 'candidate-unavailable'
+  | 'frontier-mismatch'
+  | 'memory'
+  | 'native-service'
+  | 'queue-capacity'
+  | 'watchdog';
 
 /**
  * Domain error raised when a background compiler stops making a bounded build complete.
@@ -77,8 +83,11 @@ function createPreviewBuildStallMessage(
   if (reason === 'memory') {
     return `Background React preview compilation exceeded its isolated memory budget ${stageMessage} for ${target}. The compiler worker was restarted before the process could exhaust system memory.`;
   }
-  if (reason === 'graph-budget') {
-    return `Selected-context React preview compilation was skipped before native bundling because the authored module frontier exceeded its fixed graph budget for ${target}. The last fast preview remains available until its inputs change.`;
+  if (reason === 'frontier-mismatch') {
+    return `Selected-context React preview compilation produced authored inputs outside its verified module frontier for ${target}. The build was discarded so a stale or inconsistent slice cannot replace the last good preview.`;
+  }
+  if (reason === 'candidate-unavailable') {
+    return `Selected-context React preview compilation could not prove a renderable page or target candidate for ${target}. The last good preview remains available until its inputs change.`;
   }
   if (reason === 'native-service') {
     return `The isolated esbuild service stopped ${stageMessage} for ${target}. The build was not retried with the same graph so system memory can recover.`;

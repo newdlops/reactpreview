@@ -275,8 +275,10 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       let stageDeadline: ReturnType<typeof setTimeout> | undefined;
       let totalDeadline: ReturnType<typeof setTimeout> | undefined;
       const observedStages = new Set<PreviewProgressStage>();
-      const scheduleStageDeadline = (timeoutMs: number): void => {
+      const scheduleStageDeadline = (timeoutMs: number | undefined): void => {
         if (stageDeadline !== undefined) clearTimeout(stageDeadline);
+        stageDeadline = undefined;
+        if (timeoutMs === undefined) return;
         stageDeadline = setTimeout(() => {
           this.handleCompilationTimeout(id, target, timeoutMs, transport);
         }, timeoutMs);
@@ -307,10 +309,11 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
           pending.startedAt = Date.now();
           delete pending.replayRequest;
           scheduleStageDeadline(budget.initialStageTimeoutMs);
-          if (!budget.fixed) {
+          const totalTimeoutMs = budget.totalTimeoutMs;
+          if (!budget.fixed && totalTimeoutMs !== undefined) {
             totalDeadline = setTimeout(() => {
-              this.handleCompilationTimeout(id, target, budget.totalTimeoutMs, transport);
-            }, budget.totalTimeoutMs);
+              this.handleCompilationTimeout(id, target, totalTimeoutMs, transport);
+            }, totalTimeoutMs);
             totalDeadline.unref();
           }
         },

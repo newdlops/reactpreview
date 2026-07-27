@@ -229,7 +229,7 @@ describe('PreviewCompilerWorkerServer', () => {
     expect(capacityFailures[0]).toMatchObject({ id: 9 });
   });
 
-  it('fails an already oversized automatic graph before native bundling can continue', async () => {
+  it('relays a broad graph-plan without treating descriptor paths as emitted modules', async () => {
     const port = new FakeWorkerPort();
     const compiler = new DeferredCompiler();
     const server = new PreviewCompilerWorkerServer(port, compiler);
@@ -248,13 +248,29 @@ describe('PreviewCompilerWorkerServer', () => {
         preparationMode: 'fast',
         styleSnapshotCount: 0,
       }),
-    ).toThrow('fixed graph budget');
+    ).not.toThrow();
+    expect(port.responses).toContainEqual({
+      activity: {
+        analysisCandidateCount: 1,
+        corridorSourceCount: 513,
+        dependencySnapshotCount: 0,
+        discoveryScope: 'selected-corridor',
+        discoveryTruncated: false,
+        executableCandidateCount: 1,
+        kind: 'graph-plan',
+        preparationMode: 'fast',
+        styleSnapshotCount: 0,
+      },
+      id: 1,
+      stage: 'analyzing-project',
+      type: 'progress',
+    });
 
     compiler.calls[0]?.deferred.resolve(createBundle(1));
     await waitForMicrotasks();
   });
 
-  it('turns a rejected frozen frontier into graph-budget without restarting the worker', async () => {
+  it('relays a rejected frozen frontier for the compiler to terminate with its typed error', async () => {
     const port = new FakeWorkerPort();
     const compiler = new DeferredCompiler();
     const server = new PreviewCompilerWorkerServer(port, compiler);
@@ -272,6 +288,7 @@ describe('PreviewCompilerWorkerServer', () => {
         exactModuleCount: 2,
         executableCandidateCount: 1,
         frontierSourceBytes: 1024,
+        graphAdmission: 'unbounded',
         kind: 'bundle-frontier',
         maximumDepth: 1,
         optionalComponentCount: 0,
@@ -283,9 +300,18 @@ describe('PreviewCompilerWorkerServer', () => {
         supportModuleCount: 0,
         totalAuthoredModuleCount: 2,
         truncated: true,
-        truncationReasons: ['authored-edge-count'],
+        truncationReasons: ['source-parse-failure'],
       }),
-    ).toThrow('fixed graph budget');
+    ).not.toThrow();
+    const progress = port.responses.find(
+      (response) => response.type === 'progress' && response.id === 1,
+    );
+    expect(progress).toMatchObject({
+      activity: { kind: 'bundle-frontier', phase: 'rejected' },
+      id: 1,
+      stage: 'analyzing-project',
+      type: 'progress',
+    });
 
     compiler.calls[0]?.deferred.resolve(createBundle(1));
     await waitForMicrotasks();

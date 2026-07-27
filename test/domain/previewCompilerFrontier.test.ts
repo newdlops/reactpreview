@@ -1,30 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import {
-  createPreviewCompilerFrontierPolicy,
-  exceedsPreviewCompilerFrontier,
-} from '../../src/domain/previewCompilerFrontier';
+import { isPreviewCompilerActivity } from '../../src/domain/previewCompilerActivity';
+import { createPreviewCompilerFrontierPolicy } from '../../src/domain/previewCompilerFrontier';
 
 describe('preview compiler frontier policy', () => {
-  it('uses the documented automatic limits and leaves full mode unrestricted', () => {
-    expect(createPreviewCompilerFrontierPolicy('fast')).toMatchObject({
-      maximumOptionalComponentIdentityCount: 192,
-      maximumComponentDepth: 40,
-      maximumTotalAuthoredModuleCount: 512,
-      softMaximumTotalAuthoredModuleCount: 384,
-    });
-    expect(createPreviewCompilerFrontierPolicy('corridor')).toMatchObject({
-      maximumOptionalComponentIdentityCount: 384,
-      maximumComponentDepth: 64,
-      maximumTotalAuthoredModuleCount: 1_024,
-      softMaximumTotalAuthoredModuleCount: 768,
-    });
+  it('keeps automatic mode identity without a graph admission budget', () => {
+    expect(createPreviewCompilerFrontierPolicy('fast')).toEqual({ mode: 'fast' });
+    expect(createPreviewCompilerFrontierPolicy('corridor')).toEqual({ mode: 'corridor' });
     expect(createPreviewCompilerFrontierPolicy('full')).toBeUndefined();
   });
 
-  it('preflights only automatic graphs already beyond their total-module contract', () => {
-    const fast = createPreviewCompilerFrontierPolicy('fast');
-    expect(exceedsPreviewCompilerFrontier({ corridorSourceCount: 512 }, fast)).toBe(false);
-    expect(exceedsPreviewCompilerFrontier({ corridorSourceCount: 513 }, fast)).toBe(true);
-    expect(exceedsPreviewCompilerFrontier({ corridorSourceCount: 10_000 }, undefined)).toBe(false);
+  it('accepts exact telemetry counters beyond the former protocol ceilings', () => {
+    expect(
+      isPreviewCompilerActivity({
+        analysisCandidateCount: 2_000_000,
+        authoredEdgeCount: 3_000_000,
+        corridorSourceCount: 2_000_000,
+        dependencySnapshotCount: 0,
+        discoveryScope: 'selected-corridor',
+        discoveryTruncated: false,
+        exactModuleCount: 2_000_000,
+        executableCandidateCount: 1,
+        frontierSourceBytes: 2 * 1024 ** 3,
+        graphAdmission: 'unbounded',
+        kind: 'bundle-frontier',
+        maximumDepth: 2_000_000,
+        optionalComponentCount: 0,
+        packageDemandSourceCount: 2_000_000,
+        phase: 'planned',
+        preparationMode: 'fast',
+        projectedEdgeCount: 0,
+        styleSnapshotCount: 0,
+        supportModuleCount: 0,
+        totalAuthoredModuleCount: 2_000_000,
+        truncated: false,
+        truncationReasons: [],
+      }),
+    ).toBe(true);
   });
 });

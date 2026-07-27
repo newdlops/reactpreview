@@ -1,4 +1,4 @@
-/** Bounded compiler telemetry safe to send across the worker protocol and write to logs. */
+/** Finite compiler telemetry safe to send across the worker protocol and write to logs. */
 import type { PreviewPreparationMode } from './preview';
 import type { PreviewCompilerFrontierReason } from './previewCompilerFrontier';
 
@@ -13,15 +13,6 @@ export interface PreviewCompilerGraphSummary {
   readonly executableCandidateCount: 0 | 1;
   readonly preparationMode: PreviewPreparationMode;
   readonly styleSnapshotCount: number;
-  /** Optional automatic-frontier admission result, omitted for explicit full compatibility builds. */
-  readonly frontier?: PreviewCompilerFrontierActivity;
-}
-
-/** Bounded automatic graph frontier telemetry safe to cross the worker protocol. */
-export interface PreviewCompilerFrontierActivity {
-  readonly maximumTotalModules: number;
-  readonly reasons: readonly PreviewCompilerFrontierReason[];
-  readonly rejected: boolean;
 }
 
 export interface PreviewCompilerGraphPlanActivity extends PreviewCompilerGraphSummary {
@@ -41,6 +32,7 @@ export interface PreviewCompilerBundleFrontierActivity extends PreviewCompilerGr
   readonly authoredEdgeCount: number;
   readonly exactModuleCount: number;
   readonly frontierSourceBytes: number;
+  readonly graphAdmission: 'unbounded';
   readonly kind: 'bundle-frontier';
   readonly maximumDepth: number;
   readonly optionalComponentCount: number;
@@ -62,12 +54,8 @@ export interface PreviewCompilerBundleFrontierActivity extends PreviewCompilerGr
       | 'target-contextual'
       | 'target-only';
     readonly candidateId: string;
-    readonly disposition: 'accepted-hard' | 'accepted-soft' | 'rejected-hard';
-    readonly hardMaximumAuthoredEdges: number;
-    readonly hardMaximumAuthoredModules: number;
+    readonly disposition: 'accepted-unbounded' | 'rejected-structural';
     readonly selectedCriticalSurfaceCount: number;
-    readonly softMaximumAuthoredEdges: number;
-    readonly softMaximumAuthoredModules: number;
   };
 }
 
@@ -76,7 +64,7 @@ export type PreviewCompilerActivity =
   | PreviewCompilerGraphPlanActivity
   | PreviewCompilerNativeBuildActivity;
 
-/** Rejects non-finite or oversized protocol values before they can reach UI or logs. */
+/** Rejects non-finite or imprecise protocol values before they can reach UI or logs. */
 export function isPreviewCompilerActivity(value: unknown): value is PreviewCompilerActivity {
   if (value === null || typeof value !== 'object') return false;
   const activity = value as Record<string, unknown>;
@@ -86,13 +74,7 @@ export function isPreviewCompilerActivity(value: unknown): value is PreviewCompi
     activity.dependencySnapshotCount,
     activity.styleSnapshotCount,
   ];
-  if (
-    !numeric.every(
-      (item) =>
-        typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 1_000_000,
-    )
-  )
-    return false;
+  if (!numeric.every(isNonNegativeSafeInteger)) return false;
   if (
     activity.kind !== 'bundle-frontier' &&
     activity.kind !== 'graph-plan' &&
@@ -110,8 +92,6 @@ export function isPreviewCompilerActivity(value: unknown): value is PreviewCompi
   if (activity.executableCandidateCount !== 0 && activity.executableCandidateCount !== 1)
     return false;
   if (typeof activity.discoveryTruncated !== 'boolean') return false;
-  if (activity.frontier !== undefined && !isPreviewCompilerFrontierActivity(activity.frontier))
-    return false;
   if (activity.kind === 'bundle-frontier') return isPreviewCompilerBundleFrontierActivity(activity);
   return (
     activity.kind === 'graph-plan' ||
@@ -128,7 +108,7 @@ export function isPreviewCompilerActivity(value: unknown): value is PreviewCompi
   );
 }
 
-/** Validates bounded automatic-frontier activity before it crosses worker protocol boundaries. */
+/** Validates automatic-frontier activity before it crosses worker protocol boundaries. */
 function isPreviewCompilerBundleFrontierActivity(activity: Record<string, unknown>): boolean {
   const counts = [
     activity.authoredEdgeCount,
@@ -143,14 +123,9 @@ function isPreviewCompilerBundleFrontierActivity(activity: Record<string, unknow
   return (
     activity.discoveryScope === 'selected-corridor' &&
     (activity.preparationMode === 'fast' || activity.preparationMode === 'corridor') &&
-    counts.every(
-      (count) =>
-        typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 1_000_000,
-    ) &&
-    typeof activity.frontierSourceBytes === 'number' &&
-    Number.isInteger(activity.frontierSourceBytes) &&
-    activity.frontierSourceBytes >= 0 &&
-    activity.frontierSourceBytes <= 1024 ** 3 &&
+    counts.every(isNonNegativeSafeInteger) &&
+    isNonNegativeSafeInteger(activity.frontierSourceBytes) &&
+    activity.graphAdmission === 'unbounded' &&
     (activity.phase === 'planned' || activity.phase === 'rejected') &&
     typeof activity.truncated === 'boolean' &&
     Array.isArray(activity.truncationReasons) &&
@@ -161,7 +136,7 @@ function isPreviewCompilerBundleFrontierActivity(activity: Record<string, unknow
   );
 }
 
-/** Validates the bounded Page Execution selector fields without exposing source paths. */
+/** Validates Page Execution selector fields without exposing source paths. */
 function isPreviewCompilerPageExecutionActivity(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false;
   const pageExecution = value as Record<string, unknown>;
@@ -177,38 +152,14 @@ function isPreviewCompilerPageExecutionActivity(value: unknown): boolean {
       'target-contextual',
       'target-only',
     ].includes(pageExecution.candidateFidelity as string) &&
-    ['accepted-hard', 'accepted-soft', 'rejected-hard'].includes(
-      pageExecution.disposition as string,
-    ) &&
-    [
-      pageExecution.hardMaximumAuthoredEdges,
-      pageExecution.hardMaximumAuthoredModules,
-      pageExecution.selectedCriticalSurfaceCount,
-      pageExecution.softMaximumAuthoredEdges,
-      pageExecution.softMaximumAuthoredModules,
-    ].every(
-      (item) =>
-        typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 1_000_000,
-    )
+    ['accepted-unbounded', 'rejected-structural'].includes(pageExecution.disposition as string) &&
+    isNonNegativeSafeInteger(pageExecution.selectedCriticalSurfaceCount)
   );
 }
 
-/** Validates only the finite public fields emitted for automatic graph admission. */
-function isPreviewCompilerFrontierActivity(
-  value: unknown,
-): value is PreviewCompilerFrontierActivity {
-  if (value === null || typeof value !== 'object') return false;
-  const frontier = value as Record<string, unknown>;
-  return (
-    typeof frontier.maximumTotalModules === 'number' &&
-    Number.isInteger(frontier.maximumTotalModules) &&
-    frontier.maximumTotalModules >= 0 &&
-    frontier.maximumTotalModules <= 1_000_000 &&
-    typeof frontier.rejected === 'boolean' &&
-    Array.isArray(frontier.reasons) &&
-    frontier.reasons.length <= 16 &&
-    frontier.reasons.every(isPreviewCompilerFrontierReason)
-  );
+/** Accepts every exactly representable non-negative integer without an arbitrary graph ceiling. */
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 /** Restricts serialized frontier reasons to the domain-owned closed union. */
@@ -216,20 +167,9 @@ function isPreviewCompilerFrontierReason(value: unknown): value is PreviewCompil
   return (
     typeof value === 'string' &&
     [
-      'optional-component-count',
-      'optional-support-count',
-      'authored-edge-count',
-      'component-depth',
-      'total-module-count',
-      'source-byte-count',
-      'single-source-bytes',
-      'package-demand-count',
-      'bare-package-count',
-      'style-asset-count',
-      'exact-module-count',
-      'exact-source-bytes',
       'exact-source-unreadable',
       'source-parse-failure',
+      'slice-unavailable',
       'frontier-mismatch',
     ].includes(value)
   );

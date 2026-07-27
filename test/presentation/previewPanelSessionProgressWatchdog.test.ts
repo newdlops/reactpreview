@@ -91,7 +91,10 @@ class WatchdogPanel {
     html: '',
     onDidReceiveMessage: (listener: (message: unknown) => void): vscode.Disposable =>
       this.register(this.messageListeners, listener),
-    postMessage: vi.fn(() => Promise.resolve(true)),
+    postMessage: vi.fn((message: unknown) => {
+      void message;
+      return Promise.resolve(true);
+    }),
   };
 
   /** Current complete webview document assigned by the real panel session. */
@@ -218,10 +221,43 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
       );
     },
   );
+
+  /** Reasserts terminal readiness when optional corridor work fails after fast first paint. */
+  it('settles retained fast-preview UI after context enrichment fails', async () => {
+    const fixture = createSessionFixture(
+      'retained-fast',
+      new Error('selected corridor could not be enriched'),
+    );
+
+    fixture.session.start();
+    await settleSessionBuild();
+    fixture.panel.emitMessage({
+      revision: 1,
+      token: '1:retained-fast',
+      type: 'react-preview-runtime-ready',
+    });
+    await settleSessionBuild();
+
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+    const readyMessages = fixture.panel.webview.postMessage.mock.calls
+      .map(([message]) => message)
+      .filter(
+        (message) =>
+          typeof message === 'object' &&
+          message !== null &&
+          Reflect.get(message, 'type') === 'react-preview-progress' &&
+          Reflect.get(message, 'stage') === 'ready',
+      );
+    expect(readyMessages).toHaveLength(2);
+
+    fixture.session.dispose();
+  });
 });
 
 /** Session fixture carrying observable artifact and webview collaborators. */
 interface SessionFixture {
+  /** Fast build plus optional enrichment invocation. */
+  readonly execute: ReturnType<typeof vi.fn>;
   /** Artifact-release spy used to prove finite lease ownership. */
   readonly releaseArtifact: ReturnType<typeof vi.fn>;
   /** Real independently owned panel session. */
@@ -236,12 +272,20 @@ interface SessionFixture {
  * @param contentHash Artifact identity encoded into the full-document startup token.
  * @returns Session plus observable panel and release spy.
  */
-function createSessionFixture(contentHash: string): SessionFixture {
+function createSessionFixture(contentHash: string, enrichmentFailure?: Error): SessionFixture {
   const target = createTarget('/workspace/src/WatchdogTarget.tsx');
   const panel = new WatchdogPanel();
   const releaseArtifact = vi.fn(() => Promise.resolve());
+  const execute = vi
+    .fn<PreviewBuildService['execute']>()
+    .mockResolvedValueOnce(createPreparedPreview(target, contentHash));
+  if (enrichmentFailure === undefined) {
+    execute.mockResolvedValue(createPreparedPreview(target, contentHash));
+  } else {
+    execute.mockRejectedValueOnce(enrichmentFailure);
+  }
   const buildPreview: PreviewBuildService = {
-    execute: vi.fn(() => Promise.resolve(createPreparedPreview(target, contentHash))),
+    execute,
     releaseArtifact,
   };
   const session = new PreviewPanelSession({
@@ -260,7 +304,7 @@ function createSessionFixture(contentHash: string): SessionFixture {
     renderMode: 'component',
     resolveTarget: vi.fn(() => Promise.resolve(target)),
   });
-  return { panel, releaseArtifact, session };
+  return { execute, panel, releaseArtifact, session };
 }
 
 /** Creates one immutable source target pinned to the watchdog panel. */

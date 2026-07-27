@@ -2,9 +2,10 @@
  * Defines bounded, stage-aware watchdog budgets for isolated preview compilation.
  *
  * Page Inspector bundling can legitimately take longer than source discovery because esbuild must
- * resolve an authored page corridor and its styles. Giving every phase the same short deadline
- * aborts healthy large graphs; removing the watchdog entirely would let a poisoned native service
- * retain memory indefinitely. This policy separates per-stage inactivity from an absolute ceiling.
+ * resolve an authored page corridor and its styles. Native bundling cannot report meaningful
+ * sub-stage progress, so production Page Inspector requests do not receive a fixed active-bundle
+ * deadline. Queue acquisition, cancellation acknowledgement, worker memory isolation, and explicit
+ * host overrides remain independent recovery boundaries.
  */
 import type { PreviewBuildRequest } from '../../domain/preview';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
@@ -15,26 +16,20 @@ export interface PreviewCompilerWorkerBudget {
   readonly fixed: boolean;
   /** Deadline used before a distinct compiler milestone proves forward progress. */
   readonly initialStageTimeoutMs: number;
-  /** Absolute active-request ceiling even when several legitimate milestones are observed. */
-  readonly totalTimeoutMs: number;
+  /** Optional absolute ceiling; omitted for automatic Page Inspector compilation. */
+  readonly totalTimeoutMs?: number;
 }
 
 const FAST_STAGE_TIMEOUT_MS = 45_000;
 const CORRIDOR_STAGE_TIMEOUT_MS = 60_000;
 const FULL_STAGE_TIMEOUT_MS = 120_000;
-const FAST_PAGE_BUNDLING_TIMEOUT_MS = 120_000;
-const CORRIDOR_PAGE_BUNDLING_TIMEOUT_MS = 120_000;
-const FULL_PAGE_BUNDLING_TIMEOUT_MS = 240_000;
-const FAST_PAGE_TOTAL_TIMEOUT_MS = 180_000;
-const CORRIDOR_PAGE_TOTAL_TIMEOUT_MS = 180_000;
-const FULL_PAGE_TOTAL_TIMEOUT_MS = 360_000;
 
 /**
  * Creates a mode-aware watchdog policy without inspecting project-specific paths or frameworks.
  *
  * A configured override remains a deterministic single deadline for tests and embedding hosts.
- * Production Page Inspector requests receive a larger absolute ceiling because their bundling step
- * includes the statically composed page shell; ordinary component previews keep the tighter limit.
+ * Production Page Inspector requests omit the absolute ceiling because their native bundling step
+ * has no reliable heartbeat. Ordinary component previews keep the tighter finite deadline.
  */
 export function createPreviewCompilerWorkerBudget(
   request: PreviewBuildRequest,
@@ -59,35 +54,25 @@ export function createPreviewCompilerWorkerBudget(
   return Object.freeze({
     fixed: false,
     initialStageTimeoutMs,
-    totalTimeoutMs: pageInspector
-      ? mode === 'fast'
-        ? FAST_PAGE_TOTAL_TIMEOUT_MS
-        : mode === 'corridor'
-          ? CORRIDOR_PAGE_TOTAL_TIMEOUT_MS
-          : FULL_PAGE_TOTAL_TIMEOUT_MS
-      : initialStageTimeoutMs,
+    ...(pageInspector ? {} : { totalTimeoutMs: initialStageTimeoutMs }),
   });
 }
 
 /**
  * Selects the inactivity budget after one new compiler milestone.
  *
- * Only Page Inspector's native bundling phase receives the larger allowance. All other work must
+ * Page Inspector's native bundling phase receives no fixed inactivity deadline. All other work must
  * continue to report a distinct stage within the normal mode budget.
  */
 export function selectPreviewCompilerStageTimeoutMs(
   request: PreviewBuildRequest,
   budget: PreviewCompilerWorkerBudget,
   stage: PreviewProgressStage,
-): number {
+): number | undefined {
   if (budget.fixed || stage !== 'bundling-modules' || request.renderMode !== 'page-inspector') {
     return budget.initialStageTimeoutMs;
   }
-  return request.preparationMode === 'fast'
-    ? FAST_PAGE_BUNDLING_TIMEOUT_MS
-    : request.preparationMode === 'corridor'
-      ? CORRIDOR_PAGE_BUNDLING_TIMEOUT_MS
-      : FULL_PAGE_BUNDLING_TIMEOUT_MS;
+  return undefined;
 }
 
 /** Rejects non-finite and non-positive overrides instead of accidentally disabling isolation. */

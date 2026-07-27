@@ -435,11 +435,8 @@ describe('PreviewCompilerWorkerClient', () => {
     }
   });
 
-  /**
-   * A Page Inspector graph that reaches native bundling receives the dedicated stage allowance.
-   * Repeating the same milestone cannot renew that allowance forever.
-   */
-  it('extends the default fast watchdog once for Page Inspector bundling progress', async () => {
+  /** Native Page Inspector bundling is not rejected by a repository-size-derived timer. */
+  it('disables the automatic watchdog after Page Inspector reaches native bundling', async () => {
     vi.useFakeTimers();
     try {
       const transport = new FakeWorkerTransport();
@@ -450,7 +447,7 @@ describe('PreviewCompilerWorkerClient', () => {
         ...REQUEST,
         renderMode: 'page-inspector',
       });
-      const capturedTimeout = compilation.catch((error: unknown) => error);
+      const capturedSettlement = compilation.catch((error: unknown) => error);
       const settled = vi.fn();
       void compilation.then(settled, settled);
       const request = transport.requests[0];
@@ -463,17 +460,22 @@ describe('PreviewCompilerWorkerClient', () => {
 
       await vi.advanceTimersByTimeAsync(1);
       expect(settled).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(119_998);
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
       expect(settled).not.toHaveBeenCalled();
-      transport.respond({ id: requestId, stage: 'bundling-modules', type: 'progress' });
-
-      await vi.advanceTimersByTimeAsync(1);
-      await expect(capturedTimeout).resolves.toMatchObject({
-        elapsedMs: 164_999,
-        lastStage: 'bundling-modules',
-        name: 'PreviewBuildStalledError',
+      transport.respond({
+        bundle: {
+          chunks: [],
+          dependencies: [],
+          diagnostics: [],
+          javascript: new Uint8Array([7]),
+          watchDirectories: [],
+        },
+        id: requestId,
+        type: 'success',
       });
-      expect(transport.terminate).toHaveBeenCalledOnce();
+      await expect(compilation).resolves.toMatchObject({ javascript: new Uint8Array([7]) });
+      await expect(capturedSettlement).resolves.toMatchObject({ javascript: new Uint8Array([7]) });
+      expect(transport.terminate).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

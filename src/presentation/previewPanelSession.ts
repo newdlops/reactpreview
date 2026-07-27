@@ -1,7 +1,8 @@
 /* eslint-disable jsdoc/require-jsdoc */
 import * as vscode from 'vscode';
 import type { PreparedPreview } from '../domain/preview';
-import { isPreviewBuildCancellation } from '../domain/previewBuildExecution';
+import { isPreviewBuildCancellation, isPreviewBuildStall } from '../domain/previewBuildExecution';
+import { formatPreviewCompilerActivity } from './previewCompilerActivityLog';
 import type { PreviewProgressStage } from '../domain/previewProgress';
 import { canonicalizeExistingPath, createExistingPathIdentitySet } from '../shared/pathIdentity';
 import type { PreviewTargetIssue, ResolvedPreviewTarget } from './activePreviewTarget';
@@ -114,12 +115,14 @@ export class PreviewPanelSession implements vscode.Disposable {
           );
           this.performanceTrace.finish('failed', revision);
           rememberPreviewFailureDependencies(this.dependencies, error, target.request.workspaceRoot);
+          this.renderProgress(revision, target.documentName, 'ready');
         },
         reportSuppressed: (target, revision, retryAfterMs) => {
           const retryMinutes = Math.max(1, Math.ceil(retryAfterMs / 60_000));
           this.options.log.info(
             `Selected-context React preview enrichment skipped for an unchanged graph after a prior resource stall. Fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}; retry window: approximately ${retryMinutes.toString()} minute(s). Edit the target or a captured dependency to retry immediately.`,
           );
+          this.renderProgress(revision, target.documentName, 'ready');
         },
       },
       renderMode: options.renderMode,
@@ -267,7 +270,9 @@ export class PreviewPanelSession implements vscode.Disposable {
       const firstPaint = await preparePreviewFirstPaint({
         buildPreview: this.options.buildPreview,
         context: {
-          reportProgress: (stage) => {
+          reportProgress: (stage, activity) => {
+            if (activity !== undefined)
+              this.options.log.debug(formatPreviewCompilerActivity(activity));
             this.renderProgress(requestedRevision, target.documentName, stage);
           },
           signal,
@@ -322,6 +327,8 @@ export class PreviewPanelSession implements vscode.Disposable {
         return;
       }
       const failure = describeBuildFailure(error);
+      if (isPreviewBuildStall(error) && error.activity !== undefined)
+        this.options.log.debug(formatPreviewCompilerActivity(error.activity));
       this.options.log.error(
         `React preview build failed; retaining the last good preview. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}`,
         error,

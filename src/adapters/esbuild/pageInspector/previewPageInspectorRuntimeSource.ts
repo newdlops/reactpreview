@@ -834,6 +834,7 @@ const previewInspectorApi = {
   registerDeferredUiTrigger: registerPreviewInspectorDeferredUiTrigger,
   registerDeferredUiTriggerMetadata: registerPreviewInspectorDeferredUiTriggerMetadata,
   registerRenderConditionDefinitions: registerPreviewInspectorRenderConditionDefinitions,
+  registerGraphqlRenderPropUsage: registerPreviewInspectorGraphqlRenderPropUsage,
   previewAxiosRequest: previewInspectorAxiosRequest,
   previewFetch: previewInspectorFetch,
   recordConsoleEntry: recordPreviewInspectorConsoleEntry,

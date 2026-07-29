@@ -201,6 +201,8 @@ describe('Preview Inspector page-candidate runtime source', () => {
     );
     expect(source).toContain("'No application routes match this filter.'");
     expect(source).toContain("'Retry route'");
+    expect(source).toContain("'Another application route level was found. Choose the next path.'");
+    expect(source).toContain("className: 'rpi-note rpi-route-continuation'");
     expect(source).toContain("autoComplete: 'off'");
     expect(source).toContain("name: 'route-filter'");
     expect(source).toContain("' · default child'");

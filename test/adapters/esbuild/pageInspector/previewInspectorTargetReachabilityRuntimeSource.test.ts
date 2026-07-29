@@ -1,4 +1,4 @@
-/** Exercises target-guided DFS selection without mounting project React code. */
+/** Exercises target-guided DFS selection and requirement rollback registration without mounting project React code. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRequirementFrontierRuntimeSource';
@@ -13,6 +13,31 @@ function createTargetReachabilityFixtureSource(): string {
     createPreviewInspectorTargetPathIdentityRuntimeSource() +
     createPreviewInspectorTargetAttemptRuntimeSource()
   );
+}
+
+/** Reuses the byte-identical page/target corridor declarations in VM scenarios. */
+function createPageTargetDescriptorCandidateFixtureSource(): string {
+  return `const descriptor = { inspector: { renderChainsByExport: { Target: { paths: [] } }, target: { exportName: 'Target' } } }; const candidate = { edges: [], id: 'page', renderPath: { id: 'path', steps: [{ label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] }, { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] }] }, root: { exportName: 'Page' } };`;
+}
+
+/** Shares only the byte-equivalent empty target-runtime VM preamble. */
+function createEmptyPageTargetRuntimePreambleSource(): string {
+  return `const previewInspectorSession = { boundariesByExport: new Map(), renderConditionOverrides: new Map(), renderConditions: new Map(), selectedExportName: 'Target' }; const initializePreviewInspectorConditionState = () => undefined; const readPreviewInspectorRuntimeFallbacks = () => []; const readPreviewInspectorDataRequests = () => []; const readPreviewInspectorDataShapePaths = () => []; const collectPreviewInspectorFiberElements = () => []; const notifyPreviewInspector = () => undefined; const schedulePreviewInspectorTreeRefresh = () => undefined; const schedulePreviewInspectorCommitRefresh = () => undefined; const recordPreviewInspectorConsoleEntry = () => undefined; const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });`;
+}
+
+/** Reuses the unrelated shell gate that must never enter the target corridor. */
+function createUnrelatedShellGateFixtureSource(): string {
+  return `previewInspectorSession.renderConditions.set('unrelated-shell-gate', { effectiveEnabled: true, expression: '<TruncatableParagraph> gate: typeof content === "string"', id: 'unrelated-shell-gate', ownerName: 'TruncatableParagraph', reachabilityDiscoveryOrder: 0, reachabilityKey: state.key, sourcePath: '/shell/truncatable-paragraph.tsx', targetBranch: 'falsy' });`;
+}
+
+/** Shares Dashboard VM dependencies without changing host-aware output observation. */
+function createDashboardRuntimeDependenciesFixtureSource(): string {
+  return `const previewInspectorSession = { boundariesByExport: new Map(), renderConditionOverrides: new Map(), renderConditions: new Map(), selectedExportName: 'DashboardPanel' }; const initializePreviewInspectorConditionState = () => undefined; const readPreviewInspectorRuntimeFallbacks = () => []; const readPreviewInspectorDataRequests = () => []; const readPreviewInspectorDataShapePaths = () => []; const notifyPreviewInspector = () => undefined; const schedulePreviewInspectorTreeRefresh = () => undefined; const schedulePreviewInspectorCommitRefresh = () => undefined; const setPreviewInspectorTargetGuidedConditionOverride = () => undefined; const clearPreviewInspectorTargetGuidedConditionOverrides = () => false; const recordPreviewInspectorConsoleEntry = () => undefined; const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined }); const collectPreviewInspectorFiberElements = (boundary) => boundary?.host === true ? [{}] : [];`;
+}
+
+/** Shares the Dashboard target descriptor and page candidate declarations. */
+function createDashboardDescriptorCandidateFixtureSource(): string {
+  return `const descriptor = { inspector: { renderChainsByExport: { DashboardPanel: { paths: [] } }, target: { exportName: 'DashboardPanel' } } }; const candidate = { edges: [], id: 'dashboard-page', renderPath: { id: 'path', steps: [{ label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] }, { label: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx', wrapperNames: [] }] }, root: { exportName: 'DashboardPage' } };`;
 }
 
 /** Minimal pure helper result exposed by the generated runtime fixture. */
@@ -427,17 +452,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const readPreviewInspectorDataRequests = () => requests;
         const readPreviewInspectorDataShapePaths = () => [];
         ${createTargetReachabilityFixtureSource()}
-        const descriptor = { inspector: {
-          renderChainsByExport: { Target: { paths: [] } },
-          target: { exportName: 'Target' },
-        } };
-        const candidate = {
-          edges: [], id: 'page', root: { exportName: 'Page' },
-          renderPath: { id: 'path', steps: [
-            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
-            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
-          ] },
-        };
+        ${createPageTargetDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         globalThis.__result = readPreviewInspectorRequirementBatch(
           descriptor, candidate, state, false,
@@ -486,17 +501,7 @@ describe('Preview Inspector target reachability runtime source', () => {
 
   /** Batches minimum hook/data fixtures and preserves already proven corridor branch choices. */
   it('smart-fills one page path without clearing its guided gates', () => {
-    const context: {
-      __result?: {
-        readonly calls: readonly string[];
-        readonly dataRevision: number;
-        readonly fallbackValuesEnabled: boolean;
-        readonly gateRetained: boolean;
-        readonly observedPathCount: number;
-        readonly renderConditionRevision: number;
-        readonly stateRetained: boolean;
-      };
-    } = {};
+    const context: { __result?: unknown } = {};
     vm.runInNewContext(
       `
         const calls = [];
@@ -505,17 +510,19 @@ describe('Preview Inspector target reachability runtime source', () => {
           dataRevision: 2,
           fallbackValuesEnabled: false,
           renderConditionRevision: 4,
+          runtimeFallbackValues: new Map(),
+          dataRequests: new Map(),
           targetGuidedConditionOverrides: new Map([['login', false]]),
           targetReachabilityByKey: new Map([['page:Target', { key: 'page:Target' }]]),
         };
         const initializePreviewInspectorConditionState = () => undefined;
         const initializePreviewInspectorDataState = () => undefined;
-        const smartFillPreviewInspectorRuntimeFallbacksForReachability = (key) => {
-          calls.push('runtime:' + key);
+        const smartFillPreviewInspectorRuntimeFallbacksForReachability = (key, options) => {
+          calls.push('runtime:' + key + ':' + String(options?.preserveUserValues));
           return true;
         };
-        const smartFillPreviewInspectorDataPayloadsForReachability = (key) => {
-          calls.push('data:' + key);
+        const smartFillPreviewInspectorDataPayloadsForReachability = (key, options) => {
+          calls.push('data:' + key + ':' + String(options?.preserveUserValues));
           return true;
         };
         const persistPreviewInspectorState = () => calls.push('persist');
@@ -528,7 +535,35 @@ describe('Preview Inspector target reachability runtime source', () => {
         }];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
+        const createPreviewInspectorRuntimeFallbackSmartDraftTemplate = () => ({});
+        const generatePreviewInspectorDataValue = () => ({});
+        let recordPreviewInspectorBlockerAutoDecision = () => undefined;
         ${createTargetReachabilityFixtureSource()}
+        const resetConvergence = resetPreviewInspectorRequirementConvergence;
+        resetPreviewInspectorRequirementConvergence = (key) => {
+          calls.push('convergence-reset:' + (key?.key ?? key));
+          return resetConvergence(key);
+        };
+        const clearRollbacks = clearPreviewInspectorRequirementAutoRollbacks;
+        clearPreviewInspectorRequirementAutoRollbacks = (key) => {
+          calls.push('rollback-clear:' + key);
+          return clearRollbacks(key);
+        };
+        const captureRollback = capturePreviewInspectorRequirementAutoRollback;
+        capturePreviewInspectorRequirementAutoRollback = (state, batch) => {
+          calls.push('capture:' + state.key + ':' + batch.hookIds.join(','));
+          return captureRollback(state, batch);
+        };
+        const registerRollback = registerPreviewInspectorRequirementAutoRollback;
+        registerPreviewInspectorRequirementAutoRollback = (traceId, snapshot) => {
+          const registered = registerRollback(traceId, snapshot);
+          calls.push('register:' + traceId + ':' + snapshot?.reachabilityKey + ':' + snapshot?.mode + ':' + registered);
+          return registered;
+        };
+        recordPreviewInspectorBlockerAutoDecision = (decision) => {
+          calls.push('trace:' + decision.mode + ':' + String(decision.startsRenderAttempt));
+          return decision.startsRenderAttempt === true ? 'user-trace' : undefined;
+        };
         smartFillPreviewInspectorTargetApplicationPath({ key: 'page:Target' });
         globalThis.__result = {
           calls,
@@ -544,7 +579,10 @@ describe('Preview Inspector target reachability runtime source', () => {
       context,
     );
     expect(context.__result).toEqual({
-      calls: ['runtime:page:Target', 'data:page:Target', 'persist', 'notify', 'tree', 'commit'],
+      calls:
+        'convergence-reset:page:Target|rollback-clear:page:Target|trace:minimum-requirement-dfs:undefined|capture:page:Target:query|runtime:page:Target:false|data:page:Target:false|trace:minimum-requirement-dfs:true|register:user-trace:page:Target:minimum-requirement-dfs:true|persist|notify|tree|commit'.split(
+          '|',
+        ),
       dataRevision: 3,
       fallbackValuesEnabled: true,
       gateRetained: true,
@@ -601,19 +639,7 @@ describe('Preview Inspector target reachability runtime source', () => {
         const collectPreviewInspectorFiberElements = (boundary) =>
           boundary?.host === true ? [{}] : [];
         ${createTargetReachabilityFixtureSource()}
-        const descriptor = { inspector: {
-          renderChainsByExport: { Target: { paths: [] } },
-          target: { exportName: 'Target' },
-        } };
-        const candidate = {
-          edges: [],
-          id: 'page',
-          renderPath: { id: 'path', steps: [
-            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
-            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
-          ] },
-          root: { exportName: 'Page' },
-        };
+        ${createPageTargetDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         state.pageRootCommitted = true;
         previewInspectorSession.directTargetConditionIdsByExport = new Map([
@@ -654,26 +680,22 @@ describe('Preview Inspector target reachability runtime source', () => {
 
   /** Re-admits a stale Smart backend shape to deterministic convergence without an Inspector click. */
   it('auto-starts deterministic minimum requirements for an expanded Smart payload', () => {
-    const context: {
-      __result?: {
-        readonly calls: readonly string[];
-        readonly origin: string;
-        readonly pass: number;
-        readonly status: string;
-      };
-    } = {};
+    const context: { __result?: unknown } = {};
     vm.runInNewContext(
       `
         const calls = [];
         let activeKey = '';
         const previewInspectorSession = {
           boundariesByExport: new Map(),
+          dataPayloadOverrides: new Map([['profile-request', { mode: 'smart', payload: {} }]]),
           dataPayloadSmartShapeSignatures: new Map([['profile-request', 'previous-shape']]),
+          dataRequests: new Map(),
           dataRevision: 0,
           renderConditionOverrides: new Map(),
           renderConditionRevision: 0,
           renderConditions: new Map(),
           selectedExportName: 'Target',
+          runtimeFallbackValues: new Map(),
         };
         const initializePreviewInspectorConditionState = () => undefined;
         const readPreviewInspectorRuntimeFallbacks = () => [];
@@ -699,49 +721,116 @@ describe('Preview Inspector target reachability runtime source', () => {
         const schedulePreviewInspectorTreeRefresh = () => calls.push('tree');
         const schedulePreviewInspectorCommitRefresh = () => calls.push('commit');
         const collectPreviewInspectorFiberElements = () => [];
+        let clearPreviewInspectorTargetGuidedConditionOverrides = () => false;
         const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
         const recordPreviewInspectorConsoleEntry = () => undefined;
         const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        const createPreviewInspectorRuntimeFallbackSmartDraftTemplate = () => ({});
+        const generatePreviewInspectorDataValue = () => ({});
+        let recordPreviewInspectorBlockerAutoDecision = () => undefined;
         ${createTargetReachabilityFixtureSource()}
-        const descriptor = { inspector: {
-          renderChainsByExport: { Target: { paths: [] } },
-          target: { exportName: 'Target' },
-        } };
-        const candidate = {
-          edges: [],
-          id: 'page',
-          renderPath: { id: 'path', steps: [
-            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
-            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
-          ] },
-          root: { exportName: 'Page' },
+        const captureRollback = capturePreviewInspectorRequirementAutoRollback;
+        capturePreviewInspectorRequirementAutoRollback = (state, batch) => {
+          calls.push(
+            'capture:' + state.key + ':' + batch.hookIds.join(',') + ':' + batch.requestIds.join(','),
+          );
+          return captureRollback(state, batch);
         };
+        const registerRollback = registerPreviewInspectorRequirementAutoRollback;
+        registerPreviewInspectorRequirementAutoRollback = (traceId, snapshot) => {
+          const registered = registerRollback(traceId, snapshot);
+          if (registered)
+            calls.push('register:' + traceId + ':' + snapshot.reachabilityKey + ':' + snapshot.mode);
+          return registered;
+        };
+        recordPreviewInspectorBlockerAutoDecision = (decision) => {
+          calls.push('trace:' + decision.mode + ':' + String(decision.startsRenderAttempt));
+          return decision.startsRenderAttempt === true ? 'trace-1' : undefined;
+        };
+        ${createPageTargetDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         activeKey = state.key;
+        previewInspectorSession.dataRequests.set('profile-request', readPreviewInspectorDataRequests()[0]);
         state.pageRootCommitted = true;
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         const search = readPreviewInspectorMinimumRequirementSearch(state);
+        const changedStatus = state.status;
+        const changedCalls = calls.length;
+        resetPreviewInspectorRequirementConvergence(state);
+        search.status = 'searching';
+        advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state);
+        const unchangedCalls = calls.length;
+        const clears = [], conditionClears = [];
+        const clearRollbacks = clearPreviewInspectorRequirementAutoRollbacks;
+        clearPreviewInspectorRequirementAutoRollbacks = (key) => {
+          clears.push(key === undefined ? 'all' : key);
+          return clearRollbacks(key);
+        };
+        const clearConditions = clearPreviewInspectorTargetGuidedConditionOverrides;
+        clearPreviewInspectorTargetGuidedConditionOverrides = (key) => {
+          conditionClears.push(key === undefined ? 'all' : key);
+          return clearConditions(key);
+        };
+        const otherSnapshot = capturePreviewInspectorRequirementAutoRollback(
+          { key: 'page:Other' },
+          { hookIds: [], requestIds: ['profile-request'] },
+        );
+        otherSnapshot.mode = 'deterministic-minimum-auto';
+        registerPreviewInspectorRequirementAutoRollback('other-trace', otherSnapshot);
+        findSelectedPreviewInspectorDescriptor = () => descriptor;
+        readSelectedPreviewInspectorPageCandidate = () => candidate;
+        retryPreviewInspectorTargetApplicationPath();
+        const firstTransactionGone = !previewInspectorSession.requirementAutoRollbackByTraceId.has('trace-1');
+        const otherTransactionRetained = previewInspectorSession.requirementAutoRollbackByTraceId.has('other-trace');
+        const retryStateAbsent = !previewInspectorSession.targetReachabilityByKey.has(state.key);
+        const retrySearchAbsent = !previewInspectorSession.minimumRequirementSearchByKey.has(state.key);
+        const retrySizes = [previewInspectorSession.targetReachabilityByKey.size, previewInspectorSession.minimumRequirementSearchByKey.size, previewInspectorSession.requirementAutoRollbackByTraceId.size];
+        const reset = resetPreviewInspectorTargetReachability();
         globalThis.__result = {
           calls,
+          changedCalls,
+          changedStatus,
+          clears,
+          conditionClears,
+          firstTransactionGone,
+          otherTransactionRetained,
+          retryStateAbsent,
+          retrySearchAbsent,
+          retrySizes,
           origin: search.origin,
           pass: search.pass,
+          reset,
+          searchStatus: search.status,
           status: state.status,
+          mapsEmpty: [previewInspectorSession.targetReachabilityByKey.size, previewInspectorSession.minimumRequirementSearchByKey.size, previewInspectorSession.requirementAutoRollbackByTraceId.size],
+          activeKey: previewInspectorSession.activeTargetReachabilityKey,
+          unchangedCalls,
         };
       `,
       context,
     );
     expect(context.__result).toEqual({
-      calls: [
-        'runtime:page:Target:true',
-        'data:page:Target:true',
-        'persist',
-        'notify',
-        'tree',
-        'commit',
-      ],
+      calls:
+        'trace:deterministic-minimum-auto:undefined|capture:page:Target::profile-request|runtime:page:Target:true|data:page:Target:true|trace:deterministic-minimum-auto:true|register:trace-1:page:Target:deterministic-minimum-auto|persist|notify|tree|commit|capture:page:Target::profile-request|runtime:page:Target:true|data:page:Target:true|capture:page:Other::profile-request|register:other-trace:page:Other:deterministic-minimum-auto|notify|commit'.split(
+          '|',
+        ),
+      clears: ['page:Target', 'all'],
+      conditionClears: ['page:Target', 'all'],
+      changedCalls: 10,
+      changedStatus: 'filling-requirements',
       origin: 'deterministic-auto',
       pass: 1,
+      reset: true,
+      searchStatus: 'settled',
       status: 'filling-requirements',
+      unchangedCalls: 13,
+      firstTransactionGone: true,
+      otherTransactionRetained: true,
+      retryStateAbsent: true,
+      retrySearchAbsent: true,
+      retrySizes: [0, 0, 1],
+      mapsEmpty: [0, 0, 0],
+      activeKey: undefined,
     });
   });
 
@@ -758,40 +847,13 @@ describe('Preview Inspector target reachability runtime source', () => {
     vm.runInNewContext(
       `
         const applied = [];
-        const previewInspectorSession = {
-          boundariesByExport: new Map(),
-          renderConditionOverrides: new Map(),
-          renderConditions: new Map(),
-          selectedExportName: 'Target',
-        };
-        const initializePreviewInspectorConditionState = () => undefined;
-        const readPreviewInspectorRuntimeFallbacks = () => [];
-        const readPreviewInspectorDataRequests = () => [];
-        const readPreviewInspectorDataShapePaths = () => [];
-        const collectPreviewInspectorFiberElements = () => [];
-        const notifyPreviewInspector = () => undefined;
-        const schedulePreviewInspectorTreeRefresh = () => undefined;
-        const schedulePreviewInspectorCommitRefresh = () => undefined;
-        const recordPreviewInspectorConsoleEntry = () => undefined;
-        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        ${createEmptyPageTargetRuntimePreambleSource()}
         const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
           applied.push([id, enabled]);
           return true;
         };
         ${createTargetReachabilityFixtureSource()}
-        const descriptor = { inspector: {
-          renderChainsByExport: { Target: { paths: [] } },
-          target: { exportName: 'Target' },
-        } };
-        const candidate = {
-          edges: [],
-          id: 'page',
-          renderPath: { id: 'path', steps: [
-            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
-            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
-          ] },
-          root: { exportName: 'Page' },
-        };
+        ${createPageTargetDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         state.pageRootCommitted = true;
         previewInspectorSession.renderConditions.set('guard', {
@@ -804,16 +866,7 @@ describe('Preview Inspector target reachability runtime source', () => {
           sourcePath: '/with-page-guard.tsx',
           targetBranch: 'falsy',
         });
-        previewInspectorSession.renderConditions.set('unrelated-shell-gate', {
-          effectiveEnabled: true,
-          expression: '<TruncatableParagraph> gate: typeof content === "string"',
-          id: 'unrelated-shell-gate',
-          ownerName: 'TruncatableParagraph',
-          reachabilityDiscoveryOrder: 0,
-          reachabilityKey: state.key,
-          sourcePath: '/shell/truncatable-paragraph.tsx',
-          targetBranch: 'falsy',
-        });
+        ${createUnrelatedShellGateFixtureSource()}
         previewInspectorSession.activeTargetReachabilityKey = state.key;
         rememberPreviewInspectorTargetRuntimeOwner('Target', { name: 'GuardedPage' });
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
@@ -840,39 +893,12 @@ describe('Preview Inspector target reachability runtime source', () => {
     vm.runInNewContext(
       `
         const applied = [];
-        const previewInspectorSession = {
-          boundariesByExport: new Map(),
-          renderConditionOverrides: new Map(),
-          renderConditions: new Map(),
-          selectedExportName: 'Target',
-        };
-        const initializePreviewInspectorConditionState = () => undefined;
-        const readPreviewInspectorRuntimeFallbacks = () => [];
-        const readPreviewInspectorDataRequests = () => [];
-        const readPreviewInspectorDataShapePaths = () => [];
-        const collectPreviewInspectorFiberElements = () => [];
-        const notifyPreviewInspector = () => undefined;
-        const schedulePreviewInspectorTreeRefresh = () => undefined;
-        const schedulePreviewInspectorCommitRefresh = () => undefined;
-        const recordPreviewInspectorConsoleEntry = () => undefined;
-        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        ${createEmptyPageTargetRuntimePreambleSource()}
         const setPreviewInspectorTargetGuidedConditionOverride = (id, enabled) => {
           applied.push([id, enabled]);
         };
         ${createTargetReachabilityFixtureSource()}
-        const descriptor = { inspector: {
-          renderChainsByExport: { Target: { paths: [] } },
-          target: { exportName: 'Target' },
-        } };
-        const candidate = {
-          edges: [],
-          id: 'page',
-          renderPath: { id: 'path', steps: [
-            { label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] },
-            { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] },
-          ] },
-          root: { exportName: 'Page' },
-        };
+        ${createPageTargetDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         state.pageRootCommitted = true;
         previewInspectorSession.activeTargetReachabilityKey = state.key;
@@ -886,16 +912,7 @@ describe('Preview Inspector target reachability runtime source', () => {
           sourcePath: '/with-staff-page.tsx',
           targetBranch: 'falsy',
         });
-        previewInspectorSession.renderConditions.set('unrelated-shell-gate', {
-          effectiveEnabled: true,
-          expression: '<TruncatableParagraph> gate: typeof content === "string"',
-          id: 'unrelated-shell-gate',
-          ownerName: 'TruncatableParagraph',
-          reachabilityDiscoveryOrder: 0,
-          reachabilityKey: state.key,
-          sourcePath: '/shell/truncatable-paragraph.tsx',
-          targetBranch: 'falsy',
-        });
+        ${createUnrelatedShellGateFixtureSource()}
         previewInspectorSession.directTargetConditionIdsByExport = new Map([
           ['Target', new Set(['guard'])],
         ]);
@@ -927,39 +944,9 @@ describe('Preview Inspector target reachability runtime source', () => {
     } = {};
     vm.runInNewContext(
       `
-        const previewInspectorSession = {
-          boundariesByExport: new Map(),
-          renderConditionOverrides: new Map(),
-          renderConditions: new Map(),
-          selectedExportName: 'DashboardPanel',
-        };
-        const initializePreviewInspectorConditionState = () => undefined;
-        const readPreviewInspectorRuntimeFallbacks = () => [];
-        const readPreviewInspectorDataRequests = () => [];
-        const readPreviewInspectorDataShapePaths = () => [];
-        const notifyPreviewInspector = () => undefined;
-        const schedulePreviewInspectorTreeRefresh = () => undefined;
-        const schedulePreviewInspectorCommitRefresh = () => undefined;
-        const setPreviewInspectorTargetGuidedConditionOverride = () => undefined;
-        const clearPreviewInspectorTargetGuidedConditionOverrides = () => false;
-        const recordPreviewInspectorConsoleEntry = () => undefined;
-        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
-        const collectPreviewInspectorFiberElements = (boundary) =>
-          boundary?.host === true ? [{}] : [];
+        ${createDashboardRuntimeDependenciesFixtureSource()}
         ${createTargetReachabilityFixtureSource()}
-        const descriptor = { inspector: {
-          renderChainsByExport: { DashboardPanel: { paths: [] } },
-          target: { exportName: 'DashboardPanel' },
-        } };
-        const candidate = {
-          edges: [],
-          id: 'dashboard-page',
-          renderPath: { id: 'path', steps: [
-            { label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] },
-            { label: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx', wrapperNames: [] },
-          ] },
-          root: { exportName: 'DashboardPage' },
-        };
+        ${createDashboardDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
         previewInspectorSession.boundariesByExport.set('DashboardPanel', new Set([{ host: true }]));
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);

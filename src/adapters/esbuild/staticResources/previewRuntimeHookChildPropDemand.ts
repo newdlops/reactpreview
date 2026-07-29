@@ -106,10 +106,12 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     );
     if (hasParseDiagnostics(sourceFile)) return new Map();
     const imports = collectImportedComponentBindings(sourceFile);
-    const usedComponents = collectUsedJsxComponentBindings(
-      sourceFile,
-      collectHookResultBindings(sourceFile),
+    const usedComponents = new Set(
+      collectUsedJsxComponentBindings(sourceFile, collectHookResultBindings(sourceFile)),
     );
+    // Render-prop data is not a hook binding, but its imported child is still an operation-proven
+    // consumer. Keep the catalog bounded and syntax-only for that adjacent use as well.
+    collectAllUsedJsxComponentBindings(sourceFile, usedComponents);
     const catalog = new Map<string, ReadonlyMap<string, PreviewInferredPropShape>>();
     for (const localName of usedComponents) {
       if (catalog.size >= MAX_COMPONENT_IMPORTS) break;
@@ -175,6 +177,21 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
       !path.isAbsolute(relative)
     );
   }
+}
+
+/** Adds bounded imported JSX consumers used by static render-prop callbacks. */
+function collectAllUsedJsxComponentBindings(sourceFile: ts.SourceFile, names: Set<string>): void {
+  const visit = (node: ts.Node): void => {
+    if (names.size >= MAX_COMPONENT_IMPORTS) return;
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      ts.isIdentifier(node.tagName) &&
+      isPascalCase(node.tagName.text)
+    )
+      names.add(node.tagName.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
 }
 
 /**

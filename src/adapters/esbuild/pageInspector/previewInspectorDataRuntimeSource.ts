@@ -449,7 +449,11 @@ function resolvePreviewInspectorBackendRequest(metadata, seedPayload, requestCon
   const normalized = normalizePreviewInspectorDataRequest(metadata, seedPayload);
   const previous = previewInspectorSession.dataRequests.get(normalized.id);
   const shapeFingerprint = stringifyPreviewInspectorProps(normalized.shape);
+  const renderScenario = typeof readPreviewInspectorRenderScenario === 'function'
+    ? readPreviewInspectorRenderScenario()
+    : 'file-components';
   const autoPayloadProfile =
+    renderScenario === 'authored-page' ||
     typeof previewInspectorSession.activeTargetReachabilityKey === 'string'
       ? 'corridor-auto'
       : 'auto';

@@ -245,6 +245,11 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
   const visibleChildFolders = [...childFolderCounts].slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
   const visibleImmediateBranches = immediateBranches.slice(0, PREVIEW_INSPECTOR_ROUTE_SEARCH_LIMIT);
   const routeError = previewInspectorSession.pendingRouteError;
+  const openedOwner = ownerId === undefined ? undefined : branchById.get(ownerId);
+  const continuationGuide =
+    openedOwner?.childState === 'expanded'
+      ? 'Another application route level was found. Choose the next path.'
+      : undefined;
   const renderVisibleBranch = (branch) => {
     const childCount = directChildCounts.get(branch.id) ?? 0;
     return branch.childState === 'expanded' && childCount > 0
@@ -302,6 +307,13 @@ function PreviewInspectorRouteExplorer({ descriptor }) {
             'div',
             { className: 'rpi-note rpi-route-error', role: 'status' },
             routeError.message,
+          ),
+      continuationGuide === undefined
+        ? undefined
+        : React.createElement(
+            'div',
+            { className: 'rpi-note rpi-route-continuation', role: 'status' },
+            continuationGuide,
           ),
       normalizedQuery.length > 0
         ? React.createElement(

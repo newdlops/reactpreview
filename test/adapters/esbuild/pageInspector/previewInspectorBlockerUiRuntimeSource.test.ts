@@ -1,4 +1,4 @@
-/** Verifies render blockers are placed at their closest source-backed React owner. */
+/** Verifies render blockers include the closest source-backed owner and rolled-back resolver state. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorBlockerUiRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorBlockerUiRuntimeSource';
@@ -299,6 +299,54 @@ describe('Preview Inspector blocker UI runtime source', () => {
     expect(deferredText).toContain('waiting for its parent to call the render callback');
     expect(deferredText).toContain('parent needs data before it calls this render callback');
   });
+
+  it('renders the rolled-back resolver stop with retry actions enabled', () => {
+    const runtime = evaluateBlockerRuntime();
+    const blocker = {
+      applicationPath: ['Application', 'Page', 'Target'],
+      appliedConditions: [],
+      directTarget: false,
+      directTargetAvailable: true,
+      minimumRequirementSearch: { observedPathCount: 1, pass: 2, status: 'rolled-back' },
+      pageRootCommitted: true,
+      requiredPaths: ['useProfile.value'],
+      rootName: 'Application',
+      status: 'resolver-rolled-back',
+      targetExportName: 'Target',
+      targetHasOutput: false,
+      targetMounted: false,
+    };
+    const rendered = runtime.renderReachabilityDetail({ node: { blocker } });
+    const text = collectRenderedText(rendered).join(' ');
+    for (const expected of [
+      'Automatic search stopped because a generated preview value caused a render error and was reverted.',
+      'Page: Application · loaded',
+      'Current file: Target · not used on this path',
+      'Page path: Application > Page > Target',
+      'No login, session, or permission condition has been proven for this path yet.',
+      'Possible data needed next (1): useProfile.value',
+      'Automatic requirement search: pass 2 of 8 · stopped: unsafe generated values reverted · 1 possible field(s) seen.',
+      'Preview values never change source code or backend data. Your manual condition and payload choices stay in control.',
+    ])
+      expect(text).toContain(expected);
+    expect(text).not.toContain('cycle-detected');
+    expect(text).not.toContain('pass limit');
+    expect(text).not.toContain('stopped: the same values repeated');
+    expect(text).not.toContain(
+      'Automatic search stopped because it kept generating the same preview values.',
+    );
+    const buttons = collectElements(rendered, 'button');
+    expect(buttons.map((button) => collectRenderedText(button).join(' '))).toEqual([
+      'Auto-find missing values',
+      'Try page again',
+      'Show file by itself',
+    ]);
+    expect(buttons[0]?.props.disabled).not.toBe(true);
+    expect(buttons[1]?.props.disabled).not.toBe(true);
+    expect(buttons[0]?.props.title).toBe(
+      'Follow newly revealed hook and backend fields in bounded passes, fill their minimum shape, and retry the authored page',
+    );
+  });
 });
 
 /** Evaluates attachment functions with fixed hook/data registries and no React project runtime. */
@@ -413,6 +461,25 @@ function collectRenderedText(value: unknown, output: string[] = []): string[] {
   const children = (value as { readonly children?: readonly unknown[] }).children;
   if (!Array.isArray(children)) return output;
   for (const child of children) collectRenderedText(child, output);
+  return output;
+}
+
+/** Collects inert fake React elements by their rendered host type. */
+function collectElements(
+  value: unknown,
+  type: string,
+  output: { readonly children: readonly unknown[]; readonly props: Record<string, unknown> }[] = [],
+): { readonly children: readonly unknown[]; readonly props: Record<string, unknown> }[] {
+  if (value === null || typeof value !== 'object') return output;
+  const element = value as {
+    readonly children?: readonly unknown[];
+    readonly props?: Record<string, unknown>;
+    readonly type?: string;
+  };
+  if (element.type === type && Array.isArray(element.children) && element.props !== undefined)
+    output.push({ children: element.children, props: element.props });
+  if (Array.isArray(element.children))
+    for (const child of element.children) collectElements(child, type, output);
   return output;
 }
 

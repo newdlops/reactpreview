@@ -37,6 +37,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     const smartEvidenceReads: string[] = [];
     const warnings: string[] = [];
     const source = [
+      "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",
       createPreviewInspectorTargetBoundaryRuntimeSource(),
       'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
     ].join('\n');
@@ -88,6 +89,7 @@ describe('Preview Inspector selected-target boundary runtime', () => {
   /** Defers the recoverable nested-Router invariant to the candidate's outer retry boundary. */
   it('rethrows a nested Router error instead of replacing the application root', () => {
     const source = [
+      "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",
       createPreviewInspectorTargetBoundaryRuntimeSource(),
       'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
     ].join('\n');
@@ -106,6 +108,25 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     );
 
     expect(() => Boundary.getDerivedStateFromError(routerError)).toThrow(routerError);
+  });
+
+  /** Defers only the exact outside-Router hook invariant for the candidate provider retry. */
+  it('rethrows an exact outside-Router hook invariant but contains unrelated hook failures', () => {
+    const source = [
+      "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",
+      createPreviewInspectorTargetBoundaryRuntimeSource(),
+      'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
+    ].join('\n');
+    const sandbox = createTargetBoundarySandbox({
+      rememberedErrors: [], mountedOwnerExports: [], remountedExports: [], smartEvidenceReads: [], warnings: [],
+    });
+    runInContext(source, createContext(sandbox));
+    const Boundary = sandbox.__TestBoundary;
+    if (Boundary === undefined) throw new Error('Missing test boundary.');
+    expect(() => Boundary.getDerivedStateFromError(
+      new Error('useLocation() may be used only in the context of a <Router> component.'),
+    )).toThrow();
+    expect(Boundary.getDerivedStateFromError(new Error('hook exploded'))).toEqual({ error: expect.any(Error) });
   });
 });
 

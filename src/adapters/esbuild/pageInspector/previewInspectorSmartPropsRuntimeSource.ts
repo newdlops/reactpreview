@@ -545,10 +545,8 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
     hasPreviewInspectorSmartPropPath(userProps, visibilityPath) ||
     hasPreviewInspectorSmartPropPath(resolverProps, visibilityPath)
   ) return undefined;
-  const value = {};
-  if (!setPreviewInspectorSmartBooleanProp(value, visibilityPath)) return undefined;
-  // Record before scheduling React work. Even if another resolver clears its generated prop layer,
-  // this exact revision/corridor/value cannot oscillate between opening and closing the same modal.
+  // Visibility is application semantics. Keep compiler-proven evidence actionable but report-only
+  // until the user explicitly enables the overlay; no automatic generated-prop transaction occurs.
   previewInspectorSession.overlayAutoAttemptKeys.add(attemptKey);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
@@ -560,18 +558,12 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
       mode: 'target-overlay-auto',
       ownerName: exportName,
       reason: 'The selected overlay mounted without host output and has one declared visibility prop',
-      selectedValue: value,
-      startsRenderAttempt: true,
+      selectedValue: undefined,
+      startsRenderAttempt: false,
       targetReachabilityKey,
     });
   }
-  /* Apply both generated-value policies as one render transaction so the modal opens once. */
-  setPreviewInspectorFallbackValuesEnabled(true, false);
-  setPreviewInspectorResolverPropsOverride(exportName, value, false);
-  persistPreviewInspectorState();
-  notifyPreviewInspector();
-  schedulePreviewInspectorCommitRefresh();
-  return visibilityPath;
+  return undefined;
 }
 `;
 }

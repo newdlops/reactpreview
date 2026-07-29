@@ -37,6 +37,16 @@ let previewRuntimeStatus = AUTOMATIC_ROUTER_BOUNDARY_ENABLED
   ? 'available: target graph requested a MemoryRouter boundary'
   : 'available: an existing target-reachable Router provider was detected';
 
+/** Uses Page Inspector's existing internal runtime-health hook when that mode owns the preview. */
+function recordPreviewRouterScopeTransition(event, detail) {
+  const recorder = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')]
+    ?.recordRuntimeHealth;
+  if (typeof recorder !== 'function') return;
+  recorder({
+    category: 'router-scope', detail: { ...detail, status: previewRuntimeStatus, transition: event }, event: 'render-attempt-settled',
+  });
+}
+
 /** Returns the last automatic Router decision for detailed preview runtime diagnostics. */
 export function readPreviewRuntimeStatus() {
   return previewRuntimeStatus;
@@ -130,6 +140,17 @@ export function isNestedPreviewRouterError(error) {
   );
 }
 
+/** Matches only stable React Router hook invariants; arbitrary hook/application failures rethrow. */
+export function isOutsidePreviewRouterError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /use(?:Location|Navigate|Params|Match|Routes|NavigationType|OutletContext)\(\) may be used only in the context of a <Router> component/iu.test(message);
+}
+
+/** Exposes the two exact retry invariants to the selected-target boundary. */
+export function isPreviewRouterRetryError(error) {
+  return isNestedPreviewRouterError(error) || isOutsidePreviewRouterError(error);
+}
+
 /**
  * Retries a candidate without the inferred MemoryRouter when an unrecognized project wrapper owns
  * one itself. All unrelated render errors are rethrown to the normal preview error boundary.
@@ -139,29 +160,53 @@ class PreviewCandidateRouterErrorBoundary extends React.Component {
     super(properties);
     this.state = {
       hasUnrelatedError: false,
-      nestedRouterDetected: false,
+      mode: properties.startWrapped === false ? 'unwrapped' : 'wrapped',
+      retried: false,
       unrelatedError: undefined,
     };
   }
 
   /** Stores only the one recoverable Router invariant and preserves every other thrown value. */
   static getDerivedStateFromError(error) {
-    return isNestedPreviewRouterError(error)
-      ? { hasUnrelatedError: false, nestedRouterDetected: true, unrelatedError: undefined }
-      : { hasUnrelatedError: true, nestedRouterDetected: false, unrelatedError: error };
+    return { error };
   }
 
   /** Reports why the automatic boundary was removed without classifying application behavior. */
   componentDidCatch(error) {
-    if (isNestedPreviewRouterError(error)) {
+    const nested = isNestedPreviewRouterError(error);
+    const outside = isOutsidePreviewRouterError(error);
+    if (!this.state.retried && ((this.state.mode === 'wrapped' && nested) ||
+      (this.state.mode === 'unwrapped' && outside))) {
       previewRuntimeStatus =
-        'active: candidate-owned Router detected at runtime; inferred MemoryRouter removed';
+        this.state.mode === 'wrapped'
+          ? 'recovering: candidate-owned Router detected at runtime; removing inferred MemoryRouter once'
+          : 'recovering: retrying candidate once with a MemoryRouter provider';
+      recordPreviewRouterScopeTransition('recovering', { mode: this.state.mode });
+      this.setState({
+        error: undefined,
+        mode: this.state.mode === 'wrapped' ? 'unwrapped' : 'wrapped',
+        retried: true,
+      });
+      return;
+    }
+    this.setState({ hasUnrelatedError: true, unrelatedError: error });
+    previewRuntimeStatus = 'unresolved: Router scope retry was not applicable or already consumed';
+    recordPreviewRouterScopeTransition('unresolved', { mode: this.state.mode });
+  }
+
+  componentDidUpdate() {
+    if (this.state.retried === true && this.state.error === undefined) {
+      previewRuntimeStatus = this.state.mode === 'wrapped'
+        ? 'recovered: candidate Router scope supplied after one provider retry'
+        : 'recovered: candidate-owned Router retained after one unwrapped retry';
+      recordPreviewRouterScopeTransition('recovered', { mode: this.state.mode });
     }
   }
 
   render() {
     if (this.state.hasUnrelatedError) throw this.state.unrelatedError;
-    if (this.state.nestedRouterDetected) return this.props.children;
+    if (this.state.error !== undefined) return null;
+    if (this.state.mode === 'unwrapped') return this.props.children;
     const MemoryRouter = readMemoryRouter();
     return typeof MemoryRouter === 'function'
       ? React.createElement(
@@ -219,15 +264,18 @@ export function createNestedRouterPreviewElement(children, options) {
     previewRuntimeStatus = 'disabled by setup (routerPreview=false)';
     return children;
   }
-  if (options?.ownsRouter === true) {
-    previewRuntimeStatus = 'not applied: selected page candidate owns a Router boundary';
-    return children;
-  }
   if (typeof readMemoryRouter() !== 'function') {
     previewRuntimeStatus = 'unavailable: installed react-router-dom has no MemoryRouter export';
     return children;
   }
-  return React.createElement(PreviewCandidateRouterBoundary, { configuration }, children);
+  if (options?.ownsRouter !== true) {
+    return React.createElement(PreviewCandidateRouterBoundary, { configuration }, children);
+  }
+  return React.createElement(
+    PreviewCandidateRouterErrorBoundary,
+    { configuration, startWrapped: options?.ownsRouter !== true },
+    children,
+  );
 }
 
 /**

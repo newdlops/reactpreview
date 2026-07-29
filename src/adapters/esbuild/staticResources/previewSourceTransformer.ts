@@ -36,6 +36,7 @@ import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGl
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
 import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntimeHookChildPropDemand';
+import { createPreviewGraphqlRenderPropUsageReplacements } from './previewGraphqlRenderPropUsageInstrumentation';
 import * as framework from './previewFrameworkReplacements';
 import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
@@ -255,6 +256,15 @@ export class PreviewSourceTransformer {
             typeDemand === undefined
               ? undefined
               : (typeNode) => typeDemand.inferLocalTypeFallback(sourcePath, sourceText, typeNode),
+          ),
+        );
+      }
+      if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('query=')) {
+        replacements.push(
+          ...createPreviewGraphqlRenderPropUsageReplacements(
+            sourcePath,
+            sourceText,
+            this.runtimeHookChildPropDemands?.collect(sourcePath, sourceText),
           ),
         );
       }

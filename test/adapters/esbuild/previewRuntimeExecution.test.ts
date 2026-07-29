@@ -14,6 +14,8 @@ import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/p
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
 import { createPreviewEntry } from '../../../src/adapters/esbuild/createPreviewEntry';
+import { createPreviewDirectBlockerTraceRuntimeSource } from '../../../src/adapters/esbuild/staticResources/previewDirectBlockerTraceRuntimeSource';
+import { createPreviewRuntimeCorrelationSource } from '../../../src/adapters/esbuild/staticResources/previewRuntimeCorrelationSource';
 import { PREVIEW_SOURCE_LOADERS } from '../../../src/adapters/esbuild/previewLoaderPolicy';
 import { resolvePreviewRuntimeEnvironment } from '../../../src/adapters/esbuild/previewRuntimeEnvironment';
 import { createPreviewSetupBridgePlugin } from '../../../src/adapters/esbuild/previewSetupBridgePlugin';
@@ -141,6 +143,49 @@ export function createRoot(mountNode) {
 `;
 
 describe('generated preview runtime execution', () => {
+  /** Executes direct terminal producers and proves they emit once only after an observed lifecycle. */
+  it('emits complete direct success and failure traces only for observed terminals', () => {
+    const messages: unknown[] = [];
+    const source = [
+      createPreviewRuntimeCorrelationSource().replace('import.meta.url', JSON.stringify(
+        'https://preview.invalid/entry-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.js',
+      )),
+      createPreviewDirectBlockerTraceRuntimeSource(),
+      'globalThis.__post = postPreviewDirectBlockerTrace;',
+    ].join('\n');
+    const sandbox: Record<string, unknown> = {
+      URL,
+      activeRuntimePhase: 'commit React root',
+      previewEntryRevision: 3,
+      previewHotRuntime: { vscodeApi: { postMessage: (message: unknown) => { messages.push(message); } } },
+      previewRuntimeRevision: 3,
+    };
+    const context = createContext(sandbox);
+
+    runInContext(source, context, { timeout: 10_000 });
+    expect(messages).toEqual([]);
+    const post = sandbox.__post as (outcome: 'failed' | 'ready', error?: string) => void;
+    post('ready');
+    post('failed', 'bounded failure detail');
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      runtimeRevision: 3,
+      runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u),
+      event: { event: 'render-result', previewCommand: 'direct-preview', result: { outcome: 'committed', remainingBlockerIds: [] } },
+    });
+    expect(messages[1]).toMatchObject({
+      runtimeRevision: 3,
+      runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u),
+      event: {
+        blocker: { category: 'runtime', outcome: 'report-only' },
+        event: 'subsequent-error',
+        previewCommand: 'direct-preview',
+        result: { remainingBlockerIds: ['direct-preview-terminal-failure'] },
+      },
+    });
+  });
+
   /**
    * Creates missing namespaces before setup evaluation, awaits initialization before importing the
    * named targets, and finally applies shared plus per-export props through one provider boundary.

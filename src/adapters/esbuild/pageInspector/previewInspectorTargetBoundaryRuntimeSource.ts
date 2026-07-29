@@ -34,12 +34,9 @@ function describePreviewInspectorTargetError(error) {
 function isPreviewInspectorCandidateRouterRetry(error) {
   const bridgeDetector = typeof activePreviewRouterBridge === 'undefined'
     ? undefined
-    : activePreviewRouterBridge?.isNestedPreviewRouterError;
+    : activePreviewRouterBridge?.isPreviewRouterRetryError;
   if (typeof bridgeDetector === 'function') return bridgeDetector(error) === true;
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return /cannot render a <Router> inside another <Router>|should never have more than one in your app/iu.test(
-    message,
-  );
+  return false;
 }
 
 /**

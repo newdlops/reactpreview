@@ -25,7 +25,13 @@ class PreviewExportErrorBoundary extends React.Component {
     if (props.resetKey === state.resetKey) return null;
     return { componentStack: '', error: undefined, resetKey: props.resetKey };
   }
-  static getDerivedStateFromError(error) { return { error }; }
+  static getDerivedStateFromError(error) {
+    const retryDetector = typeof activePreviewRouterBridge === 'undefined'
+      ? undefined
+      : activePreviewRouterBridge?.isPreviewRouterRetryError;
+    if (typeof retryDetector === 'function' && retryDetector(error) === true) throw error;
+    return { error };
+  }
   componentDidCatch(error, errorInfo) {
     rememberCapturedReactError(error);
     const componentStack = errorInfo?.componentStack;

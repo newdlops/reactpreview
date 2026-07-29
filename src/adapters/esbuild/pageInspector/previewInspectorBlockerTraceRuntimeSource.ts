@@ -14,8 +14,11 @@
  *
  * @returns Plain JavaScript source concatenated before project modules are imported.
  */
+import { PREVIEW_BLOCKER_KIND_CATEGORIES } from '../../../domain/previewBlocker';
+
 export function createPreviewInspectorBlockerTraceRuntimeSource(): string {
   return String.raw`
+const PREVIEW_INSPECTOR_BLOCKER_CATEGORY_BY_KIND = ${JSON.stringify(PREVIEW_BLOCKER_KIND_CATEGORIES)};
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_RECORD_LIMIT = 256;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_ACTIVE_WINDOW_MS = 5_000;
 const PREVIEW_INSPECTOR_BLOCKER_TRACE_SETTLED_ERROR_GRACE_MS = 1_000;
@@ -160,8 +163,13 @@ function completePreviewInspectorBlockerTraceAttempt(
   settlementDetail = result,
 ) {
   if (!settlePreviewInspectorBlockerTraceAttempt(attempt, settlementDetail)) return false;
+  const outcome = result?.outcome === 'rolled-back'
+    ? 'rolled-back'
+    : result?.outcome === 'committed'
+      ? 'auto-resolved'
+      : 'report-only';
   postPreviewInspectorBlockerTraceEvent('render-result', attempt.traceId, {
-    ...(attempt.blocker === undefined ? {} : { blocker: attempt.blocker }),
+    ...(attempt.blocker === undefined ? {} : { blocker: { ...attempt.blocker, outcome } }),
     result,
   });
   return true;
@@ -292,6 +300,8 @@ function postPreviewInspectorBlockerTraceEvent(event, traceId, fields = {}) {
     event: {
       ...fields,
       event,
+      // Canonical campaign command identity; paths and target names stay inside the private manifest.
+      previewCommand: 'page-inspector',
       sequence: previewInspectorSession.blockerTraceEventSequence,
       target: readPreviewInspectorBlockerTraceTarget(),
       timestamp: new Date().toISOString(),
@@ -410,10 +420,13 @@ function createPreviewInspectorBlockerTraceRecord(node) {
         : node?.blockerKind === 'target-error' || node?.blockerKind === 'runtime-global'
           ? { error: blocker?.headline, requiredPaths: blocker?.requiredPaths }
           : undefined;
+  const kind = String(node?.blockerKind ?? node?.kind ?? 'blocker').slice(0, 120);
   return {
+    category: normalizePreviewInspectorBlockerTraceCategory(kind),
     id: String(node?.blockerId ?? node?.id ?? 'unknown-blocker').slice(0, 160),
-    kind: String(node?.blockerKind ?? node?.kind ?? 'blocker').slice(0, 120),
+    kind,
     name: String(node?.name ?? 'Render blocker').slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT),
+    outcome: 'report-only',
     ownerName:
       typeof blocker?.ownerName === 'string'
         ? blocker.ownerName
@@ -429,6 +442,11 @@ function createPreviewInspectorBlockerTraceRecord(node) {
       state: diagnosticState,
     }),
   };
+}
+
+/** Maps existing generic kinds to the host's bounded, privacy-preserving taxonomy. */
+function normalizePreviewInspectorBlockerTraceCategory(kind) {
+  return PREVIEW_INSPECTOR_BLOCKER_CATEGORY_BY_KIND[kind] ?? 'unsupported';
 }
 
 /** Collects only unresolved blocker pseudo-nodes without retaining Fiber/component references. */
@@ -467,6 +485,8 @@ function createPreviewInspectorBlockerTraceBatchRecord(records, label, totalCoun
       id: record.id,
       kind: record.kind,
       name: record.name,
+      category: record.category,
+      outcome: record.outcome,
       ownerName: record.ownerName,
       source: record.source,
     }),
@@ -631,10 +651,14 @@ function createPreviewInspectorBlockerTraceDecisionRecord(candidate) {
   if (existing !== undefined) return existing;
   const source = createPreviewInspectorBlockerTraceSource(candidate);
   return {
+    category: normalizePreviewInspectorBlockerTraceCategory(
+      String(candidate?.blockerKind ?? 'automatic-resolver'),
+    ),
     id: blockerId,
     kind: String(candidate?.blockerKind ?? 'automatic-resolver').slice(0, 120),
     name: String(candidate?.blockerName ?? candidate?.action ?? 'Automatic blocker decision')
       .slice(0, PREVIEW_INSPECTOR_BLOCKER_TRACE_TEXT_LIMIT),
+    outcome: candidate?.startsRenderAttempt === true ? 'prevented' : 'report-only',
     ownerName: typeof candidate?.ownerName === 'string' ? candidate.ownerName : undefined,
     ...(source === undefined ? {} : { source }),
     summary: copyPreviewInspectorBlockerTraceValue(candidate?.summary ?? {}),
@@ -838,7 +862,7 @@ function recordPreviewInspectorBlockerTraceError(entry) {
   }
   const activeAttempt = previewInspectorSession.blockerTraceActiveAttempt;
   const now = Date.now();
-  const settledErrorGrace = ['target-guided-auto', 'target-overlay-auto'].includes(
+  const settledErrorGrace = ['target-guided-auto', 'target-overlay-auto', 'deterministic-minimum-auto', 'minimum-requirement-dfs'].includes(
     activeAttempt?.autoMode,
   )
     ? PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS
@@ -889,21 +913,33 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       previewInspectorSession.blockerTraceErrorFingerprints.keys().next().value,
     );
   }
-  // A target-guided JSX choice is a reversible preview transaction. If that exact render attempt
-  // produces a new fatal error, restore authored semantics before the DFS evaluates another gate.
-  // Runtime fallback and user-authored mutations intentionally remain outside this narrow hook.
-  const rollbackEligible = active && activeAttempt.autoMode === 'target-guided-auto';
-  const rolledBack = (
-    rollbackEligible &&
-    active &&
-    !errorWasKnownAtAttemptStart &&
-    typeof rollbackPreviewInspectorFailedAutoDecision === 'function'
-  ) ? rollbackPreviewInspectorFailedAutoDecision(activeAttempt.traceId) : false;
+  // Reversible automatic decisions are deliberately mode-specific. User-authored and broad
+  // gallery generation modes remain diagnostic-only even when they share this trace machinery.
+  let conditionRolledBack = false;
+  let requirementRolledBack = false;
+  if (active && !errorWasKnownAtAttemptStart) {
+    if (
+      activeAttempt.autoMode === 'target-guided-auto' &&
+      typeof rollbackPreviewInspectorFailedAutoDecision === 'function'
+    ) {
+      conditionRolledBack = rollbackPreviewInspectorFailedAutoDecision(activeAttempt.traceId);
+    } else if (
+      ['deterministic-minimum-auto', 'minimum-requirement-dfs'].includes(activeAttempt.autoMode) &&
+      typeof rollbackPreviewInspectorRequirementAutoDecision === 'function'
+    ) {
+      requirementRolledBack = rollbackPreviewInspectorRequirementAutoDecision(activeAttempt.traceId);
+    }
+  }
   postPreviewInspectorBlockerTraceEvent(
     'subsequent-error',
     active ? activeAttempt.traceId : createPreviewInspectorBlockerTraceId(),
     {
-      ...(!active || activeAttempt.blocker === undefined ? {} : { blocker: activeAttempt.blocker }),
+      ...(!active || activeAttempt.blocker === undefined ? {} : {
+        blocker: {
+          ...activeAttempt.blocker,
+          outcome: conditionRolledBack || requirementRolledBack ? 'rolled-back' : 'report-only',
+        },
+      }),
       error: {
         details: typeof entry.details === 'string' ? entry.details : undefined,
         exportName: typeof entry.exportName === 'string' ? entry.exportName : undefined,
@@ -915,12 +951,24 @@ function recordPreviewInspectorBlockerTraceError(entry) {
       },
     },
   );
-  if (rolledBack && active) {
+  if (requirementRolledBack && active && activeAttempt.settledAt === undefined) {
+    activeAttempt.targetReachabilityResumeHandled = true;
+  }
+  if ((conditionRolledBack || requirementRolledBack) && active && activeAttempt.settledAt === undefined) {
     completePreviewInspectorBlockerTraceAttempt(
       activeAttempt,
       createPreviewInspectorBlockerTraceAttemptResult(activeAttempt, 'rolled-back'),
       { outcome: 'rolled-back', reason: 'new fatal error' },
     );
+  } else if (requirementRolledBack && active) {
+    // A fatal observed during the bounded post-settlement grace must supersede the optimistic
+    // commit record; emit the causal correction with the same trace identity and no new retry.
+    postPreviewInspectorBlockerTraceEvent('render-result', activeAttempt.traceId, {
+      ...(activeAttempt.blocker === undefined ? {} : {
+        blocker: { ...activeAttempt.blocker, outcome: 'rolled-back' },
+      }),
+      result: createPreviewInspectorBlockerTraceAttemptResult(activeAttempt, 'rolled-back'),
+    });
   }
 }
 `;

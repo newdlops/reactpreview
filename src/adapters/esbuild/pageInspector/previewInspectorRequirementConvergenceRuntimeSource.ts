@@ -13,12 +13,167 @@ export function createPreviewInspectorRequirementConvergenceRuntimeSource(): str
   return String.raw`
 const PREVIEW_INSPECTOR_REQUIREMENT_FRONTIER_HISTORY_LIMIT = 12;
 const PREVIEW_INSPECTOR_REQUIREMENT_CONVERGENCE_RECORD_LIMIT = 64;
+const PREVIEW_INSPECTOR_REQUIREMENT_AUTO_ROLLBACK_LIMIT = 64;
 
 /** Initializes histories outside reachability state so incidental state recreation cannot reset a loop. */
 function initializePreviewInspectorRequirementConvergenceState() {
   if (!(previewInspectorSession.requirementConvergenceByKey instanceof Map)) {
     previewInspectorSession.requirementConvergenceByKey = new Map();
   }
+  if (!(previewInspectorSession.requirementAutoRollbackByTraceId instanceof Map)) {
+    previewInspectorSession.requirementAutoRollbackByTraceId = new Map();
+  }
+}
+
+function capturePreviewInspectorRequirementMapEntry(map, id) {
+  return map instanceof Map && map.has(id)
+    ? { present: true, value: map.get(id) }
+    : { present: false };
+}
+
+function restorePreviewInspectorRequirementMapEntry(map, id, entry) {
+  if (!(map instanceof Map)) return;
+  if (entry?.present === true) map.set(id, entry.value);
+  else map.delete(id);
+}
+
+/** Captures session-only generated-state entries immediately before one bounded Auto mutation. */
+function capturePreviewInspectorRequirementAutoRollback(state, batch) {
+  initializePreviewInspectorRequirementConvergenceState();
+  if (typeof state?.key !== 'string') return undefined;
+  const hookIds = [...new Set((batch?.hookIds ?? []).filter((id) => typeof id === 'string'))]
+    .slice(0, PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT);
+  const requestIds = [...new Set((batch?.requestIds ?? []).filter((id) => typeof id === 'string'))]
+    .slice(0, PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT);
+  if (hookIds.length === 0 && requestIds.length === 0) return undefined;
+  const hooks = hookIds.map((id) => ({
+    id,
+    materialized: capturePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.runtimeFallbackMaterializedOverrides, id,
+    ),
+    override: capturePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbackOverrides, id),
+    record: capturePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbacks, id),
+    signature: capturePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.runtimeFallbackSmartPathSignatures, id,
+    ),
+    smart: previewInspectorSession.runtimeFallbackSmartIds instanceof Set &&
+      previewInspectorSession.runtimeFallbackSmartIds.has(id),
+    value: capturePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbackValues, id),
+  }));
+  const requests = requestIds.map((id) => ({
+    id,
+    override: capturePreviewInspectorRequirementMapEntry(previewInspectorSession.dataPayloadOverrides, id),
+    signature: capturePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.dataPayloadSmartShapeSignatures, id,
+    ),
+  }));
+  return { fallbackValuesEnabled: previewInspectorSession.fallbackValuesEnabled === true,
+    dataAutoEnabled: previewInspectorSession.dataAutoEnabled === true, hooks, reachabilityKey: state.key, requests };
+}
+
+/** Associates one causal render attempt with its exact pre-mutation generated state. */
+function registerPreviewInspectorRequirementAutoRollback(traceId, snapshot) {
+  initializePreviewInspectorRequirementConvergenceState();
+  if (typeof traceId !== 'string' || traceId.length === 0 || snapshot === undefined) return false;
+  if (snapshot.hooks.length === 0 && snapshot.requests.length === 0) return false;
+  previewInspectorSession.requirementAutoRollbackByTraceId.set(traceId, snapshot);
+  while (previewInspectorSession.requirementAutoRollbackByTraceId.size >
+    PREVIEW_INSPECTOR_REQUIREMENT_AUTO_ROLLBACK_LIMIT) {
+    previewInspectorSession.requirementAutoRollbackByTraceId.delete(
+      previewInspectorSession.requirementAutoRollbackByTraceId.keys().next().value,
+    );
+  }
+  return true;
+}
+
+function clearPreviewInspectorRequirementAutoRollbacks(reachabilityKey) {
+  initializePreviewInspectorRequirementConvergenceState();
+  let changed = false;
+  for (const [traceId, snapshot] of previewInspectorSession.requirementAutoRollbackByTraceId) {
+    if (reachabilityKey === undefined || snapshot.reachabilityKey === reachabilityKey) {
+      previewInspectorSession.requirementAutoRollbackByTraceId.delete(traceId);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Restores a failed minimum-requirement transaction before any follow-up resolver pass. */
+function rollbackPreviewInspectorRequirementAutoDecision(traceId) {
+  initializePreviewInspectorRequirementConvergenceState();
+  if (typeof traceId !== 'string') return false;
+  const snapshot = previewInspectorSession.requirementAutoRollbackByTraceId.get(traceId);
+  previewInspectorSession.requirementAutoRollbackByTraceId.delete(traceId);
+  if (snapshot === undefined) return false;
+  const activeKey = previewInspectorSession.activeTargetReachabilityKey;
+  if (typeof activeKey === 'string' && activeKey !== snapshot.reachabilityKey) return false;
+  for (const hook of snapshot.hooks) {
+    restorePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbackValues, hook.id, hook.value);
+    restorePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbackOverrides, hook.id, hook.override);
+    restorePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbackSmartPathSignatures, hook.id, hook.signature);
+    restorePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.runtimeFallbackMaterializedOverrides, hook.id, hook.materialized,
+    );
+    if (previewInspectorSession.runtimeFallbackSmartIds instanceof Set) {
+      if (hook.smart) previewInspectorSession.runtimeFallbackSmartIds.add(hook.id);
+      else previewInspectorSession.runtimeFallbackSmartIds.delete(hook.id);
+    }
+    const current = previewInspectorSession.runtimeFallbacks?.get(hook.id);
+    if (hook.record.present && current !== undefined) {
+      previewInspectorSession.runtimeFallbacks.set(hook.id, {
+        ...current,
+        mode: hook.record.value?.mode,
+        requiredPaths: current.requiredPaths,
+      });
+    } else {
+      restorePreviewInspectorRequirementMapEntry(previewInspectorSession.runtimeFallbacks, hook.id, hook.record);
+    }
+  }
+  for (const request of snapshot.requests) {
+    restorePreviewInspectorRequirementMapEntry(previewInspectorSession.dataPayloadOverrides, request.id, request.override);
+    restorePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.dataPayloadSmartShapeSignatures, request.id, request.signature,
+    );
+    if (typeof clearPreviewInspectorVirtualBackendResource === 'function') {
+      clearPreviewInspectorVirtualBackendResource(request.id);
+    }
+  }
+  previewInspectorSession.fallbackValuesEnabled = snapshot.fallbackValuesEnabled;
+  previewInspectorSession.dataAutoEnabled = snapshot.dataAutoEnabled;
+  const search = previewInspectorSession.minimumRequirementSearchByKey?.get(snapshot.reachabilityKey);
+  if (search !== undefined) Object.assign(search, { rollbackTraceId: traceId, rolledBackHookCount: snapshot.hooks.length,
+    rolledBackRequestCount: snapshot.requests.length, status: 'rolled-back' });
+  const state = previewInspectorSession.targetReachabilityByKey?.get(snapshot.reachabilityKey);
+  if (state !== undefined) {
+    state.exhausted = true;
+    state.idlePasses = 0;
+    state.probeRevision = (state.probeRevision ?? 0) + 1;
+    state.status = 'resolver-rolled-back';
+  }
+  const convergence = readPreviewInspectorRequirementConvergence({ key: snapshot.reachabilityKey });
+  convergence.status = 'rolled-back';
+  clearPreviewInspectorRequirementAutoRollbacks(snapshot.reachabilityKey);
+  if (snapshot.requests.length > 0) previewInspectorSession.dataRevision =
+    (previewInspectorSession.dataRevision ?? 0) + 1;
+  previewInspectorSession.renderConditionRevision = (previewInspectorSession.renderConditionRevision ?? 0) + 1;
+  if (typeof persistPreviewInspectorState === 'function') persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
+  const message = 'Automatic generated preview values were reverted after a new render error.';
+  if (typeof recordPreviewInspectorConsoleEntry === 'function') recordPreviewInspectorConsoleEntry({
+    details: 'Trace: ' + traceId + '\\nMode: ' + String(snapshot.mode ?? 'minimum-requirement') +
+      '\\nTarget: ' + String(state?.targetExportName ?? '') +
+      '\\nGenerated hooks: ' + snapshot.hooks.length + '\\nGenerated requests: ' + snapshot.requests.length,
+    level: 'warn', location: '', message, phase: 'blocker resolver rollback', source: 'target-reachability',
+  });
+  if (typeof recordPreviewInspectorRuntimeHealth === 'function') recordPreviewInspectorRuntimeHealth({
+    category: 'blocker-resolver', detail: { mode: snapshot.mode ?? 'minimum-requirement',
+      reason: 'runtime-error', target: state?.targetExportName, traceId, hookCount: snapshot.hooks.length,
+      requestCount: snapshot.requests.length },
+    event: 'automatic-resolution-rolled-back',
+  });
+  return true;
 }
 
 /** Includes the active hot artifact revision so a real source edit receives a fresh automatic budget. */

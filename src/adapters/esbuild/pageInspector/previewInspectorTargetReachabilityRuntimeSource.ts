@@ -419,6 +419,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   const frontier = beginPreviewInspectorRequirementFrontier(state, search, batch);
   if (frontier === undefined) return state.exhausted === true;
+  const rollbackSnapshot = capturePreviewInspectorRequirementAutoRollback(state, batch);
   const runtimeChanged = smartFillPreviewInspectorRuntimeFallbacksForReachability(
     state.key,
     {
@@ -440,6 +441,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
     completePreviewInspectorRequirementFrontier(search, frontier, false);
     return false;
   }
+  let traceId;
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     const hookIdSet = new Set(batch.hookIds);
     const requestIdSet = new Set(batch.requestIds);
@@ -464,7 +466,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
         };
       });
     const sourceGate = state.appliedConditions?.at(-1);
-    recordPreviewInspectorBlockerAutoDecision({
+    traceId = recordPreviewInspectorBlockerAutoDecision({
       action: search.origin === 'deterministic-auto'
         ? 'Auto-fill deterministic page-path requirements'
         : 'Fill newly discovered page-path requirements',
@@ -483,6 +485,14 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
       startsRenderAttempt: true,
       summary: { applicationPath: state.applicationPath },
     });
+  }
+  if (runtimeChanged || dataChanged) {
+    if (rollbackSnapshot !== undefined) {
+      rollbackSnapshot.mode = search.origin === 'deterministic-auto'
+        ? 'deterministic-minimum-auto'
+        : 'minimum-requirement-dfs';
+    }
+    registerPreviewInspectorRequirementAutoRollback(traceId, rollbackSnapshot);
   }
   completePreviewInspectorRequirementFrontier(search, frontier, true);
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
@@ -800,6 +810,7 @@ function smartFillPreviewInspectorTargetApplicationPath(blocker) {
     : undefined;
   const state = previewInspectorSession.targetReachabilityByKey.get(reachabilityKey);
   resetPreviewInspectorRequirementConvergence(state ?? reachabilityKey);
+  clearPreviewInspectorRequirementAutoRollbacks(reachabilityKey);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Start minimum page-path requirement search',
@@ -850,6 +861,7 @@ function retryPreviewInspectorTargetApplicationPath() {
   if (descriptor === undefined || candidate === undefined) return;
   const key = createPreviewInspectorTargetReachabilityKey(descriptor, candidate);
   resetPreviewInspectorRequirementConvergence(key);
+  clearPreviewInspectorRequirementAutoRollbacks(key);
   previewInspectorSession.minimumRequirementSearchByKey?.delete(key);
   clearPreviewInspectorTargetGuidedConditionOverrides(key);
   previewInspectorSession.targetReachabilityByKey?.delete(key);
@@ -890,11 +902,12 @@ function returnPreviewInspectorToPageContext() {
 function resetPreviewInspectorTargetReachability() {
   initializePreviewInspectorTargetReachabilityState();
   const conditionChanged = clearPreviewInspectorTargetGuidedConditionOverrides();
+  const rollbackChanged = clearPreviewInspectorRequirementAutoRollbacks();
   const stateChanged = previewInspectorSession.targetReachabilityByKey.size > 0;
   previewInspectorSession.targetReachabilityByKey.clear();
   previewInspectorSession.minimumRequirementSearchByKey.clear();
   previewInspectorSession.activeTargetReachabilityKey = undefined;
-  return conditionChanged || stateChanged;
+  return conditionChanged || rollbackChanged || stateChanged;
 }
 `;
 }

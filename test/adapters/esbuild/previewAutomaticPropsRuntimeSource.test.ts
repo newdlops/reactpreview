@@ -103,6 +103,26 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     });
   });
 
+  /** Materializes exactly one inert item only when type inference provided its element contract. */
+  it('keeps unknown arrays empty and creates one structured typed list item', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { unknown: { kind: 'array' }, pills: { kind: 'array', items: { kind: 'object', properties: { id: { kind: 'string' }, label: { kind: 'string' } } } } } };",
+        'const value = createPreviewPropsFromLayers(shape);',
+        'globalThis.result = { unknownLength: value.unknown.length, pillLength: value.pills.length, pill: value.pills[0] };',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({
+      unknownLength: 0,
+      pillLength: 1,
+      pill: { id: '', label: '' },
+    });
+  });
+
   /**
    * Repairs a dormant parent's null only at the exact selected target whose local guard is forced.
    */

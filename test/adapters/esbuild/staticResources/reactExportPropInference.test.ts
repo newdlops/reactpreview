@@ -3,6 +3,141 @@ import { describe, expect, it } from 'vitest';
 import { collectReactExportPropInference } from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
 
 describe('collectReactExportPropInference', () => {
+  /** Carries a type-proven list element contract so automatic props can exercise a pill branch. */
+  it('infers a nullable typed collection with its one inert item structure', () => {
+    const source = [
+      'interface Pill { id: string; label: string; }',
+      'type Props = { pills: Pill[] | undefined };',
+      'export function PillList({ pills }: Props) {',
+      '  return <div>{pills?.map((pill) => <span key={pill.id}>{pill.label}</span>)}</div>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/PillList.tsx', source);
+
+    expect(result.PillList?.shape.properties?.pills).toEqual({
+      kind: 'array',
+      items: {
+        kind: 'object',
+        properties: {
+          id: { kind: 'string' },
+          label: { kind: 'string' },
+        },
+      },
+    });
+    expect(result.PillList?.provenance).toContainEqual({
+      kind: 'object', path: 'pills.[]', source: 'type',
+    });
+  });
+  /** Resolves a local imported/re-exported item interface without executing a module. */
+  it('resolves a re-exported typed collection item through the bounded parse-only reader', () => {
+    const sources = new Map([
+      ['/workspace/types.ts', 'export interface Item { id: string; label: string; }'],
+      ['/workspace/barrel.ts', "export { Item } from './types';"],
+    ]);
+    const result = collectReactExportPropInference(
+      '/workspace/List.tsx',
+      "import type { Item } from './barrel'; export function List({ items }: { items: Item[] | undefined }) { return <>{items?.map((item) => item.label)}</>; }",
+      {
+        resolveImport: (specifier, importer) => {
+          const sourcePath = specifier === './barrel' ? '/workspace/barrel.ts' :
+            specifier === './types' ? '/workspace/types.ts' : undefined;
+          const sourceText = sourcePath === undefined ? undefined : sources.get(sourcePath);
+          return sourcePath === undefined || sourceText === undefined ? undefined : { sourcePath, sourceText };
+        },
+      },
+    );
+    expect(result.List?.shape.properties?.items?.items).toEqual({
+      kind: 'object', properties: { id: { kind: 'string' }, label: { kind: 'string' } },
+    });
+  });
+  /** Fails closed for ambiguous non-null collection alternatives instead of selecting one branch. */
+  it('does not materialize an ambiguous non-null collection union', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/Ambiguous.tsx',
+      'export function Ambiguous({ items }: { items: { id: string }[] | { name: string }[] | undefined }) { return <>{items?.length}</>; }',
+    );
+    expect(result.Ambiguous).toBeUndefined();
+  });
+  /** Does not admit same-name module locals unless the imported declaration is genuinely exported. */
+  it('fails closed for a non-exported imported item declaration', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/List.tsx',
+      "import type { Item } from './types'; export function List({ items }: { items: Item[] }) { return <>{items.length}</>; }",
+      { resolveImport: () => ({ sourcePath: '/workspace/types.ts', sourceText: 'interface Item { id: string; }' }) },
+    );
+    expect(result.List?.shape.properties?.items).toEqual({ kind: 'array' });
+  });
+  /** Recursive item aliases cannot re-enter after their declaration becomes active. */
+  it('fails closed for recursive collection items', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/Recursive.tsx',
+      'interface Item { id: string; children: Item[]; } export function Tree({ items }: { items: Item[] }) { return <>{items.length}</>; }',
+    );
+    expect(result.Tree?.shape.properties?.items?.items?.properties?.children).toEqual({ kind: 'array' });
+  });
+
+  /** Mutual aliases share the same active declaration stack across detached item traversal. */
+  it('fails closed for mutually recursive collection items', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/Mutual.tsx',
+      'interface A { items: B[]; } interface B { items: A[]; } export function Mutual({ items }: { items: A[] }) { return <>{items.length}</>; }',
+    );
+    const nested = result.Mutual?.shape.properties?.items?.items?.properties?.items?.items?.properties?.items;
+    expect(nested).toEqual({ kind: 'array' });
+  });
+
+  /** Deep array nesting consumes the bounded inference corridor instead of restarting per item. */
+  it('fails closed beyond the aggregate nested-array depth budget', () => {
+    const nested = '[]'.repeat(16);
+    const result = collectReactExportPropInference(
+      '/workspace/Deep.tsx',
+      `export function Deep({ items }: { items: { id: string }${nested} }) { return <>{items.length}</>; }`,
+    );
+    expect(result.Deep?.shape.properties?.items).toEqual({ kind: 'array' });
+  });
+
+  /** Many sibling collection contracts share the aggregate node budget instead of restarting. */
+  it('does not restart the item budget for many sibling arrays', () => {
+    const fields = Array.from({ length: 220 }, (_, index) => `items${index}: { id: string }[]`).join(';');
+    const result = collectReactExportPropInference(
+      '/workspace/Many.tsx',
+      `type Props = { ${fields} }; export function Many(props: Props) { return <>{props.items0.length}</>; }`,
+    );
+    expect(Object.keys(result.Many?.shape.properties ?? {}).length).toBeLessThan(192);
+  });
+  it('resolves the same non-recursive alias independently for sibling props', () => {
+    const result = collectReactExportPropInference('/workspace/Siblings.tsx',
+      'interface Item { id: string; } export function Siblings({ left, right }: { left: Item[]; right: Item[] }) { return <>{left.length}{right.length}</>; }');
+    expect(result.Siblings?.shape.properties?.left?.items).toBeDefined();
+    expect(result.Siblings?.shape.properties?.right?.items).toBeDefined();
+  });
+  /** Distinct aliases consume one shared object/array corridor rather than relying on recursion filtering. */
+  it('cuts off a distinct alternating object-array alias chain at the aggregate depth limit', () => {
+    const aliases = Array.from(
+      { length: 14 },
+      (_, index) => `interface A${index} { next: A${index + 1}[]; }`,
+    ).join('\n') + 'interface A14 { id: string; }';
+    const result = collectReactExportPropInference(
+      '/workspace/Alternating.tsx',
+      `${aliases}\nexport function Alternating({ items }: { items: A0[] }) { return <>{items.length}</>; }`,
+    );
+    let current = result.Alternating?.shape.properties?.items;
+    for (let index = 0; index < 5; index += 1) {
+      expect(current?.kind).toBe('array');
+      current = current?.items?.properties?.next;
+    }
+    expect(current).toBeUndefined();
+  });
+  it('fails closed for mutually cyclic type aliases', () => {
+    expect(collectReactExportPropInference('/workspace/Cycle.tsx',
+      'type A = B; type B = A; export function Cycle({ value }: { value: A }) { return <>{value}</>; }')).toEqual({});
+  });
+  it('fails closed for cyclic interface heritage', () => {
+    expect(collectReactExportPropInference('/workspace/Heritage.tsx',
+      'interface A extends B {} interface B extends A {} export function Heritage({ value }: { value: A }) { return <>{value}</>; }').Heritage?.shape.properties?.value)
+      .toEqual({ kind: 'object', properties: {} });
+  });
   /**
    * Retains the non-null object branch needed when Inspector reveals an authored dormant target.
    */
@@ -200,8 +335,8 @@ describe('collectReactExportPropInference', () => {
 
     expect(result.Form?.shape.properties).toMatchObject({
       name: { kind: 'string' },
-      variant: { kind: 'string', value: 'create' },
     });
+    expect(result.Form?.shape.properties).not.toHaveProperty('variant');
     expect(result.Form?.shape.properties).not.toHaveProperty('optional');
   });
 

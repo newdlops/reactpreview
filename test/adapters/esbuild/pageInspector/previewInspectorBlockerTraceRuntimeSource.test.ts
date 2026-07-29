@@ -1,4 +1,4 @@
-/** Verifies chronological blocker correlation without mounting React or project modules. */
+/** Verifies chronological blocker correlation and mode-specific rollback dispatch without mounting React or project modules. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorBlockerTraceRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorBlockerTraceRuntimeSource';
@@ -36,6 +36,9 @@ interface TraceRuntime {
   readonly flush: () => void;
   readonly messages: TraceMessage[];
   readonly rollbackCalls: string[];
+  readonly requirementRollbackCalls: string[];
+  readonly resumeEffects: string[];
+  readonly resumeHandledAtCall: boolean[];
   readonly rollbacks: string[];
   readonly setReachability: (key: string, state: Record<string, unknown>) => void;
   readonly snapshot: (snapshot: Record<string, unknown>) => void;
@@ -110,6 +113,149 @@ describe('Preview Inspector blocker trace runtime source', () => {
     expect(error?.traceId).toBe(traceId);
     expect(error?.error?.message).toBe('next missing property');
     expect(runtime.rollbacks).toEqual([]);
+  });
+
+  it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
+    'rolls back only eligible requirement mode %s',
+    (mode) => {
+      const runtime = createTraceRuntime();
+      runtime.snapshot(createSnapshot('auto'));
+      const traceId = runtime.decide({
+        action: 'requirements',
+        blockerId: 'path',
+        blockerKind: 'target-reachability',
+        blockerName: 'Path',
+        mode,
+        startsRenderAttempt: true,
+      });
+      runtime.error({ level: 'error', message: 'new fatal', source: 'preview-runtime' });
+      expect(runtime.requirementRollbackCalls).toEqual([traceId]);
+      expect(runtime.rollbackCalls).toEqual([]);
+      expect(runtime.rollbacks).toEqual([]);
+      expect(
+        runtime.messages.filter((message) => message.event.event === 'subsequent-error'),
+      ).toHaveLength(1);
+      expect(
+        runtime.messages.find((message) => message.event.event === 'subsequent-error')?.event
+          .traceId,
+      ).toBe(traceId);
+      expect(runtime.messages.filter((message) => message.event.event === 'render-result')).toEqual(
+        [
+          expect.objectContaining({
+            event: expect.objectContaining({
+              traceId,
+              result: expect.objectContaining({ outcome: 'rolled-back' }),
+            }),
+          }),
+        ],
+      );
+      expect(runtime.resumeHandledAtCall).toEqual([true]);
+      expect(runtime.resumeEffects).toEqual([]);
+    },
+  );
+
+  it.each(['target-overlay-auto', 'auto', 'smart', 'smart-props', 'convergence-circuit'])(
+    'keeps excluded Auto mode %s diagnostic-only',
+    (mode) => {
+      const runtime = createTraceRuntime();
+      runtime.snapshot(createSnapshot('auto'));
+      const traceId = runtime.decide({
+        action: 'auto',
+        blockerId: 'path',
+        blockerKind: 'target-reachability',
+        blockerName: 'Path',
+        mode,
+        startsRenderAttempt: true,
+      });
+      runtime.error({ level: 'error', message: 'new fatal', source: 'preview-runtime' });
+      expect(runtime.requirementRollbackCalls).toEqual([]);
+      expect(runtime.rollbackCalls).toEqual([]);
+      expect(runtime.rollbacks).toEqual([]);
+      expect(
+        runtime.messages.filter((message) => message.event.event === 'subsequent-error'),
+      ).toHaveLength(1);
+      expect(
+        runtime.messages.find((message) => message.event.event === 'subsequent-error')?.event
+          .traceId,
+      ).toBe(traceId);
+    },
+  );
+
+  it.each(['deterministic-minimum-auto', 'minimum-requirement-dfs'])(
+    'does not roll back eligible mode %s for a known baseline error',
+    (mode) => {
+      const runtime = createTraceRuntime();
+      const error = { level: 'error', message: 'known fatal', source: 'preview-runtime' };
+      runtime.error(error);
+      runtime.decide({
+        action: 'requirements',
+        blockerId: 'path',
+        mode,
+        startsRenderAttempt: true,
+      });
+      runtime.error(error);
+      expect(runtime.requirementRollbackCalls).toEqual([]);
+      expect(runtime.rollbackCalls).toEqual([]);
+      expect(runtime.messages.filter((message) => message.event.event === 'render-result')).toEqual(
+        [],
+      );
+    },
+  );
+
+  it('deduplicates eligible requirement rollback across duplicate fatal transports', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('auto'));
+    const traceId = runtime.decide({
+      action: 'requirements',
+      blockerId: 'path',
+      mode: 'deterministic-minimum-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.error({ level: 'error', message: 'duplicate fatal', source: 'preview-runtime' });
+    runtime.error({ level: 'error', message: 'duplicate fatal', source: 'react-boundary' });
+    expect(runtime.requirementRollbackCalls).toEqual([traceId]);
+    expect(runtime.rollbackCalls).toEqual([]);
+    expect(runtime.rollbacks).toEqual([]);
+    const errors = runtime.messages.filter((message) => message.event.event === 'subsequent-error');
+    const results = runtime.messages.filter((message) => message.event.event === 'render-result');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.event.traceId).toBe(traceId);
+    expect(results).toEqual([
+      expect.objectContaining({
+        event: expect.objectContaining({
+          traceId,
+          result: expect.objectContaining({ outcome: 'rolled-back' }),
+        }),
+      }),
+    ]);
+    expect(runtime.resumeHandledAtCall).toEqual([true]);
+    expect(runtime.resumeEffects).toEqual([]);
+  });
+
+  it('corrects a committed requirement transaction during settled-error grace with a final rollback', () => {
+    const runtime = createTraceRuntime();
+    runtime.snapshot(createSnapshot('auto'));
+    const traceId = runtime.decide({
+      action: 'requirements',
+      blockerId: 'path',
+      mode: 'deterministic-minimum-auto',
+      startsRenderAttempt: true,
+    });
+    runtime.snapshot(createSnapshot('same'));
+    runtime.snapshot(createSnapshot('same'));
+    runtime.advance(320);
+    runtime.error({ level: 'error', message: 'late fatal', source: 'preview-runtime' });
+    const results = runtime.messages.filter((message) => message.event.event === 'render-result');
+    expect(results).toHaveLength(2);
+    expect(results[0]?.event.result?.outcome).toBe('committed');
+    expect(results[1]?.event.result?.outcome).toBe('rolled-back');
+    expect(results[1]?.event.traceId).toBe(traceId);
+    expect(runtime.requirementRollbackCalls).toEqual([traceId]);
+    const errors = runtime.messages.filter((message) => message.event.event === 'subsequent-error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.event.traceId).toBe(traceId);
+    expect(runtime.resumeHandledAtCall).toEqual([false]);
+    expect(runtime.resumeEffects).toEqual([traceId]);
   });
 
   /** Emits a standalone error trace when no Auto attempt exists, while ignoring ordinary info rows. */
@@ -238,7 +384,15 @@ describe('Preview Inspector blocker trace runtime source', () => {
       source: 'react-boundary',
     });
 
+    expect(runtime.rollbackCalls).toEqual([traceId]);
     expect(runtime.rollbacks).toEqual([traceId]);
+    expect(runtime.requirementRollbackCalls).toEqual([]);
+    expect(
+      runtime.messages.filter(
+        (message) =>
+          message.event.event === 'subsequent-error' && message.event.traceId === traceId,
+      ),
+    ).toHaveLength(1);
     expect(
       runtime.messages.find(
         (message) => message.event.event === 'render-result' && message.event.traceId === traceId,
@@ -770,7 +924,10 @@ function createTraceRuntime(): TraceRuntime {
       const PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS = 160;
       const messages = [];
       const rollbackCalls = [];
+      const requirementRollbackCalls = [];
       const rollbacks = [];
+      const resumeHandledAtCall = [];
+      const resumeEffects = [];
       const previewInspectorPostHostMessage = (message) => { messages.push(message); };
       const readPreviewInspectorRuntimeCorrelation = () => ({
         artifactId: '0123456789abcdef',
@@ -787,7 +944,16 @@ function createTraceRuntime(): TraceRuntime {
         rollbacks.push(traceId);
         return true;
       };
-      const resumePreviewInspectorTargetReachabilityAfterConditionAttempt = () => false;
+      const resumePreviewInspectorTargetReachabilityAfterConditionAttempt = (attempt) => {
+        resumeHandledAtCall.push(attempt?.targetReachabilityResumeHandled === true);
+        if (attempt?.targetReachabilityResumeHandled === true) return false;
+        attempt.targetReachabilityResumeHandled = true;
+        resumeEffects.push(attempt.traceId);
+        return true;
+      };
+      const rollbackPreviewInspectorRequirementAutoDecision = (traceId) => {
+        requirementRollbackCalls.push(traceId); return true;
+      };
       const inferPreviewInspectorTargetAutoAttemptReachabilityKey = (candidate) =>
         candidate?.targetReachabilityKey;
       const isPreviewInspectorBlockingNode = (node) => node?.blocker?.mode !== 'assisted';
@@ -800,6 +966,9 @@ function createTraceRuntime(): TraceRuntime {
         flush: flushPreviewInspectorBlockerTraceAutoDecisions,
         messages,
         rollbackCalls,
+        requirementRollbackCalls,
+        resumeEffects,
+        resumeHandledAtCall,
         rollbacks,
         setReachability: (key, state) => {
           previewInspectorSession.targetReachabilityByKey.set(key, state);

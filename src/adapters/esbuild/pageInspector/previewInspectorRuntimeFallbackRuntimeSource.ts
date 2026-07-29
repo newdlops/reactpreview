@@ -142,16 +142,24 @@ function createPreviewInspectorRuntimeFallbackPathSignature(requiredPaths) {
 
 /** Separates a shared query-wrapper callsite into one fallback record per authored request. */
 function scopePreviewInspectorRuntimeFallbackMetadata(metadata, readDocument, readOptions) {
-  if (metadata.id.length === 0) return metadata;
+  const renderPropPaths = readPreviewInspectorGraphqlRenderPropUsagePaths(readDocument);
+  const mergedMetadata = renderPropPaths.length === 0 ? metadata : {
+    ...metadata,
+    requiredPaths: normalizePreviewInspectorRequiredPropertyPaths([
+      ...metadata.requiredPaths,
+      ...renderPropPaths,
+    ]),
+  };
+  if (mergedMetadata.id.length === 0) return mergedMetadata;
   const requestIdentity = createPreviewInspectorHookGraphqlRequestIdentity(
     readDocument,
     readOptions,
   );
-  if (requestIdentity.length === 0) return metadata;
+  if (requestIdentity.length === 0) return mergedMetadata;
   const suffix = ':graphql:' + requestIdentity;
   return {
-    ...metadata,
-    id: metadata.id.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT - suffix.length) + suffix,
+    ...mergedMetadata,
+    id: mergedMetadata.id.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT - suffix.length) + suffix,
   };
 }
 

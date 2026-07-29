@@ -1,4 +1,4 @@
-/** Exercises the automatic requirement circuit without mounting project-owned React components. */
+/** Exercises automatic requirement convergence and session-only rollback transactions without mounting project-owned React components. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorRequirementConvergenceRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRequirementConvergenceRuntimeSource';
@@ -9,12 +9,16 @@ function runConvergenceScenario(scenario: string): unknown {
   vm.runInNewContext(
     `
       const PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8;
+      const PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT = 24;
+      const PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT = 12;
       const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
       const previewEntryRevision = 4;
       const warnings = [];
       const health = [];
       let notifications = 0;
       let treeRefreshes = 0;
+      let commits = 0;
+      let persists = 0;
       const hookRecord = {
         id: 'session-hook',
         reachabilityKey: 'page:Target',
@@ -22,9 +26,19 @@ function runConvergenceScenario(scenario: string): unknown {
       };
       const previewInspectorSession = {
         dataPayloadOverrides: new Map(),
+        dataPayloadSmartShapeSignatures: new Map(),
+        dataAutoEnabled: false,
+        dataRevision: 3,
+        fallbackValuesEnabled: false,
         minimumRequirementSearchByKey: new Map(),
+        renderConditionRevision: 6,
+        runtimeFallbackMaterializedOverrides: new Map(),
         runtimeFallbackOverrides: new Map(),
+        runtimeFallbackSmartIds: new Set(),
+        runtimeFallbackSmartPathSignatures: new Map(),
+        runtimeFallbacks: new Map([['session-hook', hookRecord]]),
         runtimeFallbackValues: new Map([['session-hook', { session: { user: { id: 'A' } } }]]),
+        targetReachabilityByKey: new Map(),
       };
       const initializePreviewInspectorTargetReachabilityState = () => {
         previewInspectorSession.minimumRequirementSearchByKey ??= new Map();
@@ -37,7 +51,11 @@ function runConvergenceScenario(scenario: string): unknown {
       const recordPreviewInspectorRuntimeHealth = (entry) => health.push(entry);
       const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
       const notifyPreviewInspector = () => { notifications += 1; };
+      const persistPreviewInspectorState = () => { persists += 1; };
       const schedulePreviewInspectorTreeRefresh = () => { treeRefreshes += 1; };
+      const schedulePreviewInspectorCommitRefresh = () => { commits += 1; };
+      const clearedResources = [];
+      const clearPreviewInspectorVirtualBackendResource = (id) => clearedResources.push(id);
       ${createPreviewInspectorRequirementConvergenceRuntimeSource()}
       const state = {
         appliedConditions: [],
@@ -51,6 +69,7 @@ function runConvergenceScenario(scenario: string): unknown {
       };
       const search = { observedPathCount: 1, origin: 'user', pass: 0, status: 'searching' };
       previewInspectorSession.minimumRequirementSearchByKey.set(state.key, search);
+      previewInspectorSession.targetReachabilityByKey.set(state.key, state);
       const batch = { hookIds: ['session-hook'], requestIds: [] };
       ${scenario}
     `,
@@ -193,6 +212,179 @@ describe('Preview Inspector requirement convergence runtime source', () => {
       oldPasses: 8,
       reset: true,
       statusAtLimit: 'limit-reached',
+    });
+  });
+
+  it('restores a captured requirement transaction exactly once before resolver side effects', () => {
+    const result = runConvergenceScenario(`
+      const value = { session: { user: { id: 'prior' } } };
+      const override = { session: { user: { id: 'override' } } };
+      const signature = ['session.user.id'];
+      const materialized = { session: true };
+      const record = { ...hookRecord, mode: 'manual', requiredPaths: ['old'] };
+      const requestOverride = { payload: { profile: { name: 'prior' } } };
+      const requestSignature = ['profile.name'];
+      previewInspectorSession.runtimeFallbackValues.set('session-hook', value);
+      previewInspectorSession.runtimeFallbackOverrides.set('session-hook', override);
+      previewInspectorSession.runtimeFallbackSmartPathSignatures.set('session-hook', signature);
+      previewInspectorSession.runtimeFallbackMaterializedOverrides.set('session-hook', materialized);
+      previewInspectorSession.runtimeFallbackSmartIds.add('session-hook');
+      previewInspectorSession.runtimeFallbacks.set('session-hook', record);
+      previewInspectorSession.dataPayloadOverrides.set('profile-request', requestOverride);
+      previewInspectorSession.dataPayloadSmartShapeSignatures.set('profile-request', requestSignature);
+      const snapshot = capturePreviewInspectorRequirementAutoRollback(state, {
+        hookIds: ['session-hook'], requestIds: ['profile-request'],
+      });
+      snapshot.mode = 'deterministic-minimum-auto';
+      previewInspectorSession.runtimeFallbackValues.set('session-hook', { unsafe: true });
+      previewInspectorSession.runtimeFallbackOverrides.delete('session-hook');
+      previewInspectorSession.runtimeFallbackSmartPathSignatures.set('session-hook', ['unsafe']);
+      previewInspectorSession.runtimeFallbackMaterializedOverrides.set('session-hook', { unsafe: true });
+      previewInspectorSession.runtimeFallbackSmartIds.delete('session-hook');
+      previewInspectorSession.runtimeFallbacks.set('session-hook', {
+        ...record, mode: 'auto', requiredPaths: ['newly.observed'], observed: true,
+      });
+      previewInspectorSession.dataPayloadOverrides.set('profile-request', { payload: { unsafe: true } });
+      previewInspectorSession.dataPayloadSmartShapeSignatures.set('profile-request', ['unsafe']);
+      previewInspectorSession.fallbackValuesEnabled = true;
+      previewInspectorSession.dataAutoEnabled = true;
+      previewInspectorSession.activeTargetReachabilityKey = state.key;
+      const registered = registerPreviewInspectorRequirementAutoRollback('trace-restore', snapshot);
+      const restored = rollbackPreviewInspectorRequirementAutoDecision('trace-restore');
+      const effects = [clearedResources.length, commits, health.length, notifications, persists, treeRefreshes, warnings.length];
+      const duplicate = rollbackPreviewInspectorRequirementAutoDecision('trace-restore');
+      const effectsAfterDuplicate = [clearedResources.length, commits, health.length, notifications, persists, treeRefreshes, warnings.length];
+      globalThis.__result = {
+        clearedResources, commits, convergence: readPreviewInspectorRequirementConvergence(state), dataRevision: previewInspectorSession.dataRevision, duplicate,
+        effects, effectsAfterDuplicate,
+        dataAutoEnabled: previewInspectorSession.dataAutoEnabled,
+        fallbackValuesEnabled: previewInspectorSession.fallbackValuesEnabled, health, notifications,
+        persists, record: previewInspectorSession.runtimeFallbacks.get('session-hook'),
+        registered, renderConditionRevision: previewInspectorSession.renderConditionRevision, restored,
+        search, state, treeRefreshes, valueSame: previewInspectorSession.runtimeFallbackValues.get('session-hook') === value,
+        overrideSame: previewInspectorSession.runtimeFallbackOverrides.get('session-hook') === override,
+        signatureSame: previewInspectorSession.runtimeFallbackSmartPathSignatures.get('session-hook') === signature,
+        materializedSame: previewInspectorSession.runtimeFallbackMaterializedOverrides.get('session-hook') === materialized,
+        requestSame: previewInspectorSession.dataPayloadOverrides.get('profile-request') === requestOverride,
+        requestSignatureSame: previewInspectorSession.dataPayloadSmartShapeSignatures.get('profile-request') === requestSignature,
+        smart: previewInspectorSession.runtimeFallbackSmartIds.has('session-hook'), warnings,
+      };
+    `) as Record<string, unknown>;
+    expect(result.registered).toBe(true);
+    expect(result.restored).toBe(true);
+    expect(result.duplicate).toBe(false);
+    expect(result.dataAutoEnabled).toBe(false);
+    expect(result.fallbackValuesEnabled).toBe(false);
+    expect(result.effects).toEqual([1, 1, 1, 1, 1, 1, 1]);
+    expect(result.effectsAfterDuplicate).toEqual(result.effects);
+    expect(result.valueSame).toBe(true);
+    expect(result.overrideSame).toBe(true);
+    expect(result.signatureSame).toBe(true);
+    expect(result.materializedSame).toBe(true);
+    expect(result.requestSame).toBe(true);
+    expect(result.requestSignatureSame).toBe(true);
+    expect(result.smart).toBe(true);
+    expect(result.record).toEqual({
+      ...{ id: 'session-hook', reachabilityKey: 'page:Target' },
+      mode: 'manual',
+      observed: true,
+      requiredPaths: ['newly.observed'],
+    });
+    expect(result.clearedResources).toEqual(['profile-request']);
+    expect(result).toMatchObject({
+      commits: 1,
+      dataRevision: 4,
+      notifications: 1,
+      persists: 1,
+      renderConditionRevision: 7,
+      treeRefreshes: 1,
+    });
+    expect(result.search).toMatchObject({
+      rollbackTraceId: 'trace-restore',
+      rolledBackHookCount: 1,
+      rolledBackRequestCount: 1,
+      status: 'rolled-back',
+    });
+    expect(result.convergence).toMatchObject({ status: 'rolled-back' });
+    expect(result.state).toMatchObject({
+      exhausted: true,
+      idlePasses: 0,
+      probeRevision: 1,
+      status: 'resolver-rolled-back',
+    });
+    expect(result.health).toEqual([
+      {
+        category: 'blocker-resolver',
+        detail: {
+          hookCount: 1,
+          mode: 'deterministic-minimum-auto',
+          reason: 'runtime-error',
+          requestCount: 1,
+          target: 'Target',
+          traceId: 'trace-restore',
+        },
+        event: 'automatic-resolution-rolled-back',
+      },
+    ]);
+    expect(result.warnings).toEqual([
+      {
+        details:
+          'Trace: trace-restore\\nMode: deterministic-minimum-auto\\nTarget: Target\\nGenerated hooks: 1\\nGenerated requests: 1',
+        level: 'warn',
+        location: '',
+        message: 'Automatic generated preview values were reverted after a new render error.',
+        phase: 'blocker resolver rollback',
+        source: 'target-reachability',
+      },
+    ]);
+  });
+
+  it('consumes mismatches, bounds registrations, and clears only the requested corridor', () => {
+    const result = runConvergenceScenario(`
+      const other = capturePreviewInspectorRequirementAutoRollback({ key: 'page:Other' }, batch);
+      const retainedUnsafe = { unsafe: true };
+      previewInspectorSession.runtimeFallbackValues.set('session-hook', retainedUnsafe);
+      previewInspectorSession.activeTargetReachabilityKey = state.key;
+      registerPreviewInspectorRequirementAutoRollback('mismatch', other);
+      const mismatch = rollbackPreviewInspectorRequirementAutoDecision('mismatch');
+      const consumed = previewInspectorSession.requirementAutoRollbackByTraceId.has('mismatch');
+      const invalid = [
+        registerPreviewInspectorRequirementAutoRollback('', other),
+        registerPreviewInspectorRequirementAutoRollback('empty', undefined),
+        registerPreviewInspectorRequirementAutoRollback('empty-snapshot', { hooks: [], requests: [] }),
+      ];
+      for (let index = 0; index < 65; index += 1) {
+        const snapshot = capturePreviewInspectorRequirementAutoRollback({ key: index % 2 ? 'page:Other' : state.key }, batch);
+        registerPreviewInspectorRequirementAutoRollback('trace-' + String(index), snapshot);
+      }
+      const size = previewInspectorSession.requirementAutoRollbackByTraceId.size;
+      const oldest = previewInspectorSession.requirementAutoRollbackByTraceId.has('trace-0');
+      const newest = previewInspectorSession.requirementAutoRollbackByTraceId.has('trace-64');
+      const keyed = clearPreviewInspectorRequirementAutoRollbacks(state.key);
+      const onlyOther = [...previewInspectorSession.requirementAutoRollbackByTraceId.values()].every((entry) => entry.reachabilityKey === 'page:Other');
+      const all = clearPreviewInspectorRequirementAutoRollbacks();
+      const second = clearPreviewInspectorRequirementAutoRollbacks();
+      globalThis.__result = {
+        all, consumed, invalid, keyed, mismatch, newest, oldest, onlyOther, second, size,
+        retainedUnsafe: previewInspectorSession.runtimeFallbackValues.get('session-hook') === retainedUnsafe,
+        effects: [clearedResources.length, commits, health.length, notifications, persists, treeRefreshes, warnings.length],
+        flags: [previewInspectorSession.dataAutoEnabled, previewInspectorSession.fallbackValuesEnabled, previewInspectorSession.dataRevision, previewInspectorSession.renderConditionRevision],
+      };
+    `);
+    expect(result).toEqual({
+      all: true,
+      consumed: false,
+      invalid: [false, false, false],
+      keyed: true,
+      mismatch: false,
+      newest: true,
+      oldest: false,
+      onlyOther: true,
+      second: false,
+      size: 64,
+      retainedUnsafe: true,
+      effects: [0, 0, 0, 0, 0, 0, 0],
+      flags: [false, false, 3, 6],
     });
   });
 });

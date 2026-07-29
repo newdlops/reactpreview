@@ -13,6 +13,28 @@ export function createPreviewInspectorHookGraphqlRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT = 1_000_000;
 const previewInspectorHookGraphqlDocumentIdentities = new WeakMap();
+const previewInspectorHookGraphqlRenderPropUsages = new WeakMap();
+
+/** Registers compiler-proven render-prop demand and returns the same DocumentNode identity. */
+function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths) {
+  if ((typeof document !== 'object' && typeof document !== 'function') || document === null ||
+    !Array.isArray(rawPaths)) return document;
+  const paths = [...new Set(rawPaths.filter((path) => typeof path === 'string' &&
+    /^data(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\.\[\]){1,12}$/u.test(path)))].sort().slice(0, 32);
+  if (paths.length === 0) return document;
+  const previous = previewInspectorHookGraphqlRenderPropUsages.get(document);
+  const merged = [...new Set([...(previous ?? []), ...paths])].sort().slice(0, 32);
+  previewInspectorHookGraphqlRenderPropUsages.set(document, Object.freeze(merged));
+  return document;
+}
+
+function readPreviewInspectorGraphqlRenderPropUsagePaths(readDocument) {
+  if (typeof readDocument !== 'function') return [];
+  try {
+    const document = readDocument();
+    return previewInspectorHookGraphqlRenderPropUsages.get(document) ?? [];
+  } catch { return []; }
+}
 
 /** Reads bounded operation evidence without executing getters outside one guarded access chain. */
 function readPreviewInspectorHookGraphqlDocumentEvidence(readDocument) {
@@ -110,9 +132,13 @@ function createPreviewInspectorHookGraphqlRequestIdentity(readDocument, readOpti
     const variables = readPreviewInspectorHookGraphqlIdentityVariables(readOptions)
       .map((identity) => identity.name + ':' + typeof identity.value + ':' + String(identity.value))
       .join('\0');
+    const demand = previewInspectorHookGraphqlRenderPropUsages.get(document) ?? [];
+    const demandSignature = demand.length === 0 ? '' : hashPreviewInspectorHookGraphqlRequestIdentity(demand.join('\0'));
+    const scopedIdentity = demandSignature.length === 0 ? documentIdentity :
+      hashPreviewInspectorHookGraphqlRequestIdentity(documentIdentity + '\0' + demandSignature);
     return variables.length === 0
-      ? documentIdentity
-      : hashPreviewInspectorHookGraphqlRequestIdentity(documentIdentity + '\0' + variables);
+      ? scopedIdentity
+      : hashPreviewInspectorHookGraphqlRequestIdentity(scopedIdentity + '\0' + variables);
   } catch {
     return '';
   }

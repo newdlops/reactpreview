@@ -108,6 +108,14 @@ describe('Page Inspector data runtime source', () => {
     });
   });
 
+  // prettier-ignore
+  it.each([['authored-page', undefined, 'corridor-auto', []], ['file-components', undefined, 'auto', ['value', 'value']], ['file-components', 'page:Target', 'corridor-auto', []]])('uses %s with active key %s', (scenario, activeKey, profile, payload) => {
+    const runtime = evaluateDataRuntime(undefined, activeKey, scenario);
+    const metadata: unknown = JSON.parse('{"id":"profile-race","kind":"graphql","label":"ProfileRace","shape":{"items":{"kind":"string"},"kind":"array"}}');
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(payload);
+    expect(runtime.requests()[0]).toMatchObject({ autoPayloadProfile: profile });
+  });
+
   /** Opens an unknown list conservatively only after the user/frontier selects its request. */
   it('uses neutral unknown items for Smart and Lorem while corridor Auto remains empty', () => {
     const runtime = evaluateDataRuntime(undefined, 'page:Target');
@@ -939,6 +947,7 @@ interface EvaluatedDataRuntime {
 function evaluateDataRuntime(
   nativeFetch?: (...arguments_: unknown[]) => unknown,
   activeTargetReachabilityKey?: string,
+  renderScenario = 'file-components',
 ): EvaluatedDataRuntime {
   const source = `
 const previewHotRuntime = { inspectorNativeFetch: globalThis.__nativeFetch };
@@ -952,6 +961,7 @@ function stringifyPreviewInspectorProps(value) { return JSON.stringify(value, nu
 function persistPreviewInspectorState() {}
 function notifyPreviewInspector() {}
 function schedulePreviewInspectorTreeRefresh() {}
+function readPreviewInspectorRenderScenario() { return ${JSON.stringify(renderScenario)}; }
 ${createPreviewInspectorDataRuntimeSource()}
 globalThis.__dataRuntime = {
   auto: setPreviewInspectorDataAutoEnabled,

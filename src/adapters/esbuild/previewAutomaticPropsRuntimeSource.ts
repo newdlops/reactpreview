@@ -63,7 +63,13 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
   ) return undefined;
   budget.nodes += 1;
   switch (node.kind) {
-    case 'array': return [];
+    case 'array': {
+      // A one-item list is admitted only when static type evidence supplied an element contract.
+      // Unknown arrays stay empty so automatic props cannot invent application collection semantics.
+      if (node.items === undefined) return [];
+      const item = materializePreviewAutomaticPropNode(node.items, budget, depth + 1);
+      return item === undefined ? [] : [item];
+    }
     case 'boolean': return typeof node.value === 'boolean' ? node.value : false;
     case 'component': {
       const component = function PreviewAutomaticComponent() { return null; };

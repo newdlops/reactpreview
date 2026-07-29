@@ -47,7 +47,8 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
   const minimumSearch = blocker.minimumRequirementSearch;
   const resolving = blocker.status === 'settling-auto-attempt' || minimumSearch?.status === 'searching';
-  const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status);
+  const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status) ||
+    minimumSearch?.status === 'rolled-back';
   const invisibleExplanation = fallbackOutput
     ? 'The visible DOM belongs to an error fallback, not this file’s authored output.'
     : candidateOutput
@@ -61,7 +62,9 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
               routeChoiceName + ' at ' + String(routeChoicePath ?? '/') +
               ' produced no visible element. Choose another Page path or inspect this page’s first condition.'
             : 'This file ran, but the current branch produced no visible element.';
-  const searchStatusLabel = minimumSearch?.status === 'cycle-detected'
+  const searchStatusLabel = minimumSearch?.status === 'rolled-back'
+    ? 'stopped: unsafe generated values reverted'
+    : minimumSearch?.status === 'cycle-detected'
     ? 'stopped: the same values repeated'
     : minimumSearch?.status === 'limit-reached'
       ? 'stopped: pass limit reached'
@@ -81,12 +84,14 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
         : candidateOutput
           ? invisibleExplanation
           : circuitOpen
-            ? minimumSearch.status === 'cycle-detected'
-              ? 'Automatic search stopped because it kept generating the same preview values.' +
-                (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
-              : 'Automatic search stopped after its safe pass limit.' +
-                (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
-        : direct
+            ? minimumSearch.status === 'rolled-back'
+              ? 'Automatic search stopped because a generated preview value caused a render error and was reverted.'
+              : minimumSearch.status === 'cycle-detected'
+                ? 'Automatic search stopped because it kept generating the same preview values.' +
+                  (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
+                : 'Automatic search stopped after its safe pass limit.' +
+                  (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
+            : direct
           ? 'File-only view is active. Return to the page to inspect the real layout.'
           : pageCommitted
             ? targetMountedWithoutOutput

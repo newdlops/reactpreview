@@ -6,6 +6,7 @@ import {
 } from '../../domain/preview';
 import {
   isPreviewBuildCancellation,
+  isPreviewFrontierMismatchEvidence,
   PreviewBuildStalledError,
 } from '../../domain/previewBuildExecution';
 import { convertMessage, describeUnknownError, isBuildFailure } from './previewBuildResult';
@@ -29,8 +30,16 @@ export async function resolvePreviewCompilerFailure(
   const { buildSignal, error } = options;
   if (isPreviewBuildCancellation(error, buildSignal)) throw error;
   if (error instanceof PreviewBuildStalledError) throw error;
-  if (isPreviewInspectorFrontierMismatch(error)) {
-    throw new PreviewBuildStalledError(options.target, 'bundling-modules', 0, 'frontier-mismatch');
+  const frontierMismatch = readPreviewInspectorFrontierMismatch(error);
+  if (frontierMismatch !== undefined) {
+    throw new PreviewBuildStalledError(
+      options.target,
+      'bundling-modules',
+      0,
+      'frontier-mismatch',
+      undefined,
+      frontierMismatch.evidence,
+    );
   }
   if (
     !options.dependencyAcquisitionAttempted &&
@@ -48,9 +57,18 @@ export async function resolvePreviewCompilerFailure(
 }
 
 /** Maps a frozen-frontier guard violation to a typed consistency failure. */
-function isPreviewInspectorFrontierMismatch(error: unknown): boolean {
-  return (
-    isBuildFailure(error) &&
-    error.errors.some((message) => message.text.startsWith('React Preview frontier mismatch:'))
+function readPreviewInspectorFrontierMismatch(
+  error: unknown,
+):
+  | { evidence?: import('../../domain/previewBuildExecution').PreviewFrontierMismatchEvidence }
+  | undefined {
+  if (!isBuildFailure(error)) return undefined;
+  const message = error.errors.find((candidate) =>
+    candidate.text.startsWith('React Preview frontier mismatch:'),
   );
+  return message === undefined
+    ? undefined
+    : {
+        ...(isPreviewFrontierMismatchEvidence(message.detail) ? { evidence: message.detail } : {}),
+      };
 }

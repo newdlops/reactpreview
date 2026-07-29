@@ -97,6 +97,10 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('selectReactLikePreviewDescriptors(previewModule.default)');
     expect(entry).toContain('isReactLikePreviewValue(descriptor?.value)');
     expect(entry).toContain('PreviewExportErrorBoundary');
+    expect(entry).toContain('activePreviewRouterBridge?.isPreviewRouterRetryError');
+    expect(entry).toContain(
+      "if (typeof retryDetector === 'function' && retryDetector(error) === true) throw error;",
+    );
     expect(entry).toContain('React.createElement(React.Suspense, { fallback: suspenseFallback }');
     expect(entry).toContain("className: 'react-preview-suspense-placeholder'");
     expect(entry).toContain('React.createElement(PreviewRenderedCommitSignal)');
@@ -114,6 +118,9 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('react-preview-export-label');
     expect(entry).toContain('Export: ');
     expect(entry).toContain("replacePreviewRuntimeListener('unhandledrejection'");
+    expect(entry).toContain(
+      'activePreviewRouterBridge?.isPreviewRouterRetryError?.(event.error ?? event.message) === true',
+    );
     expect(entry).toContain('const PREVIEW_PROGRESS_MESSAGE_TYPE = "react-preview-progress"');
     expect(entry).toContain("host.attachShadow({ mode: 'open' })");
     expect(entry).toContain('message.revision < currentRevision');
@@ -123,6 +130,11 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('await preparedEntry.preparationPromise');
     expect(entry).toContain('await preparedEntry.activate()');
     expect(entry).toContain('previewHotRuntime.bootstrapPromise = previewBootstrapPromise');
+    expect(entry).toContain('function postPreviewDirectBlockerTrace(outcome, error)');
+    expect(entry).toContain("previewCommand: 'direct-preview'");
+    expect(entry).toContain("event: 'render-result'");
+    expect(entry).toContain("event: 'subsequent-error'");
+    expect(entry).toContain('...readPreviewRuntimeCorrelation()');
   });
 
   /** Uses the React 16/17 root API without leaving an unresolvable client-entry import behind. */
@@ -141,6 +153,8 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('ReactDOMNamespace.render(element, container)');
     expect(entry).toContain('ReactDOMNamespace.unmountComponentAtNode(container)');
     expect(entry.match(/import \* as ReactDOMNamespace from 'react-dom'/gu)).toHaveLength(1);
+    expect(entry).toContain('function readPreviewInspectorRuntimeCorrelation()');
+    expect(entry).not.toContain('function postPreviewDirectBlockerTrace(outcome, error)');
   });
 
   /** Preloads replacement resources before unmounting and admits content-addressed root entries. */
@@ -186,9 +200,33 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('new Promise((resolve, reject) =>');
     expect(entry).toContain('previewCommitCompleted ||');
     expect(entry).toContain('React Preview retained the mounted revision after a runtime error.');
-    expect(entry).toContain("completePreviewCommit('failed')");
+    expect(entry).toContain("completePreviewCommit('failed', description)");
     expect(entry).toContain('resolvePreviewCommit(outcome)');
     expect(entry).toContain('could not retire stale lazy stylesheets');
+  });
+
+  /** Emits direct correlation only at observed commit/failure terminals, never at entry evaluation. */
+  it('keeps direct blocker traces lifecycle-bound and preserves the Inspector-only producer', () => {
+    const directEntry = createPreviewEntry({
+      documentName: 'Direct.tsx',
+      globalNamespaces: [],
+      setupKind: 'none',
+    });
+    const inspectorEntry = createPreviewEntry({
+      documentName: 'Inspector.tsx',
+      globalNamespaces: [],
+      renderMode: 'page-inspector',
+      setupKind: 'none',
+    });
+    const directProducer = directEntry.indexOf('function postPreviewDirectBlockerTrace(outcome, error)');
+    const terminal = directEntry.indexOf('function completePreviewCommit(outcome = \'ready\', error)');
+
+    expect(directProducer).toBeGreaterThan(-1);
+    expect(directEntry.indexOf('postPreviewDirectBlockerTrace(outcome', terminal)).toBeGreaterThan(terminal);
+    expect(directEntry).toContain("outcome: 'committed'");
+    expect(directEntry).toContain('Direct preview entry failed before a committed render.');
+    expect(inspectorEntry).not.toContain('function postPreviewDirectBlockerTrace(outcome, error)');
+    expect(inspectorEntry).toContain("previewCommand: 'page-inspector'");
   });
 
   /** Keeps valueless cancellation rejections observational while preserving real fatal reasons. */
@@ -217,8 +255,8 @@ describe('createPreviewEntry', () => {
     expect(fatalFallback).toBeGreaterThan(earlyReturn);
   });
 
-  /** Prevents a recoverable first nested-Router attempt from becoming a failed hot revision. */
-  it('defers nested Router browser events to the Inspector candidate retry boundary', () => {
+  /** Prevents either exact recoverable Router attempt from becoming a failed hot revision. */
+  it('defers recoverable Router browser events to the Inspector candidate retry boundary', () => {
     const entry = createPreviewEntry({
       documentName: 'AppRouter.tsx',
       globalNamespaces: [],
@@ -227,7 +265,7 @@ describe('createPreviewEntry', () => {
     });
 
     expect(entry).toContain(
-      'activePreviewRouterBridge?.isNestedPreviewRouterError?.(event.error ?? event.message) === true',
+      'activePreviewRouterBridge?.isPreviewRouterRetryError?.(event.error ?? event.message) === true',
     );
     expect(entry).toContain(
       'preparePreviewInspectorRuntimeFallbackScope(preparedPreviewInspectorTargets)',

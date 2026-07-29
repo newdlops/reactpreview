@@ -11,10 +11,12 @@ import {
 } from '../../domain/preview';
 import {
   isPreviewBuildCancellation,
+  isPreviewFrontierMismatchEvidence,
   isPreviewBuildStall,
   PreviewBuildCancelledError,
   PreviewBuildStalledError,
   type PreviewBuildStallReason,
+  type PreviewFrontierMismatchEvidence,
 } from '../../domain/previewBuildExecution';
 import type { PreviewProgressStage } from '../../domain/previewProgress';
 import type { PreviewCompilerActivity } from '../../domain/previewCompilerActivity';
@@ -101,6 +103,8 @@ export interface PreviewCompilerWorkerSerializedError {
   readonly stack?: string;
   /** Resource boundary used to explain why the graph is not immediately retried. */
   readonly stallReason?: PreviewBuildStallReason;
+  /** Valid bounded frontier evidence retained only for frontier stalls. */
+  readonly frontierMismatchEvidence?: PreviewFrontierMismatchEvidence;
 }
 
 /** Rejects one compile request with a domain-preserving serialized failure. */
@@ -160,6 +164,11 @@ export function serializePreviewCompilerWorkerError(
       ...(isPreviewBuildStall(error) && error.activity !== undefined
         ? { activity: error.activity }
         : {}),
+      ...(isPreviewBuildStall(error) &&
+      error.reason === 'frontier-mismatch' &&
+      isPreviewFrontierMismatchEvidence(error.frontierMismatchEvidence)
+        ? { frontierMismatchEvidence: error.frontierMismatchEvidence }
+        : {}),
       message: error instanceof Error ? error.message : String(error),
       name: error instanceof Error ? error.name : 'PreviewBuildStalledError',
       stallReason: isPreviewBuildStall(error) ? error.reason : 'native-service',
@@ -204,6 +213,10 @@ export function deserializePreviewCompilerWorkerError(
       serialized.elapsedMs ?? 0,
       serialized.stallReason ?? 'watchdog',
       serialized.activity,
+      serialized.stallReason === 'frontier-mismatch' &&
+        isPreviewFrontierMismatchEvidence(serialized.frontierMismatchEvidence)
+        ? serialized.frontierMismatchEvidence
+        : undefined,
     );
     if (serialized.stack !== undefined) stalled.stack = serialized.stack;
     return stalled;

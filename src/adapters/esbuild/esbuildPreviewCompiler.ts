@@ -1,6 +1,7 @@
 /* eslint-disable jsdoc/require-jsdoc */
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import ts from 'typescript';
 import type { PreviewCompiler } from '../../application/previewCompiler';
 import {
   PreviewCompilationError,
@@ -188,6 +189,13 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const inferredPropsByExport = collectReactExportPropInference(
         request.documentPath,
         request.sourceText,
+        {
+          resolveImport: (moduleSpecifier, importerPath) => {
+            const sourcePath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
+            const sourceText = sourcePath === undefined ? undefined : ts.sys.readFile(sourcePath);
+            return sourcePath === undefined || sourceText === undefined ? undefined : { sourcePath, sourceText };
+          },
+        },
       );
       const inspectorExportName = targetSelection.inspectorExportName;
       const themeImport = selectPreviewThemeImport(request.sourceText);
@@ -572,10 +580,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               createPreviewFormikBridgePlugin({ projectRoot }),
               createPreviewReduxBridgePlugin({ projectRoot }),
               createPreviewRouterBridgePlugin({
-                // prettier-ignore
-                automaticallyWrap: activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v5' || activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v6' ? false : routerSelection.automaticallyWrap,
-                // prettier-ignore
-                enabled: activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v5' || activePageExecutionCandidate?.routeRecipe?.kind === 'react-router-v6' ? false : routerSelection.enabled,
+                automaticallyWrap: routerSelection.automaticallyWrap,
+                enabled: routerSelection.enabled,
                 nextAppEnabled:
                   inspectorPlan?.pageCandidates.some(
                     (candidate) => candidate.routeLocation?.evidenceKind === 'next-app-filesystem',

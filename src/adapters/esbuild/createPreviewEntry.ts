@@ -14,6 +14,8 @@ import { createPreviewPageInspectorRuntimeSource } from './pageInspector/preview
 import { createPreviewHotReloadRuntimeSource } from './previewHotReloadRuntimeSource';
 import { createPreviewProgressRuntimeSource } from './previewProgressRuntimeSource';
 import { createPreviewRegeneratorRuntimeGlobalSource } from './previewRegeneratorRuntimeGlobalSource';
+import { createPreviewDirectBlockerTraceRuntimeSource } from './staticResources/previewDirectBlockerTraceRuntimeSource';
+import { createPreviewRuntimeCorrelationSource } from './staticResources/previewRuntimeCorrelationSource';
 import {
   createPreviewReactDomRootRuntimeSource,
   type PreviewReactDomRootKind,
@@ -112,6 +114,10 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
     storybookRuntimeSource,
   });
   const hotReloadRuntimeSource = createPreviewHotReloadRuntimeSource(progressRuntimeSource);
+  const runtimeCorrelationSource =
+    renderMode === 'page-inspector' ? '' : createPreviewRuntimeCorrelationSource();
+  const directBlockerTraceRuntimeSource =
+    renderMode === 'component' ? createPreviewDirectBlockerTraceRuntimeSource() : '';
   const reactDomRootSource = createPreviewReactDomRootRuntimeSource({
     requiresReactDomNamespace: renderMode === 'page-inspector',
     rootKind: options.reactDomRootKind ?? 'client',
@@ -152,6 +158,10 @@ registerPreviewRuntimeCapability('Globals', {
 });
 
 ${hotReloadRuntimeSource}
+
+${runtimeCorrelationSource}
+
+${directBlockerTraceRuntimeSource}
 
 let activePreviewRouterBridge;
 let activePreviewRouterConfiguration;
@@ -283,19 +293,19 @@ function showRuntimeError(error, runtimeContext = {}) {
   errorElement.className = 'react-preview-runtime-error';
   errorElement.textContent = description;
   mountNode.replaceChildren(errorElement);
-  completePreviewCommit('failed');
+  completePreviewCommit('failed', description);
 }
 
 replacePreviewRuntimeListener('error', (event) => {
   if (isCapturedReactError(event.error)) {
     return;
   }
-  // A Page Inspector candidate owns a parent boundary that retries this exact invariant without
-  // the inferred MemoryRouter. React still dispatches a development ErrorEvent before that parent
-  // commits, so do not prematurely mark the recoverable first attempt as a failed revision.
+  // A Page Inspector candidate owns a parent boundary that retries one exact Router invariant.
+  // React still dispatches a development ErrorEvent before that parent commits, so do not
+  // prematurely mark the recoverable first attempt as a failed revision.
   if (
     ${JSON.stringify(renderMode === 'page-inspector')} &&
-    activePreviewRouterBridge?.isNestedPreviewRouterError?.(event.error ?? event.message) === true
+    activePreviewRouterBridge?.isPreviewRouterRetryError?.(event.error ?? event.message) === true
   ) {
     return;
   }
@@ -349,7 +359,13 @@ class PreviewErrorBoundary extends React.Component {
   /** Retains React's logical owner stack, which is more useful than generated bundle offsets. */
   componentDidCatch(error, errorInfo) {
     rememberCapturedReactError(error);
-    completePreviewCommit('failed');
+    completePreviewCommit(
+      'failed',
+      describeRuntimeError(error, {
+        componentStack: errorInfo?.componentStack,
+        phase: 'React provider composition or root render',
+      }),
+    );
     const componentStack = errorInfo?.componentStack;
     recordPreviewInspectorRuntimeConsoleEntry(error, {
       componentStack,
@@ -777,11 +793,14 @@ async function activatePreparedPreview(preparedPreview) {
 }
 
 /** Resolves one entry revision exactly once and terminally hides its preparation indicator. */
-function completePreviewCommit(outcome = 'ready') {
+function completePreviewCommit(outcome = 'ready', error) {
   if (previewCommitCompleted) {
     return;
   }
   previewCommitCompleted = true;
+  if (${encodedRenderMode} === 'component') {
+    postPreviewDirectBlockerTrace(outcome, typeof error === 'string' ? error : undefined);
+  }
   completePreviewProgress(previewEntryRevision);
   try {
     previewHotRuntime.activeStyleSheetBoundary?.commit?.();

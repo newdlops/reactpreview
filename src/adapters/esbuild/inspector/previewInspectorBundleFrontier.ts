@@ -7,7 +7,10 @@ import type {
   PreviewCompilerFrontierReason,
 } from '../../../domain/previewCompilerFrontier';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
-import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
+import type {
+  PreviewInspectorMountSurface,
+  PreviewInspectorPageExecutionCandidate,
+} from './previewInspectorPageExecutionTypes';
 import { collectPreviewInspectorRuntimeImportInventory } from './previewInspectorRuntimeImportInventory';
 import {
   createPreviewInspectorLocalComponentSlice,
@@ -74,6 +77,7 @@ interface OptionalProposal {
 export async function preparePreviewInspectorBundleFrontier(
   options: PreparePreviewInspectorBundleFrontierOptions,
 ): Promise<PreparedPreviewInspectorBundleFrontier> {
+  const authenticInventorySourcePaths = collectAuthenticInventorySourcePaths(options);
   const pending: FrontierSourceQueueItem[] = [
     ...collectExactSeedPaths(options.plan, options.executionCandidate),
     ...(options.runtimeCompanionSourcePaths ?? []),
@@ -147,15 +151,15 @@ export async function preparePreviewInspectorBundleFrontier(
   const processedStaticEdges = new Set<string>();
 
   const readInventory = (sourcePath: string): Promise<SourceInventory | SourceInventoryFailure> => {
-    const cached = sourceCache.get(sourcePath);
+    const normalizedSourcePath = path.normalize(sourcePath);
+    const cached = sourceCache.get(normalizedSourcePath);
     if (cached !== undefined) return cached;
-    const read = options.readSource(sourcePath).then((sourceText) => {
+    const read = options.readSource(normalizedSourcePath).then((sourceText) => {
       if (sourceText === undefined) return 'exact-source-unreadable' as const;
       const slicedSurfaces = options.executionCandidate?.criticalSurfaces.filter(
         (surface) =>
-          (surface.strategy === 'selected-export-slice' ||
-            surface.strategy === 'inner-local-component-slice') &&
-          path.normalize(surface.sourcePath) === path.normalize(sourcePath),
+          isVirtualSliceSurface(surface) &&
+          path.normalize(surface.sourcePath) === normalizedSourcePath,
       );
       if (slicedSurfaces !== undefined && slicedSurfaces.length > 1)
         return 'slice-unavailable' as const;
@@ -168,26 +172,30 @@ export async function preparePreviewInspectorBundleFrontier(
             ? createPreviewInspectorLocalComponentSlice({
                 localName: slicedSurface.localName,
                 preservedWrapperKinds: slicedSurface.preservedWrapperKinds ?? [],
-                sourcePath,
+                sourcePath: normalizedSourcePath,
                 sourceText,
               })
             : createPreviewInspectorSelectedExportSlice({
                 exportName: slicedSurface.exportName,
-                sourcePath,
+                sourcePath: normalizedSourcePath,
                 sourceText,
               });
       if (slicedSurface !== undefined && slice?.kind !== 'success')
         return 'slice-unavailable' as const;
-      const inventorySource = slice?.kind === 'success' ? slice.slice.contents : sourceText;
+      const inventorySource = authenticInventorySourcePaths.has(normalizedSourcePath)
+        ? sourceText
+        : slice?.kind === 'success'
+          ? slice.slice.contents
+          : sourceText;
       const byteLength = Buffer.byteLength(inventorySource, 'utf8');
-      if (hasSourceParseFailure(sourcePath, inventorySource))
+      if (hasSourceParseFailure(normalizedSourcePath, inventorySource))
         return 'source-parse-failure' as const;
       return Object.freeze({
         byteLength,
-        edges: collectPreviewInspectorRuntimeImportInventory(sourcePath, inventorySource),
+        edges: collectPreviewInspectorRuntimeImportInventory(normalizedSourcePath, inventorySource),
       });
     });
-    sourceCache.set(sourcePath, read);
+    sourceCache.set(normalizedSourcePath, read);
     return read;
   };
 
@@ -391,6 +399,30 @@ export async function preparePreviewInspectorBundleFrontier(
     }),
     rejected: truncationReasons.length > 0,
   };
+}
+
+/** Identifies critical strategies evaluated through the generated virtual surface namespace. */
+function isVirtualSliceSurface(surface: PreviewInspectorMountSurface): boolean {
+  return (
+    surface.strategy === 'selected-export-slice' ||
+    surface.strategy === 'inner-local-component-slice'
+  );
+}
+
+/** Collects sources already guaranteed to be evaluated as full authored modules. */
+function collectAuthenticInventorySourcePaths(
+  options: PreparePreviewInspectorBundleFrontierOptions,
+): ReadonlySet<string> {
+  const sourcePaths = new Set(
+    (options.runtimeCompanionSourcePaths ?? []).map((sourcePath) => path.normalize(sourcePath)),
+  );
+  for (const surface of options.executionCandidate?.criticalSurfaces ?? []) {
+    if (!isVirtualSliceSurface(surface)) sourcePaths.add(path.normalize(surface.sourcePath));
+  }
+  for (const surface of options.executionCandidate?.optionalSurfaces ?? []) {
+    sourcePaths.add(path.normalize(surface.sourcePath));
+  }
+  return sourcePaths;
 }
 
 /** Requires existing one-hop render evidence before a dynamic import can enter a v2 slice. */

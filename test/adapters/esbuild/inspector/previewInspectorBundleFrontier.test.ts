@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewCompilerFrontierPolicy } from '../../../../src/domain/previewCompilerFrontier';
 import { preparePreviewInspectorBundleFrontier } from '../../../../src/adapters/esbuild/inspector/previewInspectorBundleFrontier';
 import type { PreviewInspectorAncestorPlan } from '../../../../src/adapters/esbuild/inspector/previewInspectorAncestorPlan';
+import type { PreviewInspectorPageExecutionCandidate } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionTypes';
 
 describe('preparePreviewInspectorBundleFrontier', () => {
   it('keeps selected route/page/target sources in the compatibility frontier', async () => {
@@ -596,6 +597,150 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     expect(result.frontier.summary.supportModuleCount).toBe(1);
   });
 
+  it('uses full authored inventory when a sliced Page Execution source also has an authentic surface', async () => {
+    const workspaceRoot = '/workspace';
+    const appPath = '/workspace/legal/app/app.tsx';
+    const appBasePath = '/workspace/common/ui/app/app-base.tsx';
+    const sources = new Map<string, string>([
+      [
+        appPath,
+        [
+          "import { AppBase } from 'common/ui/app/app-base';",
+          'export const SlicedPage = () => null;',
+          'export const AuthenticTarget = () => <AppBase />;',
+        ].join('\n'),
+      ],
+      [appBasePath, 'export const AppBase = () => null;'],
+    ]);
+    const plan = createRepresentationDominancePlan(appPath);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: createRepresentationDominanceCandidate(appPath, true),
+      plan,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) =>
+        specifier === 'common/ui/app/app-base' && importer === appPath ? appBasePath : undefined,
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.version).toBe(2);
+    expect(result.frontier.authenticSourcePaths).toEqual([appBasePath, appPath].sort());
+    expect(result.frontier.sourceKinds?.[appBasePath]).toBe('critical-support');
+    expect(result.frontier.summary.authoredEdgeCount).toBe(1);
+    expect(result.frontier.summary.supportModuleCount).toBe(1);
+    expect(result.frontier.summary.truncationReasons).toEqual([]);
+  });
+
+  it('keeps omitted authored imports outside a slice-only Page Execution frontier', async () => {
+    const workspaceRoot = '/workspace';
+    const appPath = '/workspace/legal/app/app.tsx';
+    const appBasePath = '/workspace/common/ui/app/app-base.tsx';
+    const sources = new Map<string, string>([
+      [
+        appPath,
+        [
+          "import { AppBase } from 'common/ui/app/app-base';",
+          'export const SlicedPage = () => null;',
+          'export const AuthenticTarget = () => <AppBase />;',
+        ].join('\n'),
+      ],
+      [appBasePath, 'export const AppBase = () => null;'],
+    ]);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: createRepresentationDominanceCandidate(appPath, false),
+      plan: createRepresentationDominancePlan(appPath),
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) =>
+        specifier === 'common/ui/app/app-base' && importer === appPath ? appBasePath : undefined,
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticSourcePaths).toEqual([appPath]);
+    expect(result.frontier.authenticSourcePaths).not.toContain(appBasePath);
+    expect(result.frontier.summary.authoredEdgeCount).toBe(0);
+    expect(result.frontier.summary.supportModuleCount).toBe(0);
+  });
+
+  it.each([
+    ['a runtime companion', (appPath: string) => ({ runtimeCompanionSourcePaths: [appPath] })],
+    [
+      'an optional authored surface',
+      (appPath: string) => ({
+        executionCandidate: createRepresentationDominanceCandidate(appPath, false, true),
+      }),
+    ],
+  ])('uses full authored inventory when a sliced source also has %s', async (_, options) => {
+    const workspaceRoot = '/workspace';
+    const appPath = '/workspace/legal/app/app.tsx';
+    const appBasePath = '/workspace/common/ui/app/app-base.tsx';
+    const sources = new Map<string, string>([
+      [
+        appPath,
+        [
+          "import { AppBase } from 'common/ui/app/app-base';",
+          'export const SlicedPage = () => null;',
+          'export const AuthenticTarget = () => <AppBase />;',
+        ].join('\n'),
+      ],
+      [appBasePath, 'export const AppBase = () => null;'],
+    ]);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+    const overlap = options(appPath);
+    const executionCandidate =
+      'executionCandidate' in overlap
+        ? overlap.executionCandidate
+        : createRepresentationDominanceCandidate(appPath, false);
+    const runtimeCompanionSourcePaths =
+      'runtimeCompanionSourcePaths' in overlap ? overlap.runtimeCompanionSourcePaths : undefined;
+
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate,
+      plan: createRepresentationDominancePlan(appPath),
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) =>
+        specifier === 'common/ui/app/app-base' && importer === appPath ? appBasePath : undefined,
+      ...(runtimeCompanionSourcePaths === undefined ? {} : { runtimeCompanionSourcePaths }),
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticSourcePaths).toContain(appBasePath);
+    expect(result.frontier.summary.truncationReasons).toEqual([]);
+  });
+
+  it('rejects an unavailable slice even when the source also has an authentic surface', async () => {
+    const workspaceRoot = '/workspace';
+    const appPath = '/workspace/legal/app/app.tsx';
+    const sources = new Map<string, string>([
+      [appPath, 'export const AuthenticTarget = () => null;'],
+    ]);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: createRepresentationDominanceCandidate(appPath, true),
+      plan: createRepresentationDominancePlan(appPath),
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: () => undefined,
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(true);
+    expect(result.frontier.summary.truncationReasons).toEqual(['slice-unavailable']);
+  });
+
   it('keeps frontier identity and membership stable across repeated equivalent source reads', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
@@ -640,3 +785,66 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     expect(Object.isFrozen(first.frontier.summary)).toBe(true);
   });
 });
+
+/** Creates the minimal ancestor plan used by authored-representation dominance fixtures. */
+function createRepresentationDominancePlan(appPath: string): PreviewInspectorAncestorPlan {
+  return {
+    edges: [],
+    pageCandidates: [],
+    root: { exportName: 'SlicedPage', sourcePath: appPath },
+    target: { exportName: 'AuthenticTarget', sourcePath: appPath },
+  } as unknown as PreviewInspectorAncestorPlan;
+}
+
+/** Creates sliced and optionally authored representations of one synthetic page module. */
+function createRepresentationDominanceCandidate(
+  appPath: string,
+  includesAuthenticSurface: boolean,
+  includesOptionalSurface = false,
+): PreviewInspectorPageExecutionCandidate {
+  return {
+    browserCandidate: { id: 'selected' },
+    compositionEdges: [],
+    criticalSurfaces: [
+      {
+        bypassedWrapperNames: [],
+        exportName: 'SlicedPage',
+        id: 'sliced-page',
+        omittedTopLevelEffectCount: 0,
+        sourcePath: appPath,
+        strategy: 'selected-export-slice',
+        watchSourcePaths: [appPath],
+      },
+      ...(includesAuthenticSurface
+        ? [
+            {
+              bypassedWrapperNames: [],
+              exportName: 'AuthenticTarget',
+              id: 'authentic-target',
+              omittedTopLevelEffectCount: 0,
+              sourcePath: appPath,
+              strategy: 'authentic-module-export',
+              watchSourcePaths: [appPath],
+            },
+          ]
+        : []),
+    ],
+    evidenceSourcePaths: [],
+    fidelity: 'page-sliced',
+    id: 'candidate',
+    optionalSurfaces: includesOptionalSurface
+      ? [
+          {
+            bypassedWrapperNames: [],
+            exportName: 'OptionalPage',
+            id: 'optional-page',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: appPath,
+            strategy: 'selected-route-surface',
+            watchSourcePaths: [appPath],
+          },
+        ]
+      : [],
+    watchSourcePaths: [appPath],
+  } as never;
+}

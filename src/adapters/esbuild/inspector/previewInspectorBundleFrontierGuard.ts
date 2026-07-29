@@ -2,6 +2,7 @@
 import path from 'node:path';
 import type { OnResolveArgs, OnResolveResult, PluginBuild } from 'esbuild';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
+import { createPreviewInspectorFrontierMismatchEvidence } from './previewInspectorFrontierMismatchEvidence';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { PREVIEW_RESOLVE_GUARD } from '../previewPluginProtocol';
 
@@ -39,6 +40,13 @@ export function registerPreviewInspectorBundleFrontierGuard(
     return {
       errors: [
         {
+          detail: createPreviewInspectorFrontierMismatchEvidence({
+            cause: 'guard-escape',
+            importerPath: importer,
+            moduleSpecifier: arguments_.path,
+            sourcePath: canonicalizeExistingPath(resolved),
+            workspaceRoot,
+          }),
           text: `React Preview frontier mismatch: ${arguments_.path} escaped the planned authored bundle.`,
         },
       ],

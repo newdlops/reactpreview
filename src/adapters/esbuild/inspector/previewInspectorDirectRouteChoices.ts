@@ -14,6 +14,12 @@ import {
 } from './previewInspectorRoutePattern';
 import { readPreviewInspectorRouteFactoryBasePath } from './previewInspectorRouteFactory';
 import {
+  readPreviewInspectorRouteBasePathReference,
+  readStaticJsxBooleanAttribute,
+  readStaticJsxStringAttribute,
+  type PreviewInspectorRouteBasePathReference,
+} from './previewInspectorRoutePathMetadata';
+import {
   collectPreviewInspectorRouteElementPath,
   type PreviewInspectorRouteElementIdentity,
 } from './previewInspectorRouteElementPath';
@@ -43,8 +49,12 @@ export interface PreviewInspectorDirectRouteChoice {
   readonly elementPath?: readonly PreviewInspectorDirectRouteElementComponent[];
   /** Optional page module retained only after this choice becomes active. */
   readonly reference?: PreviewInspectorDirectRouteComponentReference;
-  /** Normalized authored route pattern. */
+  /** Exact only for resolved choices; unresolved choices retain ancestor context. */
   readonly pattern: string;
+  /** Whether this route path was statically resolved without evaluating authored code. */
+  readonly pathResolution: 'resolved' | 'unresolved';
+  /** Same-component factory-base metadata retained for later asynchronous materialization. */
+  readonly routeBasePath?: PreviewInspectorRouteBasePathReference;
   /** Router source that provided this exact path. */
   readonly sourcePath: string;
 }
@@ -277,6 +287,24 @@ function parseRouteModule(sourcePath: string, sourceText: string): ParsedRouteMo
   };
 }
 
+/** Flattens resolved structural ancestors without changing the selected route's authored pattern. */
+function createDirectRoutePattern(
+  routeSegments: readonly string[],
+  pathResolution: PreviewInspectorDirectRouteChoice['pathResolution'],
+  isIndex: boolean,
+): string {
+  if (pathResolution === 'unresolved') return joinRouteSegments(routeSegments);
+  const lastIndex = routeSegments.length - 1;
+  return joinRouteSegments(
+    routeSegments.flatMap((segment, index) => {
+      const structural = index < lastIndex || (isIndex && index === lastIndex);
+      if (!structural) return [segment];
+      const base = segment.replace(/(?:^|\/)\*+\/?$/u, '');
+      return base.length === 0 ? [] : [base];
+    }),
+  );
+}
+
 /** Collects nested JSX Route paths and their directly rendered component expressions. */
 function collectJsxRouteChoices(
   parsed: ParsedRouteModule,
@@ -284,11 +312,19 @@ function collectJsxRouteChoices(
   choices: PreviewInspectorDirectRouteChoice[],
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
 ): void {
-  const visit = (node: ts.Node, parentSegments: readonly string[]): void => {
+  const visit = (
+    node: ts.Node,
+    parentSegments: readonly string[],
+    parentResolution: PreviewInspectorDirectRouteChoice['pathResolution'],
+  ): void => {
     if (choices.length >= MAXIMUM_DIRECT_ROUTE_CHOICES) return;
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
       const opening = ts.isJsxElement(node) ? node.openingElement : node;
       if (readJsxTagTerminalName(opening.tagName) === 'Route') {
+        const pathAttribute = opening.attributes.properties.find(
+          (property): property is ts.JsxAttribute =>
+            ts.isJsxAttribute(property) && property.name.getText() === 'path',
+        );
         const routePath = readStaticJsxStringAttribute(opening.attributes, 'path');
         const isIndex = readStaticJsxBooleanAttribute(opening.attributes, 'index') === true;
         const inheritedSegments =
@@ -301,34 +337,59 @@ function collectJsxRouteChoices(
             : routePath.startsWith('/')
               ? [routePath]
               : [...inheritedSegments, routePath];
-        const componentExpression =
-          readJsxExpressionAttribute(opening.attributes, ['element', 'Component', 'component']) ??
-          readJsxRouteChildExpression(node);
-        const ownsNestedRoutes = jsxRouteOwnsNestedRoutes(node);
+        const pathResolution =
+          routePath === undefined
+            ? pathAttribute === undefined
+              ? parentResolution
+              : 'unresolved'
+            : routePath.startsWith('/')
+              ? 'resolved'
+              : parentResolution;
+        const routePattern = createDirectRoutePattern(routeSegments, pathResolution, isIndex);
+        const hasExplicitComponentAttribute = opening.attributes.properties.some(
+          (property) =>
+            ts.isJsxAttribute(property) &&
+            ['element', 'Component', 'component'].includes(property.name.getText()),
+        );
+        const ownsNestedRouteContent =
+          jsxRouteOwnsNestedRoutes(node) ||
+          (ts.isJsxElement(node) &&
+            hasExplicitComponentAttribute &&
+            hasSubstantiveJsxRouteChildren(node));
+        const componentExpression = ownsNestedRouteContent
+          ? undefined
+          : hasExplicitComponentAttribute
+            ? readJsxExpressionAttribute(opening.attributes, ['element', 'Component', 'component'])
+            : readJsxRouteChildExpression(node);
         if (
-          (!ownsNestedRoutes || isIndex) &&
+          !ownsNestedRouteContent &&
           (routePath !== undefined || isIndex || componentExpression !== undefined)
         ) {
           addExpressionChoice(
             componentExpression,
-            joinRouteSegments(routeSegments),
+            routePattern,
             parsed,
             sourcePath,
             choices,
             resolveModule,
+            pathResolution,
+            pathAttribute?.initializer !== undefined &&
+              ts.isJsxExpression(pathAttribute.initializer)
+              ? pathAttribute.initializer.expression
+              : undefined,
           );
         }
         if (ts.isJsxElement(node)) {
-          for (const child of node.children) visit(child, routeSegments);
+          for (const child of node.children) visit(child, routeSegments, pathResolution);
         }
         return;
       }
     }
     ts.forEachChild(node, (child) => {
-      visit(child, parentSegments);
+      visit(child, parentSegments, parentResolution);
     });
   };
-  visit(parsed.sourceFile, []);
+  visit(parsed.sourceFile, [], 'resolved');
 }
 
 /** Recovers an absolute base passed to a surrounding conventional app/router factory. */
@@ -368,6 +429,16 @@ function jsxRouteOwnsNestedRoutes(node: ts.JsxElement | ts.JsxSelfClosingElement
   return found;
 }
 
+/** Reports direct JSX child syntax that makes an explicit Route component a nested owner. */
+function hasSubstantiveJsxRouteChildren(node: ts.JsxElement): boolean {
+  return node.children.some(
+    (child) =>
+      ts.isJsxElement(child) ||
+      ts.isJsxSelfClosingElement(child) ||
+      (ts.isJsxExpression(child) && child.expression !== undefined),
+  );
+}
+
 /** Collects descriptor arrays passed to exact React Router factory/useRoutes imports. */
 function collectObjectRouteChoices(
   parsed: ParsedRouteModule,
@@ -393,22 +464,31 @@ function collectObjectRouteChoices(
   const exportedRoot = readExportedDescriptorExpression(parsed, descriptorExportName);
   if (exportedRoot !== undefined) roots.push(exportedRoot);
   const visited = new Set<ts.Node>();
-  const visitDescriptor = (node: ts.Node, parentSegments: readonly string[]): void => {
+  const visitDescriptor = (
+    node: ts.Node,
+    parentSegments: readonly string[],
+    parentResolution: PreviewInspectorDirectRouteChoice['pathResolution'],
+  ): void => {
     if (choices.length >= MAXIMUM_DIRECT_ROUTE_CHOICES || visited.has(node)) return;
     visited.add(node);
     const expression = ts.isExpression(node) ? unwrapExpression(node) : node;
     if (ts.isIdentifier(expression)) {
       const initializer = parsed.initializers.get(expression.text);
-      if (initializer !== undefined) visitDescriptor(initializer, parentSegments);
+      if (initializer !== undefined) visitDescriptor(initializer, parentSegments, parentResolution);
       return;
     }
     if (ts.isArrayLiteralExpression(expression)) {
       for (const element of expression.elements) {
-        visitDescriptor(ts.isSpreadElement(element) ? element.expression : element, parentSegments);
+        visitDescriptor(
+          ts.isSpreadElement(element) ? element.expression : element,
+          parentSegments,
+          parentResolution,
+        );
       }
       return;
     }
     if (!ts.isObjectLiteralExpression(expression)) return;
+    const pathProperty = findObjectProperty(expression, ['path']);
     const routePath = readStaticObjectStringProperty(expression, 'path');
     const isIndex = readStaticObjectBooleanProperty(expression, 'index') === true;
     const routeSegments =
@@ -417,6 +497,15 @@ function collectObjectRouteChoices(
         : routePath.startsWith('/')
           ? [routePath]
           : [...parentSegments, routePath];
+    const pathResolution =
+      routePath === undefined
+        ? pathProperty === undefined
+          ? parentResolution
+          : 'unresolved'
+        : routePath.startsWith('/')
+          ? 'resolved'
+          : parentResolution;
+    const routePattern = createDirectRoutePattern(routeSegments, pathResolution, isIndex);
     const componentProperty = findObjectProperty(expression, ['Component', 'component', 'element']);
     const lazyProperty = findObjectProperty(expression, ['lazy']);
     const childrenProperty = findObjectProperty(expression, ['children']);
@@ -426,30 +515,34 @@ function collectObjectRouteChoices(
     ) {
       addExpressionChoice(
         componentProperty?.initializer,
-        joinRouteSegments(routeSegments),
+        routePattern,
         parsed,
         sourcePath,
         choices,
         resolveModule,
+        pathResolution,
+        pathProperty?.initializer,
       );
       if (componentProperty === undefined && lazyProperty !== undefined) {
         addDynamicImportChoice(
           lazyProperty.initializer,
-          joinRouteSegments(routeSegments),
+          routePattern,
           sourcePath,
           choices,
           resolveModule,
+          pathResolution,
         );
       }
     }
     if (childrenProperty !== undefined) {
-      visitDescriptor(childrenProperty.initializer, routeSegments);
+      visitDescriptor(childrenProperty.initializer, routeSegments, pathResolution);
     }
     for (const property of expression.properties) {
-      if (ts.isSpreadAssignment(property)) visitDescriptor(property.expression, parentSegments);
+      if (ts.isSpreadAssignment(property))
+        visitDescriptor(property.expression, parentSegments, parentResolution);
     }
   };
-  for (const root of roots) visitDescriptor(root, []);
+  for (const root of roots) visitDescriptor(root, [], 'resolved');
 }
 
 /** Finds an imported descriptor aggregate's exact named/default export without evaluating it. */
@@ -517,6 +610,8 @@ function addExpressionChoice(
   sourcePath: string,
   choices: PreviewInspectorDirectRouteChoice[],
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
+  pathResolution: PreviewInspectorDirectRouteChoice['pathResolution'] = 'resolved',
+  pathExpression?: ts.Expression,
 ): void {
   if (expression === undefined) return;
   const identities = collectPreviewInspectorRouteElementPath(expression, parsed.sourceFile);
@@ -525,6 +620,15 @@ function addExpressionChoice(
   const pattern = normalizeRoutePattern(rawPattern);
   if (pattern === undefined) return;
   const reference = resolveComponentReference(identity, parsed, sourcePath, resolveModule);
+  const routeBasePath =
+    pathResolution === 'unresolved' && reference !== undefined
+      ? readPreviewInspectorRouteBasePathReference(
+          pathExpression,
+          reference,
+          identity.localName,
+          sourcePath,
+        )
+      : undefined;
   const elementPath = identities.map((candidate) => {
     const candidateReference = resolveComponentReference(
       candidate,
@@ -541,6 +645,8 @@ function addExpressionChoice(
     componentName: identity.componentName,
     elementPath: Object.freeze(elementPath),
     pattern,
+    pathResolution,
+    ...(routeBasePath === undefined ? {} : { routeBasePath }),
     ...(reference === undefined ? {} : { reference }),
     sourcePath,
   });
@@ -553,6 +659,7 @@ function addDynamicImportChoice(
   sourcePath: string,
   choices: PreviewInspectorDirectRouteChoice[],
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
+  pathResolution: PreviewInspectorDirectRouteChoice['pathResolution'] = 'resolved',
 ): void {
   const moduleSpecifier = findDynamicImportSpecifier(expression);
   const pattern = normalizeRoutePattern(rawPattern);
@@ -562,6 +669,7 @@ function addDynamicImportChoice(
   addChoice(choices, {
     componentName,
     pattern,
+    pathResolution,
     ...(resolvedPath === undefined
       ? {}
       : {
@@ -671,43 +779,6 @@ function readJsxExpressionAttribute(
   return attribute?.initializer !== undefined && ts.isJsxExpression(attribute.initializer)
     ? attribute.initializer.expression
     : undefined;
-}
-
-/** Reads a literal path attribute without evaluating templates or project constants. */
-function readStaticJsxStringAttribute(
-  attributes: ts.JsxAttributes,
-  name: string,
-): string | undefined {
-  const attribute = attributes.properties.find(
-    (property): property is ts.JsxAttribute =>
-      ts.isJsxAttribute(property) && ts.isIdentifier(property.name) && property.name.text === name,
-  );
-  if (attribute?.initializer === undefined) return undefined;
-  if (ts.isStringLiteral(attribute.initializer)) return attribute.initializer.text;
-  return ts.isJsxExpression(attribute.initializer) &&
-    attribute.initializer.expression !== undefined &&
-    ts.isStringLiteralLike(attribute.initializer.expression)
-    ? attribute.initializer.expression.text
-    : undefined;
-}
-
-/** Reads `<Route index>` and exact boolean JSX expressions. */
-function readStaticJsxBooleanAttribute(
-  attributes: ts.JsxAttributes,
-  name: string,
-): boolean | undefined {
-  const attribute = attributes.properties.find(
-    (property): property is ts.JsxAttribute =>
-      ts.isJsxAttribute(property) && ts.isIdentifier(property.name) && property.name.text === name,
-  );
-  if (attribute === undefined) return undefined;
-  if (attribute.initializer === undefined) return true;
-  const expression = ts.isJsxExpression(attribute.initializer)
-    ? attribute.initializer.expression
-    : undefined;
-  if (expression?.kind === ts.SyntaxKind.TrueKeyword) return true;
-  if (expression?.kind === ts.SyntaxKind.FalseKeyword) return false;
-  return undefined;
 }
 
 /** Reads the first direct non-Route JSX child or expression returned by a v5 Route. */
@@ -829,18 +900,7 @@ function addChoice(
   choices: PreviewInspectorDirectRouteChoice[],
   choice: PreviewInspectorDirectRouteChoice,
 ): void {
-  if (
-    choices.length >= MAXIMUM_DIRECT_ROUTE_CHOICES ||
-    choices.some(
-      (candidate) =>
-        candidate.pattern === choice.pattern &&
-        candidate.componentName === choice.componentName &&
-        candidate.sourcePath === choice.sourcePath,
-    )
-  ) {
-    return;
-  }
-  choices.push(
+  const freezeChoice = (): PreviewInspectorDirectRouteChoice =>
     Object.freeze({
       componentName: choice.componentName,
       ...(choice.elementPath === undefined
@@ -858,8 +918,36 @@ function addChoice(
             ),
           }),
       pattern: choice.pattern,
+      pathResolution: choice.pathResolution,
+      ...(choice.routeBasePath === undefined
+        ? {}
+        : { routeBasePath: Object.freeze(choice.routeBasePath) }),
       ...(choice.reference === undefined ? {} : { reference: Object.freeze(choice.reference) }),
       sourcePath: path.normalize(choice.sourcePath),
-    }),
+    });
+  const existingIndex = choices.findIndex(
+    (candidate) =>
+      candidate.pattern === choice.pattern &&
+      candidate.componentName === choice.componentName &&
+      candidate.sourcePath === choice.sourcePath &&
+      createRouteBasePathIdentity(candidate.routeBasePath) ===
+        createRouteBasePathIdentity(choice.routeBasePath),
   );
+  if (existingIndex >= 0) {
+    const existing = choices[existingIndex];
+    if (existing?.pathResolution === 'unresolved' && choice.pathResolution === 'resolved')
+      choices[existingIndex] = freezeChoice();
+    return;
+  }
+  if (choices.length >= MAXIMUM_DIRECT_ROUTE_CHOICES) return;
+  choices.push(freezeChoice());
+}
+
+/** Keeps distinct source-proven base mounts from collapsing into one unresolved placeholder. */
+function createRouteBasePathIdentity(
+  value: PreviewInspectorRouteBasePathReference | undefined,
+): string {
+  return value === undefined
+    ? ''
+    : `${value.sourcePath}\0${value.exportName}\0${value.prefix}\0${value.suffix}`;
 }

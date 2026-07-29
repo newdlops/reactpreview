@@ -32,6 +32,20 @@ describe('previewInspectorRoutePattern', () => {
     ).toBe('/shares/00000000-0000-4000-8000-000000000000');
   });
 
+  it('allows terminal splats to consume zero segments while retaining unsupported splats', () => {
+    expect(materializePreviewInspectorRoutePattern('/*')).toBe('/');
+    expect(materializePreviewInspectorRoutePattern('/catalog/*')).toBe('/catalog');
+    expect(materializePreviewInspectorRoutePattern('/partner/:partnerId/*')).toBe('/partner/1');
+    expect(
+      materializePreviewInspectorRoutePattern('/workspace/:workspaceId/*', [
+        '/workspace/:workspaceId/dashboard',
+      ]),
+    ).toBe('/workspace/1/dashboard');
+    expect(materializePreviewInspectorRoutePattern('/files/*/detail')).toBe(
+      '/files/preview/detail',
+    );
+  });
+
   it('removes v5 regex suffixes from isolated v6 route patterns while preserving params', () => {
     expect(
       createPreviewInspectorV6RoutePattern(

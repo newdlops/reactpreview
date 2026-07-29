@@ -139,6 +139,15 @@ export function createPreviewInspectorCorridorPlugin(
   const authoredHookEvidenceByPath = new Map<string, Promise<boolean>>();
   const expandedVirtualPageModuleExports = new Set<string>();
 
+  function shouldRetainAuthenticTarget(
+    sourcePath: string,
+    nonFrozenAuthenticPaths: ReadonlySet<string>,
+  ): boolean {
+    return usesFrozenAuthenticFrontier
+      ? frozenAuthenticSourcePaths.has(sourcePath)
+      : nonFrozenAuthenticPaths.has(sourcePath);
+  }
+
   async function resolveShallowVisualChild(
     arguments_: OnResolveArgs,
   ): Promise<OnResolveResult | undefined> {
@@ -161,18 +170,15 @@ export function createPreviewInspectorCorridorPlugin(
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
     const canonicalTarget = canonicalizeExistingPath(resolvedPath);
     if (
-      exactCorridorPaths.has(canonicalTarget) ||
       !isPathInside(workspaceRoot, canonicalTarget) ||
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
       containsDependencyDirectory(workspaceRoot, canonicalTarget)
     ) {
       return undefined;
     }
-    if (usesFrozenAuthenticFrontier) {
-      return frozenAuthenticSourcePaths.has(canonicalTarget)
-        ? undefined
-        : createShallowVisualProjection(canonicalImporter, projection);
-    }
+    if (shouldRetainAuthenticTarget(canonicalTarget, exactCorridorPaths)) return undefined;
+    if (usesFrozenAuthenticFrontier)
+      return createShallowVisualProjection(canonicalImporter, projection);
     if (await shouldRetainAuthoredHookLogic(canonicalTarget, projection)) {
       /*
        * Keep authored state, defaults, branching, and value transforms, then analyze this module as
@@ -247,16 +253,20 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    if (matchesPreviewRouteParameters(arguments_.path, routeParameterGroups)) return undefined;
+    const matchesRouteParameters = matchesPreviewRouteParameters(
+      arguments_.path,
+      routeParameterGroups,
+    );
+    if (!usesFrozenAuthenticFrontier && matchesRouteParameters) return undefined;
     const importerEvidence = await readDynamicImporterEvidence(canonicalImporter);
-    if (
+    const isRenderedNextDynamicSpecifier =
       corridorPaths.has(canonicalImporter) &&
-      importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path)
-    ) {
-      return undefined;
-    }
+      importerEvidence.renderedNextDynamicSpecifiers.has(arguments_.path);
+    if (!usesFrozenAuthenticFrontier && isRenderedNextDynamicSpecifier) return undefined;
+    const hasSelectedSyntaxEvidence = matchesRouteParameters || isRenderedNextDynamicSpecifier;
     if (
       importerEvidence.isBroadRegistry &&
+      !hasSelectedSyntaxEvidence &&
       !matchesPreviewCorridorModuleStem(arguments_.path, corridorModuleStems)
     ) {
       return createOmittedDeferredBranch();
@@ -274,9 +284,7 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    if (corridorPaths.has(canonicalTarget)) {
-      return undefined;
-    }
+    if (shouldRetainAuthenticTarget(canonicalTarget, corridorPaths)) return undefined;
     if (
       !corridorPaths.has(canonicalImporter) &&
       !importerEvidence.hasCorridorTarget &&
@@ -323,13 +331,13 @@ export function createPreviewInspectorCorridorPlugin(
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
     const canonicalTarget = canonicalizeExistingPath(resolvedPath);
     if (
-      corridorPaths.has(canonicalTarget) ||
       !isPathInside(workspaceRoot, canonicalTarget) ||
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
       containsDependencyDirectory(workspaceRoot, canonicalTarget)
     ) {
       return undefined;
     }
+    if (shouldRetainAuthenticTarget(canonicalTarget, corridorPaths)) return undefined;
     return createOmittedStaticRouteBranch(canonicalImporter, projection);
   }
 
@@ -589,6 +597,9 @@ export function createPreviewInspectorCorridorPlugin(
             : undefined;
         },
       );
+      build.onResolve({ filter: /.*/ }, resolveShallowVisualChild);
+      build.onResolve({ filter: /.*/ }, resolveDeferredBranch);
+      build.onResolve({ filter: /.*/ }, resolveStaticRouteBranch);
       if (usesFrozenAuthenticFrontier) {
         registerPreviewInspectorBundleFrontierGuard(build, {
           authenticSourcePaths: frozenAuthenticSourcePaths,
@@ -596,9 +607,6 @@ export function createPreviewInspectorCorridorPlugin(
           workspaceRoot,
         });
       }
-      build.onResolve({ filter: /.*/ }, resolveShallowVisualChild);
-      build.onResolve({ filter: /.*/ }, resolveDeferredBranch);
-      build.onResolve({ filter: /.*/ }, resolveStaticRouteBranch);
       build.onLoad({ filter: /.*/, namespace: INSPECTOR_CORRIDOR_NAMESPACE }, loadDeferredBranch);
       build.onLoad(
         { filter: /.*/, namespace: INSPECTOR_STATIC_CORRIDOR_NAMESPACE },

@@ -172,7 +172,11 @@ export async function collectPreviewInspectorRouteBranchPlan(
       });
     }
     if (levelChoices.length === 0) {
-      if (parentBranch !== undefined) parentBranch.childState = 'leaf';
+      // A factory can prove that this owner has children while being unable to prove a safe
+      // pathname for any of them. Keep that distinction visible to the explorer: marking the
+      // owner as a leaf would incorrectly imply that the selected application has terminated.
+      if (parentBranch !== undefined && (inventory.unresolvedFactoryOptions?.length ?? 0) === 0)
+        parentBranch.childState = 'leaf';
       break;
     }
 

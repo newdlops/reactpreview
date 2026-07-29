@@ -11,9 +11,9 @@ import {
 import { createPreviewStaticModuleResolver } from '../../../../src/adapters/esbuild/previewStaticModuleResolver';
 import { PREVIEW_RESOLVE_GUARD } from '../../../../src/adapters/esbuild/previewPluginProtocol';
 
-/** Keeps a selected lazy page while replacing an unrelated sibling route with an inert module. */
+/** Keeps frozen selected inputs authentic while broad route candidates become inert modules. */
 describe('createPreviewInspectorCorridorPlugin', () => {
-  it('omits only project dynamic imports outside the proven page corridor', async () => {
+  it('does not let broad candidate evidence override selected frozen membership', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
     const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');
     const selectedPath = path.join(workspaceRoot, 'src', 'Selected.ts');
@@ -30,7 +30,18 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       writeFile(selectedPath, `export default 'SELECTED_CORRIDOR_MARKER';`),
       writeFile(unrelatedPath, `export default 'UNRELATED_ROUTE_MARKER';`),
     ]);
-    const plan = createCorridorPlan(entryPath, selectedPath);
+    const selectedPlan = createCorridorPlan(entryPath, selectedPath);
+    const alternativePlan = createCorridorPlan(
+      entryPath,
+      unrelatedPath,
+      undefined,
+      [],
+      'candidate-unrelated',
+    );
+    const plan: PreviewInspectorAncestorPlan = {
+      ...selectedPlan,
+      pageCandidates: [...selectedPlan.pageCandidates, ...alternativePlan.pageCandidates],
+    };
     const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
 
     const result = await build({
@@ -38,9 +49,11 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       bundle: true,
       entryPoints: [entryPath],
       format: 'esm',
+      metafile: true,
       outdir: path.join(workspaceRoot, 'out'),
       plugins: [
         createPreviewInspectorCorridorPlugin({
+          frozenAuthenticSourcePaths: [entryPath, selectedPath],
           plan,
           projectRoot: workspaceRoot,
           resolveModule: resolver.resolve,
@@ -56,6 +69,9 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).not.toContain('UNRELATED_ROUTE_MARKER');
     expect(source).toContain('ReactPreviewDeferredCorridorRoute');
     expect(result.outputFiles).toHaveLength(3);
+    const inputs = Object.keys(result.metafile.inputs).map((key) => key.replaceAll(path.sep, '/'));
+    expect(inputs.some((key) => key.endsWith('src/Selected.ts'))).toBe(true);
+    expect(inputs.some((key) => key.endsWith('src/Unrelated.ts'))).toBe(false);
     await expect(readFile(unrelatedPath, 'utf8')).resolves.toContain('UNRELATED_ROUTE_MARKER');
   });
 
@@ -228,6 +244,7 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       outdir: path.join(workspaceRoot, 'out'),
       plugins: [
         createPreviewInspectorCorridorPlugin({
+          frozenAuthenticSourcePaths: [entryPath, pagePath, welcomePath],
           plan: createCorridorPlan(entryPath, pagePath),
           projectRoot: workspaceRoot,
           resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
@@ -335,9 +352,7 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).toContain('VirtualPage component isolated');
   });
 
-  /**
-   * Keeps authored navigation/tab records while still cutting the data hook's nested runtime edge.
-   */
+  /** Keeps authored navigation/tab records while still cutting the data hook's nested runtime edge. */
   it('retains a static render-data hook below a VirtualPage shell', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
     const sourceRoot = path.join(workspaceRoot, 'src');
@@ -402,8 +417,16 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       ),
     ]);
     const basePlan = createCorridorPlan(entryPath, pagePath);
+    const permissionPlan = createCorridorPlan(
+      entryPath,
+      permissionPath,
+      undefined,
+      [],
+      'candidate-off-frontier-permission',
+    );
     const plan: PreviewInspectorAncestorPlan = {
       ...basePlan,
+      pageCandidates: [...basePlan.pageCandidates, ...permissionPlan.pageCandidates],
       shallowVisualPaths: [
         {
           exportName: 'ApplicationLayout',
@@ -431,6 +454,13 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       outdir: path.join(workspaceRoot, 'out'),
       plugins: [
         createPreviewInspectorCorridorPlugin({
+          frozenAuthenticSourcePaths: [
+            entryPath,
+            pagePath,
+            layoutPath,
+            navigationPath,
+            navigationDataPath,
+          ],
           plan,
           projectRoot: workspaceRoot,
           resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
@@ -445,6 +475,7 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).toContain('NAV_REPORT_DETAIL');
     expect(source).toContain('NAV_ADMIN_DETAIL');
     expect(source).not.toContain('EXPENSIVE_PERMISSION_MARKER');
+    expect(source).toContain('createShallowRuntimeHook("./usePermission:usePermission")');
   });
 
   /** Uses module/export cycle identity rather than a fixed hop count for deep component trees. */
@@ -529,10 +560,7 @@ describe('createPreviewInspectorCorridorPlugin', () => {
     expect(source).not.toContain('createShallowComponent("./Layer');
   });
 
-  /**
-   * Preserves a small API loader, then narrows its generated registry to the exact App Router
-   * parameter tuple. Every omitted branch shares one module so split output remains bounded.
-   */
+  /** Preserves a small API loader, then narrows its generated registry to the exact App Router parameter tuple. Every omitted branch shares one module so split output remains bounded. */
   it('narrows broad lazy registries with selected Next route parameters', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
     const sourceRoot = path.join(workspaceRoot, 'src');
@@ -589,6 +617,14 @@ describe('createPreviewInspectorCorridorPlugin', () => {
       outdir: path.join(workspaceRoot, 'out'),
       plugins: [
         createPreviewInspectorCorridorPlugin({
+          frozenAuthenticSourcePaths: [
+            entryPath,
+            pagePath,
+            helperPath,
+            indexPath,
+            registryPath,
+            selectedPath,
+          ],
           plan: createCorridorPlan(entryPath, pagePath, { base: 'base', name: 'preview' }),
           projectRoot: workspaceRoot,
           resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
@@ -888,6 +924,7 @@ function createCorridorPlan(
   selectedPath: string,
   routeParams?: Readonly<Record<string, string>>,
   evidenceSourcePaths: readonly string[] = [],
+  candidateId = 'candidate-selected',
 ): PreviewInspectorAncestorPlan {
   const target = { exportName: 'default', sourcePath: selectedPath };
   const renderPath = {
@@ -897,7 +934,7 @@ function createCorridorPlan(
       sourcePath: entryPath,
       wrapperNames: [],
     },
-    id: 'selected-path',
+    id: `${candidateId}-path`,
     steps: [
       {
         certainty: 'confirmed' as const,
@@ -929,7 +966,7 @@ function createCorridorPlan(
     complete: true,
     dependencyPaths: [entryPath, selectedPath],
     edges: [],
-    id: 'candidate-selected',
+    id: candidateId,
     renderPath,
     root: target,
     rootAutomaticProps: {},

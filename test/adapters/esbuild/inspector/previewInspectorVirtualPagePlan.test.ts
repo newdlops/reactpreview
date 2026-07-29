@@ -692,8 +692,8 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     expect(virtualPages[0]?.browserCandidate.dependencyPaths).toContain('/workspace/pages.json');
   });
 
-  /** Executes a statically resolved route leaf instead of invoking its application Router owner. */
-  it('promotes a resolved descendant route page when reverse ancestry contains only the app root', () => {
+  /** Keeps the proven route factory owner when a resolved descendant has no reverse-path proof. */
+  it('keeps a route-factory owner when a resolved descendant lacks reverse-path proof', () => {
     const application = createCandidate({
       complete: true,
       id: 'application-root',
@@ -710,6 +710,15 @@ describe('PreviewInspectorVirtualPagePlan', () => {
       evidenceKind: 'route-jsx' as const,
       pathname: '/dashboard',
       pattern: '/dashboard',
+      routeMounts: [
+        {
+          basePath: '/',
+          exportName: 'Application',
+          hasWildcardFallback: false,
+          routeSlotCount: 1,
+          sourcePath: APP_PATH,
+        },
+      ],
       sourcePath: APP_PATH,
     };
 
@@ -718,12 +727,25 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     expect(expanded).toHaveLength(1);
     expect(expanded[0]).toMatchObject({
       complete: true,
-      edges: [],
-      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
-      rootOwnsRouter: false,
+      dependencyPaths: [APP_PATH, PAGE_PATH],
+      edges: application.edges,
+      root: application.root,
+      rootAutomaticProps: application.rootAutomaticProps,
+      rootOwnsRouter: true,
       routeLocation,
-      stopReason: 'render-path-checkpoint',
+      stopReason: 'root-reached',
     });
+    expect(expanded.map((candidate) => candidate.root)).not.toContainEqual({
+      exportName: 'DashboardPage',
+      sourcePath: PAGE_PATH,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(expanded);
+
+    expect(virtualPage?.contentCandidate.root).toEqual(application.root);
+    expect(virtualPage?.browserCandidate.root).toEqual(application.root);
+    expect(virtualPage?.browserCandidate.routeLocation).toBe(routeLocation);
+    expect(virtualPage?.browserCandidate.routeLocation?.pathname).toBe('/dashboard');
   });
 
   /** Falls back to the authored root when no shared static render path proves a safer body. */

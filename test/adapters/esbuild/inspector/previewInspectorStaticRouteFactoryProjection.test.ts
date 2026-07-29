@@ -136,11 +136,22 @@ describe('static component-factory route projection', () => {
         entryPoints: [entryPath],
         external: ['react/jsx-runtime'],
         format: 'esm',
+        metafile: true,
         outdir: path.join(workspaceRoot, 'out'),
         plugins: [
           createPreviewInspectorCorridorPlugin({
             maximumSmallStaticRouteImports: 8,
-            plan: createFactoryOwnerRouteChoicePlan(entryPath, selectedPagePath),
+            frozenAuthenticSourcePaths: [
+              entryPath,
+              selectedPagePath,
+              path.join(sourceRoot, 'factory.tsx'),
+              path.join(sourceRoot, 'shell', 'AppLayout.tsx'),
+              path.join(sourceRoot, 'shell', 'Header.tsx'),
+              path.join(sourceRoot, 'shell', 'Navigation.tsx'),
+              path.join(sourceRoot, 'subapps', 'SelectedSubApp.tsx'),
+              path.join(sourceRoot, 'subapps', 'SelectedSubPage.tsx'),
+            ],
+            plan: createFactoryOwnerRouteChoicePlan(entryPath, selectedPagePath, siblingPages),
             projectRoot: workspaceRoot,
             resolveModule: createPreviewStaticModuleResolver({ workspaceRoot }).resolve,
             workspaceRoot,
@@ -152,8 +163,29 @@ describe('static component-factory route projection', () => {
       const bundledSource = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
 
       expect(bundledSource).toContain('SELECTED_ROUTE_CHOICE_MARKER');
+      expect(bundledSource).toContain('APP_LAYOUT_MARKER');
+      expect(bundledSource).toContain('APP_HEADER_MARKER');
+      expect(bundledSource).toContain('APP_NAVIGATION_MARKER');
+      expect(bundledSource).toContain('SELECTED_SUBAPP_METADATA_MARKER');
+      expect(bundledSource).toContain('SELECTED_SUBPAGE_MARKER');
+      expect(bundledSource).not.toContain('SIBLING_SUBAPP_METADATA_MARKER');
+      expect(bundledSource).not.toContain('SIBLING_SUBPAGE_MARKER');
       expect(bundledSource).not.toContain('OWNER_SIBLING_MARKER_');
       expect(bundledSource).toContain('__react-preview-omitted__');
+      const metafileInputs = Object.keys(result.metafile.inputs).map((inputPath) =>
+        inputPath.replaceAll(path.sep, '/'),
+      );
+      expect(metafileInputs.some((inputPath) => inputPath.endsWith('pages/SelectedPage.tsx'))).toBe(
+        true,
+      );
+      for (const { sourcePath } of siblingPages) {
+        const siblingInputSuffix = sourcePath
+          .slice(sourcePath.indexOf(`${path.sep}pages${path.sep}`) + 1)
+          .replaceAll(path.sep, '/');
+        expect(metafileInputs.some((inputPath) => inputPath.endsWith(siblingInputSuffix))).toBe(
+          false,
+        );
+      }
     } finally {
       await rm(workspaceRoot, { force: true, recursive: true });
     }
@@ -349,6 +381,10 @@ function createFactoryCorridorPlan(
 function createFactoryOwnerRouteChoicePlan(
   entryPath: string,
   selectedPagePath: string,
+  siblingPages: readonly {
+    readonly importName: string;
+    readonly sourcePath: string;
+  }[],
 ): PreviewInspectorAncestorPlan {
   const target = { exportName: 'default', sourcePath: entryPath };
   const renderPath = {
@@ -400,9 +436,22 @@ function createFactoryOwnerRouteChoicePlan(
     stopReason: 'root-reached' as const,
     targetAutomaticProps: {},
   };
+  const siblingCandidates = siblingPages.map((sibling, index) => ({
+    ...pageCandidate,
+    dependencyPaths: [entryPath, sibling.sourcePath],
+    id: `factory-owner-route-choice-sibling-${index.toString()}`,
+    routeLocation: {
+      ...routeLocation,
+      componentName: sibling.importName,
+      componentSourcePath: sibling.sourcePath,
+      dependencyPaths: [entryPath, sibling.sourcePath],
+      pathname: `/workspace/sibling-${index.toString()}`,
+      pattern: `/workspace/sibling-${index.toString()}`,
+    },
+  }));
   return {
     ...pageCandidate,
-    pageCandidates: [pageCandidate],
+    pageCandidates: [pageCandidate, ...siblingCandidates],
     renderChain,
     renderChainsByExport: { default: renderChain },
     target,

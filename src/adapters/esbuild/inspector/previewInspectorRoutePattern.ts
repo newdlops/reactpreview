@@ -51,7 +51,8 @@ interface RouteParameterEvidence {
  *
  * A router owner often declares `:id/*`, while the selected app module separately declares
  * `:id(\\d+)`. Materialization merges those same-position parameter contracts and uses a concrete
- * compatible child/base pattern for the splat before falling back to a visible `preview` segment.
+ * compatible child/base pattern for the splat before allowing a terminal splat to consume zero
+ * segments; unsupported nonterminal splats retain a visible `preview` segment.
  */
 export function materializePreviewInspectorRoutePattern(
   pattern: string,
@@ -59,13 +60,12 @@ export function materializePreviewInspectorRoutePattern(
 ): string {
   const concretePattern = selectConcreteWildcardPattern(pattern, supportingPatterns) ?? pattern;
   const evidencePatterns = [pattern, concretePattern, ...supportingPatterns];
-  const materialized = concretePattern
-    .replace(
-      /:([$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}]*)(?:\((?:\\.|[^)])*\))?\??/gu,
-      (token, name: string) =>
-        selectPreviewInspectorRouteParameterValue(token, name, pattern, evidencePatterns),
-    )
-    .replace(/\*+/gu, 'preview');
+  const parameterized = concretePattern.replace(
+    /:([$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}]*)(?:\((?:\\.|[^)])*\))?\??/gu,
+    (token, name: string) =>
+      selectPreviewInspectorRouteParameterValue(token, name, pattern, evidencePatterns),
+  );
+  const materialized = parameterized.replace(/(?:^|\/)\*+\/?$/u, '').replace(/\*+/gu, 'preview');
   return normalizePreviewInspectorRoutePattern(materialized) ?? '/';
 }
 

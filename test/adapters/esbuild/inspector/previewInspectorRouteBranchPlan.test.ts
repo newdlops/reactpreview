@@ -98,6 +98,92 @@ function resolveFixtureModule(moduleSpecifier: string, consumerPath: string): st
 }
 
 describe('preview Inspector hierarchical route branches', () => {
+  it('retains unresolved dynamic paths without treating ancestor context as exact evidence', async () => {
+    const sourceText = [
+      'import DynamicPage from "./DynamicPage";',
+      'import ExactPage from "./ExactPage";',
+      'const buildPath = () => "/dynamic";',
+      'export const routes = <Route path="/*"><Route path={buildPath()} element={<DynamicPage />} /><Route path="exact" element={<ExactPage />} /><Route index element={<ExactPage />} /><Route path={buildPath()}><Route path="/absolute" element={<ExactPage />} /></Route></Route>;',
+    ].join('\n');
+    const inventory = await collectPreviewInspectorDirectRouteChoices({
+      readSource: () => Promise.resolve(undefined),
+      resolveModule: () => undefined,
+      sourcePath: ROUTER_PATH,
+      sourceText,
+    });
+
+    expect(inventory.choices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          componentName: 'DynamicPage',
+          pattern: '/*',
+          pathResolution: 'unresolved',
+        }),
+        expect.objectContaining({
+          componentName: 'ExactPage',
+          pattern: '/exact',
+          pathResolution: 'resolved',
+        }),
+        expect.objectContaining({
+          componentName: 'ExactPage',
+          pattern: '/absolute',
+          pathResolution: 'resolved',
+        }),
+      ]),
+    );
+    expect(
+      inventory.choices.some(
+        (choice) => choice.pathResolution === 'resolved' && choice.pattern.startsWith('/*/'),
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps object-route dynamic path descendants unresolved until an absolute literal resets them', async () => {
+    const sourceText = [
+      'import DynamicPage from "./DynamicPage";',
+      'import ExactPage from "./ExactPage";',
+      'import { createBrowserRouter } from "react-router-dom";',
+      'const buildPath = () => "/dynamic";',
+      'export const router = createBrowserRouter([{ path: "/*", children: [{ path: buildPath(), element: <DynamicPage /> }, { path: buildPath(), children: [{ children: [{ path: "relative", element: <DynamicPage /> }] }] }, { path: "/absolute", element: <ExactPage /> }, { path: "exact", element: <ExactPage /> }] }]);',
+    ].join('\n');
+    const inventory = await collectPreviewInspectorDirectRouteChoices({
+      readSource: () => Promise.resolve(undefined),
+      resolveModule: () => undefined,
+      sourcePath: ROUTER_PATH,
+      sourceText,
+    });
+
+    expect(inventory.choices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          componentName: 'DynamicPage',
+          pattern: '/*',
+          pathResolution: 'unresolved',
+        }),
+        expect.objectContaining({
+          componentName: 'DynamicPage',
+          pattern: '/*/relative',
+          pathResolution: 'unresolved',
+        }),
+        expect.objectContaining({
+          componentName: 'ExactPage',
+          pattern: '/absolute',
+          pathResolution: 'resolved',
+        }),
+        expect.objectContaining({
+          componentName: 'ExactPage',
+          pattern: '/exact',
+          pathResolution: 'resolved',
+        }),
+      ]),
+    );
+    expect(
+      inventory.choices.some(
+        (choice) => choice.pathResolution === 'resolved' && choice.pattern.startsWith('/*/'),
+      ),
+    ).toBe(false);
+  });
+
   it('indexes hundreds of object routes as inert metadata', async () => {
     const pageImports = Array.from(
       { length: 320 },
@@ -181,6 +267,13 @@ describe('preview Inspector hierarchical route branches', () => {
     expect(plan.dependencyPaths).not.toContain(DASHBOARD_PATH);
     expect(readPaths).not.toContain(ABOUT_PATH);
     expect(readPaths).not.toContain(DASHBOARD_PATH);
+    const settingsBranch = plan.branches.find(
+      (branch) => branch.componentName === 'SettingsPage' && branch.pattern === '/feature/settings',
+    );
+    expect(settingsBranch?.selectionPath).toEqual([
+      { componentName: 'FeatureApp', pattern: '/feature/*' },
+      { componentName: 'SettingsPage', pattern: '/feature/settings' },
+    ]);
   });
 
   it('reports the effective leaf when selecting an already-active parent resolves its default child', async () => {
@@ -396,5 +489,130 @@ describe('preview Inspector hierarchical route branches', () => {
     ]);
     expect(inventory.dependencyPaths).toEqual([APP_PATH, configPath, routesPath].sort());
     expect(readPaths).not.toContain(pagePath);
+  });
+
+  it('does not emit explicit route elements that own substantive JSX route children', async () => {
+    const sourceText = [
+      'const routeNodes = [<Route path={buildPath()} element={<DestinationPage />} />];',
+      'const buildPath = () => "/destination";',
+      'const comment = null;',
+      '<Routes>',
+      '  <Route path="/*">',
+      '    <Route element={<AccessBoundary />}>{routeNodes}</Route>',
+      '    <Route Component={InlineBoundary}><Route path="inline" element={<InlinePage />} /></Route>',
+      '    <Route component={LowerBoundary}>{routeNodes}</Route>',
+      '    <Route index element={<IndexBoundary />}><Route path="nested" element={<NestedIndexPage />} /></Route>',
+      '    <Route index element={<IndexPage />}>{/* comment */}</Route>',
+      '    <Route path="comment" element={<CommentPage />}>  {/* comment */}  </Route>',
+      '    <Route path="self-closing" element={<SelfClosingPage />} />',
+      '    <Route path="legacy"><LegacyPage /></Route>',
+      '  </Route>',
+      '</Routes>;',
+    ].join('\n');
+    const inventory = await collectPreviewInspectorDirectRouteChoices({
+      readSource: () => Promise.resolve(undefined),
+      resolveModule: () => undefined,
+      sourcePath: ROUTER_PATH,
+      sourceText,
+    });
+
+    expect(inventory.choices.map((choice) => choice.componentName)).not.toEqual(
+      expect.arrayContaining([
+        'AccessBoundary',
+        'InlineBoundary',
+        'LowerBoundary',
+        'IndexBoundary',
+      ]),
+    );
+    expect(inventory.choices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          componentName: 'DestinationPage',
+          pathResolution: 'unresolved',
+        }),
+        expect.objectContaining({ componentName: 'InlinePage', pattern: '/inline' }),
+        expect.objectContaining({ componentName: 'NestedIndexPage', pattern: '/nested' }),
+        expect.objectContaining({ componentName: 'IndexPage', pattern: '/' }),
+        expect.objectContaining({ componentName: 'CommentPage', pattern: '/comment' }),
+        expect.objectContaining({ componentName: 'SelfClosingPage', pattern: '/self-closing' }),
+        expect.objectContaining({ componentName: 'LegacyPage', pattern: '/legacy' }),
+      ]),
+    );
+    expect(
+      inventory.choices.some(
+        (choice) =>
+          ['AccessBoundary', 'InlineBoundary', 'LowerBoundary', 'IndexBoundary'].includes(
+            choice.componentName,
+          ) && choice.pattern === '/*',
+      ),
+    ).toBe(false);
+    expect(
+      inventory.choices.some(
+        (choice) => choice.pathResolution === 'resolved' && choice.pattern.startsWith('/*/'),
+      ),
+    ).toBe(false);
+  });
+
+  it('selects a catalog leaf instead of a pathless explicit route boundary', async () => {
+    const terminalPath = '/workspace/src/TerminalPage.tsx';
+    const layoutPath = '/workspace/src/TerminalLayout.tsx';
+    const mapPath = '/workspace/src/pages-map.ts';
+    const catalogPath = '/workspace/src/pages.json';
+    const sources: Record<string, string> = {
+      [APP_PATH]: [
+        'import TerminalPage from "./TerminalPage";',
+        'import TerminalLayout from "./TerminalLayout";',
+        'const dynamicPath = () => "/terminal";',
+        'const routeNodes = [',
+        '  <Route path={dynamicPath()} element={<TerminalLayout><TerminalPage /></TerminalLayout>} />,',
+        '  <Route path="*" element={<MissingPage />} />,',
+        '];',
+        'export default function App() {',
+        '  return <Routes><Route path="/*"><Route element={<AccessBoundary />}>{routeNodes}</Route></Route></Routes>;',
+        '}',
+      ].join('\n'),
+      [terminalPath]: 'export default function TerminalPage() { return <main />; }',
+      [layoutPath]:
+        'export default function TerminalLayout({ children }) { return <section>{children}</section>; }',
+      [mapPath]: 'import pages from "./pages.json"; export default pages;',
+      [catalogPath]: JSON.stringify({ concrete: { index: 'TerminalPage' } }),
+    };
+    const resolveModule = (moduleSpecifier: string, consumerPath: string): string | undefined =>
+      new Map([
+        [`${APP_PATH}\0./TerminalPage`, terminalPath],
+        [`${APP_PATH}\0./TerminalLayout`, layoutPath],
+        [`${mapPath}\0./pages.json`, catalogPath],
+      ]).get(`${consumerPath}\0${moduleSpecifier}`);
+    const plan = await collectPreviewInspectorRouteBranchPlan({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createAppRenderChain(),
+      resolveModule,
+      sourcePaths: [APP_PATH, mapPath],
+    });
+    const selected = plan.branches.find((branch) => branch.id === plan.selectedBranchId);
+
+    expect(plan.activeLocation).toMatchObject({
+      componentName: 'TerminalPage',
+      componentSourcePath: terminalPath,
+      componentSourcePaths: [terminalPath],
+      evidenceKind: 'route-catalog',
+      pathname: '/concrete',
+      pattern: '/concrete',
+      elementWrappers: [
+        { componentName: 'TerminalLayout', exportName: 'default', sourcePath: layoutPath },
+      ],
+    });
+    expect(plan.branches.some((branch) => branch.componentName === 'AccessBoundary')).toBe(false);
+    expect(
+      plan.branches.some(
+        (branch) =>
+          branch.componentName === 'TerminalPage' && ['/*', '/preview'].includes(branch.pattern),
+      ),
+    ).toBe(false);
+    expect(plan.selectionResolution).toBe('automatic');
+    expect(selected).toMatchObject({ componentName: 'TerminalPage', pattern: '/concrete' });
+    expect(selected?.componentName).not.toBe('MissingPage');
   });
 });

@@ -17,6 +17,11 @@ import {
   type PreviewInspectorDirectRouteChoice,
   type PreviewInspectorDirectRouteComponentReference,
 } from './previewInspectorDirectRouteChoices';
+import {
+  collectPreviewInspectorDirectRouteRegistrySources,
+  isPreviewInspectorRouteRegistrySource,
+  materializePreviewInspectorRouteBasePath,
+} from './previewInspectorRoutePathMetadata';
 import { collectPreviewInspectorRouteFactoryEvidence } from './previewInspectorRouteFactory';
 import { collectPreviewInspectorRouteFactoryManifest } from './previewInspectorRouteFactoryManifest';
 import type { PreviewInspectorFactoryRouteAvailability } from './previewInspectorRouteFactoryManifestTypes';
@@ -42,8 +47,6 @@ const MAX_ROUTE_CATALOGS = 16;
 const MAX_ROUTE_CANDIDATES = 4_096;
 const FACTORY_BASE_EVIDENCE_PENALTY = 25;
 const ROOT_WILDCARD_EVIDENCE_PENALTY = 100;
-const ROUTE_REGISTRY_SOURCE_PATTERN =
-  /^(?:(?:page|route|router|routing)s?|(?:page|route)[-_.](?:map|paths?|config|registry))(?:[-_.](?:map|paths?|config|registry))?\.[cm]?[jt]sx?$/iu;
 const COMPONENT_IDENTITY_PATTERN = /^[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*$/u;
 
 /** Static evidence retained with the inferred location for diagnostics and hot reload. */
@@ -256,11 +259,38 @@ export async function collectPreviewInspectorRouteLocationInventory(
   );
 
   const pathSources = collectRenderPathSourcePaths(options.renderChain);
-  const registrySources = options.sourcePaths
+  const registrySeeds = [
+    path.normalize(options.documentPath),
+    ...pathSources,
+    ...directChoiceInventory.dependencyPaths,
+  ];
+  const directRegistrySources = [
+    ...new Set(
+      (
+        await Promise.all(
+          registrySeeds.map(async (sourcePath) => {
+            const sourceText = await readCachedSource(sourcePath, options.readSource, sourceCache);
+            return sourceText === undefined
+              ? []
+              : collectPreviewInspectorDirectRouteRegistrySources(
+                  sourcePath,
+                  sourceText,
+                  options.resolveModule,
+                );
+          }),
+        )
+      ).flat(),
+    ),
+  ].sort((left, right) => compareRouteRegistryPaths(left, right, options.documentPath));
+  const inventoryRegistrySources = options.sourcePaths
     .map((sourcePath) => path.normalize(sourcePath))
-    .filter((sourcePath) => ROUTE_REGISTRY_SOURCE_PATTERN.test(path.basename(sourcePath)))
+    .filter(isPreviewInspectorRouteRegistrySource)
     .sort((left, right) => compareRouteRegistryPaths(left, right, options.documentPath))
-    .slice(0, MAX_ROUTE_REGISTRY_SOURCES);
+    .filter((sourcePath) => !directRegistrySources.includes(sourcePath));
+  const registrySources = [...directRegistrySources, ...inventoryRegistrySources].slice(
+    0,
+    MAX_ROUTE_REGISTRY_SOURCES,
+  );
   // The target module can carry a factory base path even when the proven owner step lives in a
   // different module. Keep it in the bounded source set so an outer `:id/*` candidate can inherit
   // the target factory's stricter `:id(\\d+)` contract without walking another directory.
@@ -290,8 +320,11 @@ export async function collectPreviewInspectorRouteLocationInventory(
     const directContributedRoutePattern = directChoices.length > 0;
     for (const choice of directChoices) {
       const identityOrder = identities.indexOf(choice.componentName);
-      addSupportingRoutePattern(routePatterns, choice.pattern);
+      supportingSourcePaths.add(choice.sourcePath);
+      if (choice.pathResolution === 'resolved')
+        addSupportingRoutePattern(routePatterns, choice.pattern);
       if (identityOrder < 0) continue;
+      if (choice.pathResolution === 'unresolved') continue;
       directChoicesByKey.set(createDirectRouteReferenceKey(choice), choice);
       addRouteCandidate(candidates, {
         componentName: choice.componentName,
@@ -314,7 +347,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
     if (directContributedRoutePattern || contributedRoutePattern) {
       supportingSourcePaths.add(sourcePath);
     }
-    if (!ROUTE_REGISTRY_SOURCE_PATTERN.test(path.basename(sourcePath))) continue;
+    if (!isPreviewInspectorRouteRegistrySource(sourcePath)) continue;
     for (const moduleSpecifier of collectJsonCatalogSpecifiers(sourcePath, sourceText)) {
       if (catalogPaths.size >= MAX_ROUTE_CATALOGS) break;
       const catalogPath = resolveRouteCatalogPath(
@@ -343,6 +376,31 @@ export async function collectPreviewInspectorRouteLocationInventory(
     if (candidates.length >= MAX_ROUTE_CANDIDATES) break;
   }
 
+  for (const choice of directChoiceInventory.choices) {
+    if (candidates.length >= MAX_ROUTE_CANDIDATES) break;
+    if (choice.routeBasePath === undefined || choice.reference === undefined) continue;
+    const identityOrder = identities.indexOf(choice.componentName);
+    if (identityOrder < 0) continue;
+    const pattern = await materializePreviewInspectorRouteBasePath(
+      choice.routeBasePath,
+      (sourcePath) => readCachedSource(sourcePath, options.readSource, sourceCache),
+      choice.sourcePath,
+    );
+    if (pattern === undefined) continue;
+    const normalizedPattern = normalizeRoutePattern(pattern);
+    if (normalizedPattern === undefined) continue;
+    const materializedChoice = Object.freeze({ ...choice, pattern: normalizedPattern });
+    directChoicesByKey.set(createDirectRouteReferenceKey(materializedChoice), materializedChoice);
+    addRouteCandidate(candidates, {
+      componentName: choice.componentName,
+      documentPath: options.documentPath,
+      evidenceKind: 'route-jsx',
+      identityOrder,
+      pattern: normalizedPattern,
+      sourcePath: choice.sourcePath,
+    });
+  }
+
   const rankedCandidates = candidates.sort(compareRouteCandidates);
   const primaryCandidate =
     rankedCandidates.find((candidate) => targetIdentitySet.has(candidate.componentName)) ??
@@ -352,13 +410,29 @@ export async function collectPreviewInspectorRouteLocationInventory(
     return candidate === undefined ? [] : [candidate];
   });
   const directChoiceCandidates = directChoiceInventory.choices.flatMap((choice) => {
-    const candidate = rankedCandidates.find(
-      (item) =>
-        item.componentName === choice.componentName &&
-        item.pattern === choice.pattern &&
-        path.normalize(item.sourcePath) === path.normalize(choice.sourcePath),
-    );
-    return candidate === undefined ? [] : [candidate];
+    const candidatesForChoice =
+      choice.pathResolution === 'resolved'
+        ? rankedCandidates.filter(
+            (item) =>
+              item.componentName === choice.componentName &&
+              item.pattern === choice.pattern &&
+              path.normalize(item.sourcePath) === path.normalize(choice.sourcePath),
+          )
+        : rankedCandidates.filter(
+            (item) =>
+              (item.componentName === choice.componentName &&
+                item.evidenceKind === 'route-catalog') ||
+              (choice.routeBasePath !== undefined &&
+                item.componentName === choice.componentName &&
+                item.evidenceKind === 'route-jsx' &&
+                path.normalize(item.sourcePath) === path.normalize(choice.sourcePath) &&
+                directChoicesByKey.has(createDirectRouteReferenceKey(item))),
+          );
+    for (const candidate of candidatesForChoice) {
+      const key = createDirectRouteReferenceKey(candidate);
+      if (!directChoicesByKey.has(key)) directChoicesByKey.set(key, choice);
+    }
+    return candidatesForChoice;
   });
   const choiceCandidates = [...factoryChoiceCandidates, ...directChoiceCandidates].filter(
     (candidate, index, values) =>
@@ -815,7 +889,7 @@ function collectSourceRouteCandidates(
   return contributedRoutePattern;
 }
 
-/** Adds one normalized route and attaches a specificity score without duplicating candidates. */
+/** Adds one normalized route and keeps distinct authored patterns even when paths materialize alike. */
 function addRouteCandidate(
   candidates: RouteLocationCandidate[],
   input: Omit<RouteLocationCandidate, 'pathname' | 'score'> & {
@@ -823,13 +897,14 @@ function addRouteCandidate(
     readonly scoreAdjustment?: number;
   },
 ): void {
+  if (candidates.length >= MAX_ROUTE_CANDIDATES) return;
   const pattern = normalizeRoutePattern(input.pattern);
   if (pattern === undefined) return;
   const pathname = materializeRoutePattern(pattern);
   if (
     candidates.some(
       (candidate) =>
-        candidate.pathname === pathname && candidate.componentName === input.componentName,
+        candidate.pattern === pattern && candidate.componentName === input.componentName,
     )
   ) {
     return;

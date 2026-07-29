@@ -2,7 +2,11 @@
 import path from 'node:path';
 import type { Metafile } from 'esbuild';
 import type { PreviewCompilerBundleFrontierActivity } from '../../../domain/previewCompilerActivity';
-import { PreviewBuildStalledError } from '../../../domain/previewBuildExecution';
+import {
+  PreviewBuildStalledError,
+  type PreviewFrontierMismatchEvidence,
+} from '../../../domain/previewBuildExecution';
+import { createPreviewInspectorFrontierMismatchEvidence } from './previewInspectorFrontierMismatchEvidence';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE } from '../previewPluginProtocol';
 
@@ -38,9 +42,29 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
         isAuthoredWorkspaceSource(workspaceRoot, sourcePath) &&
         !authenticSourcePaths.has(sourcePath),
     );
-  if (unexpectedInput !== undefined) throwFrontierMismatch(options);
-  if (options.executionSurfaces?.some((surface) => !hasExecutionSurface(options, surface)))
-    throwFrontierMismatch(options);
+  if (unexpectedInput !== undefined)
+    throwFrontierMismatch(
+      options,
+      createPreviewInspectorFrontierMismatchEvidence({
+        cause: 'unexpected-metafile-input',
+        sourcePath: unexpectedInput,
+        workspaceRoot,
+      }),
+    );
+  const missingExecutionSurface = options.executionSurfaces?.find(
+    (surface) => !hasExecutionSurface(options, surface),
+  );
+  if (missingExecutionSurface !== undefined)
+    throwFrontierMismatch(
+      options,
+      createPreviewInspectorFrontierMismatchEvidence({
+        cause: 'missing-execution-surface',
+        sourcePath: missingExecutionSurface.sourcePath,
+        surfaceId: missingExecutionSurface.id,
+        surfaceStrategy: missingExecutionSurface.strategy,
+        workspaceRoot,
+      }),
+    );
 }
 
 /** Requires every generated execution surface to survive output tree-shaking and composition. */
@@ -67,6 +91,7 @@ function hasExecutionSurface(
 /** Reports one consistency failure without disclosing candidate paths or virtual identifiers. */
 function throwFrontierMismatch(
   options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
+  frontierMismatchEvidence: PreviewFrontierMismatchEvidence,
 ): never {
   throw new PreviewBuildStalledError(
     options.target,
@@ -74,6 +99,7 @@ function throwFrontierMismatch(
     0,
     'frontier-mismatch',
     options.activity,
+    frontierMismatchEvidence,
   );
 }
 

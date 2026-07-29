@@ -3,6 +3,10 @@
 .git/**
 .github/**
 .lh/**
+.plan/**
+plan*.md
+workingplan*.md
+frozen-frontier-authentic-target-authority-*.md
 .portmanager/**
 .vscode/**
 coverage/**

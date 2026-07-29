@@ -11,6 +11,7 @@ const MAXIMUM_LINES = 1000;
 const EXCLUDED_DIRECTORY_NAMES = new Set([
   '.codeidx',
   '.git',
+  '.plan',
   '.tmp',
   '.vscode',
   '.vscode-test',

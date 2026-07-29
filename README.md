@@ -262,6 +262,11 @@ Output일 뿐 payload를 backend로 전송하거나 project 동작을 바꾸지 
 `runtimeRevision`을 공유하므로 같은 `blocker-trace-N` 번호가 다른 탭이나 reload에서 다시 시작되어도 별도 실행으로
 구분할 수 있습니다.
 
+여러 로그의 blocker 사례는 로컬에서 다음처럼 집계할 수 있습니다.
+`node scripts/summarize-preview-blocker-cases.mjs "<React Preview.log 또는 log 디렉터리>" [...]`
+보고서는 blocker 빈도, Auto mode, 남아 있는 blocker render, Auto 직후의 상관 오류와 malformed 레코드 수만
+집계합니다. 처리와 출력은 모두 로컬에서 수행하며 payload, source 내용, target 경로를 포함하지 않습니다.
+
 렌더링에 필요한 사용자 조작은 모두 component tree의 소유 경로에서 시작합니다. API/GraphQL 응답,
 render-critical hook/Context 값과 target props는 해당 component 아래의 `PREVIEW VALUE` 또는 `BLOCKER` 행을 선택해
 Auto/Smart/JSON으로 보완합니다. `if/else`, 삼항식과 literal/default `switch/case`는 branch control 행으로 남고,
@@ -314,6 +319,10 @@ pass에서만 remount하며 pass 수와 발견 property 수를 상세 화면에 
 진행되고 동일 semantic state 또는 A→B→A 진동이 다시 나타나면 자동 회로가 열려 page를 그대로 유지합니다.
 누적 pass 상한과 cycle 상태는 자동 probe가 초기화하지 않으며, 사용자가 `Try page again`이나
 `Auto-find missing values`를 명시적으로 선택한 경우에만 해당 page path의 탐색 예산을 새로 시작합니다.
+authored page의 Auto list는 requirement 근거가 생길 때까지 비어 있으며 File Components는 기존 gallery sample을
+유지합니다. deterministic/Auto-find가 생성한 hook 또는 backend 값이 새 fatal render 오류를 만들면 해당 값은
+정확히 이전 상태로 되돌리고 자동 탐색을 멈춥니다. `Try page again`과 `Auto-find missing values`로 명시적으로
+재시도할 수 있으며, 수동 값은 항상 우선합니다.
 `Show file by itself`는 Router·Theme·provider·no-network 경계 안에서 selected export만 확인하는 명시적
 진단 모드이고 page 성공으로 계산되지 않습니다. `Return to page`로 같은 page path로 돌아갑니다.
 

@@ -94,7 +94,12 @@ function getOrCreateResources(state: ActiveExtensionState): ActiveExtensionResou
     state.log,
   );
   const buildPreview = new BuildPreview(compiler, artifactStore);
-  const controller = new PreviewController(buildPreview, artifactStore.resourceRoot, state.log);
+  const controller = new PreviewController(
+    buildPreview,
+    artifactStore.resourceRoot,
+    state.log,
+    state.context.workspaceState,
+  );
   const resources = { artifactStore, compiler, controller };
   state.resources = resources;
   state.context.subscriptions.push(compiler, artifactStore, controller);

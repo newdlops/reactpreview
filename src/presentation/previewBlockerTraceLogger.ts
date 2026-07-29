@@ -25,8 +25,10 @@ const BLOCKER_TRACE_ERROR_LIMIT = 1_000;
 export interface PreviewBlockerTraceLogContext {
   /** Canonical paths reached by the last committed preview bundle. */
   readonly dependencyPaths: ReadonlySet<string>;
-  /** Restricts browser-authored trace events to the explicit Page Inspector rendering mode. */
+  /** Inspector-only gates remain owned by their protocols; blocker traces use command matching. */
   readonly enabled: boolean;
+  /** Producer command required by this panel's selected render mode. */
+  readonly expectedPreviewCommand: 'direct-preview' | 'page-inspector';
   /** Shared diagnostic channel; trace rows use info while malformed reads stay at debug level. */
   readonly log: Pick<vscode.LogOutputChannel, 'debug' | 'info'>;
   /** Pinned document URI whose remote scheme and authority are reused for sibling source reads. */
@@ -69,13 +71,24 @@ export function handlePreviewBlockerTraceMessage(
   context: PreviewBlockerTraceLogContext,
 ): boolean {
   if (!isPreviewBlockerTraceMessage(value)) return false;
-  if (!context.enabled) {
-    context.log.debug('Ignored a React Preview blocker trace outside Page Inspector mode.');
-    return true;
-  }
   const message = readPreviewBlockerTraceMessage(value);
   if (message === undefined) {
     context.log.debug('Ignored a malformed React Preview blocker trace message.');
+    return true;
+  }
+  if (message.event.previewCommand === undefined) {
+    context.log.debug('Ignored a React Preview blocker trace without a producer command.');
+    return true;
+  }
+  if (message.event.previewCommand !== context.expectedPreviewCommand) {
+    context.log.debug('Ignored a React Preview blocker trace with a mismatched producer command.');
+    return true;
+  }
+  if (
+    message.event.previewCommand === 'direct-preview' &&
+    (message.runtimeSessionId === undefined || message.runtimeRevision === undefined)
+  ) {
+    context.log.debug('Ignored a direct React Preview blocker trace without complete runtime correlation.');
     return true;
   }
 

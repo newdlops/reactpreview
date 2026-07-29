@@ -1,5 +1,47 @@
+/* eslint-disable jsdoc/require-jsdoc, @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-non-null-assertion */
 /** Formats bounded compiler activity for logs without leaking source text or paths. */
 import type { PreviewCompilerActivity } from '../domain/previewCompilerActivity';
+import type { PreviewFrontierMismatchEvidence } from '../domain/previewBuildExecution';
+const FRONTIER_PREFIX = 'React Preview frontier mismatch evidence: ';
+const FRONTIER_MAX = 2048;
+export function formatPreviewFrontierMismatchEvidence(
+  evidence: PreviewFrontierMismatchEvidence,
+): string {
+  const path = (
+    value: { digest: string; workspaceRelativePath?: string },
+    hashesOnly: boolean,
+  ) => ({
+    digest: value.digest,
+    ...(hashesOnly || value.workspaceRelativePath === undefined
+      ? {}
+      : { workspaceRelativePath: value.workspaceRelativePath }),
+  });
+  const payload = (hashesOnly: boolean) =>
+    evidence.cause === 'guard-escape'
+      ? {
+          cause: evidence.cause,
+          source: path(evidence.source, hashesOnly),
+          importer: path(evidence.importer!, hashesOnly),
+          specifier: {
+            digest: evidence.specifier!.digest,
+            ...(hashesOnly || evidence.specifier!.value === undefined
+              ? {}
+              : { value: evidence.specifier!.value }),
+          },
+        }
+      : evidence.cause === 'missing-execution-surface'
+        ? {
+            cause: evidence.cause,
+            source: path(evidence.source, hashesOnly),
+            surface: {
+              identityDigest: evidence.surface!.identityDigest,
+              strategy: evidence.surface!.strategy,
+            },
+          }
+        : { cause: evidence.cause, source: path(evidence.source, hashesOnly) };
+  const full = FRONTIER_PREFIX + JSON.stringify(payload(false));
+  return full.length <= FRONTIER_MAX ? full : FRONTIER_PREFIX + JSON.stringify(payload(true));
+}
 
 /** Formats one bounded activity record for diagnostic logging. */
 export function formatPreviewCompilerActivity(activity: PreviewCompilerActivity): string {

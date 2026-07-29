@@ -76,6 +76,7 @@ describe('Preview blocker trace logger', () => {
       handlePreviewBlockerTraceMessage(createTraceMessage(SOURCE_PATH), {
         dependencyPaths: new Set([SOURCE_PATH]),
         enabled: true,
+        expectedPreviewCommand: 'page-inspector',
         log,
         pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
         targetPath: TARGET_PATH,
@@ -104,6 +105,7 @@ describe('Preview blocker trace logger', () => {
       handlePreviewBlockerTraceMessage(createTraceMessage(SOURCE_PATH), {
         dependencyPaths: new Set([TARGET_PATH]),
         enabled: true,
+        expectedPreviewCommand: 'page-inspector',
         log,
         pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
         targetPath: TARGET_PATH,
@@ -127,6 +129,7 @@ describe('Preview blocker trace logger', () => {
         {
           dependencyPaths: new Set([TARGET_PATH]),
           enabled: true,
+          expectedPreviewCommand: 'page-inspector',
           log,
           pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
           targetPath: TARGET_PATH,
@@ -139,24 +142,83 @@ describe('Preview blocker trace logger', () => {
     expect(log.info).not.toHaveBeenCalled();
   });
 
-  /** Refuses host source work when an ordinary component-gallery webview claims the trace type. */
-  it('consumes trace messages outside Page Inspector mode without reading or logging source', () => {
+  /** Accepts a direct-preview producer when the component panel explicitly expects that command. */
+  it('accepts a direct preview trace without widening Inspector-only protocol gates', async () => {
     const log = { debug: vi.fn(), info: vi.fn() };
+    const directTrace = createTraceMessage(SOURCE_PATH);
+    (directTrace.event as Record<string, unknown>).previewCommand = 'direct-preview';
 
     expect(
-      handlePreviewBlockerTraceMessage(createTraceMessage(SOURCE_PATH), {
+      handlePreviewBlockerTraceMessage(directTrace, {
         dependencyPaths: new Set([SOURCE_PATH]),
         enabled: false,
+        expectedPreviewCommand: 'direct-preview',
         log,
         pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
         targetPath: TARGET_PATH,
       }),
     ).toBe(true);
+    await vi.waitFor(() => expect(log.info).toHaveBeenCalledTimes(1));
+  });
+
+  /** Requires a producer-owned command and never substitutes the panel expectation. */
+  it('rejects missing and mismatched producer commands after parsing the trace envelope', () => {
+    const log = { debug: vi.fn(), info: vi.fn() };
+    const missing = createTraceMessage(SOURCE_PATH);
+    delete (missing.event as Record<string, unknown>).previewCommand;
+    const mismatched = createTraceMessage(SOURCE_PATH);
+    (mismatched.event as Record<string, unknown>).previewCommand = 'direct-preview';
+
+    for (const message of [missing, mismatched]) {
+      expect(
+        handlePreviewBlockerTraceMessage(message, {
+          dependencyPaths: new Set([SOURCE_PATH]),
+          enabled: true,
+          expectedPreviewCommand: 'page-inspector',
+          log,
+          pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
+          targetPath: TARGET_PATH,
+        }),
+      ).toBe(true);
+    }
     expect(log.debug).toHaveBeenCalledWith(
-      'Ignored a React Preview blocker trace outside Page Inspector mode.',
+      'Ignored a React Preview blocker trace without a producer command.',
+    );
+    expect(log.debug).toHaveBeenCalledWith(
+      'Ignored a React Preview blocker trace with a mismatched producer command.',
     );
     expect(log.info).not.toHaveBeenCalled();
-    expect(vscodeState.openTextDocument).not.toHaveBeenCalled();
+  });
+
+  /** Requires direct producers to provide the full runtime identity, while legacy Inspector stays valid. */
+  it('requires direct runtime correlation without tightening legacy Page Inspector traces', async () => {
+    const log = { debug: vi.fn(), info: vi.fn() };
+    const direct = createTraceMessage(SOURCE_PATH);
+    (direct.event as Record<string, unknown>).previewCommand = 'direct-preview';
+    delete direct.artifactId;
+    delete direct.runtimeRevision;
+    delete direct.runtimeSessionId;
+    const legacyInspector = createTraceMessage(SOURCE_PATH);
+    delete legacyInspector.artifactId;
+    delete legacyInspector.runtimeRevision;
+    delete legacyInspector.runtimeSessionId;
+
+    expect(
+      handlePreviewBlockerTraceMessage(direct, {
+        dependencyPaths: new Set([SOURCE_PATH]), enabled: false, expectedPreviewCommand: 'direct-preview',
+        log, pinnedDocumentUri: vscode.Uri.file(TARGET_PATH), targetPath: TARGET_PATH,
+      }),
+    ).toBe(true);
+    expect(log.debug).toHaveBeenCalledWith(
+      'Ignored a direct React Preview blocker trace without complete runtime correlation.',
+    );
+    expect(
+      handlePreviewBlockerTraceMessage(legacyInspector, {
+        dependencyPaths: new Set([SOURCE_PATH]), enabled: true, expectedPreviewCommand: 'page-inspector',
+        log, pinnedDocumentUri: vscode.Uri.file(TARGET_PATH), targetPath: TARGET_PATH,
+      }),
+    ).toBe(true);
+    await vi.waitFor(() => expect(log.info).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -180,6 +242,7 @@ function createTraceMessage(sourcePath: string): Record<string, unknown> {
         summary: { requiredPaths: ['formikProps.values.name'] },
       },
       event: 'auto-selection',
+      previewCommand: 'page-inspector',
       sequence: 2,
       timestamp: '2026-07-19T12:00:00.000Z',
       traceId: 'blocker-trace-2',

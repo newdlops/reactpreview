@@ -6,6 +6,7 @@ import type { BuildPreview } from '../../src/application/buildPreview';
 import type { PreviewBuildRequest, PreparedPreview } from '../../src/domain/preview';
 import type { ResolvedPreviewTarget } from '../../src/presentation/activePreviewTarget';
 import { PreviewController } from '../../src/presentation/previewController';
+import { createPreviewControllerTestWorkspaceState } from './previewControllerTestWorkspaceState';
 import {
   createAcknowledgement,
   type HotReloadMessageIdentity,
@@ -331,8 +332,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open('component');
     await controller.open('page-inspector');
     await vi.waitFor(() => {
@@ -392,8 +393,12 @@ describe('PreviewController', () => {
       error: vi.fn(),
       warn: vi.fn(),
     } as unknown as vscode.LogOutputChannel;
-    const controller = new PreviewController(buildPreview, vscode.Uri.file('/artifacts'), log);
-
+    const controller = new PreviewController(
+      buildPreview,
+      vscode.Uri.file('/artifacts'),
+      log,
+      createPreviewControllerTestWorkspaceState(),
+    );
     await controller.open();
     await controller.open();
     await vi.waitFor(() => {
@@ -411,7 +416,6 @@ describe('PreviewController', () => {
       targetA.request.documentPath,
       targetB.request.documentPath,
     ]);
-
     execute.mockClear();
     vscodeState.changeListeners[0]?.({ document: { fileName: '/workspace/src/Shared.tsx' } });
     await vi.advanceTimersByTimeAsync(300);
@@ -434,18 +438,15 @@ describe('PreviewController', () => {
     vscodeState.changeListeners[0]?.({ document: { fileName: '/workspace/src/Unrelated.tsx' } });
     await vi.advanceTimersByTimeAsync(300);
     expect(execute).not.toHaveBeenCalled();
-
     panelA?.focus();
     await Promise.resolve();
     expect(execute).not.toHaveBeenCalled();
-
     vscodeState.changeListeners[0]?.({ document: { fileName: targetB.request.documentPath } });
     await vi.advanceTimersByTimeAsync(300);
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
     });
     expect(execute.mock.calls[0]?.[0].documentPath).toBe(targetB.request.documentPath);
-
     execute.mockClear();
     const watcherB = (vscodeState.watchers as TestWatcher[]).find(
       (watcher) => watcher.basePath === '/workspace/generated-pages/B',
@@ -506,8 +507,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -558,8 +559,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -601,8 +602,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -649,8 +650,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -691,8 +692,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -734,8 +735,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact: vi.fn(() => Promise.resolve()) } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -787,8 +788,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       log,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -834,8 +835,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(1);
@@ -872,8 +873,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     await controller.refresh();
     await vi.waitFor(() => {
@@ -903,8 +904,8 @@ describe('PreviewController', () => {
       { execute, releaseArtifact } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
-
     await controller.open();
     controller.dispose();
     pendingBuild.resolve(createPreparedPreview(target, 'closed-panel-artifact'));

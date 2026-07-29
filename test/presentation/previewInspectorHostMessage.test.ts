@@ -216,6 +216,30 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(handlerState.blocker).toHaveBeenCalledTimes(1);
     expect(handlerState.navigation).toHaveBeenCalledTimes(1);
   });
+
+  /** Forwards the panel-owned direct command while leaving all Inspector gates disabled. */
+  it('routes direct blocker traces with the direct command expectation only', () => {
+    const { context } = createContext();
+    const directContext: PreviewInspectorHostMessageContext = {
+      ...context,
+      enabled: false,
+      expectedPreviewCommand: 'direct-preview',
+    };
+    handlerState.blocker.mockReturnValue(true);
+
+    expect(handlePreviewInspectorHostMessage({ type: 'react-preview-blocker-trace' }, directContext)).toBe(
+      true,
+    );
+    expect(handlerState.health).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ enabled: false }),
+    );
+    expect(handlerState.blocker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ enabled: false, expectedPreviewCommand: 'direct-preview' }),
+    );
+    expect(handlerState.navigation).not.toHaveBeenCalled();
+  });
 });
 
 /** Test context plus direct spy references that avoid extracting class methods from typed objects. */
@@ -239,6 +263,7 @@ function createContext(): TestPreviewInspectorHostMessageContext {
     currentRuntimeRevision: 12,
     dependencyPaths: new Set([SOURCE_PATH]),
     enabled: true,
+    expectedPreviewCommand: 'page-inspector' as const,
     gestureGate: {} as PreviewInspectorHostMessageContext['gestureGate'],
     log: { debug, info: vi.fn() } as unknown as PreviewInspectorHostMessageContext['log'],
     panelViewColumn: undefined,

@@ -19,9 +19,11 @@ describe('Preview blocker trace protocol', () => {
           selectedValue: { formikProps: { values: { name: 'Preview name' } } },
         },
         blocker: {
+          category: 'provider',
           id: 'hook-form',
           kind: 'runtime-fallback',
           name: 'Missing hook value · useFormContext',
+          outcome: 'prevented',
           ownerName: 'ProfileForm',
           source: {
             column: 5,
@@ -55,7 +57,9 @@ describe('Preview blocker trace protocol', () => {
           selectedValue: { formikProps: { values: { name: 'Preview name' } } },
         },
         blocker: {
+          category: 'provider',
           kind: 'runtime-fallback',
+          outcome: 'prevented',
           source: { line: 12, sourcePath: '/workspace/src/ProfileForm.tsx' },
         },
         event: 'auto-selection',

@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import type { BuildPreview } from '../../src/application/buildPreview';
 import type { ResolvedPreviewTarget } from '../../src/presentation/activePreviewTarget';
 import { PreviewController } from '../../src/presentation/previewController';
+import { createPreviewControllerTestWorkspaceState } from './previewControllerTestWorkspaceState';
 
 /** Controller-created session surface exposed to fan-out assertions. */
 interface ObservedSession {
@@ -170,6 +171,7 @@ describe('PreviewController source-decoration visibility fan-out', () => {
       { execute: vi.fn(), releaseArtifact: vi.fn() } as unknown as BuildPreview,
       vscode.Uri.file('/artifacts'),
       { debug: vi.fn(), error: vi.fn(), warn: vi.fn() } as unknown as vscode.LogOutputChannel,
+      createPreviewControllerTestWorkspaceState(),
     );
 
     await controller.open('component');

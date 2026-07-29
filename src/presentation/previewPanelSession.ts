@@ -1,8 +1,15 @@
 /* eslint-disable jsdoc/require-jsdoc */
 import * as vscode from 'vscode';
 import type { PreparedPreview } from '../domain/preview';
-import { isPreviewBuildCancellation, isPreviewBuildStall } from '../domain/previewBuildExecution';
-import { formatPreviewCompilerActivity } from './previewCompilerActivityLog';
+import {
+  isPreviewBuildCancellation,
+  isPreviewBuildStall,
+  isPreviewFrontierMismatchEvidence,
+} from '../domain/previewBuildExecution';
+import {
+  formatPreviewCompilerActivity,
+  formatPreviewFrontierMismatchEvidence,
+} from './previewCompilerActivityLog';
 import type { PreviewProgressStage } from '../domain/previewProgress';
 import { canonicalizeExistingPath, createExistingPathIdentitySet } from '../shared/pathIdentity';
 import type { PreviewTargetIssue, ResolvedPreviewTarget } from './activePreviewTarget';
@@ -110,7 +117,7 @@ export class PreviewPanelSession implements vscode.Disposable {
         reportFailure: (error, target, revision) => {
           const failure = describeBuildFailure(error);
           this.options.log.warn(
-            `Selected-context React preview enrichment failed; fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}`,
+            `Selected-context React preview enrichment failed; fast preview retained. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}${this.formatFrontierMismatchEvidenceSuffix(error)}`,
             error,
           );
           this.performanceTrace.finish('failed', revision);
@@ -330,7 +337,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       if (isPreviewBuildStall(error) && error.activity !== undefined)
         this.options.log.debug(formatPreviewCompilerActivity(error.activity));
       this.options.log.error(
-        `React preview build failed; retaining the last good preview. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}`,
+        `React preview build failed; retaining the last good preview. Target: ${target.request.documentPath}; mode: ${this.options.renderMode}.${failure.details === undefined ? '' : `\n${failure.details}`}${this.formatFrontierMismatchEvidenceSuffix(error)}`,
         error,
       );
       this.performanceTrace.finish('failed', requestedRevision);
@@ -351,6 +358,9 @@ export class PreviewPanelSession implements vscode.Disposable {
     } finally {
       if (!awaitingBrowserApplication) this.clearBuildExecution(requestedRevision);
     }
+  }
+  private formatFrontierMismatchEvidenceSuffix(error: unknown): string {
+    return isPreviewBuildStall(error) && error.reason === 'frontier-mismatch' && isPreviewFrontierMismatchEvidence(error.frontierMismatchEvidence) ? `\n${formatPreviewFrontierMismatchEvidence(error.frontierMismatchEvidence)}` : '';
   }
   private commitPreparedPreview(
     documentName: string,
@@ -554,6 +564,8 @@ export class PreviewPanelSession implements vscode.Disposable {
         currentRuntimeRevision: this.displayedRuntimeRevision,
         dependencyPaths: this.dependencies,
         enabled: this.options.renderMode === 'page-inspector',
+        expectedPreviewCommand:
+          this.options.renderMode === 'page-inspector' ? 'page-inspector' : 'direct-preview',
         gestureGate: this.inspectorSourceGesture,
         log: this.options.log,
         panelViewColumn: this.options.panel.viewColumn,

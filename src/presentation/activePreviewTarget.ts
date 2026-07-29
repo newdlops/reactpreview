@@ -69,6 +69,22 @@ export async function resolvePinnedPreviewTarget(
   }
 }
 
+/** Resolves a picker or durable URI only after requiring current workspace membership. */
+export async function resolveWorkspacePreviewTarget(
+  documentUri: vscode.Uri,
+): Promise<PreviewTargetIssue | ResolvedPreviewTarget> {
+  if (!vscode.workspace.isTrusted) return workspaceTrustIssue();
+  if (!SUPPORTED_DOCUMENT_SCHEMES.has(documentUri.scheme)) return unsupportedDocumentIssue();
+  if (getPreviewSourceLanguage(documentUri.fsPath) === undefined) return unsupportedFileIssue();
+  if (vscode.workspace.getWorkspaceFolder(documentUri) === undefined) {
+    return {
+      message: 'Choose a supported source file from a currently open workspace folder.',
+      title: 'Preview target is outside the workspace',
+    };
+  }
+  return resolvePinnedPreviewTarget(documentUri);
+}
+
 /**
  * Validates and snapshots an explicit document while preserving its identity for later rebuilds.
  *
@@ -78,26 +94,15 @@ export async function resolvePinnedPreviewTarget(
 export function resolvePreviewTarget(
   document: vscode.TextDocument,
 ): PreviewTargetIssue | ResolvedPreviewTarget {
-  if (!vscode.workspace.isTrusted) {
-    return {
-      message: 'Trust this workspace before executing its React source in a preview.',
-      title: 'Workspace trust is required',
-    };
-  }
+  if (!vscode.workspace.isTrusted) return workspaceTrustIssue();
 
   if (document.isUntitled || !SUPPORTED_DOCUMENT_SCHEMES.has(document.uri.scheme)) {
-    return {
-      message: 'Save the component in a filesystem-backed workspace before previewing it.',
-      title: 'Unsupported document',
-    };
+    return unsupportedDocumentIssue();
   }
 
   const language = getPreviewSourceLanguage(document.fileName);
   if (language === undefined) {
-    return {
-      message: 'React Preview supports JS/JSX/TS/TSX files and their MJS/CJS/MTS/CTS variants.',
-      title: 'Unsupported file type',
-    };
+    return unsupportedFileIssue();
   }
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -135,6 +140,30 @@ export function resolvePreviewTarget(
         ? {}
         : { tsconfigPath: path.resolve(workspaceRoot, configuredTsconfig) }),
     },
+  };
+}
+
+/** Returns the shared workspace-trust issue. */
+function workspaceTrustIssue(): PreviewTargetIssue {
+  return {
+    message: 'Trust this workspace before executing its React source in a preview.',
+    title: 'Workspace trust is required',
+  };
+}
+
+/** Returns the shared unsupported-document issue. */
+function unsupportedDocumentIssue(): PreviewTargetIssue {
+  return {
+    message: 'Save the component in a filesystem-backed workspace before previewing it.',
+    title: 'Unsupported document',
+  };
+}
+
+/** Returns the shared unsupported-file issue. */
+function unsupportedFileIssue(): PreviewTargetIssue {
+  return {
+    message: 'React Preview supports JS/JSX/TS/TSX files and their MJS/CJS/MTS/CTS variants.',
+    title: 'Unsupported file type',
   };
 }
 

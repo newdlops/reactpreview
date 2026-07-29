@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import {
   resolveActivePreviewTarget,
   resolvePinnedPreviewTarget,
+  resolveWorkspacePreviewTarget,
 } from '../../src/presentation/activePreviewTarget';
 
 const vscodeState = vi.hoisted(() => ({
@@ -23,17 +24,18 @@ const vscodeState = vi.hoisted(() => ({
 }));
 
 vi.mock('vscode', () => {
-  /** Minimal immutable file URI used by workspace-folder and document comparisons. */
+  /** Minimal immutable URI used by workspace-folder and document comparisons. */
   class FakeUri {
-    /** Filesystem document scheme supported by the preview target resolver. */
-    public readonly scheme = 'file';
-
     /**
      * Creates a URI for one absolute fake workspace path.
      *
      * @param fsPath Filesystem path exposed to production code.
      */
-    public constructor(public readonly fsPath: string) {}
+    public constructor(
+      public readonly fsPath: string,
+      public readonly scheme = 'file',
+      public readonly authority = '',
+    ) {}
 
     /**
      * Serializes a stable identity used to compare workspace folders.
@@ -41,7 +43,9 @@ vi.mock('vscode', () => {
      * @returns File URI string for the fake path.
      */
     public toString(): string {
-      return `file://${this.fsPath}`;
+      return this.scheme === 'file'
+        ? `file://${this.fsPath}`
+        : `${this.scheme}://${this.authority}${this.fsPath}`;
     }
 
     /**
@@ -52,6 +56,15 @@ vi.mock('vscode', () => {
      */
     public static file(fsPath: string): FakeUri {
       return new FakeUri(fsPath);
+    }
+
+    /** Recreates a remote URI while preserving its authority and path identity. */
+    public static from(components: {
+      readonly authority?: string;
+      readonly path: string;
+      readonly scheme: string;
+    }): FakeUri {
+      return new FakeUri(components.path, components.scheme, components.authority ?? '');
     }
   }
 
@@ -170,6 +183,96 @@ describe('resolveActivePreviewTarget', () => {
     expect(target.request.documentPath).toBe(pinnedDocument.fileName);
     expect(target.request.sourceText).toBe('pinned source');
   });
+
+  it('resolves a supported workspace URI without showing an editor', async () => {
+    const document = createDocument('/workspace/src/Selected.tsx', false, 'selected');
+    vscodeState.openTextDocument.mockResolvedValue(document);
+
+    const target = await resolveWorkspacePreviewTarget(document.uri);
+
+    expect(vscodeState.openTextDocument).toHaveBeenCalledWith(document.uri);
+    expect('request' in target).toBe(true);
+  });
+
+  it('resolves a supported remote workspace URI while preserving its authority', async () => {
+    const uri = vscode.Uri.from({
+      authority: 'ssh-remote+preview-host',
+      path: '/workspace/src/Remote.tsx',
+      scheme: 'vscode-remote',
+    });
+    const document = createDocument('/workspace/src/Remote.tsx', false, 'remote selected', uri);
+    vscodeState.openTextDocument.mockResolvedValue(document);
+
+    const target = await resolveWorkspacePreviewTarget(uri);
+
+    expect(vscodeState.openTextDocument).toHaveBeenCalledWith(uri);
+    expect('request' in target).toBe(true);
+    if (!('request' in target)) return;
+    expect(target.documentUri.scheme).toBe('vscode-remote');
+    expect(target.documentUri.authority).toBe('ssh-remote+preview-host');
+  });
+
+  it('rejects an unsupported scheme before opening it', async () => {
+    const uri = vscode.Uri.from({ path: '/workspace/src/Untitled.tsx', scheme: 'untitled' });
+
+    const target = await resolveWorkspacePreviewTarget(uri);
+
+    expect(target).toEqual({
+      title: 'Unsupported document',
+      message: 'Save the component in a filesystem-backed workspace before previewing it.',
+    });
+    expect(vscodeState.openTextDocument).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported extension before opening it', async () => {
+    const uri = vscode.Uri.file('/workspace/src/Unsupported.css');
+
+    const target = await resolveWorkspacePreviewTarget(uri);
+
+    expect(target).toEqual({
+      title: 'Unsupported file type',
+      message: 'React Preview supports JS/JSX/TS/TSX files and their MJS/CJS/MTS/CTS variants.',
+    });
+    expect(vscodeState.openTextDocument).not.toHaveBeenCalled();
+  });
+
+  it('rejects an outside-workspace URI before opening it', async () => {
+    const document = createDocument('/outside/Selected.tsx', false, 'selected');
+
+    const target = await resolveWorkspacePreviewTarget(document.uri);
+
+    expect(target).toEqual({
+      title: 'Preview target is outside the workspace',
+      message: 'Choose a supported source file from a currently open workspace folder.',
+    });
+    expect(vscodeState.openTextDocument).not.toHaveBeenCalled();
+  });
+
+  it('returns the existing unavailable issue when a valid workspace URI cannot reopen', async () => {
+    const uri = vscode.Uri.file('/workspace/src/Moved.tsx');
+    vscodeState.openTextDocument.mockRejectedValue(new Error('moved'));
+
+    const target = await resolveWorkspacePreviewTarget(uri);
+
+    expect(target).toEqual({
+      title: 'Preview target unavailable',
+      message: 'The pinned preview target could not be reopened: /workspace/src/Moved.tsx',
+    });
+    expect(vscodeState.openTextDocument).toHaveBeenCalledWith(uri);
+  });
+
+  it('rejects an untrusted workspace before opening the selected URI', async () => {
+    const uri = vscode.Uri.file('/workspace/src/Trusted.tsx');
+    vscodeState.trusted = false;
+
+    const target = await resolveWorkspacePreviewTarget(uri);
+
+    expect(target).toEqual({
+      title: 'Workspace trust is required',
+      message: 'Trust this workspace before executing its React source in a preview.',
+    });
+    expect(vscodeState.openTextDocument).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -184,13 +287,14 @@ function createDocument(
   fileName: string,
   isDirty: boolean,
   sourceText: string,
+  uri = vscode.Uri.file(fileName),
 ): vscode.TextDocument {
   return {
     fileName,
     getText: () => sourceText,
     isDirty,
     isUntitled: false,
-    uri: vscode.Uri.file(fileName),
+    uri,
     version: sourceText.length,
   } as vscode.TextDocument;
 }

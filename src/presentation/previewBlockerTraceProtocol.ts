@@ -7,6 +7,12 @@
  * selections and diagnostic summaries; it is not a transport for arbitrary application state.
  */
 import path from 'node:path';
+import {
+  isPreviewBlockerCategory,
+  isPreviewBlockerOutcome,
+  type PreviewBlockerCategory,
+  type PreviewBlockerOutcome,
+} from '../domain/previewBlocker';
 import { isPreviewSourcePath } from '../domain/previewTarget';
 import {
   readPreviewRuntimeCorrelation,
@@ -61,9 +67,11 @@ export interface PreviewBlockerTraceSource {
 
 /** One blocker identity and the deterministic facts used to classify it. */
 export interface PreviewBlockerTraceBlocker {
+  readonly category?: PreviewBlockerCategory;
   readonly id: string;
   readonly kind: string;
   readonly name: string;
+  readonly outcome?: PreviewBlockerOutcome;
   readonly ownerName?: string;
   readonly source?: PreviewBlockerTraceSource;
   readonly summary?: PreviewBlockerTraceJson;
@@ -114,6 +122,8 @@ export interface PreviewBlockerTraceEvent {
   readonly blocker?: PreviewBlockerTraceBlocker;
   readonly error?: PreviewBlockerTraceError;
   readonly event: PreviewBlockerTraceEventKind;
+  /** Canonical private campaign command used only for manifest scenario correlation. */
+  readonly previewCommand?: 'direct-preview' | 'page-inspector';
   readonly result?: PreviewBlockerTraceRenderResult;
   readonly sequence: number;
   readonly target?: PreviewBlockerTraceTarget;
@@ -181,12 +191,14 @@ function readPreviewBlockerTraceEvent(value: unknown): PreviewBlockerTraceEvent 
   const result = value.result === undefined ? undefined : readTraceRenderResult(value.result);
   const error = value.error === undefined ? undefined : readTraceError(value.error);
   const target = value.target === undefined ? undefined : readTraceTarget(value.target);
+  const previewCommand = value.previewCommand;
   if (
     (value.blocker !== undefined && blocker === undefined) ||
     (value.auto !== undefined && auto === undefined) ||
     (value.result !== undefined && result === undefined) ||
     (value.error !== undefined && error === undefined) ||
     (value.target !== undefined && target === undefined)
+    || (previewCommand !== undefined && previewCommand !== 'direct-preview' && previewCommand !== 'page-inspector')
   ) {
     return undefined;
   }
@@ -196,6 +208,7 @@ function readPreviewBlockerTraceEvent(value: unknown): PreviewBlockerTraceEvent 
     ...(blocker === undefined ? {} : { blocker }),
     ...(error === undefined ? {} : { error }),
     event: event as PreviewBlockerTraceEventKind,
+    ...(previewCommand === undefined ? {} : { previewCommand }),
     ...(result === undefined ? {} : { result }),
     sequence: sequence as number,
     ...(target === undefined ? {} : { target }),
@@ -211,6 +224,8 @@ function readTraceBlocker(value: unknown): PreviewBlockerTraceBlocker | undefine
   const kind = readRequiredTraceText(value.kind, 120);
   const name = readRequiredTraceText(value.name, TRACE_TEXT_LIMIT);
   const ownerName = readOptionalTraceText(value.ownerName, TRACE_TEXT_LIMIT);
+  const category = value.category;
+  const outcome = value.outcome;
   const source = value.source === undefined ? undefined : readTraceSource(value.source);
   const summary = value.summary === undefined ? undefined : copyBoundedTraceJson(value.summary);
   if (
@@ -218,16 +233,20 @@ function readTraceBlocker(value: unknown): PreviewBlockerTraceBlocker | undefine
     kind === undefined ||
     name === undefined ||
     ownerName === null ||
+    (category !== undefined && !isPreviewBlockerCategory(category)) ||
+    (outcome !== undefined && !isPreviewBlockerOutcome(outcome)) ||
     (value.source !== undefined && source === undefined) ||
     (value.summary !== undefined && summary === undefined)
   ) {
     return undefined;
   }
   return Object.freeze({
+    ...(category === undefined ? {} : { category }),
     id,
     kind,
     name,
     ...(ownerName === undefined ? {} : { ownerName }),
+    ...(outcome === undefined ? {} : { outcome }),
     ...(source === undefined ? {} : { source }),
     ...(summary === undefined ? {} : { summary }),
   });

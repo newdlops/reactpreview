@@ -9,12 +9,35 @@ import type { PreviewRenderMode } from '../domain/preview';
 import {
   resolveActivePreviewTarget,
   resolvePinnedPreviewTarget,
+  resolvePreviewTarget,
+  resolveWorkspacePreviewTarget,
   type PreviewTargetIssue,
   type ResolvedPreviewTarget,
 } from './activePreviewTarget';
 import { PreviewInspectorCompanionPanel } from './previewInspectorCompanionPanel';
 import { PreviewPanelSession } from './previewPanelSession';
 import { createPreviewPanelTitle } from './previewPanelTitle';
+
+const PAGE_CONTEXT_TARGET_KEY = 'reactPreview.pageContextTarget';
+const PAGE_CONTEXT_TARGET_VERSION = 1;
+const PAGE_CONTEXT_EXTENSIONS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts'];
+
+interface PreviewWorkspaceState {
+  get(key: string): unknown;
+  update(key: string, value: unknown): Thenable<void>;
+}
+
+/** Returns whether a workspace-state value has the exact durable target schema. */
+function isStoredTarget(value: unknown): value is { readonly uri: string; readonly version: 1 } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 2 &&
+    record.version === 1 &&
+    typeof record.uri === 'string' &&
+    record.uri.length > 0
+  );
+}
 
 /** Extension-scoped manager for any number of file-pinned React preview tabs. */
 export class PreviewController implements vscode.Disposable {
@@ -34,6 +57,7 @@ export class PreviewController implements vscode.Disposable {
     private readonly buildPreview: BuildPreview,
     private readonly resourceRoot: vscode.Uri,
     private readonly log: vscode.LogOutputChannel,
+    private readonly workspaceState: PreviewWorkspaceState,
   ) {
     this.extensionDisposables.push(
       vscode.window.onDidChangeVisibleTextEditors(this.handleVisibleTextEditorsChanged.bind(this)),
@@ -53,13 +77,79 @@ export class PreviewController implements vscode.Disposable {
       return;
     }
 
-    const target = resolveActivePreviewTarget();
-    if ('title' in target) {
-      await this.showTargetIssue(target);
+    if (renderMode === 'component') {
+      const target = resolveActivePreviewTarget();
+      if ('title' in target) await this.showTargetIssue(target);
+      else this.openTarget(target, renderMode);
       return;
     }
+    await this.openPageContext();
+  }
 
-    this.openTarget(target, renderMode);
+  /** Resolves, persists, then opens one page-context target. */
+  private async openPageContext(): Promise<void> {
+    let target: PreviewTargetIssue | ResolvedPreviewTarget | undefined;
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor !== undefined) {
+      target = resolvePreviewTarget(activeEditor.document);
+    } else {
+      const session =
+        [...this.sessions].find((candidate) => candidate.isActive) ??
+        (this.lastFocusedSession !== undefined && this.sessions.has(this.lastFocusedSession)
+          ? this.lastFocusedSession
+          : undefined);
+      if (session !== undefined) target = await resolvePinnedPreviewTarget(session.documentUri);
+      else target = await this.resolveDurableOrPick();
+    }
+    if (target === undefined) return;
+    if ('title' in target) return this.showTargetIssue(target);
+    try {
+      await this.workspaceState.update(PAGE_CONTEXT_TARGET_KEY, {
+        uri: target.documentUri.toString(true),
+        version: PAGE_CONTEXT_TARGET_VERSION,
+      });
+    } catch (cause) {
+      throw new Error(
+        'React Preview could not remember the selected page-context target. No preview was opened.',
+        { cause },
+      );
+    }
+    this.openTarget(target, 'page-inspector');
+  }
+
+  /** Resolves durable state when valid, otherwise prompts once with the native picker. */
+  private async resolveDurableOrPick(): Promise<
+    PreviewTargetIssue | ResolvedPreviewTarget | undefined
+  > {
+    const value = this.workspaceState.get(PAGE_CONTEXT_TARGET_KEY);
+    if (isStoredTarget(value)) {
+      let uri: vscode.Uri | undefined;
+      try {
+        uri = vscode.Uri.parse(value.uri, true);
+      } catch {
+        uri = undefined;
+      }
+      if (uri !== undefined) {
+        const durable = await resolveWorkspacePreviewTarget(uri);
+        if (!('title' in durable)) return durable;
+      }
+    }
+    const selections = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      openLabel: 'Open in React Page Context',
+      filters: { 'JavaScript / TypeScript': PAGE_CONTEXT_EXTENSIONS },
+    });
+    if (selections === undefined || selections.length === 0) return undefined;
+    if (selections.length !== 1)
+      return {
+        title: 'Select one preview target',
+        message: 'Choose exactly one supported source file for the page-context preview.',
+      };
+    const selected = selections[0];
+    if (selected === undefined) return undefined;
+    return resolveWorkspacePreviewTarget(selected);
   }
 
   /**

@@ -38,6 +38,8 @@ import {
 export interface PreviewInspectorHostMessageContext extends PreviewInspectorSourceNavigationContext {
   /** Revision currently committed by the panel; in-flight builds must not decorate old sources. */
   readonly currentRuntimeRevision: number;
+  /** Panel-owned command that must exactly match the browser trace producer identity. */
+  readonly expectedPreviewCommand: 'direct-preview' | 'page-inspector';
   /** Panel-owned source marker retaining one pending selection for later-visible editors. */
   readonly sourceDecoration: PreviewInspectorSourceDecoration;
   /** Immutable source target used to label events from simultaneous pinned previews. */
@@ -121,6 +123,7 @@ export function handlePreviewInspectorHostMessage(
     handlePreviewBlockerTraceMessage(value, {
       dependencyPaths: context.dependencyPaths,
       enabled: context.enabled,
+      expectedPreviewCommand: context.expectedPreviewCommand,
       log: context.log,
       pinnedDocumentUri: context.pinnedDocumentUri,
       targetPath: context.targetPath,

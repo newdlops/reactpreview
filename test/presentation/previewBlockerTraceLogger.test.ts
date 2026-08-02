@@ -205,8 +205,12 @@ describe('Preview blocker trace logger', () => {
 
     expect(
       handlePreviewBlockerTraceMessage(direct, {
-        dependencyPaths: new Set([SOURCE_PATH]), enabled: false, expectedPreviewCommand: 'direct-preview',
-        log, pinnedDocumentUri: vscode.Uri.file(TARGET_PATH), targetPath: TARGET_PATH,
+        dependencyPaths: new Set([SOURCE_PATH]),
+        enabled: false,
+        expectedPreviewCommand: 'direct-preview',
+        log,
+        pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
+        targetPath: TARGET_PATH,
       }),
     ).toBe(true);
     expect(log.debug).toHaveBeenCalledWith(
@@ -214,8 +218,12 @@ describe('Preview blocker trace logger', () => {
     );
     expect(
       handlePreviewBlockerTraceMessage(legacyInspector, {
-        dependencyPaths: new Set([SOURCE_PATH]), enabled: true, expectedPreviewCommand: 'page-inspector',
-        log, pinnedDocumentUri: vscode.Uri.file(TARGET_PATH), targetPath: TARGET_PATH,
+        dependencyPaths: new Set([SOURCE_PATH]),
+        enabled: true,
+        expectedPreviewCommand: 'page-inspector',
+        log,
+        pinnedDocumentUri: vscode.Uri.file(TARGET_PATH),
+        targetPath: TARGET_PATH,
       }),
     ).toBe(true);
     await vi.waitFor(() => expect(log.info).toHaveBeenCalledTimes(1));

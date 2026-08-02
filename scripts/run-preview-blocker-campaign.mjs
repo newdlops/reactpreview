@@ -222,8 +222,9 @@ export function selectPreviewBlockerCensusTargets(candidates, cap = 200) {
   const available = candidates
     .filter((candidate) => candidate.exportable)
     .sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
-  const breadthStrata = [...new Set(available.map((candidate) => candidate.stratum ?? 'default'))]
-    .sort();
+  const breadthStrata = [
+    ...new Set(available.map((candidate) => candidate.stratum ?? 'default')),
+  ].sort();
   const selected = [];
   // Historical blockers are regression anchors. Retain them even when their signatures are now
   // redundant, before coverage rotation considers newly discovered surfaces.
@@ -237,7 +238,9 @@ export function selectPreviewBlockerCensusTargets(candidates, cap = 200) {
     const selectedStratum = breadthStrata
       .slice(selected.length % breadthStrata.length)
       .concat(breadthStrata.slice(0, selected.length % breadthStrata.length))
-      .find((stratum) => available.some((candidate) => (candidate.stratum ?? 'default') === stratum));
+      .find((stratum) =>
+        available.some((candidate) => (candidate.stratum ?? 'default') === stratum),
+      );
     const eligible = available.filter(
       (candidate) => (candidate.stratum ?? 'default') === selectedStratum,
     );
@@ -246,8 +249,11 @@ export function selectPreviewBlockerCensusTargets(candidates, cap = 200) {
       const rightHistorical = right.historical === true ? 1 : 0;
       const leftCoverage = left.signatures.filter((signature) => remaining.has(signature)).length;
       const rightCoverage = right.signatures.filter((signature) => remaining.has(signature)).length;
-      return rightHistorical - leftHistorical || rightCoverage - leftCoverage ||
-        left.sourcePath.localeCompare(right.sourcePath);
+      return (
+        rightHistorical - leftHistorical ||
+        rightCoverage - leftCoverage ||
+        left.sourcePath.localeCompare(right.sourcePath)
+      );
     });
     let next = ranked.find((candidate) =>
       candidate.signatures.some((signature) => remaining.has(signature)),
@@ -280,7 +286,11 @@ export function selectPreviewBlockerCensusTargets(candidates, cap = 200) {
  */
 export function derivePreviewBlockerBreadthStratum(sourcePath, root, rootStratum = 'default') {
   const relative = path.relative(root, sourcePath);
-  const segments = path.dirname(relative).split(path.sep).filter((value) => value && value !== '.').slice(0, 2);
+  const segments = path
+    .dirname(relative)
+    .split(path.sep)
+    .filter((value) => value && value !== '.')
+    .slice(0, 2);
   const surface = segments.length === 0 ? 'root' : segments.join('/').slice(0, 120);
   return `${rootStratum}:${surface}`;
 }

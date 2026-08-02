@@ -79,22 +79,30 @@ describe('summarize-preview-blocker-cases', () => {
     directories.push(directory);
     const target = path.join(directory, 'PillList.tsx');
     const manifest = path.join(directory, 'manifest.json');
-    writeFileSync(path.join(directory, 'events.log'), trace('render-result', {
-      blocker: { category: 'render', outcome: 'auto-resolved' },
-      previewCommand: 'direct-preview',
-      result: { outcome: 'committed', remainingBlockerIds: [] },
-      previewTarget: target,
-    }));
-    writeFileSync(manifest, JSON.stringify({
-      commands: ['direct-preview', 'page-inspector'],
-      targets: [{ sourceHash: 'a'.repeat(64), sourcePath: target }],
-    }));
+    writeFileSync(
+      path.join(directory, 'events.log'),
+      trace('render-result', {
+        blocker: { category: 'render', outcome: 'auto-resolved' },
+        previewCommand: 'direct-preview',
+        result: { outcome: 'committed', remainingBlockerIds: [] },
+        previewTarget: target,
+      }),
+    );
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        commands: ['direct-preview', 'page-inspector'],
+        targets: [{ sourceHash: 'a'.repeat(64), sourcePath: target }],
+      }),
+    );
 
-    const report = JSON.parse(execFileSync(
-      process.execPath,
-      [script, '--manifest', manifest, path.join(directory, 'events.log')],
-      { encoding: 'utf8' },
-    )) as Record<string, unknown>;
+    const report = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [script, '--manifest', manifest, path.join(directory, 'events.log')],
+        { encoding: 'utf8' },
+      ),
+    ) as Record<string, unknown>;
 
     expect(report.format).toBe('react-preview-blocker-cases/v2');
     expect(report.manifestSha256).toMatch(/^[0-9a-f]{64}$/u);
@@ -113,21 +121,33 @@ describe('summarize-preview-blocker-cases', () => {
     directories.push(directory);
     const target = path.join(directory, 'BrokenDirect.tsx');
     const manifest = path.join(directory, 'manifest.json');
-    writeFileSync(path.join(directory, 'events.log'), trace('subsequent-error', {
-      blocker: { category: 'runtime', outcome: 'report-only' },
-      previewCommand: 'direct-preview',
-      previewTarget: target,
-      result: { outcome: 'committed', remainingBlockerIds: ['direct-preview-terminal-failure'] },
-    }));
-    writeFileSync(manifest, JSON.stringify({
-      commands: ['direct-preview'],
-      targets: [{ sourceHash: 'b'.repeat(64), sourcePath: target }],
-    }));
+    writeFileSync(
+      path.join(directory, 'events.log'),
+      trace('subsequent-error', {
+        blocker: { category: 'runtime', outcome: 'report-only' },
+        previewCommand: 'direct-preview',
+        previewTarget: target,
+        result: { outcome: 'committed', remainingBlockerIds: ['direct-preview-terminal-failure'] },
+      }),
+    );
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        commands: ['direct-preview'],
+        targets: [{ sourceHash: 'b'.repeat(64), sourcePath: target }],
+      }),
+    );
 
-    const report = JSON.parse(execFileSync(
-      process.execPath, [script, '--manifest', manifest, path.join(directory, 'events.log')],
-      { encoding: 'utf8' },
-    )) as { readonly healthyScenarioIds: readonly string[]; readonly scenarioOutcomes: readonly { outcome: string; unresolved: boolean }[] };
+    const report = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [script, '--manifest', manifest, path.join(directory, 'events.log')],
+        { encoding: 'utf8' },
+      ),
+    ) as {
+      readonly healthyScenarioIds: readonly string[];
+      readonly scenarioOutcomes: readonly { outcome: string; unresolved: boolean }[];
+    };
     expect(report.healthyScenarioIds).toEqual([]);
     expect(report.scenarioOutcomes).toEqual([
       expect.objectContaining({ category: 'runtime', outcome: 'report-only', unresolved: true }),

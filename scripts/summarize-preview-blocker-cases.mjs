@@ -10,10 +10,22 @@ const PROTOCOL_MARKER = 'PREVIEW_BLOCKER_TRACE';
 const LIMIT = 2 * 1024 * 1024;
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const CATEGORY_VALUES = new Set([
-  'build', 'data', 'environment', 'navigation', 'provider', 'render', 'runtime', 'unsupported',
+  'build',
+  'data',
+  'environment',
+  'navigation',
+  'provider',
+  'render',
+  'runtime',
+  'unsupported',
 ]);
 const OUTCOME_VALUES = new Set([
-  'auto-resolved', 'prevented', 'rejected', 'report-only', 'rolled-back', 'unavailable',
+  'auto-resolved',
+  'prevented',
+  'rejected',
+  'report-only',
+  'rolled-back',
+  'unavailable',
 ]);
 
 function fail(message) {
@@ -303,28 +315,31 @@ function manifestBoundEvidence(summary, records, manifestBytes) {
     manifest.commands.length === 0 ||
     !manifest.commands.every((command) => typeof command === 'string' && command.length > 0) ||
     new Set(manifest.commands).size !== manifest.commands.length
-  ) throw new Error('Campaign manifest is invalid.');
+  )
+    throw new Error('Campaign manifest is invalid.');
   const manifestSha256 = sha256(manifestBytes);
-  const scenarioOutcomes = manifest.targets.flatMap((target, targetOrdinal) => manifest.commands.map((command) => {
-    const id = sha256(JSON.stringify({ command, manifestSha256, targetOrdinal }));
-    const events = records.filter(
-      (record) => record.previewTarget === target.sourcePath && record.previewCommand === command,
-    );
-    const observed = events.length > 0;
-    const unresolved = events.some(
-      (record) => (record.result?.remainingBlockerIds ?? []).length > 0,
-    );
-    const blocker = [...events].reverse().find((record) => record.blocker?.category)?.blocker;
-    const category = CATEGORY_VALUES.has(blocker?.category) ? blocker.category : 'unsupported';
-    const outcome = !observed
-      ? 'unavailable'
-      : unresolved
-      ? 'report-only'
-      : OUTCOME_VALUES.has(blocker?.outcome)
-        ? blocker.outcome
-        : 'auto-resolved';
-    return { category, id, outcome, unresolved: unresolved || !observed };
-  }));
+  const scenarioOutcomes = manifest.targets.flatMap((target, targetOrdinal) =>
+    manifest.commands.map((command) => {
+      const id = sha256(JSON.stringify({ command, manifestSha256, targetOrdinal }));
+      const events = records.filter(
+        (record) => record.previewTarget === target.sourcePath && record.previewCommand === command,
+      );
+      const observed = events.length > 0;
+      const unresolved = events.some(
+        (record) => (record.result?.remainingBlockerIds ?? []).length > 0,
+      );
+      const blocker = [...events].reverse().find((record) => record.blocker?.category)?.blocker;
+      const category = CATEGORY_VALUES.has(blocker?.category) ? blocker.category : 'unsupported';
+      const outcome = !observed
+        ? 'unavailable'
+        : unresolved
+          ? 'report-only'
+          : OUTCOME_VALUES.has(blocker?.outcome)
+            ? blocker.outcome
+            : 'auto-resolved';
+      return { category, id, outcome, unresolved: unresolved || !observed };
+    }),
+  );
   const categoryOutcomeCounts = {};
   for (const scenario of scenarioOutcomes) {
     const key = `${scenario.category}\0${scenario.outcome}`;
@@ -338,8 +353,10 @@ function manifestBoundEvidence(summary, records, manifestBytes) {
   if (
     new Set(scenarioIds).size !== scenarioIds.length ||
     healthyScenarioIds.length + unresolvedScenarioCount !== scenarioIds.length ||
-    Object.values(categoryOutcomeCounts).reduce((total, count) => total + count, 0) !== scenarioIds.length
-  ) throw new Error('Campaign scenario evidence is incomplete.');
+    Object.values(categoryOutcomeCounts).reduce((total, count) => total + count, 0) !==
+      scenarioIds.length
+  )
+    throw new Error('Campaign scenario evidence is incomplete.');
   return {
     ...summary,
     format: 'react-preview-blocker-cases/v2',
@@ -352,7 +369,10 @@ function manifestBoundEvidence(summary, records, manifestBytes) {
     },
     normalized: { categoryOutcomeCounts },
     scenarioOutcomes: scenarioOutcomes.map(({ id, category, outcome, unresolved }) => ({
-      category, id, outcome, unresolved,
+      category,
+      id,
+      outcome,
+      unresolved,
     })),
   };
 }
@@ -360,11 +380,14 @@ function manifestBoundEvidence(summary, records, manifestBytes) {
 const arguments_ = process.argv.slice(2);
 const manifestIndex = arguments_.indexOf('--manifest');
 const manifestPath = manifestIndex < 0 ? undefined : arguments_[manifestIndex + 1];
-const inputs = manifestIndex < 0
-  ? arguments_
-  : arguments_.filter((value, index) => index !== manifestIndex && index !== manifestIndex + 1);
+const inputs =
+  manifestIndex < 0
+    ? arguments_
+    : arguments_.filter((value, index) => index !== manifestIndex && index !== manifestIndex + 1);
 if (inputs.length === 0 || (manifestIndex >= 0 && !manifestPath))
-  fail('Usage: summarize-preview-blocker-cases [--manifest frozen-manifest.json] <log file or directory> [...]');
+  fail(
+    'Usage: summarize-preview-blocker-cases [--manifest frozen-manifest.json] <log file or directory> [...]',
+  );
 else {
   try {
     const files = await expand(inputs);
@@ -372,9 +395,10 @@ else {
     const malformed = { count: 0 };
     const parsed = (await Promise.all(files.map((file) => records(file, malformed)))).flat();
     const summary = main(parsed, files.length, malformed.count);
-    const evidence = manifestPath === undefined
-      ? summary
-      : manifestBoundEvidence(summary, parsed, await readFile(manifestPath));
+    const evidence =
+      manifestPath === undefined
+        ? summary
+        : manifestBoundEvidence(summary, parsed, await readFile(manifestPath));
     process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
   } catch (error) {
     fail(error instanceof Error ? error.message : 'Cannot read inputs.');

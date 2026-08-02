@@ -66,7 +66,11 @@ export function createDiagnosticIndex(
   classification: string,
   manifestSha256: string,
 ): {
-  readonly artifacts: readonly { readonly name: string; readonly bytes: number; readonly sha256: string }[];
+  readonly artifacts: readonly {
+    readonly name: string;
+    readonly bytes: number;
+    readonly sha256: string;
+  }[];
 };
 export function validateProofAcknowledgement(
   proof: unknown,

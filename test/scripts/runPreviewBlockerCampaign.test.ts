@@ -31,10 +31,32 @@ describe('run-preview-blocker-campaign manifest', () => {
   it('prioritizes historical evidence and round-robins deterministic breadth strata', async () => {
     const campaign = await import('../../scripts/run-preview-blocker-campaign.mjs');
     const candidates = [
-      { exportable: true, historical: true, signatures: ['router'], sourcePath: '/repo/pages/A.tsx', stratum: 'app:pages' },
-      { exportable: true, historical: true, signatures: ['router'], sourcePath: '/repo/legacy/D.tsx', stratum: 'app:legacy' },
-      { exportable: true, signatures: ['router', 'provider'], sourcePath: '/repo/views/B.tsx', stratum: 'app:views' },
-      { exportable: true, signatures: ['render'], sourcePath: '/repo/screens/C.tsx', stratum: 'app:screens' },
+      {
+        exportable: true,
+        historical: true,
+        signatures: ['router'],
+        sourcePath: '/repo/pages/A.tsx',
+        stratum: 'app:pages',
+      },
+      {
+        exportable: true,
+        historical: true,
+        signatures: ['router'],
+        sourcePath: '/repo/legacy/D.tsx',
+        stratum: 'app:legacy',
+      },
+      {
+        exportable: true,
+        signatures: ['router', 'provider'],
+        sourcePath: '/repo/views/B.tsx',
+        stratum: 'app:views',
+      },
+      {
+        exportable: true,
+        signatures: ['render'],
+        sourcePath: '/repo/screens/C.tsx',
+        stratum: 'app:screens',
+      },
     ];
     const first = campaign.selectPreviewBlockerCensusTargets(candidates, 3).selected;
     expect(first.map((candidate: { sourcePath: string }) => candidate.sourcePath)).toEqual([
@@ -42,8 +64,9 @@ describe('run-preview-blocker-campaign manifest', () => {
       '/repo/pages/A.tsx',
       '/repo/screens/C.tsx',
     ]);
-    expect(campaign.derivePreviewBlockerBreadthStratum('/repo/pages/admin/A.tsx', '/repo', 'app'))
-      .toBe('app:pages/admin');
+    expect(
+      campaign.derivePreviewBlockerBreadthStratum('/repo/pages/admin/A.tsx', '/repo', 'app'),
+    ).toBe('app:pages/admin');
   });
 
   it('writes a deterministic, private, root-confined manifest without exposing targets in stdout', () => {

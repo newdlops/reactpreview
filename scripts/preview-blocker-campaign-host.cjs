@@ -5,56 +5,432 @@ const fsp = require('node:fs/promises');
 const inspector = require('node:inspector');
 const path = require('node:path');
 
-const PLAN = 'breadth-first-preview-blocker-resilience-20260729-v5.6-shared-inspector-parser-remainder';
+const PLAN =
+  'breadth-first-preview-blocker-resilience-20260729-v5.6-shared-inspector-parser-remainder';
 const PORT = 9945;
 const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const inside = (value, root) => value === root || value.startsWith(`${root}${path.sep}`);
-const lifecycle = (events) => events.every((event, index) => ['host-start', 'authority-verified', 'debug-verified', 'extension-verified', 'controller-acknowledged'].indexOf(event) === index);
+const lifecycle = (events) =>
+  events.every(
+    (event, index) =>
+      [
+        'host-start',
+        'authority-verified',
+        'debug-verified',
+        'extension-verified',
+        'controller-acknowledged',
+      ].indexOf(event) === index,
+  );
 exports.hasValidBootstrapLifecycle = lifecycle;
 exports.validateAuthority = (authority, expectedSha, now = Date.now()) => {
-  if (authority?.format !== 'react-preview-campaign-authority/v1' || authority.planVersion && authority.planVersion !== PLAN || authority.expiresAt < now || authority.attemptOrdinal !== 5 || authority.inspectorPort !== PORT || authority.canonicalRepo !== '/Users/lky/project/reactpreview' || typeof expectedSha !== 'string' || !/^[0-9a-f]{64}$/u.test(expectedSha)) throw new Error('Campaign authority is invalid.');
+  if (
+    authority?.format !== 'react-preview-campaign-authority/v1' ||
+    (authority.planVersion && authority.planVersion !== PLAN) ||
+    authority.expiresAt < now ||
+    authority.attemptOrdinal !== 5 ||
+    authority.inspectorPort !== PORT ||
+    authority.canonicalRepo !== '/Users/lky/project/reactpreview' ||
+    typeof expectedSha !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(expectedSha)
+  )
+    throw new Error('Campaign authority is invalid.');
   return authority;
 };
 exports.observeInspectorUrl = (value) => {
-  const kind = value === undefined || value === null || value === '' ? 'missing' : typeof value === 'string' ? 'string' : 'non-string'; const text = typeof value === 'string' ? value : ''; const base = { rawKind: kind, rawBytes: Buffer.byteLength(text, 'utf8'), rawSha256: sha(text), parseSuccess: false, protocol: 'unavailable', addressFamily: 'unavailable', hostClass: 'unavailable', normalizedHost: undefined, normalizedHostSha256: undefined, port: null, credentials: false, query: false, fragment: false, pathnamePresent: false, pathnameBytes: 0, pathnameSegments: 0, pathnameSha256: sha('') };
+  const kind =
+    value === undefined || value === null || value === ''
+      ? 'missing'
+      : typeof value === 'string'
+        ? 'string'
+        : 'non-string';
+  const text = typeof value === 'string' ? value : '';
+  const base = {
+    rawKind: kind,
+    rawBytes: Buffer.byteLength(text, 'utf8'),
+    rawSha256: sha(text),
+    parseSuccess: false,
+    protocol: 'unavailable',
+    addressFamily: 'unavailable',
+    hostClass: 'unavailable',
+    normalizedHost: undefined,
+    normalizedHostSha256: undefined,
+    port: null,
+    credentials: false,
+    query: false,
+    fragment: false,
+    pathnamePresent: false,
+    pathnameBytes: 0,
+    pathnameSegments: 0,
+    pathnameSha256: sha(''),
+  };
   if (kind !== 'string' || base.rawBytes > 4096) return base;
-  try { const url = new URL(text); const rawHost = url.hostname; const host = rawHost.replace(/^\[|\]$/gu, ''); const parts = host.split('.'); const canonical4 = /^127\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/u.test(host) && parts.slice(1).every((part) => Number(part) <= 255); const hostClass = host === '::1' ? 'ipv6-loopback' : canonical4 ? 'ipv4-loopback' : /^127\./u.test(host) ? 'noncanonical-ip' : host === '0.0.0.0' || host === '::' ? 'wildcard' : /^fe80:/iu.test(host) ? 'link-local' : /::ffff:/iu.test(host) ? 'mapped-ipv6' : /^\d+(?:\.\d+){3}$/u.test(host) || host.includes(':') ? 'nonloopback-ip' : 'hostname'; const pathname = url.pathname || ''; return { ...base, parseSuccess: true, protocol: url.protocol === 'ws:' ? 'ws' : 'other', addressFamily: host.includes(':') ? 6 : /^\d/.test(host) ? 4 : 0, hostClass, normalizedHost: hostClass === 'ipv4-loopback' || hostClass === 'ipv6-loopback' ? host : undefined, normalizedHostSha256: hostClass === 'ipv4-loopback' || hostClass === 'ipv6-loopback' ? undefined : sha(host), port: /^\d+$/u.test(url.port) ? Number(url.port) : null, credentials: Boolean(url.username || url.password), query: Boolean(url.search), fragment: Boolean(url.hash), pathnamePresent: Boolean(pathname), pathnameBytes: Buffer.byteLength(pathname, 'utf8'), pathnameSegments: pathname.split('/').filter(Boolean).length, pathnameSha256: sha(pathname) }; } catch { return { ...base, protocol: 'unavailable' }; }
+  try {
+    const url = new URL(text);
+    const rawHost = url.hostname;
+    const host = rawHost.replace(/^\[|\]$/gu, '');
+    const parts = host.split('.');
+    const canonical4 =
+      /^127\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/u.test(host) &&
+      parts.slice(1).every((part) => Number(part) <= 255);
+    const hostClass =
+      host === '::1'
+        ? 'ipv6-loopback'
+        : canonical4
+          ? 'ipv4-loopback'
+          : /^127\./u.test(host)
+            ? 'noncanonical-ip'
+            : host === '0.0.0.0' || host === '::'
+              ? 'wildcard'
+              : /^fe80:/iu.test(host)
+                ? 'link-local'
+                : /::ffff:/iu.test(host)
+                  ? 'mapped-ipv6'
+                  : /^\d+(?:\.\d+){3}$/u.test(host) || host.includes(':')
+                    ? 'nonloopback-ip'
+                    : 'hostname';
+    const pathname = url.pathname || '';
+    return {
+      ...base,
+      parseSuccess: true,
+      protocol: url.protocol === 'ws:' ? 'ws' : 'other',
+      addressFamily: host.includes(':') ? 6 : /^\d/.test(host) ? 4 : 0,
+      hostClass,
+      normalizedHost:
+        hostClass === 'ipv4-loopback' || hostClass === 'ipv6-loopback' ? host : undefined,
+      normalizedHostSha256:
+        hostClass === 'ipv4-loopback' || hostClass === 'ipv6-loopback' ? undefined : sha(host),
+      port: /^\d+$/u.test(url.port) ? Number(url.port) : null,
+      credentials: Boolean(url.username || url.password),
+      query: Boolean(url.search),
+      fragment: Boolean(url.hash),
+      pathnamePresent: Boolean(pathname),
+      pathnameBytes: Buffer.byteLength(pathname, 'utf8'),
+      pathnameSegments: pathname.split('/').filter(Boolean).length,
+      pathnameSha256: sha(pathname),
+    };
+  } catch {
+    return { ...base, protocol: 'unavailable' };
+  }
 };
-exports.validateInspectorUrl = (value) => { const observation = exports.observeInspectorUrl(value); let code; if (observation.rawKind === 'missing') code = 'missing'; else if (observation.rawKind !== 'string') code = 'non-string'; else if (observation.rawBytes > 4096) code = 'over-cap'; else if (!observation.parseSuccess) code = 'parse'; else if (observation.protocol !== 'ws') code = 'protocol'; else if (observation.credentials) code = 'credentials'; else if (observation.query) code = 'query'; else if (observation.fragment) code = 'fragment'; else if (observation.hostClass === 'hostname') code = 'host-non-ip'; else if (observation.hostClass === 'wildcard') code = 'host-wildcard'; else if (observation.hostClass === 'link-local') code = 'host-link-local'; else if (observation.hostClass === 'mapped-ipv6') code = 'host-mapped-ipv6'; else if (observation.hostClass === 'nonloopback-ip') code = 'host-nonloopback'; else if (observation.hostClass !== 'ipv4-loopback' && observation.hostClass !== 'ipv6-loopback') code = 'host-noncanonical'; else if (observation.port !== PORT) code = 'port'; return code ? { ok: false, code, observation } : { ok: true, host: observation.normalizedHost, port: PORT, observation }; };
+exports.validateInspectorUrl = (value) => {
+  const observation = exports.observeInspectorUrl(value);
+  let code;
+  if (observation.rawKind === 'missing') code = 'missing';
+  else if (observation.rawKind !== 'string') code = 'non-string';
+  else if (observation.rawBytes > 4096) code = 'over-cap';
+  else if (!observation.parseSuccess) code = 'parse';
+  else if (observation.protocol !== 'ws') code = 'protocol';
+  else if (observation.credentials) code = 'credentials';
+  else if (observation.query) code = 'query';
+  else if (observation.fragment) code = 'fragment';
+  else if (observation.hostClass === 'hostname') code = 'host-non-ip';
+  else if (observation.hostClass === 'wildcard') code = 'host-wildcard';
+  else if (observation.hostClass === 'link-local') code = 'host-link-local';
+  else if (observation.hostClass === 'mapped-ipv6') code = 'host-mapped-ipv6';
+  else if (observation.hostClass === 'nonloopback-ip') code = 'host-nonloopback';
+  else if (observation.hostClass !== 'ipv4-loopback' && observation.hostClass !== 'ipv6-loopback')
+    code = 'host-noncanonical';
+  else if (observation.port !== PORT) code = 'port';
+  return code
+    ? { ok: false, code, observation }
+    : { ok: true, host: observation.normalizedHost, port: PORT, observation };
+};
 exports.validateAcknowledgement = (value, proof, authoritySha) => {
-  if (value?.format !== 'react-preview-campaign-ack/v1' || value.proofSha256 !== sha(JSON.stringify(proof)) || value.authoritySha256 !== authoritySha) throw new Error('Campaign controller acknowledgement is invalid.');
+  if (
+    value?.format !== 'react-preview-campaign-ack/v1' ||
+    value.proofSha256 !== sha(JSON.stringify(proof)) ||
+    value.authoritySha256 !== authoritySha
+  )
+    throw new Error('Campaign controller acknowledgement is invalid.');
   return true;
 };
-async function privateFile(file, root) { const stat = await fsp.lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || !inside(await fsp.realpath(file), root)) throw new Error('Campaign private file is invalid.'); return stat; }
-async function hash(file) { return sha(await fsp.readFile(file)); }
+async function privateFile(file, root) {
+  const stat = await fsp.lstat(file);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
+    (stat.mode & 0o077) !== 0 ||
+    !inside(await fsp.realpath(file), root)
+  )
+    throw new Error('Campaign private file is invalid.');
+  return stat;
+}
+async function hash(file) {
+  return sha(await fsp.readFile(file));
+}
 async function verifyAuthority(authorityPath, expectedSha) {
-  const bytes = await fsp.readFile(authorityPath); if (sha(bytes) !== expectedSha) throw new Error('Campaign authority hash mismatch.'); const authority = exports.validateAuthority(JSON.parse(bytes), expectedSha);
-  if (authority.controllerRoot !== '/tmp/rp56-p0' || authority.canonicalControllerRoot !== '/private/tmp/rp56-p0' || authority.userdata !== '/tmp/rp56-p0/u' || authority.evidence !== '/tmp/rp56-p0/c' || authority.diagnostics !== '/tmp/rp56-p0/d' || authority.hostStartPath !== '/tmp/rp56-p0/host-start.jsonl' || authority.hostEvidencePath !== '/tmp/rp56-p0/h' || authority.hostLogPath !== '/tmp/rp56-p0/h/host.jsonl') throw new Error('Campaign controller path is invalid.'); const root = authority.controllerRoot; const canonical = await fsp.realpath(root); const owner = await fsp.lstat(root); if (canonical !== authority.canonicalControllerRoot || !owner.isDirectory() || owner.isSymbolicLink() || owner.uid !== process.getuid() || (owner.mode & 0o077) !== 0) throw new Error('Campaign controller is invalid.'); await privateFile(authorityPath, canonical);
-  for (const key of ['workspacePath', 'userdata', 'extensions', 'logs', 'evidence', 'diagnostics', 'proofPath', 'acknowledgementPath', 'stopPath', 'leasePath', 'controllerLogPath', 'hostStartPath', 'hostEvidencePath', 'hostLogPath', 'processLogPath', 'diagnosticIndexPath']) if (!inside(path.resolve(authority[key]), root)) throw new Error('Campaign authority path escapes controller.');
-  for (const key of ['manifestPath', 'canonicalRepo', 'hostPath']) if (typeof authority[key] !== 'string') throw new Error('Campaign authority is incomplete.');
-  if (await hash(authority.manifestPath) !== authority.manifestSha256 || await hash(authority.workspacePath) !== authority.workspaceSha256 || await hash(path.join(authority.canonicalRepo, 'package.json')) !== authority.packageSha256 || await hash(path.join(authority.canonicalRepo, 'dist/extension.mjs')) !== authority.extensionMainSha256 || await hash(path.join(authority.canonicalRepo, 'dist/previewCompilerWorker.js')) !== authority.workerSha256) throw new Error('Campaign authority artifact hash mismatch.');
+  const bytes = await fsp.readFile(authorityPath);
+  if (sha(bytes) !== expectedSha) throw new Error('Campaign authority hash mismatch.');
+  const authority = exports.validateAuthority(JSON.parse(bytes), expectedSha);
+  if (
+    authority.controllerRoot !== '/tmp/rp56-p0' ||
+    authority.canonicalControllerRoot !== '/private/tmp/rp56-p0' ||
+    authority.userdata !== '/tmp/rp56-p0/u' ||
+    authority.evidence !== '/tmp/rp56-p0/c' ||
+    authority.diagnostics !== '/tmp/rp56-p0/d' ||
+    authority.hostStartPath !== '/tmp/rp56-p0/host-start.jsonl' ||
+    authority.hostEvidencePath !== '/tmp/rp56-p0/h' ||
+    authority.hostLogPath !== '/tmp/rp56-p0/h/host.jsonl'
+  )
+    throw new Error('Campaign controller path is invalid.');
+  const root = authority.controllerRoot;
+  const canonical = await fsp.realpath(root);
+  const owner = await fsp.lstat(root);
+  if (
+    canonical !== authority.canonicalControllerRoot ||
+    !owner.isDirectory() ||
+    owner.isSymbolicLink() ||
+    owner.uid !== process.getuid() ||
+    (owner.mode & 0o077) !== 0
+  )
+    throw new Error('Campaign controller is invalid.');
+  await privateFile(authorityPath, canonical);
+  for (const key of [
+    'workspacePath',
+    'userdata',
+    'extensions',
+    'logs',
+    'evidence',
+    'diagnostics',
+    'proofPath',
+    'acknowledgementPath',
+    'stopPath',
+    'leasePath',
+    'controllerLogPath',
+    'hostStartPath',
+    'hostEvidencePath',
+    'hostLogPath',
+    'processLogPath',
+    'diagnosticIndexPath',
+  ])
+    if (!inside(path.resolve(authority[key]), root))
+      throw new Error('Campaign authority path escapes controller.');
+  for (const key of ['manifestPath', 'canonicalRepo', 'hostPath'])
+    if (typeof authority[key] !== 'string') throw new Error('Campaign authority is incomplete.');
+  if (
+    (await hash(authority.manifestPath)) !== authority.manifestSha256 ||
+    (await hash(authority.workspacePath)) !== authority.workspaceSha256 ||
+    (await hash(path.join(authority.canonicalRepo, 'package.json'))) !== authority.packageSha256 ||
+    (await hash(path.join(authority.canonicalRepo, 'dist/extension.mjs'))) !==
+      authority.extensionMainSha256 ||
+    (await hash(path.join(authority.canonicalRepo, 'dist/previewCompilerWorker.js'))) !==
+      authority.workerSha256
+  )
+    throw new Error('Campaign authority artifact hash mismatch.');
   return authority;
 }
-async function settled(promise, timeout) { let timer; try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('command-timeout')), timeout); })]); } finally { clearTimeout(timer); } }
-async function quietLogs(root) { let prior = ''; let stable = 0; for (let i = 0; i < 20; i++) { const all = []; const walk = async (dir) => { for (const name of await fsp.readdir(dir).catch(() => [])) { const item = path.join(dir, name), stat = await fsp.lstat(item); if (stat.isDirectory()) await walk(item); else if (stat.isFile()) all.push(`${item}:${stat.size}:${stat.mtimeMs}`); } }; await walk(root); const now = all.sort().join('|'); stable = now === prior ? stable + 500 : 0; prior = now; if (stable >= 2000) return; await wait(500); } throw new Error('render-quiet-timeout'); }
+async function settled(promise, timeout) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('command-timeout')), timeout);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function quietLogs(root) {
+  let prior = '';
+  let stable = 0;
+  for (let i = 0; i < 20; i++) {
+    const all = [];
+    const walk = async (dir) => {
+      for (const name of await fsp.readdir(dir).catch(() => [])) {
+        const item = path.join(dir, name),
+          stat = await fsp.lstat(item);
+        if (stat.isDirectory()) await walk(item);
+        else if (stat.isFile()) all.push(`${item}:${stat.size}:${stat.mtimeMs}`);
+      }
+    };
+    await walk(root);
+    const now = all.sort().join('|');
+    stable = now === prior ? stable + 500 : 0;
+    prior = now;
+    if (stable >= 2000) return;
+    await wait(500);
+  }
+  throw new Error('render-quiet-timeout');
+}
 exports.run = async () => {
-  const authorityPath = process.env.REACT_PREVIEW_CAMPAIGN_AUTHORITY; const expectedSha = process.env.REACT_PREVIEW_CAMPAIGN_AUTHORITY_SHA256;
+  const authorityPath = process.env.REACT_PREVIEW_CAMPAIGN_AUTHORITY;
+  const expectedSha = process.env.REACT_PREVIEW_CAMPAIGN_AUTHORITY_SHA256;
   if (!authorityPath || !expectedSha) throw new Error('Campaign authority is required.');
-  const authority = await verifyAuthority(authorityPath, expectedSha); let sequence = 0; const entry = (event, fields = {}) => `${JSON.stringify({ format: 'react-preview-campaign/v1', campaignId: authority.campaignId, hostSessionId: authority.hostSessionId, writer: 'host', sequence: ++sequence, elapsedMs: Date.now() - authority.createdAt, event, ...fields })}\n`;
-  await fsp.writeFile(authority.hostStartPath, entry('host-start'), { flag: 'wx', mode: 0o600 }); await fsp.mkdir(authority.hostEvidencePath, { mode: 0o700 }); const output = authority.hostLogPath; await fsp.writeFile(output, '', { flag: 'wx', mode: 0o600 });
+  const authority = await verifyAuthority(authorityPath, expectedSha);
+  let sequence = 0;
+  const entry = (event, fields = {}) =>
+    `${JSON.stringify({ format: 'react-preview-campaign/v1', campaignId: authority.campaignId, hostSessionId: authority.hostSessionId, writer: 'host', sequence: ++sequence, elapsedMs: Date.now() - authority.createdAt, event, ...fields })}\n`;
+  await fsp.writeFile(authority.hostStartPath, entry('host-start'), { flag: 'wx', mode: 0o600 });
+  await fsp.mkdir(authority.hostEvidencePath, { mode: 0o700 });
+  const output = authority.hostLogPath;
+  await fsp.writeFile(output, '', { flag: 'wx', mode: 0o600 });
   const emit = async (event, fields = {}) => fsp.appendFile(output, entry(event, fields));
   try {
-    await fsp.writeFile(authority.leasePath, `${JSON.stringify({ format: 'react-preview-campaign-lease/v1', authoritySha256: expectedSha, pid: process.pid })}\n`, { flag: 'wx', mode: 0o600 }); await emit('authority-verified');
-    const observed = inspector.url(); const endpoint = exports.validateInspectorUrl(observed); await emit('debug-observed', endpoint.observation); if (!endpoint.ok) { await emit('debug-rejected', { reason: endpoint.code, observationDigest: sha(JSON.stringify(endpoint.observation)) }); throw new Error(`Campaign inspector rejected: ${endpoint.code}`); } await emit('debug-verified', { host: endpoint.host, port: endpoint.port, observationDigest: sha(JSON.stringify(endpoint.observation)) });
-    const vscode = require('vscode'); const extension = vscode.extensions.all.filter((item) => item.id.toLowerCase() === authority.expectedExtensionId.toLowerCase());
-    if (extension.length !== 1 || extension[0].extensionMode !== vscode.ExtensionMode.Test || await fsp.realpath(extension[0].extensionPath) !== authority.canonicalRepo) throw new Error('extension-failed'); await extension[0].activate();
-    const commands = await vscode.commands.getCommands(true); if (!authority.commands.every((command) => commands.includes(command)) || !vscode.workspace.isTrusted || vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath).join('\0') !== JSON.parse(await fsp.readFile(authority.manifestPath)).roots.join('\0')) throw new Error('extension-failed'); await emit('extension-verified');
-    const proof = { format: 'react-preview-campaign-proof/v1', authoritySha256: expectedSha, manifestSha256: authority.manifestSha256, workspaceSha256: authority.workspaceSha256, hostSha256: await hash(authority.hostPath), packageSha256: authority.packageSha256, extensionMainSha256: authority.extensionMainSha256, workerSha256: authority.workerSha256, inspectorUrl: observed, inspectorHost: endpoint.host, inspectorPort: endpoint.port, inspectorObservationDigest: sha(JSON.stringify(endpoint.observation)), pid: process.pid, extensionId: extension[0].id, extensionMode: 'test', extensionPathDigest: sha(authority.canonicalRepo), commandsDigest: sha(JSON.stringify(authority.commands)), debugVerified: true, sequence };
-    await fsp.writeFile(authority.proofPath, `${JSON.stringify(proof)}\n`, { flag: 'wx', mode: 0o600 });
-    const until = Date.now() + 20_000; let acknowledged = false; while (Date.now() < until) { try { exports.validateAcknowledgement(JSON.parse(await fsp.readFile(authority.acknowledgementPath)), proof, expectedSha); acknowledged = true; break; } catch {} await wait(100); } if (!acknowledged) throw new Error('acknowledgement-failed'); await emit('controller-acknowledged');
-    const manifest = JSON.parse(await fsp.readFile(authority.manifestPath)); let coverage = 0;
-    for (let ordinal = 0; ordinal < manifest.targets.length; ordinal++) for (const [commandOrdinal, command] of authority.commands.entries()) { const target = manifest.targets[ordinal]; const targetId = sha(target.sourcePath).slice(0, 16); const before = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs)); await emit('start', { ordinal, commandOrdinal, command, targetId }); try { if (await hash(target.sourcePath) !== target.sourceHash) throw new Error('source-changed'); const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target.sourcePath)); await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false }); if (await fsp.realpath(vscode.window.activeTextEditor?.document.uri.fsPath || '') !== target.sourcePath) throw new Error('source-active'); await emit('source-verified', { ordinal, commandOrdinal, command, targetId }); await settled(vscode.commands.executeCommand(command), 45_000); await emit('command-settled', { ordinal, commandOrdinal, command, targetId }); await wait(8000); await quietLogs(authority.logs); await emit('dwell-complete', { ordinal, commandOrdinal, command, targetId }); if (await hash(target.sourcePath) !== target.sourceHash) throw new Error('source-changed'); coverage++; } catch (error) { await emit(String(error).includes('timeout') ? 'timeout' : 'unavailable', { ordinal, commandOrdinal, command, targetId }); throw error; } finally { const created = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => !before.has(tab)); const preview = created.filter((tab) => tab.input instanceof vscode.TabInputWebview && authority.viewTypes.includes(tab.input.viewType)); if (preview.length) await vscode.window.tabGroups.close(preview, true); const leftovers = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => !before.has(tab) && tab.input instanceof vscode.TabInputWebview && authority.viewTypes.includes(tab.input.viewType)); if (leftovers.length) await vscode.window.tabGroups.close(leftovers, true); await emit('closed', { ordinal, commandOrdinal, command, targetId, previewCount: preview.length }); } }
-    if (coverage !== manifest.targets.length * authority.commands.length) throw new Error('incomplete-coverage'); await emit('host-complete', { scenarioCount: coverage });
-  } catch (error) { await emit(String(error).includes('extension') ? 'extension-failed' : String(error).includes('authority') ? 'authority-failed' : 'unavailable'); throw error; }
+    await fsp.writeFile(
+      authority.leasePath,
+      `${JSON.stringify({ format: 'react-preview-campaign-lease/v1', authoritySha256: expectedSha, pid: process.pid })}\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    await emit('authority-verified');
+    const observed = inspector.url();
+    const endpoint = exports.validateInspectorUrl(observed);
+    await emit('debug-observed', endpoint.observation);
+    if (!endpoint.ok) {
+      await emit('debug-rejected', {
+        reason: endpoint.code,
+        observationDigest: sha(JSON.stringify(endpoint.observation)),
+      });
+      throw new Error(`Campaign inspector rejected: ${endpoint.code}`);
+    }
+    await emit('debug-verified', {
+      host: endpoint.host,
+      port: endpoint.port,
+      observationDigest: sha(JSON.stringify(endpoint.observation)),
+    });
+    const vscode = require('vscode');
+    const extension = vscode.extensions.all.filter(
+      (item) => item.id.toLowerCase() === authority.expectedExtensionId.toLowerCase(),
+    );
+    if (
+      extension.length !== 1 ||
+      extension[0].extensionMode !== vscode.ExtensionMode.Test ||
+      (await fsp.realpath(extension[0].extensionPath)) !== authority.canonicalRepo
+    )
+      throw new Error('extension-failed');
+    await extension[0].activate();
+    const commands = await vscode.commands.getCommands(true);
+    if (
+      !authority.commands.every((command) => commands.includes(command)) ||
+      !vscode.workspace.isTrusted ||
+      vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath).join('\0') !==
+        JSON.parse(await fsp.readFile(authority.manifestPath)).roots.join('\0')
+    )
+      throw new Error('extension-failed');
+    await emit('extension-verified');
+    const proof = {
+      format: 'react-preview-campaign-proof/v1',
+      authoritySha256: expectedSha,
+      manifestSha256: authority.manifestSha256,
+      workspaceSha256: authority.workspaceSha256,
+      hostSha256: await hash(authority.hostPath),
+      packageSha256: authority.packageSha256,
+      extensionMainSha256: authority.extensionMainSha256,
+      workerSha256: authority.workerSha256,
+      inspectorUrl: observed,
+      inspectorHost: endpoint.host,
+      inspectorPort: endpoint.port,
+      inspectorObservationDigest: sha(JSON.stringify(endpoint.observation)),
+      pid: process.pid,
+      extensionId: extension[0].id,
+      extensionMode: 'test',
+      extensionPathDigest: sha(authority.canonicalRepo),
+      commandsDigest: sha(JSON.stringify(authority.commands)),
+      debugVerified: true,
+      sequence,
+    };
+    await fsp.writeFile(authority.proofPath, `${JSON.stringify(proof)}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    const until = Date.now() + 20_000;
+    let acknowledged = false;
+    while (Date.now() < until) {
+      try {
+        exports.validateAcknowledgement(
+          JSON.parse(await fsp.readFile(authority.acknowledgementPath)),
+          proof,
+          expectedSha,
+        );
+        acknowledged = true;
+        break;
+      } catch {}
+      await wait(100);
+    }
+    if (!acknowledged) throw new Error('acknowledgement-failed');
+    await emit('controller-acknowledged');
+    const manifest = JSON.parse(await fsp.readFile(authority.manifestPath));
+    let coverage = 0;
+    for (let ordinal = 0; ordinal < manifest.targets.length; ordinal++)
+      for (const [commandOrdinal, command] of authority.commands.entries()) {
+        const target = manifest.targets[ordinal];
+        const targetId = sha(target.sourcePath).slice(0, 16);
+        const before = new Set(vscode.window.tabGroups.all.flatMap((group) => group.tabs));
+        await emit('start', { ordinal, commandOrdinal, command, targetId });
+        try {
+          if ((await hash(target.sourcePath)) !== target.sourceHash)
+            throw new Error('source-changed');
+          const document = await vscode.workspace.openTextDocument(
+            vscode.Uri.file(target.sourcePath),
+          );
+          await vscode.window.showTextDocument(document, {
+            viewColumn: vscode.ViewColumn.One,
+            preview: false,
+          });
+          if (
+            (await fsp.realpath(vscode.window.activeTextEditor?.document.uri.fsPath || '')) !==
+            target.sourcePath
+          )
+            throw new Error('source-active');
+          await emit('source-verified', { ordinal, commandOrdinal, command, targetId });
+          await settled(vscode.commands.executeCommand(command), 45_000);
+          await emit('command-settled', { ordinal, commandOrdinal, command, targetId });
+          await wait(8000);
+          await quietLogs(authority.logs);
+          await emit('dwell-complete', { ordinal, commandOrdinal, command, targetId });
+          if ((await hash(target.sourcePath)) !== target.sourceHash)
+            throw new Error('source-changed');
+          coverage++;
+        } catch (error) {
+          await emit(String(error).includes('timeout') ? 'timeout' : 'unavailable', {
+            ordinal,
+            commandOrdinal,
+            command,
+            targetId,
+          });
+          throw error;
+        } finally {
+          const created = vscode.window.tabGroups.all
+            .flatMap((group) => group.tabs)
+            .filter((tab) => !before.has(tab));
+          const preview = created.filter(
+            (tab) =>
+              tab.input instanceof vscode.TabInputWebview &&
+              authority.viewTypes.includes(tab.input.viewType),
+          );
+          if (preview.length) await vscode.window.tabGroups.close(preview, true);
+          const leftovers = vscode.window.tabGroups.all
+            .flatMap((group) => group.tabs)
+            .filter(
+              (tab) =>
+                !before.has(tab) &&
+                tab.input instanceof vscode.TabInputWebview &&
+                authority.viewTypes.includes(tab.input.viewType),
+            );
+          if (leftovers.length) await vscode.window.tabGroups.close(leftovers, true);
+          await emit('closed', {
+            ordinal,
+            commandOrdinal,
+            command,
+            targetId,
+            previewCount: preview.length,
+          });
+        }
+      }
+    if (coverage !== manifest.targets.length * authority.commands.length)
+      throw new Error('incomplete-coverage');
+    await emit('host-complete', { scenarioCount: coverage });
+  } catch (error) {
+    await emit(
+      String(error).includes('extension')
+        ? 'extension-failed'
+        : String(error).includes('authority')
+          ? 'authority-failed'
+          : 'unavailable',
+    );
+    throw error;
+  }
 };

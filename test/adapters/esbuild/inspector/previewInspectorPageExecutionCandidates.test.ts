@@ -1,11 +1,22 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   createEligiblePreviewInspectorPageExecutionCandidates,
+  createPreviewInspectorExecutionRootModuleContract,
   createPreviewInspectorPageExecutionCandidates,
+  createPreviewInspectorPageExecutionSource,
+  createPreviewInspectorRootSource,
+  resolvePreviewInspectorRuntimeOwnershipTarget,
+  resolvePreviewInspectorRuntimeTargetMode,
   type PreviewInspectorAncestorPlan,
   type PreviewInspectorPageCandidate,
 } from '../../../../src/adapters/esbuild/inspector';
+import { PreviewCompilationError } from '../../../../src/domain/preview';
 import type { PreviewRenderChainCandidate } from '../../../../src/adapters/esbuild/renderGraph';
+import { expandPreviewInspectorRouteChoiceCandidates } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteChoiceCandidates';
+import { canonicalizeExistingPath } from '../../../../src/shared/pathIdentity';
 
 const TARGET = '/workspace/Target.tsx';
 const PAGE = '/workspace/SelectedPage.tsx';
@@ -13,6 +24,367 @@ const ROUTE = '/workspace/RouteLayout.tsx';
 const APP = '/workspace/App.tsx';
 
 describe('createPreviewInspectorPageExecutionCandidates', () => {
+  it('executes an exact resolved route leaf without re-entering its application router', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-route-leaf-'));
+    const applicationPath = path.join(workspaceRoot, 'Application.tsx');
+    const selectedPagePath = path.join(workspaceRoot, 'SelectedPage.tsx');
+    try {
+      const selectedPageSource =
+        'export default function SelectedPage() { return <main>selected route</main>; }';
+      await Promise.all([
+        writeFile(
+          applicationPath,
+          [
+            "import { Routes } from 'react-router-dom';",
+            "import SelectedPage from './SelectedPage';",
+            'export default function Application() {',
+            '  return <Routes />;',
+            '}',
+            'void SelectedPage;',
+          ].join('\n'),
+        ),
+        writeFile(selectedPagePath, selectedPageSource),
+      ]);
+      const routeLocation = {
+        componentExportName: 'default',
+        componentName: 'SelectedPage',
+        componentSourcePath: selectedPagePath,
+        dependencyPaths: [applicationPath, selectedPagePath],
+        evidenceKind: 'route-jsx' as const,
+        pathname: '/selected',
+        pattern: '/selected',
+        sourcePath: applicationPath,
+      };
+      const application = {
+        complete: true,
+        dependencyPaths: [applicationPath],
+        edges: [],
+        id: 'application-route-choice',
+        root: { exportName: 'default', sourcePath: applicationPath },
+        rootAutomaticProps: {},
+        rootOwnsRouter: true,
+        routeLocation,
+        stopReason: 'root-reached',
+        targetAutomaticProps: {},
+      } as PreviewInspectorPageCandidate;
+      const [selected] = expandPreviewInspectorRouteChoiceCandidates(
+        [application],
+        [routeLocation],
+      );
+      if (selected === undefined) throw new Error('Expected one expanded route choice.');
+      const plan = {
+        ...selected,
+        pageCandidates: [selected],
+        renderChain: { paths: [] },
+        renderChainsByExport: {},
+        routeSelectionResolution: 'exact',
+        target: { exportName: 'default', sourcePath: applicationPath },
+      } as unknown as PreviewInspectorAncestorPlan;
+
+      const candidate = createPreviewInspectorPageExecutionCandidates({
+        plan,
+        targetMode: 'selected-route-leaf',
+      })[0];
+      expect(candidate?.browserCandidate).toMatchObject({
+        root: { exportName: 'default', sourcePath: selectedPagePath },
+        rootOwnsRouter: false,
+        target: { exportName: 'default', sourcePath: selectedPagePath },
+      });
+      expect(candidate?.criticalSurfaces.map((surface) => surface.sourcePath)).toEqual([
+        selectedPagePath,
+      ]);
+      expect(candidate?.executionRootSurfaceId).toBe(candidate?.runtimeTargetSurfaceId);
+      expect(candidate?.executionRootContract).toEqual({
+        exportName: 'default',
+        sourcePath: selectedPagePath,
+        surfaceId: candidate?.executionRootSurfaceId,
+      });
+      expect(candidate?.runtimeTargetContract).toEqual(candidate?.executionRootContract);
+      expect(candidate?.routeRecipe).toMatchObject({
+        kind: 'react-router-v6',
+        pathname: '/selected',
+        rootOwnsRouter: false,
+      });
+      if (candidate === undefined) throw new Error('Expected a selected route leaf candidate.');
+      const runtimeOwnershipTarget = resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget: plan.target,
+        candidate,
+        diagnosticPath: applicationPath,
+        routeSelection: [{ componentName: 'SelectedPage', pattern: '/selected' }],
+        ...(plan.routeSelectionResolution === undefined
+          ? {}
+          : { routeSelectionResolution: plan.routeSelectionResolution }),
+        selectedLeafSourceText: selectedPageSource,
+        targetMode: 'selected-route-leaf',
+      });
+      expect(runtimeOwnershipTarget).toEqual({
+        exportName: 'default',
+        sourcePath: selectedPagePath,
+      });
+      const source = createPreviewInspectorPageExecutionSource({
+        candidate,
+        executionRootModuleContract: createPreviewInspectorExecutionRootModuleContract({
+          exportName: candidate.executionRootContract.exportName,
+          preparedSourceText: selectedPageSource,
+          sourcePath: candidate.executionRootContract.sourcePath,
+          surfaceId: candidate.executionRootContract.surfaceId,
+        }),
+        target: runtimeOwnershipTarget,
+      });
+      expect(source).toContain('from "react-preview:inspector-target-facade"');
+      expect(source).toContain("import { MemoryRouter, Route, Routes } from 'react-router-dom';");
+      expect(source).not.toContain(`from ${JSON.stringify(applicationPath)}`);
+      const rootSource = createPreviewInspectorRootSource({
+        pageExecutionCandidate: candidate,
+        plan,
+        runtimeOwnershipTarget,
+      });
+      expect(rootSource).toContain('"rootOwnsRouter":true');
+      expect(rootSource).toContain(
+        `"target":{"exportName":"default","sourcePath":${JSON.stringify(selectedPagePath)}}`,
+      );
+      expect(rootSource).not.toContain('direct-target:default');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('preserves active-document ownership when the opt-in mode is omitted', () => {
+    const analysisTarget = { exportName: 'Target', sourcePath: TARGET };
+
+    expect(
+      resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget,
+        diagnosticPath: TARGET,
+      }),
+    ).toBe(analysisTarget);
+  });
+
+  it('derives automatic route-leaf ownership from the compiler-selected route candidate', () => {
+    const leaf = { exportName: 'NamedPage', sourcePath: PAGE };
+    const plan = {
+      pageCandidates: [
+        {
+          routeLocation: {
+            componentName: 'NamedPage',
+            evidenceKind: 'route-jsx',
+            pathname: '/named',
+            pattern: '/named',
+            sourcePath: APP,
+          },
+          target: leaf,
+        },
+      ],
+      routeSelectionResolution: 'automatic',
+      target: { exportName: 'default', sourcePath: APP },
+    } as unknown as PreviewInspectorAncestorPlan;
+    const targetMode = resolvePreviewInspectorRuntimeTargetMode(plan, undefined);
+    const candidate = {
+      browserCandidate: {
+        root: leaf,
+        routeLocation: plan.pageCandidates[0]?.routeLocation,
+        target: leaf,
+      },
+      criticalSurfaces: [
+        {
+          exportName: leaf.exportName,
+          id: 'leaf',
+          sourcePath: leaf.sourcePath,
+          strategy: 'authentic-module-export',
+        },
+      ],
+      executionRootSurfaceId: 'leaf',
+      runtimeTargetSurfaceId: 'leaf',
+    } as unknown as NonNullable<
+      Parameters<typeof resolvePreviewInspectorRuntimeOwnershipTarget>[0]['candidate']
+    >;
+
+    expect(targetMode).toBe('selected-route-leaf');
+    if (targetMode === undefined) throw new Error('Expected automatic route-leaf ownership.');
+    expect(
+      resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget: { exportName: 'default', sourcePath: APP },
+        candidate,
+        diagnosticPath: APP,
+        routeSelectionResolution: 'automatic',
+        selectedLeafSourceText: 'export function NamedPage() { return <main>named</main>; }',
+        targetMode,
+      }),
+    ).toEqual(leaf);
+  });
+
+  it('keeps active-document ownership when an automatic route already targets that document', () => {
+    const target = { exportName: 'default', sourcePath: TARGET };
+    const plan = {
+      pageCandidates: [
+        {
+          routeLocation: {
+            componentName: 'Target',
+            evidenceKind: 'route-jsx',
+            pathname: '/root/child',
+            pattern: '/root/child',
+            sourcePath: ROUTE,
+          },
+          target,
+        },
+      ],
+      routeSelectionResolution: 'automatic',
+      target,
+    } as unknown as PreviewInspectorAncestorPlan;
+
+    expect(resolvePreviewInspectorRuntimeTargetMode(plan, undefined)).toBeUndefined();
+  });
+
+  it('derives an exact named selected-route leaf from compiler-owned candidate evidence', () => {
+    const leaf = { exportName: 'NamedPage', sourcePath: PAGE };
+    const candidate = {
+      browserCandidate: { root: leaf, target: leaf },
+      criticalSurfaces: [
+        {
+          exportName: leaf.exportName,
+          id: 'leaf',
+          sourcePath: leaf.sourcePath,
+          strategy: 'authentic-module-export',
+        },
+      ],
+      executionRootSurfaceId: 'leaf',
+      runtimeTargetSurfaceId: 'leaf',
+    } as unknown as NonNullable<
+      Parameters<typeof resolvePreviewInspectorRuntimeOwnershipTarget>[0]['candidate']
+    >;
+
+    expect(
+      resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget: { exportName: 'App', sourcePath: APP },
+        candidate,
+        diagnosticPath: APP,
+        routeSelection: [{ componentName: 'NamedPage', pattern: '/named' }],
+        routeSelectionResolution: 'exact',
+        selectedLeafSourceText: 'export function NamedPage() { return <main>named route</main>; }',
+        targetMode: 'selected-route-leaf',
+      }),
+    ).toEqual(leaf);
+  });
+
+  it('fails selected-route ownership for empty or conflicting compiler evidence', () => {
+    const analysisTarget = { exportName: 'Target', sourcePath: TARGET };
+    const candidate = {
+      browserCandidate: {
+        root: { exportName: 'SelectedPage', sourcePath: PAGE },
+        target: { exportName: 'OtherPage', sourcePath: PAGE },
+      },
+      criticalSurfaces: [
+        {
+          exportName: 'SelectedPage',
+          id: 'selected-page',
+          sourcePath: PAGE,
+          strategy: 'authentic-module-export',
+        },
+      ],
+      executionRootSurfaceId: 'selected-page',
+      runtimeTargetSurfaceId: 'selected-page',
+    } as unknown as NonNullable<
+      Parameters<typeof resolvePreviewInspectorRuntimeOwnershipTarget>[0]['candidate']
+    >;
+
+    expect(() =>
+      resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget,
+        candidate,
+        diagnosticPath: TARGET,
+        routeSelection: [],
+        routeSelectionResolution: 'exact',
+        selectedLeafSourceText: 'export function SelectedPage() { return null; }',
+        targetMode: 'selected-route-leaf',
+      }),
+    ).toThrow(PreviewCompilationError);
+    expect(() =>
+      resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget,
+        candidate,
+        diagnosticPath: TARGET,
+        routeSelection: [{ componentName: 'SelectedPage', pattern: '/selected' }],
+        routeSelectionResolution: 'exact',
+        selectedLeafSourceText: 'export function SelectedPage() { return null; }',
+        targetMode: 'selected-route-leaf',
+      }),
+    ).toThrow(/selected route leaf/u);
+  });
+
+  it('reports each Page Execution role conflict independently', () => {
+    const leaf = { exportName: 'NamedPage', sourcePath: PAGE };
+    const root = { exportName: 'App', sourcePath: APP };
+    const leafSurface = {
+      exportName: leaf.exportName,
+      id: 'leaf',
+      sourcePath: leaf.sourcePath,
+      strategy: 'authentic-module-export',
+    };
+    const rootSurface = {
+      exportName: root.exportName,
+      id: 'root',
+      sourcePath: root.sourcePath,
+      strategy: 'authentic-module-export',
+    };
+    const baseCandidate = {
+      browserCandidate: { root: leaf, target: leaf },
+      criticalSurfaces: [leafSurface],
+      executionRootSurfaceId: 'leaf',
+      runtimeTargetSurfaceId: 'leaf',
+    } as unknown as NonNullable<
+      Parameters<typeof resolvePreviewInspectorRuntimeOwnershipTarget>[0]['candidate']
+    >;
+    const resolve = (candidate: unknown): void => {
+      resolvePreviewInspectorRuntimeOwnershipTarget({
+        analysisTarget: root,
+        candidate: candidate as NonNullable<
+          Parameters<typeof resolvePreviewInspectorRuntimeOwnershipTarget>[0]['candidate']
+        >,
+        diagnosticPath: APP,
+        routeSelection: [{ componentName: 'NamedPage', pattern: '/named' }],
+        routeSelectionResolution: 'exact',
+        selectedLeafSourceText: 'export function NamedPage() { return null; }',
+        targetMode: 'selected-route-leaf',
+      });
+    };
+
+    expect(() => resolve({ ...baseCandidate, executionRootSurfaceId: 'missing' })).toThrow(
+      /missing its execution-root surface/u,
+    );
+    expect(() =>
+      resolve({
+        ...baseCandidate,
+        criticalSurfaces: [leafSurface, { ...leafSurface }],
+      }),
+    ).toThrow(/duplicate execution-root surfaces/u);
+    expect(() =>
+      resolve({
+        ...baseCandidate,
+        browserCandidate: { root, target: leaf },
+      }),
+    ).toThrow(/candidate root that does not match its execution-root surface/u);
+    expect(() => resolve({ ...baseCandidate, runtimeTargetSurfaceId: 'missing' })).toThrow(
+      /missing its runtime-target surface/u,
+    );
+    expect(() =>
+      resolve({
+        ...baseCandidate,
+        browserCandidate: { root, target: leaf },
+        criticalSurfaces: [rootSurface, leafSurface, { ...leafSurface }],
+        executionRootSurfaceId: 'root',
+      }),
+    ).toThrow(/duplicate runtime-target surfaces/u);
+    expect(() =>
+      resolve({
+        ...baseCandidate,
+        browserCandidate: {
+          root: leaf,
+          target: { exportName: 'OtherPage', sourcePath: PAGE },
+        },
+      }),
+    ).toThrow(/runtime-target leaf whose source or export does not match/u);
+  });
+
   it('tries selected route/page surfaces before smaller page and target-only slices', () => {
     const renderPath: PreviewRenderChainCandidate = {
       entryPoint: {
@@ -64,9 +436,18 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       id: 'selected',
       renderPath,
       root: { exportName: 'SelectedPage', sourcePath: PAGE },
-      rootAutomaticProps: {},
+      rootAutomaticProps: { staleRoot: true },
+      rootInference: {
+        provenance: [{ kind: 'string', path: 'staleRoot', source: 'type' }],
+        shape: {
+          kind: 'object',
+          properties: { staleRoot: { kind: 'string' } },
+        },
+      },
       rootOwnsRouter: true,
       rootStepIndex: 1,
+      routeMountBasePath: '/stale',
+      routeSlotCount: 99,
       routeLocation: {
         componentName: 'SelectedPage',
         dependencyPaths: [ROUTE],
@@ -86,6 +467,7 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       },
       stopReason: 'root-reached',
       targetAutomaticProps: {},
+      wildcardFallbackPresent: false,
     } as PreviewInspectorPageCandidate;
     const plan = {
       pageCandidates: [candidate],
@@ -107,7 +489,7 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       kind: 'generic-memory-location',
       loaderPolicy: 'never-execute',
       pathname: '/selected/42',
-      rootOwnsRouter: true,
+      rootOwnsRouter: false,
     });
     expect(candidates[0]?.criticalSurfaces.map((surface) => surface.sourcePath)).toEqual([
       ROUTE,
@@ -115,11 +497,280 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       TARGET,
     ]);
     expect(candidates[0]?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(APP);
+    expect(candidates.map((item) => item.browserCandidate.root.sourcePath)).toEqual([
+      ROUTE,
+      ROUTE,
+      PAGE,
+      PAGE,
+      TARGET,
+    ]);
+    expect(
+      candidates.every((item) => {
+        const executionRoot = item.criticalSurfaces.find(
+          (surface) => surface.id === item.executionRootSurfaceId,
+        );
+        return (
+          executionRoot?.sourcePath === item.browserCandidate.root.sourcePath &&
+          executionRoot.exportName === item.browserCandidate.root.exportName &&
+          Object.isFrozen(item.browserCandidate)
+        );
+      }),
+    ).toBe(true);
+    expect(candidates[0]?.browserCandidate).toMatchObject({
+      root: { exportName: 'RouteLayout', sourcePath: ROUTE },
+      rootAutomaticProps: {},
+      rootOwnsRouter: false,
+      routeMountBasePath: '/',
+      routeSlotCount: 1,
+      wildcardFallbackPresent: true,
+    });
+    expect(candidates[0]?.browserCandidate.rootStepIndex).toBeUndefined();
+    expect(candidates[0]?.browserCandidate.rootInference).toBeUndefined();
+    expect(candidates[2]?.browserCandidate).toMatchObject({
+      root: { exportName: 'SelectedPage', sourcePath: PAGE },
+      rootAutomaticProps: { staleRoot: true },
+      rootInference: candidate.rootInference,
+      rootOwnsRouter: true,
+      rootStepIndex: 1,
+      routeMountBasePath: '/stale',
+      routeSlotCount: 99,
+      wildcardFallbackPresent: false,
+    });
+    expect(candidates.at(-1)?.browserCandidate).toMatchObject({
+      root: { exportName: 'Target', sourcePath: TARGET },
+      rootAutomaticProps: {},
+      rootOwnsRouter: false,
+    });
+    expect(candidates.at(-1)?.browserCandidate.rootStepIndex).toBeUndefined();
+    expect(candidates.at(-1)?.browserCandidate.rootInference).toBeUndefined();
+    expect(candidates.at(-1)?.browserCandidate.routeMountBasePath).toBeUndefined();
+    expect(candidate.root).toEqual({ exportName: 'SelectedPage', sourcePath: PAGE });
+    expect(candidate.rootAutomaticProps).toEqual({ staleRoot: true });
+    expect(candidate.rootStepIndex).toBe(1);
+    expect(candidates[0]?.executionRootSurfaceId).toBe(candidates[0]?.criticalSurfaces[0]?.id);
+    expect(
+      candidates[0]?.criticalSurfaces.find(
+        (surface) => surface.id === candidates[0]?.runtimeTargetSurfaceId,
+      ),
+    ).toMatchObject({ exportName: 'Target', sourcePath: TARGET });
     expect(candidates.at(-1)?.criticalSurfaces).toEqual([
       expect.objectContaining({ sourcePath: TARGET, strategy: 'authentic-module-export' }),
     ]);
     expect(candidates.every((item) => item.routeRecipe?.pathname === '/selected/42')).toBe(true);
-    expect(candidates.every((item) => item.routeRecipe?.rootOwnsRouter === true)).toBe(true);
+    expect(candidates.map((item) => item.routeRecipe?.rootOwnsRouter)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('recreates the parent Route context for a retained useRoutes owner', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-use-routes-owner-'));
+    const ownerPath = path.join(workspaceRoot, 'NestedOwner.tsx');
+    const childPath = path.join(workspaceRoot, 'ChildPage.tsx');
+    try {
+      await Promise.all([
+        writeFile(
+          ownerPath,
+          [
+            "import { useRoutes } from 'react-router-dom';",
+            "import ChildPage from './ChildPage';",
+            'export default function NestedOwner() {',
+            "  return useRoutes([{ path: 'child', element: <ChildPage /> }]);",
+            '}',
+          ].join('\n'),
+        ),
+        writeFile(
+          childPath,
+          'export default function ChildPage() { return <main>selected child</main>; }',
+        ),
+      ]);
+      const routeLocation = {
+        componentExportName: 'default',
+        componentName: 'ChildPage',
+        componentSourcePath: childPath,
+        componentSourcePaths: [ownerPath, childPath],
+        dependencyPaths: [ownerPath, childPath],
+        evidenceKind: 'route-jsx' as const,
+        pathname: '/root/child',
+        pattern: '/root/child',
+        routeMounts: [
+          {
+            basePath: '/root',
+            contextPattern: '/root/*',
+            exportName: 'default',
+            hasWildcardFallback: false,
+            routeSlotCount: 1,
+            sourcePath: ownerPath,
+          },
+        ],
+        sourcePath: ownerPath,
+      };
+      const owner = {
+        complete: false,
+        dependencyPaths: [ownerPath, childPath],
+        edges: [],
+        id: 'nested-owner',
+        root: { exportName: 'default', sourcePath: ownerPath },
+        rootAutomaticProps: {},
+        rootOwnsRouter: false,
+        routeLocation,
+        stopReason: 'render-path-checkpoint',
+        targetAutomaticProps: {},
+      } as PreviewInspectorPageCandidate;
+      const plan = {
+        pageCandidates: [owner],
+        renderChain: { paths: [] },
+        renderChainsByExport: {},
+        target: { exportName: 'default', sourcePath: childPath },
+      } as unknown as PreviewInspectorAncestorPlan;
+
+      const nestedCandidates = createPreviewInspectorPageExecutionCandidates({
+        plan,
+        targetMode: 'selected-route-leaf',
+      });
+      const candidate = nestedCandidates[0];
+      expect(candidate?.routeRecipe).toMatchObject({
+        kind: 'react-router-v6',
+        mounts: [
+          expect.objectContaining({
+            contextPattern: '/root/*',
+          }),
+        ],
+        pathname: '/root/child',
+        rootOwnsRouter: false,
+        routerModuleSpecifier: 'react-router-dom',
+      });
+      if (candidate === undefined)
+        throw new Error('Expected one nested route execution candidate.');
+      expect(nestedCandidates.every((item) => item.fidelity !== 'target-only')).toBe(true);
+      expect(
+        nestedCandidates.every(
+          (item) => item.executionRootSurfaceId !== item.runtimeTargetSurfaceId,
+        ),
+      ).toBe(true);
+      expect(owner.root).toEqual({ exportName: 'default', sourcePath: ownerPath });
+      const ownerSurface = candidate.criticalSurfaces.find(
+        (surface) => surface.sourcePath === ownerPath,
+      );
+      const childSurface = candidate.criticalSurfaces.find(
+        (surface) => surface.sourcePath === childPath,
+      );
+      expect(candidate.executionRootSurfaceId).toBe(ownerSurface?.id);
+      expect(candidate.runtimeTargetSurfaceId).toBe(childSurface?.id);
+      expect(candidate.executionRootContract).toEqual({
+        exportName: 'default',
+        sourcePath: ownerPath,
+        surfaceId: ownerSurface?.id,
+      });
+      expect(candidate.runtimeTargetContract).toEqual({
+        exportName: 'default',
+        sourcePath: childPath,
+        surfaceId: childSurface?.id,
+      });
+      const ownershipOptions = {
+        analysisTarget: { exportName: 'App', sourcePath: ownerPath },
+        candidate,
+        diagnosticPath: ownerPath,
+        routeSelection: [
+          { componentName: 'NestedOwner', pattern: '/root/*' },
+          { componentName: 'ChildPage', pattern: '/root/child' },
+        ],
+        routeSelectionResolution: 'exact' as const,
+        selectedLeafSourceText:
+          'export default function ChildPage() { return <main>selected child</main>; }',
+        targetMode: 'selected-route-leaf' as const,
+      };
+      const runtimeTarget = resolvePreviewInspectorRuntimeOwnershipTarget(ownershipOptions);
+      expect(runtimeTarget).toEqual({ exportName: 'default', sourcePath: childPath });
+      expect(
+        resolvePreviewInspectorRuntimeOwnershipTarget({
+          ...ownershipOptions,
+          routeSelection: [{ componentName: 'NestedOwner', pattern: '/root/*' }],
+        }),
+      ).toEqual({ exportName: 'default', sourcePath: childPath });
+      expect(() =>
+        resolvePreviewInspectorRuntimeOwnershipTarget({
+          ...ownershipOptions,
+          routeSelection: [{ componentName: 'ChildPage', pattern: '/root/child' }],
+        }),
+      ).toThrow(/mismatched, cyclic, ambiguous, or reordered nested mount edge/u);
+      const source = createPreviewInspectorPageExecutionSource({
+        candidate,
+        executionRootModuleContract: createPreviewInspectorExecutionRootModuleContract({
+          exportName: candidate.executionRootContract.exportName,
+          preparedSourceText: [
+            "import { useRoutes } from 'react-router-dom';",
+            "import ChildPage from './ChildPage';",
+            'export default function NestedOwner() {',
+            "  return useRoutes([{ path: 'child', element: <ChildPage /> }]);",
+            '}',
+          ].join('\n'),
+          sourcePath: candidate.executionRootContract.sourcePath,
+          surfaceId: candidate.executionRootContract.surfaceId,
+        }),
+        target: runtimeTarget,
+      });
+      expect(source).toContain("import { MemoryRouter, Route, Routes } from 'react-router-dom';");
+      expect(source).toContain('initialEntries: ["/root/child"]');
+      expect(source).toContain('path: "/root/*"');
+      expect(source).toContain(`from ${JSON.stringify(canonicalizeExistingPath(ownerPath))}`);
+      expect(source).toContain('from "react-preview:inspector-target-facade"');
+      expect(source).not.toContain(`from ${JSON.stringify(childPath)}`);
+      expect(source).not.toContain('path: "/root/child", element: React.createElement(Surface0');
+
+      const routeRecipe = candidate.routeRecipe;
+      const mount = routeRecipe?.mounts[0];
+      if (routeRecipe === undefined || mount === undefined || ownerSurface === undefined) {
+        throw new Error('Expected one complete nested route recipe.');
+      }
+      const invalidCandidates = [
+        {
+          ...candidate,
+          routeRecipe: { ...routeRecipe, mounts: [] },
+        },
+        {
+          ...candidate,
+          routeRecipe: {
+            ...routeRecipe,
+            mounts: [{ ...mount, childSurfaceId: ownerSurface.id }],
+          },
+        },
+        {
+          ...candidate,
+          routeRecipe: {
+            ...routeRecipe,
+            mounts: [{ ...mount, childSurfaceId: 'wrong-terminal' }],
+          },
+        },
+        {
+          ...candidate,
+          routeRecipe: {
+            ...routeRecipe,
+            mounts: [{ ...mount, contextPattern: undefined }],
+          },
+        },
+        {
+          ...candidate,
+          routeRecipe: {
+            ...routeRecipe,
+            mounts: [{ ...mount, contextPattern: '/wrong/*' }],
+          },
+        },
+      ];
+      for (const invalidCandidate of invalidCandidates) {
+        expect(() =>
+          resolvePreviewInspectorRuntimeOwnershipTarget({
+            ...ownershipOptions,
+            candidate: invalidCandidate as never,
+          }),
+        ).toThrow(PreviewCompilationError);
+      }
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
   });
 
   it('uses the live VirtualPage checkpoint ownership after omitting an authored app router', () => {
@@ -207,8 +858,8 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     expect(candidates[0]?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(APP);
   });
 
-  /** Keeps inline route wrappers around a detached leaf without executing the application Router. */
-  it('composes a resolved route page inside its authored element wrappers', () => {
+  /** Rejects wrapper-only distinct roles when no retained mount chain proves their execution path. */
+  it('keeps only an internally consistent leaf when inline wrappers lack a retained mount chain', () => {
     const routeLocation = {
       componentExportName: 'default',
       componentName: 'SelectedPage',
@@ -254,40 +905,182 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       target: { exportName: 'Target', sourcePath: TARGET },
     } as unknown as PreviewInspectorAncestorPlan;
 
-    const candidates = createPreviewInspectorPageExecutionCandidates({ plan });
-    const authentic = candidates[0];
+    const candidates = createPreviewInspectorPageExecutionCandidates({
+      plan,
+      targetMode: 'selected-route-leaf',
+    });
+    const leaf = candidates[0];
 
-    expect(candidates.map((candidate) => candidate.fidelity)).toEqual([
-      'page-authentic',
-      'page-sliced',
-      'target-only',
-    ]);
-    expect(authentic?.criticalSurfaces).toEqual([
-      expect.objectContaining({
-        exportName: 'default',
-        sourcePath: ROUTE,
-        strategy: 'selected-export-slice',
-      }),
+    expect(candidates.map((candidate) => candidate.fidelity)).toEqual(['target-only']);
+    expect(leaf?.criticalSurfaces).toEqual([
       expect.objectContaining({
         exportName: 'default',
         sourcePath: PAGE,
         strategy: 'authentic-module-export',
       }),
     ]);
-    expect(authentic?.compositionEdges).toEqual([
-      expect.objectContaining({
-        mode: 'children-slot',
-        placementIndex: 0,
-      }),
-    ]);
-    expect(authentic?.routeRecipe).toMatchObject({
+    expect(leaf?.compositionEdges).toEqual([]);
+    expect(leaf?.routeRecipe).toMatchObject({
       loaderPolicy: 'never-execute',
       mounts: [],
       pathname: '/selected',
       rootOwnsRouter: false,
     });
-    expect(authentic?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(APP);
-    expect(authentic?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(TARGET);
+    expect(leaf?.browserCandidate.root).toEqual({
+      exportName: 'default',
+      sourcePath: PAGE,
+    });
+    expect(leaf?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(APP);
+    expect(leaf?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(ROUTE);
+    expect(leaf?.criticalSurfaces.map((surface) => surface.sourcePath)).not.toContain(TARGET);
+    expect(leaf?.executionRootSurfaceId).toBe(leaf?.runtimeTargetSurfaceId);
+  });
+
+  it('retains an authenticated direct catalog owner around a detached selected route leaf', () => {
+    const renderPath: PreviewRenderChainCandidate = {
+      entryPoint: {
+        kind: 'create-root',
+        occurrenceStart: 3,
+        sourcePath: '/workspace/main.tsx',
+        wrapperNames: [],
+      },
+      id: 'catalog-route-path',
+      steps: [
+        {
+          certainty: 'confirmed',
+          kind: 'route-branch',
+          label: 'SelectedPage',
+          occurrenceStart: 1,
+          sourcePath: PAGE,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'AppRouter',
+          occurrenceStart: 2,
+          sourcePath: APP,
+          wrapperNames: [],
+        },
+      ],
+    };
+    const routeLocation = {
+      componentExportName: 'default',
+      componentName: 'SelectedPage',
+      componentSourcePath: PAGE,
+      dependencyPaths: [APP, PAGE, '/workspace/pages.json'],
+      directRouteOwnerSourcePath: APP,
+      evidenceKind: 'route-catalog' as const,
+      pathname: '/selected',
+      pattern: '/selected',
+      routeMounts: [
+        {
+          basePath: '/',
+          exportName: 'default',
+          hasWildcardFallback: false,
+          routeSlotCount: 1,
+          sourcePath: APP,
+        },
+      ],
+      sourcePath: '/workspace/pages.json',
+    };
+    const authoredApp = {
+      complete: true,
+      dependencyPaths: [APP, PAGE, '/workspace/pages.json'],
+      edges: [],
+      id: 'catalog-app-root',
+      renderPath,
+      root: { exportName: 'default', sourcePath: APP },
+      rootAutomaticProps: {},
+      rootOwnsRouter: true,
+      rootStepIndex: 1,
+      routeLocation,
+      stopReason: 'root-reached',
+      targetAutomaticProps: {},
+    } as PreviewInspectorPageCandidate;
+    const contentPage = {
+      ...authoredApp,
+      complete: false,
+      id: 'catalog-page-checkpoint',
+      root: { exportName: 'default', sourcePath: PAGE },
+      rootOwnsRouter: false,
+      rootStepIndex: 0,
+      stopReason: 'render-path-checkpoint',
+    } as PreviewInspectorPageCandidate;
+    const plan = {
+      pageCandidates: [authoredApp, contentPage],
+      renderChain: { paths: [renderPath] },
+      renderChainsByExport: { default: { paths: [renderPath] } },
+      target: { exportName: 'default', sourcePath: APP },
+    } as unknown as PreviewInspectorAncestorPlan;
+
+    const candidates = createPreviewInspectorPageExecutionCandidates({
+      plan,
+      selectedPageCandidateId: 'catalog-app-root',
+      targetMode: 'selected-route-leaf',
+    });
+
+    expect(candidates.map((candidate) => candidate.fidelity)).toContain('route-page-authentic');
+    expect(candidates[0]?.browserCandidate.root).toEqual({
+      exportName: 'default',
+      sourcePath: APP,
+    });
+    expect(candidates[0]?.routeRecipe?.mounts).toEqual([
+      expect.objectContaining({ parentSurfaceId: expect.any(String) }),
+    ]);
+    expect(candidates[0]?.executionRootSurfaceId).not.toBe(
+      candidates[0]?.runtimeTargetSurfaceId,
+    );
+    expect(candidates.map((candidate) => candidate.fidelity)).not.toContain('target-only');
+    const candidate = candidates[0];
+    const evidenceMount = routeLocation.routeMounts[0];
+    const recipeMount = candidate?.routeRecipe?.mounts[0];
+    if (candidate === undefined || evidenceMount === undefined || recipeMount === undefined) {
+      throw new Error('Expected one complete direct catalog-owner mount.');
+    }
+    const ownershipOptions = {
+      analysisTarget: plan.target,
+      candidate,
+      diagnosticPath: APP,
+      routeSelection: [{ componentName: 'SelectedPage', pattern: '/selected' }],
+      routeSelectionResolution: 'exact' as const,
+      selectedLeafSourceText:
+        'export default function SelectedPage() { return <main>selected route</main>; }',
+      targetMode: 'selected-route-leaf' as const,
+    };
+    expect(resolvePreviewInspectorRuntimeOwnershipTarget(ownershipOptions)).toEqual({
+      exportName: 'default',
+      sourcePath: PAGE,
+    });
+
+    const withEvidenceMount = (mount: typeof evidenceMount) => ({
+      ...candidate,
+      browserCandidate: {
+        ...candidate.browserCandidate,
+        routeLocation: {
+          ...candidate.browserCandidate.routeLocation,
+          routeMounts: [mount],
+        },
+      },
+    });
+    for (const invalidCandidate of [
+      withEvidenceMount({ ...evidenceMount, sourcePath: ROUTE }),
+      withEvidenceMount({ ...evidenceMount, exportName: 'OtherApp' }),
+      {
+        ...candidate,
+        routeRecipe: {
+          ...candidate.routeRecipe,
+          mounts: [{ ...recipeMount, contextPattern: '/unexpected/*' }],
+        },
+      },
+    ]) {
+      expect(() =>
+        resolvePreviewInspectorRuntimeOwnershipTarget({
+          ...ownershipOptions,
+          candidate: invalidCandidate as never,
+        }),
+      ).toThrow(PreviewCompilationError);
+    }
   });
 
   it('preserves known generic route state when no authored route mount can be recovered', () => {

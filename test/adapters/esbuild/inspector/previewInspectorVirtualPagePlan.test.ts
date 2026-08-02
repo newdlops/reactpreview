@@ -748,6 +748,48 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     expect(virtualPage?.browserCandidate.routeLocation?.pathname).toBe('/dashboard');
   });
 
+  it('mounts a direct nested route owner instead of its detached child page', () => {
+    const ownerPath = '/workspace/routes/NestedOwner.tsx';
+    const child = createCandidate({
+      id: 'nested-child',
+      root: { exportName: 'default', sourcePath: PAGE_PATH },
+      routeLocation: {
+        componentExportName: 'default',
+        componentName: 'ChildPage',
+        componentSourcePath: PAGE_PATH,
+        dependencyPaths: [ownerPath, PAGE_PATH],
+        evidenceKind: 'route-jsx',
+        pathname: '/root/child',
+        pattern: '/root/child',
+        routeMounts: [
+          {
+            basePath: '/root',
+            exportName: 'default',
+            hasWildcardFallback: false,
+            routeSlotCount: 1,
+            sourcePath: ownerPath,
+          },
+        ],
+        sourcePath: ownerPath,
+      },
+    });
+    const owner = createCandidate({
+      id: 'nested-owner',
+      root: { exportName: 'default', sourcePath: ownerPath },
+      rootOwnsRouter: false,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates([child, owner]);
+
+    expect(virtualPage?.contentCandidate).toBe(owner);
+    expect(virtualPage?.browserCandidate).toMatchObject({
+      root: owner.root,
+      routeMountBasePath: '/root',
+      routeSlotCount: 1,
+      wildcardFallbackPresent: false,
+    });
+  });
+
   /** Falls back to the authored root when no shared static render path proves a safer body. */
   it('retains an independently discovered authored candidate', () => {
     const standalone = createCandidate({

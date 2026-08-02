@@ -1,6 +1,7 @@
 /** Verifies bounded real-owner discovery for the Page Inspector mount mode. */
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorAncestorPlan } from '../../../../src/adapters/esbuild/inspector';
+import { createPreviewCompleteRouteUsageContext } from '../../../../src/adapters/esbuild/preparePreviewCompilerUsage';
 
 const TARGET_PATH = '/workspace/packages/application/src/Target.tsx';
 const CARD_PATH = '/workspace/packages/application/src/Card.tsx';
@@ -28,13 +29,25 @@ describe('createPreviewInspectorAncestorPlan', () => {
       ].join('\n'),
     };
 
-    const plan = await createPreviewInspectorAncestorPlan({
+    const options = {
       documentPath: pagePath,
       exportName: 'default',
       readSource: createSourceReader(sources),
       sourcePaths: Object.keys(sources),
-    });
+    } as const;
+    const baseline = await createPreviewInspectorAncestorPlan(options);
+    const usageContext = createPreviewCompleteRouteUsageContext();
+    const plan = await createPreviewInspectorAncestorPlan({ ...options, usageContext });
+    const repeated = await createPreviewInspectorAncestorPlan({ ...options, usageContext });
 
+    expect(JSON.stringify(plan)).toBe(JSON.stringify(baseline));
+    expect(JSON.stringify(repeated)).toBe(JSON.stringify(baseline));
+    expect(usageContext.getStatistics()).toMatchObject({
+      ancestorPreludeComputations: 1,
+      ancestorPreludeHits: 1,
+      candidateTemplateComputations: 1,
+      candidateTemplateHits: 1,
+    });
     expect(plan.pageCandidates[0]).toMatchObject({
       complete: true,
       nextPagesShell: { app: { exportName: 'default', sourcePath: appPath } },
@@ -507,13 +520,21 @@ describe('createPreviewInspectorAncestorPlan', () => {
       ].join('\n'),
     };
 
-    const plan = await createPreviewInspectorAncestorPlan({
+    const routeSelection = [{ componentName: 'Page', pattern: '/dashboard' }] as const;
+    const options = {
       documentPath: TARGET_PATH,
       exportName: 'Target',
       readSource: createSourceReader(sources),
+      routeSelection,
       sourcePaths: Object.keys(sources),
-    });
+    } as const;
+    const baseline = await createPreviewInspectorAncestorPlan(options);
+    const usageContext = createPreviewCompleteRouteUsageContext();
+    const plan = await createPreviewInspectorAncestorPlan({ ...options, usageContext });
+    const repeated = await createPreviewInspectorAncestorPlan({ ...options, usageContext });
 
+    expect(JSON.stringify(plan)).toBe(JSON.stringify(baseline));
+    expect(JSON.stringify(repeated)).toBe(JSON.stringify(baseline));
     expect(plan.complete).toBe(false);
     expect(plan.stopReason).toBe('non-component-owner');
     expect(plan.root).toEqual({ exportName: 'Page', sourcePath: PAGE_PATH });

@@ -1,4 +1,5 @@
 /** Verifies syntax-only target route inference for detached application-shell previews. */
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   collectPreviewInspectorDirectRouteChoices,
@@ -19,6 +20,7 @@ function createRenderChain(
   stepSourcePath = APP_PATH,
   targetPath = TARGET_PATH,
   targetLabel = 'InvestmentContractAnalysisPage',
+  targetExportName = 'default',
 ): PreviewRenderChainPlan {
   return {
     dependencyPaths: [TARGET_PATH, stepSourcePath],
@@ -44,7 +46,7 @@ function createRenderChain(
       },
     ],
     reachability: 'entry-connected',
-    target: { exportName: 'default', sourcePath: targetPath },
+    target: { exportName: targetExportName, sourcePath: targetPath },
     truncated: false,
   };
 }
@@ -56,9 +58,16 @@ function createOptions(
 ): CollectPreviewInspectorRouteLocationOptions {
   return {
     documentPath: renderChain.target.sourcePath,
-    exportName: 'default',
+    exportName: renderChain.target.exportName,
     readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
     renderChain,
+    resolveModule: (specifier, importer) => {
+      if (!specifier.startsWith('.')) return undefined;
+      const candidate = path.resolve(path.dirname(importer), specifier);
+      return [candidate, `${candidate}.ts`, `${candidate}.tsx`, `${candidate}.json`].find(
+        (sourcePath) => Object.hasOwn(sources, sourcePath),
+      );
+    },
     sourcePaths: Object.keys(sources).filter((sourcePath) => !sourcePath.endsWith('.json')),
   };
 }
@@ -98,8 +107,10 @@ describe('collectPreviewInspectorRouteLocation', () => {
   it('joins nested JSX Route paths and materializes semantic identifier parameters', async () => {
     const routesPath = '/workspace/application/src/routes.tsx';
     const sources = {
-      [TARGET_PATH]: 'export function InvestmentContractAnalysisPage() { return <main />; }',
+      [TARGET_PATH]:
+        'export default function InvestmentContractAnalysisPage() { return <main />; }',
       [routesPath]: [
+        'import InvestmentContractAnalysisPage from "./pages/investment-contract-analysis-page";',
         'const routes = <Routes>',
         '  <Route path="/workspace/:workspaceId">',
         '    <Route path="analysis" element={<InvestmentContractAnalysisPage />} />',
@@ -123,11 +134,12 @@ describe('collectPreviewInspectorRouteLocation', () => {
 
   /** Prefers a target-near v5 child Route over the outer shell that merely owns `/patients`. */
   it('recognizes a component rendered as the child of a React Router v5 Route', async () => {
-    const targetPath = '/workspace/application/src/patients/CareGoalForm.tsx';
+    const targetPath = '/workspace/application/src/patients/ViewCareGoal.tsx';
     const routesPath = '/workspace/application/src/HospitalRun.tsx';
     const sources = {
-      [targetPath]: 'export default function CareGoalForm() { return <form />; }',
+      [targetPath]: 'export default function ViewCareGoal() { return <form />; }',
       [routesPath]: [
+        'import ViewCareGoal from "./patients/ViewCareGoal";',
         '<Switch>',
         '  <Route path="/patients" component={Patients} />',
         '  <Route path="/patients/:id/care-goals/:careGoalId">',
@@ -136,7 +148,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
         '</Switch>',
       ].join('\n'),
     };
-    const baseRenderChain = createRenderChain(routesPath, targetPath, 'CareGoalForm');
+    const baseRenderChain = createRenderChain(routesPath, targetPath, 'ViewCareGoal');
     const basePath = baseRenderChain.paths[0];
     if (basePath === undefined) throw new Error('The route fixture requires one render path.');
     const renderChain: PreviewRenderChainPlan = {
@@ -148,16 +160,8 @@ describe('collectPreviewInspectorRouteLocation', () => {
             {
               certainty: 'confirmed',
               kind: 'component-render',
-              label: 'CareGoalForm',
-              occurrenceStart: 10,
-              sourcePath: targetPath,
-              wrapperNames: [],
-            },
-            {
-              certainty: 'confirmed',
-              kind: 'component-render',
               label: 'ViewCareGoal',
-              occurrenceStart: 20,
+              occurrenceStart: 10,
               sourcePath: routesPath,
               wrapperNames: [],
             },
@@ -193,6 +197,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
       [TARGET_PATH]:
         'export default function InvestmentContractAnalysisPage() { return <main />; }',
       [routesPath]: [
+        'import InvestmentContractAnalysisPage from "./pages/investment-contract-analysis-page";',
         'const FEATURE_BASE_PATH = "/company/:companyId(\\\\d+)/contracts";',
         'export const FeatureApp = createAppModule(',
         '  FEATURE_BASE_PATH,',
@@ -224,7 +229,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
    * The fixture mirrors the generic contract where a factory receives an absolute base, page-map
    * object, submodule array, and JSX wrapper callback; no factory implementation is executed.
    */
-  it('collects selectable page paths owned by a route factory', async () => {
+  it('keeps factory page choices unresolved without factory-to-catalog provenance', async () => {
     const routerPath = '/workspace/application/src/feature/feature-app.tsx';
     const dashboardPath = '/workspace/application/src/feature/dashboard-page.tsx';
     const settingsPath = '/workspace/application/src/feature/settings-page.tsx';
@@ -285,35 +290,25 @@ describe('collectPreviewInspectorRouteLocation', () => {
       componentName: 'FeatureApp',
       pathname: '/workspace/1/feature',
     });
-    expect(inventory.choices).toEqual([
+    expect(inventory.choices).toEqual([]);
+    expect(inventory.unresolvedFactoryRoutes).toBe(true);
+    expect(inventory.unresolvedFactoryOptionNames).toEqual(['DashboardPage', 'SettingsPage']);
+    expect(inventory.unresolvedFactoryOptions).toEqual([
       expect.objectContaining({
-        componentExportName: 'DashboardPage',
+        availability: 'factory-contract-unresolved',
         componentName: 'DashboardPage',
-        componentSourcePath: dashboardPath,
-        elementWrappers: [
-          {
-            componentName: 'FeatureLayout',
-            exportName: 'FeatureLayout',
-            sourcePath: layoutPath,
-          },
-        ],
-        pathname: '/workspace/1/feature',
-        pattern: '/workspace/:workspaceId(\\d+)/feature',
+        kind: 'page',
       }),
       expect.objectContaining({
-        componentExportName: 'SettingsPage',
+        availability: 'factory-contract-unresolved',
         componentName: 'SettingsPage',
-        componentSourcePath: settingsPath,
-        pathname: '/workspace/1/feature/settings',
-        pattern: '/workspace/:workspaceId(\\d+)/feature/settings',
+        kind: 'page',
       }),
     ]);
-    expect(inventory.choices[0]?.dependencyPaths).toContain(dashboardPath);
-    expect(inventory.choices[1]?.dependencyPaths).toContain(settingsPath);
   });
 
   /** A direct default-exported factory has no local owner name but still owns selectable pages. */
-  it('collects route choices from a default-exported factory expression', async () => {
+  it('keeps default-exported factory choices unresolved without catalog provenance', async () => {
     const routerPath = '/workspace/application/src/feature/default-feature-app.tsx';
     const dashboardPath = '/workspace/application/src/feature/dashboard-page.tsx';
     const renderChain = createRenderChain(APP_PATH, routerPath, 'DefaultFeatureApp');
@@ -348,13 +343,8 @@ describe('collectPreviewInspectorRouteLocation', () => {
         moduleSpecifier === './dashboard-page' ? dashboardPath : undefined,
     });
 
-    expect(inventory.choices).toEqual([
-      expect.objectContaining({
-        componentName: 'DashboardPage',
-        componentSourcePath: dashboardPath,
-        pathname: '/workspace/1/feature',
-      }),
-    ]);
+    expect(inventory.choices).toEqual([]);
+    expect(inventory.unresolvedFactoryOptionNames).toEqual(['DashboardPage']);
   });
 
   /**
@@ -453,6 +443,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
       ].join('\n'),
       [APP_PATH]: [
         'import { useRoutes } from "react-router-dom";',
+        'import { PartnerStaffApp } from "./staff/partner-staff-app";',
         'const appRoutes = [',
         '  { path: "partner/:legalPartnerId/*", element: <PartnerStaffApp /> },',
         '  { path: "*", element: <NotFoundPage /> },',
@@ -460,18 +451,34 @@ describe('collectPreviewInspectorRouteLocation', () => {
         'export default function App() { return useRoutes(appRoutes); }',
       ].join('\n'),
     };
-    const renderChain = createRenderChain(APP_PATH, targetPath, 'PartnerStaffApp');
+    const renderChain = createRenderChain(
+      APP_PATH,
+      targetPath,
+      'PartnerStaffApp',
+      'PartnerStaffApp',
+    );
 
     const location = await collectPreviewInspectorRouteLocation(
       createOptions(sources, renderChain),
     );
 
-    expect(location).toEqual({
+    expect(location).toMatchObject({
+      componentExportName: 'PartnerStaffApp',
       componentName: 'PartnerStaffApp',
+      componentSourcePath: targetPath,
       dependencyPaths: [APP_PATH, targetPath].sort(),
       evidenceKind: 'route-jsx',
       pathname: '/partner/1',
       pattern: '/partner/:legalPartnerId/*',
+      routeMounts: [
+        {
+          basePath: '/partner/:legalPartnerId(\\d+)',
+          exportName: 'PartnerStaffApp',
+          hasWildcardFallback: false,
+          routeSlotCount: 1,
+          sourcePath: targetPath,
+        },
+      ],
       sourcePath: APP_PATH,
     });
   });
@@ -483,6 +490,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
       [targetPath]: 'export function WorkspaceShell() { return <Outlet />; }',
       [APP_PATH]: [
         'import { useRoutes } from "react-router-dom";',
+        'import { WorkspaceShell } from "./workspace-shell";',
         'const routes = [',
         '  { path: "/workspace/:workspaceId/*", element: <WorkspaceShell /> },',
         '  { path: "/workspace/:workspaceId/dashboard", element: <Dashboard /> },',
@@ -490,7 +498,12 @@ describe('collectPreviewInspectorRouteLocation', () => {
         'export default function App() { return useRoutes(routes); }',
       ].join('\n'),
     };
-    const renderChain = createRenderChain(APP_PATH, targetPath, 'WorkspaceShell');
+    const renderChain = createRenderChain(
+      APP_PATH,
+      targetPath,
+      'WorkspaceShell',
+      'WorkspaceShell',
+    );
 
     const location = await collectPreviewInspectorRouteLocation(
       createOptions(sources, renderChain),
@@ -571,7 +584,196 @@ describe('collectPreviewInspectorRouteLocation', () => {
     });
   });
 
-  it('correlates a dynamic direct route with a same-component catalog leaf', async () => {
+  it('binds a dynamic direct route only to its imported registry export and JSON chain', async () => {
+    const pagePath = '/workspace/application/src/BoundPage.tsx';
+    const registryPath = '/workspace/application/src/route-registry.ts';
+    const catalogPath = '/workspace/application/src/bound-routes.json';
+    const unrelatedRegistryPath = '/workspace/application/src/unrelated-pages-map.ts';
+    const unrelatedCatalogPath = '/workspace/application/src/unrelated-pages.json';
+    const sources: Record<string, string> = {
+      [APP_PATH]: [
+        'import { createBrowserRouter } from "react-router-dom";',
+        'import BoundPage from "./BoundPage";',
+        'import { routeNamePathMap } from "./route-registry";',
+        'const router = createBrowserRouter([{ path: normalize(routeNamePathMap["BoundPage"]), element: <BoundPage /> }]);',
+        'export default function App() { return <RouterProvider router={router} />; }',
+      ].join('\n'),
+      [pagePath]: 'export default function BoundPage() { return <main />; }',
+      [registryPath]: [
+        'import rawRoutes from "./bound-routes.json";',
+        'const pathNameMap = transform(rawRoutes);',
+        'export const routeNamePathMap = invert(pathNameMap);',
+      ].join('\n'),
+      [catalogPath]: JSON.stringify({ exact: { index: 'BoundPage' } }),
+      [unrelatedRegistryPath]: [
+        'import rawRoutes from "./unrelated-pages.json";',
+        'export const routeNamePathMap = invert(rawRoutes);',
+      ].join('\n'),
+      [unrelatedCatalogPath]: JSON.stringify({ wrong: { index: 'BoundPage' } }),
+    };
+    const resolveModule = (specifier: string, importer: string): string | undefined =>
+      new Map([
+        [`${APP_PATH}\0./BoundPage`, pagePath],
+        [`${APP_PATH}\0./route-registry`, registryPath],
+        [`${registryPath}\0./bound-routes.json`, catalogPath],
+        [`${unrelatedRegistryPath}\0./unrelated-pages.json`, unrelatedCatalogPath],
+      ]).get(`${importer}\0${specifier}`);
+    const inventory = await collectPreviewInspectorRouteLocationInventory({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createRenderChain(APP_PATH, APP_PATH, 'App'),
+      resolveModule,
+      sourcePaths: [APP_PATH, registryPath, unrelatedRegistryPath],
+    });
+
+    expect(inventory.choices).toEqual([
+      expect.objectContaining({
+        componentExportName: 'default',
+        componentName: 'BoundPage',
+        componentSourcePath: pagePath,
+        evidenceKind: 'route-catalog',
+        pattern: '/exact',
+        sourcePath: catalogPath,
+      }),
+    ]);
+    expect(inventory.choices[0]?.dependencyPaths).toEqual(
+      expect.arrayContaining([APP_PATH, pagePath, registryPath, catalogPath]),
+    );
+    expect(inventory.choices[0]?.dependencyPaths).not.toEqual(
+      expect.arrayContaining([unrelatedRegistryPath, unrelatedCatalogPath]),
+    );
+    expect(inventory.choices[0]).toMatchObject({
+      directRouteOwnerSourcePath: APP_PATH,
+      routeMounts: [
+        expect.objectContaining({
+          exportName: 'default',
+          sourcePath: APP_PATH,
+        }),
+      ],
+      sourcePath: catalogPath,
+    });
+  });
+
+  it('keeps an exact registry-member route unresolved when only an unrelated registry has its key', async () => {
+    const pagePath = '/workspace/application/src/BoundPage.tsx';
+    const registryPath = '/workspace/application/src/route-registry.ts';
+    const catalogPath = '/workspace/application/src/bound-routes.json';
+    const unrelatedRegistryPath = '/workspace/application/src/unrelated-pages-map.ts';
+    const unrelatedCatalogPath = '/workspace/application/src/unrelated-pages.json';
+    const sources: Record<string, string> = {
+      [APP_PATH]: [
+        'import { createBrowserRouter } from "react-router-dom";',
+        'import BoundPage from "./BoundPage";',
+        'import { routeNamePathMap } from "./route-registry";',
+        'const router = createBrowserRouter([{ path: normalize(routeNamePathMap["BoundPage"]), element: <BoundPage /> }]);',
+        'export default function App() { return <RouterProvider router={router} />; }',
+      ].join('\n'),
+      [pagePath]: 'export default function BoundPage() { return <main />; }',
+      [registryPath]:
+        'import rawRoutes from "./bound-routes.json"; export const routeNamePathMap = invert(rawRoutes);',
+      [catalogPath]: JSON.stringify({ exact: { index: 'DifferentPage' } }),
+      [unrelatedRegistryPath]:
+        'import rawRoutes from "./unrelated-pages.json"; export const routeNamePathMap = invert(rawRoutes);',
+      [unrelatedCatalogPath]: JSON.stringify({ wrong: { index: 'BoundPage' } }),
+    };
+    const resolveModule = (specifier: string, importer: string): string | undefined =>
+      new Map([
+        [`${APP_PATH}\0./BoundPage`, pagePath],
+        [`${APP_PATH}\0./route-registry`, registryPath],
+        [`${registryPath}\0./bound-routes.json`, catalogPath],
+        [`${unrelatedRegistryPath}\0./unrelated-pages.json`, unrelatedCatalogPath],
+      ]).get(`${importer}\0${specifier}`);
+    const inventory = await collectPreviewInspectorRouteLocationInventory({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createRenderChain(APP_PATH, APP_PATH, 'App'),
+      resolveModule,
+      sourcePaths: [APP_PATH, registryPath, unrelatedRegistryPath],
+    });
+
+    expect(inventory.choices).toEqual([]);
+    expect(inventory.unresolvedFactoryOptions).toEqual([
+      expect.objectContaining({
+        availability: 'catalog-unresolved',
+        componentName: 'BoundPage',
+        kind: 'direct',
+      }),
+    ]);
+  });
+
+  it('demotes conflicting same-public direct occurrences while retaining exact duplicates', async () => {
+    const firstPath = '/workspace/application/src/first-page.tsx';
+    const secondPath = '/workspace/application/src/second-page.tsx';
+    const ambiguousSources: Record<string, string> = {
+      [APP_PATH]: [
+        'import * as First from "./first-page";',
+        'import * as Second from "./second-page";',
+        'export default function App() { return <Routes>',
+        '  <Route path="/shared" element={<First.SharedPage />} />',
+        '  <Route path="/shared" element={<Second.SharedPage />} />',
+        '</Routes>; }',
+      ].join('\n'),
+      [firstPath]: 'export function SharedPage() { return <main />; }',
+      [secondPath]: 'export function SharedPage() { return <main />; }',
+    };
+    const ambiguousInventory = await collectPreviewInspectorRouteLocationInventory({
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(ambiguousSources[sourcePath]),
+      renderChain: createRenderChain(APP_PATH, APP_PATH, 'App'),
+      resolveModule: (specifier) =>
+        specifier === './first-page'
+          ? firstPath
+          : specifier === './second-page'
+            ? secondPath
+            : undefined,
+      sourcePaths: [APP_PATH],
+    });
+
+    expect(ambiguousInventory.choices).toEqual([]);
+    expect(
+      ambiguousInventory.unresolvedFactoryOptions?.map((option) => option.availability),
+    ).toEqual(['route-provenance-ambiguous', 'route-provenance-ambiguous']);
+    expect(
+      new Set(
+        ambiguousInventory.unresolvedFactoryOptions?.map(
+          (option) => option.occurrenceIdentity,
+        ),
+      ).size,
+    ).toBe(2);
+
+    const duplicateSources: Record<string, string> = {
+      [APP_PATH]: [
+        'import SharedPage from "./first-page";',
+        'export default function App() { return <Routes>',
+        '  <Route path="/shared" element={<SharedPage />} />',
+        '  <Route path="/shared" element={<SharedPage />} />',
+        '</Routes>; }',
+      ].join('\n'),
+      [firstPath]: 'export default function SharedPage() { return <main />; }',
+    };
+    const duplicateOptions: CollectPreviewInspectorRouteLocationOptions = {
+      documentPath: APP_PATH,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(duplicateSources[sourcePath]),
+      renderChain: createRenderChain(APP_PATH, APP_PATH, 'App'),
+      resolveModule: (specifier) => (specifier === './first-page' ? firstPath : undefined),
+      sourcePaths: [APP_PATH],
+    };
+    const duplicateInventory =
+      await collectPreviewInspectorRouteLocationInventory(duplicateOptions);
+    const duplicatePlan = await collectPreviewInspectorRouteBranchPlan(duplicateOptions);
+
+    expect(duplicateInventory.choices).toHaveLength(1);
+    expect(duplicateInventory.directRouteDuplicates).toHaveLength(1);
+    expect(duplicatePlan.branches.filter((branch) => branch.duplicateOf !== undefined)).toHaveLength(
+      1,
+    );
+  });
+
+  it('does not correlate a dynamic direct route through a name-only catalog leaf', async () => {
     const pagePath = '/workspace/application/src/TerminalPage.tsx';
     const layoutPath = '/workspace/application/src/Shell.tsx';
     const mapPath = '/workspace/application/src/pages-map.ts';
@@ -610,36 +812,19 @@ describe('collectPreviewInspectorRouteLocation', () => {
     const location = await collectPreviewInspectorRouteLocation(options);
 
     expect(location).toMatchObject({
-      componentExportName: 'default',
-      componentName: 'TerminalPage',
-      elementWrappers: [{ componentName: 'Shell', exportName: 'default', sourcePath: layoutPath }],
-      evidenceKind: 'route-catalog',
-      pathname: '/concrete',
-      pattern: '/concrete',
-      componentSourcePath: pagePath,
+      componentName: 'NotFound',
+      evidenceKind: 'route-jsx',
+      pattern: '/*',
     });
-    expect(location?.dependencyPaths).toEqual(
-      expect.arrayContaining([APP_PATH, catalogPath, layoutPath, mapPath, pagePath]),
-    );
-    expect(location?.componentName).not.toBe('NotFound');
-
+    expect(location?.componentName).not.toBe('TerminalPage');
+    expect(location?.componentSourcePath).toBeUndefined();
     const plan = await collectPreviewInspectorRouteBranchPlan({ ...options });
-    const selected = plan.branches.find((branch) => branch.id === plan.selectedBranchId);
-    expect(plan.selectionResolution).toBe('automatic');
     expect(plan.activeLocation).toMatchObject({
-      componentName: 'TerminalPage',
-      componentSourcePath: pagePath,
-      componentSourcePaths: [pagePath],
-      elementWrappers: [{ componentName: 'Shell', exportName: 'default', sourcePath: layoutPath }],
-      pathname: '/concrete',
-      pattern: '/concrete',
+      componentName: 'NotFound',
+      evidenceKind: 'route-jsx',
+      pattern: '/*',
     });
-    expect(selected).toMatchObject({
-      childState: 'leaf',
-      componentName: 'TerminalPage',
-      pattern: '/concrete',
-    });
-    expect(plan.selectedBranchId).toBe(selected?.id);
+    expect(plan.activeLocation?.componentName).not.toBe('TerminalPage');
 
     const noCatalogSources: Record<string, string> = {
       [APP_PATH]: appSource.replace(', { path: "*", element: <NotFound /> }', ''),
@@ -653,6 +838,42 @@ describe('collectPreviewInspectorRouteLocation', () => {
         sourcePaths: [APP_PATH],
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('does not promote an unrelated contextual sibling when the target path is unresolved', async () => {
+    const targetPath = '/workspace/application/src/TargetPage.tsx';
+    const siblingPath = '/workspace/application/src/SiblingPage.tsx';
+    const sources: Record<string, string> = {
+      [APP_PATH]: [
+        'import TargetPage from "./TargetPage";',
+        'import SiblingPage from "./SiblingPage";',
+        'const dynamicPath = () => "/target";',
+        'export default function App() { return <Routes>',
+        '  <Route path={dynamicPath()} element={<TargetPage />} />',
+        '  <Route path="/sibling" element={<SiblingPage />} />',
+        '</Routes>; }',
+      ].join('\n'),
+      [targetPath]: 'export default function TargetPage() { return <main />; }',
+      [siblingPath]: 'export default function SiblingPage() { return <main />; }',
+    };
+    const inventory = await collectPreviewInspectorRouteLocationInventory({
+      documentPath: targetPath,
+      exportName: 'default',
+      readSource: (sourcePath) => Promise.resolve(sources[sourcePath]),
+      renderChain: createRenderChain(APP_PATH, targetPath, 'TargetPage'),
+      resolveModule: (specifier) =>
+        specifier === './TargetPage'
+          ? targetPath
+          : specifier === './SiblingPage'
+            ? siblingPath
+            : undefined,
+      sourcePaths: [APP_PATH],
+    });
+
+    expect(inventory.primary).toBeUndefined();
+    expect(inventory.choices).toEqual([]);
+    expect(inventory.unresolvedFactoryOptions).toBeUndefined();
+    expect(inventory.directRouteDuplicates).toBeUndefined();
   });
 
   it('omits an unresolved aggregate leaf and its pathless boundary without a catalog', async () => {
@@ -777,8 +998,14 @@ describe('collectPreviewInspectorRouteLocation', () => {
       pathname: '/design-system',
       pattern: '/design-system/*',
     });
-    expect(explicitPlan.branches.some((branch) => branch.pathname.includes('/preview'))).toBe(
-      false,
+    expect(explicitPlan.branches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          componentName: 'MissingPage',
+          pathname: '/preview',
+          pattern: '/*',
+        }),
+      ]),
     );
   });
 });

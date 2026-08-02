@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createPreviewCompilerFrontierPolicy } from '../../../../src/domain/previewCompilerFrontier';
+import {
+  createPreviewInspectorBundleDiagnosticsCollector,
+  type PreviewInspectorBundleDiagnosticsCollector,
+} from '../../../../src/adapters/esbuild/inspector/previewInspectorBundleDiagnostics';
+import { createPreviewInspectorBundleSourceInventoryMemo } from '../../../../src/adapters/esbuild/inspector/previewInspectorBundleFrontier';
 import { preparePreviewInspectorPageExecutionSelection } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageFrontier';
 import type { PreviewInspectorPageExecutionCandidate } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionTypes';
 
@@ -441,8 +446,16 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     } as unknown as PreviewInspectorPageExecutionCandidate;
     const policy = createPreviewCompilerFrontierPolicy('fast');
     if (policy === undefined) throw new Error('Expected fast frontier policy.');
+    let clockMicros = 0n;
+    const bundleDiagnostics = createPreviewInspectorBundleDiagnosticsCollector(true, () => {
+      const now = clockMicros;
+      clockMicros += 1_000n;
+      return now;
+    });
+    if (bundleDiagnostics === undefined) throw new Error('Expected bundle diagnostics.');
 
     const selection = await preparePreviewInspectorPageExecutionSelection({
+      bundleDiagnostics,
       candidates: [candidate],
       plan: {
         edges: [],
@@ -462,5 +475,248 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
       kind: 'rejected',
       prepared: { frontier: { summary: { truncationReasons: ['slice-unavailable'] } } },
     });
+    expect(bundleDiagnostics.snapshot()).toMatchObject({
+      candidateSelectionSortCount: 2,
+      frontierCount: 1,
+      rawSourceReadCount: 1,
+    });
+  });
+
+  it('shares exact authentic and sliced inventories without changing candidate proof or traces', async () => {
+    const workspaceRoot = '/workspace';
+    const pagePath = '/workspace/Page.tsx';
+    const targetPath = '/workspace/Target.tsx';
+    const sources = new Map<string, string>([
+      [
+        pagePath,
+        [
+          "import { Target } from './Target';",
+          'const Inner = () => <Target />;',
+          'export const Page = () => <Inner />;',
+          "export const Unused = () => import('./unused');",
+        ].join('\n'),
+      ],
+      [targetPath, 'export const Target = () => null;'],
+    ]);
+    const surface = (
+      id: string,
+      sourcePath: string,
+      exportName: string,
+      strategy: 'authentic-module-export' | 'selected-export-slice' | 'inner-local-component-slice',
+      localName?: string,
+    ): PreviewInspectorPageExecutionCandidate['criticalSurfaces'][number] => ({
+      bypassedWrapperNames: [],
+      exportName,
+      id,
+      ...(localName === undefined ? {} : { localName }),
+      omittedTopLevelEffectCount: 0,
+      sourcePath,
+      strategy,
+      watchSourcePaths: [sourcePath],
+    });
+    const candidates = [
+      {
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [],
+        criticalSurfaces: [
+          surface('authentic-page', pagePath, 'Page', 'authentic-module-export'),
+          surface('authentic-target', targetPath, 'Target', 'authentic-module-export'),
+        ],
+        evidenceSourcePaths: [],
+        fidelity: 'page-authentic',
+        id: 'authentic',
+        optionalSurfaces: [],
+        watchSourcePaths: [pagePath, targetPath],
+      },
+      {
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [],
+        criticalSurfaces: [
+          surface('local-page', pagePath, 'Page', 'inner-local-component-slice', 'Inner'),
+          surface('local-target', targetPath, 'Target', 'authentic-module-export'),
+        ],
+        evidenceSourcePaths: [],
+        fidelity: 'target-contextual',
+        id: 'local',
+        optionalSurfaces: [],
+        watchSourcePaths: [pagePath, targetPath],
+      },
+      {
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [],
+        criticalSurfaces: [
+          surface('sliced-page', pagePath, 'Page', 'selected-export-slice'),
+          surface('sliced-target', targetPath, 'Target', 'authentic-module-export'),
+        ],
+        evidenceSourcePaths: [],
+        fidelity: 'page-sliced',
+        id: 'sliced',
+        optionalSurfaces: [],
+        watchSourcePaths: [pagePath, targetPath],
+      },
+    ] as unknown as readonly PreviewInspectorPageExecutionCandidate[];
+    const plan = {
+      edges: [],
+      pageCandidates: [],
+      root: { exportName: 'Page', sourcePath: pagePath },
+      target: { exportName: 'Target', sourcePath: targetPath },
+    } as never;
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected fast frontier policy.');
+    const memo = createPreviewInspectorBundleSourceInventoryMemo();
+    const run = async (
+      withMemo: boolean,
+      bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector,
+      sourceInventoryMemo = memo,
+    ): Promise<{
+      resolutions: string[];
+      selection: Awaited<ReturnType<typeof preparePreviewInspectorPageExecutionSelection>>;
+      sourceReads: string[];
+    }> => {
+      const sourceReads: string[] = [];
+      const resolutions: string[] = [];
+      const selection = await preparePreviewInspectorPageExecutionSelection({
+        ...(bundleDiagnostics === undefined ? {} : { bundleDiagnostics }),
+        candidates,
+        plan,
+        policy,
+        readSource: (sourcePath) => {
+          sourceReads.push(sourcePath);
+          return Promise.resolve(sources.get(sourcePath));
+        },
+        resolveModule: (specifier, importer) => {
+          resolutions.push(`${importer}\0${specifier}`);
+          return specifier === './Target' && importer === pagePath ? targetPath : undefined;
+        },
+        ...(withMemo ? { sourceInventoryMemo } : {}),
+        workspaceRoot,
+      });
+      return { resolutions, selection, sourceReads };
+    };
+
+    const withoutMemo = await run(false);
+    const first = await run(true);
+    const second = await run(true);
+    let clockMicros = 0n;
+    const bundleDiagnostics = createPreviewInspectorBundleDiagnosticsCollector(true, () => {
+      const now = clockMicros;
+      clockMicros += 1_000n;
+      return now;
+    });
+    if (bundleDiagnostics === undefined) throw new Error('Expected bundle diagnostics.');
+    const diagnosticsMemo = createPreviewInspectorBundleSourceInventoryMemo();
+    const withDiagnostics = await run(true, bundleDiagnostics, diagnosticsMemo);
+    const withDiagnosticsHit = await run(true, bundleDiagnostics, diagnosticsMemo);
+
+    expect(JSON.stringify(first.selection)).toBe(JSON.stringify(withoutMemo.selection));
+    expect(JSON.stringify(second.selection)).toBe(JSON.stringify(withoutMemo.selection));
+    expect(first.sourceReads).toEqual(withoutMemo.sourceReads);
+    expect(second.sourceReads).toEqual([]);
+    expect(first.resolutions).toEqual(withoutMemo.resolutions);
+    expect(second.resolutions).toEqual([]);
+    expect(JSON.stringify(withDiagnostics.selection)).toBe(JSON.stringify(withoutMemo.selection));
+    expect(JSON.stringify(withDiagnosticsHit.selection)).toBe(
+      JSON.stringify(withoutMemo.selection),
+    );
+    expect(withDiagnostics.sourceReads).toEqual(withoutMemo.sourceReads);
+    expect(withDiagnostics.resolutions).toEqual(withoutMemo.resolutions);
+    expect(withDiagnosticsHit.sourceReads).toEqual([]);
+    expect(withDiagnosticsHit.resolutions).toEqual([]);
+    expect(first.selection?.kind).toBe('selected');
+    if (first.selection?.kind !== 'selected') throw new Error('Expected selected Page Execution.');
+    expect(first.selection.executionPlan.alternatives.map((item) => item.candidateId)).toEqual([
+      'authentic',
+      'local',
+      'sliced',
+    ]);
+    expect(first.selection.executionPlan.candidate.id).toBe('authentic');
+    expect(memo.getStatistics()).toEqual({
+      computations: 4,
+      entries: 4,
+      hits: 0,
+      released: false,
+      requests: 4,
+    });
+    expect(memo.getSliceStatistics()).toEqual({
+      released: false,
+      sliceComputations: 2,
+      sliceEntries: 2,
+      sliceHits: 0,
+      sliceRequests: 2,
+    });
+    expect(memo.getClosureStatistics()).toEqual({
+      closureComputations: 3,
+      closureEntries: 3,
+      closureHits: 3,
+      closureRequests: 6,
+      released: false,
+    });
+    // Each of the three candidates seeds Page and Target. Processing Page also enqueues its
+    // resolved Target support before the already-seeded Target is admitted, so every frontier
+    // performs three deterministic queue iterations (9 total). Authentic Page exposes its
+    // static Target and unused dynamic edge; the local and selected slices expose only Target,
+    // yielding four visited/resolved edges in total.
+    expect(bundleDiagnostics.snapshot()).toMatchObject({
+      authoredPathCheckCount: 9,
+      authoredPathCheckMicros: 9,
+      candidateSelectionMicros: 2,
+      candidateSelectionSortCount: 2,
+      edgeVisitCount: 4,
+      frontierCount: 6,
+      frontierFinalizeMicros: 18,
+      frontierIdentityMicros: 6,
+      inventoryComputationCount: 4,
+      inventoryHitCount: 0,
+      inventoryLookupMicros: 4,
+      inventoryReadPathCacheHitCount: 0,
+      inventoryReadRequestCount: 4,
+      optionalClosureMicros: 0,
+      optionalClosureProbeCount: 0,
+      queueIterationCount: 9,
+      queuePeakLength: 2,
+      queueSortCount: 9,
+      queueSortMicros: 9,
+      rawSourceReadCount: 2,
+      rawSourceReadMicros: 2,
+      resolveModuleCount: 4,
+      resolveModuleMicros: 4,
+      sliceComputationCount: 2,
+      sliceHitCount: 0,
+      sliceLookupMicros: 2,
+      sliceRequestCount: 2,
+    });
+    expect(diagnosticsMemo.getClosureStatistics()).toEqual({
+      closureComputations: 3,
+      closureEntries: 3,
+      closureHits: 3,
+      closureRequests: 6,
+      released: false,
+    });
+    for (const requestMemo of [memo, diagnosticsMemo])
+      expect(requestMemo.getGraphStatistics()).toMatchObject({
+        dynamicResolutionEntries: 1,
+        proposalEntries: 0,
+        released: false,
+        resolvedNodeComputations: 4,
+        resolvedNodeEntries: 4,
+        resolvedNodeHits: 2,
+        resolvedNodeRequests: 6,
+        rootedGraphEntries: 0,
+      });
+    memo.release();
+    diagnosticsMemo.release();
+    expect(memo.getClosureStatistics()).toMatchObject({ closureEntries: 0, released: true });
+    expect(diagnosticsMemo.getClosureStatistics()).toMatchObject({
+      closureEntries: 0,
+      released: true,
+    });
+    for (const requestMemo of [memo, diagnosticsMemo])
+      expect(requestMemo.getGraphStatistics()).toMatchObject({
+        dynamicResolutionEntries: 0,
+        proposalEntries: 0,
+        released: true,
+        resolvedNodeEntries: 0,
+        rootedGraphEntries: 0,
+      });
   });
 });

@@ -53,6 +53,13 @@ const sources: Record<string, string> = {
       alternate: 'ListPage',
     },
   }),
+  [`${root}/unrelated-page-map.ts`]: [
+    'import pages from "./unrelated-pages.json";',
+    'export const pageNamePathMap = invert(pages);',
+  ].join('\n'),
+  [`${root}/unrelated-pages.json`]: JSON.stringify({
+    unrelated: { index: 'ListPage' },
+  }),
   [`${root}/list-page.tsx`]: 'export const ListPage = () => <div />;',
   [`${root}/create-page.tsx`]: 'export const CreatePage = () => <div />;',
   [`${root}/management-app.tsx`]:
@@ -85,7 +92,11 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
       sourcePath,
     });
     expect(definition).toMatchObject({
-      catalogBindingName: 'pageNamePathMap',
+      catalogBinding: {
+        bindingKind: 'export',
+        bindingName: 'pageNamePathMap',
+        sourcePath: `${root}/page-map.ts`,
+      },
       pageSlotPropertyName: 'generatedPages',
       submoduleSlotPropertyName: 'generatedModules',
     });
@@ -93,11 +104,12 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
 
   it('traces a catalog binding through a transform module to its JSON data', async () => {
     const catalog = await collectPreviewInspectorRouteFactoryCatalog({
+      catalogBindingKind: 'export',
       catalogBindingName: 'pageNamePathMap',
       expectedComponentNames: new Set(['ListPage', 'CreatePage']),
       readSource: readFixtureSource,
       resolveModule,
-      sourcePath: `${root}/create-section-module.ts`,
+      sourcePath: `${root}/page-map.ts`,
     });
     expect(catalog.patternsByComponentName.get('ListPage')).toEqual([
       '/section',
@@ -121,7 +133,7 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
       ['ListPage', 'selectable'],
       ['ListPage', 'selectable'],
       ['CreatePage', 'selectable'],
-      ['NoCatalogPage', 'catalog-unresolved'],
+      ['NoCatalogPage', 'component-unresolved'],
       ['ManagementApp', 'selectable'],
       ['MissingApp', 'component-unresolved'],
     ]);
@@ -135,7 +147,7 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
     expect(unavailableOptions).toEqual([
       expect.objectContaining({
         componentName: 'NoCatalogPage',
-        availability: 'catalog-unresolved',
+        availability: 'component-unresolved',
       }),
       expect.objectContaining({
         componentName: 'MissingApp',
@@ -169,5 +181,7 @@ describe('collectPreviewInspectorRouteFactoryManifest', () => {
       expect.objectContaining({ componentName: 'NotFound', pattern: '*' }),
     ]);
     expect(manifest?.unresolvedChoiceNames).toEqual(['NoCatalogPage', 'MissingApp']);
+    expect(manifest?.dependencies).not.toContain(`${root}/unrelated-page-map.ts`);
+    expect(manifest?.dependencies).not.toContain(`${root}/unrelated-pages.json`);
   });
 });

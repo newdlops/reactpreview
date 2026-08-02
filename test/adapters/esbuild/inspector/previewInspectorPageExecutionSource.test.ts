@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createPreviewInspectorExecutionRootModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorExecutionRootModuleContract';
 import { createPreviewInspectorPageExecutionSource } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionSource';
+import { createPreviewInspectorTargetModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorTargetModuleContract';
 import type { PreviewInspectorPageExecutionCandidate } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionTypes';
 
 describe('createPreviewInspectorPageExecutionSource', () => {
@@ -64,19 +66,64 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           watchSourcePaths: [],
         },
       ],
+      executionRootSurfaceId: 'route',
+      runtimeTargetSurfaceId: 'target',
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
       candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
       target: { exportName: 'Target', sourcePath: '/workspace/Target.tsx' },
+      targetModuleContract: createPreviewInspectorTargetModuleContract({
+        preparedSourceText: [
+          'export function Target() { return null; }',
+          'export default function DefaultTarget() { return null; }',
+        ].join('\n'),
+        selectedExportNames: ['Target'],
+        sourcePath: '/workspace/Target.tsx',
+      }),
     });
 
     expect(source).toContain('react-preview:page-surface/page');
     expect(source).toContain('React.createElement(Surface0, null');
     expect(source).toContain('"content": React.createElement(Surface2, null)');
     expect(source).toContain('react-preview:inspector-target-facade');
+    expect(source).toContain('import { Route as Surface0 } from "/workspace/Route.tsx";');
     expect(source).toContain('Surface3');
     expect(source).not.toContain('ShellBoundary');
+  });
+
+  it('rejects PageExecution target drift from the prepared facade contract', () => {
+    const candidate = {
+      compositionEdges: [],
+      criticalSurfaces: [
+        {
+          exportName: 'SelectedTarget',
+          id: 'target',
+          sourcePath: '/workspace/SelectedTarget.tsx',
+          strategy: 'authentic-module-export',
+        },
+      ],
+      executionRootSurfaceId: 'target',
+      runtimeTargetSurfaceId: 'target',
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+    const targetModuleContract = createPreviewInspectorTargetModuleContract({
+      preparedSourceText: 'export function OtherTarget() { return null; }',
+      selectedExportNames: ['OtherTarget'],
+      sourcePath: '/workspace/OtherTarget.tsx',
+    });
+
+    expect(() =>
+      createPreviewInspectorPageExecutionSource({
+        candidate,
+        executionRootModuleContract: createExecutionRootContract(candidate),
+        target: {
+          exportName: 'SelectedTarget',
+          sourcePath: '/workspace/SelectedTarget.tsx',
+        },
+        targetModuleContract,
+      }),
+    ).toThrow('does not match the prepared target module contract');
   });
 
   it('installs a generic selected route without importing a route registry or executing loaders', () => {
@@ -94,6 +141,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           watchSourcePaths: [],
         },
       ],
+      executionRootSurfaceId: 'page',
       routeRecipe: {
         kind: 'generic-memory-location',
         loaderPolicy: 'never-execute',
@@ -104,10 +152,12 @@ describe('createPreviewInspectorPageExecutionSource', () => {
         rootOwnsRouter: false,
         searchParams: { filter: ['open', 'mine'] },
       },
+      runtimeTargetSurfaceId: 'page',
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
       candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
       target: { exportName: 'default', sourcePath: '/workspace/Page.tsx' },
     });
 
@@ -148,6 +198,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           watchSourcePaths: [],
         },
       ],
+      executionRootSurfaceId: 'app',
       routeRecipe: {
         kind: 'next-pages',
         loaderPolicy: 'never-execute',
@@ -158,10 +209,12 @@ describe('createPreviewInspectorPageExecutionSource', () => {
         rootOwnsRouter: false,
         searchParams: {},
       },
+      runtimeTargetSurfaceId: 'page',
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
       candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
       target: { exportName: 'default', sourcePath: '/workspace/pages/products/[id].tsx' },
     });
 
@@ -194,6 +247,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           watchSourcePaths: [],
         },
       ],
+      executionRootSurfaceId: 'layout',
       routeRecipe: {
         kind: 'react-router-v6',
         loaderPolicy: 'never-execute',
@@ -207,25 +261,104 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           {
             basePath: '/',
             childSurfaceId: 'page',
+            contextPattern: '/root/*',
             hasWildcardFallback: false,
             parentSurfaceId: 'layout',
             pattern: '/orders/:id',
           },
         ],
       },
+      runtimeTargetSurfaceId: 'page',
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
       candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
       target: { exportName: 'default', sourcePath: '/workspace/Page.tsx' },
     });
 
     expect(source).toContain("import { MemoryRouter, Route, Routes } from 'react-router';");
     expect(source).toContain('initialEntries: ["/orders/42"]');
-    expect(source).toContain('path: "/orders/:id"');
+    expect(source).toContain('path: "/root/*"');
     expect(source).toContain('React.createElement(Routes, null');
     expect(source).not.toContain('RouteRegistry');
     expect(source).not.toContain('loader:');
+  });
+
+  it('makes an inner v6 mount relative to the preceding selected mount', () => {
+    const candidate = {
+      compositionEdges: [],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'company-root',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/CompanyRoot.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'company-layout',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/CompanyLayout.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'company-page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/CompanyPage.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      executionRootSurfaceId: 'company-root',
+      routeRecipe: {
+        kind: 'react-router-v6',
+        loaderPolicy: 'never-execute',
+        mounts: [
+          {
+            basePath: '/company',
+            childSurfaceId: 'company-layout',
+            contextPattern: '/company/*',
+            hasWildcardFallback: false,
+            parentSurfaceId: 'company-root',
+            pattern: '/company/*',
+          },
+          {
+            basePath: '/company/:companyId',
+            childSurfaceId: 'company-page',
+            contextPattern: '/company/:companyId',
+            hasWildcardFallback: false,
+            parentSurfaceId: 'company-layout',
+            pattern: '/company/:companyId',
+          },
+        ],
+        params: { companyId: '42' },
+        pattern: '/company/:companyId',
+        pathname: '/company/42',
+        rootOwnsRouter: false,
+        routerModuleSpecifier: 'react-router-dom',
+        searchParams: {},
+      },
+      runtimeTargetSurfaceId: 'company-page',
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
+      target: { exportName: 'default', sourcePath: '/workspace/CompanyPage.tsx' },
+    });
+
+    expect(source).toContain('path: "/company/*", element: React.createElement(Surface0, null)');
+    expect(source).toContain('path: ":companyId", element: React.createElement(Surface1, null)');
+    expect(source).not.toContain('path: "/company/:companyId"');
+    expect(source.match(/React\.createElement\(MemoryRouter/gu)).toHaveLength(1);
   });
 
   it('places an inline route wrapper and leaf page inside exactly one generated Router', () => {
@@ -259,6 +392,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           watchSourcePaths: [],
         },
       ],
+      executionRootSurfaceId: 'layout',
       routeRecipe: {
         kind: 'react-router-v6',
         loaderPolicy: 'never-execute',
@@ -270,11 +404,13 @@ describe('createPreviewInspectorPageExecutionSource', () => {
         routerModuleSpecifier: 'react-router-dom',
         searchParams: { tab: 'details' },
       },
+      runtimeTargetSurfaceId: 'page',
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
       candidate,
-      target: { exportName: 'Target', sourcePath: '/workspace/App.tsx' },
+      executionRootModuleContract: createExecutionRootContract(candidate),
+      target: { exportName: 'default', sourcePath: '/workspace/SelectedPage.tsx' },
     });
 
     expect(source).toContain(
@@ -285,7 +421,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     expect(source).not.toContain('index: true');
     expect(source.match(/React\.createElement\(MemoryRouter/gu)).toHaveLength(1);
     expect(source).not.toContain('RouterProvider');
-    expect(source).not.toContain('react-preview:inspector-target-facade');
+    expect(source).toContain('react-preview:inspector-target-facade');
   });
 
   it('does not nest a generated MemoryRouter around an authored React Router root', () => {
@@ -302,6 +438,7 @@ describe('createPreviewInspectorPageExecutionSource', () => {
           watchSourcePaths: [],
         },
       ],
+      executionRootSurfaceId: 'app',
       routeRecipe: {
         kind: 'react-router-v6',
         loaderPolicy: 'never-execute',
@@ -313,10 +450,12 @@ describe('createPreviewInspectorPageExecutionSource', () => {
         routerModuleSpecifier: 'react-router-dom',
         searchParams: {},
       },
+      runtimeTargetSurfaceId: 'app',
     } as unknown as PreviewInspectorPageExecutionCandidate;
 
     const source = createPreviewInspectorPageExecutionSource({
       candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
       target: { exportName: 'default', sourcePath: '/workspace/App.tsx' },
     });
 
@@ -326,3 +465,19 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     expect(source).not.toContain('React.createElement(Routes');
   });
 });
+
+function createExecutionRootContract(candidate: PreviewInspectorPageExecutionCandidate) {
+  const surface = candidate.criticalSurfaces.find(
+    (candidateSurface) => candidateSurface.id === candidate.executionRootSurfaceId,
+  );
+  if (surface === undefined) throw new Error('Fixture execution root is missing.');
+  return createPreviewInspectorExecutionRootModuleContract({
+    exportName: surface.exportName,
+    preparedSourceText:
+      surface.exportName === 'default'
+        ? 'export default function ExecutionRoot() { return null; }'
+        : `export function ${surface.exportName}() { return null; }`,
+    sourcePath: surface.sourcePath,
+    surfaceId: surface.id,
+  });
+}

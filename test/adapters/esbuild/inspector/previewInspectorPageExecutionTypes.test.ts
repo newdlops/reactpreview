@@ -32,6 +32,7 @@ describe('freezePreviewInspectorPageExecutionPlan', () => {
           },
         ],
         evidenceSourcePaths: ['/workspace/main.tsx'],
+        executionRootSurfaceId: 'page',
         fidelity: 'page-authentic',
         id: 'candidate-a',
         optionalSurfaces: [],
@@ -45,11 +46,12 @@ describe('freezePreviewInspectorPageExecutionPlan', () => {
           rootOwnsRouter: false,
           searchParams: {},
         },
+        runtimeTargetSurfaceId: 'page',
         watchSourcePaths: ['/workspace/main.tsx', '/workspace/Page.tsx'],
       },
       descriptorPlan: { dependencyPaths: ['/workspace/main.tsx'] },
-      executionIdentity: 'v2:candidate-a',
-      version: 2,
+      executionIdentity: 'v4:candidate-a',
+      version: 4,
     } as unknown as PreviewInspectorPageExecutionPlan;
 
     const frozen = freezePreviewInspectorPageExecutionPlan(plan);
@@ -57,6 +59,9 @@ describe('freezePreviewInspectorPageExecutionPlan', () => {
     expect(frozen.candidate.evidenceSourcePaths).toEqual(['/workspace/main.tsx']);
     expect(frozen.candidate.criticalSurfaces[0]?.sourcePath).toBe('/workspace/Page.tsx');
     expect(frozen.candidate.routeRecipe?.loaderPolicy).toBe('never-execute');
+    expect(frozen.candidate.executionRootSurfaceId).toBe('page');
+    expect(frozen.candidate.runtimeTargetSurfaceId).toBe('page');
+    expect(frozen.version).toBe(4);
     expect(Object.isFrozen(frozen)).toBe(true);
     expect(Object.isFrozen(frozen.candidate)).toBe(true);
     expect(Object.isFrozen(frozen.candidate.criticalSurfaces)).toBe(true);

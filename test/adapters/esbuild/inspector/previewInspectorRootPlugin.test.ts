@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createPreviewInspectorRootSource,
   type PreviewInspectorAncestorPlan,
+  type PreviewInspectorPageExecutionCandidate,
 } from '../../../../src/adapters/esbuild/inspector';
 
 const TARGET_PATH = '/workspace/application/Target.tsx';
@@ -163,6 +164,32 @@ describe('createPreviewInspectorRootSource', () => {
     );
     expect(source).toContain('"inferredPropShape":{"kind":"object"');
     expect(source).toContain('"targetInferredProps":[{"kind":"object","path":"field"');
+  });
+
+  /** Publishes a compiler-derived leaf without replacing the original analysis plan. */
+  it('uses runtime ownership only for selected-leaf imports and descriptor identity', () => {
+    const plan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const source = createPreviewInspectorRootSource({
+      displayName: 'Page.tsx',
+      plan,
+      runtimeOwnershipTarget: { exportName: 'Page', sourcePath: PAGE_PATH },
+      targetInference: {
+        provenance: [{ kind: 'object', path: 'appField', source: 'usage' }],
+        shape: { kind: 'object', properties: { appField: { kind: 'object', properties: {} } } },
+      },
+    });
+
+    expect(source).toContain(
+      'load: () => Promise.all([import("react-preview:inspector-target-facade")])',
+    );
+    expect(source).toContain('"displayName":"Page.tsx"');
+    expect(source).toContain('"exportName":"Page"');
+    expect(source).toContain(
+      `"target":{"exportName":"Page","sourcePath":${JSON.stringify(PAGE_PATH)}}`,
+    );
+    expect(source).not.toContain('direct-target:Target');
+    expect(source).not.toContain('"targetInferredProps":[{"kind":"object","path":"appField"');
+    expect(plan.target).toEqual({ exportName: 'Target', sourcePath: TARGET_PATH });
   });
 
   /** Evaluates a proven dependency registry before any selected page module can initialize. */
@@ -804,40 +831,81 @@ describe('createPreviewInspectorRootSource', () => {
     const plan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
     const browserCandidate = plan.pageCandidates[0];
     if (browserCandidate === undefined) throw new Error('Expected one page candidate.');
-    const source = createPreviewInspectorRootSource({
-      pageExecutionCandidate: {
-        browserCandidate,
-        compositionEdges: [],
-        criticalSurfaces: [
+    const pageExecutionCandidate = {
+      browserCandidate: {
+        ...browserCandidate,
+        root: { exportName: 'InlineLayout', sourcePath: TARGET_PATH },
+        rootAutomaticProps: {},
+        rootOwnsRouter: false,
+      },
+      compositionEdges: [],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'InlineLayout',
+          id: 'layout',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: TARGET_PATH,
+          strategy: 'selected-export-slice',
+          watchSourcePaths: [TARGET_PATH],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'Page',
+          id: 'page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: PAGE_PATH,
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [PAGE_PATH],
+        },
+      ],
+      evidenceSourcePaths: [],
+      executionRootContract: {
+        exportName: 'InlineLayout',
+        sourcePath: TARGET_PATH,
+        surfaceId: 'layout',
+      },
+      executionRootSurfaceId: 'layout',
+      fidelity: 'page-authentic',
+      id: 'frozen-route-page',
+      optionalSurfaces: [],
+      routeRecipe: {
+        kind: 'react-router-v6',
+        loaderPolicy: 'never-execute',
+        mounts: [
           {
-            bypassedWrapperNames: [],
-            exportName: 'InlineLayout',
-            id: 'layout',
-            omittedTopLevelEffectCount: 0,
-            sourcePath: TARGET_PATH,
-            strategy: 'selected-export-slice',
-            watchSourcePaths: [TARGET_PATH],
-          },
-          {
-            bypassedWrapperNames: [],
-            exportName: 'Page',
-            id: 'page',
-            omittedTopLevelEffectCount: 0,
-            sourcePath: PAGE_PATH,
-            strategy: 'authentic-module-export',
-            watchSourcePaths: [PAGE_PATH],
+            basePath: '/',
+            childSurfaceId: 'page',
+            contextPattern: '/*',
+            hasWildcardFallback: false,
+            parentSurfaceId: 'layout',
+            pattern: '/page',
           },
         ],
-        evidenceSourcePaths: [],
-        fidelity: 'page-authentic',
-        id: 'frozen-route-page',
-        optionalSurfaces: [],
-        watchSourcePaths: [TARGET_PATH, PAGE_PATH],
+        params: {},
+        pattern: '/page',
+        pathname: '/page',
+        rootOwnsRouter: false,
+        searchParams: {},
       },
+      runtimeTargetSurfaceId: 'page',
+      runtimeTargetContract: {
+        exportName: 'Page',
+        sourcePath: PAGE_PATH,
+        surfaceId: 'page',
+      },
+      watchSourcePaths: [TARGET_PATH, PAGE_PATH],
+    } as PreviewInspectorPageExecutionCandidate;
+    const source = createPreviewInspectorRootSource({
+      pageExecutionCandidate,
+      pageExecutionCandidates: [pageExecutionCandidate],
       plan,
     });
 
     expect(source).toContain('react-preview:inspector-page-execution');
+    expect(source).toContain('"nestedMountCount":1');
+    expect(source).toContain('"executionRootSurfaceId":"layout"');
+    expect(source).toContain('"runtimeTargetSurfaceId":"page"');
     expect(source).not.toContain('direct-target:Target');
     expect(source).not.toContain('react-preview:inspector-direct-target/Target');
   });

@@ -14,3 +14,15 @@ export function createPreviewInspectorRouteBranchId(
   }
   return `route-${hash.digest('hex').slice(0, 20)}`;
 }
+
+/** Produces a distinct internal branch identity for one non-selectable authored occurrence. */
+export function createPreviewInspectorRouteOccurrenceBranchId(
+  selectionPath: readonly PreviewInspectorRouteSelectionStep[],
+  occurrenceIdentity: string,
+): string {
+  const hash = createHash('sha256');
+  hash.update(createPreviewInspectorRouteBranchId(selectionPath));
+  hash.update('\0');
+  hash.update(occurrenceIdentity);
+  return `route-${hash.digest('hex').slice(0, 20)}`;
+}

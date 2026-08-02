@@ -25,6 +25,19 @@ export {
   type PreviewInspectorRouteBranchPlan,
 } from './previewInspectorRouteBranchPlan';
 export {
+  collectPreviewInspectorCompleteRouteInventory,
+  type CollectPreviewInspectorCompleteRouteInventoryOptions,
+  type PreviewInspectorCompleteDuplicateRoute,
+  type PreviewInspectorCompleteRouteCounts,
+  type PreviewInspectorCompleteRouteEntry,
+  type PreviewInspectorCompleteRouteInventory,
+  type PreviewInspectorCompleteRouteInventoryLimits,
+  type PreviewInspectorCompleteRouteOwner,
+  type PreviewInspectorCompleteRouteUnresolvedReason,
+  type PreviewInspectorCompleteRunnableRoute,
+  type PreviewInspectorCompleteUnresolvedRoute,
+} from './previewInspectorCompleteRouteInventory';
+export {
   collectPreviewInspectorDirectRouteChoices,
   collectPreviewInspectorDirectRouteChoicesFromSource,
   type CollectPreviewInspectorDirectRouteChoicesFromSourceOptions,
@@ -97,6 +110,7 @@ export {
   type PreviewInspectorPageExecutionAlternativeSummary,
   type PreviewInspectorPageExecutionCandidate,
   type PreviewInspectorPageExecutionPlan,
+  type PreviewInspectorPageExecutionRoleContract,
   type PreviewInspectorPageFidelity,
   type PreviewInspectorPagePathSegment,
   type PreviewInspectorPagePathSegmentRole,
@@ -104,6 +118,13 @@ export {
   type PreviewInspectorRouteExecutionRecipe,
   type PreviewInspectorRouteRuntimeKind,
 } from './previewInspectorPageExecutionTypes';
+export {
+  createPreviewInspectorExecutionRootModuleContract,
+  PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_DIGEST,
+  PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_VERSION,
+  type CreatePreviewInspectorExecutionRootModuleContractOptions,
+  type PreviewInspectorExecutionRootModuleContract,
+} from './previewInspectorExecutionRootModuleContract';
 export {
   createPreviewInspectorPagePathSegments,
   type CreatePreviewInspectorPagePathSegmentsOptions,
@@ -142,6 +163,11 @@ export {
   type CreatePreviewInspectorPageExecutionSourceOptions,
 } from './previewInspectorPageExecutionSource';
 export {
+  resolvePreviewInspectorRuntimeOwnershipTarget,
+  resolvePreviewInspectorRuntimeTargetMode,
+  type ResolvePreviewInspectorRuntimeOwnershipTargetOptions,
+} from './previewInspectorRuntimeOwnershipTarget';
+export {
   selectPreviewInspectorExecutableCandidate,
   type PreviewInspectorExecutableCandidateSelection,
 } from './previewInspectorExecutableCandidateSelection';
@@ -163,3 +189,10 @@ export {
   type PreviewInspectorTargetMetadata,
   type PreviewInspectorTargetPluginOptions,
 } from './previewInspectorTargetPlugin';
+export {
+  createPreviewInspectorTargetModuleContract,
+  PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_DIGEST,
+  PREVIEW_TARGET_FACADE_OWNERSHIP_POLICY_VERSION,
+  type CreatePreviewInspectorTargetModuleContractOptions,
+  type PreviewInspectorTargetModuleContract,
+} from './previewInspectorTargetModuleContract';

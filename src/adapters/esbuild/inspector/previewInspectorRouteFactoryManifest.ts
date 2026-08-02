@@ -55,28 +55,35 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
   ]);
   const pageChoices = choices.choices.filter((choice) => choice.kind === 'page');
   const catalog =
-    definition?.catalogBindingName === undefined
+    definition?.catalogBinding === undefined
       ? undefined
-      : await collectCatalog(
-          definition.dependencyPaths,
-          definition.catalogBindingName,
-          new Set(pageChoices.map((choice) => choice.componentName)),
-          options,
-        );
+      : await collectPreviewInspectorRouteFactoryCatalog({
+          catalogBindingKind: definition.catalogBinding.bindingKind,
+          catalogBindingName: definition.catalogBinding.bindingName,
+          expectedComponentNames: new Set(pageChoices.map((choice) => choice.componentName)),
+          maximumModules: 12,
+          readSource: options.readSource,
+          ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+          sourcePath: definition.catalogBinding.sourcePath,
+        });
   for (const dependency of catalog?.dependencyPaths ?? [])
     dependencies.add(path.normalize(dependency));
   const routeOptions: PreviewInspectorFactoryRouteOption[] = [];
   const unresolved = new Set<string>();
   for (const choice of choices.choices) {
-    const reference =
-      choices.references.get(createPreviewInspectorRouteFactoryChoiceKey(choice)) ??
-      choices.references.get(choice.componentName);
+    const choiceKey = createPreviewInspectorRouteFactoryChoiceKey(choice);
+    const reference = choices.references.get(choiceKey);
     if (definition === undefined) {
       unresolved.add(choice.componentName);
       routeOptions.push(freezeOption(choice, 'factory-contract-unresolved'));
       continue;
     }
     if (choice.kind === 'page') {
+      if (reference === undefined) {
+        unresolved.add(choice.componentName);
+        routeOptions.push(freezeOption(choice, 'component-unresolved'));
+        continue;
+      }
       const patterns = catalog?.patternsByComponentName.get(choice.componentName);
       if (patterns === undefined || patterns.length === 0) {
         unresolved.add(choice.componentName);
@@ -92,13 +99,22 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
         }
         const route = Object.freeze({
           absolutePattern: pattern,
-          ...(reference === undefined
-            ? {}
-            : {
-                componentExportName: reference.exportName,
-                componentSourcePath: reference.sourcePath,
-              }),
+          catalogSourcePaths: Object.freeze([...(catalog?.dependencyPaths ?? [])].sort()),
+          choiceIdentity: createChoiceIdentity(
+            owner.sourcePath,
+            owner.exportName,
+            choiceKey,
+            pattern,
+            reference.sourcePath,
+            reference.exportName,
+            catalog?.dependencyPaths ?? [],
+          ),
+          componentExportName: reference.exportName,
+          componentSourcePath: reference.sourcePath,
           componentName: choice.componentName,
+          ...(reference.elementWrappers === undefined
+            ? {}
+            : { elementWrappers: reference.elementWrappers }),
           kind: 'page' as const,
           relativeRouterPattern: relative,
         });
@@ -129,9 +145,22 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
     for (const dependency of nested.dependencyPaths) dependencies.add(path.normalize(dependency));
     const route = Object.freeze({
       absolutePattern: nested.basePattern,
+      catalogSourcePaths: Object.freeze([...nested.dependencyPaths].sort()),
+      choiceIdentity: createChoiceIdentity(
+        owner.sourcePath,
+        owner.exportName,
+        choiceKey,
+        nested.basePattern,
+        reference.sourcePath,
+        reference.exportName,
+        nested.dependencyPaths,
+      ),
       componentExportName: reference.exportName,
       componentName: choice.componentName,
       componentSourcePath: reference.sourcePath,
+      ...(reference.elementWrappers === undefined
+        ? {}
+        : { elementWrappers: reference.elementWrappers }),
       kind: 'submodule' as const,
       relativeRouterPattern: relative.length === 0 ? '*' : `${relative}/*`,
     });
@@ -160,9 +189,29 @@ export async function collectPreviewInspectorRouteFactoryManifest(options: {
   });
 }
 
-/**
- *
- */
+/** Canonical exact factory/catalog/component identity; no component-name lookup participates. */
+function createChoiceIdentity(
+  ownerSourcePath: string,
+  ownerExportName: string,
+  choiceKey: string,
+  pattern: string,
+  componentSourcePath: string,
+  componentExportName: string,
+  catalogSourcePaths: readonly string[],
+): string {
+  return JSON.stringify({
+    catalogSourcePaths: [...catalogSourcePaths]
+      .map((sourcePath) => path.normalize(sourcePath))
+      .sort(),
+    choiceKey,
+    componentExportName,
+    componentSourcePath: path.normalize(componentSourcePath),
+    ownerExportName,
+    ownerSourcePath: path.normalize(ownerSourcePath),
+    pattern,
+  });
+}
+
 /** Freezes one visible route option without exposing parser nodes. */
 function freezeOption(
   choice: { componentName: string; kind: 'page' | 'submodule'; occurrenceStart: number },
@@ -188,49 +237,6 @@ function freezeSelectableOption(
     occurrenceStart: choice.occurrenceStart,
     route,
   });
-}
-
-/**
- *
- */
-/** Merges every bounded catalog result because curry closures can originate in several modules. */
-async function collectCatalog(
-  dependencies: readonly string[],
-  catalogBindingName: string,
-  expectedComponentNames: ReadonlySet<string>,
-  options: Parameters<typeof collectPreviewInspectorRouteFactoryManifest>[0],
-): Promise<Awaited<ReturnType<typeof collectPreviewInspectorRouteFactoryCatalog>> | undefined> {
-  let result: Awaited<ReturnType<typeof collectPreviewInspectorRouteFactoryCatalog>> | undefined;
-  for (const sourcePath of dependencies) {
-    const catalog = await collectPreviewInspectorRouteFactoryCatalog({
-      catalogBindingName,
-      expectedComponentNames,
-      maximumModules: 12,
-      readSource: options.readSource,
-      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      sourcePath,
-    });
-    if (catalog.patternsByComponentName.size === 0) continue;
-    if (result === undefined) result = catalog;
-    else {
-      const patterns = new Map(result.patternsByComponentName);
-      for (const [name, values] of catalog.patternsByComponentName)
-        patterns.set(
-          name,
-          Object.freeze([
-            ...(patterns.get(name) ?? []),
-            ...values.filter((value) => !(patterns.get(name) ?? []).includes(value)),
-          ]),
-        );
-      result = Object.freeze({
-        dependencyPaths: Object.freeze([
-          ...new Set([...result.dependencyPaths, ...catalog.dependencyPaths]),
-        ]),
-        patternsByComponentName: patterns,
-      });
-    }
-  }
-  return result;
 }
 
 /**

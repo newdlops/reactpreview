@@ -26,6 +26,51 @@ export function normalizePreviewInspectorRoutePattern(pattern: string): string |
   return pathname === undefined || pathname.length === 0 ? '/' : pathname;
 }
 
+/** Canonical parent/child identity shared by inventory enumeration and exact branch replay. */
+export interface PreviewInspectorComposedRoutePattern {
+  /** Authenticated non-splat parent base used for nested route ownership. */
+  readonly basePattern: string;
+  /** Deterministic browser pathname materialized from the composed pattern. */
+  readonly pathname: string;
+  /** Canonical absolute nested route pattern. */
+  readonly pattern: string;
+}
+
+/**
+ * Composes one nested route from authored parent and child evidence without double-prefixing.
+ *
+ * Route analyzers normalize relative-looking child paths to absolute strings before hierarchy
+ * planning. A child already beneath the authenticated parent base is therefore preserved; every
+ * other child is joined exactly once below the parent's non-splat base.
+ */
+export function composePreviewInspectorNestedRoutePattern(
+  parentPattern: string,
+  childPattern: string,
+): PreviewInspectorComposedRoutePattern | undefined {
+  const normalizedParent = normalizePreviewInspectorRoutePattern(parentPattern);
+  const normalizedChild = normalizePreviewInspectorRoutePattern(childPattern);
+  if (normalizedParent === undefined || normalizedChild === undefined) return undefined;
+  const basePattern =
+    normalizePreviewInspectorRoutePattern(
+      normalizedParent.replace(/\/\*+$/u, '').replace(/\/+$/u, ''),
+    ) ?? '/';
+  const alreadyComposed =
+    basePattern === '/' ||
+    normalizedChild === basePattern ||
+    normalizedChild.startsWith(`${basePattern}/`);
+  const pattern = alreadyComposed
+    ? normalizedChild
+    : normalizePreviewInspectorRoutePattern(
+        `${basePattern}/${normalizedChild.replace(/^\/+/u, '')}`,
+      );
+  if (pattern === undefined) return undefined;
+  return Object.freeze({
+    basePattern,
+    pathname: materializePreviewInspectorRoutePattern(pattern),
+    pattern,
+  });
+}
+
 /** Adds one normalized supporting pattern while preserving deterministic discovery order. */
 export function addPreviewInspectorSupportingRoutePattern(
   routePatterns: string[],
@@ -142,16 +187,7 @@ function readRouteParameterConstraint(token: string): string | undefined {
 /** Materializes common regex contracts without executing an authored regular expression. */
 function materializeRouteParameterConstraint(constraint: string): string | undefined {
   const normalized = constraint.replace(/^\^/u, '').replace(/\$$/u, '');
-  const quantifiedLengths = [...normalized.matchAll(/\{(\d+)(?:,\d*)?\}/gu)].map((match) =>
-    Number.parseInt(match[1] ?? '', 10),
-  );
-  if (
-    /uuid|guid/iu.test(normalized) ||
-    (quantifiedLengths.slice(0, 5).join(',') === '8,4,4,4,12' &&
-      normalized.includes('-') &&
-      /[a-f]/iu.test(normalized) &&
-      /0-9|\\d/iu.test(normalized))
-  ) {
+  if (/uuid|guid/iu.test(normalized) || isCanonicalUuidConstraint(normalized)) {
     return '00000000-0000-4000-8000-000000000000';
   }
   const numericLength = /(?:\\d|\[0-9\])\{(\d+)(?:,\d*)?\}/iu.exec(normalized)?.[1];
@@ -170,6 +206,16 @@ function materializeRouteParameterConstraint(constraint: string): string | undef
     .map((value) => value.replace(/\\([._~-])/gu, '$1'))
     .find((value) => /^[A-Za-z0-9._~-]+$/u.test(value));
   return literalAlternative;
+}
+
+/** Recognizes only the two complete canonical UUID constraint structures supported by preview. */
+function isCanonicalUuidConstraint(constraint: string): boolean {
+  return (
+    constraint ===
+      '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' ||
+    constraint ===
+      '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+  );
 }
 
 /** Keeps synthesized values small even when an authored quantifier is unexpectedly large. */

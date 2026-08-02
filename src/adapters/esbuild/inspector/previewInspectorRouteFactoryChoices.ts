@@ -183,8 +183,6 @@ function collectRouteFactoryChoiceReferences(
       sourcePath: resolvedChoice.sourcePath,
     });
     references.set(createPreviewInspectorRouteFactoryChoiceKey(choice), reference);
-    /* A name key keeps existing consumers compatible; exact occurrence keys remain authoritative. */
-    if (!references.has(choice.componentName)) references.set(choice.componentName, reference);
   }
   return references;
 

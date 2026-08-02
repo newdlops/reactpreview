@@ -14,18 +14,29 @@ export type PreviewInspectorFactoryRouteAvailability =
   | 'catalog-unresolved'
   | 'component-unresolved'
   | 'submodule-base-unresolved'
-  | 'factory-contract-unresolved';
+  | 'factory-contract-unresolved'
+  | 'route-provenance-ambiguous';
 
 /** One renderable, non-fallback route recovered from a factory call. */
 export interface PreviewInspectorFactoryRouteEntry {
   /** Catalog/factory pattern with authored parameter constraints preserved. */
   readonly absolutePattern: string;
   /** Public export used when the component import can be resolved. */
-  readonly componentExportName?: string;
+  readonly componentExportName: string;
   /** Page-map key or nested-module component identity. */
   readonly componentName: string;
   /** Authored component module, when import syntax proves it. */
-  readonly componentSourcePath?: string;
+  readonly componentSourcePath: string;
+  /** Exact factory occurrence plus catalog and resolved component provenance. */
+  readonly choiceIdentity: string;
+  /** Catalog/import sources followed from the selected factory definition, never a broad scan. */
+  readonly catalogSourcePaths: readonly string[];
+  /** Exact wrapper modules resolved from the same factory choice occurrence. */
+  readonly elementWrappers?: readonly {
+    readonly componentName: string;
+    readonly exportName: string;
+    readonly sourcePath: string;
+  }[];
   /** Whether this entry is a direct page or a nested application module. */
   readonly kind: PreviewInspectorFactoryRouteKind;
   /** Constraint-free pattern passed to the owning React Router. */

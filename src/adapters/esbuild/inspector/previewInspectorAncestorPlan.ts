@@ -1,8 +1,4 @@
-/**
- * Discovers an importable ancestor component for the Page Inspector preview mode.
- * Unlike a pinpoint parent slice, this plan intentionally mounts an authored owner export so its
- * real descendants, siblings, hooks, and event-driven UI are present in the browser React tree.
- */
+/** Discovers importable authored owners for Page Inspector. */
 import path from 'node:path';
 import ts from 'typescript';
 import type { PreviewInspectorRouteSelectionStep } from '../../../domain/preview';
@@ -18,6 +14,7 @@ import {
   collectPreviewRenderModuleSpecifiers,
   createPreviewRenderChainPlan,
   type PreviewRenderChainCandidate,
+  type PreviewRenderChainPlan,
   type PreviewRenderChainPlansByExport,
   type ResolvePreviewRenderGraphModule,
 } from '../renderGraph';
@@ -49,7 +46,10 @@ import {
   type PreviewInspectorSourcePromiseCache,
 } from './previewInspectorRenderPathRoots';
 import { rankPreviewInspectorPageCandidates } from './previewInspectorPageCandidateRanking';
-import { collectPreviewInspectorRouteBranchPlan } from './previewInspectorRouteBranchPlan';
+import {
+  collectPreviewInspectorRouteBranchPlan,
+  type CollectPreviewInspectorRouteBranchPlanOptions,
+} from './previewInspectorRouteBranchPlan';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocation';
 import { expandPreviewInspectorRouteChoiceCandidates } from './previewInspectorRouteChoiceCandidates';
 import type {
@@ -73,39 +73,47 @@ export type {
 } from './previewInspectorAncestorTypes';
 const MAX_CONCURRENT_SOURCE_READS = 64;
 
-/** Inputs for one bounded package-local reverse JSX owner traversal. */
 export interface CreatePreviewInspectorAncestorPlanOptions {
-  /** Optional project-aware aliases for each changing reverse-graph frontier. */
   readonly acceptedImportSpecifiers?: ReadPreviewInspectorAcceptedSpecifiers;
-  /** Absolute source path selected by the editor command. */
   readonly documentPath: string;
-  /** Exact selected runtime export within `documentPath`. */
   readonly exportName: string;
-  /** Optional tsconfig/jsconfig-aware import identity check for every reverse frontier. */
   readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
-  /** Current source reader; dirty editor snapshots should take precedence in the caller. */
   readonly readSource: ReadPreviewInspectorSource;
-  /** Project-aware resolver used by lazy, barrel, route-value, and entry graph discovery. */
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  /** Optional shared-index result for all current-file exports; avoids rebuilding the graph here. */
   readonly renderChainsByExport?: PreviewRenderChainPlansByExport;
-  /** User-selected nested route path, revalidated against current source before one leaf is bundled. */
   readonly routeSelection?: readonly PreviewInspectorRouteSelectionStep[];
-  /** Cancels stale ancestor and render-chain discovery between bounded source batches. */
   readonly signal?: AbortSignal;
-  /** Bounded nearest-package or monorepo-package inventory in any order. */
   readonly sourcePaths: readonly string[];
+  readonly usageContext?: PreviewInspectorAncestorUsageContext;
 }
-
-/** Successful exported-owner result after crossing private declarations in one file. */
+export interface PreviewInspectorAncestorPrelude {
+  readonly dependencyPaths: readonly string[];
+  readonly renderChain: PreviewRenderChainPlan;
+  readonly renderChainsByExport: PreviewRenderChainPlansByExport;
+  readonly renderOutcomesByExport: NonNullable<
+    PreviewInspectorAncestorPlan['renderOutcomesByExport']
+  >;
+  readonly sourcePaths: readonly string[];
+  readonly target: PreviewInspectorComponentReference;
+}
+export interface PreviewInspectorAncestorCandidateTemplates {
+  readonly candidates: readonly PreviewInspectorPageCandidate[];
+}
+export interface PreviewInspectorAncestorUsageContext {
+  readonly getAncestorPrelude: (
+    compute: () => Promise<PreviewInspectorAncestorPrelude>,
+  ) => Promise<PreviewInspectorAncestorPrelude>;
+  readonly getCandidateTemplates: (
+    compute: () => Promise<PreviewInspectorAncestorCandidateTemplates>,
+  ) => Promise<PreviewInspectorAncestorCandidateTemplates>;
+  readonly selectionPrefixProvider?: CollectPreviewInspectorRouteBranchPlanOptions['selectionPrefixProvider'];
+}
 interface SuccessfulOwnerPromotion {
   readonly exportNames: readonly string[];
   readonly kind: 'promoted';
   readonly localOwnerNames: readonly string[];
   readonly root: PreviewInspectorComponentReference;
 }
-
-/** Fail-closed result when no outer declaration can become an actual React mount root. */
 interface StoppedOwnerPromotion {
   readonly kind: 'stopped';
   readonly stopReason: Extract<
@@ -113,28 +121,19 @@ interface StoppedOwnerPromotion {
     'non-component-owner' | 'private-owner'
   >;
 }
-
-/** Result of crossing private owners toward the nearest component-shaped exported declaration. */
 type OwnerPromotionResult = SuccessfulOwnerPromotion | StoppedOwnerPromotion;
-
-/** One selected JSX occurrence plus its already parsed consumer text. */
 interface InspectorUsageCandidate {
   readonly frontier: PreviewInspectorModuleFrontier;
   readonly reexportPaths: readonly string[];
   readonly slice: PreviewParentSlice;
   readonly sourceText: string;
 }
-
-/** One already-read source retained only for the duration of a bounded planner call. */
 interface InspectorCandidateSource {
   readonly sourcePath: string;
   readonly sourceText: string;
 }
-
-/** Reused source and candidate indexes prevent each alternative caller path from reparsing a repo. */
 interface InspectorUsagePlanningContext {
   readonly inferenceByReference: Map<string, Promise<PreviewInferredExportProps | undefined>>;
-  /** Reuses finite dynamic-route evidence across alternative page candidates. */
   readonly nextPagesShellRefiner: PreviewInspectorNextPagesShellRefiner;
   readonly routerOwnershipBySource: Map<string, Promise<boolean>>;
   readonly rankedCandidatesByFrontier: Map<
@@ -145,32 +144,100 @@ interface InspectorUsagePlanningContext {
   readonly sourceTextByPath: PreviewInspectorSourcePromiseCache;
   sources?: Promise<readonly InspectorCandidateSource[]>;
 }
-
-/** A path-independent structural score cached before one render path adds its preference bonus. */
 interface RankedInspectorUsageCandidate {
   readonly candidate: InspectorUsageCandidate;
   readonly score: number;
 }
 
-/**
- * Finds the outermost bounded exported owner that can reproduce the target's authored page branch.
- *
- * Dynamic props and wrapper components do not block this inspector-only traversal: they will be
- * evaluated by React when the real owner export is mounted. The algorithm still fails closed on
- * private terminal owners and cycles, and never imports application code in the extension host.
- *
- * @param options Selected target, package inventory, source reader, and optional alias resolver.
- * @returns Frozen ancestor plan suitable for a generated browser entry.
- */
+/** Finds the outermost bounded exported owner reproducing the target's authored page branch. */
 export async function createPreviewInspectorAncestorPlan(
   options: CreatePreviewInspectorAncestorPlanOptions,
 ): Promise<PreviewInspectorAncestorPlan> {
   throwIfPreviewBuildCancelled(options.signal);
   assertInspectorTarget(options.documentPath, options.exportName);
-  const sourcePaths = [
-    ...new Set(options.sourcePaths.map((sourcePath) => path.normalize(sourcePath))),
-  ].sort();
+  const sourcePaths = Object.freeze(
+    [...new Set(options.sourcePaths.map((sourcePath) => path.normalize(sourcePath)))].sort(),
+  );
   const target = freezeReference(options.documentPath, options.exportName);
+  const computePrelude = (): Promise<PreviewInspectorAncestorPrelude> =>
+    createPreviewInspectorAncestorPrelude(options, target, sourcePaths);
+  const prelude =
+    options.usageContext === undefined
+      ? await computePrelude()
+      : await options.usageContext.getAncestorPrelude(computePrelude);
+  assertPreviewInspectorAncestorPrelude(prelude, target);
+  const routeBranchPlan = await collectPreviewInspectorRouteBranchPlan({
+    documentPath: target.sourcePath,
+    exportName: target.exportName,
+    readSource: options.readSource,
+    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    renderChain: prelude.renderChain,
+    ...(options.routeSelection === undefined ? {} : { selection: options.routeSelection }),
+    ...(options.usageContext?.selectionPrefixProvider === undefined
+      ? {}
+      : { selectionPrefixProvider: options.usageContext.selectionPrefixProvider }),
+    sourcePaths: prelude.sourcePaths,
+  });
+  const routeLocation = routeBranchPlan.activeLocation ?? routeBranchPlan.primary;
+  throwIfPreviewBuildCancelled(options.signal);
+  const computeTemplates = (): Promise<PreviewInspectorAncestorCandidateTemplates> =>
+    createPreviewInspectorAncestorCandidateTemplates(options, prelude);
+  const templates =
+    options.usageContext === undefined
+      ? await computeTemplates()
+      : await options.usageContext.getCandidateTemplates(computeTemplates);
+  const discoveredCandidates = templates.candidates.map((candidate) =>
+    attachPreviewInspectorSelectedRouteFallback(candidate, routeLocation),
+  );
+  const pageCandidates = rankPreviewInspectorPageCandidates(
+    expandPreviewInspectorRouteChoiceCandidates(
+      discoveredCandidates,
+      routeBranchPlan.activeLocation === undefined ? [] : [routeBranchPlan.activeLocation],
+    ),
+  );
+
+  const primary = pageCandidates[0];
+  if (primary === undefined) {
+    throw new Error(`Missing Inspector page candidate for export: ${target.exportName}`);
+  }
+  const sharedDependencies = new Set<string>([
+    ...prelude.dependencyPaths,
+    ...routeBranchPlan.dependencyPaths,
+  ]);
+  for (const candidate of pageCandidates) {
+    for (const dependencyPath of candidate.dependencyPaths) {
+      sharedDependencies.add(dependencyPath);
+    }
+  }
+  return freezePreviewInspectorAncestorPlan({
+    complete: primary.complete,
+    dependencies: sharedDependencies,
+    edges: primary.edges,
+    pageCandidates,
+    root: primary.root,
+    rootAutomaticProps: primary.rootAutomaticProps,
+    renderChain: prelude.renderChain,
+    renderChainsByExport: prelude.renderChainsByExport,
+    renderOutcomesByExport: prelude.renderOutcomesByExport,
+    routeBranches: routeBranchPlan.branches,
+    ...(routeBranchPlan.selectionResolution === undefined
+      ? {}
+      : { routeSelectionResolution: routeBranchPlan.selectionResolution }),
+    ...(routeBranchPlan.selectedBranchId === undefined
+      ? {}
+      : { selectedRouteBranchId: routeBranchPlan.selectedBranchId }),
+    stopReason: primary.stopReason,
+    target,
+    targetAutomaticProps: primary.targetAutomaticProps,
+  });
+}
+
+/** Computes the immutable render evidence shared by every route selection in one request. */
+async function createPreviewInspectorAncestorPrelude(
+  options: CreatePreviewInspectorAncestorPlanOptions,
+  target: PreviewInspectorComponentReference,
+  sourcePaths: readonly string[],
+): Promise<PreviewInspectorAncestorPrelude> {
   const renderChainsByExport = await readInspectorRenderChains(options, target, sourcePaths);
   const renderChain = renderChainsByExport[target.exportName];
   if (renderChain === undefined) {
@@ -184,24 +251,30 @@ export async function createPreviewInspectorAncestorPlan(
     sourcePath: target.sourcePath,
     sourcePaths,
   });
-  const renderOutcomesByExport = renderOutcomeAnalysis.plansByExport;
-  const sharedDependencies = new Set<string>([
-    target.sourcePath,
-    ...Object.values(renderChainsByExport).flatMap((plan) => plan.dependencyPaths),
-    ...renderOutcomeAnalysis.dependencyPaths,
-  ]);
-  const routeBranchPlan = await collectPreviewInspectorRouteBranchPlan({
-    documentPath: target.sourcePath,
-    exportName: target.exportName,
-    readSource: options.readSource,
-    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+  return Object.freeze({
+    dependencyPaths: Object.freeze(
+      [
+        ...new Set([
+          target.sourcePath,
+          ...Object.values(renderChainsByExport).flatMap((plan) => plan.dependencyPaths),
+          ...renderOutcomeAnalysis.dependencyPaths,
+        ]),
+      ].sort(),
+    ),
     renderChain,
-    ...(options.routeSelection === undefined ? {} : { selection: options.routeSelection }),
-    sourcePaths,
+    renderChainsByExport,
+    renderOutcomesByExport: renderOutcomeAnalysis.plansByExport,
+    sourcePaths: Object.freeze([...sourcePaths]),
+    target,
   });
-  const routeLocation = routeBranchPlan.activeLocation ?? routeBranchPlan.primary;
-  for (const dependencyPath of routeBranchPlan.dependencyPaths)
-    sharedDependencies.add(dependencyPath);
+}
+
+/** Computes unexpanded candidates without retaining a selected route's fallback location. */
+async function createPreviewInspectorAncestorCandidateTemplates(
+  options: CreatePreviewInspectorAncestorPlanOptions,
+  prelude: PreviewInspectorAncestorPrelude,
+): Promise<PreviewInspectorAncestorCandidateTemplates> {
+  const { sourcePaths, target } = prelude;
   const planningContext: InspectorUsagePlanningContext = {
     inferenceByReference: new Map(),
     nextPagesShellRefiner: createPreviewInspectorNextPagesShellRefiner({
@@ -215,13 +288,8 @@ export async function createPreviewInspectorAncestorPlan(
     sourceFileByPath: new Map(),
     sourceTextByPath: new Map(),
   };
-  /*
-   * Every entry-connected render path is a distinct authored page possibility. In particular,
-   * shared components commonly have several legitimate consumers, so project size must never
-   * collapse the result to one or two arbitrary pages. The render graph already owns cycle and
-   * aggregate-visit protection; this layer preserves every path that survived that proof.
-   */
-  const renderPaths = renderChain.paths;
+  // Preserve every entry-connected path that survived the render graph's bounded traversal.
+  const renderPaths = prelude.renderChain.paths;
   const candidatePaths: readonly (PreviewRenderChainCandidate | undefined)[] =
     renderPaths.length > 0 ? renderPaths : [undefined];
   const discoveredCandidates: PreviewInspectorPageCandidate[] = [];
@@ -247,7 +315,7 @@ export async function createPreviewInspectorAncestorPlan(
       renderPath,
       sourcePaths,
       target,
-      routeLocation,
+      routeLocation: undefined,
     });
     baseCandidates.push({ candidate, renderPath });
     const nextPagesDescendants = await collectPreviewInspectorNextPagesDescendantPages({
@@ -282,48 +350,42 @@ export async function createPreviewInspectorAncestorPlan(
           options,
           planningContext,
           renderPathRoot,
-          routeLocation,
+          routeLocation: undefined,
         }),
       );
     }
   }
+  return Object.freeze({ candidates: Object.freeze(discoveredCandidates) });
+}
 
-  const pageCandidates = rankPreviewInspectorPageCandidates(
-    expandPreviewInspectorRouteChoiceCandidates(
-      discoveredCandidates,
-      routeBranchPlan.activeLocation === undefined ? [] : [routeBranchPlan.activeLocation],
-    ),
-  );
+/** Rejects a stage supplied for a different target or source inventory before route finalization. */
+function assertPreviewInspectorAncestorPrelude(
+  prelude: PreviewInspectorAncestorPrelude,
+  target: PreviewInspectorComponentReference,
+): void {
+  if (
+    path.normalize(prelude.target.sourcePath) !== target.sourcePath ||
+    prelude.target.exportName !== target.exportName ||
+    prelude.renderChainsByExport[target.exportName] !== prelude.renderChain ||
+    path.normalize(prelude.renderChain.target.sourcePath) !== target.sourcePath ||
+    prelude.renderChain.target.exportName !== target.exportName
+  ) {
+    throw new TypeError('Preview Inspector ancestor context does not match the selected target.');
+  }
+}
 
-  const primary = pageCandidates[0];
-  if (primary === undefined) {
-    throw new Error(`Missing Inspector page candidate for export: ${target.exportName}`);
-  }
-  for (const candidate of pageCandidates) {
-    for (const dependencyPath of candidate.dependencyPaths) {
-      sharedDependencies.add(dependencyPath);
-    }
-  }
-  return freezePreviewInspectorAncestorPlan({
-    complete: primary.complete,
-    dependencies: sharedDependencies,
-    edges: primary.edges,
-    pageCandidates,
-    root: primary.root,
-    rootAutomaticProps: primary.rootAutomaticProps,
-    renderChain,
-    renderChainsByExport,
-    renderOutcomesByExport,
-    routeBranches: routeBranchPlan.branches,
-    ...(routeBranchPlan.selectionResolution === undefined
-      ? {}
-      : { routeSelectionResolution: routeBranchPlan.selectionResolution }),
-    ...(routeBranchPlan.selectedBranchId === undefined
-      ? {}
-      : { selectedRouteBranchId: routeBranchPlan.selectedBranchId }),
-    stopReason: primary.stopReason,
-    target,
-    targetAutomaticProps: primary.targetAutomaticProps,
+/** Copies a template only when it lacks a stronger framework-owned route location. */
+function attachPreviewInspectorSelectedRouteFallback(
+  candidate: PreviewInspectorPageCandidate,
+  routeLocation: PreviewInspectorRouteLocation | undefined,
+): PreviewInspectorPageCandidate {
+  if (candidate.routeLocation !== undefined || routeLocation === undefined) return candidate;
+  const { stopReason, targetAutomaticProps, ...prefix } = candidate;
+  return Object.freeze({
+    ...prefix,
+    routeLocation,
+    stopReason,
+    targetAutomaticProps,
   });
 }
 
@@ -402,11 +464,7 @@ async function createInspectorPageCandidate(arguments_: {
     });
   };
 
-  /*
-   * Source inventory and reference-cycle detection already make this traversal finite. Avoiding a
-   * hop limit is important for VirtualPage: deeply nested provider/layout/HOC corridors must reach
-   * the actual application owner instead of silently stopping at an arbitrary intermediate file.
-   */
+  // Inventory and reference-cycle checks bound traversal without truncating deep authored owners.
   for (;;) {
     throwIfPreviewBuildCancelled(options.signal);
     const candidate = await findInspectorUsage({
@@ -547,10 +605,7 @@ async function createRenderPathPageCandidate(arguments_: {
   });
 }
 
-/**
- * Reuses a caller-provided all-export graph when available, otherwise preserves the standalone
- * ancestor-planner API by discovering only its selected target export.
- */
+/** Reuses an all-export graph or discovers only the standalone selected target. */
 async function readInspectorRenderChains(
   options: CreatePreviewInspectorAncestorPlanOptions,
   target: PreviewInspectorComponentReference,
@@ -587,7 +642,6 @@ async function findInspectorUsage(options: {
   readonly acceptedImportSpecifiers: readonly string[];
   readonly matchesTargetImport?: MatchesPreviewParentSliceTargetImport;
   readonly planningContext: InspectorUsagePlanningContext;
-  /** Source modules selected by the best entry-connected graph path. */
   readonly preferredSourcePaths: ReadonlySet<string>;
   readonly readSource: ReadPreviewInspectorSource;
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
@@ -742,11 +796,7 @@ async function collectRankedInspectorUsageCandidates(options: {
   rankedCandidates.sort(compareRankedInspectorUsageCandidates);
   return Object.freeze(rankedCandidates);
 }
-/**
- * Proves a plausible import before the parent-slice analyzer allocates a TypeScript AST.
- * Component/file names cover ordinary imports; configured aliases use the exact project resolver,
- * keeping this gate conservative while avoiding thousands of irrelevant JSX parses.
- */
+/** Proves a plausible import before allocating a TypeScript AST. */
 function mayContainInspectorUsage(
   options: Parameters<typeof collectRankedInspectorUsageCandidates>[0],
   source: InspectorCandidateSource,
@@ -777,9 +827,7 @@ function mayContainInspectorUsage(
     );
   });
 }
-/**
- * Climbs private same-module component usages until an importable owner export is reached.
- */
+/** Climbs private same-module component usages to an importable owner export. */
 function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromotionResult {
   const visitedLocalOwners = new Set<string>();
   const localOwnerNames: string[] = [];
@@ -827,11 +875,7 @@ function promoteInspectorOwner(candidate: InspectorUsageCandidate): OwnerPromoti
   }
 }
 
-/**
- * Orders candidates by mountability and generic application source conventions before path order.
- * Stories, tests, examples, fixtures, demos, and mocks remain eligible fallbacks, but application
- * pages/layouts/routes and entry modules win when both branches are structurally renderable.
- */
+/** Orders candidates by mountability and application conventions before path order. */
 function compareRankedInspectorUsageCandidates(
   left: { readonly candidate: InspectorUsageCandidate; readonly score: number },
   right: { readonly candidate: InspectorUsageCandidate; readonly score: number },

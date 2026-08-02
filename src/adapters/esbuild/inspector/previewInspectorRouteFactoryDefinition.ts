@@ -11,10 +11,17 @@ import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 const MAXIMUM_MODULES = 8;
 const MAXIMUM_EDGES = 32;
 
+/** Exact local/export binding that supplies the factory's immutable route registry. */
+export interface PreviewInspectorRouteCatalogBindingReference {
+  readonly bindingKind: 'export' | 'local';
+  readonly bindingName: string;
+  readonly sourcePath: string;
+}
+
 /** Names that connect a selected factory call to its generated route-slot implementation. */
 export interface PreviewInspectorRouteFactoryDefinition {
   readonly baseParameterName: string;
-  readonly catalogBindingName?: string;
+  readonly catalogBinding?: PreviewInspectorRouteCatalogBindingReference;
   readonly dependencyPaths: readonly string[];
   readonly pageCollectionParameterName: string;
   readonly pageSlotPropertyName: string;
@@ -42,7 +49,7 @@ export async function resolvePreviewInspectorRouteFactoryDefinition(options: {
   const follow = async (
     sourcePath: string,
     exportName: string,
-    inheritedCatalogBinding?: string,
+    inheritedCatalogBinding?: PreviewInspectorRouteCatalogBindingReference,
   ): Promise<PreviewInspectorRouteFactoryDefinition | undefined> => {
     if (visited.size >= MAXIMUM_MODULES || edges >= MAXIMUM_EDGES) return undefined;
     const normalizedPath = path.normalize(sourcePath);
@@ -79,9 +86,14 @@ export async function resolvePreviewInspectorRouteFactoryDefinition(options: {
       if (nextPath === undefined) return undefined;
       const firstArgument = unwrapped.arguments[0];
       const catalogBinding =
-        firstArgument !== undefined && ts.isIdentifier(firstArgument)
-          ? firstArgument.text
-          : inheritedCatalogBinding;
+        firstArgument === undefined
+          ? inheritedCatalogBinding
+          : (readCatalogBindingReference(
+              firstArgument,
+              sourceFile,
+              normalizedPath,
+              options.resolveModule,
+            ) ?? inheritedCatalogBinding);
       return follow(nextPath, alias.exportName, catalogBinding);
     }
     if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
@@ -118,7 +130,7 @@ function findExportFunction(
 /** Reads the returned callable from a curried factory declaration such as `(catalog) => (...) =>`. */
 function readFactoryFunctionContract(
   factory: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration,
-  catalogBindingName: string | undefined,
+  catalogBinding: PreviewInspectorRouteCatalogBindingReference | undefined,
 ): Omit<PreviewInspectorRouteFactoryDefinition, 'dependencyPaths'> | undefined {
   if (factory.body === undefined) return undefined;
   const returned = findReturnedFunction(factory.body);
@@ -159,7 +171,7 @@ function readFactoryFunctionContract(
   if (slots === undefined) return undefined;
   return Object.freeze({
     baseParameterName,
-    ...(catalogBindingName === undefined ? {} : { catalogBindingName }),
+    ...(catalogBinding === undefined ? {} : { catalogBinding }),
     pageCollectionParameterName,
     pageSlotPropertyName: slots.page,
     submoduleCollectionParameterName,
@@ -172,7 +184,7 @@ function readFactoryFunctionContract(
 function readFactoryImplementationContract(
   expression: ts.CallExpression,
   sourceFile: ts.SourceFile,
-  catalogBindingName: string | undefined,
+  catalogBinding: PreviewInspectorRouteCatalogBindingReference | undefined,
 ): Omit<PreviewInspectorRouteFactoryDefinition, 'dependencyPaths'> | undefined {
   const callback = expression.arguments.find(
     (argument): argument is ts.ArrowFunction | ts.FunctionExpression =>
@@ -214,13 +226,62 @@ function readFactoryImplementationContract(
   if (slots === undefined) return undefined;
   return Object.freeze({
     baseParameterName,
-    ...(catalogBindingName === undefined ? {} : { catalogBindingName }),
+    ...(catalogBinding === undefined ? {} : { catalogBinding }),
     pageCollectionParameterName,
     pageSlotPropertyName: slots.page,
     submoduleCollectionParameterName,
     submoduleSlotPropertyName: slots.submodule,
     wrapperParameterName,
   });
+}
+
+/** Resolves only the exact identifier passed into the curried factory registry slot. */
+function readCatalogBindingReference(
+  expression: ts.Expression,
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+  resolveModule: ResolvePreviewRenderGraphModule | undefined,
+): PreviewInspectorRouteCatalogBindingReference | undefined {
+  const value = unwrap(expression);
+  if (!ts.isIdentifier(value)) return undefined;
+  const imported = readImportedBinding(value, sourceFile);
+  if (imported !== undefined) {
+    const resolvedPath = resolveModule?.(imported.moduleSpecifier, sourcePath);
+    return resolvedPath === undefined
+      ? undefined
+      : Object.freeze({
+          bindingKind: 'export' as const,
+          bindingName: imported.exportName,
+          sourcePath: path.normalize(resolvedPath),
+        });
+  }
+  return findLocalInitializer(sourceFile, value.text) === undefined
+    ? undefined
+    : Object.freeze({
+        bindingKind: 'local' as const,
+        bindingName: value.text,
+        sourcePath: path.normalize(sourcePath),
+      });
+}
+
+/** Accepts one immutable same-file binding as a local catalog anchor. */
+function findLocalInitializer(
+  sourceFile: ts.SourceFile,
+  localName: string,
+): ts.Expression | undefined {
+  const matches = sourceFile.statements.flatMap((statement) =>
+    !ts.isVariableStatement(statement) ||
+    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+      ? []
+      : statement.declarationList.declarations.flatMap((declaration) =>
+          ts.isIdentifier(declaration.name) &&
+          declaration.name.text === localName &&
+          declaration.initializer !== undefined
+            ? [declaration.initializer]
+            : [],
+        ),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** Finds a returned arrow/function body without evaluating HOCs or callback invocations. */

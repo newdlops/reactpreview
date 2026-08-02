@@ -7,6 +7,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { selectAdjacentPreviewRuntimeModule } from '../globalPackageBridge/previewGlobalPackageBridgeEvidence';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import {
   joinPreviewInspectorRouteSegments as joinRouteSegments,
@@ -17,8 +18,20 @@ import {
   readPreviewInspectorRouteBasePathReference,
   readStaticJsxBooleanAttribute,
   readStaticJsxStringAttribute,
-  type PreviewInspectorRouteBasePathReference,
 } from './previewInspectorRoutePathMetadata';
+import {
+  createPreviewInspectorDirectRoutePathEvidence,
+  createPreviewInspectorDirectRouteOccurrenceIdentity,
+  readPreviewInspectorDirectRouteCatalogMemberReference,
+  type PreviewInspectorDirectRouteCatalogMemberReference,
+} from './previewInspectorDirectRoutePathEvidence';
+import type {
+  CollectPreviewInspectorDirectRouteChoicesFromSourceOptions,
+  CollectPreviewInspectorDirectRouteChoicesOptions,
+  PreviewInspectorDirectRouteChoice,
+  PreviewInspectorDirectRouteChoiceInventory,
+  PreviewInspectorDirectRouteComponentReference,
+} from './previewInspectorDirectRouteChoiceTypes';
 import {
   collectPreviewInspectorRouteElementPath,
   type PreviewInspectorRouteElementIdentity,
@@ -33,67 +46,18 @@ const ROUTER_DESCRIPTOR_EXPORTS = new Set([
   'useRoutes',
 ]);
 
-/** Resolved source identity for a component rendered by one direct route. */
-export interface PreviewInspectorDirectRouteComponentReference {
-  /** Public ESM export requested by the route owner. */
-  readonly exportName: string;
-  /** Resolved local/workspace module path; the module is not loaded during analysis. */
-  readonly sourcePath: string;
-}
-
-/** One path/component pair offered by standard React Router syntax. */
-export interface PreviewInspectorDirectRouteChoice {
-  /** Component label shown in the route explorer. */
-  readonly componentName: string;
-  /** Resolved outer-to-inner JSX components authored directly in the route element. */
-  readonly elementPath?: readonly PreviewInspectorDirectRouteElementComponent[];
-  /** Optional page module retained only after this choice becomes active. */
-  readonly reference?: PreviewInspectorDirectRouteComponentReference;
-  /** Exact only for resolved choices; unresolved choices retain ancestor context. */
-  readonly pattern: string;
-  /** Whether this route path was statically resolved without evaluating authored code. */
-  readonly pathResolution: 'resolved' | 'unresolved';
-  /** Same-component factory-base metadata retained for later asynchronous materialization. */
-  readonly routeBasePath?: PreviewInspectorRouteBasePathReference;
-  /** Router source that provided this exact path. */
-  readonly sourcePath: string;
-}
-
-/** One component in an inline route element, including its optional exact source identity. */
-export interface PreviewInspectorDirectRouteElementComponent {
-  readonly componentName: string;
-  readonly reference?: PreviewInspectorDirectRouteComponentReference;
-}
-
-/** Standard route choices plus router configuration files needed for hot reload. */
-export interface PreviewInspectorDirectRouteChoiceInventory {
-  /** Every exact route found in the selected owner and delegated router configurations. */
-  readonly choices: readonly PreviewInspectorDirectRouteChoice[];
-  /** Files parsed to obtain route metadata; page component files are deliberately excluded. */
-  readonly dependencyPaths: readonly string[];
-}
-
-/** Capabilities supplied by the existing package-bounded Inspector planner. */
-export interface CollectPreviewInspectorDirectRouteChoicesOptions {
-  /** Snapshot-aware reader that must return no content outside caller policy. */
-  readonly readSource: (sourcePath: string) => Promise<string | undefined>;
-  /** Optional project-aware module resolver. */
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  /** Selected route owner source. */
-  readonly sourcePath: string;
-  /** Already-read selected source snapshot. */
-  readonly sourceText: string | undefined;
-}
-
-/** Inputs for one already-read source pass without following RouterProvider configuration imports. */
-export interface CollectPreviewInspectorDirectRouteChoicesFromSourceOptions {
-  /** Optional project-aware resolver used only to attach page module identities. */
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  /** Authored router or render-path source. */
-  readonly sourcePath: string;
-  /** Current source snapshot. */
-  readonly sourceText: string;
-}
+export type {
+  CollectPreviewInspectorDirectRouteChoicesFromSourceOptions,
+  CollectPreviewInspectorDirectRouteChoicesOptions,
+  PreviewInspectorDirectRouteChoice,
+  PreviewInspectorDirectRouteChoiceInventory,
+  PreviewInspectorDirectRouteComponentReference,
+  PreviewInspectorDirectRouteElementComponent,
+} from './previewInspectorDirectRouteChoiceTypes';
+export type {
+  PreviewInspectorDirectRouteCatalogMemberReference,
+  PreviewInspectorDirectRoutePathEvidence,
+} from './previewInspectorDirectRoutePathEvidence';
 
 /** One imported runtime binding, including namespace imports used by route configurations. */
 interface ImportedBinding {
@@ -527,10 +491,12 @@ function collectObjectRouteChoices(
         addDynamicImportChoice(
           lazyProperty.initializer,
           routePattern,
+          parsed,
           sourcePath,
           choices,
           resolveModule,
           pathResolution,
+          pathProperty?.initializer,
         );
       }
     }
@@ -629,6 +595,18 @@ function addExpressionChoice(
           sourcePath,
         )
       : undefined;
+  const catalogMember = readDirectRouteCatalogMemberReference(
+    pathResolution === 'unresolved' ? pathExpression : undefined,
+    parsed,
+    sourcePath,
+    resolveModule,
+  );
+  const pathEvidence = createPreviewInspectorDirectRoutePathEvidence({
+    ...(catalogMember === undefined ? {} : { catalogMember }),
+    ...(routeBasePath === undefined ? {} : { componentBase: routeBasePath }),
+    pathResolution,
+  });
+  const occurrenceStart = expression.getStart(parsed.sourceFile);
   const elementPath = identities.map((candidate) => {
     const candidateReference = resolveComponentReference(
       candidate,
@@ -644,7 +622,17 @@ function addExpressionChoice(
   addChoice(choices, {
     componentName: identity.componentName,
     elementPath: Object.freeze(elementPath),
+    occurrenceIdentity: createPreviewInspectorDirectRouteOccurrenceIdentity({
+      componentName: identity.componentName,
+      occurrenceStart,
+      pathEvidence,
+      pattern,
+      ...(reference === undefined ? {} : { reference }),
+      sourcePath,
+    }),
+    occurrenceStart,
     pattern,
+    pathEvidence,
     pathResolution,
     ...(routeBasePath === undefined ? {} : { routeBasePath }),
     ...(reference === undefined ? {} : { reference }),
@@ -656,29 +644,77 @@ function addExpressionChoice(
 function addDynamicImportChoice(
   expression: ts.Expression,
   rawPattern: string,
+  parsed: ParsedRouteModule,
   sourcePath: string,
   choices: PreviewInspectorDirectRouteChoice[],
   resolveModule: ResolvePreviewRenderGraphModule | undefined,
   pathResolution: PreviewInspectorDirectRouteChoice['pathResolution'] = 'resolved',
+  pathExpression?: ts.Expression,
 ): void {
   const moduleSpecifier = findDynamicImportSpecifier(expression);
   const pattern = normalizeRoutePattern(rawPattern);
   if (moduleSpecifier === undefined || pattern === undefined) return;
   const componentName = createComponentNameFromModuleSpecifier(moduleSpecifier);
   const resolvedPath = resolveModule?.(moduleSpecifier, sourcePath);
+  const reference =
+    resolvedPath === undefined
+      ? undefined
+      : Object.freeze({
+          exportName: 'default',
+          sourcePath: path.normalize(resolvedPath),
+        });
+  const catalogMember = readDirectRouteCatalogMemberReference(
+    pathResolution === 'unresolved' ? pathExpression : undefined,
+    parsed,
+    sourcePath,
+    resolveModule,
+  );
+  const pathEvidence = createPreviewInspectorDirectRoutePathEvidence({
+    ...(catalogMember === undefined ? {} : { catalogMember }),
+    pathResolution,
+  });
+  const occurrenceStart = expression.getStart(parsed.sourceFile);
   addChoice(choices, {
     componentName,
+    occurrenceIdentity: createPreviewInspectorDirectRouteOccurrenceIdentity({
+      componentName,
+      occurrenceStart,
+      pathEvidence,
+      pattern,
+      ...(reference === undefined ? {} : { reference }),
+      sourcePath,
+    }),
+    occurrenceStart,
     pattern,
+    pathEvidence,
     pathResolution,
-    ...(resolvedPath === undefined
-      ? {}
-      : {
-          reference: Object.freeze({
-            exportName: 'default',
-            sourcePath: path.normalize(resolvedPath),
-          }),
-        }),
+    ...(reference === undefined ? {} : { reference }),
     sourcePath,
+  });
+}
+
+/** Reads one exact imported registry member through inert outer one-argument wrappers. */
+function readDirectRouteCatalogMemberReference(
+  expression: ts.Expression | undefined,
+  parsed: ParsedRouteModule,
+  sourcePath: string,
+  resolveModule: ResolvePreviewRenderGraphModule | undefined,
+): PreviewInspectorDirectRouteCatalogMemberReference | undefined {
+  if (resolveModule === undefined) return undefined;
+  return readPreviewInspectorDirectRouteCatalogMemberReference({
+    expression,
+    resolveRegistryBinding: (receiver) => {
+      const imported = readImportedExpressionBinding(receiver, parsed);
+      if (imported === undefined) return undefined;
+      const registrySourcePath = resolveModule(imported.moduleSpecifier, sourcePath);
+      return registrySourcePath === undefined
+        ? undefined
+        : {
+            exportName: imported.exportName,
+            sourcePath: registrySourcePath,
+          };
+    },
+    sourceFile: parsed.sourceFile,
   });
 }
 
@@ -693,9 +729,15 @@ function resolveComponentReference(
   if (imported !== undefined) {
     const resolvedPath = resolveModule?.(imported.moduleSpecifier, sourcePath);
     if (resolvedPath === undefined) return undefined;
+    const normalizedResolvedPath = path.normalize(resolvedPath);
+    const componentSourcePath = /(?:^|[\\/])node_modules[\\/].+\.d\.[cm]?ts$/iu.test(
+      normalizedResolvedPath,
+    )
+      ? (selectAdjacentPreviewRuntimeModule(normalizedResolvedPath) ?? normalizedResolvedPath)
+      : normalizedResolvedPath;
     return Object.freeze({
       exportName: identity.exportName ?? imported.exportName,
-      sourcePath: path.normalize(resolvedPath),
+      sourcePath: componentSourcePath,
     });
   }
   const initializer = parsed.initializers.get(identity.localName);
@@ -918,6 +960,23 @@ function addChoice(
             ),
           }),
       pattern: choice.pattern,
+      occurrenceIdentity: choice.occurrenceIdentity,
+      occurrenceStart: choice.occurrenceStart,
+      pathEvidence:
+        choice.pathEvidence.kind === 'component-base'
+          ? Object.freeze({
+              kind: choice.pathEvidence.kind,
+              reference: Object.freeze(choice.pathEvidence.reference),
+            })
+          : choice.pathEvidence.kind === 'catalog-member'
+            ? Object.freeze({
+                kind: choice.pathEvidence.kind,
+                reference: Object.freeze({
+                  ...choice.pathEvidence.reference,
+                  normalizerChain: Object.freeze(choice.pathEvidence.reference.normalizerChain),
+                }),
+              })
+            : Object.freeze({ kind: choice.pathEvidence.kind }),
       pathResolution: choice.pathResolution,
       ...(choice.routeBasePath === undefined
         ? {}
@@ -926,12 +985,7 @@ function addChoice(
       sourcePath: path.normalize(choice.sourcePath),
     });
   const existingIndex = choices.findIndex(
-    (candidate) =>
-      candidate.pattern === choice.pattern &&
-      candidate.componentName === choice.componentName &&
-      candidate.sourcePath === choice.sourcePath &&
-      createRouteBasePathIdentity(candidate.routeBasePath) ===
-        createRouteBasePathIdentity(choice.routeBasePath),
+    (candidate) => candidate.occurrenceIdentity === choice.occurrenceIdentity,
   );
   if (existingIndex >= 0) {
     const existing = choices[existingIndex];
@@ -941,13 +995,4 @@ function addChoice(
   }
   if (choices.length >= MAXIMUM_DIRECT_ROUTE_CHOICES) return;
   choices.push(freezeChoice());
-}
-
-/** Keeps distinct source-proven base mounts from collapsing into one unresolved placeholder. */
-function createRouteBasePathIdentity(
-  value: PreviewInspectorRouteBasePathReference | undefined,
-): string {
-  return value === undefined
-    ? ''
-    : `${value.sourcePath}\0${value.exportName}\0${value.prefix}\0${value.suffix}`;
 }

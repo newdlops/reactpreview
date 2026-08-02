@@ -23,8 +23,15 @@ export function expandPreviewInspectorRouteChoiceCandidates(
   if (choices.length === 0) return candidates;
   return Object.freeze(
     candidates.flatMap((candidate) =>
-      choices.map((routeLocation, choiceIndex) =>
-        Object.freeze({
+      choices.map((routeLocation, choiceIndex) => {
+        const routeTarget =
+          routeLocation.componentSourcePath === undefined
+            ? undefined
+            : Object.freeze({
+                exportName: routeLocation.componentExportName ?? 'default',
+                sourcePath: routeLocation.componentSourcePath,
+              });
+        return Object.freeze({
           ...candidate,
           dependencyPaths: Object.freeze(
             [...new Set([...candidate.dependencyPaths, ...routeLocation.dependencyPaths])].sort(),
@@ -35,8 +42,9 @@ export function expandPreviewInspectorRouteChoiceCandidates(
             choiceIndex,
           ),
           routeLocation,
-        }),
-      ),
+          ...(routeTarget === undefined ? {} : { target: routeTarget }),
+        });
+      }),
     ),
   );
 }

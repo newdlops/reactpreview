@@ -9,7 +9,7 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
-import type { PreviewRenderChainPlan, ResolvePreviewRenderGraphModule } from '../renderGraph';
+import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import { collectPreviewRenderModuleFacts } from '../renderGraph/previewRenderModuleFacts';
 import {
   collectPreviewInspectorDirectRouteChoices,
@@ -18,18 +18,21 @@ import {
   type PreviewInspectorDirectRouteComponentReference,
 } from './previewInspectorDirectRouteChoices';
 import {
+  resolvePreviewInspectorDirectRouteChoices,
+  type PreviewInspectorDirectRouteResolution,
+} from './previewInspectorDirectRouteResolution';
+import { referencesPreviewInspectorDirectRouteTarget } from './previewInspectorDirectRouteTargetReference';
+import {
   collectPreviewInspectorDirectRouteRegistrySources,
   isPreviewInspectorRouteRegistrySource,
-  materializePreviewInspectorRouteBasePath,
 } from './previewInspectorRoutePathMetadata';
 import { collectPreviewInspectorRouteFactoryEvidence } from './previewInspectorRouteFactory';
 import { collectPreviewInspectorRouteFactoryManifest } from './previewInspectorRouteFactoryManifest';
-import type { PreviewInspectorFactoryRouteAvailability } from './previewInspectorRouteFactoryManifestTypes';
 import {
   collectPreviewInspectorRouteFactoryChoices,
   type PreviewInspectorRouteFactoryOwnerEvidence,
-  type PreviewInspectorRouteChoiceReference,
 } from './previewInspectorRouteFactoryChoices';
+import { retainPreviewInspectorNestedRouteOwnerContext } from './previewInspectorNestedRouteOwnerContext';
 import {
   addPreviewInspectorSupportingRoutePattern as addSupportingRoutePattern,
   isPreviewInspectorRootWildcardRoutePattern as isRootWildcardRoutePattern,
@@ -37,7 +40,23 @@ import {
   materializePreviewInspectorRoutePattern as materializeRoutePattern,
   normalizePreviewInspectorRoutePattern as normalizeRoutePattern,
 } from './previewInspectorRoutePattern';
-
+import {
+  collectPreviewInspectorRenderPathSourcePaths as collectRenderPathSourcePaths,
+  createPreviewInspectorFactoryUnresolvedOccurrenceIdentity as createFactoryUnresolvedOccurrenceIdentity,
+} from './previewInspectorRouteLocationIdentity';
+import type {
+  CollectPreviewInspectorRouteLocationOptions,
+  PreviewInspectorRouteElementWrapperEvidence,
+  PreviewInspectorRouteLocation,
+  PreviewInspectorRouteLocationInventory,
+} from './previewInspectorRouteLocationTypes';
+export type {
+  CollectPreviewInspectorRouteLocationOptions,
+  PreviewInspectorRouteElementWrapperEvidence,
+  PreviewInspectorRouteLocation,
+  PreviewInspectorRouteLocationInventory,
+  PreviewInspectorRouteMountEvidence,
+} from './previewInspectorRouteLocationTypes';
 const MAX_ROUTE_REGISTRY_SOURCES = 48;
 const MAX_ROUTE_CATALOGS = 16;
 /*
@@ -48,99 +67,21 @@ const MAX_ROUTE_CANDIDATES = 4_096;
 const FACTORY_BASE_EVIDENCE_PENALTY = 25;
 const ROOT_WILDCARD_EVIDENCE_PENALTY = 100;
 const COMPONENT_IDENTITY_PATTERN = /^[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*$/u;
-
-/** Static evidence retained with the inferred location for diagnostics and hot reload. */
-export interface PreviewInspectorRouteLocation {
-  /** Public ESM binding rendered by this route choice, when import syntax proves it. */
-  readonly componentExportName?: string;
-  /** Component/export spelling whose catalog leaf or Route element matched the target. */
-  readonly componentName: string;
-  /** Resolved authored module rendered by this route choice, when package resolution succeeds. */
-  readonly componentSourcePath?: string;
-  /**
-   * Selected router-owner modules plus the final page module for one recursively resolved branch.
-   *
-   * Ordinary direct routes omit this field. The corridor consumes it only at build time; browser
-   * descriptors receive the public component/path identities without local filesystem disclosure.
-   */
-  readonly componentSourcePaths?: readonly string[];
-  /** Kind of inert source evidence used to choose the route. */
-  readonly evidenceKind: 'route-catalog' | 'route-jsx';
-  /** Every source whose route pattern participated in the materialized browser pathname. */
-  readonly dependencyPaths: readonly string[];
-  /** Inline layout/provider components authored around the selected terminal route page. */
-  readonly elementWrappers?: readonly PreviewInspectorRouteElementWrapperEvidence[];
-  /** Browser-ready path with every dynamic segment replaced by a deterministic preview value. */
-  readonly pathname: string;
-  /** Outer-to-inner app-module mounts that own this selected route, when syntax proves them. */
-  readonly routeMounts?: readonly PreviewInspectorRouteMountEvidence[];
-  /** Authored route pattern before neutral dynamic values were substituted. */
-  readonly pattern: string;
-  /** Absolute authored source that should invalidate this inference during hot reload. */
-  readonly sourcePath: string;
-}
-
-/** One immutable app-module mount used to localize a directly mounted route owner. */
-export interface PreviewInspectorRouteMountEvidence {
-  readonly basePath: string;
-  readonly exportName: string;
-  readonly hasWildcardFallback: boolean;
-  readonly routeSlotCount: number;
-  readonly sourcePath: string;
-}
-
-/** One exact outer-to-inner component wrapper authored in a selected route element. */
-export interface PreviewInspectorRouteElementWrapperEvidence {
-  readonly componentName: string;
-  readonly exportName: string;
-  readonly sourcePath: string;
-}
-
-/**
- * One target route plus the concrete descendant pages owned by a selected route factory.
- *
- * `primary` reproduces the historical single-location contract. `choices` exists only when the
- * selected export is itself a factory-produced router whose page-map entries have exact route
- * evidence; ordinary leaf components therefore keep the previous one-candidate behavior.
- */
-export interface PreviewInspectorRouteLocationInventory {
-  /** Best route that directly names the selected target or one of its proven aliases. */
-  readonly primary?: PreviewInspectorRouteLocation;
-  /** Mutually exclusive visible pages rendered below the selected Provider/Routes owner. */
-  readonly choices: readonly PreviewInspectorRouteLocation[];
-  /** Number of literal wildcard fallbacks retained as non-selectable metadata. */
-  readonly fallbackCount: number;
-  /** True when a factory was proven but one or more generated choices lack safe path evidence. */
-  readonly unresolvedFactoryRoutes: boolean;
-  /** Names retained when a factory exposed choices but their path proof is incomplete. */
-  readonly unresolvedFactoryOptionNames?: readonly string[];
-  /** Structured disabled choices for the route explorer; no source text is exposed. */
-  readonly unresolvedFactoryOptions?: readonly {
-    readonly availability: Exclude<PreviewInspectorFactoryRouteAvailability, 'selectable'>;
-    readonly componentName: string;
-    readonly kind: 'page' | 'submodule';
-  }[];
-}
-
-/** Inputs kept independent from the ancestor planner so route inference is unit-testable. */
-export interface CollectPreviewInspectorRouteLocationOptions {
-  /** Selected source module in the editor. */
-  readonly documentPath: string;
-  /** Selected runtime export, including `default`. */
-  readonly exportName: string;
-  /** Snapshot-aware, package-bounded source reader owned by the caller. */
-  readonly readSource: (sourcePath: string) => Promise<string | undefined>;
-  /** Optional project-aware resolver used for relative and workspace-alias JSON catalog imports. */
-  readonly resolveModule?: ResolvePreviewRenderGraphModule;
-  /** Exact target-to-entry evidence already computed for Page Inspector. */
-  readonly renderChain: PreviewRenderChainPlan;
-  /** Existing bounded authored source inventory; no second directory walk is performed. */
-  readonly sourcePaths: readonly string[];
-}
-
 interface RouteLocationCandidate extends Omit<PreviewInspectorRouteLocation, 'dependencyPaths'> {
+  readonly choiceOccurrenceIdentity?: string;
+  readonly dependencyPaths?: readonly string[];
   readonly identityOrder: number;
+  readonly provenanceIdentity?: string;
   readonly score: number;
+}
+interface ResolvedDirectRouteChoice {
+  readonly candidate: RouteLocationCandidate;
+  readonly choice: PreviewInspectorDirectRouteChoice;
+}
+interface DuplicateDirectRouteChoice extends ResolvedDirectRouteChoice {
+  readonly choice: PreviewInspectorDirectRouteChoice & {
+    readonly reference: PreviewInspectorDirectRouteComponentReference;
+  };
 }
 
 /**
@@ -171,7 +112,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
   if (targetIdentities.length === 0) {
     return { choices: Object.freeze([]), fallbackCount: 0, unresolvedFactoryRoutes: false };
   }
-  const directChoiceInventory = await collectPreviewInspectorDirectRouteChoices({
+  const ownerDirectChoiceInventory = await collectPreviewInspectorDirectRouteChoices({
     readSource: options.readSource,
     ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
     sourcePath: options.documentPath,
@@ -195,21 +136,17 @@ export async function collectPreviewInspectorRouteLocationInventory(
   });
   const manifestLocations =
     factoryManifest?.routes.map((route) => {
-      const factoryReference = factoryChoiceInventory.references.get(route.componentName);
-      const elementWrappers = factoryReference?.elementWrappers ?? [];
+      const elementWrappers = route.elementWrappers ?? [];
       return Object.freeze({
-        ...(route.componentExportName === undefined
-          ? {}
-          : { componentExportName: route.componentExportName }),
+        componentExportName: route.componentExportName,
         componentName: route.componentName,
-        ...(route.componentSourcePath === undefined
-          ? {}
-          : { componentSourcePath: route.componentSourcePath }),
+        componentSourcePath: route.componentSourcePath,
         dependencyPaths: Object.freeze(
           [
             ...new Set([
               ...factoryManifest.dependencies,
-              ...(route.componentSourcePath === undefined ? [] : [route.componentSourcePath]),
+              ...route.catalogSourcePaths,
+              route.componentSourcePath,
               ...elementWrappers.map((wrapper) => wrapper.sourcePath),
             ]),
           ].sort(),
@@ -239,10 +176,9 @@ export async function collectPreviewInspectorRouteLocationInventory(
   const choiceComponentNames = [
     ...new Set([
       ...factoryChoices.map((choice) => choice.componentName),
-      ...directChoiceInventory.choices.map((choice) => choice.componentName),
+      ...ownerDirectChoiceInventory.choices.map((choice) => choice.componentName),
     ]),
   ];
-  const factoryChoiceReferences = factoryChoiceInventory.references;
   const identities = Object.freeze([
     ...targetIdentities,
     ...choiceComponentNames.filter((name) => !targetIdentitySet.has(name)),
@@ -257,12 +193,11 @@ export async function collectPreviewInspectorRouteLocationInventory(
       .map(normalizeComponentIdentity)
       .filter((identity): identity is string => identity !== undefined),
   );
-
   const pathSources = collectRenderPathSourcePaths(options.renderChain);
   const registrySeeds = [
     path.normalize(options.documentPath),
     ...pathSources,
-    ...directChoiceInventory.dependencyPaths,
+    ...ownerDirectChoiceInventory.dependencyPaths,
   ];
   const directRegistrySources = [
     ...new Set(
@@ -298,17 +233,21 @@ export async function collectPreviewInspectorRouteLocationInventory(
     ...new Set([
       path.normalize(options.documentPath),
       ...pathSources,
-      ...directChoiceInventory.dependencyPaths,
+      ...ownerDirectChoiceInventory.dependencyPaths,
       ...registrySources,
     ]),
   ];
   const candidates: RouteLocationCandidate[] = [];
-  const directChoicesByKey = new Map<string, PreviewInspectorDirectRouteChoice>();
+  const ownerDirectChoiceOccurrences = new Set(
+    ownerDirectChoiceInventory.choices.map((choice) => choice.occurrenceIdentity),
+  );
+  const allDirectChoicesByOccurrence = new Map<string, PreviewInspectorDirectRouteChoice>(
+    ownerDirectChoiceInventory.choices.map((choice) => [choice.occurrenceIdentity, choice]),
+  );
   const routePatterns: string[] = [];
   const supportingSourcePaths = new Set<string>();
   const catalogPaths = new Set<string>();
   const catalogImportersByPath = new Map<string, Set<string>>();
-
   for (const sourcePath of analysisSources) {
     const sourceText = await readCachedSource(sourcePath, options.readSource, sourceCache);
     if (sourceText === undefined) continue;
@@ -319,21 +258,10 @@ export async function collectPreviewInspectorRouteLocationInventory(
     });
     const directContributedRoutePattern = directChoices.length > 0;
     for (const choice of directChoices) {
-      const identityOrder = identities.indexOf(choice.componentName);
+      allDirectChoicesByOccurrence.set(choice.occurrenceIdentity, choice);
       supportingSourcePaths.add(choice.sourcePath);
       if (choice.pathResolution === 'resolved')
         addSupportingRoutePattern(routePatterns, choice.pattern);
-      if (identityOrder < 0) continue;
-      if (choice.pathResolution === 'unresolved') continue;
-      directChoicesByKey.set(createDirectRouteReferenceKey(choice), choice);
-      addRouteCandidate(candidates, {
-        componentName: choice.componentName,
-        documentPath: options.documentPath,
-        evidenceKind: 'route-jsx',
-        identityOrder,
-        pattern: choice.pattern,
-        sourcePath: choice.sourcePath,
-      });
     }
     const contributedRoutePattern = collectSourceRouteCandidates(
       sourcePath,
@@ -362,7 +290,6 @@ export async function collectPreviewInspectorRouteLocationInventory(
       catalogImportersByPath.set(catalogPath, catalogImporters);
     }
   }
-
   for (const catalogPath of catalogPaths) {
     const catalogText = await readCachedSource(catalogPath, options.readSource, sourceCache);
     if (catalogText === undefined) continue;
@@ -375,66 +302,60 @@ export async function collectPreviewInspectorRouteLocationInventory(
     );
     if (candidates.length >= MAX_ROUTE_CANDIDATES) break;
   }
-
-  for (const choice of directChoiceInventory.choices) {
-    if (candidates.length >= MAX_ROUTE_CANDIDATES) break;
-    if (choice.routeBasePath === undefined || choice.reference === undefined) continue;
-    const identityOrder = identities.indexOf(choice.componentName);
-    if (identityOrder < 0) continue;
-    const pattern = await materializePreviewInspectorRouteBasePath(
-      choice.routeBasePath,
-      (sourcePath) => readCachedSource(sourcePath, options.readSource, sourceCache),
-      choice.sourcePath,
-    );
-    if (pattern === undefined) continue;
-    const normalizedPattern = normalizeRoutePattern(pattern);
-    if (normalizedPattern === undefined) continue;
-    const materializedChoice = Object.freeze({ ...choice, pattern: normalizedPattern });
-    directChoicesByKey.set(createDirectRouteReferenceKey(materializedChoice), materializedChoice);
-    addRouteCandidate(candidates, {
-      componentName: choice.componentName,
-      documentPath: options.documentPath,
-      evidenceKind: 'route-jsx',
-      identityOrder,
-      pattern: normalizedPattern,
-      sourcePath: choice.sourcePath,
-    });
+  const readSource = (sourcePath: string): Promise<string | undefined> =>
+    readCachedSource(sourcePath, options.readSource, sourceCache);
+  const ownerDirectResolution = materializeDirectRouteResolution(
+    await resolvePreviewInspectorDirectRouteChoices({
+      choices: ownerDirectChoiceInventory.choices,
+      identities,
+      readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    }),
+    options.documentPath,
+  );
+  const contextualDirectResolution = materializeDirectRouteResolution(
+    await resolvePreviewInspectorDirectRouteChoices({
+      choices: [...allDirectChoicesByOccurrence.values()].filter(
+        (choice) => !ownerDirectChoiceOccurrences.has(choice.occurrenceIdentity),
+      ),
+      identities,
+      readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    }),
+    options.documentPath,
+  );
+  for (const resolved of ownerDirectResolution.selectable) candidates.push(resolved.candidate);
+  for (const resolved of ownerDirectResolution.selectable) {
+    addSupportingRoutePattern(routePatterns, resolved.candidate.pattern);
   }
-
-  const rankedCandidates = candidates.sort(compareRouteCandidates);
+  for (const resolved of contextualDirectResolution.selectable) {
+    addSupportingRoutePattern(routePatterns, resolved.candidate.pattern);
+  }
+  const factoryOrDirectChoiceNames = new Set(choiceComponentNames);
+  const rankedCandidates = candidates
+    .filter(
+      (candidate) =>
+        candidate.evidenceKind !== 'route-catalog' ||
+        candidate.choiceOccurrenceIdentity !== undefined ||
+        !factoryOrDirectChoiceNames.has(candidate.componentName),
+    )
+    .sort(compareRouteCandidates);
   const primaryCandidate =
-    rankedCandidates.find((candidate) => targetIdentitySet.has(candidate.componentName)) ??
-    rankedCandidates[0];
-  const factoryChoiceCandidates = factoryChoices.flatMap(({ componentName }) => {
-    const candidate = rankedCandidates.find((item) => item.componentName === componentName);
-    return candidate === undefined ? [] : [candidate];
-  });
-  const directChoiceCandidates = directChoiceInventory.choices.flatMap((choice) => {
-    const candidatesForChoice =
-      choice.pathResolution === 'resolved'
-        ? rankedCandidates.filter(
-            (item) =>
-              item.componentName === choice.componentName &&
-              item.pattern === choice.pattern &&
-              path.normalize(item.sourcePath) === path.normalize(choice.sourcePath),
-          )
-        : rankedCandidates.filter(
-            (item) =>
-              (item.componentName === choice.componentName &&
-                item.evidenceKind === 'route-catalog') ||
-              (choice.routeBasePath !== undefined &&
-                item.componentName === choice.componentName &&
-                item.evidenceKind === 'route-jsx' &&
-                path.normalize(item.sourcePath) === path.normalize(choice.sourcePath) &&
-                directChoicesByKey.has(createDirectRouteReferenceKey(item))),
-          );
-    for (const candidate of candidatesForChoice) {
-      const key = createDirectRouteReferenceKey(candidate);
-      if (!directChoicesByKey.has(key)) directChoicesByKey.set(key, choice);
-    }
-    return candidatesForChoice;
-  });
-  const choiceCandidates = [...factoryChoiceCandidates, ...directChoiceCandidates].filter(
+    [
+      ...rankedCandidates.filter((candidate) =>
+        targetIdentitySet.has(candidate.componentName),
+      ),
+      ...contextualDirectResolution.selectable
+        .filter((resolved) =>
+          referencesPreviewInspectorDirectRouteTarget(resolved.choice, options.renderChain.target),
+        )
+        .map((resolved) => resolved.candidate),
+    ]
+      .sort(compareRouteCandidates)[0] ?? rankedCandidates[0];
+  const ownerDirectChoiceCandidates = ownerDirectResolution.selectable.map(
+    (resolved) => resolved.candidate,
+  );
+  const choiceCandidates = ownerDirectChoiceCandidates.filter(
     (candidate, index, values) =>
       values.findIndex(
         (item) =>
@@ -446,12 +367,13 @@ export async function collectPreviewInspectorRouteLocationInventory(
   const inferredChoices = choiceCandidates.map((candidate) =>
     freezeRouteLocation(
       candidate,
-      factoryChoiceReferences,
       factoryChoiceInventory.owner,
-      directChoicesByKey,
+      allDirectChoicesByOccurrence,
       supportingSourcePaths,
       catalogImportersByPath,
       routePatterns,
+      options.documentPath,
+      options.exportName,
     ),
   );
   const choices = Object.freeze(
@@ -468,17 +390,74 @@ export async function collectPreviewInspectorRouteLocationInventory(
       ? undefined
       : freezeRouteLocation(
           primaryCandidate,
-          factoryChoiceReferences,
           factoryChoiceInventory.owner,
-          directChoicesByKey,
+          allDirectChoicesByOccurrence,
           supportingSourcePaths,
           catalogImportersByPath,
           routePatterns,
+          options.documentPath,
+          options.exportName,
         );
+  const contextualPrimary = retainPreviewInspectorNestedRouteOwnerContext(
+    inferredPrimary,
+    [...ownerDirectResolution.selectable, ...contextualDirectResolution.selectable].map(
+      (resolved) =>
+        Object.freeze({
+          ...resolved.choice,
+          pathResolution: 'resolved' as const,
+          pattern: resolved.candidate.pattern,
+        }),
+    ),
+    pathSources,
+    routePatterns,
+  );
   const primary =
     manifestLocations.find((choice) => targetIdentitySet.has(choice.componentName)) ??
-    inferredPrimary ??
+    contextualPrimary ??
     choices[0];
+  const factoryUnresolvedOptions =
+    factoryManifest === undefined
+      ? factoryChoices.map((choice) =>
+          Object.freeze({
+            availability: 'factory-contract-unresolved' as const,
+            componentName: choice.componentName,
+            kind: choice.kind,
+            occurrenceIdentity: createFactoryUnresolvedOccurrenceIdentity(
+              options.documentPath,
+              choice.kind,
+              choice.componentName,
+              choice.occurrenceStart,
+            ),
+          }),
+        )
+      : factoryManifest.options
+          .filter((option) => option.availability !== 'selectable')
+          .map((option) =>
+            Object.freeze({
+              availability: option.availability,
+              componentName: option.componentName,
+              kind: option.kind,
+              occurrenceIdentity: createFactoryUnresolvedOccurrenceIdentity(
+                factoryManifest.ownerSourcePath,
+                option.kind,
+                option.componentName,
+                option.occurrenceStart,
+              ),
+            }),
+          );
+  const directUnresolvedOptions = ownerDirectResolution.unresolved.map(({ availability, choice }) =>
+    Object.freeze({
+      availability,
+      componentName: choice.componentName,
+      kind: 'direct' as const,
+      occurrenceIdentity: choice.occurrenceIdentity,
+      pattern: choice.pattern,
+    }),
+  );
+  const unresolvedOptions = Object.freeze([
+    ...factoryUnresolvedOptions,
+    ...directUnresolvedOptions,
+  ]);
   return Object.freeze({
     ...(primary === undefined
       ? {}
@@ -486,43 +465,100 @@ export async function collectPreviewInspectorRouteLocationInventory(
           primary,
         }),
     choices,
-    fallbackCount: factoryManifest?.fallbacks.length ?? 0,
-    unresolvedFactoryRoutes: (factoryManifest?.unresolvedChoiceNames.length ?? 0) > 0,
-    ...(factoryManifest === undefined
+    ...(ownerDirectResolution.duplicates.length === 0
       ? {}
       : {
-          unresolvedFactoryOptionNames: factoryManifest.unresolvedChoiceNames,
-          unresolvedFactoryOptions: Object.freeze(
-            factoryManifest.options
-              .filter((option) => option.availability !== 'selectable')
-              .map((option) =>
-                Object.freeze({
-                  availability: option.availability,
-                  componentName: option.componentName,
-                  kind: option.kind,
-                }),
-              ),
+          directRouteDuplicates: Object.freeze(
+            ownerDirectResolution.duplicates.map(({ candidate, choice }) =>
+              Object.freeze({
+                componentExportName: choice.reference.exportName,
+                componentName: choice.componentName,
+                componentSourcePath: choice.reference.sourcePath,
+                occurrenceIdentity: choice.occurrenceIdentity,
+                pattern: candidate.pattern,
+              }),
+            ),
           ),
         }),
+    fallbackCount: factoryManifest?.fallbacks.length ?? 0,
+    unresolvedFactoryRoutes:
+      unresolvedOptions.length > 0,
+    ...(unresolvedOptions.length === 0
+      ? {}
+      : {
+          unresolvedFactoryOptionNames: Object.freeze(
+            unresolvedOptions.map((option) => option.componentName),
+          ),
+          unresolvedFactoryOptions: unresolvedOptions,
+        }),
+  });
+}
+/** Converts occurrence-bound direct evidence into the shared deterministic ranking model. */
+function materializeDirectRouteResolution(
+  resolution: PreviewInspectorDirectRouteResolution,
+  documentPath: string,
+): {
+  readonly duplicates: readonly DuplicateDirectRouteChoice[];
+  readonly selectable: readonly ResolvedDirectRouteChoice[];
+  readonly unresolved: PreviewInspectorDirectRouteResolution['unresolved'];
+} {
+  const create = (
+    item:
+      | PreviewInspectorDirectRouteResolution['selectable'][number]
+      | PreviewInspectorDirectRouteResolution['duplicates'][number],
+  ): RouteLocationCandidate | undefined => {
+    const candidates: RouteLocationCandidate[] = [];
+    addRouteCandidate(candidates, {
+      choiceOccurrenceIdentity: item.choice.occurrenceIdentity,
+      componentName: item.choice.componentName,
+      dependencyPaths: item.dependencyPaths,
+      ...(item.directRouteOwnerSourcePath === undefined
+        ? {}
+        : { directRouteOwnerSourcePath: item.directRouteOwnerSourcePath }),
+      documentPath,
+      evidenceKind: item.evidenceKind,
+      identityOrder: item.identityOrder,
+      pattern: item.pattern,
+      provenanceIdentity: item.provenanceIdentity,
+      sourcePath: item.sourcePath,
+    });
+    return candidates[0];
+  };
+  return Object.freeze({
+    duplicates: Object.freeze(
+      resolution.duplicates.flatMap((item) => {
+        const candidate = create(item);
+        return candidate === undefined ? [] : [{ candidate, choice: item.choice }];
+      }),
+    ),
+    selectable: Object.freeze(
+      resolution.selectable.flatMap((item) => {
+        const candidate = create(item);
+        return candidate === undefined ? [] : [{ candidate, choice: item.choice }];
+      }),
+    ),
+    unresolved: resolution.unresolved,
   });
 }
 
 /** Freezes one ranked candidate with the complete shared evidence needed for hot reload. */
 function freezeRouteLocation(
   candidate: RouteLocationCandidate,
-  choiceReferences: ReadonlyMap<string, PreviewInspectorRouteChoiceReference>,
   factoryOwner: PreviewInspectorRouteFactoryOwnerEvidence | undefined,
-  directChoicesByKey: ReadonlyMap<string, PreviewInspectorDirectRouteChoice>,
+  allDirectChoicesByOccurrence: ReadonlyMap<string, PreviewInspectorDirectRouteChoice>,
   supportingSourcePaths: ReadonlySet<string>,
   catalogImportersByPath: ReadonlyMap<string, ReadonlySet<string>>,
   routePatterns: readonly string[],
+  documentPath: string,
+  exportName: string,
 ): PreviewInspectorRouteLocation {
-  const directChoice = directChoicesByKey.get(createDirectRouteReferenceKey(candidate));
-  const factoryReference = choiceReferences.get(candidate.componentName);
-  const componentReference = directChoice?.reference ?? factoryReference;
+  const directChoice =
+    candidate.choiceOccurrenceIdentity === undefined
+      ? undefined
+      : allDirectChoicesByOccurrence.get(candidate.choiceOccurrenceIdentity);
+  const componentReference = directChoice?.reference;
   const elementWrappers = [
     ...collectDirectRouteElementWrappers(directChoice, componentReference),
-    ...(factoryReference?.elementWrappers ?? []),
   ].filter(
     (wrapper, index, values) =>
       values.findIndex(
@@ -535,6 +571,20 @@ function freezeRouteLocation(
     candidate.evidenceKind === 'route-catalog'
       ? (catalogImportersByPath.get(candidate.sourcePath) ?? [])
       : [];
+  const directRouteOwnerSourcePath = candidate.directRouteOwnerSourcePath;
+  const authenticatedDirectOwner =
+    directRouteOwnerSourcePath !== undefined &&
+    path.normalize(directRouteOwnerSourcePath) === path.normalize(documentPath)
+      ? Object.freeze({ exportName, sourcePath: path.normalize(directRouteOwnerSourcePath) })
+      : undefined;
+  const sameOwnerDirectChoices =
+    authenticatedDirectOwner === undefined
+      ? []
+      : [...allDirectChoicesByOccurrence.values()].filter(
+          (choice) =>
+            path.normalize(choice.sourcePath) === authenticatedDirectOwner.sourcePath &&
+            choice.pathResolution === 'resolved',
+        );
   return Object.freeze({
     ...(componentReference === undefined
       ? {}
@@ -549,18 +599,34 @@ function freezeRouteLocation(
           candidate.sourcePath,
           ...(componentReference === undefined ? [] : [componentReference.sourcePath]),
           ...elementWrappers.map((wrapper) => wrapper.sourcePath),
+          ...(candidate.dependencyPaths ?? []),
           ...supportingSourcePaths,
           ...selectedCatalogImporters,
         ]),
       ].sort(),
     ),
     evidenceKind: candidate.evidenceKind,
+    ...(directRouteOwnerSourcePath === undefined ? {} : { directRouteOwnerSourcePath }),
     ...(elementWrappers.length === 0 ? {} : { elementWrappers: Object.freeze(elementWrappers) }),
     pathname: materializeRoutePattern(candidate.pattern, routePatterns),
-    ...(factoryOwner === undefined ||
+    ...(authenticatedDirectOwner !== undefined
+      ? {
+          routeMounts: Object.freeze([
+            Object.freeze({
+              basePath: '/',
+              exportName: authenticatedDirectOwner.exportName,
+              hasWildcardFallback: sameOwnerDirectChoices.some((choice) =>
+                /(?:^|\/)\*$/u.test(choice.pattern),
+              ),
+              routeSlotCount: sameOwnerDirectChoices.length,
+              sourcePath: authenticatedDirectOwner.sourcePath,
+            }),
+          ]),
+        }
+      : factoryOwner === undefined ||
     ((candidate.componentName !== factoryOwner.exportName ||
       path.normalize(candidate.sourcePath) !== path.normalize(factoryOwner.sourcePath)) &&
-      !choiceReferences.has(candidate.componentName))
+      componentReference === undefined)
       ? {}
       : {
           routeMounts: Object.freeze([
@@ -611,15 +677,6 @@ function collectDirectRouteElementWrappers(
       }),
     ];
   });
-}
-
-/** Keys a direct component reference by its exact router source, component, and authored pattern. */
-function createDirectRouteReferenceKey(input: {
-  readonly componentName: string;
-  readonly pattern: string;
-  readonly sourcePath: string;
-}): string {
-  return `${path.normalize(input.sourcePath)}\0${input.pattern}\0${input.componentName}`;
 }
 
 /** Builds only identities that can denote the exact selected export in its own source module. */
@@ -708,20 +765,6 @@ function toPascalCase(value: string): string {
     .filter(Boolean)
     .map((segment) => segment.slice(0, 1).toUpperCase() + segment.slice(1))
     .join('');
-}
-
-/** Keeps exact render-path sources first because they are the cheapest and strongest evidence. */
-function collectRenderPathSourcePaths(renderChain: PreviewRenderChainPlan): readonly string[] {
-  return [
-    ...new Set(
-      renderChain.paths.flatMap((renderPath) => [
-        ...renderPath.steps.map((step) => path.normalize(step.sourcePath)),
-        ...(renderPath.entryPoint === undefined
-          ? []
-          : [path.normalize(renderPath.entryPoint.sourcePath)]),
-      ]),
-    ),
-  ];
 }
 
 /** Counts common normalized path segments so the target's monorepo package is inspected first. */
@@ -904,17 +947,31 @@ function addRouteCandidate(
   if (
     candidates.some(
       (candidate) =>
-        candidate.pattern === pattern && candidate.componentName === input.componentName,
+        candidate.pattern === pattern &&
+        candidate.componentName === input.componentName &&
+        (candidate.choiceOccurrenceIdentity === input.choiceOccurrenceIdentity ||
+          (candidate.choiceOccurrenceIdentity === undefined &&
+            input.choiceOccurrenceIdentity === undefined)),
     )
   ) {
     return;
   }
   candidates.push({
+    ...(input.choiceOccurrenceIdentity === undefined
+      ? {}
+      : { choiceOccurrenceIdentity: input.choiceOccurrenceIdentity }),
     componentName: input.componentName,
+    ...(input.dependencyPaths === undefined ? {} : { dependencyPaths: input.dependencyPaths }),
+    ...(input.directRouteOwnerSourcePath === undefined
+      ? {}
+      : { directRouteOwnerSourcePath: path.normalize(input.directRouteOwnerSourcePath) }),
     evidenceKind: input.evidenceKind,
     identityOrder: input.identityOrder,
     pathname,
     pattern,
+    ...(input.provenanceIdentity === undefined
+      ? {}
+      : { provenanceIdentity: input.provenanceIdentity }),
     score:
       scoreRoutePattern(pattern, input.documentPath, input.identityOrder, input.evidenceKind) +
       (input.scoreAdjustment ?? 0),

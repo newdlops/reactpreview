@@ -435,8 +435,8 @@ describe('PreviewCompilerWorkerClient', () => {
     }
   });
 
-  /** Native Page Inspector bundling is not rejected by a repository-size-derived timer. */
-  it('disables the automatic watchdog after Page Inspector reaches native bundling', async () => {
+  /** Native Page Inspector bundling gets a generous deadline but cannot wedge Preparing forever. */
+  it('recycles Page Inspector after the finite native bundling deadline', async () => {
     vi.useFakeTimers();
     try {
       const transport = new FakeWorkerTransport();
@@ -460,22 +460,16 @@ describe('PreviewCompilerWorkerClient', () => {
 
       await vi.advanceTimersByTimeAsync(1);
       expect(settled).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(119_998);
       expect(settled).not.toHaveBeenCalled();
-      transport.respond({
-        bundle: {
-          chunks: [],
-          dependencies: [],
-          diagnostics: [],
-          javascript: new Uint8Array([7]),
-          watchDirectories: [],
-        },
-        id: requestId,
-        type: 'success',
+      await vi.advanceTimersByTimeAsync(1);
+      const timeoutError = await capturedSettlement;
+      expect(timeoutError).toMatchObject({
+        lastStage: 'bundling-modules',
+        name: 'PreviewBuildStalledError',
       });
-      await expect(compilation).resolves.toMatchObject({ javascript: new Uint8Array([7]) });
-      await expect(capturedSettlement).resolves.toMatchObject({ javascript: new Uint8Array([7]) });
-      expect(transport.terminate).not.toHaveBeenCalled();
+      expect(transport.requests.at(-1)).toEqual({ id: requestId, type: 'cancel' });
+      expect(transport.terminate).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -642,6 +636,43 @@ describe('PreviewCompilerWorkerClient', () => {
 
       await vi.advanceTimersByTimeAsync(20);
       expect(transport.terminate).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** The campaign recovery barrier settles only after an unresponsive worker fully retires. */
+  it('confirms forced retirement before resolving cancellation recovery', async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new FakeWorkerTransport();
+      let finishRetirement!: (exitCode: number) => void;
+      transport.terminate.mockImplementation(
+        () =>
+          new Promise<number>((resolve) => {
+            finishRetirement = resolve;
+          }),
+      );
+      const client = new PreviewCompilerWorkerClient('/extension/worker.js', {
+        cancellationGraceMs: 20,
+        compilationTimeoutMs: 1_000,
+        createTransport: () => transport,
+      });
+      const controller = new AbortController();
+      const compilation = client.compile(REQUEST, { signal: controller.signal });
+      controller.abort();
+      await expect(compilation).rejects.toBeInstanceOf(PreviewBuildCancelledError);
+      let recovered = false;
+      const recovery = client.waitForCancellationRecovery().then(() => {
+        recovered = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(20);
+      expect(transport.terminate).toHaveBeenCalledOnce();
+      expect(recovered).toBe(false);
+      finishRetirement(0);
+      await recovery;
+      expect(recovered).toBe(true);
     } finally {
       vi.useRealTimers();
     }

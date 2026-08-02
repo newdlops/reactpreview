@@ -2,6 +2,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PreviewBuildRequest, PreviewBundle } from '../../../src/domain/preview';
 import type { PreviewBuildExecutionContext } from '../../../src/domain/previewBuildExecution';
+import type {
+  PreviewCompleteRouteInventoryTelemetryEvent,
+  PreviewCompleteRouteInventoryTelemetryObserver,
+  PreviewInspectorCompleteRouteInventory,
+  PreviewInspectorCompleteRouteInventoryLimits,
+} from '../../../src/adapters/esbuild/inspector/previewInspectorCompleteRouteInventory';
 import {
   PreviewCompilerWorkerServer,
   type PreviewCompilerWorkerBackend,
@@ -50,6 +56,22 @@ class DeferredCompiler implements PreviewCompilerWorkerBackend {
     readonly request: PreviewBuildRequest;
   }[] = [];
   public readonly shutdown = vi.fn(() => Promise.resolve());
+
+  /** Inventory is configured per inventory-specific test and unused by route scheduling tests. */
+  public readonly collectCompleteRouteInventory = vi.fn(
+    (
+      _request: PreviewBuildRequest,
+      _limits?: Partial<PreviewInspectorCompleteRouteInventoryLimits>,
+      _signal?: AbortSignal,
+      _observer?: PreviewCompleteRouteInventoryTelemetryObserver,
+    ): Promise<PreviewInspectorCompleteRouteInventory> => {
+      void _request;
+      void _limits;
+      void _signal;
+      void _observer;
+      return Promise.reject(new Error('Inventory response was not configured for this test.'));
+    },
+  );
 
   /** Records one compile and returns its manually controlled promise. */
   public compile(
@@ -181,6 +203,111 @@ describe('PreviewCompilerWorkerServer', () => {
     await waitForMicrotasks();
     expect(compiler.shutdown).toHaveBeenCalledOnce();
     expect(port.responses.at(-1)).toEqual({ type: 'shutdown-complete' });
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
+  it('releases the inventory compiler before posting the one-shot success', async () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    const inventory: PreviewInspectorCompleteRouteInventory = {
+      analysisPasses: 1,
+      complete: true,
+      counts: { duplicate: 0, runnable: 0, total: 0, unresolved: 0 },
+      dependencyPaths: [],
+      entries: [],
+      limits: { maximumAnalysisPasses: 1, maximumBranches: 1, maximumDepth: 1 },
+      owner: { exportName: 'default', sourcePath: '/workspace/App.tsx' },
+      predecessorVersion: 3,
+      replayPasses: 0,
+      replayPolicy: { digest: 'a'.repeat(64), predecessorVersion: 3, version: 4 },
+      truncated: false,
+      version: 4,
+    };
+    let releaseShutdown!: () => void;
+    compiler.collectCompleteRouteInventory.mockResolvedValueOnce(inventory);
+    compiler.shutdown.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        releaseShutdown = resolve;
+      }),
+    );
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+
+    port.request({
+      request: {
+        dependencySnapshots: [],
+        documentPath: '/workspace/App.tsx',
+        language: 'tsx',
+        sourceText: 'export default function App() { return null; }',
+        workspaceRoot: '/workspace',
+      },
+      type: 'collect-complete-route-inventory',
+    });
+    await waitForMicrotasks();
+
+    expect(compiler.collectCompleteRouteInventory).toHaveBeenCalledOnce();
+    const progressEvent: PreviewCompleteRouteInventoryTelemetryEvent = {
+      cpuSystemMicros: 2,
+      cpuUserMicros: 1,
+      elapsedMs: 3,
+      heapUsedBytes: 4,
+      phase: 'prepare-source-index',
+      rssBytes: 5,
+      sequence: 1,
+      transition: 'start',
+      version: 1,
+    };
+    compiler.collectCompleteRouteInventory.mock.calls[0]?.[3]?.(progressEvent);
+    expect(port.responses).toEqual([
+      {
+        event: progressEvent,
+        type: 'complete-route-inventory-progress',
+      },
+    ]);
+    expect(compiler.shutdown).toHaveBeenCalledOnce();
+    releaseShutdown();
+    await waitForMicrotasks();
+    expect(port.responses).toEqual([
+      {
+        event: progressEvent,
+        type: 'complete-route-inventory-progress',
+      },
+      { inventory, type: 'complete-route-inventory-success' },
+    ]);
+    expect(port.close).toHaveBeenCalledOnce();
+  });
+
+  it('returns one stable inventory failure only after compiler shutdown', async () => {
+    const port = new FakeWorkerPort();
+    const compiler = new DeferredCompiler();
+    compiler.collectCompleteRouteInventory.mockRejectedValueOnce(
+      new Error('synthetic inventory failure'),
+    );
+    const server = new PreviewCompilerWorkerServer(port, compiler);
+    server.start();
+
+    port.request({
+      request: {
+        dependencySnapshots: [],
+        documentPath: '/workspace/App.tsx',
+        language: 'tsx',
+        sourceText: 'export default function App() { return null; }',
+        workspaceRoot: '/workspace',
+      },
+      type: 'collect-complete-route-inventory',
+    });
+    await waitForMicrotasks();
+
+    expect(compiler.shutdown).toHaveBeenCalledOnce();
+    expect(port.responses).toEqual([
+      {
+        error: {
+          code: 'preview-inventory-failed',
+          message: 'synthetic inventory failure',
+        },
+        type: 'complete-route-inventory-failure',
+      },
+    ]);
     expect(port.close).toHaveBeenCalledOnce();
   });
 

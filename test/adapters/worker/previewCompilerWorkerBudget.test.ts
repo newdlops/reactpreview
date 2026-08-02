@@ -17,8 +17,8 @@ const BASE_REQUEST: PreviewBuildRequest = {
 };
 
 describe('previewCompilerWorkerBudget', () => {
-  /** Native Page Inspector bundling has no project-size-derived deadline. */
-  it('does not impose a fixed Page Inspector bundling allowance', () => {
+  /** Native Page Inspector bundling is generous but can never leave Preparing visible forever. */
+  it('bounds Page Inspector native bundling independently from its fast analysis stages', () => {
     const budget = createPreviewCompilerWorkerBudget(BASE_REQUEST, undefined);
 
     expect(budget).toEqual({
@@ -28,13 +28,13 @@ describe('previewCompilerWorkerBudget', () => {
     expect(selectPreviewCompilerStageTimeoutMs(BASE_REQUEST, budget, 'preparing-runtime')).toBe(
       45_000,
     );
-    expect(
-      selectPreviewCompilerStageTimeoutMs(BASE_REQUEST, budget, 'bundling-modules'),
-    ).toBeUndefined();
+    expect(selectPreviewCompilerStageTimeoutMs(BASE_REQUEST, budget, 'bundling-modules')).toBe(
+      120_000,
+    );
   });
 
-  /** Full page enrichment follows the same native-bundling contract. */
-  it('keeps full-page analysis bounded before entering unbounded native bundling', () => {
+  /** Full page enrichment follows the same finite native-bundling contract. */
+  it('keeps full-page analysis and native bundling on finite stage budgets', () => {
     const request: PreviewBuildRequest = { ...BASE_REQUEST, preparationMode: 'full' };
     const budget = createPreviewCompilerWorkerBudget(request, undefined);
 
@@ -42,9 +42,7 @@ describe('previewCompilerWorkerBudget', () => {
       fixed: false,
       initialStageTimeoutMs: 120_000,
     });
-    expect(
-      selectPreviewCompilerStageTimeoutMs(request, budget, 'bundling-modules'),
-    ).toBeUndefined();
+    expect(selectPreviewCompilerStageTimeoutMs(request, budget, 'bundling-modules')).toBe(120_000);
   });
 
   /** Ordinary component previews do not inherit the more expensive authored-page allowance. */

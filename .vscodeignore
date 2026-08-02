@@ -34,4 +34,5 @@ assets/*.md
 node_modules/esbuild/bin/esbuild
 .zoek-rs
 .tmp
+.react-preview-*/**
 log*.txt

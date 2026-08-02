@@ -47,6 +47,16 @@ const sharedBuildOptions = {
  */
 const extensionBuildOptions = {
   ...sharedBuildOptions,
+  banner: {
+    js: [
+      "import { createRequire as __reactPreviewCreateRequire } from 'node:module';",
+      "import { fileURLToPath as __reactPreviewFileURLToPath } from 'node:url';",
+      "import { dirname as __reactPreviewDirname } from 'node:path';",
+      'const require = __reactPreviewCreateRequire(import.meta.url);',
+      'const __filename = __reactPreviewFileURLToPath(import.meta.url);',
+      'const __dirname = __reactPreviewDirname(__filename);',
+    ].join('\n'),
+  },
   entryPoints: ['src/extension.ts'],
   format: 'esm',
   outfile: 'dist/extension.mjs',

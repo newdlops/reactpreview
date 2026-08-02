@@ -40,6 +40,30 @@ export interface PendingPreviewHotReload {
   readonly timeout: ReturnType<typeof setTimeout>;
 }
 
+/** Host-owned request that makes one preparing replacement retain the visible React tree. */
+export interface PreviewHotReloadCancellation {
+  /** Session-local revision copied from the pending replacement. */
+  readonly revision: number;
+  /** Exact pending request token; unrelated or already-settled reloads ignore the message. */
+  readonly token: string;
+  /** Private webview protocol discriminator. */
+  readonly type: 'react-preview-hot-reload-cancel';
+}
+
+/** Creates one bounded cancellation for a replacement that has not committed its React root. */
+export function createPreviewHotReloadCancellation(
+  revision: number,
+  token: string,
+): PreviewHotReloadCancellation {
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new TypeError('Hot-reload cancellation revision must be a non-negative safe integer.');
+  }
+  if (token.length === 0 || token.length > 256) {
+    throw new TypeError('Hot-reload cancellation token must be bounded and non-empty.');
+  }
+  return Object.freeze({ revision, token, type: 'react-preview-hot-reload-cancel' });
+}
+
 /**
  * Reads a structured-clone value only when it describes an internally consistent hot-reload
  * acknowledgement. Ready messages must report an applied tree, while failures may explicitly say

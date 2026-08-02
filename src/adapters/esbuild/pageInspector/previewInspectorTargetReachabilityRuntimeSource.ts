@@ -117,6 +117,21 @@ function readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExpor
   }
   return targetPlan?.paths?.[0] ?? candidatePath;
 }
+/** Resolves the exact facade source for the selected export without export-name-only fallback. */
+function readPreviewInspectorTargetSourcePath(descriptor, candidate, targetExportName) {
+  for (const reference of [
+    candidate?.target,
+    descriptor?.inspector?.renderChainsByExport?.[targetExportName]?.target,
+    descriptor?.inspector?.target,
+  ]) {
+    if (
+      reference?.exportName === targetExportName &&
+      typeof reference?.sourcePath === 'string' &&
+      reference.sourcePath.length > 0
+    ) return reference.sourcePath.replaceAll('\\', '/');
+  }
+  return undefined;
+}
 /** Builds one mutable but bounded state record from immutable application-path evidence. */
 function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   const targetExportName = readPreviewInspectorExpectedTargetExport(descriptor, candidate);
@@ -145,10 +160,26 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     runtimeOwnerNames: [],
     status: 'probing',
     targetExportName,
+    targetSourcePath: readPreviewInspectorTargetSourcePath(
+      descriptor,
+      candidate,
+      targetExportName,
+    ),
     targetHasOutput: false,
     targetMounted: false,
     targetWasMounted: false,
   };
+}
+/** Returns only committed boundaries carrying the state's exact compiler facade identity. */
+function readPreviewInspectorTargetBoundaries(state) {
+  if (typeof state?.targetSourcePath !== 'string') return new Set();
+  const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  if (!(boundaries instanceof Set)) return new Set();
+  return new Set([...boundaries].filter((boundary) =>
+    boundary?.props?.exportName === state.targetExportName &&
+    typeof boundary?.props?.sourcePath === 'string' &&
+    boundary.props.sourcePath.replaceAll('\\', '/') === state.targetSourcePath
+  ));
 }
 /** Returns the retained traversal state, creating it before the candidate's first render. */
 function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
@@ -228,7 +259,7 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
 }
 /** Reports whether the exact selected target facade committed at least one live boundary. */
 function hasMountedPreviewInspectorTarget(state) {
-  const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
   return boundaries instanceof Set && boundaries.size > 0;
 }
 /**
@@ -345,7 +376,7 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
  * authored visual component; treating that boundary alone as success stops DFS on a blank page.
  */
 function hasPreviewInspectorTargetHostOutput(state) {
-  const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
   state.targetHasAnyHostOutput = false;
   state.targetDeferredCallbackPending = false;
   state.targetOutputKind = 'none';
@@ -362,7 +393,7 @@ function hasPreviewInspectorTargetHostOutput(state) {
 }
 /** Stops automatic branch traversal while the selected target owns a contained render failure. */
 function hasPreviewInspectorTargetRenderError(state) {
-  const boundaries = previewInspectorSession.boundariesByExport.get(state.targetExportName);
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
   return boundaries instanceof Set &&
     [...boundaries].some((boundary) => boundary?.state?.error !== undefined);
 }

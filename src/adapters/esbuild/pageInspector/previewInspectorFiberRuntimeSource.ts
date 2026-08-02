@@ -88,9 +88,30 @@ function readPreviewInspectorFiberLink(fiber, propertyName) {
 /** Reads the current boundary Fiber across React 16-19 class-instance field spellings. */
 function readPreviewInspectorBoundaryFiber(boundary) {
   const modernFiber = readPreviewInspectorOwnData(boundary, '_reactInternals');
-  if (modernFiber !== null && typeof modernFiber === 'object') return modernFiber;
   const legacyFiber = readPreviewInspectorOwnData(boundary, '_reactInternalFiber');
-  return legacyFiber !== null && typeof legacyFiber === 'object' ? legacyFiber : undefined;
+  const primary = modernFiber !== null && typeof modernFiber === 'object'
+    ? modernFiber
+    : legacyFiber !== null && typeof legacyFiber === 'object'
+      ? legacyFiber
+      : undefined;
+  if (primary === undefined) return undefined;
+  const alternate = readPreviewInspectorFiberLink(primary, 'alternate');
+  for (const candidate of [primary, alternate]) {
+    const stateNode = readPreviewInspectorOwnData(candidate, 'stateNode');
+    if (
+      candidate !== undefined &&
+      (stateNode === undefined || stateNode === boundary) &&
+      readPreviewInspectorFiberLink(candidate, 'child') !== undefined
+    ) return candidate;
+  }
+  const primaryStateNode = readPreviewInspectorOwnData(primary, 'stateNode');
+  const alternateStateNode = readPreviewInspectorOwnData(alternate, 'stateNode');
+  return primaryStateNode === undefined || primaryStateNode === boundary
+    ? primary
+    : alternate !== undefined &&
+        (alternateStateNode === undefined || alternateStateNode === boundary)
+      ? alternate
+      : undefined;
 }
 
 /** Returns a descriptor-safe component name through memo, forward-ref, and lazy-like wrappers. */
@@ -674,6 +695,11 @@ function normalizePreviewInspectorBoundaryEntries(boundaries) {
     return {
       boundary: nestedBoundary ?? value,
       exportName: typeof exportName === 'string' && exportName.length > 0 ? exportName : undefined,
+      sourcePath: readPreviewInspectorOwnData(value, 'sourcePath') ??
+        readPreviewInspectorOwnData(
+          readPreviewInspectorOwnData(nestedBoundary ?? value, 'props'),
+          'sourcePath',
+        ),
     };
   });
 }
@@ -761,6 +787,7 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
             hostElementCount: 0,
             id,
             kind,
+            mounted: true,
             name,
             props: snapshotPreviewInspectorValue(readPreviewInspectorOwnData(fiber, 'memoizedProps')),
             ...(role === undefined ? {} : { role }),
@@ -800,8 +827,13 @@ function collectPreviewInspectorFiberTree(boundaries, selectedId, options = {}) 
   const seenSlices = new Set();
   for (const entry of normalizePreviewInspectorBoundaryEntries(boundaries)) {
     const boundaryFiber = readPreviewInspectorBoundaryFiber(entry.boundary);
+    boundaryFibers.push({
+      boundary: entry.boundary,
+      exportName: entry.exportName,
+      fiber: boundaryFiber,
+      sourcePath: entry.sourcePath,
+    });
     if (boundaryFiber === undefined) continue;
-    boundaryFibers.push({ boundary: entry.boundary, exportName: entry.exportName, fiber: boundaryFiber });
     const sliceFiber = findPreviewInspectorApplicationSliceFiber(boundaryFiber);
     if (sliceFiber === undefined || seenSlices.has(sliceFiber)) continue;
     seenSlices.add(sliceFiber);
@@ -929,10 +961,6 @@ function findPreviewInspectorFiberTreeNodeByHost(snapshot, hostValue, preferComp
   return selectPreviewInspectorFiberTreeNode(snapshot, id);
 }
 
-/**
- * Preserves the original exact-target highlighting contract instead of outlining the entire page
- * slice now exposed by the component tree.
- */
 function collectPreviewInspectorFiberElements(boundary) {
   const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
   if (boundaryFiber === undefined) return [];

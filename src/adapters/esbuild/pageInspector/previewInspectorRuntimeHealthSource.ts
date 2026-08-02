@@ -54,7 +54,7 @@ function copyPreviewInspectorRuntimeHealthValue(
   if (typeof value === 'string') return value.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT);
   if (value === null || typeof value === 'boolean') return value;
   if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
-  if (value === undefined) return '[undefined]';
+  if (value === undefined) return null;
   if (typeof value === 'bigint') return String(value) + 'n';
   if (typeof value === 'symbol' || typeof value === 'function') return '[' + typeof value + ']';
   if (typeof value !== 'object') return '[' + typeof value + ']';
@@ -75,7 +75,11 @@ function copyPreviewInspectorRuntimeHealthValue(
     if (blockedInspectorPropNames.has(key)) continue;
     let descriptor;
     try { descriptor = Object.getOwnPropertyDescriptor(value, key); } catch { descriptor = undefined; }
-    if (descriptor === undefined || !('value' in descriptor)) continue;
+    if (
+      descriptor === undefined ||
+      !('value' in descriptor) ||
+      descriptor.value === undefined
+    ) continue;
     result[key] = copyPreviewInspectorRuntimeHealthValue(descriptor.value, depth + 1, state);
   }
   return result;

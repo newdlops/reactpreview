@@ -23,7 +23,11 @@ import { PreviewPanelPreparationState } from './previewPanelPreparationState';
 import { PreviewPanelInspectorSelectionController } from './previewPanelInspectorSelectionController';
 import { PreviewPerformanceTrace } from './previewPerformanceTrace';
 import { preparePreviewFirstPaint } from './previewFirstPaint';
-import { createHotReloadScriptUri, type PendingPreviewHotReload } from './previewHotReloadProtocol';
+import {
+  createHotReloadScriptUri,
+  createPreviewHotReloadCancellation,
+  type PendingPreviewHotReload,
+} from './previewHotReloadProtocol';
 import { handlePreviewPanelRuntimeAcknowledgement } from './previewPanelRuntimeAcknowledgement';
 import { readPreviewRetryRequest } from './previewRetryProtocol';
 import type { PreviewInspectorCompanionOpenSourceRequest } from './previewInspectorCompanionProtocol';
@@ -40,6 +44,7 @@ import type { PreviewInspectorPageCandidateSelectionRequest } from './previewIns
 import type { PreviewInspectorPageExecutionRetryRequest } from './previewInspectorPageExecutionRetryProtocol';
 import type { PreviewInspectorRouteSelectionRequest } from './previewInspectorRouteSelectionProtocol';
 import type { PreviewInspectorSelectionStatusMessage } from './previewInspectorSelectionStatusProtocol';
+import type { PreviewRuntimeHealthMessage } from './previewRuntimeHealthProtocol';
 import { PreviewProgressGate } from './previewProgressGate';
 import type {
   ActivePreviewBuildExecution,
@@ -71,6 +76,7 @@ export class PreviewPanelSession implements vscode.Disposable {
   private readonly directoryWatcherDisposables = new Map<string, vscode.Disposable[]>();
   private disposed = false;
   private disposalNotified = false;
+  private displayedArtifactHash: string | undefined;
   private displayedRuntimeRevision = 0;
   private readonly preparationState = new PreviewPanelPreparationState();
   private readonly inspectorRouteSelection = new PreviewPanelRouteSelection();
@@ -96,6 +102,7 @@ export class PreviewPanelSession implements vscode.Disposable {
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private revision = 0;
   private hotReloadSequence = 0;
+  private verifiedTargetOutputArtifactHash: string | undefined;
   public constructor(private readonly options: PreviewPanelSessionOptions) {
     this.targetPath = canonicalizeExistingPath(options.initialTarget.request.documentPath);
     this.dependencies = createExistingPathIdentitySet([options.initialTarget.request.documentPath]);
@@ -379,7 +386,14 @@ export class PreviewPanelSession implements vscode.Disposable {
     for (const diagnostic of preparedPreview.diagnostics) {
       this.options.log.warn(formatDiagnostic(diagnostic));
     }
-    const scriptUri = this.options.panel.webview.asWebviewUri(vscode.Uri.parse(preparedPreview.artifact.scriptLocation, true)).toString(true);
+    const publishedScriptUri = this.options.panel.webview
+      .asWebviewUri(vscode.Uri.parse(preparedPreview.artifact.scriptLocation, true))
+      .toString(true);
+    const scriptUri = createHotReloadScriptUri(
+      publishedScriptUri,
+      requestedRevision,
+      preparedPreview.artifact.contentHash,
+    );
     const stylesheetLocation = preparedPreview.artifact.stylesheetLocation;
     const stylesheetUri =
       stylesheetLocation === undefined ? undefined : this.options.panel.webview.asWebviewUri(vscode.Uri.parse(stylesheetLocation, true)).toString(true);
@@ -432,8 +446,7 @@ export class PreviewPanelSession implements vscode.Disposable {
         disposition: 'already-displayed',
       };
     }
-    const hotScriptUri =
-      previousArtifactHash === undefined ? undefined : createHotReloadScriptUri(scriptUri, requestedRevision, preparedPreview.artifact.contentHash);
+    const hotScriptUri = previousArtifactHash === undefined ? undefined : scriptUri;
     if (previousArtifactHash === undefined) {
       // Do not accept the incoming lease until VS Code accepts the initial complete document.
       this.options.panel.webview.html = nextHtml;
@@ -573,6 +586,7 @@ export class PreviewPanelSession implements vscode.Disposable {
         selectRoute: this.selectInspectorRoute.bind(this),
         selectPageCandidate: this.selectInspectorPageCandidate.bind(this),
         selectPageExecutionRetry: this.selectInspectorPageExecutionRetry.bind(this),
+        settleVerifiedTargetOutput: this.retainVerifiedTargetOutput.bind(this),
         sourceDecoration: this.inspectorSourceDecoration,
         targetPath: this.targetPath,
       })
@@ -605,6 +619,51 @@ export class PreviewPanelSession implements vscode.Disposable {
       },
       settlePreparedApplication: this.settlePreparedApplication.bind(this),
     });
+  }
+  private retainVerifiedTargetOutput(health: PreviewRuntimeHealthMessage): void {
+    const artifactId = health.artifactId;
+    if (artifactId === undefined) return;
+    const pendingReplacement = [...this.pendingHotReloads.entries()].find(
+      ([, pending]) =>
+        pending.origin.kind === 'context-enrichment' &&
+        pending.previousArtifactHash === artifactId &&
+        pending.runtimeRevision === health.runtimeRevision,
+    );
+    const isDisplayedArtifact = artifactId === this.displayedArtifactHash;
+    if (!isDisplayedArtifact && pendingReplacement === undefined) {
+      this.options.log.warn(
+        `React preview observed blocker-free target output from an uncorrelated artifact; optional work was not cancelled. Target: ${this.targetPath}; observed artifact: ${artifactId}; displayed artifact: ${this.displayedArtifactHash ?? 'none'}.`,
+      );
+      return;
+    }
+    if (this.verifiedTargetOutputArtifactHash !== artifactId) {
+      this.verifiedTargetOutputArtifactHash = artifactId;
+      this.options.log.info(
+        `React preview retained verified target output and cancelled optional context enrichment. Target: ${this.targetPath}.`,
+      );
+    }
+    this.contextEnrichment.cancel();
+    if (pendingReplacement === undefined) return;
+    const [token, pending] = pendingReplacement;
+    try {
+      const delivery = this.options.panel.webview.postMessage(
+        createPreviewHotReloadCancellation(pending.runtimeRevision, token),
+      );
+      void Promise.resolve(delivery).then(
+        (delivered) => {
+          if (!delivered) {
+            this.options.log.warn(
+              `React preview could not cancel optional context enrichment before browser commit. Target: ${this.targetPath}.`,
+            );
+          }
+        },
+        (error: unknown) => {
+          this.options.log.debug('React preview context-enrichment cancellation delivery failed.', error);
+        },
+      );
+    } catch (error) {
+      this.options.log.debug('Could not post React preview context-enrichment cancellation.', error);
+    }
   }
   private selectInspectorRoute(request: PreviewInspectorRouteSelectionRequest): void {
     const admission = this.inspectorSelection.beginRoute(request, this.revision + 1);
@@ -650,7 +709,12 @@ export class PreviewPanelSession implements vscode.Disposable {
     const enrichmentInput = this.pendingContextEnrichmentInputs.get(applicationId);
     this.pendingContextEnrichmentInputs.delete(applicationId);
     this.clearBuildExecution(origin.buildRevision);
-    if (origin.requiresContextEnrichment && enrichmentInput !== undefined && this.isCurrentRevision(origin.buildRevision)) {
+    if (
+      origin.requiresContextEnrichment &&
+      enrichmentInput !== undefined &&
+      this.isCurrentRevision(origin.buildRevision) &&
+      this.verifiedTargetOutputArtifactHash !== enrichmentInput.artifactHash
+    ) {
       this.contextEnrichment.startAfterCommittedFast(enrichmentInput.target, enrichmentInput.artifactHash, origin.buildRevision, enrichmentInput.signal);
     }
   }
@@ -757,6 +821,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     }
     this.pendingHotReloads.delete(token);
     clearTimeout(pending.timeout);
+    if (outcome === 'applied') this.displayedArtifactHash = pending.nextArtifactHash;
     const retainedPriorTree = outcome === 'retained' || (outcome === 'undelivered' && this.artifactHash !== pending.nextArtifactHash);
     if (retainedPriorTree) {
       this.retainPreviousHotReloadArtifact(pending);
@@ -883,6 +948,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     },
     applicationId = runtimeToken,
   ): void {
+    this.displayedArtifactHash = artifactHash;
     this.displayedRuntimeRevision = revision;
     this.clearInitialRuntimeWatchdog();
     const timeout = setTimeout(() => {
@@ -975,6 +1041,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     this.clearInitialRuntimeWatchdog();
     this.pendingSameArtifactRevision = undefined;
     this.retryController.clear();
+    this.displayedArtifactHash = undefined;
     const contentHash = this.artifactHash;
     this.artifactHash = undefined;
     if (contentHash !== undefined) {

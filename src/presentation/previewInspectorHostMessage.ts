@@ -33,6 +33,11 @@ import {
   readPreviewInspectorPageExecutionRetryRequest,
   type PreviewInspectorPageExecutionRetryRequest,
 } from './previewInspectorPageExecutionRetryProtocol';
+import {
+  readPreviewRuntimeHealthMessage,
+  type PreviewRuntimeHealthJson,
+  type PreviewRuntimeHealthMessage,
+} from './previewRuntimeHealthProtocol';
 
 /** Combined panel state required by blocker tracing and signed source navigation. */
 export interface PreviewInspectorHostMessageContext extends PreviewInspectorSourceNavigationContext {
@@ -52,6 +57,8 @@ export interface PreviewInspectorHostMessageContext extends PreviewInspectorSour
   readonly selectPageCandidate?: (request: PreviewInspectorPageCandidateSelectionRequest) => void;
   /** Schedules one compiler-owned inner Page Execution retry. */
   readonly selectPageExecutionRetry?: (request: PreviewInspectorPageExecutionRetryRequest) => void;
+  /** Prevents optional enrichment from replacing an exact, blocker-free target output. */
+  readonly settleVerifiedTargetOutput?: (message: PreviewRuntimeHealthMessage) => void;
 }
 
 /**
@@ -110,6 +117,10 @@ export function handlePreviewInspectorHostMessage(
     }
     return true;
   }
+  const runtimeHealth = readPreviewRuntimeHealthMessage(value);
+  if (runtimeHealth !== undefined && isVerifiedTargetOutput(runtimeHealth)) {
+    context.settleVerifiedTargetOutput?.(runtimeHealth);
+  }
   if (
     handlePreviewRuntimeHealthMessage(value, {
       enabled: context.enabled,
@@ -132,4 +143,37 @@ export function handlePreviewInspectorHostMessage(
     return true;
   }
   return handlePreviewInspectorSourceNavigationMessage(value, context);
+}
+
+/** Accepts only an exact mounted target with output and no active blocker provenance. */
+function isVerifiedTargetOutput(message: PreviewRuntimeHealthMessage): boolean {
+  if (
+    message.event.event !== 'page-composition-snapshot' ||
+    message.event.category !== 'page-composition'
+  ) {
+    return false;
+  }
+  const detail = readHealthRecord(message.event.detail);
+  const target = readHealthRecord(detail?.targetState);
+  const blockers = readHealthRecord(detail?.blockerSummary);
+  const provenance = detail?.activeBlockerProvenance;
+  return (
+    target?.stage === 'target-output' &&
+    target.status === 'reached' &&
+    target.outputKind === 'target-output' &&
+    target.mounted === true &&
+    target.hasOutput === true &&
+    target.pageRootCommitted === true &&
+    blockers?.active === 0 &&
+    Array.isArray(provenance) &&
+    provenance.length === 0
+  );
+}
+
+/** Narrows one already-budgeted health JSON node without evaluating project accessors. */
+function readHealthRecord(
+  value: PreviewRuntimeHealthJson | undefined,
+): Readonly<Record<string, PreviewRuntimeHealthJson>> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return value as Readonly<Record<string, PreviewRuntimeHealthJson>>;
 }

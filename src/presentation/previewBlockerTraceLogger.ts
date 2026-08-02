@@ -88,7 +88,9 @@ export function handlePreviewBlockerTraceMessage(
     message.event.previewCommand === 'direct-preview' &&
     (message.runtimeSessionId === undefined || message.runtimeRevision === undefined)
   ) {
-    context.log.debug('Ignored a direct React Preview blocker trace without complete runtime correlation.');
+    context.log.debug(
+      'Ignored a direct React Preview blocker trace without complete runtime correlation.',
+    );
     return true;
   }
 

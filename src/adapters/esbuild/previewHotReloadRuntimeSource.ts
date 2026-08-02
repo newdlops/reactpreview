@@ -224,8 +224,32 @@ function readHotReloadMessage(value) {
   return { revision, scriptUri, stylesheetUri, token };
 }
 
+/** Accepts only a cancellation matching one extension-issued pending request identity. */
+function readHotReloadCancellation(value) {
+  if (value === null || typeof value !== 'object') {
+    return undefined;
+  }
+  const { revision, token, type } = value;
+  if (
+    type !== 'react-preview-hot-reload-cancel' ||
+    !Number.isSafeInteger(revision) ||
+    revision < 0 ||
+    typeof token !== 'string' ||
+    token.length === 0 ||
+    token.length > 256
+  ) {
+    return undefined;
+  }
+  return { revision, token };
+}
+
 /** Reports one exact hot request outcome with enough state for host-side lease reconciliation. */
 function reportHotReloadOutcome(message, outcome) {
+  const previousOutcome = previewHotRuntime.reloadOutcomeByToken.get(message.token);
+  if (previousOutcome !== undefined) {
+    previewHotRuntime.vscodeApi?.postMessage(previousOutcome);
+    return;
+  }
   const acknowledgement = {
     applied: outcome.applied,
     retainedPrevious: outcome.retainedPrevious,
@@ -242,6 +266,30 @@ function reportHotReloadOutcome(message, outcome) {
     previewHotRuntime.reloadOutcomeByToken.delete(oldestToken);
   }
   previewHotRuntime.vscodeApi?.postMessage(acknowledgement);
+}
+
+/** Invalidates in-flight preparation before it may unmount a blocker-free visible target. */
+function cancelPreparingHotReload(message) {
+  const latest = previewHotRuntime.latestReloadRequest;
+  if (latest?.revision !== message.revision || latest.token !== message.token) {
+    return;
+  }
+  const settledOutcome = previewHotRuntime.reloadOutcomeByToken.get(message.token);
+  if (settledOutcome !== undefined) {
+    previewHotRuntime.vscodeApi?.postMessage(settledOutcome);
+    return;
+  }
+  previewHotRuntime.requestSequence += 1;
+  previewHotRuntime.latestReloadRequest = {
+    ...latest,
+    requestSequence: previewHotRuntime.requestSequence,
+  };
+  reportHotReloadOutcome(latest, {
+    applied: false,
+    ready: false,
+    retainedPrevious: true,
+    stale: true,
+  });
 }
 
 /** Reports whether a queued or preparing request remains the newest browser-side intention. */
@@ -360,6 +408,11 @@ async function applyHotReloadMessage(message) {
 
 if (!previewHotRuntime.messageListenerInstalled) {
   window.addEventListener('message', (event) => {
+    const cancellation = readHotReloadCancellation(event.data);
+    if (cancellation !== undefined) {
+      cancelPreparingHotReload(cancellation);
+      return;
+    }
     const message = readHotReloadMessage(event.data);
     if (message === undefined) {
       return;

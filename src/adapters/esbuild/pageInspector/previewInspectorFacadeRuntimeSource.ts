@@ -71,6 +71,14 @@ function copyPreviewInspectorComponentStatics(source, target) {
  * The wrapper delegates props, target markers, and remount behavior to the entry-owned inspector.
  */
 export function wrapPreviewInspectorTarget(Component, metadata) {
+  const initialInspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
+  if (metadata?.compilerExportEvidence === true) {
+    initialInspectorApi?.registerTargetOwnershipPhase?.(metadata, 'compiler-export-evidence');
+  }
+  if (metadata?.facadeResolutionEvidence === true) {
+    initialInspectorApi?.registerTargetOwnershipPhase?.(metadata, 'facade-resolution');
+  }
+  initialInspectorApi?.registerTargetOwnershipPhase?.(metadata, 'facade-evaluation');
   if (Component === undefined || Component === null) {
     return Component;
   }
@@ -80,10 +88,16 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
   if (!renderable) {
     return Component;
   }
+  // One facade invocation represents one compiler-selected source export. This opaque value never
+  // reaches application props or markup; it is carried only through the private TargetRenderer.
+  const targetMarker = {};
+  inspectorApi?.registerCompilerCapability?.(targetMarker, metadata);
   const displayName =
     metadata?.exportName ?? Component.displayName ?? Component.name ?? 'default';
   const WrappedPreviewInspectorTarget = React.forwardRef((targetProps, forwardedRef) => {
     const activeInspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
+    activeInspectorApi?.registerTargetOwnershipPhase?.(metadata, 'wrapper-render');
+    activeInspectorApi?.registerCompilerCapability?.(targetMarker, metadata);
     const TargetRenderer = activeInspectorApi?.TargetRenderer;
     if (typeof TargetRenderer !== 'function') {
       const fallbackProps = forwardedRef === null
@@ -97,6 +111,7 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
       Component,
       forwardedRef,
       metadata,
+      targetMarker,
       targetProps,
     });
   });
@@ -109,5 +124,6 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
   }
   return WrappedPreviewInspectorTarget;
 }
+
 `;
 }

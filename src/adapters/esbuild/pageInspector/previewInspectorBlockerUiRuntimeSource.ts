@@ -102,6 +102,19 @@ function readPreviewInspectorTargetFailures() {
   const seen = new Set();
   for (const [exportName, boundaries] of previewInspectorSession.boundariesByExport) {
     for (const boundary of boundaries) {
+      const boundarySourcePath = typeof boundary?.props?.sourcePath === 'string'
+        ? boundary.props.sourcePath.replaceAll('\\', '/')
+        : undefined;
+      const descriptor = previewInspectorSession.descriptors.find((item) => {
+        const reference = item?.inspector?.renderChainsByExport?.[exportName]?.target ??
+          (item?.inspector?.target?.exportName === exportName
+            ? item.inspector.target
+            : undefined);
+        return boundarySourcePath !== undefined &&
+          typeof reference?.sourcePath === 'string' &&
+          reference.sourcePath.replaceAll('\\', '/') === boundarySourcePath;
+      });
+      if (descriptor === undefined) continue;
       const error = boundary?.state?.error;
       if (error === undefined) continue;
       const headline = createRuntimeErrorHeadline(error).slice(0, 1_000);
@@ -111,10 +124,6 @@ function readPreviewInspectorTargetFailures() {
       const identity = exportName + '\0' + headline + '\0' + componentStack;
       if (seen.has(identity) || failures.length >= 64) continue;
       seen.add(identity);
-      const descriptor = previewInspectorSession.descriptors.find((item) =>
-        Object.hasOwn(item?.inspector?.renderChainsByExport ?? {}, exportName) ||
-        item?.inspector?.target?.exportName === exportName,
-      );
       const reference = descriptor?.inspector?.renderChainsByExport?.[exportName]?.target ??
         descriptor?.inspector?.target;
       const runtimeGlobalName = readPreviewInspectorMissingRuntimeGlobalName(error);

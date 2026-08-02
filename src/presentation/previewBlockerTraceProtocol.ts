@@ -197,8 +197,10 @@ function readPreviewBlockerTraceEvent(value: unknown): PreviewBlockerTraceEvent 
     (value.auto !== undefined && auto === undefined) ||
     (value.result !== undefined && result === undefined) ||
     (value.error !== undefined && error === undefined) ||
-    (value.target !== undefined && target === undefined)
-    || (previewCommand !== undefined && previewCommand !== 'direct-preview' && previewCommand !== 'page-inspector')
+    (value.target !== undefined && target === undefined) ||
+    (previewCommand !== undefined &&
+      previewCommand !== 'direct-preview' &&
+      previewCommand !== 'page-inspector')
   ) {
     return undefined;
   }

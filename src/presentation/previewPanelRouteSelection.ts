@@ -28,6 +28,7 @@ export class PreviewPanelRouteSelection {
       request: {
         ...target.request,
         inspectorRouteSelection: steps,
+        inspectorTargetMode: 'selected-route-leaf',
       },
     };
   }

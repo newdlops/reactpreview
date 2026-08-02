@@ -55,10 +55,27 @@ function skipPreviewInspectorGraphqlDirectives(tokens, cursor) {
   }
 }
 
-/** Merges fragment fields without allowing prototype names or overwriting explicit local fields. */
+/** Merges one repeated GraphQL response shape according to selection-set merge semantics. */
+function mergePreviewInspectorGraphqlShape(target, source) {
+  if (target?.kind === 'object' && source?.kind === 'object') {
+    mergePreviewInspectorGraphqlFields(target.fields, source.fields);
+    target.spreads = [...new Set([...(target.spreads ?? []), ...(source.spreads ?? [])])];
+    return target;
+  }
+  if (target?.kind === 'array' && source?.kind === 'array') {
+    target.items = mergePreviewInspectorGraphqlShape(target.items, source.items);
+    return target;
+  }
+  return target ?? source;
+}
+
+/** Merges fragment and repeated fields without allowing prototype names. */
 function mergePreviewInspectorGraphqlFields(target, source) {
   for (const [name, shape] of Object.entries(source ?? {})) {
-    if (!blockedInspectorPropNames.has(name) && !Object.hasOwn(target, name)) target[name] = shape;
+    if (blockedInspectorPropNames.has(name)) continue;
+    target[name] = Object.hasOwn(target, name)
+      ? mergePreviewInspectorGraphqlShape(target[name], shape)
+      : shape;
   }
 }
 
@@ -116,18 +133,20 @@ function parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget) {
     skipPreviewInspectorGraphqlBalanced(tokens, cursor, '(', ')');
     skipPreviewInspectorGraphqlDirectives(tokens, cursor);
     budget.fields += 1;
+    let shape;
     if (tokens[cursor.index] === '{') {
       const child = parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget);
-      fields[responseName] = looksLikePreviewInspectorCollection(fieldName) &&
+      shape = looksLikePreviewInspectorCollection(fieldName) &&
         !isPreviewInspectorGraphqlConnectionSelection(child)
         ? { items: child, kind: 'array' }
         : child;
     } else {
       const scalarShape = { kind: inferPreviewInspectorSemanticKind(fieldName) };
-      fields[responseName] = looksLikePreviewInspectorCollection(fieldName)
+      shape = looksLikePreviewInspectorCollection(fieldName)
         ? { items: scalarShape, kind: 'array' }
         : scalarShape;
     }
+    mergePreviewInspectorGraphqlFields(fields, { [responseName]: shape });
   }
   if (tokens[cursor.index] === '}') cursor.index += 1;
   return { fields, kind: 'object', spreads };
@@ -158,7 +177,9 @@ function resolvePreviewInspectorGraphqlFragments(shape, fragments, active = new 
     mergePreviewInspectorGraphqlFields(fields, resolvedFragment.fields);
   }
   for (const [name, child] of Object.entries(shape.fields ?? {})) {
-    fields[name] = resolvePreviewInspectorGraphqlFragments(child, fragments, active, depth + 1);
+    mergePreviewInspectorGraphqlFields(fields, {
+      [name]: resolvePreviewInspectorGraphqlFragments(child, fragments, active, depth + 1),
+    });
   }
   return { fields, kind: 'object' };
 }

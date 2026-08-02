@@ -73,7 +73,7 @@ function looksLikeCollection(fieldName) {
   if (/(items|nodes|edges|list|collection|connections|results|features)$/.test(lowerName)) {
     return true;
   }
-  if (/(status|address|business|success|access|process|progress|news|series|analysis)$/.test(lowerName)) {
+  if (/(status|address|business|success|access|process|progress|news|series|analysis|relations)$/.test(lowerName)) {
     return false;
   }
   return lowerName.startsWith('all') || lowerName.endsWith('ies') || lowerName.endsWith('s');
@@ -157,7 +157,9 @@ function appendSelections(target, selectionSet, fragments, budget, depth, active
       if (looksLikeCollection(fieldName) && !isStaticApolloConnectionSelection(selection.selectionSet)) {
         target[responseName] = [];
       } else if (selection.selectionSet !== undefined) {
-        const child = {};
+        // GraphQL merges repeated fields with the same response name. Reuse the already-built
+        // object so split companyInfo name/profileLogo selections retain both branches.
+        const child = isRecord(target[responseName]) ? target[responseName] : {};
         appendSelections(child, selection.selectionSet, fragments, budget, depth + 1, activeFragments);
         target[responseName] = child;
       } else {
@@ -214,7 +216,13 @@ function appendSelectionShapes(target, selectionSet, fragments, budget, depth, a
       if (typeof fieldName !== 'string') continue;
       const responseName = selection.alias?.value ?? fieldName;
       if (looksLikeCollection(fieldName) && !isStaticApolloConnectionSelection(selection.selectionSet)) {
-        const items = selection.selectionSet === undefined ? { kind: 'unknown' } : { fields: {}, kind: 'object' };
+        const previous = target[responseName];
+        const items = selection.selectionSet === undefined
+          ? { kind: 'unknown' }
+          : previous?.kind === 'array' && previous.items?.kind === 'object' &&
+              isRecord(previous.items.fields)
+            ? previous.items
+            : { fields: {}, kind: 'object' };
         if (selection.selectionSet !== undefined) {
           appendSelectionShapes(
             items.fields,
@@ -227,7 +235,10 @@ function appendSelectionShapes(target, selectionSet, fragments, budget, depth, a
         }
         target[responseName] = { items, kind: 'array' };
       } else if (selection.selectionSet !== undefined) {
-        const fields = {};
+        const previous = target[responseName];
+        const fields = previous?.kind === 'object' && isRecord(previous.fields)
+          ? previous.fields
+          : {};
         appendSelectionShapes(fields, selection.selectionSet, fragments, budget, depth + 1, activeFragments);
         target[responseName] = { fields, kind: 'object' };
       } else {

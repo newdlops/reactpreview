@@ -21,6 +21,8 @@ export function createPreviewInspectorTargetBoundaryRuntimeSource(): string {
   return String.raw`
 ${failureEvidenceRuntimeSource}
 
+function createPreviewInspectorTargetBoundaryFactory({ React }) {
+
 /** Returns one bounded message suitable for the selected target's inline failure placeholder. */
 function describePreviewInspectorTargetError(error) {
   const headline = createRuntimeErrorHeadline(error);
@@ -64,7 +66,22 @@ class PreviewInspectorTargetBoundary extends React.Component {
 
   /** Registers the committed class instance whose subtree belongs to one target invocation. */
   componentDidMount() {
-    this.unregisterBoundary = registerPreviewInspectorBoundary(this.props.exportName, this);
+    if (typeof registerPreviewInspectorTargetOwnershipPhase === 'function') {
+      registerPreviewInspectorTargetOwnershipPhase(
+        {
+          exportName: this.props.exportName,
+          sourcePath: this.props.sourcePath,
+        },
+        'boundary-commit',
+      );
+    }
+    this.unregisterBoundary = registerPreviewInspectorBoundary(
+      this.props.exportName,
+      this.props.sourcePath,
+      this,
+    );
+    this.ownershipToken = this.props.ownershipToken;
+    this.unregisterOwnership = registerPreviewInspectorOwnershipBoundary(this.ownershipToken, this);
     if (typeof rememberPreviewInspectorTargetMountedOwnerChain === 'function') {
       rememberPreviewInspectorTargetMountedOwnerChain(this.props.exportName, this);
     }
@@ -79,6 +96,7 @@ class PreviewInspectorTargetBoundary extends React.Component {
    * componentDidCatch and therefore cannot include this commit-time information yet.
    */
   componentDidCatch(error, errorInfo) {
+    clearPreviewInspectorOwnedHosts(this.ownershipToken, this);
     rememberCapturedReactError(error);
     const componentStack =
       typeof errorInfo?.componentStack === 'string' ? errorInfo.componentStack : '';
@@ -93,12 +111,18 @@ class PreviewInspectorTargetBoundary extends React.Component {
   }
 
   /** Marks the Fiber snapshot stale after target-owned state or its failure marker commits. */
-  componentDidUpdate() {
+  componentDidUpdate(previousProps) {
+    if (previousProps.ownershipToken !== this.props.ownershipToken) {
+      this.unregisterOwnership?.();
+      this.ownershipToken = this.props.ownershipToken;
+      this.unregisterOwnership = registerPreviewInspectorOwnershipBoundary(this.ownershipToken, this);
+    }
     schedulePreviewInspectorCommitRefresh();
   }
 
   /** Removes the boundary before React removes its target or placeholder DOM nodes. */
   componentWillUnmount() {
+    this.unregisterOwnership?.();
     this.unregisterBoundary?.();
   }
 
@@ -110,7 +134,10 @@ class PreviewInspectorTargetBoundary extends React.Component {
   /** Returns authored children directly, or one compact and locally recoverable failure marker. */
   render() {
     if (this.state.error === undefined) {
-      return this.props.children;
+      const OwnershipContext = readPreviewInspectorJsxOwnershipContext();
+      return OwnershipContext === undefined
+        ? this.props.children
+        : React.createElement(OwnershipContext.Provider, { value: this.props.ownershipToken }, this.props.children);
     }
     const blockedComponent = readPreviewInspectorBlockedComponentName(
       this.state.componentStack,
@@ -161,6 +188,8 @@ class PreviewInspectorTargetBoundary extends React.Component {
       ),
     );
   }
+}
+return PreviewInspectorTargetBoundary;
 }
 `;
 }

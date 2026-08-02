@@ -10,6 +10,7 @@
 /** Creates browser source for authored target-output verification. */
 export function createPreviewInspectorTargetOutputRuntimeSource(): string {
   return String.raw`
+function createPreviewInspectorTargetOutputFactory() {
 const PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT = 512;
 
 /** Normalizes component/member spellings used by analyzer and runtime Fiber labels. */
@@ -141,24 +142,19 @@ function readPreviewInspectorLiveTargetOutputNames(boundary) {
   return names;
 }
 
-/** Proves that the boundary's first committed Fiber owns the exact React element it was given. */
-function hasPreviewInspectorExactTargetFiberOwnership(boundary) {
-  const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
-  const childFiber = readPreviewInspectorFiberLink(boundaryFiber, 'child');
-  const boundaryProps = readPreviewInspectorOwnData(boundary, 'props');
-  const childElement = readPreviewInspectorOwnData(boundaryProps, 'children');
-  const expectedType = readPreviewInspectorOwnData(childElement, 'type');
-  if (childFiber === undefined || expectedType === undefined) return false;
-  return readPreviewInspectorOwnData(childFiber, 'elementType') === expectedType ||
-    readPreviewInspectorOwnData(childFiber, 'type') === expectedType;
-}
-
-/** Recognizes concrete loading/error UI, excluding passive error boundaries around healthy output. */
-function hasPreviewInspectorFallbackLikeTargetOutput(liveNames) {
+/** Recognizes concrete loading/error UI, excluding passive wrappers around healthy output. */
+function hasPreviewInspectorFallbackLikeTargetOutput(
+  liveNames,
+  targetExportName,
+  deferredFallbackNames,
+) {
+  const normalizedTargetExportName = normalizePreviewInspectorTargetOutputName(targetExportName);
   return [...liveNames].some((name) =>
-    /(?:ErrorFallback|ErrorPage|ErrorStatus|FallbackPage|Loading|LoadingPage|Loader|NotFoundStatus|Progress|Skeleton|Spinner)$/u.test(
-      name,
-    ),
+    name !== normalizedTargetExportName &&
+      (name !== 'SuspenseLoader' || deferredFallbackNames.has(name)) &&
+      /(?:ErrorFallback|ErrorPage|ErrorStatus|FallbackPage|Loading|LoadingPage|Loader|NotFoundStatus|Progress|Skeleton|Spinner)$/u.test(
+        name,
+      ),
   );
 }
 
@@ -219,7 +215,12 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
   const activeError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
     ? readPreviewInspectorRuntimeHealthTargetError(state.targetExportName)
     : undefined;
-  const exactFiberOwnership = hasPreviewInspectorExactTargetFiberOwnership(boundary);
+  const privatelyOwnedHosts = typeof readPreviewInspectorOwnedHosts === 'function'
+    ? readPreviewInspectorOwnedHosts(boundary, state)
+    : [];
+  const targetDomOwnership = privatelyOwnedHosts.some((node) =>
+    node?.nodeType === 1 && node.isConnected === true && mountNode?.contains?.(node) === true,
+  );
   if (expected.hasIntentionalEmpty) {
     if (activeError !== undefined) {
       return rejectPreviewInspectorTargetOutput(state, 'fallback-output', activeError);
@@ -232,9 +233,13 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     activeError !== undefined ||
     !expected.hasEvidence;
   const liveNames = needsLiveNames ? readPreviewInspectorLiveTargetOutputNames(boundary) : new Set();
-  const hasAnyHostOutput = collectPreviewInspectorFiberElements(boundary).length > 0;
+  const hasAnyHostOutput = targetDomOwnership;
   if (hasAnyHostOutput) state.targetHasAnyHostOutput = true;
-  const fallbackLikeOutput = hasPreviewInspectorFallbackLikeTargetOutput(liveNames);
+  const fallbackLikeOutput = hasPreviewInspectorFallbackLikeTargetOutput(
+    liveNames,
+    state.targetExportName,
+    expected.deferredFallbackNames,
+  );
   let resolved = false;
   if (expected.deferredNames.size > 0) {
     const hasIndependentOutput = [...expected.independentNames].some((name) => liveNames.has(name));
@@ -268,7 +273,7 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
   }
   if (!resolved) {
     if (!expected.hasEvidence) {
-      resolved = exactFiberOwnership && !fallbackLikeOutput;
+      resolved = targetDomOwnership && !fallbackLikeOutput;
     } else if (!expected.hasJsx) {
       resolved = false;
     } else if (expected.hasIntrinsicJsx || expected.deferredNames.size > 0) {
@@ -281,7 +286,7 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
         [...requiredNames].some((name) => liveNames.has(name));
     }
   }
-  if (!exactFiberOwnership) {
+  if (!targetDomOwnership) {
     return rejectPreviewInspectorTargetOutput(state, 'candidate-output', activeError);
   }
   if (!resolved) {
@@ -302,6 +307,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     }
   }
   return acceptPreviewInspectorTargetOutput(state);
+}
+return hasPreviewInspectorResolvedTargetOutput;
 }
 `;
 }

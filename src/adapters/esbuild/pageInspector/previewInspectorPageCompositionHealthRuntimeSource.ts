@@ -105,6 +105,7 @@ function summarizePreviewInspectorPageCompositionTree(snapshot) {
   };
   const rows = [];
   const blockerItems = [];
+  const activeBlockerItems = [];
   const mountedNames = [];
   let observedFiberPath = [];
   let observedFiberPathHasCurrentFile = false;
@@ -190,16 +191,31 @@ function summarizePreviewInspectorPageCompositionTree(snapshot) {
       }
       if (replacementIndex >= 0) rows[replacementIndex] = row;
     }
-    if (
-      (node.kind === 'blocker' || node.kind === 'condition') &&
-      blockerItems.length < PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT
-    ) {
-      blockerItems.push({
+    if (node.kind === 'blocker' || node.kind === 'condition') {
+      const blockerItem = {
         active: blocking,
         kind: String(node.blockerKind ?? node.kind).slice(0, 80),
         name: name.slice(0, 240),
         ownerPath: current.owners.slice(-12).join(' > ').slice(0, 1_200),
-      });
+      };
+      if (
+        blocking &&
+        activeBlockerItems.length < PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT
+      ) {
+        activeBlockerItems.push(blockerItem);
+      }
+      if (blockerItems.length < PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT) {
+        blockerItems.push(blockerItem);
+      } else if (blocking) {
+        // A broad page can expose many dormant conditions before the active blocker. Preserve the
+        // bounded record but always retain active evidence so headless validation cannot report a
+        // positive blocker count with an empty provenance list.
+        let replacementIndex = blockerItems.length - 1;
+        while (replacementIndex >= 0 && blockerItems[replacementIndex]?.active === true) {
+          replacementIndex -= 1;
+        }
+        if (replacementIndex >= 0) blockerItems[replacementIndex] = blockerItem;
+      }
     }
     const childOwners = [...current.owners, name].slice(-24);
     const childLiveOwners = node.mounted === true
@@ -216,6 +232,7 @@ function summarizePreviewInspectorPageCompositionTree(snapshot) {
     }
   }
   return {
+    activeBlockerItems,
     blockerItems,
     counts,
     mountedNames,
@@ -231,6 +248,14 @@ function summarizePreviewInspectorPageCompositionTree(snapshot) {
 function readPreviewInspectorCompositionTargetStage(reachability, tree) {
   if (reachability?.targetOutputKind === 'fallback-output') return 'fallback-output';
   if (reachability?.targetOutputKind === 'candidate-output') return 'candidate-output';
+  // The target-output verifier already requires an exact source/export boundary, owned connected
+  // DOM, and authored JSX evidence. Its positive result remains authoritative when a barrel export
+  // prevents the secondary display-tree collector from attaching currentFileExport to the
+  // implementation Fiber.
+  if (
+    reachability?.targetOutputKind === 'target-output' &&
+    reachability?.targetHasOutput === true
+  ) return 'target-output';
   const ownsObservedFiber = tree?.counts?.currentFileMounted > 0 &&
     Array.isArray(tree?.observedFiberPath) &&
     tree.observedFiberPath.length > 0;
@@ -269,6 +294,26 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     ? readPreviewInspectorRuntimeHealthTargetError(reachability?.targetExportName)
     : undefined;
   const targetOutputError = reachability?.targetOutputError ?? retainedTargetError;
+  const requirementSearch = reachability !== undefined &&
+    typeof readPreviewInspectorMinimumRequirementSearch === 'function'
+    ? readPreviewInspectorMinimumRequirementSearch(reachability)
+    : undefined;
+  const requirementConvergence = reachability !== undefined &&
+    typeof readPreviewInspectorRequirementConvergence === 'function'
+    ? readPreviewInspectorRequirementConvergence(reachability)
+    : undefined;
+  const requirementSearchStatus = requirementSearch?.status ??
+    (requirementConvergence?.status === 'idle' && targetStage === 'target-output'
+      ? 'not-required'
+      : requirementConvergence?.status ?? (
+        targetStage === 'target-output' ? 'not-required' : 'untracked'
+      ));
+  const requirementSearchSettled =
+    reachability?.exhausted === true ||
+    requirementSearchStatus === 'not-required' ||
+    ['reached', 'settled', 'limit-reached', 'cycle-detected'].includes(
+      requirementSearchStatus,
+    );
   const applicationPath = (Array.isArray(reachability?.applicationPath)
     ? reachability.applicationPath
     : []).filter((name) => typeof name === 'string' && name.length > 0).slice(0, 24);
@@ -278,11 +323,33 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     ),
   ).slice(0, 24);
   const routeLocation = candidate?.routeLocation;
-  const evidenceSourcePath = typeof routeLocation?.sourcePath === 'string'
-    ? routeLocation.sourcePath
-    : typeof candidate?.root?.sourcePath === 'string'
-      ? candidate.root.sourcePath
-      : undefined;
+  const evidenceSourcePath = typeof descriptor?.inspector?.target?.sourcePath === 'string'
+    ? descriptor.inspector.target.sourcePath
+    : undefined;
+  const targetExportName = reachability?.targetExportName ??
+    descriptor?.inspector?.target?.exportName ??
+    descriptor?.exportName ??
+    'default';
+  const targetOwnershipPhases =
+    typeof readPreviewInspectorTargetOwnershipPhases === 'function'
+      ? readPreviewInspectorTargetOwnershipPhases({
+          exportName: targetExportName,
+          sourcePath: evidenceSourcePath,
+        })
+      : {};
+  const pageExecutionCandidateId = typeof descriptor?.inspector?.pageExecutionCandidateId === 'string'
+    ? descriptor.inspector.pageExecutionCandidateId
+    : undefined;
+  const pageExecutionCandidate = Array.isArray(descriptor?.inspector?.pageExecutionCandidates)
+    ? descriptor.inspector.pageExecutionCandidates.find(
+        (item) => item?.id === pageExecutionCandidateId,
+      )
+    : undefined;
+  const authoredTargetOwner = (
+    typeof evidenceSourcePath === 'string' && evidenceSourcePath.length > 0
+      ? evidenceSourcePath + '#' + String(targetExportName)
+      : String(targetExportName)
+  ).slice(0, 1_200);
   const requiresOutputBlocker = ['candidate-output', 'fallback-output'].includes(targetStage);
   const hasOutputBlocker = tree.blockerItems.some((item) =>
     item.active === true && item.kind === 'target-reachability',
@@ -294,15 +361,20 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         name: (targetStage === 'fallback-output'
           ? 'Error fallback shown instead · '
           : 'Candidate output is not the current file · ') +
-          String(reachability?.targetExportName ?? descriptor?.exportName ?? 'default'),
-        ownerPath: String(targetOutputError?.ownerName ?? '').slice(0, 1_200),
+          String(targetExportName),
+        ownerPath: String(targetOutputError?.ownerName ?? authoredTargetOwner).slice(0, 1_200),
       }
     : undefined;
   const blockerItems = [
     ...tree.blockerItems,
     ...(outputBlockerItem === undefined ? [] : [outputBlockerItem]),
   ].slice(0, PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT);
+  const activeBlockerItems = [
+    ...tree.activeBlockerItems,
+    ...(outputBlockerItem === undefined ? [] : [outputBlockerItem]),
+  ].slice(0, PREVIEW_INSPECTOR_PAGE_COMPOSITION_BLOCKER_LIMIT);
   const detail = {
+    activeBlockerProvenance: activeBlockerItems,
     applicationPath,
     authoredStaticPath: applicationPath,
     blockerSummary: {
@@ -330,34 +402,55 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       : { evidence: { sourcePath: evidenceSourcePath } }),
     missingShellNames: missingPathNames,
     observedFiberPath: tree.observedFiberPath,
+    pageExecution: {
+      candidateId: pageExecutionCandidateId ?? 'none',
+      executionRootSurfaceId:
+        typeof pageExecutionCandidate?.executionRootSurfaceId === 'string'
+          ? pageExecutionCandidate.executionRootSurfaceId
+          : '',
+      fidelity: typeof pageExecutionCandidate?.fidelity === 'string'
+        ? pageExecutionCandidate.fidelity
+        : 'none',
+      nestedMountCount: Number.isSafeInteger(pageExecutionCandidate?.nestedMountCount)
+        ? Math.max(0, pageExecutionCandidate.nestedMountCount)
+        : 0,
+      runtimeTargetSurfaceId:
+        typeof pageExecutionCandidate?.runtimeTargetSurfaceId === 'string'
+          ? pageExecutionCandidate.runtimeTargetSurfaceId
+          : '',
+    },
     route: {
       evidenceKind: routeLocation?.evidenceKind ?? 'none',
       pathname: routeLocation?.pathname ?? '/',
       pattern: routeLocation?.pattern ?? '',
       rootOwnsRouter: candidate?.rootOwnsRouter === true,
     },
+    requirementSearch: {
+      convergenceStatus: requirementConvergence?.status ?? 'untracked',
+      exhausted: reachability?.exhausted === true,
+      searchStatus: requirementSearchStatus,
+      settled: requirementSearchSettled,
+    },
     statusCounts: tree.counts,
     targetState: {
       directTarget: reachability?.directTarget === true,
-      exportName: reachability?.targetExportName ??
-        descriptor?.inspector?.target?.exportName ??
-        descriptor?.exportName ??
-        'default',
-      errorMessage: typeof targetOutputError?.message === 'string'
-        ? targetOutputError.message.slice(0, 1_200)
-        : undefined,
-      errorOwner: typeof targetOutputError?.ownerName === 'string'
-        ? targetOutputError.ownerName.slice(0, 240)
-        : undefined,
-      errorPhase: typeof targetOutputError?.phase === 'string'
-        ? targetOutputError.phase.slice(0, 240)
-        : undefined,
-      fallbackOwner: typeof targetOutputError?.fallbackOwnerName === 'string'
-        ? targetOutputError.fallbackOwnerName.slice(0, 240)
-        : undefined,
+      exportName: targetExportName,
+      ...(typeof targetOutputError?.message === 'string'
+        ? { errorMessage: targetOutputError.message.slice(0, 1_200) }
+        : {}),
+      ...(typeof targetOutputError?.ownerName === 'string'
+        ? { errorOwner: targetOutputError.ownerName.slice(0, 240) }
+        : {}),
+      ...(typeof targetOutputError?.phase === 'string'
+        ? { errorPhase: targetOutputError.phase.slice(0, 240) }
+        : {}),
+      ...(typeof targetOutputError?.fallbackOwnerName === 'string'
+        ? { fallbackOwner: targetOutputError.fallbackOwnerName.slice(0, 240) }
+        : {}),
       hasOutput: targetStage === 'target-output',
       mounted: reachability?.targetMounted === true,
       outputKind: reachability?.targetOutputKind ?? 'none',
+      ownershipPhases: targetOwnershipPhases,
       pageRootCommitted: reachability?.pageRootCommitted === true,
       reachabilityHasOutput: reachability?.targetHasOutput === true,
       renderScenario: typeof readPreviewInspectorRenderScenario === 'function'
@@ -365,6 +458,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         : 'authored-page',
       stage: targetStage,
       status: reachability?.status ?? 'untracked',
+      targetRenderedEmpty: reachability?.targetRenderedEmpty === true,
       wasMounted: reachability?.targetWasMounted === true,
     },
     treeRows: tree.rows,
@@ -375,11 +469,16 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
   const digest = JSON.stringify([
     detail.candidate.id,
     detail.candidate.complete,
+    detail.pageExecution,
     detail.route.pathname,
     detail.targetState.stage,
     detail.targetState.status,
     detail.targetState.errorOwner,
     detail.targetState.errorMessage,
+    detail.targetState.pageRootCommitted,
+    detail.targetState.ownershipPhases,
+    detail.targetState.targetRenderedEmpty,
+    detail.requirementSearch,
     tree.rows.map((row) => [row.name, row.state]),
     blockerItems.map((item) => [item.name, item.active]),
     missingPathNames,

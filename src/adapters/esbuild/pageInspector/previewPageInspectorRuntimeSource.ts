@@ -25,6 +25,7 @@ import { createPreviewInspectorTargetPathIdentityRuntimeSource } from './preview
 import { createPreviewInspectorRuntimeFallbackRuntimeSource } from './previewInspectorRuntimeFallbackRuntimeSource';
 import { createPreviewInspectorRuntimeFallbackScopeRuntimeSource } from './previewInspectorRuntimeFallbackScopeRuntimeSource';
 import { createPreviewInspectorSmartPropsRuntimeSource } from './previewInspectorSmartPropsRuntimeSource';
+import { createPreviewInspectorDomOwnershipRuntimeSource } from './previewInspectorDomOwnershipRuntimeSource';
 export const PREVIEW_PAGE_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 export const PREVIEW_PAGE_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
 /** Internal helper. */
@@ -57,6 +58,7 @@ export function createPreviewPageInspectorRuntimeSource(sourceGestureSecret?: st
   const runtimeFallbackScopeRuntimeSource =
     createPreviewInspectorRuntimeFallbackScopeRuntimeSource();
   const smartPropsRuntimeSource = createPreviewInspectorSmartPropsRuntimeSource();
+  const domOwnershipRuntimeSource = createPreviewInspectorDomOwnershipRuntimeSource();
   const encodedSourceGestureSecret = JSON.stringify(sourceGestureSecret ?? '');
   return String.raw`
 const PREVIEW_INSPECTOR_API_KEY = Symbol.for('newdlops.react-file-preview.page-inspector');
@@ -64,6 +66,7 @@ const PREVIEW_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
 const PREVIEW_INSPECTOR_STATE_KEY = 'reactFilePreviewPageInspector';
 const PREVIEW_INSPECTOR_SOURCE_GESTURE_SECRET = ${encodedSourceGestureSecret};
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+${domOwnershipRuntimeSource}
 const previewInspectorSourceCrypto = (() => {
   const cryptoObject = globalThis.crypto;
   const subtle = cryptoObject?.subtle;
@@ -122,6 +125,7 @@ ${dataRuntimeSource}
 ${renderOutcomeRuntimeSource}
 ${conditionRuntimeSource}
 ${targetOutputRuntimeSource}
+const hasPreviewInspectorResolvedTargetOutput = createPreviewInspectorTargetOutputFactory();
 ${targetReachabilityRuntimeSource}
 ${targetPathIdentityRuntimeSource}
 ${targetAttemptRuntimeSource}
@@ -185,6 +189,7 @@ function createPreviewInspectorSession() {
       typeof persisted.selectedPageCandidateId === 'string' ? persisted.selectedPageCandidateId : '',
     selectedTreeNodeId:
       typeof persisted.selectedTreeNodeId === 'string' ? persisted.selectedTreeNodeId : undefined,
+    targetOwnershipPhasesByIdentity: new Map(),
     treeListeners: new Set(),
     treeDirty: true,
     userSelectedPageCandidateId:
@@ -199,6 +204,7 @@ const previewInspectorSession =
   previewHotRuntime.inspectorSession ?? createPreviewInspectorSession();
 previewHotRuntime.inspectorSession = previewInspectorSession;
 previewInspectorSession.instanceEpochByExport ??= new Map();
+previewInspectorSession.targetOwnershipPhasesByIdentity ??= new Map();
 previewInspectorSession.lastRequestedRouteSelectionPath ??= undefined;
 previewInspectorSession.pendingRouteBranchId ??= undefined;
 previewInspectorSession.pendingRouteBuildRevision ??= undefined;
@@ -410,12 +416,18 @@ function collectPreviewInspectorTreeSnapshot() {
     targetName,
     ...currentFileExportNames.filter((exportName) => exportName !== targetName),
   ];
-  const boundaries = orderedExportNames.flatMap((exportName) =>
-    [...(previewInspectorSession.boundariesByExport.get(exportName) ?? [])].map((boundary) => ({
+  const boundaries = orderedExportNames.flatMap((exportName) => {
+    const reference =
+      descriptor?.inspector?.renderChainsByExport?.[exportName]?.target ??
+      (descriptor?.inspector?.target?.exportName === exportName
+        ? descriptor.inspector.target
+        : undefined);
+    return [...readPreviewInspectorBoundariesForReference(reference)].map((boundary) => ({
       boundary,
       exportName,
-    })),
-  );
+      sourcePath: reference?.sourcePath,
+    }));
+  });
   const snapshot = collectPreviewInspectorFiberTree(
     boundaries,
     previewInspectorSession.selectedTreeNodeId,
@@ -636,7 +648,12 @@ function remountPreviewInspectorExport(exportName, persist = true) {
   previewInspectorSession.instanceEpochByExport.set(exportName, currentEpoch + 1);
   refreshPreviewInspectorExport(exportName, persist);
 }
-function registerPreviewInspectorBoundary(exportName, boundary) {
+function registerPreviewInspectorBoundary(exportName, sourcePath, boundary) {
+  if (
+    typeof exportName !== 'string' ||
+    typeof sourcePath !== 'string' ||
+    sourcePath.length === 0
+  ) return () => undefined;
   const boundaries = previewInspectorSession.boundariesByExport.get(exportName) ?? new Set();
   boundaries.add(boundary);
   previewInspectorSession.boundariesByExport.set(exportName, boundaries);
@@ -648,6 +665,76 @@ function registerPreviewInspectorBoundary(exportName, boundary) {
     }
     schedulePreviewInspectorCommitRefresh();
   };
+}
+const PREVIEW_INSPECTOR_TARGET_OWNERSHIP_PHASES = new Set([
+  'compiler-export-evidence',
+  'facade-resolution',
+  'facade-evaluation',
+  'wrapper-render',
+  'boundary-commit',
+  'source-export-match',
+  'fiber-availability',
+]);
+function createPreviewInspectorTargetOwnershipIdentity(metadata) {
+  return typeof metadata?.sourcePath === 'string' &&
+    metadata.sourcePath.length > 0 &&
+    typeof metadata?.exportName === 'string' &&
+    metadata.exportName.length > 0
+    ? metadata.sourcePath.replaceAll('\\', '/') + '\0' + metadata.exportName
+    : undefined;
+}
+function registerPreviewInspectorTargetOwnershipPhase(metadata, phase) {
+  const identity = createPreviewInspectorTargetOwnershipIdentity(metadata);
+  if (identity === undefined || !PREVIEW_INSPECTOR_TARGET_OWNERSHIP_PHASES.has(phase)) {
+    return false;
+  }
+  let state = previewInspectorSession.targetOwnershipPhasesByIdentity.get(identity);
+  if (state === undefined) {
+    state = {
+      exportName: metadata.exportName,
+      phases: new Set(),
+      sourcePath: metadata.sourcePath.replaceAll('\\', '/'),
+    };
+    previewInspectorSession.targetOwnershipPhasesByIdentity.set(identity, state);
+  }
+  const previousSize = state.phases.size;
+  state.phases.add(phase);
+  if (state.phases.size !== previousSize) schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+function readPreviewInspectorTargetOwnershipPhases(metadata) {
+  const identity = createPreviewInspectorTargetOwnershipIdentity(metadata);
+  const state =
+    identity === undefined
+      ? undefined
+      : previewInspectorSession.targetOwnershipPhasesByIdentity.get(identity);
+  return Object.fromEntries(
+    [...PREVIEW_INSPECTOR_TARGET_OWNERSHIP_PHASES].map((phase) => [
+      phase,
+      state?.phases?.has(phase) === true,
+    ]),
+  );
+}
+function readPreviewInspectorBoundariesForReference(reference) {
+  const exportName = reference?.exportName;
+  const sourcePath = typeof reference?.sourcePath === 'string'
+    ? reference.sourcePath.replaceAll('\\', '/')
+    : undefined;
+  if (typeof exportName !== 'string' || sourcePath === undefined) return new Set();
+  const boundaries = previewInspectorSession.boundariesByExport.get(exportName);
+  if (!(boundaries instanceof Set)) return new Set();
+  return new Set([...boundaries].filter((boundary) =>
+    typeof boundary?.props?.sourcePath === 'string' &&
+    boundary.props.sourcePath.replaceAll('\\', '/') === sourcePath &&
+    boundary.props.exportName === exportName
+  ));
+}
+function readPreviewInspectorActiveTargetBoundaries(exportName) {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const reference = descriptor?.inspector?.target;
+  return reference?.exportName === exportName
+    ? readPreviewInspectorBoundariesForReference(reference)
+    : new Set();
 }
 function createPreviewInspectorPortalHost() {
   const portalHost = document.createElement('react-preview-inspector-host');
@@ -666,15 +753,22 @@ function createPreviewInspectorPortalHost() {
   return portalHost;
 }
 ${targetBoundaryRuntimeSource}
+const PreviewInspectorTargetBoundary = createPreviewInspectorTargetBoundaryFactory({ React });
 function createPreviewInspectorElement(Component, props) {
   return React.isValidElement(Component)
     ? React.cloneElement(Component, props)
     : React.createElement(Component, props);
 }
-function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetProps }) {
+function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetMarker, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
+  const sourcePath = typeof metadata?.sourcePath === 'string' ? metadata.sourcePath : '';
+  const targetIdentity = sourcePath.replaceAll('\\', '/') + '\0' + exportName;
   rememberPreviewInspectorTargetRuntimeOwner(exportName, Component);
+  const ownershipToken = React.useMemo(
+    () => createPreviewInspectorOwnershipToken(targetMarker, metadata),
+    [targetMarker, metadata?.exportName, metadata?.sourcePath],
+  );
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
   const automaticTargetProps = React.useMemo(
     () => createPreviewTargetPropsFromLayers(
@@ -708,12 +802,14 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
     PreviewInspectorTargetBoundary,
     {
       exportName,
-      key: exportName,
+      key: targetIdentity,
       resetKey: String(revision) + ':' + String(conditionRevision),
+      sourcePath,
+      ownershipToken,
     },
     createPreviewInspectorElement(Component, {
       ...effectiveProps,
-      key: exportName + ':instance:' + String(instanceEpoch),
+      key: targetIdentity + ':instance:' + String(instanceEpoch),
     }),
   );
 }
@@ -829,7 +925,11 @@ const previewInspectorApi = {
     };
   },
   registerTargetElement: registerPreviewInspectorTargetElement,
+  registerJsxOwnershipContext: registerPreviewInspectorJsxOwnershipContext,
+  registerCompilerCapability: registerPreviewInspectorCompilerCapability,
+  registerOwnedHost: registerPreviewInspectorOwnedHost,
   registerTargetRenderability: registerPreviewInspectorTargetRenderability,
+  registerTargetOwnershipPhase: registerPreviewInspectorTargetOwnershipPhase,
   registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
   registerDeferredUiTrigger: registerPreviewInspectorDeferredUiTrigger,
   registerDeferredUiTriggerMetadata: registerPreviewInspectorDeferredUiTriggerMetadata,
@@ -849,6 +949,7 @@ const previewInspectorApi = {
   resolveRenderConditionLazy: resolvePreviewInspectorRenderConditionLazy,
   resolveRuntimeEffect: resolvePreviewInspectorRuntimeEffect,
   resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook,
+  readJsxOwnershipContext: readPreviewInspectorJsxOwnershipContext,
   remount: remountPreviewInspectorExport,
   resetPropsOverride: resetPreviewInspectorPropsOverride,
   selectExport: selectPreviewInspectorExport,

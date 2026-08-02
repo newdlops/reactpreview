@@ -27,6 +27,8 @@ export interface ReadyPreviewState {
   readonly kind: 'ready';
   /** Safe display name of the active source document. */
   readonly documentName: string;
+  /** Internal pre-entry browser host shim used only by opt-in headless execution. */
+  readonly hostBridgeScriptUri?: string;
   /** Webview URI for the generated ESM entry bundle. */
   readonly scriptUri: string;
   /** Session-owned acknowledgement token read by the generated entry after the document starts. */
@@ -184,8 +186,16 @@ function createBody(state: PreviewHtmlState, retryNonce: string | undefined): st
     case 'ready':
       return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
-<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
+${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
+}
+
+/** Creates the optional headless host bridge immediately before the authored runtime entry. */
+function createHostBridgeScriptElement(state: ReadyPreviewState): string {
+  return state.hostBridgeScriptUri === undefined
+    ? ''
+    : `<script src="${escapeHtml(state.hostBridgeScriptUri)}"></script>
+`;
 }
 
 /** Creates a host-only recovery button whose inline handler is authorized by a unique CSP nonce. */

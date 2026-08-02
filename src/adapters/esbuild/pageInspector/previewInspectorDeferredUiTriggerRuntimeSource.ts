@@ -180,7 +180,7 @@ function createPreviewInspectorDeferredUiTriggerMountIndex(records) {
     }
   }
   const pending = [];
-  const selectedBoundaries = previewInspectorSession.boundariesByExport?.get?.(
+  const selectedBoundaries = readPreviewInspectorActiveTargetBoundaries(
     previewInspectorSession.selectedExportName,
   );
   if (selectedBoundaries !== null && typeof selectedBoundaries?.[Symbol.iterator] === 'function') {

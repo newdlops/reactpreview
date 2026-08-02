@@ -3,7 +3,7 @@
  * UI node budget before visiting the selected component.
  *
  * General siblings stay bounded by the main collector. This helper admits at most one additional
- * target record per instrumented export boundary, preserving truthful mounted/output evidence
+ * target record per exact source/export boundary, preserving truthful mounted Fiber evidence
  * without increasing broad traversal or allowing large application shells to monopolize the UI.
  */
 
@@ -11,27 +11,43 @@
 export function createPreviewInspectorFiberTargetReservationRuntimeSource(): string {
   return String.raw`
 /**
- * Finds a collected target descendant or appends one exact synthetic record outside the general
- * sibling budget. The synthetic record is backed by the live boundary Fiber and connected hosts;
- * it is not static path evidence and therefore remains safe to mark as mounted.
+ * Appends one exact source/export record outside the general sibling budget. The record is backed
+ * by the mounted boundary Fiber and its Fiber-connected hosts; DOM ownership, output, and static
+ * reachability are deliberately insufficient to claim a current-file mount.
  */
 function reservePreviewInspectorTargetNode(entry, exportName, index, collections, options) {
-  const pending = [readPreviewInspectorFiberLink(entry.fiber, 'child')];
-  const seen = new Set();
-  let representative;
-  while (pending.length > 0 && seen.size < PREVIEW_INSPECTOR_FIBER_VISIT_LIMIT) {
-    const fiber = pending.shift();
-    if (fiber === undefined || seen.has(fiber)) continue;
-    seen.add(fiber);
-    representative ??= fiber;
-    const nodeId = collections.nodeIdByFiber.get(fiber);
-    if (nodeId !== undefined && collections.nodeById.has(nodeId)) return nodeId;
-    pending.push(
-      readPreviewInspectorFiberLink(fiber, 'child'),
-      readPreviewInspectorFiberLink(fiber, 'sibling'),
+  if (typeof exportName !== 'string') return undefined;
+  const source = readPreviewInspectorStaticSource(exportName, options);
+  const sourcePath = typeof source?.sourcePath === 'string'
+    ? source.sourcePath.replaceAll('\\', '/')
+    : undefined;
+  const boundarySourcePath = typeof entry.sourcePath === 'string'
+    ? entry.sourcePath.replaceAll('\\', '/')
+    : undefined;
+  if (
+    sourcePath === undefined ||
+    boundarySourcePath === undefined ||
+    sourcePath !== boundarySourcePath ||
+    source.approximate === true
+  ) return undefined;
+  if (typeof registerPreviewInspectorTargetOwnershipPhase === 'function') {
+    registerPreviewInspectorTargetOwnershipPhase(
+      { exportName, sourcePath: boundarySourcePath },
+      'source-export-match',
     );
   }
-  if (representative === undefined || typeof exportName !== 'string') return undefined;
+  if (entry.fiber === undefined) return undefined;
+  if (typeof registerPreviewInspectorTargetOwnershipPhase === 'function') {
+    registerPreviewInspectorTargetOwnershipPhase(
+      { exportName, sourcePath: boundarySourcePath },
+      'fiber-availability',
+    );
+  }
+  const representative = readPreviewInspectorFiberLink(entry.fiber, 'child') ?? entry.fiber;
+  const collectedId = collections.nodeIdByFiber.get(representative);
+  if (collectedId !== undefined && collections.nodeById.has(collectedId)) {
+    return collectedId;
+  }
 
   const id = createPreviewInspectorTreeNodeId(
     'reserved-target',
@@ -40,9 +56,6 @@ function reservePreviewInspectorTargetNode(entry, exportName, index, collections
     exportName,
   );
   const hosts = collectPreviewInspectorFiberElements(entry.boundary);
-  const source =
-    readPreviewInspectorStaticSource(exportName, options) ??
-    readPreviewInspectorFiberSource(representative, exportName, options, undefined);
   const node = {
     children: [],
     currentFileExport: true,
@@ -52,17 +65,15 @@ function reservePreviewInspectorTargetNode(entry, exportName, index, collections
     kind: 'target',
     mounted: true,
     name: exportName,
-    props: snapshotPreviewInspectorValue(
-      readPreviewInspectorOwnData(representative, 'memoizedProps'),
-    ),
+    props: snapshotPreviewInspectorValue(readPreviewInspectorOwnData(representative, 'memoizedProps')),
+    source,
     state: snapshotPreviewInspectorFiberState(
       representative,
       classifyPreviewInspectorFiber(representative),
     ),
-    ...(source === undefined ? {} : { source }),
   };
   collections.nodeById.set(id, node);
-  collections.nodeIdByFiber.set(representative, id);
+  collections.nodeIdByFiber.set(entry.fiber, id);
   collections.hostNodesById.set(id, hosts);
   for (const host of hosts) collections.nodeIdByHost.set(host, id);
 

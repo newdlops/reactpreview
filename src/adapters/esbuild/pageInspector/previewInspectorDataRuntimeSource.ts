@@ -211,7 +211,7 @@ function inferPreviewInspectorEmptyObjectScalarKind(fieldName) {
 function looksLikePreviewInspectorCollection(fieldName) {
   const sourceName = String(fieldName);
   const name = sourceName.toLowerCase();
-  if (/(status|address|business|success|access|process|progress|news|series|analysis)$/u.test(name)) {
+  if (/(status|address|business|success|access|process|progress|news|series|analysis|relations)$/u.test(name)) {
     return false;
   }
   if (
@@ -227,7 +227,8 @@ function looksLikePreviewInspectorCollection(fieldName) {
     .filter(Boolean);
   const relationWords = new Set(['by', 'for', 'from', 'of', 'to', 'with']);
   const nonCollectionPlurals = new Set([
-    'access', 'address', 'analysis', 'business', 'news', 'process', 'progress', 'series', 'status',
+    'access', 'address', 'analysis', 'business', 'news', 'process', 'progress', 'relations', 'series',
+    'status',
   ]);
   return words.some((word, index) =>
     relationWords.has(words[index + 1] ?? '') &&

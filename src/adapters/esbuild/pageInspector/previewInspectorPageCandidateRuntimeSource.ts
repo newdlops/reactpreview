@@ -50,7 +50,15 @@ function readPreviewInspectorRouteBranches(descriptor) {
   return Array.isArray(branches) ? branches : [];
 }
 
-const PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS = 10 * 60 * 1000;
+const PREVIEW_INSPECTOR_ROUTE_ADMISSION_TIMEOUT_MS = 5 * 1000;
+const PREVIEW_INSPECTOR_ROUTE_SETTLEMENT_TIMEOUT_MS = 150 * 1000;
+
+/** Correlates host interactions with the displayed revision, including an initial entry numbered 0. */
+function readPreviewInspectorHostRuntimeRevision() {
+  return Number.isSafeInteger(previewEntryRevision) && previewEntryRevision > 0
+    ? previewEntryRevision
+    : previewRuntimeRevision;
+}
 
 /** Clears a settled route request and its bounded watchdog without affecting the visible preview. */
 function clearPreviewInspectorPendingRouteSelection() {
@@ -65,26 +73,39 @@ function clearPreviewInspectorPendingRouteSelection() {
   previewInspectorSession.pendingRouteTimeout = undefined;
 }
 
-/** Makes a delayed compiler hand-off recoverable instead of leaving a disabled route control forever. */
+/** Arms one phase-specific route watchdog without extending a request the host never accepted. */
+function schedulePreviewInspectorRouteSelectionTimeout(branchId, timeoutMs, message) {
+  if (previewInspectorSession.pendingRouteTimeout !== undefined) {
+    clearTimeout(previewInspectorSession.pendingRouteTimeout);
+  }
+  previewInspectorSession.pendingRouteTimeout = setTimeout(() => {
+    if (previewInspectorSession.pendingRouteBranchId !== branchId) return;
+    clearPreviewInspectorPendingRouteSelection();
+    previewInspectorSession.pendingRouteError = {
+      branchId,
+      message,
+      revision: previewEntryRevision,
+    };
+    notifyPreviewInspector();
+  }, timeoutMs);
+}
+
+/** Makes a lost compiler hand-off recoverable instead of leaving a disabled route control forever. */
 function beginPreviewInspectorPendingRouteSelection(branch) {
   clearPreviewInspectorPendingRouteSelection();
   previewInspectorSession.pendingRouteBranchId = branch.id;
   previewInspectorSession.pendingRouteInteractionId =
-    'route:' + String(previewEntryRevision) + ':' + String(++previewInspectorSession.interactionSequence);
+    'route:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
+    String(++previewInspectorSession.interactionSequence);
   previewInspectorSession.pendingRouteBranchRevision = previewEntryRevision;
   previewInspectorSession.pendingRouteSelectionPath = branch.selectionPath;
   previewInspectorSession.lastRequestedRouteSelectionPath = branch.selectionPath;
   previewInspectorSession.pendingRouteError = undefined;
-  previewInspectorSession.pendingRouteTimeout = setTimeout(() => {
-    if (previewInspectorSession.pendingRouteBranchId !== branch.id) return;
-    clearPreviewInspectorPendingRouteSelection();
-    previewInspectorSession.pendingRouteError = {
-      branchId: branch.id,
-      message: 'Route preparation is taking longer than expected. Retry when ready.',
-      revision: previewEntryRevision,
-    };
-    notifyPreviewInspector();
-  }, PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS);
+  schedulePreviewInspectorRouteSelectionTimeout(
+    branch.id,
+    PREVIEW_INSPECTOR_ROUTE_ADMISSION_TIMEOUT_MS,
+    'Route request was not accepted. Retry route.',
+  );
 }
 
 /** Requests a fresh branch-scoped bundle after preserving the current preview until it is ready. */
@@ -105,7 +126,7 @@ function selectPreviewInspectorRouteBranch(branch) {
   previewInspectorPostHostMessage({
     branchId: branch.id,
     interactionId: previewInspectorSession.pendingRouteInteractionId,
-    runtimeRevision: previewEntryRevision,
+    runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
     selectionPath: branch.selectionPath,
     type: 'react-preview-inspector-route-selected',
   });
@@ -460,14 +481,15 @@ function selectPreviewInspectorPageCandidate(candidateId) {
   ) {
     previewInspectorSession.pendingPageCandidateId = candidateId;
     previewInspectorSession.pendingPageCandidateInteractionId =
-      'page:' + String(previewEntryRevision) + ':' + String(++previewInspectorSession.interactionSequence);
+      'page:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
+      String(++previewInspectorSession.interactionSequence);
     previewInspectorSession.pendingPageCandidateRevision = previewEntryRevision;
     if (preferenceChanged) persistPreviewInspectorState();
     notifyPreviewInspector();
     previewInspectorPostHostMessage({
       candidateId,
       interactionId: previewInspectorSession.pendingPageCandidateInteractionId,
-      runtimeRevision: previewEntryRevision,
+      runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
       type: 'react-preview-inspector-page-candidate-selected',
     });
     return;
@@ -510,6 +532,13 @@ function handlePreviewInspectorSelectionStatus(message) {
     if (message.interactionId !== previewInspectorSession.pendingRouteInteractionId) return;
     if (Number.isSafeInteger(message.buildRevision)) {
       previewInspectorSession.pendingRouteBuildRevision = message.buildRevision;
+    }
+    if (message.status === 'accepted' || message.status === 'progress') {
+      schedulePreviewInspectorRouteSelectionTimeout(
+        previewInspectorSession.pendingRouteBranchId,
+        PREVIEW_INSPECTOR_ROUTE_SETTLEMENT_TIMEOUT_MS,
+        'Route preparation did not finish. Retry route.',
+      );
     }
     if (message.status === 'committed') {
       clearPreviewInspectorPendingRouteSelection();
@@ -656,9 +685,9 @@ function requestPreviewInspectorPageExecutionRetry(descriptor, candidate) {
   previewInspectorPostHostMessage({
     candidateId: candidate.id,
     executionCandidateId: next.id,
-    interactionId: 'execution:' + String(previewEntryRevision) + ':' +
+    interactionId: 'execution:' + String(readPreviewInspectorHostRuntimeRevision()) + ':' +
       String(++previewInspectorSession.interactionSequence),
-    runtimeRevision: previewEntryRevision,
+    runtimeRevision: readPreviewInspectorHostRuntimeRevision(),
     type: 'react-preview-inspector-page-execution-retry',
   });
   return true;

@@ -522,7 +522,7 @@ function collectSelectedPreviewInspectorElements() {
     return treeSelection[0];
   }
   const collected = [];
-  for (const boundary of previewInspectorSession.boundariesByExport.get(exportName) ?? []) {
+  for (const boundary of readPreviewInspectorActiveTargetBoundaries(exportName)) {
     collected.push(...collectPreviewInspectorBoundaryElements(boundary));
   }
   for (const element of previewInspectorSession.manualElementsByExport.get(exportName) ?? []) {

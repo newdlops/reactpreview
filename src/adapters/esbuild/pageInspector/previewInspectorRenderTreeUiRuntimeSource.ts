@@ -118,7 +118,7 @@ function readPreviewInspectorExpectedOutputState(exportName) {
   let deferredCallbackPending = retainedState?.targetDeferredCallbackPending === true;
   let renderedEmpty = retainedState?.targetRenderedEmpty === true;
   try {
-    const boundaries = previewInspectorSession.boundariesByExport?.get(exportName);
+    const boundaries = readPreviewInspectorActiveTargetBoundaries(exportName);
     if (boundaries instanceof Set) {
       hasAnyHostOutput = [...boundaries].some(
         (boundary) => collectPreviewInspectorFiberElements(boundary).length > 0,
@@ -687,7 +687,7 @@ function markPreviewInspectorCurrentFileExports(
       ...node,
       ...(matching === undefined
         ? {}
-        : { currentFileExport: true, mounted: liveSnapshot === true }),
+        : { currentFileExport: true, mounted: node.mounted === true || liveSnapshot === true }),
       children: markPreviewInspectorCurrentFileExports(
         node.children,
         exports,

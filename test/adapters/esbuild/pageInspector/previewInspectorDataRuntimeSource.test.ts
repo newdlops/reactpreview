@@ -4,6 +4,29 @@ import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorDataRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDataRuntimeSource';
 
 describe('Page Inspector data runtime source', () => {
+  /** Treats a singular Relations entity as an object and merges repeated GraphQL selections. */
+  it('materializes the public investor-relations entity from its complete selection set', () => {
+    const runtime = evaluateDataRuntime();
+    const shape = runtime.inferGraphql(
+      `query PublicInvestorRelationsPage {
+        publicInvestorRelations {
+          companyInfo { name }
+          companyInfo { profileLogo { url } }
+        }
+      }`,
+      'PublicInvestorRelationsPage',
+    );
+
+    expect(cloneJson(runtime.generate(shape))).toEqual({
+      publicInvestorRelations: {
+        companyInfo: {
+          name: 'name',
+          profileLogo: { url: 'https://example.com/preview/1' },
+        },
+      },
+    });
+  });
+
   /** Infers deterministic scalar/list values and records explicit generated provenance. */
   it('generates Auto, Smart minimum, Lorem, and custom payloads from one shared type shape', () => {
     const runtime = evaluateDataRuntime();
@@ -926,6 +949,8 @@ interface EvaluatedDataRuntime {
     init?: unknown,
     metadata?: unknown,
   ) => Promise<{ readonly ok: boolean; readonly status: number; json(): Promise<unknown> }>;
+  readonly generate: (shape: unknown) => unknown;
+  readonly inferGraphql: (source: string, operationName: string) => unknown;
   readonly lorem: (id: string) => void;
   readonly paths: (shape: unknown) => readonly string[];
   readonly requests: () => readonly unknown[];
@@ -968,6 +993,8 @@ globalThis.__dataRuntime = {
   axios: previewInspectorAxiosRequest,
   createXhr: () => new PreviewInspectorXmlHttpRequest(),
   fetch: previewInspectorFetch,
+  generate: (shape) => generatePreviewInspectorDataValue(shape, '', 'smart'),
+  inferGraphql: inferPreviewInspectorGraphqlQueryShape,
   lorem: generatePreviewInspectorLoremPayload,
   paths: readPreviewInspectorDataShapePaths,
   requests: readPreviewInspectorDataRequests,

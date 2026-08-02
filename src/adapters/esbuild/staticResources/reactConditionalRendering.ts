@@ -394,17 +394,23 @@ function describeReturnedRenderExpression(
     : describeRenderBranch(expression, sourceFile, portalBindings);
 }
 
-/** Reads an exact one-statement return whose value is JSX, a portal, or `null`. */
+/**
+ * Reads a terminal return whose value is JSX, a portal, or `null`.
+ *
+ * A guarded branch may prepare local values or contain a more specific nested early return before
+ * its final render return. Entering such a branch still cannot reach the component body that follows
+ * the `if`, so the outer guard is the continuation decision the preview engine must expose. Only the
+ * terminal statement is classified; preceding project statements are neither interpreted nor moved.
+ */
 function readSingleReturnedRenderExpression(
   statement: ts.Statement,
   portalBindings: ReactDomPortalBindings,
 ): ts.Expression | undefined {
   if (ts.isBlock(statement)) {
-    if (statement.statements.length !== 1) return undefined;
-    const onlyStatement = statement.statements[0];
-    return onlyStatement === undefined
+    const terminalStatement = statement.statements.at(-1);
+    return terminalStatement === undefined
       ? undefined
-      : readSingleReturnedRenderExpression(onlyStatement, portalBindings);
+      : readSingleReturnedRenderExpression(terminalStatement, portalBindings);
   }
   if (!ts.isReturnStatement(statement) || statement.expression === undefined) return undefined;
   const expression = unwrapConditionalExpression(statement.expression);

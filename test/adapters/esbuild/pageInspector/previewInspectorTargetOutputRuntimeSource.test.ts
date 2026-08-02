@@ -10,6 +10,7 @@ interface TestFiber {
   readonly kind: string;
   readonly name: string;
   readonly sibling?: TestFiber;
+  readonly stateNode?: { readonly isConnected?: boolean };
   readonly type?: object;
 }
 
@@ -45,6 +46,7 @@ function evaluateResolvedOutput(
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
     readonly selected?: boolean;
+    readonly targetExportName?: string;
   } = {},
 ): TestTargetOutputEvaluation {
   const outcome = {
@@ -75,6 +77,7 @@ function evaluateResolvedOutput(
     __scheduled?: { readonly delay: number };
     __selected: boolean;
     __state?: TestTargetOutputState;
+    __targetExportName: string;
   } = {
     __activeError: options.activeError,
     __cleared: 0,
@@ -84,18 +87,13 @@ function evaluateResolvedOutput(
     __liveChild: liveChild,
     __outcome: outcome,
     __selected: options.selected !== false,
+    __targetExportName: options.targetExportName ?? 'default',
   };
   vm.runInNewContext(
     `
       const outcome = globalThis.__outcome;
       const liveChild = globalThis.__liveChild;
-      const targetType = {};
-      const targetFiber = liveChild === undefined ? undefined : {
-        ...liveChild,
-        elementType: globalThis.__exactOwnership ? targetType : {},
-        type: globalThis.__exactOwnership ? targetType : {},
-      };
-      const descriptor = { inspector: { renderOutcomesByExport: {
+      const descriptor = { inspector: { target: { sourcePath: '/workspace/Target.tsx' }, renderOutcomesByExport: {
         default: globalThis.__includePlan ? { outcomes: [outcome] } : undefined,
       } } };
       const findSelectedPreviewInspectorDescriptor = () => descriptor;
@@ -107,7 +105,9 @@ function evaluateResolvedOutput(
       const classifyPreviewInspectorFiber = (fiber) => fiber?.kind ?? 'other';
       const namePreviewInspectorFiber = (fiber) => fiber?.name ?? 'Anonymous';
       const isPreviewInspectorOwnedFiber = () => false;
-      const collectPreviewInspectorFiberElements = (boundary) => boundary.host ? [{}] : [];
+      const mountNode = { contains: (node) => node?.inside === true };
+      const readPreviewInspectorOwnedHosts = (_boundary, _state) =>
+        globalThis.__host ? [{ inside: globalThis.__exactOwnership, isConnected: true, nodeType: 1 }] : [];
       const readPreviewInspectorRuntimeHealthTargetError = () => globalThis.__activeError;
       const clearPreviewInspectorRuntimeHealthTargetError = () => {
         globalThis.__activeError = undefined;
@@ -121,12 +121,11 @@ function evaluateResolvedOutput(
       };
       const clearTimeout = () => undefined;
       ${createPreviewInspectorTargetOutputRuntimeSource()}
-      const state = { targetExportName: 'default' };
+      const hasPreviewInspectorResolvedTargetOutput = createPreviewInspectorTargetOutputFactory();
+      const state = { targetExportName: globalThis.__targetExportName };
       globalThis.__result = hasPreviewInspectorResolvedTargetOutput(
         {
-          fiber: { child: targetFiber },
-          host: globalThis.__host,
-          props: { children: { type: targetType } },
+          fiber: { child: liveChild },
         },
         state,
       );
@@ -159,12 +158,110 @@ function hasResolvedOutput(
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
     readonly selected?: boolean;
+    readonly targetExportName?: string;
   } = {},
 ): boolean {
   return evaluateResolvedOutput(componentTree, liveChild, options).resolved;
 }
 
 describe('Preview Inspector target output runtime source', () => {
+  /** A selected export ending in a fallback suffix is authored output, not its own fallback. */
+  it('does not classify HrmPortalNotFoundStatus as its own fallback', () => {
+    const evaluation = evaluateResolvedOutput(
+      [],
+      { kind: 'function', name: 'HrmPortalNotFoundStatus' },
+      {
+        includePlan: false,
+        targetExportName: 'HrmPortalNotFoundStatus',
+      },
+    );
+
+    expect(evaluation.resolved).toBe(true);
+    expect(evaluation.state.targetOutputKind).toBe('target-output');
+  });
+
+  /** A passive Suspense loader and error boundary can wrap fully rendered product-design output. */
+  it('accepts ProductDesignWikiPage output beneath normal Suspense wrappers', () => {
+    const evaluation = evaluateResolvedOutput(
+      [],
+      {
+        child: {
+          child: {
+            child: {
+              child: { kind: 'function', name: 'Suspense' },
+              kind: 'function',
+              name: 'SuspenseLoader',
+            },
+            kind: 'class',
+            name: 'ErrorBoundary',
+          },
+          kind: 'function',
+          name: 'ProductDesignWikiHome',
+        },
+        kind: 'function',
+        name: 'ProductDesignWikiPage',
+      },
+      {
+        includePlan: false,
+        targetExportName: 'ProductDesignWikiPage',
+      },
+    );
+
+    expect(evaluation.resolved).toBe(true);
+    expect(evaluation.state.targetOutputKind).toBe('target-output');
+  });
+
+  /** Only the exact selected name is excluded; nested and differently named fallbacks still match. */
+  it('retains nested error, loader, and other fallback-name detection', () => {
+    const evaluate = (child: TestFiber): TestTargetOutputEvaluation =>
+      evaluateResolvedOutput(
+        [],
+        { child, kind: 'function', name: 'HrmPortalNotFoundStatus' },
+        {
+          includePlan: false,
+          targetExportName: 'HrmPortalNotFoundStatus',
+        },
+      );
+    const evaluations = [
+      evaluate({ kind: 'function', name: 'ErrorFallback' }),
+      evaluate({ kind: 'function', name: 'ProductDesignErrorFallback' }),
+      evaluate({
+        child: { kind: 'function', name: 'Loader' },
+        kind: 'function',
+        name: 'QueryRenderer',
+      }),
+      evaluate({ kind: 'function', name: 'AccountNotFoundStatus' }),
+    ];
+
+    for (const evaluation of evaluations) {
+      expect(evaluation.resolved).toBe(false);
+      expect(evaluation.state.targetOutputKind).toBe('fallback-output');
+    }
+  });
+
+  /** Static deferred-role evidence still identifies SuspenseLoader as an active fallback branch. */
+  it('retains SuspenseLoader fallback detection when deferred provenance proves its role', () => {
+    const evaluation = evaluateResolvedOutput(
+      [
+        {
+          children: [
+            { children: [], name: 'SuspenseLoader' },
+            { children: [], name: 'ProductDesignWikiHome', renderMode: 'deferred-callback' },
+          ],
+          name: 'QueryRenderer',
+        },
+      ],
+      {
+        child: { kind: 'function', name: 'SuspenseLoader' },
+        kind: 'function',
+        name: 'QueryRenderer',
+      },
+    );
+
+    expect(evaluation.resolved).toBe(false);
+    expect(evaluation.state.targetOutputKind).toBe('fallback-output');
+  });
+
   /** A loader host below QueryRenderer is not the Page subtree authored by the current file. */
   it('rejects wrapper fallback DOM when the expected nested page components are absent', () => {
     const expected = [

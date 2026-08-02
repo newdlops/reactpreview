@@ -738,6 +738,77 @@ describe('Preview Inspector condition runtime source', () => {
     ).toBe(true);
   });
 
+  /**
+   * Preserves a lazy route whose public facade and implementation are different source files.
+   * The exact compiler facade must be rendering; an owner-name match by itself is insufficient.
+   */
+  it('synchronously continues a lazy facade implementation navigation guard', () => {
+    const key = 'candidate:HrmTrialSignupCompletePage';
+    const facadeSourcePath = '/workspace/src/pages/hrm-trial-signup-complete-page/index.ts';
+    const harness = createConditionRuntimeHarness({}, vi.fn(), {
+      activeTargetReachabilityKey: key,
+      descriptors: [{ exportName: 'HrmTrialSignupCompletePage', inspector: {} }],
+      fallbackValuesEnabled: true,
+      selectedExportName: 'HrmTrialSignupCompletePage',
+      selectedPageCandidate: { id: 'authored-page' },
+    });
+    const state = {
+      appliedConditions: [],
+      directTarget: false,
+      key,
+      synchronousEvidencePaths: [facadeSourcePath],
+      targetExportName: 'HrmTrialSignupCompletePage',
+      targetSourcePath: facadeSourcePath,
+    };
+    harness.session.targetReachabilityByKey = new Map([[key, state]]);
+    harness.session.targetOwnershipPhasesByIdentity = new Map([
+      [
+        facadeSourcePath + '\0HrmTrialSignupCompletePage',
+        {
+          phases: new Set([
+            'compiler-export-evidence',
+            'facade-resolution',
+            'facade-evaluation',
+            'wrapper-render',
+          ]),
+        },
+      ],
+    ]);
+    const metadata = {
+      expression: '<HrmTrialSignupCompletePage> gate: companies.length > 0',
+      fallbackBranch: 'truthy',
+      falsyLabel: 'continue <HrmTrialSignupCompletePage>',
+      kind: 'early-return',
+      ownerName: 'HrmTrialSignupCompletePage',
+      role: 'navigation',
+      sourcePath:
+        '/workspace/src/pages/hrm-trial-signup-complete-page/hrm-trial-signup-complete-page.tsx',
+      targetBranch: 'falsy',
+      truthyLabel: '<Navigate>',
+    };
+
+    expect(harness.resolveCondition('companies-gate', true, metadata)).toBe(false);
+    expect(state.appliedConditions).toEqual([
+      expect.objectContaining({ enabled: false, id: 'companies-gate', synchronous: true }),
+    ]);
+    expect(
+      harness.resolveCondition('same-source-sibling', true, {
+        ...metadata,
+        ownerName: 'SiblingPanel',
+      }),
+    ).toBe(true);
+
+    const unprovenHarness = createConditionRuntimeHarness({}, vi.fn(), {
+      activeTargetReachabilityKey: key,
+      descriptors: [{ exportName: 'HrmTrialSignupCompletePage', inspector: {} }],
+      fallbackValuesEnabled: true,
+      selectedExportName: 'HrmTrialSignupCompletePage',
+      selectedPageCandidate: { id: 'authored-page' },
+    });
+    unprovenHarness.session.targetReachabilityByKey = new Map([[key, { ...state }]]);
+    expect(unprovenHarness.resolveCondition('unproven-facade', true, metadata)).toBe(true);
+  });
+
   /** Opens a directly selected Modal whose authored hidden guard would otherwise return no DOM. */
   it('automatically reveals a cold direct target overlay', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn(), {

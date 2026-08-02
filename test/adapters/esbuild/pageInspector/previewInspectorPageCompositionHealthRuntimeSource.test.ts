@@ -10,6 +10,12 @@ import {
 interface PageCompositionRecord {
   readonly category: string;
   readonly detail: {
+    readonly activeBlockerProvenance: readonly {
+      readonly active: boolean;
+      readonly kind: string;
+      readonly name: string;
+      readonly ownerPath: string;
+    }[];
     readonly applicationPath: readonly string[];
     readonly authoredStaticPath: readonly string[];
     readonly blockerSummary: {
@@ -23,6 +29,13 @@ interface PageCompositionRecord {
     readonly candidate: { readonly complete: boolean; readonly rootExport: string };
     readonly missingShellNames: readonly string[];
     readonly observedFiberPath: readonly string[];
+    readonly pageExecution: {
+      readonly candidateId: string;
+      readonly executionRootSurfaceId: string;
+      readonly fidelity: string;
+      readonly nestedMountCount: number;
+      readonly runtimeTargetSurfaceId: string;
+    };
     readonly statusCounts: {
       readonly currentFileMounted: number;
       readonly expected: number;
@@ -135,11 +148,24 @@ describe('Preview Inspector page-composition health runtime source', () => {
         candidate: { complete: true, rootExport: 'Application' },
         missingShellNames: ['Application', 'MissingShell', 'PageRoot'],
         observedFiberPath: ['TargetPanel'],
+        pageExecution: {
+          candidateId: 'nested-page-execution',
+          executionRootSurfaceId: 'owner-surface',
+          fidelity: 'page-authentic',
+          nestedMountCount: 1,
+          runtimeTargetSurfaceId: 'leaf-surface',
+        },
+        requirementSearch: {
+          exhausted: false,
+          searchStatus: 'not-required',
+          settled: true,
+        },
         statusCounts: { currentFileMounted: 1, expected: 1, hostOutput: 1 },
         targetState: {
           hasOutput: true,
           pageRootCommitted: true,
           stage: 'target-output',
+          targetRenderedEmpty: false,
         },
       },
       event: 'page-composition-snapshot',
@@ -159,6 +185,8 @@ describe('Preview Inspector page-composition health runtime source', () => {
         }),
       ]),
     );
+    expect(health.detail.targetState).not.toHaveProperty('errorMessage');
+    expect(health.detail.targetState).not.toHaveProperty('errorOwner');
   });
 
   /** Caps serialized rows while aggregate counts continue across a broader component tree. */
@@ -193,6 +221,37 @@ describe('Preview Inspector page-composition health runtime source', () => {
     expect(second.digest).toBe(first.digest);
   });
 
+  /** Retains an active blocker even when dormant conditions fill the ordinary summary budget. */
+  it('publishes active blocker provenance independently from inactive summary rows', () => {
+    const runtime = createPageCompositionFixture({ targetHasOutput: false });
+    const health = runtime.create({
+      roots: [
+        ...Array.from({ length: 6 }, (_, index) => ({
+          blocksCurrentTarget: false,
+          children: [],
+          id: `inactive-${index.toString()}`,
+          kind: 'condition',
+          name: `Inactive ${index.toString()}`,
+        })),
+        {
+          blocksCurrentTarget: true,
+          children: [],
+          id: 'active-condition',
+          kind: 'condition',
+          name: 'Active target condition',
+        },
+      ],
+    });
+
+    expect(health.detail.activeBlockerProvenance).toEqual([
+      expect.objectContaining({
+        active: true,
+        kind: 'condition',
+        name: 'Active target condition',
+      }),
+    ]);
+  });
+
   /** Wrapper/error DOM growth cannot count as selected-file output without a current-file Fiber. */
   it('demotes reachability-only host success to candidate output', () => {
     const runtime = createPageCompositionFixture();
@@ -220,11 +279,38 @@ describe('Preview Inspector page-composition health runtime source', () => {
         expect.objectContaining({
           kind: 'target-reachability',
           name: 'Candidate output is not the current file · TargetPanel',
+          ownerPath: '/workspace/src/TargetPanel.tsx#TargetPanel',
         }),
       ],
     });
     expect(health.detail.observedFiberPath).toEqual(['ErrorStatus']);
     expect(health.detail.statusCounts.currentFileMounted).toBe(0);
+  });
+
+  /** Keeps exact boundary/DOM verification authoritative across a barrel implementation edge. */
+  it('accepts verified target output when the display tree misses the implementation Fiber', () => {
+    const runtime = createPageCompositionFixture({ targetOutputKind: 'target-output' });
+    const health = runtime.create({
+      hostNodesById: new Map([['page', [{ isConnected: true }]]]),
+      roots: [
+        {
+          children: [],
+          id: 'page',
+          kind: 'component',
+          mounted: true,
+          name: 'PublicInvestorRelationsPageImplementation',
+        },
+      ],
+    });
+
+    expect(health.detail.statusCounts.currentFileMounted).toBe(0);
+    expect(health.detail.targetState).toMatchObject({
+      hasOutput: true,
+      outputKind: 'target-output',
+      reachabilityHasOutput: true,
+      stage: 'target-output',
+    });
+    expect(health.detail.blockerSummary.active).toBe(0);
   });
 
   /** Runtime fallback diagnostics retain the original component owner and causal error text. */
@@ -296,7 +382,22 @@ function createPageCompositionFixture(
       };
       const descriptor = {
         exportName: 'TargetPanel',
-        inspector: { target: { exportName: 'TargetPanel' } },
+        inspector: {
+          pageExecutionCandidateId: 'nested-page-execution',
+          pageExecutionCandidates: [
+            {
+              executionRootSurfaceId: 'owner-surface',
+              fidelity: 'page-authentic',
+              id: 'nested-page-execution',
+              nestedMountCount: 1,
+              runtimeTargetSurfaceId: 'leaf-surface',
+            },
+          ],
+          target: {
+            exportName: 'TargetPanel',
+            sourcePath: '/workspace/src/TargetPanel.tsx',
+          },
+        },
       };
       const reachability = {
         applicationPath: ['Application', 'MissingShell', 'PageRoot', 'TargetPanel'],
@@ -315,7 +416,8 @@ function createPageCompositionFixture(
       const readSelectedPreviewInspectorPageCandidate = () => candidate;
       const readPreviewInspectorTargetReachabilityState = () => reachability;
       const readPreviewInspectorRenderScenario = () => 'authored-page';
-      const isPreviewInspectorBlockingNode = (node) => node?.kind === 'blocker';
+      const isPreviewInspectorBlockingNode = (node) =>
+        node?.kind === 'blocker' || node?.blocksCurrentTarget === true;
       const recordPreviewInspectorRuntimeHealth = (record) => records.push(record);
       ${createPreviewInspectorPageCompositionHealthRuntimeSource()}
       globalThis.__runtime = {

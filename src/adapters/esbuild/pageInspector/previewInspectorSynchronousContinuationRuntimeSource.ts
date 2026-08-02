@@ -4,7 +4,8 @@
  * A React Router `<Navigate>`/`<Redirect>` return changes the in-memory location during its first
  * commit. The normal target DFS runs after that commit, so merely discovering and overriding the
  * guard later cannot restore the authored route. This small runtime admits only compiler-labelled
- * navigation exits whose source file is already proven on the selected root-to-file render path.
+ * navigation exits whose source file is already proven on the selected root-to-file render path,
+ * or whose owner is proven by the exact selected facade while that facade is rendering.
  */
 
 /**
@@ -34,6 +35,40 @@ function isPreviewInspectorProvenContinuationSource(sourcePath, evidence) {
     ) return true;
   }
   return false;
+}
+
+/**
+ * Proves a lazy/barrel implementation owner through the exact selected facade invocation.
+ *
+ * A route can import Page from Page/index.ts while React.lazy evaluates Page/Page.tsx. The
+ * static route corridor intentionally ends at the public facade, so the implementation source is
+ * not a path match. Requiring every compiler/facade phase plus wrapper render prevents an unrelated
+ * same-named condition from becoming evidence before the selected export is actually invoked.
+ */
+function isPreviewInspectorProvenContinuationOwner(metadata, state) {
+  const ownerName = typeof metadata?.ownerName === 'string' ? metadata.ownerName : '';
+  const targetExportName =
+    typeof state?.targetExportName === 'string' ? state.targetExportName : '';
+  const targetSourcePath = typeof state?.targetSourcePath === 'string'
+    ? state.targetSourcePath.replaceAll('\\', '/')
+    : '';
+  if (ownerName.length === 0 || targetExportName.length === 0 || targetSourcePath.length === 0) {
+    return false;
+  }
+  const identity = targetSourcePath + '\0' + targetExportName;
+  const ownership = previewInspectorSession.targetOwnershipPhasesByIdentity?.get?.(identity);
+  for (const phase of [
+    'compiler-export-evidence',
+    'facade-resolution',
+    'facade-evaluation',
+    'wrapper-render',
+  ]) {
+    if (ownership?.phases?.has?.(phase) !== true) return false;
+  }
+  if (ownerName === targetExportName) return true;
+  return previewInspectorSession.targetFacadeRuntimeOwnerNamesByExport
+    ?.get?.(targetExportName)
+    ?.has?.(ownerName) === true;
 }
 
 /**
@@ -86,7 +121,10 @@ function readPreviewInspectorSynchronousNavigationContinuation(
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return undefined;
   const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
-  if (!isPreviewInspectorProvenContinuationSource(metadata.sourcePath, evidence)) return undefined;
+  if (
+    !isPreviewInspectorProvenContinuationSource(metadata.sourcePath, evidence) &&
+    !isPreviewInspectorProvenContinuationOwner(metadata, state)
+  ) return undefined;
   state.appliedConditions ??= [];
   if (!state.appliedConditions.some((condition) => condition?.id === conditionId)) {
     state.appliedConditions.push({

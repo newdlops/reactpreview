@@ -172,8 +172,9 @@ describe('Preview Inspector page-candidate runtime source', () => {
       'previewInspectorSession.pendingRouteBuildRevision = message.revision',
     );
     expect(source).toContain("message?.type === 'react-preview-progress'");
-    expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SELECTION_TIMEOUT_MS = 10 * 60 * 1000');
-    expect(source).toContain('Route preparation is taking longer than expected. Retry when ready.');
+    expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_ADMISSION_TIMEOUT_MS = 5 * 1000');
+    expect(source).toContain('PREVIEW_INSPECTOR_ROUTE_SETTLEMENT_TIMEOUT_MS = 150 * 1000');
+    expect(source).toContain('Route request was not accepted. Retry route.');
     expect(source).toContain(
       'previewInspectorSession.lastRequestedRouteSelectionPath = branch.selectionPath',
     );
@@ -228,15 +229,32 @@ describe('Preview Inspector page-candidate runtime source', () => {
   it('uses the matching ready revision as a terminal route-selection fallback', () => {
     expect(evaluateRouteSelectionReadyFallback()).toEqual({
       afterAccepted: 'route-selected',
+      afterAcceptedTimeoutMs: 150_000,
       afterStaleReady: 'route-selected',
       afterMatchingReady: undefined,
       notifications: 2,
     });
   });
 
+  /** Initial entry 0 must send the host's displayed revision or the host silently rejects the click. */
+  it('correlates route selection with the displayed host revision', () => {
+    expect(evaluateRouteSelectionHostRevision(0, 7)).toEqual({
+      errorMessage: 'Route request was not accepted. Retry route.',
+      interactionId: 'route:7:1',
+      pendingAfterAdmissionTimeout: undefined,
+      runtimeRevision: 7,
+      timeoutMs: 5_000,
+    });
+    expect(evaluateRouteSelectionHostRevision(8, 7)).toMatchObject({
+      interactionId: 'route:8:1',
+      runtimeRevision: 8,
+    });
+  });
+
   /** Strips only a proven app-module mount prefix and leaves direct component routes untouched. */
   it('maps an absolute route into the selected app root coordinate system', () => {
     expect(evaluateCandidateInitialEntries()).toEqual({
+      compilerEvidenceMount: '/child',
       directTarget: '/company/1/credit',
       noBasePath: '/company/1/credit',
       rootIndex: '/',
@@ -659,6 +677,11 @@ const AppModule = Object.assign(() => undefined, { basePath: '/company' });
 const PlainRoot = () => undefined;
 const route = { routeLocation: { pathname: '/company/1/credit' } };
 globalThis.__result = {
+  compilerEvidenceMount: createPreviewInspectorCandidateInitialEntry(
+    { routeLocation: { pathname: '/root/child' }, routeMountBasePath: '/root' },
+    PlainRoot,
+    false,
+  ),
   directTarget: createPreviewInspectorCandidateInitialEntry(route, AppModule, true),
   noBasePath: createPreviewInspectorCandidateInitialEntry(route, PlainRoot, false),
   rootIndex: createPreviewInspectorCandidateInitialEntry(
@@ -679,6 +702,7 @@ globalThis.__result = {
 /** Exercises the generated progress fallback without loading React or a project route module. */
 function evaluateRouteSelectionReadyFallback(): {
   readonly afterAccepted: string | undefined;
+  readonly afterAcceptedTimeoutMs: number | undefined;
   readonly afterMatchingReady: string | undefined;
   readonly afterStaleReady: string | undefined;
   readonly notifications: number;
@@ -697,6 +721,9 @@ const previewInspectorSession = {
   pendingRouteTimeout: undefined,
 };
 let notifications = 0;
+let timeoutMs;
+function setTimeout(callback, delay) { timeoutMs = delay; return 1; }
+function clearTimeout() {}
 function notifyPreviewInspector() { notifications += 1; }
 handlePreviewInspectorSelectionStatus({
   branchId: 'route-selected',
@@ -707,6 +734,7 @@ handlePreviewInspectorSelectionStatus({
   type: 'react-preview-inspector-route-selection-status',
 });
 const afterAccepted = previewInspectorSession.pendingRouteBranchId;
+const afterAcceptedTimeoutMs = timeoutMs;
 handlePreviewInspectorSelectionStatus({
   complete: true,
   revision: 7,
@@ -722,6 +750,7 @@ handlePreviewInspectorSelectionStatus({
 });
 globalThis.__result = {
   afterAccepted,
+  afterAcceptedTimeoutMs,
   afterMatchingReady: previewInspectorSession.pendingRouteBranchId,
   afterStaleReady,
   notifications,
@@ -730,6 +759,63 @@ globalThis.__result = {
   );
   if (context.__result === undefined) {
     throw new Error('Route ready fallback did not expose its test result.');
+  }
+  return context.__result;
+}
+
+/** Executes one route click against initial and hot-entry revision identities. */
+function evaluateRouteSelectionHostRevision(
+  entryRevision: number,
+  runtimeRevision: number,
+): {
+  readonly errorMessage: string | undefined;
+  readonly interactionId: string;
+  readonly pendingAfterAdmissionTimeout: string | undefined;
+  readonly runtimeRevision: number;
+  readonly timeoutMs: number;
+} {
+  const context: {
+    __result?: ReturnType<typeof evaluateRouteSelectionHostRevision>;
+    entryRevision: number;
+    runtimeRevision: number;
+  } = { entryRevision, runtimeRevision };
+  vm.runInNewContext(
+    `const React = { Component: class {} };
+${createPreviewInspectorPageCandidateRuntimeSource()}
+const previewEntryRevision = globalThis.entryRevision;
+const previewRuntimeRevision = globalThis.runtimeRevision;
+const previewInspectorSession = {
+  interactionSequence: 0,
+  pendingRouteTimeout: undefined,
+};
+let admissionCallback;
+let timeoutMs = 0;
+let posted;
+function setTimeout(callback, delay) { admissionCallback = callback; timeoutMs = delay; return 1; }
+function clearTimeout() {}
+function notifyPreviewInspector() {}
+function findSelectedPreviewInspectorDescriptor() {
+  return { inspector: { selectedRouteBranchId: 'route-selected' } };
+}
+function previewInspectorPostHostMessage(message) { posted = message; }
+selectPreviewInspectorRouteBranch({
+  id: 'route-0123456789abcdefabcd',
+  selectionPath: [{ componentName: 'CompanyApp', pattern: '/company/:companyId/*' }],
+});
+const interactionId = posted.interactionId;
+const postedRuntimeRevision = posted.runtimeRevision;
+admissionCallback();
+globalThis.__result = {
+  errorMessage: previewInspectorSession.pendingRouteError?.message,
+  interactionId,
+  pendingAfterAdmissionTimeout: previewInspectorSession.pendingRouteBranchId,
+  runtimeRevision: postedRuntimeRevision,
+  timeoutMs,
+};`,
+    context,
+  );
+  if (context.__result === undefined) {
+    throw new Error('Route host revision fixture did not expose its test result.');
   }
   return context.__result;
 }

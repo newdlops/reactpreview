@@ -27,6 +27,10 @@ interface RenderTreeSnapshot {
 /** Pure data helpers exposed from the generated enrichment source. */
 interface RenderTreeRuntime {
   readonly enrich: (snapshot: Record<string, unknown>) => RenderTreeSnapshot;
+  readonly readOutputState: (exportName: string) => {
+    readonly hasOutput: boolean;
+    readonly mounted: boolean;
+  };
   readonly readContext: (options?: { readonly preferShortest?: boolean }) => {
     readonly entries: readonly { readonly name: string }[];
   };
@@ -34,6 +38,7 @@ interface RenderTreeRuntime {
 
 /** Runtime-only target visibility retained by the fixture's local Inspector session. */
 interface RenderTreeRuntimeOptions {
+  readonly boundaryProbeRequiresSourcePath?: boolean;
   readonly selectedOutcomeId?: string;
   readonly targetDeferredCallbackPending?: boolean;
   readonly targetHasAnyHostOutput?: boolean;
@@ -43,6 +48,29 @@ interface RenderTreeRuntimeOptions {
 
 /** Proves entry/route context and missing exports remain visible around the mounted page Fiber. */
 describe('Preview Inspector render-tree UI runtime source', () => {
+  /** Carries the selected facade source into live boundary probes instead of erasing retained truth. */
+  it('reads live target output with the exact retained source identity', () => {
+    const descriptor = {
+      inspector: {
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const runtime = evaluateRenderTreeRuntime(
+      descriptor,
+      { root: { exportName: 'Application', sourcePath: '/workspace/Application.tsx' } },
+      {
+        boundaryProbeRequiresSourcePath: true,
+        targetHasOutput: true,
+        targetMounted: true,
+      },
+    );
+
+    expect(runtime.readOutputState('CurrentCard')).toMatchObject({
+      hasOutput: true,
+      mounted: true,
+    });
+  });
+
   it('prepends the workspace render root and inventories unmounted current-file exports', () => {
     const descriptor = {
       inspector: {
@@ -206,6 +234,46 @@ describe('Preview Inspector render-tree UI runtime source', () => {
     expect(findNodeById(snapshot.roots, 'static-target')).toMatchObject({
       currentFileExport: true,
       mounted: false,
+    });
+    expect(findNode(snapshot.roots, 'Unmounted current-file exports')).toBeUndefined();
+  });
+
+  /** Preserves an exact runtime ownership reservation even when Fiber collection stayed static. */
+  it('keeps an already mounted current-file target mounted in a static snapshot', () => {
+    const descriptor = {
+      inspector: {
+        pageCandidates: [],
+        renderChainsByExport: {
+          CurrentCard: {
+            paths: [],
+            target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+          },
+        },
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const candidate = {
+      root: { exportName: 'Application', sourcePath: '/workspace/Application.tsx' },
+    };
+    const runtime = evaluateRenderTreeRuntime(descriptor, candidate);
+    const snapshot = runtime.enrich({
+      roots: [
+        {
+          children: [],
+          exportName: 'CurrentCard',
+          id: 'owned-target',
+          kind: 'target',
+          mounted: true,
+          name: 'CurrentCard',
+          source: { path: '/workspace/CurrentCard.tsx' },
+        },
+      ],
+      status: 'static',
+    });
+
+    expect(findNodeById(snapshot.roots, 'owned-target')).toMatchObject({
+      currentFileExport: true,
+      mounted: true,
     });
     expect(findNode(snapshot.roots, 'Unmounted current-file exports')).toBeUndefined();
   });
@@ -738,6 +806,7 @@ function evaluateRenderTreeRuntime(
           ['fixture:CurrentCard', {
             key: 'fixture:CurrentCard',
             targetExportName: 'CurrentCard',
+            targetSourcePath: descriptor?.inspector?.target?.sourcePath,
             targetDeferredCallbackPending: options.targetDeferredCallbackPending === true,
             targetHasAnyHostOutput: options.targetHasAnyHostOutput === true,
             targetHasOutput: options.targetHasOutput === true,
@@ -753,10 +822,20 @@ function evaluateRenderTreeRuntime(
         typeof value === 'string' ? value.replaceAll('\\\\', '/') : '';
       const matchesPreviewInspectorConditionSourcePath = (left, right) =>
         left === right || left.endsWith('/' + right) || right.endsWith('/' + left);
+      const readPreviewInspectorActiveTargetBoundaries =
+        options.boundaryProbeRequiresSourcePath === true ? () => new Set([{}]) : undefined;
+      const collectPreviewInspectorFiberElements = () => [{}];
+      const hasMountedPreviewInspectorTarget = options.boundaryProbeRequiresSourcePath === true
+        ? (state) => state?.targetSourcePath === '/workspace/CurrentCard.tsx'
+        : undefined;
+      const hasPreviewInspectorTargetHostOutput = options.boundaryProbeRequiresSourcePath === true
+        ? (state) => state?.targetSourcePath === '/workspace/CurrentCard.tsx'
+        : undefined;
       ${createPreviewInspectorRenderTreeUiRuntimeSource()}
       globalThis.__runtime = {
         enrich: enrichPreviewInspectorRenderTreeSnapshot,
         readContext: (options) => readPreviewInspectorRenderContextEntries(descriptor, options),
+        readOutputState: readPreviewInspectorExpectedOutputState,
       };
     `,
     context,

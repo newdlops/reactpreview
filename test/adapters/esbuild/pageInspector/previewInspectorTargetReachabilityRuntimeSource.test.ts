@@ -17,7 +17,7 @@ function createTargetReachabilityFixtureSource(): string {
 
 /** Reuses the byte-identical page/target corridor declarations in VM scenarios. */
 function createPageTargetDescriptorCandidateFixtureSource(): string {
-  return `const descriptor = { inspector: { renderChainsByExport: { Target: { paths: [] } }, target: { exportName: 'Target' } } }; const candidate = { edges: [], id: 'page', renderPath: { id: 'path', steps: [{ label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] }, { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] }] }, root: { exportName: 'Page' } };`;
+  return `const descriptor = { inspector: { renderChainsByExport: { Target: { paths: [], target: { exportName: 'Target', sourcePath: '/Target.tsx' } } }, target: { exportName: 'Target', sourcePath: '/Target.tsx' } } }; const candidate = { edges: [], id: 'page', renderPath: { id: 'path', steps: [{ label: 'Target', sourcePath: '/Target.tsx', wrapperNames: [] }, { label: 'Page', sourcePath: '/Page.tsx', wrapperNames: [] }] }, root: { exportName: 'Page' } };`;
 }
 
 /** Shares only the byte-equivalent empty target-runtime VM preamble. */
@@ -37,7 +37,7 @@ function createDashboardRuntimeDependenciesFixtureSource(): string {
 
 /** Shares the Dashboard target descriptor and page candidate declarations. */
 function createDashboardDescriptorCandidateFixtureSource(): string {
-  return `const descriptor = { inspector: { renderChainsByExport: { DashboardPanel: { paths: [] } }, target: { exportName: 'DashboardPanel' } } }; const candidate = { edges: [], id: 'dashboard-page', renderPath: { id: 'path', steps: [{ label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] }, { label: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx', wrapperNames: [] }] }, root: { exportName: 'DashboardPage' } };`;
+  return `const descriptor = { inspector: { renderChainsByExport: { DashboardPanel: { paths: [], target: { exportName: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx' } } }, target: { exportName: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx' } } }; const candidate = { edges: [], id: 'dashboard-page', renderPath: { id: 'path', steps: [{ label: 'DashboardPanel', sourcePath: '/workspace/Dashboard.tsx', wrapperNames: [] }, { label: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx', wrapperNames: [] }] }, root: { exportName: 'DashboardPage' } };`;
 }
 
 /** Minimal pure helper result exposed by the generated runtime fixture. */
@@ -609,7 +609,9 @@ describe('Preview Inspector target reachability runtime source', () => {
         let commitCount = 0;
         let runtimeCalls = 0;
         const previewInspectorSession = {
-          boundariesByExport: new Map([['Target', new Set([{}])]]),
+          boundariesByExport: new Map([['Target', new Set([{
+            props: { exportName: 'Target', sourcePath: '/Target.tsx' },
+          }])]]),
           dataRevision: 0,
           renderConditionOverrides: new Map(),
           renderConditionRevision: 0,
@@ -948,7 +950,13 @@ describe('Preview Inspector target reachability runtime source', () => {
         ${createTargetReachabilityFixtureSource()}
         ${createDashboardDescriptorCandidateFixtureSource()}
         const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
-        previewInspectorSession.boundariesByExport.set('DashboardPanel', new Set([{ host: true }]));
+        previewInspectorSession.boundariesByExport.set('DashboardPanel', new Set([{
+          host: true,
+          props: {
+            exportName: 'DashboardPanel',
+            sourcePath: '/workspace/Dashboard.tsx',
+          },
+        }]));
         evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
         const pagePendingStatus = state.status;
         state.pageRootCommitted = true;

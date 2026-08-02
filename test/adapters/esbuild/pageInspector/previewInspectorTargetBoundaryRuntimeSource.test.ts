@@ -13,7 +13,11 @@ interface TestElement {
 interface TestBoundary {
   componentDidMount(): void;
   componentDidCatch(error: Error, info: { readonly componentStack: string }): void;
-  props: { readonly children: TestElement; readonly exportName: string };
+  props: {
+    readonly children: TestElement;
+    readonly exportName: string;
+    readonly sourcePath: string;
+  };
   render(): TestElement;
   retry(): void;
   state: { componentStack: string; error: Error | undefined };
@@ -35,17 +39,19 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     const mountedOwnerExports: string[] = [];
     const remountedExports: string[] = [];
     const smartEvidenceReads: string[] = [];
+    const targetOwnershipPhases: string[] = [];
     const warnings: string[] = [];
     const source = [
       "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",
       createPreviewInspectorTargetBoundaryRuntimeSource(),
-      'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
+      'globalThis.__TestBoundary = createPreviewInspectorTargetBoundaryFactory({ React });',
     ].join('\n');
     const sandbox = createTargetBoundarySandbox({
       rememberedErrors,
       mountedOwnerExports,
       remountedExports,
       smartEvidenceReads,
+      targetOwnershipPhases,
       warnings,
     });
     runInContext(source, createContext(sandbox));
@@ -54,11 +60,16 @@ describe('Preview Inspector selected-target boundary runtime', () => {
       throw new Error('The generated target boundary was not exposed to the test sandbox.');
     }
     const child: TestElement = { props: { children: 'healthy' }, type: 'main' };
-    const boundary = new Boundary({ children: child, exportName: 'SelectedCard' });
+    const boundary = new Boundary({
+      children: child,
+      exportName: 'SelectedCard',
+      sourcePath: '/workspace/SelectedCard.tsx',
+    });
 
     expect(boundary.render()).toBe(child);
     boundary.componentDidMount();
     expect(mountedOwnerExports).toEqual(['SelectedCard']);
+    expect(targetOwnershipPhases).toEqual(['boundary-commit']);
 
     const error = new TypeError("Cannot read properties of undefined (reading 'value')");
     boundary.state = { ...boundary.state, ...Boundary.getDerivedStateFromError(error) };
@@ -91,13 +102,14 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     const source = [
       "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",
       createPreviewInspectorTargetBoundaryRuntimeSource(),
-      'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
+      'globalThis.__TestBoundary = createPreviewInspectorTargetBoundaryFactory({ React });',
     ].join('\n');
     const sandbox = createTargetBoundarySandbox({
       rememberedErrors: [],
       mountedOwnerExports: [],
       remountedExports: [],
       smartEvidenceReads: [],
+      targetOwnershipPhases: [],
       warnings: [],
     });
     runInContext(source, createContext(sandbox));
@@ -115,18 +127,32 @@ describe('Preview Inspector selected-target boundary runtime', () => {
     const source = [
       "const activePreviewRouterBridge = { isPreviewRouterRetryError: (error) => /Router>|useLocation\\(\\)/.test(String(error?.message ?? '')) };",
       createPreviewInspectorTargetBoundaryRuntimeSource(),
-      'globalThis.__TestBoundary = PreviewInspectorTargetBoundary;',
+      'globalThis.__TestBoundary = createPreviewInspectorTargetBoundaryFactory({ React });',
     ].join('\n');
     const sandbox = createTargetBoundarySandbox({
-      rememberedErrors: [], mountedOwnerExports: [], remountedExports: [], smartEvidenceReads: [], warnings: [],
+      rememberedErrors: [],
+      mountedOwnerExports: [],
+      remountedExports: [],
+      smartEvidenceReads: [],
+      targetOwnershipPhases: [],
+      warnings: [],
     });
     runInContext(source, createContext(sandbox));
     const Boundary = sandbox.__TestBoundary;
     if (Boundary === undefined) throw new Error('Missing test boundary.');
-    expect(() => Boundary.getDerivedStateFromError(
-      new Error('useLocation() may be used only in the context of a <Router> component.'),
-    )).toThrow();
-    expect(Boundary.getDerivedStateFromError(new Error('hook exploded'))).toEqual({ error: expect.any(Error) });
+    expect(() =>
+      Boundary.getDerivedStateFromError(
+        new Error('useLocation() may be used only in the context of a <Router> component.'),
+      ),
+    ).toThrow();
+    const ErrorBoundary = Boundary as unknown as {
+      readonly getDerivedStateFromError: (error: Error) => unknown;
+    };
+    const fallback = ErrorBoundary.getDerivedStateFromError(new Error('hook exploded'));
+    if (fallback === null || typeof fallback !== 'object')
+      throw new Error('Expected fallback state.');
+    const error = (fallback as { readonly error?: unknown }).error;
+    expect(error).toBeInstanceOf(Error);
   });
 });
 
@@ -136,6 +162,7 @@ interface TargetBoundaryObservations {
   readonly mountedOwnerExports: string[];
   readonly remountedExports: string[];
   readonly smartEvidenceReads: string[];
+  readonly targetOwnershipPhases: string[];
   readonly warnings: string[];
 }
 
@@ -196,6 +223,12 @@ function createTargetBoundarySandbox(
     readPreviewInspectorSmartPropPathRecords: () => [
       { kind: 'string', path: 'selectedValue.value', source: 'type' },
     ],
+    readPreviewInspectorJsxOwnershipContext: () => undefined,
+    registerPreviewInspectorTargetOwnershipPhase(_metadata: unknown, phase: string): number {
+      return observations.targetOwnershipPhases.push(phase);
+    },
+    registerPreviewInspectorOwnershipBoundary: () => undefined,
+    clearPreviewInspectorOwnedHosts: () => undefined,
     registerPreviewInspectorBoundary: vi.fn(() => vi.fn()),
     rememberPreviewInspectorTargetMountedOwnerChain(exportName: string): number {
       return observations.mountedOwnerExports.push(exportName);

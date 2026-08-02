@@ -45,11 +45,26 @@ interface WireframeLayout {
   readonly context: readonly { readonly name: string }[];
 }
 
+/** Exact live output evidence used to suppress only stale static inventory duplicates. */
+interface WireframeOutputProof {
+  readonly pageRootHasOutput?: boolean;
+  readonly rootExportName?: string;
+  readonly rootSourcePath?: string;
+  readonly targetExportName?: string;
+  readonly targetHasOutput?: boolean;
+  readonly targetSourcePath?: string;
+}
+
 /** Pure helper surface published by the VM fixture. */
 interface WireframeRuntime {
   readonly collect: (
     snapshot: Record<string, unknown>,
     viewport: { readonly height: number; readonly width: number },
+  ) => WireframeLayout;
+  readonly collectWithProof: (
+    snapshot: Record<string, unknown>,
+    viewport: { readonly height: number; readonly width: number },
+    proof: WireframeOutputProof,
   ) => WireframeLayout;
   readonly copyIndexes: (
     source: Record<string, unknown>,
@@ -167,6 +182,79 @@ describe('Preview Inspector wireframe UI runtime source', () => {
 
     expect(layout.blockers).toEqual([]);
     expect(layout.context.map((item) => item.name)).toContain('Workspace React render root');
+  });
+
+  /**
+   * Omits static target/root duplicates after exact live output is proven, while retaining a
+   * genuinely unrendered current-file export as a visible diagnostic.
+   */
+  it('suppresses only current-file placeholders superseded by proven live output', () => {
+    const runtime = evaluateWireframeRuntime();
+    const pageHost = hostRect(10, 20, 600, 500);
+    const snapshot = {
+      hostNodesById: new Map([['live-page', [pageHost]]]),
+      roots: [
+        { children: [], id: 'live-page', kind: 'function', name: 'SignupCompleteContent' },
+        {
+          children: [],
+          currentFileExport: true,
+          id: 'static:target',
+          kind: 'target',
+          mounted: false,
+          name: 'HrmTrialSignupCompletePage',
+          source: { path: '/workspace/pages/signup/index.ts' },
+        },
+        {
+          children: [],
+          currentFileExport: true,
+          id: 'static:root',
+          kind: 'target',
+          mounted: false,
+          name: 'default',
+          source: { path: '/workspace/app.tsx' },
+        },
+        {
+          children: [],
+          currentFileExport: true,
+          id: 'static:genuine-miss',
+          kind: 'target',
+          mounted: false,
+          name: 'AnotherPanel',
+          source: { path: '/workspace/another-panel.tsx' },
+        },
+      ],
+    };
+
+    const layout = runtime.collectWithProof(
+      snapshot,
+      { height: 720, width: 900 },
+      {
+        pageRootHasOutput: true,
+        rootExportName: 'default',
+        rootSourcePath: '/workspace/app.tsx',
+        targetExportName: 'HrmTrialSignupCompletePage',
+        targetHasOutput: true,
+        targetSourcePath: '/workspace/pages/signup/index.ts',
+      },
+    );
+
+    expect(layout.boxes.map((item) => [item.node.id, item.placeholder])).toEqual([
+      ['live-page', false],
+      ['static:genuine-miss', true],
+    ]);
+    const missingTargetLayout = runtime.collectWithProof(
+      snapshot,
+      { height: 720, width: 900 },
+      {
+        pageRootHasOutput: true,
+        rootExportName: 'default',
+        rootSourcePath: '/workspace/app.tsx',
+        targetExportName: 'HrmTrialSignupCompletePage',
+        targetHasOutput: false,
+        targetSourcePath: '/workspace/pages/signup/index.ts',
+      },
+    );
+    expect(missingTargetLayout.boxes.map((item) => item.node.id)).toContain('static:target');
   });
 
   /** Does not paint successful Auto substitutions as failures or synthesize their hook owners. */
@@ -314,6 +402,7 @@ function evaluateWireframeRuntime(
       ${createPreviewInspectorWireframeUiRuntimeSource()}
       globalThis.__wireframe = {
         collect: collectPreviewInspectorWireframeLayout,
+        collectWithProof: collectPreviewInspectorWireframeLayout,
         consumeReveal: consumePreviewInspectorTreeReveal,
         copyIndexes: copyPreviewInspectorSnapshotRuntimeIndexes,
         readCompanion: () => ({ ...previewInspectorCompanionState }),

@@ -7,6 +7,7 @@ import { createPreviewInspectorRuntimeHealthSource } from '../../../../src/adapt
 interface RuntimeHealthMessage {
   readonly artifactId?: string;
   readonly event: {
+    readonly detail?: unknown;
     readonly event: string;
     readonly eventId: string;
     readonly parentEventId?: string;
@@ -70,6 +71,36 @@ describe('Preview Inspector runtime health source', () => {
     expect(runtime.messages.map((message) => message.event.event)).toEqual([
       'page-composition-snapshot',
     ]);
+  });
+
+  /** Preserves JSON positions while omitting optional object absence from bounded health data. */
+  it('omits undefined object members and preserves null and array positions', () => {
+    const runtime = createRuntimeHealthFixture();
+    runtime.record({
+      category: 'page-composition',
+      detail: {
+        nested: {
+          absent: undefined,
+          explicitNull: null,
+          literal: '[undefined]',
+        },
+        positional: [undefined, null, { absent: undefined, present: true }],
+      },
+      event: 'page-composition-snapshot',
+    });
+
+    const detail = runtime.messages[0]?.event.detail as
+      | {
+          readonly nested?: Record<string, unknown>;
+          readonly positional?: readonly unknown[];
+        }
+      | undefined;
+    expect(detail?.nested).toEqual({
+      explicitNull: null,
+      literal: '[undefined]',
+    });
+    expect(detail?.nested).not.toHaveProperty('absent');
+    expect(detail?.positional).toEqual([null, null, { present: true }]);
   });
 
   /** Emits theme repairs once and links a stack-evidenced fallback to its first runtime error. */

@@ -197,9 +197,12 @@ describe('Page Inspector runtime source', () => {
       targetRendererSource.indexOf('overrideProps,'),
     );
     expect(targetRendererSource).toContain(
-      "key: exportName + ':instance:' + String(instanceEpoch)",
+      "key: targetIdentity + ':instance:' + String(instanceEpoch)",
     );
-    expect(targetRendererSource).toContain('key: exportName');
+    expect(targetRendererSource).toContain(
+      "const targetIdentity = sourcePath.replaceAll('\\\\', '/') + '\\0' + exportName",
+    );
+    expect(targetRendererSource).toContain('key: targetIdentity');
   });
 
   /** Delegates facade wrappers through the same global API installed before target evaluation. */
@@ -210,6 +213,8 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('isPreviewInspectorRenderableTarget(Component)');
     expect(source).toContain('registerTargetRenderability?.(metadata?.exportName, renderable)');
     expect(source).toContain('activeInspectorApi?.TargetRenderer');
+    expect(source).toContain('const targetMarker = {}');
+    expect(source).toContain('targetMarker,');
     expect(source).toContain('React.forwardRef');
     expect(source).toContain('React.cloneElement(Component, fallbackProps)');
   });
@@ -221,28 +226,62 @@ describe('Page Inspector runtime source', () => {
     const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');
     const globalRecord = globalThis as unknown as Record<PropertyKey, unknown>;
     const delegatedLabels: string[] = [];
+    const delegatedMarkers: object[] = [];
+    const targetOwnershipPhases: string[] = [];
     globalRecord[apiKey] = {
-      TargetRenderer({ Component, targetProps }: FacadeTargetRendererProps) {
+      registerTargetOwnershipPhase(_metadata: unknown, phase: string) {
+        targetOwnershipPhases.push(phase);
+      },
+      TargetRenderer({ Component, targetMarker, targetProps }: FacadeTargetRendererProps) {
         delegatedLabels.push(String(targetProps.label));
-        return React.createElement(Component, targetProps);
+        if (targetMarker !== undefined) delegatedMarkers.push(targetMarker);
+        return React.isValidElement(Component)
+          ? React.cloneElement(Component, targetProps)
+          : React.createElement(Component, targetProps);
       },
     };
     try {
       const PlainTarget = ({ label }: { readonly label: string }): React.ReactElement =>
         React.createElement('strong', undefined, label);
-      const targets = [React.memo(PlainTarget), React.forwardRef(PlainTarget)];
+      const targets = [
+        PlainTarget,
+        React.memo(PlainTarget),
+        React.forwardRef(PlainTarget),
+        React.createElement(PlainTarget, { label: 'original' }),
+      ];
       const lazyTarget = React.lazy(() => Promise.resolve({ default: PlainTarget }));
       const wrappedLazyTarget = wrapTarget(lazyTarget, { exportName: 'LazyTarget' });
-      const html = targets.map((target, index) =>
+      const wrappedTargets = targets.map((target, index) =>
+        wrapTarget(target, { exportName: `Target${index.toString()}` }),
+      );
+      const html = wrappedTargets.map((target, index) =>
         renderToStaticMarkup(
-          React.createElement(wrapTarget(target, { exportName: `Target${index.toString()}` }), {
+          React.createElement(target, {
             label: `inspected-${index.toString()}`,
           }),
         ),
       );
 
-      expect(delegatedLabels).toEqual(['inspected-0', 'inspected-1']);
-      expect(html).toEqual(['<strong>inspected-0</strong>', '<strong>inspected-1</strong>']);
+      const firstWrappedTarget = wrappedTargets[0];
+      if (firstWrappedTarget === undefined) throw new Error('Expected first wrapped target.');
+      renderToStaticMarkup(React.createElement(firstWrappedTarget, { label: 'inspected-again' }));
+      expect(delegatedLabels).toEqual([
+        'inspected-0',
+        'inspected-1',
+        'inspected-2',
+        'inspected-3',
+        'inspected-again',
+      ]);
+      expect(html).toEqual([
+        '<strong>inspected-0</strong>',
+        '<strong>inspected-1</strong>',
+        '<strong>inspected-2</strong>',
+        '<strong>inspected-3</strong>',
+      ]);
+      expect(delegatedMarkers[0]).toBe(delegatedMarkers[4]);
+      expect(new Set(delegatedMarkers.slice(0, 4)).size).toBe(4);
+      expect(targetOwnershipPhases).toContain('facade-evaluation');
+      expect(targetOwnershipPhases).toContain('wrapper-render');
       expect(readReactTypeSymbol(wrappedLazyTarget)).toBe(Symbol.for('react.forward_ref'));
       expect(Reflect.ownKeys(wrappedLazyTarget as object)).not.toEqual(
         expect.arrayContaining(['_payload', '_init', '_debugInfo']),
@@ -325,6 +364,12 @@ describe('Page Inspector runtime source', () => {
       "persisted.renderScenario === 'file-components' ? 'file-components' : 'authored-page'",
     );
     expect(source).toContain('renderScenario: readPreviewInspectorRenderScenario()');
+    expect(source).toContain('const previewInspectorOwnershipByToken = new WeakMap()');
+    expect(source).toContain('function createPreviewInspectorOwnershipToken');
+    expect(source).toContain('function registerPreviewInspectorOwnedHost');
+    expect(source).toContain('function readPreviewInspectorOwnedHosts');
+    expect(source).toContain('const previewInspectorCapabilitiesByMarker = new WeakMap()');
+    expect(source).toContain('function registerPreviewInspectorCompilerCapability');
   });
 
   /** Connects the independent tree adapter to selection, source navigation, and commit refresh. */
@@ -396,6 +441,7 @@ describe('Page Inspector runtime source', () => {
 /** Minimal public props consumed by the generated facade's entry-owned target renderer. */
 interface FacadeTargetRendererProps {
   readonly Component: React.ElementType;
+  readonly targetMarker?: object;
   readonly targetProps: Record<string, unknown>;
 }
 
@@ -403,7 +449,7 @@ interface FacadeTargetRendererProps {
 interface ImportedPreviewInspectorFacade {
   readonly fixtureDirectory: string;
   readonly wrapTarget: (
-    component: React.ElementType,
+    component: React.ElementType | React.ReactElement,
     metadata: { readonly exportName: string },
   ) => React.ElementType;
 }
@@ -419,7 +465,10 @@ async function importPreviewInspectorFacade(): Promise<ImportedPreviewInspectorF
     const facadeModule = (await import(pathToFileURL(modulePath).href)) as {
       readonly wrapPreviewInspectorTarget: ImportedPreviewInspectorFacade['wrapTarget'];
     };
-    return { fixtureDirectory, wrapTarget: facadeModule.wrapPreviewInspectorTarget };
+    return {
+      fixtureDirectory,
+      wrapTarget: facadeModule.wrapPreviewInspectorTarget,
+    };
   } catch (error) {
     await rm(fixtureDirectory, { force: true, recursive: true });
     throw error;

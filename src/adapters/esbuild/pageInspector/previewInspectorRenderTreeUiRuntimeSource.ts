@@ -124,11 +124,17 @@ function readPreviewInspectorExpectedOutputState(exportName) {
         (boundary) => collectPreviewInspectorFiberElements(boundary).length > 0,
       );
     }
+    const targetSourcePath = typeof retainedState?.targetSourcePath === 'string'
+      ? retainedState.targetSourcePath
+      : findSelectedPreviewInspectorDescriptor()?.inspector?.target?.sourcePath;
+    const outputProbe = {
+      targetExportName: exportName,
+      ...(typeof targetSourcePath === 'string' ? { targetSourcePath } : {}),
+    };
     if (typeof hasMountedPreviewInspectorTarget === 'function') {
-      mounted = hasMountedPreviewInspectorTarget({ targetExportName: exportName }) || mounted;
+      mounted = hasMountedPreviewInspectorTarget(outputProbe) || mounted;
     }
     if (typeof hasPreviewInspectorTargetHostOutput === 'function') {
-      const outputProbe = { targetExportName: exportName };
       hasOutput = hasPreviewInspectorTargetHostOutput(outputProbe);
       deferredCallbackPending = outputProbe.targetDeferredCallbackPending === true;
       renderedEmpty = outputProbe.targetRenderedEmpty === true;

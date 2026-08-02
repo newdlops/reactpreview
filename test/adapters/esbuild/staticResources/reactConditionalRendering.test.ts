@@ -523,6 +523,39 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"truthyLabel":"<Navigate>"');
   });
 
+  /**
+   * Keeps a selected route on its authored page when a redirect branch prepares local data before
+   * its terminal Navigate. The outer collection gate, not only its nested detail gate, owns the
+   * continuation into the component's visible body.
+   */
+  it('instruments a multi-statement terminal navigation branch as the outer continuation gate', () => {
+    const source = [
+      'export const HrmTrialSignupCompletePage = styled(({ companies }) => {',
+      '  if (companies.length > 0) {',
+      '    const [company] = companies;',
+      '    if (company.hrmId) return <Navigate to="/onboarding" replace />;',
+      '    return <Navigate to="/intro" replace />;',
+      '  }',
+      '  return <HrmTrialSignupCompleteContent />;',
+      '})`display: block;`;',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/HrmTrialSignupCompletePage.tsx',
+      source,
+    );
+
+    expect(readRenderConditionCalls(transformed)).toHaveLength(2);
+    expect(readAuthoredExpressions(transformed)).toEqual(['companies.length > 0', 'company.hrmId']);
+    expect(transformed).toContain(
+      '"expression":"<HrmTrialSignupCompletePage> gate: companies.length > 0"',
+    );
+    expect(transformed).toContain('"fallbackBranch":"truthy"');
+    expect(transformed).toContain('"role":"navigation"');
+    expect(transformed).toContain('"targetBranch":"falsy"');
+    expect(transformed).toContain('"truthyLabel":"<Navigate>"');
+  });
+
   /** Recovers the authored owner through styling/HOC factories so descendant branches stay reachable. */
   it('instruments an early-return branch inside a styled component factory', () => {
     const source = [

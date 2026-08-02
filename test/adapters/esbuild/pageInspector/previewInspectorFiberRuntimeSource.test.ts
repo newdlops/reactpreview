@@ -48,6 +48,7 @@ interface FiberTreeNode {
   readonly hostElementCount: number;
   readonly id: string;
   readonly kind: string;
+  readonly mounted?: boolean;
   readonly name: string;
   readonly overlayState?: string;
   readonly props: unknown;
@@ -88,7 +89,10 @@ interface FiberRuntimeApi {
 
 /** Complete authored page slice plus its selected boundary and DOM host identities. */
 interface FiberFixture {
-  readonly boundary: { readonly _reactInternals: FakeFiber };
+  readonly boundary: {
+    readonly _reactInternals: FakeFiber;
+    readonly props: { readonly exportName: string; readonly sourcePath: string };
+  };
   readonly getterReadCount: () => number;
   readonly inspectorPortalHost: FakeHostElement;
   readonly sideHost: FakeHostElement;
@@ -185,13 +189,26 @@ describe('preview Inspector Fiber runtime source', () => {
 
     const snapshot = runtime.collect(
       [
-        { boundary: { _reactInternals: secondBoundary }, exportName: 'SecondCard' },
-        { boundary: { _reactInternals: firstBoundary }, exportName: 'FirstCard' },
+        {
+          boundary: { _reactInternals: secondBoundary },
+          exportName: 'SecondCard',
+          sourcePath: '/workspace/Cards.tsx',
+        },
+        {
+          boundary: { _reactInternals: firstBoundary },
+          exportName: 'FirstCard',
+          sourcePath: '/workspace/Cards.tsx',
+        },
       ],
       undefined,
       {
         descriptor: {
           inspector: {
+            renderChainsByExport: {
+              SecondCard: {
+                target: { exportName: 'SecondCard', sourcePath: '/workspace/Cards.tsx' },
+              },
+            },
             root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
             target: { exportName: 'FirstCard', sourcePath: '/workspace/Cards.tsx' },
           },
@@ -205,12 +222,105 @@ describe('preview Inspector Fiber runtime source', () => {
     expect(findTreeNode(snapshot.roots, 'FirstCard')).toMatchObject({
       currentFileExport: true,
       exportName: 'FirstCard',
+      mounted: true,
     });
     expect(findTreeNode(snapshot.roots, 'SecondCard')).toMatchObject({
       currentFileExport: true,
       exportName: 'SecondCard',
+      mounted: true,
     });
     expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.node.name).toBe('SecondCard');
+  });
+
+  it('requires the mounted boundary Fiber to match the exact target source and export', () => {
+    const runtime = evaluateFiberRuntime();
+    const target = createFiber(0, namedComponent('SelectedPage'));
+    const boundaryFiber = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
+    connectChildren(boundaryFiber, [target]);
+    const snapshot = runtime.collect(
+      [
+        {
+          boundary: { _reactInternals: boundaryFiber },
+          exportName: 'SelectedPage',
+          sourcePath: '/workspace/analysis/SelectedPage.tsx',
+        },
+      ],
+      undefined,
+      {
+        descriptor: {
+          inspector: {
+            target: {
+              exportName: 'SelectedPage',
+              sourcePath: '/workspace/routes/SelectedPage.tsx',
+            },
+          },
+        },
+        targetExportName: 'SelectedPage',
+      },
+    );
+
+    expect(
+      flattenTree(snapshot.roots).some(
+        (node) => node.currentFileExport === true && node.mounted === true,
+      ),
+    ).toBe(false);
+  });
+
+  /** Refuses to convert compiler-token DOM ownership into mounted current-file Fiber evidence. */
+  it('does not reserve a mounted current-file target from DOM ownership without Fiber', () => {
+    const ownedHost = createHostElement();
+    const runtime = evaluateFiberRuntime([ownedHost]);
+    const snapshot = runtime.collect(
+      [{ boundary: {}, exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.tsx' }],
+      undefined,
+      {
+        descriptor: {
+          inspector: {
+            root: { exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.tsx' },
+            target: { exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.tsx' },
+          },
+        },
+        selectedExportName: 'SelectedPage',
+        targetExportName: 'SelectedPage',
+        targetExportNames: ['SelectedPage'],
+      },
+    );
+
+    expect(
+      snapshot.roots.some((node) => node.name === 'SelectedPage' && node.mounted === true),
+    ).toBe(false);
+  });
+
+  it('does not reserve a compiler-authenticated boundary without Fiber or hosts', () => {
+    const collect = (authenticatedBoundary: boolean) =>
+      evaluateFiberRuntime([], authenticatedBoundary).collect(
+        [{ boundary: {}, exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.ts' }],
+        undefined,
+        {
+          descriptor: {
+            inspector: {
+              root: { exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.ts' },
+              target: { exportName: 'SelectedPage', sourcePath: '/workspace/SelectedPage.ts' },
+            },
+          },
+          selectedExportName: 'SelectedPage',
+          targetExportName: 'SelectedPage',
+          targetExportNames: ['SelectedPage'],
+        },
+      );
+
+    const authenticatedSnapshot = collect(true);
+    expect(
+      authenticatedSnapshot.roots.some(
+        (node) => node.name === 'SelectedPage' && node.mounted === true,
+      ),
+    ).toBe(false);
+    const unverifiedSnapshot = collect(false);
+    expect(
+      unverifiedSnapshot.roots.some(
+        (node) => node.name === 'SelectedPage' && node.mounted === true,
+      ),
+    ).toBe(false);
   });
 
   /** Reads accessor descriptors as labels instead of executing project getters while snapshotting. */
@@ -261,11 +371,12 @@ describe('preview Inspector Fiber runtime source', () => {
     const runtime = evaluateFiberRuntime();
     const fixture = createFiberFixture();
     const snapshot = runtime.collect(fixture.boundary);
+    const targetSelection = runtime.findByHost(snapshot, fixture.targetLeafHost);
 
-    expect(runtime.findByHost(snapshot, fixture.targetLeafHost)?.node.name).toBe('SelectedCard');
+    expect(targetSelection?.node.name).toBe('SelectedCard');
     expect(runtime.collectElements(fixture.boundary)).toEqual([fixture.targetHost]);
     fixture.targetHost.isConnected = false;
-    expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.hostNodes).toEqual([]);
+    expect(runtime.select(snapshot, targetSelection?.node.id ?? '')?.hostNodes).toEqual([]);
   });
 
   /** Fails closed for missing private pointers and caps large display forests at 512 nodes. */
@@ -306,7 +417,13 @@ describe('preview Inspector Fiber runtime source', () => {
     connectChildren(exportBoundary, [page]);
 
     const snapshot = runtime.collect(
-      [{ boundary: { _reactInternals: targetBoundary }, exportName: 'SelectedCard' }],
+      [
+        {
+          boundary: { _reactInternals: targetBoundary },
+          exportName: 'SelectedCard',
+          sourcePath: '/workspace/SelectedCard.tsx',
+        },
+      ],
       undefined,
       {
         descriptor: {
@@ -635,8 +752,18 @@ describe('preview Inspector Fiber runtime source', () => {
 });
 
 /** Evaluates generated source and publishes only its intended helper surface to the test realm. */
-function evaluateFiberRuntime(): FiberRuntimeApi {
-  const context: { __fiberRuntime?: FiberRuntimeApi } = {};
+function evaluateFiberRuntime(
+  ownedHosts: readonly FakeHostElement[] = [],
+  authenticatedBoundary = false,
+): FiberRuntimeApi {
+  const context: {
+    __fiberRuntime?: FiberRuntimeApi;
+    hasPreviewInspectorOwnedBoundary: () => boolean;
+    readPreviewInspectorOwnedHosts: () => readonly FakeHostElement[];
+  } = {
+    hasPreviewInspectorOwnedBoundary: () => authenticatedBoundary,
+    readPreviewInspectorOwnedHosts: () => ownedHosts,
+  };
   const source = `${createPreviewInspectorFiberRuntimeSource()}
 function normalizePreviewInspectorHostElement(value) {
   if (value !== null && typeof value === 'object' && value.nodeType === 1 &&
@@ -712,7 +839,13 @@ function createFiberFixture(): FiberFixture {
   connectChildren(exportBoundary, [dashboardPage]);
 
   return {
-    boundary: { _reactInternals: targetBoundaryFiber },
+    boundary: {
+      _reactInternals: targetBoundaryFiber,
+      props: {
+        exportName: 'SelectedCard',
+        sourcePath: '/workspace/SelectedCard.tsx',
+      },
+    },
     getterReadCount: () => getterReads,
     inspectorPortalHost,
     sideHost,
@@ -789,4 +922,8 @@ function findTreeNode(nodes: readonly FiberTreeNode[], name: string): FiberTreeN
     if (child !== undefined) return child;
   }
   return undefined;
+}
+
+function flattenTree(nodes: readonly FiberTreeNode[]): readonly FiberTreeNode[] {
+  return nodes.flatMap((node) => [node, ...flattenTree(node.children)]);
 }

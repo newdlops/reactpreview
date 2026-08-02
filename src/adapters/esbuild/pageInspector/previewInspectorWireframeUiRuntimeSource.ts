@@ -187,6 +187,88 @@ function hasPreviewInspectorWireframeBlockingDescendant(node) {
   return false;
 }
 
+/** Reads one exact source path from a normalized tree node or compiler reference. */
+function readPreviewInspectorWireframeSourcePath(value) {
+  const sourcePath = value?.source?.path ?? value?.source?.sourcePath ?? value?.sourcePath;
+  return typeof sourcePath === 'string' ? sourcePath.replaceAll('\\', '/') : '';
+}
+
+/** Reports whether the current page owns at least one measurable non-Inspector host rectangle. */
+function hasPreviewInspectorWireframeMeasuredPageOutput(snapshot, viewport, rectByHost) {
+  const nodeIds = snapshot?.hostNodesById?.keys?.();
+  if (nodeIds === undefined || typeof nodeIds[Symbol.iterator] !== 'function') return false;
+  let visited = 0;
+  for (const nodeId of nodeIds) {
+    if (visited >= PREVIEW_INSPECTOR_WIREFRAME_VISIT_LIMIT) break;
+    visited += 1;
+    if (readPreviewInspectorWireframeHostRect(snapshot, nodeId, viewport, rectByHost) !== undefined) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolves exact live-output proof for the selected target and authored page root.
+ *
+ * Static current-file rows remain useful when a target genuinely never renders. Once the exact
+ * target boundary has host output, however, those inventory rows are stale duplicates rather than
+ * missing UI. The authored root uses the same rule and additionally requires a committed page plus
+ * measurable page output, so a blank or failed root keeps its placeholder.
+ */
+function readPreviewInspectorWireframeOutputProof(snapshot, viewport, rectByHost) {
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  const session = typeof previewInspectorSession === 'object'
+    ? previewInspectorSession
+    : undefined;
+  const activeKey = session?.activeTargetReachabilityKey;
+  const reachability = typeof activeKey === 'string'
+    ? session?.targetReachabilityByKey?.get?.(activeKey)
+    : undefined;
+  const targetReference = candidate?.target ?? descriptor?.inspector?.target;
+  const targetExportName = typeof reachability?.targetExportName === 'string'
+    ? reachability.targetExportName
+    : targetReference?.exportName;
+  const targetOutput =
+    typeof readPreviewInspectorExpectedOutputState === 'function' &&
+    typeof targetExportName === 'string'
+      ? readPreviewInspectorExpectedOutputState(targetExportName)
+      : undefined;
+  const rootReference = candidate?.root ?? descriptor?.inspector?.root;
+  return {
+    pageRootHasOutput:
+      reachability?.pageRootCommitted === true &&
+      hasPreviewInspectorWireframeMeasuredPageOutput(snapshot, viewport, rectByHost),
+    rootExportName: rootReference?.exportName,
+    rootSourcePath: readPreviewInspectorWireframeSourcePath(rootReference),
+    targetExportName,
+    targetHasOutput: targetOutput?.mounted === true && targetOutput?.hasOutput === true,
+    targetSourcePath: readPreviewInspectorWireframeSourcePath(
+      reachability?.targetSourcePath === undefined
+        ? targetReference
+        : { sourcePath: reachability.targetSourcePath },
+    ),
+  };
+}
+
+/** Identifies a stale static export row already superseded by exact live output proof. */
+function isPreviewInspectorWireframeProvenRenderedNode(node, proof) {
+  if (node?.currentFileExport !== true || node?.mounted !== false) return false;
+  const exportName = typeof node?.exportName === 'string' ? node.exportName : node?.name;
+  const sourcePath = readPreviewInspectorWireframeSourcePath(node);
+  if (
+    proof?.targetHasOutput === true &&
+    exportName === proof.targetExportName &&
+    sourcePath.length > 0 &&
+    sourcePath === proof.targetSourcePath
+  ) return true;
+  return proof?.pageRootHasOutput === true &&
+    exportName === proof.rootExportName &&
+    sourcePath.length > 0 &&
+    sourcePath === proof.rootSourcePath;
+}
+
 /** Creates a bounded placeholder for a failed component that has no measurable host output. */
 function createPreviewInspectorWireframePlaceholderRect(anchor, index, depth, viewport) {
   if (anchor !== undefined) {
@@ -260,11 +342,17 @@ function coalescePreviewInspectorWireframeBoxes(boxes) {
  * Builds a viewport-only layout model. Tree traversal supplies ownership for blockers even when
  * their failed component never committed a Fiber host node.
  */
-function collectPreviewInspectorWireframeLayout(snapshot, viewport = readPreviewInspectorWireframeViewport()) {
+function collectPreviewInspectorWireframeLayout(
+  snapshot,
+  viewport = readPreviewInspectorWireframeViewport(),
+  suppliedOutputProof,
+) {
   const boxes = [];
   const blockers = [];
   const context = [];
   const rectByHost = new WeakMap();
+  const outputProof = suppliedOutputProof ??
+    readPreviewInspectorWireframeOutputProof(snapshot, viewport, rectByHost);
   let visitCount = 0;
   let placeholderCount = 0;
   const markerCountByAnchor = new Map();
@@ -305,7 +393,11 @@ function collectPreviewInspectorWireframeLayout(snapshot, viewport = readPreview
         }
       } else if (
         (node?.blockedOwner === true && hasPreviewInspectorWireframeBlockingDescendant(node)) ||
-        (node?.mounted === false && node?.currentFileExport === true)
+        (
+          node?.mounted === false &&
+          node?.currentFileExport === true &&
+          !isPreviewInspectorWireframeProvenRenderedNode(node, outputProof)
+        )
       ) {
         const placeholder = createPreviewInspectorWireframePlaceholderRect(
           nearestAnchor,

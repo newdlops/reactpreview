@@ -9,6 +9,7 @@ import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { matchesPreviewParentSliceTargetImport } from '../parentSlice/previewParentSliceImports';
 import { PREVIEW_INSPECTOR_TARGET_NAMESPACE } from '../previewPluginProtocol';
 import type { PreviewInferredPropsByExport } from '../staticResources/reactExportPropInference';
+import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
 
 const INSPECTOR_TARGET_FACADE_PATH = 'selected-target-facade';
 const INSPECTOR_DIRECT_TARGET_PATH_PREFIX = 'selected-direct-target:';
@@ -31,7 +32,10 @@ export function createPreviewInspectorDirectTargetSpecifier(exportName: string):
 
 /** Metadata passed to the browser-side target wrapper without evaluating project code. */
 export interface PreviewInspectorTargetMetadata {
+  readonly compilerExportEvidence: true;
   readonly exportName: string;
+  readonly facadeResolutionEvidence: true;
+  readonly preparedSourceDigest: string;
   readonly sourcePath: string;
 }
 
@@ -39,16 +43,12 @@ export interface PreviewInspectorTargetMetadata {
 export interface PreviewInspectorTargetPluginOptions {
   /** Exact aliases resolved from the active tsconfig/package graph, when available. */
   readonly acceptedTargetImportSpecifiers?: readonly string[];
-  /** Absolute editor-selected target module. */
-  readonly documentPath: string;
-  /** Explicit target exports to wrap while preserving every other module export. */
-  readonly exportNames: readonly string[];
-  /** Whether the authored target declares a default export that the facade must preserve. */
-  readonly originalHasDefaultExport: boolean;
   /** Data-only fallback shapes associated with exact selected runtime exports. */
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
   /** Optional private runtime specifier, primarily useful to isolated compiler tests. */
   readonly runtimeSpecifier?: string;
+  /** Prepared-source export evidence shared with PageExecution and facade generation. */
+  readonly targetModuleContract: PreviewInspectorTargetModuleContract;
 }
 
 /**
@@ -65,10 +65,10 @@ export function createPreviewInspectorTargetPlugin(
   options: PreviewInspectorTargetPluginOptions,
 ): Plugin {
   assertPluginOptions(options);
-  const documentPath = path.normalize(options.documentPath);
-  const canonicalDocumentPath = canonicalizeExistingPath(documentPath);
-  const targetModuleStem = path.basename(documentPath).replace(/\.[^.]+$/u, '');
-  const selectedExportNames = Object.freeze([...new Set(options.exportNames)]);
+  const targetPath = path.normalize(options.targetModuleContract.sourcePath);
+  const canonicalTargetPath = canonicalizeExistingPath(targetPath);
+  const targetModuleStem = path.basename(targetPath).replace(/\.[^.]+$/u, '');
+  const selectedExportNames = options.targetModuleContract.selectedExportNames;
   const acceptedSpecifiers = new Set(options.acceptedTargetImportSpecifiers ?? []);
   const runtimeSpecifier = options.runtimeSpecifier ?? PREVIEW_INSPECTOR_RUNTIME_SPECIFIER;
 
@@ -78,7 +78,7 @@ export function createPreviewInspectorTargetPlugin(
       arguments_.namespace === PREVIEW_INSPECTOR_TARGET_NAMESPACE &&
       arguments_.path === INSPECTOR_ORIGINAL_TARGET_SPECIFIER
     ) {
-      return { namespace: 'file', path: documentPath };
+      return { namespace: 'file', path: targetPath };
     }
     if (arguments_.path === PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER) {
       return {
@@ -100,11 +100,11 @@ export function createPreviewInspectorTargetPlugin(
     if (
       arguments_.importer.length === 0 ||
       !path.isAbsolute(arguments_.importer) ||
-      (arguments_.namespace === 'file' && path.normalize(arguments_.importer) === documentPath) ||
+      (arguments_.namespace === 'file' && path.normalize(arguments_.importer) === targetPath) ||
       !matchesPreviewParentSliceTargetImport(
         arguments_.path,
         arguments_.importer,
-        documentPath,
+        targetPath,
         acceptedSpecifiers,
       )
     ) {
@@ -120,16 +120,14 @@ export function createPreviewInspectorTargetPlugin(
   function loadTargetFacade(): OnLoadResult {
     return {
       contents: createPreviewInspectorTargetFacadeSource({
-        exportNames: selectedExportNames,
-        originalHasDefaultExport: options.originalHasDefaultExport,
         ...(options.inferredPropsByExport === undefined
           ? {}
           : { inferredPropsByExport: options.inferredPropsByExport }),
         runtimeSpecifier,
-        sourcePath: documentPath,
+        targetModuleContract: options.targetModuleContract,
       }),
       loader: 'js',
-      resolveDir: path.dirname(documentPath),
+      resolveDir: path.dirname(targetPath),
     };
   }
 
@@ -151,7 +149,7 @@ export function createPreviewInspectorTargetPlugin(
         'export default __reactPreviewDirectTarget;',
       ].join('\n'),
       loader: 'js',
-      resolveDir: path.dirname(documentPath),
+      resolveDir: path.dirname(targetPath),
     };
   }
 
@@ -184,7 +182,7 @@ export function createPreviewInspectorTargetPlugin(
         if (
           resolution.namespace === 'file' &&
           resolution.path.length > 0 &&
-          canonicalizeExistingPath(resolution.path) === canonicalDocumentPath
+          canonicalizeExistingPath(resolution.path) === canonicalTargetPath
         ) {
           return {
             namespace: PREVIEW_INSPECTOR_TARGET_NAMESPACE,
@@ -248,11 +246,9 @@ function hasInspectorResolutionGuard(pluginData: unknown): boolean {
 
 /** Inputs for the pure facade source generator used by plugin and unit tests. */
 export interface PreviewInspectorTargetFacadeSourceOptions {
-  readonly exportNames: readonly string[];
-  readonly originalHasDefaultExport: boolean;
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
   readonly runtimeSpecifier?: string;
-  readonly sourcePath: string;
+  readonly targetModuleContract: PreviewInspectorTargetModuleContract;
 }
 
 /**
@@ -268,65 +264,85 @@ export interface PreviewInspectorTargetFacadeSourceOptions {
 export function createPreviewInspectorTargetFacadeSource(
   options: PreviewInspectorTargetFacadeSourceOptions,
 ): string {
-  const exportNames = [...new Set(options.exportNames)];
+  const exportNames = options.targetModuleContract.selectedExportNames;
   for (const exportName of exportNames) {
     assertExportName(exportName);
   }
   const runtimeSpecifier = options.runtimeSpecifier ?? PREVIEW_INSPECTOR_RUNTIME_SPECIFIER;
   const selectedDefault = exportNames.includes('default');
-  if (selectedDefault && !options.originalHasDefaultExport) {
+  if (selectedDefault && !options.targetModuleContract.hasDefaultExport) {
     throw new TypeError('Preview inspector cannot select an absent original default export.');
   }
   const namedExports = exportNames.filter((exportName) => exportName !== 'default');
-  const lines = [
-    `import * as __reactPreviewOriginal from ${JSON.stringify(INSPECTOR_ORIGINAL_TARGET_SPECIFIER)};`,
+  const lines: string[] = [];
+  if (options.targetModuleContract.hasDefaultExport) {
+    lines.push(
+      `import __reactPreviewOriginalDefault from ${JSON.stringify(INSPECTOR_ORIGINAL_TARGET_SPECIFIER)};`,
+    );
+  }
+  for (const [index, exportName] of namedExports.entries()) {
+    lines.push(
+      `import { ${exportName} as __reactPreviewOriginalSelected${index.toString()} } from ${JSON.stringify(INSPECTOR_ORIGINAL_TARGET_SPECIFIER)};`,
+    );
+  }
+  lines.push(
     `import { wrapPreviewInspectorTarget as __reactPreviewWrap } from ${JSON.stringify(runtimeSpecifier)};`,
     `export * from ${JSON.stringify(INSPECTOR_ORIGINAL_TARGET_SPECIFIER)};`,
-  ];
+  );
 
   for (const [index, exportName] of namedExports.entries()) {
     lines.push(
-      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal[${JSON.stringify(exportName)}], ${serializeMetadata(options.sourcePath, exportName, options.inferredPropsByExport?.[exportName])});`,
+      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName])});`,
       `export { __reactPreviewSelected${index.toString()} as ${exportName} };`,
     );
   }
   if (selectedDefault) {
     lines.push(
-      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginal.default, ${serializeMetadata(options.sourcePath, 'default', options.inferredPropsByExport?.default)});`,
+      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default)});`,
     );
-  } else if (options.originalHasDefaultExport) {
-    lines.push('export default __reactPreviewOriginal.default;');
+  } else if (options.targetModuleContract.hasDefaultExport) {
+    lines.push('export { __reactPreviewOriginalDefault as default };');
   }
   return lines.join('\n');
 }
 
 /** Serializes immutable target identity supplied to the inspector runtime registry. */
 function serializeMetadata(
-  sourcePath: string,
+  contract: PreviewInspectorTargetModuleContract,
   exportName: string,
   inference: PreviewInferredPropsByExport[string] | undefined,
 ): string {
   return JSON.stringify({
+    compilerExportEvidence: true,
     exportName,
+    facadeResolutionEvidence: true,
     ...(inference === undefined
       ? {}
       : { inferredPropShape: inference.shape, inferredProps: inference.provenance }),
-    sourcePath: path.normalize(sourcePath),
+    preparedSourceDigest: contract.preparedSourceDigest,
+    sourcePath: path.normalize(contract.sourcePath),
   });
 }
 
 /** Validates plugin boundaries before installing broad esbuild resolver callbacks. */
 function assertPluginOptions(options: PreviewInspectorTargetPluginOptions): void {
-  if (!path.isAbsolute(options.documentPath)) {
+  if (!path.isAbsolute(options.targetModuleContract.sourcePath)) {
     throw new RangeError('Preview inspector target path must be absolute.');
   }
-  if (options.exportNames.length === 0) {
+  if (options.targetModuleContract.selectedExportNames.length === 0) {
     throw new TypeError('Preview inspector requires at least one explicit target export.');
   }
-  for (const exportName of options.exportNames) {
+  const explicitExportNames = new Set(options.targetModuleContract.explicitExportNames);
+  for (const exportName of options.targetModuleContract.selectedExportNames) {
     assertExportName(exportName);
+    if (!explicitExportNames.has(exportName)) {
+      throw new TypeError(`Preview inspector selected an unproven target export: ${exportName}`);
+    }
   }
-  if (options.exportNames.includes('default') && !options.originalHasDefaultExport) {
+  if (
+    options.targetModuleContract.selectedExportNames.includes('default') &&
+    !options.targetModuleContract.hasDefaultExport
+  ) {
     throw new TypeError('Preview inspector cannot select an absent original default export.');
   }
 }

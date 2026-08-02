@@ -31,6 +31,10 @@ import {
   createPreviewCompilerWorkerBudget,
   selectPreviewCompilerStageTimeoutMs,
 } from './previewCompilerWorkerBudget';
+import {
+  createPreviewCompilerWorkerOptions,
+  PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB,
+} from './previewCompilerWorkerIsolation';
 
 /** Minimal event boundary implemented by both Node Worker and deterministic test transports. */
 export interface PreviewCompilerWorkerTransport {
@@ -54,6 +58,8 @@ export interface PreviewCompilerWorkerClientOptions {
   readonly createTransport?: () => PreviewCompilerWorkerTransport;
   /** Persistent global-storage root for cross-workspace dependency environments. */
   readonly managedDependencyStoreRoot?: string;
+  /** Optional explicit parent environment source; production inherits the current host. */
+  readonly parentEnvironment?: Readonly<NodeJS.ProcessEnv>;
   /** Test/host override for the legacy fixed watchdog; production uses stage-aware budgets. */
   readonly compilationTimeoutMs?: number;
   /** Grace period after cancellation before a non-responsive worker is recycled. */
@@ -62,8 +68,6 @@ export interface PreviewCompilerWorkerClientOptions {
   readonly shutdownGraceMs?: number;
   /** Quiet period after which completed compiler caches are released to return memory to the OS. */
   readonly idleWorkerTimeoutMs?: number;
-  /** V8 heap ceiling for analysis running inside the isolated compiler thread. */
-  readonly workerMemoryLimitMb?: number;
 }
 
 /** Serializable immutable bootstrap data delivered before the worker constructs its compiler. */
@@ -113,6 +117,10 @@ interface PendingWorkerCompilation {
 interface PendingCancellationAcknowledgement {
   /** Stops the grace timer after an acknowledgement or worker failure. */
   readonly clearTimer: () => void;
+  /** Resolves after the worker acknowledges cancellation or its forced retirement completes. */
+  readonly recovery: Promise<void>;
+  /** Settles the public recovery barrier exactly once. */
+  readonly resolveRecovery: () => void;
   /** Worker that must be recycled if it cannot acknowledge cancellation. */
   readonly transport: PreviewCompilerWorkerTransport;
 }
@@ -121,9 +129,6 @@ const DEFAULT_QUEUE_ACQUISITION_TIMEOUT_MS = 120_000;
 const DEFAULT_CANCELLATION_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const DEFAULT_IDLE_WORKER_TIMEOUT_MS = 15_000;
-const DEFAULT_WORKER_MEMORY_LIMIT_MB = 384;
-const DEFAULT_ESBUILD_PARALLELISM = '2';
-const DEFAULT_ESBUILD_MEMORY_LIMIT = '256MiB';
 
 /** Wraps Node's EventEmitter-style Worker API in the narrow transport boundary. */
 class NodePreviewCompilerWorkerTransport implements PreviewCompilerWorkerTransport {
@@ -133,20 +138,16 @@ class NodePreviewCompilerWorkerTransport implements PreviewCompilerWorkerTranspo
   public constructor(
     workerPath: string,
     bootstrap: PreviewCompilerWorkerBootstrap,
-    memoryLimitMb = DEFAULT_WORKER_MEMORY_LIMIT_MB,
+    parentEnvironment: Readonly<NodeJS.ProcessEnv>,
   ) {
+    const workerOptions = createPreviewCompilerWorkerOptions(
+      parentEnvironment,
+      PREVIEW_ROUTE_WORKER_OLD_GENERATION_LIMIT_MB,
+    );
     this.worker = new Worker(workerPath, {
-      env: {
-        ...process.env,
-        // Esbuild's native Go service inherits the worker environment. GOMEMLIMIT is a soft heap
-        // ceiling that forces earlier collection instead of allowing a fragmented route graph to
-        // consume all system memory before the host-side watchdog can recycle the worker.
-        GOMEMLIMIT: selectBoundedGoMemoryLimit(process.env.GOMEMLIMIT),
-        GOMAXPROCS: selectBoundedGoParallelism(process.env.GOMAXPROCS),
-      },
-      resourceLimits: {
-        maxOldGenerationSizeMb: normalizeWorkerMemoryLimit(memoryLimitMb),
-      },
+      env: workerOptions.env,
+      execArgv: [...workerOptions.execArgv],
+      resourceLimits: workerOptions.resourceLimits,
       workerData: bootstrap,
     });
   }
@@ -216,6 +217,21 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     context?: PreviewBuildExecutionContext,
   ): Promise<PreviewBundle> {
     return this.compileWithReplay(request, context, 0);
+  }
+
+  /**
+   * Waits until every currently cancelled request is safe to follow with new compiler work.
+   *
+   * Responsive workers acknowledge cancellation and retain warm caches. Unresponsive workers
+   * resolve this barrier only after their thread (and owned esbuild service) has terminated.
+   */
+  public async waitForCancellationRecovery(): Promise<void> {
+    const recoveries = [...this.cancellationAcknowledgements.values()].map(
+      (acknowledgement) => acknowledgement.recovery,
+    );
+    if (recoveries.length > 0) await Promise.all(recoveries);
+    const retirement = this.transportRetirement;
+    if (retirement !== undefined) await retirement;
   }
 
   /** Implements compile while retaining a bounded replay count across worker replacement. */
@@ -391,7 +407,7 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
                 managedDependencyStoreRoot: path.resolve(this.options.managedDependencyStoreRoot),
               }),
         },
-        this.options.workerMemoryLimitMb ?? DEFAULT_WORKER_MEMORY_LIMIT_MB,
+        this.options.parentEnvironment ?? process.env,
       );
     this.transport = transport;
     transport.onMessage((message) => {
@@ -533,7 +549,7 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       pending.startedAt === undefined
         ? scheduledTimeoutMs
         : Math.max(1, Date.now() - pending.startedAt);
-    this.recycleUnresponsiveTransport(
+    void this.recycleUnresponsiveTransport(
       new PreviewBuildStalledError(
         target,
         pending.lastStage,
@@ -559,7 +575,7 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       const acknowledgement = this.cancellationAcknowledgements.get(requestId);
       if (acknowledgement?.transport !== transport || this.transport !== transport) return;
       this.cancellationAcknowledgements.delete(requestId);
-      this.recycleUnresponsiveTransport(
+      const retirement = this.recycleUnresponsiveTransport(
         new PreviewBuildStalledError(
           'cancelled preview revision',
           undefined,
@@ -568,12 +584,19 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
         ),
         transport,
       );
+      void retirement.finally(acknowledgement.resolveRecovery);
     }, graceMs);
     timer.unref();
+    let resolveRecovery!: () => void;
+    const recovery = new Promise<void>((resolve) => {
+      resolveRecovery = resolve;
+    });
     this.cancellationAcknowledgements.set(requestId, {
       clearTimer: () => {
         clearTimeout(timer);
       },
+      recovery,
+      resolveRecovery,
       transport,
     });
   }
@@ -587,6 +610,7 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
     if (acknowledgement?.transport !== transport) return;
     this.cancellationAcknowledgements.delete(requestId);
     acknowledgement.clearTimer();
+    acknowledgement.resolveRecovery();
   }
 
   /** Clears every grace timer owned by a worker that is already terminating. */
@@ -595,6 +619,7 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
       if (acknowledgement.transport !== transport) continue;
       this.cancellationAcknowledgements.delete(requestId);
       acknowledgement.clearTimer();
+      acknowledgement.resolveRecovery();
     }
   }
 
@@ -602,14 +627,15 @@ export class PreviewCompilerWorkerClient implements PreviewCompiler {
   private recycleUnresponsiveTransport(
     error: PreviewBuildStalledError,
     transport: PreviewCompilerWorkerTransport,
-  ): void {
-    if (this.transport !== transport) return;
+  ): Promise<void> {
+    if (this.transport !== transport) return this.transportRetirement ?? Promise.resolve();
     this.transport = undefined;
     this.clearIdleRetirement();
     this.clearCancellationAcknowledgements(transport);
     this.retireTransportPending(transport, (pending) =>
       createRequestScopedStall(pending, error.reason, error.elapsedMs),
     );
+    return this.transportRetirement ?? Promise.resolve();
   }
 
   /** Rejects active failures while replaying every untouched queued request at most once. */
@@ -851,46 +877,6 @@ function attachRequestContext(
 /** Rejects non-finite or non-positive configuration values before scheduling host timers. */
 function normalizePositiveTimeout(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-}
-
-/** Keeps configured worker heaps within a useful range instead of disabling isolation accidentally. */
-function normalizeWorkerMemoryLimit(value: number): number {
-  return Number.isFinite(value) && value >= 128
-    ? Math.min(Math.floor(value), DEFAULT_WORKER_MEMORY_LIMIT_MB)
-    : DEFAULT_WORKER_MEMORY_LIMIT_MB;
-}
-
-/** Preserves a stricter inherited Go heap limit while clamping `off` and oversized host values. */
-function selectBoundedGoMemoryLimit(configuredValue: string | undefined): string {
-  if (configuredValue === undefined) return DEFAULT_ESBUILD_MEMORY_LIMIT;
-  const match = /^([0-9]+(?:\.[0-9]+)?)([KMGT]i?B|B)?$/iu.exec(configuredValue.trim());
-  if (match === null) return DEFAULT_ESBUILD_MEMORY_LIMIT;
-  const numericValue = Number(match[1]);
-  const unit = (match[2] ?? 'B').toUpperCase();
-  const multipliers: Readonly<Record<string, number>> = {
-    B: 1,
-    GB: 1_000_000_000,
-    GIB: 1024 ** 3,
-    KB: 1_000,
-    KIB: 1024,
-    MB: 1_000_000,
-    MIB: 1024 ** 2,
-    TB: 1_000_000_000_000,
-    TIB: 1024 ** 4,
-  };
-  const configuredBytes = numericValue * (multipliers[unit] ?? Number.POSITIVE_INFINITY);
-  const maximumBytes = 384 * 1024 ** 2;
-  return Number.isFinite(configuredBytes) && configuredBytes > 0 && configuredBytes <= maximumBytes
-    ? configuredValue
-    : DEFAULT_ESBUILD_MEMORY_LIMIT;
-}
-
-/** Limits inherited Go scheduler width so a host setting cannot multiply graph allocations. */
-function selectBoundedGoParallelism(configuredValue: string | undefined): string {
-  const parsed = Number.parseInt(configuredValue ?? '', 10);
-  return Number.isSafeInteger(parsed) && parsed > 0
-    ? Math.min(parsed, Number(DEFAULT_ESBUILD_PARALLELISM)).toString()
-    : DEFAULT_ESBUILD_PARALLELISM;
 }
 
 /** Recognizes Node worker heap-limit failures so orchestration does not replay the same graph. */

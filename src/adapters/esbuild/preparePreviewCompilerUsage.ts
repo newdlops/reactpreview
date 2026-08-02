@@ -13,9 +13,18 @@ import {
   createPreviewInspectorModuleConsumerPagePlan,
   hasPreviewInspectorCallableModuleExports,
 } from './inspector/previewInspectorModuleConsumerPagePlan';
-import { createPreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorPlan';
-import { collectPreviewInspectorFastPageCorridor } from './inspector/previewInspectorFastPageCorridor';
+import {
+  createPreviewInspectorAncestorPlan,
+  type PreviewInspectorAncestorCandidateTemplates,
+  type PreviewInspectorAncestorPrelude,
+  type PreviewInspectorAncestorUsageContext,
+} from './inspector/previewInspectorAncestorPlan';
+import {
+  collectPreviewInspectorFastPageCorridor,
+  type PreviewInspectorFastPageCorridor,
+} from './inspector/previewInspectorFastPageCorridor';
 import type { PreviewInspectorOneHopVisualPath } from './inspector/previewInspectorShallowVisualTypes';
+import { createPreviewInspectorRouteBranchSelectionPrefixProvider } from './inspector/previewInspectorRouteBranchPlan';
 import { createPreviewInspectorNextAppDirectRoutePlan } from './inspector/previewInspectorNextAppDirectRoutePlan';
 import { createPreviewInspectorNextAppModulePagePlan } from './inspector/previewInspectorNextAppModulePagePlan';
 import {
@@ -36,6 +45,156 @@ const NEXT_APP_ROUTE_STATE_MODULE_PATTERN = /^(?:error|loading|not-found)\.[cm]?
 /** Static resolver shape inferred from the project-aware resolver factory. */
 type PreviewCompilerStaticModuleResolver = ReturnType<typeof createPreviewStaticModuleResolver>;
 
+/** Frozen selected-corridor inputs shared by route selections in one confined inventory request. */
+interface PreviewCompleteRouteFastContext {
+  readonly corridor: PreviewInspectorFastPageCorridor | undefined;
+  readonly packageSourcePaths: readonly string[];
+}
+
+/** Test-only counters for successful request-local route-usage stage reuse. */
+export interface PreviewCompleteRouteUsageContextStatistics {
+  readonly ancestorPreludeComputations: number;
+  readonly ancestorPreludeHits: number;
+  readonly candidateTemplateComputations: number;
+  readonly candidateTemplateHits: number;
+  readonly fastContextComputations: number;
+  readonly fastContextHits: number;
+  readonly released: boolean;
+}
+
+/** Internal successful-only storage for one confined complete-inventory execution phase. */
+export interface PreviewCompleteRouteUsageContext extends PreviewInspectorAncestorUsageContext {
+  readonly getFastContext: (
+    compute: () => Promise<PreviewCompleteRouteFastContext>,
+  ) => Promise<PreviewCompleteRouteFastContext>;
+  readonly getStatistics: () => PreviewCompleteRouteUsageContextStatistics;
+  readonly release: () => void;
+}
+
+/** One successful-only stage that coalesces work without retaining a rejection. */
+interface PreviewCompleteRouteUsageStage<Value> {
+  readonly get: (compute: () => Promise<Value>) => Promise<Value>;
+  readonly release: () => void;
+}
+
+/** Creates request-local route-usage storage and a fresh execution-only prefix provider. */
+export function createPreviewCompleteRouteUsageContext(): PreviewCompleteRouteUsageContext {
+  const statistics = {
+    ancestorPreludeComputations: 0,
+    ancestorPreludeHits: 0,
+    candidateTemplateComputations: 0,
+    candidateTemplateHits: 0,
+    fastContextComputations: 0,
+    fastContextHits: 0,
+  };
+  let released = false;
+  const fastContext = createPreviewCompleteRouteUsageStage<PreviewCompleteRouteFastContext>(
+    () => {
+      statistics.fastContextComputations += 1;
+    },
+    () => {
+      statistics.fastContextHits += 1;
+    },
+  );
+  const ancestorPrelude = createPreviewCompleteRouteUsageStage<PreviewInspectorAncestorPrelude>(
+    () => {
+      statistics.ancestorPreludeComputations += 1;
+    },
+    () => {
+      statistics.ancestorPreludeHits += 1;
+    },
+  );
+  const candidateTemplates =
+    createPreviewCompleteRouteUsageStage<PreviewInspectorAncestorCandidateTemplates>(
+      () => {
+        statistics.candidateTemplateComputations += 1;
+      },
+      () => {
+        statistics.candidateTemplateHits += 1;
+      },
+    );
+  const selectionPrefixProvider = createPreviewInspectorRouteBranchSelectionPrefixProvider();
+  const assertActive = (): void => {
+    if (released) throw new Error('Preview complete-route usage context was already released.');
+  };
+  return Object.freeze({
+    getAncestorPrelude: async (compute: () => Promise<PreviewInspectorAncestorPrelude>) => {
+      assertActive();
+      return ancestorPrelude.get(compute);
+    },
+    getCandidateTemplates: async (
+      compute: () => Promise<PreviewInspectorAncestorCandidateTemplates>,
+    ) => {
+      assertActive();
+      return candidateTemplates.get(compute);
+    },
+    getFastContext: async (compute: () => Promise<PreviewCompleteRouteFastContext>) => {
+      assertActive();
+      return fastContext.get(compute);
+    },
+    getStatistics: () =>
+      Object.freeze({
+        ...statistics,
+        released,
+      }),
+    release: () => {
+      if (released) return;
+      released = true;
+      candidateTemplates.release();
+      ancestorPrelude.release();
+      fastContext.release();
+      selectionPrefixProvider.release();
+    },
+    selectionPrefixProvider,
+  });
+}
+
+/** Retains a value only after success and clears all state when its request terminates. */
+function createPreviewCompleteRouteUsageStage<Value>(
+  onComputation: () => void,
+  onHit: () => void,
+): PreviewCompleteRouteUsageStage<Value> {
+  let pending: Promise<Value> | undefined;
+  let retained: Value | undefined;
+  let retainedValue = false;
+  let released = false;
+  const retainSuccessfulValueIfActive = (value: Value): void => {
+    if (released) return;
+    retained = value;
+    retainedValue = true;
+  };
+  return {
+    async get(compute: () => Promise<Value>): Promise<Value> {
+      if (released) throw new Error('Preview complete-route usage stage was already released.');
+      if (retainedValue) {
+        onHit();
+        return retained as Value;
+      }
+      if (pending !== undefined) {
+        const value = await pending;
+        onHit();
+        return value;
+      }
+      onComputation();
+      const operation = compute();
+      pending = operation;
+      try {
+        const value = await operation;
+        retainSuccessfulValueIfActive(value);
+        return value;
+      } finally {
+        if (pending === operation) pending = undefined;
+      }
+    },
+    release(): void {
+      released = true;
+      pending = undefined;
+      retained = undefined;
+      retainedValue = false;
+    },
+  };
+}
+
 /** Inputs shared by normal reverse component analysis and module-to-page promotion. */
 export interface PreparePreviewCompilerUsageOptions {
   /** Compiler-lifetime inventory and source analysis cache. */
@@ -55,6 +214,8 @@ export interface PreparePreviewCompilerUsageOptions {
   readonly setupKind: 'custom' | 'none' | 'storybook';
   /** Ordinary or synthesized target exports selected before usage analysis. */
   readonly targetSelection: PreviewCompilerTargetSelection;
+  /** Confined complete-inventory execution context; never used by ordinary or replay builds. */
+  readonly usageContext?: PreviewCompleteRouteUsageContext;
   /** Trusted canonical workspace that bounds every path and source read. */
   readonly workspaceRoot: string;
 }
@@ -192,24 +353,35 @@ export async function preparePreviewCompilerUsage(
      * consumers in sibling feature folders, which is required for components reused by several
      * authored pages.
      */
-    const packageSourcePaths = await options.cache.getSourcePaths(
-      options.workspaceRoot,
-      options.projectRoot,
-      signal,
-    );
-    const corridor = await collectPreviewInspectorFastPageCorridor({
-      additionalSourcePaths: mergeInventorySnapshots(
-        packageSourcePaths,
-        snapshotSourceByPath.keys(),
-        options.workspaceRoot,
-      ),
-      documentPath: request.documentPath,
-      projectRoot: options.projectRoot,
-      readSource,
-      resolveModule: options.resolver.resolve,
-      ...(signal === undefined ? {} : { signal }),
-      workspaceRoot: options.workspaceRoot,
-    });
+    const computeFastContext = async (): Promise<PreviewCompleteRouteFastContext> => {
+      const packageSourcePaths = Object.freeze(
+        [
+          ...new Set(
+            (
+              await options.cache.getSourcePaths(options.workspaceRoot, options.projectRoot, signal)
+            ).map((sourcePath) => path.normalize(sourcePath)),
+          ),
+        ].sort(),
+      );
+      const corridor = await collectPreviewInspectorFastPageCorridor({
+        additionalSourcePaths: mergeInventorySnapshots(
+          packageSourcePaths,
+          snapshotSourceByPath.keys(),
+          options.workspaceRoot,
+        ),
+        documentPath: request.documentPath,
+        projectRoot: options.projectRoot,
+        readSource,
+        resolveModule: options.resolver.resolve,
+        ...(signal === undefined ? {} : { signal }),
+        workspaceRoot: options.workspaceRoot,
+      });
+      return Object.freeze({ corridor, packageSourcePaths });
+    };
+    const { corridor } =
+      options.usageContext === undefined
+        ? await computeFastContext()
+        : await options.usageContext.getFastContext(computeFastContext);
     if (corridor !== undefined) {
       /*
        * A nested lazy gallery registry is an import corridor, not an ordinary JSX owner. Reuse the
@@ -262,6 +434,7 @@ export async function preparePreviewCompilerUsage(
                 : { routeSelection: request.inspectorRouteSelection }),
               ...(signal === undefined ? {} : { signal }),
               sourcePaths: corridor.sourcePaths,
+              ...(options.usageContext === undefined ? {} : { usageContext: options.usageContext }),
             });
       if (inspectorPlan !== undefined) {
         return createPreparedInspectorUsage(

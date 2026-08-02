@@ -5,6 +5,11 @@
  */
 import type { PreviewCompiler } from '../../application/previewCompiler';
 import type { PreviewBuildIntent, PreviewBuildRequest } from '../../domain/preview';
+import type {
+  PreviewCompleteRouteInventoryTelemetryObserver,
+  PreviewInspectorCompleteRouteInventory,
+  PreviewInspectorCompleteRouteInventoryLimits,
+} from '../esbuild/inspector/previewInspectorCompleteRouteInventory';
 import {
   PreviewBuildCancelledError,
   PreviewBuildStalledError,
@@ -13,8 +18,10 @@ import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
 import { attachPreviewArtifactMetadata } from '../vscode/previewArtifactLayout';
 import {
   collectPreviewBundleTransferList,
+  isPreviewCompilerWorkerRequest,
   serializePreviewCompilerWorkerError,
   type PreviewCompilerWorkerCompileRequest,
+  type PreviewCompilerWorkerInventoryRequest,
   type PreviewCompilerWorkerRequest,
   type PreviewCompilerWorkerResponse,
 } from './previewCompilerWorkerProtocol';
@@ -24,7 +31,7 @@ export interface PreviewCompilerWorkerPort {
   /** Stops accepting messages once compiler shutdown is complete. */
   readonly close: () => void;
   /** Subscribes to structured requests from the extension host. */
-  readonly onMessage: (listener: (message: PreviewCompilerWorkerRequest) => void) => void;
+  readonly onMessage: (listener: (message: unknown) => void) => void;
   /** Returns a response and optionally transfers bundle buffers without copying. */
   readonly postMessage: (
     message: PreviewCompilerWorkerResponse,
@@ -34,6 +41,12 @@ export interface PreviewCompilerWorkerPort {
 
 /** Compiler operations required by the worker scheduler. */
 export interface PreviewCompilerWorkerBackend extends PreviewCompiler {
+  readonly collectCompleteRouteInventory: (
+    request: PreviewBuildRequest,
+    limits?: Partial<PreviewInspectorCompleteRouteInventoryLimits>,
+    signal?: AbortSignal,
+    observer?: PreviewCompleteRouteInventoryTelemetryObserver,
+  ) => Promise<PreviewInspectorCompleteRouteInventory>;
   /** Stops native compiler state after active work has observed cancellation. */
   readonly shutdown: () => Promise<void>;
 }
@@ -75,12 +88,16 @@ export class PreviewCompilerWorkerServer {
   /** Starts request routing; the compiler itself remains lazy until the first compile message. */
   public start(): void {
     this.port.onMessage((message) => {
-      this.handleRequest(message);
+      if (isPreviewCompilerWorkerRequest(message)) this.handleRequest(message);
     });
   }
 
   /** Routes compile, cancellation, and ordered shutdown requests. */
   private handleRequest(message: PreviewCompilerWorkerRequest): void {
+    if (message.type === 'collect-complete-route-inventory') {
+      this.startInventory(message);
+      return;
+    }
     if (message.type === 'cancel') {
       this.cancel(message.id);
       return;
@@ -199,6 +216,7 @@ export class PreviewCompilerWorkerServer {
   /** Cancels all work and waits for active compiler cleanup before acknowledging shutdown. */
   private requestShutdown(): void {
     if (this.shuttingDown) {
+      this.activeController?.abort();
       return;
     }
     this.shuttingDown = true;
@@ -215,6 +233,73 @@ export class PreviewCompilerWorkerServer {
     if (!this.running) {
       void this.finalize();
     }
+  }
+
+  /** Owns one complete inventory, releases native state, then posts the sole terminal response. */
+  private startInventory(message: PreviewCompilerWorkerInventoryRequest): void {
+    if (this.running || this.shuttingDown || this.queue.length > 0) {
+      this.port.postMessage({
+        error: {
+          code: 'preview-inventory-failed',
+          message: 'Inventory worker received concurrent compiler work.',
+        },
+        type: 'complete-route-inventory-failure',
+      });
+      return;
+    }
+    this.running = true;
+    this.shuttingDown = true;
+    const controller = new AbortController();
+    this.activeController = controller;
+    void this.collectInventoryAndRelease(message, controller);
+  }
+
+  /** Shuts down esbuild before exposing either inventory success or failure to the parent. */
+  private async collectInventoryAndRelease(
+    message: PreviewCompilerWorkerInventoryRequest,
+    controller: AbortController,
+  ): Promise<void> {
+    let response: PreviewCompilerWorkerResponse;
+    try {
+      const inventory = await this.compiler.collectCompleteRouteInventory(
+        message.request,
+        message.limits,
+        controller.signal,
+        (event) => {
+          this.port.postMessage({
+            event,
+            type: 'complete-route-inventory-progress',
+          });
+        },
+      );
+      response = { inventory, type: 'complete-route-inventory-success' };
+    } catch (error) {
+      response = {
+        error: {
+          code: controller.signal.aborted
+            ? 'preview-inventory-cancelled'
+            : 'preview-inventory-failed',
+          message: error instanceof Error ? error.message : String(error),
+        },
+        type: 'complete-route-inventory-failure',
+      };
+    }
+    try {
+      await this.compiler.shutdown();
+    } catch (error) {
+      response = {
+        error: {
+          code: 'preview-inventory-failed',
+          message: error instanceof Error ? error.message : String(error),
+        },
+        type: 'complete-route-inventory-failure',
+      };
+    }
+    this.finalizing = true;
+    this.activeController = undefined;
+    this.running = false;
+    this.port.postMessage(response);
+    this.port.close();
   }
 
   /** Executes at most one compile so large tabs cannot multiply peak graph memory. */

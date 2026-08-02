@@ -74,6 +74,81 @@ export interface PreviewStaticModuleResolver {
   readonly isSideEffectFree?: (sourcePath: string) => boolean;
 }
 
+/** Frozen audit counters for one request-owned static module-resolution memo. */
+export interface PreviewStaticModuleResolutionMemoStatistics {
+  readonly computations: number;
+  readonly entries: number;
+  readonly hits: number;
+  readonly released: boolean;
+  readonly requests: number;
+}
+
+/** Exact request-local memo for synchronous static module resolution. */
+export interface PreviewStaticModuleResolutionMemo {
+  /** Returns a frozen snapshot of retained entries and lifetime counters. */
+  readonly getStatistics: () => PreviewStaticModuleResolutionMemoStatistics;
+  /** Clears retained results and prevents later resolution. */
+  readonly release: () => void;
+  /** Resolves one exact consumer-path and module-specifier tuple. */
+  readonly resolve: (
+    moduleSpecifier: string,
+    consumerPath: string,
+    compute: () => string | undefined,
+  ) => string | undefined;
+}
+
+/** Creates an exact two-level static-resolution memo owned by one inventory request. */
+export function createPreviewStaticModuleResolutionMemo(): PreviewStaticModuleResolutionMemo {
+  const resolutionsByConsumerPath = new Map<string, Map<string, string | undefined>>();
+  let computations = 0;
+  let entries = 0;
+  let hits = 0;
+  let released = false;
+  let requests = 0;
+  return Object.freeze({
+    getStatistics(): PreviewStaticModuleResolutionMemoStatistics {
+      return Object.freeze({
+        computations,
+        entries,
+        hits,
+        released,
+        requests,
+      });
+    },
+    release(): void {
+      if (released) return;
+      for (const resolutions of resolutionsByConsumerPath.values()) resolutions.clear();
+      resolutionsByConsumerPath.clear();
+      entries = 0;
+      released = true;
+    },
+    resolve(
+      moduleSpecifier: string,
+      consumerPath: string,
+      compute: () => string | undefined,
+    ): string | undefined {
+      if (released) {
+        throw new Error('The preview static module resolution memo was already released.');
+      }
+      requests += 1;
+      const existingResolutions = resolutionsByConsumerPath.get(consumerPath);
+      if (existingResolutions?.has(moduleSpecifier) === true) {
+        hits += 1;
+        return existingResolutions.get(moduleSpecifier);
+      }
+      computations += 1;
+      const resolved = compute();
+      const resolutions = existingResolutions ?? new Map<string, string | undefined>();
+      if (existingResolutions === undefined) {
+        resolutionsByConsumerPath.set(consumerPath, resolutions);
+      }
+      resolutions.set(moduleSpecifier, resolved);
+      entries += 1;
+      return resolved;
+    },
+  });
+}
+
 /** Compiler options and TypeScript's own bounded module-resolution memoization. */
 interface PreviewStaticResolutionContext {
   /** Directory against which TypeScript path mapping targets are interpreted. */

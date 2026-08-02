@@ -29,6 +29,14 @@ export interface PreviewWildcardTargetExportSlot {
 export type PreviewTargetExportSlot =
   PreviewExplicitTargetExportSlot | PreviewWildcardTargetExportSlot;
 
+/** Complete syntax-proven runtime export evidence for one prepared source module. */
+export interface PreviewTargetModuleExportEvidence {
+  /** Every explicitly named runtime export, without component-name filtering. */
+  readonly explicitExportNames: readonly string[];
+  /** Whether a bare `export *` leaves additional names unresolved in this source alone. */
+  readonly hasWildcardExport: boolean;
+}
+
 /** Suffixes that strongly identify rendered React owners without project naming configuration. */
 const PRIMARY_COMPONENT_NAME_PATTERN =
   /(?:App|Page|Screen|View|Layout|Template|Section|Panel|Modal|Dialog|Drawer|Form|Field|Input|Select|Button|Link|Table|List|Item|Row|Card|Header|Footer|Nav|Menu|Sidebar|Content|Container|Provider|Boundary|Renderer|Preview|Target)$/u;
@@ -47,6 +55,41 @@ export interface PreviewThemeImportSelection {
 
 /** Callback used by statement collectors to append one eligible explicit export exactly once. */
 type AddExplicitExport = (exportName: string, displayName?: string) => void;
+
+/**
+ * Collects the complete explicit runtime export surface used to prove an exact facade contract.
+ *
+ * Unlike the preview gallery inventory, this evidence does not apply React naming heuristics.
+ * Type-only exports remain excluded, and a bare wildcard is retained as unresolved evidence rather
+ * than being treated as proof of any selected binding.
+ *
+ * @param sourcePath Exact prepared runtime module path used for grammar and diagnostics.
+ * @param sourceText Prepared runtime source that the workspace loader will compile.
+ * @returns Immutable explicit export names plus unresolved wildcard presence.
+ */
+export function collectPreviewTargetModuleExportEvidence(
+  sourcePath: string,
+  sourceText: string,
+): PreviewTargetModuleExportEvidence {
+  const sourceFile = createSourceFile(sourcePath, sourceText);
+  assertSyntacticallyValid(sourceFile, sourcePath);
+  const runtimeBindings = collectRuntimeBindings(sourceFile);
+  const slots: PreviewTargetExportSlot[] = [];
+  const explicitExportNames: string[] = [];
+  const seen = new Set<string>();
+  const addExplicitExport: AddExplicitExport = (exportName): void => {
+    if (seen.has(exportName)) return;
+    seen.add(exportName);
+    explicitExportNames.push(exportName);
+  };
+  for (const statement of sourceFile.statements) {
+    collectStatementExportSlots(statement, runtimeBindings, slots, addExplicitExport);
+  }
+  return Object.freeze({
+    explicitExportNames: Object.freeze(explicitExportNames),
+    hasWildcardExport: slots.some((slot) => slot.kind === 'wildcard'),
+  });
+}
 
 /**
  * Selects every statically identifiable component-shaped runtime export in source order.

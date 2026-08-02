@@ -13,6 +13,9 @@ export type PreviewRenderMode = 'component' | 'page-inspector';
 /** Two-phase preparation policy used to minimize time to the first rendered component. */
 export type PreviewPreparationMode = 'fast' | 'corridor' | 'full';
 
+/** Optional runtime ownership policy for one compiler-validated Page Inspector route selection. */
+export type PreviewInspectorTargetMode = 'selected-route-leaf';
+
 /**
  * Compiler-owned statement about whether one artifact contains the selected file's authored page
  * context. `partial` is deliberately the safe default: a successful direct-file bundle proves
@@ -56,6 +59,120 @@ export interface PreviewInspectorRouteSelectionStep {
   readonly pattern: string;
 }
 
+/** Canonical source/export/surface identity retained by a campaign route execution plan. */
+export interface PreviewRouteExecutionPlanRoleIdentity {
+  readonly exportName: string;
+  readonly sourcePath: string;
+  readonly surfaceId: string;
+}
+
+/** Canonical route mount identity retained without source text or executable configuration. */
+export interface PreviewRouteExecutionPlanMountIdentity {
+  readonly basePath: string;
+  readonly childSurfaceId: string;
+  readonly contextPattern?: string;
+  readonly hasWildcardFallback: boolean;
+  readonly parentSurfaceId?: string;
+  readonly pattern: string;
+}
+
+/** Canonical selected-route recipe used by the compiler-owned Page Execution candidate. */
+export interface PreviewRouteExecutionPlanRecipeIdentity {
+  readonly kind: string;
+  readonly mounts: readonly PreviewRouteExecutionPlanMountIdentity[];
+  readonly params: Readonly<Record<string, string | readonly string[]>>;
+  readonly pathname: string;
+  readonly pattern: string;
+  readonly rootOwnsRouter: boolean;
+  readonly routerModuleSpecifier?: string;
+  readonly searchParams: Readonly<Record<string, string | readonly string[]>>;
+}
+
+/** Compact compiler context whose canonical digest prevents cross-snapshot plan reuse. */
+export interface PreviewRouteExecutionPlanningContextIdentity {
+  readonly compilerPolicyDigest: string;
+  readonly preparationPolicyDigest: string;
+  readonly requestDigest: string;
+  readonly resolutionConfinementDigest: string;
+  readonly resolverDigest: string;
+  readonly sourceSnapshotDigest: string;
+}
+
+/**
+ * Immutable campaign-only proof produced by the real fast compiler planning path.
+ *
+ * Ordinary editor requests omit this artifact and retain their existing automatic selection
+ * behavior. Campaign compilation accepts it only after recreating and comparing every field.
+ */
+export interface PreviewRouteExecutionPlanArtifact {
+  readonly browserCandidateId: string;
+  readonly digest: string;
+  readonly executionCandidateId: string;
+  readonly executionIdentity: string;
+  readonly executionRoot: PreviewRouteExecutionPlanRoleIdentity;
+  readonly frontierIdentity: string;
+  readonly ownerChain: readonly {
+    readonly basePattern: string;
+    readonly exportName: string;
+    readonly sourcePath: string;
+  }[];
+  readonly pageCandidateId: string;
+  readonly planningContext: PreviewRouteExecutionPlanningContextIdentity;
+  readonly planningContextDigest: string;
+  readonly policyDigest: string;
+  readonly recipe?: PreviewRouteExecutionPlanRecipeIdentity;
+  readonly rootRoleContract: PreviewRouteExecutionPlanRoleIdentity & {
+    readonly preparedSourceDigest: string;
+  };
+  readonly routeId: string;
+  readonly runtimeTarget: PreviewRouteExecutionPlanRoleIdentity;
+  readonly selectedBranch: {
+    readonly componentName: string;
+    readonly exportName: string;
+    readonly id: string;
+    readonly pathname: string;
+    readonly pattern: string;
+    readonly sourcePath: string;
+  };
+  readonly selection: readonly PreviewInspectorRouteSelectionStep[];
+  readonly targetRoleContract: PreviewRouteExecutionPlanRoleIdentity & {
+    readonly preparedSourceDigest: string;
+  };
+  readonly version: number;
+}
+
+/** Bounded, structured evidence for one fail-closed campaign plan mismatch. */
+export interface PreviewRouteExecutionPlanInvariantEvidence {
+  readonly expectedContextDigest?: string;
+  readonly expectedPlanDigest?: string;
+  readonly expectedPolicyDigest?: string;
+  readonly mismatchField: string;
+  readonly observedCandidateId?: string;
+  readonly observedContextDigest?: string;
+  readonly observedPlanDigest?: string;
+  readonly observedPolicyDigest?: string;
+  readonly observedResolution?: 'automatic' | 'exact' | 'fallback' | 'missing';
+  readonly observedRootIdentity?: string;
+  readonly observedTargetIdentity?: string;
+  readonly reason: string;
+  readonly requestedResolution: 'exact';
+  readonly routeId: string;
+}
+
+/**
+ * Opt-in immutable-source boundary for non-editor compiler integrations.
+ *
+ * Digests are prepared by trusted Node tooling; the compiler still canonicalizes every path and
+ * validates every resolved input. Ordinary editor requests omit this contract.
+ */
+export interface PreviewResolutionConfinement {
+  readonly approvedDependencyRoots: readonly string[];
+  readonly dependencyViewDigest: string;
+  readonly policyDigest: string;
+  readonly sourceManifestDigest: string;
+  readonly sourceRoot: string;
+}
+
 /**
  * Immutable snapshot of the active editor at the moment a preview build starts.
  * `sourceText` deliberately comes from the editor rather than disk so unsaved changes are visible.
@@ -86,6 +203,13 @@ export interface PreviewBuildRequest {
    */
   readonly inspectorRouteSelection?: readonly PreviewInspectorRouteSelectionStep[];
   /**
+   * Attributes current-file runtime evidence to the exact compiler-recreated selected route leaf.
+   *
+   * The request intentionally carries no source path or export identity. The compiler derives both
+   * from its validated Page Execution candidate and fails when that evidence is absent or conflicts.
+   */
+  readonly inspectorTargetMode?: PreviewInspectorTargetMode;
+  /**
    * Stable Page Inspector candidate identity selected by the user.
    *
    * Candidate metadata is intentionally collected for every proven caller path, but the compiler
@@ -100,8 +224,15 @@ export interface PreviewBuildRequest {
    * recreated from current static evidence for the already-selected page candidate.
    */
   readonly inspectorPageExecutionCandidateId?: string;
+  /**
+   * Trusted campaign-only execution proof. The compiler always recreates this artifact before use;
+   * callers cannot select filesystem modules or candidates merely by serializing their identities.
+   */
+  readonly routeExecutionPlan?: PreviewRouteExecutionPlanArtifact;
   /** Component gallery by default, or an opt-in actual-parent page inspector. */
   readonly renderMode?: PreviewRenderMode;
+  /** Optional immutable-source and installed-dependency resolution boundary. */
+  readonly resolutionConfinement?: PreviewResolutionConfinement;
   /** Complete current editor contents, including unsaved changes. */
   readonly sourceText: string;
   /** Optional project module that initializes globals and supplies preview providers or props. */
@@ -235,5 +366,31 @@ export class PreviewCompilationError extends Error {
     super(message, { cause });
     this.name = 'PreviewCompilationError';
     this.diagnostics = diagnostics;
+  }
+}
+
+/** Campaign-only invariant failure carrying bounded evidence through worker serialization. */
+export class PreviewRouteExecutionPlanInvariantError extends PreviewCompilationError {
+  public readonly evidence: PreviewRouteExecutionPlanInvariantEvidence;
+
+  /** Creates one fail-closed campaign invariant with structured diagnostics. */
+  public constructor(evidence: PreviewRouteExecutionPlanInvariantEvidence) {
+    super(
+      `React Preview rejected the frozen route execution plan at "${evidence.mismatchField}": ${evidence.reason}.`,
+      [
+        {
+          message: `Route execution-plan invariant failed at "${evidence.mismatchField}".`,
+          notes: [
+            `route=${evidence.routeId}`,
+            `reason=${evidence.reason}`,
+            `requested-resolution=${evidence.requestedResolution}`,
+            `observed-resolution=${evidence.observedResolution ?? 'missing'}`,
+          ],
+          severity: 'error',
+        },
+      ],
+    );
+    this.name = 'PreviewRouteExecutionPlanInvariantError';
+    this.evidence = Object.freeze({ ...evidence });
   }
 }

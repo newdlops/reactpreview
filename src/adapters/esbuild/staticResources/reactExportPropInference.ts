@@ -157,21 +157,36 @@ function collectResolvableObjectTypes(
   if (options.resolveImport === undefined) return localTypes;
   const budget = { bytes: 0, modules: 0 };
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier))
+      continue;
     const bindings = statement.importClause?.namedBindings;
     if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
     const module = options.resolveImport(statement.moduleSpecifier.text, sourcePath);
     const moduleBytes = module === undefined ? 0 : Buffer.byteLength(module.sourceText, 'utf8');
-    if (module === undefined || moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
-      ++budget.modules > MAX_IMPORTED_TYPE_MODULES || (budget.bytes += moduleBytes) > MAX_IMPORTED_TYPE_BYTES) continue;
+    if (
+      module === undefined ||
+      moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
+      ++budget.modules > MAX_IMPORTED_TYPE_MODULES ||
+      (budget.bytes += moduleBytes) > MAX_IMPORTED_TYPE_BYTES
+    )
+      continue;
     const importedFile = ts.createSourceFile(
-      module.sourcePath, module.sourceText, ts.ScriptTarget.Latest, true, readScriptKind(module.sourcePath),
+      module.sourcePath,
+      module.sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      readScriptKind(module.sourcePath),
     );
     if (hasParseDiagnostics(importedFile)) continue;
     for (const binding of bindings.elements) {
       const importedName = (binding.propertyName ?? binding.name).text;
       const declaration = resolveExportedObjectType(
-        importedName, importedFile, module.sourcePath, options, new Set([sourcePath]), budget,
+        importedName,
+        importedFile,
+        module.sourcePath,
+        options,
+        new Set([sourcePath]),
+        budget,
       );
       if (declaration !== undefined && !localTypes.has(binding.name.text)) {
         localTypes.set(binding.name.text, declaration);
@@ -205,13 +220,31 @@ function resolveExportedObjectType(
     if (binding === undefined || options.resolveImport === undefined) continue;
     const module = options.resolveImport(moduleSpecifier.text, sourcePath);
     const moduleBytes = module === undefined ? 0 : Buffer.byteLength(module.sourceText, 'utf8');
-    if (module === undefined || moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
-      ++budget.modules > MAX_IMPORTED_TYPE_MODULES || (budget.bytes += moduleBytes) > MAX_IMPORTED_TYPE_BYTES) continue;
-    const next = ts.createSourceFile(module.sourcePath, module.sourceText, ts.ScriptTarget.Latest, true,
-      readScriptKind(module.sourcePath));
-    const resolved = hasParseDiagnostics(next) ? undefined : resolveExportedObjectType(
-      (binding.propertyName ?? binding.name).text, next, module.sourcePath, options, activePaths, budget, depth + 1,
+    if (
+      module === undefined ||
+      moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
+      ++budget.modules > MAX_IMPORTED_TYPE_MODULES ||
+      (budget.bytes += moduleBytes) > MAX_IMPORTED_TYPE_BYTES
+    )
+      continue;
+    const next = ts.createSourceFile(
+      module.sourcePath,
+      module.sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      readScriptKind(module.sourcePath),
     );
+    const resolved = hasParseDiagnostics(next)
+      ? undefined
+      : resolveExportedObjectType(
+          (binding.propertyName ?? binding.name).text,
+          next,
+          module.sourcePath,
+          options,
+          activePaths,
+          budget,
+          depth + 1,
+        );
     if (resolved !== undefined) return resolved;
   }
   return undefined;
@@ -359,16 +392,17 @@ function readObjectTypeMembers(
   if (declaration === undefined || resolutionStack.has(name)) return undefined;
   resolutionStack.add(name);
   try {
-  const members = ts.isInterfaceDeclaration(declaration)
-    ? [
-        ...declaration.members,
-        ...(declaration.heritageClauses ?? []).flatMap((clause) =>
-          clause.types.flatMap(
-            (heritageType) => readObjectTypeMembers(heritageType, localTypes, resolutionStack) ?? [],
+    const members = ts.isInterfaceDeclaration(declaration)
+      ? [
+          ...declaration.members,
+          ...(declaration.heritageClauses ?? []).flatMap((clause) =>
+            clause.types.flatMap(
+              (heritageType) =>
+                readObjectTypeMembers(heritageType, localTypes, resolutionStack) ?? [],
+            ),
           ),
-        ),
-      ]
-    : readObjectTypeMembers(declaration.type, localTypes, resolutionStack);
+        ]
+      : readObjectTypeMembers(declaration.type, localTypes, resolutionStack);
     return members;
   } finally {
     resolutionStack.delete(name);
@@ -404,12 +438,21 @@ function addTypeRequirement(
   }
   if (ts.isArrayTypeNode(unwrapped) || ts.isTupleTypeNode(unwrapped)) {
     requirePath(state, path_, 'array', 'type');
-    const elementType = ts.isArrayTypeNode(unwrapped) ? unwrapped.elementType : unwrapped.elements[0];
+    const elementType = ts.isArrayTypeNode(unwrapped)
+      ? unwrapped.elementType
+      : unwrapped.elements[0];
     if (elementType !== undefined) {
       setArrayItemRequirement(
         state,
         path_,
-        createTypeShape(elementType, localTypes, state, sourceFile, activeNames, depthOffset + path_.length),
+        createTypeShape(
+          elementType,
+          localTypes,
+          state,
+          sourceFile,
+          activeNames,
+          depthOffset + path_.length,
+        ),
       );
     }
     return;
@@ -430,15 +473,12 @@ function addTypeRequirement(
     return;
   }
   if (ts.isUnionTypeNode(unwrapped)) {
-    const members = unwrapped.types.filter(
-      (candidate) => !isNullishTypeNode(candidate),
-    );
-    if (members.length === 1)
-      {
-        const member = members[0];
-        if (member === undefined) return;
+    const members = unwrapped.types.filter((candidate) => !isNullishTypeNode(candidate));
+    if (members.length === 1) {
+      const member = members[0];
+      if (member === undefined) return;
       addTypeRequirement(path_, member, localTypes, state, sourceFile, activeNames, depthOffset);
-      }
+    }
     return;
   }
   if (
@@ -452,14 +492,22 @@ function addTypeRequirement(
       setArrayItemRequirement(
         state,
         path_,
-        createTypeShape(elementType, localTypes, state, sourceFile, activeNames, depthOffset + path_.length),
+        createTypeShape(
+          elementType,
+          localTypes,
+          state,
+          sourceFile,
+          activeNames,
+          depthOffset + path_.length,
+        ),
       );
     }
     return;
   }
-  const activeName = ts.isTypeReferenceNode(unwrapped) && ts.isIdentifier(unwrapped.typeName)
-    ? unwrapped.typeName.text
-    : undefined;
+  const activeName =
+    ts.isTypeReferenceNode(unwrapped) && ts.isIdentifier(unwrapped.typeName)
+      ? unwrapped.typeName.text
+      : undefined;
   if (activeName !== undefined && activeNames.has(activeName)) return;
   if (activeName !== undefined) activeNames.add(activeName);
   try {
@@ -467,10 +515,23 @@ function addTypeRequirement(
     if (members === undefined) return;
     requirePath(state, path_, 'object', 'type');
     for (const member of members) {
-      if (!ts.isPropertySignature(member) || member.questionToken !== undefined || member.type === undefined) continue;
+      if (
+        !ts.isPropertySignature(member) ||
+        member.questionToken !== undefined ||
+        member.type === undefined
+      )
+        continue;
       const propertyName = readPropertyName(member.name);
       if (propertyName === undefined || BLOCKED_PROPERTY_NAMES.has(propertyName)) continue;
-      addTypeRequirement([...path_, propertyName], member.type, localTypes, state, sourceFile, activeNames, depthOffset);
+      addTypeRequirement(
+        [...path_, propertyName],
+        member.type,
+        localTypes,
+        state,
+        sourceFile,
+        activeNames,
+        depthOffset,
+      );
     }
   } finally {
     if (activeName !== undefined) activeNames.delete(activeName);
@@ -479,11 +540,16 @@ function addTypeRequirement(
 
 /** Removes only nullish union branches; other alternatives remain ambiguous and fail closed. */
 function isNullishTypeNode(node: ts.TypeNode): boolean {
-  if (node.kind === ts.SyntaxKind.NullKeyword || node.kind === ts.SyntaxKind.UndefinedKeyword ||
-    node.kind === ts.SyntaxKind.VoidKeyword) return true;
-  return ts.isLiteralTypeNode(node) && (
-    node.literal.kind === ts.SyntaxKind.NullKeyword ||
-    node.literal.kind === ts.SyntaxKind.UndefinedKeyword
+  if (
+    node.kind === ts.SyntaxKind.NullKeyword ||
+    node.kind === ts.SyntaxKind.UndefinedKeyword ||
+    node.kind === ts.SyntaxKind.VoidKeyword
+  )
+    return true;
+  return (
+    ts.isLiteralTypeNode(node) &&
+    (node.literal.kind === ts.SyntaxKind.NullKeyword ||
+      node.literal.kind === ts.SyntaxKind.UndefinedKeyword)
   );
 }
 
@@ -503,7 +569,15 @@ function createTypeShape(
   const previousRoot = state.root;
   state.root = root;
   try {
-    addTypeRequirement(['value'], typeNode, localTypes, state, sourceFile, activeNames, depthOffset);
+    addTypeRequirement(
+      ['value'],
+      typeNode,
+      localTypes,
+      state,
+      sourceFile,
+      activeNames,
+      depthOffset,
+    );
   } finally {
     state.root = previousRoot;
   }

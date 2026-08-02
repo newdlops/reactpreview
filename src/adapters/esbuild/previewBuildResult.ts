@@ -3,6 +3,7 @@
  * Keeping output validation, dependency recovery, and diagnostic restoration at this boundary lets
  * the compiler focus on build planning while every caller receives the same safety guarantees.
  */
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { BuildFailure, BuildResult, Message, Metafile, OutputFile } from 'esbuild';
 import {
@@ -26,28 +27,63 @@ import { selectReportablePreviewBuildWarnings } from './previewBuildWarningPolic
 import {
   PREVIEW_ASSET_NAMESPACE,
   PREVIEW_APOLLO_BRIDGE_NAMESPACE,
-  PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
   PREVIEW_DATA_URL_NAMESPACE,
   PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-  PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE,
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
-  PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE,
-  PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE,
   PREVIEW_INSPECTOR_RUNTIME_NAMESPACE,
   PREVIEW_INSPECTOR_TARGET_NAMESPACE,
   PREVIEW_NODE_BUILTIN_NAMESPACE,
   PREVIEW_REDUX_BRIDGE_NAMESPACE,
   PREVIEW_ROUTER_BRIDGE_NAMESPACE,
   PREVIEW_SETUP_BRIDGE_NAMESPACE,
-  PREVIEW_STYLE_SHEET_MANAGER_NAMESPACE,
   PREVIEW_SNAPSHOT_NAMESPACE,
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
   PREVIEW_THEME_BRIDGE_NAMESPACE,
-  PREVIEW_THEME_CANDIDATE_NAMESPACE,
 } from './previewPluginProtocol';
+import { isKnownPreviewCompilerVirtualInput } from './previewOwnedNamespaceRegistry';
+import {
+  PREVIEW_IMPORT_META_ENV_DEFINE_INPUT,
+  PREVIEW_STDIN_ENTRY_NAME,
+} from './previewSyntheticInputRegistry';
+
+/** Stable identity for ordered recovery of physical files from esbuild metafile namespaces. */
+export const PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_VERSION = 1;
+export const PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_DIGEST = createHash('sha256')
+  .update(
+    JSON.stringify({
+      fileBackedNamespaces: [
+        PREVIEW_ASSET_NAMESPACE,
+        PREVIEW_DATA_URL_NAMESPACE,
+        PREVIEW_SNAPSHOT_NAMESPACE,
+      ],
+      order: [
+        'exact-synthetic',
+        'declared-file-backed',
+        'compiler-virtual',
+        'ordinary-file',
+        'invalid-namespace',
+      ],
+      physicalNormalization: 'decode-strip-suffix-resolve-workspace-normalize-deduplicate-sort',
+      policyVersion: PREVIEW_METAFILE_DEPENDENCY_RECOVERY_POLICY_VERSION,
+    }),
+  )
+  .digest('hex');
+
+const PREVIEW_METAFILE_DEPENDENCY_NAMESPACES = Object.freeze([
+  PREVIEW_ASSET_NAMESPACE,
+  PREVIEW_DATA_URL_NAMESPACE,
+  PREVIEW_SNAPSHOT_NAMESPACE,
+]);
+
+/** A declared metafile namespace whose payload carries one physical dependency identity. */
+export interface PreviewMetafileFileDependency {
+  readonly dependencyPath?: string;
+  readonly namespace: string;
+  readonly payload: string;
+}
 
 /** Virtual source name used to locate the generated browser entry in esbuild metadata. */
-export const VIRTUAL_ENTRY_NAME = '<react-preview-entry>';
+export const VIRTUAL_ENTRY_NAME = PREVIEW_STDIN_ENTRY_NAME;
 
 /** Stable synthetic output root shared by esbuild options and output-plan validation. */
 export const PREVIEW_OUTPUT_DIRECTORY_NAME = 'react-preview-output';
@@ -167,38 +203,25 @@ export function collectPreviewBuildDependencies(
   request: PreviewBuildRequest,
   metafile: Metafile,
 ): readonly string[] {
-  const dependencies = Object.keys(metafile.inputs)
-    .filter(
-      (inputPath) =>
-        !inputPath.startsWith('<') &&
-        !inputPath.endsWith(VIRTUAL_ENTRY_NAME) &&
-        !inputPath.startsWith(`${PREVIEW_APOLLO_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_CONTEXT_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_FORMIK_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_GLOBAL_PACKAGE_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_ROOT_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_RUNTIME_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_INSPECTOR_TARGET_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_NODE_BUILTIN_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_REDUX_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_ROUTER_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_THEME_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_THEME_CANDIDATE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_SETUP_BRIDGE_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_STYLE_SHEET_MANAGER_NAMESPACE}:`) &&
-        !inputPath.startsWith(`${PREVIEW_TARGET_BRIDGE_NAMESPACE}:`),
-    )
-    .map((inputPath) => {
-      const namespacelessInput = removeFileBackedPreviewNamespace(inputPath);
-      const filesystemInput = stripAssetSuffix(namespacelessInput);
-      return path.normalize(
-        path.isAbsolute(filesystemInput)
-          ? filesystemInput
-          : path.resolve(request.workspaceRoot, filesystemInput),
-      );
-    });
+  const dependencies: string[] = [];
+  for (const inputIdentity of Object.keys(metafile.inputs)) {
+    if (isExactPreviewBuildSyntheticInput(request, inputIdentity)) {
+      continue;
+    }
+    const fileDependency = decodePreviewMetafileFileDependency(
+      inputIdentity,
+      request.workspaceRoot,
+    );
+    if (fileDependency !== undefined) {
+      if (fileDependency.dependencyPath !== undefined) {
+        dependencies.push(fileDependency.dependencyPath);
+      }
+      continue;
+    }
+    if (isKnownPreviewCompilerVirtualInput(inputIdentity)) continue;
+    if (readPreviewMetafileNamespacePrefix(inputIdentity) !== undefined) continue;
+    dependencies.push(normalizePreviewMetafilePhysicalPath(inputIdentity, request.workspaceRoot));
+  }
 
   // Preserve the editor's lexical target identity even when esbuild resolves a symlink to its real
   // path. Panel change routing listens to the URI VS Code opened, while both identities may still
@@ -206,33 +229,78 @@ export function collectPreviewBuildDependencies(
   return [...new Set([path.normalize(request.documentPath), ...dependencies])].sort();
 }
 
+function isExactPreviewBuildSyntheticInput(
+  request: PreviewBuildRequest,
+  inputIdentity: string,
+): boolean {
+  if (inputIdentity === PREVIEW_IMPORT_META_ENV_DEFINE_INPUT) return true;
+  const entryIdentity = path
+    .relative(
+      request.workspaceRoot,
+      path.join(path.dirname(request.documentPath), PREVIEW_STDIN_ENTRY_NAME),
+    )
+    .split(path.sep)
+    .join('/');
+  return inputIdentity === entryIdentity;
+}
+
 /**
- * Removes a private file-backed namespace from an esbuild metadata input identity.
+ * Decodes only the closed set of metafile namespaces declared to carry physical dependencies.
  *
- * @param inputPath Metafile key that may represent a snapshot or generated asset module.
- * @returns Underlying filesystem path with any query or fragment still attached.
+ * @param inputIdentity Raw esbuild metafile input identity.
+ * @param workingDirectory Exact build workspace root used for relative payloads.
+ * @returns Namespace evidence and normalized dependency path, or `undefined` for other inputs.
  */
-function removeFileBackedPreviewNamespace(inputPath: string): string {
-  for (const namespace of [
-    PREVIEW_ASSET_NAMESPACE,
-    PREVIEW_APOLLO_BRIDGE_NAMESPACE,
-    PREVIEW_CONTEXT_BRIDGE_NAMESPACE,
-    PREVIEW_DATA_URL_NAMESPACE,
-    PREVIEW_FORMIK_BRIDGE_NAMESPACE,
-    PREVIEW_NODE_BUILTIN_NAMESPACE,
-    PREVIEW_REDUX_BRIDGE_NAMESPACE,
-    PREVIEW_ROUTER_BRIDGE_NAMESPACE,
-    PREVIEW_SETUP_BRIDGE_NAMESPACE,
-    PREVIEW_SNAPSHOT_NAMESPACE,
-    PREVIEW_THEME_BRIDGE_NAMESPACE,
-  ]) {
+export function decodePreviewMetafileFileDependency(
+  inputIdentity: string,
+  workingDirectory: string,
+): PreviewMetafileFileDependency | undefined {
+  for (const namespace of PREVIEW_METAFILE_DEPENDENCY_NAMESPACES) {
     const prefix = `${namespace}:`;
-    if (inputPath.startsWith(prefix)) {
-      return inputPath.slice(prefix.length);
+    if (inputIdentity.startsWith(prefix)) {
+      const payload = inputIdentity.slice(prefix.length);
+      const filesystemPayload = stripAssetSuffix(payload);
+      return {
+        ...(filesystemPayload.length === 0
+          ? {}
+          : {
+              dependencyPath: normalizePreviewMetafilePhysicalPath(
+                filesystemPayload,
+                workingDirectory,
+              ),
+            }),
+        namespace,
+        payload,
+      };
     }
   }
+  return undefined;
+}
 
-  return inputPath;
+/**
+ * Detects a custom metafile namespace without treating Windows drive letters as namespaces.
+ *
+ * @param inputIdentity Raw esbuild metafile input identity.
+ * @returns Namespace prefix or angle-bracket identity when the input is not an ordinary file.
+ */
+export function readPreviewMetafileNamespacePrefix(inputIdentity: string): string | undefined {
+  if (inputIdentity.startsWith('<')) return inputIdentity;
+  const match = /^([A-Za-z0-9_.-]+):/u.exec(inputIdentity);
+  if (match === null) return undefined;
+  const prefix = match[1];
+  return prefix?.length === 1 && /^[A-Za-z]$/u.test(prefix) ? undefined : prefix;
+}
+
+function normalizePreviewMetafilePhysicalPath(
+  inputIdentity: string,
+  workingDirectory: string,
+): string {
+  const filesystemInput = stripAssetSuffix(inputIdentity);
+  return path.normalize(
+    path.isAbsolute(filesystemInput)
+      ? filesystemInput
+      : path.resolve(workingDirectory, filesystemInput),
+  );
 }
 
 /**

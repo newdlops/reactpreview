@@ -67,7 +67,7 @@ export function createPreviewGlobalPackageBridgeHintsFromEvidence(
  * Absolute implementation paths also bypass the Node-built-in compatibility shim when a browser
  * polyfill package intentionally owns the same spelling, as with the `buffer` npm package.
  */
-function selectAdjacentPreviewRuntimeModule(declarationPath: string): string | undefined {
+export function selectAdjacentPreviewRuntimeModule(declarationPath: string): string | undefined {
   const basePath = declarationPath.replace(/\.d\.[cm]?ts$/iu, '');
   const extension = path.extname(declarationPath).toLowerCase();
   const preferredExtension = extension === '.mts' ? '.mjs' : extension === '.cts' ? '.cjs' : '.js';

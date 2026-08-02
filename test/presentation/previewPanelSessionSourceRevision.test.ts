@@ -351,6 +351,7 @@ describe('PreviewPanelSession displayed Inspector revision', () => {
     expect(execute).toHaveBeenCalledTimes(2);
     expect(execute.mock.calls[1]?.[0]).toMatchObject({
       inspectorRouteSelection: selectionPath,
+      inspectorTargetMode: 'selected-route-leaf',
     });
     fixture.session.dispose();
   });

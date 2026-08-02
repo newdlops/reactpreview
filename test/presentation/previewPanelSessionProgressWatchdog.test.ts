@@ -7,6 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import type { PreparedPreview } from '../../src/domain/preview';
+import { PreviewBuildCancelledError } from '../../src/domain/previewBuildExecution';
 import type { ResolvedPreviewTarget } from '../../src/presentation/activePreviewTarget';
 import {
   PreviewPanelSession,
@@ -159,6 +160,8 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
 
     expect(fixture.panel.html).toContain('data-react-preview-runtime-token');
     expect(fixture.panel.html).toContain('1:watchdog-timeout');
+    expect(fixture.panel.html).toContain('reactPreviewArtifact=watchdog-timeout');
+    expect(fixture.panel.html).toContain('reactPreviewRevision=1');
     expect(fixture.releaseArtifact).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(29_999);
@@ -252,6 +255,185 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
 
     fixture.session.dispose();
   });
+
+  /** A proven fast target must not be replaced by a slower optional corridor regression. */
+  it('cancels optional context enrichment after exact target output is verified', async () => {
+    const contentHash = 'aaaaaaaaaaaaaaaa';
+    const target = createTarget('/workspace/src/VerifiedTarget.tsx');
+    const panel = new WatchdogPanel();
+    const releaseArtifact = vi.fn(() => Promise.resolve());
+    let enrichmentSignal: AbortSignal | undefined;
+    const execute = vi
+      .fn<PreviewBuildService['execute']>()
+      .mockResolvedValueOnce(createPreparedPreview(target, contentHash))
+      .mockImplementationOnce(
+        (_request, context) =>
+          new Promise<PreparedPreview>((_resolve, reject) => {
+            enrichmentSignal = context?.signal;
+            const cancel = (): void => {
+              reject(new PreviewBuildCancelledError());
+            };
+            if (enrichmentSignal?.aborted === true) cancel();
+            else enrichmentSignal?.addEventListener('abort', cancel, { once: true });
+          }),
+      );
+    const info = vi.fn();
+    const session = new PreviewPanelSession({
+      buildPreview: { execute, releaseArtifact },
+      callbacks: { onDidDispose: vi.fn(), onDidFocus: vi.fn() },
+      initialTarget: target,
+      log: {
+        debug: vi.fn(),
+        error: vi.fn(),
+        info,
+        warn: vi.fn(),
+      } as unknown as vscode.LogOutputChannel,
+      panel: panel as unknown as vscode.WebviewPanel,
+      renderMode: 'page-inspector',
+      resolveTarget: vi.fn(() => Promise.resolve(target)),
+    });
+
+    session.start();
+    await settleSessionBuild();
+    panel.emitMessage({
+      revision: 1,
+      token: `1:${contentHash}`,
+      type: 'react-preview-runtime-ready',
+    });
+    await settleSessionBuild();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(enrichmentSignal?.aborted).toBe(false);
+
+    panel.emitMessage(createVerifiedTargetOutputHealthMessage(contentHash));
+    await settleSessionBuild();
+
+    expect(enrichmentSignal?.aborted).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('retained verified target output'));
+
+    session.dispose();
+  });
+
+  /** Content identity remains authoritative while the browser and host revision markers overlap. */
+  it('cancels active enrichment for exact output from the current artifact across revision skew', async () => {
+    const contentHash = 'cccccccccccccccc';
+    const target = createTarget('/workspace/src/RevisionSkewTarget.tsx');
+    const panel = new WatchdogPanel();
+    const releaseArtifact = vi.fn(() => Promise.resolve());
+    let enrichmentSignal: AbortSignal | undefined;
+    const execute = vi
+      .fn<PreviewBuildService['execute']>()
+      .mockResolvedValueOnce(createPreparedPreview(target, contentHash))
+      .mockImplementationOnce(
+        (_request, context) =>
+          new Promise<PreparedPreview>((_resolve, reject) => {
+            enrichmentSignal = context?.signal;
+            const cancel = (): void => {
+              reject(new PreviewBuildCancelledError());
+            };
+            if (enrichmentSignal?.aborted === true) cancel();
+            else enrichmentSignal?.addEventListener('abort', cancel, { once: true });
+          }),
+      );
+    const session = new PreviewPanelSession({
+      buildPreview: { execute, releaseArtifact },
+      callbacks: { onDidDispose: vi.fn(), onDidFocus: vi.fn() },
+      initialTarget: target,
+      log: {
+        debug: vi.fn(),
+        error: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as unknown as vscode.LogOutputChannel,
+      panel: panel as unknown as vscode.WebviewPanel,
+      renderMode: 'page-inspector',
+      resolveTarget: vi.fn(() => Promise.resolve(target)),
+    });
+
+    session.start();
+    await settleSessionBuild();
+    panel.emitMessage({
+      revision: 1,
+      token: `1:${contentHash}`,
+      type: 'react-preview-runtime-ready',
+    });
+    await settleSessionBuild();
+
+    panel.emitMessage({
+      ...createVerifiedTargetOutputHealthMessage(contentHash),
+      runtimeRevision: 2,
+    });
+    await settleSessionBuild();
+
+    expect(enrichmentSignal?.aborted).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(2);
+    session.dispose();
+  });
+
+  /** A completed corridor build may still be preparing in Chromium when fast output is proven. */
+  it('cancels an in-flight enrichment hot reload and retains the displayed fast artifact', async () => {
+    const fastHash = 'aaaaaaaaaaaaaaaa';
+    const enrichmentHash = 'bbbbbbbbbbbbbbbb';
+    const target = createTarget('/workspace/src/VerifiedHotTarget.tsx');
+    const panel = new WatchdogPanel();
+    const releaseArtifact = vi.fn(() => Promise.resolve());
+    const execute = vi
+      .fn<PreviewBuildService['execute']>()
+      .mockResolvedValueOnce(createPreparedPreview(target, fastHash))
+      .mockResolvedValueOnce(createPreparedPreview(target, enrichmentHash));
+    const info = vi.fn();
+    const session = new PreviewPanelSession({
+      buildPreview: { execute, releaseArtifact },
+      callbacks: { onDidDispose: vi.fn(), onDidFocus: vi.fn() },
+      initialTarget: target,
+      log: {
+        debug: vi.fn(),
+        error: vi.fn(),
+        info,
+        warn: vi.fn(),
+      } as unknown as vscode.LogOutputChannel,
+      panel: panel as unknown as vscode.WebviewPanel,
+      renderMode: 'page-inspector',
+      resolveTarget: vi.fn(() => Promise.resolve(target)),
+    });
+
+    session.start();
+    await settleSessionBuild();
+    panel.emitMessage({
+      revision: 1,
+      token: `1:${fastHash}`,
+      type: 'react-preview-runtime-ready',
+    });
+    await settleSessionBuild();
+
+    const reload = panel.webview.postMessage.mock.calls
+      .map(([message]) => message as Record<string, unknown>)
+      .find((message) => message.type === 'react-preview-hot-reload');
+    expect(reload).toMatchObject({ revision: 1, type: 'react-preview-hot-reload' });
+
+    panel.emitMessage(createVerifiedTargetOutputHealthMessage(fastHash));
+    await settleSessionBuild();
+
+    expect(panel.webview.postMessage).toHaveBeenCalledWith({
+      revision: 1,
+      token: reload?.token,
+      type: 'react-preview-hot-reload-cancel',
+    });
+    panel.emitMessage({
+      applied: false,
+      retainedPrevious: true,
+      revision: 1,
+      token: reload?.token,
+      type: 'react-preview-hot-reload-failed',
+    });
+    await settleSessionBuild();
+
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('retained verified target output'));
+    expect(releaseArtifact).toHaveBeenCalledWith(enrichmentHash);
+
+    session.dispose();
+  });
 });
 
 /** Session fixture carrying observable artifact and webview collaborators. */
@@ -343,4 +525,35 @@ async function settleSessionBuild(): Promise<void> {
   for (let turn = 0; turn < 8; turn += 1) {
     await Promise.resolve();
   }
+}
+
+/** Mirrors the exact blocker-free health evidence emitted by the Page Inspector renderer. */
+function createVerifiedTargetOutputHealthMessage(artifactId: string): Record<string, unknown> {
+  return {
+    artifactId,
+    event: {
+      category: 'page-composition',
+      detail: {
+        activeBlockerProvenance: [],
+        blockerSummary: { active: 0 },
+        targetState: {
+          hasOutput: true,
+          mounted: true,
+          outputKind: 'target-output',
+          pageRootCommitted: true,
+          stage: 'target-output',
+          status: 'reached',
+        },
+      },
+      event: 'page-composition-snapshot',
+      eventId: 'runtime-health-verified-target',
+      revision: 0,
+      sequence: 1,
+      severity: 'info',
+      timestamp: '2026-08-02T00:00:00.000Z',
+    },
+    runtimeRevision: 1,
+    runtimeSessionId: 'rp-0123456789abcdef01234567',
+    type: 'react-preview-runtime-health',
+  };
 }

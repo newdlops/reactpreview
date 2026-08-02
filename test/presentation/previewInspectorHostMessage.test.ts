@@ -217,6 +217,46 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     expect(handlerState.navigation).toHaveBeenCalledTimes(1);
   });
 
+  /** Stops optional replacement work only after the current runtime proves exact target output. */
+  it('settles a current blocker-free target-output health event', () => {
+    const { context, settleVerifiedTargetOutput } = createContext();
+    handlerState.health.mockReturnValue(true);
+    const message = createTargetOutputHealthMessage();
+
+    expect(handlePreviewInspectorHostMessage(message, context)).toBe(true);
+
+    expect(settleVerifiedTargetOutput).toHaveBeenCalledTimes(1);
+    expect(settleVerifiedTargetOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactId: '0123456789abcdef', runtimeRevision: 12 }),
+    );
+  });
+
+  /** The session owns artifact overlap correlation while a newer replacement is preparing. */
+  it('forwards exact target output after the displayed revision marker has advanced', () => {
+    const { context, settleVerifiedTargetOutput } = createContext();
+    handlerState.health.mockReturnValue(true);
+    const message = createTargetOutputHealthMessage();
+
+    expect(
+      handlePreviewInspectorHostMessage(message, { ...context, currentRuntimeRevision: 13 }),
+    ).toBe(true);
+
+    expect(settleVerifiedTargetOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ artifactId: '0123456789abcdef', runtimeRevision: 12 }),
+    );
+  });
+
+  /** A partial render or active blocker must not suppress the enrichment that may repair it. */
+  it('does not settle target output while active blocker provenance remains', () => {
+    const { context, settleVerifiedTargetOutput } = createContext();
+    handlerState.health.mockReturnValue(true);
+    const message = createTargetOutputHealthMessage({ activeBlockers: 1 });
+
+    expect(handlePreviewInspectorHostMessage(message, context)).toBe(true);
+
+    expect(settleVerifiedTargetOutput).not.toHaveBeenCalled();
+  });
+
   /** Forwards the panel-owned direct command while leaving all Inspector gates disabled. */
   it('routes direct blocker traces with the direct command expectation only', () => {
     const { context } = createContext();
@@ -227,9 +267,9 @@ describe('handlePreviewInspectorHostMessage source selection', () => {
     };
     handlerState.blocker.mockReturnValue(true);
 
-    expect(handlePreviewInspectorHostMessage({ type: 'react-preview-blocker-trace' }, directContext)).toBe(
-      true,
-    );
+    expect(
+      handlePreviewInspectorHostMessage({ type: 'react-preview-blocker-trace' }, directContext),
+    ).toBe(true);
     expect(handlerState.health).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ enabled: false }),
@@ -250,6 +290,7 @@ interface TestPreviewInspectorHostMessageContext {
   readonly select: ReturnType<typeof vi.fn>;
   readonly selectRoute: ReturnType<typeof vi.fn>;
   readonly selectPageCandidate: ReturnType<typeof vi.fn>;
+  readonly settleVerifiedTargetOutput: ReturnType<typeof vi.fn>;
 }
 
 /** Creates the smallest structurally complete host context used by protocol routing tests. */
@@ -259,6 +300,7 @@ function createContext(): TestPreviewInspectorHostMessageContext {
   const select = vi.fn();
   const selectRoute = vi.fn();
   const selectPageCandidate = vi.fn();
+  const settleVerifiedTargetOutput = vi.fn();
   const context = {
     currentRuntimeRevision: 12,
     dependencyPaths: new Set([SOURCE_PATH]),
@@ -270,11 +312,57 @@ function createContext(): TestPreviewInspectorHostMessageContext {
     pinnedDocumentUri: {} as PreviewInspectorHostMessageContext['pinnedDocumentUri'],
     selectRoute,
     selectPageCandidate,
+    settleVerifiedTargetOutput,
     sourceDecoration: {
       decorateBranches,
       select,
     } as unknown as PreviewInspectorHostMessageContext['sourceDecoration'],
     targetPath: SOURCE_PATH,
   };
-  return { context, debug, decorateBranches, select, selectRoute, selectPageCandidate };
+  return {
+    context,
+    debug,
+    decorateBranches,
+    select,
+    selectRoute,
+    selectPageCandidate,
+    settleVerifiedTargetOutput,
+  };
+}
+
+/** Creates one fully correlated composition record accepted by the untrusted health protocol. */
+function createTargetOutputHealthMessage(
+  options: { readonly activeBlockers?: number } = {},
+): Record<string, unknown> {
+  const activeBlockers = options.activeBlockers ?? 0;
+  return {
+    artifactId: '0123456789abcdef',
+    event: {
+      category: 'page-composition',
+      detail: {
+        activeBlockerProvenance:
+          activeBlockers === 0
+            ? []
+            : [{ active: true, kind: 'target-reachability', name: 'Target blocked' }],
+        blockerSummary: { active: activeBlockers },
+        targetState: {
+          hasOutput: true,
+          mounted: true,
+          outputKind: 'target-output',
+          pageRootCommitted: true,
+          stage: 'target-output',
+          status: 'reached',
+        },
+      },
+      event: 'page-composition-snapshot',
+      eventId: 'runtime-health-1',
+      revision: 0,
+      sequence: 1,
+      severity: 'info',
+      timestamp: '2026-08-02T00:00:00.000Z',
+    },
+    runtimeRevision: 12,
+    runtimeSessionId: 'rp-0123456789abcdef01234567',
+    type: 'react-preview-runtime-health',
+  };
 }

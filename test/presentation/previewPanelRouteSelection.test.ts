@@ -12,12 +12,14 @@ describe('PreviewPanelRouteSelection', () => {
     expect(selection.begin(first)).toBe(true);
     selection.commit();
     expect(selection.applyTo(target).request.inspectorRouteSelection).toEqual(first);
+    expect(selection.applyTo(target).request.inspectorTargetMode).toBe('selected-route-leaf');
 
     expect(selection.begin(second)).toBe(true);
     expect(selection.applyTo(target).request.inspectorRouteSelection).toEqual(second);
     selection.rollback();
 
     expect(selection.applyTo(target).request.inspectorRouteSelection).toEqual(first);
+    expect(selection.applyTo(target).request.inspectorTargetMode).toBe('selected-route-leaf');
     expect(selection.begin(second)).toBe(true);
   });
 });

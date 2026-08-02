@@ -35,6 +35,22 @@ describe('createPreviewHtml', () => {
       ":where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }",
     );
     expect(html).not.toContain('<main id="react-preview-root">');
+    expect(html).not.toContain('react-preview-headless-bridge');
+  });
+
+  /** Inserts an escaped internal host shim before the existing module without changing CSP policy. */
+  it('places an optional headless host bridge immediately before the entry module', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      documentName: 'Card.tsx',
+      hostBridgeScriptUri: 'vscode-webview://unit-test/react-preview-headless-bridge.js?x=1&y=<',
+      kind: 'ready',
+      scriptUri: 'vscode-webview://unit-test/entry.js',
+    });
+
+    const bridge = 'react-preview-headless-bridge.js?x=1&amp;y=&lt;';
+    expect(html).toContain(bridge);
+    expect(html.indexOf(bridge)).toBeLessThan(html.indexOf('type="module"'));
+    expect(html).toContain(`script-src ${CSP_SOURCE}`);
   });
 
   /** Explains real preparation milestones without claiming a time-based completion percentage. */

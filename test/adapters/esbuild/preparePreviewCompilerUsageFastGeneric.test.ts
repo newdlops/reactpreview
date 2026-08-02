@@ -5,7 +5,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PreviewBuildRequest } from '../../../src/domain/preview';
 import { preparePreviewCompilerTarget } from '../../../src/adapters/esbuild/previewImperativeEntryTarget';
-import { preparePreviewCompilerUsage } from '../../../src/adapters/esbuild/preparePreviewCompilerUsage';
+import {
+  createPreviewCompleteRouteUsageContext,
+  preparePreviewCompilerUsage,
+} from '../../../src/adapters/esbuild/preparePreviewCompilerUsage';
 import type { PreviewProjectUsageCache } from '../../../src/adapters/esbuild/previewProjectUsageCache';
 import type { createPreviewStaticModuleResolver } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
 
@@ -115,7 +118,7 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       ),
     } as unknown as PreviewProjectUsageCache;
 
-    const prepared = await preparePreviewCompilerUsage({
+    const usageOptions = {
       cache,
       projectRoot,
       projectUsesNextRuntime: false,
@@ -124,10 +127,26 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
       setupKind: 'none',
       targetSelection: preparePreviewCompilerTarget(request),
       workspaceRoot: projectRoot,
-    });
+    } as const;
+    const usageContext = createPreviewCompleteRouteUsageContext();
+    const prepared = await preparePreviewCompilerUsage({ ...usageOptions, usageContext });
+    const repeated = await preparePreviewCompilerUsage({ ...usageOptions, usageContext });
+    const baseline = await preparePreviewCompilerUsage(usageOptions);
 
     const plan = prepared.packageTargetUsageProps.inspectorPlan;
-    expect(getSourcePaths).toHaveBeenCalledOnce();
+    expect(JSON.stringify(prepared)).toBe(JSON.stringify(baseline));
+    expect(JSON.stringify(repeated)).toBe(JSON.stringify(baseline));
+    expect(getSourcePaths).toHaveBeenCalledTimes(2);
+    expect(usageContext.getStatistics()).toMatchObject({
+      fastContextComputations: 1,
+      fastContextHits: 1,
+      ancestorPreludeComputations: 1,
+      ancestorPreludeHits: 1,
+      candidateTemplateComputations: 1,
+      candidateTemplateHits: 1,
+    });
+    usageContext.release();
+    expect(usageContext.getStatistics().released).toBe(true);
     expect(plan?.renderChain.reachability).toBe('entry-connected');
     expect(plan?.renderChain.paths[0]?.entryPoint?.sourcePath).toBe(
       path.join(projectRoot, 'src/main.tsx'),

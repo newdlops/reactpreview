@@ -20,6 +20,204 @@ async function writeSource(
 }
 
 describe('EsbuildPreviewCompiler fast generic page context', () => {
+  it('automatically owns the route leaf when a route choice strips the RouterProvider root', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/stripped-router-provider-context-'),
+    );
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await writeFile(
+        path.join(projectRoot, 'package.json'),
+        '{"private":true,"dependencies":{"react-router-dom":"6.30.1"}}',
+        'utf8',
+      );
+      await Promise.all([
+        writeSource(
+          projectRoot,
+          'node_modules/react-router-dom/package.json',
+          '{"name":"react-router-dom","version":"6.30.1","type":"module","exports":"./index.js"}',
+        ),
+        writeSource(
+          projectRoot,
+          'node_modules/react-router-dom/index.js',
+          [
+            'export function createBrowserRouter(routes) { return routes; }',
+            'export function createRoutesFromElements(routes) { return routes; }',
+            'export function MemoryRouter({ children }) { return children; }',
+            'export function Route({ element }) { return element; }',
+            'export function RouterProvider({ router }) { return router; }',
+            'export function Routes({ children }) { return children; }',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/main.tsx',
+          [
+            "import { createRoot } from 'react-dom/client';",
+            "import AppRouter from './App';",
+            'createRoot(document.body).render(<AppRouter />);',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/CompanyApp.tsx',
+          [
+            "import { Route, Routes } from 'react-router-dom';",
+            "import CompanyListPage from './CompanyListPage';",
+            'export default function CompanyApp() {',
+            '  return <Routes><Route index element={<CompanyListPage />} /></Routes>;',
+            '}',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/CompanyListPage.tsx',
+          'export default function CompanyListPage() { return <main>COMPANY_LIST_PAGE</main>; }',
+        ),
+      ]);
+      const targetSource = [
+        "import { createBrowserRouter, createRoutesFromElements, Route, RouterProvider } from 'react-router-dom';",
+        "import CompanyListPage from './CompanyListPage';",
+        'const router = createBrowserRouter(createRoutesFromElements(',
+        '  <Route path="/company" element={<CompanyListPage />} />,',
+        '));',
+        'export default function AppRouter() { return <RouterProvider router={router} />; }',
+      ].join('\n');
+      const targetPath = await writeSource(projectRoot, 'src/App.tsx', targetSource);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        preparationMode: 'full',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(javascript).toContain('COMPANY_LIST_PAGE');
+      expect(javascript).toContain(
+        JSON.stringify(path.join(projectRoot, 'src/CompanyListPage.tsx')),
+      );
+      expect(javascript).toContain('initialEntries: ["/company"]');
+      expect(javascript).toContain('path: "/company"');
+      expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
+        [],
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  }, 15_000);
+
+  it('retains a parent Route context around a nested useRoutes owner', async () => {
+    const projectRoot = await mkdtemp(
+      path.join(REPOSITORY_ROOT, 'test/fixtures/nested-use-routes-context-'),
+    );
+    const compiler = new EsbuildPreviewCompiler();
+    try {
+      await writeFile(
+        path.join(projectRoot, 'package.json'),
+        '{"private":true,"dependencies":{"react-router-dom":"6.30.1"}}',
+        'utf8',
+      );
+      await Promise.all([
+        writeSource(
+          projectRoot,
+          'node_modules/react-router-dom/package.json',
+          '{"name":"react-router-dom","version":"6.30.1","type":"module","exports":"./index.js"}',
+        ),
+        writeSource(
+          projectRoot,
+          'node_modules/react-router-dom/index.js',
+          [
+            'export function MemoryRouter({ children }) { return children; }',
+            'export function Route({ element }) { return element; }',
+            'export function Routes({ children }) { return children; }',
+            'export function useRoutes(routes) { return routes[0]?.element ?? null; }',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/main.tsx',
+          [
+            "import { createRoot } from 'react-dom/client';",
+            "import App from './App';",
+            'createRoot(document.body).render(<App />);',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/App.tsx',
+          [
+            "import { Route, Routes } from 'react-router-dom';",
+            "import NestedOwner from './NestedOwner';",
+            'export default function App() {',
+            '  return <Routes><Route path="/root/*" element={<NestedOwner />} /></Routes>;',
+            '}',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/NestedOwner.tsx',
+          [
+            "import { useRoutes } from 'react-router-dom';",
+            "import ChildPage from './ChildPage';",
+            'export default function NestedOwner() {',
+            '  return useRoutes([{ path: "child", element: <ChildPage /> }]);',
+            '}',
+          ].join('\n'),
+        ),
+        writeSource(
+          projectRoot,
+          'src/ChildPage.tsx',
+          [
+            "import SelectedCard from './SelectedCard';",
+            'export default function ChildPage() {',
+            '  return <main data-child-page><SelectedCard /></main>;',
+            '}',
+          ].join('\n'),
+        ),
+      ]);
+      const targetSource =
+        'export default function SelectedCard() { return <article>NESTED_ROUTE_TARGET</article>; }';
+      const targetPath = await writeSource(projectRoot, 'src/SelectedCard.tsx', targetSource);
+
+      const bundle = await compiler.compile({
+        dependencySnapshots: [],
+        documentPath: targetPath,
+        language: 'tsx',
+        preparationMode: 'full',
+        renderMode: 'page-inspector',
+        sourceText: targetSource,
+        useStorybookPreview: false,
+        workspaceRoot: projectRoot,
+      });
+      const javascript = Buffer.concat([
+        Buffer.from(bundle.javascript),
+        ...bundle.chunks.map((chunk) => Buffer.from(chunk.contents)),
+      ]).toString('utf8');
+
+      expect(javascript).toContain('NESTED_ROUTE_TARGET');
+      expect(javascript).toContain('initialEntries: ["/root/child"]');
+      expect(javascript).toContain('path: "/root/*"');
+      expect(javascript).not.toContain(
+        'path: "/root/child", element: React.createElement(NestedOwner',
+      );
+      expect(bundle.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
+        [],
+      );
+    } finally {
+      await compiler.shutdown();
+      await rm(projectRoot, { force: true, recursive: true });
+    }
+  }, 15_000);
+
   it('bundles one fast shell while retaining partial coverage for omitted page candidates', async () => {
     const projectRoot = await mkdtemp(
       path.join(REPOSITORY_ROOT, 'test/fixtures/fast-generic-page-context-'),

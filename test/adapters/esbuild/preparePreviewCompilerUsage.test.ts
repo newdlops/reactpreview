@@ -3,7 +3,10 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PreviewBuildRequest } from '../../../src/domain/preview';
 import { preparePreviewCompilerTarget } from '../../../src/adapters/esbuild/previewImperativeEntryTarget';
-import { preparePreviewCompilerUsage } from '../../../src/adapters/esbuild/preparePreviewCompilerUsage';
+import {
+  createPreviewCompleteRouteUsageContext,
+  preparePreviewCompilerUsage,
+} from '../../../src/adapters/esbuild/preparePreviewCompilerUsage';
 import type { PreviewProjectUsageCache } from '../../../src/adapters/esbuild/previewProjectUsageCache';
 import type { createPreviewStaticModuleResolver } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
 
@@ -65,6 +68,34 @@ async function prepareWithInventoryProbe(
 }
 
 describe('preparePreviewCompilerUsage inventory policy', () => {
+  /** Failed invariant work remains retryable and terminal release rejects later access. */
+  it('retains only successful route-usage context stages', async () => {
+    const usageContext = createPreviewCompleteRouteUsageContext();
+    const failure = new Error('invariant stage failed');
+    await expect(usageContext.getFastContext(() => Promise.reject(failure))).rejects.toBe(failure);
+    const retained = Object.freeze({
+      corridor: undefined,
+      packageSourcePaths: Object.freeze(['/workspace/src/App.tsx']),
+    });
+    await expect(usageContext.getFastContext(() => Promise.resolve(retained))).resolves.toBe(
+      retained,
+    );
+    await expect(
+      usageContext.getFastContext(() => Promise.reject(new Error('must not execute'))),
+    ).resolves.toBe(retained);
+    expect(usageContext.getStatistics()).toMatchObject({
+      fastContextComputations: 2,
+      fastContextHits: 1,
+      released: false,
+    });
+
+    usageContext.release();
+    expect(usageContext.getStatistics().released).toBe(true);
+    await expect(usageContext.getFastContext(() => Promise.resolve(retained))).rejects.toThrow(
+      'already released',
+    );
+  });
+
   /** A generic page may use path-only caller ranking without being classified as a Next route. */
   it('indexes a lowercase page filename without assuming installed Next evidence', async () => {
     const request = createRequest(

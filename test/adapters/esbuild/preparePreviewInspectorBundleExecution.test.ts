@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { preparePreviewInspectorBundleExecution } from '../../../src/adapters/esbuild/preparePreviewInspectorBundleExecution';
 import { createPreviewPreparationPolicy } from '../../../src/adapters/esbuild/previewPreparationPolicy';
+import { createPreviewInspectorBundleDiagnosticsCollector } from '../../../src/adapters/esbuild/inspector/previewInspectorBundleDiagnostics';
 import type { PreviewInspectorAncestorPlan } from '../../../src/adapters/esbuild/inspector/previewInspectorAncestorPlan';
 import { PreviewBuildStalledError } from '../../../src/domain/previewBuildExecution';
 
 describe('preparePreviewInspectorBundleExecution', () => {
   it('admits a Page Execution candidate with a source beyond the former byte budget', async () => {
     const targetPath = '/workspace/Target.tsx';
+    let clockMicros = 0n;
+    const bundleDiagnostics = createPreviewInspectorBundleDiagnosticsCollector(true, () => {
+      const now = clockMicros;
+      clockMicros += 1_000n;
+      return now;
+    });
+    if (bundleDiagnostics === undefined) throw new Error('Expected bundle diagnostics.');
     const result = await preparePreviewInspectorBundleExecution({
       analysisCandidateCount: 1,
+      bundleDiagnostics,
       corridorSourceCount: 1,
       dependencySnapshotCount: 0,
       discoveryTruncated: false,
@@ -56,6 +65,16 @@ describe('preparePreviewInspectorBundleExecution', () => {
     expect(() => {
       result.throwIfRejected(targetPath);
     }).not.toThrow();
+    expect(bundleDiagnostics.snapshot()).toMatchObject({
+      candidateSelectionSortCount: 1,
+      frontierCount: 1,
+      inventoryComputationCount: 1,
+      inventoryReadRequestCount: 1,
+      queueIterationCount: 1,
+      queueSortCount: 1,
+      rawSourceReadCount: 1,
+      sliceRequestCount: 0,
+    });
   });
 
   it('reports candidate-unavailable when automatic Page Execution has no candidate', async () => {
@@ -92,8 +111,16 @@ describe('preparePreviewInspectorBundleExecution', () => {
 
   it('admits an unbounded legacy frontier when no Page Execution list is supplied', async () => {
     const targetPath = '/workspace/Target.tsx';
+    let clockMicros = 0n;
+    const bundleDiagnostics = createPreviewInspectorBundleDiagnosticsCollector(true, () => {
+      const now = clockMicros;
+      clockMicros += 1_000n;
+      return now;
+    });
+    if (bundleDiagnostics === undefined) throw new Error('Expected bundle diagnostics.');
     const result = await preparePreviewInspectorBundleExecution({
       analysisCandidateCount: 1,
+      bundleDiagnostics,
       corridorSourceCount: 1,
       dependencySnapshotCount: 0,
       discoveryTruncated: false,
@@ -126,5 +153,11 @@ describe('preparePreviewInspectorBundleExecution', () => {
     expect(() => {
       result.throwIfRejected(targetPath);
     }).not.toThrow();
+    expect(bundleDiagnostics.snapshot()).toMatchObject({
+      candidateSelectionSortCount: 0,
+      frontierCount: 1,
+      inventoryReadRequestCount: 1,
+      rawSourceReadCount: 2,
+    });
   });
 });

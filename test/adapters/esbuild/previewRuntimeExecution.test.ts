@@ -147,9 +147,12 @@ describe('generated preview runtime execution', () => {
   it('emits complete direct success and failure traces only for observed terminals', () => {
     const messages: unknown[] = [];
     const source = [
-      createPreviewRuntimeCorrelationSource().replace('import.meta.url', JSON.stringify(
-        'https://preview.invalid/entry-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.js',
-      )),
+      createPreviewRuntimeCorrelationSource().replace(
+        'import.meta.url',
+        JSON.stringify(
+          'https://preview.invalid/entry-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.js',
+        ),
+      ),
       createPreviewDirectBlockerTraceRuntimeSource(),
       'globalThis.__post = postPreviewDirectBlockerTrace;',
     ].join('\n');
@@ -157,7 +160,13 @@ describe('generated preview runtime execution', () => {
       URL,
       activeRuntimePhase: 'commit React root',
       previewEntryRevision: 3,
-      previewHotRuntime: { vscodeApi: { postMessage: (message: unknown) => { messages.push(message); } } },
+      previewHotRuntime: {
+        vscodeApi: {
+          postMessage: (message: unknown) => {
+            messages.push(message);
+          },
+        },
+      },
       previewRuntimeRevision: 3,
     };
     const context = createContext(sandbox);
@@ -172,7 +181,11 @@ describe('generated preview runtime execution', () => {
     expect(messages[0]).toMatchObject({
       runtimeRevision: 3,
       runtimeSessionId: expect.stringMatching(/^rp-[0-9a-f]{24}$/u),
-      event: { event: 'render-result', previewCommand: 'direct-preview', result: { outcome: 'committed', remainingBlockerIds: [] } },
+      event: {
+        event: 'render-result',
+        previewCommand: 'direct-preview',
+        result: { outcome: 'committed', remainingBlockerIds: [] },
+      },
     });
     expect(messages[1]).toMatchObject({
       runtimeRevision: 3,

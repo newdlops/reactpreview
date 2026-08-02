@@ -218,11 +218,17 @@ describe('createPreviewEntry', () => {
       renderMode: 'page-inspector',
       setupKind: 'none',
     });
-    const directProducer = directEntry.indexOf('function postPreviewDirectBlockerTrace(outcome, error)');
-    const terminal = directEntry.indexOf('function completePreviewCommit(outcome = \'ready\', error)');
+    const directProducer = directEntry.indexOf(
+      'function postPreviewDirectBlockerTrace(outcome, error)',
+    );
+    const terminal = directEntry.indexOf(
+      "function completePreviewCommit(outcome = 'ready', error)",
+    );
 
     expect(directProducer).toBeGreaterThan(-1);
-    expect(directEntry.indexOf('postPreviewDirectBlockerTrace(outcome', terminal)).toBeGreaterThan(terminal);
+    expect(directEntry.indexOf('postPreviewDirectBlockerTrace(outcome', terminal)).toBeGreaterThan(
+      terminal,
+    );
     expect(directEntry).toContain("outcome: 'committed'");
     expect(directEntry).toContain('Direct preview entry failed before a committed render.');
     expect(inspectorEntry).not.toContain('function postPreviewDirectBlockerTrace(outcome, error)');

@@ -124,6 +124,9 @@ describe('createPreviewApolloBridgePlugin', () => {
             profile: { displayName: '' },
           },
           eventList: { objectList: [], pageInfo: { count: 0 } },
+          publicInvestorRelations: {
+            companyInfo: { name: '', profileLogo: { url: '' } },
+          },
           recentItems: [],
         },
       });
@@ -185,6 +188,21 @@ describe('createPreviewApolloBridgePlugin', () => {
               fields: {
                 objectList: { items: { kind: 'object' }, kind: 'array' },
                 pageInfo: { kind: 'object' },
+              },
+              kind: 'object',
+            },
+            publicInvestorRelations: {
+              fields: {
+                companyInfo: {
+                  fields: {
+                    name: { kind: 'string' },
+                    profileLogo: {
+                      fields: { url: { kind: 'string' } },
+                      kind: 'object',
+                    },
+                  },
+                  kind: 'object',
+                },
               },
               kind: 'object',
             },
@@ -333,6 +351,14 @@ const query = {
             selections: [
               field('pageInfo', { selections: [field('count')] }),
               field('objectList', { selections: [field('id')] }),
+            ],
+          }),
+          field('publicInvestorRelations', {
+            selections: [
+              field('companyInfo', { selections: [field('name')] }),
+              field('companyInfo', {
+                selections: [field('profileLogo', { selections: [field('url')] })],
+              }),
             ],
           }),
         ],

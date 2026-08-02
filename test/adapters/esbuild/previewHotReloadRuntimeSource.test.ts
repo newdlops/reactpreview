@@ -20,4 +20,17 @@ describe('createPreviewHotReloadRuntimeSource', () => {
     expect(source).toContain('retainedPrevious: !replacementStarted');
     expect(source).toContain('await previewHotRuntime.preparedEntry?.dispose?.()');
   });
+
+  it('invalidates a preparing optional replacement without unmounting the visible root', () => {
+    const source = createPreviewHotReloadRuntimeSource('');
+    const cancellation = source.indexOf("type !== 'react-preview-hot-reload-cancel'");
+    const invalidate = source.indexOf('previewHotRuntime.requestSequence += 1', cancellation);
+    const retained = source.indexOf('retainedPrevious: true', invalidate);
+    const unmount = source.indexOf('previewHotRuntime.root.unmount()', retained);
+
+    expect(cancellation).toBeGreaterThan(-1);
+    expect(invalidate).toBeGreaterThan(cancellation);
+    expect(retained).toBeGreaterThan(invalidate);
+    expect(unmount).toBeGreaterThan(retained);
+  });
 });

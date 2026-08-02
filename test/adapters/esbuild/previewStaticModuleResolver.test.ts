@@ -2,8 +2,95 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { createPreviewStaticModuleResolver } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createPreviewStaticModuleResolutionMemo,
+  createPreviewStaticModuleResolver,
+} from '../../../src/adapters/esbuild/previewStaticModuleResolver';
+
+describe('createPreviewStaticModuleResolutionMemo', () => {
+  it('memoizes exact two-level keys, including undefined, without normalizing strings', () => {
+    const memo = createPreviewStaticModuleResolutionMemo();
+    const firstCompute = vi.fn(() => '/workspace/src/Target.tsx');
+    const cachedCompute = vi.fn(() => '/workspace/src/Changed.tsx');
+    const consumerPath = '/workspace/src/Consumer.tsx';
+
+    expect(memo.resolve('./Target?mode=one', consumerPath, firstCompute)).toBe(
+      '/workspace/src/Target.tsx',
+    );
+    expect(memo.resolve('./Target?mode=one', consumerPath, cachedCompute)).toBe(
+      '/workspace/src/Target.tsx',
+    );
+    expect(memo.resolve('./Other', consumerPath, () => '/workspace/src/Other.tsx')).toBe(
+      '/workspace/src/Other.tsx',
+    );
+    expect(
+      memo.resolve('./Target?mode=one', '/workspace/src/OtherConsumer.tsx', () => undefined),
+    ).toBeUndefined();
+    expect(memo.resolve('./Target#mode=one', consumerPath, () => undefined)).toBeUndefined();
+    expect(memo.resolve('./Missing', consumerPath, () => undefined)).toBeUndefined();
+    expect(
+      memo.resolve('./Missing', consumerPath, () => {
+        throw new Error('cached undefined must not recompute');
+      }),
+    ).toBeUndefined();
+
+    expect(firstCompute).toHaveBeenCalledTimes(1);
+    expect(cachedCompute).not.toHaveBeenCalled();
+    const statistics = memo.getStatistics();
+    expect(statistics).toEqual({
+      computations: 5,
+      entries: 5,
+      hits: 2,
+      released: false,
+      requests: 7,
+    });
+    expect(statistics.requests).toBe(statistics.computations + statistics.hits);
+    expect(Object.isFrozen(statistics)).toBe(true);
+  });
+
+  it('does not cache throws and releases retained results idempotently', () => {
+    const memo = createPreviewStaticModuleResolutionMemo();
+    let attempts = 0;
+    const throwResolution = (): string => {
+      attempts += 1;
+      throw new Error('intentional resolution failure');
+    };
+
+    expect(() => memo.resolve('./Throws', '/workspace/src/Consumer.tsx', throwResolution)).toThrow(
+      'intentional resolution failure',
+    );
+    expect(() => memo.resolve('./Throws', '/workspace/src/Consumer.tsx', throwResolution)).toThrow(
+      'intentional resolution failure',
+    );
+    expect(attempts).toBe(2);
+    expect(memo.getStatistics()).toEqual({
+      computations: 2,
+      entries: 0,
+      hits: 0,
+      released: false,
+      requests: 2,
+    });
+
+    expect(
+      memo.resolve('./Resolved', '/workspace/src/Consumer.tsx', () => '/workspace/src/Resolved.ts'),
+    ).toBe('/workspace/src/Resolved.ts');
+    memo.release();
+    memo.release();
+    expect(memo.getStatistics()).toEqual({
+      computations: 3,
+      entries: 0,
+      hits: 0,
+      released: true,
+      requests: 3,
+    });
+    const computeAfterRelease = vi.fn(() => '/workspace/src/Unexpected.ts');
+    expect(() =>
+      memo.resolve('./Unexpected', '/workspace/src/Consumer.tsx', computeAfterRelease),
+    ).toThrow('already released');
+    expect(computeAfterRelease).not.toHaveBeenCalled();
+  });
+});
 
 describe('createPreviewStaticModuleResolver', () => {
   /** Resolves a sibling monorepo package through the importing application's nearest tsconfig. */

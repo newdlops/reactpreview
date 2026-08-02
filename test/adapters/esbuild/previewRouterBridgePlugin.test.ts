@@ -427,8 +427,10 @@ describe('createPreviewRouterBridgePlugin', () => {
     expect(source).not.toContain('fetch(');
     expect(source).toContain('class PreviewCandidateRouterErrorBoundary');
     expect(source).toContain('candidate-owned Router detected at runtime');
-    expect(source).toContain("transition: event");
-    expect(source).toContain('use(?:Location|Navigate|Params|Match|Routes|NavigationType|OutletContext)');
+    expect(source).toContain('transition: event');
+    expect(source).toContain(
+      'use(?:Location|Navigate|Params|Match|Routes|NavigationType|OutletContext)',
+    );
     expect(source).toContain('!this.state.retried');
     expect(source).toContain("mode: this.state.mode === 'wrapped' ? 'unwrapped' : 'wrapped'");
     expect(source).toContain("'recovering'");

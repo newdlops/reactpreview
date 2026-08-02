@@ -8,12 +8,16 @@
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import {
   PREVIEW_INSPECTOR_ROOT_NAMESPACE,
   PREVIEW_TARGET_SPECIFIER,
 } from '../previewPluginProtocol';
-import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
+import type {
+  PreviewInspectorAncestorPlan,
+  PreviewInspectorComponentReference,
+} from './previewInspectorAncestorPlan';
 import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
 import {
   createPreviewInspectorDirectTargetSpecifier,
@@ -37,7 +41,9 @@ import {
   registerPreviewInspectorPageExecutionEntryPlugin,
 } from './previewInspectorPageExecutionEntryPlugin';
 import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
+import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
 import { canBundlePreviewInspectorDirectTargetDefinitions } from './previewInspectorDirectTargetBundling';
+import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
 const INSPECTOR_ROOT_PATH = 'selected-ancestor-root';
 const INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE = 'react-preview-inspector-render-bootstrap';
 const INSPECTOR_RENDER_BOOTSTRAP_SPECIFIER_PREFIX = 'react-preview:inspector-render-bootstrap/';
@@ -57,6 +63,8 @@ export interface PreviewInspectorRootPluginOptions {
   readonly maximumPageCandidates?: number;
   /** Frozen selected route/page/target slice; descriptor alternatives remain metadata only. */
   readonly pageExecutionCandidate?: PreviewInspectorPageExecutionCandidate;
+  /** Compiler-proven exact binding for the selected PageExecution owner module. */
+  readonly executionRootModuleContract?: PreviewInspectorExecutionRootModuleContract;
   /** Ordered, path-free retry alternatives for the current browser candidate. */
   readonly pageExecutionCandidates?: readonly PreviewInspectorPageExecutionCandidate[];
   /** Bounded real-owner plan produced from current editor-or-disk source. */
@@ -65,8 +73,12 @@ export interface PreviewInspectorRootPluginOptions {
   readonly selectedPageCandidateId?: string;
   /** Supplies unsaved entry snapshots before the plugin falls back to bounded disk reads. */
   readonly readSource?: (sourcePath: string) => string | undefined;
+  /** Runtime-only current-file identity derived from the frozen Page Execution route leaf. */
+  readonly runtimeOwnershipTarget?: PreviewInspectorComponentReference;
   /** Neutral target props inferred without evaluating the selected project module. */
   readonly targetInference?: PreviewInferredExportProps;
+  /** Prepared-source target identity shared with the exact facade and PageExecution edge. */
+  readonly targetModuleContract?: PreviewInspectorTargetModuleContract;
   /** Exact page-corridor theme imported before any lazy authored root begins rendering. */
   readonly themeImport?: PreviewThemeImportSelection;
 }
@@ -74,6 +86,8 @@ export interface PreviewInspectorRootPluginOptions {
 export function createPreviewInspectorRootPlugin(
   options: PreviewInspectorRootPluginOptions,
 ): Plugin {
+  assertTargetModuleContract(options);
+  assertExecutionRootModuleContract(options);
   const renderBootstrapModules = collectRenderBootstrapModules(options);
   const renderBootstrapBySpecifier = new Map(
     renderBootstrapModules.map((module) => [module.specifier, module]),
@@ -104,6 +118,9 @@ export function createPreviewInspectorRootPlugin(
         ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates }),
         plan: options.plan,
         renderBootstrapSpecifiersByCandidateId,
+        ...(options.runtimeOwnershipTarget === undefined
+          ? {}
+          : { runtimeOwnershipTarget: options.runtimeOwnershipTarget }),
         ...(options.selectedPageCandidateId === undefined
           ? {}
           : { selectedPageCandidateId: options.selectedPageCandidateId }),
@@ -150,7 +167,13 @@ export function createPreviewInspectorRootPlugin(
         ...(options.pageExecutionCandidate === undefined
           ? {}
           : { candidate: options.pageExecutionCandidate }),
-        target: options.plan.target,
+        ...(options.executionRootModuleContract === undefined
+          ? {}
+          : { executionRootModuleContract: options.executionRootModuleContract }),
+        target: options.runtimeOwnershipTarget ?? options.plan.target,
+        ...(options.targetModuleContract === undefined
+          ? {}
+          : { targetModuleContract: options.targetModuleContract }),
       });
       build.onLoad(
         { filter: /.*/, namespace: INSPECTOR_RENDER_BOOTSTRAP_NAMESPACE },
@@ -158,6 +181,44 @@ export function createPreviewInspectorRootPlugin(
       );
     },
   };
+}
+
+/** Rejects compiler, descriptor, and PageExecution target identity drift before source generation. */
+function assertTargetModuleContract(options: PreviewInspectorRootPluginOptions): void {
+  const contract = options.targetModuleContract;
+  if (contract === undefined) return;
+  const target = options.runtimeOwnershipTarget ?? options.plan.target;
+  if (
+    path.normalize(contract.sourcePath) !== path.normalize(target.sourcePath) ||
+    !contract.selectedExportNames.includes(target.exportName)
+  ) {
+    throw new TypeError(
+      'Preview Inspector root target does not match the prepared target module contract.',
+    );
+  }
+}
+
+/** Rejects PageExecution owner drift before registering its virtual entry. */
+function assertExecutionRootModuleContract(options: PreviewInspectorRootPluginOptions): void {
+  const candidate = options.pageExecutionCandidate;
+  const contract = options.executionRootModuleContract;
+  if (candidate === undefined && contract === undefined) return;
+  if (candidate === undefined || contract === undefined) {
+    throw new TypeError(
+      'Preview Inspector root requires one PageExecution execution-root contract.',
+    );
+  }
+  const role = candidate.executionRootContract;
+  if (
+    contract.surfaceId !== role.surfaceId ||
+    canonicalizeExistingPath(path.normalize(contract.sourcePath)) !==
+      canonicalizeExistingPath(path.normalize(role.sourcePath)) ||
+    contract.exportName !== role.exportName
+  ) {
+    throw new TypeError(
+      'Preview Inspector root does not match the prepared execution-root module contract.',
+    );
+  }
 }
 /** Builds candidate-scoped entry registration slices without importing the entry module. */
 function collectRenderBootstrapModules(
@@ -246,6 +307,8 @@ export interface PreviewInspectorRootSourceOptions {
   readonly pageExecutionCandidates?: readonly PreviewInspectorPageExecutionCandidate[];
   readonly plan: PreviewInspectorAncestorPlan;
   readonly renderBootstrapSpecifiersByCandidateId?: Readonly<Record<string, string>>;
+  /** Runtime-only selected route leaf; omission preserves the active-document target. */
+  readonly runtimeOwnershipTarget?: PreviewInspectorComponentReference;
   /** One persisted caller-path choice that may produce an executable loader. */
   readonly selectedPageCandidateId?: string;
   readonly targetInference?: PreviewInferredExportProps;
@@ -257,6 +320,13 @@ export function createPreviewInspectorRootSource(
   options: PreviewInspectorRootSourceOptions,
 ): string {
   const { plan } = options;
+  const runtimeOwnershipTarget = options.runtimeOwnershipTarget ?? plan.target;
+  const runtimeOwnershipDiffersFromAnalysis =
+    path.normalize(runtimeOwnershipTarget.sourcePath) !== path.normalize(plan.target.sourcePath) ||
+    runtimeOwnershipTarget.exportName !== plan.target.exportName;
+  const runtimeTargetInference = runtimeOwnershipDiffersFromAnalysis
+    ? undefined
+    : options.targetInference;
   const virtualPageCandidates = createPreviewInspectorVirtualPageCandidates(
     plan.pageCandidates,
     options.maximumPageCandidates ?? plan.pageCandidates.length,
@@ -275,6 +345,13 @@ export function createPreviewInspectorRootSource(
   }
   const browserCandidates = virtualPageCandidates.map((virtualPage) => {
     const { browserCandidate: candidate } = virtualPage;
+    const executionRecipe =
+      options.pageExecutionCandidate?.browserCandidate.id === candidate.id
+        ? options.pageExecutionCandidate.routeRecipe
+        : undefined;
+    const generatedExecutionOwnsRouter =
+      executionRecipe?.rootOwnsRouter === false &&
+      (executionRecipe.kind === 'react-router-v5' || executionRecipe.kind === 'react-router-v6');
     return {
       complete: candidate.complete,
       ...(candidate.contextModule === undefined ? {} : { contextModule: candidate.contextModule }),
@@ -295,7 +372,7 @@ export function createPreviewInspectorRootSource(
       ...(candidate.nextPagesShell === undefined
         ? {}
         : { nextPagesShell: candidate.nextPagesShell }),
-      rootOwnsRouter: candidate.rootOwnsRouter,
+      rootOwnsRouter: candidate.rootOwnsRouter || generatedExecutionOwnsRouter,
       ...(candidate.routeMountBasePath === undefined
         ? {}
         : {
@@ -332,12 +409,15 @@ export function createPreviewInspectorRootSource(
   ).map((virtualPage) => {
     const { browserCandidate: candidate, contentCandidate, recipe } = virtualPage;
     const rootIsTarget =
-      path.normalize(contentCandidate.root.sourcePath) === path.normalize(plan.target.sourcePath);
+      path.normalize(contentCandidate.root.sourcePath) ===
+        path.normalize(runtimeOwnershipTarget.sourcePath) &&
+      contentCandidate.root.exportName === runtimeOwnershipTarget.exportName;
     const rootSpecifier = rootIsTarget
       ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
       : contentCandidate.root.sourcePath.replaceAll('\\', '/');
     const layoutSpecifiers = contentCandidate.nextAppLayoutChain?.map((layout) =>
-      path.normalize(layout.sourcePath) === path.normalize(plan.target.sourcePath)
+      path.normalize(layout.sourcePath) === path.normalize(runtimeOwnershipTarget.sourcePath) &&
+      layout.exportName === runtimeOwnershipTarget.exportName
         ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
         : layout.sourcePath.replaceAll('\\', '/'),
     );
@@ -377,7 +457,8 @@ export function createPreviewInspectorRootSource(
     if (contentCandidate.nextPagesShell !== undefined) {
       const appIsTarget =
         path.normalize(contentCandidate.nextPagesShell.app.sourcePath) ===
-        path.normalize(plan.target.sourcePath);
+          path.normalize(runtimeOwnershipTarget.sourcePath) &&
+        contentCandidate.nextPagesShell.app.exportName === runtimeOwnershipTarget.exportName;
       const appSpecifier = appIsTarget
         ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
         : contentCandidate.nextPagesShell.app.sourcePath.replaceAll('\\', '/');
@@ -398,7 +479,8 @@ export function createPreviewInspectorRootSource(
       ].join('');
     }
     const shellSpecifiers = recipe.shells.map((shell) =>
-      path.normalize(shell.root.sourcePath) === path.normalize(plan.target.sourcePath)
+      path.normalize(shell.root.sourcePath) === path.normalize(runtimeOwnershipTarget.sourcePath) &&
+      shell.root.exportName === runtimeOwnershipTarget.exportName
         ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
         : shell.root.sourcePath.replaceAll('\\', '/'),
     );
@@ -435,6 +517,7 @@ export function createPreviewInspectorRootSource(
   // browser invokes these loaders only for the explicit file-component overview; authored page
   // flow still mounts one selected caller path and preserves its exact UI.
   const directTargetExportNames =
+    !runtimeOwnershipDiffersFromAnalysis &&
     plan.contextModule === undefined &&
     canBundlePreviewInspectorDirectTargetDefinitions(options.pageExecutionCandidate, plan.target)
       ? [...new Set([plan.target.exportName, ...Object.keys(plan.renderChainsByExport)])]
@@ -452,15 +535,16 @@ export function createPreviewInspectorRootSource(
     ].join(''),
   );
   const primaryRootIsTarget =
-    path.normalize(plan.root.sourcePath) === path.normalize(plan.target.sourcePath);
+    path.normalize(runtimeOwnershipTarget.sourcePath) === path.normalize(plan.root.sourcePath) &&
+    runtimeOwnershipTarget.exportName === plan.root.exportName;
   const descriptor = {
     automaticProps: {},
-    displayName: options.displayName ?? plan.target.exportName,
-    exportName: plan.target.exportName,
-    ...(primaryRootIsTarget && options.targetInference !== undefined
+    displayName: options.displayName ?? runtimeOwnershipTarget.exportName,
+    exportName: runtimeOwnershipTarget.exportName,
+    ...(primaryRootIsTarget && runtimeTargetInference !== undefined
       ? {
-          inferredPropShape: options.targetInference.shape,
-          inferredProps: options.targetInference.provenance,
+          inferredPropShape: runtimeTargetInference.shape,
+          inferredProps: runtimeTargetInference.provenance,
         }
       : {}),
     inspector: {
@@ -474,7 +558,7 @@ export function createPreviewInspectorRootSource(
       // prettier-ignore
       ...(options.pageExecutionCandidate === undefined ? {} : { pageExecutionCandidateId: options.pageExecutionCandidate.id }),
       // prettier-ignore
-      ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates.map((candidate) => ({ fidelity: candidate.fidelity, id: candidate.id })) }),
+      ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates.map((candidate) => ({ executionRootSurfaceId: candidate.executionRootSurfaceId, fidelity: candidate.fidelity, id: candidate.id, nestedMountCount: candidate.routeRecipe?.mounts.length ?? 0, runtimeTargetSurfaceId: candidate.runtimeTargetSurfaceId })) }),
       ...(executableCandidate?.requestedCandidateWasUnavailable === true
         ? { requestedPageCandidateUnavailable: true }
         : {}),
@@ -494,7 +578,7 @@ export function createPreviewInspectorRootSource(
           selectionPath: branch.selectionPath,
           selectable: branch.selectable !== false,
         })) ?? [],
-      root: plan.root,
+      root: runtimeOwnershipDiffersFromAnalysis ? runtimeOwnershipTarget : plan.root,
       ...(plan.selectedRouteBranchId === undefined
         ? {}
         : { selectedRouteBranchId: plan.selectedRouteBranchId }),
@@ -502,12 +586,12 @@ export function createPreviewInspectorRootSource(
         ? {}
         : { routeSelectionResolution: plan.routeSelectionResolution }),
       stopReason: plan.stopReason,
-      target: plan.target,
-      targetAutomaticProps: plan.targetAutomaticProps,
-      ...(options.targetInference === undefined
+      target: runtimeOwnershipTarget,
+      targetAutomaticProps: runtimeOwnershipDiffersFromAnalysis ? {} : plan.targetAutomaticProps,
+      ...(runtimeTargetInference === undefined
         ? {}
-        : { targetInferredPropShape: options.targetInference.shape }),
-      targetInferredProps: options.targetInference?.provenance ?? [],
+        : { targetInferredPropShape: runtimeTargetInference.shape }),
+      targetInferredProps: runtimeTargetInference?.provenance ?? [],
     },
   };
   const themeImport = createInspectorThemeImport(options.themeImport);

@@ -145,10 +145,12 @@ export async function collectPreviewInspectorRenderOutcomes(
   const plans = analyzePreviewReactRenderOutcomes(options.sourcePath, sourceText).filter((plan) =>
     acceptedExportNames.has(plan.exportName),
   );
+  const resolveModule =
+    options.resolveModule ?? createLexicalInspectorModuleResolver(options.sourcePaths);
   const expanded = await expandPreviewInspectorRenderOutcomes({
     plans,
     readSource: options.readSource,
-    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    resolveModule,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     sourcePath: options.sourcePath,
     sourcePaths: options.sourcePaths,

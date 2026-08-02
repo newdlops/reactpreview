@@ -84,6 +84,8 @@ export type PreviewInspectorRouteRuntimeKind =
 export interface PreviewInspectorRouteExecutionMount {
   readonly basePath: string;
   readonly childSurfaceId: string;
+  /** Parent Route pattern required by a retained nested route owner such as a `useRoutes` shell. */
+  readonly contextPattern?: string;
   readonly hasWildcardFallback: boolean;
   readonly parentSurfaceId?: string;
   readonly pattern: string;
@@ -114,16 +116,29 @@ export type PreviewInspectorPageFidelity =
   | 'target-contextual'
   | 'target-only';
 
+/** Exact compiler-owned role identity frozen before module export proof. */
+export interface PreviewInspectorPageExecutionRoleContract {
+  readonly exportName: string;
+  readonly sourcePath: string;
+  readonly surfaceId: string;
+}
+
 /** An executable route/page/target combination, without application-wide evidence imports. */
 export interface PreviewInspectorPageExecutionCandidate {
   readonly browserCandidate: PreviewInspectorPageCandidate;
   readonly compositionEdges: readonly PreviewInspectorPageCompositionEdge[];
   readonly criticalSurfaces: readonly PreviewInspectorMountSurface[];
   readonly evidenceSourcePaths: readonly string[];
+  /** Admitted authored shell/content root that remains mounted for execution context. */
+  readonly executionRootContract: PreviewInspectorPageExecutionRoleContract;
+  readonly executionRootSurfaceId: string;
   readonly fidelity: PreviewInspectorPageFidelity;
   readonly id: string;
   readonly optionalSurfaces: readonly PreviewInspectorMountSurface[];
   readonly routeRecipe?: PreviewInspectorRouteExecutionRecipe;
+  /** Admitted selected leaf whose exact source/export is wrapped by the target facade. */
+  readonly runtimeTargetContract: PreviewInspectorPageExecutionRoleContract;
+  readonly runtimeTargetSurfaceId: string;
   readonly watchSourcePaths: readonly string[];
 }
 
@@ -141,7 +156,7 @@ export interface PreviewInspectorPageExecutionPlan {
   readonly candidate: PreviewInspectorPageExecutionCandidate;
   readonly descriptorPlan: PreviewInspectorAncestorPlan;
   readonly executionIdentity: string;
-  readonly version: 2;
+  readonly version: 4;
 }
 
 /** Freezes arrays at the execution boundary without mutating analyzer-owned descriptor evidence. */
@@ -185,10 +200,12 @@ export function freezePreviewInspectorPageExecutionPlan(
     compositionEdges: Object.freeze(plan.candidate.compositionEdges.map(freezeEdge)),
     criticalSurfaces: Object.freeze(plan.candidate.criticalSurfaces.map(freezeSurface)),
     evidenceSourcePaths: Object.freeze([...plan.candidate.evidenceSourcePaths]),
+    executionRootContract: Object.freeze({ ...plan.candidate.executionRootContract }),
     optionalSurfaces: Object.freeze(plan.candidate.optionalSurfaces.map(freezeSurface)),
     ...(plan.candidate.routeRecipe === undefined
       ? {}
       : { routeRecipe: freezeRecipe(plan.candidate.routeRecipe) }),
+    runtimeTargetContract: Object.freeze({ ...plan.candidate.runtimeTargetContract }),
     watchSourcePaths: Object.freeze([...plan.candidate.watchSourcePaths]),
   });
   return Object.freeze({

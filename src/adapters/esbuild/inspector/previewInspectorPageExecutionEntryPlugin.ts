@@ -7,14 +7,18 @@ import {
   PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER,
   createPreviewInspectorPageRouteStatePreludeSource,
 } from './previewInspectorPageRouteStatePrelude';
+import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
 import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
+import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
 
 export const PREVIEW_INSPECTOR_PAGE_EXECUTION_SPECIFIER = 'react-preview:inspector-page-execution';
 export { PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER };
 
 export interface PreviewInspectorPageExecutionEntryPluginOptions {
   readonly candidate?: PreviewInspectorPageExecutionCandidate;
+  readonly executionRootModuleContract?: PreviewInspectorExecutionRootModuleContract;
   readonly target: { readonly exportName: string; readonly sourcePath: string };
+  readonly targetModuleContract?: PreviewInspectorTargetModuleContract;
 }
 
 /** Does nothing without a frozen candidate, preserving legacy Inspector root behavior. */
@@ -24,6 +28,10 @@ export function registerPreviewInspectorPageExecutionEntryPlugin(
 ): void {
   const candidate = options.candidate;
   if (candidate === undefined) return;
+  const executionRootModuleContract = options.executionRootModuleContract;
+  if (executionRootModuleContract === undefined) {
+    throw new TypeError('Page Execution requires a prepared execution-root module contract.');
+  }
   build.onResolve({ filter: /^react-preview:inspector-page-execution$/ }, (arguments_) =>
     arguments_.path === PREVIEW_INSPECTOR_PAGE_EXECUTION_SPECIFIER
       ? { namespace: PREVIEW_INSPECTOR_PAGE_EXECUTION_NAMESPACE, path: 'selected-page-execution' }
@@ -39,7 +47,11 @@ export function registerPreviewInspectorPageExecutionEntryPlugin(
     () => ({
       contents: createPreviewInspectorPageExecutionSource({
         candidate,
+        executionRootModuleContract,
         target: options.target,
+        ...(options.targetModuleContract === undefined
+          ? {}
+          : { targetModuleContract: options.targetModuleContract }),
       }),
       loader: 'js',
       resolveDir: path.dirname(options.target.sourcePath),

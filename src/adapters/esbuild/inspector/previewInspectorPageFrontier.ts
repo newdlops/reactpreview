@@ -1,30 +1,36 @@
 /* eslint-disable jsdoc/require-jsdoc */
 /** Selects the highest-fidelity Page Execution candidate admitted by Frontier v2. */
 import { createHash } from 'node:crypto';
+import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import type { PreviewCompilerFrontierPolicy } from '../../../domain/previewCompilerFrontier';
 import {
   preparePreviewInspectorBundleFrontier,
+  type PreviewInspectorBundleSourceInventoryMemo,
   type PreparedPreviewInspectorBundleFrontier,
 } from './previewInspectorBundleFrontier';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
+import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
 import { createPreviewInspectorPageExecutionCandidates } from './previewInspectorPageExecutionCandidates';
 import type {
   PreviewInspectorPageExecutionCandidate,
   PreviewInspectorPageExecutionPlan,
   PreviewInspectorPageFidelity,
 } from './previewInspectorPageExecutionTypes';
+import { resolvePreviewInspectorRuntimeTargetMode } from './previewInspectorRuntimeOwnershipTarget';
 
 export type PreviewInspectorFrontierSourceKind =
   'critical-surface' | 'critical-support' | 'optional-surface' | 'optional-support';
 export type PreviewInspectorPageFrontierDisposition = 'accepted-unbounded' | 'rejected-structural';
 
 export interface PreparePreviewInspectorPageExecutionSelectionOptions {
+  readonly bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector;
   readonly runtimeCompanionSourcePaths?: readonly string[];
   readonly candidates: readonly PreviewInspectorPageExecutionCandidate[];
   readonly plan: PreviewInspectorAncestorPlan;
   readonly policy: PreviewCompilerFrontierPolicy;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   readonly resolveModule: (specifier: string, importer: string) => string | undefined;
+  readonly sourceInventoryMemo?: PreviewInspectorBundleSourceInventoryMemo;
   readonly workspaceRoot: string;
 }
 
@@ -51,10 +57,13 @@ export function createEligiblePreviewInspectorPageExecutionCandidates(
   plan: PreviewInspectorAncestorPlan,
   selectedPageCandidateId: string | undefined,
   selectedExecutionCandidateId?: string,
+  targetMode?: PreviewInspectorTargetMode,
 ): readonly PreviewInspectorPageExecutionCandidate[] {
+  const runtimeTargetMode = resolvePreviewInspectorRuntimeTargetMode(plan, targetMode);
   const candidates = createPreviewInspectorPageExecutionCandidates({
     plan,
     ...(selectedPageCandidateId === undefined ? {} : { selectedPageCandidateId }),
+    ...(runtimeTargetMode === undefined ? {} : { targetMode: runtimeTargetMode }),
   });
   if (selectedExecutionCandidateId === undefined) return candidates;
   const requested = candidates.filter((candidate) => candidate.id === selectedExecutionCandidateId);
@@ -72,7 +81,10 @@ export async function preparePreviewInspectorPageExecutionSelection(
   const readSharedSource = (sourcePath: string): Promise<string | undefined> => {
     const cached = sourceTextByPath.get(sourcePath);
     if (cached !== undefined) return cached;
-    const read = options.readSource(sourcePath);
+    const read =
+      options.bundleDiagnostics === undefined
+        ? options.readSource(sourcePath)
+        : options.bundleDiagnostics.measureRawSourceRead(() => options.readSource(sourcePath));
     sourceTextByPath.set(sourcePath, read);
     return read;
   };
@@ -87,10 +99,19 @@ export async function preparePreviewInspectorPageExecutionSelection(
         ? {}
         : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
       executionCandidate: candidate,
+      ...(options.bundleDiagnostics === undefined
+        ? {}
+        : {
+            bundleDiagnostics: options.bundleDiagnostics,
+            rawSourceReadAccounting: 'upstream-page-cache' as const,
+          }),
       plan: options.plan,
       policy: options.policy,
       readSource: readSharedSource,
       resolveModule: options.resolveModule,
+      ...(options.sourceInventoryMemo === undefined
+        ? {}
+        : { sourceInventoryMemo: options.sourceInventoryMemo }),
       workspaceRoot: options.workspaceRoot,
     });
     probes.push({
@@ -99,11 +120,19 @@ export async function preparePreviewInspectorPageExecutionSelection(
       prepared,
     });
   }
-  const selected = probes
-    .filter((probe) => probe.disposition === 'accepted-unbounded')
-    .sort(compareProbe)[0];
+  const selectAccepted = (): (typeof probes)[number] | undefined =>
+    probes.filter((probe) => probe.disposition === 'accepted-unbounded').sort(compareProbe)[0];
+  const selected =
+    options.bundleDiagnostics === undefined
+      ? selectAccepted()
+      : options.bundleDiagnostics.measureCandidateSelection(selectAccepted);
   if (selected === undefined) {
-    const rejected = [...probes].sort(compareRejectedProbe)[0];
+    const selectRejected = (): (typeof probes)[number] | undefined =>
+      [...probes].sort(compareRejectedProbe)[0];
+    const rejected =
+      options.bundleDiagnostics === undefined
+        ? selectRejected()
+        : options.bundleDiagnostics.measureCandidateSelection(selectRejected);
     if (rejected === undefined) return undefined;
     return Object.freeze({
       candidate: rejected.candidate,
@@ -129,7 +158,7 @@ export async function preparePreviewInspectorPageExecutionSelection(
       selected.prepared.frontier.identity,
     ),
     frontier: selected.prepared.frontier,
-    version: 2,
+    version: 4,
   });
   return Object.freeze({
     disposition: 'accepted-unbounded',
@@ -197,6 +226,6 @@ function createExecutionIdentity(
   frontierIdentity: string,
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify({ candidate, frontierIdentity, version: 2 }))
+    .update(JSON.stringify({ candidate, frontierIdentity, version: 4 }))
     .digest('hex');
 }

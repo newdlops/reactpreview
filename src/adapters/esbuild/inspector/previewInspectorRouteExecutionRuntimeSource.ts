@@ -2,6 +2,7 @@
 import type { PreviewInspectorRouteExecutionRecipe } from './previewInspectorPageExecutionTypes';
 import { createPreviewInspectorRouteHref } from './previewInspectorRouteHref';
 import { createPreviewInspectorV6RoutePattern } from './previewInspectorRoutePattern';
+import { relativizePreviewInspectorRoutePattern } from './previewInspectorRoutePatternMatch';
 
 export interface CreatePreviewInspectorRouteExecutionRuntimeSourceOptions {
   readonly recipe: PreviewInspectorRouteExecutionRecipe;
@@ -32,19 +33,29 @@ function createV6Runtime(options: CreatePreviewInspectorRouteExecutionRuntimeSou
   const routeHref = createPreviewInspectorRouteHref(recipe.pathname, recipe.searchParams);
   const nested =
     options.routeSurfaceLocals.length === 0
-      ? `React.createElement(Route, { path: ${JSON.stringify(routePattern)}, element: ${options.renderedPage} })`
+      ? `React.createElement(Route, { path: ${JSON.stringify(
+          createPreviewInspectorV6RoutePattern(recipe.mounts[0]?.contextPattern ?? recipe.pattern),
+        )}, element: ${options.renderedPage} })`
       : options.routeSurfaceLocals
           .slice()
           .reverse()
-          .reduce(
-            (child, local, reverseIndex) =>
-              `React.createElement(Route, { ${
-                reverseIndex === options.routeSurfaceLocals.length - 1
-                  ? `path: ${JSON.stringify(routePattern)}`
-                  : 'path: ""'
-              }, element: React.createElement(${local}, null) }, ${child})`,
-            `React.createElement(Route, { index: true, element: ${options.renderedPage} })`,
-          );
+          .reduce((child, local, reverseIndex) => {
+            const mountIndex = options.routeSurfaceLocals.length - reverseIndex - 1;
+            const contextPattern = recipe.mounts[mountIndex]?.contextPattern;
+            const previousBasePath = recipe.mounts[mountIndex - 1]?.basePath;
+            const nestedContextPattern =
+              mountIndex > 0 && contextPattern !== undefined && previousBasePath !== undefined
+                ? (relativizePreviewInspectorRoutePattern(previousBasePath, contextPattern) ??
+                  contextPattern)
+                : contextPattern;
+            const mountedPattern =
+              nestedContextPattern === undefined
+                ? reverseIndex === options.routeSurfaceLocals.length - 1
+                  ? routePattern
+                  : ''
+                : createPreviewInspectorV6RoutePattern(nestedContextPattern);
+            return `React.createElement(Route, { path: ${JSON.stringify(mountedPattern)}, element: React.createElement(${local}, null) }, ${child})`;
+          }, `React.createElement(Route, { index: true, element: ${options.renderedPage} })`);
   return Object.freeze({
     imports: Object.freeze([
       `import { MemoryRouter, Route, Routes } from '${options.recipe.routerModuleSpecifier ?? 'react-router-dom'}';`,

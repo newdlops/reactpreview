@@ -1,7 +1,5 @@
 /** Creates the deterministic authored import closure before esbuild resolution. */
-import { createHash } from 'node:crypto';
 import path from 'node:path';
-import ts from 'typescript';
 import type {
   PreviewCompilerFrontierPolicy,
   PreviewCompilerFrontierReason,
@@ -15,21 +13,46 @@ import { collectPreviewInspectorRuntimeImportInventory } from './previewInspecto
 import {
   createPreviewInspectorLocalComponentSlice,
   createPreviewInspectorSelectedExportSlice,
+  type PreviewInspectorMountSurfaceSliceResult,
 } from './previewInspectorMountSurfaceSlice';
 import { collectPreviewInspectorShallowProjectionInventory } from './previewInspectorShallowProjection';
+import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
+import {
+  createPreviewInspectorBundleFrontierIdentity,
+  PREVIEW_INSPECTOR_BUNDLE_FRONTIER_FORMAT_VERSION,
+  PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
+  sortPreviewInspectorBundleFrontierReasons,
+} from './previewInspectorBundleFrontierFinalization';
+import { createPreviewInspectorStableMinPriorityQueue } from './previewInspectorStableMinPriorityQueue';
+import {
+  collectPreviewInspectorBundleOptionalClosure,
+  collectPreviewInspectorBundleSourceInventory,
+  type PreviewInspectorBundleDynamicResolution,
+  type PreviewInspectorBundleResolvedNodeFailure,
+  type PreviewInspectorBundleResolvedSourceNode,
+  type PreviewInspectorBundleResolvedStaticEdge,
+  type PreviewInspectorBundleSourceClosureTemplate,
+  type PreviewInspectorBundleSourceInventoryMemo,
+  type PreviewInspectorBundleSourceInventoryResult,
+} from './previewInspectorBundleSourceInventoryMemo';
 import type {
   PreviewInspectorBundleFrontier,
   PreviewInspectorProjectedEdge,
   PreviewInspectorRuntimeImportEdge,
 } from './previewInspectorBundleFrontierTypes';
-
-const FRONTIER_FORMAT_VERSION = 1;
-const PAGE_EXECUTION_FRONTIER_FORMAT_VERSION = 2;
+export {
+  createPreviewInspectorBundleSourceInventoryMemo,
+  type PreviewInspectorBundleSourceClosureMemoStatistics,
+  type PreviewInspectorBundleGraphMemoStatistics,
+  type PreviewInspectorBundleSourceInventoryMemo,
+  type PreviewInspectorBundleSourceInventoryMemoStatistics,
+  type PreviewInspectorBundleSurfaceSliceMemoStatistics,
+} from './previewInspectorBundleSourceInventoryMemo';
 const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 const STYLE_OR_ASSET_PATTERN =
   /\.(?:css|less|sass|scss|svg|png|jpe?g|gif|webp|avif|woff2?|ttf|eot)$/iu;
-
 export interface PreparePreviewInspectorBundleFrontierOptions {
+  readonly bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector;
   /** Runtime bridge modules that the generated execution entry evaluates beside selected surfaces. */
   readonly runtimeCompanionSourcePaths?: readonly string[];
   /** A frozen Page Execution candidate switches exact admission from broad evidence to surfaces. */
@@ -37,52 +60,66 @@ export interface PreparePreviewInspectorBundleFrontierOptions {
   readonly plan: PreviewInspectorAncestorPlan;
   readonly policy: PreviewCompilerFrontierPolicy;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
+  /** Page selection accounts only shared-cache misses upstream to avoid duplicate raw-read counts. */
+  readonly rawSourceReadAccounting?: 'upstream-page-cache';
   readonly resolveModule: (specifier: string, importer: string) => string | undefined;
+  /** Request-owned reuse of only exact source-inventory analysis. */
+  readonly sourceInventoryMemo?: PreviewInspectorBundleSourceInventoryMemo;
   readonly workspaceRoot: string;
 }
-
 export interface PreparedPreviewInspectorBundleFrontier {
   readonly frontier: PreviewInspectorBundleFrontier;
   readonly rejected: boolean;
 }
-
 interface FrontierSourceQueueItem {
   readonly depth: number;
   readonly kind: 'exact' | 'optional-component' | 'optional-support' | 'support';
   readonly optionalEdge?: Omit<PreviewInspectorProjectedEdge, 'reason'>;
   readonly sourcePath: string;
 }
-
 type AdmittedKind = FrontierSourceQueueItem['kind'];
-
-interface SourceInventory {
-  readonly byteLength: number;
-  readonly edges: readonly PreviewInspectorRuntimeImportEdge[];
-}
-
-type SourceInventoryFailure = Extract<
-  PreviewCompilerFrontierReason,
-  'exact-source-unreadable' | 'source-parse-failure' | 'slice-unavailable'
->;
-
-interface OptionalProposal {
-  readonly authoredEdgeCount: number;
-  readonly packageDemandPaths: ReadonlySet<string>;
-  readonly sourceBytes: number;
-  readonly sourcePaths: readonly string[];
-  readonly supportPaths: ReadonlySet<string>;
-}
-
 /** Builds the same frontier for equal source snapshots regardless of resolve callback timing. */
 export async function preparePreviewInspectorBundleFrontier(
   options: PreparePreviewInspectorBundleFrontierOptions,
 ): Promise<PreparedPreviewInspectorBundleFrontier> {
+  const diagnostics = options.bundleDiagnostics;
+  diagnostics?.recordFrontier();
+  const collectTemplate = (): Promise<PreviewInspectorBundleSourceClosureTemplate> =>
+    collectPreviewInspectorBundleSourceClosureTemplate(options);
+  const template =
+    options.executionCandidate === undefined || options.sourceInventoryMemo === undefined
+      ? await collectTemplate()
+      : await options.sourceInventoryMemo.collectSourceClosure(
+          createPreviewInspectorBundleSourceClosureKey(options),
+          collectTemplate,
+        );
+  return materializePreviewInspectorBundleFrontier(options, template);
+}
+/** Collects route-invariant authored closure data without retaining candidate identity. */
+async function collectPreviewInspectorBundleSourceClosureTemplate(
+  options: PreparePreviewInspectorBundleFrontierOptions,
+): Promise<PreviewInspectorBundleSourceClosureTemplate> {
+  const diagnostics = options.bundleDiagnostics;
+  const checkAuthoredPath = (sourcePath: string): boolean =>
+    diagnostics === undefined
+      ? isAuthoredPath(options.workspaceRoot, sourcePath)
+      : diagnostics.measureAuthoredPathCheck(() =>
+          isAuthoredPath(options.workspaceRoot, sourcePath),
+        );
+  const resolveModule = (specifier: string, importer: string): string | undefined =>
+    diagnostics === undefined
+      ? options.resolveModule(specifier, importer)
+      : diagnostics.measureResolveModule(() => options.resolveModule(specifier, importer));
+  const readRawSource = (sourcePath: string): Promise<string | undefined> =>
+    diagnostics === undefined || options.rawSourceReadAccounting === 'upstream-page-cache'
+      ? options.readSource(sourcePath)
+      : diagnostics.measureRawSourceRead(() => options.readSource(sourcePath));
   const authenticInventorySourcePaths = collectAuthenticInventorySourcePaths(options);
   const pending: FrontierSourceQueueItem[] = [
     ...collectExactSeedPaths(options.plan, options.executionCandidate),
     ...(options.runtimeCompanionSourcePaths ?? []),
   ]
-    .filter((sourcePath) => isAuthoredPath(options.workspaceRoot, sourcePath))
+    .filter(checkAuthoredPath)
     .map((sourcePath) => ({ depth: 0, kind: 'exact', sourcePath }));
   const projectedEdges: PreviewInspectorProjectedEdge[] = [];
   const optionalExportsByPath = new Map<string, Set<string>>();
@@ -90,10 +127,7 @@ export async function preparePreviewInspectorBundleFrontier(
   for (const visualPath of options.executionCandidate === undefined
     ? [...(options.plan.shallowVisualPaths ?? [])].sort(compareVisualPaths)
     : []) {
-    if (
-      visualPath.relation === 'route-alternative' ||
-      !isAuthoredPath(options.workspaceRoot, visualPath.sourcePath)
-    )
+    if (visualPath.relation === 'route-alternative' || !checkAuthoredPath(visualPath.sourcePath))
       continue;
     const sourcePath = path.normalize(visualPath.sourcePath);
     const edge = Object.freeze({
@@ -116,16 +150,35 @@ export async function preparePreviewInspectorBundleFrontier(
     ? collectExactVisualRoots(options.plan)
     : []) {
     await collectExactVisualAdmissions(
-      options,
       reference,
       optionalExportsByPath,
       optionalIdentities,
       pending,
+      readRawSource,
+      resolveModule,
+      checkAuthoredPath,
+    );
+  }
+  const authenticRuntimeTargetSurface = options.executionCandidate?.criticalSurfaces.find(
+    (surface) =>
+      surface.id === options.executionCandidate?.runtimeTargetSurfaceId &&
+      surface.strategy === 'authentic-module-export',
+  );
+  if (authenticRuntimeTargetSurface !== undefined) {
+    await collectExactVisualAdmissions(
+      authenticRuntimeTargetSurface,
+      optionalExportsByPath,
+      optionalIdentities,
+      pending,
+      readRawSource,
+      resolveModule,
+      checkAuthoredPath,
+      'dynamic-import',
     );
   }
   for (const surface of options.executionCandidate?.optionalSurfaces ?? []) {
     const sourcePath = path.normalize(surface.sourcePath);
-    if (!isAuthoredPath(options.workspaceRoot, sourcePath)) continue;
+    if (!checkAuthoredPath(sourcePath)) continue;
     const identity = `${sourcePath}\0${surface.exportName}`;
     if (optionalIdentities.has(identity)) continue;
     optionalIdentities.add(identity);
@@ -140,8 +193,10 @@ export async function preparePreviewInspectorBundleFrontier(
     optionalExportsByPath.set(sourcePath, new Set(edge.exportNames));
     pending.push({ depth: 1, kind: 'optional-component', optionalEdge: edge, sourcePath });
   }
-
-  const sourceCache = new Map<string, Promise<SourceInventory | SourceInventoryFailure>>();
+  const queue = createPreviewInspectorStableMinPriorityQueue(pending, compareQueueItems);
+  const graphMemo =
+    options.executionCandidate === undefined ? undefined : options.sourceInventoryMemo;
+  const sourceCache = new Map<string, Promise<PreviewInspectorBundleResolvedSourceNode>>();
   const admittedKinds = new Map<string, AdmittedKind>();
   const packageDemandPaths = new Set<string>();
   const reasons = new Set<PreviewCompilerFrontierReason>();
@@ -149,67 +204,184 @@ export async function preparePreviewInspectorBundleFrontier(
   let maximumDepth = 0;
   let sourceBytes = 0;
   const processedStaticEdges = new Set<string>();
-
-  const readInventory = (sourcePath: string): Promise<SourceInventory | SourceInventoryFailure> => {
+  const readNode = (sourcePath: string): Promise<PreviewInspectorBundleResolvedSourceNode> => {
     const normalizedSourcePath = path.normalize(sourcePath);
-    const cached = sourceCache.get(normalizedSourcePath);
-    if (cached !== undefined) return cached;
-    const read = options.readSource(normalizedSourcePath).then((sourceText) => {
-      if (sourceText === undefined) return 'exact-source-unreadable' as const;
-      const slicedSurfaces = options.executionCandidate?.criticalSurfaces.filter(
-        (surface) =>
-          isVirtualSliceSurface(surface) &&
-          path.normalize(surface.sourcePath) === normalizedSourcePath,
+    const representationKey = createResolvedNodeRepresentationKey(
+      options,
+      authenticInventorySourcePaths,
+      normalizedSourcePath,
+    );
+    const cached = sourceCache.get(representationKey);
+    if (cached !== undefined) {
+      diagnostics?.recordInventoryRead(true);
+      return cached;
+    }
+    const compute = async (): Promise<PreviewInspectorBundleResolvedSourceNode> => {
+      diagnostics?.recordInventoryRead(false);
+      const sourceText = await readRawSource(normalizedSourcePath);
+      if (sourceText === undefined)
+        return createResolvedNodeFailure(
+          normalizedSourcePath,
+          representationKey,
+          'exact-source-unreadable',
+        );
+      const slicedSurfaces = collectSlicedSurfaces(
+        options.executionCandidate,
+        normalizedSourcePath,
       );
       if (slicedSurfaces !== undefined && slicedSurfaces.length > 1)
-        return 'slice-unavailable' as const;
+        return createResolvedNodeFailure(
+          normalizedSourcePath,
+          representationKey,
+          'slice-unavailable',
+        );
       const slicedSurface = slicedSurfaces?.[0];
-      const slice =
-        slicedSurface === undefined
-          ? undefined
-          : slicedSurface.strategy === 'inner-local-component-slice' &&
-              slicedSurface.localName !== undefined
-            ? createPreviewInspectorLocalComponentSlice({
+      let slice: PreviewInspectorMountSurfaceSliceResult | undefined;
+      if (slicedSurface !== undefined) {
+        const before = diagnostics && options.sourceInventoryMemo?.getSliceStatistics();
+        const collectSlice = (): PreviewInspectorMountSurfaceSliceResult =>
+          slicedSurface.strategy === 'inner-local-component-slice' &&
+          slicedSurface.localName !== undefined
+            ? (options.sourceInventoryMemo?.collectLocalComponentSlice(
+                normalizedSourcePath,
+                sourceText,
+                slicedSurface.localName,
+                slicedSurface.preservedWrapperKinds ?? [],
+              ) ??
+              createPreviewInspectorLocalComponentSlice({
                 localName: slicedSurface.localName,
                 preservedWrapperKinds: slicedSurface.preservedWrapperKinds ?? [],
                 sourcePath: normalizedSourcePath,
                 sourceText,
-              })
-            : createPreviewInspectorSelectedExportSlice({
+              }))
+            : (options.sourceInventoryMemo?.collectSelectedExportSlice(
+                normalizedSourcePath,
+                sourceText,
+                slicedSurface.exportName,
+              ) ??
+              createPreviewInspectorSelectedExportSlice({
                 exportName: slicedSurface.exportName,
                 sourcePath: normalizedSourcePath,
                 sourceText,
-              });
+              }));
+        slice =
+          diagnostics === undefined ? collectSlice() : diagnostics.measureSliceLookup(collectSlice);
+        const after = diagnostics && options.sourceInventoryMemo?.getSliceStatistics();
+        diagnostics?.recordSliceMemoDelta(
+          before === undefined || after === undefined
+            ? { computations: 1, hits: 0, requests: 1 }
+            : {
+                computations: after.sliceComputations - before.sliceComputations,
+                hits: after.sliceHits - before.sliceHits,
+                requests: after.sliceRequests - before.sliceRequests,
+              },
+        );
+      }
       if (slicedSurface !== undefined && slice?.kind !== 'success')
-        return 'slice-unavailable' as const;
+        return createResolvedNodeFailure(
+          normalizedSourcePath,
+          representationKey,
+          'slice-unavailable',
+        );
       const inventorySource = authenticInventorySourcePaths.has(normalizedSourcePath)
         ? sourceText
         : slice?.kind === 'success'
           ? slice.slice.contents
           : sourceText;
-      const byteLength = Buffer.byteLength(inventorySource, 'utf8');
-      if (hasSourceParseFailure(normalizedSourcePath, inventorySource))
-        return 'source-parse-failure' as const;
+      const before = diagnostics && options.sourceInventoryMemo?.getStatistics();
+      const collectInventory = (): PreviewInspectorBundleSourceInventoryResult =>
+        options.sourceInventoryMemo?.collect(normalizedSourcePath, inventorySource) ??
+        collectPreviewInspectorBundleSourceInventory(normalizedSourcePath, inventorySource);
+      const inventory =
+        diagnostics === undefined
+          ? collectInventory()
+          : diagnostics.measureInventoryLookup(collectInventory);
+      const after = diagnostics && options.sourceInventoryMemo?.getStatistics();
+      diagnostics?.recordInventoryMemoDelta(
+        before === undefined || after === undefined
+          ? { computations: 1, hits: 0, requests: 1 }
+          : {
+              computations: after.computations - before.computations,
+              hits: after.hits - before.hits,
+              requests: after.requests - before.requests,
+            },
+      );
+      if (typeof inventory === 'string')
+        return createResolvedNodeFailure(normalizedSourcePath, representationKey, inventory);
+      const staticEdges: PreviewInspectorBundleResolvedStaticEdge[] = [];
+      for (const edge of inventory.edges) {
+        diagnostics?.recordEdgeVisit();
+        if (edge.kind === 'dynamic-import' || STYLE_OR_ASSET_PATTERN.test(edge.moduleSpecifier))
+          continue;
+        const identity = createRuntimeEdgeIdentity(normalizedSourcePath, edge);
+        const resolved = resolveModule(edge.moduleSpecifier, normalizedSourcePath);
+        if (resolved !== undefined && checkAuthoredPath(resolved)) {
+          staticEdges.push(
+            Object.freeze({
+              identity,
+              kind: 'authored' as const,
+              targetPath: path.normalize(resolved),
+            }),
+          );
+          continue;
+        }
+        if (normalizeBarePackageSpecifier(edge.moduleSpecifier) !== undefined)
+          staticEdges.push(Object.freeze({ identity, kind: 'package-demand' as const }));
+      }
       return Object.freeze({
-        byteLength,
-        edges: collectPreviewInspectorRuntimeImportInventory(normalizedSourcePath, inventorySource),
+        byteLength: inventory.byteLength,
+        edges: inventory.edges,
+        representationKey,
+        sourcePath: normalizedSourcePath,
+        staticEdges: Object.freeze(staticEdges),
       });
-    });
-    sourceCache.set(normalizedSourcePath, read);
+    };
+    const read = graphMemo?.collectResolvedSourceNode(representationKey, compute) ?? compute();
+    sourceCache.set(representationKey, read);
     return read;
   };
-
-  while (pending.length > 0) {
-    pending.sort(compareQueueItems);
-    const item = pending.shift();
+  const resolveDynamicEdge = (
+    node: PreviewInspectorBundleResolvedSourceNode,
+    edge: PreviewInspectorRuntimeImportEdge,
+  ): PreviewInspectorBundleDynamicResolution => {
+    const key = `${node.representationKey}\0${createRuntimeEdgeIdentity(node.sourcePath, edge)}`;
+    const compute = (): PreviewInspectorBundleDynamicResolution => {
+      const resolved = resolveModule(edge.moduleSpecifier, node.sourcePath);
+      return Object.freeze(
+        resolved !== undefined && checkAuthoredPath(resolved)
+          ? { targetPath: path.normalize(resolved) }
+          : {},
+      );
+    };
+    return graphMemo?.collectDynamicResolution(key, compute) ?? compute();
+  };
+  while (queue.size > 0) {
+    diagnostics?.recordQueueIteration(queue.size);
+    const item =
+      diagnostics === undefined
+        ? queue.popMinimum()
+        : diagnostics.measureQueueSort(() => queue.popMinimum());
     if (item === undefined || admittedKinds.has(item.sourcePath)) continue;
     if (item.kind === 'optional-component') {
-      const proposal = await probeOptionalClosure(
-        item.sourcePath,
-        admittedKinds,
-        options,
-        readInventory,
-      );
+      const collectProposal = (): ReturnType<typeof collectPreviewInspectorBundleOptionalClosure> =>
+        collectPreviewInspectorBundleOptionalClosure({
+          blockedSourcePaths: new Set(admittedKinds.keys()),
+          diagnostics,
+          getRepresentationKey: (sourcePath) =>
+            createResolvedNodeRepresentationKey(options, authenticInventorySourcePaths, sourcePath),
+          memo: graphMemo,
+          pendingContextKey: createResolvedNodeRepresentationContextKey(
+            options,
+            authenticInventorySourcePaths,
+          ),
+          readNode,
+          rootPath: item.sourcePath,
+        });
+      const collected =
+        diagnostics === undefined
+          ? await collectProposal()
+          : await diagnostics.measureOptionalClosure(collectProposal);
+      const { graph, proposal } = collected;
       if (typeof proposal === 'string') {
         appendProjection(projectedEdges, item, proposal);
         continue;
@@ -227,13 +399,14 @@ export async function preparePreviewInspectorBundleFrontier(
       sourceBytes += proposal.sourceBytes;
       for (const sourcePath of proposal.packageDemandPaths) packageDemandPaths.add(sourcePath);
       maximumDepth = Math.max(maximumDepth, item.depth);
-      const rootInventory = await readInventory(item.sourcePath);
-      if (typeof rootInventory !== 'string') {
-        for (const edge of rootInventory.edges) {
+      const rootNode = graph.entries.find((entry) => entry.sourcePath === item.sourcePath)?.node;
+      if (rootNode !== undefined && rootNode.failure === undefined) {
+        for (const edge of rootNode.edges) {
+          if (graphMemo === undefined) diagnostics?.recordEdgeVisit();
           if (edge.kind !== 'dynamic-import') continue;
-          const resolved = options.resolveModule(edge.moduleSpecifier, item.sourcePath);
-          if (resolved === undefined || !isAuthoredPath(options.workspaceRoot, resolved)) continue;
-          const sourcePath = path.normalize(resolved);
+          const resolution = resolveDynamicEdge(rootNode, edge);
+          if (resolution.targetPath === undefined) continue;
+          const sourcePath = resolution.targetPath;
           const identity = `${sourcePath}\0default`;
           const edgeRecord = Object.freeze({
             exportNames: Object.freeze(
@@ -248,7 +421,7 @@ export async function preparePreviewInspectorBundleFrontier(
           if (optionalIdentities.has(identity) || admittedKinds.has(sourcePath)) continue;
           optionalIdentities.add(identity);
           optionalExportsByPath.set(sourcePath, new Set(edgeRecord.exportNames));
-          pending.push({
+          queue.push({
             depth: item.depth + 1,
             kind: 'optional-component',
             optionalEdge: edgeRecord,
@@ -258,70 +431,52 @@ export async function preparePreviewInspectorBundleFrontier(
       }
       continue;
     }
-    const inventory = await readInventory(item.sourcePath);
-    if (typeof inventory === 'string') {
-      reasons.add(inventory);
+    const node = await readNode(item.sourcePath);
+    if (node.failure !== undefined) {
+      reasons.add(node.failure);
       continue;
     }
     admittedKinds.set(item.sourcePath, item.kind);
     maximumDepth = Math.max(maximumDepth, item.depth);
-    sourceBytes += inventory.byteLength;
-    for (const edge of inventory.edges) {
-      if (edge.kind === 'dynamic-import') {
-        /* A lazy child reached from a selected critical surface is still part of the executable
-         * page slice. Legacy v1 treated it as an optional visual transaction; v2 must admit its
-         * authored closure before strict metafile verification can allow the emitted lazy chunk. */
-        if (options.executionCandidate === undefined) continue;
-        const resolved = options.resolveModule(edge.moduleSpecifier, item.sourcePath);
-        if (
-          resolved !== undefined &&
-          isAuthoredPath(options.workspaceRoot, resolved) &&
-          isSelectedDynamicVisualPath(options.plan, item.sourcePath, resolved)
-        ) {
-          const resolvedSourcePath = path.normalize(resolved);
-          const edgeIdentity = `${item.sourcePath}\0${edge.occurrenceStart.toString()}\0${edge.moduleSpecifier}`;
-          if (!processedStaticEdges.has(edgeIdentity)) {
-            processedStaticEdges.add(edgeIdentity);
-            authoredEdgeCount += 1;
-            pending.push({
-              depth: item.depth + 1,
-              kind: 'support',
-              sourcePath: resolvedSourcePath,
-            });
-          }
-        }
-        continue;
-      }
-      const edgeIdentity = `${item.sourcePath}\0${edge.occurrenceStart.toString()}\0${edge.moduleSpecifier}`;
-      if (processedStaticEdges.has(edgeIdentity)) continue;
-      if (STYLE_OR_ASSET_PATTERN.test(edge.moduleSpecifier)) {
-        processedStaticEdges.add(edgeIdentity);
-        continue;
-      }
-      const resolved = options.resolveModule(edge.moduleSpecifier, item.sourcePath);
-      if (resolved !== undefined && isAuthoredPath(options.workspaceRoot, resolved)) {
-        const resolvedSourcePath = path.normalize(resolved);
-        processedStaticEdges.add(edgeIdentity);
-        authoredEdgeCount += 1;
-        // A proven rendered child owns an optional transaction; treating its static import as
-        // mandatory support would bypass projection and expand every modal/form subtree eagerly.
-        if (!optionalExportsByPath.has(resolvedSourcePath)) {
-          pending.push({
+    sourceBytes += node.byteLength;
+    for (const edge of node.edges) {
+      if (edge.kind !== 'dynamic-import' || options.executionCandidate === undefined) continue;
+      const resolution = resolveDynamicEdge(node, edge);
+      if (
+        resolution.targetPath !== undefined &&
+        isSelectedDynamicVisualPath(options.plan, item.sourcePath, resolution.targetPath)
+      ) {
+        const edgeIdentity = createRuntimeEdgeIdentity(item.sourcePath, edge);
+        if (!processedStaticEdges.has(edgeIdentity)) {
+          processedStaticEdges.add(edgeIdentity);
+          authoredEdgeCount += 1;
+          queue.push({
             depth: item.depth + 1,
             kind: 'support',
-            sourcePath: resolvedSourcePath,
+            sourcePath: resolution.targetPath,
           });
         }
+      }
+    }
+    for (const edge of node.staticEdges) {
+      if (processedStaticEdges.has(edge.identity)) continue;
+      processedStaticEdges.add(edge.identity);
+      if (edge.kind === 'package-demand') {
+        packageDemandPaths.add(item.sourcePath);
         continue;
       }
-      processedStaticEdges.add(edgeIdentity);
-      const packageName = normalizeBarePackageSpecifier(edge.moduleSpecifier);
-      if (packageName !== undefined) {
-        packageDemandPaths.add(item.sourcePath);
+      authoredEdgeCount += 1;
+      // A proven rendered child owns an optional transaction; treating its static import as
+      // mandatory support would bypass projection and expand every modal/form subtree eagerly.
+      if (edge.targetPath !== undefined && !optionalExportsByPath.has(edge.targetPath)) {
+        queue.push({
+          depth: item.depth + 1,
+          kind: 'support',
+          sourcePath: edge.targetPath,
+        });
       }
     }
   }
-
   const authenticSourcePaths = Object.freeze([...admittedKinds.keys()].sort());
   const exactSourcePaths = Object.freeze(
     authenticSourcePaths.filter((sourcePath) => admittedKinds.get(sourcePath) === 'exact'),
@@ -329,10 +484,8 @@ export async function preparePreviewInspectorBundleFrontier(
   const optionalSourcePaths = authenticSourcePaths.filter(
     (sourcePath) => admittedKinds.get(sourcePath) === 'optional-component',
   );
-  const supportModuleCount =
-    countKinds(admittedKinds, 'support') + countKinds(admittedKinds, 'optional-support');
   const packageDemandSourcePaths = Object.freeze([...packageDemandPaths].sort());
-  const truncationReasons = Object.freeze(sortReasons(reasons));
+  const truncationReasons = Object.freeze(sortPreviewInspectorBundleFrontierReasons(reasons));
   const summary = Object.freeze({
     authoredEdgeCount,
     exactModuleCount: exactSourcePaths.length,
@@ -341,66 +494,137 @@ export async function preparePreviewInspectorBundleFrontier(
     packageDemandSourceCount: packageDemandSourcePaths.length,
     projectedEdgeCount: projectedEdges.length,
     sourceBytes,
-    supportModuleCount,
+    supportModuleCount:
+      countKinds(admittedKinds, 'support') + countKinds(admittedKinds, 'optional-support'),
     totalAuthoredModuleCount: authenticSourcePaths.length,
     truncationReasons,
   });
-  const components = Object.freeze(
-    optionalSourcePaths.map((sourcePath) =>
-      Object.freeze({
-        exportNames: Object.freeze([...(optionalExportsByPath.get(sourcePath) ?? [])].sort()),
-        runtimeHookExportNames: Object.freeze([]),
-        sourcePath,
-      }),
+  return Object.freeze({
+    authenticComponentExports: Object.freeze(
+      optionalSourcePaths.map((sourcePath) =>
+        Object.freeze({
+          exportNames: Object.freeze([...(optionalExportsByPath.get(sourcePath) ?? [])].sort()),
+          runtimeHookExportNames: Object.freeze([]),
+          sourcePath,
+        }),
+      ),
     ),
-  );
-  const sortedProjections = Object.freeze([...projectedEdges].sort(compareProjectedEdges));
-  return {
-    frontier: Object.freeze({
-      authenticComponentExports: components,
-      authenticSourcePaths,
-      exactSourcePaths,
-      identity: createFrontierIdentity(
+    authenticSourcePaths,
+    exactSourcePaths,
+    packageDemandSourcePaths,
+    projectedEdges: Object.freeze([...projectedEdges].sort(compareProjectedEdges)),
+    rejected: truncationReasons.length > 0,
+    sourceKinds: Object.freeze(
+      Object.fromEntries(
+        [...admittedKinds.entries()].map(([sourcePath, kind]) => [
+          sourcePath,
+          kind === 'exact'
+            ? ('critical-surface' as const)
+            : kind === 'optional-component'
+              ? ('optional-surface' as const)
+              : kind === 'optional-support'
+                ? ('optional-support' as const)
+                : ('critical-support' as const),
+        ]),
+      ),
+    ),
+    summary,
+  });
+}
+/** Rebuilds candidate-specific identity and transport around one immutable closure template. */
+function materializePreviewInspectorBundleFrontier(
+  options: PreparePreviewInspectorBundleFrontierOptions,
+  template: PreviewInspectorBundleSourceClosureTemplate,
+): PreparedPreviewInspectorBundleFrontier {
+  const diagnostics = options.bundleDiagnostics;
+  const finalize = (): PreparedPreviewInspectorBundleFrontier => {
+    const collectIdentity = (): string =>
+      createPreviewInspectorBundleFrontierIdentity(
         options.policy,
         options.executionCandidate,
-        authenticSourcePaths,
-        exactSourcePaths,
-        packageDemandSourcePaths,
-        components,
-        sortedProjections,
-        summary,
-      ),
-      packageDemandSourcePaths,
-      projectedEdges: sortedProjections,
-      summary,
-      version:
-        options.executionCandidate === undefined
-          ? FRONTIER_FORMAT_VERSION
-          : PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
-      ...(options.executionCandidate === undefined
-        ? {}
-        : {
-            executionCandidateId: options.executionCandidate.id,
-            sourceKinds: Object.freeze(
-              Object.fromEntries(
-                [...admittedKinds.entries()].map(([sourcePath, kind]) => [
-                  sourcePath,
-                  kind === 'exact'
-                    ? ('critical-surface' as const)
-                    : kind === 'optional-component'
-                      ? ('optional-surface' as const)
-                      : kind === 'optional-support'
-                        ? ('optional-support' as const)
-                        : ('critical-support' as const),
-                ]),
-              ),
-            ),
-          }),
-    }),
-    rejected: truncationReasons.length > 0,
+        template.authenticSourcePaths,
+        template.exactSourcePaths,
+        template.packageDemandSourcePaths,
+        template.authenticComponentExports,
+        template.projectedEdges,
+        template.summary,
+      );
+    const identity =
+      diagnostics === undefined
+        ? collectIdentity()
+        : diagnostics.measureFrontierIdentity(collectIdentity);
+    return {
+      frontier: Object.freeze({
+        authenticComponentExports: template.authenticComponentExports,
+        authenticSourcePaths: template.authenticSourcePaths,
+        exactSourcePaths: template.exactSourcePaths,
+        identity,
+        packageDemandSourcePaths: template.packageDemandSourcePaths,
+        projectedEdges: template.projectedEdges,
+        summary: template.summary,
+        version:
+          options.executionCandidate === undefined
+            ? PREVIEW_INSPECTOR_BUNDLE_FRONTIER_FORMAT_VERSION
+            : PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
+        ...(options.executionCandidate === undefined
+          ? {}
+          : {
+              executionCandidateId: options.executionCandidate.id,
+              sourceKinds: template.sourceKinds,
+            }),
+      }),
+      rejected: template.rejected,
+    };
   };
+  return diagnostics === undefined ? finalize() : diagnostics.measureFrontierFinalize(finalize);
 }
-
+/** Keys only immutable inputs that can change v2 authored closure traversal. */
+function createPreviewInspectorBundleSourceClosureKey(
+  options: PreparePreviewInspectorBundleFrontierOptions,
+): string {
+  const candidate = options.executionCandidate;
+  if (candidate === undefined) throw new TypeError('Page Execution closure requires a candidate.');
+  const sortRows = <Row extends readonly unknown[]>(rows: Row[]): Row[] =>
+    rows.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return JSON.stringify([
+    'preview-inspector-bundle-source-closure',
+    1,
+    PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
+    path.normalize(options.workspaceRoot),
+    [...(options.runtimeCompanionSourcePaths ?? [])]
+      .map((sourcePath) => path.normalize(sourcePath))
+      .sort(),
+    sortRows(
+      candidate.criticalSurfaces.map(
+        (surface) =>
+          [
+            path.normalize(surface.sourcePath),
+            surface.exportName,
+            surface.strategy,
+            surface.localName ?? null,
+            [...(surface.preservedWrapperKinds ?? [])],
+          ] as const,
+      ),
+    ),
+    sortRows(
+      candidate.optionalSurfaces.map(
+        (surface) =>
+          [path.normalize(surface.sourcePath), surface.exportName, surface.strategy] as const,
+      ),
+    ),
+    sortRows(
+      (options.plan.shallowVisualPaths ?? [])
+        .filter((visualPath) => visualPath.relation !== 'route-alternative')
+        .map(
+          (visualPath) =>
+            [
+              path.normalize(visualPath.importerPath),
+              path.normalize(visualPath.sourcePath),
+            ] as const,
+        ),
+    ),
+  ]);
+}
 /** Identifies critical strategies evaluated through the generated virtual surface namespace. */
 function isVirtualSliceSurface(surface: PreviewInspectorMountSurface): boolean {
   return (
@@ -408,7 +632,103 @@ function isVirtualSliceSurface(surface: PreviewInspectorMountSurface): boolean {
     surface.strategy === 'inner-local-component-slice'
   );
 }
+/** Selects only the virtual critical representations associated with one authored path. */
+function collectSlicedSurfaces(
+  candidate: PreviewInspectorPageExecutionCandidate | undefined,
+  sourcePath: string,
+): readonly PreviewInspectorMountSurface[] | undefined {
+  return candidate?.criticalSurfaces.filter(
+    (surface) =>
+      isVirtualSliceSurface(surface) && path.normalize(surface.sourcePath) === sourcePath,
+  );
+}
+/** Keys one path by the exact full, sliced, or multi-slice representation it evaluates. */
+function createResolvedNodeRepresentationKey(
+  options: PreparePreviewInspectorBundleFrontierOptions,
+  authenticSourcePaths: ReadonlySet<string>,
+  sourcePath: string,
+): string {
+  const normalizedSourcePath = path.normalize(sourcePath);
+  const slicedSurfaces = collectSlicedSurfaces(options.executionCandidate, normalizedSourcePath);
+  if (slicedSurfaces !== undefined && slicedSurfaces.length > 1) {
+    const shapes = slicedSurfaces
+      .map((surface) => [
+        surface.exportName,
+        surface.strategy,
+        surface.localName ?? null,
+        [...(surface.preservedWrapperKinds ?? [])],
+      ])
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    return JSON.stringify([
+      'preview-inspector-bundle-resolved-node',
+      1,
+      normalizedSourcePath,
+      'multi-slice-unavailable',
+      shapes,
+    ]);
+  }
+  const slicedSurface = slicedSurfaces?.[0];
+  const representation =
+    slicedSurface === undefined
+      ? ['authentic-full-source']
+      : slicedSurface.strategy === 'inner-local-component-slice' &&
+          slicedSurface.localName !== undefined
+        ? [
+            'inner-local-slice',
+            slicedSurface.localName,
+            [...(slicedSurface.preservedWrapperKinds ?? [])],
+          ]
+        : ['selected-export-slice', slicedSurface.exportName];
+  return JSON.stringify([
+    'preview-inspector-bundle-resolved-node',
+    1,
+    normalizedSourcePath,
+    slicedSurface === undefined || authenticSourcePaths.has(normalizedSourcePath)
+      ? 'authentic-inventory'
+      : 'slice-inventory',
+    representation,
+  ]);
+}
+/** Identifies only representation choices needed to coalesce identical pending rooted work. */
+function createResolvedNodeRepresentationContextKey(
+  options: PreparePreviewInspectorBundleFrontierOptions,
+  authenticSourcePaths: ReadonlySet<string>,
+): string {
+  const sourcePaths = new Set(authenticSourcePaths);
+  for (const surface of options.executionCandidate?.criticalSurfaces ?? [])
+    sourcePaths.add(path.normalize(surface.sourcePath));
+  return JSON.stringify(
+    [...sourcePaths]
+      .sort()
+      .map((sourcePath) => [
+        sourcePath,
+        createResolvedNodeRepresentationKey(options, authenticSourcePaths, sourcePath),
+      ]),
+  );
+}
+/** Builds one deeply frozen structural-failure node without retaining an error. */
+function createResolvedNodeFailure(
+  sourcePath: string,
+  representationKey: string,
+  failure: PreviewInspectorBundleResolvedNodeFailure,
+): PreviewInspectorBundleResolvedSourceNode {
+  return Object.freeze({
+    byteLength: 0,
+    edges: Object.freeze([]),
+    failure,
+    representationKey,
+    sourcePath,
+    staticEdges: Object.freeze([]),
+  });
+}
 
+/** Identifies one source-ordered runtime edge independently of route selection. */
+function createRuntimeEdgeIdentity(
+  sourcePath: string,
+  edge: PreviewInspectorRuntimeImportEdge,
+): string {
+  return `${sourcePath}\0${edge.occurrenceStart.toString()}\0${edge.moduleSpecifier}`;
+}
 /** Collects sources already guaranteed to be evaluated as full authored modules. */
 function collectAuthenticInventorySourcePaths(
   options: PreparePreviewInspectorBundleFrontierOptions,
@@ -424,7 +744,6 @@ function collectAuthenticInventorySourcePaths(
   }
   return sourcePaths;
 }
-
 /** Requires existing one-hop render evidence before a dynamic import can enter a v2 slice. */
 function isSelectedDynamicVisualPath(
   plan: PreviewInspectorAncestorPlan,
@@ -438,17 +757,19 @@ function isSelectedDynamicVisualPath(
       visualPath.relation !== 'route-alternative',
   );
 }
-
 /** Promotes proven JSX children of an exact render root when broad plan evidence omits them. */
 async function collectExactVisualAdmissions(
-  options: PreparePreviewInspectorBundleFrontierOptions,
   reference: { readonly exportName: string; readonly sourcePath: string },
   optionalExportsByPath: Map<string, Set<string>>,
   optionalIdentities: Set<string>,
   pending: FrontierSourceQueueItem[],
+  readSource: (sourcePath: string) => Promise<string | undefined>,
+  resolveModule: (specifier: string, importer: string) => string | undefined,
+  checkAuthoredPath: (sourcePath: string) => boolean,
+  edgeKind: 'static' | 'dynamic-import' = 'static',
 ): Promise<void> {
   const importerPath = path.normalize(reference.sourcePath);
-  const sourceText = await options.readSource(importerPath);
+  const sourceText = await readSource(importerPath);
   if (sourceText === undefined) return;
   const inventory = collectPreviewInspectorRuntimeImportInventory(importerPath, sourceText);
   const projections = collectPreviewInspectorShallowProjectionInventory(
@@ -460,11 +781,13 @@ async function collectExactVisualAdmissions(
   for (const projection of projections.projectionsBySpecifier.values()) {
     const importEdge = inventory.find(
       (edge) =>
-        edge.kind !== 'dynamic-import' && edge.moduleSpecifier === projection.moduleSpecifier,
+        (edgeKind === 'dynamic-import'
+          ? edge.kind === 'dynamic-import'
+          : edge.kind !== 'dynamic-import') && edge.moduleSpecifier === projection.moduleSpecifier,
     );
     if (importEdge === undefined) continue;
-    const resolved = options.resolveModule(projection.moduleSpecifier, importerPath);
-    if (resolved === undefined || !isAuthoredPath(options.workspaceRoot, resolved)) continue;
+    const resolved = resolveModule(projection.moduleSpecifier, importerPath);
+    if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
     const sourcePath = path.normalize(resolved);
     const existingExports = optionalExportsByPath.get(sourcePath);
     if (existingExports !== undefined) {
@@ -486,7 +809,6 @@ async function collectExactVisualAdmissions(
     pending.push({ depth: 1, kind: 'optional-component', optionalEdge: edge, sourcePath });
   }
 }
-
 /** Lists only named exports the generated VirtualPage can mount or compose as authored roots. */
 function collectExactVisualRoots(
   plan: PreviewInspectorAncestorPlan,
@@ -515,54 +837,6 @@ function collectExactVisualRoots(
       left.exportName.localeCompare(right.exportName),
   );
 }
-
-/** Probes an optional component and every required static local import without mutating admission. */
-async function probeOptionalClosure(
-  rootPath: string,
-  admittedKinds: ReadonlyMap<string, AdmittedKind>,
-  options: PreparePreviewInspectorBundleFrontierOptions,
-  readInventory: (sourcePath: string) => Promise<SourceInventory | SourceInventoryFailure>,
-): Promise<OptionalProposal | SourceInventoryFailure> {
-  const pending = [rootPath];
-  const sourcePaths = new Set<string>();
-  const supportPaths = new Set<string>();
-  const packageDemandPaths = new Set<string>();
-  let authoredEdgeCount = 0;
-  let sourceBytes = 0;
-  while (pending.length > 0) {
-    pending.sort();
-    const sourcePath = pending.shift();
-    if (sourcePath === undefined || admittedKinds.has(sourcePath) || sourcePaths.has(sourcePath))
-      continue;
-    const inventory = await readInventory(sourcePath);
-    if (typeof inventory === 'string') return inventory;
-    sourcePaths.add(sourcePath);
-    sourceBytes += inventory.byteLength;
-    if (sourcePath !== rootPath) supportPaths.add(sourcePath);
-    for (const edge of inventory.edges) {
-      if (edge.kind === 'dynamic-import') continue;
-      if (STYLE_OR_ASSET_PATTERN.test(edge.moduleSpecifier)) continue;
-      const resolved = options.resolveModule(edge.moduleSpecifier, sourcePath);
-      if (resolved !== undefined && isAuthoredPath(options.workspaceRoot, resolved)) {
-        authoredEdgeCount += 1;
-        pending.push(path.normalize(resolved));
-        continue;
-      }
-      const packageName = normalizeBarePackageSpecifier(edge.moduleSpecifier);
-      if (packageName !== undefined) {
-        packageDemandPaths.add(sourcePath);
-      }
-    }
-  }
-  return {
-    authoredEdgeCount,
-    packageDemandPaths,
-    sourceBytes,
-    sourcePaths: [...sourcePaths].sort(),
-    supportPaths,
-  };
-}
-
 /** Records only an incoming optional edge, never a partially admitted component. */
 function appendProjection(
   projections: PreviewInspectorProjectedEdge[],
@@ -572,7 +846,6 @@ function appendProjection(
   if (item.optionalEdge !== undefined)
     projections.push(Object.freeze({ ...item.optionalEdge, reason }));
 }
-
 /** Keeps exact closure ahead of optional transactions and preserves their source order. */
 function compareQueueItems(left: FrontierSourceQueueItem, right: FrontierSourceQueueItem): number {
   return (
@@ -583,17 +856,14 @@ function compareQueueItems(left: FrontierSourceQueueItem, right: FrontierSourceQ
     left.sourcePath.localeCompare(right.sourcePath)
   );
 }
-
 /** Finishes mandatory exact closure before optional component transactions. */
 function queuePriority(kind: FrontierSourceQueueItem['kind']): number {
   return kind === 'exact' ? 0 : kind === 'support' ? 1 : 2;
 }
-
 /** Counts current optional support entries; exact sources are deliberately never charged to it. */
 function countKinds(kinds: ReadonlyMap<string, AdmittedKind>, kind: AdmittedKind): number {
   return [...kinds.values()].filter((value) => value === kind).length;
 }
-
 /** Preserves visual relation ordering before stable source/export tie breakers. */
 function compareVisualPaths(
   left: NonNullable<PreviewInspectorAncestorPlan['shallowVisualPaths']>[number],
@@ -608,7 +878,6 @@ function compareVisualPaths(
     left.exportName.localeCompare(right.exportName)
   );
 }
-
 /** Keeps owner/wrapper paths ahead of sibling and component-prop alternatives. */
 function visualRelationPriority(relation: string): number {
   return relation === 'wrapper'
@@ -619,7 +888,6 @@ function visualRelationPriority(relation: string): number {
         ? 2
         : 3;
 }
-
 /** Sorts public projection records independently of source read or resolver completion timing. */
 function compareProjectedEdges(
   left: PreviewInspectorProjectedEdge,
@@ -631,7 +899,6 @@ function compareProjectedEdges(
     left.moduleSpecifier.localeCompare(right.moduleSpecifier)
   );
 }
-
 /** Selects only active structured Inspector evidence as exact authored seeds. */
 function collectExactSeedPaths(
   plan: PreviewInspectorAncestorPlan,
@@ -672,7 +939,6 @@ function collectExactSeedPaths(
   for (const contextPath of plan.contextModule?.importPath ?? []) paths.add(contextPath);
   return [...paths].map((sourcePath) => path.normalize(sourcePath)).sort();
 }
-
 /** Excludes installed dependencies and non-source resources from authored graph accounting. */
 function isAuthoredPath(workspaceRoot: string, sourcePath: string): boolean {
   const relative = path.relative(path.normalize(workspaceRoot), path.normalize(sourcePath));
@@ -684,80 +950,10 @@ function isAuthoredPath(workspaceRoot: string, sourcePath: string): boolean {
     SOURCE_MODULE_PATTERN.test(sourcePath)
   );
 }
-
-/** Detects syntax failures before native esbuild begins bundling. */
-function hasSourceParseFailure(sourcePath: string, sourceText: string): boolean {
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  return (
-    ((sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] })
-      .parseDiagnostics?.length ?? 0) > 0
-  );
-}
-
 /** Normalizes package subpaths so each package consumes one demand identity. */
 function normalizeBarePackageSpecifier(specifier: string): string | undefined {
   if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:'))
     return undefined;
   const parts = specifier.split('/');
   return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
-}
-
-/** Returns structural failure reasons in deterministic diagnostic order. */
-function sortReasons(
-  reasons: ReadonlySet<PreviewCompilerFrontierReason>,
-): readonly PreviewCompilerFrontierReason[] {
-  const ordered: readonly PreviewCompilerFrontierReason[] = [
-    'exact-source-unreadable',
-    'source-parse-failure',
-    'slice-unavailable',
-    'frontier-mismatch',
-  ];
-  return ordered.filter((reason) => reasons.has(reason));
-}
-
-/** Produces a context-reuse key from immutable membership and fixed policy values. */
-function createFrontierIdentity(
-  policy: PreviewCompilerFrontierPolicy,
-  executionCandidate: PreviewInspectorPageExecutionCandidate | undefined,
-  authenticSourcePaths: readonly string[],
-  exactSourcePaths: readonly string[],
-  packageDemandSourcePaths: readonly string[],
-  components: PreviewInspectorBundleFrontier['authenticComponentExports'],
-  projectedEdges: readonly PreviewInspectorProjectedEdge[],
-  summary: PreviewInspectorBundleFrontier['summary'],
-): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        authenticSourcePaths,
-        components,
-        executionCandidate:
-          executionCandidate === undefined
-            ? undefined
-            : {
-                compositionEdges: executionCandidate.compositionEdges,
-                fidelity: executionCandidate.fidelity,
-                id: executionCandidate.id,
-                optionalSurfaces: executionCandidate.optionalSurfaces,
-                routeRecipe: executionCandidate.routeRecipe,
-                surfaces: executionCandidate.criticalSurfaces,
-              },
-        exactSourcePaths,
-        packageDemandSourcePaths,
-        policy,
-        projectedEdges,
-        summary,
-        version:
-          executionCandidate === undefined
-            ? FRONTIER_FORMAT_VERSION
-            : PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
-      }),
-    )
-    .digest('hex');
 }

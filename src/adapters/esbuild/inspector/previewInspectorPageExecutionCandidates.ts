@@ -8,8 +8,10 @@ import type {
   PreviewInspectorComponentReference,
   PreviewInspectorPageCandidate,
 } from './previewInspectorAncestorTypes';
+import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import { createPreviewInspectorPagePathSegments } from './previewInspectorPagePathSegments';
 import { resolvePreviewReactLocalComponentSurface } from '../staticResources/previewReactLocalComponentSurface';
+import { collectPreviewRouterRequirement } from '../previewRouterRequirement';
 import {
   createPreviewInspectorVirtualPageCandidates,
   type PreviewInspectorVirtualPageCandidate,
@@ -26,6 +28,7 @@ import { collectPreviewInspectorRouteParameterValues } from './previewInspectorR
 export interface CreatePreviewInspectorPageExecutionCandidatesOptions {
   readonly plan: PreviewInspectorAncestorPlan;
   readonly selectedPageCandidateId?: string;
+  readonly targetMode?: PreviewInspectorTargetMode;
 }
 
 /**
@@ -38,23 +41,30 @@ export function createPreviewInspectorPageExecutionCandidates(
 ): readonly PreviewInspectorPageExecutionCandidate[] {
   const virtualPage = selectVirtualPageCandidate(options.plan, options.selectedPageCandidateId);
   if (virtualPage === undefined) return Object.freeze([]);
-  const browserCandidate = virtualPage.browserCandidate;
+  const browserCandidate = attachCompilerOwnedRuntimeTarget(
+    virtualPage,
+    options.plan.target,
+    options.targetMode,
+  );
   const segments = createPreviewInspectorPagePathSegments({
     candidate: browserCandidate,
     plan: options.plan,
   });
-  const targetSurface = createAuthenticSurface(options.plan.target, 'target');
+  const targetSurface = createAuthenticSurface(browserCandidate.target, 'target');
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
   const detachedRouteLeaf = isDetachedRouteLeaf(browserCandidate, options.plan.target);
-  const routeSurfaces = detachedRouteLeaf
+  const detachedCatalogOwnerRetained = hasRetainedDetachedCatalogOwner(browserCandidate);
+  const routeSurfaces = detachedRouteLeaf && !detachedCatalogOwnerRetained
     ? Object.freeze([])
     : createRouteSurfaces(browserCandidate);
   const routeElementSurfaces = createRouteElementSurfaces(browserCandidate);
   const frameworkSurfaces = createFrameworkSurfaces(browserCandidate);
   const shellSurfaces = createShellSurfaces(virtualPage);
-  const contextualTargetSurfaces = detachedRouteLeaf ? [] : [targetSurface];
+  const contextualTargetSurfaces = detachedRouteLeaf && !detachedCatalogOwnerRetained
+    ? []
+    : [targetSurface];
   const frameworkEdges = createFrameworkCompositionEdges(
     browserCandidate,
     frameworkSurfaces,
@@ -69,7 +79,12 @@ export function createPreviewInspectorPageExecutionCandidates(
     pageLocalSurface === undefined
       ? []
       : createFrameworkCompositionEdges(browserCandidate, frameworkSurfaces, pageLocalSurface);
-  const routeRecipe = createRouteRecipe(browserCandidate, routeSurfaces, pageSurface);
+  const routeRecipe = createRouteRecipe(
+    browserCandidate,
+    routeSurfaces,
+    pageSurface,
+    targetSurface,
+  );
   const shellEdges = createShellCompositionEdges(virtualPage, shellSurfaces, pageSurface);
   const outerPageSurface = readOuterPageSurface(shellSurfaces, shellEdges, pageSurface);
   const routeElementEdges = createRouteElementCompositionEdges(
@@ -78,7 +93,7 @@ export function createPreviewInspectorPageExecutionCandidates(
   );
   const routeElementRoot = routeElementSurfaces[0] ?? outerPageSurface;
   const routeEdges = createRouteCompositionEdges(routeSurfaces, routeElementRoot);
-  const pageTargetEdge = detachedRouteLeaf
+  const pageTargetEdge = detachedRouteLeaf && !detachedCatalogOwnerRetained
     ? undefined
     : createPageTargetEdge(pageSurface, targetSurface);
   const slicedShellEdges = createShellCompositionEdges(
@@ -97,7 +112,7 @@ export function createPreviewInspectorPageExecutionCandidates(
   );
   const slicedRouteElementRoot = routeElementSurfaces[0] ?? slicedOuterPageSurface;
   const slicedRouteEdges = createRouteCompositionEdges(routeSurfaces, slicedRouteElementRoot);
-  const slicedPageTargetEdge = detachedRouteLeaf
+  const slicedPageTargetEdge = detachedRouteLeaf && !detachedCatalogOwnerRetained
     ? undefined
     : createPageTargetEdge(pageSlicedSurface, targetSurface);
   const localShellEdges =
@@ -113,7 +128,7 @@ export function createPreviewInspectorPageExecutionCandidates(
       ? []
       : createRouteElementCompositionEdges(routeElementSurfaces, localOuterPageSurface);
   const localPageTargetEdge =
-    pageLocalSurface === undefined || detachedRouteLeaf
+    pageLocalSurface === undefined || (detachedRouteLeaf && !detachedCatalogOwnerRetained)
       ? undefined
       : createPageTargetEdge(pageLocalSurface, targetSurface);
   const evidenceSourcePaths = Object.freeze(
@@ -259,19 +274,31 @@ export function createPreviewInspectorPageExecutionCandidates(
       );
     }
   }
-  candidates.push(
-    createCandidate({
-      browserCandidate,
-      compositionEdges: [],
-      criticalSurfaces: [targetSurface],
-      evidenceSourcePaths,
-      fidelity: 'target-only',
-      ...(routeRecipe === undefined ? {} : { routeRecipe }),
-      watchSourcePaths: targetSurface.watchSourcePaths,
-    }),
-  );
+  const targetOnlyOmitsNestedOwner =
+    options.targetMode === 'selected-route-leaf' && (routeRecipe?.mounts.length ?? 0) > 0;
+  if (!targetOnlyOmitsNestedOwner) {
+    candidates.push(
+      createCandidate({
+        browserCandidate,
+        compositionEdges: [],
+        criticalSurfaces: [detachedRouteLeaf ? pageSurface : targetSurface],
+        evidenceSourcePaths,
+        fidelity: 'target-only',
+        ...(routeRecipe === undefined ? {} : { routeRecipe }),
+        watchSourcePaths: (detachedRouteLeaf ? pageSurface : targetSurface).watchSourcePaths,
+      }),
+    );
+  }
+  const topologyCandidates =
+    options.targetMode === 'selected-route-leaf'
+      ? candidates.filter(
+          (candidate) =>
+            candidate.executionRootSurfaceId === candidate.runtimeTargetSurfaceId ||
+            (candidate.routeRecipe?.mounts.length ?? 0) > 0,
+        )
+      : candidates;
   return Object.freeze(
-    deduplicateCandidates(candidates).map((candidate) =>
+    deduplicateCandidates(topologyCandidates).map((candidate) =>
       attachOptionalSurfaces(candidate, options.plan),
     ),
   );
@@ -363,6 +390,46 @@ function selectVirtualPageCandidate(
   );
 }
 
+/**
+ * Preserves the exact route leaf selected by compiler-owned route evidence across VirtualPage
+ * checkpoint replacement. The analysis target remains the exact non-route fallback; an execution
+ * candidate never silently converts its content owner into the runtime target.
+ */
+function attachCompilerOwnedRuntimeTarget(
+  virtualPage: PreviewInspectorVirtualPageCandidate,
+  analysisTarget: PreviewInspectorComponentReference,
+  targetMode: PreviewInspectorTargetMode | undefined,
+): PreviewInspectorPageCandidate & { readonly target: PreviewInspectorComponentReference } {
+  const location = virtualPage.browserCandidate.routeLocation;
+  const routeTarget =
+    location !== undefined &&
+    'componentSourcePath' in location &&
+    location.componentSourcePath !== undefined
+      ? Object.freeze({
+          exportName: location.componentExportName ?? 'default',
+          sourcePath: path.normalize(location.componentSourcePath),
+        })
+      : undefined;
+  const selectedRouteTarget =
+    routeTarget ?? virtualPage.authoredCandidate.target ?? virtualPage.browserCandidate.target;
+  if (targetMode === 'selected-route-leaf' && selectedRouteTarget === undefined) {
+    throw new TypeError(
+      'Page Execution candidate does not have an exact compiler-owned selected route target.',
+    );
+  }
+  const target = targetMode === 'selected-route-leaf' ? selectedRouteTarget : analysisTarget;
+  if (target === undefined) {
+    throw new TypeError('Page Execution candidate does not have a compiler-owned runtime target.');
+  }
+  return Object.freeze({
+    ...virtualPage.browserCandidate,
+    target: Object.freeze({
+      exportName: target.exportName,
+      sourcePath: path.normalize(target.sourcePath),
+    }),
+  });
+}
+
 function createAuthenticSurface(
   reference: PreviewInspectorComponentReference,
   prefix: string,
@@ -441,23 +508,19 @@ function createRouteSurfaces(
     candidate.routeLocation !== undefined && 'routeMounts' in candidate.routeLocation
       ? (candidate.routeLocation.routeMounts ?? [])
       : [];
-  const references = mounts.map((mount) => ({
-    exportName: mount.exportName,
-    sourcePath: mount.sourcePath,
-  }));
   const seen = new Set<string>();
   return Object.freeze(
-    references
-      .filter((reference) => {
-        const key = `${path.normalize(reference.sourcePath)}\0${reference.exportName}`;
+    mounts
+      .filter((mount) => {
+        const key = `${path.normalize(mount.sourcePath)}\0${mount.exportName}`;
         if (seen.has(key)) return false;
         seen.add(key);
-        return (
-          path.normalize(reference.sourcePath) !== path.normalize(candidate.root.sourcePath) ||
-          reference.exportName !== candidate.root.exportName
-        );
+        const matchesCandidateRoot =
+          path.normalize(mount.sourcePath) === path.normalize(candidate.root.sourcePath) &&
+          mount.exportName === candidate.root.exportName;
+        return !matchesCandidateRoot || isRetainedDetachedCatalogOwnerMount(candidate, mount);
       })
-      .map((reference) => createModuleFallbackSurface(reference, 'route')),
+      .map((mount) => createModuleFallbackSurface(mount, 'route')),
   );
 }
 
@@ -637,6 +700,34 @@ function isDetachedRouteLeaf(
   );
 }
 
+/** Admits only the exact labeled JSX owner authenticated into retained route-mount evidence. */
+function hasRetainedDetachedCatalogOwner(candidate: PreviewInspectorPageCandidate): boolean {
+  const location = candidate.routeLocation;
+  if (
+    location?.evidenceKind !== 'route-catalog' ||
+    typeof location.directRouteOwnerSourcePath !== 'string' ||
+    !('routeMounts' in location)
+  ) {
+    return false;
+  }
+  return (location.routeMounts ?? []).some((mount) =>
+    isRetainedDetachedCatalogOwnerMount(candidate, mount),
+  );
+}
+
+/** Keeps the browser root only when the exact labeled catalog owner authenticated this mount. */
+function isRetainedDetachedCatalogOwnerMount(
+  candidate: PreviewInspectorPageCandidate,
+  mount: { readonly exportName: string; readonly sourcePath: string },
+): boolean {
+  const location = candidate.routeLocation;
+  return (
+    location?.evidenceKind === 'route-catalog' &&
+    typeof location.directRouteOwnerSourcePath === 'string' &&
+    path.normalize(mount.sourcePath) === path.normalize(location.directRouteOwnerSourcePath)
+  );
+}
+
 /** Keeps one source/export identity in the execution import list. */
 function deduplicateSurfaces(
   surfaces: readonly PreviewInspectorMountSurface[],
@@ -656,24 +747,65 @@ function createRouteRecipe(
   candidate: PreviewInspectorPageCandidate,
   routeSurfaces: readonly PreviewInspectorMountSurface[],
   pageSurface: PreviewInspectorMountSurface,
+  targetSurface: PreviewInspectorMountSurface,
 ): PreviewInspectorRouteExecutionRecipe | undefined {
   const location = candidate.routeLocation;
   if (location === undefined) return undefined;
   const routeRuntime = readRouteRuntime(location);
+  const routeMountEvidence = 'routeMounts' in location ? (location.routeMounts ?? []) : [];
+  const contentRootPath = path.normalize(pageSurface.sourcePath);
+  const retainsNestedRouteOwner = routeMountEvidence.some(
+    (mount) =>
+      mount.contextPattern !== undefined &&
+      path.normalize(mount.sourcePath) === contentRootPath &&
+      mount.exportName === pageSurface.exportName,
+  );
+  const runtimeTargetReference = candidate.target;
+  if (runtimeTargetReference === undefined) {
+    throw new TypeError(
+      'Page Execution route recipe does not have a compiler-owned runtime target.',
+    );
+  }
+  const admittedSurfaces = deduplicateSurfaces([...routeSurfaces, pageSurface, targetSurface]);
+  const runtimeTargetSurfaces = admittedSurfaces.filter((surface) =>
+    sameSurfaceReference(surface, runtimeTargetReference),
+  );
+  if (runtimeTargetSurfaces.length !== 1) {
+    throw new TypeError(
+      'Page Execution route recipe runtime target is not one unique admitted surface.',
+    );
+  }
+  const runtimeTargetSurface = runtimeTargetSurfaces[0];
+  if (runtimeTargetSurface === undefined) {
+    throw new TypeError('Page Execution route recipe does not have an admitted runtime target.');
+  }
+  const retainedMountSurfaces = routeMountEvidence.map((mount) =>
+    admittedSurfaces.find(
+      (surface) =>
+        path.normalize(surface.sourcePath) === path.normalize(mount.sourcePath) &&
+        surface.exportName === mount.exportName,
+    ),
+  );
   const mounts =
-    'routeMounts' in location && routeSurfaces.length > 0
-      ? (location.routeMounts ?? []).map((mount, index) =>
+    routeSurfaces.length > 0 || retainsNestedRouteOwner
+      ? routeMountEvidence.map((mount, index) =>
           Object.freeze({
             basePath: mount.basePath,
-            childSurfaceId: routeSurfaces[index + 1]?.id ?? pageSurface.id,
+            childSurfaceId: retainedMountSurfaces[index + 1]?.id ?? runtimeTargetSurface.id,
+            ...(mount.contextPattern === undefined ? {} : { contextPattern: mount.contextPattern }),
             hasWildcardFallback: mount.hasWildcardFallback,
-            ...(routeSurfaces[index] === undefined
+            ...(retainedMountSurfaces[index] === undefined
               ? {}
-              : { parentSurfaceId: routeSurfaces[index].id }),
+              : { parentSurfaceId: retainedMountSurfaces[index].id }),
             pattern: location.pattern,
           }),
         )
       : [];
+  const routeExecutionRoot = routeSurfaces[0];
+  const executionRootOwnsRouter =
+    routeExecutionRoot === undefined || sameSurfaceReference(routeExecutionRoot, candidate.root)
+      ? candidate.rootOwnsRouter
+      : (doesPreviewInspectorSurfaceOwnRouter(routeExecutionRoot) ?? false);
   return Object.freeze({
     kind: routeRuntime.kind,
     loaderPolicy: 'never-execute',
@@ -685,12 +817,27 @@ function createRouteRecipe(
     ),
     pattern: location.pattern,
     pathname: location.pathname,
-    rootOwnsRouter: candidate.rootOwnsRouter,
+    rootOwnsRouter: executionRootOwnsRouter,
     ...(routeRuntime.routerModuleSpecifier === undefined
       ? {}
       : { routerModuleSpecifier: routeRuntime.routerModuleSpecifier }),
     searchParams: Object.freeze('searchParams' in location ? { ...location.searchParams } : {}),
   });
+}
+
+/**
+ * Recomputes Router ownership for the live execution root after an authored app root is stripped.
+ *
+ * A selected route surface can live below an AppRouter that owns RouterProvider. Reusing the
+ * authored root flag would omit the MemoryRouter even though the generated slice now begins at a
+ * component that only consumes Route context.
+ */
+function doesPreviewInspectorSurfaceOwnRouter(
+  surface: PreviewInspectorMountSurface,
+): boolean | undefined {
+  const sourceText = readSource(surface.sourcePath);
+  if (sourceText === undefined) return undefined;
+  return collectPreviewRouterRequirement(surface.sourcePath, sourceText).ownsRouter;
 }
 
 /** Distinguishes only statically authored v5/v6 route syntax; unknown routers stay generic. */
@@ -719,7 +866,9 @@ function readRouteRuntime(
       ? 'react-router'
       : undefined;
   if (routerModuleSpecifier === undefined) return { kind: 'generic-memory-location' };
-  if (/\b(?:Routes|RouterProvider|create(?:Browser|Hash|Memory)Router)\b/u.test(sourceText))
+  if (
+    /\b(?:Routes|RouterProvider|useRoutes|create(?:Browser|Hash|Memory)Router)\b/u.test(sourceText)
+  )
     return { kind: 'react-router-v6', routerModuleSpecifier };
   if (/\b(?:Switch|withRouter)\b|\b(?:component|render)\s*=/u.test(sourceText))
     return { kind: 'react-router-v5', routerModuleSpecifier };
@@ -764,22 +913,164 @@ function createCandidate(options: {
   readonly routeRecipe?: PreviewInspectorRouteExecutionRecipe;
   readonly watchSourcePaths: readonly string[];
 }): PreviewInspectorPageExecutionCandidate {
-  const id = createCandidateId(
-    options.browserCandidate.id,
-    options.fidelity,
-    options.criticalSurfaces,
+  const roles = derivePageExecutionRoles(options);
+  const executionRootSurface = options.criticalSurfaces.find(
+    (surface) => surface.id === roles.executionRootSurfaceId,
+  );
+  if (executionRootSurface === undefined) {
+    throw new TypeError('Page Execution candidate is missing its execution-root surface.');
+  }
+  const runtimeTargetSurface = options.criticalSurfaces.find(
+    (surface) => surface.id === roles.runtimeTargetSurfaceId,
+  );
+  if (runtimeTargetSurface === undefined) {
+    throw new TypeError('Page Execution candidate is missing its runtime-target surface.');
+  }
+  const executionRootContract = createPageExecutionRoleContract(executionRootSurface);
+  const runtimeTargetContract = createPageExecutionRoleContract(runtimeTargetSurface);
+  const browserCandidate = createCandidateSpecificBrowserRoot(
+    options.browserCandidate,
+    executionRootSurface,
     options.routeRecipe,
   );
+  const routeRecipe =
+    options.routeRecipe === undefined
+      ? undefined
+      : Object.freeze({
+          ...options.routeRecipe,
+          rootOwnsRouter: browserCandidate.rootOwnsRouter,
+        });
+  const id = createCandidateId(
+    browserCandidate.id,
+    options.fidelity,
+    options.criticalSurfaces,
+    executionRootContract,
+    runtimeTargetContract,
+    browserCandidate.root,
+    routeRecipe,
+  );
   return Object.freeze({
-    browserCandidate: options.browserCandidate,
+    browserCandidate,
     compositionEdges: Object.freeze([...options.compositionEdges]),
     criticalSurfaces: Object.freeze([...options.criticalSurfaces]),
     evidenceSourcePaths: options.evidenceSourcePaths,
+    executionRootContract,
+    executionRootSurfaceId: roles.executionRootSurfaceId,
     fidelity: options.fidelity,
     id,
     optionalSurfaces: Object.freeze([]),
-    ...(options.routeRecipe === undefined ? {} : { routeRecipe: options.routeRecipe }),
+    ...(routeRecipe === undefined ? {} : { routeRecipe }),
+    runtimeTargetContract,
+    runtimeTargetSurfaceId: roles.runtimeTargetSurfaceId,
     watchSourcePaths: options.watchSourcePaths,
+  });
+}
+
+/**
+ * Pins browser-facing execution metadata to the candidate's actual admitted root without mutating
+ * the reusable VirtualPage candidate that supplied route and authored provenance.
+ */
+function createCandidateSpecificBrowserRoot(
+  candidate: PreviewInspectorPageCandidate,
+  executionRootSurface: PreviewInspectorMountSurface,
+  routeRecipe: PreviewInspectorRouteExecutionRecipe | undefined,
+): PreviewInspectorPageCandidate {
+  const pinnedRoot = Object.freeze({
+    exportName: executionRootSurface.exportName,
+    sourcePath: path.normalize(executionRootSurface.sourcePath),
+  });
+  if (sameSurfaceReference(executionRootSurface, candidate.root)) return candidate;
+  const {
+    rootInference: omittedRootInference,
+    rootStepIndex: omittedRootStepIndex,
+    routeMountBasePath: omittedRouteMountBasePath,
+    routeSlotCount: omittedRouteSlotCount,
+    wildcardFallbackPresent: omittedWildcardFallbackPresent,
+    ...shared
+  } = candidate;
+  void omittedRootInference;
+  void omittedRootStepIndex;
+  void omittedRouteMountBasePath;
+  void omittedRouteSlotCount;
+  void omittedWildcardFallbackPresent;
+  const location = candidate.routeLocation;
+  const matchingMount =
+    location !== undefined && 'routeMounts' in location
+      ? location.routeMounts.find(
+          (mount) =>
+            path.normalize(mount.sourcePath) === pinnedRoot.sourcePath &&
+            mount.exportName === pinnedRoot.exportName,
+        )
+      : undefined;
+  const sourceRouterOwnership = doesPreviewInspectorSurfaceOwnRouter(executionRootSurface);
+  const rootOwnsRouter =
+    sourceRouterOwnership ??
+    (routeRecipe?.mounts[0]?.parentSurfaceId === executionRootSurface.id
+      ? routeRecipe.rootOwnsRouter
+      : false);
+  return Object.freeze({
+    ...shared,
+    complete: false,
+    root: pinnedRoot,
+    rootAutomaticProps: Object.freeze({}),
+    rootOwnsRouter,
+    ...(matchingMount === undefined
+      ? {}
+      : {
+          routeMountBasePath: matchingMount.basePath,
+          routeSlotCount: matchingMount.routeSlotCount,
+          wildcardFallbackPresent: matchingMount.hasWildcardFallback,
+        }),
+    stopReason: 'render-path-checkpoint',
+  });
+}
+
+function derivePageExecutionRoles(options: {
+  readonly browserCandidate: PreviewInspectorPageCandidate;
+  readonly compositionEdges: readonly PreviewInspectorPageCompositionEdge[];
+  readonly criticalSurfaces: readonly PreviewInspectorMountSurface[];
+  readonly routeRecipe?: PreviewInspectorRouteExecutionRecipe;
+}): {
+  readonly executionRootSurfaceId: string;
+  readonly runtimeTargetSurfaceId: string;
+} {
+  const surfacesById = new Map<string, PreviewInspectorMountSurface>();
+  for (const surface of options.criticalSurfaces) {
+    if (surfacesById.has(surface.id)) {
+      throw new TypeError(`Duplicate Page Execution surface id: ${surface.id}`);
+    }
+    surfacesById.set(surface.id, surface);
+  }
+  const childIds = new Set(
+    options.compositionEdges
+      .filter((edge) => edge.mode !== 'contains-authored-child')
+      .map((edge) => edge.childSurfaceId),
+  );
+  const executionRootSurface =
+    (options.routeRecipe?.mounts[0]?.parentSurfaceId === undefined
+      ? undefined
+      : surfacesById.get(options.routeRecipe.mounts[0].parentSurfaceId)) ??
+    options.criticalSurfaces.find((surface) => !childIds.has(surface.id)) ??
+    options.criticalSurfaces[0];
+  const runtimeTargetReference = options.browserCandidate.target;
+  if (runtimeTargetReference === undefined) {
+    throw new TypeError('Page Execution candidate does not have a compiler-owned runtime target.');
+  }
+  const runtimeTargetSurfaces = options.criticalSurfaces.filter((surface) =>
+    sameSurfaceReference(surface, runtimeTargetReference),
+  );
+  if (executionRootSurface === undefined) {
+    throw new TypeError('Page Execution candidate is missing its execution-root surface.');
+  }
+  if (runtimeTargetSurfaces.length === 0) {
+    throw new TypeError('Page Execution candidate is missing its runtime-target surface.');
+  }
+  if (runtimeTargetSurfaces.length > 1) {
+    throw new TypeError('Page Execution candidate contains duplicate runtime-target surfaces.');
+  }
+  return Object.freeze({
+    executionRootSurfaceId: executionRootSurface.id,
+    runtimeTargetSurfaceId: runtimeTargetSurfaces[0]?.id ?? '',
   });
 }
 
@@ -806,6 +1097,9 @@ function createCandidateId(
   browserCandidateId: string,
   fidelity: PreviewInspectorPageFidelity,
   surfaces: readonly PreviewInspectorMountSurface[],
+  executionRootContract: PreviewInspectorPageExecutionCandidate['executionRootContract'],
+  runtimeTargetContract: PreviewInspectorPageExecutionCandidate['runtimeTargetContract'],
+  pinnedRoot: PreviewInspectorComponentReference,
   routeRecipe?: PreviewInspectorRouteExecutionRecipe,
 ): string {
   return createHash('sha256')
@@ -813,6 +1107,14 @@ function createCandidateId(
       [
         browserCandidateId,
         fidelity,
+        executionRootContract.surfaceId,
+        path.normalize(executionRootContract.sourcePath),
+        executionRootContract.exportName,
+        runtimeTargetContract.surfaceId,
+        path.normalize(runtimeTargetContract.sourcePath),
+        runtimeTargetContract.exportName,
+        path.normalize(pinnedRoot.sourcePath),
+        pinnedRoot.exportName,
         ...surfaces.map((surface) => surface.id),
         routeRecipe === undefined ? '' : JSON.stringify(routeRecipe),
       ].join('\0'),
@@ -821,9 +1123,29 @@ function createCandidateId(
     .slice(0, 24);
 }
 
+function createPageExecutionRoleContract(
+  surface: PreviewInspectorMountSurface,
+): PreviewInspectorPageExecutionCandidate['executionRootContract'] {
+  return Object.freeze({
+    exportName: surface.exportName,
+    sourcePath: path.normalize(surface.sourcePath),
+    surfaceId: surface.id,
+  });
+}
+
 function isSameSurface(
   left: PreviewInspectorMountSurface,
   right: PreviewInspectorMountSurface,
 ): boolean {
   return left.sourcePath === right.sourcePath && left.exportName === right.exportName;
+}
+
+function sameSurfaceReference(
+  surface: Pick<PreviewInspectorMountSurface, 'exportName' | 'sourcePath'>,
+  reference: PreviewInspectorComponentReference,
+): boolean {
+  return (
+    surface.exportName === reference.exportName &&
+    path.normalize(surface.sourcePath) === path.normalize(reference.sourcePath)
+  );
 }

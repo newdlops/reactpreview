@@ -1,5 +1,7 @@
 /* eslint-disable jsdoc/require-jsdoc */
 /** Generates an exact-edge Page Execution Slice React root. */
+import path from 'node:path';
+import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { createPreviewInspectorPageSurfaceSpecifier } from './previewInspectorPageExecutionPlugin';
 import { PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER } from './previewInspectorTargetPlugin';
 import {
@@ -12,10 +14,14 @@ import type {
   PreviewInspectorPageCompositionEdge,
   PreviewInspectorPageExecutionCandidate,
 } from './previewInspectorPageExecutionTypes';
+import type { PreviewInspectorExecutionRootModuleContract } from './previewInspectorExecutionRootModuleContract';
+import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
 
 export interface CreatePreviewInspectorPageExecutionSourceOptions {
   readonly candidate: PreviewInspectorPageExecutionCandidate;
+  readonly executionRootModuleContract: PreviewInspectorExecutionRootModuleContract;
   readonly target: { readonly exportName: string; readonly sourcePath: string };
+  readonly targetModuleContract?: PreviewInspectorTargetModuleContract;
 }
 
 /**
@@ -28,7 +34,15 @@ export function createPreviewInspectorPageExecutionSource(
 ): string {
   const surfaces = options.candidate.criticalSurfaces;
   const imports = surfaces.map((surface, index) =>
-    createSurfaceImport(surface, index, options.target),
+    createSurfaceImport(
+      surface,
+      index,
+      options.candidate.executionRootSurfaceId,
+      options.candidate.runtimeTargetSurfaceId,
+      options.executionRootModuleContract,
+      options.target,
+      options.targetModuleContract,
+    ),
   );
   const localById = new Map(
     surfaces.map((surface, index) => [surface.id, `Surface${index.toString()}`]),
@@ -42,7 +56,7 @@ export function createPreviewInspectorPageExecutionSource(
     childrenByParent.set(edge.parentSurfaceId, list);
     if (edge.mode !== 'contains-authored-child') childIds.add(edge.childSurfaceId);
   }
-  const root = surfaces.find((surface) => !childIds.has(surface.id)) ?? surfaces[0];
+  const root = surfaces.find((surface) => surface.id === options.candidate.executionRootSurfaceId);
   if (root === undefined)
     return 'export default function PreviewInspectorPageExecution() { return null; }';
   const render = (surfaceId: string, active: Set<string>): string => {
@@ -115,20 +129,53 @@ export function createPreviewInspectorPageExecutionSource(
 function createSurfaceImport(
   surface: PreviewInspectorMountSurface,
   index: number,
+  executionRootSurfaceId: string,
+  runtimeTargetSurfaceId: string,
+  executionRootModuleContract: PreviewInspectorExecutionRootModuleContract,
   target: { readonly exportName: string; readonly sourcePath: string },
+  targetModuleContract: PreviewInspectorTargetModuleContract | undefined,
 ): string {
   const local = `Surface${index.toString()}`;
-  const specifier =
-    surface.strategy === 'authentic-module-export' &&
-    surface.sourcePath === target.sourcePath &&
-    surface.exportName === target.exportName
-      ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
+  const isExecutionRoot = surface.id === executionRootSurfaceId;
+  const isRuntimeTarget = surface.id === runtimeTargetSurfaceId;
+  if (
+    isExecutionRoot &&
+    (executionRootModuleContract.surfaceId !== surface.id ||
+      canonicalizeExistingPath(path.normalize(executionRootModuleContract.sourcePath)) !==
+        canonicalizeExistingPath(path.normalize(surface.sourcePath)) ||
+      executionRootModuleContract.exportName !== surface.exportName)
+  ) {
+    throw new TypeError(
+      'Page Execution root role does not match the prepared execution-root module contract.',
+    );
+  }
+  if (
+    isRuntimeTarget &&
+    (path.normalize(surface.sourcePath) !== path.normalize(target.sourcePath) ||
+      surface.exportName !== target.exportName)
+  ) {
+    throw new TypeError('Page Execution runtime target role does not match the compiler target.');
+  }
+  if (
+    isRuntimeTarget &&
+    targetModuleContract !== undefined &&
+    (path.normalize(targetModuleContract.sourcePath) !== path.normalize(target.sourcePath) ||
+      !targetModuleContract.selectedExportNames.includes(target.exportName))
+  ) {
+    throw new TypeError(
+      'Page Execution runtime target role does not match the prepared target module contract.',
+    );
+  }
+  const specifier = isRuntimeTarget
+    ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
+    : isExecutionRoot
+      ? executionRootModuleContract.sourcePath
       : surface.strategy === 'authentic-module-export' ||
           surface.strategy === 'framework-page-surface' ||
           surface.strategy === 'selected-route-surface'
         ? surface.sourcePath
         : createPreviewInspectorPageSurfaceSpecifier(surface.id);
-  if (surface.strategy === 'selected-route-surface') {
+  if (!isRuntimeTarget && !isExecutionRoot && surface.strategy === 'selected-route-surface') {
     const namespace = `${local}Module`;
     return [
       `import * as ${namespace} from ${JSON.stringify(specifier)};`,

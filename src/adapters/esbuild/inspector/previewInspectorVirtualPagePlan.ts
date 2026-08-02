@@ -147,6 +147,8 @@ export function selectPreviewInspectorVirtualPageContentCandidate(
   if (isFrameworkComposedCandidate(authoredCandidate)) return authoredCandidate;
   const routeOwner = selectPreviewInspectorRouteOwnerCandidate(candidates, authoredCandidate);
   if (routeOwner !== undefined) return routeOwner;
+  const selectedRouteLeaf = createPreviewInspectorSelectedRouteLeafCandidate(authoredCandidate);
+  if (selectedRouteLeaf !== undefined) return selectedRouteLeaf;
   const renderPathId = authoredCandidate.renderPath?.id;
   if (renderPathId === undefined) return authoredCandidate;
   const samePathCandidates = candidates.filter(
@@ -165,6 +167,52 @@ export function selectPreviewInspectorVirtualPageContentCandidate(
         (left, right) => right.score - left.score || left.discoveryIndex - right.discoveryIndex,
       )[0]?.candidate ?? authoredCandidate
   );
+}
+
+/**
+ * Promotes an exact resolved route choice below an authored router root to the live page body.
+ *
+ * The authored root remains VirtualPage provenance, but executing it would re-enter unrelated
+ * application-wide gates before the selected route surface. Nested route owners are excluded here
+ * because their retained mount is the proven provider/Router context for the leaf.
+ */
+function createPreviewInspectorSelectedRouteLeafCandidate(
+  authoredCandidate: PreviewInspectorPageCandidate,
+): PreviewInspectorPageCandidate | undefined {
+  const location = authoredCandidate.routeLocation;
+  if (
+    location === undefined ||
+    !('componentSourcePath' in location) ||
+    location.componentSourcePath === undefined ||
+    ('routeMounts' in location && (location.routeMounts?.length ?? 0) > 0)
+  ) {
+    return undefined;
+  }
+  const routeRoot = Object.freeze({
+    exportName: location.componentExportName ?? 'default',
+    sourcePath: path.normalize(location.componentSourcePath),
+  });
+  if (
+    path.normalize(authoredCandidate.root.sourcePath) === routeRoot.sourcePath &&
+    authoredCandidate.root.exportName === routeRoot.exportName
+  ) {
+    return undefined;
+  }
+  const { rootStepIndex: omittedRootStepIndex, ...routeCandidate } = authoredCandidate;
+  void omittedRootStepIndex;
+  return Object.freeze({
+    ...routeCandidate,
+    dependencyPaths: Object.freeze(
+      [...new Set([...authoredCandidate.dependencyPaths, routeRoot.sourcePath])].sort(),
+    ),
+    edges: Object.freeze([]),
+    root: routeRoot,
+    rootAutomaticProps: Object.freeze({}),
+    rootOwnsRouter: false,
+    stopReason: 'render-path-checkpoint',
+    target: routeRoot,
+    targetAutomaticProps: Object.freeze({}),
+  });
 }
 
 /**

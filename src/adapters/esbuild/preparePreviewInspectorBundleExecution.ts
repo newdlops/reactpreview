@@ -5,10 +5,12 @@ import type {
 } from '../../domain/previewCompilerActivity';
 import { PreviewBuildStalledError } from '../../domain/previewBuildExecution';
 import type { PreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorPlan';
+import type { PreviewInspectorBundleDiagnosticsCollector } from './inspector/previewInspectorBundleDiagnostics';
 import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
 import { preparePreviewInspectorPageExecutionSelection } from './inspector/previewInspectorPageFrontier';
 import {
   preparePreviewInspectorBundleFrontier,
+  type PreviewInspectorBundleSourceInventoryMemo,
   type PreparedPreviewInspectorBundleFrontier,
 } from './inspector/previewInspectorBundleFrontier';
 import type { PreviewPreparationPolicy } from './previewPreparationPolicy';
@@ -23,6 +25,7 @@ export interface PreparedPreviewInspectorBundleExecution {
 export interface PreparePreviewInspectorBundleExecutionOptions {
   readonly runtimeCompanionSourcePaths?: readonly string[];
   readonly analysisCandidateCount: number;
+  readonly bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector;
   readonly corridorSourceCount: number;
   readonly dependencySnapshotCount: number;
   readonly discoveryTruncated: boolean;
@@ -31,6 +34,7 @@ export interface PreparePreviewInspectorBundleExecutionOptions {
   readonly policy: PreviewPreparationPolicy;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   readonly resolveModule: (specifier: string, importer: string) => string | undefined;
+  readonly sourceInventoryMemo?: PreviewInspectorBundleSourceInventoryMemo;
   readonly styleSnapshotCount: number;
   readonly workspaceRoot: string;
 }
@@ -69,6 +73,9 @@ export async function preparePreviewInspectorBundleExecution(
       ? undefined
       : await preparePreviewInspectorPageExecutionSelection({
           candidates: options.executionCandidates,
+          ...(options.bundleDiagnostics === undefined
+            ? {}
+            : { bundleDiagnostics: options.bundleDiagnostics }),
           ...(options.runtimeCompanionSourcePaths === undefined
             ? {}
             : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
@@ -76,6 +83,9 @@ export async function preparePreviewInspectorBundleExecution(
           policy: options.policy.frontierPolicy,
           readSource: options.readSource,
           resolveModule: options.resolveModule,
+          ...(options.sourceInventoryMemo === undefined
+            ? {}
+            : { sourceInventoryMemo: options.sourceInventoryMemo }),
           workspaceRoot: options.workspaceRoot,
         });
   const selection = selectionResult?.kind === 'selected' ? selectionResult : undefined;
@@ -90,8 +100,14 @@ export async function preparePreviewInspectorBundleExecution(
         : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
       plan: options.executablePlan,
       policy: options.policy.frontierPolicy,
+      ...(options.bundleDiagnostics === undefined
+        ? {}
+        : { bundleDiagnostics: options.bundleDiagnostics }),
       readSource: options.readSource,
       resolveModule: options.resolveModule,
+      ...(options.sourceInventoryMemo === undefined
+        ? {}
+        : { sourceInventoryMemo: options.sourceInventoryMemo }),
       workspaceRoot: options.workspaceRoot,
     }));
   const summary = prepared.frontier.summary;

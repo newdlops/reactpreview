@@ -6,6 +6,7 @@
 import * as esbuild from 'esbuild';
 import { cp, mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { NODE_ESM_COMPATIBILITY_BANNER } from './preview-node-esm-compatibility.mjs';
 
 const isProduction = process.argv.includes('--production');
 const shouldWatch = process.argv.includes('--watch');
@@ -48,14 +49,7 @@ const sharedBuildOptions = {
 const extensionBuildOptions = {
   ...sharedBuildOptions,
   banner: {
-    js: [
-      "import { createRequire as __reactPreviewCreateRequire } from 'node:module';",
-      "import { fileURLToPath as __reactPreviewFileURLToPath } from 'node:url';",
-      "import { dirname as __reactPreviewDirname } from 'node:path';",
-      'const require = __reactPreviewCreateRequire(import.meta.url);',
-      'const __filename = __reactPreviewFileURLToPath(import.meta.url);',
-      'const __dirname = __reactPreviewDirname(__filename);',
-    ].join('\n'),
+    js: NODE_ESM_COMPATIBILITY_BANNER,
   },
   entryPoints: ['src/extension.ts'],
   format: 'esm',

@@ -203,5 +203,34 @@ function isPreviewInspectorKnownRenderCondition(conditionId) {
   return previewInspectorSession.renderConditions.has(conditionId) ||
     previewInspectorSession.renderConditionDefinitions.has(conditionId);
 }
+
+/** Filters every truthy override that would replace a missing data receiver with Boolean true. */
+function readPreviewInspectorApplicableConditionOverrides(
+  conditionId, authoredValue, metadata, manualOverride, outcomeOverride, autoOverride,
+) {
+  const apply = (override) => {
+    const unsafeTruthyData = override === true && !authoredValue &&
+      typeof authoredValue !== 'boolean' && metadata?.kind !== 'overlay-visibility' &&
+      metadata?.role !== 'overlay';
+    return unsafeTruthyData ? undefined : override;
+  };
+  const applicableManualOverride = apply(manualOverride);
+  if (manualOverride === true && applicableManualOverride === undefined) {
+    previewInspectorSession.renderConditionOverrides.delete(conditionId);
+    schedulePreviewInspectorRenderOutcomeReconciliationPersistence();
+  }
+  return {
+    autoOverride: apply(autoOverride),
+    manualOverride: applicableManualOverride,
+    outcomeOverride: apply(outcomeOverride),
+  };
+}
+
+/** Allows target-guided true only for Boolean or compiler-proven overlay visibility conditions. */
+function canPreviewInspectorTargetGuideCondition(record, enabled) {
+  return enabled !== true || record?.authoredEnabled !== false ||
+    record?.authoredValueKind === 'boolean' || record?.kind === 'overlay-visibility' ||
+    record?.role === 'overlay';
+}
 `;
 }

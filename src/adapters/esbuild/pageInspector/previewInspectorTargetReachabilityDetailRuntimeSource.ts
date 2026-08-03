@@ -39,7 +39,8 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const fallbackOutput = blocker.targetOutputKind === 'fallback-output';
   const candidateOutput = blocker.targetOutputKind === 'candidate-output';
   const targetOutputError = blocker.targetOutputError;
-  const routeChoiceName = typeof selectedCandidate?.routeLocation?.componentName === 'string' &&
+  const routeChoiceName = selectedCandidate?.rootOwnsRouter === true &&
+    typeof selectedCandidate?.routeLocation?.componentName === 'string' &&
     selectedCandidate.routeLocation.componentName !== blocker.targetExportName
     ? selectedCandidate.routeLocation.componentName
     : undefined;

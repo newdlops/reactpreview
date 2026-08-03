@@ -83,7 +83,8 @@ function readPreviewInspectorFriendlyPageStatus(reachability) {
   const moduleContext = typeof readSelectedPreviewInspectorModuleContext === 'function'
     ? readSelectedPreviewInspectorModuleContext(descriptor)
     : descriptor?.inspector?.contextModule;
-  const routeChoiceName = typeof selectedCandidate?.routeLocation?.componentName === 'string' &&
+  const routeChoiceName = selectedCandidate?.rootOwnsRouter === true &&
+    typeof selectedCandidate?.routeLocation?.componentName === 'string' &&
     selectedCandidate.routeLocation.componentName !== descriptor?.inspector?.target?.exportName
     ? selectedCandidate.routeLocation.componentName
     : undefined;

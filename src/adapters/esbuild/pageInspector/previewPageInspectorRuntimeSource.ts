@@ -798,6 +798,12 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
   const revision = previewInspectorSession.propsRevisionByExport.get(exportName) ?? 0;
   const instanceEpoch = previewInspectorSession.instanceEpochByExport.get(exportName) ?? 0;
   const conditionRevision = readPreviewInspectorRenderConditionRevision();
+  const targetElement = metadata?.intentionalNavigationOutput === true
+    ? null
+    : createPreviewInspectorElement(Component, {
+        ...effectiveProps,
+        key: targetIdentity + ':instance:' + String(instanceEpoch),
+      });
   return React.createElement(
     PreviewInspectorTargetBoundary,
     {
@@ -807,10 +813,7 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
       sourcePath,
       ownershipToken,
     },
-    createPreviewInspectorElement(Component, {
-      ...effectiveProps,
-      key: targetIdentity + ':instance:' + String(instanceEpoch),
-    }),
+    targetElement,
   );
 }
 const PreviewInspectorDirectTargetContext = React.createContext(undefined);

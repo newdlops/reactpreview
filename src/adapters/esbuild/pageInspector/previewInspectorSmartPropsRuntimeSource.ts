@@ -545,8 +545,17 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
     hasPreviewInspectorSmartPropPath(userProps, visibilityPath) ||
     hasPreviewInspectorSmartPropPath(resolverProps, visibilityPath)
   ) return undefined;
-  // Visibility is application semantics. Keep compiler-proven evidence actionable but report-only
-  // until the user explicitly enables the overlay; no automatic generated-prop transaction occurs.
+  const materializedResolver = materializePreviewInspectorRuntimeFallbackOverride(resolverProps);
+  const nextResolverProps =
+    materializedResolver !== null && typeof materializedResolver === 'object' &&
+    !Array.isArray(materializedResolver)
+      ? materializedResolver
+      : {};
+  if (!setPreviewInspectorSmartBooleanProp(nextResolverProps, visibilityPath)) return undefined;
+  if (
+    typeof setPreviewInspectorResolverPropsOverride !== 'function' ||
+    !setPreviewInspectorResolverPropsOverride(exportName, nextResolverProps, true)
+  ) return undefined;
   previewInspectorSession.overlayAutoAttemptKeys.add(attemptKey);
   if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
     recordPreviewInspectorBlockerAutoDecision({
@@ -558,12 +567,12 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
       mode: 'target-overlay-auto',
       ownerName: exportName,
       reason: 'The selected overlay mounted without host output and has one declared visibility prop',
-      selectedValue: undefined,
-      startsRenderAttempt: false,
+      selectedValue: true,
+      startsRenderAttempt: true,
       targetReachabilityKey,
     });
   }
-  return undefined;
+  return visibilityPath;
 }
 `;
 }

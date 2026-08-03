@@ -214,25 +214,34 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
       ),
     )
     .map((condition) => {
+      const conditionSourcePath = normalizePreviewInspectorReachabilityPath(condition.sourcePath);
+      const exactMountedTargetOverlayLocal = exactTargetOnly &&
+        condition?.kind === 'overlay-visibility' &&
+        condition?.role === 'overlay' &&
+        conditionSourcePath.length > 0 &&
+        conditionSourcePath === normalizePreviewInspectorReachabilityPath(state.targetSourcePath);
       const exactConditionLocal = evidence.exactConditionIds?.has(condition.id) === true;
       const exactOwnerLocal =
         evidence.exactTargetNames?.has(condition.ownerName) === true &&
         !evidence.ambiguousNames?.has(condition.ownerName);
-      const exactSourceLocal = evidence.pathScores?.get(
-        normalizePreviewInspectorReachabilityPath(condition.sourcePath),
-      ) === 800;
+      const exactSourceLocal = (evidence.pathScores?.get(conditionSourcePath) ?? 0) >= 800;
       return {
         condition,
-        desiredValue: readPreviewInspectorTargetConditionValue(condition, evidence),
+        desiredValue: exactMountedTargetOverlayLocal
+          ? true
+          : readPreviewInspectorTargetConditionValue(condition, evidence),
+        exactMountedTargetOverlayLocal,
         exactOverlayTargetLocal:
           isPreviewInspectorExactTargetOverlayCondition(condition, evidence),
-        exactTargetLocal: exactConditionLocal || exactOwnerLocal || exactSourceLocal,
+        exactTargetLocal:
+          exactConditionLocal || exactOwnerLocal || exactSourceLocal || exactMountedTargetOverlayLocal,
         pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
       };
     })
     .filter(({
       condition,
       desiredValue,
+      exactMountedTargetOverlayLocal,
       exactOverlayTargetLocal,
       exactTargetLocal,
       pathLocal,
@@ -245,10 +254,15 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
        * A page/source match is sufficient for ordinary continuation guards, but not for overlays.
        * Several sibling dialogs commonly live in the same page file. Opening every one merely
        * because that file lies on the target corridor obscures the page and can create modal loops.
-       * An overlay is automatic only when compiler evidence names its exact condition, target, or
-       * unambiguous root-to-target corridor owner; all others remain user-toggleable in the tree.
+       * The narrow exception is a visibility gate authored in the exact selected target file after
+       * that target has mounted without output: source order reveals one child overlay per pass.
+       * All other overlays still require an exact condition, target, or corridor-owner identity.
        */
-      (condition.role !== 'overlay' || exactOverlayTargetLocal),
+      (
+        condition.role !== 'overlay' ||
+        exactOverlayTargetLocal ||
+        exactMountedTargetOverlayLocal
+      ),
     )
     .sort((left, right) =>
       Number(right.pathLocal) - Number(left.pathLocal) ||
@@ -371,9 +385,21 @@ function markPreviewInspectorTargetReachabilityMount(exportName) {
   state.targetWasMounted = true;
 }
 /**
+ * Reads the target-output verifier's static proof for a selected export that only navigates.
+ * Keeping this proof on the verifier avoids accepting a short HOC or parent redirect merely
+ * because some boundary with the same public export name committed before DFS observed it.
+ */
+function hasPreviewInspectorIntentionalNavigationTargetOutput(state) {
+  if (typeof hasPreviewInspectorResolvedTargetOutput !== 'function') return false;
+  const detector = hasPreviewInspectorResolvedTargetOutput.hasIntentionalNavigationOutput;
+  return typeof detector === 'function' && detector(state) === true;
+}
+/**
  * Requires the selected boundary to own connected host output and to remain error-free.
  * A HOC can mount the facade boundary and immediately return Navigate/null before invoking the
  * authored visual component; treating that boundary alone as success stops DFS on a blank page.
+ * A compiler-proven navigation-only export is the narrow exception: its authored output changes
+ * the route and therefore cannot retain either a host node or its boundary at settled observation.
  */
 function hasPreviewInspectorTargetHostOutput(state) {
   const boundaries = readPreviewInspectorTargetBoundaries(state);
@@ -388,6 +414,20 @@ function hasPreviewInspectorTargetHostOutput(state) {
     if (typeof hasPreviewInspectorResolvedTargetOutput === 'function'
       ? hasPreviewInspectorResolvedTargetOutput(boundary, state)
       : collectPreviewInspectorFiberElements(boundary).length > 0) return true;
+  }
+  const activeError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
+    ? readPreviewInspectorRuntimeHealthTargetError(state.targetExportName)
+    : undefined;
+  if (
+    state.targetWasMounted === true &&
+    activeError === undefined &&
+    hasPreviewInspectorIntentionalNavigationTargetOutput(state)
+  ) {
+    state.targetOutputError = undefined;
+    state.targetOutputKind = 'target-output';
+    state.targetOutputRecoveryPending = false;
+    state.targetRenderedEmpty = true;
+    return true;
   }
   return false;
 }
@@ -660,10 +700,21 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
   state.targetWasMounted = state.targetWasMounted === true || state.targetMounted;
   state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
+  if (
+    state.targetMounted !== true &&
+    state.targetWasMounted === true &&
+    state.targetHasOutput === true &&
+    hasPreviewInspectorIntentionalNavigationTargetOutput(state)
+  ) {
+    // The exact boundary is gone only because its authored output completed the route transition.
+    // Promote the latched commit to corridor-mounted semantics for existing blocker/UI consumers.
+    state.targetMounted = true;
+  }
   if (hasReachedPreviewInspectorPageCorridor(state)) {
     completePreviewInspectorMinimumRequirementSearch(state);
     state.status = 'reached';
     state.idlePasses = 0;
+    notifyPreviewInspector();
     schedulePreviewInspectorTreeRefresh();
     return;
   }
@@ -812,8 +863,12 @@ function readPreviewInspectorTargetReachabilityRequiredPaths(state) {
 /** Returns logical blockers even when the page committed without throwing an exception. */
 function readPreviewInspectorTargetReachabilityBlockers() {
   initializePreviewInspectorTargetReachabilityState();
+  const activeKey = previewInspectorSession.activeTargetReachabilityKey;
   return [...previewInspectorSession.targetReachabilityByKey.values()]
-    .filter((state) => state.status !== 'reached')
+    .filter((state) =>
+      state.status !== 'reached' &&
+      (typeof activeKey !== 'string' || state.key === activeKey),
+    )
     .map((state) => ({
       ...state,
       id: 'target-reachability:' + state.key,

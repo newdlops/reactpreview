@@ -505,7 +505,8 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     autoOverrides.set(conditionId, directContinuation);
     autoOverride = directContinuation;
   }
-  const effectiveEnabled = outcomeOverride ?? override ?? autoOverride ?? authoredEnabled;
+  const applicableOverrides = readPreviewInspectorApplicableConditionOverrides(conditionId, authoredValue, normalizedMetadata, override, outcomeOverride, autoOverride);
+  const effectiveEnabled = applicableOverrides.outcomeOverride ?? applicableOverrides.manualOverride ?? applicableOverrides.autoOverride ?? authoredEnabled;
   const records = previewInspectorSession.renderConditions;
   const previous = records.get(conditionId);
   const reachabilityKey =
@@ -518,6 +519,7 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
   const nextRecord = {
     ...normalizedMetadata,
     authoredEnabled,
+    authoredValueKind: authoredValue === null ? 'null' : typeof authoredValue,
     effectiveEnabled,
     id: conditionId,
     reachabilityDiscoveryOrder,
@@ -562,7 +564,7 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
       },
     });
   }
-  const selectedOverride = override ?? outcomeOverride ?? autoOverride;
+  const selectedOverride = applicableOverrides.outcomeOverride ?? applicableOverrides.manualOverride ?? applicableOverrides.autoOverride;
   if (selectedOverride === undefined) return authoredValue;
   if (selectedOverride === false) return false;
   return authoredEnabled ? authoredValue : true;
@@ -658,6 +660,7 @@ function setPreviewInspectorTargetGuidedConditionOverride(conditionId, enabled) 
   if (record === undefined || typeof enabled !== 'boolean') {
     return false;
   }
+  if (!canPreviewInspectorTargetGuideCondition(record, enabled)) return false;
   /* A complete current-file return choice is user intent; DFS must not fight that scenario. */
   if (
     typeof isPreviewInspectorRenderConditionControlledByOutcome === 'function' &&

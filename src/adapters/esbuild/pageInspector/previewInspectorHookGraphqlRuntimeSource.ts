@@ -240,6 +240,75 @@ function createPreviewInspectorHookGraphqlFragmentData(readDocument) {
 }
 
 /**
+ * Reconciles schema-less GraphQL object guesses with collection structure proven by authored use.
+ * A response field can return a list even when its name is singular (for example a domain noun),
+ * while the selected child fields still describe the list item exactly. In that case retain the
+ * selection-shaped object as one bounded item instead of replacing it with an empty array item.
+ */
+function alignPreviewInspectorHookGraphqlStructure(value, fallback, depth = 0) {
+  if (depth > 12) return value;
+  if (Array.isArray(fallback)) {
+    const itemFallback = readPreviewInspectorHookGraphqlOwnValue(fallback, '0');
+    if (Array.isArray(value)) {
+      if (itemFallback === undefined || value.length === 0) return value;
+      let changed = false;
+      const aligned = Array.prototype.map.call(value, (item) => {
+        const next = alignPreviewInspectorHookGraphqlStructure(item, itemFallback, depth + 1);
+        if (next !== item) changed = true;
+        return next;
+      });
+      return changed ? Object.freeze(aligned) : value;
+    }
+    if (value !== null && typeof value === 'object') {
+      return Object.freeze([
+        alignPreviewInspectorHookGraphqlStructure(value, itemFallback, depth + 1),
+      ]);
+    }
+    return fallback;
+  }
+  if (
+    fallback === null ||
+    typeof fallback !== 'object' ||
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value)
+  ) {
+    return value;
+  }
+  let valueDescriptors;
+  let fallbackDescriptors;
+  try {
+    valueDescriptors = Object.getOwnPropertyDescriptors(value);
+    fallbackDescriptors = Object.getOwnPropertyDescriptors(fallback);
+  } catch {
+    return value;
+  }
+  const replacements = new Map();
+  for (const [propertyName, fallbackDescriptor] of Object.entries(fallbackDescriptors)) {
+    if (blockedInspectorPropNames.has(propertyName) || !Object.hasOwn(fallbackDescriptor, 'value')) {
+      continue;
+    }
+    const valueDescriptor = valueDescriptors[propertyName];
+    if (valueDescriptor === undefined || !Object.hasOwn(valueDescriptor, 'value')) continue;
+    const aligned = alignPreviewInspectorHookGraphqlStructure(
+      valueDescriptor.value,
+      fallbackDescriptor.value,
+      depth + 1,
+    );
+    if (aligned !== valueDescriptor.value) replacements.set(propertyName, aligned);
+  }
+  if (replacements.size === 0) return value;
+  for (const [propertyName, replacement] of replacements) {
+    valueDescriptors[propertyName] = { ...valueDescriptors[propertyName], value: replacement };
+  }
+  try {
+    return Object.freeze(Object.defineProperties({}, valueDescriptors));
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Overlays transport-state sentinels whose successful static-preview values have one answer.
  * Other inferred fields and callbacks retain the compiler fallback selected from local use.
  */
@@ -248,13 +317,19 @@ function createPreviewInspectorHookGraphqlFallback(fallback, readDocument, readO
   if (data === undefined) return fallback;
   const hasObjectFallback =
     fallback !== null && typeof fallback === 'object' && !Array.isArray(fallback);
-  const settled = hasObjectFallback ? { ...fallback, data } : { data };
+  const fallbackData = hasObjectFallback
+    ? readPreviewInspectorHookGraphqlOwnValue(fallback, 'data')
+    : undefined;
+  const alignedData = fallbackData === undefined
+    ? data
+    : alignPreviewInspectorHookGraphqlStructure(data, fallbackData);
+  const settled = hasObjectFallback ? { ...fallback, data: alignedData } : { data: alignedData };
   settled.loading = false;
   settled.fallback = null;
   settled.error = null;
   settled.networkStatus = 7;
   if (typeof settled.refetch !== 'function') {
-    settled.refetch = Object.freeze(() => Promise.resolve({ data }));
+    settled.refetch = Object.freeze(() => Promise.resolve({ data: alignedData }));
   }
   return Object.freeze(settled);
 }

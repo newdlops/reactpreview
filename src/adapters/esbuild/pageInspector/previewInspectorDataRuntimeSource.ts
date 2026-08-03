@@ -172,6 +172,13 @@ function normalizePreviewInspectorDataShape(shape, depth = 0, budget = { fields:
   return { fields, kind };
 }
 
+/** Recognizes numeric units only at authored word boundaries, so holidays stays a collection. */
+function hasPreviewInspectorNumericUnitFieldSuffix(fieldName) {
+  const source = String(fieldName);
+  return /(?:Age|Years?|Months?|Days?|Hours?|Minutes?|Seconds?)$/u.test(source) ||
+    /(?:^|_)(?:age|years?|months?|days?|hours?|minutes?|seconds?)$/u.test(source);
+}
+
 /** Infers a scalar family from common API/GraphQL field naming conventions. */
 function inferPreviewInspectorSemanticKind(fieldName) {
   const name = String(fieldName).replaceAll('_', '').toLowerCase();
@@ -186,6 +193,7 @@ function inferPreviewInspectorSemanticKind(fieldName) {
   if (
     paginationNumber ||
     sumNumber ||
+    hasPreviewInspectorNumericUnitFieldSuffix(fieldName) ||
     /(count|total|length|size|index|limit|offset|amount|price|cost|fee|rate|ratio|percent|salary|wage)$/u.test(name)
   ) {
     return 'number';
@@ -211,9 +219,14 @@ function inferPreviewInspectorEmptyObjectScalarKind(fieldName) {
 function looksLikePreviewInspectorCollection(fieldName) {
   const sourceName = String(fieldName);
   const name = sourceName.toLowerCase();
-  if (/(status|address|business|success|access|process|progress|news|series|analysis|relations)$/u.test(name)) {
+  if (
+    /(status|address|business|success|access|process|progress|news|series|analysis|relations|statistics)$/u.test(
+      name,
+    )
+  ) {
     return false;
   }
+  if (hasPreviewInspectorNumericUnitFieldSuffix(sourceName)) return false;
   if (
     /(?:items|nodes|edges|list|collection|connections|results|entries|records)$/u.test(name) ||
     name.startsWith('all') || name.endsWith('ies') || name.endsWith('s')
@@ -228,7 +241,7 @@ function looksLikePreviewInspectorCollection(fieldName) {
   const relationWords = new Set(['by', 'for', 'from', 'of', 'to', 'with']);
   const nonCollectionPlurals = new Set([
     'access', 'address', 'analysis', 'business', 'news', 'process', 'progress', 'relations', 'series',
-    'status',
+    'days', 'hours', 'minutes', 'months', 'seconds', 'statistics', 'status', 'years',
   ]);
   return words.some((word, index) =>
     relationWords.has(words[index + 1] ?? '') &&

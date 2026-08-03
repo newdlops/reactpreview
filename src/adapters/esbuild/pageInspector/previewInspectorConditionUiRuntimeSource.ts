@@ -57,6 +57,12 @@ function doesPreviewInspectorConditionBlockCurrentTarget(condition) {
   }
   const state = previewInspectorSession.targetReachabilityByKey.get(condition.reachabilityKey);
   if (state === undefined) return false;
+  /*
+   * Target-path conditions are discovery gates, not permanent page defects. Once the selected
+   * export has produced its own output, a sibling/parent branch that differs from static path
+   * evidence remains useful as an editable scenario but no longer blocks the current preview.
+   */
+  if (state.status === 'reached' && state.targetHasOutput === true) return false;
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return false;

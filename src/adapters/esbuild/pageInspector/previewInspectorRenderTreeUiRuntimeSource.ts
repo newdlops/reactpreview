@@ -129,6 +129,8 @@ function readPreviewInspectorExpectedOutputState(exportName) {
       : findSelectedPreviewInspectorDescriptor()?.inspector?.target?.sourcePath;
     const outputProbe = {
       targetExportName: exportName,
+      targetWasMounted:
+        retainedState?.targetWasMounted === true || retainedState?.targetMounted === true,
       ...(typeof targetSourcePath === 'string' ? { targetSourcePath } : {}),
     };
     if (typeof hasMountedPreviewInspectorTarget === 'function') {

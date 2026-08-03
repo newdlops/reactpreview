@@ -180,9 +180,12 @@ function createPreviewInspectorDeferredUiTriggerMountIndex(records) {
     }
   }
   const pending = [];
-  const selectedBoundaries = readPreviewInspectorActiveTargetBoundaries(
-    previewInspectorSession.selectedExportName,
-  );
+  const selectedBoundaries =
+    typeof readPreviewInspectorActiveTargetBoundaries === 'function'
+      ? readPreviewInspectorActiveTargetBoundaries(previewInspectorSession.selectedExportName)
+      : previewInspectorSession.boundariesByExport?.get?.(
+          previewInspectorSession.selectedExportName,
+        ) ?? new Set();
   if (selectedBoundaries !== null && typeof selectedBoundaries?.[Symbol.iterator] === 'function') {
     for (const boundary of selectedBoundaries) {
       const boundaryRoot = readPreviewInspectorBoundaryFiber(boundary);

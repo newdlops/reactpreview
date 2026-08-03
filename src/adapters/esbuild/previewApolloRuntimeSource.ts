@@ -73,10 +73,22 @@ function looksLikeCollection(fieldName) {
   if (/(items|nodes|edges|list|collection|connections|results|features)$/.test(lowerName)) {
     return true;
   }
-  if (/(status|address|business|success|access|process|progress|news|series|analysis|relations)$/.test(lowerName)) {
+  if (
+    /(status|address|business|success|access|process|progress|news|series|analysis|relations|statistics)$/.test(
+      lowerName,
+    )
+  ) {
     return false;
   }
+  if (hasNumericUnitFieldSuffix(fieldName)) return false;
   return lowerName.startsWith('all') || lowerName.endsWith('ies') || lowerName.endsWith('s');
+}
+
+/** Recognizes numeric units only at authored word boundaries, so holidays is still a list. */
+function hasNumericUnitFieldSuffix(fieldName) {
+  const source = String(fieldName);
+  return /(?:Age|Years?|Months?|Days?|Hours?|Minutes?|Seconds?)$/u.test(source) ||
+    /(?:^|_)(?:age|years?|months?|days?|hours?|minutes?|seconds?)$/u.test(source);
 }
 
 /** Produces a conservative scalar placeholder from a field name when schema types are unavailable. */
@@ -91,7 +103,8 @@ function createNeutralScalar(fieldName) {
   if (/^(is|has|can|should|allow|enable|disable|visible|active|selected|checked)/.test(lowerName)) {
     return false;
   }
-  if (/(count|total|length|size|index|page|limit|offset)$/.test(lowerName)) {
+  if (/(count|total|length|size|index|page|limit|offset)$/.test(lowerName) ||
+    hasNumericUnitFieldSuffix(fieldName)) {
     return 0;
   }
   if (/(price|amount|balance|rate|ratio|percent|percentage|cost|fee|salary|wage)$/.test(lowerName)) {

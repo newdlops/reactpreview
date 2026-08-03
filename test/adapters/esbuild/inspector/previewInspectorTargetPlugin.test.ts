@@ -22,6 +22,7 @@ describe('createPreviewInspectorTargetFacadeSource', () => {
           shape: { kind: 'object', properties: { field: { kind: 'object', properties: {} } } },
         },
       },
+      navigationOnlyExportNames: ['default'],
       runtimeSpecifier: RUNTIME_SPECIFIER,
       targetModuleContract: createPreviewInspectorTargetModuleContract({
         preparedSourceText: [
@@ -41,6 +42,7 @@ describe('createPreviewInspectorTargetFacadeSource', () => {
     expect(source).toContain('"sourcePath":"/workspace/application/Target.tsx"');
     expect(source).toContain('"compilerExportEvidence":true');
     expect(source).toContain('"facadeResolutionEvidence":true');
+    expect(source).toContain('"intentionalNavigationOutput":true');
     expect(source).toContain('"inferredPropShape":{"kind":"object"');
     expect(source).toContain('"inferredProps":[{"kind":"object","path":"field"');
   });

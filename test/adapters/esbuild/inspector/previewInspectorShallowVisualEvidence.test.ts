@@ -95,6 +95,54 @@ describe('collectPreviewInspectorShallowVisualEvidence', () => {
     });
   });
 
+  it('retains providers composed by recompose nest as authentic wrapper sources', () => {
+    const importerPath = '/workspace/CompanyOwnerApp.tsx';
+    const sourceText = [
+      "import nest from 'recompose/nest';",
+      "import { SessionProvider } from './SessionProvider';",
+      "import { MenuProvider } from './MenuProvider';",
+      "import TargetPage from './TargetPage';",
+      'const PageProviders = nest(SessionProvider, MenuProvider);',
+      'export function CompanyOwnerApp() {',
+      '  return <PageProviders><TargetPage /></PageProviders>;',
+      '}',
+    ].join('\n');
+
+    const evidence = collectPreviewInspectorShallowVisualEvidence({
+      importerPath,
+      ownerExportName: 'CompanyOwnerApp',
+      resolveModule: createResolver({
+        './MenuProvider': '/workspace/MenuProvider.tsx',
+        './SessionProvider': '/workspace/SessionProvider.tsx',
+        './TargetPage': '/workspace/TargetPage.tsx',
+      }),
+      selectedChildPath: '/workspace/TargetPage.tsx',
+      sourceText,
+    });
+
+    expect(
+      evidence.paths.map((visualPath) => ({
+        localEdgeKinds: visualPath.localEdges.map((edge) => edge.kind),
+        relation: visualPath.relation,
+        renderedLocalName: visualPath.renderedLocalName,
+        sourcePath: visualPath.sourcePath,
+      })),
+    ).toEqual([
+      {
+        localEdgeKinds: ['hoc'],
+        relation: 'wrapper',
+        renderedLocalName: 'PageProviders',
+        sourcePath: '/workspace/SessionProvider.tsx',
+      },
+      {
+        localEdgeKinds: ['hoc'],
+        relation: 'wrapper',
+        renderedLocalName: 'PageProviders',
+        sourcePath: '/workspace/MenuProvider.tsx',
+      },
+    ]);
+  });
+
   it('retains component-valued prop evidence beside a selected component prop', () => {
     const sourceText = [
       "import Frame from './Frame';",

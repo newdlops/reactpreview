@@ -374,6 +374,83 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     ]);
   });
 
+  /**
+   * A route owner can wrap its injected page routes without exposing the callback as a nested
+   * render-prop invocation. Flattening only the importable layout drops local provider/HOC
+   * boundaries that feed navigation, drawers, and overlay coordinators inside that layout.
+   */
+  it('keeps a structural route owner instead of flattening its local provider boundary', () => {
+    const factoryPath = '/workspace/application/CompanyPortalApp.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'structural-route-owner-corridor',
+      steps: [
+        readRenderPathStep(0),
+        readRenderPathStep(1),
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'CompanyPortalApp',
+          occurrenceStart: 25,
+          sourcePath: factoryPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(2),
+      ],
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'application-with-structural-route-owner',
+      renderPath,
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootStepIndex: 3,
+      stopReason: 'root-reached',
+    });
+    const page = createCandidate({
+      id: 'page-inside-structural-route-owner',
+      renderPath,
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates([application, page], 1, [
+      {
+        exportName: 'CompanyPortalLayout',
+        importerPath: factoryPath,
+        importKind: 'static',
+        localEdges: [],
+        moduleSpecifier: './CompanyPortalLayout',
+        occurrenceStart: 40,
+        relation: 'sibling',
+        renderedLocalName: 'CompanyPortalLayout',
+        renderBoundaryStart: 20,
+        selectedChildPath: PAGE_PATH,
+        sourcePath: '/workspace/application/CompanyPortalLayout.tsx',
+      },
+      {
+        exportName: 'CommandOverlay',
+        importerPath: factoryPath,
+        importKind: 'static',
+        localEdges: [],
+        moduleSpecifier: './CommandOverlay',
+        occurrenceStart: 50,
+        relation: 'sibling',
+        renderedLocalName: 'CommandOverlay',
+        renderBoundaryStart: 20,
+        selectedChildPath: PAGE_PATH,
+        sourcePath: '/workspace/application/CommandOverlay.tsx',
+      },
+    ]);
+
+    expect(virtualPage?.recipe.shells).toEqual([
+      {
+        importerPath: factoryPath,
+        relation: 'owner',
+        root: { exportName: 'CompanyPortalApp', sourcePath: factoryPath },
+      },
+    ]);
+  });
+
   /** Rejects mutually exclusive route-layout siblings instead of stacking every catalog branch. */
   it('omits ambiguous sibling layouts owned by the same route catalog', () => {
     const application = createCandidate({
@@ -557,29 +634,39 @@ describe('PreviewInspectorVirtualPagePlan', () => {
       root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
       rootStepIndex: 1,
     });
+    const layout = createCandidate({
+      id: 'default-exported-layout',
+      renderPath,
+      root: { exportName: 'default', sourcePath: layoutPath },
+      rootStepIndex: 2,
+    });
 
-    const [virtualPage] = createPreviewInspectorVirtualPageCandidates([application, page], 1, [
-      {
-        exportName: 'Header',
-        importerPath: layoutPath,
-        importKind: 'static',
-        localEdges: [],
-        moduleSpecifier: './Header',
-        occurrenceStart: 10,
-        relation: 'sibling',
-        renderedLocalName: 'Header',
-        renderBoundaryStart: 0,
-        selectedChildPath: PAGE_PATH,
-        selectedOccurrenceStart: 20,
-        sourcePath: '/workspace/application/Header.tsx',
-      },
-    ]);
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(
+      [application, page, layout],
+      1,
+      [
+        {
+          exportName: 'Header',
+          importerPath: layoutPath,
+          importKind: 'static',
+          localEdges: [],
+          moduleSpecifier: './Header',
+          occurrenceStart: 10,
+          relation: 'sibling',
+          renderedLocalName: 'Header',
+          renderBoundaryStart: 0,
+          selectedChildPath: PAGE_PATH,
+          selectedOccurrenceStart: 20,
+          sourcePath: '/workspace/application/Header.tsx',
+        },
+      ],
+    );
 
     expect(virtualPage?.recipe.shells).toEqual([
       {
         importerPath: layoutPath,
         relation: 'owner',
-        root: { exportName: 'RootLayout', sourcePath: layoutPath },
+        root: { exportName: 'default', sourcePath: layoutPath },
       },
     ]);
   });

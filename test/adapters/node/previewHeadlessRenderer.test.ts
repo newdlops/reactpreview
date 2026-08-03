@@ -78,6 +78,7 @@ describe('preview headless renderer', () => {
     expect(bridge).toContain('targetErrorOwner');
     expect(bridge).toContain('targetSourcePath');
     expect(bridge).toContain('progressVisible');
+    expect(bridge).toContain("document.querySelector?.('[data-react-preview-mount]')");
     expect(createPreviewHeadlessTimeoutExpression('__reactPreviewHeadless_test')).toContain(
       'bridgeInstalled',
     );
@@ -86,6 +87,9 @@ describe('preview headless renderer', () => {
     );
     expect(createPreviewHeadlessTimeoutExpression('__reactPreviewHeadless_test')).toContain(
       'progressVisible',
+    );
+    expect(createPreviewHeadlessTimeoutExpression('__reactPreviewHeadless_test')).toContain(
+      "document.querySelector?.('[data-react-preview-mount]')",
     );
   });
 
@@ -179,6 +183,25 @@ describe('preview headless renderer', () => {
       targetError: true,
       targetErrorOwner: 'SelectedPage',
       targetErrorPhase: 'render',
+    });
+  });
+
+  it('retains a composition snapshot emitted before the ready terminal', () => {
+    const readComposition = createBridgeCompositionFixture({ terminalFirst: false });
+    expect(
+      readComposition({
+        hasOutput: true,
+        mounted: true,
+        pageRootCommitted: true,
+        stage: 'target-output',
+        status: 'reached',
+      }),
+    ).toMatchObject({
+      activeBlockers: 0,
+      targetHasOutput: true,
+      targetMounted: true,
+      targetStage: 'target-output',
+      targetStatus: 'reached',
     });
   });
 
@@ -391,9 +414,9 @@ function createStabilizedHeadlessResult(): PreviewHeadlessResult {
 }
 
 /** Evaluates the generated host bridge and returns its normalized latest composition snapshot. */
-function createBridgeCompositionFixture(): (
-  targetState: Record<string, unknown>,
-) => PreviewHeadlessCompositionDiagnostic {
+function createBridgeCompositionFixture(
+  options: { readonly terminalFirst?: boolean } = {},
+): (targetState: Record<string, unknown>) => PreviewHeadlessCompositionDiagnostic {
   const bindingName = '__reactPreviewHeadless_optional';
   const context: {
     MutationObserver: new () => { observe(): void };
@@ -433,7 +456,9 @@ globalThis.__state = globalThis[${JSON.stringify(`${bindingName}State`)}];`,
   if (api === undefined || context.__state === undefined) {
     throw new Error('Headless bridge composition fixture did not initialize.');
   }
-  void api.postMessage({ revision: 1, token: '1:test', type: 'react-preview-runtime-ready' });
+  if (options.terminalFirst !== false) {
+    void api.postMessage({ revision: 1, token: '1:test', type: 'react-preview-runtime-ready' });
+  }
   return (targetState) => {
     void api.postMessage({
       event: {
@@ -452,6 +477,9 @@ globalThis.__state = globalThis[${JSON.stringify(`${bindingName}State`)}];`,
       runtimeRevision: 1,
       type: 'react-preview-runtime-health',
     });
+    if (options.terminalFirst === false) {
+      void api.postMessage({ revision: 1, token: '1:test', type: 'react-preview-runtime-ready' });
+    }
     const composition = context.__state?.latestComposition;
     if (composition === undefined) {
       throw new Error('Headless bridge did not normalize the composition snapshot.');

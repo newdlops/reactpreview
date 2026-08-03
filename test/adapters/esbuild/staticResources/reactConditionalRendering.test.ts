@@ -473,6 +473,30 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"falsyLabel":"continue <Application>"');
   });
 
+  /** Keeps a provider shell reachable when its query hook directly returns a React fallback. */
+  it('instruments a directly returned fallback binding as a component gate', () => {
+    const source = [
+      'export function CompanyContextProvider({ children }) {',
+      '  const { data, fallback } = useQuery(COMPANY_QUERY);',
+      '  if (!data || fallback) return fallback;',
+      '  return <CompanyContext.Provider value={data}>{children}</CompanyContext.Provider>;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering(
+      '/workspace/src/CompanyContextProvider.tsx',
+      source,
+    );
+
+    expect(readRenderConditionCalls(transformed)).toHaveLength(1);
+    expect(transformed).toContain(
+      '"expression":"<CompanyContextProvider> gate: !data || fallback"',
+    );
+    expect(transformed).toContain('"fallbackBranch":"truthy"');
+    expect(transformed).toContain('"targetBranch":"falsy"');
+    expect(transformed).toContain('"truthyLabel":"fallback"');
+  });
+
   /** Exposes guarded branches inside a local helper only when JSX actually invokes that helper. */
   it('instruments early returns in an invoked lowercase local render function', () => {
     const source = [

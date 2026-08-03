@@ -19,6 +19,7 @@ import { createPreviewRenderExpressionFingerprint } from './previewReactRenderOu
 import {
   createPreviewReactRenderTerminalAnalyzer,
   isPreviewReactCreateElementCall,
+  type PreviewReactRenderTerminalAnalyzer,
   type PreviewReactRenderTerminalEvidence,
 } from './previewReactRenderTerminal';
 import { createPreviewReactOverlayActivationReplacements } from './previewReactOverlayActivation';
@@ -238,6 +239,7 @@ function collectConditionalRenderCandidates(
           sourceFile,
           portalBindings,
           invokedLocalRenderFunctions,
+          terminalAnalyzer,
         );
         if (earlyReturnGate !== undefined) candidates.push(earlyReturnGate);
       }
@@ -326,22 +328,32 @@ function collectEarlyReturnGateCandidate(
   sourceFile: ts.SourceFile,
   portalBindings: ReactDomPortalBindings,
   invokedLocalRenderFunctions: ReadonlySet<ts.Node>,
+  terminalAnalyzer: PreviewReactRenderTerminalAnalyzer,
 ): ReactConditionalRenderCandidate | undefined {
   const owner = findNearestOverlayRuntimeFunction(statement);
-  const ownerName =
-    owner === undefined ? undefined : readOverlayRuntimeFunctionName(owner, sourceFile);
+  if (owner === undefined) return undefined;
+  const ownerName = readOverlayRuntimeFunctionName(owner, sourceFile);
   if (
     ownerName === undefined ||
-    (!/^[$_\p{Lu}]/u.test(ownerName) &&
-      (owner === undefined || !invokedLocalRenderFunctions.has(owner)))
+    (!/^[$_\p{Lu}]/u.test(ownerName) && !invokedLocalRenderFunctions.has(owner))
   ) {
     return undefined;
   }
-  const thenRender = readSingleReturnedRenderExpression(statement.thenStatement, portalBindings);
+  const thenRender = readSingleReturnedRenderExpression(
+    statement.thenStatement,
+    portalBindings,
+    owner,
+    terminalAnalyzer,
+  );
   const elseRender =
     statement.elseStatement === undefined
       ? undefined
-      : readSingleReturnedRenderExpression(statement.elseStatement, portalBindings);
+      : readSingleReturnedRenderExpression(
+          statement.elseStatement,
+          portalBindings,
+          owner,
+          terminalAnalyzer,
+        );
   if (thenRender === undefined && elseRender === undefined) return undefined;
   if (thenRender !== undefined && elseRender !== undefined) {
     const truthyLabel = describeReturnedRenderExpression(thenRender, sourceFile, portalBindings);
@@ -389,6 +401,8 @@ function describeReturnedRenderExpression(
   portalBindings: ReactDomPortalBindings,
 ): string {
   if (expression?.kind === ts.SyntaxKind.NullKeyword) return 'empty return';
+  if (expression !== undefined && isConventionalReactFallbackExpression(expression))
+    return boundMetadataText(expression.getText(sourceFile));
   return expression === undefined
     ? 'early return'
     : describeRenderBranch(expression, sourceFile, portalBindings);
@@ -405,19 +419,147 @@ function describeReturnedRenderExpression(
 function readSingleReturnedRenderExpression(
   statement: ts.Statement,
   portalBindings: ReactDomPortalBindings,
+  owner: OverlayRuntimeFunction,
+  terminalAnalyzer: PreviewReactRenderTerminalAnalyzer,
 ): ts.Expression | undefined {
   if (ts.isBlock(statement)) {
     const terminalStatement = statement.statements.at(-1);
     return terminalStatement === undefined
       ? undefined
-      : readSingleReturnedRenderExpression(terminalStatement, portalBindings);
+      : readSingleReturnedRenderExpression(
+          terminalStatement,
+          portalBindings,
+          owner,
+          terminalAnalyzer,
+        );
   }
   if (!ts.isReturnStatement(statement) || statement.expression === undefined) return undefined;
   const expression = unwrapConditionalExpression(statement.expression);
   return expression.kind === ts.SyntaxKind.NullKeyword ||
-    isDirectReactRenderExpression(expression, portalBindings)
+    isDirectReactRenderExpression(expression, portalBindings) ||
+    isConventionalReactFallbackExpression(expression) ||
+    isPreviewReactRenderPropReturnCall(expression, owner, terminalAnalyzer)
     ? expression
     : undefined;
+}
+
+/** Recognizes conventional render-prop names without treating arbitrary callback props as React. */
+function isPreviewReactRenderPropName(name: string): boolean {
+  return (
+    name === 'children' ||
+    /^render(?:[$_\p{Lu}]|$)/u.test(name) ||
+    /Renderer$/u.test(name)
+  );
+}
+
+/** Proves that one local identifier was destructured from a render-prop component parameter. */
+function isPreviewReactRenderPropParameterBinding(
+  owner: OverlayRuntimeFunction,
+  localName: string,
+): boolean {
+  for (const parameter of owner.parameters) {
+    if (ts.isIdentifier(parameter.name)) {
+      if (
+        parameter.name.text === localName &&
+        isPreviewReactRenderPropName(parameter.name.text)
+      ) {
+        return true;
+      }
+      continue;
+    }
+    for (const element of parameter.name.elements) {
+      if (
+        !ts.isBindingElement(element) ||
+        element.dotDotDotToken !== undefined ||
+        !ts.isIdentifier(element.name) ||
+        element.name.text !== localName
+      ) {
+        continue;
+      }
+      const sourceName =
+        element.propertyName === undefined
+          ? element.name.text
+          : readStaticPropertyName(element.propertyName);
+      if (sourceName !== undefined && isPreviewReactRenderPropName(sourceName)) return true;
+    }
+  }
+  return false;
+}
+
+/** Proves a `props.children(...)`-shaped call against the component's direct parameter. */
+function isPreviewReactRenderPropParameterAccess(
+  owner: OverlayRuntimeFunction,
+  expression: ts.PropertyAccessExpression,
+): boolean {
+  if (
+    !ts.isIdentifier(expression.expression) ||
+    !isPreviewReactRenderPropName(expression.name.text)
+  ) {
+    return false;
+  }
+  const parameterName = expression.expression.text;
+  return owner.parameters.some(
+    (parameter) =>
+      ts.isIdentifier(parameter.name) && parameter.name.text === parameterName,
+  );
+}
+
+/** Finds compiler-proven React output inside the value object passed to a render prop. */
+function hasPreviewReactRenderPropPayload(
+  expression_: ts.Expression,
+  terminalAnalyzer: PreviewReactRenderTerminalAnalyzer,
+  depth = 0,
+): boolean {
+  if (depth > 4) return false;
+  const expression = unwrapConditionalExpression(expression_);
+  if (terminalAnalyzer.analyze(expression) !== undefined) return true;
+  if (!ts.isObjectLiteralExpression(expression)) return false;
+  return expression.properties.some((property) => {
+    if (ts.isPropertyAssignment(property)) {
+      return hasPreviewReactRenderPropPayload(property.initializer, terminalAnalyzer, depth + 1);
+    }
+    if (ts.isShorthandPropertyAssignment(property)) {
+      return terminalAnalyzer.analyze(property.name) !== undefined;
+    }
+    return false;
+  });
+}
+
+/**
+ * Admits an early return through a component-owned render prop when its payload contains proven JSX.
+ *
+ * The call target must be the component's own `children`/`render*` parameter. This covers wrappers
+ * that return `children({ body: <Loader /> })` without classifying unrelated project calls as React.
+ */
+function isPreviewReactRenderPropReturnCall(
+  expression: ts.Expression,
+  owner: OverlayRuntimeFunction,
+  terminalAnalyzer: PreviewReactRenderTerminalAnalyzer,
+): expression is ts.CallExpression {
+  if (!ts.isCallExpression(expression) || expression.questionDotToken !== undefined) return false;
+  const callee = unwrapConditionalExpression(expression.expression);
+  const parameterOwned = ts.isIdentifier(callee)
+    ? isPreviewReactRenderPropParameterBinding(owner, callee.text)
+    : ts.isPropertyAccessExpression(callee)
+      ? isPreviewReactRenderPropParameterAccess(owner, callee)
+      : false;
+  return (
+    parameterOwned &&
+    expression.arguments.some(
+      (argument) =>
+        !ts.isSpreadElement(argument) &&
+        hasPreviewReactRenderPropPayload(argument, terminalAnalyzer),
+    )
+  );
+}
+
+/** Recognizes a directly returned React fallback binding without admitting arbitrary values. */
+function isConventionalReactFallbackExpression(expression: ts.Expression): boolean {
+  const unwrapped = unwrapConditionalExpression(expression);
+  return (
+    (ts.isIdentifier(unwrapped) && /fallback$/iu.test(unwrapped.text)) ||
+    (ts.isPropertyAccessExpression(unwrapped) && /fallback$/iu.test(unwrapped.name.text))
+  );
 }
 
 /**

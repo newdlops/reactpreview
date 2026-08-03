@@ -256,6 +256,11 @@ export class PreviewSourceTransformer {
             typeDemand === undefined
               ? undefined
               : (typeNode) => typeDemand.inferLocalTypeFallback(sourcePath, sourceText, typeNode),
+            typeDemand?.inferImportedHelperArrayItemFallback.bind(
+              typeDemand,
+              sourcePath,
+              sourceText,
+            ),
           ),
         );
       }

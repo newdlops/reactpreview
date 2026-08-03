@@ -1,10 +1,10 @@
 /**
  * Recovers one overlay visibility prop from syntax-resolvable component prop type aliases.
  *
- * Application contracts imported from another module remain opaque, but a utility declaration such
- * as `Pick<ModalProps, "show">` exposes the exact public key without resolving or executing that
- * module. The selected component must also have an overlay-shaped name, and multiple possible keys
- * remain deliberately ambiguous.
+ * Application contracts can be supplied by the caller after bounded static import resolution. A
+ * utility declaration such as `Pick<ModalProps, "show">` also exposes the exact public key without
+ * resolving or executing that module. The selected component must have an overlay-shaped name, and
+ * multiple possible keys remain deliberately ambiguous.
  */
 import ts from 'typescript';
 import {
@@ -15,7 +15,7 @@ import {
 /** Function bodies accepted by the direct exported-component prop analyzer. */
 type OverlayFunctionLike = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
 
-/** Same-file object declarations that can route an exported parameter to an exact Pick key. */
+/** Statically resolved object declarations that can route a parameter to one visibility key. */
 type LocalObjectType = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
 
 /**
@@ -25,6 +25,7 @@ type LocalObjectType = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
  * @param exportName Public export label used when the function is anonymous.
  * @param contextualPropsType Variable-level React component props annotation, when present.
  * @param sourceFile Parsed selected source containing local aliases.
+ * @param resolvedObjectTypes Bounded local/imported declarations already resolved by the caller.
  * @returns One exact visibility key, or `undefined` when source evidence is absent or ambiguous.
  */
 export function inferReactOverlayVisibilityTypeProp(
@@ -32,20 +33,24 @@ export function inferReactOverlayVisibilityTypeProp(
   exportName: string,
   contextualPropsType: ts.TypeNode | undefined,
   sourceFile: ts.SourceFile,
+  resolvedObjectTypes?: ReadonlyMap<string, LocalObjectType>,
 ): string | undefined {
   const ownerName = readFunctionOwnerName(functionLike) ?? exportName;
   if (!isReactOverlayComponentName(ownerName)) return undefined;
   const propsType = functionLike.parameters[0]?.type ?? contextualPropsType;
   if (propsType === undefined) return undefined;
-  const localTypes = collectLocalObjectTypes(sourceFile);
+  const localTypes = collectLocalObjectTypes(sourceFile, resolvedObjectTypes);
   const candidates = new Set<string>();
   collectVisibilityTypeProps(propsType, localTypes, new Set(), candidates);
   return candidates.size === 1 ? [...candidates][0] : undefined;
 }
 
 /** Builds a bounded identity map for only interface and type-alias declarations in this module. */
-function collectLocalObjectTypes(sourceFile: ts.SourceFile): Map<string, LocalObjectType> {
-  const declarations = new Map<string, LocalObjectType>();
+function collectLocalObjectTypes(
+  sourceFile: ts.SourceFile,
+  resolvedObjectTypes?: ReadonlyMap<string, LocalObjectType>,
+): Map<string, LocalObjectType> {
+  const declarations = new Map<string, LocalObjectType>(resolvedObjectTypes);
   for (const statement of sourceFile.statements) {
     if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
       declarations.set(statement.name.text, statement);

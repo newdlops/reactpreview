@@ -26,6 +26,7 @@ import {
 import { inferPreviewRuntimeHookGuardPassFallback } from './previewRuntimeHookGuardValue';
 import {
   readPreviewRuntimeHookAliasUsagePaths,
+  type ResolvePreviewRuntimeHookImportedHelperItemFallback,
   type PreviewRuntimeHookAliasUsagePath as PreviewRuntimeHookUsagePath,
 } from './previewRuntimeHookAliasUsage';
 import {
@@ -88,6 +89,11 @@ const childPropDemandsBySourceFile = new WeakMap<
 const localTypeFallbackBySourceFile = new WeakMap<
   ts.SourceFile,
   (typeNode: ts.TypeNode) => PreviewRuntimeHookLocalTypeFallback | undefined
+>();
+/** Direct imported-helper parameter contracts available only during the current transformation. */
+const importedHelperItemFallbackBySourceFile = new WeakMap<
+  ts.SourceFile,
+  ResolvePreviewRuntimeHookImportedHelperItemFallback
 >();
 /** Import or local-declaration evidence for one callable custom hook binding. */
 interface PreviewRuntimeHookBinding {
@@ -174,6 +180,7 @@ export function createPreviewRuntimeHookReplacements(
   sourceText: string,
   childPropDemands?: PreviewRuntimeHookChildPropDemandCatalog,
   localTypeFallback?: (typeNode: ts.TypeNode) => PreviewRuntimeHookLocalTypeFallback | undefined,
+  importedHelperItemFallback?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
 ): readonly PreviewSourceReplacement[] {
   if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) {
     return [];
@@ -193,6 +200,9 @@ export function createPreviewRuntimeHookReplacements(
   }
   if (localTypeFallback !== undefined) {
     localTypeFallbackBySourceFile.set(sourceFile, localTypeFallback);
+  }
+  if (importedHelperItemFallback !== undefined) {
+    importedHelperItemFallbackBySourceFile.set(sourceFile, importedHelperItemFallback);
   }
   const inventory = collectRuntimeHookInventory(sourceFile);
   if (inventory.direct.size === 0 && inventory.namespaces.size === 0) {
@@ -717,7 +727,13 @@ function createIdentifierUsageFallback(
   visit(owner);
   for (const usage of readPreviewRuntimeHookIdentityAliasCollectionUsages(identifier, owner))
     (usage.optional ? optionalPaths : paths).push({ called: false, ...usage });
-  paths.push(...readPreviewRuntimeHookAliasUsagePaths(identifier, owner));
+  paths.push(
+    ...readPreviewRuntimeHookAliasUsagePaths(
+      identifier,
+      owner,
+      importedHelperItemFallbackBySourceFile.get(identifier.getSourceFile()),
+    ),
+  );
   /*
    * A hook array may reach a child through an identity-preserving transform such as
    * `items.filter(... )`. Such a carrier has no property-name prefix, so retain its inferred child

@@ -129,6 +129,42 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       : this.inferShape(typeNode, module, module.literalHints, new Set(), { nodes: 0 });
   }
 
+  /**
+   * Expands one direct imported helper parameter without executing or type-checking the helper.
+   * This lets a hook-fed identity inherit the exact collection item contract of a reached pure
+   * helper even when every first field read lives in that helper's module.
+   */
+  public inferImportedFunctionParameter(
+    sourcePath: string,
+    sourceText: string,
+    localName: string,
+    parameterIndex: number,
+  ): PreviewInferredPropShape | undefined {
+    if (!Number.isSafeInteger(parameterIndex) || parameterIndex < 0 || parameterIndex > 15) {
+      return undefined;
+    }
+    const consumer = this.readModule(sourcePath, sourceText);
+    const imported = consumer?.imports.get(localName);
+    if (imported === undefined) return undefined;
+    const resolvedPath = this.options.resolveModule(imported.moduleSpecifier, sourcePath);
+    const importedModule =
+      resolvedPath === undefined || !this.isInspectableSource(resolvedPath)
+        ? undefined
+        : this.readModule(resolvedPath);
+    if (importedModule === undefined) return undefined;
+    const candidate = collectExportedComponentCandidates(importedModule).get(imported.sourceName);
+    const functionLike =
+      candidate === undefined
+        ? undefined
+        : readRuntimeFunctionLike(candidate, importedModule.localFunctions, new Set());
+    const parameterType = functionLike?.parameters[parameterIndex]?.type;
+    return parameterType === undefined
+      ? undefined
+      : this.inferShape(parameterType, importedModule, importedModule.literalHints, new Set(), {
+          nodes: 0,
+        });
+  }
+
   /** Recursively converts one type syntax node into a neutral preview data shape. */
   private inferShape(
     typeNode: ts.TypeNode,
@@ -561,6 +597,26 @@ function readComponentPropsType(
     if (propsType !== undefined) return propsType;
   }
   return undefined;
+}
+
+/** Resolves one ordinary function body through exact same-file value aliases. */
+function readRuntimeFunctionLike(
+  candidate: ComponentFunctionCandidate,
+  declarations: ReadonlyMap<string, ComponentFunctionCandidate>,
+  activeNames: Set<string>,
+): ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | undefined {
+  if (candidate.functionLike !== undefined) return candidate.functionLike;
+  const expression = candidate.initializer;
+  if (expression === undefined) return undefined;
+  const current = unwrapExpression(expression);
+  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return current;
+  if (!ts.isIdentifier(current) || activeNames.has(current.text)) return undefined;
+  const next = declarations.get(current.text);
+  if (next === undefined) return undefined;
+  activeNames.add(current.text);
+  const result = readRuntimeFunctionLike(next, declarations, activeNames);
+  activeNames.delete(current.text);
+  return result;
 }
 
 /** Merges compatible structural shapes while preserving operation-proven first operands. */

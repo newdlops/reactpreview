@@ -148,6 +148,31 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     });
   }
 
+  /**
+   * Infers the item required by an Array-typed parameter of a direct imported helper call.
+   * Returning an item rather than the parameter root lets the hook usage-tree retain the exact
+   * hook-relative response path while applying the helper's nested contract below that collection.
+   */
+  public inferImportedHelperArrayItemFallback(
+    sourcePath: string,
+    sourceText: string,
+    localName: string,
+    parameterIndex: number,
+  ): PreviewRuntimeHookLocalTypeFallback | undefined {
+    const parameter = this.typeDemands.inferImportedFunctionParameter(
+      sourcePath,
+      sourceText,
+      localName,
+      parameterIndex,
+    );
+    if (parameter?.kind !== 'array' || parameter.items === undefined) return undefined;
+    return Object.freeze({
+      expression: serializePreviewRuntimeHookChildShape(parameter.items, 'item'),
+      label: 'generated collection item from imported helper parameter',
+      requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(parameter.items)),
+    });
+  }
+
   /** Reads and caches one resolved component source under strict path and text-size limits. */
   private readInference(
     sourcePath: string,

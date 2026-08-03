@@ -45,22 +45,43 @@ export interface PreviewRuntimeHookAliasUsagePath {
   readonly valueExpression?: string;
 }
 
+/** Item fallback supplied by the bounded imported-helper type resolver. */
+export interface PreviewRuntimeHookImportedHelperItemFallback {
+  readonly expression: string;
+  readonly requiredPaths?: readonly string[];
+}
+
+/** Resolves one exact direct-import call argument to an Array item contract. */
+export type ResolvePreviewRuntimeHookImportedHelperItemFallback = (
+  localName: string,
+  parameterIndex: number,
+) => PreviewRuntimeHookImportedHelperItemFallback | undefined;
+
 /** One local alias may originate from a small logical or conditional choice. */
 type AliasPathCatalog = ReadonlyMap<string, readonly (readonly string[])[]>;
+
+/** Exact React imports admitted for identity-only `useMemo` projections. */
+interface ReactMemoBindings {
+  readonly direct: ReadonlySet<string>;
+  readonly namespaces: ReadonlySet<string>;
+}
 
 /**
  * Returns required paths observed below immutable aliases of one hook-bound identifier.
  *
- * Only simple `const` identifiers, property access, `||`, `??`, and ternary value choices are
- * admitted. Calls, assignments, computed keys, defaults, and mutable bindings stop propagation.
+ * Only simple `const` identifiers, property access, `||`, `??`, ternary choices, and identity-only
+ * callbacks passed to the exact React `useMemo` import are admitted. Other calls, assignments,
+ * computed keys, defaults, and mutable bindings stop propagation.
  */
 export function readPreviewRuntimeHookAliasUsagePaths(
   identifier: ts.Identifier,
   owner: PreviewRuntimeFunction,
+  resolveImportedHelperItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
 ): readonly PreviewRuntimeHookAliasUsagePath[] {
   const declarations = collectOwnerConstDeclarations(owner);
   const bindingCounts = countSimpleBindingNames(declarations);
-  const aliases = propagateAliasPaths(identifier.text, declarations, bindingCounts);
+  const memoBindings = collectReactMemoBindings(identifier.getSourceFile());
+  const aliases = propagateAliasPaths(identifier.text, declarations, bindingCounts, memoBindings);
   if (aliases.size <= 1) return [];
 
   const usages = new Map<string, PreviewRuntimeHookAliasUsagePath>();
@@ -85,6 +106,15 @@ export function readPreviewRuntimeHookAliasUsagePaths(
           usages.set(`${usage.names.join('.')}\0${terminalKind}`, usage);
         }
       }
+    }
+    if (ts.isCallExpression(node) && resolveImportedHelperItem !== undefined) {
+      appendImportedHelperAliasUsages(
+        node,
+        identifier.text,
+        aliases,
+        resolveImportedHelperItem,
+        usages,
+      );
     }
     ts.forEachChild(node, visit);
   };
@@ -124,11 +154,76 @@ function countSimpleBindingNames(
   return counts;
 }
 
+/** Indexes only authored React imports that can prove the real `useMemo` identity helper. */
+function collectReactMemoBindings(sourceFile: ts.SourceFile): ReactMemoBindings {
+  const direct = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== 'react'
+    ) {
+      continue;
+    }
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+      continue;
+    }
+    for (const element of bindings.elements) {
+      if ((element.propertyName?.text ?? element.name.text) === 'useMemo') {
+        direct.add(element.name.text);
+      }
+    }
+  }
+  return { direct, namespaces };
+}
+
+/** Reads a synchronous identity-only callback result from the exact imported React `useMemo`. */
+function readReactMemoValue(
+  expression: ts.Expression,
+  bindings: ReactMemoBindings,
+): ts.Expression | undefined {
+  if (!ts.isCallExpression(expression) || expression.questionDotToken !== undefined) {
+    return undefined;
+  }
+  const callee = unwrapPreviewRuntimeExpression(expression.expression);
+  const direct = ts.isIdentifier(callee) && bindings.direct.has(callee.text);
+  const namespace =
+    ts.isPropertyAccessExpression(callee) &&
+    callee.questionDotToken === undefined &&
+    callee.name.text === 'useMemo' &&
+    ts.isIdentifier(unwrapPreviewRuntimeExpression(callee.expression)) &&
+    bindings.namespaces.has(
+      (unwrapPreviewRuntimeExpression(callee.expression) as ts.Identifier).text,
+    );
+  if (!direct && !namespace) return undefined;
+  const callback = expression.arguments[0];
+  if (callback === undefined) return undefined;
+  const current = unwrapPreviewRuntimeExpression(callback);
+  if (
+    (!ts.isArrowFunction(current) && !ts.isFunctionExpression(current)) ||
+    current.parameters.length !== 0 ||
+    current.asteriskToken !== undefined ||
+    current.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true
+  ) {
+    return undefined;
+  }
+  if (!ts.isBlock(current.body)) return current.body;
+  const statement = current.body.statements.length === 1 ? current.body.statements[0] : undefined;
+  return statement !== undefined && ts.isReturnStatement(statement)
+    ? statement.expression
+    : undefined;
+}
+
 /** Repeats a small fixed-point pass until every supported alias has its hook-relative origins. */
 function propagateAliasPaths(
   rootName: string,
   declarations: readonly ts.VariableDeclaration[],
   bindingCounts: ReadonlyMap<string, number>,
+  memoBindings: ReactMemoBindings,
 ): AliasPathCatalog {
   const aliases = new Map<string, readonly (readonly string[])[]>([[rootName, [[]]]]);
   for (let pass = 0; pass < MAXIMUM_ALIAS_PASSES && aliases.size < MAXIMUM_ALIAS_COUNT; pass += 1) {
@@ -142,7 +237,7 @@ function propagateAliasPaths(
       ) {
         continue;
       }
-      const paths = readChoicePaths(declaration.initializer, aliases, 0);
+      const paths = readChoicePaths(declaration.initializer, aliases, memoBindings, 0);
       if (paths.length === 0) continue;
       aliases.set(declaration.name.text, paths);
       changed = true;
@@ -157,21 +252,26 @@ function propagateAliasPaths(
 function readChoicePaths(
   expression: ts.Expression,
   aliases: AliasPathCatalog,
+  memoBindings: ReactMemoBindings,
   depth: number,
 ): readonly (readonly string[])[] {
   if (depth > MAXIMUM_ALIAS_DEPTH) return [];
   const value = unwrapPreviewRuntimeExpression(expression);
   if (ts.isBinaryExpression(value) && isValueChoiceOperator(value.operatorToken.kind)) {
     return deduplicatePaths([
-      ...readChoicePaths(value.left, aliases, depth + 1),
-      ...readChoicePaths(value.right, aliases, depth + 1),
+      ...readChoicePaths(value.left, aliases, memoBindings, depth + 1),
+      ...readChoicePaths(value.right, aliases, memoBindings, depth + 1),
     ]);
   }
   if (ts.isConditionalExpression(value)) {
     return deduplicatePaths([
-      ...readChoicePaths(value.whenTrue, aliases, depth + 1),
-      ...readChoicePaths(value.whenFalse, aliases, depth + 1),
+      ...readChoicePaths(value.whenTrue, aliases, memoBindings, depth + 1),
+      ...readChoicePaths(value.whenFalse, aliases, memoBindings, depth + 1),
     ]);
+  }
+  const memoValue = readReactMemoValue(value, memoBindings);
+  if (memoValue !== undefined) {
+    return readChoicePaths(memoValue, aliases, memoBindings, depth + 1);
   }
   return readIdentityPaths(value, aliases);
 }
@@ -213,6 +313,40 @@ function readAliasAccess(
         aliasName: current.text,
         names: prefixes.map((prefix) => [...prefix, ...suffix]),
       };
+}
+
+/** Adds collection structure proven by a direct imported helper's typed Array parameter. */
+function appendImportedHelperAliasUsages(
+  call: ts.CallExpression,
+  rootName: string,
+  aliases: AliasPathCatalog,
+  resolveItem: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
+): void {
+  const callee = unwrapPreviewRuntimeExpression(call.expression);
+  if (!ts.isIdentifier(callee)) return;
+  for (const [parameterIndex, argument] of call.arguments.entries()) {
+    if (usages.size >= MAXIMUM_USAGE_PATHS) return;
+    const value = unwrapPreviewRuntimeExpression(argument);
+    if (!ts.isIdentifier(value) || value.text === rootName) continue;
+    const prefixes = aliases.get(value.text);
+    if (prefixes === undefined) continue;
+    const item = resolveItem(callee.text, parameterIndex);
+    if (item === undefined) continue;
+    for (const names of prefixes) {
+      if (names.length === 0 || names.length > MAXIMUM_ALIAS_DEPTH) continue;
+      const usage = Object.freeze({
+        called: false,
+        collectionItemExpression: item.expression,
+        ...(item.requiredPaths === undefined
+          ? {}
+          : { collectionItemRequiredPaths: Object.freeze([...item.requiredPaths]) }),
+        collectionProperty: 'imported-helper-array-parameter',
+        names: Object.freeze([...names]),
+      });
+      usages.set(`${names.join('.')}\0imported-helper-array-parameter`, usage);
+    }
+  }
 }
 
 /** Converts one reached terminal into the collection/string/call shape used by serialization. */

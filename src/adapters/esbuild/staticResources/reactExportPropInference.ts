@@ -55,6 +55,20 @@ export type PreviewInferredPropsByExport = Readonly<Record<string, PreviewInferr
 type ExportedFunctionLike = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
 type LocalObjectType = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
 
+/** One named import ordered for bounded type-contract resolution. */
+interface ResolvableObjectTypeImport {
+  readonly binding: ts.ImportSpecifier;
+  readonly moduleSpecifier: string;
+  readonly order: number;
+  readonly typeOnly: boolean;
+}
+
+/** One parsed direct-import module shared by all bindings from the same authored specifier. */
+interface ResolvedObjectTypeModule {
+  readonly sourceFile: ts.SourceFile;
+  readonly sourcePath: string;
+}
+
 /** Bounded parse-only import reader shared by compiler and child-demand callers. */
 export interface PreviewPropInferenceOptions {
   readonly resolveImport?: (
@@ -156,44 +170,79 @@ function collectResolvableObjectTypes(
   const localTypes = new Map(collectLocalObjectTypes(sourceFile));
   if (options.resolveImport === undefined) return localTypes;
   const budget = { bytes: 0, modules: 0 };
-  for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier))
-      continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
-    const module = options.resolveImport(statement.moduleSpecifier.text, sourcePath);
-    const moduleBytes = module === undefined ? 0 : Buffer.byteLength(module.sourceText, 'utf8');
-    if (
-      module === undefined ||
-      moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
-      ++budget.modules > MAX_IMPORTED_TYPE_MODULES ||
-      (budget.bytes += moduleBytes) > MAX_IMPORTED_TYPE_BYTES
-    )
-      continue;
-    const importedFile = ts.createSourceFile(
-      module.sourcePath,
-      module.sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      readScriptKind(module.sourcePath),
-    );
-    if (hasParseDiagnostics(importedFile)) continue;
-    for (const binding of bindings.elements) {
-      const importedName = (binding.propertyName ?? binding.name).text;
-      const declaration = resolveExportedObjectType(
-        importedName,
-        importedFile,
-        module.sourcePath,
-        options,
-        new Set([sourcePath]),
-        budget,
-      );
-      if (declaration !== undefined && !localTypes.has(binding.name.text)) {
-        localTypes.set(binding.name.text, declaration);
+  const modules = new Map<string, ResolvedObjectTypeModule | undefined>();
+  for (const imported of collectResolvableObjectTypeImports(sourceFile)) {
+    if (!modules.has(imported.moduleSpecifier)) {
+      const module = options.resolveImport(imported.moduleSpecifier, sourcePath);
+      const moduleBytes = module === undefined ? 0 : Buffer.byteLength(module.sourceText, 'utf8');
+      if (
+        module === undefined ||
+        moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
+        budget.modules + 1 > MAX_IMPORTED_TYPE_MODULES ||
+        budget.bytes + moduleBytes > MAX_IMPORTED_TYPE_BYTES
+      ) {
+        modules.set(imported.moduleSpecifier, undefined);
+      } else {
+        budget.modules += 1;
+        budget.bytes += moduleBytes;
+        const importedFile = ts.createSourceFile(
+          module.sourcePath,
+          module.sourceText,
+          ts.ScriptTarget.Latest,
+          true,
+          readScriptKind(module.sourcePath),
+        );
+        modules.set(
+          imported.moduleSpecifier,
+          hasParseDiagnostics(importedFile)
+            ? undefined
+            : { sourceFile: importedFile, sourcePath: module.sourcePath },
+        );
       }
+    }
+    const module = modules.get(imported.moduleSpecifier);
+    if (module === undefined) continue;
+    const importedName = (imported.binding.propertyName ?? imported.binding.name).text;
+    const declaration = resolveExportedObjectType(
+      importedName,
+      module.sourceFile,
+      module.sourcePath,
+      options,
+      new Set([sourcePath]),
+      budget,
+    );
+    if (declaration !== undefined && !localTypes.has(imported.binding.name.text)) {
+      localTypes.set(imported.binding.name.text, declaration);
     }
   }
   return localTypes;
+}
+
+/** Prioritizes explicit type imports so runtime-heavy modules cannot starve prop contracts. */
+function collectResolvableObjectTypeImports(
+  sourceFile: ts.SourceFile,
+): readonly ResolvableObjectTypeImport[] {
+  const imports: ResolvableObjectTypeImport[] = [];
+  let order = 0;
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier))
+      continue;
+    const importClause = statement.importClause;
+    const bindings = importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      imports.push({
+        binding,
+        moduleSpecifier: statement.moduleSpecifier.text,
+        order: order++,
+        typeOnly:
+          importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword || binding.isTypeOnly,
+      });
+    }
+  }
+  return imports.sort(
+    (left, right) => Number(right.typeOnly) - Number(left.typeOnly) || left.order - right.order,
+  );
 }
 
 /** Follows an exported object declaration through a bounded acyclic re-export chain. */
@@ -278,7 +327,7 @@ function inferComponentProps(
   );
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
-  addOverlayVisibilityRequirement(component, state, sourceFile);
+  addOverlayVisibilityRequirement(component, localTypes, state, sourceFile);
   if (state.root.children.size === 0) {
     return undefined;
   }
@@ -294,6 +343,7 @@ function inferComponentProps(
  */
 function addOverlayVisibilityRequirement(
   component: ExportedComponentFunction,
+  localTypes: ReadonlyMap<string, LocalObjectType>,
   state: InferenceState,
   sourceFile: ts.SourceFile,
 ): void {
@@ -304,6 +354,7 @@ function addOverlayVisibilityRequirement(
       component.exportName,
       component.contextualPropsType,
       sourceFile,
+      localTypes,
     );
   if (propName !== undefined) requirePath(state, [propName], 'boolean', 'usage', true);
 }

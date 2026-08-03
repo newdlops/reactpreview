@@ -202,6 +202,8 @@ describe('Page Inspector runtime source', () => {
     expect(targetRendererSource).toContain(
       "const targetIdentity = sourcePath.replaceAll('\\\\', '/') + '\\0' + exportName",
     );
+    expect(targetRendererSource).toContain('metadata?.intentionalNavigationOutput === true');
+    expect(targetRendererSource).toContain('targetElement,');
     expect(targetRendererSource).toContain('key: targetIdentity');
   });
 

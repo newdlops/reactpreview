@@ -1,7 +1,10 @@
 /** Verifies that wrapper fallback DOM cannot masquerade as the selected file's authored JSX. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import { createPreviewInspectorTargetOutputRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetOutputRuntimeSource';
+import {
+  createPreviewInspectorTargetOutputRuntimeSource,
+  isPreviewInspectorNavigationOnlyRenderOutcomePlan,
+} from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetOutputRuntimeSource';
 
 /** Minimal synthetic Fiber used to express component ownership without mounting React. */
 interface TestFiber {
@@ -20,6 +23,7 @@ interface TestTargetOutputState {
   readonly targetExportName: string;
   readonly targetOutputError?: { readonly message: string; readonly ownerName?: string };
   readonly targetOutputKind?: string;
+  readonly targetRenderedEmpty?: boolean;
 }
 
 /** Result and diagnostic state produced by one selected-outcome evaluation. */
@@ -45,8 +49,10 @@ function evaluateResolvedOutput(
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
+    readonly additionalOutcomes?: readonly Record<string, unknown>[];
     readonly selected?: boolean;
     readonly targetExportName?: string;
+    readonly truncated?: boolean;
   } = {},
 ): TestTargetOutputEvaluation {
   const outcome = {
@@ -73,11 +79,13 @@ function evaluateResolvedOutput(
     __cleared: number;
     __exactOwnership: boolean;
     __outcome: typeof outcome;
+    __planOutcomes: readonly Record<string, unknown>[];
     __result?: boolean;
     __scheduled?: { readonly delay: number };
     __selected: boolean;
     __state?: TestTargetOutputState;
     __targetExportName: string;
+    __truncated: boolean;
   } = {
     __activeError: options.activeError,
     __cleared: 0,
@@ -86,15 +94,19 @@ function evaluateResolvedOutput(
     __includePlan: options.includePlan !== false,
     __liveChild: liveChild,
     __outcome: outcome,
+    __planOutcomes: [outcome, ...(options.additionalOutcomes ?? [])],
     __selected: options.selected !== false,
     __targetExportName: options.targetExportName ?? 'default',
+    __truncated: options.truncated === true,
   };
   vm.runInNewContext(
     `
       const outcome = globalThis.__outcome;
       const liveChild = globalThis.__liveChild;
       const descriptor = { inspector: { target: { sourcePath: '/workspace/Target.tsx' }, renderOutcomesByExport: {
-        default: globalThis.__includePlan ? { outcomes: [outcome] } : undefined,
+        default: globalThis.__includePlan
+          ? { outcomes: globalThis.__planOutcomes, truncated: globalThis.__truncated }
+          : undefined,
       } } };
       const findSelectedPreviewInspectorDescriptor = () => descriptor;
       const readPreviewInspectorSelectedRenderOutcome = () =>
@@ -157,14 +169,55 @@ function hasResolvedOutput(
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
+    readonly additionalOutcomes?: readonly Record<string, unknown>[];
     readonly selected?: boolean;
     readonly targetExportName?: string;
+    readonly truncated?: boolean;
   } = {},
 ): boolean {
   return evaluateResolvedOutput(componentTree, liveChild, options).resolved;
 }
 
 describe('Preview Inspector target output runtime source', () => {
+  /** Requires a complete all-Navigate/Redirect inventory before suppressing router side effects. */
+  it('proves only complete navigation-only render outcome plans', () => {
+    const navigationOutcome = {
+      column: 3,
+      componentNames: ['Navigate'],
+      componentTree: [{ children: [], column: 3, line: 4, name: 'Router.Navigate' }],
+      conditions: [],
+      exportName: 'default',
+      id: 'navigation-outcome',
+      kind: 'jsx' as const,
+      label: '<Navigate>',
+      line: 4,
+      sourcePath: '/workspace/Target.tsx',
+    };
+    const navigationPlan = {
+      exportName: 'default',
+      outcomes: [navigationOutcome],
+      sourcePath: '/workspace/Target.tsx',
+      truncated: false,
+    };
+
+    expect(isPreviewInspectorNavigationOnlyRenderOutcomePlan(navigationPlan)).toBe(true);
+    expect(
+      isPreviewInspectorNavigationOnlyRenderOutcomePlan({ ...navigationPlan, truncated: true }),
+    ).toBe(false);
+    expect(
+      isPreviewInspectorNavigationOnlyRenderOutcomePlan({
+        ...navigationPlan,
+        outcomes: [
+          {
+            ...navigationOutcome,
+            componentNames: ['MainPanel'],
+            componentTree: [{ children: [], column: 3, line: 4, name: 'MainPanel' }],
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   /** A selected export ending in a fallback suffix is authored output, not its own fallback. */
   it('does not classify HrmPortalNotFoundStatus as its own fallback', () => {
     const evaluation = evaluateResolvedOutput(
@@ -413,6 +466,35 @@ describe('Preview Inspector target output runtime source', () => {
     expect(hasResolvedOutput([], undefined, { host: false, kind: 'empty', selected: false })).toBe(
       false,
     );
+  });
+
+  /** Router-only JSX completes by changing location, so it cannot retain target-owned host DOM. */
+  it('accepts an all-navigation export but rejects a mixed visible branch', () => {
+    const navigation = evaluateResolvedOutput([{ children: [], name: 'Navigate' }], undefined, {
+      host: false,
+    });
+    const mixed = hasResolvedOutput([{ children: [], name: 'Navigate' }], undefined, {
+      additionalOutcomes: [
+        {
+          componentTree: [{ children: [], name: 'MainPanel' }],
+          exportName: 'default',
+          id: 'visible-outcome',
+          kind: 'jsx',
+        },
+      ],
+      host: false,
+    });
+
+    expect(navigation.resolved).toBe(true);
+    expect(navigation.state.targetOutputKind).toBe('target-output');
+    expect(navigation.state.targetRenderedEmpty).toBe(true);
+    expect(
+      hasResolvedOutput([{ children: [], name: 'Navigate' }], undefined, {
+        host: false,
+        truncated: true,
+      }),
+    ).toBe(false);
+    expect(mixed).toBe(false);
   });
 
   /** Older descriptors still require exact selected-boundary Fiber ownership before host success. */

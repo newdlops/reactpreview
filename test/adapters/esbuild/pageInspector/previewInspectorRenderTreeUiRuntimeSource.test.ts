@@ -39,11 +39,13 @@ interface RenderTreeRuntime {
 /** Runtime-only target visibility retained by the fixture's local Inspector session. */
 interface RenderTreeRuntimeOptions {
   readonly boundaryProbeRequiresSourcePath?: boolean;
+  readonly boundaryProbeRequiresWasMounted?: boolean;
   readonly selectedOutcomeId?: string;
   readonly targetDeferredCallbackPending?: boolean;
   readonly targetHasAnyHostOutput?: boolean;
   readonly targetHasOutput?: boolean;
   readonly targetMounted?: boolean;
+  readonly targetWasMounted?: boolean;
 }
 
 /** Proves entry/route context and missing exports remain visible around the mounted page Fiber. */
@@ -62,6 +64,29 @@ describe('Preview Inspector render-tree UI runtime source', () => {
         boundaryProbeRequiresSourcePath: true,
         targetHasOutput: true,
         targetMounted: true,
+      },
+    );
+
+    expect(runtime.readOutputState('CurrentCard')).toMatchObject({
+      hasOutput: true,
+      mounted: true,
+    });
+  });
+
+  /** A redirect removes its boundary before the UI probe, so the retained commit must cross it. */
+  it('carries a latched target mount into navigation-only output probes', () => {
+    const descriptor = {
+      inspector: {
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/CurrentCard.tsx' },
+      },
+    };
+    const runtime = evaluateRenderTreeRuntime(
+      descriptor,
+      { root: { exportName: 'Application', sourcePath: '/workspace/Application.tsx' } },
+      {
+        boundaryProbeRequiresWasMounted: true,
+        targetHasOutput: true,
+        targetWasMounted: true,
       },
     );
 
@@ -811,6 +836,7 @@ function evaluateRenderTreeRuntime(
             targetHasAnyHostOutput: options.targetHasAnyHostOutput === true,
             targetHasOutput: options.targetHasOutput === true,
             targetMounted: options.targetMounted === true,
+            targetWasMounted: options.targetWasMounted === true,
           }],
         ]),
       };
@@ -823,14 +849,19 @@ function evaluateRenderTreeRuntime(
       const matchesPreviewInspectorConditionSourcePath = (left, right) =>
         left === right || left.endsWith('/' + right) || right.endsWith('/' + left);
       const readPreviewInspectorActiveTargetBoundaries =
-        options.boundaryProbeRequiresSourcePath === true ? () => new Set([{}]) : undefined;
+        options.boundaryProbeRequiresSourcePath === true ||
+        options.boundaryProbeRequiresWasMounted === true
+          ? () => new Set([{}])
+          : undefined;
       const collectPreviewInspectorFiberElements = () => [{}];
       const hasMountedPreviewInspectorTarget = options.boundaryProbeRequiresSourcePath === true
         ? (state) => state?.targetSourcePath === '/workspace/CurrentCard.tsx'
         : undefined;
       const hasPreviewInspectorTargetHostOutput = options.boundaryProbeRequiresSourcePath === true
         ? (state) => state?.targetSourcePath === '/workspace/CurrentCard.tsx'
-        : undefined;
+        : options.boundaryProbeRequiresWasMounted === true
+          ? (state) => state?.targetWasMounted === true
+          : undefined;
       ${createPreviewInspectorRenderTreeUiRuntimeSource()}
       globalThis.__runtime = {
         enrich: enrichPreviewInspectorRenderTreeSnapshot,

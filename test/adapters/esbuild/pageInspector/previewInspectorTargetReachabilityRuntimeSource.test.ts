@@ -1,8 +1,10 @@
+/* eslint-disable max-lines -- Reachability scenarios share one generated-runtime VM harness. */
 /** Exercises target-guided DFS selection and requirement rollback registration without mounting project React code. */
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorRequirementFrontierRuntimeSource';
 import { createPreviewInspectorTargetAttemptRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetAttemptRuntimeSource';
+import { createPreviewInspectorTargetOutputRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetOutputRuntimeSource';
 import { createPreviewInspectorTargetPathIdentityRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetPathIdentityRuntimeSource';
 import { createPreviewInspectorTargetReachabilityRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorTargetReachabilityRuntimeSource';
 
@@ -931,6 +933,64 @@ describe('Preview Inspector target reachability runtime source', () => {
     );
 
     expect(context.__result?.applied).toEqual([['guard', false]]);
+  });
+
+  /** A selected file whose complete authored contract is navigation settles after its short commit. */
+  it('reaches a navigation-only target after its route transition removes the boundary', () => {
+    const context: {
+      __result?: {
+        readonly blockers: number;
+        readonly status: string;
+        readonly targetHasOutput: boolean;
+        readonly targetMounted: boolean;
+        readonly targetOutputKind: string;
+        readonly targetRenderedEmpty: boolean;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        ${createEmptyPageTargetRuntimePreambleSource()}
+        ${createPreviewInspectorTargetOutputRuntimeSource()}
+        const hasPreviewInspectorResolvedTargetOutput = createPreviewInspectorTargetOutputFactory();
+        ${createTargetReachabilityFixtureSource()}
+        ${createPageTargetDescriptorCandidateFixtureSource()}
+        descriptor.inspector.renderOutcomesByExport = { Target: { outcomes: [
+          { componentTree: [{ children: [], name: 'Navigate' }], kind: 'jsx' },
+          { componentTree: [{ children: [], name: 'Navigate' }], kind: 'jsx' },
+        ] } };
+        const findSelectedPreviewInspectorDescriptor = () => descriptor;
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        state.pageRootCommitted = true;
+        previewInspectorSession.activeTargetReachabilityKey = state.key;
+        markPreviewInspectorTargetReachabilityMount('Target');
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        previewInspectorSession.targetReachabilityByKey.set('stale-page:Target', {
+          ...state,
+          key: 'stale-page:Target',
+          status: 'probing',
+          targetHasOutput: false,
+          targetMounted: false,
+        });
+        globalThis.__result = {
+          blockers: readPreviewInspectorTargetReachabilityBlockers().length,
+          status: state.status,
+          targetHasOutput: state.targetHasOutput,
+          targetMounted: state.targetMounted,
+          targetOutputKind: state.targetOutputKind,
+          targetRenderedEmpty: state.targetRenderedEmpty,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      blockers: 0,
+      status: 'reached',
+      targetHasOutput: true,
+      targetMounted: true,
+      targetOutputKind: 'target-output',
+      targetRenderedEmpty: true,
+    });
   });
 
   /** Requires a real page commit and never auto-promotes target-only diagnostics to success. */

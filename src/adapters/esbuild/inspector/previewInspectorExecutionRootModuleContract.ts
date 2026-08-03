@@ -8,11 +8,12 @@ import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { collectPreviewTargetModuleExportEvidence } from '../previewTargetExports';
 
 /** Stable identity for absence-safe health transport and exact execution-root imports. */
-export const PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_VERSION = 1;
+export const PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_VERSION = 2;
 export const PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_DIGEST = createHash('sha256')
   .update(
     JSON.stringify({
       arrayUndefined: 'json-null-position',
+      defaultBindingFallback: 'selected-route-surface-only-when-explicitly-proven',
       executionRootBinding: 'compiler-proven-static-exact-import',
       executionRootTargetRoles: 'independent-source-export-surface-contracts',
       objectUndefined: 'omit-member',
@@ -25,7 +26,10 @@ export const PREVIEW_ABSENCE_EXECUTION_ROOT_POLICY_DIGEST = createHash('sha256')
 
 /** Exact prepared-source evidence for the module binding that owns PageExecution. */
 export interface PreviewInspectorExecutionRootModuleContract {
+  /** Exact prepared-module export imported by generated PageExecution source. */
+  readonly bindingExportName: string;
   readonly explicitExportNames: readonly string[];
+  /** Planner-owned surface export identity retained for route-plan equality. */
   readonly exportName: string;
   readonly hasWildcardExport: boolean;
   readonly preparedSourceDigest: string;
@@ -34,6 +38,8 @@ export interface PreviewInspectorExecutionRootModuleContract {
 }
 
 export interface CreatePreviewInspectorExecutionRootModuleContractOptions {
+  /** Allows an uncertain route-local JSX name to resolve to a proven default module binding. */
+  readonly allowDefaultExportFallback?: boolean;
   readonly exportName: string;
   readonly preparedSourceText: string;
   readonly sourcePath: string;
@@ -52,7 +58,13 @@ export function createPreviewInspectorExecutionRootModuleContract(
   }
   const sourcePath = canonicalizeExistingPath(path.normalize(options.sourcePath));
   const evidence = collectPreviewTargetModuleExportEvidence(sourcePath, options.preparedSourceText);
-  if (!evidence.explicitExportNames.includes(options.exportName)) {
+  const bindingExportName = evidence.explicitExportNames.includes(options.exportName)
+    ? options.exportName
+    : options.allowDefaultExportFallback === true &&
+        evidence.explicitExportNames.includes('default')
+      ? 'default'
+      : undefined;
+  if (bindingExportName === undefined) {
     throw new PreviewCompilationError(
       `React Preview could not prove the execution-root export "${options.exportName}".`,
       [
@@ -65,6 +77,7 @@ export function createPreviewInspectorExecutionRootModuleContract(
     );
   }
   return Object.freeze({
+    bindingExportName,
     explicitExportNames: evidence.explicitExportNames,
     exportName: options.exportName,
     hasWildcardExport: evidence.hasWildcardExport,

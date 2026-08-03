@@ -180,17 +180,16 @@ function createPreviewInspectorSelectedRouteLeafCandidate(
   authoredCandidate: PreviewInspectorPageCandidate,
 ): PreviewInspectorPageCandidate | undefined {
   const location = authoredCandidate.routeLocation;
-  if (
-    location === undefined ||
-    !('componentSourcePath' in location) ||
-    location.componentSourcePath === undefined ||
-    ('routeMounts' in location && (location.routeMounts?.length ?? 0) > 0)
-  ) {
+  if (location?.evidenceKind !== 'route-catalog' && location?.evidenceKind !== 'route-jsx') {
+    return undefined;
+  }
+  const componentSourcePath = location.componentSourcePath;
+  if (componentSourcePath === undefined || (location.routeMounts?.length ?? 0) > 0) {
     return undefined;
   }
   const routeRoot = Object.freeze({
     exportName: location.componentExportName ?? 'default',
-    sourcePath: path.normalize(location.componentSourcePath),
+    sourcePath: path.normalize(componentSourcePath),
   });
   if (
     path.normalize(authoredCandidate.root.sourcePath) === routeRoot.sourcePath &&
@@ -362,15 +361,16 @@ function collectVirtualPageShells(
   const outerIndexBySource = new Map(
     omittedOuterPath.map((step, index) => [path.normalize(step.sourcePath), index]),
   );
-  const callbackOwnerStep = findNearestVirtualPageRenderCallbackOwner(
+  const contentPath = path.normalize(contentCandidate.root.sourcePath);
+  const structuralOwnerStep = findNearestVirtualPageStructuralOwner(
     omittedOuterPath,
     shallowVisualPaths,
+    contentPath,
   );
   const ownerSteps = omittedOuterPath.filter(
-    (step) => isVirtualPageOwnerStep(step) || step === callbackOwnerStep,
+    (step) => isVirtualPageOwnerStep(step) || step === structuralOwnerStep,
   );
   const ownerSourcePaths = new Set(ownerSteps.map((step) => path.normalize(step.sourcePath)));
-  const contentPath = path.normalize(contentCandidate.root.sourcePath);
   const competingPageRootKeys = new Set(
     pageCandidates
       .filter(
@@ -455,19 +455,19 @@ function collectVirtualPageShells(
   /*
    * A layout can be the selected corridor node itself rather than a one-hop sibling. Retain that
    * authored module before sibling shells so Header/Sidebar imports beneath RootLayout remain part
-   * of the generated source. The runtime loader tries this component-shaped label first and the
-   * module's default export second, covering ordinary default-imported layouts without source I/O.
+   * of the generated source. Prefer the public export already proven for this exact render-path
+   * step; the component-shaped label remains a fallback only when no checkpoint proved a binding.
    */
   for (const step of ownerSteps) {
-    const exportName = inferVirtualPagePathShellExportName(step.label);
-    const key = `${path.normalize(step.sourcePath)}\0${exportName}`;
+    const root = resolveVirtualPageOwnerRoot(step, contentCandidate, pageCandidates);
+    const key = `${path.normalize(root.sourcePath)}\0${root.exportName}`;
     if (emitted.has(key)) continue;
     emitted.add(key);
     shells.push(
       Object.freeze({
         importerPath: step.sourcePath,
         relation: 'owner',
-        root: Object.freeze({ exportName, sourcePath: step.sourcePath }),
+        root,
       }),
     );
   }
@@ -488,7 +488,13 @@ function collectVirtualPageShells(
       }),
     );
   }
-  return Object.freeze(shells);
+  return Object.freeze(
+    shells.sort(
+      (left, right) =>
+        (outerIndexBySource.get(path.normalize(left.importerPath)) ?? Number.MAX_SAFE_INTEGER) -
+        (outerIndexBySource.get(path.normalize(right.importerPath)) ?? Number.MAX_SAFE_INTEGER),
+    ),
+  );
 }
 
 /** Creates one normalized component identity for route-page de-duplication. */
@@ -544,19 +550,27 @@ function isVirtualPageOwnerStep(step: PreviewInspectorVirtualPagePathStep): bool
 }
 
 /**
- * Finds the nearest route-factory owner whose callback returns the page's authentic visual frame.
+ * Finds the nearest route owner whose source owns the page's authentic visual frame.
  *
  * Some application factories receive their page catalog in one argument and a JSX-producing
  * callback in another. Static one-hop evidence then sees the selected page and callback layout as
  * component slots owned by the same exported value. Flattening those slots loses injected routes
  * and passes a ReactNode where receivers expect `children()`; executing the exact corridor owner
- * preserves both contracts. Only the innermost proven owner is selected so outer app bootstraps do
- * not re-enter expensive or unrelated route registries.
+ * preserves both contracts. A route catalog can also flatten its callback layout into a sibling
+ * frame because the selected child arrives through an injected route collection. Mounting that
+ * frame alone would bypass local provider/HOC boundaries in the route-owner source and leave its
+ * navigation or overlay descendants without context. Only the innermost proven route owner is
+ * selected so outer app bootstraps do not re-enter expensive or unrelated route registries.
  */
-function findNearestVirtualPageRenderCallbackOwner(
+function findNearestVirtualPageStructuralOwner(
   omittedOuterPath: readonly PreviewInspectorVirtualPagePathStep[],
   visualPaths: readonly PreviewInspectorOneHopVisualPath[],
+  contentPath: string,
 ): PreviewInspectorVirtualPagePathStep | undefined {
+  const corridorSourcePaths = new Set([
+    contentPath,
+    ...omittedOuterPath.map((step) => path.normalize(step.sourcePath)),
+  ]);
   const renderCallbackImporters = new Set(
     visualPaths
       .filter(
@@ -565,13 +579,29 @@ function findNearestVirtualPageRenderCallbackOwner(
       )
       .map((visualPath) => path.normalize(visualPath.importerPath)),
   );
-  return [...omittedOuterPath]
-    .reverse()
-    .find(
-      (step) =>
-        step.kind === 'route-branch' &&
-        renderCallbackImporters.has(path.normalize(step.sourcePath)),
+  const structuralFramesByImporter = new Map<string, PreviewInspectorOneHopVisualPath[]>();
+  for (const visualPath of visualPaths) {
+    if (
+      visualPath.relation !== 'sibling' ||
+      !isVisualPageFrame(visualPath) ||
+      !corridorSourcePaths.has(path.normalize(visualPath.selectedChildPath))
+    ) {
+      continue;
+    }
+    const importerPath = path.normalize(visualPath.importerPath);
+    const frames = structuralFramesByImporter.get(importerPath) ?? [];
+    frames.push(visualPath);
+    structuralFramesByImporter.set(importerPath, frames);
+  }
+  return [...omittedOuterPath].reverse().find((step) => {
+    if (step.kind !== 'route-branch') return false;
+    const sourcePath = path.normalize(step.sourcePath);
+    if (renderCallbackImporters.has(sourcePath)) return true;
+    const ownerName = inferVirtualPagePathShellExportName(step.label);
+    return (structuralFramesByImporter.get(sourcePath) ?? []).some(
+      (visualPath) => visualPath.renderedLocalName !== ownerName,
     );
+  });
 }
 
 /**
@@ -643,6 +673,41 @@ function inferVirtualPagePathShellExportName(label: string): string {
   if (normalized === 'default' || normalized === '@default') return 'default';
   const finalSegment = normalized.split('.').at(-1) ?? '';
   return /^[A-Za-z_$][\w$]*$/u.test(finalSegment) ? finalSegment : 'default';
+}
+
+/**
+ * Reuses the importable export recovered for the exact corridor step instead of treating its local
+ * JSX label as a module export. This is what maps `import RootLayout from './RootLayout'` back to the
+ * module's real `default` binding while keeping ambiguous, unproven labels on the legacy fallback.
+ */
+function resolveVirtualPageOwnerRoot(
+  step: PreviewInspectorVirtualPagePathStep,
+  contentCandidate: PreviewInspectorPageCandidate,
+  pageCandidates: readonly PreviewInspectorPageCandidate[],
+): PreviewInspectorPageCandidate['root'] {
+  const inferredExportName = inferVirtualPagePathShellExportName(step.label);
+  const sourcePath = path.normalize(step.sourcePath);
+  const renderPathId = contentCandidate.renderPath?.id;
+  const provenRoots = pageCandidates
+    .filter((candidate) => {
+      if (path.normalize(candidate.root.sourcePath) !== sourcePath) return false;
+      if (renderPathId !== undefined && candidate.renderPath?.id !== renderPathId) return false;
+      if (candidate.rootStepIndex === undefined) return false;
+      const candidateStep = candidate.renderPath?.steps[candidate.rootStepIndex];
+      return (
+        candidateStep !== undefined &&
+        path.normalize(candidateStep.sourcePath) === sourcePath &&
+        candidateStep.label === step.label
+      );
+    })
+    .map((candidate) => candidate.root);
+  const exactRoot = provenRoots.find((root) => root.exportName === inferredExportName);
+  const distinctExportNames = new Set(provenRoots.map((root) => root.exportName));
+  const provenRoot = exactRoot ?? (distinctExportNames.size === 1 ? provenRoots[0] : undefined);
+  return Object.freeze({
+    exportName: provenRoot?.exportName ?? inferredExportName,
+    sourcePath: step.sourcePath,
+  });
 }
 
 /** Produces a stable de-duplication key without conflating independent application entries. */

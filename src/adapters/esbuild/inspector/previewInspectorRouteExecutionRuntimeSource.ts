@@ -41,7 +41,8 @@ function createV6Runtime(options: CreatePreviewInspectorRouteExecutionRuntimeSou
           .reverse()
           .reduce((child, local, reverseIndex) => {
             const mountIndex = options.routeSurfaceLocals.length - reverseIndex - 1;
-            const contextPattern = recipe.mounts[mountIndex]?.contextPattern;
+            const mount = recipe.mounts[mountIndex];
+            const contextPattern = mount?.contextPattern;
             const previousBasePath = recipe.mounts[mountIndex - 1]?.basePath;
             const nestedContextPattern =
               mountIndex > 0 && contextPattern !== undefined && previousBasePath !== undefined
@@ -54,7 +55,13 @@ function createV6Runtime(options: CreatePreviewInspectorRouteExecutionRuntimeSou
                   ? routePattern
                   : ''
                 : createPreviewInspectorV6RoutePattern(nestedContextPattern);
-            return `React.createElement(Route, { path: ${JSON.stringify(mountedPattern)}, element: React.createElement(${local}, null) }, ${child})`;
+            const route = `React.createElement(Route, { path: ${JSON.stringify(mountedPattern)}, element: React.createElement(${local}, null) }`;
+            // A proven factory owner renders its own relative route slots. Adding an outer index
+            // child makes React Router discard that owner after an authored Navigate reaches one
+            // of its sibling routes, removing persistent layout, menus, and overlay coordinators.
+            return mount?.contextOrigin === 'virtual-page-owner'
+              ? `${route})`
+              : `${route}, ${child})`;
           }, `React.createElement(Route, { index: true, element: ${options.renderedPage} })`);
   return Object.freeze({
     imports: Object.freeze([

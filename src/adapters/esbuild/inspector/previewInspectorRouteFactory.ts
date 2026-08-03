@@ -6,6 +6,7 @@
  * never evaluates expressions, follows imports, folds templates, or guesses mutable runtime state.
  */
 import ts from 'typescript';
+import { collectPreviewInspectorRouteElementPath } from './previewInspectorRouteElementPath';
 
 const ROUTE_FACTORY_NAME_PATTERN =
   /^(?:create|define)[$_\p{L}\p{N}]*(?:App|Application|Module|Router|Routes)$/u;
@@ -259,7 +260,7 @@ function readRouteFactoryChoices(
           const componentName = readStaticPropertyName(property.name);
           const composition = ts.isIdentifier(value)
             ? undefined
-            : readComposedRouteChoicePath(value, componentName);
+            : readComposedRouteChoicePath(value, componentName, sourceFile);
           add(
             componentName,
             mode,
@@ -297,7 +298,18 @@ function readRouteFactoryChoices(
 function readComposedRouteChoicePath(
   expression: ts.Expression,
   componentName: string | undefined,
+  sourceFile: ts.SourceFile,
 ): { readonly localName: string; readonly wrapperLocalNames: readonly string[] } | undefined {
+  const elementPath = collectPreviewInspectorRouteElementPath(expression, sourceFile);
+  const leaf = elementPath.at(-1);
+  if (leaf !== undefined) {
+    return Object.freeze({
+      localName: leaf.localName,
+      wrapperLocalNames: Object.freeze(
+        [...new Set(elementPath.slice(0, -1).map((item) => item.localName))],
+      ),
+    });
+  }
   if (!ts.isCallExpression(expression)) return undefined;
   const candidates: string[] = [];
   const collect = (candidate: ts.Expression): void => {

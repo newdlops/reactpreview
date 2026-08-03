@@ -10,6 +10,7 @@ import {
   type PreviewDiagnostic,
   type PreviewRouteExecutionPlanArtifact,
 } from '../../domain/preview';
+import type { PreviewCompilerGraphSummary } from '../../domain/previewCompilerActivity';
 // prettier-ignore
 import { throwIfPreviewBuildCancelled, type PreviewBuildExecutionContext } from '../../domain/previewBuildExecution';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
@@ -44,6 +45,8 @@ import {
 } from './inspector/previewInspectorBundleFrontier';
 import { createInspectorSourceGestureSecret } from './previewInspectorSourceGestureSecret';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
+import { isPreviewInspectorNavigationOnlyRenderOutcomePlan } from './pageInspector/previewInspectorTargetOutputRuntimeSource';
+import { analyzePreviewReactRenderOutcomes } from './staticResources/previewReactRenderOutcomes';
 // prettier-ignore
 import { createPreviewGlobalPackageBridgePlugin, discoverPreviewGlobalPackageBridges, type PreviewGlobalPackageBridgePlan } from './globalPackageBridge';
 import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
@@ -121,6 +124,7 @@ import { PreviewProjectUsageCache } from './previewProjectUsageCache';
 import { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
 import {
   PreviewIncrementalBuildCache,
+  type PreviewIncrementalBuildActivityReporter,
   type PreviewIncrementalBuildOptions,
 } from './previewIncrementalBuildCache';
 import {
@@ -707,16 +711,19 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       let portalHostIds = styleContext.portalHostIds;
       const activePageExecutionCandidate =
         preparedBundleExecution?.executionCandidate ?? pageExecutionCandidates[0];
-      context?.reportProgress?.('analyzing-project', {
+      const compilerGraphSummary: PreviewCompilerGraphSummary = {
         analysisCandidateCount: targetUsageProps.inspectorPlan?.pageCandidates.length ?? 0,
         corridorSourceCount: activeInspectorDependencyPaths.length,
         dependencySnapshotCount: request.dependencySnapshots.length,
         discoveryScope: policy.discoveryScope,
         discoveryTruncated: contextDiscoveryTruncated === true,
         executableCandidateCount: activeInspectorPlan === undefined ? 0 : 1,
-        kind: 'graph-plan',
         preparationMode: policy.mode,
         styleSnapshotCount: styleContext.tailwindCandidateSnapshots.length,
+      };
+      context?.reportProgress?.('analyzing-project', {
+        ...compilerGraphSummary,
+        kind: 'graph-plan',
       });
       if (preparedBundleExecution !== undefined) {
         context?.reportProgress?.('analyzing-project', preparedBundleExecution.activity);
@@ -822,6 +829,22 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               selectedExportNames: selectedTargetExportNames,
               sourcePath: runtimeTargetReference.sourcePath,
             }));
+      const navigationOnlyTargetExportNames =
+        targetModuleContract === undefined || targetModuleSourceText === undefined
+          ? []
+          : analyzePreviewReactRenderOutcomes(
+              targetModuleContract.sourcePath,
+              path.normalize(targetModuleContract.sourcePath) ===
+                path.normalize(request.documentPath)
+                ? targetSelection.sourceText
+                : targetModuleSourceText,
+            )
+              .filter(
+                (plan) =>
+                  targetModuleContract.selectedExportNames.includes(plan.exportName) &&
+                  isPreviewInspectorNavigationOnlyRenderOutcomePlan(plan),
+              )
+              .map((plan) => plan.exportName);
       const executionRootRole = activePageExecutionCandidate?.executionRootContract;
       const executionRootSourceText =
         executionRootRole === undefined
@@ -854,6 +877,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         (executionRootRole === undefined || executionRootSourceText === undefined
           ? undefined
           : createPreviewInspectorExecutionRootModuleContract({
+              ...(activePageExecutionCandidate?.criticalSurfaces.find(
+                (surface) => surface.id === executionRootRole.surfaceId,
+              )?.strategy === 'selected-route-surface'
+                ? { allowDefaultExportFallback: true }
+                : {}),
               exportName: executionRootRole.exportName,
               preparedSourceText: targetSelection.prepareSource(
                 canonicalizeExistingPath(executionRootRole.sourcePath),
@@ -877,6 +905,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         environment: PreviewRuntimeEnvironment,
         routerSelection: PreviewRouterBuildSelection,
         globalPackagePlan: PreviewGlobalPackageBridgePlan,
+        adaptivePass: 1 | 2,
         fallbackBoundary?: PreviewSetupFallbackBoundary,
       ): Promise<
         PreviewCompilerBuildExecution & {
@@ -1022,9 +1051,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                             acceptedTargetImportSpecifiers:
                               targetUsageProps.inspectorTargetImportSpecifiers,
                           }),
-                      ...(runtimeTargetMode === undefined
-                        ? { inferredPropsByExport }
-                        : {}),
+                      ...(runtimeTargetMode === undefined ? { inferredPropsByExport } : {}),
+                      navigationOnlyExportNames: navigationOnlyTargetExportNames,
                       targetModuleContract:
                         targetModuleContract ??
                         createPreviewInspectorTargetModuleContract({
@@ -1235,6 +1263,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           styledComponents: styledComponentsCompilerPlan.buildIdentity,
           workspaceRoot: canonicalWorkspaceRoot,
         });
+        const reportNativeActivity: PreviewIncrementalBuildActivityReporter = (activity) => {
+          context?.reportProgress?.('bundling-modules', {
+            ...compilerGraphSummary,
+            ...activity,
+            kind: 'native-build',
+            pass: adaptivePass,
+          });
+        };
         const result =
           fallbackBoundary === undefined
             ? await this.incrementalBuildCache.rebuild({
@@ -1245,6 +1281,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 contextKey: buildPlanIdentity,
                 createOptions: (sourceState, sassBoundary) =>
                   createBuildOptions(sourceState, requirePreviewSassBoundary(sassBoundary)),
+                reportActivity: reportNativeActivity,
                 sassOptions,
                 signal: buildSignal,
                 sourceCompilation,
@@ -1252,6 +1289,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             : await this.incrementalBuildCache.buildOnce(
                 createBuildOptions(undefined, requirePreviewSassBoundary(oneShotSassBoundary)),
                 buildSignal,
+                reportNativeActivity,
               );
         if (oneShotSassBoundary !== undefined) {
           styleDependencyPaths = oneShotSassBoundary.getDependencyPaths();
@@ -1307,6 +1345,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           environment,
           initialRouterSelection,
           initialGlobalPackagePlan,
+          1,
           fallbackBoundary,
         );
         const exactGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
@@ -1336,6 +1375,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             environment,
             exactRouterSelection,
             exactGlobalPackagePlan,
+            2,
             fallbackBoundary,
           );
         }

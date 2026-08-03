@@ -341,7 +341,10 @@ export async function preparePreviewRouteExecutionPlanner(
     );
   }
   if (options.telemetry !== undefined && bundleDiagnostics !== undefined) {
-    emitPreviewRouteExecutionBundleCompleteTelemetry(options.telemetry, bundleDiagnostics.snapshot());
+    emitPreviewRouteExecutionBundleCompleteTelemetry(
+      options.telemetry,
+      bundleDiagnostics.snapshot(),
+    );
   }
   emitPreviewRouteExecutionTelemetry(options.telemetry, 'execution-frontier-ownership', 'start');
   const analysisTarget = activeInspectorPlan?.target ?? analysisPlan?.target;
@@ -514,6 +517,11 @@ export async function preparePreviewRouteExecutionPlanner(
       executionRootRole === undefined || executionRootSourceText === undefined
         ? undefined
         : createPreviewInspectorExecutionRootModuleContract({
+            ...(selectedCandidate?.criticalSurfaces.find(
+              (surface) => surface.id === executionRootRole.surfaceId,
+            )?.strategy === 'selected-route-surface'
+              ? { allowDefaultExportFallback: true }
+              : {}),
             exportName: executionRootRole.exportName,
             preparedSourceText: options.targetSelection.prepareSource(
               canonicalizeExistingPath(executionRootRole.sourcePath),

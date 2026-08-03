@@ -16,13 +16,16 @@ import {
 import { readPreviewInspectorRouteFactoryBasePath } from './previewInspectorRouteFactory';
 import {
   readPreviewInspectorRouteBasePathReference,
+  readPreviewInspectorNormalizedRouteString,
   readStaticJsxBooleanAttribute,
   readStaticJsxStringAttribute,
 } from './previewInspectorRoutePathMetadata';
 import {
   createPreviewInspectorDirectRoutePathEvidence,
   createPreviewInspectorDirectRouteOccurrenceIdentity,
+  readPreviewInspectorDirectRouteCatalogHelperReference,
   readPreviewInspectorDirectRouteCatalogMemberReference,
+  type PreviewInspectorDirectRouteCatalogHelperReference,
   type PreviewInspectorDirectRouteCatalogMemberReference,
 } from './previewInspectorDirectRoutePathEvidence';
 import type {
@@ -601,7 +604,14 @@ function addExpressionChoice(
     sourcePath,
     resolveModule,
   );
+  const catalogHelper = readDirectRouteCatalogHelperReference(
+    pathResolution === 'unresolved' ? pathExpression : undefined,
+    parsed,
+    sourcePath,
+    resolveModule,
+  );
   const pathEvidence = createPreviewInspectorDirectRoutePathEvidence({
+    ...(catalogHelper === undefined ? {} : { catalogHelper }),
     ...(catalogMember === undefined ? {} : { catalogMember }),
     ...(routeBasePath === undefined ? {} : { componentBase: routeBasePath }),
     pathResolution,
@@ -669,7 +679,14 @@ function addDynamicImportChoice(
     sourcePath,
     resolveModule,
   );
+  const catalogHelper = readDirectRouteCatalogHelperReference(
+    pathResolution === 'unresolved' ? pathExpression : undefined,
+    parsed,
+    sourcePath,
+    resolveModule,
+  );
   const pathEvidence = createPreviewInspectorDirectRoutePathEvidence({
+    ...(catalogHelper === undefined ? {} : { catalogHelper }),
     ...(catalogMember === undefined ? {} : { catalogMember }),
     pathResolution,
   });
@@ -713,6 +730,28 @@ function readDirectRouteCatalogMemberReference(
             exportName: imported.exportName,
             sourcePath: registrySourcePath,
           };
+    },
+    sourceFile: parsed.sourceFile,
+  });
+}
+
+/** Reads one imported path helper for later return-value catalog proof. */
+function readDirectRouteCatalogHelperReference(
+  expression: ts.Expression | undefined,
+  parsed: ParsedRouteModule,
+  sourcePath: string,
+  resolveModule: ResolvePreviewRenderGraphModule | undefined,
+): PreviewInspectorDirectRouteCatalogHelperReference | undefined {
+  if (resolveModule === undefined) return undefined;
+  return readPreviewInspectorDirectRouteCatalogHelperReference({
+    expression,
+    resolveHelperBinding: (callee) => {
+      const imported = readImportedExpressionBinding(callee, parsed);
+      if (imported === undefined) return undefined;
+      const helperSourcePath = resolveModule(imported.moduleSpecifier, sourcePath);
+      return helperSourcePath === undefined
+        ? undefined
+        : { exportName: imported.exportName, sourcePath: helperSourcePath };
     },
     sourceFile: parsed.sourceFile,
   });
@@ -866,9 +905,9 @@ function readStaticObjectStringProperty(
   name: string,
 ): string | undefined {
   const property = findObjectProperty(objectLiteral, [name]);
-  return property !== undefined && ts.isStringLiteralLike(property.initializer)
-    ? property.initializer.text
-    : undefined;
+  return property === undefined
+    ? undefined
+    : readPreviewInspectorNormalizedRouteString(property.initializer);
 }
 
 /** Reads an exact descriptor index flag. */
@@ -970,12 +1009,22 @@ function addChoice(
             })
           : choice.pathEvidence.kind === 'catalog-member'
             ? Object.freeze({
-                kind: choice.pathEvidence.kind,
+                kind: 'catalog-member' as const,
                 reference: Object.freeze({
                   ...choice.pathEvidence.reference,
                   normalizerChain: Object.freeze(choice.pathEvidence.reference.normalizerChain),
                 }),
               })
+            : choice.pathEvidence.kind === 'catalog-helper'
+              ? Object.freeze({
+                  kind: 'catalog-helper' as const,
+                  reference: Object.freeze({
+                    ...choice.pathEvidence.reference,
+                    normalizerChain: Object.freeze(
+                      choice.pathEvidence.reference.normalizerChain,
+                    ),
+                  }),
+                })
             : Object.freeze({ kind: choice.pathEvidence.kind }),
       pathResolution: choice.pathResolution,
       ...(choice.routeBasePath === undefined

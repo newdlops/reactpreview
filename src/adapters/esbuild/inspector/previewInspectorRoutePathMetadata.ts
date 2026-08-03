@@ -18,7 +18,7 @@ export interface PreviewInspectorRouteBasePathReference {
   readonly ownerSourcePath?: string;
 }
 
-/** Reads literal JSX attributes without evaluating application expressions. */
+/** Reads literal JSX attributes through bounded one-argument route normalizers. */
 export function readStaticJsxStringAttribute(
   attributes: ts.JsxAttributes,
   name: string,
@@ -30,10 +30,24 @@ export function readStaticJsxStringAttribute(
   if (attribute?.initializer === undefined) return undefined;
   if (ts.isStringLiteral(attribute.initializer)) return attribute.initializer.text;
   return ts.isJsxExpression(attribute.initializer) &&
-    attribute.initializer.expression !== undefined &&
-    ts.isStringLiteralLike(attribute.initializer.expression)
-    ? attribute.initializer.expression.text
+    attribute.initializer.expression !== undefined
+    ? readPreviewInspectorNormalizedRouteString(attribute.initializer.expression)
     : undefined;
+}
+
+/** Reads a static route string below inert one-argument normalization calls. */
+export function readPreviewInspectorNormalizedRouteString(
+  expression: ts.Expression,
+): string | undefined {
+  let current = unwrap(expression);
+  while (
+    ts.isCallExpression(current) &&
+    current.arguments.length === 1 &&
+    current.arguments[0] !== undefined
+  ) {
+    current = unwrap(current.arguments[0]);
+  }
+  return readStaticString(current);
 }
 
 /** Reads `<Route index>` and exact boolean JSX expressions. */

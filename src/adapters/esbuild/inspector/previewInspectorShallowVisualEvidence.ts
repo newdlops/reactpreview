@@ -138,10 +138,20 @@ export function collectPreviewInspectorShallowVisualEvidence(
       ...(resolvedPath === undefined ? {} : { resolvedPath }),
     });
   }
+  const nestFactoryLocalNames = new Set(
+    facts.imports
+      .filter(
+        (imported) =>
+          imported.moduleSpecifier === 'recompose/nest' ||
+          (imported.moduleSpecifier === 'recompose' && imported.importedName === 'nest'),
+      )
+      .map((imported) => imported.localName),
+  );
 
   const transportsByOuterName = collectLocalTransports(
     facts.localEdges,
     localEdgesByOwner,
+    nestFactoryLocalNames,
     valueById,
   );
   let truncated = false;
@@ -297,6 +307,7 @@ function collectLocalTransports(
     string,
     readonly ReturnType<typeof analyzePreviewRenderSource>['moduleFacts']['localEdges'][number][]
   >,
+  nestFactoryLocalNames: ReadonlySet<string>,
   valueById: ReadonlyMap<
     string,
     ReturnType<typeof analyzePreviewRenderSource>['moduleFacts']['values'][number]
@@ -309,17 +320,24 @@ function collectLocalTransports(
       continue;
     }
     const kind = classifyLocalTransport(edge.invocation?.mode);
+    const ownerEdges = localEdgesByOwner.get(edge.ownerId) ?? [];
+    const nestedProvider =
+      !nestFactoryLocalNames.has(readRootLocalName(edge.childLocalName)) &&
+      isPreviewInspectorComponentShapedBinding(edge.childLocalName) &&
+      ownerEdges.some((ownerEdge) =>
+        nestFactoryLocalNames.has(readRootLocalName(ownerEdge.childLocalName)),
+      );
     const simpleAlias =
       kind === undefined &&
       edge.kind === 'value-flow' &&
       edge.invocation === undefined &&
       (localEdgesByOwner.get(edge.ownerId)?.length ?? 0) === 1 &&
       isPreviewInspectorComponentShapedBinding(edge.childLocalName);
-    if (kind === undefined && !simpleAlias) continue;
+    if (kind === undefined && !simpleAlias && !nestedProvider) continue;
     const transport: LocalTransport = Object.freeze({
       edge: Object.freeze({
         fromLocalName: edge.childLocalName,
-        kind: kind ?? 'alias',
+        kind: kind ?? (nestedProvider ? 'hoc' : 'alias'),
         occurrenceStart: edge.occurrenceStart,
         toLocalName: owner.localName,
       }),

@@ -354,6 +354,9 @@ export function createPreviewInspectorRootSource(
       (executionRecipe.kind === 'react-router-v5' || executionRecipe.kind === 'react-router-v6');
     return {
       complete: candidate.complete,
+      ...(candidate.detachedTargetPlacement === undefined
+        ? {}
+        : { detachedTargetPlacement: candidate.detachedTargetPlacement }),
       ...(candidate.contextModule === undefined ? {} : { contextModule: candidate.contextModule }),
       edges: candidate.edges,
       id: candidate.id,

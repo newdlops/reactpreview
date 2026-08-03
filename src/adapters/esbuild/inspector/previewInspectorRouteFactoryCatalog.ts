@@ -15,6 +15,9 @@ export interface PreviewInspectorRouteCatalogPatternEvidence {
   readonly pattern: string;
 }
 
+/** Runtime collision behavior proven by an exact immutable catalog transform. */
+type PreviewInspectorRouteCatalogCollisionPolicy = 'all' | 'last';
+
 /** Collects expected page-name leaves from JSON reachable through a factory catalog binding. */
 export async function collectPreviewInspectorRouteFactoryCatalog(options: {
   readonly catalogBindingKind?: 'export' | 'local';
@@ -39,15 +42,20 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
   const visited = new Set<string>();
   let edges = 0;
 
-  const addPatterns = (value: unknown, catalogSourcePath: string): void => {
+  const addPatterns = (
+    value: unknown,
+    catalogSourcePath: string,
+    collisionPolicy: PreviewInspectorRouteCatalogCollisionPolicy,
+  ): void => {
     const visit = (node: unknown, segments: readonly string[]): void => {
       if (typeof node === 'string') {
         if (!options.expectedComponentNames.has(node)) return;
-        const values = patterns.get(node) ?? [];
         const pattern = joinPreviewInspectorRouteSegments(segments);
+        const values = collisionPolicy === 'last' ? [] : (patterns.get(node) ?? []);
         if (!values.includes(pattern)) values.push(pattern);
         patterns.set(node, values);
-        const evidence = entries.get(node) ?? [];
+        const evidence =
+          collisionPolicy === 'last' ? [] : (entries.get(node) ?? []);
         if (
           !evidence.some(
             (entry) =>
@@ -77,10 +85,11 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
     sourcePath: string,
     requestedName?: string,
     requestedKind: 'export' | 'local' = 'local',
+    collisionPolicy: PreviewInspectorRouteCatalogCollisionPolicy = 'all',
   ): Promise<void> => {
     if (visited.size >= maximumModules || edges >= 96) return;
     const normalizedPath = path.normalize(sourcePath);
-    const key = `${normalizedPath}\0${requestedKind}\0${requestedName ?? '*'}`;
+    const key = `${normalizedPath}\0${requestedKind}\0${requestedName ?? '*'}\0${collisionPolicy}`;
     if (visited.has(key)) return;
     visited.add(key);
     dependencies.add(normalizedPath);
@@ -88,7 +97,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
     if (sourceText === undefined) return;
     if (normalizedPath.toLowerCase().endsWith('.json')) {
       try {
-        addPatterns(JSON.parse(sourceText), normalizedPath);
+        addPatterns(JSON.parse(sourceText), normalizedPath, collisionPolicy);
       } catch {
         // Invalid editor JSON remains unavailable until the next snapshot; no partial evaluation.
       }
@@ -117,7 +126,12 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
         normalizedPath,
       );
       if (resolved !== undefined)
-        await walk(resolved, exportedBinding.reexport.exportName, 'export');
+        await walk(
+          resolved,
+          exportedBinding.reexport.exportName,
+          'export',
+          collisionPolicy,
+        );
       return;
     }
     const requestedLocalName =
@@ -127,6 +141,14 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
       (requestedLocalName === undefined
         ? undefined
         : findLocalInitializer(sourceFile, requestedLocalName));
+    const invertedCatalogName =
+      initializer === undefined ? undefined : readLodashInvertInput(initializer, imports);
+    if (invertedCatalogName !== undefined) {
+      if (edges >= 96) return;
+      edges += 1;
+      await walk(normalizedPath, invertedCatalogName, 'local', 'last');
+      return;
+    }
     /* Same-file immutable data is always followed before imports.  Real route maps commonly use
        `const a = helper(raw); export const b = helper(a)`, where no imported symbol names `a`. */
     if (initializer !== undefined) {
@@ -135,7 +157,7 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
         const local = findLocalInitializer(sourceFile, identifier);
         if (local !== undefined && identifier !== requestedLocalName) {
           edges += 1;
-          await walk(normalizedPath, identifier, 'local');
+          await walk(normalizedPath, identifier, 'local', collisionPolicy);
         }
       }
     }
@@ -147,7 +169,8 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
       if (edges >= 96 || options.resolveModule === undefined) break;
       edges += 1;
       const resolved = options.resolveModule(binding.moduleSpecifier, normalizedPath);
-      if (resolved !== undefined) await walk(resolved, binding.exportName, 'export');
+      if (resolved !== undefined)
+        await walk(resolved, binding.exportName, 'export', collisionPolicy);
     }
     if (initializer !== undefined) {
       for (const identifier of collectIdentifiers(initializer)) {
@@ -156,7 +179,8 @@ export async function collectPreviewInspectorRouteFactoryCatalog(options: {
         const binding = imports.find((candidate) => candidate.localName === identifier);
         if (binding === undefined || options.resolveModule === undefined) continue;
         const resolved = options.resolveModule(binding.moduleSpecifier, normalizedPath);
-        if (resolved !== undefined) await walk(resolved, binding.exportName, 'export');
+        if (resolved !== undefined)
+          await walk(resolved, binding.exportName, 'export', collisionPolicy);
       }
     }
   };
@@ -182,6 +206,38 @@ interface ImportBinding {
   readonly exportName: string;
   readonly localName: string;
   readonly moduleSpecifier: string;
+}
+
+/** Reads only the exact lodash `invert(catalog)` form whose duplicate values use last-write wins. */
+function readLodashInvertInput(
+  expression: ts.Expression,
+  imports: readonly ImportBinding[],
+): string | undefined {
+  const value = unwrap(expression);
+  if (!ts.isCallExpression(value) || value.arguments.length !== 1) return undefined;
+  const input = value.arguments[0] === undefined ? undefined : unwrap(value.arguments[0]);
+  if (input === undefined || !ts.isIdentifier(input)) return undefined;
+  const callee = unwrap(value.expression);
+  if (ts.isIdentifier(callee)) {
+    const binding = imports.find((candidate) => candidate.localName === callee.text);
+    return binding?.moduleSpecifier === 'lodash' && binding.exportName === 'invert'
+      ? input.text
+      : undefined;
+  }
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    callee.name.text !== 'invert' ||
+    !ts.isIdentifier(callee.expression)
+  ) {
+    return undefined;
+  }
+  const receiverName = callee.expression.text;
+  const receiver = imports.find(
+    (candidate) => candidate.localName === receiverName,
+  );
+  return receiver?.moduleSpecifier === 'lodash' && receiver.exportName === 'default'
+    ? input.text
+    : undefined;
 }
 
 /** Exact public export resolution; re-exports remain bounded import edges. */

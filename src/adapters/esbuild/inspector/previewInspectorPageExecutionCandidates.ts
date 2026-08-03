@@ -8,10 +8,16 @@ import type {
   PreviewInspectorComponentReference,
   PreviewInspectorPageCandidate,
 } from './previewInspectorAncestorTypes';
+import type { PreviewInspectorRouteMountEvidence } from './previewInspectorRouteLocationTypes';
 import type { PreviewInspectorTargetMode } from '../../../domain/preview';
 import { createPreviewInspectorPagePathSegments } from './previewInspectorPagePathSegments';
 import { resolvePreviewReactLocalComponentSurface } from '../staticResources/previewReactLocalComponentSurface';
 import { collectPreviewRouterRequirement } from '../previewRouterRequirement';
+import { collectPreviewInspectorRouteFactoryChoices } from './previewInspectorRouteFactoryChoices';
+import {
+  localizePreviewInspectorRoutePathname,
+  relativizePreviewInspectorRoutePattern,
+} from './previewInspectorRoutePatternMatch';
 import {
   createPreviewInspectorVirtualPageCandidates,
   type PreviewInspectorVirtualPageCandidate,
@@ -31,6 +37,11 @@ export interface CreatePreviewInspectorPageExecutionCandidatesOptions {
   readonly targetMode?: PreviewInspectorTargetMode;
 }
 
+interface PreviewInspectorDerivedOwnerRouteMount {
+  readonly evidence: PreviewInspectorRouteMountEvidence;
+  readonly surface: PreviewInspectorMountSurface;
+}
+
 /**
  * Returns candidates in descending fidelity. Application-entry segments are intentionally never
  * converted into a surface, so increasing a source graph above the selected route cannot create a
@@ -41,30 +52,41 @@ export function createPreviewInspectorPageExecutionCandidates(
 ): readonly PreviewInspectorPageExecutionCandidate[] {
   const virtualPage = selectVirtualPageCandidate(options.plan, options.selectedPageCandidateId);
   if (virtualPage === undefined) return Object.freeze([]);
-  const browserCandidate = attachCompilerOwnedRuntimeTarget(
+  const unmountedBrowserCandidate = attachCompilerOwnedRuntimeTarget(
     virtualPage,
     options.plan.target,
     options.targetMode,
   );
   const segments = createPreviewInspectorPagePathSegments({
-    candidate: browserCandidate,
+    candidate: unmountedBrowserCandidate,
     plan: options.plan,
   });
-  const targetSurface = createAuthenticSurface(browserCandidate.target, 'target');
+  const targetSurface = createAuthenticSurface(unmountedBrowserCandidate.target, 'target');
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
-  const detachedRouteLeaf = isDetachedRouteLeaf(browserCandidate, options.plan.target);
-  const detachedCatalogOwnerRetained = hasRetainedDetachedCatalogOwner(browserCandidate);
-  const routeSurfaces = detachedRouteLeaf && !detachedCatalogOwnerRetained
-    ? Object.freeze([])
-    : createRouteSurfaces(browserCandidate);
-  const routeElementSurfaces = createRouteElementSurfaces(browserCandidate);
-  const frameworkSurfaces = createFrameworkSurfaces(browserCandidate);
+  const detachedRouteLeaf =
+    unmountedBrowserCandidate.detachedTargetPlacement === undefined &&
+    isDetachedRouteLeaf(unmountedBrowserCandidate, options.plan.target);
+  const detachedCatalogOwnerRetained = hasRetainedDetachedCatalogOwner(unmountedBrowserCandidate);
+  const routeSurfaces =
+    detachedRouteLeaf && !detachedCatalogOwnerRetained
+      ? Object.freeze([])
+      : createRouteSurfaces(unmountedBrowserCandidate);
+  const routeElementSurfaces = createRouteElementSurfaces(unmountedBrowserCandidate);
+  const frameworkSurfaces = createFrameworkSurfaces(unmountedBrowserCandidate);
   const shellSurfaces = createShellSurfaces(virtualPage);
-  const contextualTargetSurfaces = detachedRouteLeaf && !detachedCatalogOwnerRetained
-    ? []
-    : [targetSurface];
+  const derivedOwnerRouteMount = collectVirtualPageOwnerRouteMount(
+    unmountedBrowserCandidate,
+    virtualPage,
+    shellSurfaces,
+  );
+  const browserCandidate = attachVirtualPageOwnerRouteMount(
+    unmountedBrowserCandidate,
+    derivedOwnerRouteMount,
+  );
+  const contextualTargetSurfaces =
+    detachedRouteLeaf && !detachedCatalogOwnerRetained ? [] : [targetSurface];
   const frameworkEdges = createFrameworkCompositionEdges(
     browserCandidate,
     frameworkSurfaces,
@@ -84,6 +106,7 @@ export function createPreviewInspectorPageExecutionCandidates(
     routeSurfaces,
     pageSurface,
     targetSurface,
+    derivedOwnerRouteMount?.surface,
   );
   const shellEdges = createShellCompositionEdges(virtualPage, shellSurfaces, pageSurface);
   const outerPageSurface = readOuterPageSurface(shellSurfaces, shellEdges, pageSurface);
@@ -93,9 +116,16 @@ export function createPreviewInspectorPageExecutionCandidates(
   );
   const routeElementRoot = routeElementSurfaces[0] ?? outerPageSurface;
   const routeEdges = createRouteCompositionEdges(routeSurfaces, routeElementRoot);
-  const pageTargetEdge = detachedRouteLeaf && !detachedCatalogOwnerRetained
-    ? undefined
-    : createPageTargetEdge(pageSurface, targetSurface);
+  const pageTargetEdge =
+    detachedRouteLeaf && !detachedCatalogOwnerRetained
+      ? undefined
+      : createPageTargetEdge(
+          browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+            ? outerPageSurface
+            : pageSurface,
+          targetSurface,
+          browserCandidate.detachedTargetPlacement,
+        );
   const slicedShellEdges = createShellCompositionEdges(
     virtualPage,
     shellSurfaces,
@@ -112,9 +142,16 @@ export function createPreviewInspectorPageExecutionCandidates(
   );
   const slicedRouteElementRoot = routeElementSurfaces[0] ?? slicedOuterPageSurface;
   const slicedRouteEdges = createRouteCompositionEdges(routeSurfaces, slicedRouteElementRoot);
-  const slicedPageTargetEdge = detachedRouteLeaf && !detachedCatalogOwnerRetained
-    ? undefined
-    : createPageTargetEdge(pageSlicedSurface, targetSurface);
+  const slicedPageTargetEdge =
+    detachedRouteLeaf && !detachedCatalogOwnerRetained
+      ? undefined
+      : createPageTargetEdge(
+          browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+            ? slicedOuterPageSurface
+            : pageSlicedSurface,
+          targetSurface,
+          browserCandidate.detachedTargetPlacement,
+        );
   const localShellEdges =
     pageLocalSurface === undefined
       ? []
@@ -130,7 +167,13 @@ export function createPreviewInspectorPageExecutionCandidates(
   const localPageTargetEdge =
     pageLocalSurface === undefined || (detachedRouteLeaf && !detachedCatalogOwnerRetained)
       ? undefined
-      : createPageTargetEdge(pageLocalSurface, targetSurface);
+      : createPageTargetEdge(
+          browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+            ? (localOuterPageSurface ?? pageLocalSurface)
+            : pageLocalSurface,
+          targetSurface,
+          browserCandidate.detachedTargetPlacement,
+        );
   const evidenceSourcePaths = Object.freeze(
     [...new Set(segments.flatMap((segment) => segment.evidenceSourcePaths))].sort(),
   );
@@ -401,15 +444,18 @@ function attachCompilerOwnedRuntimeTarget(
   targetMode: PreviewInspectorTargetMode | undefined,
 ): PreviewInspectorPageCandidate & { readonly target: PreviewInspectorComponentReference } {
   const location = virtualPage.browserCandidate.routeLocation;
-  const routeTarget =
-    location !== undefined &&
-    'componentSourcePath' in location &&
-    location.componentSourcePath !== undefined
-      ? Object.freeze({
-          exportName: location.componentExportName ?? 'default',
-          sourcePath: path.normalize(location.componentSourcePath),
-        })
+  const routeLocation =
+    location?.evidenceKind === 'route-catalog' || location?.evidenceKind === 'route-jsx'
+      ? location
       : undefined;
+  const componentSourcePath = routeLocation?.componentSourcePath;
+  const routeTarget =
+    componentSourcePath === undefined
+      ? undefined
+      : Object.freeze({
+          exportName: routeLocation?.componentExportName ?? 'default',
+          sourcePath: path.normalize(componentSourcePath),
+        });
   const selectedRouteTarget =
     routeTarget ?? virtualPage.authoredCandidate.target ?? virtualPage.browserCandidate.target;
   if (targetMode === 'selected-route-leaf' && selectedRouteTarget === undefined) {
@@ -592,6 +638,103 @@ function createShellSurfaces(
 }
 
 /**
+ * Recovers the outer Route context from the exact authentic factory owner already selected as a
+ * VirtualPage shell. A leaf catalog can name an inner owner while the rendered composition begins
+ * at an outer factory shell; mounting that shell at the inner base makes its relative Routes miss.
+ */
+function collectVirtualPageOwnerRouteMount(
+  candidate: PreviewInspectorPageCandidate,
+  virtualPage: PreviewInspectorVirtualPageCandidate,
+  shellSurfaces: readonly PreviewInspectorMountSurface[],
+): PreviewInspectorDerivedOwnerRouteMount | undefined {
+  const location = candidate.routeLocation;
+  if (
+    location === undefined ||
+    (location.evidenceKind !== 'route-catalog' && location.evidenceKind !== 'route-jsx')
+  ) {
+    return undefined;
+  }
+  for (let index = virtualPage.recipe.shells.length - 1; index >= 0; index -= 1) {
+    const shell = virtualPage.recipe.shells[index];
+    const surface = shellSurfaces[index];
+    if (shell?.relation !== 'owner' || surface === undefined) continue;
+    const sourceText = readSource(surface.sourcePath);
+    if (sourceText === undefined) continue;
+    const owner = collectPreviewInspectorRouteFactoryChoices({
+      sourcePath: surface.sourcePath,
+      sourceText,
+      targetIdentities: new Set([surface.exportName]),
+    }).owner;
+    if (
+      owner === undefined ||
+      owner.routeSlotCount === 0 ||
+      path.normalize(owner.sourcePath) !== path.normalize(surface.sourcePath) ||
+      owner.exportName !== surface.exportName ||
+      relativizePreviewInspectorRoutePattern(owner.basePath, location.pattern) === undefined ||
+      localizePreviewInspectorRoutePathname(owner.basePath, location.pathname) === undefined
+    ) {
+      continue;
+    }
+    return Object.freeze({
+      evidence: Object.freeze({
+        basePath: owner.basePath,
+        contextOrigin: 'virtual-page-owner' as const,
+        contextPattern: createVirtualPageOwnerContextPattern(owner.basePath),
+        exportName: owner.exportName,
+        hasWildcardFallback: owner.hasWildcardFallback,
+        routeSlotCount: owner.routeSlotCount,
+        sourcePath: path.normalize(owner.sourcePath),
+      }),
+      surface,
+    });
+  }
+  return undefined;
+}
+
+/** Adds a trailing splat so the owner's own relative Routes receive the unmatched child path. */
+function createVirtualPageOwnerContextPattern(basePath: string): string {
+  if (/(?:^|\/)\*$/u.test(basePath)) return basePath;
+  const normalized = basePath === '/' ? '' : basePath.replace(/\/+$/u, '');
+  return `${normalized}/*`;
+}
+
+/**
+ * Publishes derived owner evidence on the compiler-owned browser candidate as well as the recipe.
+ * Runtime ownership validation can therefore compare the generated mount against immutable input
+ * evidence instead of trusting a PageExecution-only edge.
+ */
+function attachVirtualPageOwnerRouteMount(
+  candidate: PreviewInspectorPageCandidate & {
+    readonly target: PreviewInspectorComponentReference;
+  },
+  mount: PreviewInspectorDerivedOwnerRouteMount | undefined,
+): PreviewInspectorPageCandidate & { readonly target: PreviewInspectorComponentReference } {
+  if (mount === undefined) return candidate;
+  const location = candidate.routeLocation;
+  if (
+    location === undefined ||
+    (location.evidenceKind !== 'route-catalog' && location.evidenceKind !== 'route-jsx')
+  ) {
+    return candidate;
+  }
+  const sourcePath = path.normalize(mount.evidence.sourcePath);
+  const dependencyPaths = Object.freeze(
+    [...new Set([...candidate.dependencyPaths, sourcePath])].sort(),
+  );
+  return Object.freeze({
+    ...candidate,
+    dependencyPaths,
+    routeLocation: Object.freeze({
+      ...location,
+      dependencyPaths: Object.freeze(
+        [...new Set([...location.dependencyPaths, sourcePath])].sort(),
+      ),
+      routeMounts: Object.freeze([mount.evidence]),
+    }),
+  });
+}
+
+/**
  * A route recipe may retain an imported local name when static evidence cannot prove whether the
  * authored module exports that name or its default. Keep that legacy-compatible uncertainty at the
  * mount boundary instead of turning a valid default-exported layout into a build failure.
@@ -748,6 +891,7 @@ function createRouteRecipe(
   routeSurfaces: readonly PreviewInspectorMountSurface[],
   pageSurface: PreviewInspectorMountSurface,
   targetSurface: PreviewInspectorMountSurface,
+  derivedOwnerRouteSurface?: PreviewInspectorMountSurface,
 ): PreviewInspectorRouteExecutionRecipe | undefined {
   const location = candidate.routeLocation;
   if (location === undefined) return undefined;
@@ -766,7 +910,12 @@ function createRouteRecipe(
       'Page Execution route recipe does not have a compiler-owned runtime target.',
     );
   }
-  const admittedSurfaces = deduplicateSurfaces([...routeSurfaces, pageSurface, targetSurface]);
+  const admittedSurfaces = deduplicateSurfaces([
+    ...routeSurfaces,
+    ...(derivedOwnerRouteSurface === undefined ? [] : [derivedOwnerRouteSurface]),
+    pageSurface,
+    targetSurface,
+  ]);
   const runtimeTargetSurfaces = admittedSurfaces.filter((surface) =>
     sameSurfaceReference(surface, runtimeTargetReference),
   );
@@ -787,11 +936,12 @@ function createRouteRecipe(
     ),
   );
   const mounts =
-    routeSurfaces.length > 0 || retainsNestedRouteOwner
+    routeSurfaces.length > 0 || retainsNestedRouteOwner || derivedOwnerRouteSurface !== undefined
       ? routeMountEvidence.map((mount, index) =>
           Object.freeze({
             basePath: mount.basePath,
             childSurfaceId: retainedMountSurfaces[index + 1]?.id ?? runtimeTargetSurface.id,
+            ...(mount.contextOrigin === undefined ? {} : { contextOrigin: mount.contextOrigin }),
             ...(mount.contextPattern === undefined ? {} : { contextPattern: mount.contextPattern }),
             hasWildcardFallback: mount.hasWildcardFallback,
             ...(retainedMountSurfaces[index] === undefined
@@ -894,11 +1044,15 @@ function createRouteCompositionEdges(
 function createPageTargetEdge(
   pageSurface: PreviewInspectorMountSurface,
   targetSurface: PreviewInspectorMountSurface,
+  detachedTargetPlacement: PreviewInspectorPageCandidate['detachedTargetPlacement'],
 ): PreviewInspectorPageCompositionEdge | undefined {
   if (isSameSurface(pageSurface, targetSurface)) return undefined;
   return Object.freeze({
     childSurfaceId: targetSurface.id,
-    mode: 'contains-authored-child',
+    mode:
+      detachedTargetPlacement === 'overlay-sibling'
+        ? 'sibling-after'
+        : 'contains-authored-child',
     parentSurfaceId: pageSurface.id,
     placementIndex: 0,
   });

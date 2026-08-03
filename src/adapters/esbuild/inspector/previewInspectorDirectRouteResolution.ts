@@ -5,6 +5,7 @@ import type {
   PreviewInspectorDirectRouteChoice,
   PreviewInspectorDirectRouteComponentReference,
 } from './previewInspectorDirectRouteChoiceTypes';
+import { resolvePreviewInspectorDirectRouteCatalogHelper } from './previewInspectorDirectRouteCatalogHelper';
 import { collectPreviewInspectorRouteFactoryCatalog } from './previewInspectorRouteFactoryCatalog';
 import type { PreviewInspectorFactoryRouteAvailability } from './previewInspectorRouteFactoryManifestTypes';
 import { materializePreviewInspectorRouteBasePath } from './previewInspectorRoutePathMetadata';
@@ -100,20 +101,49 @@ export async function resolvePreviewInspectorDirectRouteChoices(
       else resolved.push(item);
       continue;
     }
-    if (evidence.kind === 'catalog-member') {
+    if (evidence.kind === 'catalog-member' || evidence.kind === 'catalog-helper') {
       const catalogKey = evidence.reference.catalogKey;
       if (catalogKey !== choice.componentName && catalogKey !== choice.reference.exportName) {
         unresolved.push({ availability: 'catalog-unresolved', choice });
         continue;
       }
+      const helperCatalog =
+        evidence.kind === 'catalog-helper'
+          ? await resolvePreviewInspectorDirectRouteCatalogHelper({
+              readSource: options.readSource,
+              reference: evidence.reference,
+            })
+          : undefined;
+      if (evidence.kind === 'catalog-helper' && helperCatalog === undefined) {
+        unresolved.push({ availability: 'catalog-unresolved', choice });
+        continue;
+      }
+      const catalogBindingKind =
+        evidence.kind === 'catalog-member' ? ('export' as const) : helperCatalog?.bindingKind;
+      const catalogBindingName =
+        evidence.kind === 'catalog-member'
+          ? evidence.reference.registryExportName
+          : helperCatalog?.bindingName;
+      const catalogRootSourcePath =
+        evidence.kind === 'catalog-member'
+          ? evidence.reference.registrySourcePath
+          : helperCatalog?.sourcePath;
+      if (
+        catalogBindingKind === undefined ||
+        catalogBindingName === undefined ||
+        catalogRootSourcePath === undefined
+      ) {
+        unresolved.push({ availability: 'catalog-unresolved', choice });
+        continue;
+      }
       const catalog = await collectPreviewInspectorRouteFactoryCatalog({
-        catalogBindingKind: 'export',
-        catalogBindingName: evidence.reference.registryExportName,
+        catalogBindingKind,
+        catalogBindingName,
         expectedComponentNames: new Set([catalogKey]),
         maximumModules: 12,
         readSource: options.readSource,
         ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-        sourcePath: evidence.reference.registrySourcePath,
+        sourcePath: catalogRootSourcePath,
       });
       const entries = catalog.entriesByComponentName.get(catalogKey) ?? [];
       const patterns = [
@@ -150,6 +180,9 @@ export async function resolvePreviewInspectorDirectRouteChoices(
               [
                 choice.sourcePath,
                 choice.reference.sourcePath,
+                ...(evidence.kind === 'catalog-helper'
+                  ? [evidence.reference.helperSourcePath]
+                  : [evidence.reference.registrySourcePath]),
                 ...catalog.dependencyPaths,
                 ...catalogSources,
               ],

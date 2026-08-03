@@ -21,6 +21,8 @@ export interface PreviewInspectorRouteLocation {
 /** One immutable app-module mount used to localize a directly mounted route owner. */
 export interface PreviewInspectorRouteMountEvidence {
   readonly basePath: string;
+  /** Marks a route context derived from an already-authenticated VirtualPage factory owner. */
+  readonly contextOrigin?: 'virtual-page-owner';
   readonly contextPattern?: string;
   readonly exportName: string;
   readonly hasWildcardFallback: boolean;

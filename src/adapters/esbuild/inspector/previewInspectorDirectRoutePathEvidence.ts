@@ -17,6 +17,14 @@ export interface PreviewInspectorDirectRouteCatalogMemberReference {
   readonly registrySourcePath: string;
 }
 
+/** Exact imported helper that returns a catalog lookup keyed by its first argument. */
+export interface PreviewInspectorDirectRouteCatalogHelperReference {
+  readonly catalogKey: string;
+  readonly helperExportName: string;
+  readonly helperSourcePath: string;
+  readonly normalizerChain: readonly string[];
+}
+
 /** Classifies the bounded source evidence attached to one direct route occurrence. */
 export type PreviewInspectorDirectRoutePathEvidence =
   | { readonly kind: 'literal' }
@@ -28,10 +36,15 @@ export type PreviewInspectorDirectRoutePathEvidence =
       readonly kind: 'catalog-member';
       readonly reference: PreviewInspectorDirectRouteCatalogMemberReference;
     }
+  | {
+      readonly kind: 'catalog-helper';
+      readonly reference: PreviewInspectorDirectRouteCatalogHelperReference;
+    }
   | { readonly kind: 'unresolved' };
 
 /** Chooses one exclusive evidence channel after syntax extraction. */
 export function createPreviewInspectorDirectRoutePathEvidence(options: {
+  readonly catalogHelper?: PreviewInspectorDirectRouteCatalogHelperReference;
   readonly catalogMember?: PreviewInspectorDirectRouteCatalogMemberReference;
   readonly componentBase?: PreviewInspectorRouteBasePathReference;
   readonly pathResolution: 'resolved' | 'unresolved';
@@ -42,6 +55,9 @@ export function createPreviewInspectorDirectRoutePathEvidence(options: {
   }
   if (options.catalogMember !== undefined) {
     return Object.freeze({ kind: 'catalog-member', reference: options.catalogMember });
+  }
+  if (options.catalogHelper !== undefined) {
+    return Object.freeze({ kind: 'catalog-helper', reference: options.catalogHelper });
   }
   return Object.freeze({ kind: 'unresolved' });
 }
@@ -88,6 +104,53 @@ export function readPreviewInspectorDirectRouteCatalogMemberReference(options: {
   });
 }
 
+/** Reads an imported catalog helper through inert outer one-argument normalizers. */
+export function readPreviewInspectorDirectRouteCatalogHelperReference(options: {
+  readonly expression: ts.Expression | undefined;
+  readonly resolveHelperBinding: (
+    expression: ts.Expression,
+  ) =>
+    | {
+        readonly exportName: string;
+        readonly sourcePath: string;
+      }
+    | undefined;
+  readonly sourceFile: ts.SourceFile;
+}): PreviewInspectorDirectRouteCatalogHelperReference | undefined {
+  if (options.expression === undefined) return undefined;
+  const normalizerChain: string[] = [];
+  let current = unwrap(options.expression);
+  while (
+    ts.isCallExpression(current) &&
+    current.arguments.length === 1 &&
+    current.arguments[0] !== undefined
+  ) {
+    const argument = unwrap(current.arguments[0]);
+    const helper = options.resolveHelperBinding(current.expression);
+    if (ts.isStringLiteralLike(argument) && helper !== undefined && helper.exportName !== '*') {
+      return Object.freeze({
+        catalogKey: argument.text,
+        helperExportName: helper.exportName,
+        helperSourcePath: path.normalize(helper.sourcePath),
+        normalizerChain: Object.freeze(normalizerChain),
+      });
+    }
+    normalizerChain.push(current.expression.getText(options.sourceFile));
+    current = argument;
+  }
+  if (!ts.isCallExpression(current) || current.arguments[0] === undefined) return undefined;
+  const catalogKey = unwrap(current.arguments[0]);
+  if (!ts.isStringLiteralLike(catalogKey)) return undefined;
+  const helper = options.resolveHelperBinding(current.expression);
+  if (helper === undefined || helper.exportName === '*') return undefined;
+  return Object.freeze({
+    catalogKey: catalogKey.text,
+    helperExportName: helper.exportName,
+    helperSourcePath: path.normalize(helper.sourcePath),
+    normalizerChain: Object.freeze(normalizerChain),
+  });
+}
+
 /** Canonical occurrence identity; component names never correlate independent occurrences. */
 export function createPreviewInspectorDirectRouteOccurrenceIdentity(input: {
   readonly componentName: string;
@@ -115,13 +178,21 @@ export function createPreviewInspectorDirectRouteOccurrenceIdentity(input: {
               sourcePath: path.normalize(input.pathEvidence.reference.sourcePath),
               suffix: input.pathEvidence.reference.suffix,
             }
-          : {
-              catalogKey: input.pathEvidence.reference.catalogKey,
-              kind: input.pathEvidence.kind,
-              normalizerChain: input.pathEvidence.reference.normalizerChain,
-              registryExportName: input.pathEvidence.reference.registryExportName,
-              registrySourcePath: path.normalize(input.pathEvidence.reference.registrySourcePath),
-            },
+          : input.pathEvidence.kind === 'catalog-member'
+            ? {
+                catalogKey: input.pathEvidence.reference.catalogKey,
+                kind: input.pathEvidence.kind,
+                normalizerChain: input.pathEvidence.reference.normalizerChain,
+                registryExportName: input.pathEvidence.reference.registryExportName,
+                registrySourcePath: path.normalize(input.pathEvidence.reference.registrySourcePath),
+              }
+            : {
+                catalogKey: input.pathEvidence.reference.catalogKey,
+                helperExportName: input.pathEvidence.reference.helperExportName,
+                helperSourcePath: path.normalize(input.pathEvidence.reference.helperSourcePath),
+                kind: input.pathEvidence.kind,
+                normalizerChain: input.pathEvidence.reference.normalizerChain,
+              },
     pattern: input.pattern,
   });
 }

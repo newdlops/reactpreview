@@ -13,6 +13,7 @@ import {
   createPreviewInspectorModuleConsumerPagePlan,
   hasPreviewInspectorCallableModuleExports,
 } from './inspector/previewInspectorModuleConsumerPagePlan';
+import { createPreviewInspectorDetachedOverlayPagePlan } from './inspector/previewInspectorDetachedOverlayPagePlan';
 import {
   createPreviewInspectorAncestorPlan,
   type PreviewInspectorAncestorCandidateTemplates,
@@ -378,7 +379,7 @@ export async function preparePreviewCompilerUsage(
       });
       return Object.freeze({ corridor, packageSourcePaths });
     };
-    const { corridor } =
+    const { corridor, packageSourcePaths } =
       options.usageContext === undefined
         ? await computeFastContext()
         : await options.usageContext.getFastContext(computeFastContext);
@@ -442,6 +443,31 @@ export async function preparePreviewCompilerUsage(
           inspectorPlan,
           corridor.truncated,
           corridor.shallowVisualPaths,
+        );
+      }
+    }
+    if (fastGenericExportName !== undefined) {
+      const detachedOverlayPlan = await createPreviewInspectorDetachedOverlayPagePlan({
+        acceptedImportSpecifiers: (target) =>
+          options.resolver.getMatchedSpecifiers(target.sourcePath),
+        documentPath: request.documentPath,
+        exportName: fastGenericExportName,
+        projectRoot: options.projectRoot,
+        readSource,
+        resolveModule: options.resolver.resolve,
+        ...(request.inspectorRouteSelection === undefined
+          ? {}
+          : { routeSelection: request.inspectorRouteSelection }),
+        ...(signal === undefined ? {} : { signal }),
+        sourcePaths: packageSourcePaths,
+        workspaceRoot: options.workspaceRoot,
+      });
+      if (detachedOverlayPlan !== undefined) {
+        return createPreparedInspectorUsage(
+          options,
+          detachedOverlayPlan.plan,
+          detachedOverlayPlan.truncated,
+          detachedOverlayPlan.shallowVisualPaths,
         );
       }
     }

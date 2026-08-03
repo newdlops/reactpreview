@@ -394,6 +394,13 @@ export async function collectPreviewInspectorRouteBranchPlan(
     } else if (desired !== undefined && requested === undefined) {
       selectionResolution = 'fallback';
     }
+    if (
+      parentBranch !== undefined &&
+      repeatsSelectedRouteOwner(parentBranch, selected, ownerPath, ownerExportName)
+    ) {
+      parentBranch.childState = 'leaf';
+      break;
+    }
     const levelBranches = levelChoices.map((choice) => {
       const nextSelectionPath = Object.freeze([
         ...selectionPath,
@@ -525,6 +532,22 @@ function composeNestedRouteChoice(
       pathname: composed.pathname,
       pattern: composed.pattern,
     }),
+  );
+}
+
+/** Stops a same-source leaf from recursively rediscovering its containing route declaration. */
+function repeatsSelectedRouteOwner(
+  parent: MutableRouteBranch,
+  selected: PreviewInspectorRouteLocation,
+  ownerSourcePath: string,
+  ownerExportName: string,
+): boolean {
+  return (
+    selected.componentName === parent.componentName &&
+    selected.pattern === parent.pattern &&
+    selected.componentSourcePath !== undefined &&
+    path.normalize(selected.componentSourcePath) === path.normalize(ownerSourcePath) &&
+    (selected.componentExportName ?? 'default') === ownerExportName
   );
 }
 

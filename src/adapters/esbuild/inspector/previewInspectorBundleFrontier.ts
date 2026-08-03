@@ -173,6 +173,15 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       readRawSource,
       resolveModule,
       checkAuthoredPath,
+    );
+    await collectExactVisualAdmissions(
+      authenticRuntimeTargetSurface,
+      optionalExportsByPath,
+      optionalIdentities,
+      pending,
+      readRawSource,
+      resolveModule,
+      checkAuthoredPath,
       'dynamic-import',
     );
   }
@@ -606,6 +615,7 @@ function createPreviewInspectorBundleSourceClosureKey(
           ] as const,
       ),
     ),
+    collectPreviewInspectorExecutionCorridorSeedPaths(options.plan, candidate),
     sortRows(
       candidate.optionalSurfaces.map(
         (surface) =>
@@ -904,8 +914,16 @@ function collectExactSeedPaths(
   plan: PreviewInspectorAncestorPlan,
   executionCandidate: PreviewInspectorPageExecutionCandidate | undefined,
 ): readonly string[] {
-  if (executionCandidate !== undefined)
-    return executionCandidate.criticalSurfaces.map((surface) => surface.sourcePath);
+  if (executionCandidate !== undefined) {
+    return [
+      ...new Set([
+        ...executionCandidate.criticalSurfaces.map((surface) =>
+          path.normalize(surface.sourcePath),
+        ),
+        ...collectPreviewInspectorExecutionCorridorSeedPaths(plan, executionCandidate),
+      ]),
+    ].sort();
+  }
   const active = plan.pageCandidates[0];
   const paths = new Set<string>([plan.target.sourcePath, plan.root.sourcePath]);
   const addReference = (reference: { readonly sourcePath: string } | undefined): void => {
@@ -939,6 +957,49 @@ function collectExactSeedPaths(
   for (const contextPath of plan.contextModule?.importPath ?? []) paths.add(contextPath);
   return [...paths].map((sourcePath) => path.normalize(sourcePath)).sort();
 }
+
+/**
+ * Retains the selected lazy/HOC descent between a generated page root and the current-file target.
+ *
+ * Page Execution surfaces describe the mount topology, but an authentic route owner can still
+ * reach its selected descendant through a barrel, React.lazy import, permission HOC, and ordinary
+ * component parents. Those modules are compiler-proven by the same selected render path and must
+ * remain authentic frontier members; otherwise broad-registry pruning replaces the lazy page and
+ * the authored owner legitimately falls through without ever invoking the target. Steps outside
+ * the chosen page root remain excluded so application entry and unrelated outer routes do not
+ * expand the bounded execution slice.
+ */
+function collectPreviewInspectorExecutionCorridorSeedPaths(
+  plan: PreviewInspectorAncestorPlan,
+  executionCandidate: PreviewInspectorPageExecutionCandidate,
+): readonly string[] {
+  const pageCandidate = plan.pageCandidates.find(
+    (candidate) => candidate.id === executionCandidate.browserCandidate.id,
+  );
+  const rootStepIndex = pageCandidate?.rootStepIndex;
+  const steps = pageCandidate?.renderPath?.steps;
+  if (
+    steps === undefined ||
+    !Number.isSafeInteger(rootStepIndex) ||
+    rootStepIndex === undefined ||
+    rootStepIndex < 0 ||
+    rootStepIndex >= steps.length
+  ) {
+    return Object.freeze([]);
+  }
+  const provenPaths = new Set(
+    executionCandidate.evidenceSourcePaths.map((sourcePath) => path.normalize(sourcePath)),
+  );
+  const corridorPaths = new Set<string>();
+  for (const step of steps.slice(0, rootStepIndex + 1)) {
+    for (const sourcePath of [step.sourcePath, ...(step.evidenceSourcePaths ?? [])]) {
+      const normalizedPath = path.normalize(sourcePath);
+      if (provenPaths.has(normalizedPath)) corridorPaths.add(normalizedPath);
+    }
+  }
+  return Object.freeze([...corridorPaths].sort());
+}
+
 /** Excludes installed dependencies and non-source resources from authored graph accounting. */
 function isAuthoredPath(workspaceRoot: string, sourcePath: string): boolean {
   const relative = path.relative(path.normalize(workspaceRoot), path.normalize(sourcePath));

@@ -70,6 +70,11 @@ export type PreviewInspectorAncestorStopReason =
 export interface PreviewInspectorPageCandidate {
   /** `true` when reverse owner discovery reached the outermost package-local usage. */
   readonly complete: boolean;
+  /**
+   * Explicit compiler-owned placement for an unconsumed overlay composed above a strongly related
+   * authored page. Ordinary candidates omit this and preserve their proven containment edge.
+   */
+  readonly detachedTargetPlacement?: 'overlay-sibling';
   /** Candidate-specific selected module context when a hook/HOC feeds several page components. */
   readonly contextModule?: PreviewInspectorModuleContextReference;
   /** Files that prove this candidate and should invalidate it during hot reload. */

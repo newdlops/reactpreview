@@ -178,7 +178,9 @@ function validateNestedMountChain(
     return 'does not have one complete compiler-owned nested mount chain';
   }
   const routeSelection = options.routeSelection ?? [];
-  const contextualMountCount = mounts.filter((mount) => mount.contextPattern !== undefined).length;
+  const contextualMountCount = mounts.filter(
+    (mount) => mount.contextPattern !== undefined && mount.contextOrigin !== 'virtual-page-owner',
+  ).length;
   // Selecting a proven route-owner prefix is exact even when the planner descends automatically
   // through that owner's deterministic default children to obtain visible runtime output.
   if (
@@ -206,6 +208,7 @@ function validateNestedMountChain(
       parentSurface === undefined ||
       mount.childSurfaceId === mount.parentSurfaceId ||
       visited.has(mount.childSurfaceId) ||
+      mount.contextOrigin !== evidence.contextOrigin ||
       mount.contextPattern !== evidence.contextPattern ||
       mount.basePath !== evidence.basePath ||
       mount.hasWildcardFallback !== evidence.hasWildcardFallback ||
@@ -214,12 +217,15 @@ function validateNestedMountChain(
       parentSurface.exportName !== evidence.exportName ||
       (options.routeSelectionResolution === 'exact' &&
         mount.contextPattern !== undefined &&
+        mount.contextOrigin !== 'virtual-page-owner' &&
         routeSelectionIndex < routeSelection.length &&
         routeSelection[routeSelectionIndex]?.pattern !== mount.contextPattern)
     ) {
       return 'contains a mismatched, cyclic, ambiguous, or reordered nested mount edge';
     }
-    if (mount.contextPattern !== undefined) routeSelectionIndex += 1;
+    if (mount.contextPattern !== undefined && mount.contextOrigin !== 'virtual-page-owner') {
+      routeSelectionIndex += 1;
+    }
     visited.add(mount.childSurfaceId);
     currentSurfaceId = mount.childSurfaceId;
   }

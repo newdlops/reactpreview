@@ -59,6 +59,7 @@ export function createPreviewInspectorPageExecutionSource(
   const root = surfaces.find((surface) => surface.id === options.candidate.executionRootSurfaceId);
   if (root === undefined)
     return 'export default function PreviewInspectorPageExecution() { return null; }';
+  const compositionRoot = surfaces.find((surface) => !childIds.has(surface.id)) ?? root;
   const render = (surfaceId: string, active: Set<string>): string => {
     const local = localById.get(surfaceId);
     if (local === undefined || active.has(surfaceId)) return 'null';
@@ -91,7 +92,7 @@ export function createPreviewInspectorPageExecutionSource(
       ? current
       : `React.createElement(React.Fragment, null, ${[...before, current, ...after].join(', ')})`;
   };
-  const renderedRoot = render(root.id, new Set());
+  const renderedRoot = render(compositionRoot.id, new Set());
   const routeRecipe = options.candidate.routeRecipe;
   const routerSurfaceIds = new Set(
     routeRecipe?.mounts
@@ -101,6 +102,10 @@ export function createPreviewInspectorPageExecutionSource(
   const routerPageSurfaceId = routeRecipe?.mounts.at(-1)?.childSurfaceId;
   const routerRenderedPage =
     routerPageSurfaceId === undefined ? renderedRoot : render(routerPageSurfaceId, new Set());
+  const virtualPageOwnerSurfaceId = routeRecipe?.mounts.find(
+    (mount) => mount.contextOrigin === 'virtual-page-owner',
+  )?.parentSurfaceId;
+  const virtualPageOwnerFrameLocal = 'PreviewInspectorVirtualPageOwnerRouteFrame';
   const routerRuntime =
     routeRecipe === undefined
       ? undefined
@@ -108,11 +113,24 @@ export function createPreviewInspectorPageExecutionSource(
           recipe: routeRecipe,
           renderedPage: routerRenderedPage,
           routeSurfaceLocals: [...routerSurfaceIds]
-            .map((surfaceId) => localById.get(surfaceId))
+            .map((surfaceId) =>
+              surfaceId === virtualPageOwnerSurfaceId
+                ? virtualPageOwnerFrameLocal
+                : localById.get(surfaceId),
+            )
             .filter((local): local is string => local !== undefined),
         });
+  const virtualPageOwnerFrame =
+    routerRuntime !== undefined &&
+    virtualPageOwnerSurfaceId !== undefined &&
+    localById.has(virtualPageOwnerSurfaceId)
+      ? [`function ${virtualPageOwnerFrameLocal}() {`, `  return ${renderedRoot};`, '}']
+      : [];
   const routeStatePrelude = shouldInstallPreviewInspectorPageRouteStatePrelude(routeRecipe);
   const routeElement = routerRuntime !== undefined ? routerRuntime.routeElement : renderedRoot;
+  const virtualPageSourceRegistrations = createVirtualPageSourceRegistrations(
+    options.candidate.optionalSurfaces,
+  );
   return [
     "import React from 'react';",
     ...(routeStatePrelude
@@ -120,10 +138,35 @@ export function createPreviewInspectorPageExecutionSource(
       : []),
     ...imports,
     ...(routerRuntime?.imports ?? []),
+    ...virtualPageSourceRegistrations,
+    ...virtualPageOwnerFrame,
     'export default function PreviewInspectorPageExecution() {',
     `  return ${routeElement};`,
     '}',
   ].join('\n');
+}
+
+/**
+ * Registers only compiler-proven visual descendants of the selected execution surfaces.
+ * Authentic frozen-frontier modules do not pass through the ordinary VirtualPage component facade,
+ * so without this prelude their early-return guards cannot choose the proven child continuation.
+ */
+function createVirtualPageSourceRegistrations(
+  optionalSurfaces: readonly PreviewInspectorMountSurface[] | undefined,
+): readonly string[] {
+  const sourcePaths = [
+    ...new Set(
+      (optionalSurfaces ?? []).map((surface) =>
+        canonicalizeExistingPath(path.normalize(surface.sourcePath)),
+      ),
+    ),
+  ].sort();
+  return Object.freeze(
+    sourcePaths.map(
+      (sourcePath) =>
+        `globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')]?.registerVirtualPageSource?.(${JSON.stringify(sourcePath)});`,
+    ),
+  );
 }
 
 function createSurfaceImport(
@@ -179,12 +222,15 @@ function createSurfaceImport(
     const namespace = `${local}Module`;
     return [
       `import * as ${namespace} from ${JSON.stringify(specifier)};`,
-      `const ${local} = ${namespace}[${JSON.stringify(surface.exportName)}] ?? ${namespace}.default;`,
+      `const ${local} = Reflect.get(${namespace}, ${JSON.stringify(surface.exportName)}) ?? Reflect.get(${namespace}, 'default');`,
     ].join('\n');
   }
-  return surface.exportName === 'default'
+  const bindingExportName = isExecutionRoot
+    ? executionRootModuleContract.bindingExportName
+    : surface.exportName;
+  return bindingExportName === 'default'
     ? `import ${local} from ${JSON.stringify(specifier)};`
-    : `import { ${surface.exportName} as ${local} } from ${JSON.stringify(specifier)};`;
+    : `import { ${bindingExportName} as ${local} } from ${JSON.stringify(specifier)};`;
 }
 
 function composeEdge(

@@ -59,6 +59,7 @@ export type {
 } from './previewInspectorRouteLocationTypes';
 const MAX_ROUTE_REGISTRY_SOURCES = 48;
 const MAX_ROUTE_CATALOGS = 16;
+const MAX_CONTEXTUAL_FACTORY_MANIFESTS = 16;
 /*
  * Candidates are inert path/component records. The branch planner admits only one active choice to
  * the bundle corridor, so retaining a large application catalog here does not bundle every page.
@@ -134,44 +135,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
     sourcePath: options.documentPath,
     sourceText: targetText,
   });
-  const manifestLocations =
-    factoryManifest?.routes.map((route) => {
-      const elementWrappers = route.elementWrappers ?? [];
-      return Object.freeze({
-        componentExportName: route.componentExportName,
-        componentName: route.componentName,
-        componentSourcePath: route.componentSourcePath,
-        dependencyPaths: Object.freeze(
-          [
-            ...new Set([
-              ...factoryManifest.dependencies,
-              ...route.catalogSourcePaths,
-              route.componentSourcePath,
-              ...elementWrappers.map((wrapper) => wrapper.sourcePath),
-            ]),
-          ].sort(),
-        ),
-        ...(elementWrappers.length === 0
-          ? {}
-          : { elementWrappers: Object.freeze(elementWrappers) }),
-        evidenceKind: 'route-catalog' as const,
-        pathname: materializeRoutePattern(
-          route.absolutePattern,
-          factoryManifest.routes.map((entry) => entry.absolutePattern),
-        ),
-        routeMounts: Object.freeze([
-          Object.freeze({
-            basePath: factoryManifest.basePattern,
-            exportName: factoryManifest.ownerExportName,
-            hasWildcardFallback: factoryManifest.fallbacks.length > 0,
-            routeSlotCount: factoryManifest.routeSlotCount,
-            sourcePath: factoryManifest.ownerSourcePath,
-          }),
-        ]),
-        pattern: route.absolutePattern,
-        sourcePath: factoryManifest.ownerSourcePath,
-      });
-    }) ?? [];
+  const manifestLocations = materializeFactoryManifestLocations(factoryManifest);
   const factoryChoices = factoryChoiceInventory.choices;
   const choiceComponentNames = [
     ...new Set([
@@ -237,6 +201,59 @@ export async function collectPreviewInspectorRouteLocationInventory(
       ...registrySources,
     ]),
   ];
+  const contextualManifestLocations: PreviewInspectorRouteLocation[] = [];
+  const contextualFactoryOwners = new Set<string>();
+  for (const sourcePath of analysisSources) {
+    if (
+      contextualFactoryOwners.size >= MAX_CONTEXTUAL_FACTORY_MANIFESTS ||
+      path.normalize(sourcePath) === path.normalize(options.documentPath)
+    ) {
+      continue;
+    }
+    const sourceText = await readCachedSource(sourcePath, options.readSource, sourceCache);
+    if (sourceText === undefined) continue;
+    const sourceFile = ts.createSourceFile(
+      sourcePath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const ownerNames = collectPreviewInspectorRouteFactoryEvidence(sourceFile)
+      .map((factory) => factory.componentName)
+      .filter(
+        (componentName): componentName is string =>
+          componentName !== undefined && factoryOwnerIdentities.has(componentName),
+      );
+    for (const ownerName of ownerNames) {
+      if (contextualFactoryOwners.size >= MAX_CONTEXTUAL_FACTORY_MANIFESTS) break;
+      const ownerKey = `${path.normalize(sourcePath)}\0${ownerName}`;
+      if (contextualFactoryOwners.has(ownerKey)) continue;
+      contextualFactoryOwners.add(ownerKey);
+      const contextualManifest = await collectPreviewInspectorRouteFactoryManifest({
+        exportName: ownerName,
+        readSource: (candidatePath) =>
+          readCachedSource(candidatePath, options.readSource, sourceCache),
+        ...(options.resolveModule === undefined
+          ? {}
+          : { resolveModule: options.resolveModule }),
+        sourcePath,
+        sourceText,
+      });
+      contextualManifestLocations.push(
+        ...materializeFactoryManifestLocations(contextualManifest)
+          .filter((location) => targetIdentitySet.has(location.componentName))
+          .map((location) =>
+            retargetContextualFactoryLocation(
+              location,
+              options.documentPath,
+              options.exportName,
+              options.renderChain,
+            ),
+          ),
+      );
+    }
+  }
   const candidates: RouteLocationCandidate[] = [];
   const ownerDirectChoiceOccurrences = new Set(
     ownerDirectChoiceInventory.choices.map((choice) => choice.occurrenceIdentity),
@@ -342,16 +359,13 @@ export async function collectPreviewInspectorRouteLocationInventory(
     .sort(compareRouteCandidates);
   const primaryCandidate =
     [
-      ...rankedCandidates.filter((candidate) =>
-        targetIdentitySet.has(candidate.componentName),
-      ),
+      ...rankedCandidates.filter((candidate) => targetIdentitySet.has(candidate.componentName)),
       ...contextualDirectResolution.selectable
         .filter((resolved) =>
           referencesPreviewInspectorDirectRouteTarget(resolved.choice, options.renderChain.target),
         )
         .map((resolved) => resolved.candidate),
-    ]
-      .sort(compareRouteCandidates)[0] ?? rankedCandidates[0];
+    ].sort(compareRouteCandidates)[0] ?? rankedCandidates[0];
   const ownerDirectChoiceCandidates = ownerDirectResolution.selectable.map(
     (resolved) => resolved.candidate,
   );
@@ -377,7 +391,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
     ),
   );
   const choices = Object.freeze(
-    [...manifestLocations, ...inferredChoices].filter(
+    [...manifestLocations, ...contextualManifestLocations, ...inferredChoices].filter(
       (choice, index, values) =>
         values.findIndex(
           (other) =>
@@ -413,6 +427,9 @@ export async function collectPreviewInspectorRouteLocationInventory(
   );
   const primary =
     manifestLocations.find((choice) => targetIdentitySet.has(choice.componentName)) ??
+    contextualManifestLocations.find((choice) =>
+      targetIdentitySet.has(choice.componentName),
+    ) ??
     contextualPrimary ??
     choices[0];
   const factoryUnresolvedOptions =
@@ -481,8 +498,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
           ),
         }),
     fallbackCount: factoryManifest?.fallbacks.length ?? 0,
-    unresolvedFactoryRoutes:
-      unresolvedOptions.length > 0,
+    unresolvedFactoryRoutes: unresolvedOptions.length > 0,
     ...(unresolvedOptions.length === 0
       ? {}
       : {
@@ -491,6 +507,108 @@ export async function collectPreviewInspectorRouteLocationInventory(
           ),
           unresolvedFactoryOptions: unresolvedOptions,
         }),
+  });
+}
+
+/** Converts one exact route-factory manifest into selectable browser locations. */
+function materializeFactoryManifestLocations(
+  manifest:
+    | NonNullable<Awaited<ReturnType<typeof collectPreviewInspectorRouteFactoryManifest>>>
+    | undefined,
+): readonly PreviewInspectorRouteLocation[] {
+  if (manifest === undefined) return Object.freeze([]);
+  const routePatterns = manifest.routes.map((entry) => entry.absolutePattern);
+  return Object.freeze(
+    manifest.routes.map((route) => {
+      const elementWrappers = route.elementWrappers ?? [];
+      return Object.freeze({
+        componentExportName: route.componentExportName,
+        componentName: route.componentName,
+        componentSourcePath: route.componentSourcePath,
+        dependencyPaths: Object.freeze(
+          [
+            ...new Set([
+              ...manifest.dependencies,
+              ...route.catalogSourcePaths,
+              route.componentSourcePath,
+              ...elementWrappers.map((wrapper) => wrapper.sourcePath),
+            ]),
+          ].sort(),
+        ),
+        ...(elementWrappers.length === 0
+          ? {}
+          : { elementWrappers: Object.freeze(elementWrappers) }),
+        evidenceKind: 'route-catalog' as const,
+        pathname: materializeRoutePattern(route.absolutePattern, routePatterns),
+        routeMounts: Object.freeze([
+          Object.freeze({
+            basePath: manifest.basePattern,
+            contextOrigin: 'virtual-page-owner' as const,
+            contextPattern: createFactoryOwnerContextPattern(manifest.basePattern),
+            exportName: manifest.ownerExportName,
+            hasWildcardFallback: manifest.fallbacks.length > 0,
+            routeSlotCount: manifest.routeSlotCount,
+            sourcePath: manifest.ownerSourcePath,
+          }),
+        ]),
+        pattern: route.absolutePattern,
+        sourcePath: manifest.ownerSourcePath,
+      });
+    }),
+  );
+}
+
+/** Keeps a factory app mounted at its authored base while its own relative Routes select the leaf. */
+function createFactoryOwnerContextPattern(basePath: string): string {
+  if (/(?:^|\/)\*$/u.test(basePath)) return basePath;
+  const normalized = basePath === '/' ? '' : basePath.replace(/\/+$/u, '');
+  return `${normalized}/*`;
+}
+
+/** Chases an exact lazy/re-export corridor from a factory barrel back to the selected file. */
+function retargetContextualFactoryLocation(
+  location: PreviewInspectorRouteLocation,
+  documentPath: string,
+  exportName: string,
+  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
+): PreviewInspectorRouteLocation {
+  const componentSourcePath = location.componentSourcePath;
+  if (componentSourcePath === undefined) return location;
+  const normalizedComponentPath = path.normalize(componentSourcePath);
+  const normalizedDocumentPath = path.normalize(documentPath);
+  if (normalizedComponentPath === normalizedDocumentPath) return location;
+  const proven = renderChain.paths.some((renderPath) => {
+    const targetIndex = renderPath.steps.findIndex(
+      (step) => path.normalize(step.sourcePath) === normalizedDocumentPath,
+    );
+    if (targetIndex < 0) return false;
+    const componentIndex = renderPath.steps.findIndex(
+      (step, index) =>
+        index > targetIndex &&
+        path.normalize(step.sourcePath) === normalizedComponentPath &&
+        normalizeComponentIdentity(step.label) === location.componentName,
+    );
+    return (
+      componentIndex > targetIndex &&
+      renderPath.steps
+        .slice(targetIndex, componentIndex)
+        .some((step) => step.kind === 'react-lazy' || step.kind === 're-export')
+    );
+  });
+  if (!proven) return location;
+  return Object.freeze({
+    ...location,
+    componentExportName: exportName,
+    componentSourcePath: normalizedDocumentPath,
+    dependencyPaths: Object.freeze(
+      [
+        ...new Set([
+          ...location.dependencyPaths,
+          normalizedComponentPath,
+          normalizedDocumentPath,
+        ]),
+      ].sort(),
+    ),
   });
 }
 /** Converts occurrence-bound direct evidence into the shared deterministic ranking model. */
@@ -624,21 +742,21 @@ function freezeRouteLocation(
           ]),
         }
       : factoryOwner === undefined ||
-    ((candidate.componentName !== factoryOwner.exportName ||
-      path.normalize(candidate.sourcePath) !== path.normalize(factoryOwner.sourcePath)) &&
-      componentReference === undefined)
-      ? {}
-      : {
-          routeMounts: Object.freeze([
-            Object.freeze({
-              basePath: factoryOwner.basePath,
-              exportName: factoryOwner.exportName,
-              hasWildcardFallback: factoryOwner.hasWildcardFallback,
-              routeSlotCount: factoryOwner.routeSlotCount,
-              sourcePath: factoryOwner.sourcePath,
-            }),
-          ]),
-        }),
+          ((candidate.componentName !== factoryOwner.exportName ||
+            path.normalize(candidate.sourcePath) !== path.normalize(factoryOwner.sourcePath)) &&
+            componentReference === undefined)
+        ? {}
+        : {
+            routeMounts: Object.freeze([
+              Object.freeze({
+                basePath: factoryOwner.basePath,
+                exportName: factoryOwner.exportName,
+                hasWildcardFallback: factoryOwner.hasWildcardFallback,
+                routeSlotCount: factoryOwner.routeSlotCount,
+                sourcePath: factoryOwner.sourcePath,
+              }),
+            ]),
+          }),
     pattern: candidate.pattern,
     sourcePath: candidate.sourcePath,
   });

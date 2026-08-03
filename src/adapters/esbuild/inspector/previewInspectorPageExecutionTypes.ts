@@ -84,6 +84,8 @@ export type PreviewInspectorRouteRuntimeKind =
 export interface PreviewInspectorRouteExecutionMount {
   readonly basePath: string;
   readonly childSurfaceId: string;
+  /** Distinguishes an implicit factory-owner context from a user-selected parent route branch. */
+  readonly contextOrigin?: 'virtual-page-owner';
   /** Parent Route pattern required by a retained nested route owner such as a `useRoutes` shell. */
   readonly contextPattern?: string;
   readonly hasWildcardFallback: boolean;

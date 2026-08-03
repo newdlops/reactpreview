@@ -35,6 +35,8 @@ export interface PreviewInspectorTargetMetadata {
   readonly compilerExportEvidence: true;
   readonly exportName: string;
   readonly facadeResolutionEvidence: true;
+  /** Suppresses a compiler-proven router-only target after its exact boundary commits. */
+  readonly intentionalNavigationOutput?: true;
   readonly preparedSourceDigest: string;
   readonly sourcePath: string;
 }
@@ -45,6 +47,8 @@ export interface PreviewInspectorTargetPluginOptions {
   readonly acceptedTargetImportSpecifiers?: readonly string[];
   /** Data-only fallback shapes associated with exact selected runtime exports. */
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
+  /** Selected exports whose complete static outcome inventory contains only Navigate/Redirect. */
+  readonly navigationOnlyExportNames?: readonly string[];
   /** Optional private runtime specifier, primarily useful to isolated compiler tests. */
   readonly runtimeSpecifier?: string;
   /** Prepared-source export evidence shared with PageExecution and facade generation. */
@@ -69,6 +73,13 @@ export function createPreviewInspectorTargetPlugin(
   const canonicalTargetPath = canonicalizeExistingPath(targetPath);
   const targetModuleStem = path.basename(targetPath).replace(/\.[^.]+$/u, '');
   const selectedExportNames = options.targetModuleContract.selectedExportNames;
+  const navigationOnlyExportNames = new Set(options.navigationOnlyExportNames ?? []);
+  for (const exportName of navigationOnlyExportNames) {
+    assertExportName(exportName);
+    if (!selectedExportNames.includes(exportName)) {
+      throw new TypeError('Navigation-only output must belong to a selected target export.');
+    }
+  }
   const acceptedSpecifiers = new Set(options.acceptedTargetImportSpecifiers ?? []);
   const runtimeSpecifier = options.runtimeSpecifier ?? PREVIEW_INSPECTOR_RUNTIME_SPECIFIER;
 
@@ -124,6 +135,7 @@ export function createPreviewInspectorTargetPlugin(
           ? {}
           : { inferredPropsByExport: options.inferredPropsByExport }),
         runtimeSpecifier,
+        navigationOnlyExportNames: [...navigationOnlyExportNames],
         targetModuleContract: options.targetModuleContract,
       }),
       loader: 'js',
@@ -247,6 +259,7 @@ function hasInspectorResolutionGuard(pluginData: unknown): boolean {
 /** Inputs for the pure facade source generator used by plugin and unit tests. */
 export interface PreviewInspectorTargetFacadeSourceOptions {
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
+  readonly navigationOnlyExportNames?: readonly string[];
   readonly runtimeSpecifier?: string;
   readonly targetModuleContract: PreviewInspectorTargetModuleContract;
 }
@@ -270,6 +283,13 @@ export function createPreviewInspectorTargetFacadeSource(
   }
   const runtimeSpecifier = options.runtimeSpecifier ?? PREVIEW_INSPECTOR_RUNTIME_SPECIFIER;
   const selectedDefault = exportNames.includes('default');
+  const navigationOnlyExportNames = new Set(options.navigationOnlyExportNames ?? []);
+  for (const exportName of navigationOnlyExportNames) {
+    assertExportName(exportName);
+    if (!exportNames.includes(exportName)) {
+      throw new TypeError('Navigation-only output must belong to a selected target export.');
+    }
+  }
   if (selectedDefault && !options.targetModuleContract.hasDefaultExport) {
     throw new TypeError('Preview inspector cannot select an absent original default export.');
   }
@@ -292,13 +312,13 @@ export function createPreviewInspectorTargetFacadeSource(
 
   for (const [index, exportName] of namedExports.entries()) {
     lines.push(
-      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName])});`,
+      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName], navigationOnlyExportNames.has(exportName))});`,
       `export { __reactPreviewSelected${index.toString()} as ${exportName} };`,
     );
   }
   if (selectedDefault) {
     lines.push(
-      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default)});`,
+      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default, navigationOnlyExportNames.has('default'))});`,
     );
   } else if (options.targetModuleContract.hasDefaultExport) {
     lines.push('export { __reactPreviewOriginalDefault as default };');
@@ -311,11 +331,13 @@ function serializeMetadata(
   contract: PreviewInspectorTargetModuleContract,
   exportName: string,
   inference: PreviewInferredPropsByExport[string] | undefined,
+  navigationOnlyOutput: boolean,
 ): string {
   return JSON.stringify({
     compilerExportEvidence: true,
     exportName,
     facadeResolutionEvidence: true,
+    ...(navigationOnlyOutput ? { intentionalNavigationOutput: true } : {}),
     ...(inference === undefined
       ? {}
       : { inferredPropShape: inference.shape, inferredProps: inference.provenance }),

@@ -354,7 +354,7 @@ export function createPreviewHeadlessCdpCommands(
 /** Builds the bounded page snapshot evaluated only after terminal timeout. */
 export function createPreviewHeadlessTimeoutExpression(bindingName: string): string {
   const stateName = `${bindingName}State`;
-  return `(() => { const state = globalThis[${JSON.stringify(stateName)}]; const root = document.querySelector('#react-preview-root'); const progressHost = document.getElementById('react-preview-progress-host'); return { bridgeInstalled: state?.installed === true, documentReadyState: document.readyState, messages: state?.messages?.slice(0, 64) ?? [], mountHtml: String(root?.innerHTML ?? '').slice(0, 65536), progressVisible: progressHost !== null && progressHost.hidden !== true, runtimeErrorText: root?.querySelector('.react-preview-runtime-error')?.textContent?.slice(0, 4096) }; })()`;
+  return `(() => { const state = globalThis[${JSON.stringify(stateName)}]; const root = document.querySelector?.('[data-react-preview-mount]') ?? document.getElementById('react-preview-root'); const progressHost = document.getElementById('react-preview-progress-host'); const portalHtml = [...(document.body?.children ?? [])].filter((node) => node !== root && node?.contains?.(root) !== true && node?.id !== 'react-preview-progress-host' && node?.hasAttribute?.('data-react-preview-inspector-ui') !== true && !['SCRIPT', 'STYLE'].includes(node?.tagName)).map((node) => node.outerHTML ?? '').join(''); return { bridgeInstalled: state?.installed === true, documentReadyState: document.readyState, messages: state?.messages?.slice(0, 64) ?? [], mountHtml: (String(root?.innerHTML ?? '') + portalHtml).slice(0, 65536), progressVisible: progressHost !== null && progressHost.hidden !== true, runtimeErrorText: root?.querySelector('.react-preview-runtime-error')?.textContent?.slice(0, 4096) }; })()`;
 }
 
 /** Applies the v3 evidence policy without inferring success from a ready terminal alone. */
@@ -475,6 +475,22 @@ export function createPreviewHeadlessBridgeSource(
   const markActivity = () => {
     if (bridgeState.terminalAt !== undefined) bridgeState.lastActivityAt = Date.now();
   };
+  const selectMountNode = () =>
+    document.querySelector?.('[data-react-preview-mount]') ??
+    document.getElementById('react-preview-root');
+  const readRenderedHtml = (root, maximumLength) => {
+    const portalHtml = [...(document.body?.children ?? [])]
+      .filter((node) =>
+        node !== root &&
+        node?.contains?.(root) !== true &&
+        node?.id !== 'react-preview-progress-host' &&
+        node?.hasAttribute?.('data-react-preview-inspector-ui') !== true &&
+        !['SCRIPT', 'STYLE'].includes(node?.tagName)
+      )
+      .map((node) => node.outerHTML ?? '')
+      .join('');
+    return (String(root?.innerHTML ?? '') + portalHtml).slice(0, maximumLength);
+  };
   const readComposition = (message) => {
     const detail = message?.event?.detail;
     const target = detail?.targetState;
@@ -580,13 +596,13 @@ export function createPreviewHeadlessBridgeSource(
   const capturePayload = () => {
     if (bridgeState.published) return;
     bridgeState.published = true;
-    const root = document.querySelector('#react-preview-root');
+    const root = selectMountNode();
     const progressHost = document.getElementById('react-preview-progress-host');
     const runtimeError = root?.querySelector('.react-preview-runtime-error');
     const now = Date.now();
     const payload = {
       evidence: { consoleFailures, extensionMessages: messages, windowErrors },
-      rootHtml: String(root?.innerHTML ?? '').slice(0, ${MAX_CAPTURE_BYTES.toString()}),
+      rootHtml: readRenderedHtml(root, ${MAX_CAPTURE_BYTES.toString()}),
       runtimeErrorText: runtimeError?.textContent?.slice(0, maxText),
       stabilization: {
         capReached:
@@ -648,7 +664,6 @@ export function createPreviewHeadlessBridgeSource(
     postMessage: (message) => {
       retain(messages, message);
       if (
-        bridgeState.terminal?.type === 'react-preview-runtime-ready' &&
         message?.type === 'react-preview-runtime-health' &&
         message?.runtimeRevision === expectedRevision
       ) {
@@ -695,7 +710,7 @@ export function createPreviewHeadlessBridgeSource(
     markActivity();
   });
   const observeMount = () => {
-    const root = document.querySelector('#react-preview-root');
+    const root = selectMountNode();
     if (root === null) {
       setTimeout(observeMount, 10);
       return;

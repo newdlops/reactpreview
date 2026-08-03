@@ -4,24 +4,25 @@
  */
 import { build } from 'esbuild';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { NODE_ESM_COMPATIBILITY_BANNER } from './preview-node-esm-compatibility.mjs';
 
 /*
  * Keep the ephemeral bundle below the repository so Node can resolve the intentionally external
  * esbuild package (and its platform binary) from this installation's node_modules.
  */
 const temporaryRoot = await mkdtemp(path.join(process.cwd(), '.react-preview-route-cli-'));
-const outputPath = path.join(temporaryRoot, 'campaign.cjs');
+const outputPath = path.join(temporaryRoot, 'campaign.mjs');
 const workerPath = path.join(temporaryRoot, 'compiler-worker.cjs');
-const require = createRequire(import.meta.url);
 
 try {
   await build({
     bundle: true,
     entryPoints: [path.resolve('src/adapters/node/previewHeadlessRouteCampaignCli.ts')],
+    banner: { js: NODE_ESM_COMPATIBILITY_BANNER },
     external: ['esbuild', 'vscode'],
-    format: 'cjs',
+    format: 'esm',
     logLevel: 'silent',
     platform: 'node',
     sourcemap: false,
@@ -39,7 +40,7 @@ try {
     target: 'node22',
     outfile: workerPath,
   });
-  const module = require(outputPath);
+  const module = await import(pathToFileURL(outputPath).href);
   process.exitCode = await module.runPreviewHeadlessRouteCampaignCli(
     process.argv.slice(2),
     workerPath,

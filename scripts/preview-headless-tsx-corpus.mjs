@@ -5,9 +5,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { NODE_ESM_COMPATIBILITY_BANNER } from './preview-node-esm-compatibility.mjs';
 
-const runtimeRoot = path.resolve('.tmp/rtcc-tsx-corpus-20260803/runtime');
-const runtimePath = path.join(runtimeRoot, 'preview-headless-tsx-corpus-v1.mjs');
-const metafilePath = path.join(runtimeRoot, 'preview-headless-tsx-corpus-v1.metafile.json');
+const runtimeRoot = path.resolve('.tmp/rtcc-tsx-throughput-20260804/v12/runtime');
+const runtimePath = path.join(runtimeRoot, 'preview-headless-tsx-corpus-v12.mjs');
+const metafilePath = path.join(runtimeRoot, 'preview-headless-tsx-corpus-v12.metafile.json');
 await mkdir(runtimeRoot, { recursive: true });
 const result = await build({
   banner: { js: NODE_ESM_COMPATIBILITY_BANNER },

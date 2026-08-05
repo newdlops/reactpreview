@@ -3,12 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { PreviewCompiler } from '../../application/previewCompiler';
-import type { PreviewBuildRequest, PreviewDiagnostic } from '../../domain/preview';
+import type { PreviewBuildRequest, PreviewBundle, PreviewDiagnostic } from '../../domain/preview';
 import { createHotReloadScriptUri } from '../../presentation/previewHotReloadProtocol';
 import { createPreviewHtml } from '../../presentation/webview/previewHtml';
 import { planPreviewArtifactLayout } from '../vscode/previewArtifactLayout';
@@ -16,6 +16,7 @@ import { createPreviewManagedChildEnvironment } from './previewManagedChildEnvir
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const CDP_REQUEST_TIMEOUT_MS = 3_000;
+const CDP_STARTUP_REQUEST_TIMEOUT_MS = 12_000;
 const MAX_CAPTURE_BYTES = 256 * 1_024;
 const MAX_EVIDENCE_ITEMS = 64;
 const HEADLESS_BRIDGE_PATH = '/react-preview-headless-bridge.js';
@@ -60,21 +61,41 @@ export interface PreviewHeadlessCompositionDiagnostic {
   readonly pageExecutionRootSurfaceId?: string;
   readonly pageExecutionTargetSurfaceId?: string;
   readonly requirementSearchExhausted: boolean;
+  readonly requirementSearchObservedPathCount?: number;
+  readonly requirementSearchPass?: number;
   readonly requirementSearchSettled: boolean;
   readonly requirementSearchStatus: string;
+  readonly requirementSearchTotalPasses?: number;
+  readonly targetAppliedConditionCount?: number;
+  readonly targetDetachedBoundaryOutput?: boolean;
+  readonly targetDetachedTargetPlacement?: string;
+  readonly targetDirectElementOutput?: boolean;
+  readonly targetAttempt?: number;
+  readonly targetAutoAttemptMode?: string;
+  readonly targetAutoAttemptResumeHandled?: boolean;
+  readonly targetAutoAttemptResumeScheduled?: boolean;
+  readonly targetAutoAttemptSettled?: boolean;
   readonly targetError: boolean;
   readonly targetErrorOwner?: string;
   readonly targetErrorPhase?: string;
   readonly targetExportName: string;
   readonly targetHasOutput: boolean;
+  readonly targetIdlePasses?: number;
+  readonly targetLastContinuationSkipReason?: string;
   readonly targetMounted: boolean;
   readonly targetOutputKind: string;
   readonly targetOwnershipPhases: Readonly<Record<string, boolean>>;
   readonly targetPageRootCommitted: boolean;
+  readonly targetProbeRevision?: number;
+  readonly targetProjectedCompatibilityOutput?: boolean;
+  readonly targetRejectedConditionCount?: number;
+  readonly targetRuntimeFallbackSummaries?: readonly string[];
   readonly targetRenderedEmpty: boolean;
   readonly targetSourcePath?: string;
   readonly targetStage: string;
   readonly targetStatus: string;
+  readonly targetWasMounted?: boolean;
+  readonly selectedRoutePathname?: string;
 }
 
 /** Evidence window completed after a matching ready/failed terminal. */
@@ -129,7 +150,17 @@ export interface PreviewHeadlessRendererOptions {
   readonly spawnProcess?: PreviewHeadlessSpawnProcess;
   readonly timeoutMs?: number;
   readonly virtualTimeMs?: number;
+  /** Bounded observational ownership telemetry; exceptions are deliberately ignored. */
+  readonly reportOwnership?: (event: PreviewHeadlessOwnershipEvent) => void;
 }
+
+export type PreviewHeadlessOwnershipEvent =
+  | { readonly kind: 'profile-created'; readonly profileRoot: string }
+  | { readonly kind: 'server-listening'; readonly loopbackPort: number; readonly profileRoot: string }
+  | { readonly kind: 'browser-spawned'; readonly pid?: number; readonly pgid?: number; readonly profileRoot: string }
+  | { readonly kind: 'browser-terminal'; readonly pid?: number; readonly pgid?: number; readonly profileRoot: string }
+  | { readonly kind: 'server-closed'; readonly profileRoot: string }
+  | { readonly kind: 'profile-removed'; readonly profileRoot: string };
 
 /** Narrow Chromium process-spawn boundary retained for deterministic environment tests. */
 export type PreviewHeadlessSpawnProcess = (
@@ -166,7 +197,7 @@ interface BrowserExecution {
   readonly timeoutDiagnostic?: string;
 }
 
-interface CdpMessage {
+export interface CdpMessage {
   readonly error?: { readonly message?: string };
   readonly id?: number;
   readonly method?: string;
@@ -196,6 +227,18 @@ export async function renderPreviewHeadlessly(
   options: PreviewHeadlessRendererOptions = {},
 ): Promise<PreviewHeadlessResult> {
   const bundle = await compiler.compile(request);
+  return renderCompiledPreviewHeadlessly(bundle, request, options);
+}
+
+/**
+ * Executes a caller-owned immutable compiler result through the normal Page Context document.
+ * Campaign lanes use this seam to serialize compilation separately from rendering.
+ */
+export async function renderCompiledPreviewHeadlessly(
+  bundle: PreviewBundle,
+  request: PreviewBuildRequest,
+  options: PreviewHeadlessRendererOptions = {},
+): Promise<PreviewHeadlessResult> {
   const layout = planPreviewArtifactLayout(bundle);
   const revision = 1;
   const token = `${revision.toString()}:${layout.contentHash}`;
@@ -212,6 +255,7 @@ export async function renderPreviewHeadlessly(
     };
   }
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-headless-'));
+  reportPreviewHeadlessOwnership(options, { kind: 'profile-created', profileRoot: temporaryRoot });
   const bindingName = `__reactPreviewHeadless_${randomUUID().replaceAll('-', '')}`;
   const routes = new Map<string, { readonly contents: Uint8Array; readonly type: string }>();
   const requests: string[] = [];
@@ -241,6 +285,7 @@ export async function renderPreviewHeadlessly(
     });
     server = createPreviewHeadlessServer(routes, requests);
     const port = await listenOnLoopback(server);
+    reportPreviewHeadlessOwnership(options, { kind: 'server-listening', loopbackPort: port, profileRoot: temporaryRoot });
     const origin = `http://127.0.0.1:${port.toString()}`;
     routes.set(HEADLESS_DOCUMENT_PATH, {
       contents: new TextEncoder().encode(
@@ -248,6 +293,14 @@ export async function renderPreviewHeadlessly(
           documentName: path.basename(request.documentPath),
           hostBridgeScriptUri: `${origin}${HEADLESS_BRIDGE_PATH}`,
           kind: 'ready',
+          ...(layout.moduleImports === undefined
+            ? {}
+            : {
+                moduleImports: layout.moduleImports.map(({ relativePath, specifier }) => ({
+                  specifier,
+                  uri: `${origin}/${relativePath}`,
+                })),
+              }),
           runtimeRevision: revision,
           runtimeToken: token,
           scriptUri: createHotReloadScriptUri(
@@ -275,6 +328,12 @@ export async function renderPreviewHeadlessly(
       (ownedBrowser) => {
         browser = ownedBrowser;
         browserTerminated = false;
+        reportPreviewHeadlessOwnership(options, {
+          kind: 'browser-spawned',
+          ...(ownedBrowser.pid === undefined ? {} : { pid: ownedBrowser.pid }),
+          ...(process.platform === 'win32' || ownedBrowser.pid === undefined ? {} : { pgid: ownedBrowser.pid }),
+          profileRoot: temporaryRoot,
+        });
       },
     );
     browserTerminated = execution.exitCode !== null || execution.exitSignal !== null;
@@ -291,14 +350,22 @@ export async function renderPreviewHeadlessly(
       await terminateOwnedBrowser(browser);
     }
     browserTerminated = browser === undefined || isBrowserTerminated(browser);
+    reportPreviewHeadlessOwnership(options, {
+      kind: 'browser-terminal',
+      ...(browser?.pid === undefined ? {} : { pid: browser.pid }),
+      ...(process.platform === 'win32' || browser?.pid === undefined ? {} : { pgid: browser.pid }),
+      profileRoot: temporaryRoot,
+    });
     if (server !== undefined) {
       await closeServer(server);
       serverClosed = !server.listening;
+      reportPreviewHeadlessOwnership(options, { kind: 'server-closed', profileRoot: temporaryRoot });
     } else {
       serverClosed = true;
     }
     await rm(temporaryRoot, { force: true, recursive: true });
     profileRemoved = !existsSync(temporaryRoot);
+    reportPreviewHeadlessOwnership(options, { kind: 'profile-removed', profileRoot: temporaryRoot });
   }
   result ??= createProtocolFailure(
     bundle.diagnostics,
@@ -332,7 +399,7 @@ export function decodePreviewHeadlessCdpFrames(source: string): PreviewHeadlessC
 export function createPreviewHeadlessCdpCommands(
   bindingName: string,
   documentUrl: string,
-  virtualTimeMs: number,
+  _virtualTimeMs: number,
 ): readonly PreviewHeadlessCdpCommand[] {
   return [
     { method: 'Page.enable', params: {} },
@@ -340,21 +407,75 @@ export function createPreviewHeadlessCdpCommands(
     { method: 'Log.enable', params: {} },
     { method: 'Runtime.addBinding', params: { name: bindingName } },
     { method: 'Page.navigate', params: { url: documentUrl } },
-    {
-      method: 'Emulation.setVirtualTimePolicy',
-      params: {
-        budget: virtualTimeMs,
-        policy: 'pauseIfNetworkFetchesPending',
-        waitForNavigation: true,
-      },
-    },
   ];
 }
 
 /** Builds the bounded page snapshot evaluated only after terminal timeout. */
 export function createPreviewHeadlessTimeoutExpression(bindingName: string): string {
   const stateName = `${bindingName}State`;
-  return `(() => { const state = globalThis[${JSON.stringify(stateName)}]; const root = document.querySelector?.('[data-react-preview-mount]') ?? document.getElementById('react-preview-root'); const progressHost = document.getElementById('react-preview-progress-host'); const portalHtml = [...(document.body?.children ?? [])].filter((node) => node !== root && node?.contains?.(root) !== true && node?.id !== 'react-preview-progress-host' && node?.hasAttribute?.('data-react-preview-inspector-ui') !== true && !['SCRIPT', 'STYLE'].includes(node?.tagName)).map((node) => node.outerHTML ?? '').join(''); return { bridgeInstalled: state?.installed === true, documentReadyState: document.readyState, messages: state?.messages?.slice(0, 64) ?? [], mountHtml: (String(root?.innerHTML ?? '') + portalHtml).slice(0, 65536), progressVisible: progressHost !== null && progressHost.hidden !== true, runtimeErrorText: root?.querySelector('.react-preview-runtime-error')?.textContent?.slice(0, 4096) }; })()`;
+  return `(() => {
+    const state = globalThis[${JSON.stringify(stateName)}];
+    const root = document.querySelector?.('[data-react-preview-mount]') ?? document.getElementById('react-preview-root');
+    const progressHost = document.getElementById('react-preview-progress-host');
+    const progressRoot = progressHost?.shadowRoot;
+    const hotRuntime = globalThis[Symbol.for('newdlops.react-file-preview.hot-runtime')];
+    const entryScript = document.querySelector('script[type="module"][src]');
+    let entryResource;
+    try {
+      entryResource = entryScript?.src === undefined
+        ? undefined
+        : performance.getEntriesByName(entryScript.src, 'resource').at(-1);
+    } catch {
+      entryResource = undefined;
+    }
+    const portalHtml = [...(document.body?.children ?? [])]
+      .filter((node) => node !== root && node?.contains?.(root) !== true && node?.id !== 'react-preview-progress-host' && node?.hasAttribute?.('data-react-preview-inspector-ui') !== true && !['SCRIPT', 'STYLE'].includes(node?.tagName))
+      .map((node) => node.outerHTML ?? '')
+      .join('');
+    return {
+      bodyPreviewState: document.body?.dataset?.reactPreviewState,
+      bridgeInstalled: state?.installed === true,
+      composition: state?.latestComposition,
+      documentReadyState: document.readyState,
+      entryModule: {
+        duration: Number.isFinite(entryResource?.duration) ? entryResource.duration : undefined,
+        initiatorType: typeof entryResource?.initiatorType === 'string' ? entryResource.initiatorType.slice(0, 80) : undefined,
+        present: entryScript !== null,
+        resourceObserved: entryResource !== undefined,
+        responseEnd: Number.isFinite(entryResource?.responseEnd) ? entryResource.responseEnd : undefined,
+        source: typeof entryScript?.src === 'string' ? entryScript.src.slice(-1_024) : undefined,
+        state: entryScript === null ? 'missing-script' : entryResource === undefined ? 'requested-or-pending' : 'loaded',
+        transferSize: Number.isFinite(entryResource?.transferSize) ? entryResource.transferSize : undefined,
+      },
+      hotRuntime: {
+        bootstrapPromisePresent: hotRuntime?.bootstrapPromise !== undefined,
+        preparedEntryPresent: hotRuntime?.preparedEntry !== undefined,
+        preparationPromisePresent: hotRuntime?.preparedEntry?.preparationPromise !== undefined,
+        present: hotRuntime !== undefined,
+        rootPresent: hotRuntime?.root !== undefined,
+      },
+      messageCount: Array.isArray(state?.messages) ? state.messages.length : 0,
+      messages: state?.messages?.slice(-16) ?? [],
+      mount: {
+        ariaBusy: root?.getAttribute?.('aria-busy'),
+        childElementCount: root?.childElementCount ?? 0,
+        html: (String(root?.innerHTML ?? '') + portalHtml).slice(0, 65_536),
+        isConnected: root?.isConnected === true,
+        present: root !== null,
+      },
+      progress: {
+        detail: progressRoot?.getElementById('react-preview-progress-detail')?.textContent?.slice(0, 400),
+        label: progressRoot?.getElementById('react-preview-progress-label')?.textContent?.slice(0, 240),
+        openShadowRootPresent: progressRoot !== null && progressRoot !== undefined,
+        present: progressHost !== null,
+        step: progressRoot?.getElementById('react-preview-progress-step')?.textContent?.slice(0, 160),
+        visible: progressHost !== null && progressHost.hidden !== true,
+      },
+      runtimeErrorText: root?.querySelector('.react-preview-runtime-error')?.textContent?.slice(0, 4_096),
+      snapshotCount: state?.snapshotCount ?? 0,
+      terminal: state?.terminal,
+    };
+  })()`;
 }
 
 /** Applies the v3 evidence policy without inferring success from a ready terminal alone. */
@@ -464,9 +585,36 @@ export function createPreviewHeadlessBridgeSource(
     structuredRuntimeError: false,
   };
   globalThis[stateName] = bridgeState;
-  const bounded = (value) => {
-    try { return JSON.stringify(value).slice(0, maxText); }
-    catch { return String(value).slice(0, maxText); }
+  const bounded = (value) => normalizeEvidence(value, new WeakSet(), 0).slice(0, maxText);
+  const normalizeEvidence = (value, seen, depth) => {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    const type = typeof value;
+    if (type === 'string') return value;
+    if (type === 'number' || type === 'boolean' || type === 'bigint') return String(value);
+    if (type === 'symbol') return value.toString();
+    if (type === 'function') return '[function]';
+    if (depth >= 4) return '[max-depth]';
+    if (type !== 'object') return String(value);
+    if (seen.has(value)) return '[circular]';
+    seen.add(value);
+    try {
+      const record = value;
+      const name = typeof record.name === 'string' ? record.name : undefined;
+      const message = typeof record.message === 'string' ? record.message : undefined;
+      const cause = record.cause;
+      if (name !== undefined || message !== undefined || cause !== undefined) {
+        const head = (name ?? 'Error') + (message === undefined || message.length === 0 ? '' : ': ' + message);
+        return head + (cause === undefined ? '' : '; cause=' + normalizeEvidence(cause, seen, depth + 1));
+      }
+      const fields = Object.keys(record).sort().slice(0, 12).map((key) => {
+        let field;
+        try { field = record[key]; } catch { return key + '=[unreadable]'; }
+        return key + '=' + normalizeEvidence(field, seen, depth + 1);
+      });
+      return fields.length === 0 ? Object.prototype.toString.call(value) : '{' + fields.join(', ') + '}';
+    } catch { return Object.prototype.toString.call(value); }
+    finally { seen.delete(value); }
   };
   const retain = (list, value) => {
     if (list.length < limit) list.push(bounded(value));
@@ -570,8 +718,30 @@ export function createPreviewHeadlessBridgeSource(
         ? { pageExecutionTargetSurfaceId: pageExecution.runtimeTargetSurfaceId.slice(0, 240) }
         : {}),
       requirementSearchExhausted: search?.exhausted === true,
+      requirementSearchObservedPathCount: Number.isSafeInteger(search?.observedPathCount)
+        ? Math.max(0, Number(search.observedPathCount))
+        : 0,
+      requirementSearchPass: Number.isSafeInteger(search?.pass)
+        ? Math.max(0, Number(search.pass))
+        : 0,
       requirementSearchSettled: search?.settled === true,
       requirementSearchStatus: String(search?.searchStatus ?? 'untracked').slice(0, 80),
+      requirementSearchTotalPasses: Number.isSafeInteger(search?.totalPasses)
+        ? Math.max(0, Number(search.totalPasses))
+        : 0,
+      targetAppliedConditionCount: Number.isSafeInteger(target?.appliedConditionCount)
+        ? Math.max(0, Number(target.appliedConditionCount))
+        : 0,
+      targetDetachedBoundaryOutput: target?.detachedBoundaryOutput === true,
+      targetDetachedTargetPlacement: String(target?.detachedTargetPlacement ?? '').slice(0, 80),
+      targetDirectElementOutput: target?.directElementOutput === true,
+      targetAttempt: Number.isSafeInteger(target?.attempt)
+        ? Math.max(0, Number(target.attempt))
+        : 0,
+      targetAutoAttemptMode: String(target?.activeAutoAttemptMode ?? '').slice(0, 80),
+      targetAutoAttemptResumeHandled: target?.activeAutoAttemptResumeHandled === true,
+      targetAutoAttemptResumeScheduled: target?.activeAutoAttemptResumeScheduled === true,
+      targetAutoAttemptSettled: target?.activeAutoAttemptSettled === true,
       targetError:
         targetErrorMessage !== undefined ||
         targetErrorOwner !== undefined ||
@@ -581,17 +751,79 @@ export function createPreviewHeadlessBridgeSource(
       ...(targetErrorPhase === undefined ? {} : { targetErrorPhase }),
       targetExportName: String(target?.exportName ?? 'default').slice(0, 160),
       targetHasOutput: target?.hasOutput === true || target?.reachabilityHasOutput === true,
+      targetIdlePasses: Number.isSafeInteger(target?.idlePasses)
+        ? Math.max(0, Number(target.idlePasses))
+        : 0,
+      targetLastContinuationSkipReason: String(
+        target?.lastContinuationSkipReason ?? '',
+      ).slice(0, 120),
       targetMounted: target?.mounted === true,
       targetOutputKind: String(target?.outputKind ?? 'none').slice(0, 80),
       targetOwnershipPhases: ownershipPhases,
       targetPageRootCommitted: target?.pageRootCommitted === true,
+      targetProbeRevision: Number.isSafeInteger(target?.probeRevision)
+        ? Math.max(0, Number(target.probeRevision))
+        : 0,
+      targetProjectedCompatibilityOutput: target?.projectedCompatibilityOutput === true,
+      targetRejectedConditionCount: Number.isSafeInteger(target?.rejectedConditionCount)
+        ? Math.max(0, Number(target.rejectedConditionCount))
+        : 0,
+      targetRuntimeFallbackSummaries: Array.isArray(target?.runtimeFallbackSummaries)
+        ? target.runtimeFallbackSummaries
+            .filter((value) => typeof value === 'string')
+            .slice(0, 12)
+            .map((value) => value.slice(0, 1_000))
+        : [],
       targetRenderedEmpty: target?.targetRenderedEmpty === true,
       ...(typeof detail?.evidence?.sourcePath === 'string'
         ? { targetSourcePath: detail.evidence.sourcePath.slice(0, 1_024) }
         : {}),
       targetStage: String(target?.stage ?? 'unknown').slice(0, 80),
       targetStatus: String(target?.status ?? 'unknown').slice(0, 80),
+      targetWasMounted: target?.wasMounted === true,
+      ...(typeof detail?.route?.pathname === 'string'
+        ? { selectedRoutePathname: detail.route.pathname.slice(0, 2_048) }
+        : {}),
     };
+  };
+  const pendingCompositionStatuses = new Set([
+    'advancing',
+    'blocked',
+    'filling-requirements',
+    'page-root-pending',
+    'probing',
+    'recovering-after-rejected-gate',
+    'resolving-deferred-render-contract',
+    'resuming-new-requirements',
+    'revealing-overlay',
+    'searching-deterministic-requirements',
+    'searching-requirements',
+    'settling-auto-attempt',
+  ]);
+  const isCompositionPending = () => {
+    const composition = bridgeState.latestComposition;
+    if (composition === undefined) return true;
+    if (
+      composition.targetStage === 'target-output' &&
+      composition.targetStatus === 'reached' &&
+      composition.targetHasOutput === true
+    ) return false;
+    // A file-only component has no Page Execution corridor or requirement-search lifecycle. Its
+    // runtime-ready signal plus one quiet composition snapshot is already the complete contract.
+    if (composition.pageExecutionFidelity === 'none') return false;
+    if (
+      composition.targetAutoAttemptMode &&
+      (
+        composition.targetAutoAttemptSettled !== true ||
+        composition.targetAutoAttemptResumeScheduled === true ||
+        composition.targetAutoAttemptResumeHandled !== true
+      )
+    ) return true;
+    if (pendingCompositionStatuses.has(composition.targetStatus)) {
+      return composition.requirementSearchExhausted !== true;
+    }
+    return composition.requirementSearchSettled !== true &&
+      composition.requirementSearchExhausted !== true;
   };
   const capturePayload = () => {
     if (bridgeState.published) return;
@@ -619,6 +851,7 @@ export function createPreviewHeadlessBridgeSource(
         quiet:
           bridgeState.terminal?.type === 'react-preview-runtime-ready' &&
           bridgeState.snapshotCount > 0 &&
+          !isCompositionPending() &&
           now - bridgeState.lastActivityAt >= ${PREVIEW_HEADLESS_STABILIZATION_QUIET_MS.toString()},
         snapshotCount: bridgeState.snapshotCount,
         structuredRuntimeError: bridgeState.structuredRuntimeError,
@@ -641,7 +874,7 @@ export function createPreviewHeadlessBridgeSource(
         now - bridgeState.lastActivityAt >= ${PREVIEW_HEADLESS_STABILIZATION_QUIET_MS.toString()};
       const capped =
         now - bridgeState.terminalAt >= ${PREVIEW_HEADLESS_STABILIZATION_CAP_MS.toString()};
-      if (quiet || capped) capturePayload();
+      if ((quiet && !isCompositionPending()) || capped) capturePayload();
       else setTimeout(check, Math.min(50, Math.max(1,
         ${PREVIEW_HEADLESS_STABILIZATION_QUIET_MS.toString()} -
           (now - bridgeState.lastActivityAt))));
@@ -727,7 +960,7 @@ export function createPreviewHeadlessBridgeSource(
 }
 
 /** Minimal request/event client for Chromium's NUL-delimited DevTools pipe. */
-class CdpPipeClient {
+export class CdpPipeClient {
   private buffer = '';
   private closedError: Error | undefined;
   private nextId = 1;
@@ -776,14 +1009,16 @@ class CdpPipeClient {
     method: string,
     params: Record<string, unknown> = {},
     sessionId?: string,
+    timeoutMs = CDP_REQUEST_TIMEOUT_MS,
   ): Promise<CdpMessage> {
+    const requestTimeoutMs = validateCdpRequestTimeout(timeoutMs);
     if (this.closedError !== undefined) return Promise.reject(this.closedError);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP request timed out: ${method}`));
-      }, CDP_REQUEST_TIMEOUT_MS);
+      }, requestTimeoutMs);
       this.pending.set(id, {
         reject: (error) => {
           clearTimeout(timer);
@@ -933,7 +1168,12 @@ async function executeChromiumWithCdp(
     });
   });
   try {
-    const targetResponse = await client.request('Target.getTargets');
+    const targetResponse = await client.request(
+      'Target.getTargets',
+      {},
+      undefined,
+      CDP_STARTUP_REQUEST_TIMEOUT_MS,
+    );
     const targetInfos = targetResponse.result?.targetInfos;
     const targetCandidates: unknown[] = Array.isArray(targetInfos)
       ? (targetInfos as unknown[])
@@ -946,12 +1186,22 @@ async function executeChromiumWithCdp(
     );
     let targetId = (page as { readonly targetId?: unknown } | undefined)?.targetId;
     if (typeof targetId !== 'string') {
-      const created = await client.request('Target.createTarget', { url: 'about:blank' });
+      const created = await client.request(
+        'Target.createTarget',
+        { url: 'about:blank' },
+        undefined,
+        CDP_STARTUP_REQUEST_TIMEOUT_MS,
+      );
       targetId = created.result?.targetId;
     }
     if (typeof targetId !== 'string')
       throw new Error('Chromium did not expose an attachable page.');
-    const attached = await client.request('Target.attachToTarget', { flatten: true, targetId });
+    const attached = await client.request(
+      'Target.attachToTarget',
+      { flatten: true, targetId },
+      undefined,
+      CDP_STARTUP_REQUEST_TIMEOUT_MS,
+    );
     const sessionId = attached.result?.sessionId;
     if (typeof sessionId !== 'string')
       throw new Error('Chromium did not attach a page CDP session.');
@@ -963,11 +1213,12 @@ async function executeChromiumWithCdp(
     )) {
       await client.request(command.method, command.params, sessionId);
     }
+    const deadline = createCancellableDeadline(timeoutMs);
     const outcome = await Promise.race([
       bindingPromise.then((value) => ({ kind: 'payload' as const, value })),
-      delay(timeoutMs).then(() => ({ kind: 'timeout' as const })),
+      deadline.promise.then(() => ({ kind: 'timeout' as const })),
       processEndPromise,
-    ]);
+    ]).finally(() => deadline.cancel());
     if (outcome.kind === 'payload') payload = outcome.value;
     else if (outcome.kind === 'timeout') {
       timedOut = true;
@@ -1028,7 +1279,7 @@ async function collectTimeoutDiagnostic(
       { expression, returnByValue: true },
       sessionId,
     );
-    return boundedJson(response.result);
+    return serializePreviewHeadlessTimeoutDiagnostic(response.result);
   } catch (error) {
     return `Timeout diagnostic failed: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -1219,7 +1470,16 @@ function createPreviewHeadlessServer(
       response.writeHead(400).end();
       return;
     }
-    const route = routes.get(pathname);
+    const exactRoute = routes.get(pathname);
+    if (
+      exactRoute === undefined &&
+      isPreviewHeadlessGuardedClientRouteNavigation(request, pathname)
+    ) {
+      retainPriorityLoopbackEvidence(requests, `${pathname} 204-navigation-blocked`);
+      response.writeHead(204, { 'Cache-Control': 'no-store' }).end();
+      return;
+    }
+    const route = exactRoute;
     retainEvidence(requests, `${pathname} ${route === undefined ? '404' : '200'}`);
     if (route === undefined) {
       response.writeHead(404).end();
@@ -1233,6 +1493,57 @@ function createPreviewHeadlessServer(
     });
     response.end(request.method === 'HEAD' ? undefined : route.contents);
   });
+}
+
+/** Recognizes bounded full-document client-route navigations guarded from replacing the preview. */
+function isPreviewHeadlessGuardedClientRouteNavigation(
+  request: IncomingMessage,
+  pathname: string,
+): boolean {
+  if (
+    (request.method !== 'GET' && request.method !== 'HEAD') ||
+    pathname.length === 0 ||
+    pathname.length > 2_048
+  ) {
+    return false;
+  }
+  const accept = readPreviewHeadlessRequestHeader(request, 'accept');
+  if (
+    accept === undefined ||
+    !accept
+      .split(',')
+      .some((value) => value.split(';', 1)[0]?.trim().toLowerCase() === 'text/html')
+  ) {
+    return false;
+  }
+  const destination = readPreviewHeadlessRequestHeader(request, 'sec-fetch-dest');
+  if (destination !== undefined && destination.toLowerCase() !== 'document') return false;
+  const mode = readPreviewHeadlessRequestHeader(request, 'sec-fetch-mode');
+  if (mode !== undefined && mode.toLowerCase() !== 'navigate') return false;
+  const site = readPreviewHeadlessRequestHeader(request, 'sec-fetch-site');
+  if (site !== undefined && site.toLowerCase() !== 'same-origin' && site.toLowerCase() !== 'none')
+    return false;
+  const purpose =
+    readPreviewHeadlessRequestHeader(request, 'sec-purpose') ??
+    readPreviewHeadlessRequestHeader(request, 'purpose');
+  if (purpose?.toLowerCase().includes('prefetch') === true) return false;
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  const segments = decodedPathname.split('/').filter(Boolean);
+  return segments.length <= 64 && segments.every((segment) => !segment.includes('.'));
+}
+
+/** Reads one bounded Node request-header value without weakening multi-value checks. */
+function readPreviewHeadlessRequestHeader(
+  request: IncomingMessage,
+  name: string,
+): string | undefined {
+  const value = request.headers[name];
+  return Array.isArray(value) ? value.join(',') : value;
 }
 
 /** Binds the owned server to an ephemeral IPv4 loopback port. */
@@ -1261,14 +1572,15 @@ function captureBoundedStream(stream: Readable | null): () => string {
 /** Waits no longer than the supplied close grace period. */
 function waitForBrowserClose(browser: ChildProcess, timeoutMs: number): Promise<void> {
   if (isBrowserTerminated(browser)) return Promise.resolve();
+  const deadline = createCancellableDeadline(timeoutMs);
   return Promise.race([
     new Promise<void>((resolve) =>
       browser.once('close', () => {
         resolve();
       }),
     ),
-    delay(timeoutMs),
-  ]);
+    deadline.promise,
+  ]).finally(() => deadline.cancel());
 }
 
 /** Stops only the browser process group spawned by this invocation. */
@@ -1336,6 +1648,18 @@ function validateRunTimeout(timeoutMs: number): number {
   return timeoutMs;
 }
 
+/** Keeps an individual CDP request positive and within the bounded startup allowance. */
+function validateCdpRequestTimeout(timeoutMs: number): number {
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > CDP_STARTUP_REQUEST_TIMEOUT_MS
+  ) {
+    throw new RangeError('CDP request timeout must be an integer from 1 to 12000 ms.');
+  }
+  return timeoutMs;
+}
+
 /** Keeps Chromium virtual time positive and no longer than the run wall-clock ceiling. */
 function validateVirtualTimeBudget(virtualTimeMs: number, timeoutMs: number): number {
   if (!Number.isSafeInteger(virtualTimeMs) || virtualTimeMs < 1 || virtualTimeMs > timeoutMs) {
@@ -1351,12 +1675,99 @@ function retainEvidence(target: string[], value: string): void {
   if (target.length < MAX_EVIDENCE_ITEMS) target.push(value.slice(0, 4096));
 }
 
+/** Keeps navigation guards by replacing only ordinary evidence after the shared cap is full. */
+function retainPriorityLoopbackEvidence(target: string[], value: string): void {
+  const bounded = value.slice(0, 4096);
+  if (target.length < MAX_EVIDENCE_ITEMS) {
+    target.push(bounded);
+    return;
+  }
+  const ordinaryIndex = target.findIndex((entry) => !entry.includes('204-navigation-blocked'));
+  if (ordinaryIndex < 0) return;
+  target.splice(ordinaryIndex, 1);
+  target.push(bounded);
+}
+
 /** Serializes one CDP value within the evidence budget. */
 function boundedJson(value: unknown): string {
+  return normalizeHeadlessEvidence(value).slice(0, 4096);
+}
+
+/** Keeps terminal timeout facts ahead of unbounded browser message text. */
+function serializePreviewHeadlessTimeoutDiagnostic(value: unknown): string {
+  const cdpResult =
+    typeof value === 'object' && value !== null && 'result' in value
+      ? (value as { readonly result?: unknown }).result
+      : value;
+  const remoteValue =
+    typeof cdpResult === 'object' && cdpResult !== null && 'value' in cdpResult
+      ? (cdpResult as { readonly value?: unknown }).value
+      : cdpResult;
+  if (typeof remoteValue !== 'object' || remoteValue === null) return boundedJson(remoteValue);
+  const snapshot = remoteValue as Record<string, unknown>;
+  const composition = snapshot.composition;
+  const terminal = snapshot.terminal;
+  const mount = snapshot.mount;
+  const messageTail = Array.isArray(snapshot.messages) ? snapshot.messages.slice(-16) : [];
+  return JSON.stringify({
+    document: {
+      bodyPreviewState: snapshot.bodyPreviewState,
+      bridgeInstalled: snapshot.bridgeInstalled,
+      readyState: snapshot.documentReadyState,
+    },
+    entryModule: snapshot.entryModule,
+    hotRuntime: snapshot.hotRuntime,
+    progress: snapshot.progress,
+    composition: composition === undefined ? undefined : normalizeHeadlessEvidence(composition).slice(0, 1_600),
+    terminal: terminal === undefined ? undefined : normalizeHeadlessEvidence(terminal).slice(0, 400),
+    counts: {
+      messageCount: snapshot.messageCount,
+      snapshotCount: snapshot.snapshotCount,
+    },
+    runtimeErrorText:
+      typeof snapshot.runtimeErrorText === 'string' ? snapshot.runtimeErrorText.slice(0, 800) : undefined,
+    mount: mount === undefined ? undefined : normalizeHeadlessEvidence(mount).slice(0, 800),
+    messages: messageTail.map((message) => normalizeHeadlessEvidence(message).slice(0, 120)),
+  }).slice(0, 4096);
+}
+
+/** Keeps CDP and browser causes useful when their prototypes do not cross a realm boundary. */
+function normalizeHeadlessEvidence(value: unknown, seen = new WeakSet<object>(), depth = 0): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  switch (typeof value) {
+    case 'string': return value;
+    case 'number':
+    case 'boolean':
+    case 'bigint': return String(value);
+    case 'symbol': return value.toString();
+    case 'function': return '[function]';
+    case 'object': break;
+    default: return String(value);
+  }
+  if (depth >= 4) return '[max-depth]';
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
   try {
-    return JSON.stringify(value).slice(0, 4096);
+    const record = value as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name : undefined;
+    const message = typeof record.message === 'string' ? record.message : undefined;
+    const cause = record.cause;
+    if (name !== undefined || message !== undefined || cause !== undefined) {
+      return `${name ?? 'Error'}${message === undefined || message.length === 0 ? '' : `: ${message}`}${cause === undefined ? '' : `; cause=${normalizeHeadlessEvidence(cause, seen, depth + 1)}`}`;
+    }
+    const fields = Object.keys(record).sort().slice(0, 16).map((key) => {
+      try {
+        return `${key}=${normalizeHeadlessEvidence(record[key], seen, depth + 1)}`;
+      } catch {
+        return `${key}=[unreadable]`;
+      }
+    });
+    return fields.length === 0 ? Object.prototype.toString.call(value) : `{${fields.join(', ')}}`;
   } catch {
-    return String(value).slice(0, 4096);
+    return Object.prototype.toString.call(value);
+  } finally {
+    seen.delete(value);
   }
 }
 
@@ -1365,7 +1776,31 @@ function appendBounded(current: string, next: string): string {
   return (current + next).slice(0, MAX_CAPTURE_BYTES);
 }
 
-/** Resolves after a bounded wall-clock delay. */
-function delay(timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
+/** Observational telemetry must never influence the production rendering path. */
+function reportPreviewHeadlessOwnership(
+  options: PreviewHeadlessRendererOptions,
+  event: PreviewHeadlessOwnershipEvent,
+): void {
+  try { options.reportOwnership?.(event); } catch { /* observer isolation */ }
+}
+
+/** A deadline whose timer cannot retain the process after another race branch wins. */
+function createCancellableDeadline(timeoutMs: number): { readonly cancel: () => void; readonly promise: Promise<void> } {
+  let timer: NodeJS.Timeout | undefined;
+  const promise = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      timer = undefined;
+      resolve();
+    }, timeoutMs);
+    timer.unref();
+  });
+  return {
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    },
+    promise,
+  };
 }

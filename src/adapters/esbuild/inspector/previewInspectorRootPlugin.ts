@@ -345,10 +345,12 @@ export function createPreviewInspectorRootSource(
   }
   const browserCandidates = virtualPageCandidates.map((virtualPage) => {
     const { browserCandidate: candidate } = virtualPage;
-    const executionRecipe =
+    const executionCandidate =
       options.pageExecutionCandidate?.browserCandidate.id === candidate.id
-        ? options.pageExecutionCandidate.routeRecipe
+        ? options.pageExecutionCandidate
         : undefined;
+    const executionRecipe = executionCandidate?.routeRecipe;
+    const runtimeCandidateTarget = executionCandidate?.browserCandidate.target ?? candidate.target;
     const generatedExecutionOwnsRouter =
       executionRecipe?.rootOwnsRouter === false &&
       (executionRecipe.kind === 'react-router-v5' || executionRecipe.kind === 'react-router-v6');
@@ -402,8 +404,9 @@ export function createPreviewInspectorRootSource(
             },
           }),
       stopReason: candidate.stopReason,
-      targetAutomaticProps: candidate.targetAutomaticProps,
-      ...(candidate.target === undefined ? {} : { target: candidate.target }),
+      targetAutomaticProps:
+        executionCandidate?.browserCandidate.targetAutomaticProps ?? candidate.targetAutomaticProps,
+      ...(runtimeCandidateTarget === undefined ? {} : { target: runtimeCandidateTarget }),
       virtualPage: virtualPage.recipe,
     };
   });

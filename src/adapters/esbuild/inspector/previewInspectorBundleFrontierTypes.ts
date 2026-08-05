@@ -11,10 +11,12 @@ export interface PreviewInspectorRuntimeImportEdge {
 }
 
 /** Structural failures that may safely replace an optional edge with an existing projection. */
-export type PreviewInspectorFrontierProjectionReason = Extract<
-  PreviewCompilerFrontierReason,
-  'exact-source-unreadable' | 'source-parse-failure' | 'slice-unavailable'
->;
+export type PreviewInspectorFrontierProjectionReason =
+  | Extract<
+      PreviewCompilerFrontierReason,
+      'exact-source-unreadable' | 'source-parse-failure' | 'slice-unavailable'
+    >
+  | 'budget-projection';
 
 /** Immutable representation consumed by the frozen-frontier corridor plugin. */
 export interface PreviewInspectorBundleFrontier {
@@ -42,6 +44,8 @@ export interface PreviewInspectorProjectedEdge {
   readonly exportNames: readonly string[];
   readonly importerPath: string;
   readonly moduleSpecifier: string;
+  /** Syntax-proven route-module identity retained by an otherwise shallow component projection. */
+  readonly neutralRouteBasePath?: string;
   readonly occurrenceStart: number;
   readonly reason: PreviewInspectorFrontierProjectionReason;
   readonly runtimeHookExportNames: readonly string[];
@@ -50,6 +54,8 @@ export interface PreviewInspectorProjectedEdge {
 
 export interface PreviewInspectorBundleFrontierSummary {
   readonly authoredEdgeCount: number;
+  /** Syntax-proven authored edges projected to keep native compilation inside the policy envelope. */
+  readonly boundedProjectionCount?: number;
   readonly exactModuleCount: number;
   readonly maximumDepth: number;
   readonly optionalComponentCount: number;

@@ -15,7 +15,15 @@ import {
   createPreviewInspectorSelectedExportSlice,
   type PreviewInspectorMountSurfaceSliceResult,
 } from './previewInspectorMountSurfaceSlice';
-import { collectPreviewInspectorShallowProjectionInventory } from './previewInspectorShallowProjection';
+import {
+  collectPreviewInspectorRuntimeHookProjectionInventory,
+  collectPreviewInspectorShallowProjectionInventory,
+  collectPreviewInspectorWholeModuleShallowProjectionInventory,
+  type PreviewInspectorShallowProjection,
+  type PreviewInspectorShallowProjectionInventory,
+} from './previewInspectorShallowProjection';
+import { collectPreviewStaticRouteProjectionInventory } from './previewInspectorStaticRouteProjection';
+import { collectPreviewStyleSignals } from '../previewStyleInventory';
 import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
 import {
   createPreviewInspectorBundleFrontierIdentity,
@@ -73,7 +81,8 @@ export interface PreparedPreviewInspectorBundleFrontier {
 }
 interface FrontierSourceQueueItem {
   readonly depth: number;
-  readonly kind: 'exact' | 'optional-component' | 'optional-support' | 'support';
+  readonly kind:
+    'exact' | 'optional-component' | 'optional-support' | 'support' | 'target-component';
   readonly optionalEdge?: Omit<PreviewInspectorProjectedEdge, 'reason'>;
   readonly sourcePath: string;
 }
@@ -115,8 +124,13 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       ? options.readSource(sourcePath)
       : diagnostics.measureRawSourceRead(() => options.readSource(sourcePath));
   const authenticInventorySourcePaths = collectAuthenticInventorySourcePaths(options);
+  const exactSeedPaths = new Set(
+    collectExactSeedPaths(options.plan, options.executionCandidate).map((sourcePath) =>
+      path.normalize(sourcePath),
+    ),
+  );
   const pending: FrontierSourceQueueItem[] = [
-    ...collectExactSeedPaths(options.plan, options.executionCandidate),
+    ...exactSeedPaths,
     ...(options.runtimeCompanionSourcePaths ?? []),
   ]
     .filter(checkAuthoredPath)
@@ -200,12 +214,21 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       targetPath: sourcePath,
     });
     optionalExportsByPath.set(sourcePath, new Set(edge.exportNames));
-    pending.push({ depth: 1, kind: 'optional-component', optionalEdge: edge, sourcePath });
+    pending.push({
+      depth: 1,
+      kind: 'target-component',
+      optionalEdge: edge,
+      sourcePath,
+    });
   }
   const queue = createPreviewInspectorStableMinPriorityQueue(pending, compareQueueItems);
   const graphMemo =
     options.executionCandidate === undefined ? undefined : options.sourceInventoryMemo;
   const sourceCache = new Map<string, Promise<PreviewInspectorBundleResolvedSourceNode>>();
+  const wholeModuleProjectionCache = new Map<
+    string,
+    Promise<PreviewInspectorShallowProjectionInventory>
+  >();
   const admittedKinds = new Map<string, AdmittedKind>();
   const packageDemandPaths = new Set<string>();
   const reasons = new Set<PreviewCompilerFrontierReason>();
@@ -317,6 +340,17 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       );
       if (typeof inventory === 'string')
         return createResolvedNodeFailure(normalizedSourcePath, representationKey, inventory);
+      const runtimeHookProjections =
+        slice === undefined
+            ? collectPreviewInspectorRuntimeHookProjectionInventory(
+                normalizedSourcePath,
+                inventorySource,
+              ).projectionsBySpecifier
+          : new Map<string, PreviewInspectorShallowProjection>();
+      const staticRouteInventory =
+        slice === undefined
+          ? collectPreviewStaticRouteProjectionInventory(normalizedSourcePath, inventorySource)
+          : undefined;
       const staticEdges: PreviewInspectorBundleResolvedStaticEdge[] = [];
       for (const edge of inventory.edges) {
         diagnostics?.recordEdgeVisit();
@@ -325,17 +359,76 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         const identity = createRuntimeEdgeIdentity(normalizedSourcePath, edge);
         const resolved = resolveModule(edge.moduleSpecifier, normalizedSourcePath);
         if (resolved !== undefined && checkAuthoredPath(resolved)) {
+          const runtimeHookProjection = runtimeHookProjections.get(edge.moduleSpecifier);
+          const staticRouteProjection = staticRouteInventory?.projectionsBySpecifier.get(
+            edge.moduleSpecifier,
+          );
+          const projection: PreviewInspectorShallowProjection | undefined =
+            runtimeHookProjection ??
+            (staticRouteProjection === undefined
+              ? undefined
+              : {
+                  exportNames: staticRouteProjection.exportNames,
+                  moduleSpecifier: staticRouteProjection.moduleSpecifier,
+                  ...(staticRouteProjection.neutralRouteBasePath === undefined
+                    ? {}
+                    : {
+                        neutralRouteBasePath: staticRouteProjection.neutralRouteBasePath,
+                      }),
+                  runtimeHookExportNames: Object.freeze([]),
+                });
           staticEdges.push(
             Object.freeze({
               identity,
+              importedNames: Object.freeze([...edge.importedNames]),
               kind: 'authored' as const,
+              moduleSpecifier: edge.moduleSpecifier,
+              occurrenceStart: edge.occurrenceStart,
+              ...(projection === undefined
+                ? {}
+                : {
+                    projection: Object.freeze({
+                      exportNames: Object.freeze([...projection.exportNames]),
+                      moduleSpecifier: projection.moduleSpecifier,
+                      ...(projection.neutralRouteBasePath === undefined
+                        ? {}
+                        : { neutralRouteBasePath: projection.neutralRouteBasePath }),
+                      occurrenceStart: edge.occurrenceStart,
+                      runtimeHookExportNames: Object.freeze([...projection.runtimeHookExportNames]),
+                    }),
+                  }),
               targetPath: path.normalize(resolved),
             }),
           );
           continue;
         }
         if (normalizeBarePackageSpecifier(edge.moduleSpecifier) !== undefined)
-          staticEdges.push(Object.freeze({ identity, kind: 'package-demand' as const }));
+          staticEdges.push(
+            Object.freeze({
+              identity,
+              importedNames: Object.freeze([...edge.importedNames]),
+              kind: 'package-demand' as const,
+              moduleSpecifier: edge.moduleSpecifier,
+              occurrenceStart: edge.occurrenceStart,
+            }),
+          );
+      }
+      if (slice === undefined && inventorySource.includes('styled-components')) {
+        for (const signal of collectPreviewStyleSignals(normalizedSourcePath, inventorySource)) {
+          const resolved = resolveModule(signal.moduleSpecifier, normalizedSourcePath);
+          if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
+          staticEdges.push(
+            Object.freeze({
+              compilerGeneratedSupport: true as const,
+              identity: `${normalizedSourcePath}\0preview-generated-theme\0${signal.moduleSpecifier}\0${signal.exportName}`,
+              importedNames: Object.freeze([signal.exportName]),
+              kind: 'authored' as const,
+              moduleSpecifier: signal.moduleSpecifier,
+              occurrenceStart: 0,
+              targetPath: path.normalize(resolved),
+            }),
+          );
+        }
       }
       return Object.freeze({
         byteLength: inventory.byteLength,
@@ -364,6 +457,26 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     };
     return graphMemo?.collectDynamicResolution(key, compute) ?? compute();
   };
+  const readWholeModuleProjections = (
+    sourcePath: string,
+  ): Promise<PreviewInspectorShallowProjectionInventory> => {
+    const normalizedSourcePath = path.normalize(sourcePath);
+    const retained = wholeModuleProjectionCache.get(normalizedSourcePath);
+    if (retained !== undefined) return retained;
+    const pending = readRawSource(normalizedSourcePath).then((sourceText) =>
+      sourceText === undefined
+        ? Object.freeze({
+            projectionsBySpecifier: new Map(),
+            truncated: true,
+          })
+        : collectPreviewInspectorWholeModuleShallowProjectionInventory(
+            normalizedSourcePath,
+            sourceText,
+          ),
+    );
+    wholeModuleProjectionCache.set(normalizedSourcePath, pending);
+    return pending;
+  };
   while (queue.size > 0) {
     diagnostics?.recordQueueIteration(queue.size);
     const item =
@@ -371,6 +484,130 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         ? queue.popMinimum()
         : diagnostics.measureQueueSort(() => queue.popMinimum());
     if (item === undefined || admittedKinds.has(item.sourcePath)) continue;
+    if (
+      (item.kind === 'optional-component' || item.kind === 'target-component') &&
+      options.executionCandidate !== undefined
+    ) {
+      const node = await readNode(item.sourcePath);
+      if (node.failure !== undefined) {
+        appendProjection(projectedEdges, item, node.failure);
+        continue;
+      }
+      if (
+        item.optionalEdge !== undefined &&
+        (admittedKinds.size + 1 > options.policy.maximumAuthoredModules ||
+          sourceBytes + node.byteLength > options.policy.maximumSourceBytes)
+      ) {
+        appendProjection(projectedEdges, item, 'budget-projection');
+        continue;
+      }
+      admittedKinds.set(item.sourcePath, item.kind);
+      maximumDepth = Math.max(maximumDepth, item.depth);
+      sourceBytes += node.byteLength;
+      const sourceText = await readRawSource(item.sourcePath);
+      const shallowInventory =
+        sourceText === undefined
+          ? undefined
+          : collectPreviewInspectorShallowProjectionInventory(
+              item.sourcePath,
+              sourceText,
+              optionalExportsByPath.get(item.sourcePath) ?? new Set(['default']),
+            );
+      const shallowProjections =
+        shallowInventory === undefined || shallowInventory.truncated
+          ? new Map<string, PreviewInspectorShallowProjection>()
+          : shallowInventory.projectionsBySpecifier;
+      const enqueueShallowTarget = (
+        targetPath: string,
+        moduleSpecifier: string,
+        occurrenceStart: number,
+      ): boolean => {
+        const projection = shallowProjections.get(moduleSpecifier);
+        if (projection === undefined) return false;
+        const normalizedTarget = path.normalize(targetPath);
+        const existingExports = optionalExportsByPath.get(normalizedTarget);
+        if (existingExports !== undefined) {
+          for (const exportName of projection.exportNames) existingExports.add(exportName);
+          return true;
+        }
+        optionalExportsByPath.set(normalizedTarget, new Set(projection.exportNames));
+        const identity = `${normalizedTarget}\0${projection.exportNames.join('\0')}`;
+        if (!optionalIdentities.has(identity) && !admittedKinds.has(normalizedTarget)) {
+          optionalIdentities.add(identity);
+          queue.push({
+            depth: item.depth + 1,
+            kind: 'optional-component',
+            optionalEdge: Object.freeze({
+              exportNames: Object.freeze([...projection.exportNames]),
+              importerPath: item.sourcePath,
+              moduleSpecifier,
+              occurrenceStart,
+              runtimeHookExportNames: Object.freeze([...projection.runtimeHookExportNames]),
+              targetPath: normalizedTarget,
+            }),
+            sourcePath: normalizedTarget,
+          });
+        }
+        return true;
+      };
+      for (const edge of node.edges) {
+        if (edge.kind !== 'dynamic-import') continue;
+        const resolution = resolveDynamicEdge(node, edge);
+        if (resolution.targetPath === undefined) continue;
+        const edgeIdentity = createRuntimeEdgeIdentity(item.sourcePath, edge);
+        if (processedStaticEdges.has(edgeIdentity)) continue;
+        if (
+          enqueueShallowTarget(resolution.targetPath, edge.moduleSpecifier, edge.occurrenceStart)
+        ) {
+          processedStaticEdges.add(edgeIdentity);
+          authoredEdgeCount += 1;
+        }
+      }
+      for (const edge of node.staticEdges) {
+        if (processedStaticEdges.has(edge.identity)) continue;
+        processedStaticEdges.add(edge.identity);
+        if (edge.kind === 'package-demand') {
+          packageDemandPaths.add(item.sourcePath);
+          continue;
+        }
+        authoredEdgeCount += 1;
+        if (edge.targetPath === undefined) continue;
+        if (edge.compilerGeneratedSupport === true) {
+          queue.push({
+            depth: item.depth + 1,
+            kind: 'support',
+            sourcePath: edge.targetPath,
+          });
+          continue;
+        }
+        if (
+          edge.moduleSpecifier !== undefined &&
+          edge.occurrenceStart !== undefined &&
+          enqueueShallowTarget(edge.targetPath, edge.moduleSpecifier, edge.occurrenceStart)
+        ) {
+          continue;
+        }
+        if (edge.projection !== undefined && !exactSeedPaths.has(edge.targetPath)) {
+          projectedEdges.push(
+            Object.freeze({
+              ...edge.projection,
+              importerPath: item.sourcePath,
+              reason: 'budget-projection' as const,
+              targetPath: edge.targetPath,
+            }),
+          );
+          continue;
+        }
+        if (!optionalExportsByPath.has(edge.targetPath)) {
+          queue.push({
+            depth: item.depth + 1,
+            kind: 'optional-support',
+            sourcePath: edge.targetPath,
+          });
+        }
+      }
+      continue;
+    }
     if (item.kind === 'optional-component') {
       const collectProposal = (): ReturnType<typeof collectPreviewInspectorBundleOptionalClosure> =>
         collectPreviewInspectorBundleOptionalClosure({
@@ -393,6 +630,17 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       const { graph, proposal } = collected;
       if (typeof proposal === 'string') {
         appendProjection(projectedEdges, item, proposal);
+        continue;
+      }
+      const newSourceCount = proposal.sourcePaths.filter(
+        (sourcePath) => !admittedKinds.has(sourcePath),
+      ).length;
+      if (
+        item.optionalEdge !== undefined &&
+        (admittedKinds.size + newSourceCount > options.policy.maximumAuthoredModules ||
+          sourceBytes + proposal.sourceBytes > options.policy.maximumSourceBytes)
+      ) {
+        appendProjection(projectedEdges, item, 'budget-projection');
         continue;
       }
       for (const sourcePath of proposal.sourcePaths)
@@ -475,8 +723,64 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         continue;
       }
       authoredEdgeCount += 1;
+      if (edge.compilerGeneratedSupport === true && edge.targetPath !== undefined) {
+        queue.push({
+          depth: item.depth + 1,
+          kind: 'support',
+          sourcePath: edge.targetPath,
+        });
+        continue;
+      }
       // A proven rendered child owns an optional transaction; treating its static import as
       // mandatory support would bypass projection and expand every modal/form subtree eagerly.
+      if (
+        edge.targetPath !== undefined &&
+        !optionalExportsByPath.has(edge.targetPath) &&
+        edge.projection !== undefined &&
+        !exactSeedPaths.has(edge.targetPath)
+      ) {
+        projectedEdges.push(
+          Object.freeze({
+            ...edge.projection,
+            importerPath: item.sourcePath,
+            reason: 'budget-projection' as const,
+            targetPath: edge.targetPath,
+          }),
+        );
+        continue;
+      }
+      if (
+        edge.targetPath !== undefined &&
+        optionalExportsByPath.has(edge.targetPath) &&
+        !admittedKinds.has(edge.targetPath)
+      ) {
+        const projection =
+          edge.moduleSpecifier === undefined
+            ? undefined
+            : (await readWholeModuleProjections(item.sourcePath)).projectionsBySpecifier.get(
+                edge.moduleSpecifier,
+              );
+        if (projection !== undefined && edge.occurrenceStart !== undefined) {
+          projectedEdges.push(
+            Object.freeze({
+              ...projection,
+              importerPath: item.sourcePath,
+              occurrenceStart: edge.occurrenceStart,
+              reason: 'budget-projection' as const,
+              targetPath: edge.targetPath,
+            }),
+          );
+        } else {
+          // One path-level optional reservation cannot discard another authentic importer's
+          // unprojectable demand. Admit the shared target so the fail-closed guard stays exact.
+          queue.push({
+            depth: item.depth + 1,
+            kind: 'support',
+            sourcePath: edge.targetPath,
+          });
+        }
+        continue;
+      }
       if (edge.targetPath !== undefined && !optionalExportsByPath.has(edge.targetPath)) {
         queue.push({
           depth: item.depth + 1,
@@ -491,17 +795,32 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     authenticSourcePaths.filter((sourcePath) => admittedKinds.get(sourcePath) === 'exact'),
   );
   const optionalSourcePaths = authenticSourcePaths.filter(
-    (sourcePath) => admittedKinds.get(sourcePath) === 'optional-component',
+    (sourcePath) =>
+      admittedKinds.get(sourcePath) === 'optional-component' ||
+      admittedKinds.get(sourcePath) === 'target-component',
+  );
+  // A component demand can be admitted through an exact closure as support.
+  // Keep its recorded export contract even when that admission class is not
+  // itself optional: the frozen corridor needs it only to project one proven
+  // child edge, never to expand frontier membership.
+  const authenticComponentSourcePaths = authenticSourcePaths.filter((sourcePath) =>
+    optionalExportsByPath.has(sourcePath),
+  );
+  const effectiveProjectedEdges = projectedEdges.filter(
+    (edge) => edge.targetPath === undefined || !admittedKinds.has(edge.targetPath),
   );
   const packageDemandSourcePaths = Object.freeze([...packageDemandPaths].sort());
   const truncationReasons = Object.freeze(sortPreviewInspectorBundleFrontierReasons(reasons));
   const summary = Object.freeze({
     authoredEdgeCount,
+    boundedProjectionCount: effectiveProjectedEdges.filter(
+      (edge) => edge.reason === 'budget-projection',
+    ).length,
     exactModuleCount: exactSourcePaths.length,
     maximumDepth,
     optionalComponentCount: optionalSourcePaths.length,
     packageDemandSourceCount: packageDemandSourcePaths.length,
-    projectedEdgeCount: projectedEdges.length,
+    projectedEdgeCount: effectiveProjectedEdges.length,
     sourceBytes,
     supportModuleCount:
       countKinds(admittedKinds, 'support') + countKinds(admittedKinds, 'optional-support'),
@@ -510,7 +829,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
   });
   return Object.freeze({
     authenticComponentExports: Object.freeze(
-      optionalSourcePaths.map((sourcePath) =>
+      authenticComponentSourcePaths.map((sourcePath) =>
         Object.freeze({
           exportNames: Object.freeze([...(optionalExportsByPath.get(sourcePath) ?? [])].sort()),
           runtimeHookExportNames: Object.freeze([]),
@@ -521,7 +840,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     authenticSourcePaths,
     exactSourcePaths,
     packageDemandSourcePaths,
-    projectedEdges: Object.freeze([...projectedEdges].sort(compareProjectedEdges)),
+    projectedEdges: Object.freeze([...effectiveProjectedEdges].sort(compareProjectedEdges)),
     rejected: truncationReasons.length > 0,
     sourceKinds: Object.freeze(
       Object.fromEntries(
@@ -529,7 +848,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           sourcePath,
           kind === 'exact'
             ? ('critical-surface' as const)
-            : kind === 'optional-component'
+            : kind === 'optional-component' || kind === 'target-component'
               ? ('optional-surface' as const)
               : kind === 'optional-support'
                 ? ('optional-support' as const)
@@ -600,6 +919,8 @@ function createPreviewInspectorBundleSourceClosureKey(
     1,
     PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
     path.normalize(options.workspaceRoot),
+    options.policy.maximumAuthoredModules,
+    options.policy.maximumSourceBytes,
     [...(options.runtimeCompanionSourcePaths ?? [])]
       .map((sourcePath) => path.normalize(sourcePath))
       .sort(),
@@ -754,6 +1075,7 @@ function collectAuthenticInventorySourcePaths(
   }
   return sourcePaths;
 }
+
 /** Requires existing one-hop render evidence before a dynamic import can enter a v2 slice. */
 function isSelectedDynamicVisualPath(
   plan: PreviewInspectorAncestorPlan,
@@ -868,7 +1190,7 @@ function compareQueueItems(left: FrontierSourceQueueItem, right: FrontierSourceQ
 }
 /** Finishes mandatory exact closure before optional component transactions. */
 function queuePriority(kind: FrontierSourceQueueItem['kind']): number {
-  return kind === 'exact' ? 0 : kind === 'support' ? 1 : 2;
+  return kind === 'exact' ? 0 : kind === 'target-component' ? 1 : kind === 'support' ? 2 : 3;
 }
 /** Counts current optional support entries; exact sources are deliberately never charged to it. */
 function countKinds(kinds: ReadonlyMap<string, AdmittedKind>, kind: AdmittedKind): number {
@@ -917,9 +1239,7 @@ function collectExactSeedPaths(
   if (executionCandidate !== undefined) {
     return [
       ...new Set([
-        ...executionCandidate.criticalSurfaces.map((surface) =>
-          path.normalize(surface.sourcePath),
-        ),
+        ...executionCandidate.criticalSurfaces.map((surface) => path.normalize(surface.sourcePath)),
         ...collectPreviewInspectorExecutionCorridorSeedPaths(plan, executionCandidate),
       ]),
     ].sort();

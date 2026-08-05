@@ -42,11 +42,16 @@ export function collectPreviewInspectorFastResolvedImports(
   options: {
     readonly preferredPath?: string;
     readonly preferredPaths?: readonly string[];
+    readonly requiredSourcePath?: string;
     readonly selectedAuxiliaryRoot?: string;
   } = {},
 ): readonly PreviewInspectorFastResolvedImportEdge[] {
   const edges: PreviewInspectorFastResolvedImportEdge[] = [];
   const seen = new Set<string>();
+  const requiredSourceIdentity =
+    options.requiredSourcePath === undefined
+      ? undefined
+      : createSourcePathIdentity(options.requiredSourcePath);
   const preferredPaths =
     options.preferredPaths ?? (options.preferredPath === undefined ? [] : [options.preferredPath]);
   const rankedSpecifiers = [...collectPreviewRenderModuleSpecifiers(ownerPath, sourceText)]
@@ -69,10 +74,14 @@ export function collectPreviewInspectorFastResolvedImports(
     const resolvedPath = resolveModule(specifier, ownerPath);
     if (resolvedPath === undefined) continue;
     const childPath = path.normalize(resolvedPath);
+    const requiredSource =
+      requiredSourceIdentity !== undefined &&
+      isSameSourcePathIdentity(createSourcePathIdentity(resolvedPath), requiredSourceIdentity);
     if (
       seen.has(childPath) ||
       !isProjectSourcePath(childPath, workspaceRoot) ||
-      !isAdmittedSourcePath(childPath, workspaceRoot, options.selectedAuxiliaryRoot)
+      (!requiredSource &&
+        !isAdmittedSourcePath(childPath, workspaceRoot, options.selectedAuxiliaryRoot))
     ) {
       continue;
     }
@@ -86,6 +95,22 @@ export function collectPreviewInspectorFastResolvedImports(
     );
   }
   return Object.freeze(edges);
+}
+
+/** Keeps exact lexical and absolute identities without weakening case or sibling-path checks. */
+function createSourcePathIdentity(sourcePath: string): {
+  readonly canonical: string;
+  readonly lexical: string;
+} {
+  return { canonical: path.resolve(sourcePath), lexical: path.normalize(sourcePath) };
+}
+
+/** Accepts only exact equality in either caller-preserved path representation. */
+function isSameSourcePathIdentity(
+  left: { readonly canonical: string; readonly lexical: string },
+  right: { readonly canonical: string; readonly lexical: string },
+): boolean {
+  return left.lexical === right.lexical || left.canonical === right.canonical;
 }
 
 /**

@@ -101,15 +101,18 @@ export function createPreviewInspectorPageExecutionCandidates(
     pageLocalSurface === undefined
       ? []
       : createFrameworkCompositionEdges(browserCandidate, frameworkSurfaces, pageLocalSurface);
+  const shellEdges = createShellCompositionEdges(virtualPage, shellSurfaces, pageSurface);
+  const outerPageSurface = readOuterPageSurface(shellSurfaces, shellEdges, pageSurface);
   const routeRecipe = createRouteRecipe(
     browserCandidate,
     routeSurfaces,
     pageSurface,
     targetSurface,
     derivedOwnerRouteMount?.surface,
+    browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+      ? outerPageSurface
+      : undefined,
   );
-  const shellEdges = createShellCompositionEdges(virtualPage, shellSurfaces, pageSurface);
-  const outerPageSurface = readOuterPageSurface(shellSurfaces, shellEdges, pageSurface);
   const routeElementEdges = createRouteElementCompositionEdges(
     routeElementSurfaces,
     outerPageSurface,
@@ -120,7 +123,7 @@ export function createPreviewInspectorPageExecutionCandidates(
     detachedRouteLeaf && !detachedCatalogOwnerRetained
       ? undefined
       : createPageTargetEdge(
-          browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+          browserCandidate.detachedTargetPlacement !== undefined
             ? outerPageSurface
             : pageSurface,
           targetSurface,
@@ -146,7 +149,7 @@ export function createPreviewInspectorPageExecutionCandidates(
     detachedRouteLeaf && !detachedCatalogOwnerRetained
       ? undefined
       : createPageTargetEdge(
-          browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+          browserCandidate.detachedTargetPlacement !== undefined
             ? slicedOuterPageSurface
             : pageSlicedSurface,
           targetSurface,
@@ -168,7 +171,7 @@ export function createPreviewInspectorPageExecutionCandidates(
     pageLocalSurface === undefined || (detachedRouteLeaf && !detachedCatalogOwnerRetained)
       ? undefined
       : createPageTargetEdge(
-          browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+          browserCandidate.detachedTargetPlacement !== undefined
             ? (localOuterPageSurface ?? pageLocalSurface)
             : pageLocalSurface,
           targetSurface,
@@ -892,6 +895,7 @@ function createRouteRecipe(
   pageSurface: PreviewInspectorMountSurface,
   targetSurface: PreviewInspectorMountSurface,
   derivedOwnerRouteSurface?: PreviewInspectorMountSurface,
+  overlaySiblingPageSurface?: PreviewInspectorMountSurface,
 ): PreviewInspectorRouteExecutionRecipe | undefined {
   const location = candidate.routeLocation;
   if (location === undefined) return undefined;
@@ -914,6 +918,7 @@ function createRouteRecipe(
     ...routeSurfaces,
     ...(derivedOwnerRouteSurface === undefined ? [] : [derivedOwnerRouteSurface]),
     pageSurface,
+    ...(overlaySiblingPageSurface === undefined ? [] : [overlaySiblingPageSurface]),
     targetSurface,
   ]);
   const runtimeTargetSurfaces = admittedSurfaces.filter((surface) =>
@@ -940,7 +945,10 @@ function createRouteRecipe(
       ? routeMountEvidence.map((mount, index) =>
           Object.freeze({
             basePath: mount.basePath,
-            childSurfaceId: retainedMountSurfaces[index + 1]?.id ?? runtimeTargetSurface.id,
+            childSurfaceId:
+              retainedMountSurfaces[index + 1]?.id ??
+              overlaySiblingPageSurface?.id ??
+              runtimeTargetSurface.id,
             ...(mount.contextOrigin === undefined ? {} : { contextOrigin: mount.contextOrigin }),
             ...(mount.contextPattern === undefined ? {} : { contextPattern: mount.contextPattern }),
             hasWildcardFallback: mount.hasWildcardFallback,
@@ -1050,7 +1058,7 @@ function createPageTargetEdge(
   return Object.freeze({
     childSurfaceId: targetSurface.id,
     mode:
-      detachedTargetPlacement === 'overlay-sibling'
+      detachedTargetPlacement !== undefined
         ? 'sibling-after'
         : 'contains-authored-child',
     parentSurfaceId: pageSurface.id,

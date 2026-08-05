@@ -243,6 +243,8 @@ function createBrowserCandidate(
   contentCandidate: PreviewInspectorPageCandidate,
 ): PreviewInspectorPageCandidate {
   const renderPath = authoredCandidate.renderPath ?? contentCandidate.renderPath;
+  const detachedTargetPlacement =
+    authoredCandidate.detachedTargetPlacement ?? contentCandidate.detachedTargetPlacement;
   /*
    * A route-factory owner can share one executable checkpoint across several child paths. The
    * authored candidate carries the user's exact route choice, while the selected content checkpoint
@@ -253,6 +255,7 @@ function createBrowserCandidate(
   const routeMount = selectPreviewInspectorRouteMount(routeLocation, contentCandidate.root);
   return Object.freeze({
     ...contentCandidate,
+    ...(detachedTargetPlacement === undefined ? {} : { detachedTargetPlacement }),
     id: authoredCandidate.id,
     ...(renderPath === undefined ? {} : { renderPath }),
     ...(routeLocation === undefined ? {} : { routeLocation }),

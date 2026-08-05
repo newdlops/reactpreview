@@ -10,6 +10,7 @@ const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 
 export interface PreviewInspectorBundleFrontierGuardOptions {
   readonly authenticSourcePaths: ReadonlySet<string>;
+  readonly canonicalizePath?: (sourcePath: string) => string;
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly workspaceRoot: string;
 }
@@ -19,7 +20,8 @@ export function registerPreviewInspectorBundleFrontierGuard(
   build: PluginBuild,
   options: PreviewInspectorBundleFrontierGuardOptions,
 ): void {
-  const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const canonicalizePath = options.canonicalizePath ?? canonicalizeExistingPath;
+  const workspaceRoot = canonicalizePath(options.workspaceRoot);
   build.onResolve({ filter: /.*/ }, (arguments_: OnResolveArgs): OnResolveResult | undefined => {
     if (
       arguments_.kind !== 'import-statement' ||
@@ -27,14 +29,14 @@ export function registerPreviewInspectorBundleFrontierGuard(
       !path.isAbsolute(arguments_.importer)
     )
       return undefined;
-    const importer = canonicalizeExistingPath(arguments_.importer);
+    const importer = canonicalizePath(arguments_.importer);
     if (!options.authenticSourcePaths.has(importer)) return undefined;
     const resolved = options.resolveModule(arguments_.path, importer);
     if (
       resolved === undefined ||
       !SOURCE_MODULE_PATTERN.test(resolved) ||
-      !isAuthoredWorkspacePath(workspaceRoot, resolved) ||
-      options.authenticSourcePaths.has(canonicalizeExistingPath(resolved))
+      !isAuthoredWorkspacePath(workspaceRoot, resolved, canonicalizePath) ||
+      options.authenticSourcePaths.has(canonicalizePath(resolved))
     )
       return undefined;
     return {
@@ -44,7 +46,7 @@ export function registerPreviewInspectorBundleFrontierGuard(
             cause: 'guard-escape',
             importerPath: importer,
             moduleSpecifier: arguments_.path,
-            sourcePath: canonicalizeExistingPath(resolved),
+            sourcePath: canonicalizePath(resolved),
             workspaceRoot,
           }),
           text: `React Preview frontier mismatch: ${arguments_.path} escaped the planned authored bundle.`,
@@ -55,8 +57,12 @@ export function registerPreviewInspectorBundleFrontierGuard(
 }
 
 /** Ensures packages and generated modules remain outside authored frontier enforcement. */
-function isAuthoredWorkspacePath(workspaceRoot: string, sourcePath: string): boolean {
-  const relative = path.relative(workspaceRoot, canonicalizeExistingPath(sourcePath));
+function isAuthoredWorkspacePath(
+  workspaceRoot: string,
+  sourcePath: string,
+  canonicalizePath: (sourcePath: string) => string,
+): boolean {
+  const relative = path.relative(workspaceRoot, canonicalizePath(sourcePath));
   return (
     relative.length > 0 &&
     relative !== '..' &&

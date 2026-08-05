@@ -8,6 +8,13 @@ import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorP
 export function createPreviewInspectorPageExecutionBuildPlugin(
   candidate: PreviewInspectorPageExecutionCandidate | undefined,
   readSource: (sourcePath: string) => string | undefined,
+  transformSource?: (
+    sourcePath: string,
+    sourceText: string,
+  ) => Promise<{
+    readonly contents: string;
+    readonly watchDirectories: readonly string[];
+  }>,
 ): Plugin | undefined {
   if (candidate === undefined) return undefined;
   const surfaces = candidate.criticalSurfaces
@@ -30,5 +37,6 @@ export function createPreviewInspectorPageExecutionBuildPlugin(
     : createPreviewInspectorPageExecutionPlugin({
         readSource: (sourcePath) => readSource(path.normalize(sourcePath)),
         surfaces,
+        ...(transformSource === undefined ? {} : { transformSource }),
       });
 }

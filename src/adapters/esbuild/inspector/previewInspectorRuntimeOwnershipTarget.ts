@@ -12,21 +12,18 @@ import type {
 } from './previewInspectorAncestorTypes';
 import type { PreviewInspectorPageExecutionCandidate } from './previewInspectorPageExecutionTypes';
 
-/**
- * Uses compiler-owned automatic route evidence for the same leaf ownership as an explicit route.
- */
+/** Keeps active-document ownership unless the caller explicitly requests route-leaf ownership. */
 export function resolvePreviewInspectorRuntimeTargetMode(
-  plan: PreviewInspectorAncestorPlan | undefined,
+  _plan: PreviewInspectorAncestorPlan | undefined,
   requestedMode: PreviewInspectorTargetMode | undefined,
 ): PreviewInspectorTargetMode | undefined {
-  if (requestedMode !== undefined) return requestedMode;
-  const activeCandidate = plan?.pageCandidates[0];
-  return plan?.routeSelectionResolution === 'automatic' &&
-    activeCandidate?.routeLocation !== undefined &&
-    activeCandidate.target !== undefined &&
-    !sameComponentReference(activeCandidate.target, plan.target)
-    ? 'selected-route-leaf'
-    : undefined;
+  /*
+   * Automatic route selection chooses the page context, not a different file to validate. A
+   * nested selected component can legitimately sit below that route leaf; silently promoting the
+   * leaf makes a fully rendered page report success while never proving the active file mounted.
+   * Explicit route-leaf inspection remains available through the caller-owned target mode.
+   */
+  return requestedMode;
 }
 
 export interface ResolvePreviewInspectorRuntimeOwnershipTargetOptions {

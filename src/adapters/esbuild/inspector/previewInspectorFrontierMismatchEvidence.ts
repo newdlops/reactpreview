@@ -9,7 +9,11 @@ type Options = { readonly workspaceRoot: string; readonly sourcePath: string } &
       readonly importerPath: string;
       readonly moduleSpecifier: string;
     }
-  | { readonly cause: 'unexpected-metafile-input' }
+  | {
+      readonly cause: 'unexpected-metafile-input';
+      readonly importerPath?: string;
+      readonly moduleSpecifier?: string;
+    }
   | {
       readonly cause: 'missing-execution-surface';
       readonly surfaceId: string;
@@ -39,8 +43,22 @@ export function createPreviewInspectorFrontierMismatchEvidence(
   options: Options,
 ): PreviewFrontierMismatchEvidence {
   const source = pathEvidence(options.workspaceRoot, options.sourcePath);
-  if (options.cause === 'unexpected-metafile-input')
-    return Object.freeze({ cause: options.cause, source });
+  if (options.cause === 'unexpected-metafile-input') {
+    if (options.importerPath === undefined || options.moduleSpecifier === undefined)
+      return Object.freeze({ cause: options.cause, source });
+    const value = options.moduleSpecifier;
+    const safe =
+      value.length > 0 &&
+      value.length <= 256 &&
+      !/[\\\x00-\x1f\x7f]/u.test(value) &&
+      !/^(?:\/|[A-Za-z]:[\\/]|[A-Za-z][A-Za-z0-9+.-]*:)/u.test(value);
+    return Object.freeze({
+      cause: options.cause,
+      source,
+      importer: pathEvidence(options.workspaceRoot, options.importerPath),
+      specifier: Object.freeze({ digest: digest(value), ...(safe ? { value } : {}) }),
+    });
+  }
   if (options.cause === 'missing-execution-surface')
     return Object.freeze({
       cause: options.cause,

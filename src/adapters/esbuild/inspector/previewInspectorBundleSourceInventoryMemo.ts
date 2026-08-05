@@ -41,8 +41,21 @@ export type PreviewInspectorBundleResolvedNodeFailure =
   'exact-source-unreadable' | 'slice-unavailable' | 'source-parse-failure';
 
 export interface PreviewInspectorBundleResolvedStaticEdge {
+  /** Authored module loaded behind a compiler-generated runtime boundary such as theme discovery. */
+  readonly compilerGeneratedSupport?: true;
   readonly identity: string;
+  readonly importedNames?: readonly string[];
   readonly kind: 'authored' | 'package-demand';
+  readonly moduleSpecifier?: string;
+  readonly occurrenceStart?: number;
+  /** Present only when the runtime plugin can synthesize this exact import without a guard escape. */
+  readonly projection?: {
+    readonly exportNames: readonly string[];
+    readonly moduleSpecifier: string;
+    readonly neutralRouteBasePath?: string;
+    readonly occurrenceStart: number;
+    readonly runtimeHookExportNames: readonly string[];
+  };
   readonly targetPath?: string;
 }
 

@@ -22,6 +22,14 @@ export interface PreviewInspectorPageExecutionPluginSurface {
 export interface PreviewInspectorPageExecutionPluginOptions {
   readonly readSource: (sourcePath: string) => string | undefined;
   readonly surfaces: readonly PreviewInspectorPageExecutionPluginSurface[];
+  /** Applies the same compatibility/runtime instrumentation used by authored workspace modules. */
+  readonly transformSource?: (
+    sourcePath: string,
+    sourceText: string,
+  ) => Promise<{
+    readonly contents: string;
+    readonly watchDirectories: readonly string[];
+  }>;
 }
 
 /** A result captured during virtual source generation for planner diagnostics and tests. */
@@ -55,7 +63,7 @@ export function createPreviewInspectorPageExecutionPlugin(
       ? { namespace: PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE, path: surfaceId }
       : undefined;
   };
-  const load = (arguments_: OnLoadArgs): OnLoadResult | undefined => {
+  const load = async (arguments_: OnLoadArgs): Promise<OnLoadResult | undefined> => {
     const surface = surfaces.get(arguments_.path);
     if (surface === undefined) return undefined;
     const sourceText = options.readSource(surface.sourcePath) ?? readDiskSource(surface.sourcePath);
@@ -76,10 +84,17 @@ export function createPreviewInspectorPageExecutionPlugin(
             });
     if (result?.kind === 'success') {
       loads.push(Object.freeze({ failed: false, surfaceId: surface.id }));
+      const transformed =
+        options.transformSource === undefined
+          ? undefined
+          : await options.transformSource(surface.sourcePath, result.slice.contents);
       return {
-        contents: result.slice.contents,
+        contents: transformed?.contents ?? result.slice.contents,
         loader: surface.sourcePath.toLowerCase().endsWith('x') ? 'tsx' : 'ts',
         resolveDir: path.dirname(surface.sourcePath),
+        ...(transformed?.watchDirectories === undefined
+          ? {}
+          : { watchDirs: [...transformed.watchDirectories] }),
         watchFiles: [surface.sourcePath],
       };
     }

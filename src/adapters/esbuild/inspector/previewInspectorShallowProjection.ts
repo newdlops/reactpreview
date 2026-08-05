@@ -25,6 +25,14 @@ export interface PreviewInspectorShallowProjection {
   /** Authored module request used as the esbuild projection identity. */
   readonly moduleSpecifier: string;
   /**
+   * Neutral descendant identity required when the component stands in for a route submodule.
+   *
+   * This metadata is syntax-proven by the static route analyzer. Keeping it on the shared
+   * projection shape prevents a frozen bundle frontier from degrading an app module into a plain
+   * React component that no longer satisfies its caller's `basePath`/page-list contract.
+   */
+  readonly neutralRouteBasePath?: string;
+  /**
    * Export spellings represented by undefined-returning hook stubs instead of host placeholders.
    *
    * The importer is independently rewritten with a demand-shaped runtime fallback at each of these
@@ -201,6 +209,26 @@ export function collectPreviewInspectorShallowProjectionInventory(
 }
 
 /**
+ * Collects only projections that remain safe across every runtime export in one authentic module.
+ *
+ * This is used when two authentic importers share a frontier-owned optional target. Considering
+ * every exported local keeps helper, constant, and hook uses in the safety decision instead of
+ * guessing which export caused the second importer to enter the authored closure.
+ */
+export function collectPreviewInspectorWholeModuleShallowProjectionInventory(
+  sourcePath: string,
+  sourceText: string,
+): PreviewInspectorShallowProjectionInventory {
+  const facts = analyzePreviewRenderSource(sourcePath, sourceText).moduleFacts;
+  const rootExportNames = new Set(
+    facts.exports
+      .filter((item) => item.localName !== undefined || item.moduleSpecifier !== undefined)
+      .map((item) => item.exportName),
+  );
+  return collectPreviewInspectorShallowProjectionInventory(sourcePath, sourceText, rootExportNames);
+}
+
+/**
  * Finds project hook modules that may be cut throughout an exact selected corridor module.
  *
  * Unlike visual projection, hook projection does not remove authored DOM. Every reference to a
@@ -317,6 +345,15 @@ export function createPreviewInspectorShallowProjectionSource(
       '    styledComponentId: { value: selectorId },',
       "    toString: { value: () => '.' + selectorId },",
       '  });',
+      ...(projection.neutralRouteBasePath === undefined
+        ? []
+        : [
+            '  Object.defineProperties(ShallowComponent, {',
+            `    basePath: { enumerable: false, value: ${JSON.stringify(projection.neutralRouteBasePath)} },`,
+            '    allPages: { enumerable: false, value: Object.freeze([]) },',
+            '    pageNames: { enumerable: false, value: Object.freeze([]) },',
+            '  });',
+          ]),
       '  return ShallowComponent;',
       '};',
     );

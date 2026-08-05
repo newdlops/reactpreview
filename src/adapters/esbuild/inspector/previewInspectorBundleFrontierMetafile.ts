@@ -33,24 +33,44 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
   const authenticSourcePaths = new Set(
     options.authenticSourcePaths.map((sourcePath) => canonicalizeExistingPath(sourcePath)),
   );
-  const unexpectedInput = Object.keys(options.metafile.inputs)
+  const unexpectedInputs = Object.keys(options.metafile.inputs)
     .filter(isAuthoredMetafileInputPath)
     .map((sourcePath) => canonicalizeExistingPath(path.resolve(workspaceRoot, sourcePath)))
     .sort()
-    .find(
+    .filter(
       (sourcePath) =>
         isAuthoredWorkspaceSource(workspaceRoot, sourcePath) &&
         !authenticSourcePaths.has(sourcePath),
     );
-  if (unexpectedInput !== undefined)
+  const unexpectedInputSet = new Set(unexpectedInputs);
+  const unexpectedWithEdges = unexpectedInputs.map((sourcePath) => ({
+      incomingEdge: findIncomingAuthoredEdge(options, workspaceRoot, sourcePath),
+      sourcePath,
+    }));
+  const boundaryEscape =
+    unexpectedWithEdges.find(
+      ({ incomingEdge }) =>
+        incomingEdge !== undefined && authenticSourcePaths.has(incomingEdge.importerPath),
+    ) ??
+    unexpectedWithEdges.find(
+      ({ incomingEdge }) =>
+        incomingEdge === undefined || !unexpectedInputSet.has(incomingEdge.importerPath),
+    );
+  const unexpectedInput = boundaryEscape?.sourcePath ?? unexpectedInputs[0];
+  if (unexpectedInput !== undefined) {
+    const incomingEdge =
+      boundaryEscape?.incomingEdge ??
+      findIncomingAuthoredEdge(options, workspaceRoot, unexpectedInput);
     throwFrontierMismatch(
       options,
       createPreviewInspectorFrontierMismatchEvidence({
         cause: 'unexpected-metafile-input',
         sourcePath: unexpectedInput,
         workspaceRoot,
+        ...(incomingEdge === undefined ? {} : incomingEdge),
       }),
     );
+  }
   const missingExecutionSurface = options.executionSurfaces?.find(
     (surface) => !hasExecutionSurface(options, surface),
   );
@@ -65,6 +85,31 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
         workspaceRoot,
       }),
     );
+}
+
+/** Retains the authored edge that materialized an unplanned input when esbuild exposes it. */
+function findIncomingAuthoredEdge(
+  options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
+  workspaceRoot: string,
+  targetPath: string,
+): { readonly importerPath: string; readonly moduleSpecifier: string } | undefined {
+  for (const [inputPath, input] of Object.entries(options.metafile.inputs).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    if (!isAuthoredMetafileInputPath(inputPath)) continue;
+    const importerPath = canonicalizeExistingPath(path.resolve(workspaceRoot, inputPath));
+    if (!isAuthoredWorkspaceSource(workspaceRoot, importerPath)) continue;
+    for (const imported of input.imports) {
+      if (imported.external === true || !isAuthoredMetafileInputPath(imported.path)) continue;
+      const importedPath = canonicalizeExistingPath(path.resolve(workspaceRoot, imported.path));
+      if (importedPath !== targetPath) continue;
+      return {
+        importerPath,
+        moduleSpecifier: imported.original ?? imported.path,
+      };
+    }
+  }
+  return undefined;
 }
 
 /** Requires every generated execution surface to survive output tree-shaking and composition. */

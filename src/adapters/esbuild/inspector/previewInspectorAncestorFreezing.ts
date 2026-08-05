@@ -11,6 +11,7 @@ import type {
 } from '../renderGraph';
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 import type { PreviewReactRenderOutcomePlan } from '../staticResources/previewReactRenderOutcomes';
+import { isReactOverlayComponentName } from '../staticResources/reactOverlayVisibilityInference';
 import type {
   PreviewInspectorNextAppLayoutReference,
   PreviewInspectorNextAppRouteLocation,
@@ -34,6 +35,7 @@ import type {
 export interface FreezePreviewInspectorPageCandidateOptions {
   readonly complete: boolean;
   readonly dependencies: ReadonlySet<string>;
+  readonly detachedTargetPlacement?: PreviewInspectorPageCandidate['detachedTargetPlacement'];
   readonly edges: readonly PreviewInspectorAncestorEdge[];
   readonly id: string;
   readonly renderPath: PreviewRenderChainCandidate | undefined;
@@ -56,8 +58,27 @@ export interface FreezePreviewInspectorPageCandidateOptions {
 export function freezePreviewInspectorPageCandidate(
   options: FreezePreviewInspectorPageCandidateOptions,
 ): PreviewInspectorPageCandidate {
+  const targetStep = options.renderPath?.steps[0];
+  const targetInvocation = targetStep?.invocation;
+  const hasDeferredRenderPropAncestor =
+    options.renderPath?.steps
+      .slice(1)
+      .some(
+        (step) =>
+          step.invocation?.deferred === true && step.invocation.mode === 'render-prop',
+      ) === true;
+  const detachedTargetPlacement =
+    options.detachedTargetPlacement ??
+    (targetInvocation?.deferred === true || hasDeferredRenderPropAncestor
+      ? 'deferred-sibling'
+      : targetStep?.wrapperNames.some((name) => isReactOverlayComponentName(name)) === true
+        ? 'overlay-sibling'
+      : undefined);
   return Object.freeze({
     complete: options.complete,
+    ...(detachedTargetPlacement === undefined
+      ? {}
+      : { detachedTargetPlacement }),
     dependencyPaths: Object.freeze([...options.dependencies].sort()),
     edges: Object.freeze([...options.edges]),
     id: options.id,

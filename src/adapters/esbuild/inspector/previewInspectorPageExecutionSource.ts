@@ -59,6 +59,12 @@ export function createPreviewInspectorPageExecutionSource(
   const root = surfaces.find((surface) => surface.id === options.candidate.executionRootSurfaceId);
   if (root === undefined)
     return 'export default function PreviewInspectorPageExecution() { return null; }';
+  const executionRootLocal = localById.get(root.id);
+  if (executionRootLocal === undefined)
+    return 'export default function PreviewInspectorPageExecution() { return null; }';
+  const executionPropsContext = 'PreviewInspectorExecutionRootPropsContext';
+  const executionRootBridge = 'PreviewInspectorExecutionRootBridge';
+  localById.set(root.id, executionRootBridge);
   const compositionRoot = surfaces.find((surface) => !childIds.has(surface.id)) ?? root;
   const render = (surfaceId: string, active: Set<string>): string => {
     const local = localById.get(surfaceId);
@@ -94,6 +100,18 @@ export function createPreviewInspectorPageExecutionSource(
   };
   const renderedRoot = render(compositionRoot.id, new Set());
   const routeRecipe = options.candidate.routeRecipe;
+  const detachedOverlayEdge =
+    options.candidate.browserCandidate.detachedTargetPlacement === 'overlay-sibling'
+      ? options.candidate.compositionEdges.find(
+          (edge) =>
+            edge.mode === 'sibling-after' &&
+            edge.childSurfaceId === options.candidate.runtimeTargetSurfaceId,
+        )
+      : undefined;
+  const detachedOverlayPage =
+    detachedOverlayEdge === undefined
+      ? undefined
+      : render(detachedOverlayEdge.parentSurfaceId, new Set());
   const routerSurfaceIds = new Set(
     routeRecipe?.mounts
       .map((mount) => mount.parentSurfaceId)
@@ -101,7 +119,8 @@ export function createPreviewInspectorPageExecutionSource(
   );
   const routerPageSurfaceId = routeRecipe?.mounts.at(-1)?.childSurfaceId;
   const routerRenderedPage =
-    routerPageSurfaceId === undefined ? renderedRoot : render(routerPageSurfaceId, new Set());
+    detachedOverlayPage ??
+    (routerPageSurfaceId === undefined ? renderedRoot : render(routerPageSurfaceId, new Set()));
   const virtualPageOwnerSurfaceId = routeRecipe?.mounts.find(
     (mount) => mount.contextOrigin === 'virtual-page-owner',
   )?.parentSurfaceId;
@@ -124,7 +143,11 @@ export function createPreviewInspectorPageExecutionSource(
     routerRuntime !== undefined &&
     virtualPageOwnerSurfaceId !== undefined &&
     localById.has(virtualPageOwnerSurfaceId)
-      ? [`function ${virtualPageOwnerFrameLocal}() {`, `  return ${renderedRoot};`, '}']
+      ? [
+          `function ${virtualPageOwnerFrameLocal}() {`,
+          `  return ${detachedOverlayPage ?? renderedRoot};`,
+          '}',
+        ]
       : [];
   const routeStatePrelude = shouldInstallPreviewInspectorPageRouteStatePrelude(routeRecipe);
   const routeElement = routerRuntime !== undefined ? routerRuntime.routeElement : renderedRoot;
@@ -139,9 +162,13 @@ export function createPreviewInspectorPageExecutionSource(
     ...imports,
     ...(routerRuntime?.imports ?? []),
     ...virtualPageSourceRegistrations,
+    `const ${executionPropsContext} = React.createContext(Object.freeze({}));`,
+    `function ${executionRootBridge}() {`,
+    `  return React.createElement(${executionRootLocal}, React.useContext(${executionPropsContext}));`,
+    '}',
     ...virtualPageOwnerFrame,
-    'export default function PreviewInspectorPageExecution() {',
-    `  return ${routeElement};`,
+    'export default function PreviewInspectorPageExecution(previewProps) {',
+    `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${routeElement});`,
     '}',
   ].join('\n');
 }

@@ -23,7 +23,11 @@ import {
   findPreviewInspectorSelectedAuxiliaryRoot,
 } from './previewInspectorAuxiliaryNextAppRoute';
 import { findPreviewInspectorFastForwardMeeting } from './previewInspectorFastForwardSearch';
-import { selectPreviewInspectorFastPageConsumerPaths } from './previewInspectorFastPageCandidates';
+import {
+  schedulePreviewInspectorFastReverseCandidatePaths,
+  selectPreviewInspectorFastPageConsumerPaths,
+  selectPreviewInspectorFastReverseProbePaths,
+} from './previewInspectorFastPageCandidates';
 import { analyzePreviewInspectorFastRouteRegistry } from './previewInspectorFastRouteRegistry';
 import {
   collectPreviewInspectorFastResolvedImports,
@@ -45,6 +49,9 @@ const MAXIMUM_ENTRY_FILES = 96;
 const MAXIMUM_REVERSE_DIRECTORIES = 48;
 const MAXIMUM_FILES_PER_REVERSE_DIRECTORY = 192;
 const MAXIMUM_REVERSE_FILES = 640;
+const MINIMUM_TARGETED_REVERSE_FILES = 96;
+const MAXIMUM_TARGETED_REVERSE_FILES = 2_048;
+const TARGETED_REVERSE_READ_BATCH_SIZE = 32;
 const MAXIMUM_FORWARD_FILES = 768;
 const MAXIMUM_FORWARD_AFFINITY_PATHS = 16;
 const MAXIMUM_IMPORTS_PER_FILE = 256;
@@ -134,6 +141,18 @@ export async function collectPreviewInspectorFastPageCorridor(
     projectRoot,
     documentPath,
   );
+  const reverseProbePaths = selectPreviewInspectorFastReverseProbePaths(
+    snapshotPaths,
+    projectRoot,
+    documentPath,
+  );
+  const selectedPageConsumerPaths = [
+    ...new Set([...(auxiliaryRoute?.pagePaths ?? []), ...pageConsumerPaths]),
+  ];
+  const reverseCandidatePaths = schedulePreviewInspectorFastReverseCandidatePaths(
+    reverseProbePaths,
+    selectedPageConsumerPaths,
+  );
   const entryPaths = await collectLikelyEntryPaths({
     documentPath,
     projectRoot,
@@ -150,7 +169,8 @@ export async function collectPreviewInspectorFastPageCorridor(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     snapshotPaths,
     ...(selectedAuxiliaryRoot === undefined ? {} : { selectedAuxiliaryRoot }),
-    targetedPagePaths: [...new Set([...(auxiliaryRoute?.pagePaths ?? []), ...pageConsumerPaths])],
+    selectedPageConsumerPaths,
+    targetedPagePaths: reverseCandidatePaths,
     workspaceRoot,
   });
   const forward = await findForwardMeeting({
@@ -167,7 +187,12 @@ export async function collectPreviewInspectorFastPageCorridor(
     workspaceRoot,
   });
   const importPath =
-    forward?.importPath ?? selectProvisionalReversePath(documentPath, reverse.childByOwner);
+    forward?.importPath ??
+    selectProvisionalReversePath(
+      documentPath,
+      reverse.childByOwner,
+      reverse.pageProvenancePaths,
+    );
   if (importPath.length < 2) return undefined;
 
   const boundedPath = await trimBroadRouteRegistryPrefix({
@@ -313,16 +338,22 @@ async function collectReverseClosure(options: {
   readonly selectedAuxiliaryRoot?: string;
   readonly signal?: AbortSignal;
   readonly snapshotPaths: readonly string[];
+  readonly selectedPageConsumerPaths: readonly string[];
   readonly targetedPagePaths: readonly string[];
   readonly workspaceRoot: string;
 }): Promise<{
   readonly childByOwner: ReadonlyMap<string, string>;
+  readonly pageProvenancePaths: ReadonlySet<string>;
   readonly paths: ReadonlySet<string>;
   readonly requiredExportsByPath: ReadonlyMap<string, readonly string[]>;
   readonly truncated: boolean;
 }> {
   const paths = new Set<string>([options.documentPath]);
   const childByOwner = new Map<string, string>();
+  const pageProvenancePaths = new Set<string>();
+  const selectedPageConsumerPaths = new Set(
+    options.selectedPageConsumerPaths.map((sourcePath) => path.normalize(sourcePath)),
+  );
   const depthByPath = new Map<string, number>([[options.documentPath, 0]]);
   const pending: ReverseFrontier[] = [{ depth: 0, sourcePath: options.documentPath }];
   const scannedDirectories = new Set<string>();
@@ -372,7 +403,8 @@ async function collectReverseClosure(options: {
     if (childDepth === undefined) return;
     const semanticEdge = readSemanticEdge(edge);
     if (
-      semanticEdge !== undefined &&
+      semanticEdge === undefined ||
+      semanticEdge.renderStrength < 1 ||
       !arePreviewInspectorFastExportDemandsCompatible(
         semanticEdge.requestedExportNames,
         requiredExportsByPath.get(edge.childPath),
@@ -384,6 +416,9 @@ async function collectReverseClosure(options: {
     const previousDepth = depthByPath.get(edge.ownerPath);
     if (previousDepth !== undefined && previousDepth <= ownerDepth) return;
     paths.add(edge.ownerPath);
+    if (selectedPageConsumerPaths.has(edge.ownerPath)) {
+      pageProvenancePaths.add(edge.ownerPath);
+    }
     depthByPath.set(edge.ownerPath, ownerDepth);
     childByOwner.set(edge.ownerPath, edge.childPath);
     requiredExportsByPath.set(
@@ -418,29 +453,54 @@ async function collectReverseClosure(options: {
    * affinity. Index them before nearby directory scanning can consume the read budget; this is what
    * lets one shared component retain several authored page owners in distant feature folders.
    */
-  for (const candidatePath of options.targetedPagePaths) {
-    if (readCandidates.size >= MAXIMUM_REVERSE_FILES) {
+  targetedCandidates: for (
+    let offset = 0;
+    offset < options.targetedPagePaths.length;
+    offset += TARGETED_REVERSE_READ_BATCH_SIZE
+  ) {
+    const hasPageProvenance = pageProvenancePaths.size > 0;
+    const targetedLimit =
+      hasPageProvenance ? MINIMUM_TARGETED_REVERSE_FILES : MAXIMUM_TARGETED_REVERSE_FILES;
+    if (readCandidates.size >= targetedLimit) {
       truncated = true;
       break;
     }
-    readCandidates.add(candidatePath);
-    const sourceText = await options.readSource(candidatePath);
-    if (sourceText === undefined) continue;
-    sourceTextByCandidate.set(candidatePath, sourceText);
-    const edges = collectPreviewInspectorFastResolvedImports(
-      candidatePath,
-      sourceText,
-      options.resolveModule,
-      options.workspaceRoot,
-      {
-        preferredPath: options.documentPath,
-        ...(options.selectedAuxiliaryRoot === undefined
-          ? {}
-          : { selectedAuxiliaryRoot: options.selectedAuxiliaryRoot }),
-      },
+    const batchPaths = options.targetedPagePaths
+      .slice(offset, offset + TARGETED_REVERSE_READ_BATCH_SIZE)
+      .filter((candidatePath) => !readCandidates.has(candidatePath))
+      .slice(0, Math.max(0, targetedLimit - readCandidates.size));
+    const batch = await Promise.all(
+      batchPaths.map(async (candidatePath) => ({
+        candidatePath,
+        sourceText: await options.readSource(candidatePath),
+      })),
     );
-    edgesByCandidate.set(candidatePath, edges);
-    indexCandidateEdges(candidatePath, edges);
+    for (const { candidatePath, sourceText } of batch) {
+      readCandidates.add(candidatePath);
+      if (sourceText === undefined) continue;
+      sourceTextByCandidate.set(candidatePath, sourceText);
+      const edges = collectPreviewInspectorFastResolvedImports(
+        candidatePath,
+        sourceText,
+        options.resolveModule,
+        options.workspaceRoot,
+        {
+          preferredPath: options.documentPath,
+          requiredSourcePath: options.documentPath,
+          ...(options.selectedAuxiliaryRoot === undefined
+            ? {}
+            : { selectedAuxiliaryRoot: options.selectedAuxiliaryRoot }),
+        },
+      );
+      edgesByCandidate.set(candidatePath, edges);
+      indexCandidateEdges(candidatePath, edges);
+      if (
+        pageProvenancePaths.size > 0 &&
+        readCandidates.size >= MINIMUM_TARGETED_REVERSE_FILES
+      ) {
+        break targetedCandidates;
+      }
+    }
   }
 
   while (pending.length > 0 && readCandidates.size < MAXIMUM_REVERSE_FILES) {
@@ -527,6 +587,7 @@ async function collectReverseClosure(options: {
             options.workspaceRoot,
             {
               preferredPath: frontier.sourcePath,
+              requiredSourcePath: options.documentPath,
               ...(options.selectedAuxiliaryRoot === undefined
                 ? {}
                 : { selectedAuxiliaryRoot: options.selectedAuxiliaryRoot }),
@@ -538,7 +599,13 @@ async function collectReverseClosure(options: {
       }
     }
   }
-  return Object.freeze({ childByOwner, paths, requiredExportsByPath, truncated });
+  return Object.freeze({
+    childByOwner,
+    pageProvenancePaths,
+    paths,
+    requiredExportsByPath,
+    truncated,
+  });
 }
 
 /** Walks imports from shallow app entries and stops at the first target-side meeting point. */
@@ -798,8 +865,9 @@ function hasBroadRouteRegistrySyntax(sourceText: string): boolean {
 function selectProvisionalReversePath(
   documentPath: string,
   childByOwner: ReadonlyMap<string, string>,
+  pageProvenancePaths: ReadonlySet<string>,
 ): readonly string[] {
-  const candidates = [...childByOwner.keys()].sort(
+  const candidates = [...pageProvenancePaths].sort(
     (left, right) =>
       scoreProvisionalRoot(right) - scoreProvisionalRoot(left) || left.localeCompare(right),
   );

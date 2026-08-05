@@ -4,6 +4,7 @@
  * selectors; this adapter keeps only public component-shaped identities that a webview can mount.
  */
 import path from 'node:path';
+import ts from 'typescript';
 import {
   analyzePreviewLocalParentSlices,
   analyzePreviewParentSlices,
@@ -11,6 +12,7 @@ import {
   type PreviewParentSliceStaticProps,
 } from '../parentSlice';
 import type { PreviewRenderChainCandidate, PreviewRenderInvocationMode } from '../renderGraph';
+import type { ResolvePreviewRenderGraphModule } from '../renderGraph/previewRenderGraphTypes';
 import { collectPreviewRenderModuleFacts } from '../renderGraph/previewRenderModuleFacts';
 import { collectPreviewRouterRequirement } from '../previewRouterRequirement';
 import {
@@ -112,6 +114,7 @@ export async function readPreviewInspectorRootInference(
   readSource: (sourcePath: string) => Promise<string | undefined>,
   sourceCache: PreviewInspectorSourcePromiseCache,
   inferenceCache: Map<string, Promise<PreviewInferredExportProps | undefined>>,
+  resolveModule?: ResolvePreviewRenderGraphModule,
 ): Promise<PreviewInferredExportProps | undefined> {
   const key = createReferenceKey(reference);
   const cached = inferenceCache.get(key);
@@ -120,7 +123,20 @@ export async function readPreviewInspectorRootInference(
     const sourceText = await readCachedSource(reference.sourcePath, readSource, sourceCache);
     return sourceText === undefined
       ? undefined
-      : collectReactExportPropInference(reference.sourcePath, sourceText)[reference.exportName];
+      : collectReactExportPropInference(reference.sourcePath, sourceText, {
+          ...(resolveModule === undefined
+            ? {}
+            : {
+                resolveImport(moduleSpecifier, importerPath) {
+                  const sourcePath = resolveModule(moduleSpecifier, importerPath);
+                  const importedSource =
+                    sourcePath === undefined ? undefined : ts.sys.readFile(sourcePath);
+                  return sourcePath === undefined || importedSource === undefined
+                    ? undefined
+                    : { sourcePath, sourceText: importedSource };
+                },
+              }),
+        })[reference.exportName];
   })();
   inferenceCache.set(key, inferencePromise);
   return inferencePromise;

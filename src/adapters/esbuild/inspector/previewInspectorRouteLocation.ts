@@ -592,7 +592,7 @@ function retargetContextualFactoryLocation(
       componentIndex > targetIndex &&
       renderPath.steps
         .slice(targetIndex, componentIndex)
-        .some((step) => step.kind === 'react-lazy' || step.kind === 're-export')
+        .every((step) => step.kind === 'react-lazy' || step.kind === 're-export')
     );
   });
   if (!proven) return location;

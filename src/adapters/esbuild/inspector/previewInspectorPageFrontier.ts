@@ -20,7 +20,8 @@ import { resolvePreviewInspectorRuntimeTargetMode } from './previewInspectorRunt
 
 export type PreviewInspectorFrontierSourceKind =
   'critical-surface' | 'critical-support' | 'optional-surface' | 'optional-support';
-export type PreviewInspectorPageFrontierDisposition = 'accepted-unbounded' | 'rejected-structural';
+export type PreviewInspectorPageFrontierDisposition =
+  'accepted-bounded' | 'accepted-unbounded' | 'rejected-structural';
 
 export interface PreparePreviewInspectorPageExecutionSelectionOptions {
   readonly bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector;
@@ -36,7 +37,7 @@ export interface PreparePreviewInspectorPageExecutionSelectionOptions {
 
 export interface PreparedPreviewInspectorPageExecutionSelection {
   readonly kind: 'selected';
-  readonly disposition: 'accepted-unbounded';
+  readonly disposition: 'accepted-bounded' | 'accepted-unbounded';
   readonly executionPlan: PreviewInspectorPageExecutionPlan;
   readonly prepared: PreparedPreviewInspectorBundleFrontier;
 }
@@ -116,12 +117,16 @@ export async function preparePreviewInspectorPageExecutionSelection(
     });
     probes.push({
       candidate,
-      disposition: prepared.rejected ? 'rejected-structural' : 'accepted-unbounded',
+      disposition: prepared.rejected
+        ? 'rejected-structural'
+        : (prepared.frontier.summary.boundedProjectionCount ?? 0) > 0
+          ? 'accepted-bounded'
+          : 'accepted-unbounded',
       prepared,
     });
   }
   const selectAccepted = (): (typeof probes)[number] | undefined =>
-    probes.filter((probe) => probe.disposition === 'accepted-unbounded').sort(compareProbe)[0];
+    probes.filter((probe) => probe.disposition !== 'rejected-structural').sort(compareProbe)[0];
   const selected =
     options.bundleDiagnostics === undefined
       ? selectAccepted()
@@ -161,7 +166,8 @@ export async function preparePreviewInspectorPageExecutionSelection(
     version: 4,
   });
   return Object.freeze({
-    disposition: 'accepted-unbounded',
+    disposition:
+      selected.disposition === 'accepted-bounded' ? 'accepted-bounded' : 'accepted-unbounded',
     executionPlan,
     kind: 'selected',
     prepared: selected.prepared,

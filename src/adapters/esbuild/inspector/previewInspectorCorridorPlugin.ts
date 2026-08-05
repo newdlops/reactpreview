@@ -42,6 +42,10 @@ import {
   createPreviewInspectorVirtualPageComponentSource,
   type PreviewInspectorVirtualPageComponent,
 } from './previewInspectorVirtualPageComponentSource';
+import type {
+  PreviewInspectorFrontierComponentExports,
+  PreviewInspectorProjectedEdge,
+} from './previewInspectorBundleFrontierTypes';
 import {
   createPreviewInspectorVirtualPageComponentRuntimeSource,
   PREVIEW_INSPECTOR_VIRTUAL_PAGE_COMPONENT_RUNTIME_SPECIFIER,
@@ -67,7 +71,11 @@ interface PreviewDynamicImporterEvidence {
 }
 
 export interface PreviewInspectorCorridorPluginOptions {
+  /** Immutable optional-component demands recorded by the frozen frontier. */
+  readonly authenticComponentExports?: readonly PreviewInspectorFrontierComponentExports[];
   readonly frozenAuthenticSourcePaths?: readonly string[];
+  /** Exact omitted authored edges already proven by the frozen frontier. */
+  readonly projectedEdges?: readonly PreviewInspectorProjectedEdge[];
   readonly packageDemandSourcePaths?: readonly string[];
   readonly maximumSmallDynamicImports?: number;
   readonly maximumSmallStaticRouteImports?: number;
@@ -82,8 +90,16 @@ export interface PreviewInspectorCorridorPluginOptions {
 export function createPreviewInspectorCorridorPlugin(
   options: PreviewInspectorCorridorPluginOptions,
 ): Plugin {
-  const projectRoot = canonicalizeExistingPath(options.projectRoot);
-  const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const canonicalPathByInput = new Map<string, string>();
+  const canonicalizePath = (filePath: string): string => {
+    const retained = canonicalPathByInput.get(filePath);
+    if (retained !== undefined) return retained;
+    const canonical = canonicalizeExistingPath(filePath);
+    canonicalPathByInput.set(filePath, canonical);
+    return canonical;
+  };
+  const projectRoot = canonicalizePath(options.projectRoot);
+  const workspaceRoot = canonicalizePath(options.workspaceRoot);
   const maximumSmallDynamicImports = Math.max(
     0,
     Math.floor(options.maximumSmallDynamicImports ?? MAX_SMALL_DYNAMIC_IMPORTS),
@@ -94,16 +110,35 @@ export function createPreviewInspectorCorridorPlugin(
   );
   const contextMayCrossPackages = options.plan.contextModule !== undefined;
   // prettier-ignore
-  const frozenAuthenticSourcePaths = new Set((options.frozenAuthenticSourcePaths ?? []).map((sourcePath) => canonicalizeExistingPath(sourcePath)));
+  const frozenAuthenticSourcePaths = new Set((options.frozenAuthenticSourcePaths ?? []).map((sourcePath) => canonicalizePath(sourcePath)));
   const usesFrozenAuthenticFrontier = options.frozenAuthenticSourcePaths !== undefined;
   // Frozen membership guards emission; broader evidence only recognizes page-chrome projections.
   const exactCorridorPaths = createPreviewInspectorCorridorPathSet(options.plan);
-  const initialShallowExportsByPath = collectPreviewInspectorShallowExportsByPath(options.plan);
+  const frozenProjectedEdges = collectPreviewInspectorFrozenProjectedEdges(
+    options.projectedEdges,
+    canonicalizePath,
+  );
+  const initialShallowExportsByPath = collectPreviewInspectorShallowExportsByPath(
+    options.plan,
+    options.authenticComponentExports,
+  );
   const shallowExportsByPath = new Map(initialShallowExportsByPath);
-  const shallowRuntimeHookExportsByPath = new Map<string, Set<string>>();
+  const initialShallowRuntimeHookExportsByPath = collectPreviewInspectorRuntimeHookExportsByPath(
+    options.authenticComponentExports,
+  );
+  const frozenComponentDemandPaths = new Set(
+    (options.authenticComponentExports ?? []).map((item) => canonicalizePath(item.sourcePath)),
+  );
+  const shallowRuntimeHookExportsByPath = new Map(initialShallowRuntimeHookExportsByPath);
   const initialShallowVisualPaths = new Set(
-    [...initialShallowExportsByPath.keys()].filter(
-      (sourcePath) => !exactCorridorPaths.has(sourcePath),
+    [
+      ...new Set([
+        ...initialShallowExportsByPath.keys(),
+        ...initialShallowRuntimeHookExportsByPath.keys(),
+      ]),
+    ].filter(
+      (sourcePath) =>
+        frozenComponentDemandPaths.has(sourcePath) || !exactCorridorPaths.has(sourcePath),
     ),
   );
   const shallowVisualPaths = new Set(initialShallowVisualPaths);
@@ -115,9 +150,7 @@ export function createPreviewInspectorCorridorPlugin(
   const initialSelectedPackageDemandPaths = createPreviewInspectorPackageDemandPathSet(
     options.packageDemandSourcePaths ?? [
       ...corridorPaths,
-      ...(options.plan.shallowVisualPaths?.map((item) =>
-        canonicalizeExistingPath(item.sourcePath),
-      ) ?? []),
+      ...(options.plan.shallowVisualPaths?.map((item) => canonicalizePath(item.sourcePath)) ?? []),
     ],
   );
   const selectedPackageDemandPaths = new Set(initialSelectedPackageDemandPaths);
@@ -159,21 +192,29 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    const canonicalImporter = canonicalizeExistingPath(arguments_.importer);
+    const canonicalImporter = canonicalizePath(arguments_.importer);
     if (!corridorPaths.has(canonicalImporter)) return undefined;
-    const evidence = shallowVisualPaths.has(canonicalImporter)
-      ? await readShallowImporterEvidence(canonicalImporter)
-      : await readRuntimeHookImporterEvidence(canonicalImporter);
-    const projection = evidence.projectionsBySpecifier.get(arguments_.path);
+    const frozenProjectedEdge = frozenProjectedEdges.get(
+      createPreviewInspectorFrozenProjectedEdgeKey(canonicalImporter, arguments_.path),
+    );
+    const projection =
+      frozenProjectedEdge?.projection ??
+      (shallowVisualPaths.has(canonicalImporter)
+        ? await readShallowImporterEvidence(canonicalImporter)
+        : await readRuntimeHookImporterEvidence(canonicalImporter)
+      ).projectionsBySpecifier.get(arguments_.path);
     if (projection === undefined) return undefined;
     const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
-    const canonicalTarget = canonicalizeExistingPath(resolvedPath);
+    const canonicalTarget = canonicalizePath(resolvedPath);
     if (
       !isPathInside(workspaceRoot, canonicalTarget) ||
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
       containsDependencyDirectory(workspaceRoot, canonicalTarget)
     ) {
+      return undefined;
+    }
+    if (frozenProjectedEdge !== undefined && frozenProjectedEdge.targetPath !== canonicalTarget) {
       return undefined;
     }
     if (shouldRetainAuthenticTarget(canonicalTarget, exactCorridorPaths)) return undefined;
@@ -244,7 +285,7 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    const canonicalImporter = canonicalizeExistingPath(arguments_.importer);
+    const canonicalImporter = canonicalizePath(arguments_.importer);
     if (
       !SOURCE_MODULE_PATTERN.test(canonicalImporter) ||
       !isPathInside(workspaceRoot, canonicalImporter) ||
@@ -276,7 +317,7 @@ export function createPreviewInspectorCorridorPlugin(
       if (!importerEvidence.isBroadRegistry) return undefined;
       return createOmittedDeferredBranch();
     }
-    const canonicalTarget = canonicalizeExistingPath(resolvedPath);
+    const canonicalTarget = canonicalizePath(resolvedPath);
     if (
       !isPathInside(workspaceRoot, canonicalTarget) ||
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
@@ -313,7 +354,7 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    const canonicalImporter = canonicalizeExistingPath(arguments_.importer);
+    const canonicalImporter = canonicalizePath(arguments_.importer);
     if (
       !corridorPaths.has(canonicalImporter) ||
       !SOURCE_MODULE_PATTERN.test(canonicalImporter) ||
@@ -329,7 +370,7 @@ export function createPreviewInspectorCorridorPlugin(
     if (projection === undefined) return undefined;
     const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
-    const canonicalTarget = canonicalizeExistingPath(resolvedPath);
+    const canonicalTarget = canonicalizePath(resolvedPath);
     if (
       !isPathInside(workspaceRoot, canonicalTarget) ||
       (!contextMayCrossPackages && !isPathInside(projectRoot, canonicalTarget)) ||
@@ -368,9 +409,7 @@ export function createPreviewInspectorCorridorPlugin(
         !isBroadRegistry &&
         inventory.specifiers.some((specifier) => {
           const resolvedPath = options.resolveModule(specifier, sourcePath);
-          return (
-            resolvedPath !== undefined && corridorPaths.has(canonicalizeExistingPath(resolvedPath))
-          );
+          return resolvedPath !== undefined && corridorPaths.has(canonicalizePath(resolvedPath));
         });
       return {
         hasCorridorTarget,
@@ -557,6 +596,7 @@ export function createPreviewInspectorCorridorPlugin(
       // must therefore be reread at each build boundary instead of retaining a stale generated
       // registry after an authored source save.
       build.onStart(() => {
+        canonicalPathByInput.clear();
         importerEvidenceByPath.clear();
         runtimeHookImporterEvidenceByPath.clear();
         shallowImporterEvidenceByPath.clear();
@@ -567,6 +607,9 @@ export function createPreviewInspectorCorridorPlugin(
         shallowRuntimeHookExportsByPath.clear();
         for (const [sourcePath, exportNames] of initialShallowExportsByPath) {
           shallowExportsByPath.set(sourcePath, new Set(exportNames));
+        }
+        for (const [sourcePath, exportNames] of initialShallowRuntimeHookExportsByPath) {
+          shallowRuntimeHookExportsByPath.set(sourcePath, new Set(exportNames));
         }
         shallowVisualPaths.clear();
         for (const sourcePath of initialShallowVisualPaths) shallowVisualPaths.add(sourcePath);
@@ -603,6 +646,7 @@ export function createPreviewInspectorCorridorPlugin(
       if (usesFrozenAuthenticFrontier) {
         registerPreviewInspectorBundleFrontierGuard(build, {
           authenticSourcePaths: frozenAuthenticSourcePaths,
+          canonicalizePath,
           resolveModule: options.resolveModule,
           workspaceRoot,
         });
@@ -740,13 +784,17 @@ function readShallowProjectionPluginData(
     !value.exportNames.every((name) => typeof name === 'string') ||
     !('runtimeHookExportNames' in value) ||
     !Array.isArray(value.runtimeHookExportNames) ||
-    !value.runtimeHookExportNames.every((name) => typeof name === 'string')
+    !value.runtimeHookExportNames.every((name) => typeof name === 'string') ||
+    ('neutralRouteBasePath' in value && typeof value.neutralRouteBasePath !== 'string')
   ) {
     return undefined;
   }
   return {
     exportNames: Object.freeze([...value.exportNames]),
     moduleSpecifier: value.moduleSpecifier,
+    ...('neutralRouteBasePath' in value && typeof value.neutralRouteBasePath === 'string'
+      ? { neutralRouteBasePath: value.neutralRouteBasePath }
+      : {}),
     runtimeHookExportNames: Object.freeze([...value.runtimeHookExportNames]),
   };
 }
@@ -813,6 +861,7 @@ function createPreviewInspectorCorridorModuleStemSet(
 /** Groups retained shallow roots by exact source and runtime export for plugin-time analysis. */
 function collectPreviewInspectorShallowExportsByPath(
   plan: PreviewInspectorAncestorPlan,
+  authenticComponentExports: readonly PreviewInspectorFrontierComponentExports[] = [],
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const exportsByPath = new Map<string, Set<string>>();
   for (const item of plan.shallowVisualPaths ?? []) {
@@ -827,12 +876,117 @@ function collectPreviewInspectorShallowExportsByPath(
     exportNames.add(item.exportName);
     exportsByPath.set(sourcePath, exportNames);
   }
+  // The frozen frontier already established these source/export pairs.  They
+  // are roots only for shallow projection; authentic membership remains under
+  // the separate fail-closed guard.
+  for (const item of authenticComponentExports) {
+    const sourcePath = canonicalizeExistingPath(item.sourcePath);
+    const exportNames = exportsByPath.get(sourcePath) ?? new Set<string>();
+    for (const exportName of item.exportNames) exportNames.add(exportName);
+    exportsByPath.set(sourcePath, exportNames);
+  }
   return new Map(
     [...exportsByPath].map(([sourcePath, exportNames]) => [
       sourcePath,
       new Set(exportNames) as ReadonlySet<string>,
     ]),
   );
+}
+
+/** Carries frontier-recorded hook surfaces through rebuild-safe shallow state. */
+function collectPreviewInspectorRuntimeHookExportsByPath(
+  authenticComponentExports: readonly PreviewInspectorFrontierComponentExports[] = [],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const exportsByPath = new Map<string, Set<string>>();
+  for (const item of authenticComponentExports) {
+    if (item.runtimeHookExportNames.length === 0) continue;
+    const sourcePath = canonicalizeExistingPath(item.sourcePath);
+    const exportNames = exportsByPath.get(sourcePath) ?? new Set<string>();
+    for (const exportName of item.runtimeHookExportNames) exportNames.add(exportName);
+    exportsByPath.set(sourcePath, exportNames);
+  }
+  return new Map(
+    [...exportsByPath].map(([sourcePath, exportNames]) => [
+      sourcePath,
+      new Set(exportNames) as ReadonlySet<string>,
+    ]),
+  );
+}
+
+interface PreviewInspectorFrozenProjectedEdge {
+  readonly projection: PreviewInspectorShallowProjection;
+  readonly targetPath: string;
+}
+
+/** Indexes only exact importer/specifier/target demands already frozen by frontier planning. */
+function collectPreviewInspectorFrozenProjectedEdges(
+  projectedEdges: readonly PreviewInspectorProjectedEdge[] = [],
+  canonicalizePath: (sourcePath: string) => string,
+): ReadonlyMap<string, PreviewInspectorFrozenProjectedEdge> {
+  const grouped = new Map<
+    string,
+    {
+      readonly componentNames: Set<string>;
+      readonly exportNames: Set<string>;
+      readonly neutralRouteBasePaths: Set<string>;
+      readonly runtimeHookNames: Set<string>;
+      targetPath?: string;
+      valid: boolean;
+    }
+  >();
+  for (const edge of projectedEdges) {
+    if (edge.targetPath === undefined) continue;
+    const importerPath = canonicalizePath(edge.importerPath);
+    const targetPath = canonicalizePath(edge.targetPath);
+    const key = createPreviewInspectorFrozenProjectedEdgeKey(importerPath, edge.moduleSpecifier);
+    const item = grouped.get(key) ?? {
+      componentNames: new Set<string>(),
+      exportNames: new Set<string>(),
+      neutralRouteBasePaths: new Set<string>(),
+      runtimeHookNames: new Set<string>(),
+      targetPath,
+      valid: true,
+    };
+    if (item.targetPath !== targetPath) item.valid = false;
+    if (edge.neutralRouteBasePath !== undefined) {
+      item.neutralRouteBasePaths.add(edge.neutralRouteBasePath);
+      if (item.neutralRouteBasePaths.size > 1) item.valid = false;
+    }
+    const hookNames = new Set(edge.runtimeHookExportNames);
+    for (const exportName of edge.exportNames) {
+      item.exportNames.add(exportName);
+      if (hookNames.has(exportName)) item.runtimeHookNames.add(exportName);
+      else item.componentNames.add(exportName);
+    }
+    if ([...item.componentNames].some((name) => item.runtimeHookNames.has(name))) {
+      item.valid = false;
+    }
+    grouped.set(key, item);
+  }
+  const result = new Map<string, PreviewInspectorFrozenProjectedEdge>();
+  for (const [key, item] of grouped) {
+    if (!item.valid || item.targetPath === undefined || item.exportNames.size === 0) continue;
+    result.set(key, {
+      projection: Object.freeze({
+        exportNames: Object.freeze([...item.exportNames].sort()),
+        moduleSpecifier: key.slice(key.indexOf('\0') + 1),
+        ...(item.neutralRouteBasePaths.size === 1
+          ? { neutralRouteBasePath: [...item.neutralRouteBasePaths][0] }
+          : {}),
+        runtimeHookExportNames: Object.freeze([...item.runtimeHookNames].sort()),
+      }),
+      targetPath: item.targetPath,
+    });
+  }
+  return result;
+}
+
+/** Preserves the authored module specifier verbatim inside an importer-scoped edge identity. */
+function createPreviewInspectorFrozenProjectedEdgeKey(
+  importerPath: string,
+  moduleSpecifier: string,
+): string {
+  return `${importerPath}\0${moduleSpecifier}`;
 }
 
 /** Checks only a dynamic specifier's final path segment before paying for project resolution. */

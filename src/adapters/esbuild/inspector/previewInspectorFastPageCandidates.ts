@@ -15,6 +15,35 @@ const PAGE_DIRECTORY_PATTERN =
   /^(?:app|layouts?|pages?|routes?|routers?|screens?|shells?|templates?|views?)$/iu;
 const TOOLING_DIRECTORY_PATTERN =
   /^(?:__tests__|tests?|stories?|storybook|examples?|demos?|fixtures?|mocks?)$/iu;
+const MAXIMUM_AFFINITY_PREFIX_PATHS = 192;
+const MAXIMUM_REVERSE_AFFINITY_PREFIX_PATHS = 1_536;
+const MAXIMUM_REVERSE_PROBE_PATHS = 2_048;
+const REVERSE_PROBES_PER_PAGE_CONSUMER = 1;
+const STRUCTURAL_PATH_TOKENS = new Set([
+  'app',
+  'apps',
+  'common',
+  'component',
+  'components',
+  'index',
+  'layout',
+  'layouts',
+  'package',
+  'packages',
+  'page',
+  'pages',
+  'route',
+  'routes',
+  'screen',
+  'screens',
+  'shell',
+  'shells',
+  'src',
+  'template',
+  'templates',
+  'view',
+  'views',
+]);
 
 /**
  * Returns likely authored pages in target-affinity order.
@@ -30,16 +59,246 @@ export function selectPreviewInspectorFastPageConsumerPaths(
 ): readonly string[] {
   const normalizedRoot = path.resolve(projectRoot);
   const targetSegments = relativeSegments(normalizedRoot, documentPath);
+  const rankedPaths = sourcePaths
+    .filter((sourcePath) => isLikelyPageConsumer(sourcePath, normalizedRoot))
+    .sort((left, right) => {
+      const scoreDifference =
+        scorePageConsumer(right, normalizedRoot, targetSegments) -
+        scorePageConsumer(left, normalizedRoot, targetSegments);
+      return scoreDifference !== 0 ? scoreDifference : left.localeCompare(right);
+    });
+  return diversifyPageConsumerPaths(rankedPaths, normalizedRoot);
+}
+
+/**
+ * Reserves a deterministic target-affine tranche for non-JSX value consumers before page shells.
+ *
+ * A component can be carried through a column, route, plugin, or other configuration value before
+ * an enclosing page renders it. The inventory is still path-only: exact resolution and semantic
+ * value-flow analysis in the corridor decide whether a probe is an authentic owner.
+ */
+export function selectPreviewInspectorFastReverseProbePaths(
+  sourcePaths: readonly string[],
+  projectRoot: string,
+  documentPath: string,
+): readonly string[] {
+  const normalizedRoot = path.resolve(projectRoot);
+  const targetSegments = relativeSegments(normalizedRoot, documentPath);
+  const targetTokens = collectMeaningfulPathTokens(targetSegments);
+  const rankedPaths = sourcePaths
+    .map((sourcePath) => path.normalize(sourcePath))
+    .filter(
+      (sourcePath) =>
+        sourcePath !== path.normalize(documentPath) &&
+        isProbeEligibleSource(sourcePath, normalizedRoot),
+    )
+    .sort((left, right) => {
+      const scoreDifference =
+        scoreReverseProbe(right, normalizedRoot, targetSegments, targetTokens) -
+        scoreReverseProbe(left, normalizedRoot, targetSegments, targetTokens);
+      return scoreDifference !== 0 ? scoreDifference : left.localeCompare(right);
+    });
   return Object.freeze(
-    sourcePaths
-      .filter((sourcePath) => isLikelyPageConsumer(sourcePath, normalizedRoot))
-      .sort((left, right) => {
-        const scoreDifference =
-          scorePageConsumer(right, normalizedRoot, targetSegments) -
-          scorePageConsumer(left, normalizedRoot, targetSegments);
-        return scoreDifference !== 0 ? scoreDifference : left.localeCompare(right);
-      }),
+    diversifyReverseProbePaths(rankedPaths, normalizedRoot).slice(0, MAXIMUM_REVERSE_PROBE_PATHS),
   );
+}
+
+/**
+ * Interleaves selected pages with target-affine probes inside the existing aggregate ceiling.
+ *
+ * Alternating slots give target owners and their selected page consumers equal access to the
+ * aggregate ceiling. Exhausted tranches donate their remaining capacity, and normalized first
+ * occurrence wins so ordering and deduplication stay deterministic.
+ */
+export function schedulePreviewInspectorFastReverseCandidatePaths(
+  reverseProbePaths: readonly string[],
+  pageConsumerPaths: readonly string[],
+): readonly string[] {
+  const pages = [...new Set(pageConsumerPaths.map((sourcePath) => path.normalize(sourcePath)))];
+  const probes = [
+    ...new Set(reverseProbePaths.map((sourcePath) => path.normalize(sourcePath))),
+  ];
+  const emitted = new Set<string>();
+  const scheduled: string[] = [];
+  const emit = (sourcePath: string | undefined): void => {
+    if (
+      sourcePath === undefined ||
+      emitted.has(sourcePath) ||
+      scheduled.length >= MAXIMUM_REVERSE_PROBE_PATHS
+    ) {
+      return;
+    }
+    emitted.add(sourcePath);
+    scheduled.push(sourcePath);
+  };
+  let pageIndex = 0;
+  let probeIndex = 0;
+  while (
+    scheduled.length < MAXIMUM_REVERSE_PROBE_PATHS &&
+    (pageIndex < pages.length || probeIndex < probes.length)
+  ) {
+    for (
+      let offset = 0;
+      offset < REVERSE_PROBES_PER_PAGE_CONSUMER &&
+      probeIndex < probes.length &&
+      scheduled.length < MAXIMUM_REVERSE_PROBE_PATHS;
+      offset += 1
+    ) {
+      const sourcePath = probes[probeIndex];
+      probeIndex += 1;
+      emit(sourcePath);
+    }
+    const pagePath = pages[pageIndex];
+    if (pagePath !== undefined) pageIndex += 1;
+    emit(pagePath);
+  }
+  return Object.freeze(scheduled);
+}
+
+/** Round-robins target-affine paths across generic feature roots after the strongest prefix. */
+function diversifyReverseProbePaths(
+  rankedPaths: readonly string[],
+  projectRoot: string,
+): readonly string[] {
+  const affinityPrefix = rankedPaths.slice(0, MAXIMUM_REVERSE_AFFINITY_PREFIX_PATHS);
+  if (affinityPrefix.length === rankedPaths.length) return Object.freeze([...affinityPrefix]);
+  const pathsByFeature = new Map<string, string[]>();
+  for (const sourcePath of rankedPaths.slice(affinityPrefix.length)) {
+    const featureKey = reverseProbeFeatureKey(projectRoot, sourcePath);
+    const featurePaths = pathsByFeature.get(featureKey) ?? [];
+    featurePaths.push(sourcePath);
+    pathsByFeature.set(featureKey, featurePaths);
+  }
+  const diversifiedPaths: string[] = [...affinityPrefix];
+  for (let index = 0; diversifiedPaths.length < rankedPaths.length; index += 1) {
+    let appended = false;
+    for (const featurePaths of pathsByFeature.values()) {
+      const sourcePath = featurePaths[index];
+      if (sourcePath === undefined) continue;
+      diversifiedPaths.push(sourcePath);
+      appended = true;
+    }
+    if (!appended) break;
+  }
+  return Object.freeze(diversifiedPaths);
+}
+
+/** Uses a product-feature root so one large application namespace cannot starve its siblings. */
+function reverseProbeFeatureKey(projectRoot: string, sourcePath: string): string {
+  const segments = relativeSegments(projectRoot, sourcePath);
+  const sourceOffset = segments[0]?.toLowerCase() === 'src' ? 1 : 0;
+  const directorySegments = segments.slice(sourceOffset, -1);
+  const pageDirectoryIndex = directorySegments.findIndex((segment) =>
+    PAGE_DIRECTORY_PATTERN.test(segment),
+  );
+  let featureDepth = Math.min(3, directorySegments.length);
+  if (pageDirectoryIndex >= 0) {
+    featureDepth = Math.min(directorySegments.length, pageDirectoryIndex + 2);
+    if (
+      /^(?:component|components)$/iu.test(directorySegments[featureDepth] ?? '')
+    ) {
+      featureDepth += 1;
+    }
+  }
+  return directorySegments
+    .slice(0, featureDepth)
+    .map((segment) => segment.toLowerCase())
+    .join('/');
+}
+
+/** Includes authored TS/JS consumers regardless of whether their own file contains JSX. */
+function isProbeEligibleSource(sourcePath: string, projectRoot: string): boolean {
+  if (!SOURCE_FILE_PATTERN.test(sourcePath) || !isPathInside(projectRoot, sourcePath)) return false;
+  return !relativeSegments(projectRoot, sourcePath).some((segment) =>
+    TOOLING_DIRECTORY_PATTERN.test(segment),
+  );
+}
+
+/** Scores meaningful target stem and path-token overlap anywhere in an authored source identity. */
+function scoreReverseProbe(
+  sourcePath: string,
+  projectRoot: string,
+  targetSegments: readonly string[],
+  targetTokens: ReadonlySet<string>,
+): number {
+  const candidateSegments = relativeSegments(projectRoot, sourcePath);
+  const candidateTokens = collectMeaningfulPathTokens(candidateSegments);
+  let sharedPrefixLength = 0;
+  while (
+    sharedPrefixLength < candidateSegments.length &&
+    sharedPrefixLength < targetSegments.length &&
+    candidateSegments[sharedPrefixLength] === targetSegments[sharedPrefixLength]
+  ) {
+    sharedPrefixLength += 1;
+  }
+  let sharedTokens = 0;
+  for (const token of candidateTokens) {
+    if (targetTokens.has(token)) sharedTokens += 1;
+  }
+  return (
+    sharedTokens * 400 +
+    sharedPrefixLength * 100 +
+    Math.abs(candidateSegments.length - targetSegments.length)
+  );
+}
+
+/** Drops separators, extensions, and short connective fragments from path affinity evidence. */
+function collectMeaningfulPathTokens(segments: readonly string[]): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  for (const segment of segments) {
+    for (const token of segment.toLowerCase().split(/[^a-z0-9]+/iu)) {
+      if (token.length >= 3 && !STRUCTURAL_PATH_TOKENS.has(token)) tokens.add(token);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Retains a strong target-affinity prefix, then round-robins feature roots.
+ *
+ * A shared component may be consumed by `staff/` or `legal/` while living below `common/`. Pure
+ * prefix sorting lets thousands of unrelated `common/pages` exhaust the reverse-read budget before
+ * that real consumer is inspected. Feature diversity changes ordering only: every candidate still
+ * requires exact resolver and semantic JSX evidence before it can enter the authored corridor.
+ */
+function diversifyPageConsumerPaths(
+  rankedPaths: readonly string[],
+  projectRoot: string,
+): readonly string[] {
+  const affinityPrefix = rankedPaths.slice(0, MAXIMUM_AFFINITY_PREFIX_PATHS);
+  if (affinityPrefix.length === rankedPaths.length) return Object.freeze([...affinityPrefix]);
+  const pathsByFeature = new Map<string, string[]>();
+  for (const sourcePath of rankedPaths.slice(affinityPrefix.length)) {
+    const featureKey = pageConsumerFeatureKey(projectRoot, sourcePath);
+    const featurePaths = pathsByFeature.get(featureKey) ?? [];
+    featurePaths.push(sourcePath);
+    pathsByFeature.set(featureKey, featurePaths);
+  }
+  const diversifiedPaths = [...affinityPrefix];
+  for (let index = 0; diversifiedPaths.length < rankedPaths.length; index += 1) {
+    let appended = false;
+    for (const featurePaths of pathsByFeature.values()) {
+      const sourcePath = featurePaths[index];
+      if (sourcePath === undefined) continue;
+      diversifiedPaths.push(sourcePath);
+      appended = true;
+    }
+    if (!appended) break;
+  }
+  return Object.freeze(diversifiedPaths);
+}
+
+/** Groups common packages and product feature roots without encoding application-specific names. */
+function pageConsumerFeatureKey(projectRoot: string, sourcePath: string): string {
+  const segments = relativeSegments(projectRoot, sourcePath);
+  const sourceOffset = segments[0]?.toLowerCase() === 'src' ? 1 : 0;
+  const namespace = segments[sourceOffset]?.toLowerCase() ?? '';
+  const featureDepth =
+    namespace === 'common' && segments[sourceOffset + 1]?.toLowerCase() === 'packages' ? 3 : 2;
+  return segments
+    .slice(sourceOffset, sourceOffset + featureDepth)
+    .map((segment) => segment.toLowerCase())
+    .join('/');
 }
 
 /** Uses path conventions only to avoid eagerly reading ordinary helpers and tooling fixtures. */

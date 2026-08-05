@@ -424,6 +424,7 @@ async function createInspectorPageCandidate(arguments_: {
       options.readSource,
       planningContext.sourceTextByPath,
       planningContext.inferenceByReference,
+      options.resolveModule,
     );
     const rootOwnsRouter = await readPreviewInspectorRootOwnsRouter({
       ownershipCache: planningContext.routerOwnershipBySource,
@@ -549,6 +550,7 @@ async function createRenderPathPageCandidate(arguments_: {
     options.readSource,
     planningContext.sourceTextByPath,
     planningContext.inferenceByReference,
+    options.resolveModule,
   );
   const rootOwnsRouter = await readPreviewInspectorRootOwnsRouter({
     ownershipCache: planningContext.routerOwnershipBySource,

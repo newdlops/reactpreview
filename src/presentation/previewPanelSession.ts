@@ -397,9 +397,18 @@ export class PreviewPanelSession implements vscode.Disposable {
     const stylesheetLocation = preparedPreview.artifact.stylesheetLocation;
     const stylesheetUri =
       stylesheetLocation === undefined ? undefined : this.options.panel.webview.asWebviewUri(vscode.Uri.parse(stylesheetLocation, true)).toString(true);
+    const moduleImports = preparedPreview.artifact.moduleImports?.map(
+      ({ scriptLocation, specifier }) => ({
+        specifier,
+        uri: this.options.panel.webview
+          .asWebviewUri(vscode.Uri.parse(scriptLocation, true))
+          .toString(true),
+      }),
+    );
     const baseState = {
       documentName,
       kind: 'ready' as const,
+      ...(moduleImports === undefined ? {} : { moduleImports }),
       runtimeRevision: requestedRevision,
       runtimeToken: `${requestedRevision.toString()}:${preparedPreview.artifact.contentHash}`,
       scriptUri,

@@ -25,6 +25,11 @@ export interface LoadingPreviewState {
 export interface ReadyPreviewState {
   /** Discriminant used for exhaustive state rendering. */
   readonly kind: 'ready';
+  /** Browser import-map bindings for shared package modules loaded before the preview entry. */
+  readonly moduleImports?: readonly {
+    readonly specifier: string;
+    readonly uri: string;
+  }[];
   /** Safe display name of the active source document. */
   readonly documentName: string;
   /** Internal pre-entry browser host shim used only by opt-in headless execution. */
@@ -71,9 +76,13 @@ export type PreviewHtmlState = ErrorPreviewState | LoadingPreviewState | ReadyPr
 export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): string {
   const retryNonce =
     state.kind === 'error' && state.retry !== undefined ? createRetryNonce(state) : undefined;
+  const moduleImportNonce =
+    state.kind === 'ready' && (state.moduleImports?.length ?? 0) > 0
+      ? createModuleImportNonce(state)
+      : undefined;
   const csp = [
     "default-src 'none'",
-    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}`,
+    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${moduleImportNonce === undefined ? '' : ` 'nonce-${moduleImportNonce}'`}`,
     `style-src ${cspSource} 'unsafe-inline'`,
     `img-src ${cspSource} data: blob: https:`,
     `font-src ${cspSource} data:`,
@@ -123,7 +132,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   ${createStylesheetElement(state)}
 </head>
 <body data-react-preview-state="${state.kind}">
-  ${createBody(state, retryNonce)}
+  ${createBody(state, retryNonce, moduleImportNonce)}
 </body>
 </html>`;
 }
@@ -158,7 +167,11 @@ function createStylesheetElement(state: PreviewHtmlState): string {
  * @param state Current preview UI state.
  * @returns HTML fragment whose dynamic values have already been escaped.
  */
-function createBody(state: PreviewHtmlState, retryNonce: string | undefined): string {
+function createBody(
+  state: PreviewHtmlState,
+  retryNonce: string | undefined,
+  moduleImportNonce: string | undefined,
+): string {
   switch (state.kind) {
     case 'loading': {
       const progress = createPreviewProgressSnapshot(state.stage);
@@ -186,8 +199,30 @@ function createBody(state: PreviewHtmlState, retryNonce: string | undefined): st
     case 'ready':
       return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
-${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
+${createModuleImportMapElement(state, moduleImportNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
+}
+
+/** Creates the CSP-authorized import map required by externalized package modules. */
+function createModuleImportMapElement(
+  state: ReadyPreviewState,
+  nonce: string | undefined,
+): string {
+  const moduleImports = state.moduleImports ?? [];
+  if (moduleImports.length === 0 || nonce === undefined) return '';
+  const imports = Object.fromEntries(
+    [...moduleImports]
+      .sort((left, right) => left.specifier.localeCompare(right.specifier))
+      .map(({ specifier, uri }) => [specifier, uri]),
+  );
+  const json = JSON.stringify({ imports }).replaceAll('<', '\\u003c');
+  return `<script type="importmap" nonce="${nonce}">${json}</script>\n`;
+}
+
+/** Derives a markup-safe nonce from the host-owned runtime correlation token. */
+function createModuleImportNonce(state: ReadyPreviewState): string {
+  const token = state.runtimeToken ?? `${state.runtimeRevision ?? 0}:${state.scriptUri.length.toString()}`;
+  return `module${token.replace(/[^A-Za-z0-9]/gu, '').slice(0, 32)}`;
 }
 
 /** Creates the optional headless host bridge immediately before the authored runtime entry. */

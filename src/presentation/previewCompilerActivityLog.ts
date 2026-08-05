@@ -38,7 +38,19 @@ export function formatPreviewFrontierMismatchEvidence(
               strategy: evidence.surface!.strategy,
             },
           }
-        : { cause: evidence.cause, source: path(evidence.source, hashesOnly) };
+        : evidence.importer !== undefined && evidence.specifier !== undefined
+          ? {
+              cause: evidence.cause,
+              source: path(evidence.source, hashesOnly),
+              importer: path(evidence.importer, hashesOnly),
+              specifier: {
+                digest: evidence.specifier.digest,
+                ...(hashesOnly || evidence.specifier.value === undefined
+                  ? {}
+                  : { value: evidence.specifier.value }),
+              },
+            }
+          : { cause: evidence.cause, source: path(evidence.source, hashesOnly) };
   const full = FRONTIER_PREFIX + JSON.stringify(payload(false));
   return full.length <= FRONTIER_MAX ? full : FRONTIER_PREFIX + JSON.stringify(payload(true));
 }

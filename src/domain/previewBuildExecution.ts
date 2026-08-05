@@ -138,7 +138,13 @@ export function isPreviewFrontierMismatchEvidence(
       pathEvidence(value.importer) &&
       specifierEvidence(value.specifier)
     );
-  if (value.cause === 'unexpected-metafile-input') return keys(value, ['cause', 'source']);
+  if (value.cause === 'unexpected-metafile-input')
+    return (
+      keys(value, ['cause', 'source']) ||
+      (keys(value, ['cause', 'source', 'importer', 'specifier']) &&
+        pathEvidence(value.importer) &&
+        specifierEvidence(value.specifier))
+    );
   return (
     value.cause === 'missing-execution-surface' &&
     keys(value, ['cause', 'source', 'surface']) &&

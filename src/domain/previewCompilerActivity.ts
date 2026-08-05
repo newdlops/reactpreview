@@ -32,7 +32,7 @@ export interface PreviewCompilerBundleFrontierActivity extends PreviewCompilerGr
   readonly authoredEdgeCount: number;
   readonly exactModuleCount: number;
   readonly frontierSourceBytes: number;
-  readonly graphAdmission: 'unbounded';
+  readonly graphAdmission: 'bounded-projection' | 'unbounded';
   readonly kind: 'bundle-frontier';
   readonly maximumDepth: number;
   readonly optionalComponentCount: number;
@@ -54,7 +54,7 @@ export interface PreviewCompilerBundleFrontierActivity extends PreviewCompilerGr
       | 'target-contextual'
       | 'target-only';
     readonly candidateId: string;
-    readonly disposition: 'accepted-unbounded' | 'rejected-structural';
+    readonly disposition: 'accepted-bounded' | 'accepted-unbounded' | 'rejected-structural';
     readonly selectedCriticalSurfaceCount: number;
   };
 }
@@ -125,7 +125,7 @@ function isPreviewCompilerBundleFrontierActivity(activity: Record<string, unknow
     (activity.preparationMode === 'fast' || activity.preparationMode === 'corridor') &&
     counts.every(isNonNegativeSafeInteger) &&
     isNonNegativeSafeInteger(activity.frontierSourceBytes) &&
-    activity.graphAdmission === 'unbounded' &&
+    (activity.graphAdmission === 'bounded-projection' || activity.graphAdmission === 'unbounded') &&
     (activity.phase === 'planned' || activity.phase === 'rejected') &&
     typeof activity.truncated === 'boolean' &&
     Array.isArray(activity.truncationReasons) &&
@@ -152,7 +152,9 @@ function isPreviewCompilerPageExecutionActivity(value: unknown): boolean {
       'target-contextual',
       'target-only',
     ].includes(pageExecution.candidateFidelity as string) &&
-    ['accepted-unbounded', 'rejected-structural'].includes(pageExecution.disposition as string) &&
+    ['accepted-bounded', 'accepted-unbounded', 'rejected-structural'].includes(
+      pageExecution.disposition as string,
+    ) &&
     isNonNegativeSafeInteger(pageExecution.selectedCriticalSurfaceCount)
   );
 }

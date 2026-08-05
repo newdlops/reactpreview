@@ -83,10 +83,18 @@ export interface PreviewAssetPluginOptions {
  * @returns Stateless esbuild plugin scoped to one compilation request.
  */
 export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Plugin {
-  const canonicalTargetPath = canonicalizeExistingPath(options.documentPath);
-  const canonicalWorkspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const canonicalPathByInput = new Map<string, string>();
+  const canonicalizePath = (filePath: string): string => {
+    const retained = canonicalPathByInput.get(filePath);
+    if (retained !== undefined) return retained;
+    const canonical = canonicalizeExistingPath(filePath);
+    canonicalPathByInput.set(filePath, canonical);
+    return canonical;
+  };
+  const canonicalTargetPath = canonicalizePath(options.documentPath);
+  const canonicalWorkspaceRoot = canonicalizePath(options.workspaceRoot);
   const publicDirectory = path.resolve(options.projectRoot, 'public');
-  const canonicalPublicDirectory = canonicalizeExistingPath(publicDirectory);
+  const canonicalPublicDirectory = canonicalizePath(publicDirectory);
   const assetBudget: AssetBudgetState = {
     representations: new Set<string>(),
     totalBytes: 0,
@@ -98,6 +106,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
     setup(build): void {
       /** Resets compilation-local accounting when a persistent esbuild context starts a rebuild. */
       build.onStart(() => {
+        canonicalPathByInput.clear();
         assetBudget.representations.clear();
         assetBudget.totalBytes = 0;
         stylePackageResolutionCache.clear();
@@ -139,7 +148,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
         const virtualImporter =
           arguments_.namespace === PREVIEW_TARGET_BRIDGE_NAMESPACE
             ? canonicalTargetPath
-            : canonicalizeExistingPath(arguments_.importer);
+            : canonicalizePath(arguments_.importer);
         let boundedRequest: BoundedAssetRequest;
         try {
           boundedRequest = resolveAssetRequestPath({
@@ -147,7 +156,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
             canonicalWorkspaceRoot,
             importerIsWorkspaceOwned: isPathInside(
               canonicalWorkspaceRoot,
-              canonicalizeExistingPath(virtualImporter),
+              virtualImporter,
             ),
             publicDirectory,
             requestPath: parsedRequest.path,
@@ -198,7 +207,7 @@ export function createPreviewAssetPlugin(options: PreviewAssetPluginOptions): Pl
 
         if (
           boundedRequest.requiredRoot !== undefined &&
-          !isPathInside(boundedRequest.requiredRoot, canonicalizeExistingPath(resolved.path))
+          !isPathInside(boundedRequest.requiredRoot, canonicalizePath(resolved.path))
         ) {
           return {
             errors: [

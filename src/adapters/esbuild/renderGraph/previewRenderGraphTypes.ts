@@ -67,6 +67,8 @@ export type PreviewRenderInvocationMode =
 export interface PreviewRenderInvocation {
   /** Nearest semantic transport recognized at the authored reference. */
   readonly mode: PreviewRenderInvocationMode;
+  /** Whether a nested callback must be invoked before this React value can be created. */
+  readonly deferred?: boolean;
   /** Outer call or JSX receiver, such as `memo`, `withAuth`, or `Slot`. */
   readonly calleeName?: string;
   /** Nested higher-order factories crossed from inner to outer. */

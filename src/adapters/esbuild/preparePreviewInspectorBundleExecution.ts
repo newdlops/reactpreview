@@ -121,7 +121,8 @@ export async function preparePreviewInspectorBundleExecution(
     exactModuleCount: summary.exactModuleCount,
     executableCandidateCount: 1,
     frontierSourceBytes: summary.sourceBytes,
-    graphAdmission: 'unbounded',
+    graphAdmission:
+      (summary.boundedProjectionCount ?? 0) > 0 ? 'bounded-projection' : 'unbounded',
     kind: 'bundle-frontier',
     maximumDepth: summary.maximumDepth,
     optionalComponentCount: summary.optionalComponentCount,

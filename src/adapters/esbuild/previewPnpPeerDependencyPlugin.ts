@@ -303,8 +303,13 @@ function isEligibleVirtualPeerRequest(arguments_: OnResolveArgs, workspaceRoot: 
     return false;
   }
   const physicalImporter = resolvePreviewYarnVirtualPath(arguments_.importer, workspaceRoot);
+  if (
+    physicalImporter === undefined ||
+    path.normalize(physicalImporter) === path.normalize(arguments_.importer)
+  ) {
+    return false;
+  }
   return (
-    physicalImporter !== undefined &&
     canonicalizeExistingPath(physicalImporter) !== canonicalizeExistingPath(arguments_.importer)
   );
 }

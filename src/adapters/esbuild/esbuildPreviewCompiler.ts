@@ -53,6 +53,7 @@ import { createPreviewApolloBridgePlugin } from './previewApolloBridgePlugin';
 import { prepareAutomaticPreviewSetupFallback } from './previewAutomaticSetupFallback';
 import { forwardPreviewAbort } from './previewAbortForwarding';
 import { PreviewAdaptiveBuildPlanCache } from './previewAdaptiveBuildPlanCache';
+import { preparePreviewAdaptiveBuildSeed } from './previewAdaptiveBuildSeed';
 import { createPreviewAssetPlugin } from './previewAssetPlugin';
 import { createPreviewBuildPlanIdentity } from './previewBuildPlanIdentity';
 import { createPreviewStyledComponentsCompilerPlan } from './previewStyledComponentsCompilerPlan';
@@ -84,6 +85,7 @@ import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
 import { createPreviewImportMetaEnvironment } from './previewPublicEnvironment';
+import { createPreviewInstalledPackageExternalizationPlugin } from './previewInstalledPackageExternalizationPlugin';
 import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
 import {
   createPreviewCompleteRouteUsageContext,
@@ -151,6 +153,7 @@ import { createPreviewTailwindPlugin } from './previewTailwindPlugin';
 import { selectPreviewThemeImport } from './previewTargetExports';
 import { createPreviewThemeBridgePlugin } from './previewThemeBridgePlugin';
 import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin';
+import { PreviewVendorModuleBuilder } from './previewVendorModuleBuilder';
 import { shouldEscalatePreviewAncestorSearch } from './previewWorkspaceAncestorPolicy';
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
 import { collectReactExportPropInference } from './staticResources/reactExportPropInference';
@@ -166,6 +169,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly incrementalBuildCache = new PreviewIncrementalBuildCache();
   private readonly diagnosticEmissionCache = new PreviewDiagnosticEmissionCache();
   private readonly setupFailureCache = new PreviewSetupFailureCache();
+  private readonly vendorModuleBuilder = new PreviewVendorModuleBuilder();
   private readonly completeRouteInventoryCache = new Map<
     string,
     Promise<PreviewInspectorCompleteRouteInventory>
@@ -890,6 +894,18 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               sourcePath: executionRootRole.sourcePath,
               surfaceId: executionRootRole.surfaceId,
             }));
+      const adaptiveBuildSeed = await preparePreviewAdaptiveBuildSeed({
+        globalBridgeEvidencePolicy,
+        projectRoot,
+        readSource: (sourcePath) =>
+          snapshotSourceByPath.get(path.normalize(sourcePath)) ??
+          this.projectUsageCache.readSourceText({ maximumBytes: 1024 * 1024, sourcePath }),
+        sourcePaths:
+          preparedBundleExecution?.prepared.frontier.authenticSourcePaths ??
+          activeInspectorDependencyPaths,
+        staticModuleResolver,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
       const createStorybookFallbackBoundary = (
         environment: PreviewRuntimeEnvironment,
       ): PreviewSetupFallbackBoundary | undefined =>
@@ -931,6 +947,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               ? (runtimeOwnershipTarget?.sourcePath ?? request.documentPath)
               : request.documentPath,
           ),
+          ...(activePageExecutionCandidate?.evidenceSourcePaths === undefined
+            ? {}
+            : {
+                preservedDormantOverlaySourcePaths:
+                  activePageExecutionCandidate.evidenceSourcePaths,
+              }),
           selectiveDependencyPassThrough: policy.selectiveDependencyPassThrough,
           implicitPackageGlobalCandidateNames: globalPackagePlan.fallbackCandidateNames,
           implicitPackageGlobalResolver: staticModuleResolver,
@@ -1025,6 +1047,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             outdir: path.resolve(request.workspaceRoot, PREVIEW_OUTPUT_DIRECTORY_NAME),
             platform: 'browser',
             plugins: [
+              createPreviewInstalledPackageExternalizationPlugin({
+                documentPath: request.documentPath,
+                staticModuleResolver,
+              }),
               ...entryStrategy.plugins,
               ...(inspectorPlan === undefined
                 ? []
@@ -1067,6 +1093,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       createPreviewInspectorPageExecutionBuildPlugin(
                         activePageExecutionCandidate,
                         (sourcePath) => snapshotSourceByPath.get(sourcePath),
+                        (sourcePath, sourceText) => transformer.transform(sourcePath, sourceText),
                       ),
                     ].filter(
                       (plugin): plugin is NonNullable<typeof plugin> => plugin !== undefined,
@@ -1080,8 +1107,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                         : {
                             frozenAuthenticSourcePaths:
                               preparedBundleExecution.prepared.frontier.authenticSourcePaths,
+                            authenticComponentExports:
+                              preparedBundleExecution.prepared.frontier.authenticComponentExports,
                             packageDemandSourcePaths:
                               preparedBundleExecution.prepared.frontier.packageDemandSourcePaths,
+                            projectedEdges:
+                              preparedBundleExecution.prepared.frontier.projectedEdges,
                           }),
                       optimizeSelectedPackageBarrels: policy.optimizeSelectedPackageBarrels,
                       plan: inspectorPlan,
@@ -1332,12 +1363,21 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         const initialGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
           ...globalBridgeEvidencePolicy,
           projectRoot,
-          referencedGlobalNames: cachedPlan?.referencedGlobalNames ?? [],
+          referencedGlobalNames: [
+            ...new Set([
+              ...(cachedPlan?.referencedGlobalNames ?? []),
+              ...adaptiveBuildSeed.referencedGlobalNames,
+            ]),
+          ].sort(),
           workspaceRoot: canonicalWorkspaceRoot,
         });
         const initialRouterSelection: PreviewRouterBuildSelection = selectPreviewInitialRouterBuild(
           cachedPlan?.routerRequirement,
-          routerNeed,
+          {
+            consumesRouter:
+              routerNeed.consumesRouter || adaptiveBuildSeed.routerRequirement.consumesRouter,
+            ownsRouter: routerNeed.ownsRouter || adaptiveBuildSeed.routerRequirement.ownsRouter,
+          },
         );
         let fallbackBoundary = createStorybookFallbackBoundary(environment);
         activeStorybookFallbackBoundary = fallbackBoundary;
@@ -1536,7 +1576,13 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         styledComponentsDependencyPaths: styleContext.styledComponentsPlan.dependencyPaths,
         targetDependencyPaths: targetUsageProps.dependencyPaths,
       });
-      assertPreviewResolutionPaths(resolutionConfinement, previewBundle.dependencies);
+      const browserBundle = await this.vendorModuleBuilder.prepare({
+        bundle: previewBundle,
+        metafile: buildExecution.result.metafile,
+        nodePaths: managedDependencyEnvironment.nodeModulesPaths,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      assertPreviewResolutionPaths(resolutionConfinement, browserBundle.dependencies);
       this.managedDependencyStore?.scheduleAdmission({
         dependencyPaths: collectPreviewBuildDependencies(request, buildExecution.result.metafile),
         profile: managedDependencyEnvironment.profile,
@@ -1544,8 +1590,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       });
       throwIfPreviewBuildCancelled(buildSignal);
       return inspectorSourceGestureSecret === undefined
-        ? previewBundle
-        : { ...previewBundle, inspectorSourceGestureSecret };
+        ? browserBundle
+        : { ...browserBundle, inspectorSourceGestureSecret };
     } catch (error) {
       return await resolvePreviewCompilerFailure({
         buildSignal,
@@ -1580,6 +1626,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         this.implicitGlobalEvidenceCache,
         this.projectUsageCache,
         this.setupFailureCache,
+        this.vendorModuleBuilder,
         this.completeRouteInventoryCache,
       ],
       incrementalBuildCache: this.incrementalBuildCache,

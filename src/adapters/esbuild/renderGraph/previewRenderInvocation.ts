@@ -26,6 +26,16 @@ const KNOWN_HOC_FACTORIES = new Set([
   'withRouter',
 ]);
 
+/** Callbacks whose return values are evaluated synchronously while an owner renders. */
+const SYNCHRONOUS_RENDER_CALLBACKS = new Set([
+  'flatMap',
+  'from',
+  'map',
+  'reduce',
+  'reduceRight',
+  'useMemo',
+]);
+
 /**
  * Infers the semantic React invocation surrounding one known component identifier.
  *
@@ -37,6 +47,7 @@ export function readPreviewRenderInvocation(
   identifier: ts.Identifier,
   boundary: ts.Node,
 ): PreviewRenderInvocation | undefined {
+  const deferred = isPreviewRenderInvocationDeferred(identifier, boundary);
   const attribute = findContainingJsxAttribute(identifier, boundary);
   if (attribute !== undefined) {
     const slotName = attribute.name.getText();
@@ -46,6 +57,7 @@ export function readPreviewRenderInvocation(
       const factoryNames = collectHocFactoryNames(identifier, boundary);
       return Object.freeze({
         ...(calleeName === undefined ? {} : { calleeName }),
+        ...(deferred ? { deferred: true } : {}),
         ...(factoryNames.length === 0 ? {} : { factoryNames: Object.freeze(factoryNames) }),
         mode,
         slotName,
@@ -57,6 +69,7 @@ export function readPreviewRenderInvocation(
   if (childRenderSlot !== undefined) {
     return Object.freeze({
       calleeName: childRenderSlot.receiverName,
+      deferred: true,
       mode: 'render-prop',
       slotName: 'children',
     });
@@ -66,17 +79,23 @@ export function readPreviewRenderInvocation(
     const calleeName = readContainingJsxTagName(identifier);
     return Object.freeze({
       ...(calleeName === undefined ? {} : { calleeName }),
+      ...(deferred ? { deferred: true } : {}),
       mode: 'jsx',
     });
   }
 
   if (isInsideReactCreateElement(identifier, boundary)) {
-    return Object.freeze({ calleeName: 'createElement', mode: 'create-element' });
+    return Object.freeze({
+      calleeName: 'createElement',
+      ...(deferred ? { deferred: true } : {}),
+      mode: 'create-element',
+    });
   }
 
   if (isInsideStyledTemplateInterpolation(identifier, boundary)) {
     return Object.freeze({
       calleeName: 'styled',
+      ...(deferred ? { deferred: true } : {}),
       factoryNames: Object.freeze(['styled']),
       mode: 'styled',
     });
@@ -88,9 +107,56 @@ export function readPreviewRenderInvocation(
   if (outermostFactory === undefined) return undefined;
   return Object.freeze({
     calleeName: outermostFactory,
+    ...(deferred ? { deferred: true } : {}),
     factoryNames: Object.freeze(factoryNames),
     mode: classifyHocMode(factoryNames),
   });
+}
+
+/**
+ * Distinguishes JSX created by a dormant event/helper callback from JSX evaluated during render.
+ *
+ * A nested function is deferred unless syntax proves that the function is an IIFE or a callback of
+ * a bounded synchronous render transform such as `map()` or `useMemo()`. This keeps collection
+ * children on their authored path while exposing event-owned UI through a contextual sibling.
+ */
+function isPreviewRenderInvocationDeferred(identifier: ts.Identifier, boundary: ts.Node): boolean {
+  let current: ts.Node = identifier.parent;
+  while (!ts.isSourceFile(current)) {
+    if (
+      current !== boundary &&
+      (ts.isArrowFunction(current) ||
+        ts.isFunctionExpression(current) ||
+        ts.isFunctionDeclaration(current)) &&
+      !isSynchronouslyInvokedRenderFunction(current)
+    ) {
+      return true;
+    }
+    if (current === boundary) break;
+    current = current.parent;
+  }
+  return false;
+}
+
+/** Reports whether syntax itself proves that one nested callback executes during render. */
+function isSynchronouslyInvokedRenderFunction(
+  functionLike: ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression,
+): boolean {
+  let wrapped: ts.Node = functionLike;
+  while (
+    ts.isParenthesizedExpression(wrapped.parent) ||
+    ts.isAsExpression(wrapped.parent) ||
+    ts.isSatisfiesExpression(wrapped.parent) ||
+    ts.isNonNullExpression(wrapped.parent)
+  ) {
+    wrapped = wrapped.parent;
+  }
+  const call = wrapped.parent;
+  if (!ts.isCallExpression(call)) return false;
+  if (containsNode(call.expression, wrapped)) return true;
+  if (!call.arguments.some((argument) => containsNode(argument, wrapped))) return false;
+  const calleeName = readCallFactoryName(call.expression);
+  return calleeName !== undefined && SYNCHRONOUS_RENDER_CALLBACKS.has(calleeName);
 }
 
 /**

@@ -275,6 +275,14 @@ export interface PreviewBundleChunk {
   readonly relativePath: string;
 }
 
+/** One browser import-map binding backed by a generated shared module artifact. */
+export interface PreviewBundleModuleImport {
+  /** Bare package specifier retained in the externalized preview entry. */
+  readonly specifier: string;
+  /** Stable POSIX path of the browser-loadable vendor entry below the artifact root. */
+  readonly relativePath: string;
+}
+
 /** Worker-computed byte identities that let publication avoid hashing large output on the host. */
 export interface PreviewBundleArtifactMetadata {
   /** Stable digest over entry, stylesheet presence/bytes, and ordered chunk paths/bytes. */
@@ -309,6 +317,8 @@ export interface PreviewBundle {
   readonly diagnostics: readonly PreviewDiagnostic[];
   /** Optional private HMAC key embedded only in a Page Inspector entry and returned to its host. */
   readonly inspectorSourceGestureSecret?: string;
+  /** Browser mappings for package imports intentionally shared outside the per-preview graph. */
+  readonly moduleImports?: readonly PreviewBundleModuleImport[];
   /** Complete browser JavaScript entry bundle. */
   readonly javascript: Uint8Array;
   /** Optional stylesheet emitted when the component imports CSS. */
@@ -321,6 +331,11 @@ export interface PreviewBundle {
 export interface StoredPreviewArtifact {
   /** Content digest used for cache busting and artifact identity. */
   readonly contentHash: string;
+  /** Published browser locations paired with the externalized bare package specifiers. */
+  readonly moduleImports?: readonly {
+    readonly scriptLocation: string;
+    readonly specifier: string;
+  }[];
   /** Serialized location of the browser JavaScript bundle. */
   readonly scriptLocation: string;
   /** Serialized location of the optional generated stylesheet. */

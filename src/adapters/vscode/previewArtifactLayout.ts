@@ -11,6 +11,7 @@ import type {
   PreviewBundle,
   PreviewBundleArtifactMetadata,
   PreviewBundleChunk,
+  PreviewBundleModuleImport,
 } from '../../domain/preview';
 
 /** Allows large route graphs while aggregate compiler bytes still enforce the lightweight budget. */
@@ -36,6 +37,8 @@ export interface PreviewArtifactLayout {
   readonly entryPath: string;
   /** Every entry, chunk, and optional stylesheet file required by the revision. */
   readonly files: readonly PlannedPreviewArtifactFile[];
+  /** Validated bare-specifier bindings whose targets are included in `files`. */
+  readonly moduleImports?: readonly PreviewBundleModuleImport[];
   /** Optional content-addressed stylesheet loaded explicitly by the webview document. */
   readonly stylesheetPath?: string;
 }
@@ -72,8 +75,14 @@ export function planPreviewArtifactLayout(bundle: PreviewBundle): PreviewArtifac
     stylesheetFile === undefined
       ? [entryFile, ...chunkFiles]
       : [entryFile, ...chunkFiles, stylesheetFile];
+  const moduleImports = validateModuleImports(bundle.moduleImports, chunkFiles);
 
-  const baseLayout = { contentHash, entryPath, files };
+  const baseLayout = {
+    contentHash,
+    entryPath,
+    files,
+    ...(moduleImports.length === 0 ? {} : { moduleImports }),
+  };
   return stylesheetFile === undefined
     ? baseLayout
     : { ...baseLayout, stylesheetPath: stylesheetFile.relativePath };
@@ -195,7 +204,42 @@ function createBundleHash(bundle: PreviewBundle, chunks: readonly PreviewBundleC
     updateLengthPrefixedHash(hash, chunk.relativePath);
     updateLengthPrefixedHash(hash, chunk.contents);
   }
+  hash.update('\0react-preview-module-imports\0');
+  for (const moduleImport of validateModuleImports(bundle.moduleImports, chunks)) {
+    updateLengthPrefixedHash(hash, moduleImport.specifier);
+    updateLengthPrefixedHash(hash, moduleImport.relativePath);
+  }
   return hash.digest('hex').slice(0, 16);
+}
+
+/** Validates and deterministically orders import-map bindings owned by generated vendor files. */
+function validateModuleImports(
+  moduleImports: readonly PreviewBundleModuleImport[] | undefined,
+  chunks: readonly Pick<PreviewBundleChunk, 'relativePath'>[],
+): readonly PreviewBundleModuleImport[] {
+  if (moduleImports === undefined) return [];
+  const chunkPaths = new Set(chunks.map((chunk) => chunk.relativePath));
+  const specifiers = new Set<string>();
+  const validated = moduleImports.map((moduleImport) => {
+    if (
+      !/^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9._-]+)*$/u.test(
+        moduleImport.specifier,
+      ) ||
+      specifiers.has(moduleImport.specifier)
+    ) {
+      throw new TypeError(`Invalid or duplicate React preview module specifier: ${moduleImport.specifier}`);
+    }
+    if (!chunkPaths.has(moduleImport.relativePath) || !moduleImport.relativePath.endsWith('.js')) {
+      throw new TypeError(
+        `React preview module import does not target a generated JavaScript artifact: ${moduleImport.relativePath}`,
+      );
+    }
+    specifiers.add(moduleImport.specifier);
+    return moduleImport;
+  });
+  return validated.sort((left, right) =>
+    left.specifier < right.specifier ? -1 : left.specifier > right.specifier ? 1 : 0,
+  );
 }
 
 /** Computes a longer digest for shared-file paths and in-memory collision verification. */

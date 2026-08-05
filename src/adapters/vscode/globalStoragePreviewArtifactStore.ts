@@ -44,6 +44,11 @@ interface PublishedArtifactLayout {
   readonly entryPath: string;
   /** Byte-free identities of every file required by this bundle. */
   readonly files: readonly PublishedArtifactFileIdentity[];
+  /** Bare package specifiers paired with already published vendor entry paths. */
+  readonly moduleImports?: readonly {
+    readonly relativePath: string;
+    readonly specifier: string;
+  }[];
   /** Optional content-addressed stylesheet path. */
   readonly stylesheetPath?: string;
 }
@@ -230,10 +235,21 @@ export class GlobalStoragePreviewArtifactStore implements PreviewArtifactStore, 
    * No filesystem lookup is required because the immutable layout is retained with its lease.
    */
   private describeLayout(
-    layout: Pick<PublishedArtifactLayout, 'contentHash' | 'entryPath' | 'stylesheetPath'>,
+    layout: Pick<
+      PublishedArtifactLayout,
+      'contentHash' | 'entryPath' | 'moduleImports' | 'stylesheetPath'
+    >,
   ): StoredPreviewArtifact {
     const baseArtifact = {
       contentHash: layout.contentHash,
+      ...(layout.moduleImports === undefined
+        ? {}
+        : {
+            moduleImports: layout.moduleImports.map(({ relativePath, specifier }) => ({
+              scriptLocation: this.createFileUri(relativePath).toString(true),
+              specifier,
+            })),
+          }),
       scriptLocation: this.createFileUri(layout.entryPath).toString(true),
     };
     return layout.stylesheetPath === undefined
@@ -440,9 +456,19 @@ function assertEquivalentLayouts(
         candidateFile.contentDigest === file.contentDigest
       );
     });
+  const moduleImportsMatch =
+    (published.moduleImports?.length ?? 0) === (candidate.moduleImports?.length ?? 0) &&
+    (published.moduleImports ?? []).every((moduleImport, index) => {
+      const candidateImport = candidate.moduleImports?.[index];
+      return (
+        candidateImport?.specifier === moduleImport.specifier &&
+        candidateImport.relativePath === moduleImport.relativePath
+      );
+    });
   if (
     published.entryPath !== candidate.entryPath ||
     published.stylesheetPath !== candidate.stylesheetPath ||
+    !moduleImportsMatch ||
     !filesMatch
   ) {
     throw new TypeError(`React preview artifact identity collision: ${candidate.contentHash}`);
@@ -458,6 +484,7 @@ function createPublishedArtifactLayout(layout: PreviewArtifactLayout): Published
       contentDigest: file.contentDigest,
       relativePath: file.relativePath,
     })),
+    ...(layout.moduleImports === undefined ? {} : { moduleImports: layout.moduleImports }),
   };
   return layout.stylesheetPath === undefined
     ? baseLayout

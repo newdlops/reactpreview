@@ -372,6 +372,7 @@ function collectEarlyReturnGateCandidate(
   }
   const returnedBranch = thenRender === undefined ? 'falsy' : 'truthy';
   const targetBranch = returnedBranch === 'truthy' ? 'falsy' : 'truthy';
+  if (isPreviewReactContinuationSafetyGuard(statement, returnedBranch)) return undefined;
   const returnedLabel = describeReturnedRenderExpression(
     thenRender ?? elseRender,
     sourceFile,
@@ -392,6 +393,125 @@ function collectEarlyReturnGateCandidate(
       truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
     },
   };
+}
+
+/** One immutable property path whose absence is tested by an early-return guard. */
+interface PreviewReactGuardedAccessPath {
+  readonly names: readonly string[];
+}
+
+/**
+ * Rejects an automatic continuation when the return protects a value consumed later in the body.
+ *
+ * Registration and data-loading components commonly render `null` or an error placeholder for one
+ * commit and then populate a ref/context in an effect. Forcing `if (!value) return ...` to continue
+ * cannot create that value; it only moves the failure to the first later dereference. Such guards
+ * must settle through the authored state update while navigation/permission gates remain selectable.
+ */
+function isPreviewReactContinuationSafetyGuard(
+  statement: ts.IfStatement,
+  returnedBranch: 'falsy' | 'truthy',
+): boolean {
+  const guarded = readPreviewReactMissingGuardedAccess(statement.expression, returnedBranch);
+  if (guarded === undefined || !ts.isBlock(statement.parent)) return false;
+  const statementIndex = statement.parent.statements.indexOf(statement);
+  if (statementIndex < 0) return false;
+  const continuations = statement.parent.statements.slice(statementIndex + 1);
+  let visited = 0;
+  let consumed = false;
+  const visit = (node: ts.Node): void => {
+    if (consumed || visited >= 512) return;
+    visited += 1;
+    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
+      const access = readPreviewReactStaticAccessPath(node);
+      if (access !== undefined && havePreviewReactGuardedAccessPath(access, guarded)) {
+        if (guarded.names.length > 1 || isPreviewReactUnsafeGuardedRootUse(node)) {
+          consumed = true;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const continuation of continuations) {
+    visit(continuation);
+    if (consumed) break;
+  }
+  return consumed;
+}
+
+/** Reads the value whose absence selects the returned side of a simple null-safety condition. */
+function readPreviewReactMissingGuardedAccess(
+  expression: ts.Expression,
+  returnedBranch: 'falsy' | 'truthy',
+): PreviewReactGuardedAccessPath | undefined {
+  const current = unwrapConditionalExpression(expression);
+  if (
+    returnedBranch === 'truthy' &&
+    ts.isPrefixUnaryExpression(current) &&
+    current.operator === ts.SyntaxKind.ExclamationToken
+  ) {
+    return readPreviewReactStaticAccessPath(current.operand);
+  }
+  if (!ts.isBinaryExpression(current)) return undefined;
+  const leftNullish = isPreviewReactNullishGuardLiteral(current.left);
+  const rightNullish = isPreviewReactNullishGuardLiteral(current.right);
+  if (leftNullish === rightNullish) return undefined;
+  const guardedExpression = leftNullish ? current.right : current.left;
+  const equality =
+    current.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+    current.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
+  const inequality =
+    current.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken ||
+    current.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  const missingSelectsReturn =
+    (returnedBranch === 'truthy' && equality) || (returnedBranch === 'falsy' && inequality);
+  return missingSelectsReturn ? readPreviewReactStaticAccessPath(guardedExpression) : undefined;
+}
+
+/** Recognizes only literal null/undefined checks; arbitrary comparisons remain selectable. */
+function isPreviewReactNullishGuardLiteral(expression: ts.Expression): boolean {
+  const current = unwrapConditionalExpression(expression);
+  return current.kind === ts.SyntaxKind.NullKeyword ||
+    (ts.isIdentifier(current) && current.text === 'undefined') ||
+    (ts.isVoidExpression(current) && ts.isNumericLiteral(current.expression));
+}
+
+/** Converts one identifier/property chain to a bounded syntax-only identity. */
+function readPreviewReactStaticAccessPath(
+  expression: ts.Expression,
+): PreviewReactGuardedAccessPath | undefined {
+  const names: string[] = [];
+  let current = unwrapConditionalExpression(expression);
+  while (ts.isPropertyAccessExpression(current) && current.questionDotToken === undefined) {
+    names.unshift(current.name.text);
+    current = unwrapConditionalExpression(current.expression);
+  }
+  if (!ts.isIdentifier(current)) return undefined;
+  names.unshift(current.text);
+  return names.length <= 8 ? { names: Object.freeze(names) } : undefined;
+}
+
+/** Compares one exact static access without resolving or executing project symbols. */
+function havePreviewReactGuardedAccessPath(
+  left: PreviewReactGuardedAccessPath,
+  right: PreviewReactGuardedAccessPath,
+): boolean {
+  return left.names.length === right.names.length &&
+    left.names.every((name, index) => name === right.names[index]);
+}
+
+/** Requires a direct dereference/call/destructure before treating a bare identifier as protected. */
+function isPreviewReactUnsafeGuardedRootUse(expression: ts.Expression): boolean {
+  const parent = expression.parent;
+  if (
+    (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+    parent.expression === expression
+  ) return true;
+  if (ts.isCallExpression(parent) && parent.expression === expression) return true;
+  return ts.isVariableDeclaration(parent) &&
+    parent.initializer === expression &&
+    !ts.isIdentifier(parent.name);
 }
 
 /** Labels a proven returned render expression consistently for one-sided and two-sided branches. */

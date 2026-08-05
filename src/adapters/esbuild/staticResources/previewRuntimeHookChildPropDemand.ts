@@ -18,6 +18,10 @@ import {
   PreviewRuntimeHookChildTypeDemandResolver,
 } from './previewRuntimeHookChildTypeDemand';
 import {
+  collectPreviewRuntimeHookAliasPaths,
+  type PreviewRuntimeHookAliasPathCatalog,
+} from './previewRuntimeHookAliasUsage';
+import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
   unwrapPreviewRuntimeExpression,
@@ -55,6 +59,8 @@ export type PreviewRuntimeHookChildPropDemandCatalog = ReadonlyMap<
 export interface PreviewRuntimeHookLocalTypeFallback {
   /** Side-effect-free expression evaluated only inside the preview hook boundary. */
   readonly expression: string;
+  /** Structural family proven by the expanded authored type. */
+  readonly kind: PreviewInferredPropShape['kind'];
   /** Concise provenance shown when the generated value is surfaced as a blocker. */
   readonly label: string;
   /** Nested item properties required by the expanded type. */
@@ -143,6 +149,7 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     if (shape === undefined) return undefined;
     return Object.freeze({
       expression: serializePreviewRuntimeHookChildShape(shape, 'item'),
+      kind: shape.kind,
       label: 'generated collection item from authored type',
       requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(shape)),
     });
@@ -168,8 +175,41 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     if (parameter?.kind !== 'array' || parameter.items === undefined) return undefined;
     return Object.freeze({
       expression: serializePreviewRuntimeHookChildShape(parameter.items, 'item'),
+      kind: parameter.items.kind,
       label: 'generated collection item from imported helper parameter',
       requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(parameter.items)),
+    });
+  }
+
+  /**
+   * Infers one named property supplied through an object argument to a direct imported helper.
+   *
+   * This covers identity-only forwarding such as `helper({ navigate })`: the hook consumer does
+   * not call `navigate` locally, but the helper's authored parameter contract still proves that the
+   * forwarded value must remain callable. Only a direct static property and exact imported helper
+   * identity are accepted; spreads, computed names, and unresolved parameter types fail open.
+   */
+  public inferImportedHelperParameterPropertyFallback(
+    sourcePath: string,
+    sourceText: string,
+    localName: string,
+    parameterIndex: number,
+    propertyName: string,
+  ): PreviewRuntimeHookLocalTypeFallback | undefined {
+    if (propertyName.length === 0 || propertyName.length > 128) return undefined;
+    const parameter = this.typeDemands.inferImportedFunctionParameter(
+      sourcePath,
+      sourceText,
+      localName,
+      parameterIndex,
+    );
+    const property = parameter?.kind === 'object' ? parameter.properties?.[propertyName] : undefined;
+    if (property === undefined) return undefined;
+    return Object.freeze({
+      expression: serializePreviewRuntimeHookChildShape(property, propertyName),
+      kind: property.kind,
+      label: 'generated value from imported helper parameter property',
+      requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(property)),
     });
   }
 
@@ -231,6 +271,7 @@ export function readPreviewRuntimeHookChildPropUsages(
   if (catalog === undefined || catalog.size === 0) return [];
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return [];
+  const aliases = collectPreviewRuntimeHookAliasPaths(identifier, owner);
   const usages: PreviewRuntimeHookChildPropUsage[] = [];
   const visit = (node: ts.Node): void => {
     if (usages.length >= MAX_PROP_DEMANDS) return;
@@ -247,23 +288,59 @@ export function readPreviewRuntimeHookChildPropUsages(
       ts.isJsxExpression(node.initializer)
     ) {
       const expression = node.initializer.expression;
-      const sourcePath =
+      const sourcePaths =
         expression === undefined
-          ? undefined
-          : readRequiredIdentifierPath(expression, identifier.text);
+          ? []
+          : readRequiredAliasPaths(expression, aliases);
       const propName = ts.isIdentifier(node.name) ? node.name.text : undefined;
       const componentName = readJsxAttributeComponentName(node);
       const shape =
-        sourcePath === undefined || propName === undefined || componentName === undefined
+        sourcePaths.length === 0 || propName === undefined || componentName === undefined
           ? undefined
           : catalog.get(componentName)?.get(propName);
-      if (shape !== undefined && sourcePath !== undefined) {
-        appendShapeUsages(shape, sourcePath, [], usages, 0);
+      if (shape !== undefined) {
+        for (const sourcePath of sourcePaths) {
+          appendShapeUsages(shape, sourcePath, [], usages, 0);
+        }
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(owner);
+  return deduplicateUsages(usages);
+}
+
+/**
+ * Reads the demand of a child prop that receives a hook call directly.
+ *
+ * A wrapper page commonly forwards context without first naming it:
+ * `context={useAppContext()}`. There is no local identifier for the ordinary usage walker to
+ * follow, but the exact JSX attribute and reached child contract still prove the hook root shape.
+ * Only a direct JSX expression is admitted so arbitrary transforms remain authored.
+ */
+export function readPreviewRuntimeHookDirectChildPropUsages(
+  expression: ts.Expression,
+  catalog: PreviewRuntimeHookChildPropDemandCatalog | undefined,
+): readonly PreviewRuntimeHookChildPropUsage[] {
+  if (catalog === undefined || catalog.size === 0) return [];
+  const jsxExpression = expression.parent;
+  if (
+    !ts.isJsxExpression(jsxExpression) ||
+    jsxExpression.expression !== expression ||
+    !ts.isJsxAttribute(jsxExpression.parent)
+  ) {
+    return [];
+  }
+  const attribute = jsxExpression.parent;
+  const propName = ts.isIdentifier(attribute.name) ? attribute.name.text : undefined;
+  const componentName = readJsxAttributeComponentName(attribute);
+  const shape =
+    propName === undefined || componentName === undefined
+      ? undefined
+      : catalog.get(componentName)?.get(propName);
+  if (shape === undefined) return [];
+  const usages: PreviewRuntimeHookChildPropUsage[] = [];
+  appendShapeUsages(shape, [], [], usages, 0);
   return deduplicateUsages(usages);
 }
 
@@ -386,20 +463,21 @@ function readJsxAttributeComponentName(attribute: ts.JsxAttribute): string | und
     : undefined;
 }
 
-/** Reads a non-optional identifier/property chain rooted at the requested hook local. */
-function readRequiredIdentifierPath(
+/** Reads a non-optional identifier/property chain rooted at a proven immutable hook alias. */
+function readRequiredAliasPaths(
   expression: ts.Expression,
-  identifierName: string,
-): readonly string[] | undefined {
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+): readonly (readonly string[])[] {
   const suffix: string[] = [];
   let current = unwrapRequiredCollectionCarrier(expression);
-  if (current === undefined) return undefined;
+  if (current === undefined) return [];
   while (ts.isPropertyAccessExpression(current)) {
-    if (current.questionDotToken !== undefined) return undefined;
+    if (current.questionDotToken !== undefined) return [];
     suffix.unshift(current.name.text);
     current = unwrapPreviewRuntimeExpression(current.expression);
   }
-  return ts.isIdentifier(current) && current.text === identifierName ? suffix : undefined;
+  if (!ts.isIdentifier(current)) return [];
+  return (aliases.get(current.text) ?? []).map((prefix) => [...prefix, ...suffix]);
 }
 
 /** Flattens operation-proven child leaves onto the hook-relative carrier path. */

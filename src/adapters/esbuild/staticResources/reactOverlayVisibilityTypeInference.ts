@@ -87,6 +87,23 @@ function collectVisibilityTypeProps(
     }
     return;
   }
+  if (ts.isUnionTypeNode(unwrapped)) {
+    for (const member of unwrapped.types) {
+      collectVisibilityTypeProps(member, localTypes, activeNames, candidates);
+    }
+    return;
+  }
+  if (ts.isConditionalTypeNode(unwrapped)) {
+    /*
+     * Generic overlay wrappers commonly select one of several public prop contracts. Walking both
+     * result branches is safe because the caller accepts a visibility key only when the complete
+     * candidate set remains singular; branches that disagree on `show` versus `open` therefore
+     * stay deliberately unresolved.
+     */
+    collectVisibilityTypeProps(unwrapped.trueType, localTypes, activeNames, candidates);
+    collectVisibilityTypeProps(unwrapped.falseType, localTypes, activeNames, candidates);
+    return;
+  }
   if (ts.isTypeLiteralNode(unwrapped)) {
     collectVisibilityMembers(unwrapped.members, candidates);
     return;
@@ -95,6 +112,23 @@ function collectVisibilityTypeProps(
   const name = unwrapped.typeName.text;
   if (name === 'Pick' && unwrapped.typeArguments?.[1] !== undefined) {
     collectVisibilityLiteralKeys(unwrapped.typeArguments[1], candidates);
+    return;
+  }
+  if (name === 'Omit' && unwrapped.typeArguments?.[0] !== undefined) {
+    const inheritedCandidates = new Set<string>();
+    collectVisibilityTypeProps(
+      unwrapped.typeArguments[0],
+      localTypes,
+      activeNames,
+      inheritedCandidates,
+    );
+    const omittedCandidates = new Set<string>();
+    if (unwrapped.typeArguments[1] !== undefined) {
+      collectVisibilityLiteralKeys(unwrapped.typeArguments[1], omittedCandidates);
+    }
+    for (const candidate of inheritedCandidates) {
+      if (!omittedCandidates.has(candidate)) candidates.add(candidate);
+    }
     return;
   }
   if (

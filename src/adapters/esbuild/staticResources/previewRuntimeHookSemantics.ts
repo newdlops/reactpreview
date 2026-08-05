@@ -111,7 +111,7 @@ export function inferPreviewRuntimeSemanticFallback(
     };
   }
   if (
-    /(?:value|id|name|title|status|type|kind|code|message|description|text|slug|url|path|email)$/u.test(
+    /(?:value|id|name|title|status|type|kind|code|message|description|text|slug|url|path|email|phone)$/u.test(
       normalized,
     )
   ) {

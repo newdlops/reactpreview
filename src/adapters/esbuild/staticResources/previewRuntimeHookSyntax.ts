@@ -133,7 +133,13 @@ export function unwrapPreviewRuntimeParentExpression(expression: ts.Expression):
 export function readPreviewRuntimeCallResultBinding(
   call: ts.CallExpression,
 ): ts.BindingName | undefined {
-  const expression = unwrapPreviewRuntimeParentExpression(call);
+  let expression = unwrapPreviewRuntimeParentExpression(call);
+  /* A generated inert callable may be consumed through `await fetch()` before an immediate
+   * destructure. Returning the same synchronous plain shape is Promise-compatible because await
+   * adopts non-Promise values, so the AwaitExpression is a transparent demand wrapper here. */
+  if (ts.isAwaitExpression(expression.parent) && expression.parent.expression === expression) {
+    expression = unwrapPreviewRuntimeParentExpression(expression.parent);
+  }
   const parent = expression.parent;
   return ts.isVariableDeclaration(parent) && parent.initializer === expression
     ? parent.name

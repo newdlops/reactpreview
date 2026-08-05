@@ -14,6 +14,8 @@ import ts from 'typescript';
 import { type PreviewInferredPropShape } from './reactExportPropInference';
 
 const MAX_SOURCE_CHARACTERS = 512 * 1024;
+const MAX_OVERSIZED_SOURCE_CHARACTERS = 32 * 1024 * 1024;
+const MAX_EXTRACTED_TYPE_CHARACTERS = 256 * 1024;
 const MAX_SHAPE_NODES = 512;
 const SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype', 'ref']);
@@ -58,6 +60,8 @@ type TypeDeclaration = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
 
 /** Function body and contextual props type behind a direct export or local HOC chain. */
 interface ComponentFunctionCandidate {
+  /** Exact variable annotation retained for ordinary imported helper function contracts. */
+  readonly contextualFunctionType?: ts.TypeNode;
   readonly contextualPropsType?: ts.TypeNode;
   readonly functionLike?: ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
   readonly initializer?: ts.Expression;
@@ -79,6 +83,11 @@ interface ResolvedTypeDeclaration {
  */
 export class PreviewRuntimeHookChildTypeDemandResolver {
   private readonly moduleCache = new Map<string, ParsedTypeDemandModule | undefined>();
+  private readonly oversizedSourceCache = new Map<string, string | undefined>();
+  private readonly oversizedTypeModuleCache = new Map<
+    string,
+    ParsedTypeDemandModule | undefined
+  >();
   private readonly workspaceRoot: string;
 
   /** Creates a resolver scoped to the current trusted workspace. */
@@ -157,12 +166,81 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       candidate === undefined
         ? undefined
         : readRuntimeFunctionLike(candidate, importedModule.localFunctions, new Set());
-    const parameterType = functionLike?.parameters[parameterIndex]?.type;
+    const directParameterType = functionLike?.parameters[parameterIndex]?.type;
+    const contextualParameter =
+      directParameterType === undefined && candidate?.contextualFunctionType !== undefined
+        ? this.readContextualFunctionParameter(
+            candidate.contextualFunctionType,
+            importedModule,
+            parameterIndex,
+            new Set(),
+          )
+        : undefined;
+    const parameterType =
+      directParameterType === undefined
+        ? contextualParameter
+        : { module: importedModule, type: directParameterType };
     return parameterType === undefined
       ? undefined
-      : this.inferShape(parameterType, importedModule, importedModule.literalHints, new Set(), {
-          nodes: 0,
-        });
+      : this.inferShape(
+          parameterType.type,
+          parameterType.module,
+          parameterType.module.literalHints,
+          new Set(),
+          { nodes: 0 },
+        );
+  }
+
+  /** Resolves callable aliases and call signatures without creating a TypeScript Program. */
+  private readContextualFunctionParameter(
+    typeNode: ts.TypeNode,
+    module: ParsedTypeDemandModule,
+    parameterIndex: number,
+    activeTypes: Set<string>,
+  ): { readonly module: ParsedTypeDemandModule; readonly type: ts.TypeNode } | undefined {
+    const current = unwrapTypeNode(typeNode);
+    if (ts.isFunctionTypeNode(current)) {
+      const type = current.parameters[parameterIndex]?.type;
+      return type === undefined ? undefined : { module, type };
+    }
+    if (ts.isTypeLiteralNode(current)) {
+      const type = current.members.find(ts.isCallSignatureDeclaration)?.parameters[parameterIndex]
+        ?.type;
+      return type === undefined ? undefined : { module, type };
+    }
+    if (ts.isUnionTypeNode(current) || ts.isIntersectionTypeNode(current)) {
+      for (const member of current.types) {
+        const parameter = this.readContextualFunctionParameter(
+          member,
+          module,
+          parameterIndex,
+          activeTypes,
+        );
+        if (parameter !== undefined) return parameter;
+      }
+      return undefined;
+    }
+    if (!ts.isTypeReferenceNode(current) || !ts.isIdentifier(current.typeName)) return undefined;
+    const resolved = this.resolveType(module, current.typeName.text, new Set());
+    if (resolved === undefined) return undefined;
+    const identity = `${resolved.module.sourcePath}\0${resolved.declaration.name.text}`;
+    if (activeTypes.has(identity)) return undefined;
+    activeTypes.add(identity);
+    const parameter = ts.isTypeAliasDeclaration(resolved.declaration)
+      ? this.readContextualFunctionParameter(
+          resolved.declaration.type,
+          resolved.module,
+          parameterIndex,
+          activeTypes,
+        )
+      : (() => {
+          const type = resolved.declaration.members.find(ts.isCallSignatureDeclaration)?.parameters[
+            parameterIndex
+          ]?.type;
+          return type === undefined ? undefined : { module: resolved.module, type };
+        })();
+    activeTypes.delete(identity);
+    return parameter;
   }
 
   /** Recursively converts one type syntax node into a neutral preview data shape. */
@@ -211,6 +289,21 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     }
     if (ts.isTypeLiteralNode(current)) {
       return this.createObjectShape(current.members, module, consumerHints, activeTypes, budget);
+    }
+    if (ts.isIndexedAccessTypeNode(current)) {
+      const objectShape = this.inferShape(
+        current.objectType,
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+      );
+      if (unwrapTypeNode(current.indexType).kind === ts.SyntaxKind.NumberKeyword) {
+        return objectShape?.kind === 'array' ? objectShape.items : undefined;
+      }
+      const propertyName = readStaticIndexedAccessTypeProperty(current.indexType);
+      if (propertyName === undefined) return undefined;
+      return objectShape?.kind === 'object' ? objectShape.properties?.[propertyName] : undefined;
     }
     if (!ts.isTypeReferenceNode(current) || !ts.isIdentifier(current.typeName)) return undefined;
     const name = current.typeName.text;
@@ -362,9 +455,12 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       resolvedPath === undefined || !this.isInspectableSource(resolvedPath)
         ? undefined
         : this.readModule(resolvedPath);
-    return importedModule === undefined
+    if (importedModule !== undefined) {
+      return this.resolveExportedType(importedModule, imported.sourceName, activeBindings);
+    }
+    return resolvedPath === undefined || !this.isInspectableSource(resolvedPath)
       ? undefined
-      : this.resolveExportedType(importedModule, imported.sourceName, activeBindings);
+      : this.readOversizedExportedType(resolvedPath, imported.sourceName);
   }
 
   /** Follows one exported name through local aliases and named/star re-export declarations. */
@@ -428,6 +524,12 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       this.options.readSource?.(normalizedPath) ??
       ts.sys.readFile(normalizedPath);
     if (sourceText === undefined || sourceText.length > MAX_SOURCE_CHARACTERS) {
+      if (
+        sourceText !== undefined &&
+        sourceText.length <= MAX_OVERSIZED_SOURCE_CHARACTERS
+      ) {
+        this.oversizedSourceCache.set(normalizedPath, sourceText);
+      }
       this.moduleCache.set(normalizedPath, undefined);
       return undefined;
     }
@@ -447,6 +549,53 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     return module;
   }
 
+  /**
+   * Parses one exact exported type alias from a generated module that is too large to parse whole.
+   *
+   * GraphQL code generators commonly emit multi-megabyte files while each operation result is a
+   * small, self-contained alias. Extracting only the requested export keeps child-prop completion
+   * bounded and avoids making every preview compilation parse the entire generated corpus.
+   */
+  private readOversizedExportedType(
+    sourcePath: string,
+    exportName: string,
+  ): ResolvedTypeDeclaration | undefined {
+    const normalizedPath = path.normalize(sourcePath);
+    const cacheKey = `${normalizedPath}\0${exportName}`;
+    if (!this.oversizedTypeModuleCache.has(cacheKey)) {
+      const sourceText =
+        this.oversizedSourceCache.get(normalizedPath) ??
+        this.options.readSource?.(normalizedPath) ??
+        ts.sys.readFile(normalizedPath);
+      const declarationText =
+        sourceText === undefined ||
+        sourceText.length <= MAX_SOURCE_CHARACTERS ||
+        sourceText.length > MAX_OVERSIZED_SOURCE_CHARACTERS
+          ? undefined
+          : extractOversizedExportedTypeAlias(sourceText, exportName);
+      const file =
+        declarationText === undefined
+          ? undefined
+          : ts.createSourceFile(
+              normalizedPath,
+              declarationText,
+              ts.ScriptTarget.Latest,
+              true,
+              ts.ScriptKind.TS,
+            );
+      this.oversizedTypeModuleCache.set(
+        cacheKey,
+        file === undefined || hasParseDiagnostics(file)
+          ? undefined
+          : indexTypeDemandModule(normalizedPath, file),
+      );
+    }
+    const module = this.oversizedTypeModuleCache.get(cacheKey);
+    return module === undefined
+      ? undefined
+      : this.resolveExportedType(module, exportName, new Set());
+  }
+
   /** Rejects assets, declarations outside the workspace, and path traversal. */
   private isInspectableSource(sourcePath: string): boolean {
     const normalizedPath = path.resolve(sourcePath);
@@ -458,6 +607,84 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       !path.isAbsolute(relative)
     );
   }
+}
+
+/** Extracts one top-level exported type alias without tokenizing an oversized generated module. */
+function extractOversizedExportedTypeAlias(
+  sourceText: string,
+  exportName: string,
+): string | undefined {
+  if (!/^[$A-Z_a-z][$\w]*$/u.test(exportName)) return undefined;
+  const escapedName = exportName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const match = new RegExp(
+    `(?:^|[\\r\\n])[\\t ]*export[\\t ]+(?:declare[\\t ]+)?type[\\t ]+${escapedName}(?=[\\t <=>\\r\\n])`,
+    'mu',
+  ).exec(sourceText);
+  if (match?.index === undefined) return undefined;
+  const exportOffset = match[0].lastIndexOf('export');
+  const start = match.index + Math.max(0, exportOffset);
+  const limit = Math.min(sourceText.length, start + MAX_EXTRACTED_TYPE_CHARACTERS);
+  let braces = 0;
+  let brackets = 0;
+  let parentheses = 0;
+  let quote: "'" | '"' | '`' | undefined;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = start; index < limit; index += 1) {
+    const character = sourceText[index];
+    const next = sourceText[index + 1];
+    if (lineComment) {
+      if (character === '\n' || character === '\r') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (character === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote !== undefined) {
+      if (character === '\\') {
+        index += 1;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === '/' && next === '/') {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') {
+      quote = character;
+      continue;
+    }
+    if (character === '{') braces += 1;
+    else if (character === '}') braces = Math.max(0, braces - 1);
+    else if (character === '[') brackets += 1;
+    else if (character === ']') brackets = Math.max(0, brackets - 1);
+    else if (character === '(') parentheses += 1;
+    else if (character === ')') parentheses = Math.max(0, parentheses - 1);
+    else if (character === ';' && braces === 0 && brackets === 0 && parentheses === 0) {
+      return sourceText.slice(start, index + 1);
+    }
+  }
+  return undefined;
+}
+
+/** Reads the literal key from `Type["field"]` without expanding unions or computed types. */
+function readStaticIndexedAccessTypeProperty(typeNode: ts.TypeNode): string | undefined {
+  const current = unwrapTypeNode(typeNode);
+  return ts.isLiteralTypeNode(current) && ts.isStringLiteralLike(current.literal)
+    ? current.literal.text
+    : undefined;
 }
 
 /** Indexes type bindings, local component bodies, and exact export identities for one module. */
@@ -504,6 +731,9 @@ function indexTypeDemandModule(sourcePath: string, file: ts.SourceFile): ParsedT
         if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) continue;
         const contextualPropsType = readReactComponentPropsType(declaration.type);
         localFunctions.set(declaration.name.text, {
+          ...(declaration.type === undefined
+            ? {}
+            : { contextualFunctionType: declaration.type }),
           ...(contextualPropsType === undefined ? {} : { contextualPropsType }),
           initializer: declaration.initializer,
         });

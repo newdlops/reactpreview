@@ -16,6 +16,7 @@ import {
   unwrapPreviewRuntimeExpression,
   type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
+import { inferPreviewRuntimeHookExpressionGuardPassFallback } from './previewRuntimeHookGuardValue';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
@@ -24,6 +25,7 @@ const MAXIMUM_ALIAS_DEPTH = 8;
 const MAXIMUM_ALIAS_PASSES = 8;
 const MAXIMUM_CHOICE_PATHS = 4;
 const MAXIMUM_USAGE_PATHS = 64;
+const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 
 /** One downstream use already normalized for the hook fallback usage-tree serializer. */
 export interface PreviewRuntimeHookAliasUsagePath {
@@ -39,6 +41,8 @@ export interface PreviewRuntimeHookAliasUsagePath {
   readonly collectionProperty?: string;
   /** Property path relative to the original hook-bound identifier. */
   readonly names: readonly string[];
+  /** The compiler-proven scalar must replace an authored first-state value to pass a render guard. */
+  readonly renderGuard?: true;
   /** String-only method proving the preceding leaf should be generated as text. */
   readonly stringProperty?: string;
   /** Side-effect-free scalar expression proven by a reached child component's render contract. */
@@ -48,6 +52,16 @@ export interface PreviewRuntimeHookAliasUsagePath {
 /** Item fallback supplied by the bounded imported-helper type resolver. */
 export interface PreviewRuntimeHookImportedHelperItemFallback {
   readonly expression: string;
+  readonly kind?:
+    | 'array'
+    | 'boolean'
+    | 'component'
+    | 'function'
+    | 'graphql-document'
+    | 'null'
+    | 'number'
+    | 'object'
+    | 'string';
   readonly requiredPaths?: readonly string[];
 }
 
@@ -57,8 +71,18 @@ export type ResolvePreviewRuntimeHookImportedHelperItemFallback = (
   parameterIndex: number,
 ) => PreviewRuntimeHookImportedHelperItemFallback | undefined;
 
+/** Resolves one exact property of an object parameter accepted by a direct imported helper. */
+export type ResolvePreviewRuntimeHookImportedHelperPropertyFallback = (
+  localName: string,
+  parameterIndex: number,
+  propertyName: string,
+) => PreviewRuntimeHookImportedHelperItemFallback | undefined;
+
 /** One local alias may originate from a small logical or conditional choice. */
-type AliasPathCatalog = ReadonlyMap<string, readonly (readonly string[])[]>;
+export type PreviewRuntimeHookAliasPathCatalog = ReadonlyMap<
+  string,
+  readonly (readonly string[])[]
+>;
 
 /** Exact React imports admitted for identity-only `useMemo` projections. */
 interface ReactMemoBindings {
@@ -77,12 +101,13 @@ export function readPreviewRuntimeHookAliasUsagePaths(
   identifier: ts.Identifier,
   owner: PreviewRuntimeFunction,
   resolveImportedHelperItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
 ): readonly PreviewRuntimeHookAliasUsagePath[] {
   const declarations = collectOwnerConstDeclarations(owner);
-  const bindingCounts = countSimpleBindingNames(declarations);
+  const bindingCounts = countBindingNames(declarations);
   const memoBindings = collectReactMemoBindings(identifier.getSourceFile());
-  const aliases = propagateAliasPaths(identifier.text, declarations, bindingCounts, memoBindings);
-  if (aliases.size <= 1) return [];
+  const aliases = collectPreviewRuntimeHookAliasPaths(identifier, owner);
+  if (aliases.size <= 1 && resolveImportedHelperProperty === undefined) return [];
 
   const usages = new Map<string, PreviewRuntimeHookAliasUsagePath>();
   const aliasNames = new Set(aliases.keys());
@@ -95,11 +120,34 @@ export function readPreviewRuntimeHookAliasUsagePaths(
     ) {
       return;
     }
+    if (
+      ts.isIdentifier(node) &&
+      node.text !== identifier.text &&
+      ts.isCallExpression(node.parent) &&
+      node.parent.expression === node
+    ) {
+      const aliasPaths = aliases.get(node.text);
+      if (aliasPaths !== undefined) {
+        for (const names of aliasPaths) {
+          if (names.length > MAXIMUM_ALIAS_DEPTH) continue;
+          const usage: PreviewRuntimeHookAliasUsagePath = Object.freeze({
+            called: true,
+            names: Object.freeze([...names]),
+          });
+          usages.set(`${names.join('.')}\0call`, usage);
+        }
+      }
+    }
     if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
       const access = readAliasAccess(node, aliases);
       if (access !== undefined && access.aliasName !== identifier.text) {
         for (const names of access.names) {
-          const usage = normalizeAliasUsage(node, names, identifier.text);
+          const usage = normalizeAliasUsage(
+            node,
+            names,
+            identifier.text,
+            identifier.getStart(),
+          );
           if (usage === undefined) continue;
           const terminalKind =
             usage.collectionProperty ?? usage.stringProperty ?? (usage.called ? 'call' : 'value');
@@ -116,10 +164,139 @@ export function readPreviewRuntimeHookAliasUsagePaths(
         usages,
       );
     }
+    if (ts.isCallExpression(node) && resolveImportedHelperProperty !== undefined) {
+      appendImportedHelperPropertyUsages(
+        node,
+        aliases,
+        resolveImportedHelperProperty,
+        usages,
+        declarations,
+        bindingCounts,
+        memoBindings,
+      );
+    }
     ts.forEachChild(node, visit);
   };
   visit(owner);
   return Object.freeze([...usages.values()]);
+}
+
+/**
+ * Resolves immutable aliases back to one hook-bound identifier for adjacent analyzers.
+ *
+ * Object destructuring is retained as a path projection, including a value-choice carrier such as
+ * `const { user } = data || { user: null }`. The literal alternative supplies no hook origin, while
+ * the `data.user` branch remains an exact syntax-proven path.
+ */
+export function collectPreviewRuntimeHookAliasPaths(
+  identifier: ts.Identifier,
+  owner: PreviewRuntimeFunction,
+): PreviewRuntimeHookAliasPathCatalog {
+  const declarations = collectOwnerConstDeclarations(owner);
+  const bindingCounts = countBindingNames(declarations);
+  const memoBindings = collectReactMemoBindings(identifier.getSourceFile());
+  return propagateAliasPaths(identifier.text, declarations, bindingCounts, memoBindings);
+}
+
+/**
+ * Carries a hook identity through a static object argument into an imported helper's typed field.
+ *
+ * A shorthand such as `buildMenu({ pagePath })` is passive in the caller, but an imported
+ * `{ pagePath: (...) => string }` parameter proves the value is callable. This is type-shape
+ * completion only: the helper remains authentic and no project function is executed here.
+ */
+function appendImportedHelperPropertyUsages(
+  call: ts.CallExpression,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+  resolveProperty: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
+  usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
+  declarations: readonly ts.VariableDeclaration[],
+  bindingCounts: ReadonlyMap<string, number>,
+  memoBindings: ReactMemoBindings,
+): void {
+  const callee = unwrapPreviewRuntimeExpression(call.expression);
+  if (!ts.isIdentifier(callee)) return;
+  for (const [parameterIndex, argument] of call.arguments.entries()) {
+    const object = readForwardedObjectLiteral(
+      argument,
+      declarations,
+      bindingCounts,
+      memoBindings,
+    );
+    if (object === undefined) continue;
+    for (const property of object.properties) {
+      if (usages.size >= MAXIMUM_USAGE_PATHS) return;
+      const propertyBinding = readForwardedObjectProperty(property, aliases, memoBindings);
+      if (propertyBinding === undefined) continue;
+      const fallback = resolveProperty(
+        callee.text,
+        parameterIndex,
+        propertyBinding.propertyName,
+      );
+      if (fallback === undefined) continue;
+      for (const names of propertyBinding.paths) {
+        if (names.length > MAXIMUM_ALIAS_DEPTH) continue;
+        const usage: PreviewRuntimeHookAliasUsagePath = Object.freeze({
+          called: fallback.kind === 'function',
+          names: Object.freeze([...names]),
+          ...(fallback.kind === 'function'
+            ? {}
+            : { valueExpression: fallback.expression }),
+        });
+        const terminal =
+          fallback.kind === 'function' ? 'imported-helper-callable' : 'imported-helper-value';
+        usages.set(`${names.join('.')}\0${terminal}`, usage);
+      }
+    }
+  }
+}
+
+/**
+ * Resolves an inline object or one immutable object projected by the exact React `useMemo` import.
+ * This admits a common typed-carrier pattern without treating arbitrary function calls as identity.
+ */
+function readForwardedObjectLiteral(
+  argument: ts.Expression,
+  declarations: readonly ts.VariableDeclaration[],
+  bindingCounts: ReadonlyMap<string, number>,
+  memoBindings: ReactMemoBindings,
+): ts.ObjectLiteralExpression | undefined {
+  let value = unwrapPreviewRuntimeExpression(argument);
+  if (ts.isIdentifier(value)) {
+    const bindingName = value.text;
+    if (bindingCounts.get(bindingName) !== 1) return undefined;
+    const declaration = declarations.find(
+      (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === bindingName,
+    );
+    if (declaration?.initializer === undefined) return undefined;
+    value = unwrapPreviewRuntimeExpression(declaration.initializer);
+  }
+  const memoValue = readReactMemoValue(value, memoBindings);
+  if (memoValue !== undefined) value = unwrapPreviewRuntimeExpression(memoValue);
+  return ts.isObjectLiteralExpression(value) ? value : undefined;
+}
+
+/** Reads one prototype-safe property whose value still has a hook-relative immutable origin. */
+function readForwardedObjectProperty(
+  property: ts.ObjectLiteralElementLike,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+  memoBindings: ReactMemoBindings,
+): { readonly paths: readonly (readonly string[])[]; readonly propertyName: string } | undefined {
+  if (ts.isShorthandPropertyAssignment(property)) {
+    const paths = aliases.get(property.name.text);
+    return paths === undefined
+      ? undefined
+      : { paths, propertyName: property.name.text };
+  }
+  if (!ts.isPropertyAssignment(property)) return undefined;
+  const name = property.name;
+  const propertyName =
+    ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)
+      ? name.text
+      : undefined;
+  if (propertyName === undefined || BLOCKED_PROPERTY_NAMES.has(propertyName)) return undefined;
+  const paths = readChoicePaths(property.initializer, aliases, memoBindings, 0);
+  return paths.length === 0 ? undefined : { paths, propertyName };
 }
 
 /** Collects immutable declarations owned by the component while skipping callback internals. */
@@ -143,15 +320,25 @@ function collectOwnerConstDeclarations(
 }
 
 /** Counts simple bindings so repeated block-local names cannot be conflated by lexical analysis. */
-function countSimpleBindingNames(
+function countBindingNames(
   declarations: readonly ts.VariableDeclaration[],
 ): ReadonlyMap<string, number> {
   const counts = new Map<string, number>();
   for (const declaration of declarations) {
-    if (!ts.isIdentifier(declaration.name)) continue;
-    counts.set(declaration.name.text, (counts.get(declaration.name.text) ?? 0) + 1);
+    appendBindingNameCounts(declaration.name, counts);
   }
   return counts;
+}
+
+/** Counts every identifier leaf so repeated block-local destructuring cannot be conflated. */
+function appendBindingNameCounts(binding: ts.BindingName, counts: Map<string, number>): void {
+  if (ts.isIdentifier(binding)) {
+    counts.set(binding.text, (counts.get(binding.text) ?? 0) + 1);
+    return;
+  }
+  for (const element of binding.elements) {
+    if (!ts.isOmittedExpression(element)) appendBindingNameCounts(element.name, counts);
+  }
 }
 
 /** Indexes only authored React imports that can prove the real `useMemo` identity helper. */
@@ -224,23 +411,34 @@ function propagateAliasPaths(
   declarations: readonly ts.VariableDeclaration[],
   bindingCounts: ReadonlyMap<string, number>,
   memoBindings: ReactMemoBindings,
-): AliasPathCatalog {
+): PreviewRuntimeHookAliasPathCatalog {
   const aliases = new Map<string, readonly (readonly string[])[]>([[rootName, [[]]]]);
   for (let pass = 0; pass < MAXIMUM_ALIAS_PASSES && aliases.size < MAXIMUM_ALIAS_COUNT; pass += 1) {
     let changed = false;
     for (const declaration of declarations) {
-      if (
-        !ts.isIdentifier(declaration.name) ||
-        declaration.initializer === undefined ||
-        aliases.has(declaration.name.text) ||
-        bindingCounts.get(declaration.name.text) !== 1
-      ) {
-        continue;
-      }
+      if (declaration.initializer === undefined) continue;
       const paths = readChoicePaths(declaration.initializer, aliases, memoBindings, 0);
       if (paths.length === 0) continue;
-      aliases.set(declaration.name.text, paths);
-      changed = true;
+      if (ts.isIdentifier(declaration.name)) {
+        if (
+          aliases.has(declaration.name.text) ||
+          bindingCounts.get(declaration.name.text) !== 1
+        ) {
+          continue;
+        }
+        aliases.set(declaration.name.text, paths);
+        changed = true;
+      } else if (ts.isObjectBindingPattern(declaration.name)) {
+        changed =
+          appendObjectBindingAliasPaths(
+            declaration.name,
+            paths,
+            aliases,
+            bindingCounts,
+            [],
+            0,
+          ) || changed;
+      }
       if (aliases.size >= MAXIMUM_ALIAS_COUNT) break;
     }
     if (!changed) break;
@@ -248,10 +446,73 @@ function propagateAliasPaths(
   return aliases;
 }
 
+/** Adds supported object-binding leaves below an already resolved hook-relative carrier. */
+function appendObjectBindingAliasPaths(
+  pattern: ts.ObjectBindingPattern,
+  basePaths: readonly (readonly string[])[],
+  aliases: Map<string, readonly (readonly string[])[]>,
+  bindingCounts: ReadonlyMap<string, number>,
+  prefix: readonly string[],
+  depth: number,
+): boolean {
+  if (depth > MAXIMUM_ALIAS_DEPTH || aliases.size >= MAXIMUM_ALIAS_COUNT) return false;
+  let changed = false;
+  for (const element of pattern.elements) {
+    if (
+      element.dotDotDotToken !== undefined ||
+      element.initializer !== undefined ||
+      aliases.size >= MAXIMUM_ALIAS_COUNT
+    ) {
+      continue;
+    }
+    const propertyName = readBindingPropertyName(element);
+    if (propertyName === undefined) continue;
+    const nextPrefix = [...prefix, propertyName];
+    if (ts.isObjectBindingPattern(element.name)) {
+      changed =
+        appendObjectBindingAliasPaths(
+          element.name,
+          basePaths,
+          aliases,
+          bindingCounts,
+          nextPrefix,
+          depth + 1,
+        ) || changed;
+      continue;
+    }
+    if (
+      !ts.isIdentifier(element.name) ||
+      aliases.has(element.name.text) ||
+      bindingCounts.get(element.name.text) !== 1
+    ) {
+      continue;
+    }
+    aliases.set(
+      element.name.text,
+      deduplicatePaths(basePaths.map((basePath) => [...basePath, ...nextPrefix])),
+    );
+    changed = true;
+  }
+  return changed;
+}
+
+/** Reads a non-computed, prototype-safe key from one object binding element. */
+function readBindingPropertyName(element: ts.BindingElement): string | undefined {
+  const property = element.propertyName;
+  const name =
+    property === undefined && ts.isIdentifier(element.name)
+      ? element.name.text
+      : property !== undefined &&
+          (ts.isIdentifier(property) || ts.isStringLiteral(property) || ts.isNumericLiteral(property))
+        ? property.text
+        : undefined;
+  return name === undefined || BLOCKED_PROPERTY_NAMES.has(name) ? undefined : name;
+}
+
 /** Resolves safe identity choices while retaining only paths rooted at an already-known alias. */
 function readChoicePaths(
   expression: ts.Expression,
-  aliases: AliasPathCatalog,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
   memoBindings: ReactMemoBindings,
   depth: number,
 ): readonly (readonly string[])[] {
@@ -273,13 +534,39 @@ function readChoicePaths(
   if (memoValue !== undefined) {
     return readChoicePaths(memoValue, aliases, memoBindings, depth + 1);
   }
+  const collectionCarrier = readCollectionIdentityCarrier(value);
+  if (collectionCarrier !== undefined) {
+    return readChoicePaths(collectionCarrier, aliases, memoBindings, depth + 1);
+  }
   return readIdentityPaths(value, aliases);
+}
+
+/**
+ * Peels only Array transforms that preserve every retained item's authored identity.
+ *
+ * This lets a local such as `const rows = useMemo(() => query.rows.filter(...), [query])`
+ * continue carrying `query.rows` demand into imported JSX children. Mapping and arbitrary calls
+ * remain opaque because their result item contract is not provably the receiver's contract.
+ */
+function readCollectionIdentityCarrier(expression: ts.Expression): ts.Expression | undefined {
+  if (!ts.isCallExpression(expression) || expression.questionDotToken !== undefined) {
+    return undefined;
+  }
+  const callee = unwrapPreviewRuntimeExpression(expression.expression);
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    callee.questionDotToken !== undefined ||
+    !COLLECTION_IDENTITY_METHODS.has(callee.name.text)
+  ) {
+    return undefined;
+  }
+  return unwrapPreviewRuntimeExpression(callee.expression);
 }
 
 /** Resolves an identifier/property chain, allowing optional reads but rejecting computed keys. */
 function readIdentityPaths(
   expression: ts.Expression,
-  aliases: AliasPathCatalog,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
 ): readonly (readonly string[])[] {
   const suffix: string[] = [];
   let current = unwrapPreviewRuntimeExpression(expression);
@@ -296,7 +583,7 @@ function readIdentityPaths(
 /** Reads every hook-relative origin for one property access rooted at a propagated alias. */
 function readAliasAccess(
   expression: ts.PropertyAccessExpression,
-  aliases: AliasPathCatalog,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
 ): { readonly aliasName: string; readonly names: readonly (readonly string[])[] } | undefined {
   const suffix: string[] = [];
   let current: ts.Expression = expression;
@@ -319,7 +606,7 @@ function readAliasAccess(
 function appendImportedHelperAliasUsages(
   call: ts.CallExpression,
   rootName: string,
-  aliases: AliasPathCatalog,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
   resolveItem: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
 ): void {
@@ -354,6 +641,7 @@ function normalizeAliasUsage(
   expression: ts.PropertyAccessExpression,
   names: readonly string[],
   rootName: string,
+  availableBeforePosition: number,
 ): PreviewRuntimeHookAliasUsagePath | undefined {
   if (names.length === 0 || names.length > 12) return undefined;
   const terminal = names.at(-1);
@@ -364,10 +652,20 @@ function normalizeAliasUsage(
     called &&
     isPreviewRuntimeHookStringUsageProperty(terminal) &&
     inferPreviewRuntimeSemanticFallback(names.at(-2) ?? rootName)?.label !== 'generated object';
+  const guardPass =
+    !called && !collection && !stringReceiver
+      ? inferPreviewRuntimeHookExpressionGuardPassFallback(
+          expression,
+          availableBeforePosition,
+        )
+      : undefined;
   return Object.freeze({
     called: !collection && !stringReceiver && called,
     ...(collection && terminal !== undefined ? { collectionProperty: terminal } : {}),
     names: Object.freeze(collection || stringReceiver ? names.slice(0, -1) : [...names]),
+    ...(guardPass === undefined
+      ? {}
+      : { renderGuard: true as const, valueExpression: guardPass.expression }),
     ...(stringReceiver ? { stringProperty: terminal ?? '' } : {}),
   });
 }

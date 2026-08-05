@@ -51,6 +51,7 @@ import {
 import { PreviewSourceBindingAllocator } from './previewSourceBindingAllocator';
 import { canPassThroughPreviewDependency } from './previewDependencyPassThroughPolicy';
 import { createPreviewReactJsxNamespaceCompatibilityImport } from './previewReactJsxNamespaceCompatibility';
+import { createPreviewReactDomPortalContainerReplacements } from './previewReactDomPortalInstrumentation';
 import { deferPreviewDormantOverlayImports } from './previewDormantOverlayDeferral';
 import { createPreviewStaticRenderAssetTransform } from './previewStaticRenderAssets';
 import {
@@ -157,9 +158,10 @@ export class PreviewSourceTransformer {
     ) {
       sourceText = deferPreviewDormantOverlayImports({
         allowProvisionalSideEffectDeferral: true,
-        ...(this.options.documentPath === undefined
-          ? {}
-          : { preservedSourcePaths: [this.options.documentPath] }),
+        preservedSourcePaths: [
+          ...(this.options.documentPath === undefined ? [] : [this.options.documentPath]),
+          ...(this.options.preservedDormantOverlaySourcePaths ?? []),
+        ],
         resolver: this.options.implicitPackageGlobalResolver,
         sourcePath,
         sourceText,
@@ -261,6 +263,22 @@ export class PreviewSourceTransformer {
               sourcePath,
               sourceText,
             ),
+            typeDemand?.inferImportedHelperParameterPropertyFallback.bind(
+              typeDemand,
+              sourcePath,
+              sourceText,
+            ),
+          ),
+        );
+      }
+      if (
+        this.options.instrumentRuntimeHookFallbacks === true &&
+        sourceText.includes('createPortal')
+      ) {
+        replacements.push(
+          ...createPreviewReactDomPortalContainerReplacements(
+            analysis.getSourceFile(),
+            sourceText,
           ),
         );
       }

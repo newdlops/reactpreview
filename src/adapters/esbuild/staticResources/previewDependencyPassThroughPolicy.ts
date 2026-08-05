@@ -14,6 +14,8 @@ export interface PreviewDependencyPassThroughOptions {
   readonly documentPath?: string;
   /** Whether selected-corridor compilation may bypass preview-insensitive dependencies. */
   readonly selectiveDependencyPassThrough?: boolean;
+  /** Whether reached JSX must expose conditional branches and deferred UI controls. */
+  readonly instrumentRenderConditions?: boolean;
   /** Whether reached source may depend on Next.js compatibility replacements. */
   readonly projectUsesNextRuntime?: boolean;
 }
@@ -34,6 +36,16 @@ export function canPassThroughPreviewDependency(
   if (
     options.documentPath !== undefined &&
     path.normalize(sourcePath) === path.normalize(options.documentPath)
+  ) {
+    return false;
+  }
+  // Page Inspector searches through authored JSX branches and deferred controls in dependencies,
+  // not only in the selected editor file. Passing a JSX-bearing module straight to esbuild would
+  // leave those branches invisible to the runtime search and can make a reachable nested target
+  // look permanently unrendered.
+  if (
+    options.instrumentRenderConditions === true &&
+    (/[.]jsx?$/iu.test(sourcePath) || /[.]tsx$/iu.test(sourcePath))
   ) {
     return false;
   }

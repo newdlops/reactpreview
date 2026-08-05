@@ -27,18 +27,22 @@ import { inferPreviewRuntimeHookGuardPassFallback } from './previewRuntimeHookGu
 import {
   readPreviewRuntimeHookAliasUsagePaths,
   type ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  type ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
   type PreviewRuntimeHookAliasUsagePath as PreviewRuntimeHookUsagePath,
 } from './previewRuntimeHookAliasUsage';
 import {
   type PreviewRuntimeHookLocalTypeFallback,
   readPreviewRuntimeHookChildPropUsages,
+  readPreviewRuntimeHookDirectChildPropUsages,
   type PreviewRuntimeHookChildPropDemandCatalog,
 } from './previewRuntimeHookChildPropDemand';
 import { applyPreviewRuntimeHookArrayLengthConstraints } from './previewRuntimeHookArrayLengthConstraints';
 import type { PreviewRuntimeHookArrayLengthConstraintMetadata } from './previewRuntimeHookArrayLengthConstraints';
 import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDestructuring';
+import { inferPreviewRuntimeHookDynamicElementFallback } from './previewRuntimeHookDynamicElementDemand';
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
 import { readPreviewRuntimeHookIdentityAliasCollectionUsages } from './previewRuntimeHookIdentityAliases';
+import { inferPreviewRuntimeHookJsxComponentFallback } from './previewRuntimeHookJsxComponent';
 import { inferPreviewRuntimeLocalHelperArrayItemFallback } from './previewRuntimeHookLocalHelperItem';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import {
@@ -95,6 +99,11 @@ const importedHelperItemFallbackBySourceFile = new WeakMap<
   ts.SourceFile,
   ResolvePreviewRuntimeHookImportedHelperItemFallback
 >();
+/** Imported helper object-property contracts available only during the current transformation. */
+const importedHelperPropertyFallbackBySourceFile = new WeakMap<
+  ts.SourceFile,
+  ResolvePreviewRuntimeHookImportedHelperPropertyFallback
+>();
 /** Import or local-declaration evidence for one callable custom hook binding. */
 interface PreviewRuntimeHookBinding {
   /** Authored hook name shown in Inspector diagnostics. */
@@ -124,6 +133,8 @@ interface PreviewRuntimeHookFallback extends PreviewRuntimeHookArrayLengthConstr
   readonly passive?: boolean;
   /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
   readonly preserveNullish?: boolean;
+  /** Relative scalar paths whose compiler-proven value is required to pass an early render guard. */
+  readonly renderGuardPaths?: readonly string[];
   /** Property paths whose absence would stop rendering at this exact hook edge. */
   readonly requiredPaths?: readonly string[];
 }
@@ -137,6 +148,8 @@ interface PreviewRuntimeHookValueFallback {
   readonly failurePaths?: readonly string[];
   /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
   readonly preserveNullish?: boolean;
+  /** Relative scalar paths whose compiler-proven value is required to pass an early render guard. */
+  readonly renderGuardPaths?: readonly string[];
   /** Paths relative to this value that local syntax proves are required. */
   readonly requiredPaths?: readonly string[];
 }
@@ -181,6 +194,7 @@ export function createPreviewRuntimeHookReplacements(
   childPropDemands?: PreviewRuntimeHookChildPropDemandCatalog,
   localTypeFallback?: (typeNode: ts.TypeNode) => PreviewRuntimeHookLocalTypeFallback | undefined,
   importedHelperItemFallback?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  importedHelperPropertyFallback?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
 ): readonly PreviewSourceReplacement[] {
   if (!isJavaScriptLikeSource(sourcePath) || !sourceText.includes('use')) {
     return [];
@@ -203,6 +217,9 @@ export function createPreviewRuntimeHookReplacements(
   }
   if (importedHelperItemFallback !== undefined) {
     importedHelperItemFallbackBySourceFile.set(sourceFile, importedHelperItemFallback);
+  }
+  if (importedHelperPropertyFallback !== undefined) {
+    importedHelperPropertyFallbackBySourceFile.set(sourceFile, importedHelperPropertyFallback);
   }
   const inventory = collectRuntimeHookInventory(sourceFile);
   if (inventory.direct.size === 0 && inventory.namespaces.size === 0) {
@@ -409,6 +426,13 @@ function inferRuntimeHookFallback(
       requiredPaths: ['0', '1()'],
     };
   }
+  const callbackIdentity = createPreviewRuntimeHookCallbackIdentityFallback(
+    call,
+    hook,
+    sourceFile,
+    sourceText,
+  );
+  if (callbackIdentity !== undefined) return callbackIdentity;
   const expression = unwrapParentExpression(call);
   const parent = expression.parent;
   if (ts.isExpressionStatement(parent)) {
@@ -424,6 +448,21 @@ function inferRuntimeHookFallback(
     (ts.isJsxExpression(parent) && parent.expression === expression) ||
     (ts.isReturnStatement(parent) && parent.expression === expression)
   ) {
+    if (ts.isJsxExpression(parent)) {
+      const childUsages = readPreviewRuntimeHookDirectChildPropUsages(
+        expression,
+        childPropDemandsBySourceFile.get(sourceFile),
+      );
+      if (childUsages.length > 0) {
+        const childFallback = createPreviewRuntimeHookUsageTreeFallback(childUsages);
+        return {
+          evidence: 'direct child prop and reached component contract',
+          expression: childFallback.expression,
+          label: 'generated direct child prop shape',
+          requiredPaths: childFallback.requiredPaths,
+        };
+      }
+    }
     return {
       evidence: 'hook result is rendered directly',
       expression: 'null',
@@ -441,6 +480,9 @@ function inferRuntimeHookFallback(
           ? {}
           : { failurePaths: bindingFallback.failurePaths }),
         ...(bindingFallback.preserveNullish === true ? { preserveNullish: true } : {}),
+        ...(bindingFallback.renderGuardPaths === undefined
+          ? {}
+          : { renderGuardPaths: bindingFallback.renderGuardPaths }),
         ...(bindingFallback.requiredPaths === undefined
           ? {}
           : { requiredPaths: bindingFallback.requiredPaths }),
@@ -462,6 +504,34 @@ function inferRuntimeHookFallback(
       };
 }
 
+/**
+ * Preserves an authored callback when a callback-wrapper hook is unavailable in a projected module.
+ *
+ * Hooks such as `useEventCallback(() => ++key.current)` return a stable callable rather than a
+ * no-op. Losing its return value can corrupt registration identities before any UI mounts. Returning
+ * the callback itself retains the exact closure and defers execution to the same consumer call site;
+ * no project code is invoked while the fallback is created.
+ */
+function createPreviewRuntimeHookCallbackIdentityFallback(
+  call: ts.CallExpression,
+  hook: PreviewRuntimeHookBinding,
+  sourceFile: ts.SourceFile,
+  sourceText: string,
+): PreviewRuntimeHookFallback | undefined {
+  if (!/(?:Callback|EventHandler)$/u.test(hook.hookName)) return undefined;
+  const argument = call.arguments[0];
+  if (argument === undefined || ts.isSpreadElement(argument)) return undefined;
+  const callback = unwrapExpression(argument);
+  if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) return undefined;
+  const originalCallback = sourceText.slice(argument.getStart(sourceFile), argument.end);
+  return {
+    evidence: 'authored callback passed to a callback-preserving hook',
+    expression: `Object.freeze(${originalCallback})`,
+    label: 'authored callback identity',
+    requiredPaths: ['<root>()'],
+  };
+}
+
 /** Creates a binding fallback while leaving defaulted fields absent for authored JS initializers. */
 function createBindingFallback(
   binding: ts.BindingName,
@@ -469,6 +539,13 @@ function createBindingFallback(
   callResultDepth = 0,
 ): PreviewRuntimeHookValueFallback | undefined {
   if (ts.isIdentifier(binding)) {
+    const jsxComponent = inferPreviewRuntimeHookJsxComponentFallback(
+      binding,
+      sourceFile,
+      callResultDepth,
+      createBindingFallback,
+    );
+    if (jsxComponent !== undefined) return jsxComponent;
     const usageShape = createIdentifierUsageFallback(binding, sourceFile, callResultDepth);
     if (usageShape !== undefined) return usageShape;
     const semantic = inferPreviewRuntimeSemanticFallback(binding.text);
@@ -476,7 +553,9 @@ function createBindingFallback(
       semantic?.label === 'generated boolean false'
         ? inferPreviewRuntimeHookGuardPassFallback(binding)
         : undefined;
-    if (guardPass !== undefined) return { ...guardPass, requiredPaths: ['<root>'] };
+    if (guardPass !== undefined) {
+      return { ...guardPass, renderGuardPaths: ['<root>'], requiredPaths: ['<root>'] };
+    }
     const compared = inferPreviewRuntimeHookLocalScalarFallback(binding, sourceFile);
     if (compared !== undefined) return { ...compared, requiredPaths: ['<root>'] };
     const directUsage = createPreviewRuntimeHookDirectUsageFallback(binding);
@@ -490,6 +569,13 @@ function createBindingFallback(
     }
     if (semantic !== undefined) return { ...semantic, requiredPaths: ['<root>'] };
     if (directUsage !== undefined) {
+      const guardPass =
+        directUsage.label === 'generated boolean from local condition'
+          ? inferPreviewRuntimeHookGuardPassFallback(binding)
+          : undefined;
+      if (guardPass !== undefined) {
+        return { ...guardPass, renderGuardPaths: ['<root>'], requiredPaths: ['<root>'] };
+      }
       return {
         ...directUsage,
         requiredPaths: ['<root>'],
@@ -500,6 +586,7 @@ function createBindingFallback(
   if (ts.isArrayBindingPattern(binding)) {
     const values: string[] = [];
     const failurePaths: string[] = [];
+    const renderGuardPaths: string[] = [];
     const requiredPaths: string[] = [];
     for (const [index, element] of binding.elements.entries()) {
       if (ts.isOmittedExpression(element)) {
@@ -520,17 +607,22 @@ function createBindingFallback(
       ) {
         failurePaths.push(...prefixPreviewRuntimeHookPaths(child.failurePaths, String(index)));
       }
+      renderGuardPaths.push(
+        ...prefixPreviewRuntimeHookPaths(child?.renderGuardPaths ?? [], String(index)),
+      );
       requiredPaths.push(...prefixPreviewRuntimeHookPaths(child?.requiredPaths, String(index)));
     }
     return {
       expression: `Object.freeze([${values.join(', ')}])`,
       ...(failurePaths.length === 0 ? {} : { failurePaths }),
       label: 'generated tuple',
+      ...(renderGuardPaths.length === 0 ? {} : { renderGuardPaths }),
       requiredPaths,
     };
   }
   const properties: string[] = [];
   const failurePaths: string[] = [];
+  const renderGuardPaths: string[] = [];
   const requiredPaths: string[] = [];
   for (const element of binding.elements) {
     if (element.dotDotDotToken !== undefined) {
@@ -557,12 +649,16 @@ function createBindingFallback(
     ) {
       failurePaths.push(...prefixPreviewRuntimeHookPaths(child.failurePaths, propertyName));
     }
+    renderGuardPaths.push(
+      ...prefixPreviewRuntimeHookPaths(child.renderGuardPaths ?? [], propertyName),
+    );
     requiredPaths.push(...prefixPreviewRuntimeHookPaths(child.requiredPaths, propertyName));
   }
   return {
     expression: `Object.freeze({${properties.length === 0 ? '' : ` ${properties.join(', ')} `}})`,
     ...(failurePaths.length === 0 ? {} : { failurePaths }),
     label: 'generated object fields',
+    ...(renderGuardPaths.length === 0 ? {} : { renderGuardPaths }),
     requiredPaths,
   };
 }
@@ -610,6 +706,10 @@ function createIdentifierUsageFallback(
 ): PreviewRuntimeHookValueFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  const dynamicElementFallback = inferPreviewRuntimeHookDynamicElementFallback(
+    identifier,
+    sourceFile,
+  );
   const paths: PreviewRuntimeHookUsagePath[] = [];
   const optionalPaths: PreviewRuntimeHookUsagePath[] = [];
   const arrayRootEvidence: string[] = [];
@@ -732,6 +832,7 @@ function createIdentifierUsageFallback(
       identifier,
       owner,
       importedHelperItemFallbackBySourceFile.get(identifier.getSourceFile()),
+      importedHelperPropertyFallbackBySourceFile.get(identifier.getSourceFile()),
     ),
   );
   /*
@@ -770,6 +871,9 @@ function createIdentifierUsageFallback(
       requiredPaths: prefixPreviewRuntimeHookPaths(item.requiredPaths, '[]'),
     };
   }
+  if (paths.length === 0 && dynamicElementFallback !== undefined) {
+    return dynamicElementFallback;
+  }
   if (paths.length === 0 && unsafeReferences === 0) {
     if (optionalReferences === 0) return undefined;
     const optionalFallback = createPreviewRuntimeHookUsageTreeFallback(optionalPaths);
@@ -783,9 +887,24 @@ function createIdentifierUsageFallback(
   }
   if (paths.length === 0 && optionalPaths.length === 0) return undefined;
   const fallback = createPreviewRuntimeHookUsageTreeFallback([...paths, ...optionalPaths]);
+  if (dynamicElementFallback !== undefined) {
+    return {
+      expression: `Object.freeze(Object.assign({}, ${fallback.expression}, ${dynamicElementFallback.expression}))`,
+      label: 'generated required and computed property shape',
+      ...(fallback.renderGuardPaths.length === 0
+        ? {}
+        : { renderGuardPaths: fallback.renderGuardPaths }),
+      requiredPaths: Object.freeze([
+        ...new Set([...fallback.requiredPaths, ...dynamicElementFallback.requiredPaths]),
+      ]),
+    };
+  }
   return {
     expression: fallback.expression,
     label: 'generated required property shape',
+    ...(fallback.renderGuardPaths.length === 0
+      ? {}
+      : { renderGuardPaths: fallback.renderGuardPaths }),
     requiredPaths: fallback.requiredPaths,
   };
 }
@@ -872,6 +991,9 @@ function createRuntimeHookReplacement(
       : { failurePaths: candidate.fallback.failurePaths }),
     ...(candidate.fallback.passive === true ? { passive: true } : {}),
     ...(candidate.fallback.preserveNullish === true ? { preserveNullish: true } : {}),
+    ...(candidate.fallback.renderGuardPaths === undefined
+      ? {}
+      : { renderGuardPaths: candidate.fallback.renderGuardPaths }),
     ...(candidate.fallback.nonNegativeNumberPaths === undefined
       ? {}
       : { nonNegativeNumberPaths: candidate.fallback.nonNegativeNumberPaths }),

@@ -13,6 +13,8 @@ export interface PreviewSourceTransformerOptions {
   readonly selectiveDependencyPassThrough?: boolean;
   /** Active editor target whose direct component exports may receive bounded prop defaults. */
   readonly documentPath?: string;
+  /** Exact target-path support modules that fast overlay deferral must keep executable. */
+  readonly preservedDormantOverlaySourcePaths?: readonly string[];
   /** Exact dependency/global names worth checking in modules esbuild actually reaches. */
   readonly implicitPackageGlobalCandidateNames?: readonly string[];
   /** Project-aware resolver proving a free name maps to its exact installed package. */

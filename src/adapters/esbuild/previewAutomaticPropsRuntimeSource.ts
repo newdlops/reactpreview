@@ -77,6 +77,7 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
       return Object.freeze(component);
     }
     case 'function': return function previewAutomaticNoop() { return undefined; };
+    case 'graphql-document': return createPreviewAutomaticGraphqlDocument(node, budget, depth + 1);
     case 'null': return null;
     case 'number': return typeof node.value === 'number' && Number.isFinite(node.value) ? node.value : 0;
     case 'string': return typeof node.value === 'string' ? node.value : '';
@@ -92,6 +93,47 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
     }
     default: return undefined;
   }
+}
+
+/** Builds an inert DocumentNode AST from compiler-owned selection evidence without parsing source. */
+function createPreviewAutomaticGraphqlDocument(node, budget, depth) {
+  const operation = node.value === 'mutation' ? 'mutation' : node.value === 'query' ? 'query' : undefined;
+  if (operation === undefined) return undefined;
+  const properties = isPreviewAutomaticPropRecord(node.properties) ? node.properties : {};
+  const selectionSet = createPreviewAutomaticGraphqlSelectionSet(properties, budget, depth);
+  if (selectionSet === undefined) return undefined;
+  return Object.freeze({
+    definitions: Object.freeze([Object.freeze({
+      directives: Object.freeze([]),
+      kind: 'OperationDefinition',
+      operation,
+      selectionSet,
+      variableDefinitions: Object.freeze([]),
+    })]),
+    kind: 'Document',
+  });
+}
+
+/** Serializes bounded inferred object/array paths into valid field selections with __typename leaves. */
+function createPreviewAutomaticGraphqlSelectionSet(properties, budget, depth) {
+  if (depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH || budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES) return undefined;
+  const selections = [];
+  for (const [name, child] of readPreviewAutomaticPropEntries(properties)) {
+    if (blockedPreviewAutomaticPropNames.has(name) || typeof name !== 'string') continue;
+    const childProperties = child?.kind === 'array' ? child.items?.properties : child?.properties;
+    const nested = isPreviewAutomaticPropRecord(childProperties)
+      ? createPreviewAutomaticGraphqlSelectionSet(childProperties, budget, depth + 1)
+      : undefined;
+    selections.push(Object.freeze({
+      ...(nested === undefined ? {} : { selectionSet: nested }),
+      kind: 'Field',
+      name: Object.freeze({ kind: 'Name', value: name }),
+    }));
+  }
+  if (!selections.some((selection) => selection.name?.value === '__typename')) {
+    selections.push(Object.freeze({ kind: 'Field', name: Object.freeze({ kind: 'Name', value: '__typename' }) }));
+  }
+  return Object.freeze({ kind: 'SelectionSet', selections: Object.freeze(selections) });
 }
 
 /** Returns a plain root prop record or an empty record for absent/invalid generated evidence. */

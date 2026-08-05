@@ -25,7 +25,15 @@ const STRING_METHOD_NAMES = new Set<string>(PREVIEW_STRING_ONLY_METHOD_NAMES);
 
 /** Neutral value categories understood by the generated browser materializer. */
 export type PreviewInferredPropKind =
-  'array' | 'boolean' | 'component' | 'function' | 'null' | 'number' | 'object' | 'string';
+  | 'array'
+  | 'boolean'
+  | 'component'
+  | 'function'
+  | 'graphql-document'
+  | 'null'
+  | 'number'
+  | 'object'
+  | 'string';
 
 /** JSON-safe recursive shape emitted into target and Inspector bridge descriptors. */
 export interface PreviewInferredPropShape {
@@ -67,6 +75,12 @@ interface ResolvableObjectTypeImport {
 interface ResolvedObjectTypeModule {
   readonly sourceFile: ts.SourceFile;
   readonly sourcePath: string;
+}
+
+/** One exported object declaration paired with the parsed module that owns its dependencies. */
+interface ResolvedImportedObjectType {
+  readonly declaration: LocalObjectType;
+  readonly module: ResolvedObjectTypeModule;
 }
 
 /** Bounded parse-only import reader shared by compiler and child-demand callers. */
@@ -117,6 +131,7 @@ interface LocalComponentDeclaration {
 interface InferenceState {
   readonly aliases: Map<string, PropPathBinding>;
   readonly functionLike: ExportedFunctionLike;
+  readonly graphqlDocumentTypeNames: ReadonlySet<string>;
   nodeCount: number;
   root: MutableShapeNode;
 }
@@ -203,7 +218,7 @@ function collectResolvableObjectTypes(
     const module = modules.get(imported.moduleSpecifier);
     if (module === undefined) continue;
     const importedName = (imported.binding.propertyName ?? imported.binding.name).text;
-    const declaration = resolveExportedObjectType(
+    const resolved = resolveExportedObjectType(
       importedName,
       module.sourceFile,
       module.sourcePath,
@@ -211,8 +226,17 @@ function collectResolvableObjectTypes(
       new Set([sourcePath]),
       budget,
     );
-    if (declaration !== undefined && !localTypes.has(imported.binding.name.text)) {
-      localTypes.set(imported.binding.name.text, declaration);
+    if (resolved === undefined) continue;
+    const closure = collectImportedObjectTypeClosure(resolved);
+    if (closure === undefined) continue;
+    closure.set(imported.binding.name.text, resolved.declaration);
+    if (
+      [...closure].every(([name, declaration]) => {
+        const existing = localTypes.get(name);
+        return existing === undefined || isSameObjectTypeDeclaration(existing, declaration);
+      })
+    ) {
+      for (const [name, declaration] of closure) localTypes.set(name, declaration);
     }
   }
   return localTypes;
@@ -254,11 +278,13 @@ function resolveExportedObjectType(
   activePaths: Set<string>,
   budget: { bytes: number; modules: number },
   depth = 0,
-): LocalObjectType | undefined {
+): ResolvedImportedObjectType | undefined {
   if (depth > 8 || activePaths.has(sourcePath)) return undefined;
   activePaths.add(sourcePath);
   const local = collectLocalObjectTypes(sourceFile).get(name);
-  if (local !== undefined && hasExportModifier(local)) return local;
+  if (local !== undefined && hasExportModifier(local)) {
+    return { declaration: local, module: { sourceFile, sourcePath } };
+  }
   for (const statement of sourceFile.statements) {
     if (!ts.isExportDeclaration(statement)) continue;
     const moduleSpecifier = statement.moduleSpecifier;
@@ -299,6 +325,56 @@ function resolveExportedObjectType(
   return undefined;
 }
 
+/**
+ * Collects only object declarations reachable from one already-authorized import in its owner.
+ * The walk never resolves another module and fails closed when its existing inference bounds apply.
+ */
+function collectImportedObjectTypeClosure(
+  root: ResolvedImportedObjectType,
+): Map<string, LocalObjectType> | undefined {
+  const available = collectLocalObjectTypes(root.module.sourceFile);
+  const closure = new Map<string, LocalObjectType>();
+  const visiting = new Set<string>();
+  const visit = (name: string, depth: number): boolean => {
+    if (depth > MAX_INFERRED_DEPTH || closure.size >= MAX_INFERRED_NODES) return false;
+    const declaration = available.get(name);
+    if (declaration === undefined || closure.has(name)) return true;
+    if (visiting.has(name)) return true;
+    visiting.add(name);
+    closure.set(name, declaration);
+    let valid = true;
+    const inspect = (node: ts.Node): void => {
+      if (!valid) return;
+      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+        valid = visit(node.typeName.text, depth + 1);
+        if (!valid) return;
+      }
+      ts.forEachChild(node, inspect);
+    };
+    if (ts.isInterfaceDeclaration(declaration)) {
+      for (const heritage of declaration.heritageClauses ?? []) inspect(heritage);
+      for (const member of declaration.members) inspect(member);
+    } else {
+      inspect(declaration.type);
+    }
+    visiting.delete(name);
+    return valid;
+  };
+  if (!visit(root.declaration.name.text, 0)) return undefined;
+  return closure;
+}
+
+/** Treats separately parsed declarations as equal only when their source identity is identical. */
+function isSameObjectTypeDeclaration(left: LocalObjectType, right: LocalObjectType): boolean {
+  return (
+    left === right ||
+    (left.kind === right.kind &&
+      left.pos === right.pos &&
+      left.end === right.end &&
+      left.getSourceFile().fileName === right.getSourceFile().fileName)
+  );
+}
+
 /** Infers local type and direct-use requirements for one component function. */
 function inferComponentProps(
   component: ExportedComponentFunction,
@@ -314,6 +390,7 @@ function inferComponentProps(
   const state: InferenceState = {
     aliases: new Map(),
     functionLike,
+    graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(sourceFile),
     nodeCount: 1,
     root,
   };
@@ -327,6 +404,7 @@ function inferComponentProps(
   );
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  collectSwitchDiscriminantRequirements(functionLike, state);
   addOverlayVisibilityRequirement(component, localTypes, state, sourceFile);
   if (state.root.children.size === 0) {
     return undefined;
@@ -422,38 +500,57 @@ function readObjectTypeMembers(
   typeNode: ts.TypeNode,
   localTypes: ReadonlyMap<string, LocalObjectType>,
   resolutionStack: Set<string>,
+  substitutions: ReadonlyMap<string, ts.TypeNode> = new Map(),
 ): readonly ts.TypeElement[] | undefined {
   const unwrapped = ts.isParenthesizedTypeNode(typeNode) ? typeNode.type : typeNode;
   if (ts.isTypeLiteralNode(unwrapped)) return unwrapped.members;
   if (ts.isIntersectionTypeNode(unwrapped)) {
     const members = unwrapped.types.flatMap(
-      (member) => readObjectTypeMembers(member, localTypes, resolutionStack) ?? [],
+      (member) => readObjectTypeMembers(member, localTypes, resolutionStack, substitutions) ?? [],
     );
     return members.length > 0 ? members : undefined;
   }
   if (!ts.isTypeReferenceNode(unwrapped) || !ts.isIdentifier(unwrapped.typeName)) return undefined;
   const name = unwrapped.typeName.text;
+  const substituted = substitutions.get(name);
+  if (substituted !== undefined) {
+    return readObjectTypeMembers(substituted, localTypes, resolutionStack, substitutions);
+  }
   if (
     (name === 'PropsWithChildren' || name === 'Readonly' || name === 'Required') &&
     unwrapped.typeArguments?.[0] !== undefined
   ) {
-    return readObjectTypeMembers(unwrapped.typeArguments[0], localTypes, resolutionStack);
+    return readObjectTypeMembers(unwrapped.typeArguments[0], localTypes, resolutionStack, substitutions);
   }
   const declaration = localTypes.get(name);
   if (declaration === undefined || resolutionStack.has(name)) return undefined;
   resolutionStack.add(name);
   try {
+    const typeParameters = declaration.typeParameters;
+    const typeArguments = unwrapped.typeArguments;
+    if (
+      typeParameters !== undefined &&
+      (typeArguments === undefined || typeParameters.length !== typeArguments.length)
+    ) {
+      return undefined;
+    }
+    const nestedSubstitutions = new Map(substitutions);
+    for (const [index, parameter] of (typeParameters ?? []).entries()) {
+      const argument = typeArguments?.[index];
+      if (argument === undefined) return undefined;
+      nestedSubstitutions.set(parameter.name.text, argument);
+    }
     const members = ts.isInterfaceDeclaration(declaration)
       ? [
           ...declaration.members,
           ...(declaration.heritageClauses ?? []).flatMap((clause) =>
             clause.types.flatMap(
               (heritageType) =>
-                readObjectTypeMembers(heritageType, localTypes, resolutionStack) ?? [],
+                readObjectTypeMembers(heritageType, localTypes, resolutionStack, nestedSubstitutions) ?? [],
             ),
           ),
         ]
-      : readObjectTypeMembers(declaration.type, localTypes, resolutionStack);
+      : readObjectTypeMembers(declaration.type, localTypes, resolutionStack, nestedSubstitutions);
     return members;
   } finally {
     resolutionStack.delete(name);
@@ -472,6 +569,14 @@ function addTypeRequirement(
 ): void {
   if (depthOffset + path_.length > MAX_INFERRED_DEPTH) return;
   const unwrapped = ts.isParenthesizedTypeNode(typeNode) ? typeNode.type : typeNode;
+  if (
+    ts.isTypeReferenceNode(unwrapped) &&
+    ts.isIdentifier(unwrapped.typeName) &&
+    state.graphqlDocumentTypeNames.has(unwrapped.typeName.text)
+  ) {
+    addGraphqlDocumentRequirement(path_, unwrapped, localTypes, state, sourceFile, depthOffset);
+    return;
+  }
   if (unwrapped.kind === ts.SyntaxKind.StringKeyword) {
     requirePath(state, path_, 'string', 'type');
     return;
@@ -484,7 +589,17 @@ function addTypeRequirement(
     return;
   }
   if (unwrapped.kind === ts.SyntaxKind.BooleanKeyword) {
-    requirePath(state, path_, 'boolean', 'type');
+    /* A required-state flag on a generated row describes which valid UI variant to show, not an
+     * action to perform. Prefer the affirmative representative so required markers/fields are not
+     * permanently hidden behind the otherwise neutral false value. */
+    const propertyName = path_.at(-1)?.toLowerCase();
+    requirePath(
+      state,
+      path_,
+      'boolean',
+      'type',
+      propertyName === 'isrequired' || propertyName === 'required' ? true : undefined,
+    );
     return;
   }
   if (ts.isArrayTypeNode(unwrapped) || ts.isTupleTypeNode(unwrapped)) {
@@ -525,10 +640,42 @@ function addTypeRequirement(
   }
   if (ts.isUnionTypeNode(unwrapped)) {
     const members = unwrapped.types.filter((candidate) => !isNullishTypeNode(candidate));
+    if (members.length > 0 && members.every(isPreviewCollectionTypeNode)) {
+      requirePath(state, path_, 'array', 'type');
+      const itemShapes = members
+        .map((member) => readPreviewCollectionElementType(member))
+        .filter((member): member is ts.TypeNode => member !== undefined)
+        .map((member) =>
+          createTypeShape(
+            member,
+            localTypes,
+            state,
+            sourceFile,
+            activeNames,
+            depthOffset + path_.length,
+          ),
+        )
+        .filter((shape): shape is MutableShapeNode => shape?.kind === 'object');
+      if (itemShapes.length === 1) setArrayItemRequirement(state, path_, itemShapes[0]);
+      return;
+    }
     if (members.length === 1) {
       const member = members[0];
       if (member === undefined) return;
       addTypeRequirement(path_, member, localTypes, state, sourceFile, activeNames, depthOffset);
+      return;
+    }
+    const representative = selectDiscriminatedObjectUnionMember(members, localTypes);
+    if (representative !== undefined) {
+      addTypeRequirement(
+        path_,
+        representative,
+        localTypes,
+        state,
+        sourceFile,
+        activeNames,
+        depthOffset,
+      );
     }
     return;
   }
@@ -554,6 +701,39 @@ function addTypeRequirement(
       );
     }
     return;
+  }
+  if (
+    ts.isTypeReferenceNode(unwrapped) &&
+    ts.isIdentifier(unwrapped.typeName) &&
+    unwrapped.typeName.text === 'Record'
+  ) {
+    /* Record keys may be an unbounded string domain, so invent no entries. The empty plain object
+     * still satisfies Object.keys/values/entries and dynamic lookup contracts without guessing
+     * application data. */
+    requirePath(state, path_, 'object', 'type');
+    return;
+  }
+  if (ts.isTypeReferenceNode(unwrapped) && ts.isIdentifier(unwrapped.typeName)) {
+    const aliasName = unwrapped.typeName.text;
+    const alias = localTypes.get(aliasName);
+    if (alias !== undefined && ts.isTypeAliasDeclaration(alias)) {
+      if (activeNames.has(aliasName)) return;
+      activeNames.add(aliasName);
+      try {
+        addTypeRequirement(
+          path_,
+          alias.type,
+          localTypes,
+          state,
+          sourceFile,
+          activeNames,
+          depthOffset,
+        );
+      } finally {
+        activeNames.delete(aliasName);
+      }
+      return;
+    }
   }
   const activeName =
     ts.isTypeReferenceNode(unwrapped) && ts.isIdentifier(unwrapped.typeName)
@@ -589,6 +769,132 @@ function addTypeRequirement(
   }
 }
 
+/** Admits only canonical GraphQL document imports, including a directly named local alias. */
+function collectGraphqlDocumentTypeNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    if (!/^@apollo\/client(?:\/|$)/u.test(statement.moduleSpecifier.text)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      const importedName = (binding.propertyName ?? binding.name).text;
+      if (importedName === 'DocumentNode' || importedName === 'TypedDocumentNode') {
+        names.add(binding.name.text);
+      }
+    }
+  }
+  return names;
+}
+
+/** Creates a minimum executable GraphQL document from canonical type evidence and response shape. */
+function addGraphqlDocumentRequirement(
+  path_: readonly string[],
+  typeReference: ts.TypeReferenceNode,
+  localTypes: ReadonlyMap<string, LocalObjectType>,
+  state: InferenceState,
+  sourceFile: ts.SourceFile,
+  depthOffset: number,
+): void {
+  const operation = readGraphqlOperation(path_);
+  if (operation === undefined || typeReference.typeArguments?.[0] === undefined) return;
+  requirePath(state, path_, 'graphql-document', 'type');
+  const document = readMutablePathNode(state, path_);
+  if (document === undefined || document.kind !== 'graphql-document') return;
+  const response = createTypeShape(
+    typeReference.typeArguments[0],
+    localTypes,
+    state,
+    sourceFile,
+    new Set(),
+    depthOffset + path_.length,
+  );
+  if (response?.kind === 'object') {
+    for (const [name, child] of response.children) document.children.set(name, child);
+  }
+  // Keep a neutral valid leaf even when the response type cannot be resolved.
+  if (!document.children.has('__typename')) {
+    document.children.set('__typename', createMutableNode('string', 'type'));
+  }
+  document.value = operation;
+}
+
+/** Requires a non-conflicting authored query/mutation marker in addition to canonical type evidence. */
+function readGraphqlOperation(path_: readonly string[]): 'mutation' | 'query' | undefined {
+  const name = path_.at(-1) ?? '';
+  const query = /query/iu.test(name);
+  const mutation = /mutation/iu.test(name);
+  return query === mutation ? undefined : query ? 'query' : 'mutation';
+}
+
+/** Reads one previously materialized node without widening paths or bypassing safe-name checks. */
+function readMutablePathNode(
+  state: InferenceState,
+  path_: readonly string[],
+): MutableShapeNode | undefined {
+  let node = state.root;
+  for (const name of path_) {
+    const child = node.children.get(name);
+    if (child === undefined) return undefined;
+    node = child;
+  }
+  return node;
+}
+
+/**
+ * Selects the first authored branch only when every object branch proves a shared literal tag.
+ *
+ * A discriminated union has multiple valid runtime representatives but omitting the whole prop is
+ * never one of them. Requiring a common literal field keeps this choice bounded and avoids
+ * guessing through ordinary unions whose branches carry unrelated application semantics.
+ */
+function selectDiscriminatedObjectUnionMember(
+  members: readonly ts.TypeNode[],
+  localTypes: ReadonlyMap<string, LocalObjectType>,
+): ts.TypeNode | undefined {
+  if (members.length < 2) return undefined;
+  const objectMembers = members.map((member) =>
+    readObjectTypeMembers(member, localTypes, new Set()),
+  );
+  if (objectMembers.some((member) => member === undefined)) return undefined;
+  const first = objectMembers[0];
+  if (first === undefined) return undefined;
+  for (const candidate of first) {
+    if (
+      !ts.isPropertySignature(candidate) ||
+      candidate.questionToken !== undefined ||
+      candidate.type === undefined ||
+      !ts.isLiteralTypeNode(candidate.type)
+    ) {
+      continue;
+    }
+    const propertyName = readPropertyName(candidate.name);
+    const firstLiteral = readLiteralValue(candidate.type.literal);
+    if (propertyName === undefined || firstLiteral === undefined) continue;
+    const literals = objectMembers.map((member) => {
+      const property = member?.find(
+        (entry) =>
+          ts.isPropertySignature(entry) &&
+          entry.questionToken === undefined &&
+          readPropertyName(entry.name) === propertyName,
+      );
+      return property !== undefined &&
+        ts.isPropertySignature(property) &&
+        property.type !== undefined &&
+        ts.isLiteralTypeNode(property.type)
+        ? readLiteralValue(property.type.literal)
+        : undefined;
+    });
+    if (
+      literals.every((literal) => literal !== undefined) &&
+      new Set(literals.map((literal) => `${typeof literal}:${String(literal)}`)).size > 1
+    ) {
+      return members[0];
+    }
+  }
+  return undefined;
+}
+
 /** Removes only nullish union branches; other alternatives remain ambiguous and fail closed. */
 function isNullishTypeNode(node: ts.TypeNode): boolean {
   if (
@@ -604,6 +910,56 @@ function isNullishTypeNode(node: ts.TypeNode): boolean {
   );
 }
 
+/** Reports an array-like type branch without resolving or executing imported declarations. */
+function isPreviewCollectionTypeNode(node: ts.TypeNode): boolean {
+  const unwrapped = ts.isParenthesizedTypeNode(node) ? node.type : node;
+  return (
+    ts.isArrayTypeNode(unwrapped) ||
+    ts.isTupleTypeNode(unwrapped) ||
+    (ts.isTypeReferenceNode(unwrapped) &&
+      ts.isIdentifier(unwrapped.typeName) &&
+      (unwrapped.typeName.text === 'Array' || unwrapped.typeName.text === 'ReadonlyArray'))
+  );
+}
+
+/** Reads the one direct item annotation of a safe array branch without evaluating generic values. */
+function readPreviewCollectionElementType(node: ts.TypeNode): ts.TypeNode | undefined {
+  const unwrapped = ts.isParenthesizedTypeNode(node) ? node.type : node;
+  if (ts.isArrayTypeNode(unwrapped)) return unwrapped.elementType;
+  if (ts.isTupleTypeNode(unwrapped)) return unwrapped.elements[0];
+  return ts.isTypeReferenceNode(unwrapped) &&
+    ts.isIdentifier(unwrapped.typeName) &&
+    (unwrapped.typeName.text === 'Array' || unwrapped.typeName.text === 'ReadonlyArray')
+    ? unwrapped.typeArguments?.[0]
+    : undefined;
+}
+
+/**
+ * Selects the direct object branch of a grouped collection item such as `(Row | Row[])[]`.
+ *
+ * Both branches are valid authored values, but materializing the nested-array branch would require
+ * recursively inventing grouping semantics. A unique resolvable object plus only collection
+ * alternatives has one bounded, type-valid representative: the direct object.
+ */
+function selectPreviewCollectionItemType(
+  typeNode: ts.TypeNode,
+  localTypes: ReadonlyMap<string, LocalObjectType>,
+): ts.TypeNode {
+  const unwrapped = ts.isParenthesizedTypeNode(typeNode) ? typeNode.type : typeNode;
+  if (!ts.isUnionTypeNode(unwrapped)) return typeNode;
+  const members = unwrapped.types.filter((candidate) => !isNullishTypeNode(candidate));
+  const objectMembers = members.filter(
+    (member) => readObjectTypeMembers(member, localTypes, new Set()) !== undefined,
+  );
+  if (objectMembers.length !== 1) return typeNode;
+  const objectMember = objectMembers[0];
+  if (
+    objectMember === undefined ||
+    members.some((member) => member !== objectMember && !isPreviewCollectionTypeNode(member))
+  ) return typeNode;
+  return objectMember;
+}
+
 /** Builds one fail-closed, parse-only element shape for a statically known collection. */
 function createTypeShape(
   typeNode: ts.TypeNode,
@@ -616,13 +972,14 @@ function createTypeShape(
   // The detached item root consumes one level of the caller's already-used aggregate corridor;
   // it must not restart at an apparent top-level `value` path for nested collection evidence.
   if (state.nodeCount >= MAX_INFERRED_NODES) return undefined;
+  const selectedTypeNode = selectPreviewCollectionItemType(typeNode, localTypes);
   const root = createMutableNode('object', 'type');
   const previousRoot = state.root;
   state.root = root;
   try {
     addTypeRequirement(
       ['value'],
-      typeNode,
+      selectedTypeNode,
       localTypes,
       state,
       sourceFile,
@@ -711,6 +1068,61 @@ function collectUsageRequirements(functionLike: ExportedFunctionLike, state: Inf
   visit(body);
 }
 
+/**
+ * Selects the first authored primitive branch for a direct prop-derived switch discriminant.
+ *
+ * A switch that names every branch with a literal proves a finite accepted value set without
+ * evaluating project code. Existing type or usage requirements retain ownership of a prop value;
+ * this is solely the bounded fallback for an otherwise unmaterialized discriminant.
+ */
+function collectSwitchDiscriminantRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (ts.isSwitchStatement(node)) {
+      const path_ = readPropPath(node.expression, state.aliases);
+      const caseValues = readDirectPrimitiveSwitchCaseValues(node);
+      if (
+        path_ !== undefined &&
+        path_.length > 0 &&
+        !isShadowedPathRoot(node.expression, state) &&
+        !hasPreviewInferredPropTerminal(state, path_) &&
+        caseValues !== undefined
+      ) {
+        const value = caseValues[0];
+        if (value !== undefined) {
+          requirePath(state, path_, readPrimitiveValueKind(value), 'usage', value);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+/** Accepts only switches whose non-default clauses are directly authored primitive literals. */
+function readDirectPrimitiveSwitchCaseValues(
+  statement: ts.SwitchStatement,
+): readonly (boolean | number | string)[] | undefined {
+  const values: (boolean | number | string)[] = [];
+  for (const clause of statement.caseBlock.clauses) {
+    if (!ts.isCaseClause(clause)) continue;
+    const value = readLiteralValue(clause.expression as ts.LiteralTypeNode['literal']);
+    if (value === undefined) return undefined;
+    values.push(value);
+  }
+  return values.length > 0 ? values : undefined;
+}
+
+/** Narrows the three serializable switch-literal categories to inference shape kinds. */
+function readPrimitiveValueKind(value: boolean | number | string): PreviewInferredPropKind {
+  if (typeof value === 'boolean') return 'boolean';
+  return typeof value === 'number' ? 'number' : 'string';
+}
+
 /** Ensures receiver prefixes exist only before an authored optional-chain short circuit. */
 function addReceiverContainers(
   state: InferenceState,
@@ -757,7 +1169,19 @@ function addOperationRequirement(
     /* Negation proves truthiness, not Boolean type. Preserve a semantic URL/data value so an exact
      * target can pass `if (!value) return null` instead of receiving a self-defeating `false`. */
     const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
-    requirePath(state, path_, semantic?.kind ?? 'boolean', 'usage', semantic?.value ?? false);
+    if (isRenderTerminatingNegatedGuard(parent)) {
+      if (semantic?.kind === 'boolean') {
+        requirePath(state, path_, 'boolean', 'usage', true);
+      } else if (semantic?.kind === 'number') {
+        requirePath(state, path_, 'number', 'usage', 1);
+      } else if (semantic?.kind === 'null' || semantic === undefined) {
+        requirePath(state, path_, 'object', 'usage');
+      } else {
+        requirePath(state, path_, semantic.kind, 'usage', semantic.value);
+      }
+    } else {
+      requirePath(state, path_, semantic?.kind ?? 'boolean', 'usage', semantic?.value ?? false);
+    }
     return;
   }
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node) {
@@ -793,6 +1217,37 @@ function addOperationRequirement(
       requirePath(state, path_, semantic.kind, 'usage', semantic.value);
     }
   }
+}
+
+/** Reports a negated prop guard whose selected branch exits before visible component output. */
+function isRenderTerminatingNegatedGuard(negation: ts.PrefixUnaryExpression): boolean {
+  let condition: ts.Expression = negation;
+  let parent = condition.parent;
+  while (
+    (ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isTypeAssertionExpression(parent)) &&
+    parent.expression === condition
+  ) {
+    condition = parent;
+    parent = condition.parent;
+  }
+  return (
+    ts.isIfStatement(parent) &&
+    parent.expression === condition &&
+    doesStatementTerminateRender(parent.thenStatement)
+  );
+}
+
+/** Accepts only a direct return/throw or a block whose last statement is a direct terminal. */
+function doesStatementTerminateRender(statement: ts.Statement): boolean {
+  if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) return true;
+  if (!ts.isBlock(statement)) return false;
+  const terminal = statement.statements.at(-1);
+  return terminal !== undefined &&
+    (ts.isReturnStatement(terminal) || ts.isThrowStatement(terminal));
 }
 
 /** Reports whether type or prior operation evidence already owns the final prop-path value kind. */
@@ -969,7 +1424,9 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
       ...(node.kind === 'array' && node.items !== undefined
         ? { items: freezeNode(node.items, [...path_, '[]']) }
         : {}),
-      ...(node.kind === 'object' ? { properties: Object.freeze(properties) } : {}),
+      ...(node.kind === 'object' || node.kind === 'graphql-document'
+        ? { properties: Object.freeze(properties) }
+        : {}),
       ...(node.value === undefined ? {} : { value: node.value }),
     });
   };
@@ -1131,7 +1588,6 @@ function collectLocalObjectTypes(sourceFile: ts.SourceFile): ReadonlyMap<string,
   const ambiguous = new Set<string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isInterfaceDeclaration(statement) && !ts.isTypeAliasDeclaration(statement)) continue;
-    if ((statement.typeParameters?.length ?? 0) > 0) continue;
     const name = statement.name.text;
     if (declarations.has(name)) {
       declarations.delete(name);

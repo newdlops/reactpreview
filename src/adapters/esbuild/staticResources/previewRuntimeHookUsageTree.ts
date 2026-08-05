@@ -22,6 +22,8 @@ interface PreviewRuntimeHookUsageNode {
 export interface PreviewRuntimeHookUsageTreeFallback {
   /** Side-effect-free JavaScript expression used by the preview runtime. */
   readonly expression: string;
+  /** Scalar paths whose generated values are required to continue beyond an early render exit. */
+  readonly renderGuardPaths: readonly string[];
   /** Minimal de-duplicated paths displayed by the Inspector and used for partial-value repair. */
   readonly requiredPaths: readonly string[];
 }
@@ -40,6 +42,11 @@ export function createPreviewRuntimeHookUsageTreeFallback(
   for (const path_ of completedPaths) addUsagePath(root, path_);
   return Object.freeze({
     expression: serializeUsageNode(root),
+    renderGuardPaths: Object.freeze(
+      completedPaths
+        .filter((path_) => path_.renderGuard === true)
+        .map((path_) => (path_.names.length === 0 ? '<root>' : path_.names.join('.'))),
+    ),
     requiredPaths: Object.freeze(completedPaths.flatMap(formatPreviewRuntimeHookUsagePaths)),
   });
 }
@@ -78,6 +85,9 @@ function deduplicatePreviewRuntimeHookUsagePaths(
       ...(itemRequiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
+      ...(existing.renderGuard === true || path_.renderGuard !== true
+        ? {}
+        : { renderGuard: true }),
     });
   }
   const retainedPaths = [...retained.values()];
@@ -111,8 +121,10 @@ function deduplicatePreviewRuntimeHookUsagePaths(
 /** Formats receiver evidence as the authored collection access instead of a fake own method. */
 function formatPreviewRuntimeHookUsagePath(path_: PreviewRuntimeHookAliasUsagePath): string {
   const base = path_.names.join('.');
-  if (path_.stringProperty !== undefined) return `${base}.${path_.stringProperty}()`;
-  if (path_.collectionProperty === undefined) return base + (path_.called ? '()' : '');
+  if (path_.stringProperty !== undefined)
+    return `${base.length === 0 ? '<root>' : base}.${path_.stringProperty}()`;
+  if (path_.collectionProperty === undefined)
+    return base.length === 0 ? (path_.called ? '<root>()' : '<root>') : base + (path_.called ? '()' : '');
   if (path_.collectionProperty === 'spread' || path_.collectionProperty === '[]') {
     return `${base}[]`;
   }
@@ -181,7 +193,7 @@ function createUsagePathExpression(
     path_.valueExpression ??
     (path_.collectionProperty !== undefined
       ? path_.collectionItemExpression === undefined
-        ? 'Object.freeze([])'
+        ? (existingExpression ?? 'Object.freeze([])')
         : `Object.freeze([${path_.collectionItemExpression}])`
       : path_.stringProperty !== undefined
         ? JSON.stringify(createPreviewRuntimeSemanticString(semanticName))

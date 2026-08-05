@@ -150,6 +150,134 @@ function isStaticApolloConnectionSelection(selectionSet) {
   return hasPagination && hasCollection;
 }
 
+/** Proves one collection item can be materialized without guessing conditional response shape. */
+function isSafeStaticApolloRepresentativeSelection(
+  selectionSet,
+  fragments,
+  budget,
+  depth,
+  activeFragments,
+  responseNames,
+  typeConditions,
+) {
+  if (
+    depth > MAX_STATIC_APOLLO_DEPTH ||
+    !Array.isArray(selectionSet?.selections) ||
+    selectionSet.selections.length === 0
+  ) {
+    return false;
+  }
+  for (const selection of selectionSet.selections) {
+    if (Array.isArray(selection?.directives) && selection.directives.length > 0) return false;
+    if (selection?.kind === 'Field') {
+      if (budget.fields >= MAX_STATIC_APOLLO_FIELDS) return false;
+      budget.fields += 1;
+      const fieldName = selection.name?.value;
+      if (typeof fieldName !== 'string') return false;
+      const responseName = selection.alias?.value ?? fieldName;
+      if (responseNames.has(responseName)) return false;
+      responseNames.add(responseName);
+      if (
+        selection.selectionSet !== undefined &&
+        !isSafeStaticApolloRepresentativeSelection(
+          selection.selectionSet,
+          fragments,
+          budget,
+          depth + 1,
+          activeFragments,
+          new Set(),
+          new Set(),
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (selection?.kind === 'InlineFragment') {
+      const typeName = selection.typeCondition?.name?.value;
+      if (selection.typeCondition !== undefined && typeof typeName !== 'string') return false;
+      if (typeof typeName === 'string') {
+        typeConditions.add(typeName);
+        if (typeConditions.size > 1) return false;
+      }
+      if (
+        !isSafeStaticApolloRepresentativeSelection(
+          selection.selectionSet,
+          fragments,
+          budget,
+          depth + 1,
+          activeFragments,
+          responseNames,
+          typeConditions,
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (selection?.kind !== 'FragmentSpread') return false;
+    const fragmentName = selection.name?.value;
+    if (typeof fragmentName !== 'string' || activeFragments.has(fragmentName)) return false;
+    const fragment = fragments.get(fragmentName);
+    if (
+      fragment === undefined ||
+      (Array.isArray(fragment.directives) && fragment.directives.length > 0)
+    ) {
+      return false;
+    }
+    const typeName = fragment.typeCondition?.name?.value;
+    if (fragment.typeCondition !== undefined && typeof typeName !== 'string') return false;
+    if (typeof typeName === 'string') {
+      typeConditions.add(typeName);
+      if (typeConditions.size > 1) return false;
+    }
+    activeFragments.add(fragmentName);
+    const safe = isSafeStaticApolloRepresentativeSelection(
+      fragment.selectionSet,
+      fragments,
+      budget,
+      depth + 1,
+      activeFragments,
+      responseNames,
+      typeConditions,
+    );
+    activeFragments.delete(fragmentName);
+    if (!safe) return false;
+  }
+  return true;
+}
+
+/** Builds one representative item only after the complete selection fits the shared limits. */
+function createStaticApolloRepresentativeItem(
+  selectionSet,
+  fragments,
+  budget,
+  depth,
+  activeFragments,
+) {
+  const validationBudget = { fields: budget.fields };
+  if (
+    !isSafeStaticApolloRepresentativeSelection(
+      selectionSet,
+      fragments,
+      validationBudget,
+      depth,
+      new Set(activeFragments),
+      new Set(),
+      new Set(),
+    )
+  ) {
+    return undefined;
+  }
+  const item = {};
+  const initialFieldCount = budget.fields;
+  appendSelections(item, selectionSet, fragments, budget, depth, activeFragments);
+  return budget.fields - initialFieldCount === validationBudget.fields - initialFieldCount &&
+    Object.keys(item).length > 0
+    ? item
+    : undefined;
+}
+
 /** Adds selections to one response object while enforcing field, depth, and fragment-cycle limits. */
 function appendSelections(target, selectionSet, fragments, budget, depth, activeFragments) {
   if (depth > MAX_STATIC_APOLLO_DEPTH || !Array.isArray(selectionSet?.selections)) {
@@ -168,7 +296,14 @@ function appendSelections(target, selectionSet, fragments, budget, depth, active
       }
       const responseName = selection.alias?.value ?? fieldName;
       if (looksLikeCollection(fieldName) && !isStaticApolloConnectionSelection(selection.selectionSet)) {
-        target[responseName] = [];
+        const item = createStaticApolloRepresentativeItem(
+          selection.selectionSet,
+          fragments,
+          budget,
+          depth + 1,
+          activeFragments,
+        );
+        target[responseName] = item === undefined ? [] : [item];
       } else if (selection.selectionSet !== undefined) {
         // GraphQL merges repeated fields with the same response name. Reuse the already-built
         // object so split companyInfo name/profileLogo selections retain both branches.

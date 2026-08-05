@@ -238,6 +238,11 @@ function looksLikePreviewInspectorCollection(fieldName) {
     .split(/[^A-Za-z\d]+/u)
     .map((word) => word.toLowerCase())
     .filter(Boolean);
+  const terminalSingularContainers = new Set([
+    'connection', 'context', 'detail', 'entity', 'info', 'item', 'node', 'page', 'record',
+    'request', 'response', 'result', 'state', 'summary',
+  ]);
+  if (terminalSingularContainers.has(words.at(-1) ?? '')) return false;
   const relationWords = new Set(['by', 'for', 'from', 'of', 'to', 'with']);
   const nonCollectionPlurals = new Set([
     'access', 'address', 'analysis', 'business', 'news', 'process', 'progress', 'relations', 'series',

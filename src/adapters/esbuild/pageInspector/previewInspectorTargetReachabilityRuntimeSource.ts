@@ -150,6 +150,7 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     candidateId: candidate?.id ?? 'nearest-authored-owner',
     directTarget: false,
     directTargetAvailable: false,
+    detachedTargetPlacement: candidate?.detachedTargetPlacement,
     exhausted: false,
     idlePasses: 0,
     key: createPreviewInspectorTargetReachabilityKey(descriptor, candidate),
@@ -225,14 +226,15 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
         evidence.exactTargetNames?.has(condition.ownerName) === true &&
         !evidence.ambiguousNames?.has(condition.ownerName);
       const exactSourceLocal = (evidence.pathScores?.get(conditionSourcePath) ?? 0) >= 800;
+      const exactOverlayTargetLocal =
+        isPreviewInspectorExactTargetOverlayCondition(condition, evidence);
       return {
         condition,
-        desiredValue: exactMountedTargetOverlayLocal
+        desiredValue: exactMountedTargetOverlayLocal || exactOverlayTargetLocal
           ? true
           : readPreviewInspectorTargetConditionValue(condition, evidence),
         exactMountedTargetOverlayLocal,
-        exactOverlayTargetLocal:
-          isPreviewInspectorExactTargetOverlayCondition(condition, evidence),
+        exactOverlayTargetLocal,
         exactTargetLocal:
           exactConditionLocal || exactOwnerLocal || exactSourceLocal || exactMountedTargetOverlayLocal,
         pathLocal: isPreviewInspectorConditionOnTargetPath(condition, evidence),
@@ -248,6 +250,10 @@ function selectPreviewInspectorNextTargetGate(descriptor, candidate, state, exac
     }) =>
       typeof desiredValue === 'boolean' &&
       condition.effectiveEnabled !== desiredValue &&
+      (
+        typeof canPreviewInspectorTargetGuideCondition !== 'function' ||
+        canPreviewInspectorTargetGuideCondition(condition, desiredValue)
+      ) &&
       pathLocal &&
       (!exactTargetOnly || exactTargetLocal) &&
       /*
@@ -756,7 +762,12 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   const mountedTargetGate = (state.targetMounted || state.targetWasMounted) && !state.targetHasOutput
     ? selectPreviewInspectorNextTargetGate(descriptor, candidate, state, true)
     : undefined;
-  if (mountedTargetGate === undefined) {
+  // A newly committed, path-local JSX gate is stronger reachability evidence than unrelated hook
+  // requirements collected from the surrounding application shell. Traverse it before spending
+  // another minimum-value pass (or closing that pass circuit at its limit).
+  const nextGate = mountedTargetGate ??
+    selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+  if (nextGate === undefined) {
     if (stopPreviewInspectorRequirementConvergenceAtLimit(state)) return;
     if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
   }
@@ -765,13 +776,24 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  if (state.exhausted === true && mountedTargetGate === undefined) return;
-  const nextGate = mountedTargetGate ?? selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+  if (state.exhausted === true && nextGate === undefined) return;
   if (nextGate !== undefined && state.attempt < PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT) {
     if (!setPreviewInspectorTargetGuidedConditionOverride(
       nextGate.condition.id,
       nextGate.desiredValue,
-    )) return;
+    )) {
+      state.rejectedConditions ??= [];
+      state.rejectedConditions.push({
+        expression: nextGate.condition.expression,
+        id: nextGate.condition.id,
+        reachabilityKey: state.key,
+        reason: 'target-guided condition became inapplicable before commit',
+      });
+      state.status = 'probing';
+      state.probeRevision += 1;
+      notifyPreviewInspector();
+      return;
+    }
     state.appliedConditions.push({
       enabled: nextGate.desiredValue,
       expression: nextGate.condition.expression,
@@ -781,6 +803,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
       sourcePath: nextGate.condition.sourcePath,
     });
     state.attempt += 1;
+    state.exhausted = false;
     state.idlePasses = 0;
     state.status = 'advancing';
     const search = readPreviewInspectorMinimumRequirementSearch(state);
@@ -805,6 +828,44 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     return;
   }
   notifyPreviewInspector();
+}
+
+/**
+ * Continues traversal directly from a trace settlement that already proves its React commit is
+ * stable. This avoids depending on an incidental Inspector component rerender to create the next
+ * effect timer, while the corridor key prevents an old attempt from advancing a newer selection.
+ */
+function continuePreviewInspectorTargetReachabilityAfterSettledAttempt(state) {
+  if (state === undefined) return false;
+  if (state.status !== 'probing') {
+    state.lastContinuationSkipReason = 'status:' + String(state.status);
+    return false;
+  }
+  if (previewInspectorSession.activeTargetReachabilityKey !== state.key) {
+    state.lastContinuationSkipReason = 'inactive-key';
+    return false;
+  }
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
+    ? readSelectedPreviewInspectorPageCandidate(descriptor)
+    : undefined;
+  if (descriptor === undefined) {
+    state.lastContinuationSkipReason = 'missing-descriptor';
+    return false;
+  }
+  if (candidate === undefined) {
+    state.lastContinuationSkipReason = 'missing-candidate';
+    return false;
+  }
+  if (createPreviewInspectorTargetReachabilityKey(descriptor, candidate) !== state.key) {
+    state.lastContinuationSkipReason = 'candidate-key-mismatch';
+    return false;
+  }
+  delete state.lastContinuationSkipReason;
+  evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+  return true;
 }
 /**
  * Marks the candidate subtree as one traversal pass and checks target presence after its commit.

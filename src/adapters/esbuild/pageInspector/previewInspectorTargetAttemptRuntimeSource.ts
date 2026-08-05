@@ -86,7 +86,30 @@ function hasPreviewInspectorTargetAutoAttemptEvidence(attempt, state) {
   const targetProgress = state?.targetMounted === true ||
     state?.targetWasMounted === true ||
     state?.targetHasOutput === true;
-  return blockerProgress || targetProgress;
+  return blockerProgress || targetProgress ||
+    hasPreviewInspectorTargetAutoAttemptContinuationGate(attempt, state);
+}
+
+/**
+ * Recognizes a newly revealed, compiler-proven downstream JSX gate as legitimate DFS progress.
+ *
+ * Composition blocker snapshots can settle after the trace bookkeeping snapshot, so their changed
+ * ID sets are not always populated in time. The retained condition override is still safe when the
+ * exact selected page corridor now exposes another actionable gate: the ordinary path selector
+ * applies the same source/export/overlay restrictions used by traversal and excludes the already
+ * satisfied gate through its effective value check.
+ */
+function hasPreviewInspectorTargetAutoAttemptContinuationGate(attempt, state) {
+  if (attempt?.autoMode !== 'target-guided-auto' || state === undefined) return false;
+  if (typeof selectPreviewInspectorNextTargetGate !== 'function') return false;
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
+    ? readSelectedPreviewInspectorPageCandidate(descriptor)
+    : undefined;
+  if (descriptor === undefined || candidate === undefined) return false;
+  return selectPreviewInspectorNextTargetGate(descriptor, candidate, state) !== undefined;
 }
 
 /**
@@ -129,6 +152,10 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   state.probeRevision = Number.isSafeInteger(state.probeRevision)
     ? state.probeRevision + 1
     : 1;
+  if (
+    typeof continuePreviewInspectorTargetReachabilityAfterSettledAttempt === 'function' &&
+    continuePreviewInspectorTargetReachabilityAfterSettledAttempt(state)
+  ) return true;
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
   return true;
@@ -137,8 +164,9 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
 /**
  * Schedules the one continuation owned by a settled trace.
  *
- * Condition errors retain a short attribution grace. Requirement fills resume immediately because
- * their trace settlement already proves the generated values reached a stable committed snapshot.
+ * The trace settlement itself already waits for stable committed snapshots (and retains late-error
+ * attribution separately), so traversal resumes synchronously. A second timer can be starved by a
+ * paused webview or headless virtual-time boundary and leave a settled page permanently suspended.
  */
 function schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attempt) {
   if (
@@ -151,14 +179,7 @@ function schedulePreviewInspectorTargetReachabilityResumeAfterAutoAttempt(attemp
     attempt.targetReachabilityResumeScheduled = false;
     resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt);
   };
-  if (
-    ['target-guided-auto', 'target-overlay-auto'].includes(attempt.autoMode) &&
-    typeof globalThis.setTimeout === 'function'
-  ) {
-    globalThis.setTimeout(resume, PREVIEW_INSPECTOR_TARGET_CONDITION_SETTLED_GRACE_MS);
-  } else {
-    resume();
-  }
+  resume();
   return true;
 }
 

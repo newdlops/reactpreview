@@ -101,19 +101,30 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     }
     if (typeof step?.label === 'string') {
       names.add(step.label);
+      corridorOwnerNames.add(step.label);
       if (!nameScores.has(step.label)) nameScores.set(step.label, 1);
     }
     for (const wrapperName of step?.wrapperNames ?? []) {
       names.add(wrapperName);
+      corridorOwnerNames.add(wrapperName);
       if (!nameScores.has(wrapperName)) nameScores.set(wrapperName, 1);
     }
   }
   for (const edge of candidate?.edges ?? []) {
     paths.add(normalizePreviewInspectorReachabilityPath(edge?.child?.sourcePath));
     paths.add(normalizePreviewInspectorReachabilityPath(edge?.owner?.sourcePath));
-    if (typeof edge?.child?.exportName === 'string') staticNames.add(edge.child.exportName);
-    if (typeof edge?.owner?.exportName === 'string') staticNames.add(edge.owner.exportName);
-    for (const ownerName of edge?.localOwnerNames ?? []) staticNames.add(ownerName);
+    if (typeof edge?.child?.exportName === 'string') {
+      staticNames.add(edge.child.exportName);
+      corridorOwnerNames.add(edge.child.exportName);
+    }
+    if (typeof edge?.owner?.exportName === 'string') {
+      staticNames.add(edge.owner.exportName);
+      corridorOwnerNames.add(edge.owner.exportName);
+    }
+    for (const ownerName of edge?.localOwnerNames ?? []) {
+      staticNames.add(ownerName);
+      corridorOwnerNames.add(ownerName);
+    }
   }
   for (const name of staticNames) names.add(name);
   paths.delete('');

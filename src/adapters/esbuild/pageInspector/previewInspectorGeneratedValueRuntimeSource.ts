@@ -238,6 +238,13 @@ function hasPreviewInspectorGeneratedArrayLengthRequirement(state, path) {
   return state.nonNegativeNumberPaths.includes(candidate);
 }
 
+/** Reports whether this scalar must match the compiler value to pass an authored render guard. */
+function hasPreviewInspectorGeneratedRenderGuardRequirement(state, path) {
+  if (!Array.isArray(state.renderGuardPaths)) return false;
+  const candidate = path.length === 0 ? '<root>' : path.join('.');
+  return state.renderGuardPaths.includes(candidate);
+}
+
 /** Rejects invalid native Array lengths and valid-but-dangerous allocations in the webview. */
 function isPreviewInspectorGeneratedSafeArrayLength(value) {
   return typeof value === 'number' &&
@@ -317,6 +324,19 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
     return { changed: false, value: authored };
   }
   state.nodes += 1;
+  if (
+    hasPreviewInspectorGeneratedRenderGuardRequirement(state, path) &&
+    !Object.is(authored, generated)
+  ) {
+    /*
+     * The compiler marks only Boolean leaves that local control flow proves must take one exact
+     * value to continue past an early return. A successful custom hook can still expose its first
+     * loading/null state, so ordinary missing-leaf completion is insufficient here. Replace this
+     * bounded scalar without mutating the authored result; every unrelated hook field still wins.
+     */
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
   if (authored === null || authored === undefined) {
     /*
      * Preserve matching sentinels and direct scalar replacements for an authored null. A deeper
@@ -493,6 +513,9 @@ function completePreviewInspectorGeneratedValue(authored, generated, options = {
       ? options.nonNegativeNumberPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)
       : [],
     replaceNullScalars: options?.replaceNullScalars === true,
+    renderGuardPaths: Array.isArray(options?.renderGuardPaths)
+      ? options.renderGuardPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)
+      : [],
     requiredPaths: Array.isArray(options?.requiredPaths)
       ? options.requiredPaths.slice(0, PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT)
       : [],

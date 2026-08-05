@@ -337,6 +337,31 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
           sourcePath: evidenceSourcePath,
         })
       : {};
+  const activeAutoAttempt = previewInspectorSession.blockerTraceActiveAttempt;
+  const targetRuntimeFallbackSummaries = reachability === undefined ||
+    !(previewInspectorSession.runtimeFallbacks instanceof Map)
+    ? []
+    : [...previewInspectorSession.runtimeFallbacks.values()]
+        .filter((record) =>
+          record?.reachabilityKey === reachability.key &&
+          (
+            record?.graphqlSelectionBacked === true ||
+            record?.hookName === 'useQuery' ||
+            (record?.requiredPaths ?? []).some((path) =>
+              typeof path === 'string' && path.startsWith('data.'),
+            )
+          ),
+        )
+        .slice(-12)
+        .map((record) => JSON.stringify({
+          fallback: String(record.fallbackPreview ?? '').slice(0, 600),
+          graphqlSelectionBacked: record.graphqlSelectionBacked === true,
+          id: String(record.id ?? '').slice(-48),
+          mode: String(record.mode ?? ''),
+          requiredPaths: Array.isArray(record.requiredPaths)
+            ? record.requiredPaths.slice(0, 16)
+            : [],
+        }).slice(0, 1_000));
   const pageExecutionCandidateId = typeof descriptor?.inspector?.pageExecutionCandidateId === 'string'
     ? descriptor.inspector.pageExecutionCandidateId
     : undefined;
@@ -428,12 +453,36 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     requirementSearch: {
       convergenceStatus: requirementConvergence?.status ?? 'untracked',
       exhausted: reachability?.exhausted === true,
+      observedPathCount: Number.isSafeInteger(requirementSearch?.observedPathCount)
+        ? Math.max(0, requirementSearch.observedPathCount)
+        : 0,
+      pass: Number.isSafeInteger(requirementSearch?.pass)
+        ? Math.max(0, requirementSearch.pass)
+        : 0,
       searchStatus: requirementSearchStatus,
       settled: requirementSearchSettled,
+      totalPasses: Number.isSafeInteger(requirementSearch?.totalPasses)
+        ? Math.max(0, requirementSearch.totalPasses)
+        : 0,
     },
     statusCounts: tree.counts,
     targetState: {
+      activeAutoAttemptMode: typeof activeAutoAttempt?.autoMode === 'string'
+        ? activeAutoAttempt.autoMode
+        : '',
+      activeAutoAttemptResumeHandled:
+        activeAutoAttempt?.targetReachabilityResumeHandled === true,
+      activeAutoAttemptResumeScheduled:
+        activeAutoAttempt?.targetReachabilityResumeScheduled === true,
+      activeAutoAttemptSettled: Number.isFinite(activeAutoAttempt?.settledAt),
+      appliedConditionCount: Array.isArray(reachability?.appliedConditions)
+        ? reachability.appliedConditions.length
+        : 0,
+      attempt: Number.isSafeInteger(reachability?.attempt) ? Math.max(0, reachability.attempt) : 0,
       directTarget: reachability?.directTarget === true,
+      detachedBoundaryOutput: reachability?.targetDetachedBoundaryOutput === true,
+      detachedTargetPlacement: reachability?.detachedTargetPlacement ?? '',
+      directElementOutput: reachability?.targetDirectElementOutput === true,
       exportName: targetExportName,
       ...(typeof targetOutputError?.message === 'string'
         ? { errorMessage: targetOutputError.message.slice(0, 1_200) }
@@ -448,16 +497,31 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         ? { fallbackOwner: targetOutputError.fallbackOwnerName.slice(0, 240) }
         : {}),
       hasOutput: targetStage === 'target-output',
+      idlePasses: Number.isSafeInteger(reachability?.idlePasses)
+        ? Math.max(0, reachability.idlePasses)
+        : 0,
+      lastContinuationSkipReason: typeof reachability?.lastContinuationSkipReason === 'string'
+        ? reachability.lastContinuationSkipReason
+        : '',
       mounted: reachability?.targetMounted === true,
       outputKind: reachability?.targetOutputKind ?? 'none',
+      projectedCompatibilityOutput:
+        reachability?.targetProjectedCompatibilityOutput === true,
       ownershipPhases: targetOwnershipPhases,
       pageRootCommitted: reachability?.pageRootCommitted === true,
+      probeRevision: Number.isSafeInteger(reachability?.probeRevision)
+        ? Math.max(0, reachability.probeRevision)
+        : 0,
+      rejectedConditionCount: Array.isArray(reachability?.rejectedConditions)
+        ? reachability.rejectedConditions.length
+        : 0,
       reachabilityHasOutput: reachability?.targetHasOutput === true,
       renderScenario: typeof readPreviewInspectorRenderScenario === 'function'
         ? readPreviewInspectorRenderScenario()
         : 'authored-page',
       stage: targetStage,
       status: reachability?.status ?? 'untracked',
+      runtimeFallbackSummaries: targetRuntimeFallbackSummaries,
       targetRenderedEmpty: reachability?.targetRenderedEmpty === true,
       wasMounted: reachability?.targetWasMounted === true,
     },
@@ -479,12 +543,28 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     detail.targetState.ownershipPhases,
     detail.targetState.targetRenderedEmpty,
     detail.requirementSearch,
+    detail.targetState.runtimeFallbackSummaries,
     tree.rows.map((row) => [row.name, row.state]),
     blockerItems.map((item) => [item.name, item.active]),
     missingPathNames,
     tree.observedFiberPath,
   ]);
   return { detail, digest };
+}
+
+/** Proves that Page Inspector committed the exact selected target with blocker-free output. */
+function hasPreviewInspectorVerifiedTargetOutput(detail) {
+  const target = detail?.targetState;
+  const blockers = detail?.blockerSummary;
+  return target?.stage === 'target-output' &&
+    target.status === 'reached' &&
+    target.outputKind === 'target-output' &&
+    target.mounted === true &&
+    target.hasOutput === true &&
+    target.pageRootCommitted === true &&
+    blockers?.active === 0 &&
+    Array.isArray(detail?.activeBlockerProvenance) &&
+    detail.activeBlockerProvenance.length === 0;
 }
 
 /** Emits one deduplicated page snapshot after the corresponding Inspector toolbar commit. */
@@ -501,6 +581,12 @@ function recordPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     detail: snapshot.detail,
     event: 'page-composition-snapshot',
   });
+  // Page Execution can commit the authored target in a nested root while the outer Inspector root
+  // is still waiting on unrelated work. This is an equally strong terminal success signal, so let
+  // the normal token/revision-correlated readiness protocol settle the host watchdog.
+  if (hasPreviewInspectorVerifiedTargetOutput(snapshot.detail)) {
+    completePreviewCommit();
+  }
 }
 `;
 }

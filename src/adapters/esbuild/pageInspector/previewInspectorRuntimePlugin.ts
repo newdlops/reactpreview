@@ -186,7 +186,8 @@ function createPreviewInspectorPortalRuntimeSource(runtimePath: string): string 
     `import * as original from ${JSON.stringify(runtimePath)};`,
     "const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');",
     'export * from ' + JSON.stringify(runtimePath) + ';',
-    'export const createPortal = (children, container, key) => { const Context = globalThis[apiKey]?.readJsxOwnershipContext?.(); return original.createPortal(Context === undefined ? children : React.createElement(Context.Provider, { value: undefined }, children), container, key); };',
+    'const isPortalContainer = (value) => value !== null && typeof value === "object" && [1, 9, 11].includes(value.nodeType) && typeof value.appendChild === "function";',
+    'export const createPortal = (children, container, key) => { const Context = globalThis[apiKey]?.readJsxOwnershipContext?.(); const ownedChildren = Context === undefined ? children : React.createElement(Context.Provider, { value: undefined }, children); const fallbackContainer = globalThis.document?.body ?? globalThis.document?.documentElement; const resolvedContainer = isPortalContainer(container) ? container : isPortalContainer(fallbackContainer) ? fallbackContainer : undefined; return resolvedContainer === undefined ? ownedChildren : original.createPortal(ownedChildren, resolvedContainer, key); };',
     "const defaultAdapter = originalDefault !== null && (typeof originalDefault === 'object' || typeof originalDefault === 'function') ? new Proxy(originalDefault, { get(target, key) { return key === 'createPortal' ? createPortal : Reflect.get(target, key, target); } }) : originalDefault;",
     'export default defaultAdapter;',
   ].join('\n');

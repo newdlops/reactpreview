@@ -128,6 +128,7 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     ownerName: readText('ownerName'),
     passive: source.passive === true,
     preserveNullish: source.preserveNullish === true,
+    renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths(source.renderGuardPaths),
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
     sourcePath: readText('sourcePath'),
   };
@@ -159,6 +160,7 @@ function scopePreviewInspectorRuntimeFallbackMetadata(metadata, readDocument, re
   const suffix = ':graphql:' + requestIdentity;
   return {
     ...mergedMetadata,
+    graphqlSelectionBacked: true,
     id: mergedMetadata.id.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT - suffix.length) + suffix,
   };
 }
@@ -370,6 +372,7 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
     return completePreviewInspectorGeneratedValue(value, fallback, {
       nonNegativeNumberPaths: metadata.nonNegativeNumberPaths,
+      renderGuardPaths: metadata.renderGuardPaths,
       requiredPaths: metadata.requiredPaths,
     });
   }
@@ -378,6 +381,7 @@ function readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback) {
   if (cached !== undefined && cached.fallback === fallback) return cached.completion;
   const completion = completePreviewInspectorGeneratedValue(value, fallback, {
     nonNegativeNumberPaths: metadata.nonNegativeNumberPaths,
+    renderGuardPaths: metadata.renderGuardPaths,
     requiredPaths: metadata.requiredPaths,
   });
   if (completion.changed) {
@@ -817,10 +821,12 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
   const previousPathSignature =
     previewInspectorSession.runtimeFallbackSmartPathSignatures.get(fallbackId);
   if (manualValue !== undefined) {
-    const minimum = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
-      fallback,
-      record.requiredPaths,
-    );
+    const minimum = record.graphqlSelectionBacked === true
+      ? copyPreviewInspectorBlockerValueForJson(fallback, { nodes: 0 })
+      : createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
+          fallback,
+          record.requiredPaths,
+        );
     const completion = completePreviewInspectorGeneratedValue(manualValue, minimum, {
       requiredPaths: record.requiredPaths,
     });
@@ -841,6 +847,20 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       mode: 'smart-manual',
     });
     return completion.changed || !wasSmart || previousPathSignature !== pathSignature;
+  }
+  if (record.graphqlSelectionBacked === true) {
+    /*
+     * The authored DocumentNode proves every selected response field. Narrowing this value to only
+     * locally observed wrapper paths can erase deeper items needed to reach a selected descendant.
+     * Keep the already bounded selection-shaped fallback and mark its exact compiler proof settled.
+     */
+    previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+    previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+      ...record,
+      mode: 'smart',
+    });
+    return !wasSmart || previousPathSignature !== pathSignature;
   }
   if (hasPreviewInspectorGeneratedRuntimeOnlyNativeValue(fallback)) {
     /*

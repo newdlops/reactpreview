@@ -203,6 +203,230 @@ function readPreviewInspectorLiveTargetOutputNames(boundary) {
   return names;
 }
 
+/**
+ * Accepts a bounded compatibility host only below an authentic authored child component.
+ *
+ * Frontier projection may retain a real modal/page component while replacing one of its broad UI
+ * dependencies with a structural host. That host cannot carry the selected file's private JSX
+ * ownership token, but the live Fiber ancestry still proves that the authored child ran. Requiring
+ * the exact expected component above the projected host prevents a projection of the selected
+ * component itself from being mistaken for target output.
+ */
+function hasPreviewInspectorAuthenticProjectedTargetOutput(boundary, expected, targetExportName) {
+  const expectedNames = new Set([...expected.rootNames, ...expected.descendantNames]);
+  if (expectedNames.size === 0) return false;
+  const normalizedTargetExportName = normalizePreviewInspectorTargetOutputName(targetExportName);
+  const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
+  const first = readPreviewInspectorFiberLink(boundaryFiber, 'child');
+  const pending = first === undefined
+    ? []
+    : [{ fiber: first, withinExpectedComponent: false }];
+  const seen = new Set();
+  while (pending.length > 0 && seen.size < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+    const entry = pending.pop();
+    const fiber = entry?.fiber;
+    if (fiber === undefined || seen.has(fiber)) continue;
+    seen.add(fiber);
+    const sibling = readPreviewInspectorFiberLink(fiber, 'sibling');
+    if (sibling !== undefined) {
+      pending.push({
+        fiber: sibling,
+        withinExpectedComponent: entry.withinExpectedComponent,
+      });
+    }
+    const kind = classifyPreviewInspectorFiber(fiber);
+    const name = namePreviewInspectorFiber(fiber, kind);
+    const normalizedName = normalizePreviewInspectorTargetOutputName(name);
+    const authenticExpectedComponent =
+      !['host', 'text'].includes(kind) &&
+      !isPreviewInspectorOwnedFiber(fiber, name, kind) &&
+      !name.startsWith('PreviewShallow(') &&
+      expectedNames.has(normalizedName);
+    const withinExpectedComponent =
+      entry.withinExpectedComponent || authenticExpectedComponent;
+    const child = readPreviewInspectorFiberLink(fiber, 'child');
+    if (child !== undefined) pending.push({ fiber: child, withinExpectedComponent });
+    if (kind !== 'host') continue;
+    const node = readPreviewInspectorOwnData(fiber, 'stateNode');
+    const projectedIdentity = typeof node?.getAttribute === 'function'
+      ? node.getAttribute('data-react-preview-shallow-component')
+      : undefined;
+    const projectedName = typeof projectedIdentity === 'string'
+      ? normalizePreviewInspectorTargetOutputName(
+          projectedIdentity.split(':').at(-1) ?? projectedIdentity,
+        )
+      : '';
+    const exactExpectedProjection = projectedName.length > 0 &&
+      projectedName !== normalizedTargetExportName &&
+      expectedNames.has(projectedName);
+    if (
+      (withinExpectedComponent || exactExpectedProjection) &&
+      node?.nodeType === 1 &&
+      node.isConnected === true &&
+      typeof projectedIdentity === 'string' &&
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+    ) return true;
+  }
+  return false;
+}
+
+/**
+ * Accepts connected host output below an authentic expected child of the exact target boundary.
+ *
+ * styled/memo/HOC libraries may invoke the selected file's inner component below their own Fiber,
+ * outside the private JSX ownership context captured when the facade element was created. The
+ * boundary still carries the compiler-proven source/export identity. Requiring one statically
+ * expected authored component on the live ancestry keeps unrelated wrapper DOM from satisfying
+ * the target, while the caller separately rejects loading/error fallback names.
+ */
+function hasPreviewInspectorAuthenticExpectedTargetOutput(boundary, expected) {
+  const expectedNames = new Set([...expected.rootNames, ...expected.descendantNames]);
+  if (expectedNames.size === 0) return false;
+  const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
+  const first = readPreviewInspectorFiberLink(boundaryFiber, 'child');
+  const pending = first === undefined
+    ? []
+    : [{ fiber: first, withinExpectedComponent: false }];
+  const seen = new Set();
+  while (pending.length > 0 && seen.size < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+    const entry = pending.pop();
+    const fiber = entry?.fiber;
+    if (fiber === undefined || seen.has(fiber)) continue;
+    seen.add(fiber);
+    const sibling = readPreviewInspectorFiberLink(fiber, 'sibling');
+    if (sibling !== undefined) {
+      pending.push({
+        fiber: sibling,
+        withinExpectedComponent: entry.withinExpectedComponent,
+      });
+    }
+    const kind = classifyPreviewInspectorFiber(fiber);
+    const name = namePreviewInspectorFiber(fiber, kind);
+    const normalizedName = normalizePreviewInspectorTargetOutputName(name);
+    const authenticExpectedComponent =
+      !['host', 'text'].includes(kind) &&
+      !isPreviewInspectorOwnedFiber(fiber, name, kind) &&
+      !name.startsWith('PreviewShallow(') &&
+      expectedNames.has(normalizedName);
+    const withinExpectedComponent =
+      entry.withinExpectedComponent || authenticExpectedComponent;
+    const child = readPreviewInspectorFiberLink(fiber, 'child');
+    if (child !== undefined) pending.push({ fiber: child, withinExpectedComponent });
+    if (kind !== 'host' || !withinExpectedComponent) continue;
+    const node = readPreviewInspectorOwnData(fiber, 'stateNode');
+    if (
+      node?.nodeType === 1 &&
+      node.isConnected === true &&
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+    ) return true;
+  }
+  return false;
+}
+
+/** Rejects malformed element-like values before exact target-type identity comparison. */
+function isPreviewInspectorTargetElementType(type) {
+  return (
+    typeof type === 'string' ||
+    typeof type === 'symbol' ||
+    typeof type === 'function' ||
+    (type !== null && typeof type === 'object')
+  );
+}
+
+/**
+ * Proves host output below the exact React element passed into the selected source/export boundary.
+ *
+ * Shared composites, styled-components, and similar wrappers may create the final intrinsic node in
+ * another module or with React.createElement, so the selected file's private automatic-JSX ref cannot
+ * tag it. Element-type identity is stronger than a display-name match: the target boundary received
+ * this exact compiler-selected value and the live Fiber using the same value committed DOM below it.
+ */
+function hasPreviewInspectorDirectTargetElementOutput(boundary) {
+  const boundaryProps = readPreviewInspectorOwnData(boundary, 'props');
+  const targetElement = readPreviewInspectorOwnData(boundaryProps, 'children');
+  const targetType = readPreviewInspectorOwnData(targetElement, 'type');
+  if (!isPreviewInspectorTargetElementType(targetType)) return false;
+
+  const boundaryFiber = readPreviewInspectorBoundaryFiber(boundary);
+  const first = readPreviewInspectorFiberLink(boundaryFiber, 'child');
+  const pending = first === undefined ? [] : [first];
+  const seen = new Set();
+  let targetFiber;
+  while (pending.length > 0 && seen.size < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+    const fiber = pending.pop();
+    if (fiber === undefined || seen.has(fiber)) continue;
+    seen.add(fiber);
+    const type = readPreviewInspectorOwnData(fiber, 'type');
+    const elementType = readPreviewInspectorOwnData(fiber, 'elementType');
+    if (type === targetType || elementType === targetType) {
+      targetFiber = fiber;
+      break;
+    }
+    const sibling = readPreviewInspectorFiberLink(fiber, 'sibling');
+    const child = readPreviewInspectorFiberLink(fiber, 'child');
+    if (sibling !== undefined) pending.push(sibling);
+    if (child !== undefined) pending.push(child);
+  }
+  if (targetFiber === undefined) return false;
+
+  const isConnectedProjectHost = (fiber) => {
+    if (classifyPreviewInspectorFiber(fiber) !== 'host') return false;
+    const node = readPreviewInspectorOwnData(fiber, 'stateNode');
+    return (
+      node?.nodeType === 1 &&
+      node.isConnected === true &&
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+    );
+  };
+  if (isConnectedProjectHost(targetFiber)) return true;
+  const targetChild = readPreviewInspectorFiberLink(targetFiber, 'child');
+  const targetPending = targetChild === undefined ? [] : [targetChild];
+  const targetSeen = new Set();
+  while (
+    targetPending.length > 0 &&
+    targetSeen.size < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT
+  ) {
+    const fiber = targetPending.pop();
+    if (fiber === undefined || targetSeen.has(fiber)) continue;
+    targetSeen.add(fiber);
+    const sibling = readPreviewInspectorFiberLink(fiber, 'sibling');
+    const child = readPreviewInspectorFiberLink(fiber, 'child');
+    if (sibling !== undefined) targetPending.push(sibling);
+    if (child !== undefined) targetPending.push(child);
+    if (isConnectedProjectHost(fiber)) return true;
+  }
+  return false;
+}
+
+/**
+ * Accepts dependency-owned DOM below an explicitly detached exact target boundary.
+ *
+ * A selected file may return only shared composites such as Table, Badge, or IconButton. Those
+ * dependencies own the eventual host Fibers, so JSX-token attribution alone cannot credit the
+ * selected file even though its compiler facade and boundary both committed. Detached placement
+ * is the narrow proof that this boundary cannot be a page-shell fallback: the generated execution
+ * graph mounted the exact selected source/export as a separate sibling after the authentic page.
+ */
+function hasPreviewInspectorDetachedTargetBoundaryOutput(boundary, state) {
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  const candidates = descriptor?.inspector?.pageCandidates;
+  const candidate = Array.isArray(candidates)
+    ? candidates.find((item) => item?.id === state.candidateId)
+    : undefined;
+  const placement = state.detachedTargetPlacement ?? candidate?.detachedTargetPlacement;
+  if (!['deferred-sibling', 'overlay-sibling'].includes(placement)) {
+    return false;
+  }
+  if (typeof collectPreviewInspectorFiberElements !== 'function') return false;
+  return collectPreviewInspectorFiberElements(boundary).some((node) =>
+    node?.nodeType === 1 &&
+    node.isConnected === true &&
+    node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+  );
+}
+
 /** Recognizes concrete loading/error UI, excluding passive wrappers around healthy output. */
 function hasPreviewInspectorFallbackLikeTargetOutput(
   liveNames,
@@ -303,14 +527,39 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     activeError !== undefined ||
     !expected.hasEvidence;
   const liveNames = needsLiveNames ? readPreviewInspectorLiveTargetOutputNames(boundary) : new Set();
-  const hasAnyHostOutput = targetDomOwnership;
+  const projectedCompatibilityOutput = hasPreviewInspectorAuthenticProjectedTargetOutput(
+    boundary,
+    expected,
+    state.targetExportName,
+  );
+  const authenticExpectedOutput = hasPreviewInspectorAuthenticExpectedTargetOutput(
+    boundary,
+    expected,
+  );
+  const directTargetElementOutput = hasPreviewInspectorDirectTargetElementOutput(boundary);
+  const detachedBoundaryOutput = hasPreviewInspectorDetachedTargetBoundaryOutput(boundary, state);
+  state.targetProjectedCompatibilityOutput = projectedCompatibilityOutput;
+  state.targetDirectElementOutput = directTargetElementOutput;
+  state.targetDetachedBoundaryOutput = detachedBoundaryOutput;
+  const hasAnyHostOutput =
+    targetDomOwnership ||
+    projectedCompatibilityOutput ||
+    authenticExpectedOutput ||
+    directTargetElementOutput ||
+    detachedBoundaryOutput;
   if (hasAnyHostOutput) state.targetHasAnyHostOutput = true;
   const fallbackLikeOutput = hasPreviewInspectorFallbackLikeTargetOutput(
     liveNames,
     state.targetExportName,
     expected.deferredFallbackNames,
   );
-  let resolved = false;
+  // An exact projected root/descendant already proves that the selected export executed one of its
+  // authored JSX nodes. Requiring a second non-projected descendant would incorrectly reject files
+  // whose entire shared UI layer is intentionally represented by compatibility hosts.
+  let resolved =
+    projectedCompatibilityOutput ||
+    ((authenticExpectedOutput || directTargetElementOutput || detachedBoundaryOutput) &&
+      !fallbackLikeOutput);
   if (expected.deferredNames.size > 0) {
     const hasIndependentOutput = [...expected.independentNames].some((name) => liveNames.has(name));
     const namedCallbackInvoked = [...expected.deferredNames]
@@ -324,7 +573,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     // receiver is visible in this exact selected-export boundary.
     const hasLiveDeferredReceiver = [...expected.deferredReceiverNames]
       .some((name) => liveNames.has(name));
-    const callbackRequired = !hasIndependentOutput;
+    const callbackRequired =
+      !hasIndependentOutput && !(detachedBoundaryOutput && directTargetElementOutput);
     const callbackInvoked = namedCallbackInvoked || descendantCallbackInvoked || hostCallbackInvoked;
     state.targetDeferredCallbackPending ||=
       callbackRequired && hasLiveDeferredReceiver && !callbackInvoked;
@@ -358,7 +608,13 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
         [...requiredNames].some((name) => liveNames.has(name));
     }
   }
-  if (!targetDomOwnership) {
+  if (
+    !targetDomOwnership &&
+    !projectedCompatibilityOutput &&
+    !authenticExpectedOutput &&
+    !directTargetElementOutput &&
+    !detachedBoundaryOutput
+  ) {
     return rejectPreviewInspectorTargetOutput(state, 'candidate-output', activeError);
   }
   if (!resolved) {

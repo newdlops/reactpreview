@@ -39,6 +39,7 @@ import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntim
 import { createPreviewGraphqlRenderPropUsageReplacements } from './previewGraphqlRenderPropUsageInstrumentation';
 import * as framework from './previewFrameworkReplacements';
 import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
+import { instrumentPreviewLocalTargetExportBindings } from './previewLocalTargetExportInstrumentation';
 import { createPreviewGraphqlFragmentValueReplacements } from './previewGraphqlFragmentValueInstrumentation';
 import { PreviewGraphqlDocumentInstrumentation } from './previewGraphqlDocumentInstrumentation';
 import {
@@ -235,7 +236,16 @@ export class PreviewSourceTransformer {
           sourceText.includes('createContext') && sourceText.includes('useContext')
             ? collectReactContextIdentityPairs(sourcePath, sourceText)
             : { pairs: [], truncated: false };
-        const contextHookFallback = createReactContextHookFallbackTransform(sourcePath, sourceText);
+        const contextTypeDemand = this.runtimeHookChildPropDemands;
+        const contextHookFallback = createReactContextHookFallbackTransform(
+          sourcePath,
+          sourceText,
+          contextTypeDemand?.inferImportedCollectionCallbackItemFallback.bind(
+            contextTypeDemand,
+            sourcePath,
+            sourceText,
+          ),
+        );
         replacements.push(...contextHookFallback.replacements);
         const contextRegistrations = createContextRegistrationStatements(
           contextIdentityInventory.pairs,
@@ -268,6 +278,11 @@ export class PreviewSourceTransformer {
               sourcePath,
               sourceText,
             ),
+            typeDemand?.inferImportedCollectionCallbackItemFallback.bind(
+              typeDemand,
+              sourcePath,
+              sourceText,
+            ),
           ),
         );
       }
@@ -287,7 +302,9 @@ export class PreviewSourceTransformer {
           ...createPreviewGraphqlRenderPropUsageReplacements(
             sourcePath,
             sourceText,
-            this.runtimeHookChildPropDemands?.collect(sourcePath, sourceText),
+            this.runtimeHookChildPropDemands?.collect(sourcePath, sourceText, {
+              includeOptionalTypes: true,
+            }),
           ),
         );
       }
@@ -382,7 +399,12 @@ export class PreviewSourceTransformer {
       this.options.instrumentDataRequests === true
         ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)
         : compatibilitySource;
-    const runtimeSource = instrumentPreviewRuntimeSource(sourcePath, dataBoundarySource, {
+    const localTargetSource = instrumentPreviewLocalTargetExportBindings(
+      sourcePath,
+      dataBoundarySource,
+      this.options.localTargetExportInstrumentation,
+    );
+    const runtimeSource = instrumentPreviewRuntimeSource(sourcePath, localTargetSource, {
       isolateEffects: this.options.instrumentRuntimeEffectIsolation === true,
       registerConditionDefinitions:
         this.options.documentPath === undefined ||

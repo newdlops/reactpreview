@@ -4,6 +4,7 @@
  * from becoming a second configuration boundary as new render-only compatibility layers are added.
  */
 import type { PreviewStaticModuleResolver } from '../previewStaticModuleResolver';
+import type { PreviewLocalTargetExportInstrumentation } from './previewLocalTargetExportInstrumentation';
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
@@ -34,6 +35,8 @@ export interface PreviewSourceTransformerOptions {
   readonly instrumentRuntimeHookFallbacks?: boolean;
   /** Whether failing React effects may be logged and isolated from otherwise valid page output. */
   readonly instrumentRuntimeEffectIsolation?: boolean;
+  /** Exact selected target bindings whose same-module references need the Inspector boundary. */
+  readonly localTargetExportInstrumentation?: PreviewLocalTargetExportInstrumentation;
   /** Resolver used only to trace an interpolated GraphQL fragment to authored workspace source. */
   readonly graphqlModuleResolver?: Pick<PreviewStaticModuleResolver, 'resolve'>;
   /** Dirty-editor source lookup consulted before the GraphQL catalog reads an on-disk module. */

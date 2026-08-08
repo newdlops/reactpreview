@@ -147,20 +147,147 @@ function createPreviewReactEffectCallbackReplacement(
     requiredPaths: [],
     sourcePath: path.normalize(sourcePath),
   };
-  const originalCallback = sourceText.slice(start, callback.end);
+  const originalCallback = instrumentPreviewReactEffectEventListeners(
+    sourcePath,
+    sourceText,
+    sourceFile,
+    call,
+    callback,
+    metadata,
+  );
   const apiBinding = '__reactPreviewEffectApi';
   const argumentBinding = '__reactPreviewEffectArguments';
+  const ownershipBinding = '__reactPreviewEffectOwnership';
   return {
     end: callback.end,
     replacement: [
-      `((...${argumentBinding}) => {`,
+      '(() => {',
       `const ${apiBinding} = ${PREVIEW_INSPECTOR_API};`,
+      `const ${ownershipBinding} = typeof ${apiBinding}?.useTargetOwnershipToken === 'function' ? ${apiBinding}.useTargetOwnershipToken() : undefined;`,
+      `return (...${argumentBinding}) => {`,
       `return typeof ${apiBinding}?.resolveRuntimeEffect === 'function'`,
-      `? ${apiBinding}.resolveRuntimeEffect(() => (${originalCallback})(...${argumentBinding}), ${JSON.stringify(metadata)})`,
+      `? ${apiBinding}.resolveRuntimeEffect(() => (${originalCallback})(...${argumentBinding}), ${JSON.stringify(metadata)}, ${ownershipBinding})`,
       `: (${originalCallback})(...${argumentBinding});`,
-      '})',
+      '};',
+      '})()',
     ].join(' '),
     start,
+  };
+}
+
+/**
+ * Instruments only paired positive-overlay emitter subscriptions inside one proven React effect.
+ * The generated closures evaluate each authored emitter/event/listener expression once, preserve
+ * the original listener object, and return precisely what the authored emitter call returned.
+ */
+function instrumentPreviewReactEffectEventListeners(
+  sourcePath: string,
+  sourceText: string,
+  sourceFile: ts.SourceFile,
+  effectCall: ts.CallExpression,
+  callback: ts.Expression,
+  effectMetadata: Record<string, unknown>,
+): string {
+  const callbackStart = callback.getStart(sourceFile);
+  const callbackText = sourceText.slice(callbackStart, callback.end);
+  const subscriptions: Array<{ call: ts.CallExpression; event: ts.Expression; listener: ts.Expression; emitter: ts.Expression }> = [];
+  const cleanups: Array<{ call: ts.CallExpression; event: ts.Expression; listener: ts.Expression; emitter: ts.Expression }> = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node)) {
+      const emitterCall = readPreviewReactEffectEmitterCall(node);
+      if (emitterCall !== undefined && hasPreviewPositiveOverlayEventSemantics(emitterCall.event, sourceText, sourceFile)) {
+        (emitterCall.method === 'on' || emitterCall.method === 'addListener' ? subscriptions : cleanups).push({
+          call: node,
+          emitter: emitterCall.emitter,
+          event: emitterCall.event,
+          listener: emitterCall.listener,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callback);
+  const replacements: PreviewSourceReplacement[] = [];
+  for (const subscription of subscriptions) {
+    const cleanup = cleanups.find((candidate) =>
+      previewReactEffectExpressionKey(candidate.emitter, sourceText, sourceFile) ===
+        previewReactEffectExpressionKey(subscription.emitter, sourceText, sourceFile) &&
+      previewReactEffectExpressionKey(candidate.event, sourceText, sourceFile) ===
+        previewReactEffectExpressionKey(subscription.event, sourceText, sourceFile) &&
+      previewReactEffectExpressionKey(candidate.listener, sourceText, sourceFile) ===
+        previewReactEffectExpressionKey(subscription.listener, sourceText, sourceFile),
+    );
+    if (cleanup === undefined) continue;
+    const occurrenceId = createPreviewReactEffectIdentity(sourcePath, 'event-listener', subscription.call.getStart(sourceFile));
+    const eventMetadata = {
+      ...effectMetadata,
+      eventName: sourceText.slice(subscription.event.getStart(sourceFile), subscription.event.end).slice(0, 160),
+      id: occurrenceId,
+      occurrenceId,
+    };
+    replacements.push(
+      createPreviewReactEffectEmitterReplacement(subscription, callbackStart, eventMetadata, true),
+      createPreviewReactEffectEmitterReplacement(cleanup, callbackStart, eventMetadata, false),
+    );
+  }
+  return applyPreviewSourceReplacements(
+    callbackText,
+    selectCompatiblePreviewSourceReplacements(replacements),
+  );
+}
+
+function readPreviewReactEffectEmitterCall(call: ts.CallExpression):
+  | { emitter: ts.Expression; event: ts.Expression; listener: ts.Expression; method: 'on' | 'addListener' | 'off' | 'removeListener' }
+  | undefined {
+  if (!ts.isPropertyAccessExpression(call.expression) || call.arguments.length < 2) return undefined;
+  const method = call.expression.name.text;
+  if (method !== 'on' && method !== 'addListener' && method !== 'off' && method !== 'removeListener') return undefined;
+  const [event, listener] = call.arguments;
+  if (event === undefined || listener === undefined || ts.isSpreadElement(event) || ts.isSpreadElement(listener)) return undefined;
+  return { emitter: call.expression.expression, event, listener, method };
+}
+
+/** Positive activation names must also name an overlay surface; close and generic events fail closed. */
+function hasPreviewPositiveOverlayEventSemantics(
+  event: ts.Expression,
+  sourceText: string,
+  sourceFile: ts.SourceFile,
+): boolean {
+  const normalized = sourceText
+    .slice(event.getStart(sourceFile), event.end)
+    .replace(/[^a-z]/giu, '')
+    .toLowerCase();
+  return /show|open|present/u.test(normalized) && /modal|dialog|drawer|overlay|popover|sheet|toast/u.test(normalized);
+}
+
+function previewReactEffectExpressionKey(node: ts.Expression, sourceText: string, sourceFile: ts.SourceFile): string {
+  return sourceText.slice(node.getStart(sourceFile), node.end).replace(/\s+/gu, '');
+}
+
+function createPreviewReactEffectEmitterReplacement(
+  entry: { call: ts.CallExpression; emitter: ts.Expression; event: ts.Expression; listener: ts.Expression },
+  callbackStart: number,
+  metadata: Record<string, unknown>,
+  registration: boolean,
+): PreviewSourceReplacement {
+  const callStart = entry.call.getStart();
+  const callEnd = entry.call.end;
+  const emitterText = entry.emitter.getText();
+  const eventText = entry.event.getText();
+  const listenerText = entry.listener.getText();
+  const method = (entry.call.expression as ts.PropertyAccessExpression).name.text;
+  const apiMethod = registration ? 'registerLocalUiEventListener' : 'unregisterLocalUiEventListener';
+  return {
+    end: callEnd - callbackStart,
+    replacement: [
+      '((__previewEmitter, __previewEvent, __previewListener) => {',
+      `const __previewResult = __previewEmitter.${method}(__previewEvent, __previewListener);`,
+      `const __previewApi = ${PREVIEW_INSPECTOR_API};`,
+      `if (typeof __previewApi?.${apiMethod} === 'function') __previewApi.${apiMethod}(${JSON.stringify(metadata)}, __previewEmitter, __previewEvent, __previewListener);`,
+      'return __previewResult;',
+      `})(${emitterText}, ${eventText}, ${listenerText})`,
+    ].join(' '),
+    start: callStart - callbackStart,
   };
 }
 

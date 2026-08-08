@@ -26,6 +26,7 @@ const MAX_TARGET_EXPORTS = 128;
 const MAX_TARGET_USAGES = 64;
 const MAX_ANCESTOR_FRAMES = 32;
 const MAX_JSX_MEMBER_DEPTH = 8;
+const MAX_LOCAL_EXPORT_TRANSPORT_DEPTH = 8;
 
 /** Syntactic owner used by a later reverse-graph pass to continue climbing through exported JSX. */
 export interface PreviewParentSliceOwner {
@@ -801,16 +802,42 @@ function readVariableExportNames(
  * @param sourceFile Consumer source containing export declarations and assignments.
  */
 function appendExportAliases(names: string[], localName: string, sourceFile: ts.SourceFile): void {
+  appendNamedExportAliases(names, localName, sourceFile);
   for (const statement of sourceFile.statements) {
     if (ts.isExportAssignment(statement)) {
       if (
         !statement.isExportEquals &&
-        isDefaultComponentExportForLocal(statement.expression, localName)
+        isComponentExportTransportForLocal(statement.expression, localName, sourceFile)
       ) {
         names.push('default');
       }
       continue;
     }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          !ts.isIdentifier(declaration.name) ||
+          declaration.initializer === undefined ||
+          !isComponentExportTransportForLocal(declaration.initializer, localName, sourceFile)
+        ) {
+          continue;
+        }
+        if (hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+          names.push(declaration.name.text);
+        }
+        appendNamedExportAliases(names, declaration.name.text, sourceFile);
+      }
+    }
+  }
+}
+
+/** Appends direct named export-list aliases for one source-local runtime value. */
+function appendNamedExportAliases(
+  names: string[],
+  localName: string,
+  sourceFile: ts.SourceFile,
+): void {
+  for (const statement of sourceFile.statements) {
     if (
       !ts.isExportDeclaration(statement) ||
       statement.moduleSpecifier !== undefined ||
@@ -829,21 +856,64 @@ function appendExportAliases(names: string[], localName: string, sourceFile: ts.
 }
 
 /**
- * Recognizes a local component passed through a conventional default-export HOC.
+ * Recognizes a local component passed through a conventional public HOC/styled transport.
  *
- * Framework roots commonly use `export default withStore(App)` while the selected descendant is
- * rendered inside `App`. Treating that as a private terminal hides the Next `_app` page shell. The
- * check remains syntax-only and admits only the same conventional HOC factories used by the render
- * graph; arbitrary function calls cannot turn a private declaration into a mountable export.
+ * Framework roots commonly use `export default withStore(App)`, while design-system modules use
+ * `export const Button = styled(UnstyledButton)`. Treating either as a private terminal hides the
+ * page that imports the public wrapper. The check remains syntax-only and admits only direct
+ * aliases or the same conventional HOC factories used by the render graph; arbitrary calls cannot
+ * turn a private declaration into an importable React owner.
  */
-function isDefaultComponentExportForLocal(expression: ts.Expression, localName: string): boolean {
+function isComponentExportTransportForLocal(
+  expression: ts.Expression,
+  localName: string,
+  sourceFile: ts.SourceFile,
+  depth = 0,
+  visitedNames: ReadonlySet<string> = new Set(),
+): boolean {
+  if (depth >= MAX_LOCAL_EXPORT_TRANSPORT_DEPTH) return false;
   const current = unwrapExpression(expression);
-  if (ts.isIdentifier(current)) return current.text === localName;
-  if (!ts.isCallExpression(current) || !isPreviewRenderHocFactoryCall(current)) return false;
-  return current.arguments.some((argument) => {
-    const componentArgument = unwrapExpression(argument);
-    return ts.isIdentifier(componentArgument) && componentArgument.text === localName;
-  });
+  if (ts.isIdentifier(current)) {
+    if (current.text === localName) return true;
+    if (visitedNames.has(current.text)) return false;
+    const declaration = findTopLevelVariableDeclaration(sourceFile, current.text);
+    if (declaration?.initializer === undefined) return false;
+    return isComponentExportTransportForLocal(
+      declaration.initializer,
+      localName,
+      sourceFile,
+      depth + 1,
+      new Set(visitedNames).add(current.text),
+    );
+  }
+  const hocCall = ts.isTaggedTemplateExpression(current)
+    ? unwrapExpression(current.tag)
+    : current;
+  if (!ts.isCallExpression(hocCall) || !isPreviewRenderHocFactoryCall(hocCall)) return false;
+  return hocCall.arguments.some((argument) =>
+    isComponentExportTransportForLocal(
+      argument,
+      localName,
+      sourceFile,
+      depth + 1,
+      visitedNames,
+    ),
+  );
+}
+
+/** Finds one top-level variable value without descending into runtime scopes. */
+function findTopLevelVariableDeclaration(
+  sourceFile: ts.SourceFile,
+  localName: string,
+): ts.VariableDeclaration | undefined {
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    const declaration = statement.declarationList.declarations.find(
+      (candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === localName,
+    );
+    if (declaration !== undefined) return declaration;
+  }
+  return undefined;
 }
 
 /**

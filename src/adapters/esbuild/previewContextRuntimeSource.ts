@@ -6,6 +6,7 @@
  */
 
 import { PREVIEW_COLLECTION_METHOD_NAMES } from './previewCollectionMethodNames';
+import { PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY } from './staticResources/previewRuntimeCallableFallback';
 
 /** Exact project-owned React entry required by one generated Context runtime module. */
 export interface PreviewContextRuntimeSourceOptions {
@@ -20,7 +21,8 @@ export interface PreviewContextRuntimeSourceOptions {
  * `useSyncExternalStore` boundary also subscribes to later registrations from lazy chunks, so a
  * newly evaluated component graph can gain its statically inferred Context without remounting the
  * surrounding webview document. Provider values contain no invented primitive state: they consist
- * only of proven plain object containers and extension-owned no-op callable leaves.
+ * only of proven plain object containers and extension-owned inert callable leaves. Compiler-proven
+ * Boolean callable results are retained only as copied marker evidence, never as project callbacks.
  *
  * @param options Project-owned React module selected through esbuild's browser resolver.
  * @returns JavaScript source loaded in the private Context bridge namespace.
@@ -41,7 +43,19 @@ const MAX_PROPERTY_NAME_LENGTH = 128;
 const MAX_SUBSCRIBERS = 128;
 const REACT_CONTEXT_TYPE = Symbol.for('react.context');
 const REACT_PROVIDER_TYPE = Symbol.for('react.provider');
+const PREVIEW_RUNTIME_CALL_RESULT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY)});
+const PREVIEW_TARGET_RENDER_CHAIN_BRIDGE = Symbol.for('newdlops.react-file-preview.target-render-chain');
 const STATIC_NOOP = Object.freeze(() => undefined);
+const STATIC_BOOLEAN_RESULT_FALSE = Object.freeze(Object.defineProperty(
+  () => false,
+  PREVIEW_RUNTIME_CALL_RESULT_MARKER,
+  { value: false },
+));
+const STATIC_BOOLEAN_RESULT_TRUE = Object.freeze(Object.defineProperty(
+  () => true,
+  PREVIEW_RUNTIME_CALL_RESULT_MARKER,
+  { value: true },
+));
 const ARRAY_METHOD_NAMES = new Set(${JSON.stringify(PREVIEW_COLLECTION_METHOD_NAMES)});
 const ambiguousHooks = new Set();
 const identityByHook = new Map();
@@ -177,8 +191,9 @@ function isSafePropertyName(propertyName) {
 
 /**
  * Converts a deeply frozen fallback into a non-executable structural shape.
- * Input functions are represented only as a callable marker and are never retained or invoked; the
- * materialized provider value uses the extension-owned STATIC_NOOP instead.
+ * Input functions are represented only as callable evidence and are never retained or invoked. A
+ * non-enumerable generated marker may carry one compiler-proven Boolean result; all other leaves
+ * materialize as the extension-owned STATIC_NOOP.
  */
 function readFallbackShape(value, budget, activeValues, depth) {
   if (depth > MAX_FALLBACK_DEPTH || budget.nodes >= MAX_FALLBACK_NODES) {
@@ -188,15 +203,46 @@ function readFallbackShape(value, budget, activeValues, depth) {
 
   if (typeof value === 'function') {
     try {
-      return Object.isFrozen(value) && Object.keys(value).length === 0
-        ? { children: undefined, kind: 'callable' }
-        : undefined;
+      if (!Object.isFrozen(value) || Object.keys(value).length !== 0) {
+        return undefined;
+      }
+      const resultDescriptor = Object.getOwnPropertyDescriptor(
+        value,
+        PREVIEW_RUNTIME_CALL_RESULT_MARKER,
+      );
+      if (resultDescriptor === undefined) {
+        return { children: undefined, hasCallResult: false, kind: 'callable', thunkText: Function.prototype.toString.call(value).slice(0, 320) };
+      }
+      if (
+        resultDescriptor.enumerable !== false ||
+        !Object.prototype.hasOwnProperty.call(resultDescriptor, 'value') ||
+        typeof resultDescriptor.value !== 'boolean'
+      ) {
+        return undefined;
+      }
+      return {
+        callResult: resultDescriptor.value,
+        children: undefined,
+        hasCallResult: true,
+        kind: 'callable',
+        thunkText: Function.prototype.toString.call(value).slice(0, 320),
+      };
     } catch {
       return undefined;
     }
   }
   if (value === null || typeof value !== 'object' || activeValues.has(value)) {
     return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    try {
+      return Object.isFrozen(value) && value.length === 0 && Object.keys(value).length === 0
+        ? { children: undefined, kind: 'collection' }
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   let descriptors;
@@ -244,8 +290,11 @@ function readFallbackShape(value, budget, activeValues, depth) {
 /** Creates a deterministic structural identity used to ignore duplicate module registrations. */
 function serializeFallbackShape(shape) {
   if (shape.kind === 'callable') {
-    return 'callable';
+    return shape.hasCallResult
+      ? 'callable<boolean:' + String(shape.callResult) + '>'
+      : 'callable';
   }
+  if (shape.kind === 'collection') return 'collection';
   const entries = [...shape.children.entries()].sort(([left], [right]) =>
     left.localeCompare(right),
   );
@@ -257,8 +306,17 @@ function serializeFallbackShape(shape) {
 /** Clones one internal shape before it becomes the mutable destination of a merge. */
 function cloneFallbackShape(shape) {
   if (shape.kind === 'callable') {
-    return { children: undefined, kind: 'callable' };
+    return shape.hasCallResult
+      ? {
+        callResult: shape.callResult,
+        children: undefined,
+        hasCallResult: true,
+        kind: 'callable',
+        thunkText: shape.thunkText,
+      }
+      : { children: undefined, hasCallResult: false, kind: 'callable', thunkText: shape.thunkText };
   }
+  if (shape.kind === 'collection') return { children: undefined, kind: 'collection' };
   const children = new Map();
   for (const [propertyName, child] of shape.children) {
     children.set(propertyName, cloneFallbackShape(child));
@@ -272,8 +330,10 @@ function mergeFallbackShape(destination, source) {
     return false;
   }
   if (destination.kind === 'callable') {
-    return true;
+    return destination.hasCallResult === source.hasCallResult &&
+      (!destination.hasCallResult || destination.callResult === source.callResult);
   }
+  if (destination.kind === 'collection') return true;
   for (const [propertyName, sourceChild] of source.children) {
     const destinationChild = destination.children.get(propertyName);
     if (destinationChild === undefined) {
@@ -302,10 +362,32 @@ function isArrayMethodShape(shape) {
 }
 
 /** Materializes a stable, deeply frozen structural value without preserving project callbacks. */
-function materializeFallbackShape(shape) {
+function reportPreviewContextMarkedCall(propertyPath, result) {
+  try {
+    const bridge = globalThis[PREVIEW_TARGET_RENDER_CHAIN_BRIDGE];
+    if (typeof bridge === 'function') bridge({ kind: 'marked-call', propertyPath, result });
+  } catch {}
+}
+
+function createPreviewContextMarkedBooleanCallable(result, propertyPath) {
+  return Object.freeze(Object.defineProperty(
+    () => { reportPreviewContextMarkedCall(propertyPath, result); return result; },
+    PREVIEW_RUNTIME_CALL_RESULT_MARKER,
+    { value: result },
+  ));
+}
+
+function materializeFallbackShape(shape, propertyPath = '') {
   if (shape.kind === 'callable') {
-    return STATIC_NOOP;
+    try {
+      const bridge = globalThis[PREVIEW_TARGET_RENDER_CHAIN_BRIDGE];
+      if (typeof bridge === 'function') bridge({ kind: 'specialized-context-resolver', outcome: 'materialized', thunkText: shape.thunkText });
+    } catch {}
+    return shape.hasCallResult
+      ? createPreviewContextMarkedBooleanCallable(shape.callResult, propertyPath)
+      : STATIC_NOOP;
   }
+  if (shape.kind === 'collection') return Object.freeze([]);
   if (isArrayMethodShape(shape)) {
     return Object.freeze([]);
   }
@@ -314,7 +396,7 @@ function materializeFallbackShape(shape) {
     left.localeCompare(right),
   );
   for (const [propertyName, child] of children) {
-    value[propertyName] = materializeFallbackShape(child);
+    value[propertyName] = materializeFallbackShape(child, propertyPath.length === 0 ? propertyName : propertyPath + '.' + propertyName);
   }
   return Object.freeze(value);
 }
@@ -350,8 +432,9 @@ export function registerPreviewContextIdentity(hook, context) {
 
 /**
  * Records one frozen demand-shaped fallback for an imported custom Context hook.
- * Primitive leaves, arrays, class instances, accessors, unfrozen containers, cycles, unsafe keys,
- * and excessive shapes are ignored. The accepted structure is copied before later composition.
+ * Primitive leaves, non-empty arrays, class instances, accessors, unfrozen containers, cycles,
+ * unsafe keys, and excessive shapes are ignored. Proven frozen empty collections are copied as
+ * neutral arrays before later composition.
  */
 export function registerPreviewContextRequirement(hook, fallback) {
   if (typeof hook !== 'function' || requirementCount >= MAX_HOOK_REQUIREMENTS) {
@@ -418,7 +501,13 @@ function readProviderInventory() {
   for (const [context, shape] of shapeByContext) {
     const Provider = readRawContextProvider(context);
     if (Provider !== undefined && shape.kind === 'object') {
-      providers.push({ Provider, value: materializeFallbackShape(shape) });
+      let value;
+      try {
+        value = materializeFallbackShape(shape);
+        const bridge = globalThis[PREVIEW_TARGET_RENDER_CHAIN_BRIDGE];
+        if (typeof bridge === 'function') bridge({ kind: 'specialized-context-resolver', outcome: 'materialized', thunkText: Function.prototype.toString.call(materializeFallbackShape).slice(0, 320) });
+      } catch { continue; }
+      providers.push({ Provider, value });
     }
   }
   cachedInventory = Object.freeze({

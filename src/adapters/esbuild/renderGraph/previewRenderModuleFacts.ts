@@ -632,7 +632,8 @@ function collectLocalEdges(
       ts.isIdentifier(node) &&
       node.text !== owner.localName &&
       knownLocalNames.has(node.text) &&
-      isRuntimeValueReference(node)
+      isRuntimeValueReference(node) &&
+      !isInsideTaggedTemplateBody(node, owner.analysisNode)
     ) {
       const wrapperNames = collectWrapperNames(node, owner.analysisNode);
       const routeEdge =
@@ -655,6 +656,25 @@ function collectLocalEdges(
     }
     ts.forEachChild(node, visit);
   }
+}
+
+/**
+ * Rejects value reads from a tagged template's payload while preserving reads from its tag.
+ *
+ * A styled-components selector such as `styled.div`${Section}`` consumes `Section` as CSS
+ * metadata; it does not render the component. Conversely, `styled(Section)`` legitimately wraps
+ * the component through the tag expression and remains part of the render value-flow graph.
+ */
+function isInsideTaggedTemplateBody(node: ts.Node, boundary: ts.Node): boolean {
+  let current = node;
+  while (current !== boundary && !ts.isSourceFile(current)) {
+    const parent = current.parent;
+    if (ts.isTaggedTemplateExpression(parent) && parent.template === current) {
+      return true;
+    }
+    current = parent;
+  }
+  return false;
 }
 
 /** Classifies a local read by its JSX/createElement/route context. */

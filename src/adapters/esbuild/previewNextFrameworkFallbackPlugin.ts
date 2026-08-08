@@ -285,13 +285,65 @@ function readImageSource(source) {
 /** Renders the visual image contract with no server loader or framework bootstrap. */
 const PreviewNextImage = React.forwardRef(function PreviewNextImage(properties, reference) {
   const {
-    blurDataURL, fill, loader, onLoadingComplete, placeholder, priority, quality, unoptimized,
-    src: source, style, ...imageProperties
+    blurDataURL, fill, loader, onError, onLoad, onLoadingComplete, placeholder, priority, quality,
+    unoptimized, src: source, style, ...imageProperties
   } = properties ?? {};
   const staticSource = readStaticImageData(source);
+  const imageSource = readImageSource(source);
   const imageStyle = fill === true
     ? { position: 'absolute', height: '100%', width: '100%', inset: 0, objectFit: 'cover', ...style }
     : style;
+  if (
+    typeof React.useRef !== 'function' ||
+    typeof React.useCallback !== 'function' ||
+    typeof React.useEffect !== 'function'
+  ) {
+    return React.createElement('img', {
+      ...imageProperties,
+      alt: typeof imageProperties.alt === 'string' ? imageProperties.alt : '',
+      'data-react-preview-next-image': '',
+      decoding: imageProperties.decoding ?? 'async',
+      height: imageProperties.height ?? staticSource?.height,
+      loading: priority === true ? 'eager' : imageProperties.loading,
+      onError,
+      onLoad,
+      ref: reference,
+      src: imageSource,
+      style: imageStyle,
+      width: imageProperties.width ?? staticSource?.width,
+    });
+  }
+  const imageReference = React.useRef(null);
+  const completedSource = React.useRef(undefined);
+  const assignReference = React.useCallback((node) => {
+    imageReference.current = node;
+    if (typeof reference === 'function') reference(node);
+    else if (reference !== null && typeof reference === 'object') reference.current = node;
+  }, [reference]);
+  const completeImage = React.useCallback((event) => {
+    if (completedSource.current === imageSource) return;
+    completedSource.current = imageSource;
+    if (typeof onLoad === 'function') onLoad(event);
+    if (typeof onLoadingComplete === 'function') onLoadingComplete(event.currentTarget);
+  }, [imageSource, onLoad, onLoadingComplete]);
+  React.useEffect(() => {
+    if (completedSource.current === imageSource) return undefined;
+    const node = imageReference.current;
+    if (node === null) return undefined;
+    /*
+     * A render-only webview may not be allowed to fetch an authored remote image. Next normally
+     * supplies an optimizer lifecycle around that request; this static facade has no server to do
+     * so. Dispatch one bounded load event after the real browser had a chance to win, allowing
+     * image-preload gates to reveal their authored card/layout branch instead of remaining on a
+     * permanent Skeleton. The real URL stays intact and still paints whenever it is reachable.
+     */
+    const timer = setTimeout(() => {
+      if (completedSource.current !== imageSource && imageReference.current === node) {
+        node.dispatchEvent(new Event('load'));
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [imageSource]);
   return React.createElement('img', {
     ...imageProperties,
     alt: typeof imageProperties.alt === 'string' ? imageProperties.alt : '',
@@ -299,8 +351,10 @@ const PreviewNextImage = React.forwardRef(function PreviewNextImage(properties, 
     decoding: imageProperties.decoding ?? 'async',
     height: imageProperties.height ?? staticSource?.height,
     loading: priority === true ? 'eager' : imageProperties.loading,
-    ref: reference,
-    src: readImageSource(source),
+    onError,
+    onLoad: completeImage,
+    ref: assignReference,
+    src: imageSource,
     style: imageStyle,
     width: imageProperties.width ?? staticSource?.width,
   });

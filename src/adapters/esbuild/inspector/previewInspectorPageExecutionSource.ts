@@ -9,6 +9,7 @@ import {
   shouldInstallPreviewInspectorPageRouteStatePrelude,
 } from './previewInspectorPageRouteStatePrelude';
 import { createPreviewInspectorRouteExecutionRuntimeSource } from './previewInspectorRouteExecutionRuntimeSource';
+import { isReactOverlayComponentName } from '../staticResources/reactOverlayVisibilityInference';
 import type {
   PreviewInspectorMountSurface,
   PreviewInspectorPageCompositionEdge,
@@ -85,6 +86,15 @@ export function createPreviewInspectorPageExecutionSource(
       : undefined;
   const contextualTargetEdge = authoredContextualTargetEdge ?? deferredContextualTargetEdge;
   const contextualTargetLocal = localById.get(options.candidate.runtimeTargetSurfaceId);
+  const contextualTargetWrapperExportName = selectContextualTargetOverlayRootExport(
+    options.candidate,
+    options.target,
+    options.targetModuleContract,
+  );
+  const contextualTargetWrapperLocal =
+    contextualTargetWrapperExportName === undefined
+      ? undefined
+      : 'PreviewInspectorContextualTargetOverlayRoot';
   const contextualTargetAcceptsAuthoredChild =
     authoredContextualTargetEdge !== undefined &&
     options.targetModuleContract?.transparentOrdinaryChildrenOutputExportNames.includes(
@@ -124,6 +134,12 @@ export function createPreviewInspectorPageExecutionSource(
         edge.mode !== 'sibling-after',
     );
     let current = `React.createElement(${local}, null)`;
+    if (
+      surfaceId === options.candidate.runtimeTargetSurfaceId &&
+      contextualTargetWrapperLocal !== undefined
+    ) {
+      current = `React.createElement(${contextualTargetWrapperLocal}, { open: true }, ${current})`;
+    }
     if (!authoredChild && slot !== undefined) {
       const child = render(slot.childSurfaceId, new Set(active));
       current = composeEdge(local, slot, child, current, options.candidate.routeRecipe);
@@ -219,8 +235,9 @@ export function createPreviewInspectorPageExecutionSource(
           "      if (typeof registration === 'function') registration();",
           '    };',
           '  }, [inspectorSession, contextualOwner]);',
+          `  const targetElement = inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? ', children' : ''}) ?? null;`,
           `  return inspectorSession?.shouldRenderContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, contextualOwner) === true`,
-          `    ? inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? ', children' : ''}) ?? null`,
+          `    ? ${contextualTargetWrapperLocal === undefined ? 'targetElement' : `React.createElement(${contextualTargetWrapperLocal}, { open: true }, targetElement)`}`,
           `    : ${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? 'children' : 'null'};`,
           '}',
         ];
@@ -239,6 +256,12 @@ export function createPreviewInspectorPageExecutionSource(
       ? [`import ${JSON.stringify(PREVIEW_INSPECTOR_PAGE_ROUTE_STATE_SPECIFIER)};`]
       : []),
     ...imports,
+    ...(contextualTargetWrapperExportName === undefined ||
+    contextualTargetWrapperLocal === undefined
+      ? []
+      : [
+          `import { ${contextualTargetWrapperExportName} as ${contextualTargetWrapperLocal} } from ${JSON.stringify(PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER)};`,
+        ]),
     ...(routerRuntime?.imports ?? []),
     ...virtualPageSourceRegistrations,
     ...(routerRuntime?.declarations ?? []),
@@ -278,6 +301,26 @@ export function createPreviewInspectorPageExecutionSource(
     `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${contextualRouteElement});`,
     '}',
   ].join('\n');
+}
+
+/** Finds a same-module overlay root that supplies Context to a detached Content/Portal target. */
+function selectContextualTargetOverlayRootExport(
+  candidate: PreviewInspectorPageExecutionCandidate,
+  target: { readonly exportName: string; readonly sourcePath: string },
+  contract: PreviewInspectorTargetModuleContract | undefined,
+): string | undefined {
+  if (candidate.browserCandidate.detachedTargetPlacement === undefined || contract === undefined) {
+    return undefined;
+  }
+  return [...contract.explicitExportNames]
+    .filter(
+      (exportName) =>
+        exportName !== 'default' &&
+        exportName !== target.exportName &&
+        target.exportName.startsWith(exportName) &&
+        isReactOverlayComponentName(exportName),
+    )
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))[0];
 }
 
 /**

@@ -106,12 +106,21 @@ function parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget) {
   cursor.index += 1;
   const fields = {};
   const spreads = [];
+  let representativeTypeName;
   while (cursor.index < tokens.length && tokens[cursor.index] !== '}') {
     if (budget.fields >= PREVIEW_INSPECTOR_GRAPHQL_FIELD_LIMIT) break;
     if (tokens[cursor.index] === '...') {
       cursor.index += 1;
       if (tokens[cursor.index] === 'on') {
+        const typeName = tokens[cursor.index + 1];
         cursor.index += 2;
+        if (
+          representativeTypeName === undefined &&
+          typeof typeName === 'string' &&
+          /^[_A-Za-z][_0-9A-Za-z]*$/u.test(typeName)
+        ) {
+          representativeTypeName = typeName;
+        }
         skipPreviewInspectorGraphqlDirectives(tokens, cursor);
         const inline = parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget);
         mergePreviewInspectorGraphqlFields(fields, inline.fields);
@@ -149,6 +158,9 @@ function parsePreviewInspectorGraphqlSelectionSet(tokens, cursor, budget) {
     mergePreviewInspectorGraphqlFields(fields, { [responseName]: shape });
   }
   if (tokens[cursor.index] === '}') cursor.index += 1;
+  if (representativeTypeName !== undefined && Object.hasOwn(fields, '__typename')) {
+    fields.__typename = { kind: 'literal', value: representativeTypeName };
+  }
   return { fields, kind: 'object', spreads };
 }
 
@@ -160,6 +172,11 @@ function resolvePreviewInspectorGraphqlFragments(shape, fragments, active = new 
       items: resolvePreviewInspectorGraphqlFragments(shape.items, fragments, active, depth + 1),
       kind: 'array',
     };
+  }
+  if (shape.kind === 'literal') {
+    return typeof shape.value === 'string'
+      ? { kind: 'literal', value: shape.value }
+      : { kind: 'unknown' };
   }
   if (shape.kind !== 'object') return { kind: shape.kind ?? 'unknown' };
   const fields = {};

@@ -14,9 +14,10 @@ export function createPreviewInspectorHookGraphqlRuntimeSource(): string {
 const PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT = 1_000_000;
 const previewInspectorHookGraphqlDocumentIdentities = new WeakMap();
 const previewInspectorHookGraphqlRenderPropUsages = new WeakMap();
+const previewInspectorHookGraphqlRenderPropLiteralDemands = new WeakMap();
 
 /** Registers compiler-proven render-prop demand and returns the same DocumentNode identity. */
-function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths) {
+function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawLiteralDemands) {
   if ((typeof document !== 'object' && typeof document !== 'function') || document === null ||
     !Array.isArray(rawPaths)) return document;
   const paths = [...new Set(rawPaths.filter((path) => typeof path === 'string' &&
@@ -25,7 +26,53 @@ function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths) {
   const previous = previewInspectorHookGraphqlRenderPropUsages.get(document);
   const merged = [...new Set([...(previous ?? []), ...paths])].sort().slice(0, 32);
   previewInspectorHookGraphqlRenderPropUsages.set(document, Object.freeze(merged));
+  const previousLiteralDemands = previewInspectorHookGraphqlRenderPropLiteralDemands.get(document) ?? [];
+  const literalDemands = new Map(previousLiteralDemands.map((demand) => [demand.path, demand]));
+  if (Array.isArray(rawLiteralDemands)) {
+    for (const rawDemand of rawLiteralDemands.slice(0, 32)) {
+      const demand = normalizePreviewInspectorGraphqlRenderPropLiteralDemand(rawDemand);
+      if (
+        demand !== undefined &&
+        !literalDemands.has(demand.path) &&
+        merged.includes(readPreviewInspectorGraphqlLiteralCollectionPath(demand.path)) &&
+        literalDemands.size < 32
+      ) {
+        literalDemands.set(demand.path, demand);
+      }
+    }
+  }
+  previewInspectorHookGraphqlRenderPropLiteralDemands.set(
+    document,
+    Object.freeze([...literalDemands.values()].sort((left, right) => left.path.localeCompare(right.path))),
+  );
   return document;
+}
+
+/** Validates one compiler literal demand without admitting project expressions or unsafe paths. */
+function normalizePreviewInspectorGraphqlRenderPropLiteralDemand(rawDemand) {
+  if (rawDemand === null || typeof rawDemand !== 'object') return undefined;
+  const path = rawDemand.path;
+  const value = rawDemand.value;
+  if (
+    typeof path !== 'string' ||
+    !/^data(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\.\[\]){2,12}$/u.test(path) ||
+    !path.includes('.[]') ||
+    !(
+      typeof value === 'string' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+    )
+  ) {
+    return undefined;
+  }
+  return Object.freeze({ path, value });
+}
+
+/** Returns the structural collection path that owns one item-relative literal leaf. */
+function readPreviewInspectorGraphqlLiteralCollectionPath(path) {
+  const segments = path.split('.');
+  const itemIndex = segments.lastIndexOf('[]');
+  return itemIndex < 1 ? '' : segments.slice(0, itemIndex + 1).join('.');
 }
 
 function readPreviewInspectorGraphqlRenderPropUsagePaths(readDocument) {
@@ -33,6 +80,14 @@ function readPreviewInspectorGraphqlRenderPropUsagePaths(readDocument) {
   try {
     const document = readDocument();
     return previewInspectorHookGraphqlRenderPropUsages.get(document) ?? [];
+  } catch { return []; }
+}
+
+function readPreviewInspectorGraphqlRenderPropLiteralDemands(readDocument) {
+  if (typeof readDocument !== 'function') return [];
+  try {
+    const document = readDocument();
+    return previewInspectorHookGraphqlRenderPropLiteralDemands.get(document) ?? [];
   } catch { return []; }
 }
 
@@ -133,7 +188,17 @@ function createPreviewInspectorHookGraphqlRequestIdentity(readDocument, readOpti
       .map((identity) => identity.name + ':' + typeof identity.value + ':' + String(identity.value))
       .join('\0');
     const demand = previewInspectorHookGraphqlRenderPropUsages.get(document) ?? [];
-    const demandSignature = demand.length === 0 ? '' : hashPreviewInspectorHookGraphqlRequestIdentity(demand.join('\0'));
+    const literalDemands = previewInspectorHookGraphqlRenderPropLiteralDemands.get(document) ?? [];
+    const demandEvidence = [
+      ...demand,
+      ...literalDemands.map(
+        (literalDemand) =>
+          literalDemand.path + ':' + typeof literalDemand.value + ':' + String(literalDemand.value),
+      ),
+    ];
+    const demandSignature = demandEvidence.length === 0
+      ? ''
+      : hashPreviewInspectorHookGraphqlRequestIdentity(demandEvidence.join('\0'));
     const scopedIdentity = demandSignature.length === 0 ? documentIdentity :
       hashPreviewInspectorHookGraphqlRequestIdentity(documentIdentity + '\0' + demandSignature);
     return variables.length === 0
@@ -308,6 +373,24 @@ function alignPreviewInspectorHookGraphqlStructure(value, fallback, depth = 0) {
   }
 }
 
+/** Builds the minimum data-root collection skeleton proven by one inline query render callback. */
+function createPreviewInspectorHookGraphqlRenderPropDataFallback(fallbackData, readDocument) {
+  if (typeof createPreviewInspectorRuntimeFallbackRequirementTemplate !== 'function') {
+    return fallbackData;
+  }
+  const dataPaths = readPreviewInspectorGraphqlRenderPropUsagePaths(readDocument)
+    .flatMap((path) => path.startsWith('data.') ? [path.slice('data.'.length)] : [])
+    .slice(0, 32);
+  if (dataPaths.length === 0) return fallbackData;
+  const seed = fallbackData !== null && typeof fallbackData === 'object' ? fallbackData : {};
+  try {
+    const materialized = createPreviewInspectorRuntimeFallbackRequirementTemplate(seed, dataPaths);
+    return materialized !== null && typeof materialized === 'object' ? materialized : fallbackData;
+  } catch {
+    return fallbackData;
+  }
+}
+
 /**
  * Overlays transport-state sentinels whose successful static-preview values have one answer.
  * Other inferred fields and callbacks retain the compiler fallback selected from local use.
@@ -320,9 +403,13 @@ function createPreviewInspectorHookGraphqlFallback(fallback, readDocument, readO
   const fallbackData = hasObjectFallback
     ? readPreviewInspectorHookGraphqlOwnValue(fallback, 'data')
     : undefined;
-  const alignedData = fallbackData === undefined
+  const structuralFallbackData = createPreviewInspectorHookGraphqlRenderPropDataFallback(
+    fallbackData,
+    readDocument,
+  );
+  const alignedData = structuralFallbackData === undefined
     ? data
-    : alignPreviewInspectorHookGraphqlStructure(data, fallbackData);
+    : alignPreviewInspectorHookGraphqlStructure(data, structuralFallbackData);
   const settled = hasObjectFallback ? { ...fallback, data: alignedData } : { data: alignedData };
   settled.loading = false;
   settled.fallback = null;
@@ -332,6 +419,72 @@ function createPreviewInspectorHookGraphqlFallback(fallback, readDocument, readO
     settled.refetch = Object.freeze(() => Promise.resolve({ data: alignedData }));
   }
   return Object.freeze(settled);
+}
+
+/** Applies one literal through the existing guarded generated-value merge, never mutating authored data. */
+function overlayPreviewInspectorHookGraphqlLiteralDemands(fallback, readDocument) {
+  const literalDemands = readPreviewInspectorGraphqlRenderPropLiteralDemands(readDocument);
+  return overlayPreviewInspectorGraphqlLiteralDemands(fallback, literalDemands);
+}
+
+/** Applies already-normalized literals to any selection-shaped GraphQL fallback. */
+function overlayPreviewInspectorGraphqlLiteralDemands(fallback, literalDemands) {
+  if (literalDemands.length === 0 || fallback === null || typeof fallback !== 'object') return fallback;
+  let result = fallback;
+  if (typeof createPreviewInspectorRuntimeFallbackRequirementTemplate === 'function') {
+    try {
+      const structured = createPreviewInspectorRuntimeFallbackRequirementTemplate(
+        fallback,
+        literalDemands.map((literalDemand) => literalDemand.path),
+      );
+      if (structured !== null && typeof structured === 'object') result = structured;
+    } catch {
+      result = fallback;
+    }
+  }
+  for (const literalDemand of literalDemands) {
+    const overlay = createPreviewInspectorHookGraphqlLiteralOverlay(result, literalDemand);
+    if (overlay === undefined) continue;
+    const completion = completePreviewInspectorGeneratedValue(result, overlay.value, {
+      renderGuardPaths: [overlay.renderGuardPath],
+    });
+    result = completion.changed ? completion.value : result;
+  }
+  return result;
+}
+
+/** Creates a selected-field-only generated overlay for the first structurally completed collection item. */
+function createPreviewInspectorHookGraphqlLiteralOverlay(fallback, literalDemand) {
+  const segments = literalDemand.path.split('.');
+  let current = fallback;
+  const generatedSegments = [];
+  const renderGuardSegments = [];
+  for (const segment of segments) {
+    if (segment === '[]') {
+      if (!Array.isArray(current)) return undefined;
+      const item = readPreviewInspectorHookGraphqlOwnValue(current, '0');
+      if (item === undefined) return undefined;
+      current = item;
+      generatedSegments.push(segment);
+      renderGuardSegments.push('0');
+      continue;
+    }
+    const descriptor = current !== null && (typeof current === 'object' || typeof current === 'function')
+      ? Object.getOwnPropertyDescriptor(current, segment)
+      : undefined;
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return undefined;
+    current = descriptor.value;
+    generatedSegments.push(segment);
+    renderGuardSegments.push(segment);
+  }
+  let generated = literalDemand.value;
+  for (let index = generatedSegments.length - 1; index >= 0; index -= 1) {
+    generated = generatedSegments[index] === '[]' ? [generated] : { [generatedSegments[index]]: generated };
+  }
+  return {
+    renderGuardPath: renderGuardSegments.join('.'),
+    value: generated,
+  };
 }
 
 /** Detects the loading/error wrapper result that must yield to selection-shaped static data. */

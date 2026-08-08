@@ -10,11 +10,15 @@ export function createPreviewInspectorRequirementFrontierRuntimeSource(): string
 const PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT = 8;
 const PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT = 4;
 
-/** Reports whether compiler evidence names a property that Smart fill can actually materialize. */
+/** Reports whether compiler evidence names a shape or exact scalar Smart fill can materialize. */
 function hasPreviewInspectorMaterializableHookRequirement(record) {
-  return (record?.requiredPaths ?? []).some((path) =>
+  const hasMaterializablePath = (record?.requiredPaths ?? []).some((path) =>
     typeof path === 'string' && path.length > 0 && path !== '<root>' && path !== '<root>()',
   );
+  const hasExactSmartScalar = (record?.smartPathValues ?? []).some((item) =>
+    typeof item?.path === 'string' && item.path.length > 0,
+  );
+  return hasMaterializablePath || hasExactSmartScalar;
 }
 
 /** Returns whether a formerly Smart record has discovered a shape not covered by its last fill. */
@@ -22,7 +26,10 @@ function hasPreviewInspectorStaleSmartRequirement(record) {
   if (record?.mode !== 'smart' && record?.mode !== 'smart-manual') return false;
   const signatures = previewInspectorSession.runtimeFallbackSmartPathSignatures;
   if (!(signatures instanceof Map)) return true;
-  const current = createPreviewInspectorRuntimeFallbackPathSignature(record.requiredPaths);
+  const current = createPreviewInspectorRuntimeFallbackSmartSignature(
+    record,
+    record.requiredPaths,
+  );
   return signatures.get(record.id) !== current;
 }
 
@@ -218,9 +225,10 @@ function createPreviewInspectorActionableRequirementSignature(batch) {
   const requestIds = new Set(batch?.requestIds ?? []);
   const hooks = readPreviewInspectorRuntimeFallbacks()
     .filter((record) => hookIds.has(record.id))
-    .map((record) => [record.id, createPreviewInspectorRuntimeFallbackPathSignature(
-      record.requiredPaths,
-    )])
+    .map((record) => [
+      record.id,
+      createPreviewInspectorRuntimeFallbackSmartSignature(record, record.requiredPaths),
+    ])
     .sort((left, right) => left[0].localeCompare(right[0]));
   const requests = readPreviewInspectorDataRequests()
     .filter((record) => requestIds.has(record.id))
@@ -298,6 +306,127 @@ function schedulePreviewInspectorTargetRequirementContinuation(reachabilityKey) 
     notifyPreviewInspector();
     schedulePreviewInspectorTreeRefresh();
   });
+  return true;
+}
+
+/**
+ * Coalesces a late, uniquely correlated target failure back into the same page corridor.
+ * Unsupported errors never change reachability state beyond the runtime-health containment.
+ */
+function schedulePreviewInspectorTargetFailureRepairContinuation(reachabilityKey, errorRecord) {
+  if (typeof reachabilityKey !== 'string' || reachabilityKey.length === 0) return false;
+  const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
+  if (
+    state === undefined || state.directTarget === true || state.pageRootCommitted !== true ||
+    ['resolver-cycle-detected', 'resolver-limit-reached', 'resolver-rolled-back'].includes(state.status)
+  ) return false;
+  const failure = createPreviewInspectorTargetFailureRepairRecord(
+    state,
+    errorRecord,
+    { componentStack: errorRecord?.componentStack, ownerName: errorRecord?.ownerName },
+  );
+  const mutation = createPreviewInspectorTargetFailurePropMutation(
+    failure,
+    { automatic: true, state },
+  );
+  if (mutation === undefined) return false;
+  const pending = previewInspectorSession.targetFailureContinuationPendingKeys ??= new Set();
+  if (pending.has(reachabilityKey)) return false;
+  pending.add(reachabilityKey);
+  state.pendingTargetRepairFailure = failure;
+  const schedule = globalThis.queueMicrotask ?? ((callback) => Promise.resolve().then(callback));
+  schedule(() => {
+    pending.delete(reachabilityKey);
+    const current = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
+    if (
+      current !== state || previewInspectorSession.activeTargetReachabilityKey !== reachabilityKey ||
+      current.directTarget === true ||
+      ['resolver-cycle-detected', 'resolver-limit-reached', 'resolver-rolled-back'].includes(current.status)
+    ) return;
+    current.exhausted = false;
+    current.idlePasses = 0;
+    current.status = 'probing';
+    current.probeRevision = Number.isSafeInteger(current.probeRevision)
+      ? current.probeRevision + 1
+      : 1;
+    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
+  });
+  return true;
+}
+
+/**
+ * Applies one exact selected-target prop repair as an ordinary convergence transaction.
+ * The semantic fingerprint is admitted before mutation, so A-A stalls and A-B-A cycles share the
+ * same history and pass limit as hook, data, and condition progress.
+ */
+function advancePreviewInspectorTargetFailureRequirement(state) {
+  const failure = readPreviewInspectorTargetFailureRepairRecord(state);
+  const mutation = createPreviewInspectorTargetFailurePropMutation(
+    failure,
+    { automatic: true, state },
+  );
+  if (mutation === undefined) return false;
+  const convergence = readPreviewInspectorRequirementConvergence(state);
+  let search = readPreviewInspectorMinimumRequirementSearch(state);
+  if (
+    ['cycle-detected', 'limit-reached', 'rolled-back'].includes(search?.status) ||
+    convergence.totalPasses >= PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT
+  ) return false;
+  search ??= {};
+  Object.assign(search, {
+    observedPathCount: readPreviewInspectorTargetReachabilityRequiredPaths(state).length,
+    origin: 'target-prop-auto',
+    pass: convergence.totalPasses,
+    status: 'searching',
+    totalPasses: convergence.totalPasses,
+  });
+  previewInspectorSession.minimumRequirementSearchByKey.set(state.key, search);
+  const batch = { hookIds: [], requestIds: [], targetRepair: mutation };
+  const frontier = beginPreviewInspectorRequirementFrontier(state, search, batch);
+  if (frontier === undefined) return false;
+  const rollbackSnapshot = capturePreviewInspectorRequirementAutoRollback(state, batch);
+  const result = applyPreviewInspectorTargetFailurePropMutation(
+    mutation,
+    { commit: false },
+  );
+  if (result.changed !== true) {
+    completePreviewInspectorRequirementFrontier(search, frontier, false);
+    return false;
+  }
+  let traceId;
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    traceId = recordPreviewInspectorBlockerAutoDecision({
+      action: 'Repair compiler-proven target props and retry',
+      blockerId: failure.id,
+      blockerKind: 'target-error',
+      blockerName: 'Component error · ' + failure.blockedComponentName,
+      generatedPaths: mutation.changedPaths,
+      mode: 'target-prop-repair-auto',
+      ownerName: failure.exportName,
+      reason: failure.headline,
+      selectedValue: {
+        errorIdentity: mutation.errorIdentity,
+        requiredPaths: mutation.requirementRecords,
+        resultingValues: mutation.draft.value,
+      },
+      sourcePath: failure.sourcePath,
+      startsRenderAttempt: true,
+      targetReachabilityKey: state.key,
+    });
+  }
+  if (rollbackSnapshot !== undefined) rollbackSnapshot.mode = 'target-prop-repair-auto';
+  registerPreviewInspectorRequirementAutoRollback(traceId, rollbackSnapshot);
+  completePreviewInspectorRequirementFrontier(search, frontier, true);
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.lastTargetRepairFingerprint = mutation.fingerprint;
+  state.status = 'repairing-target-props';
+  state.probeRevision += 1;
+  if (typeof persistPreviewInspectorState === 'function') persistPreviewInspectorState();
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
   return true;
 }
 

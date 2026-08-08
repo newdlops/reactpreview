@@ -9,6 +9,7 @@ import type {
   PreviewInspectorMountSurface,
   PreviewInspectorPageExecutionCandidate,
 } from './previewInspectorPageExecutionTypes';
+import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
 import { collectPreviewInspectorRuntimeImportInventory } from './previewInspectorRuntimeImportInventory';
 import {
   createPreviewInspectorLocalComponentSlice,
@@ -59,6 +60,8 @@ export {
 const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 const STYLE_OR_ASSET_PATTERN =
   /\.(?:css|less|sass|scss|svg|png|jpe?g|gif|webp|avif|woff2?|ttf|eot)$/iu;
+/** Keeps a small lazy shell intact while preventing route catalogs from becoming page chrome. */
+const MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS = 8;
 export interface PreparePreviewInspectorBundleFrontierOptions {
   readonly bundleDiagnostics?: PreviewInspectorBundleDiagnosticsCollector;
   /** Runtime bridge modules that the generated execution entry evaluates beside selected surfaces. */
@@ -82,7 +85,12 @@ export interface PreparedPreviewInspectorBundleFrontier {
 interface FrontierSourceQueueItem {
   readonly depth: number;
   readonly kind:
-    'exact' | 'optional-component' | 'optional-support' | 'support' | 'target-component';
+    | 'exact'
+    | 'optional-component'
+    | 'optional-support'
+    | 'page-shell-component'
+    | 'support'
+    | 'target-component';
   readonly optionalEdge?: Omit<PreviewInspectorProjectedEdge, 'reason'>;
   readonly sourcePath: string;
 }
@@ -138,9 +146,13 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
   const projectedEdges: PreviewInspectorProjectedEdge[] = [];
   const optionalExportsByPath = new Map<string, Set<string>>();
   const optionalIdentities = new Set<string>();
-  for (const visualPath of options.executionCandidate === undefined
-    ? [...(options.plan.shallowVisualPaths ?? [])].sort(compareVisualPaths)
-    : []) {
+  for (const visualPath of [...(options.plan.shallowVisualPaths ?? [])]
+    .filter(
+      (candidate) =>
+        options.executionCandidate === undefined ||
+        exactSeedPaths.has(path.normalize(candidate.importerPath)),
+    )
+    .sort(compareVisualPaths)) {
     if (visualPath.relation === 'route-alternative' || !checkAuthoredPath(visualPath.sourcePath))
       continue;
     const sourcePath = path.normalize(visualPath.sourcePath);
@@ -187,6 +199,8 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       readRawSource,
       resolveModule,
       checkAuthoredPath,
+      'static',
+      'target-component',
     );
     await collectExactVisualAdmissions(
       authenticRuntimeTargetSurface,
@@ -197,6 +211,48 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       resolveModule,
       checkAuthoredPath,
       'dynamic-import',
+      'target-component',
+    );
+  }
+  const authenticExecutionRootSurface = options.executionCandidate?.criticalSurfaces.find(
+    (surface) =>
+      surface.id === options.executionCandidate?.executionRootSurfaceId &&
+      surface.strategy === 'authentic-module-export',
+  );
+  if (
+    authenticExecutionRootSurface !== undefined &&
+    (authenticRuntimeTargetSurface === undefined ||
+      authenticExecutionRootSurface.sourcePath !== authenticRuntimeTargetSurface.sourcePath ||
+      authenticExecutionRootSurface.exportName !== authenticRuntimeTargetSurface.exportName)
+  ) {
+    /*
+     * The application/page root owns the authored chrome around the selected target. Promote its
+     * directly rendered layout boundary ahead of generic support closure so a large route catalog
+     * cannot turn the sidebar/topbar into a structural placeholder before optional admission runs.
+     */
+    await collectExactVisualAdmissions(
+      authenticExecutionRootSurface,
+      optionalExportsByPath,
+      optionalIdentities,
+      pending,
+      readRawSource,
+      resolveModule,
+      checkAuthoredPath,
+      'static',
+      'page-shell-component',
+      options.plan,
+    );
+    await collectExactVisualAdmissions(
+      authenticExecutionRootSurface,
+      optionalExportsByPath,
+      optionalIdentities,
+      pending,
+      readRawSource,
+      resolveModule,
+      checkAuthoredPath,
+      'dynamic-import',
+      'page-shell-component',
+      options.plan,
     );
   }
   for (const surface of options.executionCandidate?.optionalSurfaces ?? []) {
@@ -485,7 +541,9 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         : diagnostics.measureQueueSort(() => queue.popMinimum());
     if (item === undefined || admittedKinds.has(item.sourcePath)) continue;
     if (
-      (item.kind === 'optional-component' || item.kind === 'target-component') &&
+      (item.kind === 'optional-component' ||
+        item.kind === 'page-shell-component' ||
+        item.kind === 'target-component') &&
       options.executionCandidate !== undefined
     ) {
       const node = await readNode(item.sourcePath);
@@ -517,13 +575,36 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         shallowInventory === undefined || shallowInventory.truncated
           ? new Map<string, PreviewInspectorShallowProjection>()
           : shallowInventory.projectionsBySpecifier;
+      const pageShellRouteOnlySpecifiers =
+        item.kind === 'page-shell-component' && sourceText !== undefined
+          ? collectPreviewStaticRouteProjectionInventory(item.sourcePath, sourceText)
+              .projectionsBySpecifier
+          : undefined;
+      const pageShellDynamicInventory =
+        item.kind === 'page-shell-component' && sourceText !== undefined
+          ? collectPreviewDynamicImportInventory(item.sourcePath, sourceText)
+          : undefined;
+      const hasBroadPageShellDynamicRegistry =
+        pageShellDynamicInventory !== undefined &&
+        (!pageShellDynamicInventory.reliable ||
+          pageShellDynamicInventory.truncated ||
+          pageShellDynamicInventory.specifiers.length >
+            MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS);
       const enqueueShallowTarget = (
         targetPath: string,
         moduleSpecifier: string,
         occurrenceStart: number,
+        edgeKind: 'static' | 'dynamic-import',
       ): boolean => {
         const projection = shallowProjections.get(moduleSpecifier);
         if (projection === undefined) return false;
+        if (
+          item.kind === 'page-shell-component' &&
+          edgeKind === 'static' &&
+          pageShellRouteOnlySpecifiers?.has(moduleSpecifier) === true
+        ) {
+          return false;
+        }
         const normalizedTarget = path.normalize(targetPath);
         const existingExports = optionalExportsByPath.get(normalizedTarget);
         if (existingExports !== undefined) {
@@ -536,7 +617,12 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           optionalIdentities.add(identity);
           queue.push({
             depth: item.depth + 1,
-            kind: 'optional-component',
+            kind:
+              item.kind === 'target-component'
+                ? 'target-component'
+                : item.kind === 'page-shell-component'
+                  ? 'page-shell-component'
+                  : 'optional-component',
             optionalEdge: Object.freeze({
               exportNames: Object.freeze([...projection.exportNames]),
               importerPath: item.sourcePath,
@@ -554,10 +640,22 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         if (edge.kind !== 'dynamic-import') continue;
         const resolution = resolveDynamicEdge(node, edge);
         if (resolution.targetPath === undefined) continue;
+        if (
+          item.kind === 'page-shell-component' &&
+          hasBroadPageShellDynamicRegistry &&
+          !isSelectedDynamicVisualPath(options.plan, item.sourcePath, resolution.targetPath)
+        ) {
+          continue;
+        }
         const edgeIdentity = createRuntimeEdgeIdentity(item.sourcePath, edge);
         if (processedStaticEdges.has(edgeIdentity)) continue;
         if (
-          enqueueShallowTarget(resolution.targetPath, edge.moduleSpecifier, edge.occurrenceStart)
+          enqueueShallowTarget(
+            resolution.targetPath,
+            edge.moduleSpecifier,
+            edge.occurrenceStart,
+            'dynamic-import',
+          )
         ) {
           processedStaticEdges.add(edgeIdentity);
           authoredEdgeCount += 1;
@@ -583,7 +681,12 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         if (
           edge.moduleSpecifier !== undefined &&
           edge.occurrenceStart !== undefined &&
-          enqueueShallowTarget(edge.targetPath, edge.moduleSpecifier, edge.occurrenceStart)
+          enqueueShallowTarget(
+            edge.targetPath,
+            edge.moduleSpecifier,
+            edge.occurrenceStart,
+            'static',
+          )
         ) {
           continue;
         }
@@ -598,7 +701,14 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           );
           continue;
         }
-        if (!optionalExportsByPath.has(edge.targetPath)) {
+        /*
+         * A path-level optional reservation belongs to another rendered importer and does not
+         * satisfy this authentic module's unprojectable static import. If that earlier optional
+         * demand is later projected away, suppressing the support edge here leaves esbuild with a
+         * real authored import outside the frozen frontier. Queue mandatory support until the
+         * target is actually admitted; duplicate queue entries collapse at admission time.
+         */
+        if (!admittedKinds.has(edge.targetPath)) {
           queue.push({
             depth: item.depth + 1,
             kind: 'optional-support',
@@ -797,6 +907,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
   const optionalSourcePaths = authenticSourcePaths.filter(
     (sourcePath) =>
       admittedKinds.get(sourcePath) === 'optional-component' ||
+      admittedKinds.get(sourcePath) === 'page-shell-component' ||
       admittedKinds.get(sourcePath) === 'target-component',
   );
   // A component demand can be admitted through an exact closure as support.
@@ -848,7 +959,9 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
           sourcePath,
           kind === 'exact'
             ? ('critical-surface' as const)
-            : kind === 'optional-component' || kind === 'target-component'
+            : kind === 'optional-component' ||
+                kind === 'page-shell-component' ||
+                kind === 'target-component'
               ? ('optional-surface' as const)
               : kind === 'optional-support'
                 ? ('optional-support' as const)
@@ -1099,6 +1212,11 @@ async function collectExactVisualAdmissions(
   resolveModule: (specifier: string, importer: string) => string | undefined,
   checkAuthoredPath: (sourcePath: string) => boolean,
   edgeKind: 'static' | 'dynamic-import' = 'static',
+  queueKind: Extract<
+    FrontierSourceQueueItem['kind'],
+    'optional-component' | 'page-shell-component' | 'target-component'
+  > = 'optional-component',
+  plan?: PreviewInspectorAncestorPlan,
 ): Promise<void> {
   const importerPath = path.normalize(reference.sourcePath);
   const sourceText = await readSource(importerPath);
@@ -1110,7 +1228,22 @@ async function collectExactVisualAdmissions(
     new Set([reference.exportName]),
   );
   if (projections.truncated) return;
+  const pageShellRouteOnlySpecifiers =
+    queueKind === 'page-shell-component' && edgeKind === 'static'
+      ? collectPreviewStaticRouteProjectionInventory(importerPath, sourceText)
+          .projectionsBySpecifier
+      : undefined;
+  const pageShellDynamicInventory =
+    queueKind === 'page-shell-component' && edgeKind === 'dynamic-import'
+      ? collectPreviewDynamicImportInventory(importerPath, sourceText)
+      : undefined;
+  const hasBroadPageShellDynamicRegistry =
+    pageShellDynamicInventory !== undefined &&
+    (!pageShellDynamicInventory.reliable ||
+      pageShellDynamicInventory.truncated ||
+      pageShellDynamicInventory.specifiers.length > MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS);
   for (const projection of projections.projectionsBySpecifier.values()) {
+    if (pageShellRouteOnlySpecifiers?.has(projection.moduleSpecifier) === true) continue;
     const importEdge = inventory.find(
       (edge) =>
         (edgeKind === 'dynamic-import'
@@ -1121,9 +1254,16 @@ async function collectExactVisualAdmissions(
     const resolved = resolveModule(projection.moduleSpecifier, importerPath);
     if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
     const sourcePath = path.normalize(resolved);
+    if (
+      hasBroadPageShellDynamicRegistry &&
+      (plan === undefined || !isSelectedDynamicVisualPath(plan, importerPath, sourcePath))
+    ) {
+      continue;
+    }
     const existingExports = optionalExportsByPath.get(sourcePath);
     if (existingExports !== undefined) {
       for (const exportName of projection.exportNames) existingExports.add(exportName);
+      promotePendingPreviewInspectorComponent(pending, sourcePath, queueKind);
       continue;
     }
     const identity = `${sourcePath}\0${projection.exportNames.join('\0')}`;
@@ -1138,8 +1278,22 @@ async function collectExactVisualAdmissions(
     if (optionalIdentities.has(identity)) continue;
     optionalIdentities.add(identity);
     optionalExportsByPath.set(sourcePath, new Set(projection.exportNames));
-    pending.push({ depth: 1, kind: 'optional-component', optionalEdge: edge, sourcePath });
+    pending.push({ depth: 1, kind: queueKind, optionalEdge: edge, sourcePath });
   }
+}
+/** Raises an already-discovered visual root without duplicating its immutable incoming edge. */
+function promotePendingPreviewInspectorComponent(
+  pending: FrontierSourceQueueItem[],
+  sourcePath: string,
+  kind: Extract<
+    FrontierSourceQueueItem['kind'],
+    'optional-component' | 'page-shell-component' | 'target-component'
+  >,
+): void {
+  const index = pending.findIndex((item) => item.sourcePath === sourcePath);
+  const item = index < 0 ? undefined : pending[index];
+  if (item === undefined || queuePriority(item.kind) <= queuePriority(kind)) return;
+  pending[index] = { ...item, kind };
 }
 /** Lists only named exports the generated VirtualPage can mount or compose as authored roots. */
 function collectExactVisualRoots(
@@ -1190,7 +1344,15 @@ function compareQueueItems(left: FrontierSourceQueueItem, right: FrontierSourceQ
 }
 /** Finishes mandatory exact closure before optional component transactions. */
 function queuePriority(kind: FrontierSourceQueueItem['kind']): number {
-  return kind === 'exact' ? 0 : kind === 'target-component' ? 1 : kind === 'support' ? 2 : 3;
+  return kind === 'exact'
+    ? 0
+    : kind === 'target-component'
+      ? 1
+      : kind === 'page-shell-component'
+        ? 2
+        : kind === 'support'
+          ? 3
+          : 4;
 }
 /** Counts current optional support entries; exact sources are deliberately never charged to it. */
 function countKinds(kinds: ReadonlyMap<string, AdmittedKind>, kind: AdmittedKind): number {

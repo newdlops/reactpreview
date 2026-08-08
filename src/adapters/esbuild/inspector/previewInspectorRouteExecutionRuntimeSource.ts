@@ -4,23 +4,62 @@ import { createPreviewInspectorRouteHref } from './previewInspectorRouteHref';
 import { createPreviewInspectorV6RoutePattern } from './previewInspectorRoutePattern';
 import { relativizePreviewInspectorRoutePattern } from './previewInspectorRoutePatternMatch';
 
+/** Marks the one intentional exception used to activate a statically proven route error slot. */
+export const PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY =
+  'newdlops.react-file-preview.route-error-probe';
+
 export interface CreatePreviewInspectorRouteExecutionRuntimeSourceOptions {
   readonly recipe: PreviewInspectorRouteExecutionRecipe;
   readonly renderedPage: string;
   readonly routeSurfaceLocals: readonly string[];
 }
 
+interface PreviewInspectorRouteExecutionRuntimeSource {
+  readonly declarations?: readonly string[];
+  readonly imports: readonly string[];
+  readonly routeElement: string;
+}
+
 /**
  * Uses only MemoryRouter plus the mounted surfaces already admitted into the execution plan.
- * The generated route tree deliberately has no loader, action, error-element, or sibling branch.
+ * The generated route tree never invokes authored loaders or actions. A statically proven
+ * errorElement target receives one isolated data-router error branch instead of an app registry.
  */
 export function createPreviewInspectorRouteExecutionRuntimeSource(
   options: CreatePreviewInspectorRouteExecutionRuntimeSourceOptions,
-): { readonly imports: readonly string[]; readonly routeElement: string } | undefined {
+): PreviewInspectorRouteExecutionRuntimeSource | undefined {
   if (options.recipe.rootOwnsRouter) return undefined;
+  if (options.recipe.targetRole === 'error-element') {
+    return options.recipe.kind === 'react-router-v6'
+      ? createV6ErrorElementRuntime(options)
+      : undefined;
+  }
   if (options.recipe.kind === 'react-router-v6') return createV6Runtime(options);
   if (options.recipe.kind === 'react-router-v5') return createV5Runtime(options);
   return undefined;
+}
+
+/** Mounts the selected target as a real data-router errorElement without authored loaders. */
+function createV6ErrorElementRuntime(
+  options: CreatePreviewInspectorRouteExecutionRuntimeSourceOptions,
+): PreviewInspectorRouteExecutionRuntimeSource {
+  const routeHref = createPreviewInspectorRouteHref(
+    options.recipe.pathname,
+    options.recipe.searchParams,
+  );
+  return Object.freeze({
+    declarations: Object.freeze([
+      "const PreviewInspectorRouteError = new Error('React Preview route error probe');",
+      `Object.defineProperty(PreviewInspectorRouteError, Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY)}), { value: true });`,
+      'function PreviewInspectorRouteErrorTrigger() { throw PreviewInspectorRouteError; }',
+      `const PreviewInspectorRouteErrorRouter = createMemoryRouter([{ path: '*', element: React.createElement(PreviewInspectorRouteErrorTrigger), errorElement: ${options.renderedPage} }], { initialEntries: [${JSON.stringify(routeHref)}] });`,
+    ]),
+    imports: Object.freeze([
+      `import { createMemoryRouter, RouterProvider } from '${options.recipe.routerModuleSpecifier ?? 'react-router-dom'}';`,
+    ]),
+    routeElement:
+      'React.createElement(RouterProvider, { router: PreviewInspectorRouteErrorRouter })',
+  });
 }
 
 /** Emits a nested v6 Route tree so authored Outlet layouts receive their selected child. */

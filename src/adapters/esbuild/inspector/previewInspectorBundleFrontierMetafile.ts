@@ -1,4 +1,5 @@
 /** Verifies that esbuild did not materialize an authored source outside the frozen frontier. */
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Metafile } from 'esbuild';
 import type { PreviewCompilerBundleFrontierActivity } from '../../../domain/previewCompilerActivity';
@@ -9,12 +10,14 @@ import {
 import { createPreviewInspectorFrontierMismatchEvidence } from './previewInspectorFrontierMismatchEvidence';
 import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { PREVIEW_INSPECTOR_PAGE_SURFACE_NAMESPACE } from '../previewPluginProtocol';
+import { resolvePreviewYarnVirtualPath } from '../previewYarnVirtualPath';
 
 const SOURCE_MODULE_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
 
 export interface VerifyPreviewInspectorBundleFrontierMetafileOptions {
   readonly activity: PreviewCompilerBundleFrontierActivity;
   readonly authenticSourcePaths: readonly string[];
+  readonly packageDemandSourcePaths?: readonly string[];
   readonly executionSurfaces?: readonly {
     readonly id: string;
     readonly sourcePath: string;
@@ -33,20 +36,37 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
   const authenticSourcePaths = new Set(
     options.authenticSourcePaths.map((sourcePath) => canonicalizeExistingPath(sourcePath)),
   );
-  const unexpectedInputs = Object.keys(options.metafile.inputs)
+  const packageDemandSourcePaths = new Set(
+    (options.packageDemandSourcePaths ?? []).map((sourcePath) =>
+      canonicalizeExistingPath(sourcePath),
+    ),
+  );
+  const metafileInputs = Object.keys(options.metafile.inputs)
     .filter(isAuthoredMetafileInputPath)
-    .map((sourcePath) => canonicalizeExistingPath(path.resolve(workspaceRoot, sourcePath)))
-    .sort()
-    .filter(
-      (sourcePath) =>
-        isAuthoredWorkspaceSource(workspaceRoot, sourcePath) &&
-        !authenticSourcePaths.has(sourcePath),
-    );
+    .map((sourcePath) => normalizeAuthoredMetafileInput(workspaceRoot, sourcePath));
+  const admittedYarnVirtualPackageRoots = collectAdmittedYarnVirtualPackageRoots(
+    options,
+    workspaceRoot,
+    authenticSourcePaths,
+    packageDemandSourcePaths,
+  );
+  const unexpectedInputs = [
+    ...new Set(
+      metafileInputs
+        .filter(
+          (input) =>
+            isAuthoredWorkspaceSource(workspaceRoot, input.sourcePath) &&
+            !authenticSourcePaths.has(input.sourcePath) &&
+            !isAdmittedYarnVirtualPackageInput(input, admittedYarnVirtualPackageRoots),
+        )
+        .map((input) => input.sourcePath),
+    ),
+  ].sort();
   const unexpectedInputSet = new Set(unexpectedInputs);
   const unexpectedWithEdges = unexpectedInputs.map((sourcePath) => ({
-      incomingEdge: findIncomingAuthoredEdge(options, workspaceRoot, sourcePath),
-      sourcePath,
-    }));
+    incomingEdge: findIncomingAuthoredEdge(options, workspaceRoot, sourcePath),
+    sourcePath,
+  }));
   const boundaryEscape =
     unexpectedWithEdges.find(
       ({ incomingEdge }) =>
@@ -67,7 +87,7 @@ export function verifyPreviewInspectorBundleFrontierMetafile(
         cause: 'unexpected-metafile-input',
         sourcePath: unexpectedInput,
         workspaceRoot,
-        ...(incomingEdge === undefined ? {} : incomingEdge),
+        ...(incomingEdge ?? {}),
       }),
     );
   }
@@ -97,11 +117,11 @@ function findIncomingAuthoredEdge(
     left.localeCompare(right),
   )) {
     if (!isAuthoredMetafileInputPath(inputPath)) continue;
-    const importerPath = canonicalizeExistingPath(path.resolve(workspaceRoot, inputPath));
+    const importerPath = normalizeAuthoredMetafileInput(workspaceRoot, inputPath).sourcePath;
     if (!isAuthoredWorkspaceSource(workspaceRoot, importerPath)) continue;
     for (const imported of input.imports) {
       if (imported.external === true || !isAuthoredMetafileInputPath(imported.path)) continue;
-      const importedPath = canonicalizeExistingPath(path.resolve(workspaceRoot, imported.path));
+      const importedPath = normalizeAuthoredMetafileInput(workspaceRoot, imported.path).sourcePath;
       if (importedPath !== targetPath) continue;
       return {
         importerPath,
@@ -129,8 +149,151 @@ function hasExecutionSurface(
   const sourcePath = canonicalizeExistingPath(surface.sourcePath);
   return Object.keys(options.metafile.inputs).some((inputPath) => {
     if (!isAuthoredMetafileInputPath(inputPath)) return false;
-    return canonicalizeExistingPath(path.resolve(options.workspaceRoot, inputPath)) === sourcePath;
+    return (
+      normalizeAuthoredMetafileInput(options.workspaceRoot, inputPath).sourcePath === sourcePath
+    );
   });
+}
+
+interface NormalizedAuthoredMetafileInput {
+  readonly sourcePath: string;
+  readonly yarnVirtual: boolean;
+}
+
+/** Uses the authored filesystem identity while retaining proof that esbuild used a Yarn locator. */
+function normalizeAuthoredMetafileInput(
+  workspaceRoot: string,
+  sourcePath: string,
+): NormalizedAuthoredMetafileInput {
+  const lexicalPath = path.resolve(workspaceRoot, sourcePath);
+  const physicalPath = resolvePreviewYarnVirtualPath(lexicalPath, workspaceRoot);
+  return {
+    sourcePath: canonicalizeExistingPath(physicalPath ?? lexicalPath),
+    yarnVirtual:
+      physicalPath !== undefined && path.normalize(physicalPath) !== path.normalize(lexicalPath),
+  };
+}
+
+/**
+ * Admits only virtual workspace packages reached through a frozen package-demand source.
+ *
+ * A PnP locator is dependency materialization, but its physical target may be authored source in a
+ * monorepo. Requiring both the approved importer and a matching package manifest keeps that source
+ * distinguishable from an arbitrary authored frontier escape. Relative children remain confined to
+ * the proven package root; nested workspace packages require their own bare package edge.
+ */
+function collectAdmittedYarnVirtualPackageRoots(
+  options: VerifyPreviewInspectorBundleFrontierMetafileOptions,
+  workspaceRoot: string,
+  authenticSourcePaths: ReadonlySet<string>,
+  packageDemandSourcePaths: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const packageRoots = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [inputPath, input] of Object.entries(options.metafile.inputs)) {
+      if (!isAuthoredMetafileInputPath(inputPath)) continue;
+      const importer = normalizeAuthoredMetafileInput(workspaceRoot, inputPath);
+      const authenticPackageDemand =
+        authenticSourcePaths.has(importer.sourcePath) &&
+        packageDemandSourcePaths.has(importer.sourcePath);
+      if (!authenticPackageDemand && !isAdmittedYarnVirtualPackageInput(importer, packageRoots)) {
+        continue;
+      }
+      for (const imported of input.imports) {
+        const moduleSpecifier = imported.original;
+        if (
+          imported.external === true ||
+          moduleSpecifier === undefined ||
+          !isBarePackageSpecifier(moduleSpecifier) ||
+          !isAuthoredMetafileInputPath(imported.path)
+        ) {
+          continue;
+        }
+        const target = normalizeAuthoredMetafileInput(workspaceRoot, imported.path);
+        if (!target.yarnVirtual) continue;
+        const packageRoot = findMatchingWorkspacePackageRoot(
+          workspaceRoot,
+          target.sourcePath,
+          readPackageName(moduleSpecifier),
+        );
+        if (packageRoot !== undefined && !packageRoots.has(packageRoot)) {
+          packageRoots.add(packageRoot);
+          changed = true;
+        }
+      }
+    }
+  }
+  return packageRoots;
+}
+
+/** Accepts a virtual input only while its resolved source remains in a proven package boundary. */
+function isAdmittedYarnVirtualPackageInput(
+  input: NormalizedAuthoredMetafileInput,
+  packageRoots: ReadonlySet<string>,
+): boolean {
+  return (
+    input.yarnVirtual &&
+    [...packageRoots].some((packageRoot) => isPathInside(packageRoot, input.sourcePath))
+  );
+}
+
+/** Returns the package portion of a bare specifier without accepting URLs or relative paths. */
+function readPackageName(moduleSpecifier: string): string | undefined {
+  if (
+    moduleSpecifier.startsWith('.') ||
+    moduleSpecifier.startsWith('/') ||
+    path.isAbsolute(moduleSpecifier) ||
+    moduleSpecifier.includes(':')
+  ) {
+    return undefined;
+  }
+  const [firstSegment, secondSegment] = moduleSpecifier.split('/');
+  if (firstSegment === undefined || firstSegment.length === 0) return undefined;
+  if (!moduleSpecifier.startsWith('@')) return firstSegment;
+  return secondSegment === undefined || secondSegment.length === 0
+    ? undefined
+    : `${firstSegment}/${secondSegment}`;
+}
+
+/** Reports whether the import specifier names a package rather than a path or URL. */
+function isBarePackageSpecifier(moduleSpecifier: string): boolean {
+  return readPackageName(moduleSpecifier) !== undefined;
+}
+
+/** Finds a physical workspace package whose declared name proves the bare PnP edge. */
+function findMatchingWorkspacePackageRoot(
+  workspaceRoot: string,
+  sourcePath: string,
+  packageName: string | undefined,
+): string | undefined {
+  if (packageName === undefined || !isPathInside(workspaceRoot, sourcePath)) return undefined;
+  let directoryPath = path.dirname(sourcePath);
+  while (isPathInside(workspaceRoot, directoryPath)) {
+    try {
+      const manifest = JSON.parse(
+        readFileSync(path.join(directoryPath, 'package.json'), 'utf8'),
+      ) as {
+        readonly name?: unknown;
+      };
+      if (manifest.name === packageName) return canonicalizeExistingPath(directoryPath);
+    } catch {
+      // Missing or invalid manifests are not package identity evidence; keep walking to the root.
+    }
+    if (path.normalize(directoryPath) === path.normalize(workspaceRoot)) break;
+    directoryPath = path.dirname(directoryPath);
+  }
+  return undefined;
+}
+
+/** Checks containment without admitting sibling paths that merely share a string prefix. */
+function isPathInside(rootPath: string, candidatePath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return (
+    relative.length === 0 ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 /** Reports one consistency failure without disclosing candidate paths or virtual identifiers. */

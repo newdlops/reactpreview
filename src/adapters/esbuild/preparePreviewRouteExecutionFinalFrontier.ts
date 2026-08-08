@@ -108,8 +108,12 @@ export async function preparePreviewRouteExecutionFinalFrontier(
       ? undefined
       : options.targetUsageProps.renderChainsByExport?.[options.inspectorExportName]?.paths[0]);
   const activeInspectorDependencyPaths = activeInspectorPlan?.dependencyPaths ?? [];
+  const applicationStyleRoots = collectPreviewApplicationStyleRoots(
+    activeInspectorPlan?.pageCandidates ?? analysisPlan?.pageCandidates ?? [],
+  );
   emitPreviewRouteExecutionTelemetry(options.telemetry, 'execution-frontier-style', 'start');
   const styleContext = await preparePreviewStyleContext({
+    applicationStyleRoots,
     ...(options.directThemeImport === undefined
       ? {}
       : { directThemeImport: options.directThemeImport }),
@@ -234,4 +238,27 @@ export async function preparePreviewRouteExecutionFinalFrontier(
     runtimeCompanionSourcePaths,
     styleContext,
   });
+}
+
+/** Collects exact implicit framework wrappers that own app-level style declarations. */
+function collectPreviewApplicationStyleRoots(
+  pageCandidates: readonly NonNullable<PreviewInspectorAncestorPlan['pageCandidates'][number]>[],
+): readonly { readonly exportName: string; readonly sourcePath: string }[] {
+  const roots = new Map<string, { readonly exportName: string; readonly sourcePath: string }>();
+  for (const candidate of pageCandidates) {
+    const frameworkRoots = [
+      ...(candidate.nextPagesShell === undefined ? [] : [candidate.nextPagesShell.app]),
+      ...(candidate.nextAppLayoutChain ?? []),
+    ];
+    for (const root of frameworkRoots) {
+      const normalizedPath = path.normalize(root.sourcePath);
+      roots.set(JSON.stringify([normalizedPath, root.exportName]), {
+        exportName: root.exportName,
+        sourcePath: normalizedPath,
+      });
+    }
+  }
+  return Object.freeze(
+    [...roots.values()].sort((left, right) => left.sourcePath.localeCompare(right.sourcePath)),
+  );
 }

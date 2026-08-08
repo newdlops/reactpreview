@@ -33,6 +33,7 @@ import {
 } from './previewPluginProtocol';
 import { createPreviewRuntimeErrorSource } from './previewRuntimeErrorSource';
 import { createPreviewStorybookRuntimeSource } from './previewStorybookRuntimeSource';
+import { PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY } from './inspector/previewInspectorRouteExecutionRuntimeSource';
 
 /** Setup environment selected by the compiler's bounded project inspection. */
 export type PreviewEntrySetupKind = 'custom' | 'none' | 'storybook';
@@ -213,6 +214,7 @@ ${inspectorRuntimeSource}
 
 let activeRuntimePhase = 'preview bootstrap';
 const capturedReactErrors = new WeakSet();
+const previewInspectorRouteErrorProbeSymbol = Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY)});
 const runtimePhaseByFailure = new Map();
 let resolvePreviewCommit;
 const previewCommitPromise = new Promise((resolve) => {
@@ -249,6 +251,12 @@ function isCapturedReactError(error) {
   return (typeof error === 'object' || typeof error === 'function') &&
     error !== null &&
     capturedReactErrors.has(error);
+}
+
+/** Distinguishes the compiler-owned data-router probe from an authored unhandled exception. */
+function isPreviewInspectorRouteErrorProbe(error) {
+  if ((typeof error !== 'object' && typeof error !== 'function') || error === null) return false;
+  try { return error[previewInspectorRouteErrorProbeSymbol] === true; } catch { return false; }
 }
 
 /** Mirrors one runtime failure into Page Inspector when that optional mode owns this webview. */
@@ -297,6 +305,10 @@ function showRuntimeError(error, runtimeContext = {}) {
 }
 
 replacePreviewRuntimeListener('error', (event) => {
+  if (isPreviewInspectorRouteErrorProbe(event.error)) {
+    event.preventDefault?.();
+    return;
+  }
   if (isCapturedReactError(event.error)) {
     return;
   }

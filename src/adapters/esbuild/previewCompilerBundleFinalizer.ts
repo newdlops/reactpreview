@@ -41,6 +41,7 @@ export interface FinalizePreviewCompilerBundleOptions {
     | {
         readonly activity: PreviewCompilerBundleFrontierActivity;
         readonly authenticSourcePaths: readonly string[];
+        readonly packageDemandSourcePaths?: readonly string[];
         readonly executionSurfaces?: readonly {
           readonly id: string;
           readonly sourcePath: string;
@@ -58,6 +59,11 @@ export async function finalizePreviewCompilerBundle(
     verifyPreviewInspectorBundleFrontierMetafile({
       activity: options.inspectorBundleFrontier.activity,
       authenticSourcePaths: options.inspectorBundleFrontier.authenticSourcePaths,
+      ...(options.inspectorBundleFrontier.packageDemandSourcePaths === undefined
+        ? {}
+        : {
+            packageDemandSourcePaths: options.inspectorBundleFrontier.packageDemandSourcePaths,
+          }),
       ...(options.inspectorBundleFrontier.executionSurfaces === undefined
         ? {}
         : { executionSurfaces: options.inspectorBundleFrontier.executionSurfaces }),

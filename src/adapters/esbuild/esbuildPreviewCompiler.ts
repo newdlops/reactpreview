@@ -45,7 +45,10 @@ import {
 } from './inspector/previewInspectorBundleFrontier';
 import { createInspectorSourceGestureSecret } from './previewInspectorSourceGestureSecret';
 import { createPreviewInspectorRuntimePlugin } from './pageInspector';
-import { isPreviewInspectorNavigationOnlyRenderOutcomePlan } from './pageInspector/previewInspectorTargetOutputRuntimeSource';
+import {
+  isPreviewInspectorEffectControllerRenderOutcomePlan,
+  isPreviewInspectorNavigationOnlyRenderOutcomePlan,
+} from './pageInspector/previewInspectorTargetOutputRuntimeSource';
 import { analyzePreviewReactRenderOutcomes } from './staticResources/previewReactRenderOutcomes';
 // prettier-ignore
 import { createPreviewGlobalPackageBridgePlugin, discoverPreviewGlobalPackageBridges, type PreviewGlobalPackageBridgePlan } from './globalPackageBridge';
@@ -85,6 +88,7 @@ import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
 import { createPreviewImportMetaEnvironment } from './previewPublicEnvironment';
+import { findPreviewPublicAssetRoot } from './previewPublicAssetRoot';
 import { createPreviewInstalledPackageExternalizationPlugin } from './previewInstalledPackageExternalizationPlugin';
 import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
 import {
@@ -103,6 +107,7 @@ import {
 } from './previewPortalHostBuildRefinement';
 import { selectPreviewReactDomRootKind } from './previewReactDomRootRuntimeSource';
 import { createPreviewReduxBridgePlugin } from './previewReduxBridgePlugin';
+import { collectPreviewReduxAutomaticState } from './previewReduxAutomaticState';
 import {
   assertPreviewResolutionPath,
   assertPreviewResolutionPaths,
@@ -169,7 +174,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly incrementalBuildCache = new PreviewIncrementalBuildCache();
   private readonly diagnosticEmissionCache = new PreviewDiagnosticEmissionCache();
   private readonly setupFailureCache = new PreviewSetupFailureCache();
-  private readonly vendorModuleBuilder = new PreviewVendorModuleBuilder();
+  private readonly vendorModuleBuilder: PreviewVendorModuleBuilder;
   private readonly completeRouteInventoryCache = new Map<
     string,
     Promise<PreviewInspectorCompleteRouteInventory>
@@ -178,6 +183,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
   private readonly managedDependencyStore: PreviewManagedDependencyStore | undefined;
   private shutdownPromise: Promise<void> | undefined;
   public constructor(options: EsbuildPreviewCompilerOptions = {}) {
+    this.vendorModuleBuilder = new PreviewVendorModuleBuilder(options.vendorModuleCacheBackend);
     this.managedDependencyStore =
       options.managedDependencyStoreRoot === undefined
         ? undefined
@@ -711,6 +717,18 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         snapshotSourceByPath,
         themeImport: selectedThemeImport,
       } = styleContext;
+      const automaticReduxState = await collectPreviewReduxAutomaticState({
+        readSource: async (sourcePath) =>
+          snapshotSourceByPath.get(path.normalize(sourcePath)) ??
+          (await this.projectUsageCache.readSourceText({
+            maximumBytes: 1024 * 1024,
+            sourcePath,
+          })),
+        sourcePaths: [
+          ...activeInspectorDependencyPaths,
+          ...(preparedBundleExecution?.prepared.frontier.authenticSourcePaths ?? []),
+        ],
+      });
       let legacyCommonJsGlobalNames: readonly string[] = [];
       let portalHostIds = styleContext.portalHostIds;
       const activePageExecutionCandidate =
@@ -833,22 +851,52 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               selectedExportNames: selectedTargetExportNames,
               sourcePath: runtimeTargetReference.sourcePath,
             }));
-      const navigationOnlyTargetExportNames =
-        targetModuleContract === undefined || targetModuleSourceText === undefined
+      const localTargetModuleContract =
+        targetModuleContract ??
+        (request.renderMode !== 'page-inspector' || inspectorExportName === undefined
+          ? undefined
+          : createPreviewInspectorTargetModuleContract({
+              preparedSourceText: targetSelection.sourceText,
+              selectedExportNames: [inspectorExportName],
+              sourcePath: request.documentPath,
+            }));
+      const localTargetModuleSourceText =
+        targetModuleContract === undefined ? request.sourceText : targetModuleSourceText;
+      const runtimeTargetInferredPropsByExport =
+        localTargetModuleContract === undefined || localTargetModuleSourceText === undefined
+          ? inferredPropsByExport
+          : collectReactExportPropInference(
+              localTargetModuleContract.sourcePath,
+              localTargetModuleSourceText,
+              {
+                resolveImport: (moduleSpecifier, importerPath) => {
+                  const sourcePath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
+                  const sourceText =
+                    sourcePath === undefined ? undefined : ts.sys.readFile(sourcePath);
+                  return sourcePath === undefined || sourceText === undefined
+                    ? undefined
+                    : { sourcePath, sourceText };
+                },
+              },
+            );
+      const targetRenderOutcomePlans =
+        localTargetModuleContract === undefined || localTargetModuleSourceText === undefined
           ? []
           : analyzePreviewReactRenderOutcomes(
-              targetModuleContract.sourcePath,
-              path.normalize(targetModuleContract.sourcePath) ===
+              localTargetModuleContract.sourcePath,
+              path.normalize(localTargetModuleContract.sourcePath) ===
                 path.normalize(request.documentPath)
                 ? targetSelection.sourceText
-                : targetModuleSourceText,
-            )
-              .filter(
-                (plan) =>
-                  targetModuleContract.selectedExportNames.includes(plan.exportName) &&
-                  isPreviewInspectorNavigationOnlyRenderOutcomePlan(plan),
-              )
-              .map((plan) => plan.exportName);
+                : localTargetModuleSourceText,
+            ).filter((plan) =>
+              localTargetModuleContract.selectedExportNames.includes(plan.exportName),
+            );
+      const navigationOnlyTargetExportNames = targetRenderOutcomePlans
+        .filter((plan) => isPreviewInspectorNavigationOnlyRenderOutcomePlan(plan))
+        .map((plan) => plan.exportName);
+      const effectControllerTargetExportNames = targetRenderOutcomePlans
+        .filter((plan) => isPreviewInspectorEffectControllerRenderOutcomePlan(plan))
+        .map((plan) => plan.exportName);
       const executionRootRole = activePageExecutionCandidate?.executionRootContract;
       const executionRootSourceText =
         executionRootRole === undefined
@@ -896,6 +944,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             }));
       const adaptiveBuildSeed = await preparePreviewAdaptiveBuildSeed({
         globalBridgeEvidencePolicy,
+        nodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
         projectRoot,
         readSource: (sourcePath) =>
           snapshotSourceByPath.get(path.normalize(sourcePath)) ??
@@ -961,6 +1010,40 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           instrumentRenderConditions: request.renderMode === 'page-inspector',
           instrumentRuntimeEffectIsolation: request.renderMode === 'page-inspector',
           instrumentRuntimeHookFallbacks: request.renderMode === 'page-inspector',
+          ...(localTargetModuleContract === undefined
+            ? {}
+            : {
+                localTargetExportInstrumentation: {
+                  metadataByExport: Object.fromEntries(
+                    localTargetModuleContract.selectedExportNames.map((exportName) => {
+                      const inference = runtimeTargetInferredPropsByExport[exportName];
+                      return [
+                        exportName,
+                        {
+                          compilerExportEvidence: true as const,
+                          ...(effectControllerTargetExportNames.includes(exportName)
+                            ? { effectControllerOutputCandidate: true as const }
+                            : {}),
+                          exportName,
+                          facadeResolutionEvidence: true as const,
+                          ...(inference === undefined
+                            ? {}
+                            : {
+                                inferredPropShape: inference.shape,
+                                inferredProps: inference.provenance,
+                              }),
+                          ...(navigationOnlyTargetExportNames.includes(exportName)
+                            ? { intentionalNavigationOutput: true as const }
+                            : {}),
+                          preparedSourceDigest: localTargetModuleContract.preparedSourceDigest,
+                          sourcePath: localTargetModuleContract.sourcePath,
+                        },
+                      ];
+                    }),
+                  ),
+                  sourcePath: localTargetModuleContract.sourcePath,
+                },
+              }),
           graphqlModuleResolver: staticModuleResolver,
           jsxRuntimeResolver: staticModuleResolver,
           projectRoot,
@@ -1077,7 +1160,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                             acceptedTargetImportSpecifiers:
                               targetUsageProps.inspectorTargetImportSpecifiers,
                           }),
-                      ...(runtimeTargetMode === undefined ? { inferredPropsByExport } : {}),
+                      inferredPropsByExport: runtimeTargetInferredPropsByExport,
+                      effectControllerExportNames: effectControllerTargetExportNames,
                       navigationOnlyExportNames: navigationOnlyTargetExportNames,
                       targetModuleContract:
                         targetModuleContract ??
@@ -1133,7 +1217,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               createPreviewApolloBridgePlugin({ projectRoot }),
               createPreviewContextBridgePlugin({ projectRoot }),
               createPreviewFormikBridgePlugin({ projectRoot }),
-              createPreviewReduxBridgePlugin({ projectRoot }),
+              createPreviewReduxBridgePlugin({
+                ...(automaticReduxState === undefined
+                  ? {}
+                  : { automaticState: automaticReduxState }),
+                projectRoot,
+              }),
               createPreviewRouterBridgePlugin({
                 automaticallyWrap: routerSelection.automaticallyWrap,
                 enabled: routerSelection.enabled,
@@ -1165,6 +1254,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       documentPath: request.documentPath,
                       exports: targetExports,
                       parentSlicesByExport: activeParentSlices,
+                      ...(request.renderMode !== 'page-inspector' ||
+                      contextDiscoveryTruncated === true ||
+                      inspectorExportName === undefined
+                        ? {}
+                        : { standalonePageTargetExportName: inspectorExportName }),
                       ...(selectedThemeImport === undefined
                         ? {}
                         : { themeImport: selectedThemeImport }),
@@ -1195,11 +1289,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       readSource: (p) => snapshotSourceByPath.get(path.normalize(p)),
                       runtimeOwnershipTarget: runtimeOwnershipTarget ?? inspectorPlan.target,
                       ...(targetModuleContract === undefined ? {} : { targetModuleContract }),
-                      ...(runtimeTargetMode !== undefined ||
-                      inferredPropsByExport[inspectorPlan.target.exportName] === undefined
+                      ...(runtimeTargetInferredPropsByExport[
+                        (runtimeOwnershipTarget ?? inspectorPlan.target).exportName
+                      ] === undefined
                         ? {}
                         : {
-                            targetInference: inferredPropsByExport[inspectorPlan.target.exportName],
+                            targetInference:
+                              runtimeTargetInferredPropsByExport[
+                                (runtimeOwnershipTarget ?? inspectorPlan.target).exportName
+                              ],
                           }),
                     }),
                   ]),
@@ -1362,6 +1460,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         );
         const initialGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
           ...globalBridgeEvidencePolicy,
+          nodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
           projectRoot,
           referencedGlobalNames: [
             ...new Set([
@@ -1390,6 +1489,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         );
         const exactGlobalPackagePlan = await discoverPreviewGlobalPackageBridges({
           ...globalBridgeEvidencePolicy,
+          nodeModulesPaths: managedDependencyEnvironment.nodeModulesPaths,
           projectRoot,
           referencedGlobalNames: initialBuild.referencedGlobalNames,
           workspaceRoot: canonicalWorkspaceRoot,
@@ -1441,6 +1541,23 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ]);
         portalHostIds = portalRefinement.hostIds;
         legacyCommonJsGlobalNames = legacyCommonJsRefinement.globalNames;
+        if (portalRefinement.changed || legacyCommonJsRefinement.changed) {
+          /*
+           * Post-build refinement changes generated entry/define bytes, so returning the graph that
+           * merely discovered those values postpones compatibility until a later hot compile. Close
+           * both proof-based refinements in one bounded same-request pass. Their discovery reads the
+           * already successful graph and neither plan is allowed to recursively schedule a rebuild.
+           */
+          fallbackBoundary = createStorybookFallbackBoundary(environment);
+          activeStorybookFallbackBoundary = fallbackBoundary;
+          finalBuild = await runBuild(
+            environment,
+            exactRouterSelection,
+            exactGlobalPackagePlan,
+            2,
+            fallbackBoundary,
+          );
+        }
         throwIfPreviewBuildCancelled(buildSignal);
         this.adaptiveBuildPlanCache.write(adaptivePlanKey, {
           legacyCommonJsGlobalNames,
@@ -1562,6 +1679,8 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 activity: preparedBundleExecution.activity,
                 authenticSourcePaths:
                   preparedBundleExecution.prepared.frontier.authenticSourcePaths,
+                packageDemandSourcePaths:
+                  preparedBundleExecution.prepared.frontier.packageDemandSourcePaths,
                 ...(activePageExecutionCandidate === undefined
                   ? {}
                   : { executionSurfaces: activePageExecutionCandidate.criticalSurfaces }),
@@ -1578,20 +1697,24 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       });
       const browserBundle = await this.vendorModuleBuilder.prepare({
         bundle: previewBundle,
+        globalPackagePlan: buildExecution.globalPackagePlan,
         metafile: buildExecution.result.metafile,
         nodePaths: managedDependencyEnvironment.nodeModulesPaths,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       assertPreviewResolutionPaths(resolutionConfinement, browserBundle.dependencies);
+      const publicAssetRoot = await findPreviewPublicAssetRoot(projectRoot);
       this.managedDependencyStore?.scheduleAdmission({
         dependencyPaths: collectPreviewBuildDependencies(request, buildExecution.result.metafile),
         profile: managedDependencyEnvironment.profile,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       throwIfPreviewBuildCancelled(buildSignal);
+      const browserBundleWithPublicAssets =
+        publicAssetRoot === undefined ? browserBundle : { ...browserBundle, publicAssetRoot };
       return inspectorSourceGestureSecret === undefined
-        ? browserBundle
-        : { ...browserBundle, inspectorSourceGestureSecret };
+        ? browserBundleWithPublicAssets
+        : { ...browserBundleWithPublicAssets, inspectorSourceGestureSecret };
     } catch (error) {
       return await resolvePreviewCompilerFailure({
         buildSignal,

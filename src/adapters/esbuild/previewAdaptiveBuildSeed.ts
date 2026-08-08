@@ -11,6 +11,7 @@ import { collectPreviewImplicitPackageGlobals } from './staticResources/previewI
 
 interface PreparePreviewAdaptiveBuildSeedOptions {
   readonly globalBridgeEvidencePolicy: PreviewGlobalPackageBridgeEvidencePolicy;
+  readonly nodeModulesPaths: readonly string[];
   readonly projectRoot: string;
   readonly readSource: (sourcePath: string) => Promise<string | undefined> | string | undefined;
   readonly sourcePaths: readonly string[];
@@ -33,6 +34,7 @@ export async function preparePreviewAdaptiveBuildSeed(
 ): Promise<PreviewAdaptiveBuildSeed> {
   const baselineGlobalPlan = await discoverPreviewGlobalPackageBridges({
     ...options.globalBridgeEvidencePolicy,
+    nodeModulesPaths: options.nodeModulesPaths,
     projectRoot: options.projectRoot,
     referencedGlobalNames: [],
     workspaceRoot: options.workspaceRoot,

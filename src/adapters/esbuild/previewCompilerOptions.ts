@@ -4,6 +4,7 @@
  * from network transport and let the extension place immutable artifacts in VS Code global storage.
  */
 import type { PreviewManagedDependencyStoreOptions } from '../node/previewManagedDependencyStore';
+import type { PreviewVendorModuleCacheBackend } from './previewVendorModuleBuilder';
 
 /** Optional compiler policy overrides used by production bootstrap and deterministic tests. */
 export interface EsbuildPreviewCompilerOptions {
@@ -15,4 +16,6 @@ export interface EsbuildPreviewCompilerOptions {
   readonly lockedDependencyAcquirer?: PreviewManagedDependencyStoreOptions['lockedDependencyAcquirer'];
   /** Split-output threshold before retrying with lazy initializers in a coalesced local artifact. */
   readonly maximumSplitOutputFiles?: number;
+  /** Corpus-only optional cross-process vendor-output cache. */
+  readonly vendorModuleCacheBackend?: PreviewVendorModuleCacheBackend;
 }

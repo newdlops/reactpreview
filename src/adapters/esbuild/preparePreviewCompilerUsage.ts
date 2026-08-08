@@ -375,6 +375,9 @@ export async function preparePreviewCompilerUsage(
         readSource,
         resolveModule: options.resolver.resolve,
         ...(signal === undefined ? {} : { signal }),
+        ...(fastGenericExportName === undefined
+          ? {}
+          : { targetExportName: fastGenericExportName }),
         workspaceRoot: options.workspaceRoot,
       });
       return Object.freeze({ corridor, packageSourcePaths });
@@ -412,7 +415,7 @@ export async function preparePreviewCompilerUsage(
           );
         }
       }
-      const inspectorPlan =
+      let inspectorPlan =
         fastGenericExportName === undefined
           ? await createPreviewInspectorModuleConsumerPagePlan({
               acceptedImportSpecifiers: (target) =>
@@ -437,6 +440,28 @@ export async function preparePreviewCompilerUsage(
               sourcePaths: corridor.sourcePaths,
               ...(options.usageContext === undefined ? {} : { usageContext: options.usageContext }),
             });
+      /*
+       * A mixed module can expose both an ordinary component and a JSX-producing hook/HOC factory.
+       * Keep a real entry-connected component path when one exists, but do not let a target-only
+       * component plan hide the authored pages that execute the callable export. The fast corridor
+       * is already bounded, so this comparison adds no package- or workspace-wide graph search.
+       */
+      if (
+        fastGenericExportName !== undefined &&
+        hasGenericCallableContext &&
+        (inspectorPlan === undefined || isWeakGenericConsumerPlan(inspectorPlan))
+      ) {
+        const consumerPlan = await createPreviewInspectorModuleConsumerPagePlan({
+          acceptedImportSpecifiers: (target) =>
+            options.resolver.getMatchedSpecifiers(target.sourcePath),
+          documentPath: request.documentPath,
+          readSource,
+          resolveModule: options.resolver.resolve,
+          ...(signal === undefined ? {} : { signal }),
+          sourcePaths: corridor.sourcePaths,
+        });
+        inspectorPlan = selectPreferredGenericConsumerPlan(inspectorPlan, consumerPlan);
+      }
       if (inspectorPlan !== undefined) {
         return createPreparedInspectorUsage(
           options,

@@ -33,7 +33,7 @@ export function createPreviewPreparationPolicy(
     return {
       allowAutomaticStorybook: false,
       boundedTailwindSourceDiscovery: true,
-      collectRuntimeWatchInputs: false,
+      collectRuntimeWatchInputs: true,
       deferDormantOverlayImports: true,
       ...(frontierPolicy === undefined ? {} : { frontierPolicy }),
       discoveryScope: 'selected-corridor',

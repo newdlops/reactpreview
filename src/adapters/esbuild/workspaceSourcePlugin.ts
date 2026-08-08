@@ -180,9 +180,12 @@ export function createWorkspaceSourcePlugin(options: WorkspaceSourcePluginOption
           resolveDir: path.dirname(physicalImporter),
           with: arguments_.with,
         });
-        if (resolved.errors.length > 0 || resolved.namespace !== 'file' || resolved.external) {
-          return { errors: resolved.errors, warnings: resolved.warnings };
-        }
+        // A missing physical child may be a conventionally generated source handled by the later
+        // evidence-backed fallback plugin. Returning the nested error here would make this virtual
+        // path adapter own the request and prevent that narrower resolver from seeing it. Ordinary
+        // missing imports still fail through esbuild after every downstream resolver declines.
+        if (resolved.errors.length > 0) return undefined;
+        if (resolved.namespace !== 'file' || resolved.external) return resolved;
         const virtualTarget = createPreviewYarnVirtualSiblingPath(
           arguments_.importer,
           physicalImporter,

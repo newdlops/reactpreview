@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import type { PreviewBuildRequest, PreviewBundle, PreviewDiagnostic } from '../.
 import { createHotReloadScriptUri } from '../../presentation/previewHotReloadProtocol';
 import { createPreviewHtml } from '../../presentation/webview/previewHtml';
 import { planPreviewArtifactLayout } from '../vscode/previewArtifactLayout';
+import { PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY } from '../esbuild/inspector/previewInspectorRouteExecutionRuntimeSource';
 import { createPreviewManagedChildEnvironment } from './previewManagedChildEnvironment';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -21,6 +22,8 @@ const MAX_CAPTURE_BYTES = 256 * 1_024;
 const MAX_EVIDENCE_ITEMS = 64;
 const HEADLESS_BRIDGE_PATH = '/react-preview-headless-bridge.js';
 const HEADLESS_DOCUMENT_PATH = '/index.html';
+const HEADLESS_PUBLIC_ASSET_PREFIX = '/__react_preview_public__/';
+const MAX_HEADLESS_PUBLIC_ASSET_BYTES = 20 * 1024 * 1024;
 export const PREVIEW_HEADLESS_STABILIZATION_QUIET_MS = 1_250;
 export const PREVIEW_HEADLESS_STABILIZATION_CAP_MS = 5_000;
 export const PREVIEW_HEADLESS_FAILED_CAPTURE_MS = 250;
@@ -53,13 +56,18 @@ export interface PreviewHeadlessCompositionDiagnostic {
   }[];
   readonly activeBlockers: number;
   readonly criticalEvidenceTruncated: boolean;
+  readonly contextModuleEvidenceKind?: string;
+  readonly contextModuleImportPathLength?: number;
+  readonly contextModuleSourcePath?: string;
   readonly currentFileMounted: number;
   readonly hostOutput: number;
   readonly pageExecutionCandidateId?: string;
   readonly pageExecutionFidelity?: string;
   readonly pageExecutionNestedMountCount?: number;
   readonly pageExecutionRootSurfaceId?: string;
+  readonly pageExecutionStandaloneTarget?: boolean;
   readonly pageExecutionTargetSurfaceId?: string;
+  readonly pageExecutionTargetRole?: string;
   readonly requirementSearchExhausted: boolean;
   readonly requirementSearchObservedPathCount?: number;
   readonly requirementSearchPass?: number;
@@ -75,9 +83,14 @@ export interface PreviewHeadlessCompositionDiagnostic {
   readonly targetAutoAttemptResumeHandled?: boolean;
   readonly targetAutoAttemptResumeScheduled?: boolean;
   readonly targetAutoAttemptSettled?: boolean;
+  readonly targetContextualFallbackRequested?: boolean;
   readonly targetError: boolean;
+  readonly targetErrorDetails?: string;
+  readonly targetErrorLocation?: string;
+  readonly targetErrorMessage?: string;
   readonly targetErrorOwner?: string;
   readonly targetErrorPhase?: string;
+  readonly targetErrorStack?: string;
   readonly targetExportName: string;
   readonly targetHasOutput: boolean;
   readonly targetIdlePasses?: number;
@@ -90,7 +103,70 @@ export interface PreviewHeadlessCompositionDiagnostic {
   readonly targetProjectedCompatibilityOutput?: boolean;
   readonly targetRejectedConditionCount?: number;
   readonly targetRuntimeFallbackSummaries?: readonly string[];
+  readonly targetEffectControllerOutput?: boolean;
   readonly targetRenderedEmpty: boolean;
+  readonly targetRenderCommitChain?: {
+    readonly alternateFiberObserved: boolean;
+    readonly childrenForwarded: boolean;
+    readonly connectedHostCount: number;
+    readonly effectCompletedAfterMarkedCall: boolean;
+    readonly firstBreak: string;
+    readonly markedCallEffectId: string;
+    readonly markedCallPropertyPath: string;
+    readonly markedCallResult: boolean;
+    readonly ownedHostObserved: boolean;
+    readonly privateOwnershipCount: number;
+    readonly resolverOutcome: string;
+    readonly specializedReplacementExecuted: boolean;
+    readonly stableRerenderObserved: boolean;
+    readonly topologyVerdict: 'A' | 'B' | 'C' | 'D';
+    readonly topologyReason: string;
+    readonly topologyEffectContinuationAccepted: boolean;
+    readonly topologyDelayedProbeFired: boolean;
+    readonly topologyBoundaryIdentityRetained: boolean;
+    readonly topologyCurrentBranchAmbiguous: boolean;
+    readonly topologyCurrentExactTargetCount: number;
+    readonly topologyLocatorExactTargetCount: number;
+    readonly topologyCurrentTargetChildCount: number;
+    readonly topologyCurrentRetainedChildCount: number;
+    readonly topologyCurrentConnectedVisibleHostCount: number;
+    readonly topologyCurrentDescendantHostCount: number;
+    readonly topologyStaleExactTargetCount: number;
+    readonly topologyStaleConnectedVisibleHostCount: number;
+    readonly thunkTexts: readonly string[];
+    readonly logicalTargetCount: number;
+    readonly inputChildrenState: 'absent' | 'meaningful-or-unsupported';
+    readonly mountedChildrenGateDecision: {
+      readonly latchBefore: boolean;
+      readonly directTarget: boolean;
+      readonly pageRootCommitted: boolean;
+      readonly currentMount: boolean;
+      readonly targetOutput: boolean;
+      readonly repairError: boolean;
+      readonly activeKey: boolean;
+      readonly renderError: boolean;
+      readonly registrationCount: number;
+      readonly registrationConflict: boolean;
+      readonly transparentCapability: boolean;
+      readonly retainedRouteAvailable: boolean;
+      readonly retainedRouteOwned: boolean;
+      readonly boundaryCount: number;
+      readonly chainAvailable: boolean;
+      readonly alternateFiber: boolean;
+      readonly stableRerender: boolean;
+      readonly markedCall: boolean;
+      readonly effectCompleted: boolean;
+      readonly logicalTargetCount: number;
+      readonly inputChildrenState: 'absent' | 'meaningful-or-unsupported';
+      readonly returnedChild: boolean;
+      readonly ownedHost: boolean;
+      readonly latchAfter: boolean;
+      readonly requestAttempted: boolean;
+      readonly requestAccepted: boolean;
+      readonly notificationIssued: boolean;
+      readonly mountedChildrenGateFirstReject: string;
+    };
+  };
   readonly targetSourcePath?: string;
   readonly targetStage: string;
   readonly targetStatus: string;
@@ -109,6 +185,8 @@ export interface PreviewHeadlessStabilization {
   /** Whether the extension-owned preparation indicator remained visible at terminal capture. */
   readonly progressVisible: boolean;
   readonly quiet: boolean;
+  /** Final candidate-local Router retry state observed through runtime-health telemetry. */
+  readonly routerScopeTransition?: 'recovered' | 'recovering' | 'unresolved';
   readonly snapshotCount: number;
   readonly structuredRuntimeError: boolean;
 }
@@ -156,9 +234,23 @@ export interface PreviewHeadlessRendererOptions {
 
 export type PreviewHeadlessOwnershipEvent =
   | { readonly kind: 'profile-created'; readonly profileRoot: string }
-  | { readonly kind: 'server-listening'; readonly loopbackPort: number; readonly profileRoot: string }
-  | { readonly kind: 'browser-spawned'; readonly pid?: number; readonly pgid?: number; readonly profileRoot: string }
-  | { readonly kind: 'browser-terminal'; readonly pid?: number; readonly pgid?: number; readonly profileRoot: string }
+  | {
+      readonly kind: 'server-listening';
+      readonly loopbackPort: number;
+      readonly profileRoot: string;
+    }
+  | {
+      readonly kind: 'browser-spawned';
+      readonly pid?: number;
+      readonly pgid?: number;
+      readonly profileRoot: string;
+    }
+  | {
+      readonly kind: 'browser-terminal';
+      readonly pid?: number;
+      readonly pgid?: number;
+      readonly profileRoot: string;
+    }
   | { readonly kind: 'server-closed'; readonly profileRoot: string }
   | { readonly kind: 'profile-removed'; readonly profileRoot: string };
 
@@ -283,9 +375,13 @@ export async function renderCompiledPreviewHeadlessly(
       ),
       type: 'text/javascript; charset=utf-8',
     });
-    server = createPreviewHeadlessServer(routes, requests);
+    server = createPreviewHeadlessServer(routes, requests, bundle.publicAssetRoot);
     const port = await listenOnLoopback(server);
-    reportPreviewHeadlessOwnership(options, { kind: 'server-listening', loopbackPort: port, profileRoot: temporaryRoot });
+    reportPreviewHeadlessOwnership(options, {
+      kind: 'server-listening',
+      loopbackPort: port,
+      profileRoot: temporaryRoot,
+    });
     const origin = `http://127.0.0.1:${port.toString()}`;
     routes.set(HEADLESS_DOCUMENT_PATH, {
       contents: new TextEncoder().encode(
@@ -293,6 +389,9 @@ export async function renderCompiledPreviewHeadlessly(
           documentName: path.basename(request.documentPath),
           hostBridgeScriptUri: `${origin}${HEADLESS_BRIDGE_PATH}`,
           kind: 'ready',
+          ...(bundle.publicAssetRoot === undefined
+            ? {}
+            : { publicAssetBaseUri: `${origin}${HEADLESS_PUBLIC_ASSET_PREFIX}` }),
           ...(layout.moduleImports === undefined
             ? {}
             : {
@@ -331,7 +430,9 @@ export async function renderCompiledPreviewHeadlessly(
         reportPreviewHeadlessOwnership(options, {
           kind: 'browser-spawned',
           ...(ownedBrowser.pid === undefined ? {} : { pid: ownedBrowser.pid }),
-          ...(process.platform === 'win32' || ownedBrowser.pid === undefined ? {} : { pgid: ownedBrowser.pid }),
+          ...(process.platform === 'win32' || ownedBrowser.pid === undefined
+            ? {}
+            : { pgid: ownedBrowser.pid }),
           profileRoot: temporaryRoot,
         });
       },
@@ -359,13 +460,19 @@ export async function renderCompiledPreviewHeadlessly(
     if (server !== undefined) {
       await closeServer(server);
       serverClosed = !server.listening;
-      reportPreviewHeadlessOwnership(options, { kind: 'server-closed', profileRoot: temporaryRoot });
+      reportPreviewHeadlessOwnership(options, {
+        kind: 'server-closed',
+        profileRoot: temporaryRoot,
+      });
     } else {
       serverClosed = true;
     }
     await rm(temporaryRoot, { force: true, recursive: true });
     profileRemoved = !existsSync(temporaryRoot);
-    reportPreviewHeadlessOwnership(options, { kind: 'profile-removed', profileRoot: temporaryRoot });
+    reportPreviewHeadlessOwnership(options, {
+      kind: 'profile-removed',
+      profileRoot: temporaryRoot,
+    });
   }
   result ??= createProtocolFailure(
     bundle.diagnostics,
@@ -487,11 +594,11 @@ export function classifyPreviewHeadlessStabilizedOutcome(
 ): PreviewHeadlessStabilizedOutcome {
   const stabilization = result.stabilization;
   const composition = stabilization?.compositionSnapshot;
+  const fatalBrowserErrors = readPreviewHeadlessFatalBrowserErrors(result);
   if (
     stabilization?.structuredRuntimeError === true ||
     result.runtimeErrorText !== undefined ||
-    result.evidence.windowErrors.length > 0 ||
-    (result.evidence.cdpExceptions?.length ?? 0) > 0
+    fatalBrowserErrors.length > 0
   ) {
     return 'post-commit-failed';
   }
@@ -512,18 +619,24 @@ export function classifyPreviewHeadlessStabilizedOutcome(
   ) {
     return 'partial-blocked';
   }
-  const evidenceIsConclusive =
-    stabilization !== undefined &&
-    stabilization.postTerminalSnapshotReceived &&
-    stabilization.quiet &&
-    !stabilization.capReached &&
+  const targetOutputIsConclusive =
+    composition?.targetStage === 'target-output' &&
+    composition.targetStatus === 'reached' &&
+    composition.targetHasOutput;
+  const requirementSearchIsConclusive =
     composition !== undefined &&
-    !composition.criticalEvidenceTruncated &&
     composition.requirementSearchSettled &&
     (composition.requirementSearchExhausted ||
       !['idle', 'probing', 'searching', 'pending', 'untracked'].includes(
         composition.requirementSearchStatus,
       ));
+  const evidenceIsConclusive =
+    stabilization !== undefined &&
+    stabilization.postTerminalSnapshotReceived &&
+    composition !== undefined &&
+    !composition.criticalEvidenceTruncated &&
+    (targetOutputIsConclusive || (stabilization.quiet && !stabilization.capReached)) &&
+    (targetOutputIsConclusive || requirementSearchIsConclusive);
   if (evidenceIsConclusive) {
     const hasStructuredHostOutput =
       composition.currentFileMounted > 0 && composition.hostOutput > 0;
@@ -550,6 +663,62 @@ export function classifyPreviewHeadlessStabilizedOutcome(
   return 'insufficient-evidence';
 }
 
+/**
+ * Returns browser exceptions that remain fatal after a proven runtime recovery or target commit.
+ * React reports the first failed render attempt to both `window.onerror` and CDP before the
+ * candidate boundary can remove or add its inferred MemoryRouter. Some native-web bridges also
+ * dispatch an Error/Promise event without a reason after a successful browser-only fallback. The
+ * opaque window event remains in evidence but is not fatal once exact target output is conclusive;
+ * CDP exceptions and every descriptive browser error remain fatal.
+ */
+export function readPreviewHeadlessFatalBrowserErrors(
+  result: Pick<PreviewHeadlessResult, 'evidence' | 'stabilization'>,
+): readonly string[] {
+  const composition = result.stabilization?.compositionSnapshot;
+  const conclusiveTargetOutput =
+    composition?.targetPageRootCommitted === true &&
+    composition.activeBlockers === 0 &&
+    composition.currentFileMounted > 0 &&
+    composition.hostOutput > 0 &&
+    !composition.targetError &&
+    composition.targetStage === 'target-output' &&
+    composition.targetStatus === 'reached' &&
+    composition.targetHasOutput;
+  const errors = [
+    ...result.evidence.windowErrors.filter(
+      (value) => !(conclusiveTargetOutput && value === 'undefined'),
+    ),
+    ...(result.evidence.cdpExceptions ?? []),
+  ];
+  return errors.filter((value) => {
+    if (
+      composition?.pageExecutionTargetRole === 'error-element' &&
+      isPreviewHeadlessRouteErrorProbe(value)
+    ) {
+      return false;
+    }
+    if (
+      result.stabilization?.routerScopeTransition === 'recovered' &&
+      isPreviewHeadlessNestedRouterInvariant(value)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Matches only the compiler-owned exception admitted by a proven error-element recipe. */
+function isPreviewHeadlessRouteErrorProbe(value: string): boolean {
+  return /Error: React Preview route error probe(?:\\n|$)/u.test(value);
+}
+
+/** Matches only the invariant already admitted by the candidate Router error boundary. */
+function isPreviewHeadlessNestedRouterInvariant(value: string): boolean {
+  return /cannot render a (?:<|\\u003c)Router(?:>|\\u003e) inside another (?:<|\\u003c)Router(?:>|\\u003e)|should never have more than one in your app/iu.test(
+    value,
+  );
+}
+
 /** Produces the pre-entry VS Code shim and terminal binding publisher. */
 export function createPreviewHeadlessBridgeSource(
   token: string,
@@ -565,6 +734,7 @@ export function createPreviewHeadlessBridgeSource(
   const bindingName = ${JSON.stringify(bindingName)};
   const requireCompositionSnapshot = ${JSON.stringify(requireCompositionSnapshot)};
   const stateName = ${JSON.stringify(stateName)};
+  const routeErrorProbeSymbol = Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_ROUTE_ERROR_PROBE_SYMBOL_KEY)});
   const limit = 64;
   const maxText = 4096;
   const messages = [];
@@ -581,6 +751,7 @@ export function createPreviewHeadlessBridgeSource(
     latestComposition: undefined,
     mountMutationCount: 0,
     published: false,
+    routerScopeTransition: undefined,
     snapshotCount: 0,
     structuredRuntimeError: false,
   };
@@ -678,12 +849,112 @@ export function createPreviewHeadlessBridgeSource(
       : [];
     const targetErrorMessage =
       typeof target?.errorMessage === 'string' ? target.errorMessage.slice(0, 1_200) : undefined;
+    const targetErrorDetails =
+      typeof target?.errorDetails === 'string' ? target.errorDetails.slice(0, 2_400) : undefined;
+    const targetErrorLocation =
+      typeof target?.errorLocation === 'string' ? target.errorLocation.slice(0, 1_024) : undefined;
     const targetErrorOwner =
       typeof target?.errorOwner === 'string' ? target.errorOwner.slice(0, 240) : undefined;
     const targetErrorPhase =
       typeof target?.errorPhase === 'string' ? target.errorPhase.slice(0, 240) : undefined;
+    const targetErrorStack =
+      typeof target?.errorStack === 'string' ? target.errorStack.slice(0, 4_000) : undefined;
     const targetFallbackOwner =
       typeof target?.fallbackOwner === 'string' ? target.fallbackOwner.slice(0, 240) : undefined;
+    const rawChain = target?.targetRenderCommitChain;
+    const mountedGateRejects = new Set([
+      'not-evaluated', 'prior-latch-set', 'direct-target', 'page-root-not-committed',
+      'current-mount-not-observed', 'target-output-observed', 'repair-error-present',
+      'active-key-not-owned', 'render-error-present', 'registration-not-unique',
+      'registration-conflict', 'transparent-capability-unavailable',
+      'retained-route-unavailable', 'retained-route-not-owned', 'boundary-count-not-one',
+      'render-chain-unavailable', 'alternate-fiber-not-observed',
+      'stable-rerender-not-observed', 'marked-context-call-not-used',
+      'effect-not-completed-after-marked-call', 'logical-target-count-not-one',
+      'input-children-not-absent', 'returned-child-observed', 'owned-host-observed', 'none',
+    ]);
+    const rawMountedDecision = rawChain?.mountedChildrenGateDecision;
+    const mountedChildrenGateDecision = rawMountedDecision !== null &&
+      typeof rawMountedDecision === 'object'
+      ? {
+          latchBefore: rawMountedDecision.latchBefore === true,
+          directTarget: rawMountedDecision.directTarget === true,
+          pageRootCommitted: rawMountedDecision.pageRootCommitted === true,
+          currentMount: rawMountedDecision.currentMount === true,
+          targetOutput: rawMountedDecision.targetOutput === true,
+          repairError: rawMountedDecision.repairError === true,
+          activeKey: rawMountedDecision.activeKey === true,
+          renderError: rawMountedDecision.renderError === true,
+          registrationCount: Number.isSafeInteger(rawMountedDecision.registrationCount) ? Math.max(0, rawMountedDecision.registrationCount) : 0,
+          registrationConflict: rawMountedDecision.registrationConflict === true,
+          transparentCapability: rawMountedDecision.transparentCapability === true,
+          retainedRouteAvailable: rawMountedDecision.retainedRouteAvailable === true,
+          retainedRouteOwned: rawMountedDecision.retainedRouteOwned === true,
+          boundaryCount: Number.isSafeInteger(rawMountedDecision.boundaryCount) ? Math.max(0, rawMountedDecision.boundaryCount) : 0,
+          chainAvailable: rawMountedDecision.chainAvailable === true,
+          alternateFiber: rawMountedDecision.alternateFiber === true,
+          stableRerender: rawMountedDecision.stableRerender === true,
+          markedCall: rawMountedDecision.markedCall === true,
+          effectCompleted: rawMountedDecision.effectCompleted === true,
+          logicalTargetCount: Number.isSafeInteger(rawMountedDecision.logicalTargetCount) ? Math.max(0, rawMountedDecision.logicalTargetCount) : 0,
+          inputChildrenState: rawMountedDecision.inputChildrenState === 'absent' ? 'absent' : 'meaningful-or-unsupported',
+          returnedChild: rawMountedDecision.returnedChild === true,
+          ownedHost: rawMountedDecision.ownedHost === true,
+          latchAfter: rawMountedDecision.latchAfter === true,
+          requestAttempted: rawMountedDecision.requestAttempted === true,
+          requestAccepted: rawMountedDecision.requestAccepted === true,
+          notificationIssued: rawMountedDecision.notificationIssued === true,
+          mountedChildrenGateFirstReject: mountedGateRejects.has(rawMountedDecision.mountedChildrenGateFirstReject)
+            ? rawMountedDecision.mountedChildrenGateFirstReject
+            : 'not-evaluated',
+        }
+      : {
+          latchBefore: false, directTarget: false, pageRootCommitted: false, currentMount: false,
+          targetOutput: false, repairError: false, activeKey: false, renderError: false,
+          registrationCount: 0, registrationConflict: false, transparentCapability: false,
+          retainedRouteAvailable: false, retainedRouteOwned: false, boundaryCount: 0,
+          chainAvailable: false, alternateFiber: false, stableRerender: false, markedCall: false,
+          effectCompleted: false, logicalTargetCount: 0,
+          inputChildrenState: 'meaningful-or-unsupported', returnedChild: false,
+          ownedHost: false, latchAfter: false, requestAttempted: false, requestAccepted: false,
+          notificationIssued: false, mountedChildrenGateFirstReject: 'not-evaluated',
+        };
+    const targetRenderCommitChain = rawChain !== null && typeof rawChain === 'object'
+      ? {
+          alternateFiberObserved: rawChain.alternateFiberObserved === true,
+          childrenForwarded: rawChain.childrenForwarded === true,
+          connectedHostCount: Number.isSafeInteger(rawChain.connectedHostCount) ? Math.max(0, rawChain.connectedHostCount) : 0,
+          effectCompletedAfterMarkedCall: rawChain.effectCompletedAfterMarkedCall === true,
+          firstBreak: String(rawChain.firstBreak ?? 'unknown').slice(0, 80),
+          markedCallEffectId: String(rawChain.markedCallEffectId ?? '').slice(0, 240),
+          markedCallPropertyPath: String(rawChain.markedCallPropertyPath ?? '').slice(0, 240),
+          markedCallResult: rawChain.markedCallResult === true,
+          ownedHostObserved: rawChain.ownedHostObserved === true,
+          inputChildrenState: rawChain.inputChildrenState === 'absent' ? 'absent' : 'meaningful-or-unsupported',
+          logicalTargetCount: Number.isSafeInteger(rawChain.logicalTargetCount) ? Math.max(0, rawChain.logicalTargetCount) : 0,
+          privateOwnershipCount: Number.isSafeInteger(rawChain.privateOwnershipCount) ? Math.max(0, rawChain.privateOwnershipCount) : 0,
+          resolverOutcome: String(rawChain.resolverOutcome ?? 'unknown').slice(0, 80),
+          specializedReplacementExecuted: rawChain.specializedReplacementExecuted === true,
+          stableRerenderObserved: rawChain.stableRerenderObserved === true,
+          topologyVerdict: ['A', 'B', 'C', 'D'].includes(rawChain.topologyVerdict)
+            ? rawChain.topologyVerdict : 'D',
+          topologyReason: String(rawChain.topologyReason ?? 'current-root-ambiguous-or-resolver-disagrees').slice(0, 80),
+          topologyEffectContinuationAccepted: rawChain.topologyEffectContinuationAccepted === true,
+          topologyDelayedProbeFired: rawChain.topologyDelayedProbeFired === true,
+          topologyBoundaryIdentityRetained: rawChain.topologyBoundaryIdentityRetained === true,
+          topologyCurrentBranchAmbiguous: rawChain.topologyCurrentBranchAmbiguous === true,
+          topologyCurrentExactTargetCount: Number.isSafeInteger(rawChain.topologyCurrentExactTargetCount) ? Math.max(0, rawChain.topologyCurrentExactTargetCount) : 0,
+          topologyLocatorExactTargetCount: Number.isSafeInteger(rawChain.topologyLocatorExactTargetCount) ? Math.max(0, rawChain.topologyLocatorExactTargetCount) : 0,
+          topologyCurrentTargetChildCount: Number.isSafeInteger(rawChain.topologyCurrentTargetChildCount) ? Math.max(0, rawChain.topologyCurrentTargetChildCount) : 0,
+          topologyCurrentRetainedChildCount: Number.isSafeInteger(rawChain.topologyCurrentRetainedChildCount) ? Math.max(0, rawChain.topologyCurrentRetainedChildCount) : 0,
+          topologyCurrentConnectedVisibleHostCount: Number.isSafeInteger(rawChain.topologyCurrentConnectedVisibleHostCount) ? Math.max(0, rawChain.topologyCurrentConnectedVisibleHostCount) : 0,
+          topologyCurrentDescendantHostCount: Number.isSafeInteger(rawChain.topologyCurrentDescendantHostCount) ? Math.max(0, rawChain.topologyCurrentDescendantHostCount) : 0,
+          topologyStaleExactTargetCount: Number.isSafeInteger(rawChain.topologyStaleExactTargetCount) ? Math.max(0, rawChain.topologyStaleExactTargetCount) : 0,
+          topologyStaleConnectedVisibleHostCount: Number.isSafeInteger(rawChain.topologyStaleConnectedVisibleHostCount) ? Math.max(0, rawChain.topologyStaleConnectedVisibleHostCount) : 0,
+          thunkTexts: Array.isArray(rawChain.thunkTexts) ? rawChain.thunkTexts.filter((text) => typeof text === 'string').slice(0, 4).map((text) => text.slice(0, 320)) : [],
+          mountedChildrenGateDecision,
+        }
+      : undefined;
     return {
       activeBlockerProvenance,
       activeBlockers: Number.isSafeInteger(detail?.blockerSummary?.active)
@@ -693,6 +964,20 @@ export function createPreviewHeadlessBridgeSource(
         detail?.visitLimitReached === true ||
         detail?.statusCounts === '[Depth limit]' ||
         detail?.targetState === '[Depth limit]',
+      ...(typeof detail?.contextModule?.evidenceKind === 'string'
+        ? { contextModuleEvidenceKind: detail.contextModule.evidenceKind.slice(0, 80) }
+        : {}),
+      ...(Number.isSafeInteger(detail?.contextModule?.importPathLength)
+        ? {
+            contextModuleImportPathLength: Math.max(
+              0,
+              Number(detail.contextModule.importPathLength),
+            ),
+          }
+        : {}),
+      ...(typeof detail?.contextModule?.sourcePath === 'string'
+        ? { contextModuleSourcePath: detail.contextModule.sourcePath.slice(0, 1_024) }
+        : {}),
       currentFileMounted: Number.isSafeInteger(counts?.currentFileMounted)
         ? Math.max(0, counts.currentFileMounted)
         : 0,
@@ -714,8 +999,12 @@ export function createPreviewHeadlessBridgeSource(
       ...(typeof pageExecution?.executionRootSurfaceId === 'string'
         ? { pageExecutionRootSurfaceId: pageExecution.executionRootSurfaceId.slice(0, 240) }
         : {}),
+      pageExecutionStandaloneTarget: pageExecution?.standaloneTarget === true,
       ...(typeof pageExecution?.runtimeTargetSurfaceId === 'string'
         ? { pageExecutionTargetSurfaceId: pageExecution.runtimeTargetSurfaceId.slice(0, 240) }
+        : {}),
+      ...(typeof pageExecution?.targetRole === 'string'
+        ? { pageExecutionTargetRole: pageExecution.targetRole.slice(0, 80) }
         : {}),
       requirementSearchExhausted: search?.exhausted === true,
       requirementSearchObservedPathCount: Number.isSafeInteger(search?.observedPathCount)
@@ -742,13 +1031,21 @@ export function createPreviewHeadlessBridgeSource(
       targetAutoAttemptResumeHandled: target?.activeAutoAttemptResumeHandled === true,
       targetAutoAttemptResumeScheduled: target?.activeAutoAttemptResumeScheduled === true,
       targetAutoAttemptSettled: target?.activeAutoAttemptSettled === true,
+      targetContextualFallbackRequested: target?.contextualTargetFallbackRequested === true,
       targetError:
         targetErrorMessage !== undefined ||
+        targetErrorDetails !== undefined ||
+        targetErrorLocation !== undefined ||
         targetErrorOwner !== undefined ||
         targetErrorPhase !== undefined ||
+        targetErrorStack !== undefined ||
         targetFallbackOwner !== undefined,
+      ...(targetErrorDetails === undefined ? {} : { targetErrorDetails }),
+      ...(targetErrorLocation === undefined ? {} : { targetErrorLocation }),
+      ...(targetErrorMessage === undefined ? {} : { targetErrorMessage }),
       ...(targetErrorOwner === undefined ? {} : { targetErrorOwner }),
       ...(targetErrorPhase === undefined ? {} : { targetErrorPhase }),
+      ...(targetErrorStack === undefined ? {} : { targetErrorStack }),
       targetExportName: String(target?.exportName ?? 'default').slice(0, 160),
       targetHasOutput: target?.hasOutput === true || target?.reachabilityHasOutput === true,
       targetIdlePasses: Number.isSafeInteger(target?.idlePasses)
@@ -774,7 +1071,9 @@ export function createPreviewHeadlessBridgeSource(
             .slice(0, 12)
             .map((value) => value.slice(0, 1_000))
         : [],
+      targetEffectControllerOutput: target?.targetEffectControllerOutput === true,
       targetRenderedEmpty: target?.targetRenderedEmpty === true,
+      ...(targetRenderCommitChain === undefined ? {} : { targetRenderCommitChain }),
       ...(typeof detail?.evidence?.sourcePath === 'string'
         ? { targetSourcePath: detail.evidence.sourcePath.slice(0, 1_024) }
         : {}),
@@ -790,6 +1089,7 @@ export function createPreviewHeadlessBridgeSource(
     'advancing',
     'blocked',
     'filling-requirements',
+    'mounting-contextual-target',
     'page-root-pending',
     'probing',
     'recovering-after-rejected-gate',
@@ -853,6 +1153,9 @@ export function createPreviewHeadlessBridgeSource(
           bridgeState.snapshotCount > 0 &&
           !isCompositionPending() &&
           now - bridgeState.lastActivityAt >= ${PREVIEW_HEADLESS_STABILIZATION_QUIET_MS.toString()},
+        ...(bridgeState.routerScopeTransition === undefined
+          ? {}
+          : { routerScopeTransition: bridgeState.routerScopeTransition }),
         snapshotCount: bridgeState.snapshotCount,
         structuredRuntimeError: bridgeState.structuredRuntimeError,
       },
@@ -901,6 +1204,14 @@ export function createPreviewHeadlessBridgeSource(
         message?.runtimeRevision === expectedRevision
       ) {
         const event = message?.event?.event;
+        const category = message?.event?.category;
+        const transition = message?.event?.detail?.transition;
+        if (
+          category === 'router-scope' &&
+          (transition === 'recovering' || transition === 'recovered' || transition === 'unresolved')
+        ) {
+          bridgeState.routerScopeTransition = transition;
+        }
         if (event === 'page-composition-snapshot') {
           const composition = readComposition(message);
           if (composition !== undefined) {
@@ -935,12 +1246,30 @@ export function createPreviewHeadlessBridgeSource(
     console[method] = (...values) => { retain(consoleFailures, values); original(...values); };
   }
   addEventListener('error', (event) => {
+    try {
+      if (event.error?.[routeErrorProbeSymbol] === true) {
+        event.preventDefault?.();
+        return;
+      }
+    } catch { /* An uninspectable project error follows the ordinary evidence path. */ }
     retain(windowErrors, event.error ?? event.message);
     markActivity();
   });
   addEventListener('unhandledrejection', (event) => {
-    retain(windowErrors, event.reason);
-    markActivity();
+    const reason = event.reason;
+    const retainUnhandledRejection = () => {
+      /*
+       * The generated preview entry may prove that a render-only rejection is non-fatal and call
+       * preventDefault from a listener installed after this pre-entry bridge. Defer observation
+       * until dispatch completes so headless classification follows the browser runtime's final
+       * decision instead of preserving a false post-commit blocker.
+       */
+      if (event.defaultPrevented) return;
+      retain(windowErrors, reason);
+      markActivity();
+    };
+    if (typeof queueMicrotask === 'function') queueMicrotask(retainUnhandledRejection);
+    else Promise.resolve().then(retainUnhandledRejection, retainUnhandledRejection);
   });
   const observeMount = () => {
     const root = selectMountNode();
@@ -1455,6 +1784,7 @@ function classifyPreviewHeadlessNetworkFailure(
 function createPreviewHeadlessServer(
   routes: ReadonlyMap<string, { readonly contents: Uint8Array; readonly type: string }>,
   requests: string[],
+  publicAssetRoot?: string,
 ): Server {
   return createServer((request, response) => {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -1471,6 +1801,27 @@ function createPreviewHeadlessServer(
       return;
     }
     const exactRoute = routes.get(pathname);
+    if (
+      exactRoute === undefined &&
+      publicAssetRoot !== undefined &&
+      pathname.startsWith(HEADLESS_PUBLIC_ASSET_PREFIX)
+    ) {
+      void readPreviewHeadlessPublicAsset(publicAssetRoot, pathname).then((publicAsset) => {
+        retainEvidence(requests, `${pathname} ${publicAsset === undefined ? '404' : '200-public'}`);
+        if (publicAsset === undefined) {
+          response.writeHead(404).end();
+          return;
+        }
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Length': publicAsset.contents.byteLength,
+          'Content-Type': publicAsset.type,
+          'X-Content-Type-Options': 'nosniff',
+        });
+        response.end(request.method === 'HEAD' ? undefined : publicAsset.contents);
+      });
+      return;
+    }
     if (
       exactRoute === undefined &&
       isPreviewHeadlessGuardedClientRouteNavigation(request, pathname)
@@ -1495,6 +1846,76 @@ function createPreviewHeadlessServer(
   });
 }
 
+/** Reads one bounded public asset while rejecting traversal and escaping symlinks. */
+async function readPreviewHeadlessPublicAsset(
+  publicAssetRoot: string,
+  pathname: string,
+): Promise<{ readonly contents: Uint8Array; readonly type: string } | undefined> {
+  try {
+    const encodedRelativePath = pathname.slice(HEADLESS_PUBLIC_ASSET_PREFIX.length);
+    const relativePath = decodeURIComponent(encodedRelativePath);
+    if (relativePath.length === 0 || /[\\\0]/u.test(relativePath)) return undefined;
+    const canonicalRoot = await realpath(publicAssetRoot);
+    const candidatePath = path.resolve(canonicalRoot, relativePath);
+    if (!isPathInside(canonicalRoot, candidatePath)) return undefined;
+    const canonicalCandidate = await realpath(candidatePath);
+    if (!isPathInside(canonicalRoot, canonicalCandidate)) return undefined;
+    const metadata = await stat(canonicalCandidate);
+    if (!metadata.isFile() || metadata.size > MAX_HEADLESS_PUBLIC_ASSET_BYTES) return undefined;
+    return {
+      contents: await readFile(canonicalCandidate),
+      type: mimeTypeForPreviewPublicAsset(canonicalCandidate),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Returns a nosniff-compatible content type for passive files served only by headless QA. */
+function mimeTypeForPreviewPublicAsset(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.avif':
+      return 'image/avif';
+    case '.bmp':
+      return 'image/bmp';
+    case '.gif':
+      return 'image/gif';
+    case '.ico':
+      return 'image/x-icon';
+    case '.jpeg':
+    case '.jpg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.webp':
+      return 'image/webp';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.mp4':
+      return 'video/mp4';
+    case '.ogg':
+      return 'audio/ogg';
+    case '.webm':
+      return 'video/webm';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/** Reports whether one resolved file remains at or below its canonical public directory. */
+function isPathInside(directoryPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(directoryPath, candidatePath);
+  return (
+    relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
+  );
+}
+
 /** Recognizes bounded full-document client-route navigations guarded from replacing the preview. */
 function isPreviewHeadlessGuardedClientRouteNavigation(
   request: IncomingMessage,
@@ -1510,9 +1931,7 @@ function isPreviewHeadlessGuardedClientRouteNavigation(
   const accept = readPreviewHeadlessRequestHeader(request, 'accept');
   if (
     accept === undefined ||
-    !accept
-      .split(',')
-      .some((value) => value.split(';', 1)[0]?.trim().toLowerCase() === 'text/html')
+    !accept.split(',').some((value) => value.split(';', 1)[0]?.trim().toLowerCase() === 'text/html')
   ) {
     return false;
   }
@@ -1718,32 +2137,48 @@ function serializePreviewHeadlessTimeoutDiagnostic(value: unknown): string {
     entryModule: snapshot.entryModule,
     hotRuntime: snapshot.hotRuntime,
     progress: snapshot.progress,
-    composition: composition === undefined ? undefined : normalizeHeadlessEvidence(composition).slice(0, 1_600),
-    terminal: terminal === undefined ? undefined : normalizeHeadlessEvidence(terminal).slice(0, 400),
+    composition:
+      composition === undefined
+        ? undefined
+        : normalizeHeadlessEvidence(composition).slice(0, 1_600),
+    terminal:
+      terminal === undefined ? undefined : normalizeHeadlessEvidence(terminal).slice(0, 400),
     counts: {
       messageCount: snapshot.messageCount,
       snapshotCount: snapshot.snapshotCount,
     },
     runtimeErrorText:
-      typeof snapshot.runtimeErrorText === 'string' ? snapshot.runtimeErrorText.slice(0, 800) : undefined,
+      typeof snapshot.runtimeErrorText === 'string'
+        ? snapshot.runtimeErrorText.slice(0, 800)
+        : undefined,
     mount: mount === undefined ? undefined : normalizeHeadlessEvidence(mount).slice(0, 800),
     messages: messageTail.map((message) => normalizeHeadlessEvidence(message).slice(0, 120)),
   }).slice(0, 4096);
 }
 
 /** Keeps CDP and browser causes useful when their prototypes do not cross a realm boundary. */
-function normalizeHeadlessEvidence(value: unknown, seen = new WeakSet<object>(), depth = 0): string {
+function normalizeHeadlessEvidence(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0,
+): string {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
   switch (typeof value) {
-    case 'string': return value;
+    case 'string':
+      return value;
     case 'number':
     case 'boolean':
-    case 'bigint': return String(value);
-    case 'symbol': return value.toString();
-    case 'function': return '[function]';
-    case 'object': break;
-    default: return String(value);
+    case 'bigint':
+      return String(value);
+    case 'symbol':
+      return value.toString();
+    case 'function':
+      return '[function]';
+    case 'object':
+      break;
+    default:
+      return String(value);
   }
   if (depth >= 4) return '[max-depth]';
   if (seen.has(value)) return '[circular]';
@@ -1756,13 +2191,16 @@ function normalizeHeadlessEvidence(value: unknown, seen = new WeakSet<object>(),
     if (name !== undefined || message !== undefined || cause !== undefined) {
       return `${name ?? 'Error'}${message === undefined || message.length === 0 ? '' : `: ${message}`}${cause === undefined ? '' : `; cause=${normalizeHeadlessEvidence(cause, seen, depth + 1)}`}`;
     }
-    const fields = Object.keys(record).sort().slice(0, 16).map((key) => {
-      try {
-        return `${key}=${normalizeHeadlessEvidence(record[key], seen, depth + 1)}`;
-      } catch {
-        return `${key}=[unreadable]`;
-      }
-    });
+    const fields = Object.keys(record)
+      .sort()
+      .slice(0, 16)
+      .map((key) => {
+        try {
+          return `${key}=${normalizeHeadlessEvidence(record[key], seen, depth + 1)}`;
+        } catch {
+          return `${key}=[unreadable]`;
+        }
+      });
     return fields.length === 0 ? Object.prototype.toString.call(value) : `{${fields.join(', ')}}`;
   } catch {
     return Object.prototype.toString.call(value);
@@ -1781,11 +2219,18 @@ function reportPreviewHeadlessOwnership(
   options: PreviewHeadlessRendererOptions,
   event: PreviewHeadlessOwnershipEvent,
 ): void {
-  try { options.reportOwnership?.(event); } catch { /* observer isolation */ }
+  try {
+    options.reportOwnership?.(event);
+  } catch {
+    /* observer isolation */
+  }
 }
 
 /** A deadline whose timer cannot retain the process after another race branch wins. */
-function createCancellableDeadline(timeoutMs: number): { readonly cancel: () => void; readonly promise: Promise<void> } {
+function createCancellableDeadline(timeoutMs: number): {
+  readonly cancel: () => void;
+  readonly promise: Promise<void>;
+} {
   let timer: NodeJS.Timeout | undefined;
   const promise = new Promise<void>((resolve) => {
     timer = setTimeout(() => {

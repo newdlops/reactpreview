@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { PreviewBuildRequest, PreviewBundle } from '../../domain/preview';
 import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
 import { renderCompiledPreviewHeadlessly } from './previewHeadlessRenderer';
+import { createPreviewHeadlessTsxCorpusVendorCache } from './previewHeadlessTsxCorpusVendorCache';
 import {
   writePreviewTsxCorpusSpool,
   type PreviewTsxCorpusCompilerLaneCommand,
@@ -22,7 +23,13 @@ import type {
 
 /** Persistent compile-only process used by the v12 two-stage accelerator. */
 export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number> {
-  const compiler = new EsbuildPreviewCompiler();
+  let compiler: EsbuildPreviewCompiler | undefined;
+  let cacheNamespace: {
+    readonly campaignId: string;
+    readonly engineDigest: string;
+    readonly policyDigest: string;
+    readonly spoolRoot: string;
+  } | undefined;
   process.stdout.write(`${JSON.stringify({ kind: 'ready', version: 12 })}\n`);
   let buffer = '';
   try {
@@ -37,10 +44,26 @@ export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number>
         const command = JSON.parse(line) as PreviewTsxCorpusCompilerLaneCommand;
         if (command.version !== 12) throw new Error('Unsupported v12 compiler-lane protocol version.');
         if (command.kind === 'shutdown') {
-          await compiler.shutdown();
+          await compiler?.shutdown();
           process.stdout.write(`${JSON.stringify({ kind: 'drained', version: 12 })}\n`);
           return 0;
         }
+        const namespace = {
+          campaignId: command.identity.campaignId,
+          engineDigest: command.identity.engineDigest,
+          policyDigest: command.identity.policyDigest,
+          spoolRoot: path.resolve(command.spoolRoot),
+        };
+        if (cacheNamespace !== undefined && (
+          cacheNamespace.campaignId !== namespace.campaignId ||
+          cacheNamespace.engineDigest !== namespace.engineDigest ||
+          cacheNamespace.policyDigest !== namespace.policyDigest ||
+          cacheNamespace.spoolRoot !== namespace.spoolRoot
+        )) throw new Error('Compiler lane received a command outside its cache namespace.');
+        cacheNamespace ??= namespace;
+        compiler ??= new EsbuildPreviewCompiler({
+          vendorModuleCacheBackend: createPreviewHeadlessTsxCorpusVendorCache(namespace),
+        });
         const compileStartedAt = Date.now();
         let bundle: PreviewBundle;
         try {
@@ -87,7 +110,7 @@ export async function runPreviewHeadlessTsxCorpusCompilerLane(): Promise<number>
     }
     return 0;
   } finally {
-    await compiler.shutdown();
+    await compiler?.shutdown();
   }
 }
 

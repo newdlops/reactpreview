@@ -11,11 +11,15 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { EsbuildPreviewCompiler } from '../esbuild/esbuildPreviewCompiler';
-import { renderCompiledPreviewHeadlessly } from './previewHeadlessRenderer';
+import {
+  readPreviewHeadlessFatalBrowserErrors,
+  renderCompiledPreviewHeadlessly,
+} from './previewHeadlessRenderer';
 import {
   PREVIEW_TSX_CORPUS_SPOOL_LIMIT_BYTES,
   readPreviewTsxCorpusSpool,
   removePreviewTsxCorpusSpool,
+  verifyPreviewTsxCorpusSpool,
   type PreviewTsxCorpusCompilerLaneCommand,
   type PreviewTsxCorpusCompilerLaneMessage,
   type PreviewTsxCorpusSpoolDescriptor,
@@ -52,6 +56,10 @@ import {
   writePreviewTsxCorpusArtifactAtomic,
   writePreviewTsxCorpusJsonAtomic,
 } from './previewHeadlessTsxCorpusCampaignArtifacts';
+import {
+  validatePreviewTsxCorpusTriageSelection,
+  type PreviewTsxCorpusTriageSelectionArtifact,
+} from './previewHeadlessTsxCorpusSelection';
 
 interface CampaignOptions {
   readonly artifacts: string;
@@ -1204,6 +1212,7 @@ interface V12AccelerationOptions {
   readonly runtimePath: string; readonly sourceRoot: string; readonly windowRows: number;
   readonly windowStart: number; readonly workspace: string; readonly chunkRows: number;
   readonly candidates: '12x4,14x4,16x5';
+  readonly selectionPath?: string;
 }
 
 const FILTERED_JSX_EXPORT_MANIFEST_ROWS = 6807;
@@ -1240,26 +1249,52 @@ async function runV12Acceleration(options: V12AccelerationOptions): Promise<void
   const manifestBytes = await readFile(options.manifestPath);
   const manifest = parseManifest(manifestBytes.toString('utf8'));
   const manifestDigest = digest(manifestBytes);
+  const triageSelection = options.selectionPath === undefined
+    ? undefined
+    : await readPreviewTsxCorpusChecksummedJson<PreviewTsxCorpusTriageSelectionArtifact>(options.selectionPath);
   if (
-    manifest.length !== FILTERED_JSX_EXPORT_MANIFEST_ROWS ||
-    manifestDigest !== FILTERED_JSX_EXPORT_MANIFEST_SHA256
+    triageSelection === undefined &&
+    (
+      manifest.length !== FILTERED_JSX_EXPORT_MANIFEST_ROWS ||
+      manifestDigest !== FILTERED_JSX_EXPORT_MANIFEST_SHA256
+    )
   ) {
     throw new Error('v13 acceleration requires the immutable 6,807-row JSX-export manifest.');
   }
-  if (options.windowStart + options.windowRows > manifest.length) throw new Error('v12 acceleration window exceeds the frozen manifest.');
-  const engineDigest = digest(await readFile(options.runtimePath));
-  const corridorSuffix = 'legal/right-to-consent-or-consult/pages/rtcc-investment-contract-management-page/investment-agreement-management-modals.tsx';
-  const corridorMatches = manifest
-    .map((row, index) => ({ index, row }))
-    .filter(({ row }) => row.path.endsWith(corridorSuffix));
-  if (corridorMatches.length !== 1 || corridorMatches[0] === undefined) {
-    throw new Error(`v12 reference corridor resolution expected one match, found ${corridorMatches.length}.`);
+  const selectedRows = triageSelection === undefined
+    ? Array.from({ length: options.windowRows }, (_, offset) => options.windowStart + offset)
+    : validatePreviewTsxCorpusTriageSelection(triageSelection, manifest, manifestDigest);
+  if (triageSelection === undefined) {
+    if (options.windowStart + options.windowRows > manifest.length) throw new Error('v12 acceleration window exceeds the frozen manifest.');
+  } else if (
+    options.windowStart !== 0 ||
+    options.windowRows !== selectedRows.length ||
+    selectedRows.length > 8
+  ) {
+    throw new Error('v12 triage selection requires --window-start 0, matching selected rows, and no more than eight entries.');
   }
-  const corridor = corridorMatches[0];
+  const engineDigest = digest(await readFile(options.runtimePath));
+  const referenceRow = triageSelection === undefined
+    ? (() => {
+        const corridorSuffix = 'legal/right-to-consent-or-consult/pages/rtcc-investment-contract-management-page/investment-agreement-management-modals.tsx';
+        const corridorMatches = manifest
+          .map((row, index) => ({ index, row }))
+          .filter(({ row }) => row.path.endsWith(corridorSuffix));
+        if (corridorMatches.length !== 1 || corridorMatches[0] === undefined) {
+          throw new Error(`v12 reference corridor resolution expected one match, found ${corridorMatches.length}.`);
+        }
+        return corridorMatches[0];
+      })()
+    : (() => {
+        const index = selectedRows[0];
+        const row = index === undefined ? undefined : manifest[index];
+        if (index === undefined || row === undefined) throw new Error('v12 triage selection has no reference row.');
+        return { index, row };
+      })();
   const semanticKey = digestJson({
     chromiumPath: path.resolve(options.chromiumPath),
-    corridorDigest: corridor.row.sha256,
-    corridorIndex: corridor.index,
+    corridorDigest: referenceRow.row.sha256,
+    corridorIndex: referenceRow.index,
     engineDigest,
     manifestDigest,
     manifestRows: manifest.length,
@@ -1268,6 +1303,24 @@ async function runV12Acceleration(options: V12AccelerationOptions): Promise<void
     virtualTimeMs: 5_000,
     workspace: path.resolve(options.workspace),
   });
+  const selection = triageSelection === undefined
+    ? {
+        digest: digestJson({ windowRows: options.windowRows, windowStart: options.windowStart }),
+        mode: 'contiguous-window' as const,
+        rows: selectedRows.length,
+      }
+    : {
+        digest: triageSelection.selection.digest,
+        mode: triageSelection.mode,
+        rows: selectedRows.length,
+      };
+  const policyDigest = digestJson({ selection, semanticKey });
+  if (triageSelection !== undefined) {
+    const snapshotPath = path.join(options.artifacts, 'triage-selection.json');
+    const checksum = await writePreviewTsxCorpusJsonAtomic(snapshotPath, triageSelection);
+    await writePreviewTsxCorpusJsonAtomic(`${snapshotPath}.checksum.json`, checksum);
+    await readPreviewTsxCorpusChecksummedJson(snapshotPath);
+  }
   const referencePath = path.join(options.artifacts, 'reference', engineDigest, semanticKey, 'reference.json');
   const reference = await readJsonIfPresent<{ readonly semanticKey: string; readonly engineDigest: string }>(referencePath);
   if (reference !== undefined) {
@@ -1276,7 +1329,7 @@ async function runV12Acceleration(options: V12AccelerationOptions): Promise<void
   } else {
     // The reference is namespaced before lookup.  Foreign namespaces are never
     // inspected or overwritten.
-    const row = corridor.row;
+    const row = referenceRow.row;
     const compiler = new EsbuildPreviewCompiler();
     let referenceDeadline: NodeJS.Timeout | undefined;
     try {
@@ -1296,7 +1349,7 @@ async function runV12Acceleration(options: V12AccelerationOptions): Promise<void
       });
       const { request, result } = await Promise.race([referenceWork, deadline]);
       if (!result.cleanup.browserTerminated || !result.cleanup.profileRemoved || !result.cleanup.serverClosed) throw new Error('v12 reference renderer cleanup was inconclusive.');
-      const checksum = await writePreviewTsxCorpusJsonAtomic(referencePath, { engineDigest, semanticKey, signature: semanticSentinelSignature({ headless: result, index: corridor.index, kind: 'headless-result', documentPath: request.documentPath, durationMs: 0, path: row.path, version: 3 }), version: 12 });
+      const checksum = await writePreviewTsxCorpusJsonAtomic(referencePath, { engineDigest, semanticKey, signature: semanticSentinelSignature({ headless: result, index: referenceRow.index, kind: 'headless-result', documentPath: request.documentPath, durationMs: 0, path: row.path, version: 3 }), version: 12 });
       await writePreviewTsxCorpusJsonAtomic(`${referencePath}.checksum.json`, checksum);
       await readPreviewTsxCorpusChecksummedJson(referencePath);
     } finally {
@@ -1310,9 +1363,9 @@ async function runV12Acceleration(options: V12AccelerationOptions): Promise<void
   // full 240-row windows on strictly lower concurrency.
   for (const candidate of [{ lanes: 16, renders: 5 }, { lanes: 14, renders: 4 }, { lanes: 12, renders: 4 }] as const) {
     const root = path.join(options.artifacts, `candidate-v12-${candidate.lanes}x${candidate.renders}`);
-    const report = await runV12Candidate({ ...options, engineDigest, manifest, root, semanticKey }, candidate.lanes, candidate.renders);
+    const report = await runV12Candidate({ ...options, engineDigest, manifest, policyDigest, root, selectedRows, selection, semanticKey }, candidate.lanes, candidate.renders);
     aggregate.push(report);
-    const checksum = await writePreviewTsxCorpusJsonAtomic(path.join(options.artifacts, 'aggregate-report.json'), { candidates: aggregate, engineDigest, semanticKey, version: 12 });
+    const checksum = await writePreviewTsxCorpusJsonAtomic(path.join(options.artifacts, 'aggregate-report.json'), { candidates: aggregate, engineDigest, policyDigest, selection, semanticKey, version: 12 });
     await writePreviewTsxCorpusJsonAtomic(path.join(options.artifacts, 'aggregate-report.json.checksum.json'), checksum);
     await readPreviewTsxCorpusChecksummedJson(path.join(options.artifacts, 'aggregate-report.json'));
     if (report.status === 'selected' || report.status === 'safe-sub-100') return;
@@ -1750,13 +1803,10 @@ class V12ProgressCheckpointWriter {
 }
 
 async function runV12Candidate(
-  context: { readonly artifacts: string; readonly chromiumPath: string; readonly engineDigest: string; readonly manifest: readonly PreviewTsxCorpusManifestRow[]; readonly root: string; readonly runtimePath: string; readonly semanticKey: string; readonly sourceRoot: string; readonly windowRows: number; readonly windowStart: number; readonly workspace: string }, lanes: number, renderSlots: number,
+  context: { readonly artifacts: string; readonly chromiumPath: string; readonly engineDigest: string; readonly manifest: readonly PreviewTsxCorpusManifestRow[]; readonly policyDigest: string; readonly root: string; readonly runtimePath: string; readonly selectedRows: readonly number[]; readonly selection: Readonly<{ readonly digest: string; readonly mode: 'contiguous-window' | 'static-triage'; readonly rows: number }>; readonly semanticKey: string; readonly sourceRoot: string; readonly windowRows: number; readonly windowStart: number; readonly workspace: string }, lanes: number, renderSlots: number,
 ): Promise<{ readonly candidate: string; readonly gates: Readonly<Record<string, boolean>>; readonly ratePerMinute: number; readonly status: 'failed' | 'safe-sub-100' | 'selected'; readonly terminalRows: number; readonly version: 12 }> {
   await mkdir(context.root, { recursive: true });
-  const pendingRows = Array.from(
-    { length: context.windowRows },
-    (_, offset) => context.windowStart + offset,
-  );
+  const pendingRows = [...context.selectedRows];
   // Row zero owns an unusually broad automatic-search frontier when compiled
   // cold. Admit it after the shared project caches have received initial work,
   // without pinning seven unrelated rows behind the same compiler process.
@@ -1794,7 +1844,7 @@ async function runV12Candidate(
     compilerLaneCount: lanes,
     engineDigest: context.engineDigest,
     onError: fail,
-    policyDigest: context.semanticKey,
+    policyDigest: context.policyDigest,
     root: context.root,
     runtimeState: () => ({
       claimedRows: unclaimed,
@@ -1848,7 +1898,7 @@ async function runV12Candidate(
         try {
             const admittedAt = Date.now();
             const request = await v12Request(context.manifest[index]!, context.sourceRoot, context.workspace);
-            const identity = { attemptId: randomUUID(), campaignId, candidate: `${lanes}x${renderSlots}`, engineDigest: context.engineDigest, generationId: `${laneId}-g${generation.toString()}`, laneId, policyDigest: context.semanticKey, row: index, sourceDigest: context.manifest[index]!.sha256 };
+            const identity = { attemptId: randomUUID(), campaignId, candidate: `${lanes}x${renderSlots}`, engineDigest: context.engineDigest, generationId: `${laneId}-g${generation.toString()}`, laneId, policyDigest: context.policyDigest, row: index, sourceDigest: context.manifest[index]!.sha256 };
             const message = await compiler.compile({
               absoluteDeadlineEpochMs: admittedAt + 90_000,
               commandId: randomUUID(),
@@ -1860,7 +1910,8 @@ async function runV12Candidate(
             });
             descriptor = message.descriptor;
             compilerIntervals.push([message.compileStartedAt, message.compileFinishedAt]);
-            await readPreviewTsxCorpusSpool(descriptor, identity); // durable supervisor acknowledgement
+            await verifyPreviewTsxCorpusSpool(descriptor, identity); // durable supervisor acknowledgement
+            if (Date.now() > descriptor.absoluteDeadlineEpochMs) throw new Error('Row deadline expired while waiting in the render queue.');
             if (fatal !== undefined) throw fatal;
             if (bytes + descriptor.bundleBytes > PREVIEW_TSX_CORPUS_SPOOL_LIMIT_BYTES) throw new Error('v12 durable spool byte ceiling would be exceeded.');
             bytes += descriptor.bundleBytes;
@@ -1932,7 +1983,7 @@ async function runV12Candidate(
       if (fatal !== undefined) return;
       const item = queue.shift(); if (item === undefined) { if (fatal !== undefined || compilersDone === lanes) return; continue; }
       try {
-        const envelope = await readPreviewTsxCorpusSpool(item.descriptor, { attemptId: item.descriptor.attemptId, campaignId, candidate: `${lanes}x${renderSlots}`, engineDigest: context.engineDigest, generationId: item.descriptor.generationId, laneId: item.descriptor.laneId, policyDigest: context.semanticKey, row: item.descriptor.row, sourceDigest: item.descriptor.sourceDigest });
+        const envelope = await readPreviewTsxCorpusSpool(item.descriptor, { attemptId: item.descriptor.attemptId, campaignId, candidate: `${lanes}x${renderSlots}`, engineDigest: context.engineDigest, generationId: item.descriptor.generationId, laneId: item.descriptor.laneId, policyDigest: context.policyDigest, row: item.descriptor.row, sourceDigest: item.descriptor.sourceDigest });
         const start = Date.now(); const result = await renderCompiledPreviewHeadlessly(envelope.bundle, envelope.request, { chromiumPath: context.chromiumPath, timeoutMs: 30_000, virtualTimeMs: 5_000 }); const end = Date.now(); renderIntervals.push([start, end]);
         const cleanupConfirmed = result.cleanup.browserTerminated && result.cleanup.profileRemoved && result.cleanup.serverClosed;
         if (!cleanupConfirmed) throw new Error(`v12 renderer cleanup failure for row ${item.descriptor.row.toString()}: ${JSON.stringify(result.cleanup)}`);
@@ -2023,6 +2074,7 @@ async function runV12Candidate(
     ratePerMinute: rate,
     renderIntervals,
     rowFailures,
+    selection: context.selection,
     spool: { highBytes, highCount, limitBytes: PREVIEW_TSX_CORPUS_SPOOL_LIMIT_BYTES, limitCount: reservationLimit, queueHighCount },
     status,
     terminalRows: terminal.size,
@@ -3079,12 +3131,14 @@ function semanticSentinelSignature(result: PreviewTsxCorpusWorkerResult): Readon
   const composition = headless?.stabilization?.compositionSnapshot;
   return {
     category: result.kind === 'headless-result' && headless?.status === 'ready' ? 'successful meaningful render' : 'runtime/build failure',
+    contextSource: composition?.contextModuleSourcePath,
     errorPresence: result.error !== undefined || headless?.protocolError !== undefined || headless?.runtimeErrorText !== undefined,
     fidelity: composition?.pageExecutionFidelity,
     kind: result.kind,
     outcome: headless?.stabilizedOutcome,
     output: composition?.targetHasOutput,
     pageRoot: composition?.targetPageRootCommitted,
+    standaloneTarget: composition?.pageExecutionStandaloneTarget === true,
     source: composition?.targetSourcePath,
     stage: composition?.targetStage,
     status: headless?.status,
@@ -3098,7 +3152,8 @@ function semanticSentinelSignature(result: PreviewTsxCorpusWorkerResult): Readon
 
 function strictCorridorSignature(signature: Readonly<Record<string, unknown>>): boolean {
   return signature.category === 'successful meaningful render' &&
-    signature.fidelity !== 'none' && signature.fidelity !== 'target-only' &&
+    signature.fidelity !== 'none' &&
+    (signature.fidelity !== 'target-only' || signature.standaloneTarget === true) &&
     signature.output === true && signature.pageRoot === true;
 }
 
@@ -3541,6 +3596,65 @@ function classifyCanonical(
   return classifyHeadlessResult(result, row, sourceRoot);
 }
 
+/** Keeps one existing renderer-owned scalar readable and bounded in durable classifications. */
+function formatClassificationDiagnosticText(value: string, maximumLength: number): string {
+  return value.replace(/\s+/gu, ' ').trim().slice(0, maximumLength) || 'none';
+}
+
+/** Formats bounded, snapshot-only first-break evidence for target reachability blockers. */
+function formatTargetReachabilityFirstBreak(
+  composition: NonNullable<NonNullable<PreviewHeadlessResult['stabilization']>['compositionSnapshot']>,
+): string {
+  const mounted = composition.targetMounted;
+  const wasMounted = composition.targetWasMounted === true;
+  const hasOutput = composition.targetHasOutput;
+  const fallbackRequested = composition.targetContextualFallbackRequested === true;
+  const scalar = (value: string): string => {
+    const normalized = value.trim().toLowerCase()
+      .replace(/[^a-z0-9]+/gu, '-')
+      .replace(/^-+|-+$/gu, '');
+    return normalized.length === 0 ? 'none' : normalized.slice(0, 80);
+  };
+  const chain = composition.targetRenderCommitChain;
+  const mountedDecision = chain?.mountedChildrenGateDecision;
+  const corridor = `; corridor=(candidate=${scalar(composition.pageExecutionCandidateId ?? 'none')},root=${scalar(composition.pageExecutionRootSurfaceId ?? 'none')},route=${scalar(composition.selectedRoutePathname ?? 'none')},status=${scalar(composition.targetStatus)},stage=${scalar(composition.targetStage)},search=${scalar(composition.requirementSearchStatus)},pass=${composition.requirementSearchPass ?? 0},paths=${composition.requirementSearchObservedPathCount ?? 0},host-output=${composition.hostOutput})`;
+  const targetState = `; target-state=(page-root=${composition.targetPageRootCommitted ? '1' : '0'},mounted=${mounted ? '1' : '0'},was-mounted=${wasMounted ? '1' : '0'},has-output=${hasOutput ? '1' : '0'},fallback-requested=${fallbackRequested ? '1' : '0'},output-kind=${scalar(composition.targetOutputKind)},direct-output=${composition.targetDirectElementOutput === true ? '1' : '0'},projected-output=${composition.targetProjectedCompatibilityOutput === true ? '1' : '0'},detached-output=${composition.targetDetachedBoundaryOutput === true ? '1' : '0'},current-file-mounted=${composition.currentFileMounted})`;
+  const topology = chain === undefined ? '' : `; topology-verdict=${chain.topologyVerdict}; topology-support=(reason=${scalar(chain.topologyReason)},effect-continuation=${chain.topologyEffectContinuationAccepted ? '1' : '0'},delayed-probe=${chain.topologyDelayedProbeFired ? '1' : '0'},boundary-identity=${chain.topologyBoundaryIdentityRetained ? '1' : '0'},current-ambiguous=${chain.topologyCurrentBranchAmbiguous ? '1' : '0'},current-exact=${chain.topologyCurrentExactTargetCount},locator-exact=${chain.topologyLocatorExactTargetCount},target-children=${chain.topologyCurrentTargetChildCount},retained-children=${chain.topologyCurrentRetainedChildCount},current-hosts=${chain.topologyCurrentConnectedVisibleHostCount},descendant-hosts=${chain.topologyCurrentDescendantHostCount},stale-exact=${chain.topologyStaleExactTargetCount},stale-hosts=${chain.topologyStaleConnectedVisibleHostCount})`;
+  if (
+    chain !== undefined &&
+    mountedDecision !== undefined &&
+    mountedDecision.mountedChildrenGateFirstReject !== 'not-evaluated'
+  ) {
+    return `mountedChildrenGateFirstReject=${mountedDecision.mountedChildrenGateFirstReject}; mounted-children-support=(registrations=${mountedDecision.registrationCount},conflict=${mountedDecision.registrationConflict ? '1' : '0'},transparent-capability=${mountedDecision.transparentCapability ? '1' : '0'},retained-route-available=${mountedDecision.retainedRouteAvailable ? '1' : '0'},retained-route-owned=${mountedDecision.retainedRouteOwned ? '1' : '0'},boundary-count=${mountedDecision.boundaryCount},logical-target-count=${mountedDecision.logicalTargetCount},current-mount=${mountedDecision.currentMount ? '1' : '0'},alternate=${mountedDecision.alternateFiber ? '1' : '0'},rerender=${mountedDecision.stableRerender ? '1' : '0'},input-state=${mountedDecision.inputChildrenState},marked-call=${mountedDecision.markedCall ? '1' : '0'},effect=${mountedDecision.effectCompleted ? '1' : '0'},returned-child=${mountedDecision.returnedChild ? '1' : '0'},owned-host=${mountedDecision.ownedHost ? '1' : '0'},target-output=${mountedDecision.targetOutput ? '1' : '0'},render-error=${mountedDecision.renderError ? '1' : '0'},repair-error=${mountedDecision.repairError ? '1' : '0'},direct-target=${mountedDecision.directTarget ? '1' : '0'},page-root=${mountedDecision.pageRootCommitted ? '1' : '0'},active-key=${mountedDecision.activeKey ? '1' : '0'},latch-before=${mountedDecision.latchBefore ? '1' : '0'},request-attempted=${mountedDecision.requestAttempted ? '1' : '0'},request-accepted=${mountedDecision.requestAccepted ? '1' : '0'},notification-issued=${mountedDecision.notificationIssued ? '1' : '0'}); support=(replacement=${chain.specializedReplacementExecuted ? '1' : '0'},resolver=${scalar(chain.resolverOutcome)},marked-call=${chain.markedCallResult ? '1' : '0'},path=${scalar(chain.markedCallPropertyPath)},effect=${chain.effectCompletedAfterMarkedCall ? '1' : '0'},rerender=${chain.stableRerenderObserved ? '1' : '0'},children=${chain.childrenForwarded ? '1' : '0'},owned-host=${chain.ownedHostObserved ? '1' : '0'},connected-hosts=${chain.connectedHostCount},private-owned=${chain.privateOwnershipCount})${targetState}${corridor}${topology}`;
+  }
+  if (chain !== undefined && chain.firstBreak !== 'unknown') {
+    return `first-break=${chain.firstBreak}; support=(replacement=${chain.specializedReplacementExecuted ? '1' : '0'},resolver=${scalar(chain.resolverOutcome)},marked-call=${chain.markedCallResult ? '1' : '0'},path=${scalar(chain.markedCallPropertyPath)},effect=${chain.effectCompletedAfterMarkedCall ? '1' : '0'},rerender=${chain.stableRerenderObserved ? '1' : '0'},children=${chain.childrenForwarded ? '1' : '0'},owned-host=${chain.ownedHostObserved ? '1' : '0'},connected-hosts=${chain.connectedHostCount},private-owned=${chain.privateOwnershipCount})${targetState}${corridor}${topology}`;
+  }
+  const ownership = [
+    'compiler-export-evidence',
+    'facade-resolution',
+    'facade-evaluation',
+    'wrapper-render',
+    'boundary-commit',
+    'source-export-match',
+    'fiber-availability',
+  ].map((phase) => `${phase}:${composition.targetOwnershipPhases[phase] === true ? '1' : '0'}`).join(',');
+  const mountedWithoutHistory = mounted && !wasMounted;
+  const outputWithoutMount = hasOutput && !mounted && !wasMounted;
+  const firstBreak = !composition.targetPageRootCommitted
+    ? 'page-root-not-committed'
+    : mountedWithoutHistory || outputWithoutMount
+      ? 'unknown'
+      : !mounted && !wasMounted && !fallbackRequested
+        ? 'contextual-fallback-unavailable-or-not-requested'
+        : !mounted && !wasMounted && fallbackRequested
+          ? 'contextual-boundary-never-mounted'
+          : (mounted || wasMounted) && !hasOutput
+            ? 'mounted-without-owned-output'
+            : 'unknown';
+  return `first-break=${firstBreak}; support=(page-root=${composition.targetPageRootCommitted ? '1' : '0'},fallback-requested=${fallbackRequested ? '1' : '0'},mounted=${mounted ? '1' : '0'},was-mounted=${wasMounted ? '1' : '0'},has-output=${hasOutput ? '1' : '0'},stage=${scalar(composition.targetStage)},status=${scalar(composition.targetStatus)},output-kind=${scalar(composition.targetOutputKind)},detached-placement=${scalar(composition.targetDetachedTargetPlacement ?? '')},ownership=${ownership},continuation-skip=${scalar(composition.targetLastContinuationSkipReason ?? '')},search-status=${scalar(composition.requirementSearchStatus)},search-settled=${composition.requirementSearchSettled ? '1' : '0'},search-exhausted=${composition.requirementSearchExhausted ? '1' : '0'})${topology}`;
+}
+
 /** Classifies one cleaned headless result identically across serial and pipelined campaigns. */
 function classifyHeadlessResult(
   result: PreviewHeadlessResult,
@@ -3548,24 +3662,66 @@ function classifyHeadlessResult(
   sourceRoot: string,
 ): { readonly category: PreviewTsxCorpusCategory; readonly reason: string } {
   const composition = result.stabilization?.compositionSnapshot;
+  const fatalBrowserErrors = readPreviewHeadlessFatalBrowserErrors(result);
   const errorEvidence =
     result.status !== 'ready' ||
     result.protocolError !== undefined ||
     result.runtimeErrorText !== undefined ||
-    result.evidence.windowErrors.length > 0 ||
-    (result.evidence.cdpExceptions?.length ?? 0) > 0 ||
+    fatalBrowserErrors.length > 0 ||
     (result.evidence.requiredArtifactFailures?.length ?? 0) > 0 ||
     composition?.targetError === true;
   if (errorEvidence) {
+    const errorDetails: string[] = [];
+    if (composition?.targetErrorOwner !== undefined) {
+      errorDetails.push(
+        `owner=${formatClassificationDiagnosticText(composition.targetErrorOwner, 240)}`,
+      );
+    }
+    if (composition?.targetErrorPhase !== undefined) {
+      errorDetails.push(
+        `phase=${formatClassificationDiagnosticText(composition.targetErrorPhase, 240)}`,
+      );
+    }
+    if (composition?.targetErrorLocation !== undefined) {
+      errorDetails.push(
+        `location=${formatClassificationDiagnosticText(composition.targetErrorLocation, 320)}`,
+      );
+    }
+    if (composition?.targetErrorStack !== undefined) {
+      errorDetails.push(
+        `stack=${formatClassificationDiagnosticText(composition.targetErrorStack, 900)}`,
+      );
+    }
+    const consoleFailure = result.evidence.consoleFailures.find((value) =>
+      /Invalid JSX element type object|Element type is invalid/iu.test(value),
+    ) ?? result.evidence.consoleFailures.at(-1);
+    if (consoleFailure !== undefined) {
+      errorDetails.push(
+        `console=${formatClassificationDiagnosticText(consoleFailure, 900)}`,
+      );
+    }
+    if (composition?.targetErrorDetails !== undefined) {
+      errorDetails.push(
+        `details=${formatClassificationDiagnosticText(composition.targetErrorDetails, 800)}`,
+      );
+    }
+    const fallbackSummaries = (composition?.targetRuntimeFallbackSummaries ?? [])
+      .slice(0, 2)
+      .map((value) => formatClassificationDiagnosticText(value, 360));
+    if (fallbackSummaries.length > 0) {
+      errorDetails.push(`fallbacks=${fallbackSummaries.join(' | ')}`);
+    }
+    const primaryReason = String(
+      result.protocolError ??
+      result.runtimeErrorText ??
+      fatalBrowserErrors.at(0) ??
+      composition?.targetErrorMessage ??
+      `headless status ${result.status}`,
+    );
     return {
       category: 'runtime/build failure',
-      reason: String(
-        result.protocolError ??
-          result.runtimeErrorText ??
-          result.evidence.windowErrors.at(0) ??
-          result.evidence.cdpExceptions?.at(0) ??
-          `headless status ${result.status}`,
-      ).slice(0, 2_000),
+      reason: `${primaryReason}${errorDetails.length === 0 ? '' : `; target-error=(${errorDetails.join('; ')})`}`
+        .slice(0, 2_000),
     };
   }
   if (result.rootHtml.includes('Unrendered')) {
@@ -3582,52 +3738,85 @@ function classifyHeadlessResult(
     };
   }
   if ((composition?.activeBlockers ?? 0) > 0) {
+    const activeBlockerRecord = composition?.activeBlockerProvenance.at(0);
+    const activeBlocker = activeBlockerRecord?.kind ?? 'unknown';
+    const blockerIdentity = activeBlockerRecord === undefined
+      ? ''
+      : `; name=${formatClassificationDiagnosticText(activeBlockerRecord.name, 240)}; owner=${formatClassificationDiagnosticText(activeBlockerRecord.ownerPath, 320)}`;
     return {
       category: 'blocker',
-      reason: `active blocker: ${composition?.activeBlockerProvenance.at(0)?.kind ?? 'unknown'}`,
+      reason: activeBlocker === 'target-reachability' && composition !== undefined
+        ? `active blocker: ${activeBlocker}; ${formatTargetReachabilityFirstBreak(composition)}`
+        : `active blocker: ${activeBlocker}${blockerIdentity}`,
     };
   }
   if (
     result.rootHtml.trim().length === 0 ||
     result.stabilizedOutcome === 'ready-empty' ||
-    composition?.targetRenderedEmpty === true
+    (composition?.targetRenderedEmpty === true && composition.targetEffectControllerOutput !== true)
   ) {
-    return { category: 'blank/empty output', reason: 'settled capture contains no target-owned visible output' };
+    return { category: 'blank/empty output', reason: `settled capture contains no target-owned visible output; ${formatTargetReachabilityFirstBreak(composition ?? { targetMounted: false, targetWasMounted: false, targetHasOutput: false, targetContextualFallbackRequested: false, targetPageRootCommitted: false, targetOwnershipPhases: {}, targetStage: 'unknown', targetStatus: 'unknown', targetOutputKind: 'none', requirementSearchStatus: 'unknown', requirementSearchSettled: false, requirementSearchExhausted: false } as NonNullable<NonNullable<PreviewHeadlessResult['stabilization']>['compositionSnapshot']>)}` };
   }
   const exactTarget = targetSourceIsExact(composition?.targetSourcePath, row.path, sourceRoot);
+  const exactContextModule =
+    ['import-chain', 'next-app-filesystem'].includes(
+      composition?.contextModuleEvidenceKind ?? '',
+    ) &&
+    (composition?.contextModuleImportPathLength ?? 0) > 0 &&
+    targetSourceIsExact(composition?.contextModuleSourcePath, row.path, sourceRoot);
   const fidelity = composition?.pageExecutionFidelity ?? 'none';
+  const standaloneTarget = composition?.pageExecutionStandaloneTarget === true;
   const hasVerifiedTargetOutput =
     composition?.targetStage === 'target-output' &&
     composition.targetOutputKind === 'target-output';
+  const hasConclusiveTargetOutput =
+    hasVerifiedTargetOutput &&
+    composition?.targetStatus === 'reached' &&
+    composition.targetHasOutput;
   const hasCurrentFileOutput = hasVerifiedTargetOutput || (
     (composition?.currentFileMounted ?? 0) > 0 &&
     (composition?.hostOutput ?? 0) > 0
   );
   const strictSuccess =
     result.stabilizedOutcome === 'ready' &&
-    exactTarget &&
+    (exactTarget || exactContextModule) &&
     fidelity !== 'none' &&
-    fidelity !== 'target-only' &&
+    (fidelity !== 'target-only' || standaloneTarget) &&
     composition !== undefined &&
     composition.targetExportName.trim().length !== 0 &&
     composition.targetPageRootCommitted &&
     composition.targetMounted &&
     composition.targetHasOutput &&
     hasCurrentFileOutput &&
-    composition.requirementSearchSettled &&
+    (hasConclusiveTargetOutput || composition.requirementSearchSettled) &&
     result.stabilization?.postTerminalSnapshotReceived === true &&
-    result.stabilization.quiet &&
-    !result.stabilization.capReached &&
+    (hasConclusiveTargetOutput ||
+      (result.stabilization.quiet && !result.stabilization.capReached)) &&
     !composition.criticalEvidenceTruncated;
   if (strictSuccess) {
     return {
       category: 'successful meaningful render',
-      reason: `strict target-owned ${fidelity} Page Context render`,
+      reason: composition.targetEffectControllerOutput === true
+        ? `strict target-owned effect-controller ${fidelity} Page Context render`
+        : standaloneTarget
+        ? 'strict target-owned standalone Page Context render'
+        : exactTarget
+        ? `strict target-owned ${fidelity} Page Context render`
+        : `strict context-module-owned ${fidelity} Page Context render`,
     };
   }
   return {
     category: 'incomplete page composition',
-    reason: `non-strict composition: outcome=${result.stabilizedOutcome ?? 'none'}, fidelity=${fidelity}, stage=${composition?.targetStage ?? 'none'}`,
+    reason: [
+      `non-strict composition: outcome=${result.stabilizedOutcome ?? 'none'}`,
+      `fidelity=${fidelity}`,
+      `stage=${composition?.targetStage ?? 'none'}`,
+      `target-export=${composition?.targetExportName ?? 'none'}`,
+      `candidate=${composition?.pageExecutionCandidateId ?? 'none'}`,
+      `route=${composition?.selectedRoutePathname ?? 'none'}`,
+      `context=${composition?.contextModuleEvidenceKind ?? 'none'}:${composition?.contextModuleSourcePath ?? 'none'}`,
+      composition === undefined ? 'composition=missing' : formatTargetReachabilityFirstBreak(composition),
+    ].join('; ').slice(0, 2_000),
   };
 }
 

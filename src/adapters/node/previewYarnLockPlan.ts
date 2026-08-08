@@ -1,8 +1,8 @@
 /**
  * Converts a bounded Yarn v1 or Berry lockfile into an ordinary, deterministic node_modules plan.
  * The planner performs no network or extraction work. It accepts only exact public npm package
- * resolutions, follows compiler-proven missing roots plus public direct runtime requirements, and
- * keeps Yarn workspace/file/git protocols outside the automatic acquisition boundary.
+ * resolutions, follows compiler-proven missing roots plus their reachable dependency/peer closure,
+ * and keeps Yarn workspace/file/git protocols outside the automatic acquisition boundary.
  */
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
@@ -19,6 +19,7 @@ const YARN_LOCK_NAME = 'yarn.lock';
 const MAX_LOCKFILE_BYTES = 16 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_PACKAGE_COUNT = 1024;
+const MAX_REACHABILITY_RECORD_COUNT = 8192;
 const MAX_DESCRIPTOR_BYTES = 2048;
 const PUBLIC_YARN_REGISTRY_HOST = 'registry.yarnpkg.com';
 const PUBLIC_NPM_REGISTRY_HOST = 'registry.npmjs.org';
@@ -32,11 +33,6 @@ const DEPENDENCY_FIELDS: readonly PreviewDependencyField[] = Object.freeze([
   'optionalDependencies',
   'peerDependencies',
 ]);
-const RUNTIME_ROOT_FIELDS = [
-  'dependencies',
-  'optionalDependencies',
-  'peerDependencies',
-] as const satisfies readonly PreviewDependencyField[];
 
 /** One public package archive and its collision-free destination below managed node_modules. */
 export interface PreviewYarnLockedPackagePlanEntry {
@@ -76,6 +72,7 @@ interface YarnPackageRecord {
   readonly dependencies: Readonly<Record<string, string>>;
   readonly optionalDependencies: ReadonlySet<string>;
   readonly packageName: string;
+  readonly peerDependencies: Readonly<Record<string, string>>;
   readonly integrity?: string;
   readonly resolved?: string;
   readonly version: string;
@@ -233,7 +230,8 @@ function readYarnPackageRecord(
   if (optionalDependencyMap === undefined) return undefined;
   const dependencies = mergeDependencyMaps(requiredDependencies, optionalDependencyMap);
   const optionalDependencies = readOptionalDependencyNames(value, flavor, requiredDependencies);
-  if (optionalDependencies === undefined) return undefined;
+  const peerDependencies = readStringMap(value.peerDependencies);
+  if (optionalDependencies === undefined || peerDependencies === undefined) return undefined;
   if (flavor === 'classic') {
     if (
       typeof value.integrity !== 'string' ||
@@ -249,6 +247,7 @@ function readYarnPackageRecord(
           integrity: value.integrity,
           optionalDependencies,
           packageName: archive.packageName,
+          peerDependencies,
           resolved: archive.resolved,
           version: value.version,
         });
@@ -260,6 +259,7 @@ function readYarnPackageRecord(
         dependencies,
         optionalDependencies,
         packageName,
+        peerDependencies,
         version: value.version,
       });
 }
@@ -275,17 +275,30 @@ function buildYarnPackageLayout(
   const queue: PlacedYarnPackage[] = [];
   const rootRequests = selectYarnRootRequests(profile, requiredPackageNames);
   if (rootRequests === undefined) return undefined;
+  let reachableTransitiveRecords:
+    ReadonlyMap<string, ReadonlyMap<string, YarnPackageRecord>> | undefined;
   for (const { packageName, required } of rootRequests) {
     if (placedByPath.size >= MAX_PACKAGE_COUNT) return undefined;
-    // Defense in depth mirrors the diagnostic collector: direct planner callers may infer only
-    // the exact React DOM companion, and only from a safe direct React registry declaration.
-    const specifier =
-      findPreviewDependencySpecifier(profile, packageName) ??
-      (packageName === 'react-dom' ? findPreviewReactDomCompanionSpecifier(profile) : undefined);
-    const record =
-      specifier === undefined
-        ? undefined
-        : records.get(createDescriptorName(packageName, specifier, flavor));
+    const directSpecifier = findPreviewDependencySpecifier(profile, packageName);
+    const companionSpecifier =
+      directSpecifier === undefined && packageName === 'react-dom'
+        ? findPreviewReactDomCompanionSpecifier(profile)
+        : undefined;
+    let record: YarnPackageRecord | undefined;
+    if (directSpecifier !== undefined || companionSpecifier !== undefined) {
+      const specifier = directSpecifier ?? companionSpecifier;
+      record =
+        specifier !== undefined && isRegistryDependencySpecifier(specifier)
+          ? records.get(createDescriptorName(packageName, specifier, flavor))
+          : undefined;
+    } else if (required) {
+      // Esbuild can expose a missing import owned by a direct package rather than by application
+      // source. The manifest cannot name that transitive package, so prove it against the complete
+      // immutable lock graph before allowing it to become a managed root.
+      reachableTransitiveRecords ??= indexReachableYarnTransitiveRecords(records, flavor, profile);
+      const candidates = reachableTransitiveRecords?.get(packageName);
+      record = candidates?.size === 1 ? candidates.values().next().value : undefined;
+    }
     if (record === undefined) {
       // Compiler-proven misses are the retry contract and therefore fail closed. Runtime
       // supplemental roots are opportunistic: workspace/file/git dependencies deliberately have
@@ -303,6 +316,8 @@ function buildYarnPackageLayout(
     const owner = queue.shift();
     if (owner === undefined || processedPaths.has(owner.targetRelativePath)) continue;
     processedPaths.add(owner.targetRelativePath);
+    placeDeclaredPeerPackages(owner, records, flavor, profile, placedByPath, queue);
+    if (placedByPath.size > MAX_PACKAGE_COUNT) return undefined;
     for (const [dependencyName, specifier] of Object.entries(owner.record.dependencies).sort(
       ([left], [right]) => compareStrings(left, right),
     )) {
@@ -345,9 +360,87 @@ function buildYarnPackageLayout(
 }
 
 /**
- * Combines compiler-proven misses with direct manifest roots needed to satisfy undeclared peers.
- * Runtime fields are supplemental because a Yarn record does not reliably preserve every peer
- * edge. Development-only roots remain excluded unless the compiler explicitly requested them.
+ * Indexes public dependency edges reachable from safe direct manifest roots without selecting all
+ * of those packages for installation. This supplies lock-level evidence for compiler-reported
+ * transitive misses while keeping typos, stale lock entries, local protocols, and ambiguous
+ * versions outside the acquisition boundary.
+ */
+function indexReachableYarnTransitiveRecords(
+  records: ReadonlyMap<string, YarnPackageRecord>,
+  flavor: 'berry' | 'classic',
+  profile: PreviewDependencyProfile,
+): ReadonlyMap<string, ReadonlyMap<string, YarnPackageRecord>> | undefined {
+  const queue: YarnPackageRecord[] = [];
+  for (const field of DEPENDENCY_FIELDS) {
+    for (const [packageName, specifier] of Object.entries(profile.requirementsByField[field]).sort(
+      ([left], [right]) => compareStrings(left, right),
+    )) {
+      if (!isRegistryDependencySpecifier(specifier)) continue;
+      const record = records.get(createDescriptorName(packageName, specifier, flavor));
+      if (record !== undefined) queue.push(record);
+    }
+  }
+
+  const candidatesByName = new Map<string, Map<string, YarnPackageRecord>>();
+  const visitedIdentities = new Set<string>();
+  while (queue.length > 0) {
+    const owner = queue.shift();
+    if (owner === undefined) break;
+    const ownerIdentity = packageIdentity(owner);
+    if (visitedIdentities.has(ownerIdentity)) continue;
+    visitedIdentities.add(ownerIdentity);
+    if (visitedIdentities.size > MAX_REACHABILITY_RECORD_COUNT) return undefined;
+
+    for (const [dependencyName, specifier] of Object.entries(owner.dependencies).sort(
+      ([left], [right]) => compareStrings(left, right),
+    )) {
+      const record = records.get(createDescriptorName(dependencyName, specifier, flavor));
+      if (record === undefined) continue;
+      const identity = packageIdentity(record);
+      const candidates =
+        candidatesByName.get(dependencyName) ?? new Map<string, YarnPackageRecord>();
+      candidates.set(identity, record);
+      candidatesByName.set(dependencyName, candidates);
+      if (!visitedIdentities.has(identity)) queue.push(record);
+    }
+  }
+
+  const result = new Map<string, ReadonlyMap<string, YarnPackageRecord>>();
+  for (const [packageName, candidates] of candidatesByName) {
+    result.set(packageName, new Map(candidates));
+  }
+  return result;
+}
+
+/** Places only peers named by the reached package and declared by the consuming application. */
+function placeDeclaredPeerPackages(
+  owner: PlacedYarnPackage,
+  records: ReadonlyMap<string, YarnPackageRecord>,
+  flavor: 'berry' | 'classic',
+  profile: PreviewDependencyProfile,
+  placedByPath: Map<string, PlacedYarnPackage>,
+  queue: PlacedYarnPackage[],
+): void {
+  for (const peerName of Object.keys(owner.record.peerDependencies).sort(compareStrings)) {
+    const existing = placedByPath.get(peerName);
+    if (existing !== undefined) continue;
+    const specifier = findPreviewDependencySpecifier(profile, peerName);
+    const record =
+      specifier === undefined || !isRegistryDependencySpecifier(specifier)
+        ? undefined
+        : records.get(createDescriptorName(peerName, specifier, flavor));
+    if (record === undefined) continue;
+    const placement = placePackage(peerName, record);
+    placedByPath.set(peerName, placement);
+    queue.push(placement);
+    if (placedByPath.size > MAX_PACKAGE_COUNT) return;
+  }
+}
+
+/**
+ * Combines compiler-proven misses with direct project peer roots omitted from some lock records.
+ * Reached package records add their own declared peer edges later, so unrelated application
+ * dependencies do not turn a one-package recovery into a full workspace installation.
  * Required roots are emitted first so the finite package budget cannot be consumed by optional
  * context before the retry contract is represented.
  */
@@ -362,10 +455,15 @@ function selectYarnRootRequests(
   }
 
   const supplementalNames = new Set<string>();
-  for (const field of RUNTIME_ROOT_FIELDS) {
-    for (const packageName of Object.keys(profile.requirementsByField[field])) {
-      if (!requiredNames.has(packageName)) supplementalNames.add(packageName);
-    }
+  for (const packageName of Object.keys(profile.requirementsByField.peerDependencies)) {
+    if (!requiredNames.has(packageName)) supplementalNames.add(packageName);
+  }
+  if (
+    requiredNames.has('react-dom') &&
+    findPreviewDependencySpecifier(profile, 'react-dom') === undefined &&
+    findPreviewReactDomCompanionSpecifier(profile) !== undefined
+  ) {
+    supplementalNames.add('react');
   }
 
   return Object.freeze([
@@ -537,6 +635,37 @@ function hasProtocol(value: string): boolean {
   return /^[a-z][a-z\d+.-]*:/iu.test(value);
 }
 
+/** Admits ordinary npm ranges and strict npm aliases, never local or remote source protocols. */
+function isRegistryDependencySpecifier(specifier: string): boolean {
+  const normalizedSpecifier = specifier.trim();
+  const virtualRange = /^virtual:[a-f\d]{6,64}#npm:(.+)$/u.exec(normalizedSpecifier)?.[1];
+  if (virtualRange !== undefined) return isRegistryRange(virtualRange);
+  if (normalizedSpecifier.startsWith('npm:')) {
+    const aliasReference = normalizedSpecifier.slice('npm:'.length);
+    const scopeSlash = aliasReference.startsWith('@') ? aliasReference.indexOf('/') : -1;
+    const delimiterIndex = aliasReference.indexOf('@', scopeSlash >= 0 ? scopeSlash + 1 : 0);
+    return (
+      delimiterIndex > 0 &&
+      PACKAGE_NAME_PATTERN.test(aliasReference.slice(0, delimiterIndex)) &&
+      isRegistryRange(aliasReference.slice(delimiterIndex + 1))
+    );
+  }
+  return isRegistryRange(normalizedSpecifier);
+}
+
+/** Accepts npm tag/range syntax while rejecting paths, protocols, fragments, and malformed bytes. */
+function isRegistryRange(range: string): boolean {
+  return (
+    range.length > 0 &&
+    range.length <= MAX_DESCRIPTOR_BYTES &&
+    range === range.trim() &&
+    !range.startsWith('.') &&
+    !range.startsWith('/') &&
+    !/[\\/@\0\r\n?!#]/u.test(range) &&
+    !hasProtocol(range)
+  );
+}
+
 /** Splits Yarn's comma-joined equivalent descriptor key after the parser removes quoting. */
 function splitJoinedDescriptors(value: string): readonly string[] | undefined {
   if (Buffer.byteLength(value) > MAX_DESCRIPTOR_BYTES) return undefined;
@@ -573,6 +702,7 @@ function packageIdentity(record: YarnPackageRecord): string {
         integrity: record.integrity ?? null,
         optionalDependencies: [...record.optionalDependencies].sort(compareStrings),
         packageName: record.packageName,
+        peerDependencies: record.peerDependencies,
         resolved: record.resolved ?? null,
         version: record.version,
       }),

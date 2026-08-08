@@ -65,12 +65,14 @@ export async function runPreviewHeadlessTsxCorpusCampaignCli(
     if (requireValue(values, '--candidates') !== '12x4,14x4,16x5') throw new Error('--candidates must be exactly 12x4,14x4,16x5.');
     const chunkRows = parsePositiveInteger(requireValue(values, '--chunk-rows'), '--chunk-rows');
     if (chunkRows !== 8) throw new Error('--chunk-rows must be exactly 8.');
+    const selectionPath = values.get('--selection');
     await acceleratePreviewHeadlessTsxCorpusCampaign({
       artifacts: path.resolve(requireValue(values, '--artifacts')),
       chromiumPath: path.resolve(requireValue(values, '--chromium')),
       candidates: '12x4,14x4,16x5', chunkRows,
       manifestPath: path.resolve(requireValue(values, '--manifest')),
       runtimePath: path.resolve(runtimePath), sourceRoot: path.resolve(requireValue(values, '--source-root')),
+      ...(selectionPath === undefined ? {} : { selectionPath: path.resolve(selectionPath) }),
       windowRows: parsePositiveInteger(requireValue(values, '--window-rows'), '--window-rows'),
       windowStart: parseNonnegativeInteger(requireValue(values, '--window-start'), '--window-start'), workspace: path.resolve(requireValue(values, '--workspace')),
     });
@@ -110,6 +112,7 @@ function parseNamedArguments(arguments_: readonly string[]): ReadonlyMap<string,
     '--outer-deadline-ms',
     '--policy',
     '--report',
+    '--selection',
     '--phase',
     '--source-root',
     '--window-rows',

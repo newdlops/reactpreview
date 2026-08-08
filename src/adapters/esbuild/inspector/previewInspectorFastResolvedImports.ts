@@ -143,6 +143,34 @@ function scoreModuleSpecifierAffinity(
     .replace(SOURCE_FILE_PATTERN, '')
     .split('/')
     .filter((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+  const suffixMatches = countMatchingPathSuffix(targetSegments, specifierSegments);
+  const targetDirectorySegments = targetSegments.slice(0, -1);
+  const directorySuffixMatches = countMatchingPathSuffix(
+    targetDirectorySegments,
+    specifierSegments,
+  );
+  const basenameMatch =
+    targetSegments.at(-1) !== undefined && targetSegments.at(-1) === specifierSegments.at(-1);
+  const directoryBasenameMatch =
+    targetDirectorySegments.at(-1) !== undefined &&
+    targetDirectorySegments.at(-1) === specifierSegments.at(-1);
+  return Math.max(
+    Number(basenameMatch) * 10_000 + suffixMatches * 1_000,
+    /*
+     * React.lazy barrels commonly expose a selected default page from their containing directory.
+     * A router then imports that directory rather than the page filename. Preserve that authored
+     * owner inside the affinity slice without treating arbitrary lexical overlap as reachability;
+     * the exact resolver and semantic export-flow pass still have to prove the edge afterward.
+     */
+    Number(directoryBasenameMatch) * 8_000 + directorySuffixMatches * 800,
+  );
+}
+
+/** Counts exact trailing path segments for both file imports and directory-barrel imports. */
+function countMatchingPathSuffix(
+  targetSegments: readonly string[],
+  specifierSegments: readonly string[],
+): number {
   let suffixMatches = 0;
   while (
     suffixMatches < targetSegments.length &&
@@ -151,9 +179,7 @@ function scoreModuleSpecifierAffinity(
   ) {
     suffixMatches += 1;
   }
-  const basenameMatch =
-    targetSegments.at(-1) !== undefined && targetSegments.at(-1) === specifierSegments.at(-1);
-  return Number(basenameMatch) * 10_000 + suffixMatches * 1_000;
+  return suffixMatches;
 }
 
 /** Confines resolved modules to authored JS/TS sources inside the trusted workspace. */

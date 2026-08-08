@@ -64,6 +64,41 @@ export function createPreviewInspectorPageExecutionSource(
     return 'export default function PreviewInspectorPageExecution() { return null; }';
   const executionPropsContext = 'PreviewInspectorExecutionRootPropsContext';
   const executionRootBridge = 'PreviewInspectorExecutionRootBridge';
+  const syntheticNextPagesPage = 'PreviewInspectorSyntheticNextPagesPage';
+  const requiresSyntheticNextPagesPage =
+    options.candidate.browserCandidate.nextPagesShell?.syntheticPage === true;
+  const selectedRouteSurfacePassthrough = 'PreviewInspectorSelectedRouteSurfacePassthrough';
+  const selectedRouteSurfaceResolver = 'PreviewInspectorResolveSelectedRouteSurface';
+  const contextualTargetFallback = 'PreviewInspectorContextualTargetFallback';
+  const authoredContextualTargetEdge = options.candidate.compositionEdges.find(
+    (edge) =>
+      edge.mode === 'contains-authored-child' &&
+      edge.childSurfaceId === options.candidate.runtimeTargetSurfaceId,
+  );
+  const deferredContextualTargetEdge =
+    options.candidate.browserCandidate.detachedTargetPlacement === 'deferred-sibling'
+      ? options.candidate.compositionEdges.find(
+          (edge) =>
+            edge.mode === 'sibling-after' &&
+            edge.childSurfaceId === options.candidate.runtimeTargetSurfaceId,
+        )
+      : undefined;
+  const contextualTargetEdge = authoredContextualTargetEdge ?? deferredContextualTargetEdge;
+  const contextualTargetLocal = localById.get(options.candidate.runtimeTargetSurfaceId);
+  const contextualTargetAcceptsAuthoredChild =
+    authoredContextualTargetEdge !== undefined &&
+    options.targetModuleContract?.transparentOrdinaryChildrenOutputExportNames.includes(
+      options.target.exportName,
+    ) === true;
+  const contextualTargetSupportsMountedTransparentChildren =
+    options.targetModuleContract?.transparentOrdinaryChildrenOutputExportNames.includes(
+      options.target.exportName,
+    ) === true;
+  const contextualTargetReachabilityKey = `${options.candidate.browserCandidate.id}:${options.target.exportName}`;
+  const contextualTargetFallbackCapabilityRevision = JSON.stringify({
+    mountedTransparentChildren: contextualTargetSupportsMountedTransparentChildren,
+    retainedRoutePage: contextualTargetSupportsMountedTransparentChildren,
+  });
   localById.set(root.id, executionRootBridge);
   const compositionRoot = surfaces.find((surface) => !childIds.has(surface.id)) ?? root;
   const render = (surfaceId: string, active: Set<string>): string => {
@@ -80,7 +115,7 @@ export function createPreviewInspectorPageExecutionSource(
       .filter((edge) => edge.mode === 'sibling-before')
       .map((edge) => render(edge.childSurfaceId, new Set(active)));
     const after = edges
-      .filter((edge) => edge.mode === 'sibling-after')
+      .filter((edge) => edge.mode === 'sibling-after' && edge !== deferredContextualTargetEdge)
       .map((edge) => render(edge.childSurfaceId, new Set(active)));
     const slot = edges.find(
       (edge) =>
@@ -151,6 +186,50 @@ export function createPreviewInspectorPageExecutionSource(
       : [];
   const routeStatePrelude = shouldInstallPreviewInspectorPageRouteStatePrelude(routeRecipe);
   const routeElement = routerRuntime !== undefined ? routerRuntime.routeElement : renderedRoot;
+  const contextualTargetFallbackSource =
+    contextualTargetLocal === undefined ||
+    (contextualTargetEdge === undefined && !contextualTargetSupportsMountedTransparentChildren)
+      ? []
+      : [
+          `const ${contextualTargetFallback}ReachabilityKey = ${JSON.stringify(contextualTargetReachabilityKey)};`,
+          `const ${contextualTargetFallback}Capability = Object.freeze(${contextualTargetFallbackCapabilityRevision});`,
+          `function ${contextualTargetFallback}({ children }) {`,
+          '  const [, setRevision] = React.useState(0);',
+          `  const inspectorSession = globalThis[Symbol.for('newdlops.react-file-preview.page-inspector')];`,
+          `  const contextualOwner = React.useMemo(() => ({}), [${contextualTargetFallback}ReachabilityKey, inspectorSession]);`,
+          '  const contextualRoleToken = React.useRef(undefined);',
+          '  React.useEffect(() => {',
+          '    let registrationReady = false;',
+          '    let notificationBuffered = false;',
+          '    const unsubscribe = inspectorSession?.subscribe?.(() => {',
+          '      if (!registrationReady) {',
+          '        notificationBuffered = true;',
+          '        return;',
+          '      }',
+          '      setRevision((value) => value + 1);',
+          '    });',
+          `    const registration = inspectorSession?.registerContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, ${contextualTargetFallback}Capability, contextualOwner);`,
+          '    contextualRoleToken.current = registration?.contextualRoleToken;',
+          '    registrationReady = true;',
+          `    if (notificationBuffered || inspectorSession?.shouldRenderContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, contextualOwner) === true)`,
+          '      setRevision((value) => value + 1);',
+          '    return () => {',
+          "      if (typeof unsubscribe === 'function') unsubscribe();",
+          '      contextualRoleToken.current = undefined;',
+          "      if (typeof registration === 'function') registration();",
+          '    };',
+          '  }, [inspectorSession, contextualOwner]);',
+          `  return inspectorSession?.shouldRenderContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, contextualOwner) === true`,
+          `    ? inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? ', children' : ''}) ?? null`,
+          `    : ${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? 'children' : 'null'};`,
+          '}',
+        ];
+  const contextualRouteElement =
+    contextualTargetFallbackSource.length === 0
+      ? routeElement
+      : contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild
+        ? `React.createElement(${contextualTargetFallback}, null, ${routeElement})`
+        : `React.createElement(React.Fragment, null, ${routeElement}, React.createElement(${contextualTargetFallback}, null))`;
   const virtualPageSourceRegistrations = createVirtualPageSourceRegistrations(
     options.candidate.optionalSurfaces,
   );
@@ -162,13 +241,41 @@ export function createPreviewInspectorPageExecutionSource(
     ...imports,
     ...(routerRuntime?.imports ?? []),
     ...virtualPageSourceRegistrations,
-    `const ${executionPropsContext} = React.createContext(Object.freeze({}));`,
-    `function ${executionRootBridge}() {`,
-    `  return React.createElement(${executionRootLocal}, React.useContext(${executionPropsContext}));`,
+    ...(routerRuntime?.declarations ?? []),
+    `function ${selectedRouteSurfacePassthrough}({ children }) {`,
+    '  return children ?? null;',
     '}',
+    `function ${selectedRouteSurfaceResolver}(surface) {`,
+    '  const marker = surface?.$$typeof;',
+    "  return marker === Symbol.for('react.context') || marker === Symbol.for('react.consumer') || marker === Symbol.for('react.provider')",
+    `    ? ${selectedRouteSurfacePassthrough}`,
+    '    : surface;',
+    '}',
+    `const ${executionPropsContext} = React.createContext(Object.freeze({}));`,
+    ...(requiresSyntheticNextPagesPage
+      ? [
+          `function ${syntheticNextPagesPage}() {`,
+          `  return React.createElement('main', { 'data-react-preview-synthetic-next-page': 'true' });`,
+          '}',
+        ]
+      : []),
+    `function ${executionRootBridge}(bridgeProps) {`,
+    `  const executionProps = React.useContext(${executionPropsContext});`,
+    '  const rootProps = Object.assign({}, executionProps, bridgeProps);',
+    ...(requiresSyntheticNextPagesPage
+      ? [
+          `  if (rootProps.Component == null) rootProps.Component = ${syntheticNextPagesPage};`,
+          '  if (rootProps.pageProps == null) rootProps.pageProps = Object.freeze({});',
+        ]
+      : []),
+    `  return Object.prototype.hasOwnProperty.call(bridgeProps, 'children')`,
+    `    ? React.createElement(${executionRootLocal}, rootProps, bridgeProps.children)`,
+    `    : React.createElement(${executionRootLocal}, rootProps);`,
+    '}',
+    ...contextualTargetFallbackSource,
     ...virtualPageOwnerFrame,
     'export default function PreviewInspectorPageExecution(previewProps) {',
-    `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${routeElement});`,
+    `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${contextualRouteElement});`,
     '}',
   ].join('\n');
 }
@@ -236,9 +343,12 @@ function createSurfaceImport(
       'Page Execution runtime target role does not match the prepared target module contract.',
     );
   }
+  const isVirtualSlice =
+    surface.strategy === 'selected-export-slice' ||
+    surface.strategy === 'inner-local-component-slice';
   const specifier = isRuntimeTarget
     ? PREVIEW_INSPECTOR_TARGET_FACADE_SPECIFIER
-    : isExecutionRoot
+    : isExecutionRoot && !isVirtualSlice
       ? executionRootModuleContract.sourcePath
       : surface.strategy === 'authentic-module-export' ||
           surface.strategy === 'framework-page-surface' ||
@@ -247,14 +357,17 @@ function createSurfaceImport(
         : createPreviewInspectorPageSurfaceSpecifier(surface.id);
   if (!isRuntimeTarget && !isExecutionRoot && surface.strategy === 'selected-route-surface') {
     const namespace = `${local}Module`;
+    const value = `${local}Value`;
     return [
       `import * as ${namespace} from ${JSON.stringify(specifier)};`,
-      `const ${local} = Reflect.get(${namespace}, ${JSON.stringify(surface.exportName)}) ?? Reflect.get(${namespace}, 'default');`,
+      `const ${value} = Reflect.get(${namespace}, ${JSON.stringify(surface.exportName)}) ?? Reflect.get(${namespace}, 'default');`,
+      `const ${local} = PreviewInspectorResolveSelectedRouteSurface(${value});`,
     ].join('\n');
   }
-  const bindingExportName = isExecutionRoot
-    ? executionRootModuleContract.bindingExportName
-    : surface.exportName;
+  const bindingExportName =
+    isExecutionRoot && !isVirtualSlice
+      ? executionRootModuleContract.bindingExportName
+      : surface.exportName;
   return bindingExportName === 'default'
     ? `import ${local} from ${JSON.stringify(specifier)};`
     : `import { ${bindingExportName} as ${local} } from ${JSON.stringify(specifier)};`;

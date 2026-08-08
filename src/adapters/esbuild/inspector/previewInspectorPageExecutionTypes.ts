@@ -107,6 +107,8 @@ export interface PreviewInspectorRouteExecutionRecipe {
   /** The selected route's project-owned React Router package, when a mini tree is used. */
   readonly routerModuleSpecifier?: 'react-router' | 'react-router-dom';
   readonly searchParams: Readonly<Record<string, string | readonly string[]>>;
+  /** Whether the admitted target occupies an ordinary route element or its proven error slot. */
+  readonly targetRole?: 'element' | 'error-element';
 }
 
 /** Ordered fidelity candidates for one selected browser route identity. */
@@ -141,6 +143,8 @@ export interface PreviewInspectorPageExecutionCandidate {
   /** Admitted selected leaf whose exact source/export is wrapped by the target facade. */
   readonly runtimeTargetContract: PreviewInspectorPageExecutionRoleContract;
   readonly runtimeTargetSurfaceId: string;
+  /** Complete graph evidence proves this export has no authored application-entry consumer. */
+  readonly standaloneTarget?: boolean;
   readonly watchSourcePaths: readonly string[];
 }
 

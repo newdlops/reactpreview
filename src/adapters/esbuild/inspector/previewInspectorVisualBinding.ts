@@ -28,7 +28,12 @@ export function isPreviewInspectorComponentShapedBinding(localName: string): boo
  */
 export function isPreviewInspectorSafeShallowVisualBinding(localName: string): boolean {
   if (!isPreviewInspectorComponentShapedBinding(localName)) return false;
-  const rootName = localName.split('.', 1)[0] ?? '';
+  const nameSegments = localName.split('.');
+  const rootName = nameSegments[0] ?? '';
+  const memberName = nameSegments.at(-1) ?? '';
   const normalizedName = rootName.replace(/^[$_]+/u, '');
-  return !/(?:Boundary|Context|Consumer|Provider|Route|Router)$/u.test(normalizedName);
+  return (
+    !/(?:Boundary|Context|Consumer|Provider|Route|Router)$/u.test(normalizedName) &&
+    !/^(?:Consumer|Provider)$/u.test(memberName)
+  );
 }

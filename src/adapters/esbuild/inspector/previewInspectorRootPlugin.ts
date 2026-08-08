@@ -351,6 +351,10 @@ export function createPreviewInspectorRootSource(
         : undefined;
     const executionRecipe = executionCandidate?.routeRecipe;
     const runtimeCandidateTarget = executionCandidate?.browserCandidate.target ?? candidate.target;
+    const selectedExecutionRootOwnsRouter =
+      executionCandidate === undefined
+        ? candidate.rootOwnsRouter
+        : executionCandidate.browserCandidate.rootOwnsRouter;
     const generatedExecutionOwnsRouter =
       executionRecipe?.rootOwnsRouter === false &&
       (executionRecipe.kind === 'react-router-v5' || executionRecipe.kind === 'react-router-v6');
@@ -377,7 +381,7 @@ export function createPreviewInspectorRootSource(
       ...(candidate.nextPagesShell === undefined
         ? {}
         : { nextPagesShell: candidate.nextPagesShell }),
-      rootOwnsRouter: candidate.rootOwnsRouter || generatedExecutionOwnsRouter,
+      rootOwnsRouter: selectedExecutionRootOwnsRouter || generatedExecutionOwnsRouter,
       ...(candidate.routeMountBasePath === undefined
         ? {}
         : {
@@ -564,7 +568,7 @@ export function createPreviewInspectorRootSource(
       // prettier-ignore
       ...(options.pageExecutionCandidate === undefined ? {} : { pageExecutionCandidateId: options.pageExecutionCandidate.id }),
       // prettier-ignore
-      ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates.map((candidate) => ({ executionRootSurfaceId: candidate.executionRootSurfaceId, fidelity: candidate.fidelity, id: candidate.id, nestedMountCount: candidate.routeRecipe?.mounts.length ?? 0, runtimeTargetSurfaceId: candidate.runtimeTargetSurfaceId })) }),
+      ...(options.pageExecutionCandidates === undefined ? {} : { pageExecutionCandidates: options.pageExecutionCandidates.map((candidate) => ({ executionRootSurfaceId: candidate.executionRootSurfaceId, fidelity: candidate.fidelity, id: candidate.id, nestedMountCount: candidate.routeRecipe?.mounts.length ?? 0, ownsGeneratedRouter: candidate.routeRecipe !== undefined && !candidate.routeRecipe.rootOwnsRouter && (candidate.routeRecipe.kind === 'react-router-v5' || candidate.routeRecipe.kind === 'react-router-v6'), runtimeTargetSurfaceId: candidate.runtimeTargetSurfaceId, standaloneTarget: candidate.standaloneTarget, targetRole: candidate.routeRecipe?.targetRole ?? 'element' })) }),
       ...(executableCandidate?.requestedCandidateWasUnavailable === true
         ? { requestedPageCandidateUnavailable: true }
         : {}),

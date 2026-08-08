@@ -12,7 +12,9 @@
  */
 import path from 'node:path';
 import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
+import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocationTypes';
 import type { PreviewInspectorOneHopVisualPath } from './previewInspectorShallowVisualTypes';
+import { isPreviewInspectorSafeShallowVisualBinding } from './previewInspectorVisualBinding';
 
 /** How the generated page obtains its executable body. */
 export type PreviewInspectorVirtualPageMode =
@@ -215,18 +217,17 @@ function createPreviewInspectorSelectedRouteLeafCandidate(
 }
 
 /**
- * Pins a nested factory page to its outermost importable route owner when that owner is already a
- * proven authored candidate. Mounting a leaf directly drops parent Route params and providers.
+ * Pins a route leaf to an authenticated route owner. Existing route mounts retain precedence;
+ * otherwise a direct JSX owner is admitted only when one same-render-path candidate has the exact
+ * resolved owner source identity. Mounting a leaf directly drops route params and providers.
  */
 function selectPreviewInspectorRouteOwnerCandidate(
   candidates: readonly PreviewInspectorPageCandidate[],
   authoredCandidate: PreviewInspectorPageCandidate,
 ): PreviewInspectorPageCandidate | undefined {
-  const location = authoredCandidate.routeLocation;
-  if (location === undefined || !('routeMounts' in location) || location.routeMounts.length === 0) {
-    return undefined;
-  }
-  for (const mount of location.routeMounts) {
+  const location = readPreviewInspectorGenericRouteLocation(authoredCandidate.routeLocation);
+  if (location === undefined) return undefined;
+  for (const mount of location.routeMounts ?? []) {
     const candidate = candidates.find(
       (item) =>
         path.normalize(item.root.sourcePath) === path.normalize(mount.sourcePath) &&
@@ -234,7 +235,31 @@ function selectPreviewInspectorRouteOwnerCandidate(
     );
     if (candidate !== undefined) return candidate;
   }
-  return undefined;
+
+  /*
+   * An exact inline route element already supplies the selected leaf's authored page frame. Running
+   * the outer direct owner again would re-enter unrelated redirects and application-wide gates,
+   * even though the compiler can safely compose the proven wrappers around the concrete leaf.
+   * Nested route mounts above remain authoritative and returned before this guard.
+   */
+  const componentSourcePath = location.componentSourcePath;
+  if (
+    componentSourcePath !== undefined &&
+    (location.routeMounts?.length ?? 0) === 0 &&
+    (location.elementWrappers?.length ?? 0) > 0
+  ) {
+    return undefined;
+  }
+
+  const directRouteOwnerSourcePath = location.directRouteOwnerSourcePath;
+  const renderPathId = authoredCandidate.renderPath?.id;
+  if (directRouteOwnerSourcePath === undefined || renderPathId === undefined) return undefined;
+  const directRouteOwners = candidates.filter(
+    (candidate) =>
+      candidate.renderPath?.id === renderPathId &&
+      path.normalize(candidate.root.sourcePath) === path.normalize(directRouteOwnerSourcePath),
+  );
+  return directRouteOwners.length === 1 ? directRouteOwners[0] : undefined;
 }
 
 /** Creates browser metadata using the live content root while preserving authored path identity. */
@@ -251,7 +276,10 @@ function createBrowserCandidate(
    * may be the first same-path candidate chosen only for dependency safety. Preserve authored route
    * identity so switching the Inspector selector changes MemoryRouter rather than only its label.
    */
-  const routeLocation = authoredCandidate.routeLocation ?? contentCandidate.routeLocation;
+  const routeLocation = attachPreviewInspectorDirectRouteOwnerMount(
+    authoredCandidate.routeLocation ?? contentCandidate.routeLocation,
+    contentCandidate.root,
+  );
   const routeMount = selectPreviewInspectorRouteMount(routeLocation, contentCandidate.root);
   return Object.freeze({
     ...contentCandidate,
@@ -267,6 +295,51 @@ function createBrowserCandidate(
           wildcardFallbackPresent: routeMount.hasWildcardFallback,
         }),
   });
+}
+
+/**
+ * Gives an exact unmounted JSX route owner the local Router boundary its relative Routes require.
+ * Existing authored mounts remain authoritative; source identity must match the retained content
+ * root, so an unrelated or ambiguous route leaf cannot acquire synthetic ownership.
+ */
+function attachPreviewInspectorDirectRouteOwnerMount(
+  routeLocation: PreviewInspectorPageCandidate['routeLocation'],
+  contentRoot: PreviewInspectorPageCandidate['root'],
+): PreviewInspectorPageCandidate['routeLocation'] {
+  const genericLocation = readPreviewInspectorGenericRouteLocation(routeLocation);
+  if (
+    genericLocation === undefined ||
+    (genericLocation.routeMounts?.length ?? 0) > 0 ||
+    genericLocation.directRouteOwnerSourcePath === undefined ||
+    path.normalize(genericLocation.directRouteOwnerSourcePath) !==
+      path.normalize(contentRoot.sourcePath)
+  ) {
+    return routeLocation;
+  }
+  return Object.freeze({
+    ...genericLocation,
+    routeMounts: Object.freeze([
+      Object.freeze({
+        basePath: '/',
+        contextOrigin: 'virtual-page-owner' as const,
+        contextPattern: '/*',
+        exportName: contentRoot.exportName,
+        hasWildcardFallback: false,
+        routeSlotCount: 1,
+        sourcePath: path.normalize(contentRoot.sourcePath),
+      }),
+    ]),
+  });
+}
+
+/** Narrows framework filesystem locations away from generic route-catalog-only metadata. */
+function readPreviewInspectorGenericRouteLocation(
+  routeLocation: PreviewInspectorPageCandidate['routeLocation'],
+): PreviewInspectorRouteLocation | undefined {
+  return routeLocation?.evidenceKind === 'route-catalog' ||
+    routeLocation?.evidenceKind === 'route-jsx'
+    ? routeLocation
+    : undefined;
 }
 
 /**
@@ -348,12 +421,14 @@ function createVirtualPageRecipe(
 /**
  * Selects the complete, statically proven JSX frame around the omitted corridor modules.
  *
- * Every project wrapper is part of the selected page contract even when it is named Provider or
- * Context rather than Layout. Ordinary siblings and component slots from the same exact return are
- * retained too, allowing Header, Sidebar, navigation, toolbars, and overlays to keep their authored
- * descendants. Static route alternatives and explicit fallback siblings remain excluded. The
- * transitive corridor plugin follows each admitted component by module/export identity, so this
- * broadens visible page composition without restoring application-wide route registries.
+ * Ordinary wrappers, siblings, and component slots from the same exact return are retained, allowing
+ * Header, Sidebar, navigation, toolbars, and overlays to keep their authored descendants. Provider,
+ * Context, Router, Route, and Boundary values are not independently reproducible here because the
+ * shallow path does not retain their authored props or member access; runtime infrastructure owns
+ * those boundaries instead. Static route alternatives and explicit fallback siblings remain
+ * excluded. The transitive corridor plugin follows each admitted component by module/export
+ * identity, so this broadens visible page composition without restoring application-wide route
+ * registries.
  */
 function collectVirtualPageShells(
   omittedOuterPath: readonly PreviewInspectorVirtualPagePathStep[],
@@ -392,6 +467,7 @@ function collectVirtualPageShells(
       if (visualPath.relation !== 'wrapper' && visualPath.relation !== 'sibling') {
         return false;
       }
+      if (!isPreviewInspectorSafeShallowVisualBinding(visualPath.renderedLocalName)) return false;
       if (path.normalize(visualPath.sourcePath) === contentPath) return false;
       /*
        * The live content export already executes wrappers and siblings authored in its own module.

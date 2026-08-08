@@ -67,9 +67,15 @@ function scoreCandidate(candidate: PreviewInspectorPageCandidate): number {
       : (candidate.renderPath?.steps[candidate.rootStepIndex]?.label ?? '');
   const identity = `${candidate.root.exportName} ${sourceStem} ${renderLabel}`;
   let score = Math.min(candidate.rootStepIndex ?? 0, 100);
-  // Filesystem-proven App Router pages own the actual `children` branch and must outrank a nearby
-  // layout export that cannot display any page content when mounted by itself.
-  if (candidate.routeLocation?.evidenceKind === 'next-app-filesystem') score += 15_000;
+  // Filesystem-proven Next pages own the framework-injected child branch and must outrank a nearby
+  // layout or `_app`-local checkpoint that cannot receive `children`/`Component` by itself.
+  if (
+    candidate.routeLocation?.evidenceKind === 'next-app-filesystem' ||
+    candidate.routeLocation?.evidenceKind === 'next-pages-filesystem' ||
+    candidate.routeLocation?.evidenceKind === 'next-pages-synthetic'
+  ) {
+    score += 15_000;
+  }
   if (/(?:App(?!lication)|Application|Layout|Shell|Frame)/u.test(identity)) score += 9_000;
   else if (/(?:Page|Screen|View)/u.test(identity)) score += 6_000;
   else if (/(?:Form|Wizard)/u.test(identity)) score += 4_500;

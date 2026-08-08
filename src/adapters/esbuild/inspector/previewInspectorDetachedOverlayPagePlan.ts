@@ -131,6 +131,7 @@ export async function createPreviewInspectorDetachedOverlayPagePlan(
       readSource: options.readSource,
       resolveModule: options.resolveModule,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
+      targetExportName: anchor.exportName,
       workspaceRoot: options.workspaceRoot,
     });
     if (corridor === undefined) continue;

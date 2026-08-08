@@ -66,6 +66,7 @@ const MAX_CONTEXTUAL_FACTORY_MANIFESTS = 16;
  */
 const MAX_ROUTE_CANDIDATES = 4_096;
 const FACTORY_BASE_EVIDENCE_PENALTY = 25;
+const DIRECT_ROUTE_OCCURRENCE_EVIDENCE_BONUS = 30;
 const ROOT_WILDCARD_EVIDENCE_PENALTY = 100;
 const COMPONENT_IDENTITY_PATTERN = /^[$_\p{Lu}][$_\u200C\u200D\p{ID_Continue}]*$/u;
 interface RouteLocationCandidate extends Omit<PreviewInspectorRouteLocation, 'dependencyPaths'> {
@@ -244,7 +245,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
         ...materializeFactoryManifestLocations(contextualManifest)
           .filter((location) => targetIdentitySet.has(location.componentName))
           .map((location) =>
-            retargetContextualFactoryLocation(
+            retargetTransparentRouteComponentLocation(
               location,
               options.documentPath,
               options.exportName,
@@ -362,7 +363,11 @@ export async function collectPreviewInspectorRouteLocationInventory(
       ...rankedCandidates.filter((candidate) => targetIdentitySet.has(candidate.componentName)),
       ...contextualDirectResolution.selectable
         .filter((resolved) =>
-          referencesPreviewInspectorDirectRouteTarget(resolved.choice, options.renderChain.target),
+          referencesDirectRouteTarget(
+            resolved.choice,
+            options.renderChain.target,
+            options.renderChain,
+          ),
         )
         .map((resolved) => resolved.candidate),
     ].sort(compareRouteCandidates)[0] ?? rankedCandidates[0];
@@ -379,15 +384,20 @@ export async function collectPreviewInspectorRouteLocationInventory(
       ) === index,
   );
   const inferredChoices = choiceCandidates.map((candidate) =>
-    freezeRouteLocation(
-      candidate,
-      factoryChoiceInventory.owner,
-      allDirectChoicesByOccurrence,
-      supportingSourcePaths,
-      catalogImportersByPath,
-      routePatterns,
+    retargetTransparentRouteComponentLocation(
+      freezeRouteLocation(
+        candidate,
+        factoryChoiceInventory.owner,
+        allDirectChoicesByOccurrence,
+        supportingSourcePaths,
+        catalogImportersByPath,
+        routePatterns,
+        options.documentPath,
+        options.exportName,
+      ),
       options.documentPath,
       options.exportName,
+      options.renderChain,
     ),
   );
   const choices = Object.freeze(
@@ -402,15 +412,20 @@ export async function collectPreviewInspectorRouteLocationInventory(
   const inferredPrimary =
     primaryCandidate === undefined
       ? undefined
-      : freezeRouteLocation(
-          primaryCandidate,
-          factoryChoiceInventory.owner,
-          allDirectChoicesByOccurrence,
-          supportingSourcePaths,
-          catalogImportersByPath,
-          routePatterns,
+      : retargetTransparentRouteComponentLocation(
+          freezeRouteLocation(
+            primaryCandidate,
+            factoryChoiceInventory.owner,
+            allDirectChoicesByOccurrence,
+            supportingSourcePaths,
+            catalogImportersByPath,
+            routePatterns,
+            options.documentPath,
+            options.exportName,
+          ),
           options.documentPath,
           options.exportName,
+          options.renderChain,
         );
   const contextualPrimary = retainPreviewInspectorNestedRouteOwnerContext(
     inferredPrimary,
@@ -565,8 +580,8 @@ function createFactoryOwnerContextPattern(basePath: string): string {
   return `${normalized}/*`;
 }
 
-/** Chases an exact lazy/re-export corridor from a factory barrel back to the selected file. */
-function retargetContextualFactoryLocation(
+/** Chases an exact lazy/re-export corridor from any route barrel back to the selected file. */
+function retargetTransparentRouteComponentLocation(
   location: PreviewInspectorRouteLocation,
   documentPath: string,
   exportName: string,
@@ -577,24 +592,12 @@ function retargetContextualFactoryLocation(
   const normalizedComponentPath = path.normalize(componentSourcePath);
   const normalizedDocumentPath = path.normalize(documentPath);
   if (normalizedComponentPath === normalizedDocumentPath) return location;
-  const proven = renderChain.paths.some((renderPath) => {
-    const targetIndex = renderPath.steps.findIndex(
-      (step) => path.normalize(step.sourcePath) === normalizedDocumentPath,
-    );
-    if (targetIndex < 0) return false;
-    const componentIndex = renderPath.steps.findIndex(
-      (step, index) =>
-        index > targetIndex &&
-        path.normalize(step.sourcePath) === normalizedComponentPath &&
-        normalizeComponentIdentity(step.label) === location.componentName,
-    );
-    return (
-      componentIndex > targetIndex &&
-      renderPath.steps
-        .slice(targetIndex, componentIndex)
-        .every((step) => step.kind === 'react-lazy' || step.kind === 're-export')
-    );
-  });
+  const proven = isTransparentRouteComponentCorridorProven(
+    normalizedComponentPath,
+    [location.componentName, location.componentExportName],
+    normalizedDocumentPath,
+    renderChain,
+  );
   if (!proven) return location;
   return Object.freeze({
     ...location,
@@ -609,6 +612,65 @@ function retargetContextualFactoryLocation(
         ]),
       ].sort(),
     ),
+  });
+}
+
+/** Recognizes an exact route binding that reaches the selected file through only inert barrels. */
+function referencesDirectRouteTarget(
+  choice: PreviewInspectorDirectRouteChoice,
+  target: CollectPreviewInspectorRouteLocationOptions['renderChain']['target'],
+  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
+): boolean {
+  if (referencesPreviewInspectorDirectRouteTarget(choice, target)) return true;
+  const references = [
+    choice.reference,
+    ...(choice.elementPath ?? []).map((component) => component.reference),
+  ];
+  return references.some(
+    (reference) =>
+      reference !== undefined &&
+      isTransparentRouteComponentCorridorProven(
+        reference.sourcePath,
+        [choice.componentName, reference.exportName],
+        target.sourcePath,
+        renderChain,
+      ),
+  );
+}
+
+/** Proves target-to-route continuity without treating an ordinary component owner as transparent. */
+function isTransparentRouteComponentCorridorProven(
+  componentSourcePath: string,
+  componentIdentities: readonly (string | undefined)[],
+  documentPath: string,
+  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
+): boolean {
+  const normalizedComponentPath = path.normalize(componentSourcePath);
+  const normalizedDocumentPath = path.normalize(documentPath);
+  const identities = new Set(
+    componentIdentities.flatMap((identity) => {
+      const normalized = normalizeComponentIdentity(identity);
+      return normalized === undefined ? [] : [normalized];
+    }),
+  );
+  if (identities.size === 0) return false;
+  return renderChain.paths.some((renderPath) => {
+    const targetIndex = renderPath.steps.findIndex(
+      (step) => path.normalize(step.sourcePath) === normalizedDocumentPath,
+    );
+    if (targetIndex < 0) return false;
+    const componentIndex = renderPath.steps.findIndex(
+      (step, index) =>
+        index > targetIndex &&
+        path.normalize(step.sourcePath) === normalizedComponentPath &&
+        identities.has(normalizeComponentIdentity(step.label) ?? ''),
+    );
+    return (
+      componentIndex > targetIndex &&
+      renderPath.steps
+        .slice(targetIndex, componentIndex)
+        .every((step) => step.kind === 'react-lazy' || step.kind === 're-export')
+    );
   });
 }
 /** Converts occurrence-bound direct evidence into the shared deterministic ranking model. */
@@ -638,6 +700,7 @@ function materializeDirectRouteResolution(
       identityOrder: item.identityOrder,
       pattern: item.pattern,
       provenanceIdentity: item.provenanceIdentity,
+      scoreAdjustment: DIRECT_ROUTE_OCCURRENCE_EVIDENCE_BONUS,
       sourcePath: item.sourcePath,
     });
     return candidates[0];

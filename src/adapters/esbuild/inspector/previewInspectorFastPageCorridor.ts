@@ -14,6 +14,10 @@ import { readdir } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecution';
+import {
+  analyzePreviewLocalParentSlices,
+  createPreviewParentSlicePlan,
+} from '../parentSlice';
 import { analyzePreviewRenderSource } from '../renderGraph/previewRenderSourceAnalysis';
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph/previewRenderGraphTypes';
 import { collectPreviewDynamicImportInventory } from '../staticResources/previewDynamicImportInventory';
@@ -52,6 +56,8 @@ const MAXIMUM_REVERSE_FILES = 640;
 const MINIMUM_TARGETED_REVERSE_FILES = 96;
 const MAXIMUM_TARGETED_REVERSE_FILES = 2_048;
 const TARGETED_REVERSE_READ_BATCH_SIZE = 32;
+const MAXIMUM_DYNAMIC_REVERSE_PIVOTS = 6;
+const MAXIMUM_DYNAMIC_REVERSE_PATHS_PER_PIVOT = 64;
 const MAXIMUM_FORWARD_FILES = 768;
 const MAXIMUM_FORWARD_AFFINITY_PATHS = 16;
 const MAXIMUM_IMPORTS_PER_FILE = 256;
@@ -79,6 +85,8 @@ export interface CollectPreviewInspectorFastPageCorridorOptions {
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   /** Cancels stale traversal work before another editor revision can reuse it. */
   readonly signal?: AbortSignal;
+  /** Exact selected export required from the target module; omitted for module-wide consumers. */
+  readonly targetExportName?: string;
   /** Trusted workspace boundary; resolved project modules may cross package roots inside it. */
   readonly workspaceRoot: string;
 }
@@ -170,6 +178,9 @@ export async function collectPreviewInspectorFastPageCorridor(
     snapshotPaths,
     ...(selectedAuxiliaryRoot === undefined ? {} : { selectedAuxiliaryRoot }),
     selectedPageConsumerPaths,
+    ...(options.targetExportName === undefined
+      ? {}
+      : { targetExportName: options.targetExportName }),
     targetedPagePaths: reverseCandidatePaths,
     workspaceRoot,
   });
@@ -338,6 +349,7 @@ async function collectReverseClosure(options: {
   readonly selectedAuxiliaryRoot?: string;
   readonly signal?: AbortSignal;
   readonly snapshotPaths: readonly string[];
+  readonly targetExportName?: string;
   readonly selectedPageConsumerPaths: readonly string[];
   readonly targetedPagePaths: readonly string[];
   readonly workspaceRoot: string;
@@ -361,14 +373,24 @@ async function collectReverseClosure(options: {
   const edgesByCandidate = new Map<string, readonly PreviewInspectorFastResolvedImportEdge[]>();
   const indexedCandidates = new Set<string>();
   const ownersByChildPath = new Map<string, PreviewInspectorFastResolvedImportEdge[]>();
+  const requiredTargetExports = await collectFastLocalTargetExportDemands({
+    documentPath: options.documentPath,
+    readSource: options.readSource,
+    ...(options.targetExportName === undefined
+      ? {}
+      : { targetExportName: options.targetExportName }),
+  });
   const requiredExportsByPath = new Map<string, readonly string[]>([
-    [options.documentPath, Object.freeze(['*'])],
+    [options.documentPath, requiredTargetExports],
   ]);
   const semanticEdgesByCandidate = new Map<
     string,
     ReturnType<typeof analyzePreviewInspectorFastSemanticImports>
   >();
   const sourceTextByCandidate = new Map<string, string>();
+  const pendingDynamicPivots: string[] = [];
+  const scheduledDynamicPivots = new Set<string>();
+  const promotedDynamicPaths = new Set<string>();
   let truncated = false;
 
   /** Parses React/export flow only when one raw edge is about to join the target-side closure. */
@@ -423,9 +445,16 @@ async function collectReverseClosure(options: {
     childByOwner.set(edge.ownerPath, edge.childPath);
     requiredExportsByPath.set(
       edge.ownerPath,
-      semanticEdge?.ownerExportNames ?? Object.freeze(['*']),
+      semanticEdge.ownerExportNames,
     );
     pending.push({ depth: ownerDepth, sourcePath: edge.ownerPath });
+    if (
+      scheduledDynamicPivots.size < MAXIMUM_DYNAMIC_REVERSE_PIVOTS &&
+      !scheduledDynamicPivots.has(edge.ownerPath)
+    ) {
+      scheduledDynamicPivots.add(edge.ownerPath);
+      pendingDynamicPivots.push(edge.ownerPath);
+    }
     for (const upstreamEdge of ownersByChildPath.get(edge.ownerPath) ?? []) {
       connectOwner(upstreamEdge);
     }
@@ -453,11 +482,9 @@ async function collectReverseClosure(options: {
    * affinity. Index them before nearby directory scanning can consume the read budget; this is what
    * lets one shared component retain several authored page owners in distant feature folders.
    */
-  targetedCandidates: for (
-    let offset = 0;
-    offset < options.targetedPagePaths.length;
-    offset += TARGETED_REVERSE_READ_BATCH_SIZE
-  ) {
+  const targetedPagePaths = [...options.targetedPagePaths];
+  let targetedOffset = 0;
+  targetedCandidates: while (targetedOffset < targetedPagePaths.length) {
     const hasPageProvenance = pageProvenancePaths.size > 0;
     const targetedLimit =
       hasPageProvenance ? MINIMUM_TARGETED_REVERSE_FILES : MAXIMUM_TARGETED_REVERSE_FILES;
@@ -465,10 +492,11 @@ async function collectReverseClosure(options: {
       truncated = true;
       break;
     }
-    const batchPaths = options.targetedPagePaths
-      .slice(offset, offset + TARGETED_REVERSE_READ_BATCH_SIZE)
+    const batchPaths = targetedPagePaths
+      .slice(targetedOffset, targetedOffset + TARGETED_REVERSE_READ_BATCH_SIZE)
       .filter((candidatePath) => !readCandidates.has(candidatePath))
       .slice(0, Math.max(0, targetedLimit - readCandidates.size));
+    targetedOffset += TARGETED_REVERSE_READ_BATCH_SIZE;
     const batch = await Promise.all(
       batchPaths.map(async (candidatePath) => ({
         candidatePath,
@@ -500,6 +528,29 @@ async function collectReverseClosure(options: {
       ) {
         break targetedCandidates;
       }
+    }
+    const promotedPaths: string[] = [];
+    while (pendingDynamicPivots.length > 0) {
+      const pivotPath = pendingDynamicPivots.shift();
+      if (pivotPath === undefined) break;
+      for (const candidatePath of selectPreviewInspectorFastReverseProbePaths(
+        options.snapshotPaths,
+        options.projectRoot,
+        pivotPath,
+      ).slice(0, MAXIMUM_DYNAMIC_REVERSE_PATHS_PER_PIVOT)) {
+        if (
+          candidatePath === options.documentPath ||
+          readCandidates.has(candidatePath) ||
+          promotedDynamicPaths.has(candidatePath)
+        ) {
+          continue;
+        }
+        promotedDynamicPaths.add(candidatePath);
+        promotedPaths.push(candidatePath);
+      }
+    }
+    if (promotedPaths.length > 0) {
+      targetedPagePaths.splice(targetedOffset, 0, ...promotedPaths);
     }
   }
 
@@ -606,6 +657,54 @@ async function collectReverseClosure(options: {
     requiredExportsByPath,
     truncated,
   });
+}
+
+/**
+ * Admits an external owner that imports an exported same-module JSX owner of the selected target.
+ *
+ * The reverse corridor normally starts with the selected export demand itself. For
+ * `Modal <- ModalButton (same module) <- Page`, however, the Page imports `ModalButton`, so an
+ * import-only demand comparison cannot reach it. Parse only the selected source, retain the exact
+ * selected export, and add only bounded complete local JSX owner exports. The full ancestor planner
+ * still re-proves component shape and every wrapper edge before producing an executable plan.
+ */
+async function collectFastLocalTargetExportDemands(options: {
+  readonly documentPath: string;
+  readonly readSource: ReadPreviewInspectorSource;
+  readonly targetExportName?: string;
+}): Promise<readonly string[]> {
+  const targetExportName = options.targetExportName;
+  if (
+    targetExportName === undefined ||
+    targetExportName === 'default' ||
+    !/^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u.test(targetExportName)
+  ) {
+    return Object.freeze([targetExportName ?? '*']);
+  }
+  const sourceText = await options.readSource(options.documentPath);
+  if (sourceText === undefined || !sourceText.includes(`<${targetExportName}`)) {
+    return Object.freeze([targetExportName]);
+  }
+  const analysis = analyzePreviewLocalParentSlices({
+    consumerPath: options.documentPath,
+    localComponentName: targetExportName,
+    sourceText,
+  });
+  const exportNames = new Set<string>([targetExportName]);
+  for (const slice of analysis.slices) {
+    const plan = createPreviewParentSlicePlan({ directSlice: slice, sourceText });
+    /*
+     * Slice completeness describes whether the local owner can be mounted without its imported
+     * wrappers; it does not weaken the exact same-module JSX ownership edge. Preserve that owner
+     * as an import demand and let the ordinary ancestor planner re-prove every wrapper before it
+     * publishes an executable page. Otherwise an imported Section/Provider around an exact local
+     * target makes the fast reverse search forget the exported owner that real pages import.
+     */
+    for (const exportName of plan.ownerExportNames) {
+      exportNames.add(exportName);
+    }
+  }
+  return Object.freeze([...exportNames]);
 }
 
 /** Walks imports from shallow app entries and stops at the first target-side meeting point. */

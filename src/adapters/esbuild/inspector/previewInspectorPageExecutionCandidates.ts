@@ -62,6 +62,9 @@ export function createPreviewInspectorPageExecutionCandidates(
     plan: options.plan,
   });
   const targetSurface = createAuthenticSurface(unmountedBrowserCandidate.target, 'target');
+  const standaloneTarget =
+    options.plan.renderChain.reachability === 'entry-unreachable' &&
+    !options.plan.renderChain.truncated;
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
@@ -113,6 +116,7 @@ export function createPreviewInspectorPageExecutionCandidates(
       ? outerPageSurface
       : undefined,
   );
+  const routeErrorElementRecipe = createRouteErrorElementRecipe(virtualPage, options.plan.target);
   const routeElementEdges = createRouteElementCompositionEdges(
     routeElementSurfaces,
     outerPageSurface,
@@ -247,10 +251,11 @@ export function createPreviewInspectorPageExecutionCandidates(
   // surface.  Do not collapse that route/layout context to target-only merely because both leaves
   // share a module/export identity.
   if (
-    !isSameSurface(pageSurface, targetSurface) ||
-    routeElementSurfaces.length > 0 ||
-    frameworkSurfaces.length > 0 ||
-    shellSurfaces.length > 0
+    (!detachedRouteLeaf || detachedCatalogOwnerRetained) &&
+    (!isSameSurface(pageSurface, targetSurface) ||
+      routeElementSurfaces.length > 0 ||
+      frameworkSurfaces.length > 0 ||
+      shellSurfaces.length > 0)
   ) {
     candidates.push(
       createCandidate({
@@ -320,6 +325,19 @@ export function createPreviewInspectorPageExecutionCandidates(
       );
     }
   }
+  if (routeErrorElementRecipe !== undefined) {
+    candidates.push(
+      createCandidate({
+        browserCandidate,
+        compositionEdges: [],
+        criticalSurfaces: [targetSurface],
+        evidenceSourcePaths,
+        fidelity: 'target-contextual',
+        routeRecipe: routeErrorElementRecipe,
+        watchSourcePaths: targetSurface.watchSourcePaths,
+      }),
+    );
+  }
   const targetOnlyOmitsNestedOwner =
     options.targetMode === 'selected-route-leaf' && (routeRecipe?.mounts.length ?? 0) > 0;
   if (!targetOnlyOmitsNestedOwner) {
@@ -327,11 +345,12 @@ export function createPreviewInspectorPageExecutionCandidates(
       createCandidate({
         browserCandidate,
         compositionEdges: [],
-        criticalSurfaces: [detachedRouteLeaf ? pageSurface : targetSurface],
+        criticalSurfaces: [targetSurface],
         evidenceSourcePaths,
         fidelity: 'target-only',
         ...(routeRecipe === undefined ? {} : { routeRecipe }),
-        watchSourcePaths: (detachedRouteLeaf ? pageSurface : targetSurface).watchSourcePaths,
+        standaloneTarget,
+        watchSourcePaths: targetSurface.watchSourcePaths,
       }),
     );
   }
@@ -980,6 +999,47 @@ function createRouteRecipe(
       ? {}
       : { routerModuleSpecifier: routeRuntime.routerModuleSpecifier }),
     searchParams: Object.freeze('searchParams' in location ? { ...location.searchParams } : {}),
+    targetRole: 'element',
+  });
+}
+
+/**
+ * Recreates a data-router error boundary only for an exact authored `errorElement` slot.
+ * A normal MemoryRouter cannot provide `useRouteError()`, while importing the application router
+ * would execute its complete route registry and unrelated initialization.
+ */
+function createRouteErrorElementRecipe(
+  virtualPage: PreviewInspectorVirtualPageCandidate,
+  target: PreviewInspectorComponentReference,
+): PreviewInspectorRouteExecutionRecipe | undefined {
+  const normalizedTargetPath = path.normalize(target.sourcePath);
+  const ownsErrorSlot = virtualPage.recipe.omittedOuterPath.some(
+    (step) =>
+      step.slotName === 'errorElement' &&
+      step.label === target.exportName &&
+      path.normalize(step.sourcePath) === normalizedTargetPath,
+  );
+  if (!ownsErrorSlot) return undefined;
+  const runtime = readReactRouterRuntime(
+    [
+      normalizedTargetPath,
+      ...virtualPage.recipe.omittedOuterPath.map((step) => step.sourcePath),
+    ],
+  );
+  if (runtime.kind !== 'react-router-v6' || runtime.routerModuleSpecifier === undefined) {
+    return undefined;
+  }
+  return Object.freeze({
+    kind: runtime.kind,
+    loaderPolicy: 'never-execute',
+    mounts: Object.freeze([]),
+    params: Object.freeze({}),
+    pattern: '*',
+    pathname: '/',
+    rootOwnsRouter: false,
+    routerModuleSpecifier: runtime.routerModuleSpecifier,
+    searchParams: Object.freeze({}),
+    targetRole: 'error-element',
   });
 }
 
@@ -1014,6 +1074,13 @@ function readRouteRuntime(
       ? (location.routeMounts ?? []).map((mount) => mount.sourcePath)
       : []),
   ];
+  return readReactRouterRuntime(sources);
+}
+
+/** Reads the exact React Router package and generation from bounded authored sources. */
+function readReactRouterRuntime(
+  sources: readonly string[],
+): Pick<PreviewInspectorRouteExecutionRecipe, 'kind' | 'routerModuleSpecifier'> {
   const sourceText = sources
     .map(readSource)
     .filter((value): value is string => value !== undefined)
@@ -1073,6 +1140,7 @@ function createCandidate(options: {
   readonly evidenceSourcePaths: readonly string[];
   readonly fidelity: PreviewInspectorPageFidelity;
   readonly routeRecipe?: PreviewInspectorRouteExecutionRecipe;
+  readonly standaloneTarget?: boolean;
   readonly watchSourcePaths: readonly string[];
 }): PreviewInspectorPageExecutionCandidate {
   const roles = derivePageExecutionRoles(options);
@@ -1110,6 +1178,7 @@ function createCandidate(options: {
     runtimeTargetContract,
     browserCandidate.root,
     routeRecipe,
+    options.standaloneTarget === true,
   );
   return Object.freeze({
     browserCandidate,
@@ -1124,6 +1193,7 @@ function createCandidate(options: {
     ...(routeRecipe === undefined ? {} : { routeRecipe }),
     runtimeTargetContract,
     runtimeTargetSurfaceId: roles.runtimeTargetSurfaceId,
+    standaloneTarget: options.standaloneTarget === true,
     watchSourcePaths: options.watchSourcePaths,
   });
 }
@@ -1263,6 +1333,7 @@ function createCandidateId(
   runtimeTargetContract: PreviewInspectorPageExecutionCandidate['runtimeTargetContract'],
   pinnedRoot: PreviewInspectorComponentReference,
   routeRecipe?: PreviewInspectorRouteExecutionRecipe,
+  standaloneTarget = false,
 ): string {
   return createHash('sha256')
     .update(
@@ -1277,6 +1348,7 @@ function createCandidateId(
         runtimeTargetContract.exportName,
         path.normalize(pinnedRoot.sourcePath),
         pinnedRoot.exportName,
+        standaloneTarget ? 'standalone-target' : '',
         ...surfaces.map((surface) => surface.id),
         routeRecipe === undefined ? '' : JSON.stringify(routeRecipe),
       ].join('\0'),

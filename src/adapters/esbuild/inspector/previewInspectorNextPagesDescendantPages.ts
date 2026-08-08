@@ -37,9 +37,11 @@ export async function collectPreviewInspectorNextPagesDescendantPages(
   options: CollectPreviewInspectorNextPagesDescendantPagesOptions,
 ): Promise<readonly PreviewInspectorPageCandidate[]> {
   const appPath = path.normalize(options.base.root.sourcePath);
+  // Reverse traversal may identify the local function that implements `_app` rather than the
+  // module's public default alias. The filesystem convention still proves that Next invokes this
+  // module through its default export, which the generated framework surface imports explicitly.
   if (
     (options.maximumCount !== undefined && options.maximumCount <= 0) ||
-    options.base.root.exportName !== 'default' ||
     !NEXT_PAGES_APP_PATTERN.test(path.basename(appPath)) ||
     path.basename(path.dirname(appPath)).toLowerCase() !== 'pages'
   ) {

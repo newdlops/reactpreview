@@ -189,9 +189,15 @@ export async function createPreviewInspectorAncestorPlan(
   const discoveredCandidates = templates.candidates.map((candidate) =>
     attachPreviewInspectorSelectedRouteFallback(candidate, routeLocation),
   );
+  const finalizedCandidates = await finalizePreviewInspectorRouteJsxOwners(
+    discoveredCandidates,
+    options,
+    sourcePaths,
+    target,
+  );
   const pageCandidates = rankPreviewInspectorPageCandidates(
     expandPreviewInspectorRouteChoiceCandidates(
-      discoveredCandidates,
+      finalizedCandidates,
       routeBranchPlan.activeLocation === undefined ? [] : [routeBranchPlan.activeLocation],
     ),
   );
@@ -275,19 +281,7 @@ async function createPreviewInspectorAncestorCandidateTemplates(
   prelude: PreviewInspectorAncestorPrelude,
 ): Promise<PreviewInspectorAncestorCandidateTemplates> {
   const { sourcePaths, target } = prelude;
-  const planningContext: InspectorUsagePlanningContext = {
-    inferenceByReference: new Map(),
-    nextPagesShellRefiner: createPreviewInspectorNextPagesShellRefiner({
-      readSource: options.readSource,
-      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      sourcePaths,
-    }),
-    rankedCandidatesByFrontier: new Map(),
-    routerOwnershipBySource: new Map(),
-    sourceFileByPath: new Map(),
-    sourceTextByPath: new Map(),
-  };
+  const planningContext = createInspectorUsagePlanningContext(options, sourcePaths);
   // Preserve every entry-connected path that survived the render graph's bounded traversal.
   const renderPaths = prelude.renderChain.paths;
   const candidatePaths: readonly (PreviewRenderChainCandidate | undefined)[] =
@@ -307,17 +301,10 @@ async function createPreviewInspectorAncestorCandidateTemplates(
     discoveredCandidates.push(candidate);
   };
 
-  for (const renderPath of candidatePaths) {
-    throwIfPreviewBuildCancelled(options.signal);
-    const candidate = await createInspectorPageCandidate({
-      options,
-      planningContext,
-      renderPath,
-      sourcePaths,
-      target,
-      routeLocation: undefined,
-    });
-    baseCandidates.push({ candidate, renderPath });
+  /** Applies implicit framework descendants to every candidate source, including path checkpoints. */
+  const addCandidateWithFrameworkDescendants = async (
+    candidate: PreviewInspectorPageCandidate,
+  ): Promise<void> => {
     const nextPagesDescendants = await collectPreviewInspectorNextPagesDescendantPages({
       base: candidate,
       nextPagesShellRefiner: planningContext.nextPagesShellRefiner,
@@ -333,6 +320,20 @@ async function createPreviewInspectorAncestorCandidateTemplates(
       sourcePaths,
     }))
       addCandidate(descendant);
+  };
+
+  for (const renderPath of candidatePaths) {
+    throwIfPreviewBuildCancelled(options.signal);
+    const candidate = await createInspectorPageCandidate({
+      options,
+      planningContext,
+      renderPath,
+      sourcePaths,
+      target,
+      routeLocation: undefined,
+    });
+    baseCandidates.push({ candidate, renderPath });
+    await addCandidateWithFrameworkDescendants(candidate);
   }
 
   for (const { candidate, renderPath } of baseCandidates) {
@@ -344,7 +345,7 @@ async function createPreviewInspectorAncestorCandidateTemplates(
       target,
     });
     for (const renderPathRoot of renderPathRoots) {
-      addCandidate(
+      await addCandidateWithFrameworkDescendants(
         await createRenderPathPageCandidate({
           base: candidate,
           options,
@@ -356,6 +357,135 @@ async function createPreviewInspectorAncestorCandidateTemplates(
     }
   }
   return Object.freeze({ candidates: Object.freeze(discoveredCandidates) });
+}
+
+/** Creates request-local caches for one bounded candidate-materialization pass. */
+function createInspectorUsagePlanningContext(
+  options: CreatePreviewInspectorAncestorPlanOptions,
+  sourcePaths: readonly string[],
+): InspectorUsagePlanningContext {
+  return {
+    inferenceByReference: new Map(),
+    nextPagesShellRefiner: createPreviewInspectorNextPagesShellRefiner({
+      readSource: options.readSource,
+      ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      sourcePaths,
+    }),
+    rankedCandidatesByFrontier: new Map(),
+    routerOwnershipBySource: new Map(),
+    sourceFileByPath: new Map(),
+    sourceTextByPath: new Map(),
+  };
+}
+
+/** Adds one exact owner checkpoint only when route JSX and ancestry agree within one render path. */
+async function finalizePreviewInspectorRouteJsxOwners(
+  candidates: readonly PreviewInspectorPageCandidate[],
+  options: CreatePreviewInspectorAncestorPlanOptions,
+  sourcePaths: readonly string[],
+  target: PreviewInspectorComponentReference,
+): Promise<readonly PreviewInspectorPageCandidate[]> {
+  type RouteJsxCandidate = PreviewInspectorPageCandidate & {
+    readonly routeLocation: PreviewInspectorRouteLocation & { readonly evidenceKind: 'route-jsx' };
+  };
+  const finalized = [...candidates];
+  const groups = new Map<string, PreviewInspectorPageCandidate[]>();
+  for (const candidate of candidates) {
+    const renderPathId = candidate.renderPath?.id;
+    if (renderPathId === undefined) continue;
+    const group = groups.get(renderPathId) ?? [];
+    group.push(candidate);
+    groups.set(renderPathId, group);
+  }
+  for (const group of groups.values()) {
+    const eligible = group.filter((candidate): candidate is RouteJsxCandidate => {
+      const location = candidate.routeLocation;
+      return location !== undefined && location.evidenceKind === 'route-jsx' &&
+        (location.routeMounts?.length ?? 0) === 0 &&
+        location.directRouteOwnerSourcePath === undefined;
+    });
+    const locations = new Map<string, PreviewInspectorRouteLocation>();
+    for (const candidate of eligible) {
+      const location = candidate.routeLocation;
+      if (location === undefined) continue;
+      locations.set(JSON.stringify({ sourcePath: path.normalize(location.sourcePath), componentSourcePath: location.componentSourcePath === undefined ? undefined : path.normalize(location.componentSourcePath), componentExportName: location.componentExportName, pathname: location.pathname, pattern: location.pattern }), location);
+    }
+    if (locations.size !== 1) continue;
+    const location = [...locations.values()][0];
+    if (location === undefined) continue;
+    const ownerEdges = new Map<string, PreviewInspectorAncestorEdge>();
+    for (const candidate of eligible) {
+      for (const edge of candidate.edges) {
+        if (
+          path.normalize(edge.owner.sourcePath) !== path.normalize(location.sourcePath) ||
+          path.normalize(edge.child.sourcePath) !== target.sourcePath ||
+          edge.child.exportName !== target.exportName
+        ) {
+          continue;
+        }
+        const identity = [
+          path.normalize(edge.owner.sourcePath), edge.owner.exportName,
+          path.normalize(edge.child.sourcePath), edge.child.exportName,
+        ].join('\u0000');
+        ownerEdges.set(identity, edge);
+      }
+    }
+    if (ownerEdges.size !== 1) continue;
+    const edge = [...ownerEdges.values()][0];
+    if (edge === undefined) continue;
+    const renderPath = group[0]?.renderPath;
+    if (renderPath === undefined) continue;
+    const matchingSteps = renderPath.steps
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => path.normalize(step.sourcePath) === path.normalize(edge.owner.sourcePath));
+    if (matchingSteps.length !== 1) continue;
+    const routeLocation = Object.freeze({
+      ...location,
+      directRouteOwnerSourcePath: path.normalize(edge.owner.sourcePath),
+    });
+    const withLocation = (
+      candidate: PreviewInspectorPageCandidate,
+    ): PreviewInspectorPageCandidate => Object.freeze({ ...candidate, routeLocation });
+    const eligibleKeys = new Set<PreviewInspectorPageCandidate>(eligible);
+    for (let index = 0; index < finalized.length; index += 1) {
+      const candidate = finalized[index];
+      if (candidate !== undefined && eligibleKeys.has(candidate)) {
+        finalized[index] = withLocation(candidate);
+      }
+    }
+    const rootStepIndex = matchingSteps[0]?.index;
+    if (rootStepIndex === undefined) continue;
+    const checkpointExists = finalized.some(
+      (candidate) =>
+        candidate.renderPath?.id === renderPath.id &&
+        path.normalize(candidate.root.sourcePath) === path.normalize(edge.owner.sourcePath) &&
+        candidate.root.exportName === edge.owner.exportName,
+    );
+    if (checkpointExists) continue;
+    const base = eligible.find((candidate) =>
+      candidate.edges.some((candidateEdge) =>
+        path.normalize(candidateEdge.owner.sourcePath) === path.normalize(edge.owner.sourcePath) &&
+        candidateEdge.owner.exportName === edge.owner.exportName &&
+        path.normalize(candidateEdge.child.sourcePath) === path.normalize(edge.child.sourcePath) &&
+        candidateEdge.child.exportName === edge.child.exportName,
+      ),
+    );
+    if (base === undefined) continue;
+    const checkpoint = await createRenderPathPageCandidate({
+      base: withLocation(base),
+      options,
+      planningContext: createInspectorUsagePlanningContext(options, sourcePaths),
+      renderPathRoot: {
+        outermost: false,
+        reference: edge.owner,
+        stepIndex: rootStepIndex,
+      },
+      routeLocation,
+    });
+    finalized.push(checkpoint);
+  }
+  return Object.freeze(finalized);
 }
 
 /** Rejects a stage supplied for a different target or source inventory before route finalization. */
@@ -754,6 +884,31 @@ async function collectRankedInspectorUsageCandidates(options: {
     }
     for (const frontier of frontiers) {
       if (path.normalize(source.sourcePath) === path.normalize(frontier.sourcePath)) {
+        /*
+         * An exported file component can be consumed only by a sibling export in the same module:
+         * `Modal <- ModalButton <- importing page`. Import-only reverse search cannot see the first
+         * edge, so promote exact named JSX uses before continuing through ordinary external imports.
+         * Local analysis accepts no module specifier and therefore cannot recurse through a barrel
+         * or mistake a similarly named component from another source for this frontier.
+         */
+        for (const exportName of frontier.exportNames) {
+          if (exportName === 'default' || !/^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u.test(exportName)) {
+            continue;
+          }
+          const localAnalysis = analyzePreviewLocalParentSlices({
+            consumerPath: source.sourcePath,
+            localComponentName: exportName,
+            sourceText: source.sourceText,
+          });
+          for (const slice of localAnalysis.slices) {
+            candidates.push({
+              frontier,
+              reexportPaths: frontier.dependencyPaths,
+              slice,
+              sourceText: source.sourceText,
+            });
+          }
+        }
         continue;
       }
       let moduleSpecifiers = moduleSpecifiersBySource.get(source.sourcePath);

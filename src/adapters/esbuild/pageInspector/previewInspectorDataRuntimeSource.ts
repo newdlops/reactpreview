@@ -153,11 +153,17 @@ function normalizePreviewInspectorDataShape(shape, depth = 0, budget = { fields:
   ) {
     return { kind: 'unknown' };
   }
-  const kind = ['array', 'boolean', 'null', 'number', 'object', 'string', 'unknown'].includes(shape.kind)
+  const kind = ['array', 'boolean', 'literal', 'null', 'number', 'object', 'string', 'unknown'].includes(shape.kind)
     ? shape.kind
     : 'unknown';
   if (kind === 'array') {
     return { items: normalizePreviewInspectorDataShape(shape.items, depth + 1, budget), kind };
+  }
+  if (kind === 'literal') {
+    const value = shape.value;
+    return typeof value === 'string' && value.length <= 160
+      ? { kind, value }
+      : { kind: 'unknown' };
   }
   if (kind !== 'object') return { kind };
   const fields = Object.create(null);
@@ -194,7 +200,7 @@ function inferPreviewInspectorSemanticKind(fieldName) {
     paginationNumber ||
     sumNumber ||
     hasPreviewInspectorNumericUnitFieldSuffix(fieldName) ||
-    /(count|total|length|size|index|limit|offset|amount|price|cost|fee|rate|ratio|percent|salary|wage)$/u.test(name)
+    /(count|total|length|size|index|limit|offset|amount|price|cost|fee|rate|ratio|percent|salary|wage|num|den|numerator|denominator|quantity|shares)$/u.test(name)
   ) {
     return 'number';
   }
@@ -300,6 +306,7 @@ function createPreviewInspectorNumberValue(fieldName, itemIndex) {
 /** Materializes one payload from an already-normalized shape without repeating tree validation. */
 function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex, depth) {
   if (depth > PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT) return null;
+  if (shape.kind === 'literal') return shape.value;
   if (shape.kind === 'array') {
     // An unknown item has no proven fields, so expose only neutral objects. Corridor Auto remains
     // empty to avoid activating unrelated siblings during the initial page pass; once a request is

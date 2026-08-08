@@ -45,8 +45,12 @@ const previewInspectorRenderableObjectTypes = new Set([
 function isPreviewInspectorRenderableTarget(value) {
   if (typeof value === 'function') return true;
   if (React.isValidElement(value)) return true;
-  return value !== null && typeof value === 'object' &&
-    previewInspectorRenderableObjectTypes.has(value.$$typeof);
+  if (value === null || typeof value !== 'object') return false;
+  if (previewInspectorRenderableObjectTypes.has(value.$$typeof)) return true;
+  return typeof value.render === 'function' &&
+    typeof value.styledComponentId === 'string' &&
+    value.styledComponentId.length > 0 &&
+    value.componentStyle !== null && typeof value.componentStyle === 'object';
 }
 
 /** Copies safe component statics so owner modules can keep reading ordinary metadata. */
@@ -86,6 +90,9 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
   const inspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
   inspectorApi?.registerTargetRenderability?.(metadata?.exportName, renderable);
   if (!renderable) {
+    return Component;
+  }
+  if (inspectorApi?.isLocalTargetWrapper?.(Component, metadata) === true) {
     return Component;
   }
   // One facade invocation represents one compiler-selected source export. This opaque value never

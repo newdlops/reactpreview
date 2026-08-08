@@ -25,8 +25,12 @@ function readPreviewInspectorJsxOwnershipContext() { return previewInspectorJsxO
 function registerPreviewInspectorOwnedHost(token, node) {
   const record = previewInspectorOwnershipByToken.get(token);
   if (record === undefined || node?.nodeType !== 1) return undefined;
+  const added = !record.nodes.has(node);
   record.nodes.add(node);
   if (typeof schedulePreviewInspectorCommitRefresh === 'function') schedulePreviewInspectorCommitRefresh();
+  if (added && typeof continuePreviewInspectorTargetReachabilityAfterOwnedHostRegistration === 'function') {
+    continuePreviewInspectorTargetReachabilityAfterOwnedHostRegistration(record);
+  }
   return () => {
     if (!record.nodes.delete(node)) return;
     if (typeof schedulePreviewInspectorCommitRefresh === 'function') schedulePreviewInspectorCommitRefresh();

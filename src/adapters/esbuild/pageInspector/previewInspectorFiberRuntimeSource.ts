@@ -384,6 +384,7 @@ function readPreviewInspectorStaticSource(name, options) {
   for (const reference of [
     readPreviewInspectorOwnData(inspector, 'target'),
     readPreviewInspectorOwnData(pageCandidate, 'root') ?? readPreviewInspectorOwnData(inspector, 'root'),
+    descriptor,
   ]) {
     if (readPreviewInspectorOwnData(reference, 'exportName') === name) {
       const source = normalizePreviewInspectorSource(reference, 'descriptor');

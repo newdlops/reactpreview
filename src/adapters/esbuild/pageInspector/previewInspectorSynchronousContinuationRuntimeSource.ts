@@ -37,6 +37,18 @@ function isPreviewInspectorProvenContinuationSource(sourcePath, evidence) {
   return false;
 }
 
+/** Matches a guard declared by the exact selected authored page checkpoint. */
+function isPreviewInspectorSelectedRootContinuationSource(sourcePath, candidate) {
+  const normalizedSource = typeof sourcePath === 'string' ? sourcePath.replaceAll('\\', '/') : '';
+  const rootSource = typeof candidate?.root?.sourcePath === 'string'
+    ? candidate.root.sourcePath.replaceAll('\\', '/')
+    : '';
+  if (normalizedSource.length === 0 || rootSource.length === 0) return false;
+  return normalizedSource === rootSource ||
+    normalizedSource.endsWith('/' + rootSource) ||
+    rootSource.endsWith('/' + normalizedSource);
+}
+
 /**
  * Proves a lazy/barrel implementation owner through the exact selected facade invocation.
  *
@@ -72,11 +84,11 @@ function isPreviewInspectorProvenContinuationOwner(metadata, state) {
 }
 
 /**
- * Selects a navigation guard's only compiler-proven continuation before it can mutate router state.
+ * Selects a pre-commit guard's only compiler-proven continuation before it can block the page.
  *
  * Manual/outcome choices retain precedence. Ordinary login, permission, loading, modal, and sibling
- * conditions remain on the bounded post-commit DFS; only a one-sided navigation return on the exact
- * selected render corridor is eligible for this synchronous exception.
+ * conditions remain on the bounded post-commit DFS; only a one-sided navigation return or terminal
+ * throw on the exact selected render corridor is eligible for this synchronous exception.
  */
 function readPreviewInspectorSynchronousNavigationContinuation(
   conditionId,
@@ -88,7 +100,7 @@ function readPreviewInspectorSynchronousNavigationContinuation(
   if (
     previewInspectorSession.fallbackValuesEnabled !== true ||
     metadata?.kind !== 'early-return' ||
-    metadata?.role !== 'navigation'
+    (metadata?.role !== 'navigation' && metadata?.synchronousContinuation !== true)
   ) return undefined;
   const desiredValue = metadata.targetBranch === 'truthy'
     ? true
@@ -123,6 +135,7 @@ function readPreviewInspectorSynchronousNavigationContinuation(
   const evidence = readPreviewInspectorTargetPathEvidence(descriptor, candidate, state);
   if (
     !isPreviewInspectorProvenContinuationSource(metadata.sourcePath, evidence) &&
+    !isPreviewInspectorSelectedRootContinuationSource(metadata.sourcePath, candidate) &&
     !isPreviewInspectorProvenContinuationOwner(metadata, state)
   ) return undefined;
   state.appliedConditions ??= [];

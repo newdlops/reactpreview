@@ -173,7 +173,13 @@ function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
 function doesSelectedPreviewInspectorPageCandidateOwnRouter() {
   if (typeof findSelectedPreviewInspectorDescriptor !== 'function') return false;
   const descriptor = findSelectedPreviewInspectorDescriptor();
-  return readSelectedPreviewInspectorPageCandidate(descriptor)?.rootOwnsRouter === true;
+  if (readSelectedPreviewInspectorPageCandidate(descriptor)?.rootOwnsRouter === true) return true;
+  const executionCandidateId = descriptor?.inspector?.pageExecutionCandidateId;
+  const executionCandidates = descriptor?.inspector?.pageExecutionCandidates;
+  return Array.isArray(executionCandidates) && executionCandidates.some(
+    (candidate) =>
+      candidate?.id === executionCandidateId && candidate?.ownsGeneratedRouter === true,
+  );
 }
 
 /** Validates an inert compiler or runtime base path before it can affect Router state. */

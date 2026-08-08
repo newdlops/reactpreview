@@ -421,7 +421,11 @@ function collectPreviewInspectorTreeSnapshot() {
       descriptor?.inspector?.renderChainsByExport?.[exportName]?.target ??
       (descriptor?.inspector?.target?.exportName === exportName
         ? descriptor.inspector.target
-        : undefined);
+        : descriptor?.exportName === exportName &&
+            typeof descriptor?.sourcePath === 'string' &&
+            descriptor.sourcePath.length > 0
+          ? { exportName, sourcePath: descriptor.sourcePath }
+          : undefined);
     return [...readPreviewInspectorBoundariesForReference(reference)].map((boundary) => ({
       boundary,
       exportName,
@@ -668,6 +672,7 @@ function registerPreviewInspectorBoundary(exportName, sourcePath, boundary) {
 }
 const PREVIEW_INSPECTOR_TARGET_OWNERSHIP_PHASES = new Set([
   'compiler-export-evidence',
+  'local-binding-rewrite',
   'facade-resolution',
   'facade-evaluation',
   'wrapper-render',
@@ -731,7 +736,13 @@ function readPreviewInspectorBoundariesForReference(reference) {
 }
 function readPreviewInspectorActiveTargetBoundaries(exportName) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
-  const reference = descriptor?.inspector?.target;
+  const reference = descriptor?.inspector?.target ?? (
+    descriptor?.exportName === exportName &&
+    typeof descriptor?.sourcePath === 'string' &&
+    descriptor.sourcePath.length > 0
+      ? { exportName, sourcePath: descriptor.sourcePath }
+      : undefined
+  );
   return reference?.exportName === exportName
     ? readPreviewInspectorBoundariesForReference(reference)
     : new Set();
@@ -754,12 +765,13 @@ function createPreviewInspectorPortalHost() {
 }
 ${targetBoundaryRuntimeSource}
 const PreviewInspectorTargetBoundary = createPreviewInspectorTargetBoundaryFactory({ React });
+const PreviewInspectorContextualBoundaryRoleContext = React.createContext(undefined);
 function createPreviewInspectorElement(Component, props) {
   return React.isValidElement(Component)
     ? React.cloneElement(Component, props)
     : React.createElement(Component, props);
 }
-function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, targetMarker, targetProps }) {
+function PreviewInspectorTargetRenderer({ Component, contextualBoundaryRoleToken, forwardedRef, metadata, targetMarker, targetProps }) {
   usePreviewInspectorStore();
   const exportName = metadata?.exportName ?? Component?.displayName ?? Component?.name ?? 'default';
   const sourcePath = typeof metadata?.sourcePath === 'string' ? metadata.sourcePath : '';
@@ -769,6 +781,13 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
     () => createPreviewInspectorOwnershipToken(targetMarker, metadata),
     [targetMarker, metadata?.exportName, metadata?.sourcePath],
   );
+  const contextualBoundaryRoleTokenFromFactory = React.useContext(PreviewInspectorContextualBoundaryRoleContext);
+  const contextualBoundaryRole = typeof validatePreviewInspectorContextualBoundaryRoleToken === 'function'
+    ? validatePreviewInspectorContextualBoundaryRoleToken(
+        contextualBoundaryRoleToken ?? contextualBoundaryRoleTokenFromFactory,
+        metadata,
+      )
+    : undefined;
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
   const automaticTargetProps = React.useMemo(
     () => createPreviewTargetPropsFromLayers(
@@ -792,6 +811,19 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
     resolverProps,
     overrideProps,
   );
+  // Compare only while both props records are live. The resulting scalar lets the output proof
+  // distinguish a retained route passed through this facade unchanged from a replacement supplied
+  // by a later prop layer, without retaining a project element or exposing the role token.
+  const ownChildrenDescriptor = targetProps !== null && typeof targetProps === 'object'
+    ? Object.getOwnPropertyDescriptor(targetProps, 'children')
+    : undefined;
+  const effectiveChildrenDescriptor = effectiveProps !== null && typeof effectiveProps === 'object'
+    ? Object.getOwnPropertyDescriptor(effectiveProps, 'children')
+    : undefined;
+  const contextualChildrenUnchanged = contextualBoundaryRole !== undefined &&
+    ownChildrenDescriptor !== undefined && ownChildrenDescriptor.value !== undefined &&
+    ownChildrenDescriptor.value !== null && effectiveChildrenDescriptor !== undefined &&
+    effectiveChildrenDescriptor.value === ownChildrenDescriptor.value;
   if (forwardedRef !== undefined && forwardedRef !== null) {
     effectiveProps.ref = forwardedRef;
   }
@@ -804,19 +836,188 @@ function PreviewInspectorTargetRenderer({ Component, forwardedRef, metadata, tar
         ...effectiveProps,
         key: targetIdentity + ':instance:' + String(instanceEpoch),
       });
-  return React.createElement(
+  const targetBoundary = React.createElement(
     PreviewInspectorTargetBoundary,
     {
       exportName,
       key: targetIdentity,
       resetKey: String(revision) + ':' + String(conditionRevision),
       sourcePath,
+      contextualBoundaryKey: contextualBoundaryRole?.key,
+      contextualBoundaryRole: contextualBoundaryRole?.role,
+      contextualChildrenUnchanged,
+      effectControllerOutputCandidate: metadata?.effectControllerOutputCandidate === true,
       ownershipToken,
     },
     targetElement,
   );
+  // The generated contextual role belongs only to this outer target facade. Without a reset
+  // provider, a transparent target that returns the retained route leaks the same role into every
+  // authored occurrence of that export below it, making the unique boundary selector fail closed.
+  return contextualBoundaryRole === undefined
+    ? targetBoundary
+    : React.createElement(
+        PreviewInspectorContextualBoundaryRoleContext.Provider,
+        { value: undefined },
+        targetBoundary,
+      );
+}
+
+const previewInspectorLocalTargetWrapperMetadata = new WeakMap();
+const previewInspectorLocalTargetWrapperCache = new WeakMap();
+const PREVIEW_INSPECTOR_LOCAL_TARGET_OBJECT_TYPES = new Set([
+  Symbol.for('react.forward_ref'),
+  Symbol.for('react.lazy'),
+  Symbol.for('react.memo'),
+]);
+const PREVIEW_INSPECTOR_LOCAL_TARGET_BLOCKED_STATICS = new Set([
+  '$$typeof', '_debugInfo', '_init', '_payload', 'arguments', 'arity', 'callee', 'caller',
+  'childContextTypes', 'compare', 'contextType', 'contextTypes', 'defaultProps', 'displayName',
+  'getDefaultProps', 'getDerivedStateFromError', 'getDerivedStateFromProps', 'length', 'mixins',
+  'name', 'propTypes', 'prototype', 'render', 'type',
+]);
+
+/** Accepts only compiler-shaped exact source/export metadata for a selected local binding. */
+function normalizePreviewInspectorLocalTargetMetadata(metadata) {
+  if (
+    metadata?.compilerExportEvidence !== true ||
+    metadata?.facadeResolutionEvidence !== true ||
+    typeof metadata?.exportName !== 'string' ||
+    metadata.exportName.length === 0 ||
+    metadata.exportName.length > 240 ||
+    typeof metadata?.sourcePath !== 'string' ||
+    metadata.sourcePath.length === 0 ||
+    metadata.sourcePath.length > 4_096 ||
+    typeof metadata?.preparedSourceDigest !== 'string' ||
+    metadata.preparedSourceDigest.length === 0 ||
+    metadata.preparedSourceDigest.length > 128
+  ) return undefined;
+  return Object.freeze({
+    ...metadata,
+    exportName: metadata.exportName,
+    sourcePath: metadata.sourcePath.replaceAll('\\', '/'),
+  });
+}
+
+/** Mirrors the facade's final runtime check before changing one exported application value. */
+function isPreviewInspectorLocalTargetRenderable(value) {
+  if (typeof value === 'function' || React.isValidElement(value)) return true;
+  if (value === null || typeof value !== 'object') return false;
+  if (PREVIEW_INSPECTOR_LOCAL_TARGET_OBJECT_TYPES.has(value.$$typeof)) return true;
+  // styled-components v6 exposes a forward-ref-shaped object. Some compatibility builds retain
+  // its exact styled contract while the public $$typeof read is unavailable, so require all three
+  // library-owned fields before treating that selected compiler export as renderable.
+  return typeof value.render === 'function' &&
+    typeof value.styledComponentId === 'string' &&
+    value.styledComponentId.length > 0 &&
+    value.componentStyle !== null && typeof value.componentStyle === 'object';
+}
+
+/** Preserves styled/HOC statics needed by same-module interpolation and wrapper composition. */
+function copyPreviewInspectorLocalTargetStatics(source, target) {
+  if ((typeof source !== 'object' && typeof source !== 'function') || source === null) return;
+  for (const propertyName of Reflect.ownKeys(source)) {
+    if (PREVIEW_INSPECTOR_LOCAL_TARGET_BLOCKED_STATICS.has(propertyName)) continue;
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(source, propertyName);
+      if (descriptor !== undefined) Object.defineProperty(target, propertyName, descriptor);
+    } catch {
+      /* Frozen or exotic component statics are non-essential to the render boundary. */
+    }
+  }
+}
+
+/**
+ * Gives same-module references the exact boundary normally supplied by the selected import facade.
+ * The wrapper is generated only for compiler-selected variable exports and is reused by the facade.
+ */
+function wrapPreviewInspectorLocalTarget(Component, rawMetadata) {
+  const metadata = normalizePreviewInspectorLocalTargetMetadata(rawMetadata);
+  if (metadata === undefined || !isPreviewInspectorLocalTargetRenderable(Component)) {
+    return Component;
+  }
+  const identity = metadata.sourcePath + '\0' + metadata.exportName + '\0' +
+    metadata.preparedSourceDigest;
+  let wrappersByIdentity = previewInspectorLocalTargetWrapperCache.get(Component);
+  if (!(wrappersByIdentity instanceof Map)) {
+    wrappersByIdentity = new Map();
+    previewInspectorLocalTargetWrapperCache.set(Component, wrappersByIdentity);
+  }
+  const existing = wrappersByIdentity.get(identity);
+  if (existing !== undefined) return existing;
+  const targetMarker = {};
+  registerPreviewInspectorCompilerCapability(targetMarker, metadata);
+  registerPreviewInspectorTargetOwnershipPhase(metadata, 'compiler-export-evidence');
+  registerPreviewInspectorTargetOwnershipPhase(metadata, 'local-binding-rewrite');
+  const WrappedPreviewInspectorLocalTarget = React.forwardRef((targetProps, forwardedRef) => {
+    registerPreviewInspectorTargetOwnershipPhase(metadata, 'wrapper-render');
+    registerPreviewInspectorCompilerCapability(targetMarker, metadata);
+    return React.createElement(PreviewInspectorTargetRenderer, {
+      Component,
+      forwardedRef,
+      metadata,
+      targetMarker,
+      targetProps,
+    });
+  });
+  WrappedPreviewInspectorLocalTarget.displayName =
+    'ReactPreviewInspectorLocal(' + metadata.exportName + ')';
+  copyPreviewInspectorLocalTargetStatics(Component, WrappedPreviewInspectorLocalTarget);
+  previewInspectorLocalTargetWrapperMetadata.set(WrappedPreviewInspectorLocalTarget, metadata);
+  wrappersByIdentity.set(identity, WrappedPreviewInspectorLocalTarget);
+  return WrappedPreviewInspectorLocalTarget;
+}
+
+/** Resolves one deferred source wrapper only after the entry-owned Inspector API is installed. */
+function createPreviewInspectorLocalTargetElement(Component, metadata, targetProps, forwardedRef) {
+  const WrappedTarget = wrapPreviewInspectorLocalTarget(Component, metadata);
+  if (WrappedTarget === Component && !isPreviewInspectorLocalTargetRenderable(Component)) return null;
+  return React.createElement(WrappedTarget, {
+    ...(targetProps !== null && typeof targetProps === 'object' ? targetProps : {}),
+    ...(forwardedRef === undefined || forwardedRef === null ? {} : { ref: forwardedRef }),
+  });
+}
+
+/** Lets the import facade avoid adding a second boundary around the same exact local wrapper. */
+function isPreviewInspectorLocalTargetWrapper(Component, rawMetadata) {
+  if ((typeof Component !== 'object' && typeof Component !== 'function') || Component === null) {
+    return false;
+  }
+  const expected = normalizePreviewInspectorLocalTargetMetadata(rawMetadata);
+  const actual = previewInspectorLocalTargetWrapperMetadata.get(Component);
+  return expected !== undefined && actual !== undefined &&
+    actual.exportName === expected.exportName &&
+    actual.sourcePath === expected.sourcePath &&
+    actual.preparedSourceDigest === expected.preparedSourceDigest;
+}
+/** Creates one registered outer target without exposing its private role token to project props. */
+function createPreviewInspectorContextualTargetElement(Component, metadata, roleToken, children) {
+  const role = typeof validatePreviewInspectorContextualBoundaryRoleToken === 'function'
+    ? validatePreviewInspectorContextualBoundaryRoleToken(roleToken, metadata)
+    : undefined;
+  if (role === undefined) return undefined;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  const pathname = candidate?.routeLocation?.pathname;
+  const targetElement = createPreviewCandidateRouterElement(
+    React.createElement(Component, undefined, children),
+    {
+      initialEntry: typeof pathname === 'string' ? pathname : undefined,
+      ownsRouter: false,
+    },
+  );
+  return React.createElement(
+    PreviewInspectorContextualBoundaryRoleContext.Provider,
+    { value: roleToken },
+    targetElement,
+  );
 }
 const PreviewInspectorDirectTargetContext = React.createContext(undefined);
+/** Reads the live extension-owned target token at an authored hook position. */
+function usePreviewInspectorTargetOwnershipToken() {
+  const OwnershipContext = readPreviewInspectorJsxOwnershipContext();
+  return OwnershipContext === undefined ? undefined : React.useContext(OwnershipContext);
+}
 function PreviewInspectorDirectTarget(targetProps) {
   const definition = React.useContext(PreviewInspectorDirectTargetContext);
   return React.createElement(PreviewInspectorTargetRenderer, {
@@ -839,6 +1040,7 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
       exportName: descriptor?.exportName ?? 'default',
       inferredPropShape: descriptor?.inferredPropShape,
       inferredProps: descriptor?.inferredProps,
+      sourcePath: descriptor?.sourcePath,
     };
     const directTarget = useStorybook
       ? React.createElement(StorybookPreviewRoot, {
@@ -917,6 +1119,8 @@ const previewInspectorSourceNavigation = Object.freeze({
 });
 const previewInspectorApi = {
   TargetRenderer: PreviewInspectorTargetRenderer,
+  createContextualTargetElement: createPreviewInspectorContextualTargetElement,
+  createLocalTargetElement: createPreviewInspectorLocalTargetElement,
   collectTree: collectPreviewInspectorTreeSnapshot,
   createPageCandidateElement: createPreviewInspectorPageCandidateElement,
   getDiagnostics: readPreviewInspectorSerializableDiagnostics,
@@ -928,14 +1132,17 @@ const previewInspectorApi = {
     };
   },
   registerTargetElement: registerPreviewInspectorTargetElement,
+  isLocalTargetWrapper: isPreviewInspectorLocalTargetWrapper,
   registerJsxOwnershipContext: registerPreviewInspectorJsxOwnershipContext,
   registerCompilerCapability: registerPreviewInspectorCompilerCapability,
+  registerContextualTargetFallback: registerPreviewInspectorContextualTargetFallback,
   registerOwnedHost: registerPreviewInspectorOwnedHost,
   registerTargetRenderability: registerPreviewInspectorTargetRenderability,
   registerTargetOwnershipPhase: registerPreviewInspectorTargetOwnershipPhase,
   registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
   registerDeferredUiTrigger: registerPreviewInspectorDeferredUiTrigger,
   registerDeferredUiTriggerMetadata: registerPreviewInspectorDeferredUiTriggerMetadata,
+  registerLocalUiEventListener: registerPreviewInspectorLocalUiEventListener,
   registerRenderConditionDefinitions: registerPreviewInspectorRenderConditionDefinitions,
   registerGraphqlRenderPropUsage: registerPreviewInspectorGraphqlRenderPropUsage,
   previewAxiosRequest: previewInspectorAxiosRequest,
@@ -952,6 +1159,9 @@ const previewInspectorApi = {
   resolveRenderConditionLazy: resolvePreviewInspectorRenderConditionLazy,
   resolveRuntimeEffect: resolvePreviewInspectorRuntimeEffect,
   resolveRuntimeHook: resolvePreviewInspectorScopedRuntimeHook,
+  wrapLocalTarget: wrapPreviewInspectorLocalTarget,
+  useTargetOwnershipToken: usePreviewInspectorTargetOwnershipToken,
+  unregisterLocalUiEventListener: unregisterPreviewInspectorLocalUiEventListener,
   readJsxOwnershipContext: readPreviewInspectorJsxOwnershipContext,
   remount: remountPreviewInspectorExport,
   resetPropsOverride: resetPreviewInspectorPropsOverride,
@@ -959,6 +1169,8 @@ const previewInspectorApi = {
   selectNode: selectPreviewInspectorTreeNode,
   setHighlightEnabled: setPreviewInspectorHighlightEnabled,
   setPropsOverride: setPreviewInspectorPropsOverride,
+  shouldRenderContextualTargetFallback: shouldRenderPreviewInspectorContextualTargetFallback,
+  subscribe: subscribePreviewInspector,
   subscribeTree: subscribePreviewInspectorTree,
 };
 globalThis[PREVIEW_INSPECTOR_API_KEY] = previewInspectorApi;

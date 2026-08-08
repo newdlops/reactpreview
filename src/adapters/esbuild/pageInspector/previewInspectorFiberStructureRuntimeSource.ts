@@ -18,7 +18,7 @@ export function createPreviewInspectorFiberStructureRuntimeSource(): string {
 const PREVIEW_INSPECTOR_STRUCTURE_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_CHILD_ELEMENT_LIMIT = 32;
 const previewInspectorOverlayNamePattern =
-  /(?:modal|dialog|drawer|popover|popper|overlay|portal|sheet|lightbox|tooltip|toast|dropdown|menu)$/iu;
+  /(?:modal|dialog|drawer|popover|popper|popup|overlay|portal|sheet|lightbox|tooltip|toast|dropdown|menu)$/iu;
 const previewInspectorFiberOverlayVisibilityPropNames = [
   'anchorEl',
   'hidden',

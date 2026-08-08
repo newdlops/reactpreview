@@ -185,6 +185,15 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
     location: typeof candidate?.location === 'string' ? candidate.location : undefined,
     phase: typeof candidate?.phase === 'string' ? candidate.phase : undefined,
   };
+  let errorStack;
+  if (error !== undefined) {
+    try { errorStack = readRuntimeErrorStack(error); } catch { errorStack = undefined; }
+  }
+  const stack = typeof candidate?.stack === 'string'
+    ? boundPreviewInspectorConsoleText(candidate.stack, PREVIEW_INSPECTOR_CONSOLE_DETAILS_LIMIT)
+    : typeof errorStack === 'string'
+      ? boundPreviewInspectorConsoleText(errorStack, PREVIEW_INSPECTOR_CONSOLE_DETAILS_LIMIT)
+      : undefined;
   let details = typeof candidate?.details === 'string' ? candidate.details : '';
   if (details.length === 0 && error !== undefined) {
     try { details = describeRuntimeError(error, context); } catch { details = message; }
@@ -222,6 +231,7 @@ function recordPreviewInspectorConsoleEntry(candidate = {}) {
     message,
     phase: context.phase,
     source,
+    stack,
     timestamp,
   };
   entries.push(entry);

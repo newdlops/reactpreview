@@ -8,9 +8,13 @@ import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
+import { collectPreviewRuntimeLocalHelperParameterDemands } from './previewRuntimeHookLocalHelperItem';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
-import { inferReactOverlayVisibilityProp } from './reactOverlayVisibilityInference';
-import { inferReactOverlayVisibilityTypeProp } from './reactOverlayVisibilityTypeInference';
+import {
+  inferReactOverlayVisibilityProp,
+  isReactOverlayComponentName,
+} from './reactOverlayVisibilityInference';
+import { inferReactOverlayVisibilityTypePath } from './reactOverlayVisibilityTypeInference';
 import { inferReactOverlayVisibilityNeutralValue } from './reactOverlayVisibilityNeutralValue';
 
 const MAX_COMPONENT_EXPORTS = 32;
@@ -21,7 +25,28 @@ const MAX_IMPORTED_TYPE_MODULES = 12;
 const MAX_IMPORTED_TYPE_BYTES = 2 * 1024 * 1024;
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'key', 'prototype', 'ref']);
 const ARRAY_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
+const ARRAY_ITEM_CALLBACK_METHOD_NAMES = new Set([
+  'every',
+  'filter',
+  'find',
+  'findIndex',
+  'findLast',
+  'findLastIndex',
+  'flatMap',
+  'forEach',
+  'map',
+  'some',
+]);
+const ARRAY_ITEM_IDENTITY_METHOD_NAMES = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 const STRING_METHOD_NAMES = new Set<string>(PREVIEW_STRING_ONLY_METHOD_NAMES);
+const STRING_COLLECTION_SHARED_METHOD_NAMES = new Set([
+  'at',
+  'concat',
+  'includes',
+  'indexOf',
+  'lastIndexOf',
+  'slice',
+]);
 
 /** Neutral value categories understood by the generated browser materializer. */
 export type PreviewInferredPropKind =
@@ -37,6 +62,8 @@ export type PreviewInferredPropKind =
 
 /** JSON-safe recursive shape emitted into target and Inspector bridge descriptors. */
 export interface PreviewInferredPropShape {
+  /** True only when authored literal/control-flow syntax proves the exact generated scalar. */
+  readonly exactValue?: true;
   /** Element contract for arrays when syntax or a resolved type proves its required fields. */
   readonly items?: PreviewInferredPropShape;
   readonly kind: PreviewInferredPropKind;
@@ -63,9 +90,14 @@ export type PreviewInferredPropsByExport = Readonly<Record<string, PreviewInferr
 type ExportedFunctionLike = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
 type LocalObjectType = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
 
-/** One named import ordered for bounded type-contract resolution. */
+/** One named or default import ordered for bounded type-contract resolution. */
 interface ResolvableObjectTypeImport {
-  readonly binding: ts.ImportSpecifier;
+  readonly importedName: string;
+  readonly localName: string;
+  /** Prioritizes types directly referenced by an authored component props declaration. */
+  readonly propsDependency: boolean;
+  /** Keeps direct component-prop wrappers ahead of large unrelated declaration graphs. */
+  readonly propsContract: boolean;
   readonly moduleSpecifier: string;
   readonly order: number;
   readonly typeOnly: boolean;
@@ -94,6 +126,8 @@ export interface PreviewPropInferenceOptions {
 /** Mutable internal node that retains merge provenance before deterministic serialization. */
 interface MutableShapeNode {
   children: Map<string, MutableShapeNode>;
+  /** Retains authored literal/control-flow evidence across compatible shape merges. */
+  exactValue?: true;
   /** Element contract for an Array node, retained only when its syntax is statically resolvable. */
   items?: MutableShapeNode;
   kind: PreviewInferredPropKind;
@@ -129,11 +163,18 @@ interface LocalComponentDeclaration {
 
 /** Bounded mutable inference state for one exported function. */
 interface InferenceState {
+  /** Component names already traversed while carrying one exact local JSX prop demand. */
+  readonly activeLocalComponentNames: ReadonlySet<string>;
   readonly aliases: Map<string, PropPathBinding>;
+  readonly collectionDemandDepth: number;
   readonly functionLike: ExportedFunctionLike;
   readonly graphqlDocumentTypeNames: ReadonlySet<string>;
+  readonly localComponents: ReadonlyMap<string, LocalComponentDeclaration>;
+  readonly localComponentDemandDepth: number;
+  readonly localTypes: ReadonlyMap<string, LocalObjectType>;
   nodeCount: number;
   root: MutableShapeNode;
+  readonly sourceFile: ts.SourceFile;
 }
 
 /**
@@ -163,14 +204,57 @@ export function collectReactExportPropInference(
     return {};
   }
   const localTypes = collectResolvableObjectTypes(sourceFile, sourcePath, options);
+  const localComponents = collectLocalComponentDeclarations(sourceFile);
   const results: Record<string, PreviewInferredExportProps> = {};
   for (const component of collectExportedComponentFunctions(sourceFile).slice(
     0,
     MAX_COMPONENT_EXPORTS,
   )) {
-    const inference = inferComponentProps(component, localTypes, sourceFile);
+    const inference = inferComponentProps(component, localTypes, sourceFile, localComponents);
     if (inference !== undefined && inference.provenance.length > 0) {
       results[component.exportName] = inference;
+    }
+  }
+  return Object.freeze(results);
+}
+
+/**
+ * Collects prop recipes for exact same-file component bindings reached as JSX children.
+ *
+ * Render-prop data commonly crosses a local component boundary before its first collection or
+ * scalar operation. Keeping this API name-bound and caller-bounded lets GraphQL/hook inference
+ * carry that proven demand back without treating every private helper as a public preview export.
+ */
+export function collectReactLocalComponentPropInference(
+  sourcePath: string,
+  sourceText: string,
+  componentNames: readonly string[],
+  options: PreviewPropInferenceOptions = {},
+): PreviewInferredPropsByExport {
+  if (componentNames.length === 0) return {};
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    readScriptKind(sourcePath),
+  );
+  if (hasParseDiagnostics(sourceFile)) return {};
+  const localTypes = collectResolvableObjectTypes(sourceFile, sourcePath, options);
+  const declarations = collectLocalComponentDeclarations(sourceFile);
+  const results: Record<string, PreviewInferredExportProps> = {};
+  for (const componentName of [...new Set(componentNames)].slice(0, MAX_COMPONENT_EXPORTS)) {
+    if (!/^\p{Lu}/u.test(componentName)) continue;
+    const candidate = resolveLocalComponent(componentName, declarations);
+    if (candidate === undefined) continue;
+    const inference = inferComponentProps(
+      { exportName: componentName, ...candidate },
+      localTypes,
+      sourceFile,
+      declarations,
+    );
+    if (inference !== undefined && inference.provenance.length > 0) {
+      results[componentName] = inference;
     }
   }
   return Object.freeze(results);
@@ -217,9 +301,8 @@ function collectResolvableObjectTypes(
     }
     const module = modules.get(imported.moduleSpecifier);
     if (module === undefined) continue;
-    const importedName = (imported.binding.propertyName ?? imported.binding.name).text;
     const resolved = resolveExportedObjectType(
-      importedName,
+      imported.importedName,
       module.sourceFile,
       module.sourcePath,
       options,
@@ -227,46 +310,125 @@ function collectResolvableObjectTypes(
       budget,
     );
     if (resolved === undefined) continue;
-    const closure = collectImportedObjectTypeClosure(resolved);
+    const closure = collectImportedObjectTypeClosure(resolved, options, budget);
     if (closure === undefined) continue;
-    closure.set(imported.binding.name.text, resolved.declaration);
-    if (
-      [...closure].every(([name, declaration]) => {
-        const existing = localTypes.get(name);
-        return existing === undefined || isSameObjectTypeDeclaration(existing, declaration);
-      })
-    ) {
+    const localBindingName = imported.localName;
+    const declaredName = resolved.declaration.name.text;
+    /*
+     * An aliased import commonly wraps a same-named library contract:
+     * `import { SnackbarProps as MuiSnackbarProps }` followed by a local `SnackbarProps` alias.
+     * Keeping the library root under both names would collide with that authored local wrapper and
+     * discard the entire otherwise unambiguous type closure. Retain only the actual local binding;
+     * recursive references to the hidden canonical name then fail closed instead of binding to the
+     * unrelated local wrapper.
+     */
+    if (localBindingName !== declaredName) closure.delete(declaredName);
+    closure.set(localBindingName, resolved.declaration);
+    const closureUnambiguous = [...closure].every(([name, declaration]) => {
+      const existing = localTypes.get(name);
+      return existing === undefined || isSameObjectTypeDeclaration(existing, declaration);
+    });
+    if (closureUnambiguous) {
       for (const [name, declaration] of closure) localTypes.set(name, declaration);
     }
   }
   return localTypes;
 }
 
-/** Prioritizes explicit type imports so runtime-heavy modules cannot starve prop contracts. */
+/** Prioritizes prop contracts, then explicit type imports, before large unrelated type graphs. */
 function collectResolvableObjectTypeImports(
   sourceFile: ts.SourceFile,
 ): readonly ResolvableObjectTypeImport[] {
   const imports: ResolvableObjectTypeImport[] = [];
+  const referencedTypeNames = new Set<string>();
+  const propsDependencyNames = new Set<string>();
+  const collectReferencedTypeName = (
+    node: ts.Node,
+    destination: Set<string> = referencedTypeNames,
+  ): void => {
+    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+      destination.add(node.typeName.text);
+    } else if (ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression)) {
+      destination.add(node.expression.text);
+    }
+    ts.forEachChild(node, (child) => collectReferencedTypeName(child, destination));
+  };
+  collectReferencedTypeName(sourceFile);
+  for (const [name, declaration] of collectLocalObjectTypes(sourceFile)) {
+    if (/(?:^|Props?|Properties)(?:With|For|Of|$)/u.test(name)) {
+      collectReferencedTypeName(declaration, propsDependencyNames);
+    }
+  }
   let order = 0;
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier))
       continue;
     const importClause = statement.importClause;
+    if (importClause?.name !== undefined) {
+      const localName = importClause.name.text;
+      imports.push({
+        importedName: 'default',
+        localName,
+        propsDependency: propsDependencyNames.has(localName),
+        propsContract: /(?:^|Props?|Properties)(?:With|For|Of|$)/u.test(localName),
+        moduleSpecifier: statement.moduleSpecifier.text,
+        order: order++,
+        typeOnly: importClause.phaseModifier === ts.SyntaxKind.TypeKeyword,
+      });
+    }
     const bindings = importClause?.namedBindings;
     if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
     for (const binding of bindings.elements) {
+      const importedName = (binding.propertyName ?? binding.name).text;
       imports.push({
-        binding,
+        importedName,
+        localName: binding.name.text,
+        propsDependency: propsDependencyNames.has(binding.name.text),
+        propsContract: /(?:^|Props?|Properties)(?:With|For|Of|$)/u.test(importedName),
         moduleSpecifier: statement.moduleSpecifier.text,
         order: order++,
-        typeOnly:
-          importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword || binding.isTypeOnly,
+        typeOnly: importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword || binding.isTypeOnly,
       });
     }
   }
-  return imports.sort(
-    (left, right) => Number(right.typeOnly) - Number(left.typeOnly) || left.order - right.order,
-  );
+  return imports
+    .filter((imported) => referencedTypeNames.has(imported.localName))
+    .sort(
+      (left, right) =>
+        Number(right.propsDependency) - Number(left.propsDependency) ||
+        Number(right.propsContract) - Number(left.propsContract) ||
+        Number(right.typeOnly) - Number(left.typeOnly) ||
+        left.order - right.order,
+    );
+}
+
+/** Resolves a directly exported declaration, including both forms of default type export. */
+function resolveLocalExportedObjectType(
+  exportName: string,
+  sourceFile: ts.SourceFile,
+): LocalObjectType | undefined {
+  const localTypes = collectLocalObjectTypes(sourceFile);
+  if (exportName !== 'default') {
+    const declaration = localTypes.get(exportName);
+    return declaration !== undefined && hasExportModifier(declaration) ? declaration : undefined;
+  }
+  const candidates = new Set<LocalObjectType>();
+  for (const declaration of localTypes.values()) {
+    if (hasExportModifier(declaration) && hasDefaultModifier(declaration)) {
+      candidates.add(declaration);
+    }
+  }
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isExportAssignment(statement) &&
+      !statement.isExportEquals &&
+      ts.isIdentifier(statement.expression)
+    ) {
+      const declaration = localTypes.get(statement.expression.text);
+      if (declaration !== undefined) candidates.add(declaration);
+    }
+  }
+  return candidates.size === 1 ? candidates.values().next().value : undefined;
 }
 
 /** Follows an exported object declaration through a bounded acyclic re-export chain. */
@@ -281,27 +443,32 @@ function resolveExportedObjectType(
 ): ResolvedImportedObjectType | undefined {
   if (depth > 8 || activePaths.has(sourcePath)) return undefined;
   activePaths.add(sourcePath);
-  const local = collectLocalObjectTypes(sourceFile).get(name);
-  if (local !== undefined && hasExportModifier(local)) {
+  const local = resolveLocalExportedObjectType(name, sourceFile);
+  if (local !== undefined) {
     return { declaration: local, module: { sourceFile, sourcePath } };
   }
-  for (const statement of sourceFile.statements) {
-    if (!ts.isExportDeclaration(statement)) continue;
-    const moduleSpecifier = statement.moduleSpecifier;
-    const exportClause = statement.exportClause;
-    if (moduleSpecifier === undefined || exportClause === undefined) continue;
-    if (!ts.isStringLiteralLike(moduleSpecifier) || !ts.isNamedExports(exportClause)) continue;
-    const binding = exportClause.elements.find((entry) => entry.name.text === name);
-    if (binding === undefined || options.resolveImport === undefined) continue;
-    const module = options.resolveImport(moduleSpecifier.text, sourcePath);
+  const resolveReExport = (
+    moduleSpecifier: string,
+    exportedName: string,
+  ): ResolvedImportedObjectType | undefined => {
+    if (
+      options.resolveImport === undefined ||
+      budget.modules + 1 > MAX_IMPORTED_TYPE_MODULES ||
+      budget.bytes >= MAX_IMPORTED_TYPE_BYTES
+    )
+      return undefined;
+    const module = options.resolveImport(moduleSpecifier, sourcePath);
     const moduleBytes = module === undefined ? 0 : Buffer.byteLength(module.sourceText, 'utf8');
     if (
       module === undefined ||
       moduleBytes > MAX_IMPORTED_TYPE_BYTES ||
-      ++budget.modules > MAX_IMPORTED_TYPE_MODULES ||
-      (budget.bytes += moduleBytes) > MAX_IMPORTED_TYPE_BYTES
-    )
-      continue;
+      budget.modules + 1 > MAX_IMPORTED_TYPE_MODULES ||
+      budget.bytes + moduleBytes > MAX_IMPORTED_TYPE_BYTES
+    ) {
+      return undefined;
+    }
+    budget.modules += 1;
+    budget.bytes += moduleBytes;
     const next = ts.createSourceFile(
       module.sourcePath,
       module.sourceText,
@@ -309,58 +476,215 @@ function resolveExportedObjectType(
       true,
       readScriptKind(module.sourcePath),
     );
-    const resolved = hasParseDiagnostics(next)
+    return hasParseDiagnostics(next)
       ? undefined
       : resolveExportedObjectType(
-          (binding.propertyName ?? binding.name).text,
+          exportedName,
           next,
           module.sourcePath,
           options,
-          activePaths,
+          new Set(activePaths),
           budget,
           depth + 1,
         );
+  };
+  let starResolution: ResolvedImportedObjectType | undefined;
+  let ambiguousStarResolution = false;
+  const contractStem = name
+    .replace(/(?:props|properties|options|config|state|type)$/iu, '')
+    .toLowerCase();
+  const reExports = sourceFile.statements
+    .filter((statement): statement is ts.ExportDeclaration => ts.isExportDeclaration(statement))
+    .map((statement, order) => {
+      const namedMatch =
+        statement.exportClause !== undefined &&
+        ts.isNamedExports(statement.exportClause) &&
+        statement.exportClause.elements.some((entry) => entry.name.text === name);
+      const specifier =
+        statement.moduleSpecifier !== undefined && ts.isStringLiteralLike(statement.moduleSpecifier)
+          ? statement.moduleSpecifier.text
+          : '';
+      const moduleStem = path
+        .basename(specifier)
+        .replace(/\.[^.]+$/u, '')
+        .toLowerCase();
+      const semanticStarMatch =
+        statement.exportClause === undefined &&
+        contractStem.length > 0 &&
+        moduleStem === contractStem;
+      return { order, priority: namedMatch ? 0 : semanticStarMatch ? 1 : 2, statement };
+    })
+    .sort((left, right) => left.priority - right.priority || left.order - right.order);
+  for (const { priority, statement } of reExports) {
+    if (priority > 1 && starResolution !== undefined) {
+      return ambiguousStarResolution ? undefined : starResolution;
+    }
+    const moduleSpecifier = statement.moduleSpecifier;
+    const exportClause = statement.exportClause;
+    if (moduleSpecifier === undefined || !ts.isStringLiteralLike(moduleSpecifier)) continue;
+    if (exportClause === undefined) {
+      const resolved = resolveReExport(moduleSpecifier.text, name);
+      if (resolved === undefined) continue;
+      if (starResolution === undefined) {
+        starResolution = resolved;
+      } else if (!isSameObjectTypeDeclaration(starResolution.declaration, resolved.declaration)) {
+        ambiguousStarResolution = true;
+      }
+      continue;
+    }
+    if (!ts.isNamedExports(exportClause)) continue;
+    const binding = exportClause.elements.find((entry) => entry.name.text === name);
+    if (binding === undefined) continue;
+    const resolved = resolveReExport(
+      moduleSpecifier.text,
+      (binding.propertyName ?? binding.name).text,
+    );
     if (resolved !== undefined) return resolved;
   }
-  return undefined;
+  return ambiguousStarResolution ? undefined : starResolution;
 }
 
 /**
- * Collects only object declarations reachable from one already-authorized import in its owner.
- * The walk never resolves another module and fails closed when its existing inference bounds apply.
+ * Collects object declarations reachable from one already-authorized import and its type-only
+ * dependency corridor. Runtime modules are never evaluated: each direct named import is parsed with
+ * the same resolver and global byte/module bounds as the root contract. Breadth-first expansion makes
+ * sibling prop contracts available before a deep generic helper can consume the remaining budget.
  */
 function collectImportedObjectTypeClosure(
   root: ResolvedImportedObjectType,
+  options: PreviewPropInferenceOptions,
+  budget: { bytes: number; modules: number },
 ): Map<string, LocalObjectType> | undefined {
-  const available = collectLocalObjectTypes(root.module.sourceFile);
   const closure = new Map<string, LocalObjectType>();
-  const visiting = new Set<string>();
-  const visit = (name: string, depth: number): boolean => {
-    if (depth > MAX_INFERRED_DEPTH || closure.size >= MAX_INFERRED_NODES) return false;
-    const declaration = available.get(name);
-    if (declaration === undefined || closure.has(name)) return true;
-    if (visiting.has(name)) return true;
-    visiting.add(name);
-    closure.set(name, declaration);
-    let valid = true;
-    const inspect = (node: ts.Node): void => {
-      if (!valid) return;
-      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
-        valid = visit(node.typeName.text, depth + 1);
-        if (!valid) return;
-      }
-      ts.forEachChild(node, inspect);
-    };
-    if (ts.isInterfaceDeclaration(declaration)) {
-      for (const heritage of declaration.heritageClauses ?? []) inspect(heritage);
-      for (const member of declaration.members) inspect(member);
-    } else {
-      inspect(declaration.type);
+  const loadedModules = new Map<string, ResolvedObjectTypeModule | undefined>();
+  const processed = new Set<string>();
+  const pending: Array<{
+    declaration: LocalObjectType;
+    depth: number;
+    localName: string;
+    module: ResolvedObjectTypeModule;
+  }> = [
+    {
+      declaration: root.declaration,
+      depth: 0,
+      localName: root.declaration.name.text,
+      module: root.module,
+    },
+  ];
+  const loadModule = (
+    moduleSpecifier: string,
+    importerPath: string,
+  ): ResolvedObjectTypeModule | undefined => {
+    if (options.resolveImport === undefined) return undefined;
+    const key = `${importerPath}\0${moduleSpecifier}`;
+    if (loadedModules.has(key)) return loadedModules.get(key);
+    const loaded = options.resolveImport(moduleSpecifier, importerPath);
+    const bytes = loaded === undefined ? 0 : Buffer.byteLength(loaded.sourceText, 'utf8');
+    if (
+      loaded === undefined ||
+      bytes > MAX_IMPORTED_TYPE_BYTES ||
+      budget.modules + 1 > MAX_IMPORTED_TYPE_MODULES ||
+      budget.bytes + bytes > MAX_IMPORTED_TYPE_BYTES
+    ) {
+      loadedModules.set(key, undefined);
+      return undefined;
     }
-    visiting.delete(name);
-    return valid;
+    budget.modules += 1;
+    budget.bytes += bytes;
+    const sourceFile = ts.createSourceFile(
+      loaded.sourcePath,
+      loaded.sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      readScriptKind(loaded.sourcePath),
+    );
+    const module = hasParseDiagnostics(sourceFile)
+      ? undefined
+      : { sourceFile, sourcePath: loaded.sourcePath };
+    loadedModules.set(key, module);
+    return module;
   };
-  if (!visit(root.declaration.name.text, 0)) return undefined;
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined) break;
+    if (current.depth > MAX_INFERRED_DEPTH || closure.size >= MAX_INFERRED_NODES) return undefined;
+    const identity = `${current.module.sourcePath}\0${current.declaration.name.text}\0${current.localName}`;
+    if (processed.has(identity)) continue;
+    processed.add(identity);
+    const existing = closure.get(current.localName);
+    if (existing !== undefined && !isSameObjectTypeDeclaration(existing, current.declaration)) {
+      return undefined;
+    }
+    closure.set(current.localName, current.declaration);
+    const available = collectLocalObjectTypes(current.module.sourceFile);
+    const importedByLocalName = new Map<string, ResolvableObjectTypeImport>();
+    const ambiguousImports = new Set<string>();
+    for (const imported of collectResolvableObjectTypeImports(current.module.sourceFile)) {
+      const localName = imported.localName;
+      if (importedByLocalName.has(localName)) {
+        importedByLocalName.delete(localName);
+        ambiguousImports.add(localName);
+      } else if (!ambiguousImports.has(localName)) {
+        importedByLocalName.set(localName, imported);
+      }
+    }
+    const referencedNames: string[] = [];
+    const heritageReferencedNames = new Set<string>();
+    const inspect = (node: ts.Node, heritage = false): void => {
+      if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+        referencedNames.push(node.typeName.text);
+        if (heritage) heritageReferencedNames.add(node.typeName.text);
+      } else if (ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression)) {
+        referencedNames.push(node.expression.text);
+        if (heritage) heritageReferencedNames.add(node.expression.text);
+      }
+      ts.forEachChild(node, (child) => inspect(child, heritage));
+    };
+    if (ts.isInterfaceDeclaration(current.declaration)) {
+      for (const heritage of current.declaration.heritageClauses ?? []) inspect(heritage, true);
+      for (const member of current.declaration.members) inspect(member);
+    } else {
+      inspect(current.declaration.type);
+    }
+    for (const name of new Set(referencedNames)) {
+      const local = available.get(name);
+      if (local !== undefined) {
+        pending.push({
+          declaration: local,
+          depth: current.depth + 1,
+          localName: name,
+          module: current.module,
+        });
+        continue;
+      }
+      const imported = importedByLocalName.get(name);
+      if (imported === undefined) continue;
+      const contractOwnerName = name.replace(/(?:props|properties|options|config|state)$/iu, '');
+      if (
+        !heritageReferencedNames.has(name) &&
+        (contractOwnerName === name || !isReactOverlayComponentName(contractOwnerName))
+      )
+        continue;
+      const module = loadModule(imported.moduleSpecifier, current.module.sourcePath);
+      if (module === undefined) continue;
+      const resolved = resolveExportedObjectType(
+        imported.importedName,
+        module.sourceFile,
+        module.sourcePath,
+        options,
+        new Set([current.module.sourcePath]),
+        budget,
+      );
+      if (resolved !== undefined) {
+        pending.push({
+          declaration: resolved.declaration,
+          depth: current.depth + 1,
+          localName: name,
+          module: resolved.module,
+        });
+      }
+    }
+  }
   return closure;
 }
 
@@ -380,6 +704,10 @@ function inferComponentProps(
   component: ExportedComponentFunction,
   localTypes: ReadonlyMap<string, LocalObjectType>,
   sourceFile: ts.SourceFile,
+  localComponents: ReadonlyMap<string, LocalComponentDeclaration>,
+  localComponentDemandDepth = 0,
+  activeLocalComponentNames: ReadonlySet<string> = new Set([component.exportName]),
+  followLocalJsxPropForwarding = false,
 ): PreviewInferredExportProps | undefined {
   const { functionLike } = component;
   const parameter = functionLike.parameters[0];
@@ -388,11 +716,17 @@ function inferComponentProps(
   }
   const root = createMutableNode('object', 'usage');
   const state: InferenceState = {
+    activeLocalComponentNames,
     aliases: new Map(),
+    collectionDemandDepth: 0,
     functionLike,
     graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(sourceFile),
+    localComponents,
+    localComponentDemandDepth,
+    localTypes,
     nodeCount: 1,
     root,
+    sourceFile,
   };
   collectParameterBindings(parameter.name, [], state.aliases);
   addTypedParameterRequirements(
@@ -404,7 +738,11 @@ function inferComponentProps(
   );
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
+  if (followLocalJsxPropForwarding) {
+    collectLocalJsxForwardedPropRequirements(functionLike, state);
+  }
   addOverlayVisibilityRequirement(component, localTypes, state, sourceFile);
   if (state.root.children.size === 0) {
     return undefined;
@@ -413,11 +751,74 @@ function inferComponentProps(
 }
 
 /**
+ * Materializes terminal fields read by a detached callback even when they are not rendered locally.
+ * A callback supplied to `sumBy`, `groupBy`, or another collection utility consumes those leaves in
+ * its caller, so retaining only their receiver containers would still produce an invalid item.
+ */
+function collectRequiredPropertyReadTerminals(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (isAccessExpression(node) && !isNestedAccessReceiver(node)) {
+      const path_ = readPropPath(node, state.aliases);
+      const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
+      if (
+        !called &&
+        path_ !== undefined &&
+        path_.length > 0 &&
+        readFirstOptionalReceiverLength(node, state.aliases) === undefined &&
+        !isShadowedPathRoot(node, state) &&
+        !hasPreviewInferredPropTerminal(state, path_)
+      ) {
+        const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
+        requirePath(state, path_, semantic?.kind ?? 'object', 'usage', semantic?.value);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+/**
+ * Infers one runtime function parameter from its bounded, syntax-only property usage.
+ * Imported collection callbacks are often intentionally untyped JavaScript helpers; this exposes
+ * the same usage inference used for component props without evaluating the imported module.
+ */
+export function inferReactFunctionParameterUsageShape(
+  functionLike: ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression,
+  parameterIndex: number,
+): PreviewInferredPropShape | undefined {
+  if (!Number.isSafeInteger(parameterIndex) || parameterIndex < 0 || parameterIndex > 15) {
+    return undefined;
+  }
+  const parameter = functionLike.parameters[parameterIndex];
+  if (parameter === undefined || parameter.dotDotDotToken !== undefined) return undefined;
+  const parentState: InferenceState = {
+    activeLocalComponentNames: new Set(),
+    aliases: new Map(),
+    collectionDemandDepth: 0,
+    functionLike,
+    graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(functionLike.getSourceFile()),
+    localComponents: collectLocalComponentDeclarations(functionLike.getSourceFile()),
+    localComponentDemandDepth: 0,
+    localTypes: collectLocalObjectTypes(functionLike.getSourceFile()),
+    nodeCount: 1,
+    root: createMutableNode('object', 'usage'),
+    sourceFile: functionLike.getSourceFile(),
+  };
+  const requirement = inferFunctionBindingRequirement(functionLike, parameter.name, parentState);
+  return requirement === undefined ? undefined : freezeInference(requirement).shape;
+}
+
+/**
  * Gives a directly previewed overlay its one visible state while retaining authored/user priority.
- * Exact visibility bindings win. A rest wrapper is admitted only when an overlay-named component
- * explicitly forwards the same rest property into a visibility attribute; a bare spread cannot
- * prove whether a project uses `show`, `open`, or another API. The inferred `usage` provenance keeps
- * this generated value visible and editable in Page Inspector rather than changing project source.
+ * Exact visibility bindings win. A rest wrapper is admitted when an overlay-named component's
+ * resolved contract proves one direct or nested visibility path; a bare untyped spread cannot prove
+ * whether a project uses `show`, `open`, or another API. The inferred `usage` provenance keeps this
+ * generated value visible and editable in Page Inspector rather than changing project source.
  */
 function addOverlayVisibilityRequirement(
   component: ExportedComponentFunction,
@@ -425,16 +826,23 @@ function addOverlayVisibilityRequirement(
   state: InferenceState,
   sourceFile: ts.SourceFile,
 ): void {
-  const propName =
-    inferReactOverlayVisibilityProp(component.functionLike, component.exportName) ??
-    inferReactOverlayVisibilityTypeProp(
-      component.functionLike,
-      component.exportName,
-      component.contextualPropsType,
-      sourceFile,
-      localTypes,
-    );
-  if (propName !== undefined) requirePath(state, [propName], 'boolean', 'usage', true);
+  const directPropName = inferReactOverlayVisibilityProp(
+    component.functionLike,
+    component.exportName,
+  );
+  const visibilityPath =
+    directPropName === undefined
+      ? inferReactOverlayVisibilityTypePath(
+          component.functionLike,
+          component.exportName,
+          component.contextualPropsType,
+          sourceFile,
+          localTypes,
+        )
+      : [directPropName];
+  if (visibilityPath !== undefined) {
+    requirePath(state, visibilityPath, 'boolean', 'usage', true, true);
+  }
 }
 
 /** Maps destructured/local prop bindings to their external root property paths. */
@@ -510,24 +918,35 @@ function readObjectTypeMembers(
     );
     return members.length > 0 ? members : undefined;
   }
-  if (!ts.isTypeReferenceNode(unwrapped) || !ts.isIdentifier(unwrapped.typeName)) return undefined;
-  const name = unwrapped.typeName.text;
+  const reference =
+    ts.isTypeReferenceNode(unwrapped) && ts.isIdentifier(unwrapped.typeName)
+      ? { name: unwrapped.typeName.text, typeArguments: unwrapped.typeArguments }
+      : ts.isExpressionWithTypeArguments(unwrapped) && ts.isIdentifier(unwrapped.expression)
+        ? { name: unwrapped.expression.text, typeArguments: unwrapped.typeArguments }
+        : undefined;
+  if (reference === undefined) return undefined;
+  const { name } = reference;
   const substituted = substitutions.get(name);
   if (substituted !== undefined) {
     return readObjectTypeMembers(substituted, localTypes, resolutionStack, substitutions);
   }
   if (
     (name === 'PropsWithChildren' || name === 'Readonly' || name === 'Required') &&
-    unwrapped.typeArguments?.[0] !== undefined
+    reference.typeArguments?.[0] !== undefined
   ) {
-    return readObjectTypeMembers(unwrapped.typeArguments[0], localTypes, resolutionStack, substitutions);
+    return readObjectTypeMembers(
+      reference.typeArguments[0],
+      localTypes,
+      resolutionStack,
+      substitutions,
+    );
   }
   const declaration = localTypes.get(name);
   if (declaration === undefined || resolutionStack.has(name)) return undefined;
   resolutionStack.add(name);
   try {
     const typeParameters = declaration.typeParameters;
-    const typeArguments = unwrapped.typeArguments;
+    const typeArguments = reference.typeArguments;
     if (
       typeParameters !== undefined &&
       (typeArguments === undefined || typeParameters.length !== typeArguments.length)
@@ -546,7 +965,12 @@ function readObjectTypeMembers(
           ...(declaration.heritageClauses ?? []).flatMap((clause) =>
             clause.types.flatMap(
               (heritageType) =>
-                readObjectTypeMembers(heritageType, localTypes, resolutionStack, nestedSubstitutions) ?? [],
+                readObjectTypeMembers(
+                  heritageType,
+                  localTypes,
+                  resolutionStack,
+                  nestedSubstitutions,
+                ) ?? [],
             ),
           ),
         ]
@@ -633,9 +1057,11 @@ function addTypeRequirement(
   }
   if (ts.isLiteralTypeNode(unwrapped)) {
     const literal = readLiteralValue(unwrapped.literal);
-    if (typeof literal === 'string') requirePath(state, path_, 'string', 'type', literal);
-    else if (typeof literal === 'number') requirePath(state, path_, 'number', 'type', literal);
-    else if (typeof literal === 'boolean') requirePath(state, path_, 'boolean', 'type', literal);
+    if (typeof literal === 'string') requirePath(state, path_, 'string', 'type', literal, true);
+    else if (typeof literal === 'number')
+      requirePath(state, path_, 'number', 'type', literal, true);
+    else if (typeof literal === 'boolean')
+      requirePath(state, path_, 'boolean', 'type', literal, true);
     return;
   }
   if (ts.isUnionTypeNode(unwrapped)) {
@@ -773,7 +1199,8 @@ function addTypeRequirement(
 function collectGraphqlDocumentTypeNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
   const names = new Set<string>();
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier))
+      continue;
     if (!/^@apollo\/client(?:\/|$)/u.test(statement.moduleSpecifier.text)) continue;
     const bindings = statement.importClause?.namedBindings;
     if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
@@ -956,7 +1383,8 @@ function selectPreviewCollectionItemType(
   if (
     objectMember === undefined ||
     members.some((member) => member !== objectMember && !isPreviewCollectionTypeNode(member))
-  ) return typeNode;
+  )
+    return typeNode;
   return objectMember;
 }
 
@@ -1007,7 +1435,27 @@ function setArrayItemRequirement(
     if (next === undefined) return;
     node = next;
   }
-  if (node.kind === 'array' && node.items === undefined) node.items = items;
+  if (node.kind !== 'array') return;
+  if (node.items === undefined) node.items = items;
+  else mergeMutableShapeRequirement(node.items, items);
+}
+
+/** Merges independently proven callback-item branches without replacing incompatible evidence. */
+function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableShapeNode): void {
+  mergeNodeKind(target, source.kind, source.source, source.value, source.exactValue);
+  if (target.kind !== source.kind) return;
+  if (source.source === 'type') target.source = 'type';
+  if (source.value !== undefined) target.value = source.value;
+  if (source.exactValue === true) target.exactValue = true;
+  for (const [name, child] of source.children) {
+    const existing = target.children.get(name);
+    if (existing === undefined) target.children.set(name, child);
+    else mergeMutableShapeRequirement(existing, child);
+  }
+  if (source.items !== undefined) {
+    if (target.items === undefined) target.items = source.items;
+    else mergeMutableShapeRequirement(target.items, source.items);
+  }
 }
 
 /** Collects simple local aliases before evaluating later receiver paths in callbacks and JSX. */
@@ -1043,12 +1491,21 @@ function collectLocalPropAliases(functionLike: ExportedFunctionLike, state: Infe
 function collectUsageRequirements(functionLike: ExportedFunctionLike, state: InferenceState): void {
   const body = functionLike.body;
   if (body === undefined) return;
-  const visit = (node: ts.Node): void => {
+  const collectReceivers = (node: ts.Node): void => {
     if (isAccessExpression(node) && !isNestedAccessReceiver(node)) {
       const path_ = readPropPath(node, state.aliases);
       if (path_ !== undefined && path_.length > 0 && !isShadowedPathRoot(node, state)) {
         const optionalReceiverLength = readFirstOptionalReceiverLength(node, state.aliases);
         addReceiverContainers(state, path_, optionalReceiverLength ?? path_.length);
+      }
+    }
+    ts.forEachChild(node, collectReceivers);
+  };
+  const collectOperations = (node: ts.Node): void => {
+    if (isAccessExpression(node) && !isNestedAccessReceiver(node)) {
+      const path_ = readPropPath(node, state.aliases);
+      if (path_ !== undefined && path_.length > 0 && !isShadowedPathRoot(node, state)) {
+        const optionalReceiverLength = readFirstOptionalReceiverLength(node, state.aliases);
         if (optionalReceiverLength === undefined) addOperationRequirement(state, path_, node);
       }
     } else if (ts.isIdentifier(node)) {
@@ -1063,9 +1520,426 @@ function collectUsageRequirements(functionLike: ExportedFunctionLike, state: Inf
         addOperationRequirement(state, binding.path, node);
       }
     }
+    ts.forEachChild(node, collectOperations);
+  };
+  collectReceivers(body);
+  collectOperations(body);
+  collectArrayCallbackItemRequirements(body, state);
+}
+
+/** Carries collection-callback field demand into the owning prop Array's generated item shape. */
+function collectArrayCallbackItemRequirements(body: ts.ConciseBody, state: InferenceState): void {
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.questionDotToken === undefined &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.questionDotToken === undefined &&
+      ARRAY_ITEM_CALLBACK_METHOD_NAMES.has(node.expression.name.text)
+    ) {
+      const receiver = readCollectionCarrierPropPath(node.expression.expression, state.aliases);
+      const callbackArgument = node.arguments[0];
+      const callback =
+        callbackArgument === undefined || ts.isSpreadElement(callbackArgument)
+          ? undefined
+          : unwrapExpression(callbackArgument);
+      if (
+        receiver !== undefined &&
+        !isShadowedPathRoot(receiver.expression, state) &&
+        callback !== undefined &&
+        (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+      ) {
+        requirePath(state, receiver.path, 'array', 'usage');
+        setArrayItemRequirement(
+          state,
+          receiver.path,
+          inferArrayCallbackItemRequirement(callback, state),
+        );
+      }
+    }
     ts.forEachChild(node, visit);
   };
   visit(body);
+}
+
+/** Reads a prop collection through bounded transforms that preserve every item's identity. */
+function readCollectionCarrierPropPath(
+  expression: ts.Expression,
+  aliases: ReadonlyMap<string, PropPathBinding>,
+): Readonly<{ expression: ts.Expression; path: readonly string[] }> | undefined {
+  let current = unwrapExpression(expression);
+  for (let depth = 0; ts.isCallExpression(current) && depth < 8; depth += 1) {
+    if (current.questionDotToken !== undefined) return undefined;
+    const callee = unwrapExpression(current.expression);
+    if (
+      !ts.isPropertyAccessExpression(callee) ||
+      callee.questionDotToken !== undefined ||
+      !ARRAY_ITEM_IDENTITY_METHOD_NAMES.has(callee.name.text)
+    ) {
+      return undefined;
+    }
+    current = unwrapExpression(callee.expression);
+  }
+  const path_ = readPropPath(current, aliases);
+  return path_ === undefined ? undefined : { expression: current, path: path_ };
+}
+
+/** Infers one callback parameter in isolation, retaining recursively nested collection demand. */
+function inferArrayCallbackItemRequirement(
+  callback: ts.ArrowFunction | ts.FunctionExpression,
+  parentState: InferenceState,
+): MutableShapeNode | undefined {
+  const parameter = callback.parameters[0];
+  if (
+    parameter === undefined ||
+    parameter.dotDotDotToken !== undefined ||
+    parentState.collectionDemandDepth >= 8
+  ) {
+    return undefined;
+  }
+  let combined = inferFunctionBindingRequirement(callback, parameter.name, parentState);
+  if (ts.isIdentifier(parameter.name)) {
+    for (const demand of collectPreviewRuntimeLocalHelperParameterDemands(
+      callback,
+      parameter.name.text,
+      callback.getSourceFile(),
+    )) {
+      const helper = inferFunctionBindingRequirement(
+        demand.owner,
+        demand.parameter.name,
+        parentState,
+      );
+      if (helper === undefined) continue;
+      if (combined === undefined) combined = helper;
+      else mergeMutableShapeRequirement(combined, helper);
+    }
+  }
+  const forwarded = inferLocalJsxForwardedItemRequirement(callback, parameter.name, parentState);
+  if (forwarded !== undefined) {
+    if (combined === undefined) combined = forwarded;
+    else mergeMutableShapeRequirement(combined, forwarded);
+  }
+  return combined;
+}
+
+/** Carries an array item into the exact prop contract of a same-file JSX child component. */
+function inferLocalJsxForwardedItemRequirement(
+  callback: ts.ArrowFunction | ts.FunctionExpression,
+  binding: ts.BindingName,
+  parentState: InferenceState,
+): MutableShapeNode | undefined {
+  if (parentState.localComponentDemandDepth >= 8) return undefined;
+  const aliases = new Map<string, PropPathBinding>();
+  collectParameterBindings(binding, [], aliases);
+  const aliasState: InferenceState = {
+    ...parentState,
+    aliases,
+    collectionDemandDepth: parentState.collectionDemandDepth + 1,
+    functionLike: callback,
+    root: createMutableNode('object', 'usage'),
+  };
+  collectLocalPropAliases(callback, aliasState);
+  const root = createMutableNode('object', 'usage');
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isJsxAttribute(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression !== undefined
+    ) {
+      const opening = node.parent.parent;
+      const tagName =
+        (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) &&
+        ts.isIdentifier(opening.tagName)
+          ? opening.tagName.text
+          : undefined;
+      const path_ = readPropPath(node.initializer.expression, aliases);
+      const identity = tagName === undefined ? undefined : `${tagName}\0${node.name.text}`;
+      if (
+        tagName !== undefined &&
+        path_ !== undefined &&
+        path_.length <= MAX_INFERRED_DEPTH &&
+        identity !== undefined &&
+        !seen.has(identity)
+      ) {
+        seen.add(identity);
+        const candidate = resolveLocalComponent(tagName, parentState.localComponents);
+        const activeLocalComponentNames = new Set(parentState.activeLocalComponentNames);
+        const recursivelyActive = activeLocalComponentNames.has(tagName);
+        activeLocalComponentNames.add(tagName);
+        const inference =
+          candidate === undefined || recursivelyActive
+            ? undefined
+            : inferComponentProps(
+                { exportName: tagName, ...candidate },
+                parentState.localTypes,
+                parentState.sourceFile,
+                parentState.localComponents,
+                parentState.localComponentDemandDepth + 1,
+                activeLocalComponentNames,
+                true,
+              );
+        const shape = inference?.shape.properties?.[node.name.text];
+        if (shape !== undefined) mergeFrozenShapeAtPath(root, path_, shape, parentState);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callback.body);
+  return root.children.size === 0 ? undefined : root;
+}
+
+/**
+ * Carries one prop-derived value through an exact same-file JSX component boundary.
+ *
+ * A collection item often enters a local switch dispatcher before the selected renderer reads its
+ * required fields. Follow only identifier-named local components, only the already selected switch
+ * clause, and stop when a component identity recurs. This materializes the first real renderer's
+ * contract without recursively inventing an unbounded tree such as Paragraph -> Node -> Paragraph.
+ */
+function collectLocalJsxForwardedPropRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  if (state.localComponentDemandDepth >= 8 || functionLike.body === undefined) return;
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isJsxAttribute(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression !== undefined &&
+      isInsideSelectedPropSwitchClause(node, state)
+    ) {
+      const opening = node.parent.parent;
+      const tagName =
+        (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) &&
+        ts.isIdentifier(opening.tagName)
+          ? opening.tagName.text
+          : undefined;
+      const expression = node.initializer.expression;
+      const path_ = readPropPath(expression, state.aliases);
+      const identity =
+        tagName === undefined || path_ === undefined
+          ? undefined
+          : `${tagName}\0${node.name.text}\0${path_.join('.')}`;
+      if (
+        tagName !== undefined &&
+        path_ !== undefined &&
+        path_.length > 0 &&
+        path_.length <= MAX_INFERRED_DEPTH &&
+        identity !== undefined &&
+        !seen.has(identity) &&
+        !state.activeLocalComponentNames.has(tagName) &&
+        !isShadowedPathRoot(expression, state)
+      ) {
+        seen.add(identity);
+        const candidate = resolveLocalComponent(tagName, state.localComponents);
+        if (candidate !== undefined) {
+          const activeLocalComponentNames = new Set(state.activeLocalComponentNames);
+          activeLocalComponentNames.add(tagName);
+          const inference = inferComponentProps(
+            { exportName: tagName, ...candidate },
+            state.localTypes,
+            state.sourceFile,
+            state.localComponents,
+            state.localComponentDemandDepth + 1,
+            activeLocalComponentNames,
+            true,
+          );
+          const shape = inference?.shape.properties?.[node.name.text];
+          if (shape !== undefined) mergeFrozenShapeAtPath(state.root, path_, shape, state);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(functionLike.body);
+}
+
+/** Rejects JSX from non-selected direct switch clauses once an exact prop value is known. */
+function isInsideSelectedPropSwitchClause(node: ts.Node, state: InferenceState): boolean {
+  let current: ts.Node | undefined = node;
+  while (current !== undefined && current !== state.functionLike) {
+    if (ts.isCaseClause(current) || ts.isDefaultClause(current)) {
+      const caseBlock = current.parent;
+      const statement = caseBlock.parent;
+      if (ts.isSwitchStatement(statement)) {
+        const discriminantPath = readPropPath(statement.expression, state.aliases);
+        const selected =
+          discriminantPath === undefined
+            ? undefined
+            : readPreviewInferredExactValue(state, discriminantPath);
+        if (selected !== undefined) {
+          if (ts.isCaseClause(current)) {
+            return (
+              readLiteralValue(current.expression as ts.LiteralTypeNode['literal']) === selected
+            );
+          }
+          const directCases = statement.caseBlock.clauses.filter(ts.isCaseClause);
+          return !directCases.some(
+            (clause) =>
+              readLiteralValue(clause.expression as ts.LiteralTypeNode['literal']) === selected,
+          );
+        }
+      }
+    }
+    current = current.parent;
+  }
+  return true;
+}
+
+/** Reads only a literal already proven exact by type or direct control-flow evidence. */
+function readPreviewInferredExactValue(
+  state: InferenceState,
+  path_: readonly string[],
+): boolean | number | string | null | undefined {
+  let current = state.root;
+  for (const propertyName of path_) {
+    const child = current.children.get(propertyName);
+    if (child === undefined) return undefined;
+    current = child;
+  }
+  return current.exactValue === true ? current.value : undefined;
+}
+
+/** Merges one frozen child-prop shape under the callback item's relative source path. */
+function mergeFrozenShapeAtPath(
+  root: MutableShapeNode,
+  path_: readonly string[],
+  shape: PreviewInferredPropShape,
+  state: InferenceState,
+): void {
+  const incoming = thawPreviewInferredShape(shape, state);
+  if (incoming === undefined) return;
+  if (path_.length === 0) {
+    mergeMutableShapeRequirement(root, incoming);
+    return;
+  }
+  let current = root;
+  for (const propertyName of path_) {
+    if (BLOCKED_PROPERTY_NAMES.has(propertyName)) return;
+    let child = current.children.get(propertyName);
+    if (child === undefined) {
+      if (state.nodeCount >= MAX_INFERRED_NODES) return;
+      state.nodeCount += 1;
+      child = createMutableNode('object', 'usage');
+      current.children.set(propertyName, child);
+    }
+    current = child;
+  }
+  mergeMutableShapeRequirement(current, incoming);
+}
+
+/** Converts a bounded immutable inference shape back into the local merge representation. */
+function thawPreviewInferredShape(
+  shape: PreviewInferredPropShape,
+  state: InferenceState,
+): MutableShapeNode | undefined {
+  if (state.nodeCount >= MAX_INFERRED_NODES) return undefined;
+  state.nodeCount += 1;
+  const node = createMutableNode(shape.kind, 'usage');
+  if (shape.value !== undefined) node.value = shape.value;
+  if (shape.exactValue === true) node.exactValue = true;
+  if (shape.items !== undefined) {
+    const items = thawPreviewInferredShape(shape.items, state);
+    if (items !== undefined) node.items = items;
+  }
+  for (const [propertyName, childShape] of Object.entries(shape.properties ?? {})) {
+    if (BLOCKED_PROPERTY_NAMES.has(propertyName)) continue;
+    const child = thawPreviewInferredShape(childShape, state);
+    if (child !== undefined) node.children.set(propertyName, child);
+  }
+  return node;
+}
+
+/** Infers one function parameter as the root of a detached, budget-sharing item contract. */
+function inferFunctionBindingRequirement(
+  functionLike: ExportedFunctionLike,
+  binding: ts.BindingName,
+  parentState: InferenceState,
+): MutableShapeNode | undefined {
+  const root = createMutableNode('object', 'usage');
+  const state: InferenceState = {
+    activeLocalComponentNames: parentState.activeLocalComponentNames,
+    aliases: new Map(),
+    collectionDemandDepth: parentState.collectionDemandDepth + 1,
+    functionLike,
+    graphqlDocumentTypeNames: parentState.graphqlDocumentTypeNames,
+    localComponents: parentState.localComponents,
+    localComponentDemandDepth: parentState.localComponentDemandDepth,
+    localTypes: parentState.localTypes,
+    nodeCount: parentState.nodeCount,
+    root,
+    sourceFile: parentState.sourceFile,
+  };
+  collectParameterBindings(binding, [], state.aliases);
+  collectLocalPropAliases(functionLike, state);
+  collectUsageRequirements(functionLike, state);
+  collectRequiredPropertyReadTerminals(functionLike, state);
+  collectEqualityDiscriminantRequirements(functionLike, state);
+  collectSwitchDiscriminantRequirements(functionLike, state);
+  parentState.nodeCount = state.nodeCount;
+  return root.children.size === 0 ? undefined : root;
+}
+
+/**
+ * Selects the first authored primitive from a direct prop-derived equality comparison.
+ *
+ * Type inference can prove that a discriminator is a string while still leaving its value empty.
+ * A direct comparison supplies a bounded accepted value without evaluating project code, allowing
+ * preview data to enter the component's first authored branch instead of its unreachable fallback.
+ */
+function collectEqualityDiscriminantRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const body = functionLike.body;
+  if (body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (ts.isBinaryExpression(node) && isPrimitiveEqualityOperator(node.operatorToken.kind)) {
+      const candidates = [
+        {
+          expression: node.left,
+          value: readLiteralValue(node.right as ts.LiteralTypeNode['literal']),
+        },
+        {
+          expression: node.right,
+          value: readLiteralValue(node.left as ts.LiteralTypeNode['literal']),
+        },
+      ];
+      for (const candidate of candidates) {
+        const path_ = readPropPath(candidate.expression, state.aliases);
+        if (
+          candidate.value !== undefined &&
+          path_ !== undefined &&
+          path_.length > 0 &&
+          !isShadowedPathRoot(candidate.expression, state) &&
+          !hasPreviewInferredPropExplicitValue(state, path_)
+        ) {
+          requirePath(
+            state,
+            path_,
+            readPrimitiveValueKind(candidate.value),
+            'usage',
+            candidate.value,
+            true,
+          );
+          break;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+}
+
+/** Restricts discriminator evidence to direct primitive equality and inequality operators. */
+function isPrimitiveEqualityOperator(kind: ts.SyntaxKind): boolean {
+  return kind === ts.SyntaxKind.EqualsEqualsEqualsToken || kind === ts.SyntaxKind.EqualsEqualsToken;
 }
 
 /**
@@ -1089,12 +1963,12 @@ function collectSwitchDiscriminantRequirements(
         path_ !== undefined &&
         path_.length > 0 &&
         !isShadowedPathRoot(node.expression, state) &&
-        !hasPreviewInferredPropTerminal(state, path_) &&
+        !hasPreviewInferredPropExplicitValue(state, path_) &&
         caseValues !== undefined
       ) {
         const value = caseValues[0];
         if (value !== undefined) {
-          requirePath(state, path_, readPrimitiveValueKind(value), 'usage', value);
+          requirePath(state, path_, readPrimitiveValueKind(value), 'usage', value, true);
         }
       }
     }
@@ -1141,9 +2015,14 @@ function addOperationRequirement(
   node: ts.Expression,
 ): void {
   const parent = node.parent;
+  const arithmeticNeutralValue = readArithmeticNeutralValue(node, parent);
+  if (arithmeticNeutralValue !== undefined) {
+    requirePath(state, path_, 'number', 'usage', arithmeticNeutralValue, true);
+    return;
+  }
   const overlayNeutralValue = inferReactOverlayVisibilityNeutralValue(node);
   if (overlayNeutralValue !== undefined) {
-    requirePath(state, path_, overlayNeutralValue.kind, 'usage', overlayNeutralValue.value);
+    requirePath(state, path_, overlayNeutralValue.kind, 'usage', overlayNeutralValue.value, true);
     return;
   }
   if (
@@ -1171,13 +2050,13 @@ function addOperationRequirement(
     const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
     if (isRenderTerminatingNegatedGuard(parent)) {
       if (semantic?.kind === 'boolean') {
-        requirePath(state, path_, 'boolean', 'usage', true);
+        requirePath(state, path_, 'boolean', 'usage', true, true);
       } else if (semantic?.kind === 'number') {
-        requirePath(state, path_, 'number', 'usage', 1);
+        requirePath(state, path_, 'number', 'usage', 1, true);
       } else if (semantic?.kind === 'null' || semantic === undefined) {
         requirePath(state, path_, 'object', 'usage');
       } else {
-        requirePath(state, path_, semantic.kind, 'usage', semantic.value);
+        requirePath(state, path_, semantic.kind, 'usage', semantic.value, true);
       }
     } else {
       requirePath(state, path_, semantic?.kind ?? 'boolean', 'usage', semantic?.value ?? false);
@@ -1187,12 +2066,22 @@ function addOperationRequirement(
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node) {
     const methodName = path_.at(-1);
     const receiverPath = path_.slice(0, -1);
-    if (receiverPath.length > 0 && methodName !== undefined && ARRAY_METHOD_NAMES.has(methodName)) {
+    const semanticReceiver = inferPreviewRuntimeSemanticFallback(receiverPath.at(-1) ?? '');
+    const sharedStringReceiver =
+      methodName !== undefined &&
+      STRING_COLLECTION_SHARED_METHOD_NAMES.has(methodName) &&
+      semanticReceiver?.kind === 'string';
+    if (
+      receiverPath.length > 0 &&
+      methodName !== undefined &&
+      ARRAY_METHOD_NAMES.has(methodName) &&
+      !sharedStringReceiver
+    ) {
       requirePath(state, receiverPath, 'array', 'usage');
     } else if (
       receiverPath.length > 0 &&
       methodName !== undefined &&
-      STRING_METHOD_NAMES.has(methodName)
+      (STRING_METHOD_NAMES.has(methodName) || sharedStringReceiver)
     ) {
       requirePath(state, receiverPath, 'string', 'usage');
     } else {
@@ -1217,6 +2106,39 @@ function addOperationRequirement(
       requirePath(state, path_, semantic.kind, 'usage', semantic.value);
     }
   }
+}
+
+/** Selects the neutral number proven by a direct arithmetic operation. */
+function readArithmeticNeutralValue(
+  expression: ts.Expression,
+  parent: ts.Node,
+): number | undefined {
+  if (
+    ts.isPrefixUnaryExpression(parent) &&
+    parent.operand === expression &&
+    (parent.operator === ts.SyntaxKind.PlusToken || parent.operator === ts.SyntaxKind.MinusToken)
+  ) {
+    return 0;
+  }
+  if (
+    !ts.isBinaryExpression(parent) ||
+    (parent.left !== expression && parent.right !== expression)
+  ) {
+    return undefined;
+  }
+  const operator = parent.operatorToken.kind;
+  if (
+    operator === ts.SyntaxKind.AsteriskToken ||
+    operator === ts.SyntaxKind.SlashToken ||
+    operator === ts.SyntaxKind.PercentToken ||
+    operator === ts.SyntaxKind.AsteriskAsteriskToken
+  ) {
+    return 1;
+  }
+  if (operator === ts.SyntaxKind.MinusToken) return 0;
+  if (operator !== ts.SyntaxKind.PlusToken) return undefined;
+  const other = parent.left === expression ? parent.right : parent.left;
+  return ts.isNumericLiteral(unwrapExpression(other)) ? 0 : undefined;
 }
 
 /** Reports a negated prop guard whose selected branch exits before visible component output. */
@@ -1246,8 +2168,9 @@ function doesStatementTerminateRender(statement: ts.Statement): boolean {
   if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) return true;
   if (!ts.isBlock(statement)) return false;
   const terminal = statement.statements.at(-1);
-  return terminal !== undefined &&
-    (ts.isReturnStatement(terminal) || ts.isThrowStatement(terminal));
+  return (
+    terminal !== undefined && (ts.isReturnStatement(terminal) || ts.isThrowStatement(terminal))
+  );
 }
 
 /** Reports whether type or prior operation evidence already owns the final prop-path value kind. */
@@ -1259,6 +2182,20 @@ function hasPreviewInferredPropTerminal(state: InferenceState, path_: readonly s
     current = child;
   }
   return current.kind !== 'object' || current.children.size > 0;
+}
+
+/** Reports whether prior type or usage evidence already selected an exact scalar value. */
+function hasPreviewInferredPropExplicitValue(
+  state: InferenceState,
+  path_: readonly string[],
+): boolean {
+  let current = state.root;
+  for (const propertyName of path_) {
+    const child = current.children.get(propertyName);
+    if (child === undefined) return false;
+    current = child;
+  }
+  return current.value !== undefined;
 }
 
 /**
@@ -1313,6 +2250,7 @@ function requirePath(
   kind: PreviewInferredPropKind,
   source: PreviewInferredPropProvenance['source'],
   value?: boolean | number | string | null,
+  exactValue?: true,
 ): void {
   if (path_.length === 0 || path_.length > MAX_INFERRED_DEPTH) return;
   let current = state.root;
@@ -1326,7 +2264,7 @@ function requirePath(
       state.nodeCount += 1;
     }
     if (index === path_.length - 1) {
-      mergeNodeKind(child, kind, source, value);
+      mergeNodeKind(child, kind, source, value, exactValue);
     } else if (child.kind !== 'object') {
       return;
     }
@@ -1340,10 +2278,12 @@ function mergeNodeKind(
   kind: PreviewInferredPropKind,
   source: PreviewInferredPropProvenance['source'],
   value?: boolean | number | string | null,
+  exactValue?: true,
 ): void {
   if (node.kind === kind) {
     if (source === 'type') node.source = 'type';
     if (value !== undefined) node.value = value;
+    if (exactValue === true) node.exactValue = true;
     return;
   }
   if (node.kind === 'object' && node.children.size === 0) {
@@ -1351,6 +2291,7 @@ function mergeNodeKind(
     node.source = source;
     if (value === undefined) delete node.value;
     else node.value = value;
+    if (exactValue === true) node.exactValue = true;
   }
 }
 
@@ -1428,6 +2369,7 @@ function freezeInference(root: MutableShapeNode): PreviewInferredExportProps {
         ? { properties: Object.freeze(properties) }
         : {}),
       ...(node.value === undefined ? {} : { value: node.value }),
+      ...(node.exactValue === true ? { exactValue: true as const } : {}),
     });
   };
   const shape = freezeNode(root, []);

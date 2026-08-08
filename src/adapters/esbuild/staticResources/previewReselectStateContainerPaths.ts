@@ -9,6 +9,11 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  inferReactFunctionParameterUsageShape,
+  type PreviewInferredPropShape,
+} from './reactExportPropInference';
+import { collectPreviewReduxToolkitInitialStateShapes } from './previewReduxToolkitInitialState';
 
 const MAX_RESELECT_CALLS = 128;
 const MAX_SELECTOR_BINDINGS = 256;
@@ -26,6 +31,18 @@ interface ResolvedInputSelector {
   readonly path: readonly string[];
 }
 
+/** Syntax-proven neutral value required at one exact Redux selector input path. */
+export interface PreviewReselectStateValueRequirement {
+  readonly path: readonly string[];
+  readonly shape: PreviewInferredPropShape;
+}
+
+/** One parse result shared by host prebuild state and reached-module container registration. */
+export interface PreviewReselectStateRequirements {
+  readonly containerPaths: readonly (readonly string[])[];
+  readonly valueRequirements: readonly PreviewReselectStateValueRequirement[];
+}
+
 /**
  * Returns state paths that must be object containers for reachable Reselect projectors to execute.
  *
@@ -41,7 +58,22 @@ export function collectPreviewReselectStateContainerPaths(
   sourcePath: string,
   sourceText: string,
 ): readonly (readonly string[])[] {
-  if (!sourceText.includes('createSelector')) return Object.freeze([]);
+  return collectPreviewReselectStateRequirements(sourcePath, sourceText).containerPaths;
+}
+
+/**
+ * Returns both required object containers and projector-proven neutral input shapes.
+ *
+ * This richer form is consumed before React Redux starts rendering. Catching a projector failure
+ * around `useSelector` is too late because React Redux may already have consumed a different number
+ * of hooks. Empty collections and falsey scalar leaves therefore have to exist in the static store
+ * before the first selector call.
+ */
+export function collectPreviewReselectStateRequirements(
+  sourcePath: string,
+  sourceText: string,
+): PreviewReselectStateRequirements {
+  if (!sourceText.includes('createSelector')) return EMPTY_RESELECT_REQUIREMENTS;
   const sourceFile = ts.createSourceFile(
     sourcePath,
     sourceText,
@@ -49,11 +81,12 @@ export function collectPreviewReselectStateContainerPaths(
     true,
     selectScriptKind(sourcePath),
   );
-  if (hasParseDiagnostics(sourceFile)) return Object.freeze([]);
+  if (hasParseDiagnostics(sourceFile)) return EMPTY_RESELECT_REQUIREMENTS;
   const createSelectorImports = collectCreateSelectorImports(sourceFile);
-  if (createSelectorImports.size === 0) return Object.freeze([]);
+  if (createSelectorImports.size === 0) return EMPTY_RESELECT_REQUIREMENTS;
   const selectorBindings = collectSelectorFunctionBindings(sourceFile);
   const collected = new Map<string, readonly string[]>();
+  const values = new Map<string, PreviewReselectStateValueRequirement>();
   let callCount = 0;
 
   /** Visits bounded call sites while leaving project functions completely unevaluated. */
@@ -61,14 +94,56 @@ export function collectPreviewReselectStateContainerPaths(
     if (callCount >= MAX_RESELECT_CALLS) return;
     if (ts.isCallExpression(node) && isCreateSelectorCall(node, createSelectorImports)) {
       callCount += 1;
-      collectCreateSelectorCallPaths(node, selectorBindings, collected);
+      collectCreateSelectorCallPaths(node, selectorBindings, collected, values);
     }
     ts.forEachChild(node, visit);
   };
   ts.forEachChild(sourceFile, visit);
 
-  const paths = [...collected.values()].sort(compareContainerPaths);
-  return Object.freeze(paths.map((containerPath) => Object.freeze([...containerPath])));
+  mergeReduxToolkitInitialStateRequirements(
+    values,
+    collectPreviewReduxToolkitInitialStateShapes(sourceFile),
+  );
+
+  for (const requirement of values.values()) {
+    if (requirement.shape.kind !== 'object') collected.delete(requirement.path.join('\0'));
+  }
+  const containerPaths = [...collected.values()].sort(compareContainerPaths);
+  const valueRequirements = [...values.values()]
+    .sort((left, right) => compareContainerPaths(left.path, right.path))
+    .map((requirement) =>
+      Object.freeze({
+        path: Object.freeze([...requirement.path]),
+        shape: requirement.shape,
+      }),
+    );
+  return Object.freeze({
+    containerPaths: Object.freeze(
+      containerPaths.map((containerPath) => Object.freeze([...containerPath])),
+    ),
+    valueRequirements: Object.freeze(valueRequirements),
+  });
+}
+
+const EMPTY_RESELECT_REQUIREMENTS: PreviewReselectStateRequirements = Object.freeze({
+  containerPaths: Object.freeze([]),
+  valueRequirements: Object.freeze([]),
+});
+
+/** Refines demanded slice fields with exact JSON literals proven by the local `createSlice`. */
+function mergeReduxToolkitInitialStateRequirements(
+  values: Map<string, PreviewReselectStateValueRequirement>,
+  initialStateShapes: ReadonlyMap<string, PreviewInferredPropShape>,
+): void {
+  for (const [key, requirement] of values) {
+    const sliceName = requirement.path.at(-1);
+    const initialState = sliceName === undefined ? undefined : initialStateShapes.get(sliceName);
+    if (initialState === undefined) continue;
+    values.set(key, {
+      path: requirement.path,
+      shape: mergeReselectValueShapes(requirement.shape, initialState),
+    });
+  }
 }
 
 /** Selects parser grammar from the authored extension without consulting project configuration. */
@@ -180,11 +255,12 @@ function bindingContainsName(binding: ts.BindingName, name: string): boolean {
   );
 }
 
-/** Maps object-requiring projector parameters back to their corresponding input selectors. */
+/** Maps object-requiring projector paths back to their corresponding input selectors. */
 function collectCreateSelectorCallPaths(
   call: ts.CallExpression,
   bindings: ReadonlyMap<string, SelectorFunction>,
   collected: Map<string, readonly string[]>,
+  values: Map<string, PreviewReselectStateValueRequirement>,
 ): void {
   if (call.arguments.length < 2) return;
   const projector = resolveSelectorFunction(call.arguments[call.arguments.length - 1], bindings);
@@ -193,17 +269,74 @@ function collectCreateSelectorCallPaths(
   for (let index = 0; index < inputs.length && index < projector.parameters.length; index += 1) {
     const parameter = projector.parameters[index];
     const input = inputs[index];
-    if (
-      parameter === undefined ||
-      input === undefined ||
-      !projectorParameterRequiresObject(projector, parameter)
-    ) {
+    if (parameter === undefined || input === undefined) {
       continue;
     }
     const resolved = resolveInputSelector(input, bindings);
     if (resolved === undefined) continue;
-    addContainerPrefixes(resolved.path, collected);
+    const inferredShape = inferReactFunctionParameterUsageShape(projector, index);
+    if (inferredShape !== undefined) {
+      addReselectValueRequirement(resolved.path, inferredShape, values);
+      addParentContainerPrefixes(resolved.path, collected);
+    }
+    const requiredRelativePaths = collectProjectorParameterObjectPaths(projector, parameter);
+    for (const relativePath of requiredRelativePaths) {
+      addContainerPrefixes([...resolved.path, ...relativePath], collected);
+    }
   }
+}
+
+/** Merges compatible projector evidence while retaining a bounded, JSON-only shape. */
+function addReselectValueRequirement(
+  pathSegments: readonly string[],
+  shape: PreviewInferredPropShape,
+  values: Map<string, PreviewReselectStateValueRequirement>,
+): void {
+  if (
+    pathSegments.length === 0 ||
+    pathSegments.length > MAX_PATH_DEPTH ||
+    pathSegments.some((part) => !isSafePropertyName(part))
+  ) {
+    return;
+  }
+  const key = pathSegments.join('\0');
+  const existing = values.get(key);
+  values.set(key, {
+    path: pathSegments,
+    shape: mergeReselectValueShapes(existing?.shape, shape),
+  });
+}
+
+/** Recursively combines independent reads of the same selected input without widening its kind. */
+function mergeReselectValueShapes(
+  primary: PreviewInferredPropShape | undefined,
+  secondary: PreviewInferredPropShape,
+): PreviewInferredPropShape {
+  if (primary === undefined) return secondary;
+  if (primary.kind !== secondary.kind) {
+    if (primary.kind === 'object' && Object.keys(primary.properties ?? {}).length === 0) {
+      return secondary;
+    }
+    return primary;
+  }
+  if (primary.kind === 'array') {
+    return Object.freeze({
+      kind: 'array',
+      ...(primary.items === undefined && secondary.items === undefined
+        ? {}
+        : { items: mergeReselectValueShapes(primary.items, secondary.items ?? primary.items!) }),
+    });
+  }
+  if (primary.kind !== 'object') {
+    if (primary.exactValue === true) return primary;
+    if (secondary.exactValue === true) return secondary;
+    return primary.value === undefined ? secondary : primary;
+  }
+  const properties: Record<string, PreviewInferredPropShape> = { ...(primary.properties ?? {}) };
+  for (const [name, child] of Object.entries(secondary.properties ?? {})) {
+    properties[name] = mergeReselectValueShapes(properties[name], child);
+  }
+  return Object.freeze({ kind: 'object', properties: Object.freeze(properties) });
 }
 
 /** Supports both variadic inputs and the common `createSelector([inputs], projector)` spelling. */
@@ -234,28 +367,87 @@ function resolveSelectorFunction(
  * Proves that the projector consumes a parameter as an object. Object destructuring is immediate
  * proof; an identifier must participate in a non-optional direct property access in that projector.
  */
-function projectorParameterRequiresObject(
+function collectProjectorParameterObjectPaths(
   projector: SelectorFunction,
   parameter: ts.ParameterDeclaration,
-): boolean {
-  if (ts.isObjectBindingPattern(parameter.name)) return true;
-  if (!ts.isIdentifier(parameter.name) || projector.body === undefined) return false;
+): readonly (readonly string[])[] {
+  const required = new Map<string, readonly string[]>();
+  const add = (pathSegments: readonly string[]): void => {
+    if (
+      pathSegments.length > MAX_PATH_DEPTH ||
+      pathSegments.some((part) => !isSafePropertyName(part))
+    ) {
+      return;
+    }
+    const key = pathSegments.join('\0');
+    if (!required.has(key)) required.set(key, pathSegments);
+  };
+  if (ts.isObjectBindingPattern(parameter.name)) {
+    add([]);
+    collectNestedObjectBindingPaths(parameter.name, [], add);
+    return [...required.values()];
+  }
+  if (!ts.isIdentifier(parameter.name) || projector.body === undefined) return [];
   const parameterName = parameter.name.text;
-  let requiresObject = false;
   /** Avoids nested functions, where the access may occur after projector evaluation. */
   const visit = (node: ts.Node): void => {
-    if (requiresObject || (node !== projector.body && ts.isFunctionLike(node))) return;
+    if (node !== projector.body && ts.isFunctionLike(node)) return;
     if (isDirectMemberAccessExpression(node)) {
       const reference = readDirectPropertyReference(node);
       if (reference?.rootName === parameterName && reference.members.length > 0) {
-        requiresObject = true;
-        return;
+        add([]);
+        for (let length = 1; length < reference.members.length; length += 1) {
+          add(reference.members.slice(0, length));
+        }
+        if (isObjectBindingInitializer(node)) add(reference.members);
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(projector.body);
-  return requiresObject;
+  return [...required.values()];
+}
+
+/** Records nested object-binding containers beneath a projector's selected input value. */
+function collectNestedObjectBindingPaths(
+  binding: ts.ObjectBindingPattern,
+  parentPath: readonly string[],
+  add: (pathSegments: readonly string[]) => void,
+): void {
+  for (const element of binding.elements) {
+    if (!ts.isObjectBindingPattern(element.name)) continue;
+    const property = element.propertyName;
+    const propertyName =
+      property !== undefined &&
+      (ts.isIdentifier(property) ||
+        ts.isStringLiteralLike(property) ||
+        ts.isNumericLiteral(property))
+        ? property.text
+        : undefined;
+    if (propertyName === undefined || !isSafePropertyName(propertyName)) continue;
+    const pathSegments = [...parentPath, propertyName];
+    add(pathSegments);
+    collectNestedObjectBindingPaths(element.name, pathSegments, add);
+  }
+}
+
+/** Proves that a direct member value is synchronously object-destructured by the projector. */
+function isObjectBindingInitializer(expression: ts.Expression): boolean {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current.parent) ||
+    ts.isAsExpression(current.parent) ||
+    ts.isTypeAssertionExpression(current.parent) ||
+    ts.isSatisfiesExpression(current.parent) ||
+    ts.isNonNullExpression(current.parent)
+  ) {
+    current = current.parent;
+  }
+  return (
+    ts.isVariableDeclaration(current.parent) &&
+    current.parent.initializer === current &&
+    ts.isObjectBindingPattern(current.parent.name)
+  );
 }
 
 /** Resolves one input selector's direct root-state return path. */
@@ -349,6 +541,18 @@ function addContainerPrefixes(
   collected: Map<string, readonly string[]>,
 ): void {
   for (let length = 1; length <= pathSegments.length && length <= MAX_PATH_DEPTH; length += 1) {
+    const prefix = pathSegments.slice(0, length);
+    const key = prefix.join('\0');
+    if (!collected.has(key)) collected.set(key, prefix);
+  }
+}
+
+/** Adds only the parents of a scalar/collection value so its exact leaf kind remains intact. */
+function addParentContainerPrefixes(
+  pathSegments: readonly string[],
+  collected: Map<string, readonly string[]>,
+): void {
+  for (let length = 1; length < pathSegments.length && length <= MAX_PATH_DEPTH; length += 1) {
     const prefix = pathSegments.slice(0, length);
     const key = prefix.join('\0');
     if (!collected.has(key)) collected.set(key, prefix);

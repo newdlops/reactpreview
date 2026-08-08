@@ -33,6 +33,8 @@ export function createPreviewInspectorDirectTargetSpecifier(exportName: string):
 /** Metadata passed to the browser-side target wrapper without evaluating project code. */
 export interface PreviewInspectorTargetMetadata {
   readonly compilerExportEvidence: true;
+  /** Candidate contract; runtime accepts it only after an exact target-owned effect completes. */
+  readonly effectControllerOutputCandidate?: true;
   readonly exportName: string;
   readonly facadeResolutionEvidence: true;
   /** Suppresses a compiler-proven router-only target after its exact boundary commits. */
@@ -45,6 +47,8 @@ export interface PreviewInspectorTargetMetadata {
 export interface PreviewInspectorTargetPluginOptions {
   /** Exact aliases resolved from the active tsconfig/package graph, when available. */
   readonly acceptedTargetImportSpecifiers?: readonly string[];
+  /** Hostless controller-shaped exports that still require exact runtime effect completion. */
+  readonly effectControllerExportNames?: readonly string[];
   /** Data-only fallback shapes associated with exact selected runtime exports. */
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
   /** Selected exports whose complete static outcome inventory contains only Navigate/Redirect. */
@@ -73,6 +77,13 @@ export function createPreviewInspectorTargetPlugin(
   const canonicalTargetPath = canonicalizeExistingPath(targetPath);
   const targetModuleStem = path.basename(targetPath).replace(/\.[^.]+$/u, '');
   const selectedExportNames = options.targetModuleContract.selectedExportNames;
+  const effectControllerExportNames = new Set(options.effectControllerExportNames ?? []);
+  for (const exportName of effectControllerExportNames) {
+    assertExportName(exportName);
+    if (!selectedExportNames.includes(exportName)) {
+      throw new TypeError('Effect-controller output must belong to a selected target export.');
+    }
+  }
   const navigationOnlyExportNames = new Set(options.navigationOnlyExportNames ?? []);
   for (const exportName of navigationOnlyExportNames) {
     assertExportName(exportName);
@@ -134,6 +145,7 @@ export function createPreviewInspectorTargetPlugin(
         ...(options.inferredPropsByExport === undefined
           ? {}
           : { inferredPropsByExport: options.inferredPropsByExport }),
+        effectControllerExportNames: [...effectControllerExportNames],
         runtimeSpecifier,
         navigationOnlyExportNames: [...navigationOnlyExportNames],
         targetModuleContract: options.targetModuleContract,
@@ -258,6 +270,7 @@ function hasInspectorResolutionGuard(pluginData: unknown): boolean {
 
 /** Inputs for the pure facade source generator used by plugin and unit tests. */
 export interface PreviewInspectorTargetFacadeSourceOptions {
+  readonly effectControllerExportNames?: readonly string[];
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
   readonly navigationOnlyExportNames?: readonly string[];
   readonly runtimeSpecifier?: string;
@@ -283,6 +296,13 @@ export function createPreviewInspectorTargetFacadeSource(
   }
   const runtimeSpecifier = options.runtimeSpecifier ?? PREVIEW_INSPECTOR_RUNTIME_SPECIFIER;
   const selectedDefault = exportNames.includes('default');
+  const effectControllerExportNames = new Set(options.effectControllerExportNames ?? []);
+  for (const exportName of effectControllerExportNames) {
+    assertExportName(exportName);
+    if (!exportNames.includes(exportName)) {
+      throw new TypeError('Effect-controller output must belong to a selected target export.');
+    }
+  }
   const navigationOnlyExportNames = new Set(options.navigationOnlyExportNames ?? []);
   for (const exportName of navigationOnlyExportNames) {
     assertExportName(exportName);
@@ -312,13 +332,13 @@ export function createPreviewInspectorTargetFacadeSource(
 
   for (const [index, exportName] of namedExports.entries()) {
     lines.push(
-      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName], navigationOnlyExportNames.has(exportName))});`,
+      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName], navigationOnlyExportNames.has(exportName), effectControllerExportNames.has(exportName))});`,
       `export { __reactPreviewSelected${index.toString()} as ${exportName} };`,
     );
   }
   if (selectedDefault) {
     lines.push(
-      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default, navigationOnlyExportNames.has('default'))});`,
+      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default, navigationOnlyExportNames.has('default'), effectControllerExportNames.has('default'))});`,
     );
   } else if (options.targetModuleContract.hasDefaultExport) {
     lines.push('export { __reactPreviewOriginalDefault as default };');
@@ -332,11 +352,13 @@ function serializeMetadata(
   exportName: string,
   inference: PreviewInferredPropsByExport[string] | undefined,
   navigationOnlyOutput: boolean,
+  effectControllerOutputCandidate: boolean,
 ): string {
   return JSON.stringify({
     compilerExportEvidence: true,
     exportName,
     facadeResolutionEvidence: true,
+    ...(effectControllerOutputCandidate ? { effectControllerOutputCandidate: true } : {}),
     ...(navigationOnlyOutput ? { intentionalNavigationOutput: true } : {}),
     ...(inference === undefined
       ? {}

@@ -40,6 +40,347 @@ function initializePreviewInspectorTargetReachabilityState() {
   if (!(previewInspectorSession.minimumRequirementSearchByKey instanceof Map)) {
     previewInspectorSession.minimumRequirementSearchByKey = new Map();
   }
+  if (!(previewInspectorSession.contextualTargetFallbackCountByKey instanceof Map)) {
+    previewInspectorSession.contextualTargetFallbackCountByKey = new Map();
+  }
+  if (!(previewInspectorSession.contextualTargetFallbackCapabilitiesByKey instanceof Map)) {
+    previewInspectorSession.contextualTargetFallbackCapabilitiesByKey = new Map();
+  }
+  if (!(previewInspectorSession.contextualTargetFallbackRolesByKey instanceof Map)) {
+    previewInspectorSession.contextualTargetFallbackRolesByKey = new Map();
+  }
+  if (!(previewInspectorSession.contextualTargetFallbackClaimsByKey instanceof Map)) {
+    previewInspectorSession.contextualTargetFallbackClaimsByKey = new Map();
+  }
+}
+
+/** Validates the one opaque role issued to a live generated retained-route registration. */
+function validatePreviewInspectorContextualBoundaryRoleToken(roleToken, metadata) {
+  initializePreviewInspectorTargetReachabilityState();
+  if ((typeof roleToken !== 'object' && typeof roleToken !== 'function') || roleToken === null) return undefined;
+  const sourcePath = typeof metadata?.sourcePath === 'string' ? metadata.sourcePath.replaceAll('\\\\', '/') : '';
+  const exportName = typeof metadata?.exportName === 'string' ? metadata.exportName : '';
+  const key = typeof roleToken?.key === 'string' ? roleToken.key : '';
+  const state = previewInspectorSession.targetReachabilityByKey.get(key);
+  const roles = previewInspectorSession.contextualTargetFallbackRolesByKey.get(key);
+  const registrations = previewInspectorSession.contextualTargetFallbackCapabilitiesByKey.get(key);
+  const claim = previewInspectorSession.contextualTargetFallbackClaimsByKey.get(key);
+  if (
+    key.length === 0 || sourcePath.length === 0 || exportName.length === 0 ||
+    roles?.get(roleToken) !== claim?.owner || roles.size !== 1 ||
+    !(registrations instanceof Map) || registrations.size !== 1 ||
+    (previewInspectorSession.contextualTargetFallbackCountByKey.get(key) ?? 0) !== 1 ||
+    state?.key !== key || state.targetSourcePath !== sourcePath ||
+    state.targetExportName !== exportName || state.contextualTargetFallbackRequested !== true ||
+    claim?.status !== 'committed' || claim.key !== key || claim.roleToken !== roleToken ||
+    previewInspectorSession.activeTargetReachabilityKey !== key
+  ) return undefined;
+  return { key, role: 'retained-route' };
+}
+
+/** Narrows post-latch consumers to the unique live extension-owned outer boundary. */
+function readPreviewInspectorContextualTargetBoundary(state) {
+  if (state?.contextualTargetFallbackRequested !== true) return undefined;
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
+  const matches = [...boundaries].filter((boundary) =>
+    boundary?.props?.contextualBoundaryRole === 'retained-route' &&
+    boundary?.props?.contextualBoundaryKey === state.key &&
+    hasPreviewInspectorOwnedBoundary(boundary, state) === true &&
+    boundary?.state?.error === undefined &&
+    validatePreviewInspectorContextualBoundaryRoleToken(
+      [...(previewInspectorSession.contextualTargetFallbackRolesByKey.get(state.key)?.keys?.() ?? [])][0],
+      { exportName: state.targetExportName, sourcePath: state.targetSourcePath },
+    ) !== undefined,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Explains only why the live contextual boundary selector currently fails closed. */
+function readPreviewInspectorContextualTargetBoundaryFailure(state) {
+  if (state?.contextualTargetFallbackRequested !== true) return 'not-requested';
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
+  if (!(boundaries instanceof Set) || boundaries.size === 0) return 'no-boundary';
+  const contextual = [...boundaries].filter((boundary) =>
+    boundary?.props?.contextualBoundaryRole === 'retained-route' &&
+    boundary?.props?.contextualBoundaryKey === state.key,
+  );
+  if (contextual.length === 0) return 'role-key-mismatch';
+  if (contextual.length !== 1) return 'multiple-boundaries';
+  const boundary = contextual[0];
+  if (hasPreviewInspectorOwnedBoundary(boundary, state) !== true) return 'ownership-mismatch';
+  if (boundary?.state?.error !== undefined) return 'boundary-error';
+  const roles = previewInspectorSession.contextualTargetFallbackRolesByKey.get(state.key);
+  if (!(roles instanceof Map) || roles.size !== 1) return 'role-count';
+  const registrations = previewInspectorSession.contextualTargetFallbackCapabilitiesByKey.get(state.key);
+  if (!(registrations instanceof Map) || registrations.size !== 1) return 'registration-count';
+  if ((previewInspectorSession.contextualTargetFallbackCountByKey.get(state.key) ?? 0) !== 1) {
+    return 'fallback-count';
+  }
+  const claim = previewInspectorSession.contextualTargetFallbackClaimsByKey.get(state.key);
+  const [roleToken, owner] = roles.entries().next().value ?? [];
+  if (claim?.status !== 'committed' || claim.key !== state.key) return 'claim-status';
+  if (claim.owner !== owner) return 'claim-owner';
+  if (claim.roleToken !== roleToken) return 'claim-role-token';
+  if (previewInspectorSession.activeTargetReachabilityKey !== state.key) return 'inactive-key';
+  if (validatePreviewInspectorContextualBoundaryRoleToken(
+    roleToken,
+    { exportName: state.targetExportName, sourcePath: state.targetSourcePath },
+  ) === undefined) return 'role-token-invalid';
+  return 'eligible-but-unselected';
+}
+
+/** Reports whether a generated Page Execution root can mount its exact selected target as a sibling. */
+function hasPreviewInspectorContextualTargetFallback(key) {
+  initializePreviewInspectorTargetReachabilityState();
+  return (previewInspectorSession.contextualTargetFallbackCountByKey.get(key) ?? 0) > 0;
+}
+
+/** Reads one uniquely registered compiler capability without retaining route elements or components. */
+function readPreviewInspectorMountedTransparentChildrenCapability(key) {
+  initializePreviewInspectorTargetReachabilityState();
+  const registrations = previewInspectorSession.contextualTargetFallbackCapabilitiesByKey.get(key);
+  if (!(registrations instanceof Map) || registrations.size !== 1) return undefined;
+  const [signature, count] = registrations.entries().next().value ?? [];
+  return count === 1 && signature === 'mounted-transparent-children:retained-route-page'
+    ? { mountedTransparentChildren: true, retainedRoutePage: true }
+    : undefined;
+}
+
+/** Builds one bounded, fixed-order observation of the V27 mounted-children gate. */
+function readPreviewInspectorMountedTransparentChildrenGateDecision(state) {
+  const chain = typeof readPreviewInspectorTargetRenderCommitChain === 'function'
+    ? readPreviewInspectorTargetRenderCommitChain(state.key)
+    : undefined;
+  const boundaries = state.contextualTargetFallbackRequested === true
+    ? new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean))
+    : readPreviewInspectorTargetBoundaries(state);
+  const registrationCount = Math.max(0,
+    previewInspectorSession.contextualTargetFallbackCountByKey?.get?.(state.key) ?? 0);
+  const registrations = previewInspectorSession.contextualTargetFallbackCapabilitiesByKey?.get?.(state.key);
+  const registrationConflict = !(registrations instanceof Map) || registrations.size !== 1 ||
+    registrationCount !== 1;
+  const [capabilitySignature, capabilityCount] = registrations instanceof Map
+    ? registrations.entries().next().value ?? []
+    : [];
+  const transparentCapability = capabilitySignature ===
+    'mounted-transparent-children:retained-route-page' && capabilityCount === 1;
+  const retainedRouteAvailable = registrationCount > 0;
+  const retainedRouteOwned = transparentCapability === true && registrationConflict !== true;
+  const decision = {
+    latchBefore: state.contextualTargetFallbackRequested === true,
+    directTarget: state.directTarget === true,
+    pageRootCommitted: state.pageRootCommitted === true,
+    currentMount: state.targetMounted === true,
+    targetOutput: state.targetHasOutput === true,
+    repairError: state.pendingTargetRepairFailure !== undefined,
+    activeKey: previewInspectorSession.activeTargetReachabilityKey === state.key,
+    renderError: hasPreviewInspectorTargetRenderError(state) === true,
+    registrationCount,
+    registrationConflict,
+    transparentCapability,
+    retainedRouteAvailable,
+    retainedRouteOwned,
+    boundaryCount: boundaries instanceof Set ? boundaries.size : 0,
+    chainAvailable: chain !== undefined,
+    alternateFiber: chain?.alternateFiberObserved === true,
+    stableRerender: chain?.stableRerenderObserved === true,
+    markedCall: chain?.markedContextCallUsed === true,
+    effectCompleted: chain?.effectCompletedAfterMarkedCall === true,
+    logicalTargetCount: Number.isSafeInteger(chain?.logicalTargetCount)
+      ? Math.max(0, chain.logicalTargetCount)
+      : 0,
+    inputChildrenState: chain?.inputChildrenState === 'absent'
+      ? 'absent'
+      : 'meaningful-or-unsupported',
+    returnedChild: chain?.returnedChildObserved === true,
+    ownedHost: chain?.ownedHostObserved === true,
+    latchAfter: false,
+    requestAttempted: true,
+    requestAccepted: false,
+    notificationIssued: false,
+  };
+  decision.mountedChildrenGateFirstReject = decision.latchBefore ? 'prior-latch-set'
+    : decision.directTarget ? 'direct-target'
+    : !decision.pageRootCommitted ? 'page-root-not-committed'
+    : !decision.currentMount ? 'current-mount-not-observed'
+    : decision.targetOutput ? 'target-output-observed'
+    : decision.repairError ? 'repair-error-present'
+    : !decision.activeKey ? 'active-key-not-owned'
+    : decision.renderError ? 'render-error-present'
+    : decision.registrationCount !== 1 ? 'registration-not-unique'
+    : decision.registrationConflict ? 'registration-conflict'
+    : !decision.transparentCapability ? 'transparent-capability-unavailable'
+    : !decision.retainedRouteAvailable ? 'retained-route-unavailable'
+    : !decision.retainedRouteOwned ? 'retained-route-not-owned'
+    : decision.boundaryCount !== 1 ? 'boundary-count-not-one'
+    : !decision.chainAvailable ? 'render-chain-unavailable'
+    : !decision.alternateFiber ? 'alternate-fiber-not-observed'
+    : !decision.stableRerender ? 'stable-rerender-not-observed'
+    : !decision.markedCall ? 'marked-context-call-not-used'
+    : !decision.effectCompleted ? 'effect-not-completed-after-marked-call'
+    : decision.logicalTargetCount !== 1 ? 'logical-target-count-not-one'
+    : decision.inputChildrenState !== 'absent' ? 'input-children-not-absent'
+    : decision.returnedChild ? 'returned-child-observed'
+    : decision.ownedHost ? 'owned-host-observed'
+    : 'none';
+  return decision;
+}
+
+/** Admits only the V21 mounted wrapper after its exact empty render chain has settled. */
+function canRequestPreviewInspectorMountedTransparentChildrenFallback(state, decision) {
+  decision ??= readPreviewInspectorMountedTransparentChildrenGateDecision(state);
+  state.mountedChildrenGateDecision = decision;
+  return decision.mountedChildrenGateFirstReject === 'none';
+}
+
+/**
+ * Mounts the selected facade once after the authentic page corridor has conclusively omitted it.
+ * The page root remains mounted, so this is contextual recovery rather than target-only mode.
+ */
+function requestPreviewInspectorContextualTargetFallback(state) {
+  if (state === undefined) return false;
+  const roles = previewInspectorSession.contextualTargetFallbackRolesByKey.get(state.key);
+  const registrations = previewInspectorSession.contextualTargetFallbackCapabilitiesByKey.get(state.key);
+  const claim = previewInspectorSession.contextualTargetFallbackClaimsByKey.get(state.key);
+  const [roleToken, owner] = roles?.entries?.().next().value ?? [];
+  if (state.contextualTargetFallbackRequested === true) {
+    return state.directTarget !== true &&
+      state.pageRootCommitted === true &&
+      state.targetHasOutput !== true &&
+      state.pendingTargetRepairFailure === undefined &&
+      previewInspectorSession.activeTargetReachabilityKey === state.key &&
+      !hasPreviewInspectorTargetRenderError(state) &&
+      roles?.size === 1 &&
+      registrations instanceof Map && registrations.size === 1 &&
+      (previewInspectorSession.contextualTargetFallbackCountByKey.get(state.key) ?? 0) === 1 &&
+      claim?.status === 'committed' && claim.key === state.key &&
+      claim.owner === owner && claim.roleToken === roleToken;
+  }
+  const mountedTransparentChildren = state?.targetMounted === true;
+  const mountedDecision = mountedTransparentChildren
+    ? readPreviewInspectorMountedTransparentChildrenGateDecision(state)
+    : undefined;
+  if (mountedDecision !== undefined) state.mountedChildrenGateDecision = mountedDecision;
+  if (
+    state.directTarget === true ||
+    state.pageRootCommitted !== true ||
+    (mountedTransparentChildren
+      ? !canRequestPreviewInspectorMountedTransparentChildrenFallback(state, mountedDecision)
+      : state.targetWasMounted === true) ||
+    state.targetHasOutput === true ||
+    state.pendingTargetRepairFailure !== undefined ||
+    previewInspectorSession.activeTargetReachabilityKey !== state.key ||
+    !hasPreviewInspectorContextualTargetFallback(state.key) ||
+    hasPreviewInspectorTargetRenderError(state)
+  ) return false;
+  if (
+    roles?.size !== 1 ||
+    !(registrations instanceof Map) || registrations.size !== 1 ||
+    (previewInspectorSession.contextualTargetFallbackCountByKey.get(state.key) ?? 0) !== 1 ||
+    claim?.status !== 'reserved' || claim.key !== state.key ||
+    claim.owner !== owner || claim.roleToken !== roleToken
+  ) return false;
+  if (mountedDecision !== undefined) mountedDecision.requestAccepted = true;
+  claim.status = 'committed';
+  state.contextualTargetFallbackRequested = true;
+  if (mountedDecision !== undefined) mountedDecision.latchAfter = true;
+  state.detachedTargetPlacement = mountedTransparentChildren
+    ? 'mounted-transparent-children'
+    : 'deferred-sibling';
+  state.exhausted = false;
+  state.idlePasses = 0;
+  state.status = 'mounting-contextual-target';
+  state.probeRevision = (Number.isSafeInteger(state.probeRevision) ? state.probeRevision : 0) + 1;
+  if (mountedDecision !== undefined) mountedDecision.notificationIssued = true;
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  schedulePreviewInspectorCommitRefresh();
+  return true;
+}
+
+/** Registers one generated fallback without retaining component or DOM references in session state. */
+function registerPreviewInspectorContextualTargetFallback(key, rawCapability, owner) {
+  initializePreviewInspectorTargetReachabilityState();
+  if (
+    typeof key !== 'string' || key.length === 0 ||
+    (typeof owner !== 'object' && typeof owner !== 'function') || owner === null
+  ) return () => {};
+  const counts = previewInspectorSession.contextualTargetFallbackCountByKey;
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+  const capability = rawCapability?.mountedTransparentChildren === true &&
+    rawCapability?.retainedRoutePage === true
+    ? 'mounted-transparent-children:retained-route-page'
+    : 'ordinary-contextual-fallback';
+  const registrations = previewInspectorSession.contextualTargetFallbackCapabilitiesByKey;
+  const capabilityCounts = registrations.get(key) ?? new Map();
+  capabilityCounts.set(capability, (capabilityCounts.get(capability) ?? 0) + 1);
+  registrations.set(key, capabilityCounts);
+  const roles = previewInspectorSession.contextualTargetFallbackRolesByKey;
+  const roleToken = { key };
+  const roleEntries = roles.get(key) ?? new Map();
+  roleEntries.set(roleToken, owner);
+  roles.set(key, roleEntries);
+  const claims = previewInspectorSession.contextualTargetFallbackClaimsByKey;
+  const currentClaim = claims.get(key);
+  const uniquelyRegistered =
+    (counts.get(key) ?? 0) === 1 && roleEntries.size === 1 && capabilityCounts.size === 1;
+  if (
+    currentClaim !== undefined && currentClaim.owner === owner && currentClaim.key === key &&
+    (currentClaim.status === 'reserved' || currentClaim.status === 'committed')
+  ) {
+    currentClaim.generation += 1;
+    currentClaim.roleToken = roleToken;
+  } else if (currentClaim === undefined && uniquelyRegistered) {
+    claims.set(key, { generation: 0, key, owner, roleToken, status: 'reserved' });
+  }
+  const state = previewInspectorSession.targetReachabilityByKey.get(key);
+  if (state?.status === 'page-blocked') requestPreviewInspectorContextualTargetFallback(state);
+  let registered = true;
+  const release = () => {
+    if (!registered) return;
+    registered = false;
+    const nextCount = Math.max(0, (counts.get(key) ?? 1) - 1);
+    if (nextCount === 0) counts.delete(key);
+    else counts.set(key, nextCount);
+    const nextCapabilityCount = Math.max(0, (capabilityCounts.get(capability) ?? 1) - 1);
+    if (nextCapabilityCount === 0) capabilityCounts.delete(capability);
+    else capabilityCounts.set(capability, nextCapabilityCount);
+    if (capabilityCounts.size === 0) registrations.delete(key);
+    roleEntries.delete(roleToken);
+    if (roleEntries.size === 0) roles.delete(key);
+    const claim = claims.get(key);
+    const generation = claim?.generation;
+    if (claim?.key === key && claim.owner === owner && claim.roleToken === roleToken) {
+      queueMicrotask(() => {
+        const current = claims.get(key);
+        const currentState = previewInspectorSession.targetReachabilityByKey.get(key);
+        if (
+          current !== claim || current?.generation !== generation || current.key !== key ||
+          current.owner !== owner || current.roleToken !== roleToken ||
+          previewInspectorSession.contextualTargetFallbackRolesByKey.get(key)?.has(roleToken) === true ||
+          currentState?.key !== key
+        ) return;
+        claims.delete(key);
+        if (currentState.contextualTargetFallbackRequested === true) {
+          currentState.contextualTargetFallbackRequested = false;
+        }
+      });
+    }
+  };
+  release.contextualRoleToken = roleToken;
+  return release;
+}
+
+/** Lets generated Page Execution code render only the active corridor's one-shot fallback. */
+function shouldRenderPreviewInspectorContextualTargetFallback(key, owner) {
+  initializePreviewInspectorTargetReachabilityState();
+  const state = previewInspectorSession.targetReachabilityByKey.get(key);
+  const claim = previewInspectorSession.contextualTargetFallbackClaimsByKey.get(key);
+  return previewInspectorSession.activeTargetReachabilityKey === key &&
+    state?.contextualTargetFallbackRequested === true &&
+    claim?.status === 'committed' && claim.key === key && claim.owner === owner &&
+    previewInspectorSession.contextualTargetFallbackRolesByKey.get(key)?.get(claim.roleToken) === owner &&
+    state.directTarget !== true;
 }
 
 /**
@@ -68,6 +409,10 @@ function resumePreviewInspectorTargetReachabilityAfterManualCondition(conditionI
   state.exhausted = false;
   state.idlePasses = 0;
   state.overlayVisibilityAttempted = false;
+  if (state.contextualTargetFallbackRequested === true) {
+    state.contextualTargetFallbackRequested = false;
+    state.detachedTargetPlacement = undefined;
+  }
   state.status = 'probing-after-manual-condition';
   state.probeRevision = (Number.isSafeInteger(state.probeRevision) ? state.probeRevision : 0) + 1;
   previewInspectorSession.renderConditionRejectedAutoOverridesByKey?.delete?.(key);
@@ -148,6 +493,7 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     appliedConditions: [],
     attempt: 0,
     candidateId: candidate?.id ?? 'nearest-authored-owner',
+    contextualTargetFallbackRequested: false,
     directTarget: false,
     directTargetAvailable: false,
     detachedTargetPlacement: candidate?.detachedTargetPlacement,
@@ -181,6 +527,65 @@ function readPreviewInspectorTargetBoundaries(state) {
     typeof boundary?.props?.sourcePath === 'string' &&
     boundary.props.sourcePath.replaceAll('\\', '/') === state.targetSourcePath
   ));
+}
+
+/**
+ * Builds exact direct-page evidence when reverse ancestry legitimately ends at the selected file.
+ *
+ * The bridge marks only Page/Screen/View endpoints and the entry independently admits only live
+ * React values. Runtime success still requires an exact source/export boundary, an error-free
+ * selected element Fiber, and connected project DOM through the ordinary target-output verifier.
+ */
+function readPreviewInspectorStandaloneTargetReachabilityState(descriptor) {
+  const targetExportName = descriptor?.exportName;
+  const targetSourcePath = typeof descriptor?.sourcePath === 'string'
+    ? descriptor.sourcePath.replaceAll('\\', '/')
+    : '';
+  if (
+    descriptor?.inspector !== undefined ||
+    descriptor?.standalonePageTarget !== true ||
+    typeof targetExportName !== 'string' ||
+    targetExportName.length === 0 ||
+    targetSourcePath.length === 0 ||
+    previewInspectorSession.selectedExportName !== targetExportName
+  ) return undefined;
+  const state = {
+    applicationPath: [targetExportName],
+    appliedConditions: [],
+    attempt: 0,
+    candidateId: 'standalone-target:' + targetExportName,
+    contextualTargetFallbackRequested: false,
+    directTarget: true,
+    directTargetAvailable: true,
+    exhausted: false,
+    idlePasses: 0,
+    key: 'standalone-target:' + targetSourcePath + ':' + targetExportName,
+    overlayVisibilityAttempted: false,
+    pageRootCommitted: false,
+    probeRevision: 0,
+    rootName: targetExportName,
+    runtimeOwnerNames: [],
+    status: 'probing',
+    targetExportName,
+    targetHasOutput: false,
+    targetMounted: false,
+    targetSourcePath,
+    targetWasMounted: false,
+  };
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
+  state.targetMounted = boundaries.size > 0;
+  state.targetWasMounted = state.targetMounted;
+  state.pageRootCommitted = state.targetMounted;
+  if (state.targetMounted) {
+    state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
+  }
+  state.status = state.targetHasOutput
+    ? 'reached'
+    : state.targetMounted
+      ? 'target-mounted-no-output'
+      : 'probing';
+  state.exhausted = state.targetHasOutput;
+  return state;
 }
 /** Returns the retained traversal state, creating it before the candidate's first render. */
 function readPreviewInspectorTargetReachabilityState(descriptor, candidate) {
@@ -408,11 +813,14 @@ function hasPreviewInspectorIntentionalNavigationTargetOutput(state) {
  * the route and therefore cannot retain either a host node or its boundary at settled observation.
  */
 function hasPreviewInspectorTargetHostOutput(state) {
-  const boundaries = readPreviewInspectorTargetBoundaries(state);
+  const boundaries = state.contextualTargetFallbackRequested === true
+    ? new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean))
+    : readPreviewInspectorTargetBoundaries(state);
   state.targetHasAnyHostOutput = false;
   state.targetDeferredCallbackPending = false;
   state.targetOutputKind = 'none';
   state.targetOutputRecoveryPending = false;
+  state.targetEffectControllerOutput = false;
   state.targetRenderedEmpty = false;
   if (!(boundaries instanceof Set)) return false;
   for (const boundary of boundaries) {
@@ -439,7 +847,9 @@ function hasPreviewInspectorTargetHostOutput(state) {
 }
 /** Stops automatic branch traversal while the selected target owns a contained render failure. */
 function hasPreviewInspectorTargetRenderError(state) {
-  const boundaries = readPreviewInspectorTargetBoundaries(state);
+  const boundaries = state.contextualTargetFallbackRequested === true
+    ? new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean))
+    : readPreviewInspectorTargetBoundaries(state);
   return boundaries instanceof Set &&
     [...boundaries].some((boundary) => boundary?.state?.error !== undefined);
 }
@@ -452,7 +862,7 @@ function hasReachedPreviewInspectorPageCorridor(state) {
 }
 /**
  * Finds only compiler-shaped values whose continuation has one generated answer. Root-only custom
- * hooks and non-GraphQL endpoints stay interactive because their payload structure is ambiguous.
+ * hooks stay interactive unless the compiler also proved one exact target-visible scalar.
  */
 function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state) {
   const batch = readPreviewInspectorRequirementBatch(descriptor, candidate, state, true);
@@ -463,7 +873,7 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
       admittedHookIds.has(record.id) &&
       record.reachabilityKey === state.key &&
       record.mode === 'auto' &&
-      (record.requiredPaths ?? []).some((path) => path !== '<root>'),
+      hasPreviewInspectorMaterializableHookRequirement(record),
     )
     .map((record) => record.id)
     .slice(0, 24);
@@ -489,7 +899,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
   ) {
     return false;
   }
-  const preserveUserValues = search.origin === 'deterministic-auto';
+  const preserveUserValues = search.origin !== 'user';
   const batch = search.origin === 'deterministic-auto'
     ? readPreviewInspectorDeterministicRequirementEvidence(descriptor, candidate, state)
     : readPreviewInspectorRequirementBatch(descriptor, candidate, state, preserveUserValues);
@@ -705,7 +1115,11 @@ function activatePreviewInspectorDirectTarget(state) {
 function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state) {
   state.targetMounted = hasMountedPreviewInspectorTarget(state);
   state.targetWasMounted = state.targetWasMounted === true || state.targetMounted;
-  state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
+  const targetRenderError = hasPreviewInspectorTargetRenderError(state) ||
+    state.pendingTargetRepairFailure !== undefined;
+  state.targetHasOutput = targetRenderError
+    ? false
+    : hasPreviewInspectorTargetHostOutput(state);
   if (
     state.targetMounted !== true &&
     state.targetWasMounted === true &&
@@ -716,7 +1130,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     // Promote the latched commit to corridor-mounted semantics for existing blocker/UI consumers.
     state.targetMounted = true;
   }
-  if (hasReachedPreviewInspectorPageCorridor(state)) {
+  if (!targetRenderError && hasReachedPreviewInspectorPageCorridor(state)) {
     completePreviewInspectorMinimumRequirementSearch(state);
     state.status = 'reached';
     state.idlePasses = 0;
@@ -724,11 +1138,33 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorTreeRefresh();
     return;
   }
-  if (hasPreviewInspectorTargetRenderError(state)) {
+  if (targetRenderError) {
+    if (isPreviewInspectorTargetAutoAttemptPending(state)) {
+      state.status = 'settling-auto-attempt';
+      schedulePreviewInspectorTreeRefresh();
+      return;
+    }
+    if (advancePreviewInspectorTargetFailureRequirement(state)) return;
     state.status = 'target-error';
     state.idlePasses = 0;
     schedulePreviewInspectorTreeRefresh();
     return;
+  }
+  if (
+    (state.targetMounted || state.targetWasMounted) &&
+    !state.targetHasOutput
+  ) {
+    const localUiController =
+      typeof autoActivatePreviewInspectorTargetLocalUiController === 'function'
+        ? autoActivatePreviewInspectorTargetLocalUiController(state)
+        : undefined;
+    if (localUiController !== undefined) {
+      state.status = 'activating-local-ui';
+      state.probeRevision += 1;
+      notifyPreviewInspector();
+      schedulePreviewInspectorTreeRefresh();
+      return;
+    }
   }
   if (
     (state.targetMounted || state.targetWasMounted) &&
@@ -765,10 +1201,25 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   // A newly committed, path-local JSX gate is stronger reachability evidence than unrelated hook
   // requirements collected from the surrounding application shell. Traverse it before spending
   // another minimum-value pass (or closing that pass circuit at its limit).
-  const nextGate = mountedTargetGate ??
-    selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
+  const nextGate = mountedTargetGate ?? selectPreviewInspectorNextTargetGate(descriptor, candidate, state);
   if (nextGate === undefined) {
-    if (stopPreviewInspectorRequirementConvergenceAtLimit(state)) return;
+    if (
+      state.pageRootCommitted === true &&
+      state.targetMounted !== true && state.targetWasMounted !== true &&
+      (Array.isArray(state.rejectedConditions) ? state.rejectedConditions.length : 0) > 0
+    ) {
+      /*
+       * A compiler-proven target-local branch already committed without revealing this target and
+       * has been session-rejected. Further page-wide hook/data filling cannot make that same branch
+       * a stronger target owner; use the generated exact facade beside the still-mounted page.
+       */
+      settlePreviewInspectorMinimumRequirementSearch(state);
+      if (requestPreviewInspectorContextualTargetFallback(state)) return;
+    }
+    if (stopPreviewInspectorRequirementConvergenceAtLimit(state)) {
+      if (requestPreviewInspectorContextualTargetFallback(state)) return;
+      return;
+    }
     if (advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state)) return;
   }
   if (state.targetMounted && state.pageRootCommitted !== true) {
@@ -820,6 +1271,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.idlePasses >= PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT
   ) {
     settlePreviewInspectorMinimumRequirementSearch(state);
+    if (requestPreviewInspectorContextualTargetFallback(state)) return;
     state.exhausted = true;
     state.status = 'page-blocked';
     reportPreviewInspectorPageCorridorBlocked(state);
@@ -865,6 +1317,172 @@ function continuePreviewInspectorTargetReachabilityAfterSettledAttempt(state) {
   }
   delete state.lastContinuationSkipReason;
   evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+  return true;
+}
+/**
+ * Rechecks one mounted authored target after its exact compiler-proven effect has synchronously
+ * registered context state. The store notification deliberately leaves the target instance key
+ * alone, so initialized refs survive the single bounded render before ordinary DFS resumes.
+ */
+function readPreviewInspectorRuntimeEffectContinuationInstance(state, rawMetadata, ownershipToken) {
+  const effectId = typeof rawMetadata?.id === 'string' ? rawMetadata.id : '';
+  const sourcePath = typeof rawMetadata?.sourcePath === 'string'
+    ? rawMetadata.sourcePath.replaceAll('\\', '/')
+    : '';
+  const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+    ? findSelectedPreviewInspectorDescriptor()
+    : undefined;
+  const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
+    ? readSelectedPreviewInspectorPageCandidate(descriptor)
+    : undefined;
+  if (
+    state === undefined ||
+    (typeof ownershipToken !== 'object' && typeof ownershipToken !== 'function') ||
+    ownershipToken === null ||
+    state.directTarget === true ||
+    state.status === 'reached' ||
+    state.pageRootCommitted !== true ||
+    effectId.length === 0 ||
+    sourcePath.length === 0 ||
+    sourcePath !== state.targetSourcePath ||
+    descriptor === undefined ||
+    candidate === undefined ||
+    candidate.id !== state.candidateId ||
+    createPreviewInspectorTargetReachabilityKey(descriptor, candidate) !== state.key
+  ) return undefined;
+  const boundaries = state.contextualTargetFallbackRequested === true
+    ? new Set([readPreviewInspectorContextualTargetBoundary(state)].filter(Boolean))
+    : readPreviewInspectorTargetBoundaries(state);
+  const boundary = [...boundaries].find((candidateBoundary) =>
+    candidateBoundary?.ownershipToken === ownershipToken &&
+      hasPreviewInspectorOwnedBoundary(candidateBoundary, state) === true &&
+      candidateBoundary?.state?.error === undefined,
+  );
+  if (boundary === undefined || hasPreviewInspectorTargetHostOutput(state)) return undefined;
+  return { boundary, effectId };
+}
+/**
+ * Rechecks one live exact target instance after its compiler-proven effect synchronously
+ * registered context state. A state accepts one original token and, after the existing one-shot
+ * latch, one contextual token; remounts and sibling instances fail closed.
+ */
+function continuePreviewInspectorTargetReachabilityAfterSuccessfulRuntimeEffect(rawMetadata, ownershipToken) {
+  initializePreviewInspectorTargetReachabilityState();
+  const key = previewInspectorSession.activeTargetReachabilityKey;
+  const state = typeof key === 'string'
+    ? previewInspectorSession.targetReachabilityByKey.get(key)
+    : undefined;
+  const instance = readPreviewInspectorRuntimeEffectContinuationInstance(
+    state,
+    rawMetadata,
+    ownershipToken,
+  );
+  if (instance === undefined) return false;
+  if (instance.boundary?.props?.effectControllerOutputCandidate === true) {
+    state.effectControllerCompletionToken = ownershipToken;
+  }
+  const phase = instance.boundary?.props?.contextualBoundaryRole === 'retained-route'
+    ? 'contextual'
+    : 'original';
+  if ((phase === 'contextual') !== (state.contextualTargetFallbackRequested === true)) return false;
+  state.topologyEffectContinuationAccepted = true;
+  if (phase === 'contextual') state.topologyContextualEffectContinuationAccepted = true;
+  else state.topologyOriginalEffectContinuationAccepted = true;
+  const tokensByPhase = state.successfulRuntimeEffectContinuationTokensByPhase ??= new Map();
+  const admittedToken = tokensByPhase.get(phase);
+  if (admittedToken !== undefined && admittedToken !== ownershipToken) return false;
+  if (admittedToken === undefined && tokensByPhase.size >= 2) return false;
+  tokensByPhase.set(phase, ownershipToken);
+  const usedEffectIdsByToken = state.successfulRuntimeEffectContinuationIdsByToken ??= new WeakMap();
+  const usedEffectIds = usedEffectIdsByToken.get(ownershipToken) ?? new Set();
+  usedEffectIdsByToken.set(ownershipToken, usedEffectIds);
+  if (usedEffectIds.has(instance.effectId)) return false;
+  usedEffectIds.add(instance.effectId);
+  const pendingEffectIdsByToken = state.successfulRuntimeEffectContinuationPendingIdsByToken ??= new WeakMap();
+  const pendingEffectIds = pendingEffectIdsByToken.get(ownershipToken) ?? new Set();
+  pendingEffectIdsByToken.set(ownershipToken, pendingEffectIds);
+  pendingEffectIds.add(instance.effectId);
+  notifyPreviewInspector();
+  globalThis.setTimeout(() => {
+    pendingEffectIds.delete(instance.effectId);
+    if (previewInspectorSession.activeTargetReachabilityKey !== state.key) return;
+    const current = readPreviewInspectorRuntimeEffectContinuationInstance(
+      state,
+      rawMetadata,
+      ownershipToken,
+    );
+    if (
+      current === undefined ||
+      current.boundary !== instance.boundary ||
+      (current.boundary?.props?.contextualBoundaryRole === 'retained-route'
+        ? 'contextual'
+        : 'original') !== phase
+    ) return;
+    state.topologyDelayedProbeFired = true;
+    state.topologyBoundaryIdentityRetained = current.boundary === instance.boundary;
+    if (phase === 'contextual') {
+      state.topologyContextualDelayedProbeFired = true;
+      state.topologyContextualBoundaryIdentityRetained = current.boundary === instance.boundary;
+    } else {
+      state.topologyOriginalDelayedProbeFired = true;
+      state.topologyOriginalBoundaryIdentityRetained = current.boundary === instance.boundary;
+    }
+    const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+      ? findSelectedPreviewInspectorDescriptor()
+      : undefined;
+    const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
+      ? readSelectedPreviewInspectorPageCandidate(descriptor)
+      : undefined;
+    if (descriptor === undefined || candidate === undefined) return;
+    evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+  }, PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS);
+  return true;
+}
+/**
+ * Rechecks the active authored corridor when its exact compiler-owned target gains host output
+ * after an effect/provider commit. Registration can precede React's settled tree, so coalesce one
+ * delayed continuation and repeat every identity check before using the ordinary evaluator.
+ */
+function continuePreviewInspectorTargetReachabilityAfterOwnedHostRegistration(record) {
+  initializePreviewInspectorTargetReachabilityState();
+  const key = previewInspectorSession.activeTargetReachabilityKey;
+  const state = typeof key === 'string'
+    ? previewInspectorSession.targetReachabilityByKey.get(key)
+    : undefined;
+  if (
+    state === undefined ||
+    state.directTarget === true ||
+    state.status === 'reached' ||
+    record?.exportName !== state.targetExportName ||
+    record?.sourcePath !== state.targetSourcePath ||
+    state.ownedHostContinuationPending === true
+  ) return false;
+  state.ownedHostContinuationPending = true;
+  globalThis.setTimeout(() => {
+    state.ownedHostContinuationPending = false;
+    if (
+      previewInspectorSession.activeTargetReachabilityKey !== state.key ||
+      state.directTarget === true ||
+      state.pageRootCommitted !== true ||
+      state.status === 'reached' ||
+      record?.exportName !== state.targetExportName ||
+      record?.sourcePath !== state.targetSourcePath ||
+      ![...(record?.nodes ?? [])].some((node) => node?.isConnected === true)
+    ) return;
+    const descriptor = typeof findSelectedPreviewInspectorDescriptor === 'function'
+      ? findSelectedPreviewInspectorDescriptor()
+      : undefined;
+    const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
+      ? readSelectedPreviewInspectorPageCandidate(descriptor)
+      : undefined;
+    if (
+      descriptor === undefined ||
+      candidate === undefined ||
+      candidate?.id !== state.candidateId ||
+      createPreviewInspectorTargetReachabilityKey(descriptor, candidate) !== state.key
+    ) return;
+    evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+  }, PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS);
   return true;
 }
 /**
@@ -1033,7 +1651,9 @@ function returnPreviewInspectorToPageContext() {
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return;
   const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+  state.contextualTargetFallbackRequested = false;
   state.directTarget = false;
+  state.detachedTargetPlacement = candidate?.detachedTargetPlacement;
   state.exhausted = false;
   state.idlePasses = 0;
   state.pageRootCommitted = false;

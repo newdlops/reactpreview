@@ -27,6 +27,8 @@ export interface PreviewTargetBridgePluginOptions {
   readonly usagePropsByExport?: PreviewStaticPropsByExport;
   /** Lowest-priority neutral values inferred from target prop types and receiver usage. */
   readonly inferredPropsByExport?: PreviewInferredPropsByExport;
+  /** Selected Page Context export proven to have no reachable authored consumer. */
+  readonly standalonePageTargetExportName?: string;
 }
 
 /**
@@ -69,6 +71,7 @@ export function createPreviewTargetBridgePlugin(options: PreviewTargetBridgePlug
         options.parentSlicesByExport ?? {},
         options.usagePropsByExport ?? {},
         options.inferredPropsByExport ?? {},
+        options.standalonePageTargetExportName,
       ),
       loader: 'js',
       resolveDir: path.dirname(options.documentPath),
@@ -99,6 +102,7 @@ function createTargetBridgeSource(
   parentSlicesByExport: PreviewParentSlicePlansByExport,
   usagePropsByExport: PreviewStaticPropsByExport,
   inferredPropsByExport: PreviewInferredPropsByExport,
+  standalonePageTargetExportName: string | undefined,
 ): string {
   const explicitSelections = selections.filter(
     (selection): selection is Extract<PreviewTargetExportSlot, { readonly kind: 'explicit' }> =>
@@ -131,15 +135,18 @@ function createTargetBridgeSource(
       if (index === undefined) {
         return [];
       }
+      const standalonePageTarget =
+        selection.exportName === standalonePageTargetExportName ||
+        isStandalonePageTargetSelection(selection, documentSpecifier);
       return [
-        `__reactPreviewTargets.push({ automaticProps: ${JSON.stringify(usagePropsByExport[selection.exportName] ?? {})}, displayName: ${JSON.stringify(selection.displayName)}, exportName: ${JSON.stringify(selection.exportName)}, inferredPropShape: ${JSON.stringify(inferredPropsByExport[selection.exportName]?.shape)}, inferredProps: ${JSON.stringify(inferredPropsByExport[selection.exportName]?.provenance ?? [])}, parentSlice: ${serializeParentSliceMetadata(parentSlicesByExport[selection.exportName])}, value: __reactPreviewExport${index.toString()} });`,
+        `__reactPreviewTargets.push({ automaticProps: ${JSON.stringify(usagePropsByExport[selection.exportName] ?? {})}, displayName: ${JSON.stringify(selection.displayName)}, exportName: ${JSON.stringify(selection.exportName)}, inferredPropShape: ${JSON.stringify(inferredPropsByExport[selection.exportName]?.shape)}, inferredProps: ${JSON.stringify(inferredPropsByExport[selection.exportName]?.provenance ?? [])}, parentSlice: ${serializeParentSliceMetadata(parentSlicesByExport[selection.exportName])}, sourcePath: ${documentSpecifier}${standalonePageTarget ? ', standalonePageTarget: true' : ''}, value: __reactPreviewExport${index.toString()} });`,
       ];
     }
     return [
       'for (const exportName of Object.keys(__reactPreviewNamespace).sort()) {',
       '  if (!/^\\p{Lu}[$_\\p{L}\\p{N}\\u200C\\u200D]*$/u.test(exportName) || __reactPreviewSeenNames.has(exportName)) continue;',
       '  __reactPreviewSeenNames.add(exportName);',
-      '  __reactPreviewTargets.push({ displayName: exportName, exportName, value: __reactPreviewNamespace[exportName] });',
+      `  __reactPreviewTargets.push({ displayName: exportName, exportName, sourcePath: ${documentSpecifier}, value: __reactPreviewNamespace[exportName] });`,
       '}',
     ];
   });
@@ -152,6 +159,41 @@ function createTargetBridgeSource(
     `export const previewTheme = ${themeSource.reference};`,
     'export default Object.freeze(__reactPreviewTargets);',
   ].join('\n');
+}
+
+/**
+ * Recognizes a direct page endpoint using the same final-role boundary as VirtualPage selection.
+ * The entry later filters every descriptor through React value identity, so a page-named constant
+ * cannot acquire this runtime contract. PageHeader/PageLayout remain ordinary component targets.
+ */
+function isStandalonePageTargetSelection(
+  selection: Extract<PreviewTargetExportSlot, { readonly kind: 'explicit' }>,
+  documentSpecifier: string,
+): boolean {
+  let sourcePath = documentSpecifier;
+  try {
+    sourcePath = JSON.parse(documentSpecifier) as string;
+  } catch {
+    // The compiler produced this JSON string itself. Retain the encoded spelling if it is ever
+    // replaced by a non-standard caller so the page-role check still fails closed.
+  }
+  const sourceStem = path.basename(sourcePath).replace(/\.[^.]+$/u, '');
+  const identities = [selection.exportName, selection.displayName];
+  if (selection.exportName === 'default') identities.push(sourceStem);
+  return identities.some(hasPageEndpointSuffix);
+}
+
+/** Matches only a final Page, Screen, or View role word across camel and separated spellings. */
+function hasPageEndpointSuffix(identity: string): boolean {
+  const separated = identity
+    .replace(/([\p{Ll}\d])(\p{Lu})/gu, '$1 $2')
+    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, '$1 $2');
+  const finalToken = separated
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .at(-1);
+  return finalToken === 'page' || finalToken === 'screen' || finalToken === 'view';
 }
 
 /** Serializes bounded provenance shown only when an export later fails inside its selected slice. */

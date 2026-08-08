@@ -24,6 +24,38 @@ export function isPreviewInspectorNavigationOnlyRenderOutcomePlan(
   );
 }
 
+/**
+ * Proves a narrow hostless controller shape whose meaningful output can be a completed React effect.
+ *
+ * Static shape alone is not accepted at runtime. The selected facade must also mount and one exact
+ * source-owned effect must complete for that same ownership token before reachability can settle.
+ */
+export function isPreviewInspectorEffectControllerRenderOutcomePlan(
+  plan: PreviewReactRenderOutcomePlan | undefined,
+): boolean {
+  if (plan === undefined || plan.truncated || plan.outcomes.length !== 1) return false;
+  const [outcome] = plan.outcomes;
+  if (
+    outcome?.kind !== 'jsx' ||
+    outcome.conditions.length !== 0 ||
+    outcome.componentTree.length !== 1 ||
+    !hasPreviewInspectorControllerOutputName(plan.exportName)
+  ) {
+    return false;
+  }
+  const [root] = outcome.componentTree;
+  return root !== undefined && root.children.length === 0 &&
+    hasPreviewInspectorControllerOutputName(root.name);
+}
+
+/** Recognizes semantic controller roles without admitting generic wrappers or visual components. */
+function hasPreviewInspectorControllerOutputName(value: string): boolean {
+  const name = normalizePreviewInspectorNavigationOutputName(value);
+  return /(?:Bridge|Controller|Handler|Listener|Observer|Restoration|Sync|Synchronizer|Tracker)$/u.test(
+    name,
+  );
+}
+
 /** Normalizes analyzer component/member spellings for the navigation-only compile contract. */
 function normalizePreviewInspectorNavigationOutputName(value: string): string {
   const generated = /^PreviewGenerated\(([^()]+)\)$/u.exec(value.replace(/\(…\)$/u, ''))?.[1];
@@ -36,6 +68,257 @@ export function createPreviewInspectorTargetOutputRuntimeSource(): string {
   return String.raw`
 function createPreviewInspectorTargetOutputFactory() {
 const PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT = 512;
+const PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE = Symbol.for('newdlops.react-file-preview.target-render-chain');
+
+/** Resolves one exact target through each current/alternate boundary-local hostless chain. */
+function readPreviewInspectorBoundaryOwnedTargetFibers(boundary, targetType) {
+  const modernFiber = readPreviewInspectorOwnData(boundary, '_reactInternals');
+  const legacyFiber = readPreviewInspectorOwnData(boundary, '_reactInternalFiber');
+  const primary = modernFiber !== null && typeof modernFiber === 'object'
+    ? modernFiber
+    : legacyFiber !== null && typeof legacyFiber === 'object'
+      ? legacyFiber
+      : undefined;
+  const candidates = [primary, readPreviewInspectorFiberLink(primary, 'alternate')];
+  const targets = [];
+  const seen = new Set();
+  for (const boundaryFiber of candidates) {
+    if (boundaryFiber === undefined || seen.has(boundaryFiber)) continue;
+    seen.add(boundaryFiber);
+    const stateNode = readPreviewInspectorOwnData(boundaryFiber, 'stateNode');
+    if (stateNode !== undefined && stateNode !== boundary) continue;
+    let fiber = readPreviewInspectorFiberLink(boundaryFiber, 'child');
+    let steps = 0;
+    while (fiber !== undefined && steps < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+      steps += 1;
+      const type = readPreviewInspectorOwnData(fiber, 'type');
+      const elementType = readPreviewInspectorOwnData(fiber, 'elementType');
+      if (type === PreviewInspectorTargetBoundary || elementType === PreviewInspectorTargetBoundary) break;
+      if (type === targetType || elementType === targetType) {
+        if (!targets.includes(fiber)) targets.push(fiber);
+        break;
+      }
+      if (readPreviewInspectorFiberLink(fiber, 'sibling') !== undefined) break;
+      fiber = readPreviewInspectorFiberLink(fiber, 'child');
+    }
+  }
+  return targets;
+}
+
+/** Samples primary/alternate boundary topology without retaining Fiber or DOM identities. */
+function readPreviewInspectorTargetTopologySample(boundary, targetType, locatorTargets) {
+  const primary = readPreviewInspectorOwnData(boundary, '_reactInternals') ??
+    readPreviewInspectorOwnData(boundary, '_reactInternalFiber');
+  const branches = [primary, readPreviewInspectorFiberLink(primary, 'alternate')]
+    .filter((fiber, index, values) => fiber !== undefined && values.indexOf(fiber) === index);
+  const samples = [];
+  for (const branch of branches) {
+    if (readPreviewInspectorOwnData(branch, 'stateNode') !== boundary) continue;
+    let root = branch;
+    let rootSteps = 0;
+    while (readPreviewInspectorFiberLink(root, 'return') !== undefined && rootSteps < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+      root = readPreviewInspectorFiberLink(root, 'return');
+      rootSteps += 1;
+    }
+    const current = readPreviewInspectorOwnData(readPreviewInspectorOwnData(root, 'stateNode'), 'current');
+    const currentKnown = current !== undefined;
+    const pending = [readPreviewInspectorFiberLink(branch, 'child')];
+    const seen = new Set();
+    let exactTargets = 0;
+    let targetChildren = 0;
+    let retainedChildren = 0;
+    let descendantHosts = 0;
+    let connectedVisibleHosts = 0;
+    while (pending.length > 0 && seen.size < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+      const fiber = pending.pop();
+      if (fiber === undefined || seen.has(fiber)) continue;
+      seen.add(fiber);
+      const type = readPreviewInspectorOwnData(fiber, 'type');
+      const elementType = readPreviewInspectorOwnData(fiber, 'elementType');
+      const exact = type === targetType || elementType === targetType;
+      if (exact) {
+        exactTargets += 1;
+        const child = readPreviewInspectorFiberLink(fiber, 'child');
+        if (child !== undefined) targetChildren += 1;
+        if (locatorTargets.includes(fiber) && child !== undefined) retainedChildren += 1;
+      }
+      const kind = classifyPreviewInspectorFiber(fiber);
+      if (kind === 'host') {
+        descendantHosts += 1;
+        const node = readPreviewInspectorOwnData(fiber, 'stateNode');
+        if (node?.nodeType === 1 && node.isConnected === true && mountNode?.contains?.(node) === true &&
+          node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null && node.hidden !== true) {
+          const style = globalThis.getComputedStyle?.(node);
+          if (style?.display !== 'none' && style?.visibility !== 'hidden') connectedVisibleHosts += 1;
+        }
+      }
+      const child = readPreviewInspectorFiberLink(fiber, 'child');
+      const sibling = readPreviewInspectorFiberLink(fiber, 'sibling');
+      if (child !== undefined) pending.push(child);
+      if (sibling !== undefined) pending.push(sibling);
+    }
+    samples.push({
+      current: currentKnown && current === root,
+      currentKnown,
+      exactTargets: Math.min(exactTargets, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+      targetChildren: Math.min(targetChildren, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+      retainedChildren: Math.min(retainedChildren, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+      descendantHosts: Math.min(descendantHosts, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+      connectedVisibleHosts: Math.min(connectedVisibleHosts, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+    });
+  }
+  const currentSamples = samples.filter((sample) => sample.current);
+  const current = currentSamples.length === 1 ? currentSamples[0] : undefined;
+  const stale = samples.find((sample) => !sample.current);
+  return {
+    currentBranchAmbiguous: currentSamples.length !== 1 || samples.some((sample) => !sample.currentKnown),
+    currentExactTargetCount: current?.exactTargets ?? 0,
+    currentTargetChildCount: current?.targetChildren ?? 0,
+    currentRetainedChildCount: current?.retainedChildren ?? 0,
+    currentDescendantHostCount: current?.descendantHosts ?? 0,
+    currentConnectedVisibleHostCount: current?.connectedVisibleHosts ?? 0,
+    staleExactTargetCount: stale?.exactTargets ?? 0,
+    staleConnectedVisibleHostCount: stale?.connectedVisibleHosts ?? 0,
+    locatorExactTargetCount: Math.min(locatorTargets.length, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+  };
+}
+
+/** Observes the exact target boundary; this evidence never contributes to output acceptance. */
+function observePreviewInspectorTargetRenderCommitChain(boundary) {
+  let observationStage = 'started';
+  const reportObservationStage = (stage) => {
+    try {
+      const bridge = globalThis[PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE];
+      if (typeof bridge === 'function') bridge({
+        kind: 'target-fiber-observation',
+        observationStage: stage,
+        ownershipToken: boundary?.ownershipToken,
+      });
+    } catch {}
+  };
+  reportObservationStage(observationStage);
+  try {
+    observationStage = 'boundary-props';
+    const boundaryProps = readPreviewInspectorOwnData(boundary, 'props');
+    const targetElement = readPreviewInspectorOwnData(boundaryProps, 'children');
+    const targetType = readPreviewInspectorOwnData(targetElement, 'type');
+    observationStage = 'target-fibers';
+    const targetFibers = isPreviewInspectorTargetElementType(targetType)
+      ? readPreviewInspectorBoundaryOwnedTargetFibers(boundary, targetType)
+      : [];
+    observationStage = 'topology';
+    const topology = isPreviewInspectorTargetElementType(targetType)
+      ? readPreviewInspectorTargetTopologySample(boundary, targetType, targetFibers)
+      : { currentBranchAmbiguous: true, currentExactTargetCount: 0, currentTargetChildCount: 0,
+        currentRetainedChildCount: 0, currentDescendantHostCount: 0,
+        currentConnectedVisibleHostCount: 0, staleExactTargetCount: 0,
+        staleConnectedVisibleHostCount: 0, locatorExactTargetCount: 0 };
+    observationStage = 'target-input';
+    const inputChildrenState = targetFibers.some((targetFiber) => {
+      const targetProps = readPreviewInspectorOwnData(targetFiber, 'memoizedProps');
+      const childrenDescriptor = targetProps !== undefined && targetProps !== null &&
+        typeof targetProps === 'object'
+        ? Object.getOwnPropertyDescriptor(targetProps, 'children')
+        : undefined;
+      return childrenDescriptor !== undefined && childrenDescriptor.value !== undefined &&
+        childrenDescriptor.value !== null;
+    }) ? 'meaningful-or-unsupported' : 'absent';
+    let returnedChildObserved = false;
+    const ownedHosts = new Set();
+    observationStage = 'target-traversal';
+    const targetPending = targetFibers.map((targetFiber) => ({ fiber: targetFiber, targetFiber }));
+    const targetSeen = new Set();
+    while (targetPending.length > 0 && targetSeen.size < PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT) {
+      const entry = targetPending.pop();
+      const fiber = entry?.fiber;
+      const targetFiber = entry?.targetFiber;
+      if (fiber === undefined || targetSeen.has(fiber)) continue;
+      targetSeen.add(fiber);
+      if (fiber !== targetFiber) {
+        const type = readPreviewInspectorOwnData(fiber, 'type');
+        const elementType = readPreviewInspectorOwnData(fiber, 'elementType');
+        if (type === PreviewInspectorTargetBoundary || elementType === PreviewInspectorTargetBoundary) {
+          continue;
+        }
+      }
+      const kind = classifyPreviewInspectorFiber(fiber);
+      if (kind === 'portal') continue;
+      const child = readPreviewInspectorFiberLink(fiber, 'child');
+      const sibling = readPreviewInspectorFiberLink(fiber, 'sibling');
+      if (child !== undefined) targetPending.push({ fiber: child, targetFiber });
+      if (sibling !== undefined) targetPending.push({ fiber: sibling, targetFiber });
+      if (fiber !== targetFiber && (kind === 'host' || kind === 'text')) {
+        returnedChildObserved = true;
+      }
+      if (kind === 'host') {
+        const node = Object.getOwnPropertyDescriptor(fiber, 'stateNode')?.value;
+        if (
+          node?.nodeType === 1 && node.isConnected === true &&
+          mountNode?.contains?.(node) === true &&
+          node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
+          node.hidden !== true
+        ) {
+          const style = globalThis.getComputedStyle?.(node);
+          if (style?.display !== 'none' && style?.visibility !== 'hidden') ownedHosts.add(node);
+        }
+      }
+    }
+    observationStage = 'final-bridge';
+    const bridge = globalThis[PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE];
+    if (typeof bridge === 'function') bridge({
+      alternateFiberObserved: targetFibers.some((fiber) => readPreviewInspectorFiberLink(fiber, 'alternate') !== undefined),
+      childrenForwarded: inputChildrenState === 'meaningful-or-unsupported' && returnedChildObserved,
+      connectedHostCount: Math.min(ownedHosts.size, PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT),
+      inputChildrenState,
+      kind: 'target-fiber',
+      logicalTargetCount: targetFibers.length === 0 ? 0 : 1,
+      ownedHostObserved: ownedHosts.size > 0,
+      ownershipToken: boundary?.ownershipToken,
+      privateOwnershipCount: 0,
+      returnedChildObserved,
+      stableRerenderObserved: targetFibers.some((fiber) => readPreviewInspectorFiberLink(fiber, 'alternate') !== undefined),
+      topology,
+    });
+    reportObservationStage('complete');
+  } catch {
+    reportObservationStage('failed-' + observationStage);
+  }
+}
+
+/**
+ * Accepts the one contextual retained-route shape whose compiler capability, role claim, exact
+ * target Fiber, unchanged child, and token-owned visible descendant all agree. No project value is
+ * retained: the cross-commit chain and boundary carry only bounded scalar/token evidence.
+ */
+function hasPreviewInspectorContextualTransparentDescendantOutput(boundary, state) {
+  try {
+    const props = readPreviewInspectorOwnData(boundary, 'props');
+    if (
+      state?.contextualTargetFallbackRequested !== true ||
+      props?.contextualBoundaryRole !== 'retained-route' ||
+      props?.contextualBoundaryKey !== state.key ||
+      props?.contextualChildrenUnchanged !== true ||
+      typeof readPreviewInspectorContextualTargetBoundary !== 'function' ||
+      readPreviewInspectorContextualTargetBoundary(state) !== boundary ||
+      typeof readPreviewInspectorMountedTransparentChildrenCapability !== 'function' ||
+      typeof readPreviewInspectorTargetRenderCommitChain !== 'function'
+    ) return false;
+    const capability = readPreviewInspectorMountedTransparentChildrenCapability(state.key);
+    if (capability?.mountedTransparentChildren !== true || capability?.retainedRoutePage !== true) {
+      return false;
+    }
+    const chain = readPreviewInspectorTargetRenderCommitChain(state.key);
+    if (
+      chain?.logicalTargetCount !== 1 ||
+      chain.childrenForwarded !== true ||
+      chain.returnedChildObserved !== true ||
+      chain.ownedHostObserved !== true
+    ) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Normalizes component/member spellings used by analyzer and runtime Fiber labels. */
 function normalizePreviewInspectorTargetOutputName(value) {
@@ -434,11 +717,15 @@ function hasPreviewInspectorFallbackLikeTargetOutput(
   deferredFallbackNames,
 ) {
   const normalizedTargetExportName = normalizePreviewInspectorTargetOutputName(targetExportName);
+  const targetIsLoadingSurface =
+    /(?:Loading|LoadingPage|Loader|Progress|Skeleton|Spinner)$/u.test(normalizedTargetExportName);
   return [...liveNames].some((name) =>
     name !== normalizedTargetExportName &&
       (name !== 'SuspenseLoader' || deferredFallbackNames.has(name)) &&
-      /(?:ErrorFallback|ErrorPage|ErrorStatus|FallbackPage|Loading|LoadingPage|Loader|NotFoundStatus|Progress|Skeleton|Spinner)$/u.test(
-        name,
+      (
+        /(?:ErrorFallback|ErrorPage|ErrorStatus|FallbackPage|NotFoundStatus)$/u.test(name) ||
+        (!targetIsLoadingSurface &&
+          /(?:Loading|LoadingPage|Loader|Progress|Skeleton|Spinner)$/u.test(name))
       ),
   );
 }
@@ -515,11 +802,42 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
       node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null,
     );
   const targetDomOwnership = inlineTargetDomOwnership || targetPortalOwnership;
-  if (expected.hasIntentionalEmpty || expected.hasIntentionalNavigation) {
+  observePreviewInspectorTargetRenderCommitChain(boundary);
+  const boundaryProps = readPreviewInspectorOwnData(boundary, 'props');
+  const completedEffectControllerOutput =
+    boundaryProps?.effectControllerOutputCandidate === true &&
+    (
+      boundaryProps?.ownershipToken === state?.effectControllerCompletionToken ||
+      (
+        typeof hasPreviewInspectorSuccessfulRuntimeEffect === 'function' &&
+        hasPreviewInspectorSuccessfulRuntimeEffect(
+          boundaryProps?.ownershipToken,
+          state?.targetSourcePath,
+        )
+      )
+    );
+  const contextualRetainedRouteCapability =
+    typeof readPreviewInspectorMountedTransparentChildrenCapability === 'function'
+      ? readPreviewInspectorMountedTransparentChildrenCapability(state.key)
+      : undefined;
+  const contextualRetainedRoute = state?.contextualTargetFallbackRequested === true &&
+    boundaryProps?.contextualBoundaryRole === 'retained-route' &&
+    boundaryProps?.contextualBoundaryKey === state.key &&
+    boundaryProps?.contextualChildrenUnchanged === true &&
+    contextualRetainedRouteCapability?.mountedTransparentChildren === true &&
+    contextualRetainedRouteCapability?.retainedRoutePage === true;
+  const contextualTransparentDescendantOutput =
+    hasPreviewInspectorContextualTransparentDescendantOutput(boundary, state);
+  if (
+    (expected.hasIntentionalEmpty || expected.hasIntentionalNavigation || completedEffectControllerOutput) &&
+    !contextualTransparentDescendantOutput &&
+    state?.contextualTargetFallbackRequested !== true
+  ) {
     if (activeError !== undefined) {
       return rejectPreviewInspectorTargetOutput(state, 'fallback-output', activeError);
     }
-    state.targetRenderedEmpty = true;
+    state.targetEffectControllerOutput = completedEffectControllerOutput;
+    state.targetRenderedEmpty = !completedEffectControllerOutput;
     return acceptPreviewInspectorTargetOutput(state);
   }
   const needsLiveNames = expected.deferredNames.size > 0 ||
@@ -541,12 +859,16 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
   state.targetProjectedCompatibilityOutput = projectedCompatibilityOutput;
   state.targetDirectElementOutput = directTargetElementOutput;
   state.targetDetachedBoundaryOutput = detachedBoundaryOutput;
+  if (contextualRetainedRoute && !contextualTransparentDescendantOutput) {
+    return rejectPreviewInspectorTargetOutput(state, 'candidate-output', activeError);
+  }
   const hasAnyHostOutput =
     targetDomOwnership ||
     projectedCompatibilityOutput ||
     authenticExpectedOutput ||
     directTargetElementOutput ||
-    detachedBoundaryOutput;
+    detachedBoundaryOutput ||
+    contextualTransparentDescendantOutput;
   if (hasAnyHostOutput) state.targetHasAnyHostOutput = true;
   const fallbackLikeOutput = hasPreviewInspectorFallbackLikeTargetOutput(
     liveNames,
@@ -558,6 +880,7 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
   // whose entire shared UI layer is intentionally represented by compatibility hosts.
   let resolved =
     projectedCompatibilityOutput ||
+    contextualTransparentDescendantOutput ||
     ((authenticExpectedOutput || directTargetElementOutput || detachedBoundaryOutput) &&
       !fallbackLikeOutput);
   if (expected.deferredNames.size > 0) {
@@ -613,7 +936,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     !projectedCompatibilityOutput &&
     !authenticExpectedOutput &&
     !directTargetElementOutput &&
-    !detachedBoundaryOutput
+    !detachedBoundaryOutput &&
+    !contextualTransparentDescendantOutput
   ) {
     return rejectPreviewInspectorTargetOutput(state, 'candidate-output', activeError);
   }
@@ -638,6 +962,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
 }
 hasPreviewInspectorResolvedTargetOutput.hasIntentionalNavigationOutput =
   hasPreviewInspectorIntentionalNavigationOutput;
+hasPreviewInspectorResolvedTargetOutput.observeTargetRenderCommitChain =
+  observePreviewInspectorTargetRenderCommitChain;
 return hasPreviewInspectorResolvedTargetOutput;
 }
 `;

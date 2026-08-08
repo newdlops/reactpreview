@@ -223,6 +223,12 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
   ) {
     return true;
   }
+  /*
+   * Every compiler-issued logical-and guard exposes its JSX terminal only on the truthy side.
+   * Path membership is checked separately before this value is applied, so a target-local guard
+   * remains actionable even when its terminal label names only a Fragment or a shared component.
+   */
+  if (condition?.kind === 'logical-and') return true;
   if (condition?.targetBranch === 'truthy') return true;
   if (condition?.targetBranch === 'falsy') return false;
   if (condition?.fallbackBranch === 'truthy') return false;

@@ -14,6 +14,7 @@ const PREVIEW_INSPECTOR_TARGET_AUTO_ATTEMPT_MODES = new Set([
   'deterministic-minimum-auto',
   'minimum-requirement-dfs',
   'target-overlay-auto',
+  'target-prop-repair-auto',
   'target-guided-auto',
 ]);
 
@@ -120,6 +121,24 @@ function hasPreviewInspectorTargetAutoAttemptContinuationGate(attempt, state) {
  * branch again. Multi-step gates remain intact as soon as either kind of observable evidence exists.
  */
 function rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state) {
+  if (attempt?.autoMode === 'target-prop-repair-auto' && attempt.settledAt !== undefined) {
+    const snapshot = previewInspectorSession.requirementAutoRollbackByTraceId?.get?.(
+      attempt.traceId,
+    );
+    state.pendingTargetRepairFailure = undefined;
+    const currentFailure = readPreviewInspectorTargetFailureRepairRecord(state);
+    if (
+      snapshot?.targetRepair?.errorIdentity !== undefined &&
+      currentFailure?.errorIdentity === snapshot.targetRepair.errorIdentity &&
+      typeof rollbackPreviewInspectorRequirementAutoDecision === 'function'
+    ) {
+      return rollbackPreviewInspectorRequirementAutoDecision(attempt.traceId);
+    }
+    if (typeof commitPreviewInspectorRequirementAutoDecision === 'function') {
+      commitPreviewInspectorRequirementAutoDecision(attempt.traceId);
+    }
+    return false;
+  }
   if (
     attempt?.autoMode !== 'target-guided-auto' ||
     attempt.settledAt === undefined ||
@@ -145,8 +164,27 @@ function resumePreviewInspectorTargetReachabilityAfterAutoAttempt(attempt) {
   if (typeof reachabilityKey !== 'string') return false;
   const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
   if (state === undefined) return false;
-  rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state);
+  const rolledBack = rollbackPreviewInspectorNoProgressTargetAutoAttempt(attempt, state);
   attempt.targetReachabilityResumeHandled = true;
+  if (rolledBack) {
+    /*
+     * A no-progress JSX gate was removed and session-rejected successfully. That rollback changes
+     * renderConditionRevision, but the mounted reachability probe is keyed by probeRevision; without
+     * advancing it React keeps the corridor parked at recovering-after-rejected-gate indefinitely.
+     * Re-probe after the rollback commit so the next non-rejected gate, requirement frontier, or
+     * compiler-proven contextual target fallback can proceed. A failed target-prop transaction is
+     * intentionally terminal and retains its existing resolver-rolled-back circuit instead.
+     */
+    if (attempt.autoMode !== 'target-guided-auto') return false;
+    state.exhausted = false;
+    state.idlePasses = 0;
+    state.probeRevision = Number.isSafeInteger(state.probeRevision)
+      ? state.probeRevision + 1
+      : 1;
+    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
+    return true;
+  }
   if (['page-blocked', 'reached', 'target-only'].includes(state.status)) return false;
   state.status = 'probing';
   state.probeRevision = Number.isSafeInteger(state.probeRevision)

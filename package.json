@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1256",
+  "version": "0.1.1278",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -153,6 +153,7 @@
     "check": "npm run check:lines && npm run typecheck && npm run lint && npm run format:check && npm test && npm run build",
     "package:vsix": "npm run check && node ./scripts/package-vsix.mjs",
     "preview:headless-routes": "node ./scripts/preview-headless-routes.mjs",
+    "preview:headless-tsx-triage": "node ./scripts/preview-headless-tsx-triage.mjs",
     "preview:prepare-snapshot": "node ./scripts/prepare-preview-immutable-snapshot.mjs",
     "preview:snapshot-inventory": "node ./scripts/preview-snapshot-inventory.mjs",
     "preview:verify-snapshot": "node ./scripts/verify-preview-immutable-snapshot.mjs"

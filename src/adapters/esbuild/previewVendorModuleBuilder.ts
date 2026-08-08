@@ -22,7 +22,7 @@ interface PreviewVendorDemand {
 }
 
 /** Invalidates persisted vendor outputs whenever the browser-module closure contract changes. */
-const PREVIEW_VENDOR_BUILD_SCHEMA = 2;
+const PREVIEW_VENDOR_BUILD_SCHEMA = 3;
 
 export interface PreviewVendorBuildOutput {
   readonly chunks: readonly PreviewBundleChunk[];
@@ -118,7 +118,14 @@ function collectExternalModuleSpecifiers(metafile: Metafile): readonly string[] 
   const specifiers = new Set<string>();
   for (const output of Object.values(metafile.outputs)) {
     for (const imported of output.imports) {
-      if (imported.external && isPreviewBareModuleSpecifier(imported.path)) {
+      // Import maps can serve only browser ESM edges. Esbuild deliberately preserves a missing
+      // `require()` inside try/catch for optional peers (for example Framer Motion's Emotion hook);
+      // turning that guarded fallback into an unconditional vendor entry makes a valid app fail.
+      if (
+        imported.external &&
+        (imported.kind === 'import-statement' || imported.kind === 'dynamic-import') &&
+        isPreviewBareModuleSpecifier(imported.path)
+      ) {
         specifiers.add(imported.path);
       }
     }

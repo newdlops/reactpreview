@@ -50,6 +50,11 @@ export function createPreviewInstalledPackageExternalizationPlugin(
         // consume the document's JavaScript import map.
         if (args.kind !== 'import-statement' && args.kind !== 'dynamic-import') return undefined;
         const consumerPath = path.isAbsolute(args.importer) ? args.importer : options.documentPath;
+        // Keep an installed package's dependency closure in one bundle. Splitting an internal
+        // package edge can detach a peer-bound wrapper from the constructors that it re-exports
+        // (for example react-query from query-core), even though each package is valid alone.
+        // Application-owned imports remain eligible for the independently cached vendor seam.
+        if (hasNodeModulesSegment(consumerPath)) return undefined;
         const resolved = options.staticModuleResolver.resolve(args.path, consumerPath);
         if (resolved === undefined || !hasNodeModulesSegment(resolved)) return undefined;
         if (

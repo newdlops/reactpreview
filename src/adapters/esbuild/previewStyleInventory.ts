@@ -64,17 +64,27 @@ export function collectPreviewStyleSignals(
     true,
     getScriptKind(sourcePath),
   );
-  if (hasParseDiagnostics(sourceFile) || !hasStyledComponentsRuntimeImport(sourceFile)) {
+  if (hasParseDiagnostics(sourceFile)) {
     return [];
   }
 
+  const hasStyledComponentsImport = hasStyledComponentsRuntimeImport(sourceFile);
+  const explicitThemePropBindings = collectExplicitThemePropBindings(sourceFile);
+  if (!hasStyledComponentsImport && explicitThemePropBindings.size === 0) {
+    return [];
+  }
   const importerPath = path.normalize(sourcePath);
   const signals: PreviewStyleSignal[] = [];
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
       continue;
     }
-    collectThemeSignals(statement, importerPath, signals);
+    collectThemeSignals(
+      statement,
+      importerPath,
+      signals,
+      hasStyledComponentsImport ? undefined : explicitThemePropBindings,
+    );
     if (signals.length > MAX_STYLE_SIGNALS_PER_SOURCE) {
       return [];
     }
@@ -195,6 +205,7 @@ function collectThemeSignals(
   statement: ts.ImportDeclaration,
   importerPath: string,
   signals: PreviewStyleSignal[],
+  requiredLocalBindings?: ReadonlySet<string>,
 ): void {
   const clause = statement.importClause;
   if (clause === undefined || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
@@ -206,7 +217,11 @@ function collectThemeSignals(
   }
 
   const clauseIsTypeOnly = isTypeOnlyImportClause(clause);
-  if (!clauseIsTypeOnly && clause.name?.text === 'theme') {
+  if (
+    !clauseIsTypeOnly &&
+    clause.name?.text === 'theme' &&
+    (requiredLocalBindings === undefined || requiredLocalBindings.has(clause.name.text))
+  ) {
     signals.push({
       confidence: 'value',
       exportName: 'default',
@@ -223,6 +238,9 @@ function collectThemeSignals(
     if (importedName.text !== 'theme') {
       continue;
     }
+    if (requiredLocalBindings !== undefined && !requiredLocalBindings.has(element.name.text)) {
+      continue;
+    }
     signals.push({
       confidence: clauseIsTypeOnly || element.isTypeOnly ? 'type' : 'value',
       exportName: 'theme',
@@ -230,6 +248,27 @@ function collectThemeSignals(
       moduleSpecifier,
     });
   }
+}
+
+/** Finds exact imported values passed through an authored JSX `theme={binding}` provider prop. */
+function collectExplicitThemePropBindings(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const bindings = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isJsxAttribute(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'theme' &&
+      node.initializer !== undefined &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression !== undefined &&
+      ts.isIdentifier(node.initializer.expression)
+    ) {
+      bindings.add(node.initializer.expression.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return bindings;
 }
 
 /** Resolves relative syntax lexically while leaving aliases and package requests untouched. */

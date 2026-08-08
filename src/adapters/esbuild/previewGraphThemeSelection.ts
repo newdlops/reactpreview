@@ -6,6 +6,7 @@
  */
 import type { PreviewStyleSignal } from './previewStyleInventory';
 import { collectPreviewStyleSignals, selectPreviewGraphTheme } from './previewStyleInventory';
+import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
 const MAX_THEME_SOURCE_FILES = 512;
@@ -28,6 +29,8 @@ export type ResolvePreviewGraphThemeModule = (
 export interface SelectPreviewGraphThemeOptions {
   /** Files that statically prove the selected entry-to-target render corridor. */
   readonly dependencyPaths: readonly string[];
+  /** Full target-to-entry path retained even when execution starts at a safe inner checkpoint. */
+  readonly renderPath?: PreviewRenderChainCandidate;
   /** Byte-bounded current-source reader; editor snapshots should take precedence. */
   readonly readSource: ReadPreviewGraphThemeSource;
   /** Project-aware resolver for tsconfig aliases and extensionless relative imports. */
@@ -47,7 +50,10 @@ export async function selectPreviewGraphThemeImport(
 ): Promise<PreviewThemeImportSelection | undefined> {
   const sourcePaths = [
     ...new Set(
-      options.dependencyPaths.filter((sourcePath) => SOURCE_EXTENSION_PATTERN.test(sourcePath)),
+      [
+        ...collectRenderPathThemeSourcePaths(options.renderPath),
+        ...options.dependencyPaths,
+      ].filter((sourcePath) => SOURCE_EXTENSION_PATTERN.test(sourcePath)),
     ),
   ].slice(0, MAX_THEME_SOURCE_FILES);
   const signals: PreviewStyleSignal[] = [];
@@ -62,7 +68,6 @@ export async function selectPreviewGraphThemeImport(
     for (const source of sources) {
       if (
         source.sourceText === undefined ||
-        !source.sourceText.includes('styled-components') ||
         !source.sourceText.includes('theme')
       ) {
         continue;
@@ -73,6 +78,25 @@ export async function selectPreviewGraphThemeImport(
     }
   }
   return selectPreviewGraphTheme(signals);
+}
+
+/** Keeps outer provider sources eligible after Page Inspector chooses an inner execution root. */
+function collectRenderPathThemeSourcePaths(
+  renderPath: PreviewRenderChainCandidate | undefined,
+): readonly string[] {
+  if (renderPath === undefined) return [];
+  const sourcePaths: string[] = [];
+  for (const step of renderPath.steps) {
+    sourcePaths.push(step.sourcePath);
+    sourcePaths.push(...(step.evidenceSourcePaths ?? []));
+    if (step.invocation?.sourcePath !== undefined) {
+      sourcePaths.push(step.invocation.sourcePath);
+    }
+  }
+  if (renderPath.entryPoint !== undefined) {
+    sourcePaths.push(renderPath.entryPoint.sourcePath);
+  }
+  return sourcePaths;
 }
 
 /** Resolves equivalent authored requests to one stable absolute candidate key and import path. */

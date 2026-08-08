@@ -15,6 +15,7 @@ import { discoverPreviewPortalHostIds } from './previewPortalHostDiscovery';
 import { selectPreviewGraphThemeImport } from './previewGraphThemeSelection';
 import {
   selectPreviewGlobalStyleImports,
+  type PreviewApplicationStyleRoot,
   type PreviewGlobalStyleImportSelection,
 } from './previewGlobalStyleSelection';
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
@@ -36,6 +37,7 @@ export type ReadPreviewStyleContextSource = (
 
 /** Immutable inputs for one target revision's pre-render style preparation. */
 export interface PreparePreviewStyleContextOptions {
+  readonly applicationStyleRoots?: readonly PreviewApplicationStyleRoot[];
   readonly directThemeImport?: PreviewThemeImportSelection;
   readonly inspectorDependencyPaths: readonly string[];
   /** Exact Inspector root; absent for component gallery where a synthetic boundary is used. */
@@ -89,6 +91,10 @@ export async function preparePreviewStyleContext(
     importerPath: options.mountedRoot?.sourcePath ?? options.request.documentPath,
     resolveModule: options.staticModuleResolver.resolve,
   });
+  const applicationStyleRoots = [
+    ...(options.applicationStyleRoots ?? []),
+    ...createConventionalNextPagesStyleRoots(options.projectRoot),
+  ];
   const [themeImport, documentShellEvidence, globalStyleImports, availability] = await Promise.all([
     options.directThemeImport ??
       (options.inspectorDependencyPaths.length === 0
@@ -96,6 +102,7 @@ export async function preparePreviewStyleContext(
         : selectPreviewGraphThemeImport({
             dependencyPaths: options.inspectorDependencyPaths,
             readSource,
+            ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
             resolveModule: options.staticModuleResolver.resolve,
           })),
     discoverPreviewDocumentShell({
@@ -104,6 +111,7 @@ export async function preparePreviewStyleContext(
       workspaceRoot: options.workspaceRoot,
     }),
     selectPreviewGlobalStyleImports({
+      applicationRoots: applicationStyleRoots,
       readSource: readProjectSource,
       ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
       resolveModule: options.staticModuleResolver.resolve,
@@ -151,6 +159,22 @@ export async function preparePreviewStyleContext(
     tailwindCandidateSnapshots,
     ...(themeImport === undefined ? {} : { themeImport }),
   };
+}
+
+/** Supplies strict Next Pages application-shell candidates without scanning the filesystem. */
+function createConventionalNextPagesStyleRoots(
+  projectRoot: string,
+): readonly PreviewApplicationStyleRoot[] {
+  return Object.freeze(
+    ['pages', path.join('src', 'pages')].flatMap((pagesDirectory) =>
+      ['tsx', 'jsx', 'ts', 'js'].map((extension) =>
+        Object.freeze({
+          exportName: 'default',
+          sourcePath: path.join(projectRoot, pagesDirectory, `_app.${extension}`),
+        }),
+      ),
+    ),
+  );
 }
 
 /** Overlays unsaved source text on both authored and canonical filesystem identities. */

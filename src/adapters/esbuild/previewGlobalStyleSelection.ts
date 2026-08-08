@@ -1,5 +1,5 @@
 /**
- * Discovers exported styled-components global styles along one proven application render corridor.
+ * Discovers exported styled-components and Emotion global styles along one proven render corridor.
  * The traversal follows only component bindings used by the selected path, never executes project
  * code, and stays bounded so a large route catalog cannot turn style recovery into a project scan.
  */
@@ -14,7 +14,7 @@ const MAX_GLOBAL_STYLE_MODULES = 32;
 const MAX_GLOBAL_STYLE_IMPORTS = 8;
 const MAX_PENDING_STYLE_MODULES = 128;
 
-/** One exact exported `createGlobalStyle` value safe to mount inside the preview theme boundary. */
+/** One exact exported global-style component safe to mount inside the preview theme boundary. */
 export interface PreviewGlobalStyleImportSelection {
   /** Runtime export name used by the generated inspector root import. */
   readonly exportName: string;
@@ -22,8 +22,16 @@ export interface PreviewGlobalStyleImportSelection {
   readonly moduleSpecifier: string;
 }
 
+/** Exact framework-owned application wrapper whose imports may declare global styles. */
+export interface PreviewApplicationStyleRoot {
+  readonly exportName: string;
+  readonly sourcePath: string;
+}
+
 /** Inputs for bounded component-binding traversal from an entry-connected render candidate. */
 export interface SelectPreviewGlobalStylesOptions {
+  /** Implicit framework wrappers such as Next Pages `_app` or App Router layouts. */
+  readonly applicationRoots?: readonly PreviewApplicationStyleRoot[];
   /** Highest-ranked target-to-entry path selected by Page Inspector. */
   readonly renderPath?: PreviewRenderChainCandidate;
   /** Cached, size-bounded source reader shared with theme discovery. */
@@ -58,8 +66,16 @@ interface GlobalStyleSourceFacts {
   readonly localDeclarations: ReadonlyMap<string, ts.Node>;
   /** Local identifier corresponding to each public export name. */
   readonly localNameByExport: ReadonlyMap<string, string>;
+  /** Named source re-exports keyed by the current module's public export name. */
+  readonly reExportsByExportName: ReadonlyMap<string, ComponentImportBinding>;
+  /** Source modules re-exported with `export *`, resolved only for the active public name. */
+  readonly exportAllModuleSpecifiers: readonly string[];
   /** Local bindings imported as styled-components `createGlobalStyle`. */
   readonly createGlobalStyleNames: ReadonlySet<string>;
+  /** Local bindings imported as Emotion's declarative `Global` component. */
+  readonly emotionGlobalNames: ReadonlySet<string>;
+  /** Namespace bindings imported from Emotion React. */
+  readonly emotionNamespaces: ReadonlySet<string>;
   /** Namespace bindings imported from styled-components. */
   readonly styledComponentNamespaces: ReadonlySet<string>;
 }
@@ -73,8 +89,14 @@ interface GlobalStyleSourceFacts {
 export async function selectPreviewGlobalStyleImports(
   options: SelectPreviewGlobalStylesOptions,
 ): Promise<readonly PreviewGlobalStyleImportSelection[]> {
-  if (options.renderPath === undefined) return [];
-  const pending = createInitialStyleModules(options.renderPath);
+  if (options.renderPath === undefined && (options.applicationRoots?.length ?? 0) === 0) {
+    return [];
+  }
+  const pending =
+    options.renderPath === undefined ? [] : createInitialStyleModules(options.renderPath);
+  for (const root of options.applicationRoots ?? []) {
+    pending.push({ activeNames: [root.exportName], sourcePath: root.sourcePath });
+  }
   const processedNamesByPath = new Map<string, Set<string>>();
   const selectionByIdentity = new Map<string, PreviewGlobalStyleImportSelection>();
   let inspectedModules = 0;
@@ -125,12 +147,40 @@ export async function selectPreviewGlobalStyleImports(
       pending.push({ activeNames: [imported.exportName], sourcePath: resolvedPath });
       if (pending.length >= MAX_PENDING_STYLE_MODULES) break;
     }
+    for (const activeName of unprocessedNames) {
+      const namedReExport = facts.reExportsByExportName.get(activeName);
+      const reExports =
+        namedReExport === undefined
+          ? facts.exportAllModuleSpecifiers.map((moduleSpecifier) => ({
+              exportName: activeName,
+              localName: activeName,
+              moduleSpecifier,
+            }))
+          : [namedReExport];
+      for (const reExport of selectBoundedReExportBindings(reExports)) {
+        const resolvedPath = options.resolveModule(reExport.moduleSpecifier, normalizedPath);
+        if (resolvedPath === undefined) continue;
+        pending.push({ activeNames: [reExport.exportName], sourcePath: resolvedPath });
+        if (pending.length >= MAX_PENDING_STYLE_MODULES) break;
+      }
+      if (pending.length >= MAX_PENDING_STYLE_MODULES) break;
+    }
   }
 
   return [...selectionByIdentity.values()].sort((left, right) => {
     const moduleOrder = compareText(left.moduleSpecifier, right.moduleSpecifier);
     return moduleOrder === 0 ? compareText(left.exportName, right.exportName) : moduleOrder;
   });
+}
+
+/** Keeps exact symbol-named barrel edges, otherwise a small deterministic fallback fan-out. */
+function selectBoundedReExportBindings(
+  bindings: readonly ComponentImportBinding[],
+): readonly ComponentImportBinding[] {
+  const ordered = [...bindings].sort(compareReExportBindings);
+  const exact = ordered.filter((binding) => scoreReExportAffinity(binding) === 0);
+  if (exact.length === 0) return ordered.slice(0, 16);
+  return exact.slice(0, 8);
 }
 
 /** Seeds each corridor source with the declarations and wrappers proven at that exact step. */
@@ -188,6 +238,10 @@ function collectGlobalStyleSourceFacts(sourceFile: ts.SourceFile): GlobalStyleSo
   const localNameByExport = new Map<string, string>();
   const createGlobalStyleNames = new Set<string>();
   const styledComponentNamespaces = new Set<string>();
+  const emotionGlobalNames = new Set<string>();
+  const emotionNamespaces = new Set<string>();
+  const reExportsByExportName = new Map<string, ComponentImportBinding>();
+  const exportAllModuleSpecifiers: string[] = [];
 
   for (const statement of sourceFile.statements) {
     collectImportFacts(
@@ -195,15 +249,27 @@ function collectGlobalStyleSourceFacts(sourceFile: ts.SourceFile): GlobalStyleSo
       importsByLocalName,
       createGlobalStyleNames,
       styledComponentNamespaces,
+      emotionGlobalNames,
+      emotionNamespaces,
     );
     collectDeclarationFacts(statement, localDeclarations, localNameByExport);
-    collectExportFacts(statement, localNameByExport);
+    collectExportFacts(
+      statement,
+      localDeclarations,
+      localNameByExport,
+      reExportsByExportName,
+      exportAllModuleSpecifiers,
+    );
   }
   return {
     createGlobalStyleNames,
+    emotionGlobalNames,
+    emotionNamespaces,
+    exportAllModuleSpecifiers,
     importsByLocalName,
     localDeclarations,
     localNameByExport,
+    reExportsByExportName,
     styledComponentNamespaces,
   };
 }
@@ -214,6 +280,8 @@ function collectImportFacts(
   importsByLocalName: Map<string, ComponentImportBinding>,
   createGlobalStyleNames: Set<string>,
   styledComponentNamespaces: Set<string>,
+  emotionGlobalNames: Set<string>,
+  emotionNamespaces: Set<string>,
 ): void {
   if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
     return;
@@ -235,6 +303,7 @@ function collectImportFacts(
       moduleSpecifier,
     });
     if (moduleSpecifier === 'styled-components') styledComponentNamespaces.add(bindings.name.text);
+    if (moduleSpecifier === '@emotion/react') emotionNamespaces.add(bindings.name.text);
   }
   if (bindings === undefined || !ts.isNamedImports(bindings)) return;
   for (const element of bindings.elements) {
@@ -246,6 +315,9 @@ function collectImportFacts(
     });
     if (moduleSpecifier === 'styled-components' && importedName === 'createGlobalStyle') {
       createGlobalStyleNames.add(element.name.text);
+    }
+    if (moduleSpecifier === '@emotion/react' && importedName === 'Global') {
+      emotionGlobalNames.add(element.name.text);
     }
   }
 }
@@ -276,16 +348,44 @@ function collectDeclarationFacts(
 }
 
 /** Records named re-exports and `export default LocalBinding` aliases. */
-function collectExportFacts(statement: ts.Statement, localNameByExport: Map<string, string>): void {
-  if (
-    ts.isExportAssignment(statement) &&
-    !statement.isExportEquals &&
-    ts.isIdentifier(statement.expression)
-  ) {
-    localNameByExport.set('default', statement.expression.text);
+function collectExportFacts(
+  statement: ts.Statement,
+  localDeclarations: Map<string, ts.Node>,
+  localNameByExport: Map<string, string>,
+  reExportsByExportName: Map<string, ComponentImportBinding>,
+  exportAllModuleSpecifiers: string[],
+): void {
+  if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+    if (ts.isIdentifier(statement.expression)) {
+      localNameByExport.set('default', statement.expression.text);
+    } else {
+      localDeclarations.set('default', statement.expression);
+      localNameByExport.set('default', 'default');
+    }
     return;
   }
-  if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier !== undefined) return;
+  if (!ts.isExportDeclaration(statement)) return;
+  if (
+    statement.moduleSpecifier !== undefined &&
+    ts.isStringLiteralLike(statement.moduleSpecifier)
+  ) {
+    const moduleSpecifier = statement.moduleSpecifier.text;
+    const clause = statement.exportClause;
+    if (clause === undefined) {
+      exportAllModuleSpecifiers.push(moduleSpecifier);
+      return;
+    }
+    if (!ts.isNamedExports(clause)) return;
+    for (const element of clause.elements) {
+      const exportName = element.name.text;
+      reExportsByExportName.set(exportName, {
+        exportName: (element.propertyName ?? element.name).text,
+        localName: exportName,
+        moduleSpecifier,
+      });
+    }
+    return;
+  }
   const clause = statement.exportClause;
   if (clause === undefined || !ts.isNamedExports(clause)) return;
   for (const element of clause.elements) {
@@ -332,23 +432,115 @@ function visitIdentifiers(node: ts.Node, visit: (identifier: ts.Identifier) => v
   });
 }
 
-/** Reports whether a selected declaration is initialized by the proven styled-components factory. */
+/** Reports whether a selected declaration is a statically proven global-style component. */
 function isGlobalStyleDeclaration(declaration: ts.Node, facts: GlobalStyleSourceFacts): boolean {
   const initializer = ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined;
-  if (initializer === undefined) return false;
-  const factory = ts.isTaggedTemplateExpression(initializer)
-    ? initializer.tag
-    : ts.isCallExpression(initializer)
-      ? initializer.expression
+  if (initializer !== undefined) {
+    const factory = ts.isTaggedTemplateExpression(initializer)
+      ? initializer.tag
+      : ts.isCallExpression(initializer)
+        ? initializer.expression
+        : undefined;
+    if (factory !== undefined) {
+      if (ts.isIdentifier(factory) && facts.createGlobalStyleNames.has(factory.text)) return true;
+      if (
+        ts.isPropertyAccessExpression(factory) &&
+        factory.name.text === 'createGlobalStyle' &&
+        ts.isIdentifier(factory.expression) &&
+        facts.styledComponentNamespaces.has(factory.expression.text)
+      ) {
+        return true;
+      }
+    }
+  }
+  return isEmotionGlobalComponentDeclaration(declaration, facts);
+}
+
+/**
+ * Accepts only components whose root return is Emotion's imported `<Global />` value.
+ * Required runtime props are rejected; an empty React props object is safe only when every
+ * destructured field has an authored default.
+ */
+function isEmotionGlobalComponentDeclaration(
+  declaration: ts.Node,
+  facts: GlobalStyleSourceFacts,
+): boolean {
+  const component = readGlobalStyleFunction(declaration);
+  if (component?.body === undefined) return false;
+  if (!hasSafeGlobalStyleParameters(component.parameters)) return false;
+  const returned = readDirectFunctionReturnExpression(component.body);
+  if (returned === undefined) return false;
+  const tag = ts.isJsxSelfClosingElement(returned)
+    ? returned.tagName
+    : ts.isJsxElement(returned)
+      ? returned.openingElement.tagName
       : undefined;
-  if (factory === undefined) return false;
-  if (ts.isIdentifier(factory)) return facts.createGlobalStyleNames.has(factory.text);
+  if (tag === undefined) return false;
+  if (ts.isIdentifier(tag)) return facts.emotionGlobalNames.has(tag.text);
   return (
-    ts.isPropertyAccessExpression(factory) &&
-    factory.name.text === 'createGlobalStyle' &&
-    ts.isIdentifier(factory.expression) &&
-    facts.styledComponentNamespaces.has(factory.expression.text)
+    ts.isPropertyAccessExpression(tag) &&
+    tag.name.text === 'Global' &&
+    ts.isIdentifier(tag.expression) &&
+    facts.emotionNamespaces.has(tag.expression.text)
   );
+}
+
+/** Narrows supported component declarations without following aliases or invoking factories. */
+function readGlobalStyleFunction(
+  declaration: ts.Node,
+): ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | undefined {
+  if (ts.isFunctionDeclaration(declaration) && declaration.body !== undefined) return declaration;
+  if (!ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) {
+    return undefined;
+  }
+  const initializer = unwrapExpression(declaration.initializer);
+  return ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)
+    ? initializer
+    : undefined;
+}
+
+/** Ensures mounting without authored props cannot throw before Emotion receives the styles. */
+function hasSafeGlobalStyleParameters(parameters: readonly ts.ParameterDeclaration[]): boolean {
+  if (parameters.length === 0) return true;
+  const parameter = parameters[0];
+  if (
+    parameters.length !== 1 ||
+    parameter === undefined ||
+    parameter.dotDotDotToken !== undefined ||
+    !ts.isObjectBindingPattern(parameter.name)
+  ) {
+    return false;
+  }
+  return parameter.name.elements.every(
+    (element) => !ts.isOmittedExpression(element) && element.initializer !== undefined,
+  );
+}
+
+/** Reads an expression body or a block containing exactly one direct return statement. */
+function readDirectFunctionReturnExpression(body: ts.ConciseBody): ts.Expression | undefined {
+  if (!ts.isBlock(body)) return unwrapExpression(body);
+  if (body.statements.length !== 1) return undefined;
+  const statement = body.statements[0];
+  return statement !== undefined &&
+    ts.isReturnStatement(statement) &&
+    statement.expression !== undefined
+    ? unwrapExpression(statement.expression)
+    : undefined;
+}
+
+/** Removes syntax-only wrappers around a component initializer or returned JSX value. */
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
 }
 
 /** Reports a normal ECMAScript identifier suitable for declaration lookup. */
@@ -400,10 +592,26 @@ function compareComponentImportBindings(
     : priorityOrder;
 }
 
+/** Prefers a star-reexport module whose path names the exact active public binding. */
+function compareReExportBindings(
+  left: ComponentImportBinding,
+  right: ComponentImportBinding,
+): number {
+  const affinityOrder = scoreReExportAffinity(left) - scoreReExportAffinity(right);
+  return affinityOrder === 0 ? compareComponentImportBindings(left, right) : affinityOrder;
+}
+
+/** Uses only lexical identity to avoid evaluating barrel modules while reducing fan-out. */
+function scoreReExportAffinity(binding: ComponentImportBinding): number {
+  const normalizedName = binding.exportName.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
+  const normalizedSpecifier = binding.moduleSpecifier.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
+  return normalizedName.length > 0 && normalizedSpecifier.includes(normalizedName) ? 0 : 1;
+}
+
 /** Returns a small generic relevance rank without relying on any project-specific identifier. */
 function scoreStyleIdentity(name: string, moduleSpecifier: string): number {
   const identity = `${name} ${moduleSpecifier}`;
-  if (/global[-_ ]?style|style[-_ ]?global/iu.test(identity)) return 0;
+  if (/global[-_ ]?(?:font|style)|style[-_ ]?global|reset[-_ ]?style/iu.test(identity)) return 0;
   if (/app[-_ ]?base|theme[-_ ]?provider/iu.test(identity)) return 1;
   if (/provider|layout|shell|root|app(?:\.[cm]?[jt]sx?)?$/iu.test(identity)) return 2;
   return 10;

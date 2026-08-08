@@ -144,7 +144,7 @@ function chooseStyleSheetPlan(configuration, configurationStatus, plan) {
   return { plan: staticPlan, precedence: 'synthetic' };
 }
 
-function createStyleSheetManagerElement(StyleSheetManager, child, target, plan) {
+function createStyleSheetManagerElement(StyleSheetManager, child, plan) {
   let element = child;
   for (let index = plan.layers.length - 1; index >= 0; index -= 1) {
     const layer = plan.layers[index];
@@ -154,27 +154,18 @@ function createStyleSheetManagerElement(StyleSheetManager, child, target, plan) 
     if (layer.enableVendorPrefixes !== undefined) props.enableVendorPrefixes = layer.enableVendorPrefixes;
     if (layer.shouldForwardProp !== undefined) props.shouldForwardProp = layer.shouldForwardProp;
     if (layer.stylisPlugins !== undefined) props.stylisPlugins = layer.stylisPlugins;
-    if (index === 0) props.target = target;
     element = React.createElement(StyleSheetManager, props, element);
   }
   return element;
 }
 
-/** Prepares an idempotent detached StyleSheetManager target and React wrapper. */
+/** Replays authored StyleSheetManager options without changing its stylesheet ownership. */
 export function preparePreviewStyleSheetBoundary(options) {
   const StyleSheetManager = readStyleSheetManager();
   const selected = chooseStyleSheetPlan(options?.configuration, options?.configurationStatus, options?.plan);
-  let target;
   let activated = false;
   let disposed = false;
   let committed = false;
-  const makeTarget = () => {
-    if (target !== undefined) return target;
-    if (typeof document === 'undefined' || document.head === null || document.head === undefined) return undefined;
-    target = document.createElement('div');
-    target.setAttribute('data-react-preview-styled-components-target', '');
-    return target;
-  };
   const identity = selected.disabled === true || typeof StyleSheetManager !== 'function';
   if (identity) {
     previewStyleSheetRuntimeStatus = selected.disabled === true
@@ -186,39 +177,33 @@ export function preparePreviewStyleSheetBoundary(options) {
   return Object.freeze({
     activate() {
       if (disposed || activated || identity) return;
-      const ownedTarget = makeTarget();
-      if (ownedTarget === undefined) {
-        previewStyleSheetRuntimeStatus = 'unavailable: document.head is not available for StyleSheetManager';
-        return;
-      }
-      document.head.appendChild(ownedTarget);
       activated = true;
       reportPreviewStyleSheetRuntimeHealth('styled-components-boundary-composed', {
         evidence: selected.plan.evidence, layerCount: selected.plan.layers.length,
-        sharedRuntimeChunk: selected.plan.sharedRuntimeChunk, targetOwned: true,
+        sharedRuntimeChunk: selected.plan.sharedRuntimeChunk, targetMode: 'document-default', targetOwned: false,
         vendorPrefixMode: selected.plan.layers.some((layer) => layer.disableVendorPrefixes === true) ? 'disabled' : 'default',
       });
       if (selected.plan.ignoredReasons.length > 0) reportPreviewStyleSheetRuntimeHealth('styled-components-configuration-partial', { ignoredReasons: selected.plan.ignoredReasons.slice(0, 16), selectedFallback: selected.precedence });
     },
     commit() {
-      if (disposed || committed || !activated || target === undefined) return;
+      if (disposed || committed || !activated) return;
       committed = true;
-      const styles = target.querySelectorAll('style');
+      const styles = typeof document === 'undefined'
+        ? []
+        : document.head?.querySelectorAll('style[data-styled]') ?? [];
       let ruleCount = 0;
       for (const style of styles) {
         try { ruleCount += style.sheet?.cssRules?.length ?? 0; } catch { /* cross-origin rules are intentionally opaque */ }
       }
-      reportPreviewStyleSheetRuntimeHealth('styled-components-style-commit', { ruleCount: Math.min(ruleCount, 1000000), styleTagCount: Math.min(styles.length, 1000000), targetOwned: true });
+      reportPreviewStyleSheetRuntimeHealth('styled-components-style-commit', { ruleCount: Math.min(ruleCount, 1000000), styleTagCount: Math.min(styles.length, 1000000), targetMode: 'document-default', targetOwned: false });
     },
     createElement(child) {
       if (identity || disposed) return child;
-      return createStyleSheetManagerElement(StyleSheetManager, child, makeTarget(), selected.plan);
+      return createStyleSheetManagerElement(StyleSheetManager, child, selected.plan);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
-      if (target?.parentNode !== null && target?.parentNode !== undefined) target.parentNode.removeChild(target);
-      target = undefined;
       activated = false;
     },
     readStatus() { return previewStyleSheetRuntimeStatus; },

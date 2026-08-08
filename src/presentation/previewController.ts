@@ -223,6 +223,7 @@ export class PreviewController implements vscode.Disposable {
       },
     );
     const session = new PreviewPanelSession({
+      artifactResourceRoot: this.resourceRoot,
       buildPreview: this.buildPreview,
       callbacks: {
         onDidDispose: this.handleSessionDisposed.bind(this),

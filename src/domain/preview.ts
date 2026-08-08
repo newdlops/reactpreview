@@ -319,6 +319,8 @@ export interface PreviewBundle {
   readonly inspectorSourceGestureSecret?: string;
   /** Browser mappings for package imports intentionally shared outside the per-preview graph. */
   readonly moduleImports?: readonly PreviewBundleModuleImport[];
+  /** Existing project public directory used to recover runtime-computed root-relative assets. */
+  readonly publicAssetRoot?: string;
   /** Complete browser JavaScript entry bundle. */
   readonly javascript: Uint8Array;
   /** Optional stylesheet emitted when the component imports CSS. */
@@ -353,6 +355,8 @@ export interface PreparedPreview {
   readonly contextCoverage?: PreviewContextCoverage;
   /** Input module paths involved in the successful build. */
   readonly dependencies: readonly string[];
+  /** Existing project public directory authorized for passive runtime asset loading. */
+  readonly publicAssetRoot?: string;
   /** Non-fatal diagnostics produced by the compiler. */
   readonly diagnostics: readonly PreviewDiagnostic[];
   /** Optional HMAC key used by the panel to authenticate Inspector source-button gestures. */

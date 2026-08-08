@@ -787,6 +787,7 @@ function serializePreviewRuntimeHookChildShape(
     return JSON.stringify(typeof shape.value === 'string' ? shape.value : propertyName);
   if (shape.kind === 'function') return 'Object.freeze(() => undefined)';
   if (shape.kind === 'component') return 'Object.freeze(() => null)';
+  if (shape.kind === 'element') return JSON.stringify('Preview');
   const properties = Object.entries(shape.properties ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
     .map(

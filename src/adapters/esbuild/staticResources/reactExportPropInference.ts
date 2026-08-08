@@ -53,6 +53,7 @@ export type PreviewInferredPropKind =
   | 'array'
   | 'boolean'
   | 'component'
+  | 'element'
   | 'function'
   | 'graphql-document'
   | 'null'
@@ -1051,6 +1052,10 @@ function addTypeRequirement(
     requirePath(state, path_, 'function', 'type');
     return;
   }
+  if (isReactElementValueTypeSyntax(unwrapped)) {
+    requirePath(state, path_, 'element', 'type');
+    return;
+  }
   if (isReactComponentTypeSyntax(unwrapped)) {
     requirePath(state, path_, 'component', 'type');
     return;
@@ -1139,6 +1144,13 @@ function addTypeRequirement(
     requirePath(state, path_, 'object', 'type');
     return;
   }
+  if (ts.isMappedTypeNode(unwrapped)) {
+    /* A mapped key domain is no safer to populate than Record, but the mapped value still proves
+     * that the required prop itself is an object. Materialize an empty plain object so consumers
+     * such as Object.entries(config) remain executable without inventing application keys. */
+    requirePath(state, path_, 'object', 'type');
+    return;
+  }
   if (ts.isTypeReferenceNode(unwrapped) && ts.isIdentifier(unwrapped.typeName)) {
     const aliasName = unwrapped.typeName.text;
     const alias = localTypes.get(aliasName);
@@ -1193,6 +1205,37 @@ function addTypeRequirement(
   } finally {
     if (activeName !== undefined) activeNames.delete(activeName);
   }
+}
+
+/** Recognizes required React-node values without resolving or executing a library type graph. */
+function isReactElementValueTypeSyntax(typeNode: ts.TypeNode): boolean {
+  if (ts.isTypeReferenceNode(typeNode)) {
+    const rightmostName = ts.isIdentifier(typeNode.typeName)
+      ? typeNode.typeName.text
+      : typeNode.typeName.right.text;
+    if (rightmostName === 'ReactElement' || rightmostName === 'ReactNode') return true;
+    if (
+      rightmostName === 'Element' &&
+      ts.isQualifiedName(typeNode.typeName) &&
+      ts.isIdentifier(typeNode.typeName.left) &&
+      typeNode.typeName.left.text === 'JSX'
+    ) {
+      return true;
+    }
+  }
+  if (!ts.isIndexedAccessTypeNode(typeNode) || !ts.isLiteralTypeNode(typeNode.indexType)) {
+    return false;
+  }
+  const key = readLiteralValue(typeNode.indexType.literal);
+  if (key !== 'children' || !ts.isTypeReferenceNode(typeNode.objectType)) return false;
+  const rightmostName = ts.isIdentifier(typeNode.objectType.typeName)
+    ? typeNode.objectType.typeName.text
+    : typeNode.objectType.typeName.right.text;
+  return (
+    rightmostName === 'ComponentProps' ||
+    rightmostName === 'ComponentPropsWithRef' ||
+    rightmostName === 'ComponentPropsWithoutRef'
+  );
 }
 
 /** Admits only canonical GraphQL document imports, including a directly named local alias. */

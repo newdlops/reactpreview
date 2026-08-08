@@ -93,6 +93,7 @@ export interface PreviewRuntimeHookImportedHelperItemFallback {
     | 'array'
     | 'boolean'
     | 'component'
+    | 'element'
     | 'function'
     | 'graphql-document'
     | 'null'

@@ -128,6 +128,7 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
       Object.defineProperty(component, PREVIEW_AUTOMATIC_COMPONENT_MARKER, { value: true });
       return Object.freeze(component);
     }
+    case 'element': return React.createElement('div', { 'data-react-preview-generated-child': '' });
     case 'function': return function previewAutomaticNoop() { return undefined; };
     case 'graphql-document': return createPreviewAutomaticGraphqlDocument(node, budget, depth + 1);
     case 'null': return null;

@@ -43,6 +43,8 @@ export function createPreviewRuntimeHookDirectUsageFallback(
     called: false,
     callResultBindings: [] as ts.BindingName[],
     conditional: false,
+    emptyRenderable: false,
+    mutableRef: false,
     nullishDefault: false,
     rendered: false,
   };
@@ -72,7 +74,9 @@ export function createPreviewRuntimeHookDirectUsageFallback(
       } else if (isBooleanTestPosition(node, parent)) {
         usage.conditional = true;
       } else if (ts.isJsxExpression(parent) && parent.expression === node) {
-        if (isCallableJsxAttribute(parent.parent)) usage.called = true;
+        if (isPreviewRuntimeHookMutableRefJsxValue(node)) usage.mutableRef = true;
+        else if (isCallableJsxAttribute(parent.parent)) usage.called = true;
+        else if (isPreviewRuntimeHookEmptyRenderableJsxValue(node)) usage.emptyRenderable = true;
         else if (!ts.isJsxAttribute(parent.parent) || isChildrenJsxAttribute(parent.parent)) {
           usage.rendered = true;
         }
@@ -93,11 +97,20 @@ export function createPreviewRuntimeHookDirectUsageFallback(
       label: 'generated no-op function from local call',
     };
   }
+  if (usage.mutableRef) {
+    return {
+      expression: '({ current: null })',
+      label: 'generated mutable React ref',
+    };
+  }
   if (usage.nullishDefault) {
     return { expression: 'undefined', label: 'generated missing value for authored default' };
   }
   if (usage.conditional) {
     return { expression: 'false', label: 'generated boolean from local condition' };
+  }
+  if (usage.emptyRenderable) {
+    return { expression: 'null', label: 'generated empty render value' };
   }
   return usage.rendered
     ? {
@@ -128,6 +141,48 @@ function isCallableJsxAttribute(node: ts.Node): boolean {
 export function isPreviewRuntimeHookCallableJsxValue(expression: ts.Expression): boolean {
   const parent = unwrapParentNode(expression);
   return ts.isJsxExpression(parent) && isCallableJsxAttribute(parent.parent);
+}
+
+/**
+ * Reports whether an exact hook-derived value is assigned to React's special JSX ref attribute.
+ * React mutates object refs during commit, so this syntax is the proof needed to keep only that
+ * generated leaf extensible while surrounding fallback records remain frozen.
+ */
+export function isPreviewRuntimeHookMutableRefJsxValue(expression: ts.Expression): boolean {
+  const parent = unwrapParentNode(expression);
+  return ts.isJsxExpression(parent) &&
+    ts.isJsxAttribute(parent.parent) &&
+    ts.isIdentifier(parent.parent.name) &&
+    parent.parent.name.text === 'ref';
+}
+
+/**
+ * Recognizes JSX slots whose value is rendered as a React node by common component contracts.
+ * A neutral `null` is safer than inventing `{}` for these opaque prop edges because React rejects a
+ * plain object when the receiving component places it in its child tree.
+ */
+export function isPreviewRuntimeHookEmptyRenderableJsxValue(expression: ts.Expression): boolean {
+  const parent = unwrapParentNode(expression);
+  if (
+    !ts.isJsxExpression(parent) ||
+    !ts.isJsxAttribute(parent.parent) ||
+    !ts.isIdentifier(parent.parent.name)
+  ) {
+    return false;
+  }
+  const attributeName = parent.parent.name.text;
+  return /^(?:(?:start|end|menu|expand|collapse|close|open|leading|trailing)?Icon|(?:start|end)?Adornment|avatar|decorator)$/iu.test(
+    attributeName,
+  );
+}
+
+/** Reports whether React consumes this exact expression as ordinary rendered child content. */
+export function isPreviewRuntimeHookRenderedJsxValue(expression: ts.Expression): boolean {
+  const parent = unwrapParentNode(expression);
+  return (
+    ts.isJsxExpression(parent) &&
+    (!ts.isJsxAttribute(parent.parent) || isChildrenJsxAttribute(parent.parent))
+  );
 }
 
 /** Recognizes React's explicit `children` prop as rendered content rather than an opaque prop. */

@@ -17,7 +17,14 @@ import {
   type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
 import { inferPreviewRuntimeHookExpressionGuardPassFallback } from './previewRuntimeHookGuardValue';
+import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
+import {
+  isPreviewRuntimeHookEmptyRenderableJsxValue,
+  isPreviewRuntimeHookMutableRefJsxValue,
+  isPreviewRuntimeHookRenderedJsxValue,
+} from './previewRuntimeHookDirectUsage';
+import { collectPreviewRuntimeHookStateAliases } from './previewRuntimeHookStateAlias';
 
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 const MAXIMUM_ALIAS_COUNT = 32;
@@ -26,6 +33,36 @@ const MAXIMUM_ALIAS_PASSES = 8;
 const MAXIMUM_CHOICE_PATHS = 4;
 const MAXIMUM_USAGE_PATHS = 64;
 const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
+const COLLECTION_ITEM_CALLBACK_METHODS = new Set([
+  'every',
+  'filter',
+  'find',
+  'findIndex',
+  'findLast',
+  'findLastIndex',
+  'flatMap',
+  'forEach',
+  'map',
+  'some',
+  'sort',
+]);
+const COLLECTION_UTILITY_CALLBACK_ARGUMENTS = new Map<string, readonly [number, number]>([
+  ['countBy', [0, 1]],
+  ['every', [0, 1]],
+  ['filter', [0, 1]],
+  ['find', [0, 1]],
+  ['flatMap', [0, 1]],
+  ['forEach', [0, 1]],
+  ['groupBy', [0, 1]],
+  ['keyBy', [0, 1]],
+  ['map', [0, 1]],
+  ['maxBy', [0, 1]],
+  ['minBy', [0, 1]],
+  ['some', [0, 1]],
+  ['sortBy', [0, 1]],
+  ['sumBy', [0, 1]],
+  ['uniqBy', [0, 1]],
+]);
 
 /** One downstream use already normalized for the hook fallback usage-tree serializer. */
 export interface PreviewRuntimeHookAliasUsagePath {
@@ -102,14 +139,23 @@ export function readPreviewRuntimeHookAliasUsagePaths(
   owner: PreviewRuntimeFunction,
   resolveImportedHelperItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
+  resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
 ): readonly PreviewRuntimeHookAliasUsagePath[] {
   const declarations = collectOwnerConstDeclarations(owner);
   const bindingCounts = countBindingNames(declarations);
   const memoBindings = collectReactMemoBindings(identifier.getSourceFile());
   const aliases = collectPreviewRuntimeHookAliasPaths(identifier, owner);
-  if (aliases.size <= 1 && resolveImportedHelperProperty === undefined) return [];
+  if (
+    aliases.size <= 1 &&
+    resolveImportedHelperItem === undefined &&
+    resolveImportedHelperProperty === undefined &&
+    resolveImportedCollectionCallbackItem === undefined
+  ) {
+    return [];
+  }
 
   const usages = new Map<string, PreviewRuntimeHookAliasUsagePath>();
+  appendClosedScalarAliasUsages(identifier, aliases, declarations, bindingCounts, usages);
   const aliasNames = new Set(aliases.keys());
   const visit = (node: ts.Node): void => {
     if (usages.size >= MAXIMUM_USAGE_PATHS) return;
@@ -142,12 +188,7 @@ export function readPreviewRuntimeHookAliasUsagePaths(
       const access = readAliasAccess(node, aliases);
       if (access !== undefined && access.aliasName !== identifier.text) {
         for (const names of access.names) {
-          const usage = normalizeAliasUsage(
-            node,
-            names,
-            identifier.text,
-            identifier.getStart(),
-          );
+          const usage = normalizeAliasUsage(node, names, identifier.text, identifier.getStart());
           if (usage === undefined) continue;
           const terminalKind =
             usage.collectionProperty ?? usage.stringProperty ?? (usage.called ? 'call' : 'value');
@@ -161,6 +202,14 @@ export function readPreviewRuntimeHookAliasUsagePaths(
         identifier.text,
         aliases,
         resolveImportedHelperItem,
+        usages,
+      );
+    }
+    if (ts.isCallExpression(node) && resolveImportedCollectionCallbackItem !== undefined) {
+      appendImportedCollectionCallbackAliasUsage(
+        node,
+        aliases,
+        resolveImportedCollectionCallbackItem,
         usages,
       );
     }
@@ -182,6 +231,130 @@ export function readPreviewRuntimeHookAliasUsagePaths(
 }
 
 /**
+ * Carries a closed-domain scalar selected from an alias's exhaustive control flow back to the hook
+ * path. This is deliberately limited to values marked as render guards by the scalar analyzer;
+ * ordinary comparison-safe placeholders must not overwrite an authored backend value.
+ */
+function appendClosedScalarAliasUsages(
+  root: ts.Identifier,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+  declarations: readonly ts.VariableDeclaration[],
+  bindingCounts: ReadonlyMap<string, number>,
+  usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
+): void {
+  for (const [aliasName, paths] of aliases) {
+    if (
+      aliasName === root.text ||
+      bindingCounts.get(aliasName) !== 1 ||
+      usages.size >= MAXIMUM_USAGE_PATHS
+    ) {
+      continue;
+    }
+    const identifier = declarations
+      .flatMap((declaration) => collectBindingIdentifiers(declaration.name))
+      .find((candidate) => candidate.text === aliasName);
+    if (identifier === undefined) continue;
+    const fallback = inferPreviewRuntimeHookLocalScalarFallback(
+      identifier,
+      identifier.getSourceFile(),
+    );
+    if (fallback?.renderGuard !== true) continue;
+    for (const names of paths) {
+      if (names.length === 0 || names.length > MAXIMUM_ALIAS_DEPTH) continue;
+      const usage: PreviewRuntimeHookAliasUsagePath = Object.freeze({
+        called: false,
+        names: Object.freeze([...names]),
+        renderGuard: true,
+        valueExpression: fallback.expression,
+      });
+      usages.set(`${names.join('.')}\0closed-scalar`, usage);
+    }
+  }
+}
+
+/** Returns identifier leaves from one immutable binding without following initializers. */
+function collectBindingIdentifiers(binding: ts.BindingName): readonly ts.Identifier[] {
+  if (ts.isIdentifier(binding)) return [binding];
+  return binding.elements.flatMap((element) =>
+    ts.isOmittedExpression(element) ? [] : collectBindingIdentifiers(element.name),
+  );
+}
+
+/** Adds item structure proven by an exact imported function used as an Array callback. */
+function appendImportedCollectionCallbackAliasUsage(
+  call: ts.CallExpression,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+  resolveItem: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
+): void {
+  if (call.questionDotToken !== undefined) return;
+  const callee = unwrapPreviewRuntimeExpression(call.expression);
+  if (
+    ts.isPropertyAccessExpression(callee) &&
+    callee.questionDotToken === undefined &&
+    COLLECTION_ITEM_CALLBACK_METHODS.has(callee.name.text)
+  ) {
+    appendImportedCallbackCollectionUsage(
+      callee.expression,
+      call.arguments[0],
+      callee.name.text,
+      aliases,
+      resolveItem,
+      usages,
+    );
+    return;
+  }
+  const utilityName = ts.isIdentifier(callee)
+    ? callee.text
+    : ts.isPropertyAccessExpression(callee) && callee.questionDotToken === undefined
+      ? callee.name.text
+      : undefined;
+  const utilityArguments =
+    utilityName === undefined ? undefined : COLLECTION_UTILITY_CALLBACK_ARGUMENTS.get(utilityName);
+  if (utilityName === undefined || utilityArguments === undefined) return;
+  const [collectionIndex, callbackIndex] = utilityArguments;
+  const collection = call.arguments[collectionIndex];
+  if (collection === undefined || ts.isSpreadElement(collection)) return;
+  appendImportedCallbackCollectionUsage(
+    collection,
+    call.arguments[callbackIndex],
+    utilityName,
+    aliases,
+    resolveItem,
+    usages,
+  );
+}
+
+/** Applies one exact imported callback contract to a syntax-proven collection origin. */
+function appendImportedCallbackCollectionUsage(
+  collection: ts.Expression,
+  callback: ts.Expression | undefined,
+  operationName: string,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+  resolveItem: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
+): void {
+  if (callback === undefined || ts.isSpreadElement(callback)) return;
+  const callbackValue = unwrapPreviewRuntimeExpression(callback);
+  if (!ts.isIdentifier(callbackValue)) return;
+  const item = resolveItem(callbackValue.text, 0);
+  if (item === undefined) return;
+  for (const names of readIdentityPaths(collection, aliases)) {
+    if (names.length > MAXIMUM_ALIAS_DEPTH || usages.size >= MAXIMUM_USAGE_PATHS) continue;
+    const usage = Object.freeze({
+      called: false,
+      collectionItemExpression: item.expression,
+      ...(item.requiredPaths === undefined
+        ? {}
+        : { collectionItemRequiredPaths: Object.freeze([...item.requiredPaths]) }),
+      collectionProperty: operationName,
+      names: Object.freeze([...names]),
+    });
+    usages.set(`${names.join('.')}\0${operationName}\0imported-callback`, usage);
+  }
+}
+
+/**
  * Resolves immutable aliases back to one hook-bound identifier for adjacent analyzers.
  *
  * Object destructuring is retained as a path projection, including a value-choice carrier such as
@@ -195,7 +368,7 @@ export function collectPreviewRuntimeHookAliasPaths(
   const declarations = collectOwnerConstDeclarations(owner);
   const bindingCounts = countBindingNames(declarations);
   const memoBindings = collectReactMemoBindings(identifier.getSourceFile());
-  return propagateAliasPaths(identifier.text, declarations, bindingCounts, memoBindings);
+  return propagateAliasPaths(identifier.text, owner, declarations, bindingCounts, memoBindings);
 }
 
 /**
@@ -217,31 +390,20 @@ function appendImportedHelperPropertyUsages(
   const callee = unwrapPreviewRuntimeExpression(call.expression);
   if (!ts.isIdentifier(callee)) return;
   for (const [parameterIndex, argument] of call.arguments.entries()) {
-    const object = readForwardedObjectLiteral(
-      argument,
-      declarations,
-      bindingCounts,
-      memoBindings,
-    );
+    const object = readForwardedObjectLiteral(argument, declarations, bindingCounts, memoBindings);
     if (object === undefined) continue;
     for (const property of object.properties) {
       if (usages.size >= MAXIMUM_USAGE_PATHS) return;
       const propertyBinding = readForwardedObjectProperty(property, aliases, memoBindings);
       if (propertyBinding === undefined) continue;
-      const fallback = resolveProperty(
-        callee.text,
-        parameterIndex,
-        propertyBinding.propertyName,
-      );
+      const fallback = resolveProperty(callee.text, parameterIndex, propertyBinding.propertyName);
       if (fallback === undefined) continue;
       for (const names of propertyBinding.paths) {
         if (names.length > MAXIMUM_ALIAS_DEPTH) continue;
         const usage: PreviewRuntimeHookAliasUsagePath = Object.freeze({
           called: fallback.kind === 'function',
           names: Object.freeze([...names]),
-          ...(fallback.kind === 'function'
-            ? {}
-            : { valueExpression: fallback.expression }),
+          ...(fallback.kind === 'function' ? {} : { valueExpression: fallback.expression }),
         });
         const terminal =
           fallback.kind === 'function' ? 'imported-helper-callable' : 'imported-helper-value';
@@ -284,9 +446,7 @@ function readForwardedObjectProperty(
 ): { readonly paths: readonly (readonly string[])[]; readonly propertyName: string } | undefined {
   if (ts.isShorthandPropertyAssignment(property)) {
     const paths = aliases.get(property.name.text);
-    return paths === undefined
-      ? undefined
-      : { paths, propertyName: property.name.text };
+    return paths === undefined ? undefined : { paths, propertyName: property.name.text };
   }
   if (!ts.isPropertyAssignment(property)) return undefined;
   const name = property.name;
@@ -408,6 +568,7 @@ function readReactMemoValue(
 /** Repeats a small fixed-point pass until every supported alias has its hook-relative origins. */
 function propagateAliasPaths(
   rootName: string,
+  owner: PreviewRuntimeFunction,
   declarations: readonly ts.VariableDeclaration[],
   bindingCounts: ReadonlyMap<string, number>,
   memoBindings: ReactMemoBindings,
@@ -420,26 +581,27 @@ function propagateAliasPaths(
       const paths = readChoicePaths(declaration.initializer, aliases, memoBindings, 0);
       if (paths.length === 0) continue;
       if (ts.isIdentifier(declaration.name)) {
-        if (
-          aliases.has(declaration.name.text) ||
-          bindingCounts.get(declaration.name.text) !== 1
-        ) {
+        if (aliases.has(declaration.name.text) || bindingCounts.get(declaration.name.text) !== 1) {
           continue;
         }
         aliases.set(declaration.name.text, paths);
         changed = true;
       } else if (ts.isObjectBindingPattern(declaration.name)) {
         changed =
-          appendObjectBindingAliasPaths(
-            declaration.name,
-            paths,
-            aliases,
-            bindingCounts,
-            [],
-            0,
-          ) || changed;
+          appendObjectBindingAliasPaths(declaration.name, paths, aliases, bindingCounts, [], 0) ||
+          changed;
       }
       if (aliases.size >= MAXIMUM_ALIAS_COUNT) break;
+    }
+    for (const [stateName, paths] of collectPreviewRuntimeHookStateAliases({
+      aliases,
+      owner,
+      readOriginPaths: (expression) => readChoicePaths(expression, aliases, memoBindings, 0),
+    })) {
+      if (aliases.size >= MAXIMUM_ALIAS_COUNT) break;
+      if (aliases.has(stateName) || bindingCounts.get(stateName) !== 1) continue;
+      aliases.set(stateName, paths);
+      changed = true;
     }
     if (!changed) break;
   }
@@ -503,7 +665,9 @@ function readBindingPropertyName(element: ts.BindingElement): string | undefined
     property === undefined && ts.isIdentifier(element.name)
       ? element.name.text
       : property !== undefined &&
-          (ts.isIdentifier(property) || ts.isStringLiteral(property) || ts.isNumericLiteral(property))
+          (ts.isIdentifier(property) ||
+            ts.isStringLiteral(property) ||
+            ts.isNumericLiteral(property))
         ? property.text
         : undefined;
   return name === undefined || BLOCKED_PROPERTY_NAMES.has(name) ? undefined : name;
@@ -654,11 +818,19 @@ function normalizeAliasUsage(
     inferPreviewRuntimeSemanticFallback(names.at(-2) ?? rootName)?.label !== 'generated object';
   const guardPass =
     !called && !collection && !stringReceiver
-      ? inferPreviewRuntimeHookExpressionGuardPassFallback(
-          expression,
-          availableBeforePosition,
-        )
+      ? inferPreviewRuntimeHookExpressionGuardPassFallback(expression, availableBeforePosition)
       : undefined;
+  const mutableRef = isPreviewRuntimeHookMutableRefJsxValue(expression);
+  const emptyRenderable = isPreviewRuntimeHookEmptyRenderableJsxValue(expression);
+  const rendered = isPreviewRuntimeHookRenderedJsxValue(expression);
+  const renderedFallback = rendered
+    ? inferPreviewRuntimeSemanticFallback(terminal ?? '')
+    : undefined;
+  const renderedExpression = rendered
+    ? renderedFallback?.kind === 'string' || renderedFallback?.kind === 'number'
+      ? renderedFallback.expression
+      : JSON.stringify(terminal ?? 'value')
+    : undefined;
   return Object.freeze({
     called: !collection && !stringReceiver && called,
     ...(collection && terminal !== undefined ? { collectionProperty: terminal } : {}),
@@ -666,6 +838,11 @@ function normalizeAliasUsage(
     ...(guardPass === undefined
       ? {}
       : { renderGuard: true as const, valueExpression: guardPass.expression }),
+    ...(mutableRef ? { valueExpression: '({ current: null })' } : {}),
+    ...(emptyRenderable ? { valueExpression: 'null' } : {}),
+    ...(renderedExpression === undefined || emptyRenderable
+      ? {}
+      : { valueExpression: renderedExpression }),
     ...(stringReceiver ? { stringProperty: terminal ?? '' } : {}),
   });
 }

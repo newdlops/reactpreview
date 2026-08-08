@@ -11,7 +11,11 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
-import { type PreviewInferredPropShape } from './reactExportPropInference';
+import {
+  inferReactFunctionParameterUsageShape,
+  type PreviewInferredPropShape,
+} from './reactExportPropInference';
+import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 
 const MAX_SOURCE_CHARACTERS = 512 * 1024;
 const MAX_OVERSIZED_SOURCE_CHARACTERS = 32 * 1024 * 1024;
@@ -72,6 +76,11 @@ interface ShapeBudget {
   nodes: number;
 }
 
+/** Controls whether a present authored value may expose optional members without requiring it. */
+interface PreviewRuntimeHookChildTypeShapeOptions {
+  readonly includeOptionalProperties?: boolean;
+}
+
 /** A resolved type declaration retains the module that owns its nested type references. */
 interface ResolvedTypeDeclaration {
   readonly declaration: TypeDeclaration;
@@ -104,6 +113,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
   public collect(
     sourcePath: string,
     sourceText: string,
+    options: PreviewRuntimeHookChildTypeShapeOptions = {},
   ): Readonly<Record<string, PreviewInferredPropShape>> {
     const module = this.readModule(sourcePath, sourceText);
     if (module === undefined) return {};
@@ -111,11 +121,45 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     for (const [exportName, candidate] of collectExportedComponentCandidates(module)) {
       const propsType = readComponentPropsType(candidate, module.localFunctions, new Set());
       if (propsType === undefined) continue;
-      const shape = this.inferShape(propsType, module, module.literalHints, new Set(), {
-        nodes: 0,
-      });
+      const shape = this.inferShape(
+        propsType,
+        module,
+        module.literalHints,
+        new Set(),
+        { nodes: 0 },
+        options.includeOptionalProperties === true,
+      );
       if (shape?.kind !== 'object' || Object.keys(shape.properties ?? {}).length === 0) continue;
       result[exportName] = shape;
+    }
+    return Object.freeze(result);
+  }
+
+  /** Infers exact same-file JSX child contracts without promoting private bindings to exports. */
+  public collectLocal(
+    sourcePath: string,
+    sourceText: string,
+    componentNames: readonly string[],
+    options: PreviewRuntimeHookChildTypeShapeOptions = {},
+  ): Readonly<Record<string, PreviewInferredPropShape>> {
+    const module = this.readModule(sourcePath, sourceText);
+    if (module === undefined || componentNames.length === 0) return {};
+    const result: Record<string, PreviewInferredPropShape> = {};
+    for (const componentName of [...new Set(componentNames)].slice(0, 32)) {
+      const candidate = module.localFunctions.get(componentName);
+      if (candidate === undefined) continue;
+      const propsType = readComponentPropsType(candidate, module.localFunctions, new Set());
+      if (propsType === undefined) continue;
+      const shape = this.inferShape(
+        propsType,
+        module,
+        module.literalHints,
+        new Set(),
+        { nodes: 0 },
+        options.includeOptionalProperties === true,
+      );
+      if (shape?.kind !== 'object' || Object.keys(shape.properties ?? {}).length === 0) continue;
+      result[componentName] = shape;
     }
     return Object.freeze(result);
   }
@@ -180,7 +224,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       directParameterType === undefined
         ? contextualParameter
         : { module: importedModule, type: directParameterType };
-    return parameterType === undefined
+    const typedShape = parameterType === undefined
       ? undefined
       : this.inferShape(
           parameterType.type,
@@ -189,6 +233,11 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
           new Set(),
           { nodes: 0 },
         );
+    return typedShape ?? (
+      functionLike === undefined
+        ? undefined
+        : inferReactFunctionParameterUsageShape(functionLike, parameterIndex)
+    );
   }
 
   /** Resolves callable aliases and call signatures without creating a TypeScript Program. */
@@ -250,11 +299,19 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     consumerHints: ReadonlyMap<string, boolean | number | string>,
     activeTypes: Set<string>,
     budget: ShapeBudget,
+    includeOptionalProperties = false,
   ): PreviewInferredPropShape | undefined {
     if (budget.nodes >= MAX_SHAPE_NODES) return undefined;
     const current = unwrapTypeNode(typeNode);
     if (ts.isTypeOperatorNode(current) && current.operator === ts.SyntaxKind.ReadonlyKeyword) {
-      return this.inferShape(current.type, module, consumerHints, activeTypes, budget);
+      return this.inferShape(
+        current.type,
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+        includeOptionalProperties,
+      );
     }
     const primitive = readPrimitiveShape(current);
     if (primitive !== undefined) return countShape(primitive, budget);
@@ -263,7 +320,14 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     }
     if (isReactComponentType(current)) return countShape({ kind: 'component' }, budget);
     if (ts.isArrayTypeNode(current)) {
-      return this.createArrayShape(current.elementType, module, consumerHints, activeTypes, budget);
+      return this.createArrayShape(
+        current.elementType,
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+        includeOptionalProperties,
+      );
     }
     if (ts.isTupleTypeNode(current)) {
       const element = current.elements.find((candidate) => !ts.isOptionalTypeNode(candidate));
@@ -275,20 +339,42 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
             consumerHints,
             activeTypes,
             budget,
+            includeOptionalProperties,
           );
     }
     if (ts.isUnionTypeNode(current)) {
       for (const member of prioritizeUnionMembers(current.types)) {
-        const inferred = this.inferShape(member, module, consumerHints, activeTypes, budget);
+        const inferred = this.inferShape(
+          member,
+          module,
+          consumerHints,
+          activeTypes,
+          budget,
+          includeOptionalProperties,
+        );
         if (inferred !== undefined) return inferred;
       }
       return undefined;
     }
     if (ts.isIntersectionTypeNode(current)) {
-      return this.mergeObjectTypes(current.types, module, consumerHints, activeTypes, budget);
+      return this.mergeObjectTypes(
+        current.types,
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+        includeOptionalProperties,
+      );
     }
     if (ts.isTypeLiteralNode(current)) {
-      return this.createObjectShape(current.members, module, consumerHints, activeTypes, budget);
+      return this.createObjectShape(
+        current.members,
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+        includeOptionalProperties,
+      );
     }
     if (ts.isIndexedAccessTypeNode(current)) {
       const objectShape = this.inferShape(
@@ -297,6 +383,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
         consumerHints,
         activeTypes,
         budget,
+        includeOptionalProperties,
       );
       if (unwrapTypeNode(current.indexType).kind === ts.SyntaxKind.NumberKeyword) {
         return objectShape?.kind === 'array' ? objectShape.items : undefined;
@@ -305,25 +392,39 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       if (propertyName === undefined) return undefined;
       return objectShape?.kind === 'object' ? objectShape.properties?.[propertyName] : undefined;
     }
-    if (!ts.isTypeReferenceNode(current) || !ts.isIdentifier(current.typeName)) return undefined;
-    const name = current.typeName.text;
+    const reference =
+      ts.isTypeReferenceNode(current) && ts.isIdentifier(current.typeName)
+        ? { name: current.typeName.text, typeArguments: current.typeArguments }
+        : ts.isExpressionWithTypeArguments(current) && ts.isIdentifier(current.expression)
+          ? { name: current.expression.text, typeArguments: current.typeArguments }
+          : undefined;
+    if (reference === undefined) return undefined;
+    const { name } = reference;
     if (
       (name === 'Array' || name === 'ReadonlyArray') &&
-      current.typeArguments?.[0] !== undefined
+      reference.typeArguments?.[0] !== undefined
     ) {
       return this.createArrayShape(
-        current.typeArguments[0],
+        reference.typeArguments[0],
         module,
         consumerHints,
         activeTypes,
         budget,
+        includeOptionalProperties,
       );
     }
     if (
       (name === 'Readonly' || name === 'Required' || name === 'Partial') &&
-      current.typeArguments?.[0] !== undefined
+      reference.typeArguments?.[0] !== undefined
     ) {
-      return this.inferShape(current.typeArguments[0], module, consumerHints, activeTypes, budget);
+      return this.inferShape(
+        reference.typeArguments[0],
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+        includeOptionalProperties,
+      );
     }
     const resolved = this.resolveType(module, name, new Set());
     if (resolved === undefined) return undefined;
@@ -337,6 +438,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
           consumerHints,
           activeTypes,
           budget,
+          includeOptionalProperties,
         )
       : this.inferShape(
           resolved.declaration.type,
@@ -344,6 +446,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
           consumerHints,
           activeTypes,
           budget,
+          includeOptionalProperties,
         );
     activeTypes.delete(identity);
     return shape;
@@ -356,10 +459,18 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     consumerHints: ReadonlyMap<string, boolean | number | string>,
     activeTypes: Set<string>,
     budget: ShapeBudget,
+    includeOptionalProperties: boolean,
   ): PreviewInferredPropShape | undefined {
     if (budget.nodes >= MAX_SHAPE_NODES) return undefined;
     budget.nodes += 1;
-    const items = this.inferShape(elementType, module, consumerHints, activeTypes, budget);
+    const items = this.inferShape(
+      elementType,
+      module,
+      consumerHints,
+      activeTypes,
+      budget,
+      includeOptionalProperties,
+    );
     return Object.freeze({ kind: 'array', ...(items === undefined ? {} : { items }) });
   }
 
@@ -370,6 +481,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     consumerHints: ReadonlyMap<string, boolean | number | string>,
     activeTypes: Set<string>,
     budget: ShapeBudget,
+    includeOptionalProperties: boolean,
   ): PreviewInferredPropShape | undefined {
     const own = this.createObjectShape(
       declaration.members,
@@ -377,11 +489,19 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       consumerHints,
       activeTypes,
       budget,
+      includeOptionalProperties,
     );
     let merged = own;
     for (const heritage of declaration.heritageClauses ?? []) {
       for (const expression of heritage.types) {
-        const inherited = this.inferShape(expression, module, consumerHints, activeTypes, budget);
+        const inherited = this.inferShape(
+          expression,
+          module,
+          consumerHints,
+          activeTypes,
+          budget,
+          includeOptionalProperties,
+        );
         merged = mergePropShapes(merged, inherited);
       }
     }
@@ -395,6 +515,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     consumerHints: ReadonlyMap<string, boolean | number | string>,
     activeTypes: Set<string>,
     budget: ShapeBudget,
+    includeOptionalProperties: boolean,
   ): PreviewInferredPropShape | undefined {
     if (budget.nodes >= MAX_SHAPE_NODES) return undefined;
     budget.nodes += 1;
@@ -402,7 +523,7 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     for (const member of members) {
       const name =
         (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
-        member.questionToken === undefined
+        (includeOptionalProperties || member.questionToken === undefined)
           ? readPropertyName(member.name)
           : undefined;
       if (name === undefined || BLOCKED_PROPERTY_NAMES.has(name)) continue;
@@ -410,13 +531,21 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
       if (ts.isMethodSignature(member)) {
         child = countShape({ kind: 'function' }, budget);
       } else if (ts.isPropertySignature(member) && member.type !== undefined) {
-        child = this.inferShape(member.type, module, consumerHints, activeTypes, budget);
+        child = this.inferShape(
+          member.type,
+          module,
+          consumerHints,
+          activeTypes,
+          budget,
+          includeOptionalProperties,
+        );
       }
-      if (child !== undefined)
+      if (child !== undefined) {
         properties[name] = applyPrimitiveLiteralHint(
-          child,
+          applyPrimitiveSemanticHint(child, name),
           consumerHints.get(name) ?? module.literalHints.get(name),
         );
+      }
       if (budget.nodes >= MAX_SHAPE_NODES) break;
     }
     return Object.freeze({ kind: 'object', properties: Object.freeze(properties) });
@@ -429,12 +558,20 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
     consumerHints: ReadonlyMap<string, boolean | number | string>,
     activeTypes: Set<string>,
     budget: ShapeBudget,
+    includeOptionalProperties: boolean,
   ): PreviewInferredPropShape | undefined {
     let merged: PreviewInferredPropShape | undefined;
     for (const member of members) {
       merged = mergePropShapes(
         merged,
-        this.inferShape(member, module, consumerHints, activeTypes, budget),
+        this.inferShape(
+          member,
+          module,
+          consumerHints,
+          activeTypes,
+          budget,
+          includeOptionalProperties,
+        ),
       );
     }
     return merged;
@@ -716,7 +853,7 @@ function indexTypeDemandModule(sourcePath: string, file: ts.SourceFile): ParsedT
     if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
       localTypes.set(statement.name.text, statement);
       if (hasExportModifier(statement))
-        exports.set(statement.name.text, {
+        exports.set(hasDefaultModifier(statement) ? 'default' : statement.name.text, {
           localName: statement.name.text,
           sourceName: statement.name.text,
         });
@@ -736,6 +873,16 @@ function indexTypeDemandModule(sourcePath: string, file: ts.SourceFile): ParsedT
             : { contextualFunctionType: declaration.type }),
           ...(contextualPropsType === undefined ? {} : { contextualPropsType }),
           initializer: declaration.initializer,
+        });
+      }
+      continue;
+    }
+    if (ts.isExportAssignment(statement)) {
+      const expression = unwrapExpression(statement.expression);
+      if (!statement.isExportEquals && ts.isIdentifier(expression)) {
+        exports.set('default', {
+          localName: expression.text,
+          sourceName: expression.text,
         });
       }
       continue;
@@ -849,7 +996,7 @@ function readRuntimeFunctionLike(
   return result;
 }
 
-/** Merges compatible structural shapes while preserving operation-proven first operands. */
+/** Merges compatible structural shapes while letting an authored child type correct generic usage. */
 export function mergePreviewRuntimeHookChildPropShapes(
   primary: PreviewInferredPropShape | undefined,
   secondary: PreviewInferredPropShape | undefined,
@@ -865,9 +1012,10 @@ function mergePropShapes(
   if (primary === undefined) return secondary;
   if (secondary === undefined) return primary;
   if (primary.kind !== secondary.kind) {
-    return primary.kind === 'object' && Object.keys(primary.properties ?? {}).length === 0
-      ? secondary
-      : primary;
+    // Usage inference deliberately assigns a printable string/object to an otherwise untyped JSX
+    // terminal. A resolved authored prop contract is stronger evidence for its runtime family, so
+    // `data={patient.phoneNumbers}` must remain an Array rather than the label "phoneNumbers".
+    return secondary;
   }
   if (primary.kind === 'array') {
     const items = mergePropShapes(primary.items, secondary.items);
@@ -876,7 +1024,11 @@ function mergePropShapes(
       ...(items === undefined ? {} : { items }),
     });
   }
-  if (primary.kind !== 'object') return primary.value === undefined ? secondary : primary;
+  if (primary.kind !== 'object') {
+    if (primary.exactValue === true) return primary;
+    if (secondary.exactValue === true) return secondary;
+    return primary.value === undefined ? secondary : primary;
+  }
   const properties: Record<string, PreviewInferredPropShape> = { ...(primary.properties ?? {}) };
   for (const [name, child] of Object.entries(secondary.properties ?? {})) {
     const merged = mergePropShapes(properties[name], child);
@@ -947,6 +1099,24 @@ function readPrimitiveExpression(expression: ts.Expression): boolean | number | 
   return undefined;
 }
 
+/** Applies the shared render-safe scalar for a typed field when its authored type agrees. */
+function applyPrimitiveSemanticHint(
+  shape: PreviewInferredPropShape,
+  propertyName: string,
+): PreviewInferredPropShape {
+  if (shape.value !== undefined) return shape;
+  const semantic = inferPreviewRuntimeSemanticFallback(propertyName);
+  if (
+    semantic === undefined ||
+    semantic.kind !== shape.kind ||
+    semantic.value === undefined ||
+    (shape.kind !== 'string' && shape.kind !== 'number' && shape.kind !== 'boolean')
+  ) {
+    return shape;
+  }
+  return Object.freeze({ ...shape, value: semantic.value });
+}
+
 /** Applies a compatible source-proven literal to a neutral primitive type shape. */
 function applyPrimitiveLiteralHint(
   shape: PreviewInferredPropShape,
@@ -962,7 +1132,7 @@ function applyPrimitiveLiteralHint(
   ) {
     return shape;
   }
-  return Object.freeze({ ...shape, value: hint });
+  return Object.freeze({ ...shape, exactValue: true, value: hint });
 }
 
 /** Gives primitive/literal types stable neutral categories and literal values. */
@@ -976,12 +1146,13 @@ function readPrimitiveShape(typeNode: ts.TypeNode): PreviewInferredPropShape | u
   if (typeNode.kind === ts.SyntaxKind.BooleanKeyword) return { kind: 'boolean' };
   if (!ts.isLiteralTypeNode(typeNode)) return undefined;
   if (ts.isStringLiteralLike(typeNode.literal))
-    return { kind: 'string', value: typeNode.literal.text };
+    return { exactValue: true, kind: 'string', value: typeNode.literal.text };
   if (ts.isNumericLiteral(typeNode.literal))
-    return { kind: 'number', value: Number(typeNode.literal.text) };
-  if (typeNode.literal.kind === ts.SyntaxKind.TrueKeyword) return { kind: 'boolean', value: true };
+    return { exactValue: true, kind: 'number', value: Number(typeNode.literal.text) };
+  if (typeNode.literal.kind === ts.SyntaxKind.TrueKeyword)
+    return { exactValue: true, kind: 'boolean', value: true };
   if (typeNode.literal.kind === ts.SyntaxKind.FalseKeyword)
-    return { kind: 'boolean', value: false };
+    return { exactValue: true, kind: 'boolean', value: false };
   return undefined;
 }
 

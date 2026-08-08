@@ -9,6 +9,9 @@
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import type { PreviewRuntimeHookAliasUsagePath } from './previewRuntimeHookAliasUsage';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
+import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+
+const COLLECTION_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
 
 /** Mutable property tree used only while serializing one hook result. */
 interface PreviewRuntimeHookUsageNode {
@@ -16,6 +19,12 @@ interface PreviewRuntimeHookUsageNode {
   readonly children: Map<string, PreviewRuntimeHookUsageNode>;
   /** Static leaf expression, omitted while the node remains an object container. */
   expression?: string;
+  /** Array expression independently proven by direct collection evidence. */
+  collectionExpression?: string;
+  /** Distinct object-shaped item contracts proven by every callback over this collection. */
+  collectionItemExpressions?: string[];
+  /** True only for a terminal ordinary call that an Array can satisfy intrinsically. */
+  terminalOrdinaryCall?: true;
 }
 
 /** Fully serialized shape and the normalized requirement paths that produced it. */
@@ -73,15 +82,16 @@ function deduplicatePreviewRuntimeHookUsagePaths(
         ...(path_.collectionItemRequiredPaths ?? []),
       ]),
     ];
+    const collectionItemExpression = mergePreviewRuntimeHookCollectionItemExpressions(
+      existing.collectionItemExpression,
+      path_.collectionItemExpression,
+    );
     retained.set(key, {
       ...existing,
       ...(existing.callResultExpression === undefined && path_.callResultExpression !== undefined
         ? { callResultExpression: path_.callResultExpression }
         : {}),
-      ...(existing.collectionItemExpression === undefined &&
-      path_.collectionItemExpression !== undefined
-        ? { collectionItemExpression: path_.collectionItemExpression }
-        : {}),
+      ...(collectionItemExpression === undefined ? {} : { collectionItemExpression }),
       ...(itemRequiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
@@ -116,6 +126,19 @@ function deduplicatePreviewRuntimeHookUsagePaths(
           candidate.valueExpression !== undefined),
     );
   });
+}
+
+/** Retains complementary object fields when the same Array operation has multiple proven readers. */
+function mergePreviewRuntimeHookCollectionItemExpressions(
+  existing: string | undefined,
+  next: string | undefined,
+): string | undefined {
+  if (existing === undefined || existing === next) return next ?? existing;
+  if (next === undefined) return existing;
+  return isMergeableCollectionItemObjectExpression(existing) &&
+    isMergeableCollectionItemObjectExpression(next)
+    ? `Object.freeze(Object.assign({}, ${existing}, ${next}))`
+    : existing;
 }
 
 /** Formats receiver evidence as the authored collection access instead of a fake own method. */
@@ -168,6 +191,7 @@ function addUsagePath(
      * constrains the root value. Dropping it serializes `{}` and merely moves failure to `.map()`.
      */
     root.expression = createUsagePathExpression(path_, 'value', root.expression);
+    retainUsageNodeMetadata(root, path_);
     return;
   }
   let current = root;
@@ -180,6 +204,32 @@ function addUsagePath(
     current = child;
     if (index !== path_.names.length - 1) continue;
     current.expression = createUsagePathExpression(path_, propertyName, current.expression);
+    retainUsageNodeMetadata(current, path_);
+  }
+}
+
+/** Retains evidence that can safely supersede compatible callable-object children at serialization. */
+function retainUsageNodeMetadata(
+  node: PreviewRuntimeHookUsageNode,
+  path_: PreviewRuntimeHookAliasUsagePath,
+): void {
+  if (path_.collectionProperty !== undefined) {
+    if (node.expression !== undefined) node.collectionExpression = node.expression;
+    if (path_.collectionItemExpression !== undefined) {
+      const expressions = node.collectionItemExpressions ?? [];
+      if (!expressions.includes(path_.collectionItemExpression) && expressions.length < 16) {
+        expressions.push(path_.collectionItemExpression);
+      }
+      node.collectionItemExpressions = expressions;
+    }
+  }
+  if (
+    path_.called &&
+    path_.collectionProperty === undefined &&
+    path_.stringProperty === undefined &&
+    path_.valueExpression === undefined
+  ) {
+    node.terminalOrdinaryCall = true;
   }
 }
 
@@ -221,11 +271,42 @@ function createPreviewRuntimeSemanticString(propertyName: string): string {
 
 /** Serializes one usage tree into deeply frozen plain containers and inferred leaves. */
 function serializeUsageNode(node: PreviewRuntimeHookUsageNode): string {
-  if (node.children.size === 0) return node.expression ?? 'Object.freeze({})';
+  const collectionExpression = serializeCollectionUsageNode(node);
+  if (node.children.size === 0) {
+    return collectionExpression ?? node.expression ?? 'Object.freeze({})';
+  }
+  if (
+    node.collectionExpression !== undefined &&
+    [...node.children].every(
+      ([propertyName, child]) =>
+        child.children.size === 0 &&
+        child.terminalOrdinaryCall === true &&
+        COLLECTION_METHOD_NAMES.has(propertyName),
+    )
+  ) {
+    return collectionExpression ?? node.collectionExpression;
+  }
   const properties = [...node.children]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(
       ([propertyName, child]) => `${JSON.stringify(propertyName)}: ${serializeUsageNode(child)}`,
     );
   return `Object.freeze({ ${properties.join(', ')} })`;
+}
+
+/** Merges complementary object contracts from multiple callbacks over one exact collection path. */
+function serializeCollectionUsageNode(node: PreviewRuntimeHookUsageNode): string | undefined {
+  const expressions = node.collectionItemExpressions ?? [];
+  if (expressions.length === 0) return node.collectionExpression;
+  if (expressions.length === 1) return `Object.freeze([${expressions[0]}])`;
+  if (!expressions.every(isMergeableCollectionItemObjectExpression)) {
+    const last = expressions.at(-1);
+    return last === undefined ? node.collectionExpression : `Object.freeze([${last}])`;
+  }
+  return `Object.freeze([Object.freeze(Object.assign({}, ${expressions.join(', ')}))])`;
+}
+
+/** Restricts structural merging to expressions generated as frozen plain object records. */
+function isMergeableCollectionItemObjectExpression(expression: string): boolean {
+  return /^Object\.freeze\(\s*(?:\{|Object\.assign\()/u.test(expression);
 }

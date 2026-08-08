@@ -11,6 +11,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import {
   collectReactExportPropInference,
+  collectReactLocalComponentPropInference,
   type PreviewInferredPropShape,
 } from './reactExportPropInference';
 import {
@@ -28,12 +29,13 @@ import {
 } from './previewRuntimeHookSyntax';
 import type { PreviewRuntimeFunction } from './previewRuntimeHookSyntax';
 
-const MAX_COMPONENT_IMPORTS = 16;
+const MAX_COMPONENT_IMPORTS = 32;
 const MAX_PROP_DEMANDS = 32;
 const MAX_PROP_DEPTH = 8;
 const MAX_SOURCE_CHARACTERS = 512 * 1024;
 const SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
 const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
+const BLOCKED_PROP_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Operation-shaped use compatible with the hook analyzer's internal property-path contract. */
 export interface PreviewRuntimeHookChildPropUsage {
@@ -44,6 +46,8 @@ export interface PreviewRuntimeHookChildPropUsage {
   readonly collectionItemRequiredPaths?: readonly string[];
   readonly collectionProperty?: string;
   readonly names: readonly string[];
+  /** Exact authored literal/control-flow evidence that must replace a generic preview scalar. */
+  readonly renderGuard?: true;
   readonly stringProperty?: string;
   /** Static scalar required to keep a reached child's render-only branch dormant. */
   readonly valueExpression?: string;
@@ -83,11 +87,20 @@ interface ImportedComponentBinding {
   readonly moduleSpecifier: string;
 }
 
+/** Optional members are read only when an authored value is already being supplied by its caller. */
+interface PreviewRuntimeHookChildPropDemandCollectOptions {
+  readonly includeOptionalTypes?: boolean;
+}
+
 /**
  * Caches child prop inference for one compilation attempt while keeping every traversal bounded.
  */
 export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
   private readonly inferenceCache = new Map<
+    string,
+    Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> | undefined
+  >();
+  private readonly presentValueInferenceCache = new Map<
     string,
     Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> | undefined
   >();
@@ -100,9 +113,13 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     this.typeDemands = new PreviewRuntimeHookChildTypeDemandResolver(options);
   }
 
-  /** Resolves only component imports rendered by the current source module. */
-  public collect(sourcePath: string, sourceText: string): PreviewRuntimeHookChildPropDemandCatalog {
-    if (!sourceText.includes('<') || !sourceText.includes('import')) return new Map();
+  /** Resolves reached local and imported components rendered by the current source module. */
+  public collect(
+    sourcePath: string,
+    sourceText: string,
+    options: PreviewRuntimeHookChildPropDemandCollectOptions = {},
+  ): PreviewRuntimeHookChildPropDemandCatalog {
+    if (!sourceText.includes('<')) return new Map();
     const sourceFile = ts.createSourceFile(
       sourcePath,
       sourceText,
@@ -118,14 +135,26 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     // Render-prop data is not a hook binding, but its imported child is still an operation-proven
     // consumer. Keep the catalog bounded and syntax-only for that adjacent use as well.
     collectAllUsedJsxComponentBindings(sourceFile, usedComponents);
+    const boundedComponents = [...usedComponents].slice(0, MAX_COMPONENT_IMPORTS);
+    const localInferences = mergeComponentInferences(
+      collectReactLocalComponentPropInference(sourcePath, sourceText, boundedComponents),
+      this.typeDemands.collectLocal(sourcePath, sourceText, boundedComponents, {
+        includeOptionalProperties: options.includeOptionalTypes === true,
+      }),
+    );
     const catalog = new Map<string, ReadonlyMap<string, PreviewInferredPropShape>>();
-    for (const localName of usedComponents) {
+    for (const localName of boundedComponents) {
       if (catalog.size >= MAX_COMPONENT_IMPORTS) break;
-      const imported = imports.get(localName);
-      if (imported === undefined) continue;
-      const resolvedPath = this.options.resolveModule(imported.moduleSpecifier, sourcePath);
-      if (resolvedPath === undefined || !this.isInspectableSource(resolvedPath)) continue;
-      const inference = this.readInference(resolvedPath)?.[imported.exportName];
+      let inference = localInferences[localName];
+      if (inference === undefined) {
+        const imported = imports.get(localName);
+        if (imported === undefined) continue;
+        const resolvedPath = this.options.resolveModule(imported.moduleSpecifier, sourcePath);
+        if (resolvedPath === undefined || !this.isInspectableSource(resolvedPath)) continue;
+        inference = this.readInference(resolvedPath, options.includeOptionalTypes === true)?.[
+          imported.exportName
+        ];
+      }
       const properties = inference?.shape.properties;
       if (properties === undefined || Object.keys(properties).length === 0) continue;
       catalog.set(localName, new Map(Object.entries(properties)));
@@ -181,6 +210,28 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     });
   }
 
+  /** Infers the item contract of an exact imported function used as an Array callback. */
+  public inferImportedCollectionCallbackItemFallback(
+    sourcePath: string,
+    sourceText: string,
+    localName: string,
+    parameterIndex: number,
+  ): PreviewRuntimeHookLocalTypeFallback | undefined {
+    const parameter = this.typeDemands.inferImportedFunctionParameter(
+      sourcePath,
+      sourceText,
+      localName,
+      parameterIndex,
+    );
+    if (parameter === undefined) return undefined;
+    return Object.freeze({
+      expression: serializePreviewRuntimeHookChildShape(parameter, 'item'),
+      kind: parameter.kind,
+      label: 'generated collection item from imported callback parameter',
+      requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(parameter)),
+    });
+  }
+
   /**
    * Infers one named property supplied through an object argument to a direct imported helper.
    *
@@ -216,18 +267,24 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
   /** Reads and caches one resolved component source under strict path and text-size limits. */
   private readInference(
     sourcePath: string,
+    includeOptionalTypes: boolean,
   ): Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> | undefined {
     const normalizedPath = path.normalize(sourcePath);
-    if (this.inferenceCache.has(normalizedPath)) return this.inferenceCache.get(normalizedPath);
+    const cache = includeOptionalTypes
+      ? this.presentValueInferenceCache
+      : this.inferenceCache;
+    if (cache.has(normalizedPath)) return cache.get(normalizedPath);
     const sourceText = this.options.readSource?.(normalizedPath) ?? ts.sys.readFile(normalizedPath);
     const inference =
       sourceText === undefined || sourceText.length > MAX_SOURCE_CHARACTERS
         ? undefined
         : mergeComponentInferences(
             collectReactExportPropInference(normalizedPath, sourceText),
-            this.typeDemands.collect(normalizedPath, sourceText),
+            this.typeDemands.collect(normalizedPath, sourceText, {
+              includeOptionalProperties: includeOptionalTypes,
+            }),
           );
-    this.inferenceCache.set(normalizedPath, inference);
+    cache.set(normalizedPath, inference);
     return inference;
   }
 
@@ -272,6 +329,7 @@ export function readPreviewRuntimeHookChildPropUsages(
   const owner = findNearestPreviewRuntimeFunction(identifier);
   if (owner === undefined) return [];
   const aliases = collectPreviewRuntimeHookAliasPaths(identifier, owner);
+  const spreadObjects = collectPreviewRuntimeHookChildSpreadObjects(owner);
   const usages: PreviewRuntimeHookChildPropUsage[] = [];
   const visit = (node: ts.Node): void => {
     if (usages.length >= MAX_PROP_DEMANDS) return;
@@ -301,6 +359,26 @@ export function readPreviewRuntimeHookChildPropUsages(
       if (shape !== undefined) {
         for (const sourcePath of sourcePaths) {
           appendShapeUsages(shape, sourcePath, [], usages, 0);
+        }
+      }
+    }
+    if (ts.isJsxSpreadAttribute(node)) {
+      const componentName = readJsxAttributesComponentName(node.parent);
+      const object = readPreviewRuntimeHookChildSpreadObject(
+        node.expression,
+        spreadObjects,
+        node.getStart(),
+      );
+      if (componentName !== undefined && object !== undefined) {
+        for (const property of object.properties) {
+          if (usages.length >= MAX_PROP_DEMANDS) break;
+          const forwarded = readPreviewRuntimeHookChildSpreadProperty(property);
+          if (forwarded === undefined) continue;
+          const shape = catalog.get(componentName)?.get(forwarded.propName);
+          if (shape === undefined) continue;
+          for (const sourcePath of readRequiredAliasPaths(forwarded.expression, aliases)) {
+            appendShapeUsages(shape, sourcePath, [], usages, 0);
+          }
         }
       }
     }
@@ -455,12 +533,80 @@ function readHookResultRootName(
 
 /** Reads the owning simple JSX tag for one attribute. */
 function readJsxAttributeComponentName(attribute: ts.JsxAttribute): string | undefined {
-  const attributes = attribute.parent;
+  return readJsxAttributesComponentName(attribute.parent);
+}
+
+/** Reads the owning simple JSX tag shared by ordinary and spread attributes. */
+function readJsxAttributesComponentName(attributes: ts.JsxAttributes): string | undefined {
   const element = attributes.parent;
   return (ts.isJsxOpeningElement(element) || ts.isJsxSelfClosingElement(element)) &&
     ts.isIdentifier(element.tagName)
     ? element.tagName.text
     : undefined;
+}
+
+/** Indexes unique immutable object literals that may be forwarded through one JSX spread. */
+function collectPreviewRuntimeHookChildSpreadObjects(
+  owner: PreviewRuntimeFunction,
+): ReadonlyMap<string, ts.ObjectLiteralExpression> {
+  const objects = new Map<string, ts.ObjectLiteralExpression>();
+  const ambiguous = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isPreviewRuntimeFunction(node)) return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      const value = unwrapPreviewRuntimeExpression(node.initializer);
+      if (ts.isObjectLiteralExpression(value)) {
+        const name = node.name.text;
+        if (objects.has(name)) {
+          objects.delete(name);
+          ambiguous.add(name);
+        } else if (!ambiguous.has(name)) {
+          objects.set(name, value);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  return objects;
+}
+
+/** Resolves a direct or uniquely named const object used by a JSX spread before that use. */
+function readPreviewRuntimeHookChildSpreadObject(
+  expression: ts.Expression,
+  objects: ReadonlyMap<string, ts.ObjectLiteralExpression>,
+  usageStart: number,
+): ts.ObjectLiteralExpression | undefined {
+  const value = unwrapPreviewRuntimeExpression(expression);
+  if (ts.isObjectLiteralExpression(value)) return value;
+  if (!ts.isIdentifier(value)) return undefined;
+  const object = objects.get(value.text);
+  return object !== undefined && object.end <= usageStart ? object : undefined;
+}
+
+/** Reads one prototype-safe identity property from an object forwarded to a child component. */
+function readPreviewRuntimeHookChildSpreadProperty(
+  property: ts.ObjectLiteralElementLike,
+): Readonly<{ expression: ts.Expression; propName: string }> | undefined {
+  if (ts.isShorthandPropertyAssignment(property)) {
+    return BLOCKED_PROP_NAMES.has(property.name.text)
+      ? undefined
+      : { expression: property.name, propName: property.name.text };
+  }
+  if (!ts.isPropertyAssignment(property)) return undefined;
+  const propName =
+    ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)
+      ? property.name.text
+      : undefined;
+  return propName === undefined || BLOCKED_PROP_NAMES.has(propName)
+    ? undefined
+    : { expression: property.initializer, propName };
 }
 
 /** Reads a non-optional identifier/property chain rooted at a proven immutable hook alias. */
@@ -516,6 +662,7 @@ function appendShapeUsages(
     usages.push({
       called: false,
       names,
+      ...(shape.exactValue === true ? { renderGuard: true as const } : {}),
       valueExpression: serializePreviewRuntimeHookChildShape(shape, names.at(-1) ?? 'value'),
     });
     return;
@@ -527,6 +674,7 @@ function appendShapeUsages(
         : {
             called: false,
             names,
+            ...(shape.exactValue === true ? { renderGuard: true as const } : {}),
             valueExpression: serializePreviewRuntimeHookChildShape(shape, names.at(-1) ?? 'value'),
           },
     );
@@ -570,6 +718,9 @@ function deduplicateUsages(
       ...(requiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(requiredPaths) }),
+      ...(existing.renderGuard === true || usage.renderGuard !== true
+        ? {}
+        : { renderGuard: true as const }),
     });
   }
   return [...retained.values()];

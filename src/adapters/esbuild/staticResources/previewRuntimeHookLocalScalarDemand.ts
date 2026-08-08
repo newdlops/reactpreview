@@ -39,6 +39,8 @@ export interface PreviewRuntimeHookLocalScalarFallback {
   readonly expression: string;
   /** Concise reason displayed in generated-value diagnostics. */
   readonly label: string;
+  /** The literal is required to avoid an authored closed fallthrough that blocks rendering. */
+  readonly renderGuard?: true;
 }
 
 /** Directly callable same-file function with an unambiguous authored name. */
@@ -155,7 +157,87 @@ function analyzeFunctionScope(
   const aliases = collectIdentityAliases(scope, trackedName);
   const knownValues = collectKnownLocalValues(scope, parameterValues);
   collectParameterTypeCandidates(scope, trackedName, aliases, state);
+  collectClosedFallthroughCandidates(scope, trackedName, aliases, state);
   visitReachableNode(scope, scope, trackedName, aliases, knownValues, depth, state);
+}
+
+/**
+ * Selects a literal branch when every value that misses the authored equality corridor reaches a
+ * terminal throw. Generic comparison-safe text is actively harmful in this shape: it skips every
+ * accepted state and lands in the exhaustive `never` assertion. Only a direct equality whose
+ * branch exits before the final throw is admitted, and the latest such branch wins so nested
+ * prerequisite guards remain undisturbed.
+ */
+function collectClosedFallthroughCandidates(
+  scope: PreviewRuntimeFunction,
+  trackedName: string,
+  aliases: ReadonlySet<string>,
+  state: AnalysisState,
+): void {
+  const body = scope.body;
+  if (body === undefined || !ts.isBlock(body) || body.statements.length < 2) return;
+  const terminal = body.statements.at(-1);
+  if (terminal === undefined || !statementAlwaysThrows(terminal)) return;
+  let selected:
+    | { readonly expression: string; readonly key: string }
+    | undefined;
+  for (const statement of body.statements.slice(0, -1)) {
+    if (
+      !ts.isIfStatement(statement) ||
+      statement.elseStatement !== undefined ||
+      !statementAlwaysExits(statement.thenStatement)
+    ) {
+      continue;
+    }
+    const literals = readTruthyTrackedEqualityLiterals(
+      statement.expression,
+      trackedName,
+      aliases,
+      state.sourceFile,
+    );
+    const literal = literals.at(-1);
+    if (literal !== undefined) {
+      selected = { expression: literal.expression, key: scalarKey(literal.value) };
+    }
+  }
+  if (selected === undefined) return;
+  addScalarCandidate(state, {
+    expression: selected.expression,
+    key: selected.key,
+    label: 'generated accepted literal before exhaustive throw',
+    rank: 320,
+    renderGuard: true,
+  });
+}
+
+/** Reads equality literals that alone make a direct or disjunctive condition true. */
+function readTruthyTrackedEqualityLiterals(
+  expression: ts.Expression,
+  trackedName: string,
+  aliases: ReadonlySet<string>,
+  sourceFile: ts.SourceFile,
+): readonly { readonly expression: string; readonly value: KnownScalar }[] {
+  const value = unwrapPreviewRuntimeExpression(expression);
+  if (
+    ts.isBinaryExpression(value) &&
+    value.operatorToken.kind === ts.SyntaxKind.BarBarToken
+  ) {
+    return [
+      ...readTruthyTrackedEqualityLiterals(value.left, trackedName, aliases, sourceFile),
+      ...readTruthyTrackedEqualityLiterals(value.right, trackedName, aliases, sourceFile),
+    ];
+  }
+  if (
+    !ts.isBinaryExpression(value) ||
+    (value.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+      value.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsToken)
+  ) {
+    return [];
+  }
+  const compared = readComparedExpression(value, trackedName, aliases);
+  if (compared === undefined) return [];
+  const literal = readStaticScalarExpression(compared, sourceFile);
+  return literal === undefined ? [] : [literal];
 }
 
 /**
@@ -234,6 +316,9 @@ function visitReachableNode(
     return;
   }
   if (ts.isSwitchStatement(node) && isTrackedExpression(node.expression, trackedName, aliases)) {
+    const closedSwitch = node.caseBlock.clauses.some(
+      (clause) => ts.isDefaultClause(clause) && clause.statements.some(statementAlwaysThrows),
+    );
     for (const clause of node.caseBlock.clauses) {
       if (ts.isCaseClause(clause)) {
         const literal = readStaticScalarExpression(clause.expression, state.sourceFile);
@@ -241,8 +326,11 @@ function visitReachableNode(
           addScalarCandidate(state, {
             expression: literal.expression,
             key: scalarKey(literal.value),
-            label: 'generated literal from reachable local helper switch',
-            rank: 220,
+            label: closedSwitch
+              ? 'generated accepted literal before exhaustive switch throw'
+              : 'generated literal from reachable local helper switch',
+            rank: closedSwitch ? 300 : 220,
+            ...(closedSwitch ? { renderGuard: true as const } : {}),
           });
         }
       }
@@ -420,7 +508,11 @@ function selectScalarCandidate(
     })[0];
   return selected === undefined
     ? undefined
-    : { expression: selected.expression, label: selected.label };
+    : {
+        expression: selected.expression,
+        label: selected.label,
+        ...(selected.renderGuard === true ? { renderGuard: true as const } : {}),
+      };
 }
 
 /** Retains one bounded evidence candidate and assigns deterministic source discovery order. */
@@ -772,6 +864,36 @@ function statementBlocksPreview(statement: ts.Statement): boolean {
     statement.elseStatement !== undefined &&
     statementBlocksPreview(statement.thenStatement) &&
     statementBlocksPreview(statement.elseStatement)
+  );
+}
+
+/** Proves that normal control cannot continue after one statement. */
+function statementAlwaysExits(statement: ts.Statement): boolean {
+  if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) return true;
+  if (ts.isBlock(statement)) {
+    const last = statement.statements.at(-1);
+    return last !== undefined && statementAlwaysExits(last);
+  }
+  return (
+    ts.isIfStatement(statement) &&
+    statement.elseStatement !== undefined &&
+    statementAlwaysExits(statement.thenStatement) &&
+    statementAlwaysExits(statement.elseStatement)
+  );
+}
+
+/** Keeps the closed-domain proof specific to an authored unconditional throw. */
+function statementAlwaysThrows(statement: ts.Statement): boolean {
+  if (ts.isThrowStatement(statement)) return true;
+  if (ts.isBlock(statement)) {
+    const last = statement.statements.at(-1);
+    return last !== undefined && statementAlwaysThrows(last);
+  }
+  return (
+    ts.isIfStatement(statement) &&
+    statement.elseStatement !== undefined &&
+    statementAlwaysThrows(statement.thenStatement) &&
+    statementAlwaysThrows(statement.elseStatement)
   );
 }
 

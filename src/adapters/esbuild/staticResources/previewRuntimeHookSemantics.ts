@@ -41,6 +41,18 @@ export function inferPreviewRuntimeSemanticFallback(
     };
   }
   if (
+    /(?:isowner|owneraccess|canaccess|hasaccess|isallowed|haspermission|authorized)$/u.test(
+      normalized,
+    )
+  ) {
+    return {
+      expression: 'true',
+      kind: 'boolean',
+      label: 'generated positive access capability',
+      value: true,
+    };
+  }
+  if (
     /^(?:is|has|can|should|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
     /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended|touched|dirty|pristine|pending|matches)$/u.test(
       normalized,
@@ -73,7 +85,24 @@ export function inferPreviewRuntimeSemanticFallback(
     return { expression: 'Object.freeze([])', kind: 'array', label: 'generated empty list' };
   }
   if (
-    /(?:count|total|index|length|size|page|amount|rate|percent|number|seconds|milliseconds|durationms|timestamp)$/u.test(
+    /(?:At|On|Date|DateTime|Time)$/u.test(semanticName) ||
+    /^(?:date|datetime|time)$/u.test(normalized) ||
+    /^(?:birthdate|dateofbirth|dob)$/u.test(normalized) ||
+    /(?:_at|_on|_date|_datetime|_time)$/u.test(normalized)
+  ) {
+    const value = '2024-01-01T00:00:00.000Z';
+    return {
+      expression: JSON.stringify(value),
+      kind: 'string',
+      label: 'generated ISO date-time',
+      value,
+    };
+  }
+  if (
+    /^(?:count|total|index|length|size|amount|rate|percent|number|num|den|numerator|denominator|price|unitPrice|shares|quantity|seconds|milliseconds|durationMs|timestamp)(?=[A-Z0-9_$]|$)/u.test(
+      semanticName,
+    ) ||
+    /(?:count|total|index|length|size|page|amount|rate|percent|number|num|den|numerator|denominator|price|pricepershare|unitprice|shares|quantity|seconds|milliseconds|durationms|timestamp)$/u.test(
       normalized,
     )
   ) {
@@ -111,7 +140,10 @@ export function inferPreviewRuntimeSemanticFallback(
     };
   }
   if (
-    /(?:value|id|name|title|status|type|kind|code|message|description|text|slug|url|path|email|phone)$/u.test(
+    /^(?:value|id|name|label|title|status|type|kind|code|message|description|text|slug|link|url|path|email|phone)(?=[A-Z0-9_$]|$)/u.test(
+      semanticName,
+    ) ||
+    /(?:value|id|name|label|title|status|type|kind|code|message|description|text|slug|link|url|path|email|phone)$/u.test(
       normalized,
     )
   ) {

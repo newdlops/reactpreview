@@ -10,7 +10,9 @@ import ts from 'typescript';
 import {
   findNearestPreviewRuntimeFunction,
   isPreviewRuntimeFunction,
+  previewRuntimeBindingContainsName,
   unwrapPreviewRuntimeExpression,
+  type PreviewRuntimeFunction,
 } from './previewRuntimeHookSyntax';
 import {
   inferPreviewRuntimeSemanticFallback,
@@ -61,6 +63,142 @@ export function inferPreviewRuntimeHookExpressionGuardPassFallback(
     availableBeforePosition,
     sourceFile,
   );
+}
+
+/**
+ * Infers the closed scalar required after one context-call result is assigned to a stable target.
+ *
+ * This deliberately accepts only `identifier` and non-computed property targets rooted in a
+ * binding owned by the candidate render function. The assignment may occur in a nested callback,
+ * but a shadow on the route from that callback to the owner invalidates the proof. Guards are then
+ * matched by the resolved root binding and exact static property path, not identifier text alone.
+ */
+export function inferPreviewRuntimeHookAssignmentGuardPassFallback(
+  target: ts.Expression,
+  owner: PreviewRuntimeFunction,
+): PreviewRuntimeSemanticFallback | undefined {
+  const tracked = readStaticAssignmentTarget(target);
+  if (tracked === undefined || !isOwnerBindingReachable(target, tracked.root, owner)) {
+    return undefined;
+  }
+  let assignmentCount = 0;
+  let invalidWrite = false;
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isPreviewRuntimeFunction(node)) {
+      if (!isNestedScopeOnTargetRoute(node, target)) return;
+    }
+    if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
+      const written = readStaticAssignmentTarget(node.left);
+      if (
+        written !== undefined &&
+        written.root === tracked.root &&
+        isOwnerBindingReachable(node.left, tracked.root, owner)
+      ) {
+        if (
+          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !sameStaticPath(written.path, tracked.path)
+        ) {
+          invalidWrite = true;
+        } else {
+          assignmentCount += 1;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  if (invalidWrite || assignmentCount !== 1) return undefined;
+  const passValue = inferGuardPassBoolean(owner, (expression) => {
+    const candidate = readStaticAssignmentTarget(expression);
+    return (
+      candidate !== undefined &&
+      candidate.root === tracked.root &&
+      sameStaticPath(candidate.path, tracked.path) &&
+      isOwnerBindingReachable(expression, tracked.root, owner)
+    );
+  });
+  return passValue === undefined ? undefined : createBooleanGuardFallback(passValue);
+}
+
+/** Reads one identifier/property-chain assignment target without admitting computed access. */
+function readStaticAssignmentTarget(
+  expression: ts.Expression,
+): { readonly root: string; readonly path: readonly string[] } | undefined {
+  const current = unwrapPreviewRuntimeExpression(expression);
+  if (ts.isIdentifier(current)) return { root: current.text, path: Object.freeze([]) };
+  if (
+    ts.isPropertyAccessExpression(current) &&
+    current.questionDotToken === undefined
+  ) {
+    const owner = readStaticAssignmentTarget(current.expression);
+    return owner === undefined
+      ? undefined
+      : { root: owner.root, path: Object.freeze([...owner.path, current.name.text]) };
+  }
+  return undefined;
+}
+
+/** Rejects writes and guards whose root is not one unique owner parameter or direct local. */
+function isOwnerBindingReachable(
+  node: ts.Node,
+  root: string,
+  owner: PreviewRuntimeFunction,
+): boolean {
+  let declarations = 0;
+  for (const parameter of owner.parameters) {
+    if (previewRuntimeBindingContainsName(parameter.name, root)) declarations += 1;
+  }
+  visitOwnerDirectNodes(owner, (candidate) => {
+    if (ts.isVariableDeclaration(candidate) && previewRuntimeBindingContainsName(candidate.name, root)) {
+      declarations += 1;
+    }
+  });
+  if (declarations !== 1) return false;
+  let current: ts.Node | undefined = node;
+  while (current !== undefined && current !== owner) {
+    if (isPreviewRuntimeFunction(current) && current !== owner) {
+      if (current.parameters.some((parameter) => previewRuntimeBindingContainsName(parameter.name, root))) {
+        return false;
+      }
+      let shadowed = false;
+      visitOwnerDirectNodes(current, (candidate) => {
+        if (ts.isVariableDeclaration(candidate) && previewRuntimeBindingContainsName(candidate.name, root)) {
+          shadowed = true;
+        }
+      });
+      if (shadowed) return false;
+    }
+    current = current.parent;
+  }
+  return current === owner;
+}
+
+/** Visits one function body while excluding nested runtime scopes. */
+function visitOwnerDirectNodes(scope: PreviewRuntimeFunction, visitor: (node: ts.Node) => void): void {
+  const visit = (node: ts.Node): void => {
+    if (node !== scope && isPreviewRuntimeFunction(node)) return;
+    if (node !== scope) visitor(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+}
+
+/** Retains only nested scopes containing the original assignment while counting its peer writes. */
+function isNestedScopeOnTargetRoute(scope: PreviewRuntimeFunction, target: ts.Node): boolean {
+  let current: ts.Node | undefined = target;
+  while (current !== undefined) {
+    if (current === scope) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+  return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+function sameStaticPath(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
 }
 
 /** Selects one non-conflicting Boolean demanded by every reached early-return condition. */

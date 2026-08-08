@@ -8,7 +8,10 @@
  * or executes code, and fixed traversal limits keep large modules inexpensive.
  */
 import ts from 'typescript';
-import { unwrapPreviewRuntimeExpression } from './previewRuntimeHookSyntax';
+import {
+  unwrapPreviewRuntimeExpression,
+  unwrapPreviewRuntimeParentExpression,
+} from './previewRuntimeHookSyntax';
 
 /** Minimal structural fallback contract shared with the hook instrumentation coordinator. */
 export interface PreviewRuntimeLocalHelperItemFallback {
@@ -28,12 +31,14 @@ export type CreatePreviewRuntimeLocalHelperBindingFallback = (
 
 type RuntimeFunction = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
 
-interface HelperParameterDemand {
+/** Exact same-file helper parameter reached by forwarding one callback item identity. */
+export interface PreviewRuntimeLocalHelperParameterDemand {
   readonly owner: RuntimeFunction;
   readonly parameter: ts.ParameterDeclaration;
 }
 
 const MAX_LOCAL_HELPER_STATES = 16;
+const ITEM_RESULT_COLLECTION_METHODS = new Set(['find', 'findLast']);
 
 /**
  * Infers an array callback item and follows exact item arguments into local helper parameters.
@@ -58,8 +63,14 @@ export function inferPreviewRuntimeLocalHelperArrayItemFallback(
 
   const candidates: PreviewRuntimeLocalHelperItemFallback[] = [];
   appendUniqueFallback(candidates, createBindingFallback(itemParameter.name, sourceFile));
+  if (ITEM_RESULT_COLLECTION_METHODS.has(propertyAccess.name.text)) {
+    const resultBinding = readCollectionItemResultBinding(call);
+    if (resultBinding !== undefined) {
+      appendUniqueFallback(candidates, createBindingFallback(resultBinding, sourceFile));
+    }
+  }
   if (ts.isIdentifier(itemParameter.name)) {
-    for (const demand of collectLocalHelperParameterDemands(
+    for (const demand of collectPreviewRuntimeLocalHelperParameterDemands(
       callback,
       itemParameter.name.text,
       sourceFile,
@@ -68,6 +79,17 @@ export function inferPreviewRuntimeLocalHelperArrayItemFallback(
     }
   }
   return combineLocalHelperItemFallbacks(candidates);
+}
+
+/** Reads one immutable identifier that receives the item-or-undefined result of `find`/`findLast`. */
+function readCollectionItemResultBinding(call: ts.CallExpression): ts.Identifier | undefined {
+  const result = unwrapPreviewRuntimeParentExpression(call);
+  const parent = result.parent;
+  return ts.isVariableDeclaration(parent) &&
+    parent.initializer === result &&
+    ts.isIdentifier(parent.name)
+    ? parent.name
+    : undefined;
 }
 
 /** Adds one structurally distinct candidate without letting repeated helper calls inflate output. */
@@ -84,17 +106,17 @@ function appendUniqueFallback(
 }
 
 /** Follows exact parameter forwarding through a bounded graph of uniquely named local helpers. */
-function collectLocalHelperParameterDemands(
+export function collectPreviewRuntimeLocalHelperParameterDemands(
   callback: RuntimeFunction,
   parameterName: string,
   sourceFile: ts.SourceFile,
-): readonly HelperParameterDemand[] {
+): readonly PreviewRuntimeLocalHelperParameterDemand[] {
   const declarations = collectUniqueLocalRuntimeFunctions(sourceFile);
   const pending: { readonly owner: RuntimeFunction; readonly parameterName: string }[] = [
     { owner: callback, parameterName },
   ];
   const visited = new Set<string>();
-  const demands: HelperParameterDemand[] = [];
+  const demands: PreviewRuntimeLocalHelperParameterDemand[] = [];
   while (pending.length > 0 && visited.size < MAX_LOCAL_HELPER_STATES) {
     const current = pending.shift();
     if (current === undefined) break;
@@ -154,7 +176,7 @@ function collectUniqueLocalRuntimeFunctions(
 }
 
 /** Creates a stable parser-tree identity for one helper parameter without semantic resolution. */
-function createHelperParameterKey(demand: HelperParameterDemand): string {
+function createHelperParameterKey(demand: PreviewRuntimeLocalHelperParameterDemand): string {
   return `${String(demand.owner.pos)}:${String(demand.parameter.pos)}`;
 }
 
@@ -174,8 +196,8 @@ function readDirectLocalHelperParameterDemands(
   owner: RuntimeFunction,
   parameterName: string,
   declarations: ReadonlyMap<string, RuntimeFunction>,
-): readonly HelperParameterDemand[] {
-  const result: HelperParameterDemand[] = [];
+): readonly PreviewRuntimeLocalHelperParameterDemand[] {
+  const result: PreviewRuntimeLocalHelperParameterDemand[] = [];
   const visit = (node: ts.Node): void => {
     if (node !== owner && isRuntimeFunction(node)) return;
     if (ts.isCallExpression(node)) {

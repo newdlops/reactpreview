@@ -11,12 +11,14 @@ import ts from 'typescript';
 /** Minimal structural fallback accepted from the recursive binding analyzer. */
 interface PreviewRuntimeHookBindingFallback {
   readonly expression: string;
+  readonly projectionUnsafe?: true;
   readonly requiredPaths?: readonly string[];
 }
 
 /** Serializable object-spread contribution produced for one rest binding. */
 export interface PreviewRuntimeHookObjectRestFallback {
   readonly expression?: string;
+  readonly projectionUnsafe?: true;
   readonly requiredPaths: readonly string[];
 }
 
@@ -47,6 +49,7 @@ export function createPreviewRuntimeHookObjectRestFallback(
     ? { requiredPaths: [] }
     : {
         expression: `...(${fallback.expression})`,
+        ...(fallback.projectionUnsafe === true ? { projectionUnsafe: true as const } : {}),
         requiredPaths: fallback.requiredPaths ?? [],
       };
 }

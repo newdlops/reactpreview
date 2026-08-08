@@ -35,6 +35,18 @@ export interface PreviewRuntimeHookPropertyUsage {
   readonly optional: boolean;
 }
 
+/** One literal Array index with item-relative property demand on a hook-bound value. */
+export interface PreviewRuntimeHookLiteralElementUsage {
+  /** Whether the final item property is immediately called. */
+  readonly itemCalled: boolean;
+  /** Statically named path below the indexed item. */
+  readonly itemNames: readonly string[];
+  /** Scalar item expression proven by a direct template or React-child sink. */
+  readonly itemValueExpression?: string;
+  /** Property path from the hook-bound identifier to the indexed Array receiver. */
+  readonly receiverNames: readonly string[];
+}
+
 /** Reads one property path without following calls, imports, or computed element keys. */
 export function readPreviewRuntimeHookPropertyUsage(
   expression: ts.PropertyAccessExpression,
@@ -56,6 +68,81 @@ export function readPreviewRuntimeHookPropertyUsage(
     names,
     optional,
   };
+}
+
+/** Reads `value.rows[0].field` as an Array receiver plus one item-relative field path. */
+export function readPreviewRuntimeHookLiteralElementUsage(
+  expression: ts.ElementAccessExpression,
+  identifierName: string,
+): PreviewRuntimeHookLiteralElementUsage | undefined {
+  if (expression.questionDotToken !== undefined || !isSafeArrayIndex(expression.argumentExpression)) {
+    return undefined;
+  }
+  const receiverNames: string[] = [];
+  let receiver = unwrapPreviewRuntimeExpression(expression.expression);
+  while (ts.isPropertyAccessExpression(receiver)) {
+    if (receiver.questionDotToken !== undefined) return undefined;
+    receiverNames.unshift(receiver.name.text);
+    receiver = unwrapPreviewRuntimeExpression(receiver.expression);
+  }
+  if (!ts.isIdentifier(receiver) || receiver.text !== identifierName) {
+    return undefined;
+  }
+  const itemNames: string[] = [];
+  let current: ts.Expression = expression;
+  while (
+    ts.isPropertyAccessExpression(current.parent) &&
+    current.parent.expression === current
+  ) {
+    if (current.parent.questionDotToken !== undefined) return undefined;
+    itemNames.push(current.parent.name.text);
+    current = current.parent;
+  }
+  const itemValueExpression =
+    itemNames.length === 0 ? readPreviewRuntimeHookLiteralElementScalarExpression(current) : undefined;
+  if (itemNames.length === 0 && itemValueExpression === undefined) return undefined;
+  return {
+    itemCalled: ts.isCallExpression(current.parent) && current.parent.expression === current,
+    itemNames: Object.freeze(itemNames),
+    ...(itemValueExpression === undefined ? {} : { itemValueExpression }),
+    receiverNames: Object.freeze(receiverNames),
+  };
+}
+
+/** Uses zero as the smallest scalar accepted by interpolation and ordinary React child rendering. */
+function readPreviewRuntimeHookLiteralElementScalarExpression(
+  expression: ts.Expression,
+): string | undefined {
+  let current = expression;
+  while (
+    (ts.isParenthesizedExpression(current.parent) ||
+      ts.isAsExpression(current.parent) ||
+      ts.isTypeAssertionExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent)) &&
+    current.parent.expression === current
+  ) {
+    current = current.parent;
+  }
+  const parent = current.parent;
+  if (ts.isTemplateSpan(parent) && parent.expression === current) return '0';
+  if (
+    ts.isJsxExpression(parent) &&
+    (!ts.isJsxAttribute(parent.parent) ||
+      (ts.isIdentifier(parent.parent.name) && parent.parent.name.text === 'children'))
+  ) return '0';
+  return undefined;
+}
+
+/** Admits only a bounded non-negative integer literal as static Array-index evidence. */
+function isSafeArrayIndex(argument: ts.Expression | undefined): boolean {
+  if (argument === undefined) return false;
+  const value = unwrapPreviewRuntimeExpression(argument);
+  const text =
+    ts.isNumericLiteral(value) || ts.isStringLiteralLike(value) ? value.text : undefined;
+  if (text === undefined || !/^(?:0|[1-9]\d{0,5})$/u.test(text)) return false;
+  const index = Number(text);
+  return Number.isSafeInteger(index) && index >= 0;
 }
 
 /** Reports whether a named terminal property proves an Array-style receiver in preview code. */

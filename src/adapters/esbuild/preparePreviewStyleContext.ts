@@ -125,31 +125,33 @@ export async function preparePreviewStyleContext(
     ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
     resolveModule: options.staticModuleResolver.resolve,
   });
-  // Critical first paint preserves direct theme, document shell, and page-corridor global styles.
-  // Portal traversal and recursive Tailwind snapshots can touch hundreds of modules, so they run
-  // only in the deferred full pass after a browser artifact has committed.
-  const [portalHostIds, tailwindCandidateSnapshots] =
+  const criticalStyleEvidence =
     (options.styleEvidence ??
       (options.request.preparationMode === 'fast' ? 'critical' : 'workspace-complete')) ===
-    'critical'
-      ? ([[], []] as const)
-      : await Promise.all([
-          discoverPreviewPortalHostIds({
-            dependencyPaths: [
-              options.request.documentPath,
-              ...options.inspectorDependencyPaths,
-              ...options.portalHostDependencyPaths,
-            ],
-            readSource,
-          }),
-          collectPreviewTailwindCandidateSnapshotGraph({
-            corridorPaths: options.inspectorDependencyPaths,
-            readSource: readProjectSource,
-            resolveModule: options.staticModuleResolver.resolve,
-            targetPath: options.request.documentPath,
-            workspaceRoot: options.workspaceRoot,
-          }),
-        ]);
+    'critical';
+  // Critical first paint still needs class candidates from the exact visible page/layout corridor.
+  // It uses a smaller target-first graph; only portal discovery and the broader candidate budget
+  // remain deferred until full enrichment.
+  const [portalHostIds, tailwindCandidateSnapshots] = await Promise.all([
+    criticalStyleEvidence
+      ? Promise.resolve<readonly string[]>(Object.freeze([]))
+      : discoverPreviewPortalHostIds({
+          dependencyPaths: [
+            options.request.documentPath,
+            ...options.inspectorDependencyPaths,
+            ...options.portalHostDependencyPaths,
+          ],
+          readSource,
+        }),
+    collectPreviewTailwindCandidateSnapshotGraph({
+      corridorPaths: options.inspectorDependencyPaths,
+      readSource: readProjectSource,
+      resolveModule: options.staticModuleResolver.resolve,
+      scope: criticalStyleEvidence ? 'critical' : 'complete',
+      targetPath: options.request.documentPath,
+      workspaceRoot: options.workspaceRoot,
+    }),
+  ]);
   return {
     ...(documentShellEvidence === undefined ? {} : { documentShellEvidence }),
     globalStyleImports,

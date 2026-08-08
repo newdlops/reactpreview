@@ -17,6 +17,9 @@ const MAX_CANDIDATE_FILES = 128;
 const MAX_CANDIDATE_BYTES = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const MAX_IMPORT_DEPTH = 8;
+const MAX_CRITICAL_CANDIDATE_FILES = 48;
+const MAX_CRITICAL_CANDIDATE_BYTES = 1536 * 1024;
+const MAX_CRITICAL_IMPORT_DEPTH = 5;
 const MAX_IMPORTS_PER_SOURCE = 32;
 const MAX_DYNAMIC_IMPORTS_PER_SOURCE = 16;
 const SOURCE_EXTENSION_PATTERN = /\.[cm]?[jt]sx?$/iu;
@@ -36,6 +39,8 @@ export interface CollectPreviewTailwindCandidateSnapshotGraphOptions {
   readonly resolveModule: (moduleSpecifier: string, consumerPath: string) => string | undefined;
   /** Current editor file, always explored before the broader page corridor. */
   readonly targetPath: string;
+  /** Critical first paint uses a smaller graph while retaining the exact visible corridor. */
+  readonly scope?: 'complete' | 'critical';
   /** Canonical trusted boundary that every reached source must remain inside. */
   readonly workspaceRoot: string;
 }
@@ -48,30 +53,30 @@ interface CandidateWorkItem {
 /**
  * Reads a target-first, statically proven source graph for Tailwind's native string scanner.
  *
- * The selected target receives its own depth-first pass before page/layout seeds. This avoids a
- * large ancestor inventory consuming the 128-file budget before a directly imported UI component
- * is observed. Type-only imports, bare runtime packages, CSS files, and computed dynamic imports
- * never enter this source graph.
+ * Complete scope gives the selected target a depth-first pass before page/layout seeds. Critical
+ * scope first reserves every exact corridor seed, then expands them breadth-first under its smaller
+ * budget. Type-only imports, bare runtime packages, CSS files, and computed dynamic imports never
+ * enter this source graph.
  */
 export async function collectPreviewTailwindCandidateSnapshotGraph(
   options: CollectPreviewTailwindCandidateSnapshotGraphOptions,
 ): Promise<readonly PreviewSourceSnapshot[]> {
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
+  const critical = options.scope === 'critical';
+  const maximumFiles = critical ? MAX_CRITICAL_CANDIDATE_FILES : MAX_CANDIDATE_FILES;
+  const maximumBytes = critical ? MAX_CRITICAL_CANDIDATE_BYTES : MAX_CANDIDATE_BYTES;
+  const maximumImportDepth = critical ? MAX_CRITICAL_IMPORT_DEPTH : MAX_IMPORT_DEPTH;
   const snapshots: PreviewSourceSnapshot[] = [];
   const visited = new Set<string>();
   let totalBytes = 0;
 
   /**
-   * Explores one seed depth-first. Newly discovered imports are placed ahead of later corridor
-   * seeds, while authored import order remains stable for deterministic CSS candidate output.
+   * Explores one or more seeds with deterministic authored import order. Complete scope places
+   * descendants first; critical scope keeps all exact seeds ahead of their descendants.
    */
-  async function exploreSeed(seedPath: string): Promise<void> {
-    const work: CandidateWorkItem[] = [{ depth: 0, sourcePath: seedPath }];
-    while (
-      work.length > 0 &&
-      snapshots.length < MAX_CANDIDATE_FILES &&
-      totalBytes < MAX_CANDIDATE_BYTES
-    ) {
+  async function exploreSeeds(seedPaths: readonly string[], breadthFirst: boolean): Promise<void> {
+    const work: CandidateWorkItem[] = seedPaths.map((sourcePath) => ({ depth: 0, sourcePath }));
+    while (work.length > 0 && snapshots.length < maximumFiles && totalBytes < maximumBytes) {
       const item = work.shift();
       if (item === undefined) break;
       const canonicalPath = canonicalizeExistingPath(item.sourcePath);
@@ -84,7 +89,7 @@ export async function collectPreviewTailwindCandidateSnapshotGraph(
       }
       visited.add(canonicalPath);
 
-      const remainingBytes = MAX_CANDIDATE_BYTES - totalBytes;
+      const remainingBytes = maximumBytes - totalBytes;
       const sourceText = await options.readSource({
         maximumBytes: Math.min(MAX_SOURCE_BYTES, remainingBytes),
         sourcePath: canonicalPath,
@@ -101,26 +106,33 @@ export async function collectPreviewTailwindCandidateSnapshotGraph(
           sourceText,
         }),
       );
-      if (item.depth >= MAX_IMPORT_DEPTH) continue;
+      if (item.depth >= maximumImportDepth) continue;
 
       const imports = collectRuntimeModuleSpecifiers(canonicalPath, sourceText)
         .map((specifier) => options.resolveModule(specifier, canonicalPath))
         .filter((resolvedPath): resolvedPath is string => resolvedPath !== undefined)
         .filter((resolvedPath) => SOURCE_EXTENSION_PATTERN.test(resolvedPath));
-      work.unshift(
-        ...imports.map((sourcePath) => ({
-          depth: item.depth + 1,
-          sourcePath,
-        })),
-      );
+      const importedItems = imports.map((sourcePath) => ({
+        depth: item.depth + 1,
+        sourcePath,
+      }));
+      if (breadthFirst) work.push(...importedItems);
+      else work.unshift(...importedItems);
     }
   }
 
-  await exploreSeed(options.targetPath);
-  for (const corridorPath of options.corridorPaths) {
-    await exploreSeed(corridorPath);
-    if (snapshots.length >= MAX_CANDIDATE_FILES || totalBytes >= MAX_CANDIDATE_BYTES) {
-      break;
+  if (critical) {
+    /* Reserve first-paint capacity for every exact page/layout seed before following descendants.
+     * A component-heavy target can otherwise consume the entire small budget before the implicit
+     * Next layout contributes viewport, theme, and global-shell utility classes. */
+    await exploreSeeds([options.targetPath, ...options.corridorPaths], true);
+  } else {
+    await exploreSeeds([options.targetPath], false);
+    for (const corridorPath of options.corridorPaths) {
+      await exploreSeeds([corridorPath], false);
+      if (snapshots.length >= maximumFiles || totalBytes >= maximumBytes) {
+        break;
+      }
     }
   }
   return Object.freeze(snapshots);

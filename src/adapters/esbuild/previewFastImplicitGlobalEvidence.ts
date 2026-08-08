@@ -68,7 +68,10 @@ export async function preparePreviewImplicitGlobalEvidence(
   const usesInspectorCorridor =
     options.pageInspector && options.inspectorDependencyPaths.length > 0;
   if (options.fast) {
-    if (!usesInspectorCorridor) return EMPTY_IMPLICIT_GLOBAL_EVIDENCE;
+    const hasCriticalEvidenceSources =
+      options.pageInspector &&
+      (usesInspectorCorridor || options.runtimeDependencyPaths.length > 0);
+    if (!hasCriticalEvidenceSources) return EMPTY_IMPLICIT_GLOBAL_EVIDENCE;
     const selectedSources = await selectFastImplicitGlobalSources(options);
     if (selectedSources.sourcePaths.length === 0) {
       return selectedSources.truncated
@@ -136,7 +139,10 @@ async function selectFastImplicitGlobalSources(
   const priorityByPath = new Map(
     prioritizedPaths.map((sourcePath, index) => [sourcePath, prioritizedPaths.length - index]),
   );
-  const rankedCandidates = normalizeSourcePaths(options.inspectorDependencyPaths)
+  const rankedCandidates = normalizeSourcePaths([
+    ...options.inspectorDependencyPaths,
+    ...options.runtimeDependencyPaths,
+  ])
     .filter(
       (sourcePath) =>
         priorityByPath.has(sourcePath) ||

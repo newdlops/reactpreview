@@ -8,6 +8,7 @@
 const RUNTIME_BOUNDARY_TOKENS = [
   'createContext',
   'formik',
+  'getFragmentData',
   'gql',
   'react-redux',
   'react-router',

@@ -74,6 +74,8 @@ export interface PreviewGlobalPackageBridgeDiscoveryOptions {
   readonly hints?: readonly PreviewGlobalPackageBridgeHint[];
   /** Safety budget applied after rejecting scoped/hyphenated/unsafe dependency names. */
   readonly maxPackageCandidates?: number;
+  /** Canonical dependency layers already admitted by the compiler, including monorepo parents. */
+  readonly nodeModulesPaths?: readonly string[];
   /** Nearest package root selected for the target module's consumer resolution. */
   readonly projectRoot: string;
   /** Exact names proven free by source analysis; manifest metadata alone never enables fallback. */
@@ -121,6 +123,13 @@ export async function discoverPreviewGlobalPackageBridges(
   if (!isPathInside(workspaceRoot, projectRoot)) {
     return createPreviewGlobalPackageBridgePlan({ candidates: [] });
   }
+  const nodeModulesPaths = (
+    await Promise.all(
+      (options.nodeModulesPaths ?? []).map((candidate) =>
+        canonicalizeExistingDirectory(candidate),
+      ),
+    )
+  ).filter((candidate): candidate is string => candidate !== undefined);
 
   const dependencyPaths = new Set(options.evidenceDependencyPaths ?? []);
   const dependencyCandidates: DependencyCandidate[] = [];
@@ -155,7 +164,9 @@ export async function discoverPreviewGlobalPackageBridges(
   });
   const [hintCandidates, installedCandidates, browserCompatibilityCandidates] = await Promise.all([
     Promise.all(
-      (options.hints ?? []).map((hint) => createHintCandidate(hint, projectRoot, workspaceRoot)),
+      (options.hints ?? []).map((hint) =>
+        createHintCandidate(hint, projectRoot, workspaceRoot, nodeModulesPaths),
+      ),
     ),
     Promise.all(
       boundedCandidates.map(async (candidate) => ({
@@ -164,10 +175,17 @@ export async function discoverPreviewGlobalPackageBridges(
           candidate.packageSpecifier,
           projectRoot,
           workspaceRoot,
+          nodeModulesPaths,
         ),
       })),
     ),
-    createBrowserCompatibilityCandidates(options, projectRoot, workspaceRoot, blockedGlobalNames),
+    createBrowserCompatibilityCandidates(
+      options,
+      projectRoot,
+      workspaceRoot,
+      blockedGlobalNames,
+      nodeModulesPaths,
+    ),
   ]);
 
   const candidates: PreviewGlobalPackageBridgeCandidate[] = hintCandidates.filter(
@@ -214,17 +232,16 @@ async function createBrowserCompatibilityCandidates(
   projectRoot: string,
   workspaceRoot: string,
   blockedGlobalNames: ReadonlySet<string>,
+  nodeModulesPaths: readonly string[],
 ): Promise<readonly PreviewGlobalPackageBridgeCandidate[]> {
-  if (
-    options.disableDependencyFallback === true ||
-    blockedGlobalNames.has(BROWSER_BUFFER_GLOBAL_NAME)
-  ) {
+  if (blockedGlobalNames.has(BROWSER_BUFFER_GLOBAL_NAME)) {
     return [];
   }
   const installed = await findInstalledPackageIdentity(
     BROWSER_BUFFER_PACKAGE_NAME,
     projectRoot,
     workspaceRoot,
+    nodeModulesPaths,
   );
   return installed === undefined
     ? []
@@ -246,6 +263,7 @@ async function createHintCandidate(
   hint: PreviewGlobalPackageBridgeHint,
   projectRoot: string,
   workspaceRoot: string,
+  nodeModulesPaths: readonly string[],
 ): Promise<PreviewGlobalPackageBridgeCandidate | undefined> {
   const moduleSpecifier = hint.moduleSpecifier ?? hint.packageSpecifier;
   const exportKind = hint.exportKind ?? 'auto';
@@ -269,6 +287,7 @@ async function createHintCandidate(
     resolveDir,
     projectRoot,
     workspaceRoot,
+    nodeModulesPaths,
   );
   if (watchPath === undefined) {
     return undefined;
@@ -291,17 +310,31 @@ async function resolveHintWatchPath(
   resolveDir: string,
   projectRoot: string,
   workspaceRoot: string,
+  nodeModulesPaths: readonly string[],
 ): Promise<string | undefined> {
   if (hint.watchPath !== undefined) {
-    return await canonicalizeTrustedExistingFile(hint.watchPath, workspaceRoot);
+    return await canonicalizeTrustedExistingFile(
+      hint.watchPath,
+      workspaceRoot,
+      nodeModulesPaths,
+    );
   }
   if (path.isAbsolute(moduleSpecifier)) {
-    return await canonicalizeTrustedExistingFile(moduleSpecifier, workspaceRoot);
+    return await canonicalizeTrustedExistingFile(
+      moduleSpecifier,
+      workspaceRoot,
+      nodeModulesPaths,
+    );
   }
   if (!isSafePackageSpecifier(moduleSpecifier)) {
     return undefined;
   }
-  const installed = await findInstalledPackageIdentity(moduleSpecifier, projectRoot, workspaceRoot);
+  const installed = await findInstalledPackageIdentity(
+    moduleSpecifier,
+    projectRoot,
+    workspaceRoot,
+    nodeModulesPaths,
+  );
   return installed?.manifestPath;
 }
 
@@ -310,13 +343,21 @@ async function findInstalledPackageIdentity(
   packageSpecifier: string,
   projectRoot: string,
   workspaceRoot: string,
+  nodeModulesPaths: readonly string[],
 ): Promise<InstalledPackageIdentity | undefined> {
   const packageName = getRootPackageName(packageSpecifier);
   if (packageName === undefined) {
     return undefined;
   }
-  for (const directoryPath of collectAncestorDirectories(projectRoot, workspaceRoot)) {
-    const manifestPath = path.join(directoryPath, 'node_modules', packageName, 'package.json');
+  const manifestPaths = [
+    ...collectAncestorDirectories(projectRoot, workspaceRoot).map((directoryPath) =>
+      path.join(directoryPath, 'node_modules', packageName, 'package.json'),
+    ),
+    ...nodeModulesPaths.map((nodeModulesPath) =>
+      path.join(nodeModulesPath, packageName, 'package.json'),
+    ),
+  ];
+  for (const manifestPath of new Set(manifestPaths.map((candidate) => path.normalize(candidate)))) {
     if ((await readBoundedPackageManifest(manifestPath)) === undefined) {
       continue;
     }
@@ -476,18 +517,50 @@ function normalizeCandidateBudget(candidate: number | undefined): number {
 async function canonicalizeTrustedExistingFile(
   filePath: string,
   workspaceRoot: string,
+  nodeModulesPaths: readonly string[],
 ): Promise<string | undefined> {
   try {
     const canonicalPath = await canonicalizeExistingFile(filePath);
-    return (await stat(canonicalPath)).isFile() && isPathInside(workspaceRoot, canonicalPath)
-      ? canonicalPath
-      : undefined;
+    if (!(await stat(canonicalPath)).isFile()) return undefined;
+    if (
+      isPathInside(workspaceRoot, canonicalPath) ||
+      nodeModulesPaths.some((nodeModulesPath) => isPathInside(nodeModulesPath, canonicalPath)) ||
+      (await isHoistedProjectNodeModulesPath(workspaceRoot, canonicalPath))
+    ) {
+      return canonicalPath;
+    }
+    return undefined;
   } catch (error) {
     if (isIgnorableMetadataError(error)) {
       return undefined;
     }
     throw error;
   }
+}
+
+/**
+ * Admits ordinary Node hoisting only when the `node_modules` parent is an ancestor package root.
+ * This covers monorepos whose selected editor workspace is a nested package without turning an
+ * arbitrary absolute path into trusted implicit-global code.
+ */
+async function isHoistedProjectNodeModulesPath(
+  workspaceRoot: string,
+  candidatePath: string,
+): Promise<boolean> {
+  let directoryPath = path.dirname(candidatePath);
+  while (directoryPath !== path.dirname(directoryPath)) {
+    if (path.basename(directoryPath) === 'node_modules') {
+      const packageRoot = path.dirname(directoryPath);
+      if (
+        isPathInside(packageRoot, workspaceRoot) &&
+        (await readBoundedPackageManifest(path.join(packageRoot, 'package.json'))) !== undefined
+      ) {
+        return true;
+      }
+    }
+    directoryPath = path.dirname(directoryPath);
+  }
+  return false;
 }
 
 /** Canonicalizes an existing consumer directory while treating transient absence as invalid hint. */

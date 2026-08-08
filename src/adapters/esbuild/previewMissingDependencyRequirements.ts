@@ -79,6 +79,52 @@ export function collectPreviewMissingDependencyRequirements(
 }
 
 /**
+ * Collects safe unresolved roots that may be transitive. Direct declarations are validated here;
+ * undeclared candidates remain provisional until a lock adapter proves a unique path from a safe
+ * direct manifest dependency. This broader list never authorizes a registry request on its own.
+ */
+function collectPreviewLockProvenDependencyCandidates(
+  messages: readonly Message[],
+  profile: PreviewDependencyProfile | undefined,
+): readonly string[] {
+  if (profile?.hasReusableLockEvidence !== true) return Object.freeze([]);
+  const packageNames = new Set<string>();
+  for (const message of messages) {
+    const match = UNRESOLVED_PACKAGE_PATTERN.exec(message.text.trim());
+    const moduleSpecifier = match?.[1];
+    if (moduleSpecifier === undefined || !isSafeBareSpecifier(moduleSpecifier)) continue;
+    const packageName = readPackageRoot(moduleSpecifier);
+    if (packageName === undefined || NODE_BUILTIN_NAMES.has(packageName)) continue;
+    const directSpecifier = findPreviewDependencySpecifier(profile, packageName);
+    const companionSpecifier = findExactReactDomCompanionSpecifier(
+      moduleSpecifier,
+      packageName,
+      profile,
+    );
+    if (
+      packageName === 'react-dom' &&
+      directSpecifier === undefined &&
+      findPreviewReactDomCompanionSpecifier(profile) !== undefined &&
+      companionSpecifier === undefined
+    ) {
+      continue;
+    }
+    if (directSpecifier !== undefined && !isRegistryDependencySpecifier(directSpecifier)) {
+      continue;
+    }
+    if (
+      directSpecifier === undefined &&
+      companionSpecifier !== undefined &&
+      !isRegistryDependencySpecifier(companionSpecifier)
+    ) {
+      continue;
+    }
+    packageNames.add(packageName);
+  }
+  return Object.freeze([...packageNames].sort());
+}
+
+/**
  * Admits React DOM's exact package root only when direct React and reusable lock evidence can
  * identify a matching companion record. Keeping this check on the raw module request prevents the
  * narrow exception from silently widening to arbitrary `react-dom/*` entry points.
@@ -93,11 +139,11 @@ function findExactReactDomCompanionSpecifier(
     : undefined;
 }
 
-/** Acquires one declared unresolved package batch and converts unsupported/network failures to miss. */
+/** Acquires one lock-provable unresolved package batch and converts unsupported failures to miss. */
 export async function tryAcquirePreviewMissingDependencies(
   options: PreviewMissingDependencyAcquisitionOptions,
 ): Promise<boolean> {
-  const requirements = collectPreviewMissingDependencyRequirements(
+  const requirements = collectPreviewLockProvenDependencyCandidates(
     options.errors,
     options.context?.environment.profile,
   );
@@ -127,6 +173,8 @@ export async function tryAcquirePreviewMissingDependencies(
 /** Admits registry ranges and strict npm aliases while rejecting every local or remote source URL. */
 function isRegistryDependencySpecifier(dependencySpecifier: string): boolean {
   const normalizedSpecifier = dependencySpecifier.trim();
+  const virtualRange = /^virtual:[a-f\d]{6,64}#npm:(.+)$/u.exec(normalizedSpecifier)?.[1];
+  if (virtualRange !== undefined) return isRegistryRange(virtualRange);
   if (normalizedSpecifier.startsWith('npm:')) {
     return isStrictNpmAliasSpecifier(normalizedSpecifier.slice('npm:'.length));
   }

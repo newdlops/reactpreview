@@ -284,23 +284,31 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
   const candidate = typeof readSelectedPreviewInspectorPageCandidate === 'function'
     ? readSelectedPreviewInspectorPageCandidate(descriptor)
     : undefined;
-  const reachability = descriptor !== undefined && candidate !== undefined &&
+  const contextModule = typeof readSelectedPreviewInspectorModuleContext === 'function'
+    ? readSelectedPreviewInspectorModuleContext(descriptor)
+    : undefined;
+  const trackedReachability = descriptor !== undefined && candidate !== undefined &&
     typeof readPreviewInspectorTargetReachabilityState === 'function'
     ? readPreviewInspectorTargetReachabilityState(descriptor, candidate)
     : undefined;
+  const standaloneReachability = trackedReachability === undefined && descriptor !== undefined &&
+    typeof readPreviewInspectorStandaloneTargetReachabilityState === 'function'
+    ? readPreviewInspectorStandaloneTargetReachabilityState(descriptor)
+    : undefined;
+  const reachability = trackedReachability ?? standaloneReachability;
   const tree = summarizePreviewInspectorPageCompositionTree(snapshot);
   const targetStage = readPreviewInspectorCompositionTargetStage(reachability, tree);
   const retainedTargetError = typeof readPreviewInspectorRuntimeHealthTargetError === 'function'
     ? readPreviewInspectorRuntimeHealthTargetError(reachability?.targetExportName)
     : undefined;
   const targetOutputError = reachability?.targetOutputError ?? retainedTargetError;
-  const requirementSearch = reachability !== undefined &&
+  const requirementSearch = trackedReachability !== undefined &&
     typeof readPreviewInspectorMinimumRequirementSearch === 'function'
-    ? readPreviewInspectorMinimumRequirementSearch(reachability)
+    ? readPreviewInspectorMinimumRequirementSearch(trackedReachability)
     : undefined;
-  const requirementConvergence = reachability !== undefined &&
+  const requirementConvergence = trackedReachability !== undefined &&
     typeof readPreviewInspectorRequirementConvergence === 'function'
-    ? readPreviewInspectorRequirementConvergence(reachability)
+    ? readPreviewInspectorRequirementConvergence(trackedReachability)
     : undefined;
   const requirementSearchStatus = requirementSearch?.status ??
     (requirementConvergence?.status === 'idle' && targetStage === 'target-output'
@@ -325,7 +333,9 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
   const routeLocation = candidate?.routeLocation;
   const evidenceSourcePath = typeof descriptor?.inspector?.target?.sourcePath === 'string'
     ? descriptor.inspector.target.sourcePath
-    : undefined;
+    : typeof descriptor?.sourcePath === 'string' && descriptor.sourcePath.length > 0
+      ? descriptor.sourcePath
+      : undefined;
   const targetExportName = reachability?.targetExportName ??
     descriptor?.inspector?.target?.exportName ??
     descriptor?.exportName ??
@@ -362,9 +372,16 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
             ? record.requiredPaths.slice(0, 16)
             : [],
         }).slice(0, 1_000));
+  const targetRenderCommitChain = reachability !== undefined &&
+    typeof readPreviewInspectorTargetRenderCommitChain === 'function'
+    ? readPreviewInspectorTargetRenderCommitChain(reachability.key)
+    : undefined;
+  const standalonePageExecution = standaloneReachability !== undefined;
   const pageExecutionCandidateId = typeof descriptor?.inspector?.pageExecutionCandidateId === 'string'
     ? descriptor.inspector.pageExecutionCandidateId
-    : undefined;
+    : standalonePageExecution
+      ? standaloneReachability.candidateId
+      : undefined;
   const pageExecutionCandidate = Array.isArray(descriptor?.inspector?.pageExecutionCandidates)
     ? descriptor.inspector.pageExecutionCandidates.find(
         (item) => item?.id === pageExecutionCandidateId,
@@ -422,6 +439,17 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       stopReason: candidate?.stopReason ?? 'none',
       virtualPage: candidate?.virtualPage,
     },
+    ...(typeof contextModule?.sourcePath !== 'string'
+      ? {}
+      : {
+          contextModule: {
+            evidenceKind: contextModule.evidenceKind,
+            importPathLength: Array.isArray(contextModule.importPath)
+              ? contextModule.importPath.length
+              : 0,
+            sourcePath: contextModule.sourcePath,
+          },
+        }),
     ...(evidenceSourcePath === undefined
       ? {}
       : { evidence: { sourcePath: evidenceSourcePath } }),
@@ -432,17 +460,23 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       executionRootSurfaceId:
         typeof pageExecutionCandidate?.executionRootSurfaceId === 'string'
           ? pageExecutionCandidate.executionRootSurfaceId
-          : '',
+          : standalonePageExecution ? authoredTargetOwner : '',
       fidelity: typeof pageExecutionCandidate?.fidelity === 'string'
         ? pageExecutionCandidate.fidelity
-        : 'none',
+        : standalonePageExecution ? 'target-only' : 'none',
       nestedMountCount: Number.isSafeInteger(pageExecutionCandidate?.nestedMountCount)
         ? Math.max(0, pageExecutionCandidate.nestedMountCount)
         : 0,
+      ownsGeneratedRouter: pageExecutionCandidate?.ownsGeneratedRouter === true,
       runtimeTargetSurfaceId:
         typeof pageExecutionCandidate?.runtimeTargetSurfaceId === 'string'
           ? pageExecutionCandidate.runtimeTargetSurfaceId
-          : '',
+          : standalonePageExecution ? authoredTargetOwner : '',
+      standaloneTarget:
+        pageExecutionCandidate?.standaloneTarget === true || standalonePageExecution,
+      targetRole: typeof pageExecutionCandidate?.targetRole === 'string'
+        ? pageExecutionCandidate.targetRole
+        : 'element',
     },
     route: {
       evidenceKind: routeLocation?.evidenceKind ?? 'none',
@@ -479,6 +513,8 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
         ? reachability.appliedConditions.length
         : 0,
       attempt: Number.isSafeInteger(reachability?.attempt) ? Math.max(0, reachability.attempt) : 0,
+      contextualTargetFallbackRequested:
+        reachability?.contextualTargetFallbackRequested === true,
       directTarget: reachability?.directTarget === true,
       detachedBoundaryOutput: reachability?.targetDetachedBoundaryOutput === true,
       detachedTargetPlacement: reachability?.detachedTargetPlacement ?? '',
@@ -487,11 +523,20 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       ...(typeof targetOutputError?.message === 'string'
         ? { errorMessage: targetOutputError.message.slice(0, 1_200) }
         : {}),
+      ...(typeof targetOutputError?.details === 'string'
+        ? { errorDetails: targetOutputError.details.slice(0, 2_400) }
+        : {}),
+      ...(typeof targetOutputError?.location === 'string'
+        ? { errorLocation: targetOutputError.location.slice(0, 1_024) }
+        : {}),
       ...(typeof targetOutputError?.ownerName === 'string'
         ? { errorOwner: targetOutputError.ownerName.slice(0, 240) }
         : {}),
       ...(typeof targetOutputError?.phase === 'string'
         ? { errorPhase: targetOutputError.phase.slice(0, 240) }
+        : {}),
+      ...(typeof targetOutputError?.stack === 'string'
+        ? { errorStack: targetOutputError.stack.slice(0, 4_000) }
         : {}),
       ...(typeof targetOutputError?.fallbackOwnerName === 'string'
         ? { fallbackOwner: targetOutputError.fallbackOwnerName.slice(0, 240) }
@@ -522,6 +567,8 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
       stage: targetStage,
       status: reachability?.status ?? 'untracked',
       runtimeFallbackSummaries: targetRuntimeFallbackSummaries,
+      targetRenderCommitChain,
+      targetEffectControllerOutput: reachability?.targetEffectControllerOutput === true,
       targetRenderedEmpty: reachability?.targetRenderedEmpty === true,
       wasMounted: reachability?.targetWasMounted === true,
     },
@@ -533,6 +580,7 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
   const digest = JSON.stringify([
     detail.candidate.id,
     detail.candidate.complete,
+    detail.contextModule,
     detail.pageExecution,
     detail.route.pathname,
     detail.targetState.stage,
@@ -541,9 +589,11 @@ function createPreviewInspectorPageCompositionHealthSnapshot(snapshot) {
     detail.targetState.errorMessage,
     detail.targetState.pageRootCommitted,
     detail.targetState.ownershipPhases,
+    detail.targetState.targetEffectControllerOutput,
     detail.targetState.targetRenderedEmpty,
     detail.requirementSearch,
     detail.targetState.runtimeFallbackSummaries,
+    detail.targetState.targetRenderCommitChain,
     tree.rows.map((row) => [row.name, row.state]),
     blockerItems.map((item) => [item.name, item.active]),
     missingPathNames,

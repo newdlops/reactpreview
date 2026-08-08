@@ -79,6 +79,8 @@ function activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget) {
     previewInspectorSession.runtimeFallbacks.delete(fallbackId);
   }
   previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
+  previewInspectorSession.localUiControllers?.clear?.();
+  previewInspectorSession.localUiControllerAttemptKeys?.clear?.();
   const clearedEffectCount = previewInspectorSession.runtimeEffectIsolations.size;
   const clearedExecutionWindowCount = previewInspectorSession.runtimeEffectExecutionWindows.size;
   previewInspectorSession.runtimeEffectIsolations.clear();

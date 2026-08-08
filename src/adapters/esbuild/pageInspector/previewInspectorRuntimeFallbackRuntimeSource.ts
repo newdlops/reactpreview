@@ -8,6 +8,7 @@
 import { createPreviewInspectorGeneratedValueRuntimeSource } from './previewInspectorGeneratedValueRuntimeSource';
 import { createPreviewInspectorBlockerValueRuntimeSource } from './previewInspectorBlockerValueRuntimeSource';
 import { createPreviewInspectorHookGraphqlRuntimeSource } from './previewInspectorHookGraphqlRuntimeSource';
+import { createPreviewInspectorLocalUiControllerRuntimeSource } from './previewInspectorLocalUiControllerRuntimeSource';
 import { createPreviewInspectorOverlayActivationRuntimeSource } from './previewInspectorOverlayActivationRuntimeSource';
 
 /** Maximum distinct hook fallback sites retained by one pinned Inspector session. */
@@ -28,12 +29,14 @@ export function createPreviewInspectorRuntimeFallbackRuntimeSource(): string {
   const generatedValueRuntimeSource = createPreviewInspectorGeneratedValueRuntimeSource();
   const blockerValueRuntimeSource = createPreviewInspectorBlockerValueRuntimeSource();
   const hookGraphqlRuntimeSource = createPreviewInspectorHookGraphqlRuntimeSource();
+  const localUiControllerRuntimeSource = createPreviewInspectorLocalUiControllerRuntimeSource();
   const overlayActivationRuntimeSource = createPreviewInspectorOverlayActivationRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT = 1_000;
 const PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT = ${PREVIEW_INSPECTOR_RUNTIME_EFFECT_EXECUTION_LIMIT};
 const PREVIEW_INSPECTOR_RUNTIME_EFFECT_FRAME_FALLBACK_MS = 16;
+const PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE = Symbol.for('newdlops.react-file-preview.target-render-chain');
 const previewInspectorScheduleRuntimeFallbackMicrotask =
   typeof globalThis.queueMicrotask === 'function'
     ? globalThis.queueMicrotask.bind(globalThis)
@@ -86,7 +89,214 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeEffectExecutionWindows instanceof Map)) {
     previewInspectorSession.runtimeEffectExecutionWindows = new Map();
   }
+  if (!(previewInspectorSession.targetRenderCommitChainsByToken instanceof WeakMap)) {
+    previewInspectorSession.targetRenderCommitChainsByToken = new WeakMap();
+  }
+  if (!(previewInspectorSession.successfulRuntimeEffectSourcePathsByToken instanceof WeakMap)) {
+    previewInspectorSession.successfulRuntimeEffectSourcePathsByToken = new WeakMap();
+  }
 }
+
+/** Remembers a successful exact effect even when a child layout effect precedes boundary mount. */
+function rememberPreviewInspectorSuccessfulRuntimeEffect(rawMetadata, ownershipToken) {
+  if (
+    (typeof ownershipToken !== 'object' && typeof ownershipToken !== 'function') ||
+    ownershipToken === null ||
+    typeof rawMetadata?.sourcePath !== 'string' ||
+    rawMetadata.sourcePath.length === 0
+  ) return false;
+  initializePreviewInspectorRuntimeFallbackState();
+  const sourcePath = rawMetadata.sourcePath.replaceAll('\\', '/');
+  const paths = previewInspectorSession.successfulRuntimeEffectSourcePathsByToken.get(
+    ownershipToken,
+  ) ?? new Set();
+  paths.add(sourcePath);
+  previewInspectorSession.successfulRuntimeEffectSourcePathsByToken.set(ownershipToken, paths);
+  return true;
+}
+
+/** Reads only source identity recorded for the same private target ownership token. */
+function hasPreviewInspectorSuccessfulRuntimeEffect(ownershipToken, sourcePath) {
+  if (
+    (typeof ownershipToken !== 'object' && typeof ownershipToken !== 'function') ||
+    ownershipToken === null ||
+    typeof sourcePath !== 'string' ||
+    sourcePath.length === 0
+  ) return false;
+  initializePreviewInspectorRuntimeFallbackState();
+  return previewInspectorSession.successfulRuntimeEffectSourcePathsByToken
+    .get(ownershipToken)
+    ?.has(sourcePath.replaceAll('\\', '/')) === true;
+}
+
+/** Records bounded cross-runtime Context/effect evidence without retaining project values. */
+function recordPreviewInspectorTargetRenderChain(event) {
+  try {
+    initializePreviewInspectorRuntimeFallbackState();
+    const key = previewInspectorSession.activeTargetReachabilityKey;
+    if (typeof key !== 'string' || key.length === 0 || event === null || typeof event !== 'object') return;
+    const activeEffect = previewInspectorSession.activeTargetRenderChainEffect;
+    const ownershipToken = event.ownershipToken ?? activeEffect?.ownershipToken;
+    if ((typeof ownershipToken !== 'object' && typeof ownershipToken !== 'function') || ownershipToken === null) return;
+    let chain = previewInspectorSession.targetRenderCommitChainsByToken.get(ownershipToken);
+    if (chain === undefined) {
+      chain = { key, markedCalls: [], thunkTexts: [] };
+      previewInspectorSession.targetRenderCommitChainsByToken.set(ownershipToken, chain);
+    }
+    if (event.kind === 'specialized-context-resolver') {
+      chain.specializedReplacementExecuted = true;
+      chain.resolverOutcome = String(event.outcome ?? 'unknown').slice(0, 80);
+      if (typeof event.thunkText === 'string' && chain.thunkTexts.length < 4) chain.thunkTexts.push(event.thunkText.slice(0, 320));
+    } else if (event.kind === 'marked-call') {
+      const call = { effectId: typeof activeEffect?.id === 'string' ? activeEffect.id.slice(0, 240) : '', propertyPath: typeof event.propertyPath === 'string' ? event.propertyPath.slice(0, 240) : '', result: event.result === true };
+      if (chain.markedCalls.length < 8) chain.markedCalls.push(call);
+      chain.markedContextCallUsed = true;
+      chain.markedCallEffectId = call.effectId;
+      chain.markedCallPropertyPath = call.propertyPath;
+      chain.markedCallResult = call.result;
+    } else if (event.kind === 'target-fiber') {
+      // A contextual rerender legitimately replaces the original empty exact-target Fiber. Keep
+      // positive completion evidence and the pre-activation empty-input observation monotonic.
+      chain.alternateFiberObserved ||= event.alternateFiberObserved === true;
+      chain.childrenForwarded ||= event.childrenForwarded === true;
+      chain.connectedHostCount = Math.max(chain.connectedHostCount ?? 0,
+        Number.isSafeInteger(event.connectedHostCount) ? Math.max(0, event.connectedHostCount) : 0);
+      chain.logicalTargetCount = Math.max(chain.logicalTargetCount ?? 0,
+        Number.isSafeInteger(event.logicalTargetCount) ? Math.max(0, event.logicalTargetCount) : 0);
+      if (chain.inputChildrenState === undefined) {
+        chain.inputChildrenState = event.inputChildrenState === 'absent'
+          ? 'absent'
+          : 'meaningful-or-unsupported';
+      } else if (chain.inputChildrenState !== 'absent') {
+        chain.inputChildrenState = 'meaningful-or-unsupported';
+      }
+      chain.ownedHostObserved ||= event.ownedHostObserved === true;
+      chain.privateOwnershipCount = Math.max(chain.privateOwnershipCount ?? 0,
+        Number.isSafeInteger(event.privateOwnershipCount) ? Math.max(0, event.privateOwnershipCount) : 0);
+      chain.returnedChildObserved ||= event.returnedChildObserved === true;
+      chain.stableRerenderObserved ||= event.stableRerenderObserved === true;
+      const topology = event.topology;
+      if (topology !== null && typeof topology === 'object') {
+        chain.currentBranchAmbiguous ||= topology.currentBranchAmbiguous === true;
+        for (const field of [
+          'currentExactTargetCount', 'currentTargetChildCount', 'currentRetainedChildCount',
+          'currentDescendantHostCount', 'currentConnectedVisibleHostCount',
+          'staleExactTargetCount', 'staleConnectedVisibleHostCount', 'locatorExactTargetCount',
+        ]) {
+          chain[field] = Math.max(chain[field] ?? 0,
+            Number.isSafeInteger(topology[field]) ? Math.max(0, topology[field]) : 0);
+        }
+      }
+    } else if (event.kind === 'target-fiber-observation') {
+      const stage = typeof event.observationStage === 'string' ? event.observationStage : '';
+      if ([
+        'started', 'complete', 'failed-boundary-props', 'failed-target-fibers',
+        'failed-topology', 'failed-target-input', 'failed-target-traversal',
+        'failed-final-bridge',
+      ].includes(stage)) chain.targetFiberObservationStage = stage;
+    }
+  } catch {}
+}
+try { globalThis[PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE] = recordPreviewInspectorTargetRenderChain; } catch {}
+
+/** Returns only bounded scalars and generated thunk text for composition transport. */
+function readPreviewInspectorTargetRenderCommitChain(reachabilityKey) {
+  const state = previewInspectorSession.targetReachabilityByKey?.get?.(reachabilityKey);
+  const boundary = state?.contextualTargetFallbackRequested === true &&
+    typeof readPreviewInspectorContextualTargetBoundary === 'function'
+    ? readPreviewInspectorContextualTargetBoundary(state)
+    : undefined;
+  const phase = state?.contextualTargetFallbackRequested === true ? 'contextual' : 'original';
+  const ownershipToken = phase === 'contextual'
+    ? boundary?.ownershipToken
+    : state?.successfulRuntimeEffectContinuationTokensByPhase?.get?.(phase);
+  const observeCurrentBoundary = typeof hasPreviewInspectorResolvedTargetOutput === 'function'
+    ? hasPreviewInspectorResolvedTargetOutput.observeTargetRenderCommitChain
+    : undefined;
+  if (boundary !== undefined && typeof observeCurrentBoundary === 'function') {
+    observeCurrentBoundary(boundary);
+  }
+  const chain = previewInspectorSession.targetRenderCommitChainsByToken?.get?.(ownershipToken);
+  const mountedDecision = state?.mountedChildrenGateDecision;
+  if (chain === undefined && mountedDecision === undefined) return undefined;
+  const currentExactTargetCount = Number.isSafeInteger(chain?.currentExactTargetCount) ? Math.max(0, chain.currentExactTargetCount) : 0;
+  const locatorExactTargetCount = Number.isSafeInteger(chain?.locatorExactTargetCount) ? Math.max(0, chain.locatorExactTargetCount) : 0;
+  const currentTargetChildCount = Number.isSafeInteger(chain?.currentTargetChildCount) ? Math.max(0, chain.currentTargetChildCount) : 0;
+  const currentRetainedChildCount = Number.isSafeInteger(chain?.currentRetainedChildCount) ? Math.max(0, chain.currentRetainedChildCount) : 0;
+  const currentConnectedVisibleHostCount = Number.isSafeInteger(chain?.currentConnectedVisibleHostCount) ? Math.max(0, chain.currentConnectedVisibleHostCount) : 0;
+  const topologyAmbiguous = chain?.currentBranchAmbiguous === true;
+  const continuationAccepted = phase === 'contextual'
+    ? state?.topologyContextualEffectContinuationAccepted === true
+    : state?.topologyOriginalEffectContinuationAccepted === true;
+  const delayedProbeFired = phase === 'contextual'
+    ? state?.topologyContextualDelayedProbeFired === true
+    : state?.topologyOriginalDelayedProbeFired === true;
+  const boundaryIdentityRetained = phase === 'contextual'
+    ? state?.topologyContextualBoundaryIdentityRetained === true
+    : state?.topologyOriginalBoundaryIdentityRetained === true;
+  const currentResolverDisagrees = currentConnectedVisibleHostCount !== 0 && chain?.ownedHostObserved !== true;
+  const topologyObservationStage = typeof chain?.targetFiberObservationStage === 'string'
+    ? chain.targetFiberObservationStage
+    : 'not-observed';
+  const contextualBoundaryFailure = phase === 'contextual' && boundary === undefined &&
+    typeof readPreviewInspectorContextualTargetBoundaryFailure === 'function'
+    ? readPreviewInspectorContextualTargetBoundaryFailure(state)
+    : undefined;
+  const topologyVerdict = topologyAmbiguous || currentResolverDisagrees
+    ? 'D'
+    : currentExactTargetCount !== locatorExactTargetCount
+      ? 'A'
+      : !continuationAccepted || !delayedProbeFired || !boundaryIdentityRetained || currentTargetChildCount === 0
+        ? 'B'
+        : 'C';
+  const topologyReason = contextualBoundaryFailure !== undefined
+    ? 'contextual-boundary-' + contextualBoundaryFailure
+    : topologyObservationStage !== 'complete'
+    ? 'target-fiber-observation-' + topologyObservationStage
+    : topologyVerdict === 'D' ? 'current-root-ambiguous-or-resolver-disagrees'
+      : topologyVerdict === 'A' ? 'locator-dfs-exact-target-disagrees'
+        : topologyVerdict === 'B' ? 'continuation-or-post-effect-child-absent'
+          : 'retained-child-without-visible-host';
+  return {
+    alternateFiberObserved: chain?.alternateFiberObserved === true,
+    childrenForwarded: chain?.childrenForwarded === true,
+    connectedHostCount: Number.isSafeInteger(chain?.connectedHostCount) ? Math.max(0, chain.connectedHostCount) : 0,
+    effectCompletedAfterMarkedCall: chain?.effectCompletedAfterMarkedCall === true,
+    firstBreak: chain?.specializedReplacementExecuted !== true ? 'specialized-replacement-not-executed' : chain?.markedContextCallUsed !== true ? 'marked-context-call-not-used' : chain?.effectCompletedAfterMarkedCall !== true ? 'effect-not-completed-after-marked-call' : chain?.stableRerenderObserved !== true ? 'stable-rerender-not-observed' : chain?.childrenForwarded !== true ? 'children-not-forwarded' : chain?.ownedHostObserved !== true ? 'owned-host-not-observed' : 'none',
+    markedCallEffectId: typeof chain?.markedCallEffectId === 'string' ? chain.markedCallEffectId.slice(0, 240) : '',
+    markedCallPropertyPath: typeof chain?.markedCallPropertyPath === 'string' ? chain.markedCallPropertyPath.slice(0, 240) : '',
+    markedCallResult: chain?.markedCallResult === true,
+    markedContextCallUsed: chain?.markedContextCallUsed === true,
+    ownedHostObserved: chain?.ownedHostObserved === true,
+    inputChildrenState: chain?.inputChildrenState === 'absent' ? 'absent' : 'meaningful-or-unsupported',
+    logicalTargetCount: Number.isSafeInteger(chain?.logicalTargetCount) ? Math.max(0, chain.logicalTargetCount) : 0,
+    privateOwnershipCount: Number.isSafeInteger(chain?.privateOwnershipCount) ? Math.max(0, chain.privateOwnershipCount) : 0,
+    returnedChildObserved: chain?.returnedChildObserved === true,
+    resolverOutcome: typeof chain?.resolverOutcome === 'string' ? chain.resolverOutcome.slice(0, 80) : 'unknown',
+    specializedReplacementExecuted: chain?.specializedReplacementExecuted === true,
+    stableRerenderObserved: chain?.stableRerenderObserved === true,
+    topologyVerdict,
+    topologyReason,
+    topologyEffectContinuationAccepted: continuationAccepted,
+    topologyDelayedProbeFired: delayedProbeFired,
+    topologyBoundaryIdentityRetained: boundaryIdentityRetained,
+    topologyCurrentBranchAmbiguous: topologyAmbiguous,
+    topologyCurrentExactTargetCount: currentExactTargetCount,
+    topologyLocatorExactTargetCount: locatorExactTargetCount,
+    topologyCurrentTargetChildCount: currentTargetChildCount,
+    topologyCurrentRetainedChildCount: currentRetainedChildCount,
+    topologyCurrentConnectedVisibleHostCount: currentConnectedVisibleHostCount,
+    topologyCurrentDescendantHostCount: Number.isSafeInteger(chain?.currentDescendantHostCount) ? Math.max(0, chain.currentDescendantHostCount) : 0,
+    topologyStaleExactTargetCount: Number.isSafeInteger(chain?.staleExactTargetCount) ? Math.max(0, chain.staleExactTargetCount) : 0,
+    topologyStaleConnectedVisibleHostCount: Number.isSafeInteger(chain?.staleConnectedVisibleHostCount) ? Math.max(0, chain.staleConnectedVisibleHostCount) : 0,
+    thunkTexts: Array.isArray(chain?.thunkTexts) ? chain.thunkTexts.slice(0, 4).map((text) => String(text).slice(0, 320)) : [],
+    mountedChildrenGateDecision: mountedDecision === null || typeof mountedDecision !== 'object'
+      ? undefined
+      : { ...mountedDecision },
+  };
+}
+
+${localUiControllerRuntimeSource}
 
 ${generatedValueRuntimeSource}
 
@@ -106,6 +316,59 @@ function isPreviewInspectorRuntimeThenable(value) {
   }
 }
 
+/** Bounds compiler-proven fragment literals before they can affect generated browser data. */
+function normalizePreviewInspectorRuntimeLiteralDemands(rawDemands) {
+  const demands = [];
+  const seen = new Set();
+  for (const rawDemand of Array.isArray(rawDemands) ? rawDemands.slice(0, 32) : []) {
+    if (rawDemand === null || typeof rawDemand !== 'object') continue;
+    const path = rawDemand.path;
+    const value = rawDemand.value;
+    if (
+      typeof path !== 'string' ||
+      path.length === 0 ||
+      path.length > 240 ||
+      seen.has(path) ||
+      !path.split('.').every(
+        (segment) =>
+          segment === '[]' ||
+          (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(segment) && !blockedInspectorPropNames.has(segment)),
+      ) ||
+      !(
+        typeof value === 'string' ||
+        typeof value === 'boolean' ||
+        (typeof value === 'number' && Number.isFinite(value))
+      )
+    ) {
+      continue;
+    }
+    seen.add(path);
+    demands.push(Object.freeze({ path, value }));
+  }
+  return Object.freeze(demands);
+}
+
+/** Retains only bounded scalar values statically proven for target-only overlay Smart Fill. */
+function normalizePreviewInspectorRuntimeSmartPathValues(rawValues) {
+  const values = [];
+  const seen = new Set();
+  for (const rawValue of Array.isArray(rawValues) ? rawValues.slice(0, 32) : []) {
+    if (rawValue === null || typeof rawValue !== 'object') continue;
+    const path = normalizePreviewInspectorRequiredPropertyPaths([rawValue.path])[0];
+    const value = rawValue.value;
+    if (
+      typeof path !== 'string' || path.length === 0 || seen.has(path) ||
+      !(
+        typeof value === 'string' || typeof value === 'boolean' ||
+        (typeof value === 'number' && Number.isFinite(value))
+      )
+    ) continue;
+    seen.add(path);
+    values.push(Object.freeze({ path, value }));
+  }
+  return Object.freeze(values);
+}
+
 /** Bounds compiler metadata before retaining it in the local webview session. */
 function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
   const source = metadata !== null && typeof metadata === 'object' ? metadata : {};
@@ -121,6 +384,7 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     hookName: readText('hookName', 'custom hook'),
     id: readText('id'),
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
+    literalDemands: normalizePreviewInspectorRuntimeLiteralDemands(source.literalDemands),
     moduleSpecifier: readText('moduleSpecifier'),
     nonNegativeNumberPaths: normalizePreviewInspectorRequiredPropertyPaths(
       source.nonNegativeNumberPaths,
@@ -130,6 +394,7 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     preserveNullish: source.preserveNullish === true,
     renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths(source.renderGuardPaths),
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
+    smartPathValues: normalizePreviewInspectorRuntimeSmartPathValues(source.smartPathValues),
     sourcePath: readText('sourcePath'),
   };
 }
@@ -157,11 +422,22 @@ function scopePreviewInspectorRuntimeFallbackMetadata(metadata, readDocument, re
     readOptions,
   );
   if (requestIdentity.length === 0) return mergedMetadata;
+  const graphqlRequiredPaths = normalizePreviewInspectorRequiredPropertyPaths([
+    ...mergedMetadata.requiredPaths,
+    ...mergedMetadata.failurePaths,
+  ]);
   const suffix = ':graphql:' + requestIdentity;
   return {
     ...mergedMetadata,
     graphqlSelectionBacked: true,
     id: mergedMetadata.id.slice(0, PREVIEW_INSPECTOR_RUNTIME_FALLBACK_TEXT_LIMIT - suffix.length) + suffix,
+    /*
+     * Optional access may keep an unknown hook root absent, but the reached DocumentNode already
+     * proves which response fields exist. Once selection-shaped preview data is present, an Array
+     * operation recorded as a failure path is authoritative type evidence and must repair a
+     * schema-less object/list guess before application code invokes map/filter/find.
+     */
+    requiredPaths: graphqlRequiredPaths,
   };
 }
 
@@ -211,14 +487,25 @@ function readOrCreatePreviewInspectorRuntimeFallback(
      */
     return previewInspectorSession.runtimeFallbackValues.get(metadata.id);
   }
-  const fallback = createPreviewInspectorRuntimeFallbackAutoValue(
-    createPreviewInspectorHookGraphqlFallback(
-      createFallback(),
-      readGraphqlDocument,
-      readGraphqlOptions,
-    ),
+  const compilerFallback = createFallback();
+  const graphqlFallback = createPreviewInspectorHookGraphqlFallback(
+    compilerFallback,
+    readGraphqlDocument,
+    readGraphqlOptions,
+  );
+  const exactFallback = completePreviewInspectorGeneratedValue(graphqlFallback, compilerFallback, {
+    renderGuardPaths: metadata.renderGuardPaths,
+    requiredPaths: metadata.requiredPaths,
+  }).value;
+  const structuralFallback = createPreviewInspectorRuntimeFallbackAutoValue(
+    exactFallback,
     metadata.requiredPaths,
   );
+  const fallback = overlayPreviewInspectorHookGraphqlLiteralDemands(
+    structuralFallback,
+    readGraphqlDocument,
+  );
+  markPreviewInspectorGeneratedValue(fallback);
   if (previewInspectorSession.runtimeFallbackValues.size < PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT) {
     previewInspectorSession.runtimeFallbackValues.set(metadata.id, fallback);
   }
@@ -255,6 +542,57 @@ function readPreviewInspectorRuntimeFallbackValue(
   );
 }
 
+/**
+ * Promotes exact target-only Smart scalars to render guards after that fallback is selected.
+ *
+ * Ordinary Auto completion keeps every non-nullish authored value, including intentionally dormant
+ * Redux/Context state. Once target reachability explicitly Smart-fills this hook, however, a
+ * compiler-proven overlay value such as State.Default must replace the existing State.Hidden;
+ * otherwise the generated value is visible only in diagnostics and never reaches the component.
+ */
+function createPreviewInspectorRuntimeSmartCompletionMetadata(metadata) {
+  initializePreviewInspectorRuntimeFallbackState();
+  if (!previewInspectorSession.runtimeFallbackSmartIds.has(metadata.id)) return metadata;
+  const smartPaths = (Array.isArray(metadata.smartPathValues) ? metadata.smartPathValues : [])
+    .map((item) => item?.path)
+    .filter((path) => typeof path === 'string' && path.length > 0);
+  if (smartPaths.length === 0) return metadata;
+  return {
+    ...metadata,
+    renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths([
+      ...(metadata.renderGuardPaths ?? []),
+      ...smartPaths,
+    ]),
+  };
+}
+
+/** Includes exact compiler-owned Smart scalars when deciding whether one fill is still current. */
+function createPreviewInspectorRuntimeFallbackSmartSignature(metadata, requiredPaths) {
+  const pathSignature = createPreviewInspectorRuntimeFallbackPathSignature(
+    requiredPaths ?? metadata?.requiredPaths ?? [],
+  );
+  const smartSignature = JSON.stringify(
+    (Array.isArray(metadata?.smartPathValues) ? metadata.smartPathValues : [])
+      .map((item) => [item?.path, item?.value]),
+  );
+  return pathSignature + ':' + smartSignature;
+}
+
+/** Detects a dormant authored scalar that has one statically proven target-visible alternative. */
+function hasPreviewInspectorRuntimeSmartAlternative(metadata, value) {
+  for (const item of Array.isArray(metadata?.smartPathValues) ? metadata.smartPathValues : []) {
+    if (item?.path === '<root>') {
+      if (!Object.is(value, item.value)) return true;
+      continue;
+    }
+    const parsed = parsePreviewInspectorRequiredPath(item?.path);
+    if (parsed === undefined) continue;
+    const current = readPreviewInspectorRequiredPathSeed(value, parsed.path);
+    if (!Object.is(current, item.value)) return true;
+  }
+  return false;
+}
+
 /** Registers a bypassed hook failure once and mirrors it as a warning, never a fatal error. */
 function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error, generatedPaths = []) {
   initializePreviewInspectorRuntimeFallbackState();
@@ -273,7 +611,10 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   const requiredPaths = reason === 'threw' && metadata.requiredPaths.length === 0
     ? metadata.failurePaths
     : metadata.requiredPaths;
-  const requiredPathSignature = createPreviewInspectorRuntimeFallbackPathSignature(requiredPaths);
+  const requiredPathSignature = createPreviewInspectorRuntimeFallbackSmartSignature(
+    metadata,
+    requiredPaths,
+  );
   if (
     previewInspectorSession.runtimeFallbackSmartIds.has(metadata.id) &&
     previewInspectorSession.runtimeFallbackSmartPathSignatures.get(metadata.id) !==
@@ -307,10 +648,13 @@ function recordPreviewInspectorRuntimeFallback(metadata, fallback, reason, error
   };
   previewInspectorSession.runtimeFallbacks.set(metadata.id, next);
   if (
-    previous === undefined ||
-    previous.error !== next.error ||
-    previous.reason !== next.reason ||
-    previous.fallbackPreview !== next.fallbackPreview
+    reason !== 'smart-candidate' &&
+    (
+      previous === undefined ||
+      previous.error !== next.error ||
+      previous.reason !== next.reason ||
+      previous.fallbackPreview !== next.fallbackPreview
+    )
   ) {
     if (
       typeof recordPreviewInspectorBlockerAutoDecision === 'function' &&
@@ -441,6 +785,18 @@ function resolvePreviewInspectorRuntimeHook(
     }
     failure = error;
   }
+  const retainedLocalUiController = failure === undefined
+    ? rememberPreviewInspectorLocalUiController(metadata, value)
+    : undefined;
+  const completionMetadata = retainedLocalUiController === undefined || manualOverride
+    ? metadata
+    : protectPreviewInspectorLocalUiVisibilityGuard(metadata, retainedLocalUiController);
+  /*
+   * A proven React-local visibility controller already supplies a coherent false state and the
+   * authored callback that can change it. Protect only that exact false leaf from a truthy
+   * render-guard fallback; completing unrelated data/loading fields remains necessary for hooks
+   * that combine disclosure state with an application value model.
+   */
   if (failure === undefined && !manualOverride && !readPreviewInspectorFallbackValuesEnabled()) {
     return value;
   }
@@ -450,39 +806,63 @@ function resolvePreviewInspectorRuntimeHook(
   if (
     failure === undefined &&
     !manualOverride &&
-    metadata.preserveNullish === true &&
+    completionMetadata.preserveNullish === true &&
     (value === null || value === undefined)
   ) {
-    clearPreviewInspectorRuntimeFallback(metadata);
+    clearPreviewInspectorRuntimeFallback(completionMetadata);
     return value;
   }
   const fallback = readPreviewInspectorRuntimeFallbackValue(
-    metadata,
+    completionMetadata,
     createFallback,
     readGraphqlDocument,
     readGraphqlOptions,
   );
+  const effectiveCompletionMetadata =
+    createPreviewInspectorRuntimeSmartCompletionMetadata(completionMetadata);
   if (
     failure === undefined &&
     shouldUsePreviewInspectorHookGraphqlFallback(value, readGraphqlDocument)
   ) {
     recordPreviewInspectorRuntimeFallback(
-      metadata,
+      effectiveCompletionMetadata,
       fallback,
       'partial',
       undefined,
-      metadata.requiredPaths,
+      effectiveCompletionMetadata.requiredPaths,
     );
     return fallback;
   }
   if (failure === undefined && value !== null && value !== undefined) {
-    const completion = readOrCreatePreviewInspectorCompletedValue(metadata, value, fallback);
+    const completion = readOrCreatePreviewInspectorCompletedValue(
+      effectiveCompletionMetadata,
+      value,
+      fallback,
+    );
     if (!completion.changed) {
-      clearPreviewInspectorRuntimeFallback(metadata);
+      if (
+        !manualOverride &&
+        hasPreviewInspectorRuntimeSmartAlternative(effectiveCompletionMetadata, value)
+      ) {
+        /*
+         * Keep this compiler-proven alternative discoverable without changing ordinary Auto
+         * rendering or emitting a false failure warning. Target reachability may select it only
+         * after the exact component mounted without output.
+         */
+        recordPreviewInspectorRuntimeFallback(
+          effectiveCompletionMetadata,
+          fallback,
+          'smart-candidate',
+          undefined,
+          [],
+        );
+      } else {
+        clearPreviewInspectorRuntimeFallback(effectiveCompletionMetadata);
+      }
       return value;
     }
     recordPreviewInspectorRuntimeFallback(
-      metadata,
+      effectiveCompletionMetadata,
       fallback,
       'partial',
       undefined,
@@ -491,15 +871,15 @@ function resolvePreviewInspectorRuntimeHook(
     return completion.value;
   }
   recordPreviewInspectorRuntimeFallback(
-    metadata,
+    effectiveCompletionMetadata,
     fallback,
     failure === undefined ? 'nullish' : 'threw',
     failure,
-    metadata.requiredPaths.length > 0
-      ? metadata.requiredPaths
-      : failure !== undefined && metadata.failurePaths.length > 0
-        ? metadata.failurePaths
-        : metadata.passive
+    effectiveCompletionMetadata.requiredPaths.length > 0
+      ? effectiveCompletionMetadata.requiredPaths
+      : failure !== undefined && effectiveCompletionMetadata.failurePaths.length > 0
+        ? effectiveCompletionMetadata.failurePaths
+        : effectiveCompletionMetadata.passive
           ? []
           : ['<root>'],
   );
@@ -659,20 +1039,27 @@ function shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata) {
  * Successful cleanup functions remain intact. Promise-returning effects are made non-blocking and
  * their rejection is logged because React cannot use a Promise as an effect cleanup value.
  */
-function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata) {
+function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata, ownershipToken) {
   if (typeof readEffect !== 'function') return undefined;
   initializePreviewInspectorRuntimeFallbackState();
   const effectScopeKey = previewInspectorSession.runtimeFallbackScopeKey;
+  const chainEffect = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
+  previewInspectorSession.activeTargetRenderChainEffect = { id: chainEffect.id, ownershipToken, sourcePath: chainEffect.sourcePath };
   if (shouldIsolatePreviewInspectorRepeatedRuntimeEffect(rawMetadata)) return undefined;
   let result;
   try {
     result = readEffect();
   } catch (error) {
+    previewInspectorSession.activeTargetRenderChainEffect = undefined;
     if (!readPreviewInspectorFallbackValuesEnabled()) throw error;
     recordPreviewInspectorRuntimeEffectIsolation(rawMetadata, error, 'effect', effectScopeKey);
     return undefined;
   }
+  const chain = previewInspectorSession.targetRenderCommitChainsByToken?.get?.(ownershipToken);
+  if (chain?.markedCallEffectId === chainEffect.id && chainEffect.id.length > 0) chain.effectCompletedAfterMarkedCall = true;
+  previewInspectorSession.activeTargetRenderChainEffect = undefined;
   if (isPreviewInspectorRuntimeThenable(result)) {
+    previewInspectorSession.activeTargetRenderChainEffect = undefined;
     if (!readPreviewInspectorFallbackValuesEnabled()) return result;
     Promise.resolve(result).catch((error) => {
       recordPreviewInspectorRuntimeEffectIsolation(
@@ -684,11 +1071,18 @@ function resolvePreviewInspectorRuntimeEffect(readEffect, rawMetadata) {
     });
     return undefined;
   }
+  rememberPreviewInspectorSuccessfulRuntimeEffect(rawMetadata, ownershipToken);
   if (typeof result === 'function') {
+    if (typeof continuePreviewInspectorTargetReachabilityAfterSuccessfulRuntimeEffect === 'function') {
+      continuePreviewInspectorTargetReachabilityAfterSuccessfulRuntimeEffect(rawMetadata, ownershipToken);
+    }
     return createPreviewInspectorRuntimeEffectCleanup(result, rawMetadata, effectScopeKey);
   }
   const metadata = normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata);
   previewInspectorSession.runtimeEffectIsolations.delete(metadata.id);
+  if (typeof continuePreviewInspectorTargetReachabilityAfterSuccessfulRuntimeEffect === 'function') {
+    continuePreviewInspectorTargetReachabilityAfterSuccessfulRuntimeEffect(rawMetadata, ownershipToken);
+  }
   return result;
 }
 
@@ -703,13 +1097,17 @@ function resolvePreviewInspectorGraphqlFragmentValue(
   createStaticFallback,
   metadata,
 ) {
+  const normalizedMetadata = normalizePreviewInspectorRuntimeFallbackMetadata(metadata);
   return resolvePreviewInspectorRuntimeHook(
     readFragment,
     () => {
       const selectedData = createPreviewInspectorHookGraphqlFragmentData(readDocument);
-      return selectedData ?? createStaticFallback();
+      return overlayPreviewInspectorGraphqlLiteralDemands(
+        selectedData ?? createStaticFallback(),
+        normalizedMetadata.literalDemands,
+      );
     },
-    metadata,
+    normalizedMetadata,
   );
 }
 
@@ -817,7 +1215,10 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
   const fallback = previewInspectorSession.runtimeFallbackValues.get(fallbackId);
   const manualValue = previewInspectorSession.runtimeFallbackOverrides.get(fallbackId);
   const wasSmart = previewInspectorSession.runtimeFallbackSmartIds.has(fallbackId);
-  const pathSignature = createPreviewInspectorRuntimeFallbackPathSignature(record.requiredPaths);
+  const pathSignature = createPreviewInspectorRuntimeFallbackSmartSignature(
+    record,
+    record.requiredPaths,
+  );
   const previousPathSignature =
     previewInspectorSession.runtimeFallbackSmartPathSignatures.get(fallbackId);
   if (manualValue !== undefined) {
@@ -826,6 +1227,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       : createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
           fallback,
           record.requiredPaths,
+          record.smartPathValues,
         );
     const completion = completePreviewInspectorGeneratedValue(manualValue, minimum, {
       requiredPaths: record.requiredPaths,
@@ -878,7 +1280,11 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
   }
   previewInspectorSession.runtimeFallbackValues.set(
     fallbackId,
-    createPreviewInspectorRuntimeFallbackSmartValue(fallback, record.requiredPaths),
+    createPreviewInspectorRuntimeFallbackSmartValue(
+      fallback,
+      record.requiredPaths,
+      record.smartPathValues,
+    ),
   );
   previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
   previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
@@ -899,6 +1305,7 @@ function smartFillPreviewInspectorRuntimeFallback(fallbackId) {
     const generatedSelection = createPreviewInspectorRuntimeFallbackSmartDraftTemplate(
       previewInspectorSession.runtimeFallbackValues.get(fallbackId),
       record.requiredPaths,
+      record.smartPathValues,
     );
     recordPreviewInspectorBlockerAutoDecision({
       action: 'Smart fill minimum hook value',

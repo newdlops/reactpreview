@@ -225,11 +225,22 @@ function demotePreviewInspectorReachedTargetAfterRuntimeError(exportName, errorR
   let changed = false;
   for (const state of states.values()) {
     if (state?.targetExportName !== exportName) continue;
+    const previouslyReached = state.status === 'reached';
     state.targetHasOutput = false;
     state.targetOutputError = errorRecord;
     state.targetOutputKind = 'fallback-output';
     state.targetOutputRecoveryPending = true;
-    if (state.status === 'reached') state.status = 'runtime-error-output';
+    if (previouslyReached) state.status = 'runtime-error-output';
+    if (
+      previouslyReached &&
+      typeof schedulePreviewInspectorTargetFailureRepairContinuation === 'function'
+    ) {
+      try {
+        schedulePreviewInspectorTargetFailureRepairContinuation(state.key, errorRecord);
+      } catch {
+        /* Unsupported late failures remain contained and visible without reopening traversal. */
+      }
+    }
     changed = true;
   }
   if (!changed) return;
@@ -298,6 +309,9 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
       message,
       phase: typeof entry.phase === 'string' ? entry.phase : undefined,
       source,
+      stack: typeof entry.stack === 'string'
+        ? entry.stack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT)
+        : undefined,
     },
     event,
     parentEventId,
@@ -313,11 +327,20 @@ function recordPreviewInspectorRuntimeHealthError(entry) {
   if (!isStyledComponentsInstanceWarning && !followsRoot && eventId !== undefined) {
     const errorRecord = {
       componentStack: componentStack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT),
+      details: typeof entry.details === 'string'
+        ? entry.details.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT)
+        : undefined,
       eventId,
+      location: typeof entry.location === 'string'
+        ? entry.location.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT)
+        : undefined,
       message,
       ownerName,
       phase: typeof entry.phase === 'string' ? entry.phase.slice(0, 240) : undefined,
       source,
+      stack: typeof entry.stack === 'string'
+        ? entry.stack.slice(0, PREVIEW_INSPECTOR_HEALTH_TEXT_LIMIT)
+        : undefined,
       timestamp: now,
     };
     previewInspectorSession.runtimeHealthRootErrors.set(key, errorRecord);

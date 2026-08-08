@@ -45,7 +45,13 @@ function capturePreviewInspectorRequirementAutoRollback(state, batch) {
     .slice(0, PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT);
   const requestIds = [...new Set((batch?.requestIds ?? []).filter((id) => typeof id === 'string'))]
     .slice(0, PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT);
-  if (hookIds.length === 0 && requestIds.length === 0) return undefined;
+  const targetRepair = batch?.targetRepair;
+  const propExportName = typeof targetRepair?.failure?.exportName === 'string'
+    ? targetRepair.failure.exportName
+    : undefined;
+  if (hookIds.length === 0 && requestIds.length === 0 && propExportName === undefined) {
+    return undefined;
+  }
   const hooks = hookIds.map((id) => ({
     id,
     materialized: capturePreviewInspectorRequirementMapEntry(
@@ -67,15 +73,31 @@ function capturePreviewInspectorRequirementAutoRollback(state, batch) {
       previewInspectorSession.dataPayloadSmartShapeSignatures, id,
     ),
   }));
+  const props = propExportName === undefined ? [] : [{
+    exportName: propExportName,
+    override: capturePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.resolverPropsByExport,
+      propExportName,
+    ),
+  }];
   return { fallbackValuesEnabled: previewInspectorSession.fallbackValuesEnabled === true,
-    dataAutoEnabled: previewInspectorSession.dataAutoEnabled === true, hooks, reachabilityKey: state.key, requests };
+    dataAutoEnabled: previewInspectorSession.dataAutoEnabled === true, hooks, props,
+    reachabilityKey: state.key, requests,
+    ...(targetRepair === undefined ? {} : { targetRepair: {
+      changedPaths: targetRepair.changedPaths,
+      errorIdentity: targetRepair.errorIdentity,
+      fingerprint: targetRepair.fingerprint,
+    } }) };
 }
 
 /** Associates one causal render attempt with its exact pre-mutation generated state. */
 function registerPreviewInspectorRequirementAutoRollback(traceId, snapshot) {
   initializePreviewInspectorRequirementConvergenceState();
   if (typeof traceId !== 'string' || traceId.length === 0 || snapshot === undefined) return false;
-  if (snapshot.hooks.length === 0 && snapshot.requests.length === 0) return false;
+  if (
+    snapshot.hooks.length === 0 && snapshot.requests.length === 0 &&
+    (snapshot.props ?? []).length === 0
+  ) return false;
   previewInspectorSession.requirementAutoRollbackByTraceId.set(traceId, snapshot);
   while (previewInspectorSession.requirementAutoRollbackByTraceId.size >
     PREVIEW_INSPECTOR_REQUIREMENT_AUTO_ROLLBACK_LIMIT) {
@@ -96,6 +118,14 @@ function clearPreviewInspectorRequirementAutoRollbacks(reachabilityKey) {
     }
   }
   return changed;
+}
+
+/** Commits one successful transaction by discarding only its pre-mutation snapshot. */
+function commitPreviewInspectorRequirementAutoDecision(traceId) {
+  initializePreviewInspectorRequirementConvergenceState();
+  return typeof traceId === 'string'
+    ? previewInspectorSession.requirementAutoRollbackByTraceId.delete(traceId)
+    : false;
 }
 
 /** Restores a failed minimum-requirement transaction before any follow-up resolver pass. */
@@ -138,10 +168,20 @@ function rollbackPreviewInspectorRequirementAutoDecision(traceId) {
       clearPreviewInspectorVirtualBackendResource(request.id);
     }
   }
+  for (const prop of snapshot.props ?? []) {
+    restorePreviewInspectorRequirementMapEntry(
+      previewInspectorSession.resolverPropsByExport,
+      prop.exportName,
+      prop.override,
+    );
+    const revision = previewInspectorSession.propsRevisionByExport.get(prop.exportName) ?? 0;
+    previewInspectorSession.propsRevisionByExport.set(prop.exportName, revision + 1);
+  }
   previewInspectorSession.fallbackValuesEnabled = snapshot.fallbackValuesEnabled;
   previewInspectorSession.dataAutoEnabled = snapshot.dataAutoEnabled;
   const search = previewInspectorSession.minimumRequirementSearchByKey?.get(snapshot.reachabilityKey);
-  if (search !== undefined) Object.assign(search, { rollbackTraceId: traceId, rolledBackHookCount: snapshot.hooks.length,
+  if (search !== undefined) Object.assign(search, { rollbackTraceId: traceId,
+    rolledBackHookCount: snapshot.hooks.length, rolledBackPropCount: (snapshot.props ?? []).length,
     rolledBackRequestCount: snapshot.requests.length, status: 'rolled-back' });
   const state = previewInspectorSession.targetReachabilityByKey?.get(snapshot.reachabilityKey);
   if (state !== undefined) {
@@ -164,13 +204,15 @@ function rollbackPreviewInspectorRequirementAutoDecision(traceId) {
   if (typeof recordPreviewInspectorConsoleEntry === 'function') recordPreviewInspectorConsoleEntry({
     details: 'Trace: ' + traceId + '\\nMode: ' + String(snapshot.mode ?? 'minimum-requirement') +
       '\\nTarget: ' + String(state?.targetExportName ?? '') +
-      '\\nGenerated hooks: ' + snapshot.hooks.length + '\\nGenerated requests: ' + snapshot.requests.length,
+      '\\nGenerated hooks: ' + snapshot.hooks.length +
+      '\\nGenerated props: ' + (snapshot.props ?? []).length +
+      '\\nGenerated requests: ' + snapshot.requests.length,
     level: 'warn', location: '', message, phase: 'blocker resolver rollback', source: 'target-reachability',
   });
   if (typeof recordPreviewInspectorRuntimeHealth === 'function') recordPreviewInspectorRuntimeHealth({
     category: 'blocker-resolver', detail: { mode: snapshot.mode ?? 'minimum-requirement',
       reason: 'runtime-error', target: state?.targetExportName, traceId, hookCount: snapshot.hooks.length,
-      requestCount: snapshot.requests.length },
+      propCount: (snapshot.props ?? []).length, requestCount: snapshot.requests.length },
     event: 'automatic-resolution-rolled-back',
   });
   return true;
@@ -315,11 +357,20 @@ function createPreviewInspectorRequirementFrontierFingerprint(state, batch) {
   const gates = [...(state.appliedConditions ?? [])]
     .map((gate) => [gate.id, gate.enabled])
     .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+  const targetRepair = batch?.targetRepair === undefined ? undefined : {
+    changedPaths: canonicalizePreviewInspectorRequirementPaths(batch.targetRepair.changedPaths),
+    errorIdentity: batch.targetRepair.errorIdentity,
+    fingerprint: batch.targetRepair.fingerprint,
+    requirements: [...(batch.targetRepair.requirementRecords ?? [])]
+      .map((record) => [record.path, record.kind])
+      .sort((left, right) => left[0].localeCompare(right[0])),
+  };
   return JSON.stringify({
     gates,
     hooks,
     pageRootCommitted: state.pageRootCommitted === true,
     requests,
+    targetRepair,
     targetHasOutput: state.targetHasOutput === true,
     targetMounted: state.targetMounted === true,
   });

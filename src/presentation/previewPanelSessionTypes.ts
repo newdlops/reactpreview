@@ -30,6 +30,8 @@ export interface PreviewPanelSessionCallbacks {
 export interface PreviewPanelSessionOptions {
   /** Application use case that publishes and releases reference-counted artifacts. */
   readonly buildPreview: PreviewBuildService;
+  /** Generated-artifact root retained when the session narrows passive project asset access. */
+  readonly artifactResourceRoot?: vscode.Uri;
   /** Manager notifications for focus and disposal only. */
   readonly callbacks: PreviewPanelSessionCallbacks;
   /** Snapshot captured before creating the panel, preventing an open-time editor race. */

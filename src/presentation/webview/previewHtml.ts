@@ -1,7 +1,8 @@
 /**
  * Produces complete, reloadable webview documents for loading, success, and failure states.
- * All dynamic text and URI values are escaped, scripts are external ESM files, and the CSP blocks
- * active network connections, frames, workers, forms, inline scripts, and dynamic code evaluation.
+ * All dynamic text and URI values are escaped, authored scripts are external ESM files, and the CSP
+ * blocks active network connections, frames, workers, forms, untrusted inline scripts, and dynamic
+ * code evaluation. Host-owned inline bootstrap scripts use per-document nonces.
  * Passive HTTPS images remain available because authored page visuals often live on a CDN.
  */
 import type { PreviewProgressStage } from '../../domain/previewProgress';
@@ -34,6 +35,8 @@ export interface ReadyPreviewState {
   readonly documentName: string;
   /** Internal pre-entry browser host shim used only by opt-in headless execution. */
   readonly hostBridgeScriptUri?: string;
+  /** Host-authorized URI for the compiler-selected project `public` directory. */
+  readonly publicAssetBaseUri?: string;
   /** Webview URI for the generated ESM entry bundle. */
   readonly scriptUri: string;
   /** Session-owned acknowledgement token read by the generated entry after the document starts. */
@@ -76,16 +79,13 @@ export type PreviewHtmlState = ErrorPreviewState | LoadingPreviewState | ReadyPr
 export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): string {
   const retryNonce =
     state.kind === 'error' && state.retry !== undefined ? createRetryNonce(state) : undefined;
-  const moduleImportNonce =
-    state.kind === 'ready' && (state.moduleImports?.length ?? 0) > 0
-      ? createModuleImportNonce(state)
-      : undefined;
+  const readyScriptNonce = state.kind === 'ready' ? createReadyScriptNonce(state) : undefined;
   const csp = [
     "default-src 'none'",
-    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${moduleImportNonce === undefined ? '' : ` 'nonce-${moduleImportNonce}'`}`,
+    `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${readyScriptNonce === undefined ? '' : ` 'nonce-${readyScriptNonce}'`}`,
     `style-src ${cspSource} 'unsafe-inline'`,
     `img-src ${cspSource} data: blob: https:`,
-    `font-src ${cspSource} data:`,
+    `font-src ${cspSource} data: https:`,
     "connect-src 'none'",
     `media-src ${cspSource} data: blob:`,
     "worker-src 'none'",
@@ -132,7 +132,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   ${createStylesheetElement(state)}
 </head>
 <body data-react-preview-state="${state.kind}">
-  ${createBody(state, retryNonce, moduleImportNonce)}
+  ${createBody(state, retryNonce, readyScriptNonce)}
 </body>
 </html>`;
 }
@@ -170,7 +170,7 @@ function createStylesheetElement(state: PreviewHtmlState): string {
 function createBody(
   state: PreviewHtmlState,
   retryNonce: string | undefined,
-  moduleImportNonce: string | undefined,
+  readyScriptNonce: string | undefined,
 ): string {
   switch (state.kind) {
     case 'loading': {
@@ -199,15 +199,12 @@ function createBody(
     case 'ready':
       return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
-${createModuleImportMapElement(state, moduleImportNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
+${createModuleImportMapElement(state, readyScriptNonce)}${createPublicAssetCompatibilityScriptElement(state, readyScriptNonce)}${createGlobalCompatibilityScriptElement(readyScriptNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
   }
 }
 
 /** Creates the CSP-authorized import map required by externalized package modules. */
-function createModuleImportMapElement(
-  state: ReadyPreviewState,
-  nonce: string | undefined,
-): string {
+function createModuleImportMapElement(state: ReadyPreviewState, nonce: string | undefined): string {
   const moduleImports = state.moduleImports ?? [];
   if (moduleImports.length === 0 || nonce === undefined) return '';
   const imports = Object.fromEntries(
@@ -220,9 +217,141 @@ function createModuleImportMapElement(
 }
 
 /** Derives a markup-safe nonce from the host-owned runtime correlation token. */
-function createModuleImportNonce(state: ReadyPreviewState): string {
-  const token = state.runtimeToken ?? `${state.runtimeRevision ?? 0}:${state.scriptUri.length.toString()}`;
+function createReadyScriptNonce(state: ReadyPreviewState): string {
+  const token =
+    state.runtimeToken ??
+    `${(state.runtimeRevision ?? 0).toString()}:${state.scriptUri.length.toString()}`;
   return `module${token.replace(/[^A-Za-z0-9]/gu, '').slice(0, 32)}`;
+}
+
+/**
+ * Rewrites only passive root-relative resource attributes to the project public directory.
+ * React normally commits these values through `setAttribute`; property setters and an observer
+ * cover imperative libraries without changing anchors, router locations, or remote/data URLs.
+ */
+function createPublicAssetCompatibilityScriptElement(
+  state: ReadyPreviewState,
+  nonce: string | undefined,
+): string {
+  if (nonce === undefined || state.publicAssetBaseUri === undefined) return '';
+  const encodedBaseUri = JSON.stringify(state.publicAssetBaseUri).replaceAll('<', '\\u003c');
+  const encodedRevision = JSON.stringify((state.runtimeRevision ?? 0).toString());
+  return `<script nonce="${nonce}">
+  (() => {
+    const publicAssetBase = new URL(${encodedBaseUri});
+    const previewRevision = ${encodedRevision};
+    const resolveRootAsset = (value) => {
+      if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\\\')) return value;
+      try {
+        const resolved = new URL(value.slice(1), publicAssetBase);
+        if (resolved.origin !== publicAssetBase.origin || !resolved.pathname.startsWith(publicAssetBase.pathname)) return value;
+        if (previewRevision !== '' && !resolved.searchParams.has('__react_preview_revision')) {
+          resolved.searchParams.set('__react_preview_revision', previewRevision);
+        }
+        return resolved.toString();
+      } catch { return value; }
+    };
+    const resolveSourceSet = (value) => typeof value !== 'string' ? value : value
+      .split(',')
+      .map((entry) => {
+        const match = /^(\\s*)(\\/(?!\\/)\\S+)([\\s\\S]*)$/u.exec(entry);
+        return match === null ? entry : match[1] + resolveRootAsset(match[2]) + match[3];
+      })
+      .join(',');
+    const resourceKind = (element, attributeName) => {
+      const name = String(attributeName).toLowerCase();
+      const tagName = String(element?.localName ?? '').toLowerCase();
+      if (name === 'srcset' && (tagName === 'img' || tagName === 'source')) return 'source-set';
+      if (name === 'src' && ['audio', 'img', 'input', 'source', 'video'].includes(tagName)) return 'single';
+      if (name === 'poster' && tagName === 'video') return 'single';
+      if ((name === 'href' || name === 'xlink:href') && (tagName === 'image' || tagName === 'use')) return 'single';
+      if (name === 'href' && tagName === 'link' && String(element.getAttribute('as')).toLowerCase() === 'image') return 'single';
+      return undefined;
+    };
+    const resolveAttribute = (element, name, value) => {
+      const kind = resourceKind(element, name);
+      return kind === 'source-set' ? resolveSourceSet(value) : kind === 'single' ? resolveRootAsset(value) : value;
+    };
+    const nativeSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      return nativeSetAttribute.call(this, name, resolveAttribute(this, name, String(value)));
+    };
+    const nativeSetAttributeNS = Element.prototype.setAttributeNS;
+    Element.prototype.setAttributeNS = function(namespace, name, value) {
+      return nativeSetAttributeNS.call(this, namespace, name, resolveAttribute(this, name, String(value)));
+    };
+    const patchProperty = (constructorName, propertyName, kind) => {
+      const Constructor = globalThis[constructorName];
+      const descriptor = typeof Constructor === 'function'
+        ? Object.getOwnPropertyDescriptor(Constructor.prototype, propertyName)
+        : undefined;
+      if (descriptor?.get === undefined || descriptor.set === undefined) return;
+      try {
+        Object.defineProperty(Constructor.prototype, propertyName, {
+          ...descriptor,
+          set(value) {
+            descriptor.set.call(this, kind === 'source-set' ? resolveSourceSet(String(value)) : resolveRootAsset(String(value)));
+          },
+        });
+      } catch {}
+    };
+    [
+      ['HTMLImageElement', 'src', 'single'],
+      ['HTMLImageElement', 'srcset', 'source-set'],
+      ['HTMLSourceElement', 'src', 'single'],
+      ['HTMLSourceElement', 'srcset', 'source-set'],
+      ['HTMLVideoElement', 'src', 'single'],
+      ['HTMLVideoElement', 'poster', 'single'],
+      ['HTMLAudioElement', 'src', 'single'],
+      ['HTMLInputElement', 'src', 'single'],
+    ].forEach(([constructorName, propertyName, kind]) => patchProperty(constructorName, propertyName, kind));
+    const rewriteElement = (element) => {
+      if (!(element instanceof Element)) return;
+      for (const name of ['src', 'srcset', 'poster', 'href', 'xlink:href']) {
+        const value = element.getAttribute(name);
+        if (value === null) continue;
+        const resolved = resolveAttribute(element, name, value);
+        if (resolved !== value) nativeSetAttribute.call(element, name, resolved);
+      }
+    };
+    const rewriteTree = (root) => {
+      rewriteElement(root);
+      root?.querySelectorAll?.('[src],[srcset],[poster],[href]').forEach(rewriteElement);
+    };
+    new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === 'attributes') rewriteElement(record.target);
+        for (const node of record.addedNodes ?? []) rewriteTree(node);
+      }
+    }).observe(document, {
+      attributeFilter: ['src', 'srcset', 'poster', 'href', 'xlink:href'],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    rewriteTree(document);
+  })();
+</script>
+`;
+}
+
+/** Installs the legacy browser `global` alias before any static ESM dependency can evaluate. */
+function createGlobalCompatibilityScriptElement(nonce: string | undefined): string {
+  if (nonce === undefined) return '';
+  return `<script nonce="${nonce}">
+  (() => {
+    if (Object.getOwnPropertyDescriptor(globalThis, 'global') !== undefined) return;
+    try {
+      Object.defineProperty(globalThis, 'global', {
+        configurable: true,
+        enumerable: false,
+        value: globalThis,
+        writable: true,
+      });
+    } catch {}
+  })();
+</script>
+`;
 }
 
 /** Creates the optional headless host bridge immediately before the authored runtime entry. */

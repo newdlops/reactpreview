@@ -34,7 +34,7 @@ export function createPreviewInspectorCompanionHtml(
     `script-src 'nonce-${options.nonce}'`,
     "style-src 'unsafe-inline'",
     `img-src ${options.cspSource} data:`,
-    `font-src ${options.cspSource} data:`,
+    `font-src ${options.cspSource} data: https:`,
     "connect-src 'none'",
     "frame-src 'none'",
     "worker-src 'none'",

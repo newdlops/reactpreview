@@ -78,6 +78,7 @@ export class PreviewPanelSession implements vscode.Disposable {
   private disposalNotified = false;
   private displayedArtifactHash: string | undefined;
   private displayedRuntimeRevision = 0;
+  private moduleImportMapIdentity: string | undefined;
   private readonly preparationState = new PreviewPanelPreparationState();
   private readonly inspectorRouteSelection = new PreviewPanelRouteSelection();
   private readonly inspectorPageCandidateSelection = new PreviewPanelPageCandidateSelection();
@@ -397,6 +398,28 @@ export class PreviewPanelSession implements vscode.Disposable {
     const stylesheetLocation = preparedPreview.artifact.stylesheetLocation;
     const stylesheetUri =
       stylesheetLocation === undefined ? undefined : this.options.panel.webview.asWebviewUri(vscode.Uri.parse(stylesheetLocation, true)).toString(true);
+    const publicAssetUri =
+      preparedPreview.publicAssetRoot === undefined
+        ? undefined
+        : this.documentUri.with({
+            path: vscode.Uri.file(preparedPreview.publicAssetRoot).path,
+          });
+    if (this.options.artifactResourceRoot !== undefined) {
+      this.options.panel.webview.options = {
+        ...this.options.panel.webview.options,
+        localResourceRoots:
+          publicAssetUri === undefined
+            ? [this.options.artifactResourceRoot]
+            : [this.options.artifactResourceRoot, publicAssetUri],
+      };
+    }
+    const publicAssetBaseUri =
+      publicAssetUri === undefined
+        ? undefined
+        : `${this.options.panel.webview
+            .asWebviewUri(publicAssetUri)
+            .toString(true)
+            .replace(/\/+$/u, '')}/`;
     const moduleImports = preparedPreview.artifact.moduleImports?.map(
       ({ scriptLocation, specifier }) => ({
         specifier,
@@ -405,6 +428,7 @@ export class PreviewPanelSession implements vscode.Disposable {
           .toString(true),
       }),
     );
+    const nextModuleImportMapIdentity = createModuleImportMapIdentity(moduleImports);
     const baseState = {
       documentName,
       kind: 'ready' as const,
@@ -412,6 +436,7 @@ export class PreviewPanelSession implements vscode.Disposable {
       runtimeRevision: requestedRevision,
       runtimeToken: `${requestedRevision.toString()}:${preparedPreview.artifact.contentHash}`,
       scriptUri,
+      ...(publicAssetBaseUri === undefined ? {} : { publicAssetBaseUri }),
     };
     const nextHtml = createPreviewHtml(
       this.options.panel.webview.cspSource,
@@ -455,16 +480,27 @@ export class PreviewPanelSession implements vscode.Disposable {
         disposition: 'already-displayed',
       };
     }
-    const hotScriptUri = previousArtifactHash === undefined ? undefined : scriptUri;
-    if (previousArtifactHash === undefined) {
+    const requiresDocumentNavigation =
+      previousArtifactHash === undefined ||
+      this.moduleImportMapIdentity !== nextModuleImportMapIdentity;
+    const hotScriptUri = requiresDocumentNavigation ? undefined : scriptUri;
+    if (requiresDocumentNavigation) {
       // Do not accept the incoming lease until VS Code accepts the initial complete document.
       this.options.panel.webview.html = nextHtml;
-      this.startInitialRuntimeWatchdog(preparedPreview.artifact.contentHash, baseState.runtimeToken, requestedRevision, origin);
     }
     this.dependencies = nextDependencies;
     this.dependencyDirectories = nextDependencyDirectories;
     this.artifactHash = preparedPreview.artifact.contentHash;
     this.replaceDirectoryWatchers(nextDependencyDirectories);
+    if (requiresDocumentNavigation) {
+      this.moduleImportMapIdentity = nextModuleImportMapIdentity;
+      this.startInitialRuntimeWatchdog(preparedPreview.artifact.contentHash, baseState.runtimeToken, requestedRevision, origin);
+      if (previousArtifactHash !== undefined) {
+        this.options.log.debug('React preview replaced the webview document because its browser import map changed.');
+        this.releaseSupersededDocumentArtifacts(previousArtifactHash);
+      }
+      return { applicationId: baseState.runtimeToken, disposition: 'awaiting-runtime' };
+    }
     if (previousArtifactHash !== undefined && hotScriptUri !== undefined) {
       const applicationId = this.postHotReload(
         previousArtifactHash,
@@ -479,6 +515,18 @@ export class PreviewPanelSession implements vscode.Disposable {
       return { applicationId, disposition: 'awaiting-hot-reload' };
     }
     return { applicationId: baseState.runtimeToken, disposition: 'awaiting-runtime' };
+  }
+  private releaseSupersededDocumentArtifacts(previousArtifactHash: string): void {
+    const artifactHashes = new Set([previousArtifactHash]);
+    for (const pending of this.pendingHotReloads.values()) {
+      clearTimeout(pending.timeout);
+      artifactHashes.add(pending.previousArtifactHash);
+    }
+    this.pendingHotReloads.clear();
+    this.pendingSameArtifactRevision = undefined;
+    for (const artifactHash of artifactHashes) {
+      if (artifactHash !== this.artifactHash) this.releaseArtifact(artifactHash);
+    }
   }
   private postHotReload(
     previousArtifactHash: string,
@@ -1051,6 +1099,7 @@ export class PreviewPanelSession implements vscode.Disposable {
     this.pendingSameArtifactRevision = undefined;
     this.retryController.clear();
     this.displayedArtifactHash = undefined;
+    this.moduleImportMapIdentity = undefined;
     const contentHash = this.artifactHash;
     this.artifactHash = undefined;
     if (contentHash !== undefined) {
@@ -1071,4 +1120,18 @@ export class PreviewPanelSession implements vscode.Disposable {
       this.options.log.debug(`Could not release React preview artifact ${contentHash}.`, error);
     }
   }
+}
+
+function createModuleImportMapIdentity(
+  moduleImports: readonly { readonly specifier: string; readonly uri: string }[] | undefined,
+): string {
+  return JSON.stringify(
+    [...(moduleImports ?? [])]
+      .sort((left, right) =>
+        left.specifier === right.specifier
+          ? left.uri.localeCompare(right.uri)
+          : left.specifier.localeCompare(right.specifier),
+      )
+      .map(({ specifier, uri }) => [specifier, uri]),
+  );
 }

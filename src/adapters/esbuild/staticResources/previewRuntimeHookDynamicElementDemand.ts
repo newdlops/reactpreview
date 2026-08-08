@@ -39,10 +39,11 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
       node !== owner &&
       isPreviewRuntimeFunction(node) &&
       previewRuntimeFunctionShadowsName(node, identifier.text)
-    ) return;
+    )
+      return;
     if (ts.isElementAccessExpression(node)) {
       const receiver = unwrapPreviewRuntimeExpression(node.expression);
-      const key = readSafeDynamicKey(node.argumentExpression, sourceFile);
+      const key = readSafeDynamicKey(node.argumentExpression, sourceFile, owner);
       if (ts.isIdentifier(receiver) && receiver.text === identifier.text && key !== undefined) {
         const collection = hasCollectionDemand(node, owner, sourceFile);
         const prior = entries.get(key.text);
@@ -59,8 +60,8 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
     (entry) =>
       `[${entry.expression}]: ${entry.collection ? 'Object.freeze([])' : 'Object.freeze({})'}`,
   );
-  const requiredPaths = [...entries].map(([text, entry]) =>
-    `[${text}]${entry.collection ? '.map()' : ''}`,
+  const requiredPaths = [...entries].map(
+    ([text, entry]) => `[${text}]${entry.collection ? '.map()' : ''}`,
   );
   return {
     expression: `Object.freeze({ ${properties.join(', ')} })`,
@@ -73,11 +74,24 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
 function readSafeDynamicKey(
   argument: ts.Expression | undefined,
   sourceFile: ts.SourceFile,
+  owner: PreviewRuntimeFunction,
 ): { readonly expression: string; readonly text: string } | undefined {
   if (argument === undefined) return undefined;
   const value = unwrapPreviewRuntimeExpression(argument);
   if (ts.isIdentifier(value)) {
     if (BLOCKED_PROPERTY_NAMES.has(value.text) || value.text.length > 128) return undefined;
+    /*
+     * The fallback factory runs at the hook call, before a later callback or local helper receives
+     * its index parameter. Reusing that nested binding here emits a free computed key such as
+     * `{ [idx]: ... }` and turns otherwise inert fallback data into a ReferenceError. Generated
+     * collections contain one representative item, so their conventional callback index is zero.
+     * Other nested dynamic keys stay opaque instead of guessing an application-owned key.
+     */
+    if (findNearestRuntimeFunction(value) !== owner) {
+      return /^(?:i|idx|index|itemIndex|rowIndex|columnIndex)$/iu.test(value.text)
+        ? { expression: '0', text: '0' }
+        : undefined;
+    }
     return { expression: value.text, text: value.text };
   }
   if (ts.isStringLiteralLike(value) || ts.isNumericLiteral(value)) {
@@ -124,7 +138,8 @@ function identifierHasCollectionDemand(
       node !== owner &&
       isPreviewRuntimeFunction(node) &&
       previewRuntimeFunctionShadowsName(node, declaration.text)
-    ) return;
+    )
+      return;
     if (ts.isIdentifier(node) && node !== declaration && node.text === declaration.text) {
       const value = unwrapPreviewRuntimeParentExpression(node);
       if (isDirectCollectionConsumer(value)) {
@@ -152,7 +167,8 @@ function isDirectCollectionConsumer(value: ts.Expression): boolean {
     ts.isPropertyAccessExpression(parent) &&
     parent.expression === value &&
     isPreviewRuntimeHookArrayUsageProperty(parent.name.text)
-  ) return true;
+  )
+    return true;
   if (ts.isForOfStatement(parent) && parent.expression === value) return true;
   if (ts.isSpreadElement(parent) && ts.isArrayLiteralExpression(parent.parent)) return true;
   if (!ts.isCallExpression(parent)) return false;
@@ -195,7 +211,8 @@ function localHelperArgumentRequiresArray(
       node !== helper &&
       isPreviewRuntimeFunction(node) &&
       previewRuntimeFunctionShadowsName(node, parameterName)
-    ) return;
+    )
+      return;
     if (ts.isIdentifier(node) && node !== parameter.name && node.text === parameterName) {
       if (isDirectCollectionConsumer(unwrapPreviewRuntimeParentExpression(node))) {
         collection = true;

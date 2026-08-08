@@ -410,6 +410,334 @@ function applyPreviewInspectorSmartProps(exportName, requiredPaths = [], commit 
   return draft;
 }
 
+/** Reads one own compiler-proven path without invoking project accessors. */
+function readPreviewInspectorSmartPropPathValue(value, rawPath) {
+  const parsed = parsePreviewInspectorRequiredPath(rawPath);
+  if (parsed === undefined || parsed.path.length === 0) return undefined;
+  let current = value;
+  for (const propertyName of parsed.path) {
+    if (
+      (typeof current !== 'object' && typeof current !== 'function') || current === null ||
+      previewInspectorSmartPropBlockedNames.has(propertyName)
+    ) return undefined;
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(current, propertyName); } catch { return undefined; }
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return undefined;
+    current = descriptor.value;
+  }
+  return current;
+}
+
+/** Produces a deterministic, getter-free value token for prop-repair convergence. */
+function fingerprintPreviewInspectorSmartPropValue(value) {
+  if (typeof fingerprintPreviewInspectorRequirementValue === 'function') {
+    return fingerprintPreviewInspectorRequirementValue(value, { nodes: 0, seen: new WeakSet() });
+  }
+  return copyPreviewInspectorBlockerValueForJson(value, { nodes: 0 });
+}
+
+/**
+ * Resolves every runtime path to one compiler-proven target prop and inferred kind.
+ * Automatic recovery fails closed when a short diagnostic could name multiple prop branches.
+ */
+function readPreviewInspectorTargetFailureRequirementRecords(exportName, requiredPaths) {
+  const normalizedPaths = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
+    .filter((path) => path !== '<root>' && path !== '<root>()');
+  if (normalizedPaths.length === 0) return undefined;
+  const evidence = readPreviewInspectorSmartPropEvidence(exportName);
+  if (!evidence.found) return undefined;
+  const inferredRecords = readPreviewInspectorSmartPropPathRecords(evidence);
+  const admittedKinds = new Set(['array', 'boolean', 'function', 'number', 'object', 'string']);
+  for (const rawPath of normalizedPaths) {
+    const parsed = parsePreviewInspectorRequiredPath(rawPath);
+    if (parsed === undefined || parsed.path.length === 0) return undefined;
+    const diagnosticPath = parsed.path.join('.');
+    const exactMatches = inferredRecords.filter((record) =>
+      record.path === diagnosticPath || record.path.endsWith('.' + diagnosticPath),
+    );
+    if (new Set(exactMatches.map((record) => record.path)).size !== 1) return undefined;
+  }
+  const resolvedPaths = resolvePreviewInspectorSmartPropRequiredPaths(exportName, normalizedPaths);
+  if (resolvedPaths.length === 0) return undefined;
+  const records = [];
+  for (const path of resolvedPaths) {
+    const parsed = parsePreviewInspectorRequiredPath(path);
+    if (parsed === undefined || parsed.path.length === 0) return undefined;
+    const inferredPath = parsed.path.join('.');
+    const matched = inferredRecords.filter((record) => record.path === inferredPath);
+    if (matched.length !== 1 || !admittedKinds.has(matched[0].kind)) return undefined;
+    records.push({ kind: matched[0].kind, path });
+  }
+  return records.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/** Creates a stable identity for one contained selected-target failure. */
+function createPreviewInspectorTargetFailureErrorIdentity(failure) {
+  return JSON.stringify({
+    exportName: failure?.exportName,
+    headline: String(failure?.headline ?? createRuntimeErrorHeadline(failure?.error)).slice(0, 1_000),
+    ownerName: failure?.blockedComponentName,
+    sourcePath: normalizePreviewInspectorReachabilityPath(failure?.sourcePath),
+  });
+}
+
+/** Normalizes one live or late runtime error into the strict target-repair record shape. */
+function createPreviewInspectorTargetFailureRepairRecord(state, error, context = {}) {
+  if (
+    state === undefined || error === undefined ||
+    readPreviewInspectorMissingRuntimeGlobalName(error) !== undefined
+  ) return undefined;
+  const componentStack = typeof context.componentStack === 'string'
+    ? context.componentStack
+    : typeof error?.componentStack === 'string' ? error.componentStack : '';
+  const blockedComponentName = typeof context.ownerName === 'string' &&
+    context.ownerName.length > 0
+      ? context.ownerName
+      : readPreviewInspectorBlockedComponentName(componentStack, state.targetExportName);
+  const targetPropRequiredPaths = readPreviewInspectorTargetPropFailurePaths(
+    state.targetExportName,
+    blockedComponentName,
+    error,
+  );
+  const headline = createRuntimeErrorHeadline(error).slice(0, 1_000);
+  const failure = {
+    blockedComponentName,
+    componentNames: readPreviewInspectorComponentStackNames(
+      componentStack,
+      state.targetExportName,
+    ),
+    componentStack,
+    error,
+    exportName: state.targetExportName,
+    failureKind: 'component-error',
+    headline,
+    id: 'target-error:' + state.targetExportName + ':automatic-repair',
+    requiredPaths: readPreviewInspectorErrorPropertyPaths(error),
+    sourcePath: state.targetSourcePath,
+    targetPropRequiredPaths,
+  };
+  failure.errorIdentity = createPreviewInspectorTargetFailureErrorIdentity(failure);
+  return failure;
+}
+
+/** Returns one unambiguous exact-boundary failure, including a coalesced late health error. */
+function readPreviewInspectorTargetFailureRepairRecord(state) {
+  const failures = [];
+  const append = (failure) => {
+    if (
+      failure === undefined ||
+      failures.some((candidate) => candidate.errorIdentity === failure.errorIdentity)
+    ) return;
+    failures.push(failure);
+  };
+  const boundaries = readPreviewInspectorTargetBoundaries(state);
+  if (boundaries instanceof Set) {
+    for (const boundary of boundaries) {
+      append(createPreviewInspectorTargetFailureRepairRecord(
+        state,
+        boundary?.state?.error,
+        { componentStack: boundary?.state?.componentStack },
+      ));
+    }
+  }
+  append(state?.pendingTargetRepairFailure);
+  return failures.length === 1 ? failures[0] : undefined;
+}
+
+/**
+ * Creates the smallest source-correlated prop mutation without changing session state.
+ * Automatic mode requires exact active-target ownership, one inferred kind for every path, and a
+ * semantic delta. Manual mode retains the existing broad Smart draft and explicit retry behavior.
+ */
+function createPreviewInspectorTargetFailurePropMutation(failure, options = {}) {
+  const automatic = options.automatic === true;
+  if (
+    failure?.failureKind !== 'component-error' ||
+    typeof failure?.exportName !== 'string' ||
+    typeof failure?.blockedComponentName !== 'string'
+  ) return undefined;
+  const exactTargetOwner = isPreviewInspectorSelectedTargetOwnerName(
+      failure.exportName,
+      failure.blockedComponentName,
+    );
+  if (automatic && !exactTargetOwner) return undefined;
+  const state = options.state;
+  const stateSourcePath = normalizePreviewInspectorReachabilityPath(state?.targetSourcePath);
+  const failureSourcePath = normalizePreviewInspectorReachabilityPath(failure.sourcePath);
+  if (automatic && (
+    state?.targetExportName !== failure.exportName ||
+    stateSourcePath.length === 0 ||
+    stateSourcePath !== failureSourcePath
+  )) return undefined;
+  const correlatedPaths = readPreviewInspectorTargetPropFailurePaths(
+    failure.exportName,
+    failure.blockedComponentName,
+    failure.error,
+  );
+  const expectedPaths = normalizePreviewInspectorRequiredPropertyPaths(
+    failure.targetPropRequiredPaths,
+  );
+  if (automatic && (
+    correlatedPaths.length === 0 ||
+    JSON.stringify([...correlatedPaths].sort()) !== JSON.stringify([...expectedPaths].sort())
+  )) return undefined;
+  const requirementRecords = readPreviewInspectorTargetFailureRequirementRecords(
+    failure.exportName,
+    automatic ? correlatedPaths : expectedPaths,
+  );
+  if (automatic && requirementRecords === undefined) return undefined;
+  const userProps = previewInspectorSession.overridesByExport.get(failure.exportName) ?? {};
+  if (automatic && requirementRecords.some((record) => {
+    const topLevelName = parsePreviewInspectorRequiredPath(record.path)?.path?.[0];
+    return typeof topLevelName === 'string' &&
+      Object.prototype.hasOwnProperty.call(userProps, topLevelName);
+  })) return undefined;
+  const draft = automatic
+    ? (() => {
+        const evidence = readPreviewInspectorSmartPropEvidence(failure.exportName);
+        const resolverProps = previewInspectorSession.resolverPropsByExport?.get?.(
+          failure.exportName,
+        ) ?? {};
+        const inferredValue = createPreviewPropsFromLayers(
+          evidence.inferredPropShape,
+          evidence.automaticProps,
+        );
+        const baseValue = createPreviewPropsFromLayers(
+          undefined,
+          materializePreviewInspectorRuntimeFallbackOverride(resolverProps),
+        );
+        const required = requirementRecords.map((record) => record.path);
+        const requirementValue = createPreviewInspectorSmartPropRequirementValue(
+          inferredValue,
+          required,
+        );
+        const completion = completePreviewInspectorGeneratedValue(baseValue, requirementValue, {
+          replaceNullScalars: true,
+        });
+        const copiedBase = copyPreviewInspectorBlockerValueForJson(baseValue, { nodes: 0 });
+        const copiedValue = copyPreviewInspectorBlockerValueForJson(
+          completion.changed ? completion.value : baseValue,
+          { nodes: 0 },
+        );
+        return {
+          beforeValue: copiedBase !== null && typeof copiedBase === 'object' &&
+            !Array.isArray(copiedBase) ? copiedBase : {},
+          evidenceFound: evidence.found,
+          generatedPaths: required,
+          generatedValue: copyPreviewInspectorBlockerValueForJson(requirementValue, { nodes: 0 }),
+          requiredPaths: required,
+          value: copiedValue !== null && typeof copiedValue === 'object' &&
+            !Array.isArray(copiedValue) ? copiedValue : {},
+        };
+      })()
+    : createPreviewInspectorSmartPropsDraft(failure.exportName, expectedPaths);
+  if (!automatic && !hasPreviewInspectorSmartPropsDraft(draft)) {
+    return {
+      automatic: false,
+      changed: previewInspectorSession.fallbackValuesEnabled !== true,
+      changedPaths: [],
+      draft,
+      errorIdentity: createPreviewInspectorTargetFailureErrorIdentity(failure),
+      failure,
+      fingerprint: 'manual-fallback:' + createPreviewInspectorTargetFailureErrorIdentity(failure),
+      fallbackOnly: true,
+    };
+  }
+  const beforeFingerprint = fingerprintPreviewInspectorSmartPropValue(
+    automatic ? draft.beforeValue : previewInspectorSession.overridesByExport.get(failure.exportName) ?? {},
+  );
+  const afterFingerprint = fingerprintPreviewInspectorSmartPropValue(draft.value);
+  const changed = JSON.stringify(beforeFingerprint) !== JSON.stringify(afterFingerprint);
+  if (automatic && !changed) return undefined;
+  const changedPaths = (requirementRecords ?? draft.requiredPaths.map((path) => ({
+    kind: 'unknown',
+    path,
+  }))).filter((record) => {
+    if (!automatic) return true;
+    return JSON.stringify(fingerprintPreviewInspectorSmartPropValue(
+      readPreviewInspectorSmartPropPathValue(draft.beforeValue, record.path),
+    )) !== JSON.stringify(fingerprintPreviewInspectorSmartPropValue(
+      readPreviewInspectorSmartPropPathValue(draft.value, record.path),
+    ));
+  }).map((record) => record.path);
+  if (automatic && changedPaths.length === 0) return undefined;
+  const errorIdentity = createPreviewInspectorTargetFailureErrorIdentity(failure);
+  const fingerprint = JSON.stringify({
+    errorIdentity,
+    requirements: requirementRecords ?? [],
+    resultingValues: changedPaths.map((path) => [
+      path,
+      fingerprintPreviewInspectorSmartPropValue(
+        readPreviewInspectorSmartPropPathValue(draft.value, path),
+      ),
+    ]),
+  });
+  return {
+    automatic,
+    changed: automatic ? changed : true,
+    changedPaths,
+    draft,
+    errorIdentity,
+    failure,
+    fingerprint,
+    requirementRecords: requirementRecords ?? [],
+  };
+}
+
+/** Applies one prepared target-failure mutation; callers own batching and commit timing. */
+function applyPreviewInspectorTargetFailurePropMutation(mutation, options = {}) {
+  if (mutation === undefined) return { changed: false, changedPaths: [], fingerprint: undefined };
+  const commit = options.commit !== false;
+  if (mutation.fallbackOnly === true) {
+    const changed = setPreviewInspectorFallbackValuesEnabled(true, commit);
+    return { ...mutation, changed };
+  }
+  setPreviewInspectorFallbackValuesEnabled(true, false);
+  const applied = mutation.automatic === true
+    ? setPreviewInspectorResolverPropsOverride(
+        mutation.failure.exportName,
+        mutation.draft.value,
+        commit,
+      )
+    : setPreviewInspectorPropsOverride(
+        mutation.failure.exportName,
+        mutation.draft.value,
+        commit,
+      );
+  if (!applied) return { ...mutation, changed: false };
+  return mutation;
+}
+
+/** Shared manual Smart Fill action retained by the blocker UI. */
+function smartFillPreviewInspectorTargetFailure(failure, commit = true) {
+  const mutation = createPreviewInspectorTargetFailurePropMutation(failure);
+  const result = applyPreviewInspectorTargetFailurePropMutation(mutation, { commit });
+  if (result.changed !== true) return false;
+  if (typeof recordPreviewInspectorBlockerAutoDecision === 'function') {
+    recordPreviewInspectorBlockerAutoDecision({
+      action: result.fallbackOnly === true
+        ? 'Enable generated preview values and retry'
+        : 'Smart fill target props and retry',
+      blockerId: failure.id,
+      blockerKind: 'target-error',
+      blockerName: 'Component error · ' + failure.blockedComponentName,
+      generatedPaths: result.changedPaths,
+      mode: result.fallbackOnly === true ? 'automatic-values' : 'smart-props',
+      occurrenceStart: failure.occurrenceStart,
+      ownerName: failure.exportName,
+      reason: failure.headline,
+      selectedValue: result.fallbackOnly === true ? {} : result.draft.generatedValue,
+      sourcePath: failure.sourcePath,
+      startsRenderAttempt: true,
+      summary: {
+        preservedObservedOrUserProps: true,
+        requiredPaths: failure.targetPropRequiredPaths,
+      },
+    });
+  }
+  return true;
+}
+
 /** Visibility prop spellings that can reveal an otherwise mounted-but-empty overlay export. */
 const previewInspectorOverlayVisibilityPropNames = new Set([
   'active',
@@ -422,6 +750,13 @@ const previewInspectorOverlayVisibilityPropNames = new Set([
   'shown',
   'visible',
 ]);
+
+/** Loading is positive visibility only for exports whose public role is the loading surface itself. */
+function isPreviewInspectorTargetVisibilityProp(exportName, normalizedPropName) {
+  return previewInspectorOverlayVisibilityPropNames.has(normalizedPropName) ||
+    (normalizedPropName === 'loading' &&
+      /(?:Loader|Loading|Progress|Spinner)$/u.test(String(exportName)));
+}
 
 /** Normalizes one top-level prop name without reading the corresponding project value. */
 function normalizePreviewInspectorOverlayVisibilityPropName(value) {
@@ -453,7 +788,8 @@ function readPreviewInspectorObservedOverlayVisibilityPaths(exportName) {
         descriptor?.enumerable === true &&
         Object.hasOwn(descriptor, 'value') &&
         descriptor.value === false &&
-        previewInspectorOverlayVisibilityPropNames.has(
+        isPreviewInspectorTargetVisibilityProp(
+          exportName,
           normalizePreviewInspectorOverlayVisibilityPropName(propertyName),
         )
       );
@@ -519,7 +855,7 @@ function autoRevealPreviewInspectorOverlayTarget(exportName, targetReachabilityK
       const leaf = normalizePreviewInspectorOverlayVisibilityPropName(
         record.path.split('.').at(-1),
       );
-      return record.kind === 'boolean' && previewInspectorOverlayVisibilityPropNames.has(leaf);
+      return record.kind === 'boolean' && isPreviewInspectorTargetVisibilityProp(exportName, leaf);
     })
     .map((record) => record.path)
     .sort((left, right) => left.split('.').length - right.split('.').length || left.localeCompare(right));

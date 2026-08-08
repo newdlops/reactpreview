@@ -244,7 +244,7 @@ function hasPreviewInspectorRequiredPathCallableMember(value, propertyName) {
 }
 
 /** Adds one compiler-proven path when serialization alone could not expose its missing property. */
-function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
+function materializePreviewInspectorRequiredPath(template, rawPath, seedValue, explicitSmartSeed) {
   const parsed = parsePreviewInspectorRequiredPath(rawPath);
   if (parsed === undefined) return template;
   const { callable, collection, methodName, path, stringReceiver } = parsed;
@@ -271,9 +271,11 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
       ? template
       : [createPreviewInspectorRequiredPathCollectionItem()];
   }
-  const smartSeed = arguments.length >= 3
-    ? readPreviewInspectorRequiredPathSeed(seedValue, path)
-    : undefined;
+  const smartSeed = arguments.length >= 4
+    ? explicitSmartSeed
+    : arguments.length >= 3
+      ? readPreviewInspectorRequiredPathSeed(seedValue, path)
+      : undefined;
   const smartMinimum = arguments.length >= 3;
   let root = template;
   const indexedRoot = /^\d+$/u.test(path[0]);
@@ -338,6 +340,16 @@ function materializePreviewInspectorRequiredPath(template, rawPath, seedValue) {
   return root;
 }
 
+/** Reads one exact compiler-proven Smart scalar without interpreting sibling hook paths. */
+function readPreviewInspectorRuntimeFallbackSmartPathValue(rawPath, smartPathValues) {
+  const path = normalizePreviewInspectorRequiredPropertyPaths([rawPath])[0];
+  if (typeof path !== 'string') return { found: false, value: undefined };
+  for (const item of Array.isArray(smartPathValues) ? smartPathValues.slice(0, 32) : []) {
+    if (item?.path === path) return { found: true, value: item.value };
+  }
+  return { found: false, value: undefined };
+}
+
 /** Creates the smallest JSON root compatible with the inferred hook result's observable type. */
 function createPreviewInspectorRuntimeFallbackSmartRoot(value, requiredPaths) {
   const firstPath = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
@@ -359,18 +371,30 @@ function createPreviewInspectorRuntimeFallbackSmartRoot(value, requiredPaths) {
 }
 
 /** Builds JSON containing only compiler-observed demanded paths and one semantic value per leaf. */
-function createPreviewInspectorRuntimeFallbackSmartDraftTemplate(value, requiredPaths) {
+function createPreviewInspectorRuntimeFallbackSmartDraftTemplate(value, requiredPaths, smartPathValues) {
+  const rootSmartValue = readPreviewInspectorRuntimeFallbackSmartPathValue(
+    '<root>',
+    smartPathValues,
+  );
+  if (rootSmartValue.found) {
+    return copyPreviewInspectorBlockerValueForJson(rootSmartValue.value, { nodes: 0 });
+  }
   const paths = normalizePreviewInspectorRequiredPropertyPaths(requiredPaths)
     .filter((path) => path !== '<root>');
   let template = createPreviewInspectorRuntimeFallbackSmartRoot(value, paths);
-  for (const path of paths) template = materializePreviewInspectorRequiredPath(template, path, value);
+  for (const path of paths) {
+    const smartValue = readPreviewInspectorRuntimeFallbackSmartPathValue(path, smartPathValues);
+    template = smartValue.found
+      ? materializePreviewInspectorRequiredPath(template, path, value, smartValue.value)
+      : materializePreviewInspectorRequiredPath(template, path, value);
+  }
   return copyPreviewInspectorBlockerValueForJson(template, { nodes: 0 });
 }
 
 /** Converts a minimum Smart-fill JSON template into the inert runtime value consumed by project code. */
-function createPreviewInspectorRuntimeFallbackSmartValue(value, requiredPaths) {
+function createPreviewInspectorRuntimeFallbackSmartValue(value, requiredPaths, smartPathValues) {
   return materializePreviewInspectorRuntimeFallbackOverride(
-    createPreviewInspectorRuntimeFallbackSmartDraftTemplate(value, requiredPaths),
+    createPreviewInspectorRuntimeFallbackSmartDraftTemplate(value, requiredPaths, smartPathValues),
   );
 }
 

@@ -147,6 +147,7 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
     line: Number.isSafeInteger(source.line) && source.line > 0 ? source.line : undefined,
     ownerName: readText('ownerName'),
     sourcePath: readText('sourcePath'),
+    ...(source.synchronousContinuation === true ? { synchronousContinuation: true } : {}),
     ...(['navigation', 'overlay'].includes(source.role) ? { role: source.role } : {}),
     ...(targetBranch === undefined ? {} : { targetBranch }),
     truthyLabel: readText('truthyLabel', 'visible'),
@@ -374,6 +375,7 @@ function didPreviewInspectorConditionChange(previous, next) {
     'reachabilityKey',
     'role',
     'sourcePath',
+    'synchronousContinuation',
     'targetBranch',
     'truthyLabel',
   ]) {

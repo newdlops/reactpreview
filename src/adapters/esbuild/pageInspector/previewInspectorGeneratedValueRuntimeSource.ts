@@ -9,6 +9,7 @@
  */
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
+import { PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY } from '../previewAutomaticPropsRuntimeSource';
 
 /** Maximum nested object/array depth completed during one hook read. */
 export const PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT = 12;
@@ -51,6 +52,19 @@ const previewInspectorGeneratedValueCollectionMethods = new Set(
 const previewInspectorGeneratedValueStringMethods = new Set(
   ${JSON.stringify(PREVIEW_STRING_ONLY_METHOD_NAMES)},
 );
+const previewInspectorGeneratedValueRegistry = (() => {
+  const key = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY)});
+  try {
+    const existing = globalThis[key];
+    if (existing !== null && typeof existing === 'object' &&
+      typeof existing.add === 'function' && typeof existing.has === 'function') return existing;
+    const registry = new WeakSet();
+    globalThis[key] = registry;
+    return registry;
+  } catch {
+    return undefined;
+  }
+})();
 
 /** Reports whether a property can be copied without prototype mutation or unbounded UI text. */
 function isPreviewInspectorGeneratedValueKey(propertyName) {
@@ -64,6 +78,18 @@ function isPreviewInspectorGeneratedValueKey(propertyName) {
 function readPreviewInspectorGeneratedValueDescriptors(value) {
   try {
     return Object.getOwnPropertyDescriptors(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads one own data property without invoking application getters. */
+function readPreviewInspectorGeneratedOwnValue(value, propertyName) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, propertyName);
+    return descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value')
+      ? descriptor.value
+      : undefined;
   } catch {
     return undefined;
   }
@@ -86,6 +112,28 @@ function isPreviewInspectorGeneratedPlainRecord(value) {
   } catch {
     return false;
   }
+}
+
+/** Registers generated container identities without mutating frozen fallback data. */
+function markPreviewInspectorGeneratedValue(value, state = { nodes: 0 }, depth = 0) {
+  if (
+    (typeof value !== 'object' && typeof value !== 'function') || value === null ||
+    depth > PREVIEW_INSPECTOR_GENERATED_VALUE_DEPTH_LIMIT ||
+    state.nodes >= PREVIEW_INSPECTOR_GENERATED_VALUE_NODE_LIMIT
+  ) return value;
+  state.nodes += 1;
+  try { previewInspectorGeneratedValueRegistry?.add(value); } catch {}
+  if (!Array.isArray(value) && !isPreviewInspectorGeneratedPlainRecord(value)) return value;
+  const descriptors = readPreviewInspectorGeneratedValueDescriptors(value);
+  if (descriptors === undefined) return value;
+  for (const propertyName of Reflect.ownKeys(descriptors)) {
+    if (propertyName === 'length') continue;
+    const descriptor = descriptors[propertyName];
+    if (descriptor !== undefined && Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      markPreviewInspectorGeneratedValue(descriptor.value, state, depth + 1);
+    }
+  }
+  return value;
 }
 
 /** Detects the extension's neutral empty-record result without reading project-owned properties. */
@@ -178,6 +226,14 @@ function isPreviewInspectorGeneratedStringMethodRecord(value) {
   });
 }
 
+/** Normalizes static [] markers and concrete runtime indices to one comparable path form. */
+function normalizePreviewInspectorGeneratedRequirementPath(value) {
+  return String(value)
+    .replace(/(?:\.)?\[\]/gu, '.[]')
+    .replace(/(^|\.)(?:0|[1-9][0-9]*)(?=\.|$)/gu, '$1[]')
+    .replace(/^\./u, '');
+}
+
 /**
  * Reports whether compiler-required usage proves that the currently merged path is an Array.
  *
@@ -189,14 +245,10 @@ function isPreviewInspectorGeneratedStringMethodRecord(value) {
  */
 function hasPreviewInspectorGeneratedCollectionRequirement(state, path) {
   if (!Array.isArray(state.requiredPaths) || state.requiredPaths.length === 0) return false;
-  const normalizeCollectionPath = (value) => String(value)
-    .replace(/(?:\.)?\[\]/gu, '.[]')
-    .replace(/(^|\.)(?:0|[1-9][0-9]*)(?=\.|$)/gu, '$1[]')
-    .replace(/^\./u, '');
-  const prefix = normalizeCollectionPath(path.join('.'));
+  const prefix = normalizePreviewInspectorGeneratedRequirementPath(path.join('.'));
   return state.requiredPaths.some((rawRequiredPath) => {
     if (typeof rawRequiredPath !== 'string' || rawRequiredPath.length === 0) return false;
-    const requiredPath = normalizeCollectionPath(rawRequiredPath);
+    const requiredPath = normalizePreviewInspectorGeneratedRequirementPath(rawRequiredPath);
     const suffix = prefix.length === 0
       ? requiredPath
       : requiredPath === prefix
@@ -218,9 +270,20 @@ function hasPreviewInspectorGeneratedCollectionRequirement(state, path) {
 /** Reports whether a compiler path proves an object read below the currently merged value. */
 function hasPreviewInspectorGeneratedDescendantRequirement(state, path) {
   if (!Array.isArray(state.requiredPaths) || path.length === 0) return false;
-  const prefix = path.join('.') + '.';
-  return state.requiredPaths.some(
-    (requiredPath) => typeof requiredPath === 'string' && requiredPath.startsWith(prefix),
+  const prefix = normalizePreviewInspectorGeneratedRequirementPath(path.join('.')) + '.';
+  return state.requiredPaths.some((requiredPath) =>
+    typeof requiredPath === 'string' &&
+    normalizePreviewInspectorGeneratedRequirementPath(requiredPath).startsWith(prefix),
+  );
+}
+
+/** Reports whether compiler usage names the currently merged value as one exact required leaf. */
+function hasPreviewInspectorGeneratedExactRequirement(state, path) {
+  if (!Array.isArray(state.requiredPaths) || path.length === 0) return false;
+  const candidate = normalizePreviewInspectorGeneratedRequirementPath(path.join('.'));
+  return state.requiredPaths.some((requiredPath) =>
+    typeof requiredPath === 'string' &&
+    normalizePreviewInspectorGeneratedRequirementPath(requiredPath) === candidate,
   );
 }
 
@@ -234,15 +297,25 @@ function recordPreviewInspectorGeneratedPath(state, path) {
 /** Reports whether static hook usage requires a bounded Array length at this exact value path. */
 function hasPreviewInspectorGeneratedArrayLengthRequirement(state, path) {
   if (!Array.isArray(state.nonNegativeNumberPaths)) return false;
-  const candidate = path.length === 0 ? '<root>' : path.join('.');
-  return state.nonNegativeNumberPaths.includes(candidate);
+  const candidate = normalizePreviewInspectorGeneratedRequirementPath(
+    path.length === 0 ? '<root>' : path.join('.'),
+  );
+  return state.nonNegativeNumberPaths.some((requiredPath) =>
+    typeof requiredPath === 'string' &&
+    normalizePreviewInspectorGeneratedRequirementPath(requiredPath) === candidate,
+  );
 }
 
 /** Reports whether this scalar must match the compiler value to pass an authored render guard. */
 function hasPreviewInspectorGeneratedRenderGuardRequirement(state, path) {
   if (!Array.isArray(state.renderGuardPaths)) return false;
-  const candidate = path.length === 0 ? '<root>' : path.join('.');
-  return state.renderGuardPaths.includes(candidate);
+  const candidate = normalizePreviewInspectorGeneratedRequirementPath(
+    path.length === 0 ? '<root>' : path.join('.'),
+  );
+  return state.renderGuardPaths.some((requiredPath) =>
+    typeof requiredPath === 'string' &&
+    normalizePreviewInspectorGeneratedRequirementPath(requiredPath) === candidate,
+  );
 }
 
 /** Rejects invalid native Array lengths and valid-but-dangerous allocations in the webview. */
@@ -390,11 +463,53 @@ function mergePreviewInspectorGeneratedValue(authored, generated, state, path, d
     return { changed: true, value: generated };
   }
 
+  if (
+    typeof authored === 'string' &&
+    authored === String(path.at(-1) ?? '') &&
+    !Object.is(authored, generated) &&
+    (generated === null || (typeof generated !== 'object' && typeof generated !== 'function')) &&
+    hasPreviewInspectorGeneratedExactRequirement(state, path)
+  ) {
+    /*
+     * Selection-shaped GraphQL data also uses the response key itself for an unknown scalar. If
+     * local syntax proves a different exact scalar (for example the first accepted enum branch),
+     * that recognizable key-text placeholder is weaker than the compiler value. Genuine authored
+     * strings remain authoritative because only the generator's exact field-name sentinel matches.
+     */
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: generated };
+  }
+
   const authoredIsArray = Array.isArray(authored);
   const generatedIsArray = Array.isArray(generated);
   const authoredIsNeutralEmptyRecord =
     !authoredIsArray && isPreviewInspectorGeneratedEmptyPlainRecord(authored);
   const generatedType = typeof generated;
+  if (
+    authoredIsArray &&
+    isPreviewInspectorGeneratedPlainRecord(generated) &&
+    hasPreviewInspectorGeneratedDescendantRequirement(state, path)
+  ) {
+    /*
+     * Schema-less GraphQL inference may read a plural-looking object wrapper (for example
+     * initialValues) as a collection. A direct project read below that same value proves the
+     * wrapper is an object. Preserve the first selection-shaped item when available, complete it
+     * with the compiler fallback, and remove only the contradicted Array container.
+     */
+    const authoredItem = readPreviewInspectorGeneratedOwnValue(authored, '0');
+    const completedItem =
+      authoredItem !== undefined
+        ? mergePreviewInspectorGeneratedValue(
+            authoredItem,
+            generated,
+            state,
+            path,
+            depth + 1,
+          ).value
+        : generated;
+    recordPreviewInspectorGeneratedPath(state, path);
+    return { changed: true, value: completedItem };
+  }
   if (
     generatedIsArray &&
     !authoredIsArray &&

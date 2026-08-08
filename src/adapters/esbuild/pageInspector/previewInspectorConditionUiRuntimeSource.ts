@@ -61,8 +61,21 @@ function doesPreviewInspectorConditionBlockCurrentTarget(condition) {
    * Target-path conditions are discovery gates, not permanent page defects. Once the selected
    * export has produced its own output, a sibling/parent branch that differs from static path
    * evidence remains useful as an editable scenario but no longer blocks the current preview.
-   */
+  */
   if (state.status === 'reached' && state.targetHasOutput === true) return false;
+  /*
+   * A committed contextual boundary has already crossed the authored parent gate. The original
+   * condition can still describe the page scenario, but it no longer prevents this exact fallback
+   * instance from rendering. Output ownership remains fail-closed in target reachability, so an
+   * empty or failing fallback is reported there instead of being hidden by the stale parent gate.
+   */
+  if (
+    state.contextualTargetFallbackRequested === true &&
+    state.pageRootCommitted === true &&
+    state.targetMounted === true &&
+    typeof readPreviewInspectorContextualTargetBoundary === 'function' &&
+    readPreviewInspectorContextualTargetBoundary(state) !== undefined
+  ) return false;
   const descriptor = findSelectedPreviewInspectorDescriptor();
   const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
   if (descriptor === undefined || candidate === undefined) return false;

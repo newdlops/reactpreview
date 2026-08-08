@@ -7,6 +7,10 @@
 /** Global symbol key carried by generated React component props through editable Inspector JSON. */
 export const PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY = 'react-file-preview.automatic-component-prop';
 
+/** Global WeakSet identity shared by generated hook data and exact-target prop repair. */
+export const PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY =
+  'react-file-preview.automatic-generated-value-registry';
+
 /**
  * Creates helpers embedded once in every preview entry before gallery and Inspector runtimes.
  *
@@ -21,6 +25,19 @@ export function createPreviewAutomaticPropsRuntimeSource(): string {
 const PREVIEW_AUTOMATIC_PROP_MAX_DEPTH = 12;
 const PREVIEW_AUTOMATIC_PROP_MAX_NODES = 256;
 const PREVIEW_AUTOMATIC_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
+const PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY = (() => {
+  const key = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY)});
+  try {
+    const existing = globalThis[key];
+    if (existing !== null && typeof existing === 'object' &&
+      typeof existing.add === 'function' && typeof existing.has === 'function') return existing;
+    const registry = new WeakSet();
+    globalThis[key] = registry;
+    return registry;
+  } catch {
+    return undefined;
+  }
+})();
 const blockedPreviewAutomaticPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Reports whether a value is a plain record that can be copied without invoking accessors. */
@@ -53,6 +70,41 @@ function isPreviewAutomaticNeutralEmptyRecord(value) {
   } catch {
     return false;
   }
+}
+
+/** Recognizes only identities registered by the Inspector's generated-value boundary. */
+function isPreviewAutomaticGeneratedValue(value) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return false;
+  try {
+    return PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY?.has(value) === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Registers every compiler-materialized container identity without mutating frozen values. */
+function markPreviewAutomaticGeneratedValue(value, budget = { nodes: 0 }, depth = 0) {
+  if (
+    (typeof value !== 'object' && typeof value !== 'function') || value === null ||
+    depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH || budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES
+  ) return value;
+  budget.nodes += 1;
+  try { PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY?.add(value); } catch {}
+  if (!Array.isArray(value) && !isPreviewAutomaticPropRecord(value)) return value;
+  for (const [, child] of readPreviewAutomaticPropEntries(value)) {
+    markPreviewAutomaticGeneratedValue(child, budget, depth + 1);
+  }
+  return value;
+}
+
+/** Reports a container/scalar contradiction without reading project-owned child properties. */
+function doPreviewAutomaticValueKindsConflict(inferredValue, authoredValue) {
+  if (Array.isArray(inferredValue)) return !Array.isArray(authoredValue);
+  if (isPreviewAutomaticPropRecord(inferredValue)) {
+    return !isPreviewAutomaticPropRecord(authoredValue);
+  }
+  if (inferredValue === null) return authoredValue !== null;
+  return typeof inferredValue !== typeof authoredValue;
 }
 
 /** Materializes one validated shape node under fixed depth and aggregate node budgets. */
@@ -139,6 +191,7 @@ function createPreviewAutomaticGraphqlSelectionSet(properties, budget, depth) {
 /** Returns a plain root prop record or an empty record for absent/invalid generated evidence. */
 function materializePreviewAutomaticProps(shape) {
   const value = materializePreviewAutomaticPropNode(shape, { nodes: 0 }, 0);
+  markPreviewAutomaticGeneratedValue(value);
   return isPreviewAutomaticPropRecord(value) ? value : {};
 }
 
@@ -166,6 +219,11 @@ function overlayPreviewAutomaticPropValue(
     inferredValue !== null
   ) return inferredValue;
   const inferredType = typeof inferredValue;
+  if (
+    repairNeutralPlaceholder === true &&
+    isPreviewAutomaticGeneratedValue(authoredValue) &&
+    doPreviewAutomaticValueKindsConflict(inferredValue, authoredValue)
+  ) return inferredValue;
   if (
     repairNeutralPlaceholder === true &&
     isPreviewAutomaticNeutralEmptyRecord(authoredValue) &&

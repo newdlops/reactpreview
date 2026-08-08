@@ -30,7 +30,7 @@ const MAX_CONDITIONS_PER_MODULE = 128;
 const MAX_METADATA_TEXT_LENGTH = 180;
 const PREVIEW_INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const OVERLAY_COMPONENT_NAME_PATTERN =
-  /(?:modal|dialog|drawer|popover|popper|overlay|portal|sheet|lightbox|tooltip|toast|dropdown|menu)$/iu;
+  /(?:modal|dialog|drawer|popover|popper|popup|overlay|portal|sheet|lightbox|tooltip|toast|snackbar|dropdown|menu)$/iu;
 const POSITIVE_OVERLAY_VISIBILITY_PROPS = new Set([
   'active',
   'defaultopen',
@@ -82,6 +82,8 @@ interface ReactConditionalRenderMetadata {
   readonly ownerName?: string;
   /** Optional render-control classification used for navigation and dormant overlay handling. */
   readonly role?: 'navigation' | 'overlay';
+  /** Whether a one-sided terminal throw must be bypassed before the selected page can commit. */
+  readonly synchronousContinuation?: true;
   /** Branch that continues toward the selected descendant after an early render exit. */
   readonly targetBranch?: 'falsy' | 'truthy';
   /** Label rendered when the condition resolves true. */
@@ -354,7 +356,17 @@ function collectEarlyReturnGateCandidate(
           owner,
           terminalAnalyzer,
         );
-  if (thenRender === undefined && elseRender === undefined) return undefined;
+  const thenThrows = thenRender === undefined && hasSingleTerminalThrow(statement.thenStatement);
+  const elseThrows =
+    statement.elseStatement !== undefined &&
+    elseRender === undefined &&
+    hasSingleTerminalThrow(statement.elseStatement);
+  if (thenRender === undefined && elseRender === undefined && !thenThrows && !elseThrows) {
+    return undefined;
+  }
+  if ((thenRender !== undefined || thenThrows) && (elseRender !== undefined || elseThrows)) {
+    if (thenRender === undefined || elseRender === undefined) return undefined;
+  }
   if (thenRender !== undefined && elseRender !== undefined) {
     const truthyLabel = describeReturnedRenderExpression(thenRender, sourceFile, portalBindings);
     const falsyLabel = describeReturnedRenderExpression(elseRender, sourceFile, portalBindings);
@@ -370,14 +382,13 @@ function collectEarlyReturnGateCandidate(
       },
     };
   }
-  const returnedBranch = thenRender === undefined ? 'falsy' : 'truthy';
+  const returnedBranch = thenRender !== undefined || thenThrows ? 'truthy' : 'falsy';
   const targetBranch = returnedBranch === 'truthy' ? 'falsy' : 'truthy';
   if (isPreviewReactContinuationSafetyGuard(statement, returnedBranch)) return undefined;
-  const returnedLabel = describeReturnedRenderExpression(
-    thenRender ?? elseRender,
-    sourceFile,
-    portalBindings,
-  );
+  const thrownBranch = returnedBranch === 'truthy' ? thenThrows : elseThrows;
+  const returnedLabel = thrownBranch
+    ? 'thrown error'
+    : describeReturnedRenderExpression(thenRender ?? elseRender, sourceFile, portalBindings);
   const continuationLabel = `continue <${ownerName}>`;
   const role = isNavigationBranchLabel(returnedLabel) ? ('navigation' as const) : undefined;
   return {
@@ -389,10 +400,20 @@ function collectEarlyReturnGateCandidate(
       kind: 'early-return',
       ownerName,
       ...(role === undefined ? {} : { role }),
+      ...(thrownBranch ? { synchronousContinuation: true as const } : {}),
       targetBranch,
       truthyLabel: returnedBranch === 'truthy' ? returnedLabel : continuationLabel,
     },
   };
+}
+
+/** Recognizes a direct or block-terminal throw without interpreting preceding project statements. */
+function hasSingleTerminalThrow(statement: ts.Statement): boolean {
+  if (ts.isBlock(statement)) {
+    const terminalStatement = statement.statements.at(-1);
+    return terminalStatement !== undefined && hasSingleTerminalThrow(terminalStatement);
+  }
+  return ts.isThrowStatement(statement);
 }
 
 /** One immutable property path whose absence is tested by an early-return guard. */
@@ -1249,7 +1270,7 @@ function mayContainConditionalJsx(sourceText: string): boolean {
       sourceText.includes('if') ||
       sourceText.includes('createPortal') ||
       (sourceText.includes('return null') &&
-        /\b[A-Za-z_$][\w$]*(?:Modal|Dialog|Drawer|Popover|Overlay|Portal|Sheet|Lightbox|Tooltip|Toast|Dropdown|Menu)\b/u.test(
+        /\b[A-Za-z_$][\w$]*(?:Modal|Dialog|Drawer|Popover|Overlay|Portal|Sheet|Lightbox|Tooltip|Toast|Snackbar|Dropdown|Menu)\b/u.test(
           sourceText,
         )) ||
       /\b(?:active|defaultOpen|defaultVisible|expanded|hidden|isHidden|isOpen|isVisible|open|present|show|shown|visible)\s*=/u.test(

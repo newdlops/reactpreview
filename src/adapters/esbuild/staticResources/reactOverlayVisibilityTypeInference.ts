@@ -17,6 +17,9 @@ type OverlayFunctionLike = ts.ArrowFunction | ts.FunctionDeclaration | ts.Functi
 
 /** Statically resolved object declarations that can route a parameter to one visibility key. */
 type LocalObjectType = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
+type VisibilityTypePathCatalog = Map<string, readonly string[]>;
+type VisibilityTypeBindings = ReadonlyMap<string, ts.TypeNode>;
+const MAX_VISIBILITY_TYPE_DEPTH = 12;
 
 /**
  * Infers one positive visibility prop from a component's local type corridor.
@@ -35,14 +38,36 @@ export function inferReactOverlayVisibilityTypeProp(
   sourceFile: ts.SourceFile,
   resolvedObjectTypes?: ReadonlyMap<string, LocalObjectType>,
 ): string | undefined {
+  const path = inferReactOverlayVisibilityTypePath(
+    functionLike,
+    exportName,
+    contextualPropsType,
+    sourceFile,
+    resolvedObjectTypes,
+  );
+  return path?.length === 1 ? path[0] : undefined;
+}
+
+/**
+ * Infers one positive visibility path, including a proven carrier such as `modalProps.show`.
+ * Nested traversal is restricted to overlay-named prop contracts so an unrelated `settings.show`
+ * field cannot make a directly previewed modal choose application state on the user's behalf.
+ */
+export function inferReactOverlayVisibilityTypePath(
+  functionLike: OverlayFunctionLike,
+  exportName: string,
+  contextualPropsType: ts.TypeNode | undefined,
+  sourceFile: ts.SourceFile,
+  resolvedObjectTypes?: ReadonlyMap<string, LocalObjectType>,
+): readonly string[] | undefined {
   const ownerName = readFunctionOwnerName(functionLike) ?? exportName;
   if (!isReactOverlayComponentName(ownerName)) return undefined;
   const propsType = functionLike.parameters[0]?.type ?? contextualPropsType;
   if (propsType === undefined) return undefined;
   const localTypes = collectLocalObjectTypes(sourceFile, resolvedObjectTypes);
-  const candidates = new Set<string>();
-  collectVisibilityTypeProps(propsType, localTypes, new Set(), candidates);
-  return candidates.size === 1 ? [...candidates][0] : undefined;
+  const candidates: VisibilityTypePathCatalog = new Map();
+  collectVisibilityTypePaths(propsType, localTypes, new Set(), [], candidates, 0, new Map());
+  return candidates.size === 1 ? [...candidates.values()][0] : undefined;
 }
 
 /** Builds a bounded identity map for only interface and type-alias declarations in this module. */
@@ -73,23 +98,43 @@ function readFunctionOwnerName(functionLike: OverlayFunctionLike): string | unde
     : undefined;
 }
 
-/** Walks local aliases, intersections, transparent wrappers, and exact Pick key literals. */
-function collectVisibilityTypeProps(
+/** Walks aliases, intersections, utility types, and bounded nested overlay prop carriers. */
+function collectVisibilityTypePaths(
   typeNode: ts.TypeNode,
   localTypes: ReadonlyMap<string, LocalObjectType>,
   activeNames: Set<string>,
-  candidates: Set<string>,
+  prefix: readonly string[],
+  candidates: VisibilityTypePathCatalog,
+  depth: number,
+  typeBindings: VisibilityTypeBindings,
 ): void {
+  if (depth > MAX_VISIBILITY_TYPE_DEPTH) return;
   const unwrapped = ts.isParenthesizedTypeNode(typeNode) ? typeNode.type : typeNode;
   if (ts.isIntersectionTypeNode(unwrapped)) {
     for (const member of unwrapped.types) {
-      collectVisibilityTypeProps(member, localTypes, activeNames, candidates);
+      collectVisibilityTypePaths(
+        member,
+        localTypes,
+        activeNames,
+        prefix,
+        candidates,
+        depth + 1,
+        typeBindings,
+      );
     }
     return;
   }
   if (ts.isUnionTypeNode(unwrapped)) {
     for (const member of unwrapped.types) {
-      collectVisibilityTypeProps(member, localTypes, activeNames, candidates);
+      collectVisibilityTypePaths(
+        member,
+        localTypes,
+        activeNames,
+        prefix,
+        candidates,
+        depth + 1,
+        typeBindings,
+      );
     }
     return;
   }
@@ -100,34 +145,66 @@ function collectVisibilityTypeProps(
      * candidate set remains singular; branches that disagree on `show` versus `open` therefore
      * stay deliberately unresolved.
      */
-    collectVisibilityTypeProps(unwrapped.trueType, localTypes, activeNames, candidates);
-    collectVisibilityTypeProps(unwrapped.falseType, localTypes, activeNames, candidates);
+    collectVisibilityTypePaths(
+      unwrapped.trueType,
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      typeBindings,
+    );
+    collectVisibilityTypePaths(
+      unwrapped.falseType,
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      typeBindings,
+    );
     return;
   }
   if (ts.isTypeLiteralNode(unwrapped)) {
-    collectVisibilityMembers(unwrapped.members, candidates);
+    collectVisibilityMemberPaths(
+      unwrapped.members,
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      typeBindings,
+    );
     return;
   }
   if (!ts.isTypeReferenceNode(unwrapped) || !ts.isIdentifier(unwrapped.typeName)) return;
   const name = unwrapped.typeName.text;
-  if (name === 'Pick' && unwrapped.typeArguments?.[1] !== undefined) {
-    collectVisibilityLiteralKeys(unwrapped.typeArguments[1], candidates);
-    return;
-  }
-  if (name === 'Omit' && unwrapped.typeArguments?.[0] !== undefined) {
-    const inheritedCandidates = new Set<string>();
-    collectVisibilityTypeProps(
+  if (
+    (name === 'Pick' || name === 'Omit') &&
+    unwrapped.typeArguments?.[0] !== undefined &&
+    unwrapped.typeArguments[1] !== undefined
+  ) {
+    const selectedKeys = collectVisibilitySelectionKeys(unwrapped.typeArguments[1]);
+    const inherited: VisibilityTypePathCatalog = new Map();
+    collectVisibilityTypePaths(
       unwrapped.typeArguments[0],
       localTypes,
-      activeNames,
-      inheritedCandidates,
+      new Set(activeNames),
+      prefix,
+      inherited,
+      depth + 1,
+      typeBindings,
     );
-    const omittedCandidates = new Set<string>();
-    if (unwrapped.typeArguments[1] !== undefined) {
-      collectVisibilityLiteralKeys(unwrapped.typeArguments[1], omittedCandidates);
-    }
-    for (const candidate of inheritedCandidates) {
-      if (!omittedCandidates.has(candidate)) candidates.add(candidate);
+    for (const path of inherited.values()) {
+      const firstRelativeSegment = path[prefix.length];
+      if (
+        firstRelativeSegment !== undefined &&
+        (name === 'Pick'
+          ? selectedKeys.has(firstRelativeSegment)
+          : !selectedKeys.has(firstRelativeSegment))
+      ) {
+        addVisibilityTypePath(candidates, path);
+      }
     }
     return;
   }
@@ -138,44 +215,132 @@ function collectVisibilityTypeProps(
       name === 'Partial') &&
     unwrapped.typeArguments?.[0] !== undefined
   ) {
-    collectVisibilityTypeProps(unwrapped.typeArguments[0], localTypes, activeNames, candidates);
+    collectVisibilityTypePaths(
+      unwrapped.typeArguments[0],
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      typeBindings,
+    );
+    return;
+  }
+  const boundType = typeBindings.get(name);
+  if (boundType !== undefined) {
+    const bindingKey = `type-parameter:${name}`;
+    if (activeNames.has(bindingKey)) return;
+    activeNames.add(bindingKey);
+    collectVisibilityTypePaths(
+      boundType,
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      typeBindings,
+    );
+    activeNames.delete(bindingKey);
     return;
   }
   const declaration = localTypes.get(name);
   if (declaration === undefined || activeNames.has(name)) return;
   activeNames.add(name);
+  const declarationBindings = new Map(typeBindings);
+  for (const parameter of declaration.typeParameters ?? []) {
+    declarationBindings.delete(parameter.name.text);
+  }
+  for (const [index, parameter] of (declaration.typeParameters ?? []).entries()) {
+    const argument = unwrapped.typeArguments?.[index] ?? parameter.default;
+    if (argument !== undefined) declarationBindings.set(parameter.name.text, argument);
+  }
   if (ts.isTypeAliasDeclaration(declaration)) {
-    collectVisibilityTypeProps(declaration.type, localTypes, activeNames, candidates);
+    collectVisibilityTypePaths(
+      declaration.type,
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      declarationBindings,
+    );
   } else {
-    collectVisibilityMembers(declaration.members, candidates);
+    collectVisibilityMemberPaths(
+      declaration.members,
+      localTypes,
+      activeNames,
+      prefix,
+      candidates,
+      depth + 1,
+      declarationBindings,
+    );
   }
   activeNames.delete(name);
 }
 
-/** Adds visibility-shaped property signatures from an inline object or interface declaration. */
-function collectVisibilityMembers(
+/** Adds direct visibility fields and descends only through an overlay-named props carrier. */
+function collectVisibilityMemberPaths(
   members: ts.NodeArray<ts.TypeElement>,
-  candidates: Set<string>,
+  localTypes: ReadonlyMap<string, LocalObjectType>,
+  activeNames: Set<string>,
+  prefix: readonly string[],
+  candidates: VisibilityTypePathCatalog,
+  depth: number,
+  typeBindings: VisibilityTypeBindings,
 ): void {
   for (const member of members) {
     if (!ts.isPropertySignature(member)) continue;
     const propertyName = readPropertyName(member.name);
-    if (propertyName !== undefined && isReactOverlayVisibilityPropName(propertyName)) {
-      candidates.add(propertyName);
+    if (propertyName === undefined) continue;
+    const path = [...prefix, propertyName];
+    if (isReactOverlayVisibilityPropName(propertyName)) {
+      addVisibilityTypePath(candidates, path);
+    } else if (
+      member.type !== undefined &&
+      isNestedOverlayVisibilityCarrierName(propertyName)
+    ) {
+      collectVisibilityTypePaths(
+        member.type,
+        localTypes,
+        activeNames,
+        path,
+        candidates,
+        depth + 1,
+        typeBindings,
+      );
     }
   }
 }
 
-/** Adds only string-literal Pick keys that independently name positive overlay visibility. */
-function collectVisibilityLiteralKeys(typeNode: ts.TypeNode, candidates: Set<string>): void {
-  const unwrapped = ts.isParenthesizedTypeNode(typeNode) ? typeNode.type : typeNode;
-  if (ts.isUnionTypeNode(unwrapped)) {
-    for (const member of unwrapped.types) collectVisibilityLiteralKeys(member, candidates);
-    return;
-  }
-  if (!ts.isLiteralTypeNode(unwrapped) || !ts.isStringLiteral(unwrapped.literal)) return;
-  const propertyName = unwrapped.literal.text;
-  if (isReactOverlayVisibilityPropName(propertyName)) candidates.add(propertyName);
+/** Collects exact string-literal keys accepted by Pick/Omit without widening their domain. */
+function collectVisibilitySelectionKeys(typeNode: ts.TypeNode): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const collect = (candidate: ts.TypeNode): void => {
+    const unwrapped = ts.isParenthesizedTypeNode(candidate) ? candidate.type : candidate;
+    if (ts.isUnionTypeNode(unwrapped)) {
+      for (const member of unwrapped.types) collect(member);
+      return;
+    }
+    if (ts.isLiteralTypeNode(unwrapped) && ts.isStringLiteral(unwrapped.literal)) {
+      keys.add(unwrapped.literal.text);
+    }
+  };
+  collect(typeNode);
+  return keys;
+}
+
+/** De-duplicates one exact prop path without relying on application-controlled object keys. */
+function addVisibilityTypePath(
+  candidates: VisibilityTypePathCatalog,
+  path: readonly string[],
+): void {
+  candidates.set(path.join('\0'), Object.freeze([...path]));
+}
+
+/** Restricts nested inference to explicit `modalProps`/`dialogOptions`-style public contracts. */
+function isNestedOverlayVisibilityCarrierName(value: string): boolean {
+  const ownerName = value.replace(/(?:props|properties|options|config|state)$/iu, '');
+  return ownerName !== value && isReactOverlayComponentName(ownerName);
 }
 
 /** Returns a static object property name without evaluating computed expressions. */

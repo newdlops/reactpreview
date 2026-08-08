@@ -11,7 +11,7 @@ import path from 'node:path';
 import ts from 'typescript';
 
 const OVERLAY_NAME_PATTERN =
-  /(?:modal|dialog|drawer|popover|popper|overlay|portal|sheet|lightbox)$/iu;
+  /(?:modal|dialog|drawer|popover|popper|popup|overlay|portal|sheet|lightbox)$/iu;
 const POSITIVE_VISIBILITY_PROPS = new Set([
   'active',
   'defaultopen',

@@ -23,6 +23,8 @@ export interface ReactContextHookRuntimeReplacementOptions {
   readonly line: number;
   /** Unchanged authored hook-call expression, including type arguments. */
   readonly originalCall: string;
+  /** Operation-proven paths represented by the generated Context fallback. */
+  readonly requiredPaths: readonly string[];
   /** Absolute project source path retained only in the local webview diagnostic. */
   readonly sourcePath: string;
   /** Original source offset used to disambiguate repeated calls on the same line. */
@@ -61,6 +63,7 @@ export function createReactContextHookRuntimeReplacement(
       .slice(0, 24),
     line: options.line,
     moduleSpecifier: 'project Context hook',
+    requiredPaths: options.requiredPaths,
     sourcePath: normalizedSourcePath,
   };
   const api = `globalThis[Symbol.for(${JSON.stringify(INSPECTOR_API_SYMBOL)})]`;

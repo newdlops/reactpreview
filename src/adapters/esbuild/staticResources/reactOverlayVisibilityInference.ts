@@ -9,7 +9,7 @@
 import ts from 'typescript';
 
 const OVERLAY_COMPONENT_NAME_PATTERN =
-  /(?:modal|dialog|drawer|popover|popper|overlay|portal|sheet|lightbox|tooltip|toast|dropdown|menu)$/iu;
+  /(?:modal|dialog|drawer|popover|popper|popup|overlay|portal|sheet|lightbox|tooltip|toast|snackbar|dropdown|menu)(?:form|content|container|wrapper|view|panel)?$/iu;
 const POSITIVE_OVERLAY_VISIBILITY_PROPS = new Set([
   'defaultopen',
   'defaultvisible',

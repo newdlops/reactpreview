@@ -8,6 +8,10 @@
  */
 import path from 'node:path';
 import ts from 'typescript';
+import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
+import { inferPreviewRuntimeHookAssignmentGuardPassFallback } from './previewRuntimeHookGuardValue';
+import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import {
   collectLocalFunctionSummaries,
   isGlobalObjectShadowed,
@@ -16,8 +20,28 @@ import {
   type LocalFunctionSummary,
 } from './reactContextLocalFunctionSummary';
 import { createReactContextHookRuntimeReplacement } from './reactContextHookRuntimeReplacement';
+import type {
+  PreviewRuntimeHookImportedHelperItemFallback,
+  ResolvePreviewRuntimeHookImportedHelperItemFallback,
+} from './previewRuntimeHookAliasUsage';
+import { inferPreviewRuntimeArrayItemFallback } from './previewRuntimeHookInstrumentation';
 
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const COLLECTION_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
+const COLLECTION_ITEM_CALLBACK_METHODS = new Set([
+  'every',
+  'filter',
+  'find',
+  'findIndex',
+  'findLast',
+  'findLastIndex',
+  'flatMap',
+  'forEach',
+  'map',
+  'some',
+  'sort',
+]);
+const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 const CONTEXT_HOOK_NAME_PATTERN = /^use[A-Za-z0-9_$]*Context$/u;
 const MAX_ALIASES_PER_SCOPE = 256;
 const MAX_CANDIDATES_PER_MODULE = 64;
@@ -26,6 +50,7 @@ const MAX_GENERATED_FALLBACK_LENGTH = 8_192;
 const MAX_PATH_DEPTH = 16;
 const MAX_PROPERTY_NAME_LENGTH = 128;
 const MAX_SCOPES_PER_CANDIDATE = 512;
+const MAX_VALUE_CHOICE_PATHS = 16;
 
 /** One original hook-call replacement suitable for a shared right-to-left source rewrite pass. */
 export interface ReactContextHookFallbackReplacement {
@@ -33,6 +58,8 @@ export interface ReactContextHookFallbackReplacement {
   readonly end: number;
   /** Module binding that owns the stable deeply frozen fallback. */
   readonly fallbackBinding: string;
+  /** Exact-range arbitration weight for a registration-coupled Context fallback. */
+  readonly priority: number;
   /** Parenthesized nullish fallback expression containing the unchanged original hook call. */
   readonly replacement: string;
   /** Inclusive source offset at the beginning of the original hook call. */
@@ -93,16 +120,24 @@ interface HookFallbackPlan {
 
 /** A context-derived local value represented by its property path from one hook result. */
 interface HookBoundValue {
-  /** Static path relative to the custom hook's returned value. */
-  readonly path: readonly string[];
+  /** Possible static paths relative to the custom hook result after bounded value choices. */
+  readonly paths: readonly (readonly string[])[];
 }
 
-/** Recursive plain fallback node; callable nodes deliberately cannot own child properties. */
+/** Recursive neutral fallback node; callable and collection nodes cannot own child properties. */
 interface FallbackShape {
-  /** Deterministically keyed object children, unused for callable leaves. */
+  /** Deterministically keyed object children, unused for callable/collection leaves. */
   readonly children: Map<string, FallbackShape>;
-  /** Plain object container or frozen no-op function leaf. */
-  kind: 'callable' | 'object';
+  /** Side-effect-free item expression proven by an imported collection callback contract. */
+  collectionItemExpression?: string;
+  /** Item-relative paths retained for runtime structural completion and diagnostics. */
+  collectionItemRequiredPaths?: readonly string[];
+  /** Plain object container, frozen no-op function, proven collection, or bounded scalar. */
+  kind: 'callable' | 'collection' | 'object' | 'scalar';
+  /** Closed scalar expression demanded by every call through this callable path. */
+  callResultExpression?: string;
+  /** JSON-safe semantic scalar used only after a bound leaf is read by project code. */
+  scalarExpression?: string;
 }
 
 /** Runtime functions whose bodies can legally contain a React hook call. */
@@ -125,6 +160,7 @@ type RuntimeFunction = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionEx
 export function createReactContextHookFallbackTransform(
   sourcePath: string,
   sourceText: string,
+  resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
 ): ReactContextHookFallbackTransform {
   if (!isProjectRuntimeSource(sourcePath) || !sourceText.includes('Context')) {
     return EMPTY_TRANSFORM;
@@ -154,6 +190,7 @@ export function createReactContextHookFallbackTransform(
   }
 
   const localFunctionSummaries = collectLocalFunctionSummaries(sourceFile);
+  const localReturnFunctions = collectUniqueLocalRuntimeFunctions(sourceFile);
   const usedBindings = collectIdentifierTexts(sourceFile);
   const declarationByShape = new Map<
     string,
@@ -170,7 +207,9 @@ export function createReactContextHookFallbackTransform(
       new Map(),
       plan,
       localFunctionSummaries,
+      localReturnFunctions,
       isGlobalObjectShadowed(sourceFile),
+      resolveImportedCollectionCallbackItem,
     );
     if (!plan.invalid && plan.required && wouldBreakOptionalShortCircuit(plan)) {
       plan.invalid = true;
@@ -203,12 +242,14 @@ export function createReactContextHookFallbackTransform(
     replacements.push({
       end,
       fallbackBinding: declaration.binding,
+      priority: 2,
       replacement: createReactContextHookRuntimeReplacement({
         column: location.character + 1,
         fallbackBinding: declaration.binding,
         hookName: hookExpression,
         line: location.line + 1,
         originalCall,
+        requiredPaths: collectFallbackRequiredPaths(plan.shape),
         sourcePath,
         start,
       }),
@@ -429,7 +470,11 @@ function analyzeCandidateScope(
   inheritedBindings: ReadonlyMap<string, HookBoundValue>,
   plan: HookFallbackPlan,
   localFunctions: ReadonlyMap<string, LocalFunctionSummary>,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
   globalObjectShadowed: boolean,
+  resolveImportedCollectionCallbackItem:
+    | ResolvePreviewRuntimeHookImportedHelperItemFallback
+    | undefined,
 ): void {
   plan.scopeCount += 1;
   if (plan.scopeCount > MAX_SCOPES_PER_CANDIDATE || plan.invalid) {
@@ -443,10 +488,26 @@ function analyzeCandidateScope(
   const bindings = new Map(inheritedBindings);
   for (const localName of localNames) bindings.delete(localName);
 
-  inferCandidateAliases(declarations, bindings, plan);
-  inspectScopeOperations(scope, bindings, plan, localFunctions, globalObjectShadowed);
+  inferCandidateAliases(declarations, bindings, plan, localReturnFunctions);
+  inspectScopeOperations(
+    scope,
+    bindings,
+    plan,
+    localFunctions,
+    localReturnFunctions,
+    globalObjectShadowed,
+    resolveImportedCollectionCallbackItem,
+  );
   for (const nestedFunction of collectDirectNestedFunctions(scope)) {
-    analyzeCandidateScope(nestedFunction, bindings, plan, localFunctions, globalObjectShadowed);
+    analyzeCandidateScope(
+      nestedFunction,
+      bindings,
+      plan,
+      localFunctions,
+      localReturnFunctions,
+      globalObjectShadowed,
+      resolveImportedCollectionCallbackItem,
+    );
   }
 }
 
@@ -471,6 +532,7 @@ function inferCandidateAliases(
   declarations: readonly ts.VariableDeclaration[],
   bindings: Map<string, HookBoundValue>,
   plan: HookFallbackPlan,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
 ): void {
   const unresolved = new Set(declarations);
   for (let pass = 0; pass < declarations.length && unresolved.size > 0; pass += 1) {
@@ -478,10 +540,17 @@ function inferCandidateAliases(
     for (const declaration of [...unresolved]) {
       const initializer = declaration.initializer;
       if (initializer === undefined) continue;
-      const resolved = readHookBoundValue(initializer, bindings, plan.candidate.call);
+      const resolved = readHookBoundValue(
+        initializer,
+        bindings,
+        plan.candidate.call,
+        localReturnFunctions,
+      );
       if (resolved === undefined) continue;
-      recordExpressionContainerPrefixes(initializer, resolved.path, plan);
-      if (!bindCandidatePattern(declaration.name, resolved.path, bindings, plan)) {
+      for (const valuePath of resolved.paths) {
+        recordExpressionContainerPrefixes(initializer, valuePath, plan);
+      }
+      if (!bindCandidatePattern(declaration.name, resolved.paths, bindings, plan)) {
         plan.invalid = true;
         return;
       }
@@ -495,27 +564,33 @@ function inferCandidateAliases(
 /** Binds an identifier or recursively supported object pattern to one context-result path. */
 function bindCandidatePattern(
   name: ts.BindingName,
-  valuePath: readonly string[],
+  valuePaths: readonly (readonly string[])[],
   bindings: Map<string, HookBoundValue>,
   plan: HookFallbackPlan,
 ): boolean {
   if (ts.isIdentifier(name)) {
-    bindings.set(name.text, { path: valuePath });
+    bindings.set(name.text, { paths: deduplicateHookBoundPaths(valuePaths) });
     return true;
   }
   if (!ts.isObjectBindingPattern(name)) return false;
-  if (!addObjectContainer(valuePath, plan)) return false;
+  for (const valuePath of valuePaths) {
+    if (!addObjectContainer(valuePath, plan)) return false;
+  }
 
   for (const element of name.elements) {
     if (element.dotDotDotToken !== undefined || element.initializer !== undefined) return false;
     const propertyName = readBindingPropertyName(element);
     if (propertyName === undefined) return false;
-    const propertyPath = [...valuePath, propertyName];
+    const propertyPaths = deduplicateHookBoundPaths(
+      valuePaths.map((valuePath) => [...valuePath, propertyName]),
+    );
     if (ts.isIdentifier(element.name)) {
-      bindings.set(element.name.text, { path: propertyPath });
+      bindings.set(element.name.text, { paths: propertyPaths });
     } else if (ts.isObjectBindingPattern(element.name)) {
-      if (!addObjectContainer(propertyPath, plan)) return false;
-      if (!bindCandidatePattern(element.name, propertyPath, bindings, plan)) return false;
+      for (const propertyPath of propertyPaths) {
+        if (!addObjectContainer(propertyPath, plan)) return false;
+      }
+      if (!bindCandidatePattern(element.name, propertyPaths, bindings, plan)) return false;
     } else {
       return false;
     }
@@ -548,10 +623,18 @@ function inspectScopeOperations(
   bindings: ReadonlyMap<string, HookBoundValue>,
   plan: HookFallbackPlan,
   localFunctions: ReadonlyMap<string, LocalFunctionSummary>,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
   globalObjectShadowed: boolean,
+  resolveImportedCollectionCallbackItem:
+    | ResolvePreviewRuntimeHookImportedHelperItemFallback
+    | undefined,
 ): void {
   visitDirectScopeNodes(scope, (node) => {
     if (plan.invalid) return;
+    if (ts.isIdentifier(node)) {
+      inspectBoundScalarIdentifier(node, bindings, plan);
+      if (plan.invalid) return;
+    }
     if (
       ts.isElementAccessExpression(node) &&
       isRootedAtCandidate(node.expression, bindings, plan)
@@ -560,13 +643,77 @@ function inspectScopeOperations(
       return;
     }
     if (ts.isPropertyAccessExpression(node)) {
-      inspectPropertyAccess(node, bindings, plan);
+      inspectPropertyAccess(node, bindings, plan, localReturnFunctions);
+      return;
+    }
+    if (ts.isJsxAttribute(node)) {
+      inspectJsxAttribute(node, bindings, plan, localReturnFunctions);
       return;
     }
     if (ts.isCallExpression(node) && node !== plan.candidate.call) {
-      inspectCallExpression(node, bindings, plan, localFunctions, globalObjectShadowed);
+      inspectCallExpression(
+        node,
+        bindings,
+        plan,
+        localFunctions,
+        localReturnFunctions,
+        globalObjectShadowed,
+        resolveImportedCollectionCallbackItem,
+      );
     }
   });
+}
+
+/** Materializes a used destructured Boolean/number/string/null leaf without guessing objects. */
+function inspectBoundScalarIdentifier(
+  identifier: ts.Identifier,
+  bindings: ReadonlyMap<string, HookBoundValue>,
+  plan: HookFallbackPlan,
+): void {
+  const resolved = bindings.get(identifier.text);
+  if (resolved === undefined || resolved.paths.length === 0) return;
+  if (!isRuntimeValueIdentifierReference(identifier)) return;
+  for (const valuePath of resolved.paths) {
+    if (valuePath.length === 0) continue;
+    const semantic = inferPreviewRuntimeSemanticFallback(valuePath.at(-1) ?? identifier.text);
+    if (
+      semantic === undefined ||
+      !['boolean', 'null', 'number', 'string'].includes(semantic.kind)
+    ) {
+      continue;
+    }
+    plan.required = true;
+    if (
+      !addProperObjectPrefixes(valuePath, plan) ||
+      !addScalarLeaf(valuePath, semantic.expression, plan)
+    ) {
+      plan.invalid = true;
+      return;
+    }
+  }
+}
+
+/** Rejects declaration/property-name identifiers while admitting runtime value references. */
+function isRuntimeValueIdentifierReference(identifier: ts.Identifier): boolean {
+  const parent = identifier.parent;
+  if (
+    (ts.isBindingElement(parent) &&
+      (parent.name === identifier || parent.propertyName === identifier)) ||
+    (ts.isVariableDeclaration(parent) && parent.name === identifier) ||
+    (ts.isParameter(parent) && parent.name === identifier) ||
+    (ts.isPropertyAccessExpression(parent) && parent.name === identifier) ||
+    (ts.isPropertyAssignment(parent) && parent.name === identifier) ||
+    (ts.isMethodDeclaration(parent) && parent.name === identifier) ||
+    (ts.isPropertyDeclaration(parent) && parent.name === identifier) ||
+    (ts.isJsxAttribute(parent) && parent.name === identifier) ||
+    (ts.isJsxOpeningElement(parent) && parent.tagName === identifier) ||
+    (ts.isJsxClosingElement(parent) && parent.tagName === identifier) ||
+    (ts.isJsxSelfClosingElement(parent) && parent.tagName === identifier) ||
+    ts.isTypeNode(parent)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** Records object prefixes for a non-optional property read and a callable terminal when invoked. */
@@ -574,6 +721,7 @@ function inspectPropertyAccess(
   expression: ts.PropertyAccessExpression,
   bindings: ReadonlyMap<string, HookBoundValue>,
   plan: HookFallbackPlan,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
 ): void {
   if (expression.questionDotToken !== undefined) {
     // An optional segment does not itself require a fallback. Record its receiver so a fallback
@@ -582,25 +730,60 @@ function inspectPropertyAccess(
     // segment instead of inventing work that the original application would never execute.
     if (
       isRootedAtCandidate(expression.expression, bindings, plan) &&
-      !recordOptionalBase(expression.expression, bindings, plan)
+      !recordOptionalBase(expression.expression, bindings, plan, localReturnFunctions)
     ) {
       plan.invalid = true;
     }
     return;
   }
-  const resolved = readHookBoundValue(expression, bindings, plan.candidate.call);
+  if (
+    ts.isCallExpression(expression.parent) &&
+    expression.parent.expression === expression &&
+    COLLECTION_METHOD_NAMES.has(expression.name.text)
+  ) {
+    // The call visitor records the receiver itself as a collection. Treating this intermediate
+    // method property as an object/callable path first would create contradictory shape evidence.
+    return;
+  }
+  if (expression.name.text === 'length') {
+    const receiver = readHookBoundValue(
+      expression.expression,
+      bindings,
+      plan.candidate.call,
+      localReturnFunctions,
+    );
+    if (receiver === undefined) return;
+    plan.required = true;
+    for (const receiverPath of receiver.paths) {
+      const semantic = inferPreviewRuntimeSemanticFallback(receiverPath.at(-1) ?? '');
+      const valid =
+        semantic?.kind === 'string'
+          ? addScalarLeaf(receiverPath, semantic.expression, plan)
+          : addCollectionLeaf(receiverPath, plan);
+      if (!addProperObjectPrefixes(receiverPath, plan) || !valid) {
+        plan.invalid = true;
+        return;
+      }
+    }
+    return;
+  }
+  const resolved = readHookBoundValue(
+    expression,
+    bindings,
+    plan.candidate.call,
+    localReturnFunctions,
+  );
   if (resolved === undefined) return;
   if (isWriteTarget(expression)) {
     plan.invalid = true;
     return;
   }
   plan.required = true;
-  if (!addProperObjectPrefixes(resolved.path, plan)) {
-    plan.invalid = true;
-    return;
-  }
-  if (ts.isCallExpression(expression.parent) && expression.parent.expression === expression) {
-    if (!addCallableLeaf(resolved.path, plan)) plan.invalid = true;
+  for (const valuePath of resolved.paths) {
+    if (!addProperObjectPrefixes(valuePath, plan)) {
+      plan.invalid = true;
+      return;
+    }
   }
 }
 
@@ -610,22 +793,80 @@ function inspectCallExpression(
   bindings: ReadonlyMap<string, HookBoundValue>,
   plan: HookFallbackPlan,
   localFunctions: ReadonlyMap<string, LocalFunctionSummary>,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
   globalObjectShadowed: boolean,
+  resolveImportedCollectionCallbackItem:
+    | ResolvePreviewRuntimeHookImportedHelperItemFallback
+    | undefined,
 ): void {
   if (call.questionDotToken !== undefined && isRootedAtCandidate(call.expression, bindings, plan)) {
-    if (!recordOptionalBase(call.expression, bindings, plan)) plan.invalid = true;
+    if (!recordOptionalBase(call.expression, bindings, plan, localReturnFunctions)) {
+      plan.invalid = true;
+    }
     return;
   }
-  const callee = readHookBoundValue(call.expression, bindings, plan.candidate.call);
+  const callee = readHookBoundValue(
+    call.expression,
+    bindings,
+    plan.candidate.call,
+    localReturnFunctions,
+  );
   if (callee !== undefined) {
+    const collectionPaths = callee.paths.flatMap((calleePath) => {
+      const methodName = calleePath.at(-1);
+      const receiverPath = calleePath.slice(0, -1);
+      return methodName !== undefined &&
+        COLLECTION_METHOD_NAMES.has(methodName) &&
+        receiverPath.length > 0
+        ? [{ methodName, receiverPath }]
+        : [];
+    });
+    if (collectionPaths.length > 0) {
+      plan.required = true;
+      const callback = call.arguments[0];
+      const callbackValue =
+        callback === undefined || ts.isSpreadElement(callback)
+          ? undefined
+          : unwrapExpression(callback);
+      const collectionMethod = collectionPaths[0]?.methodName;
+      const propertyAccess = unwrapExpression(call.expression);
+      const collectionItem =
+        collectionMethod !== undefined &&
+        COLLECTION_ITEM_CALLBACK_METHODS.has(collectionMethod) &&
+        callbackValue !== undefined &&
+        ts.isIdentifier(callbackValue)
+          ? resolveImportedCollectionCallbackItem?.(callbackValue.text, 0)
+          : collectionMethod !== undefined &&
+              COLLECTION_ITEM_CALLBACK_METHODS.has(collectionMethod) &&
+              ts.isPropertyAccessExpression(propertyAccess)
+            ? inferPreviewRuntimeArrayItemFallback(propertyAccess, call.getSourceFile())
+            : undefined;
+      for (const { receiverPath } of collectionPaths) {
+        if (
+          !addProperObjectPrefixes(receiverPath, plan) ||
+          !addCollectionLeaf(receiverPath, plan, collectionItem)
+        ) {
+          plan.invalid = true;
+          return;
+        }
+      }
+      return;
+    }
+    const callResultExpression = readCallableResultExpression(call, plan);
     plan.required = true;
-    if (
-      callee.path.length === 0 ||
-      !addProperObjectPrefixes(callee.path, plan) ||
-      !addCallableLeaf(callee.path, plan) ||
-      isAmbiguousCallResultUse(call)
-    ) {
+    if (callResultExpression === null) return;
+    if (callResultExpression === false || callee.paths.some((calleePath) => calleePath.length === 0)) {
       plan.invalid = true;
+      return;
+    }
+    for (const calleePath of callee.paths) {
+      if (
+        !addProperObjectPrefixes(calleePath, plan) ||
+        !addCallableLeaf(calleePath, plan, callResultExpression)
+      ) {
+        plan.invalid = true;
+        return;
+      }
     }
     return;
   }
@@ -635,22 +876,49 @@ function inspectCallExpression(
     const resolved =
       argument === undefined
         ? undefined
-        : readHookBoundValue(argument, bindings, plan.candidate.call);
-    if (resolved !== undefined && !addObjectContainer(resolved.path, plan)) plan.invalid = true;
+        : readHookBoundValue(argument, bindings, plan.candidate.call, localReturnFunctions);
+    if (resolved !== undefined) {
+      for (const valuePath of resolved.paths) {
+        if (!addObjectContainer(valuePath, plan)) {
+          plan.invalid = true;
+          break;
+        }
+      }
+    }
     return;
   }
 
   const localSummary = readLocalFunctionSummary(call.expression, localFunctions);
-  if (localSummary === undefined) return;
-  for (const [parameterIndex, relativePaths] of localSummary.objectPathsByParameter) {
-    const argument = call.arguments[parameterIndex];
-    const resolved =
-      argument === undefined
-        ? undefined
-        : readHookBoundValue(argument, bindings, plan.candidate.call);
-    if (resolved === undefined) continue;
-    for (const relativePath of relativePaths) {
-      if (!addObjectContainer([...resolved.path, ...relativePath], plan)) {
+  if (localSummary !== undefined) {
+    for (const [parameterIndex, relativePaths] of localSummary.objectPathsByParameter) {
+      const argument = call.arguments[parameterIndex];
+      const resolved =
+        argument === undefined
+          ? undefined
+          : readHookBoundValue(argument, bindings, plan.candidate.call, localReturnFunctions);
+      if (resolved === undefined) continue;
+      for (const relativePath of relativePaths) {
+        for (const valuePath of resolved.paths) {
+          if (!addObjectContainer([...valuePath, ...relativePath], plan)) {
+            plan.invalid = true;
+            return;
+          }
+        }
+      }
+    }
+  }
+  for (const argument of call.arguments) {
+    const resolved = readHookBoundValue(
+      argument,
+      bindings,
+      plan.candidate.call,
+      localReturnFunctions,
+    );
+    for (const valuePath of resolved?.paths ?? []) {
+      if (
+        looksLikeStrongContextCollectionName(valuePath.at(-1)) &&
+        !addCollectionLeaf(valuePath, plan)
+      ) {
         plan.invalid = true;
         return;
       }
@@ -658,17 +926,78 @@ function inspectCallExpression(
   }
 }
 
-/** Accepts only ignored/returned no-op results and rejects chained or awaited method semantics. */
-function isAmbiguousCallResultUse(call: ts.CallExpression): boolean {
-  const parent = call.parent;
-  return (
-    (ts.isPropertyAccessExpression(parent) && parent.expression === call) ||
-    (ts.isElementAccessExpression(parent) && parent.expression === call) ||
-    (ts.isCallExpression(parent) && parent.expression === call) ||
-    (ts.isNewExpression(parent) && parent.expression === call) ||
-    ts.isAwaitExpression(parent) ||
-    (ts.isTaggedTemplateExpression(parent) && parent.tag === call)
+/** Uses an explicit JSX collection prop to retain the source value as a neutral empty array. */
+function inspectJsxAttribute(
+  attribute: ts.JsxAttribute,
+  bindings: ReadonlyMap<string, HookBoundValue>,
+  plan: HookFallbackPlan,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
+): void {
+  const attributeName = attribute.name.getText();
+  const expression = attribute.initializer !== undefined &&
+    ts.isJsxExpression(attribute.initializer)
+    ? attribute.initializer.expression
+    : undefined;
+  if (
+    expression === undefined ||
+    !looksLikeStrongContextCollectionName(attributeName)
+  ) return;
+  const resolved = readHookBoundValue(
+    expression,
+    bindings,
+    plan.candidate.call,
+    localReturnFunctions,
   );
+  for (const valuePath of resolved?.paths ?? []) {
+    if (!addCollectionLeaf(valuePath, plan)) {
+      plan.invalid = true;
+      return;
+    }
+  }
+}
+
+/**
+ * Recognizes only strong collection conventions when a value crosses an unanalyzed call/JSX edge.
+ * Direct built-in Array method calls are handled separately and need no naming inference.
+ */
+function looksLikeStrongContextCollectionName(propertyName: string | undefined): boolean {
+  if (propertyName === undefined) return false;
+  const name = propertyName.replaceAll('_', '').toLowerCase();
+  if (
+    /(?:address|analysis|business|class|news|options|parameters|params|process|progress|properties|props|series|settings|statistics|status|styles|success|values|variables)$/u.test(
+      name,
+    )
+  ) {
+    return false;
+  }
+  return /(?:items|nodes|edges|rows|records|results|entries|connections|collection|datalist)$/u.test(
+    name,
+  ) || name.endsWith('ies') || name.endsWith('s');
+}
+
+/**
+ * Retains an owner-guard scalar only for an exact simple-assignment RHS; ignored and returned
+ * results retain the established no-op callable. Every other result consumer fails closed.
+ */
+function readCallableResultExpression(
+  call: ts.CallExpression,
+  plan: HookFallbackPlan,
+): string | false | null | undefined {
+  const parent = call.parent;
+  if (ts.isExpressionStatement(parent) || (ts.isReturnStatement(parent) && parent.expression === call)) {
+    return undefined;
+  }
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.right === call &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    return (
+      inferPreviewRuntimeHookAssignmentGuardPassFallback(parent.left, plan.candidate.owner)
+        ?.expression ?? false
+    );
+  }
+  return null;
 }
 
 /** Detects assignment, mutation, or deletion against a derived frozen fallback property. */
@@ -694,20 +1023,132 @@ function readHookBoundValue(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, HookBoundValue>,
   candidateCall: ts.CallExpression,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
+  activeFunctions = new Set<string>(),
 ): HookBoundValue | undefined {
   const unwrapped = unwrapExpression(expression);
-  if (unwrapped === candidateCall) return { path: [] };
+  if (unwrapped === candidateCall) return { paths: Object.freeze([Object.freeze([])]) };
   if (ts.isIdentifier(unwrapped)) return bindings.get(unwrapped.text);
   if (
     ts.isPropertyAccessExpression(unwrapped) &&
     unwrapped.questionDotToken === undefined &&
     isSafePropertyName(unwrapped.name.text)
   ) {
-    const owner = readHookBoundValue(unwrapped.expression, bindings, candidateCall);
-    if (owner === undefined || owner.path.length >= MAX_PATH_DEPTH) return undefined;
-    return { path: [...owner.path, unwrapped.name.text] };
+    const owner = readHookBoundValue(
+      unwrapped.expression,
+      bindings,
+      candidateCall,
+      localReturnFunctions,
+      activeFunctions,
+    );
+    if (owner === undefined) return undefined;
+    const paths = deduplicateHookBoundPaths(
+      owner.paths.flatMap((ownerPath) =>
+        ownerPath.length >= MAX_PATH_DEPTH ? [] : [[...ownerPath, unwrapped.name.text]],
+      ),
+    );
+    return paths.length === 0 ? undefined : { paths };
+  }
+  if (ts.isCallExpression(unwrapped) && unwrapped.questionDotToken === undefined) {
+    const callee = unwrapExpression(unwrapped.expression);
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      callee.questionDotToken === undefined &&
+      COLLECTION_IDENTITY_METHODS.has(callee.name.text)
+    ) {
+      return readHookBoundValue(
+        callee.expression,
+        bindings,
+        candidateCall,
+        localReturnFunctions,
+        activeFunctions,
+      );
+    }
+    if (ts.isIdentifier(callee)) {
+      const localFunction = localReturnFunctions.get(callee.text);
+      const identity = localFunction === undefined ? undefined : String(localFunction.pos);
+      if (localFunction !== undefined && identity !== undefined && !activeFunctions.has(identity)) {
+        const nextActive = new Set(activeFunctions).add(identity);
+        const paths = deduplicateHookBoundPaths(
+          collectRuntimeReturnExpressions(localFunction).flatMap(
+            (returnExpression) =>
+              readHookBoundValue(
+                returnExpression,
+                bindings,
+                candidateCall,
+                localReturnFunctions,
+                nextActive,
+              )?.paths ?? [],
+          ),
+        );
+        return paths.length === 0 ? undefined : { paths };
+      }
+    }
   }
   return undefined;
+}
+
+/** Collects uniquely named local runtime functions without resolving or executing closures. */
+function collectUniqueLocalRuntimeFunctions(
+  sourceFile: ts.SourceFile,
+): ReadonlyMap<string, RuntimeFunction> {
+  const candidates = new Map<string, RuntimeFunction[]>();
+  const append = (name: string, functionLike: RuntimeFunction): void => {
+    const values = candidates.get(name) ?? [];
+    values.push(functionLike);
+    candidates.set(name, values);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+      append(node.name.text, node);
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined
+    ) {
+      const initializer = unwrapExpression(node.initializer);
+      if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+        append(node.name.text, initializer);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return new Map(
+    [...candidates].flatMap(([name, values]) =>
+      values.length === 1 && values[0] !== undefined ? [[name, values[0]] as const] : [],
+    ),
+  );
+}
+
+/** Reads direct return expressions while treating nested closures as separate functions. */
+function collectRuntimeReturnExpressions(owner: RuntimeFunction): readonly ts.Expression[] {
+  if (ts.isArrowFunction(owner) && !ts.isBlock(owner.body)) return [owner.body];
+  const expressions: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isRuntimeFunction(node)) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      expressions.push(node.expression);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  return Object.freeze(expressions);
+}
+
+/** Bounds and de-duplicates alternate hook-relative origins in stable source order. */
+function deduplicateHookBoundPaths(
+  paths: readonly (readonly string[])[],
+): readonly (readonly string[])[] {
+  const retained = new Map<string, readonly string[]>();
+  for (const path_ of paths) {
+    if (path_.length > MAX_PATH_DEPTH) continue;
+    const key = path_.join('\0');
+    if (!retained.has(key)) retained.set(key, Object.freeze([...path_]));
+    if (retained.size >= MAX_VALUE_CHOICE_PATHS) break;
+  }
+  return Object.freeze([...retained.values()]);
 }
 
 /**
@@ -719,11 +1160,17 @@ function recordOptionalBase(
   expression: ts.Expression,
   bindings: ReadonlyMap<string, HookBoundValue>,
   plan: HookFallbackPlan,
+  localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
 ): boolean {
-  const resolved = readHookBoundValue(expression, bindings, plan.candidate.call);
-  if (resolved === undefined || !isSafePath(resolved.path)) return false;
-  plan.optionalBasePaths.set(resolved.path.join('\0'), resolved.path);
-  return true;
+  const resolved = readHookBoundValue(
+    expression,
+    bindings,
+    plan.candidate.call,
+    localReturnFunctions,
+  );
+  if (resolved === undefined || resolved.paths.some((path_) => !isSafePath(path_))) return false;
+  for (const path_ of resolved.paths) plan.optionalBasePaths.set(path_.join('\0'), path_);
+  return resolved.paths.length > 0;
 }
 
 /**
@@ -806,8 +1253,64 @@ function addObjectContainer(path_: readonly string[], plan: HookFallbackPlan): b
   return true;
 }
 
+/** Adds one frozen empty-array leaf when syntax proves a collection receiver or transfer. */
+function addCollectionLeaf(
+  path_: readonly string[],
+  plan: HookFallbackPlan,
+  item?: PreviewRuntimeHookImportedHelperItemFallback,
+): boolean {
+  if (path_.length === 0 || !isSafePath(path_) || !reserveShapePath(path_, 'collection', plan)) {
+    return false;
+  }
+  let node = plan.shape;
+  for (let index = 0; index < path_.length; index += 1) {
+    const propertyName = path_[index];
+    if (propertyName === undefined || node.kind !== 'object') return false;
+    const terminal = index === path_.length - 1;
+    let child = node.children.get(propertyName);
+    if (terminal) {
+      if (child === undefined) {
+        child = {
+          children: new Map(),
+          kind: 'collection',
+          ...(item === undefined
+            ? {}
+            : {
+                collectionItemExpression: item.expression,
+                collectionItemRequiredPaths: Object.freeze([...(item.requiredPaths ?? [])]),
+              }),
+        };
+        node.children.set(propertyName, child);
+      }
+      if (child.kind !== 'collection' || child.children.size !== 0) return false;
+      if (
+        item !== undefined &&
+        (child.collectionItemExpression === undefined ||
+          (item.requiredPaths?.length ?? 0) >
+            (child.collectionItemRequiredPaths?.length ?? 0))
+      ) {
+        child.collectionItemExpression = item.expression;
+        child.collectionItemRequiredPaths = Object.freeze([...(item.requiredPaths ?? [])]);
+      }
+      return true;
+    }
+    if (child === undefined) {
+      child = { children: new Map(), kind: 'object' };
+      node.children.set(propertyName, child);
+    } else if (child.kind !== 'object') {
+      return false;
+    }
+    node = child;
+  }
+  return false;
+}
+
 /** Adds one frozen no-op function leaf while rejecting object/callable shape conflicts. */
-function addCallableLeaf(path_: readonly string[], plan: HookFallbackPlan): boolean {
+function addCallableLeaf(
+  path_: readonly string[],
+  plan: HookFallbackPlan,
+  callResultExpression?: string,
+): boolean {
   if (path_.length === 0 || !isSafePath(path_) || !reserveShapePath(path_, 'callable', plan)) {
     return false;
   }
@@ -819,10 +1322,55 @@ function addCallableLeaf(path_: readonly string[], plan: HookFallbackPlan): bool
     let child = node.children.get(propertyName);
     if (terminal) {
       if (child === undefined) {
-        child = { children: new Map(), kind: 'callable' };
+        child = {
+          children: new Map(),
+          kind: 'callable',
+          ...(callResultExpression === undefined ? {} : { callResultExpression }),
+        };
         node.children.set(propertyName, child);
       }
-      return child.kind === 'callable' && child.children.size === 0;
+      return (
+        child.kind === 'callable' &&
+        child.children.size === 0 &&
+        child.callResultExpression === callResultExpression
+      );
+    }
+    if (child === undefined) {
+      child = { children: new Map(), kind: 'object' };
+      node.children.set(propertyName, child);
+    } else if (child.kind !== 'object') {
+      return false;
+    }
+    node = child;
+  }
+  return false;
+}
+
+/** Adds one bounded semantic scalar leaf while rejecting object/callable shape conflicts. */
+function addScalarLeaf(
+  path_: readonly string[],
+  scalarExpression: string,
+  plan: HookFallbackPlan,
+): boolean {
+  if (path_.length === 0 || !isSafePath(path_) || !reserveShapePath(path_, 'scalar', plan)) {
+    return false;
+  }
+  let node = plan.shape;
+  for (let index = 0; index < path_.length; index += 1) {
+    const propertyName = path_[index];
+    if (propertyName === undefined || node.kind !== 'object') return false;
+    const terminal = index === path_.length - 1;
+    let child = node.children.get(propertyName);
+    if (terminal) {
+      if (child === undefined) {
+        child = { children: new Map(), kind: 'scalar', scalarExpression };
+        node.children.set(propertyName, child);
+      }
+      return (
+        child.kind === 'scalar' &&
+        child.children.size === 0 &&
+        child.scalarExpression === scalarExpression
+      );
     }
     if (child === undefined) {
       child = { children: new Map(), kind: 'object' };
@@ -842,8 +1390,11 @@ function reserveShapePath(
   plan: HookFallbackPlan,
 ): boolean {
   const identity = `${path_.join('\0')}\0${kind}`;
-  const conflictingIdentity = `${path_.join('\0')}\0${kind === 'object' ? 'callable' : 'object'}`;
-  if (plan.shapePaths.has(conflictingIdentity)) return false;
+  for (const otherKind of ['callable', 'collection', 'object', 'scalar'] as const) {
+    if (otherKind !== kind && plan.shapePaths.has(`${path_.join('\0')}\0${otherKind}`)) {
+      return false;
+    }
+  }
   if (plan.shapePaths.has(identity)) return true;
   if (plan.shapePaths.size >= MAX_FALLBACK_PATHS) return false;
   plan.shapePaths.add(identity);
@@ -867,7 +1418,15 @@ function isSafePropertyName(propertyName: string | undefined): propertyName is s
 
 /** Serializes a deterministic deeply frozen plain object and frozen no-op callable leaves. */
 function serializeFallbackShape(shape: FallbackShape): string {
-  if (shape.kind === 'callable') return 'Object.freeze(() => undefined)';
+  if (shape.kind === 'callable') {
+    return createPreviewRuntimeCallableFallbackExpression(shape.callResultExpression);
+  }
+  if (shape.kind === 'collection') {
+    return shape.collectionItemExpression === undefined
+      ? 'Object.freeze([])'
+      : `Object.freeze([${shape.collectionItemExpression}])`;
+  }
+  if (shape.kind === 'scalar') return shape.scalarExpression ?? 'undefined';
   const properties = [...shape.children]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(
@@ -875,6 +1434,36 @@ function serializeFallbackShape(shape: FallbackShape): string {
         `${JSON.stringify(propertyName)}: ${serializeFallbackShape(child)}`,
     );
   return `Object.freeze({${properties.length === 0 ? '' : ` ${properties.join(', ')} `}})`;
+}
+
+/** Serializes the same syntax proof as runtime merge paths without exposing internal shape kinds. */
+function collectFallbackRequiredPaths(
+  shape: FallbackShape,
+  path_: readonly string[] = [],
+): readonly string[] {
+  if (shape.kind === 'callable') {
+    return path_.length === 0 ? ['<root>()'] : [`${path_.join('.')}()`];
+  }
+  if (shape.kind === 'collection') {
+    const base = path_.length === 0 ? '[]' : `${path_.join('.')}.[]`;
+    return [
+      base,
+      ...(shape.collectionItemRequiredPaths ?? []).map((itemPath) =>
+        itemPath === '<root>' ? base : `${base}.${itemPath}`,
+      ),
+    ];
+  }
+  if (shape.kind === 'scalar') {
+    return path_.length === 0 ? ['<root>'] : [path_.join('.')];
+  }
+  if (shape.children.size === 0) {
+    return path_.length === 0 ? ['<root>'] : [path_.join('.')];
+  }
+  return [...shape.children]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([propertyName, child]) =>
+      collectFallbackRequiredPaths(child, [...path_, propertyName]),
+    );
 }
 
 /** Allocates a collision-free, human-readable binding retained in generated diagnostics. */

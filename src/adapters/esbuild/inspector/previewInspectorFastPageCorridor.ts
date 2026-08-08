@@ -26,6 +26,7 @@ import {
   collectPreviewInspectorAuxiliaryNextAppRoute,
   findPreviewInspectorSelectedAuxiliaryRoot,
 } from './previewInspectorAuxiliaryNextAppRoute';
+import { collectPreviewInspectorNextAppLayoutChain } from './previewInspectorNextAppLayoutChain';
 import { findPreviewInspectorFastForwardMeeting } from './previewInspectorFastForwardSearch';
 import {
   schedulePreviewInspectorFastReverseCandidatePaths,
@@ -238,6 +239,14 @@ export async function collectPreviewInspectorFastPageCorridor(
     workspaceRoot,
   });
   const nextAppPagePath = boundedPath.importPath[0];
+  const nextAppShell =
+    nextAppPagePath === undefined
+      ? undefined
+      : collectPreviewInspectorNextAppLayoutChain({
+          exportName: 'default',
+          pagePath: nextAppPagePath,
+          sourcePaths: snapshotPaths,
+        });
   return Object.freeze({
     entryConnected: forward?.semanticEntry === true && !boundedPath.trimmed,
     importPath: Object.freeze(boundedPath.importPath),
@@ -260,6 +269,13 @@ export async function collectPreviewInspectorFastPageCorridor(
           ...(forward?.semanticEntryPaths ?? []),
           ...subtree.sourcePaths,
           ...(auxiliaryRoute?.sourcePaths ?? []),
+          /*
+           * App Router layouts are filesystem-owned parents and therefore never appear in the
+           * page's JavaScript import corridor. Retain only the convention-proven chain from the
+           * already available package inventory so critical first paint imports the same global
+           * CSS, Tailwind theme, document sizing, and nested layout wrappers as full enrichment.
+           */
+          ...(nextAppShell?.layouts.map((layout) => layout.sourcePath) ?? []),
         ]),
       ].sort(),
     ),

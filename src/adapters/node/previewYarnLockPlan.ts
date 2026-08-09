@@ -321,9 +321,14 @@ function buildYarnPackageLayout(
     for (const [dependencyName, specifier] of Object.entries(owner.record.dependencies).sort(
       ([left], [right]) => compareStrings(left, right),
     )) {
+      // Optional packages are not part of the minimum browser-preview closure. Yarn locks retain
+      // every platform variant (for example all Next SWC and Sharp binaries), so eagerly restoring
+      // present optional records can exceed the verified archive budget even though the browser
+      // bundle never executes them. If esbuild actually reaches an optional import, its unresolved
+      // diagnostic can still promote that uniquely lock-proven package to an explicit root.
+      if (owner.record.optionalDependencies.has(dependencyName)) continue;
       const record = records.get(createDescriptorName(dependencyName, specifier, flavor));
       if (record === undefined) {
-        if (owner.record.optionalDependencies.has(dependencyName)) continue;
         return undefined;
       }
       const targetRelativePath = selectDependencyPlacement(

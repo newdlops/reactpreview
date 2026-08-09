@@ -123,20 +123,40 @@ describe('materializePreviewPackageArchives', () => {
     ).rejects.toThrow();
   });
 
-  /** Case aliases of package-manager executable and cache directories stay forbidden. */
-  it('rejects case-insensitive sensitive directory aliases', async () => {
+  /** Package-manager state and nested test installs are omitted without rejecting safe files. */
+  it('excludes case-insensitive sensitive paths and embedded installs', async () => {
     const fixture = await createArchiveFixture('package', 'sensitive-package', '1.0.0', {
       '.BIN/command': 'malicious shim',
       '.CACHE/value': 'mutable cache',
+      '.npmrc': 'registry=https://credential.example.test',
+      'index.js': 'export default "safe";',
+      'test/node_modules/fixture/index.js': 'fixture install',
     });
+    const targetNodeModulesPath = path.join(fixture.rootPath, 'staging', 'node_modules');
 
     const result = await materializePreviewPackageArchives({
       entries: [archiveEntry('sensitive-package', '1.0.0', fixture.archive)],
-      targetNodeModulesPath: path.join(fixture.rootPath, 'staging', 'node_modules'),
+      targetNodeModulesPath,
       transport: { download: () => Promise.resolve(fixture.archive) },
     });
 
-    expect(result).toBeUndefined();
+    expect(result?.packages).toHaveLength(1);
+    await expect(
+      readFile(path.join(targetNodeModulesPath, 'sensitive-package', 'index.js'), 'utf8'),
+    ).resolves.toContain('safe');
+    for (const excludedPath of [
+      '.BIN/command',
+      '.CACHE/value',
+      '.npmrc',
+      'test/node_modules/fixture/index.js',
+    ]) {
+      await expect(
+        readFile(
+          path.join(targetNodeModulesPath, 'sensitive-package', ...excludedPath.split('/')),
+          'utf8',
+        ),
+      ).rejects.toThrow();
+    }
   });
 
   /** A nested npm separator must always be followed by another complete package slot. */

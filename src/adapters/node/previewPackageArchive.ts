@@ -623,7 +623,11 @@ function validateArchiveEntry(
     }
     validatePortableArchivePath(relativePath);
     if (isExcludedArchivePath(relativePath)) {
-      throw new Error('Package archive contains nested installation or sensitive configuration.');
+      // Published packages sometimes retain test fixtures below nested node_modules directories
+      // (for example `resolve`). These bytes are never needed by the package's runtime contract.
+      // Apply the same exclusion during preflight and extraction so package-manager state and
+      // sensitive configuration never reach disk without discarding the verified package itself.
+      return false;
     }
     const kind = entry.type === 'Directory' ? 'directory' : 'file';
     registerArchivePath(state.paths, relativePath, kind);
@@ -768,7 +772,7 @@ function registerArchivePath(
   paths.set(collisionKey, kind);
 }
 
-/** Rejects package-manager state, credentials, environment files, and embedded installs. */
+/** Excludes package-manager state, credentials, environment files, and embedded installs. */
 function isExcludedArchivePath(relativePath: string): boolean {
   const segments = relativePath.split('/');
   const baseName = segments.at(-1) ?? '';

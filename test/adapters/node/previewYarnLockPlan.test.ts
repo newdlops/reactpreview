@@ -22,16 +22,17 @@ afterEach(async () => {
 });
 
 describe('createPreviewYarnLockPlan', () => {
-  /** Follows classic runtime edges, skips absent optional edges, and normalizes the public URL. */
+  /** Follows classic runtime edges, skips every optional edge, and normalizes the public URL. */
   it('plans a Yarn v1 dependency closure from declared missing roots', async () => {
     const projectRoot = await createProject(
       { alpha: '^1.0.0' },
       classicLock([
         classicEntry('alpha@^1.0.0', 'alpha', '1.0.0', {
           dependencies: { bravo: '^2.0.0' },
-          optionalDependencies: { absent: '^1.0.0' },
+          optionalDependencies: { absent: '^1.0.0', 'native-addon': '^3.0.0' },
         }),
         classicEntry('bravo@^2.0.0', 'bravo', '2.1.0'),
+        classicEntry('native-addon@^3.0.0', 'native-addon', '3.4.0'),
       ]),
     );
     const profile = await requireProfile(projectRoot);
@@ -336,7 +337,7 @@ describe('createPreviewYarnLockPlan', () => {
     ]);
   });
 
-  /** Skips a missing Berry dependency only when dependenciesMeta proves that edge optional. */
+  /** Skips a Berry dependency only when dependenciesMeta proves that edge optional. */
   it('honors Berry optional dependency metadata', async () => {
     const projectRoot = await createProject(
       { alpha: '^1.0.0' },
@@ -352,6 +353,12 @@ describe('createPreviewYarnLockPlan', () => {
         '  dependenciesMeta:',
         '    optional-child:',
         '      optional: true',
+        '  languageName: node',
+        '  linkType: hard',
+        '',
+        '"optional-child@npm:^2.0.0":',
+        '  version: 2.3.0',
+        '  resolution: "optional-child@npm:2.3.0"',
         '  languageName: node',
         '  linkType: hard',
         '',

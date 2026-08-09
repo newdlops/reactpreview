@@ -78,7 +78,7 @@ export function inferPreviewRuntimeSemanticFallback(
     };
   }
   if (
-    /(?:items|rows|list|options|results|nodes|edges|records|files|users|companies)$/u.test(
+    /(?:items|rows|list|options|results|nodes|edges|records|files|users|companies|permissions|roles|scopes|claims|capabilities)$/u.test(
       normalized,
     )
   ) {

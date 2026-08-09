@@ -54,6 +54,29 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"refresh": Object.freeze(() => undefined)');
   });
 
+  /** Keeps an opaque package helper from receiving a locally inferred, incomplete list item. */
+  it('preserves a neutral collection when a hook list crosses an opaque helper', () => {
+    const source = [
+      `import { useChat } from '@ai-sdk/react';`,
+      'export function ChatCard({ chat }) {',
+      '  const { messages, sendMessage } = useChat();',
+      '  const nextMessage = chat.next(messages);',
+      '  return messages.length === 0 ? <p>Empty</p> : messages.map((message) => (',
+      '    <button key={message.id} onClick={() => sendMessage(nextMessage)}>{message.role}</button>',
+      '  ));',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/ChatCard.tsx', source),
+    );
+
+    expect(transformed).toContain('"messages": Object.freeze([])');
+    expect(transformed).toContain('"requiredPaths":["messages","sendMessage()"]');
+    expect(transformed).not.toContain('"messages": Object.freeze([Object.freeze({');
+  });
+
   /** Retains named query fields and flattens properties proven through an object rest binding. */
   it('infers a settled query result from QueryRenderer object-rest destructuring', () => {
     const source = [

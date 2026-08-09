@@ -51,6 +51,7 @@ import {
   type PreviewRuntimeLocalHelperItemFallback,
 } from './previewRuntimeHookLocalHelperItem';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
+import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { inferPreviewRuntimeHookOverlayStateDemand } from './previewRuntimeHookOverlayStateDemand';
 import {
   readPreviewRuntimeQueryParamDefaultExpression,
@@ -169,6 +170,8 @@ interface PreviewRuntimeHookValueFallback {
   readonly preserveNullish?: boolean;
   /** True when the fallback covers local reads but not every opaque consumer of this value. */
   readonly projectionUnsafe?: true;
+  /** Keeps a generated collection empty when it is passed to a syntax-opaque helper call. */
+  readonly neutralCollectionOnOpaqueCall?: true;
   /** Relative scalar paths whose compiler-proven value is required to pass an early render guard. */
   readonly renderGuardPaths?: readonly string[];
   /** Compiler-proven target-only Smart values, kept separate from the dormant Auto fallback. */
@@ -597,16 +600,18 @@ function createBindingFallback(
     const overlayStateDemand = inferPreviewRuntimeHookOverlayStateDemand(binding, sourceFile);
     const withOverlayStateDemand = (
       fallback: PreviewRuntimeHookValueFallback,
-    ): PreviewRuntimeHookValueFallback =>
-      overlayStateDemand === undefined
-        ? fallback
+    ): PreviewRuntimeHookValueFallback => {
+      const safeFallback = createPreviewRuntimeHookProjectionSafeFallback(fallback);
+      return overlayStateDemand === undefined
+        ? safeFallback
         : {
-            ...fallback,
+            ...safeFallback,
             smartPathValueExpressions: Object.freeze([
-              ...(fallback.smartPathValueExpressions ?? []),
+              ...(safeFallback.smartPathValueExpressions ?? []),
               Object.freeze({ expression: overlayStateDemand.expression, path: '<root>' }),
             ]),
           };
+    };
     const jsxComponent = inferPreviewRuntimeHookJsxComponentFallback(
       binding,
       sourceFile,
@@ -775,6 +780,33 @@ function createBindingFallback(
   };
 }
 
+/**
+ * Keeps an authored empty collection neutral when the same hook value crosses an opaque helper.
+ *
+ * Local JSX evidence can prove an item shape such as `{ id, role }`, but a package helper may
+ * require additional fields that syntax-only analysis cannot see. Populating that collection would
+ * replace a valid empty branch with an invalid synthetic item. The empty Array still satisfies the
+ * destructuring/container contract and lets the opaque helper observe the hook's safest value.
+ */
+function createPreviewRuntimeHookProjectionSafeFallback(
+  fallback: PreviewRuntimeHookValueFallback,
+): PreviewRuntimeHookValueFallback {
+  if (
+    fallback.neutralCollectionOnOpaqueCall !== true ||
+    !fallback.expression.startsWith('Object.freeze([')
+  ) {
+    return fallback;
+  }
+  return {
+    ...fallback,
+    expression: 'Object.freeze([])',
+    failurePaths: [],
+    renderGuardPaths: [],
+    requiredPaths: ['<root>'],
+    smartPathValueExpressions: [],
+  };
+}
+
 /** Keeps a child's failure shape available when its containing hook result must be synthesized. */
 function readNestedPreviewRuntimeHookExpression(
   fallback: PreviewRuntimeHookValueFallback | undefined,
@@ -841,6 +873,7 @@ function createIdentifierUsageFallback(
   const arrayItemFallbacks: PreviewRuntimeHookValueFallback[] = [];
   let optionalReferences = 0;
   let opaqueReferences = 0;
+  let opaqueCallArgumentReferences = 0;
   let unsafeReferences = 0;
   const visit = (node: ts.Node): void => {
     if (node !== owner && isRuntimeFunction(node) && functionShadowsName(node, identifier.text)) {
@@ -851,8 +884,15 @@ function createIdentifierUsageFallback(
       if (usagePath !== undefined && usagePath.names.length > 0) {
         const collectionProperty = usagePath.names.at(-1);
         const spreadCollection = ts.isSpreadElement(node.parent);
+        const membershipItemFallback = inferPreviewRuntimeHookMembershipItemFallback(
+          node,
+          usagePath.names.at(-2) ?? identifier.text,
+          sourceFile,
+        );
         const collection =
-          spreadCollection || isPreviewRuntimeHookArrayUsageProperty(collectionProperty);
+          spreadCollection ||
+          isPreviewRuntimeHookArrayUsageProperty(collectionProperty) ||
+          membershipItemFallback !== undefined;
         const terminalCalled = ts.isCallExpression(node.parent) && node.parent.expression === node;
         const terminalCallable = terminalCalled || isPreviewRuntimeHookCallableJsxValue(node);
         const terminalMutableRef = isPreviewRuntimeHookMutableRefJsxValue(node);
@@ -876,7 +916,8 @@ function createIdentifierUsageFallback(
               )
             : undefined;
         const collectionItemFallback =
-          usagePath.collectionItemType === undefined
+          membershipItemFallback ??
+          (usagePath.collectionItemType === undefined
             ? spreadCollection
               ? inferPreviewRuntimeHookSpreadItemFallback(node)
               : terminalCalled
@@ -884,7 +925,7 @@ function createIdentifierUsageFallback(
                 : undefined
             : localTypeFallbackBySourceFile
                 .get(identifier.getSourceFile())
-                ?.call(undefined, usagePath.collectionItemType);
+                ?.call(undefined, usagePath.collectionItemType));
         const stringReceiver =
           terminalCalled &&
           isPreviewRuntimeHookStringUsageProperty(collectionProperty) &&
@@ -957,6 +998,15 @@ function createIdentifierUsageFallback(
     }
     if (ts.isIdentifier(node) && node.text === identifier.text && node !== identifier) {
       const parent = node.parent;
+      const argumentExpression = unwrapParentExpression(node);
+      const argument =
+        ts.isSpreadElement(argumentExpression.parent) &&
+        argumentExpression.parent.expression === argumentExpression
+          ? argumentExpression.parent
+          : argumentExpression;
+      const opaqueCallArgument =
+        ts.isCallExpression(argument.parent) &&
+        argument.parent.arguments.some((candidate) => candidate === argument);
       const optionalPropertyRoot =
         ts.isPropertyAccessExpression(parent) &&
         parent.expression === node &&
@@ -981,7 +1031,10 @@ function createIdentifierUsageFallback(
         optionalReferences += 1;
       } else if (!passiveDependency && !passiveObjectProperty) {
         unsafeReferences += 1;
-        if (!handledPropertyRoot && !handledCallRoot && !propertyName) opaqueReferences += 1;
+        if (!handledPropertyRoot && !handledCallRoot && !propertyName) {
+          opaqueReferences += 1;
+          if (opaqueCallArgument) opaqueCallArgumentReferences += 1;
+        }
       }
     }
     if (ts.isVariableDeclaration(node)) {
@@ -1037,6 +1090,7 @@ function createIdentifierUsageFallback(
     return {
       expression: `Object.freeze([${item.expression}])`,
       label: 'generated one-item list from local usage',
+      ...(opaqueCallArgumentReferences > 0 ? { neutralCollectionOnOpaqueCall: true } : {}),
       ...(opaqueReferences > 0 ? { projectionUnsafe: true } : {}),
       requiredPaths: prefixPreviewRuntimeHookPaths(item.requiredPaths, '[]'),
     };

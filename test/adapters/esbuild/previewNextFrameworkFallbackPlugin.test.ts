@@ -12,7 +12,9 @@ import {
   type Plugin,
 } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createPreviewInstalledPackageExternalizationPlugin } from '../../../src/adapters/esbuild/previewInstalledPackageExternalizationPlugin';
 import { createPreviewNextFrameworkFallbackPlugin } from '../../../src/adapters/esbuild/previewNextFrameworkFallbackPlugin';
+import { createPreviewStaticModuleResolver } from '../../../src/adapters/esbuild/previewStaticModuleResolver';
 
 const temporaryRoots: string[] = [];
 
@@ -23,6 +25,51 @@ afterEach(async () => {
 });
 
 describe('Next framework render fallback', () => {
+  /** Lets a custom Pages Router app extend Next App and keeps its visual head children renderable. */
+  it('supplies static app and head contracts without downloading the Next runtime', async () => {
+    const projectRoot = await createProject('next-pages-shell-missing-', {
+      dependencies: { next: '15.5.20', react: '19.1.0' },
+    });
+    const entryPath = path.join(projectRoot, 'src', 'entry.jsx');
+    await mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFile(
+      entryPath,
+      [
+        "import App, { Container } from 'next/app';",
+        "import Head from 'next/head.js';",
+        'class CustomApp extends App {}',
+        "const app = new CustomApp({ Component: 'main', pageProps: { id: 'page' } });",
+        "const container = new Container({ children: 'content' });",
+        "export const result = { app: app.render(), container: container.render(), head: Head({ children: 'metadata' }) };",
+      ].join('\n'),
+      'utf8',
+    );
+
+    const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
+      createReactFixturePlugin(),
+    ]);
+    const exports = executeCommonJs(result.outputFiles[0]?.text ?? '') as {
+      readonly result: {
+        readonly app: PreviewFixtureElement;
+        readonly container: string;
+        readonly head: string;
+      };
+    };
+
+    expect(exports.result).toMatchObject({
+      app: { props: { id: 'page' }, tag: 'main' },
+      container: 'content',
+      head: 'metadata',
+    });
+    expect(result.warnings.map((warning) => warning.text)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('next/app'),
+        expect.stringContaining('next/head.js'),
+      ]),
+    );
+  });
+
   /** Renders images, links, and named Google fonts from declaration evidence alone. */
   it('supplies exact visual modules for a declared dependency-free Next project', async () => {
     const projectRoot = await createProject('next-missing-', {
@@ -247,6 +294,10 @@ describe('Next framework render fallback', () => {
     ]);
 
     const result = await buildFixture(entryPath, projectRoot, [
+      createPreviewInstalledPackageExternalizationPlugin({
+        documentPath: entryPath,
+        staticModuleResolver: createPreviewStaticModuleResolver({ workspaceRoot: projectRoot }),
+      }),
       createPreviewNextFrameworkFallbackPlugin({ workspaceRoot: projectRoot }),
     ]);
     const exports = executeCommonJs(result.outputFiles[0]?.text ?? '');
@@ -430,6 +481,7 @@ function createReactFixturePlugin(): Plugin {
       build.onResolve({ filter: /^react$/ }, () => ({ namespace: 'react-fixture', path: 'react' }));
       build.onLoad({ filter: /.*/, namespace: 'react-fixture' }, (): OnLoadResult => ({
         contents: [
+          'exports.Component = class Component { constructor(props) { this.props = props || {}; } };',
           'exports.createElement = (tag, props, ...children) => ({ children, props: props || {}, tag });',
           'exports.forwardRef = (render) => (props) => render(props, null);',
           'exports.isValidElement = (value) => value !== null && typeof value === "object" && "tag" in value;',

@@ -1,9 +1,9 @@
 /**
  * Supplies a tiny browser-rendering surface for selected Next.js modules outside Next's compiler.
- * Image and font modules require build transforms even when installed, while the `server-only`
- * marker deliberately throws in a browser. Link defers to normal resolution. Every fallback still
- * requires an inert, workspace-owned manifest that declares Next. It never imports configuration,
- * starts a server, or executes package scripts.
+ * App, Head, image, and font modules require Next's bootstrap or build transforms even when
+ * installed, while the `server-only` marker deliberately throws in a browser. Link defers to
+ * normal resolution. Every fallback still requires an inert, workspace-owned manifest that
+ * declares Next. It never imports configuration, starts a server, or executes package scripts.
  */
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -13,7 +13,8 @@ import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 import { isFileBackedPreviewNamespace, PREVIEW_RESOLVE_GUARD } from './previewPluginProtocol';
 
 const NEXT_RENDER_FALLBACK_NAMESPACE = 'react-preview-next-render-fallback';
-const NEXT_RENDER_MODULE_PATTERN = /^(?:next\/(?:font\/google|image|link(?:\.js)?)|server-only)$/;
+const NEXT_RENDER_MODULE_PATTERN =
+  /^(?:next\/(?:(?:app|head)(?:\.js)?|font\/google|image|link(?:\.js)?)|server-only)$/;
 const MAXIMUM_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
 const MAXIMUM_IMPORTER_BYTES = 2 * 1024 * 1024;
 const PACKAGE_DEPENDENCY_FIELDS = [
@@ -254,12 +255,53 @@ function createNextRenderModuleSource(
   fontExportNames: readonly string[],
 ): string | undefined {
   if (moduleSpecifier === 'server-only') return 'export {};';
+  if (/^next\/app(?:\.js)?$/u.test(moduleSpecifier)) return createNextAppFallbackSource();
+  if (/^next\/head(?:\.js)?$/u.test(moduleSpecifier)) return createNextHeadFallbackSource();
   if (moduleSpecifier === 'next/image') return createNextImageFallbackSource();
   if (isNextLinkSpecifier(moduleSpecifier)) return createNextLinkFallbackSource();
   if (moduleSpecifier === 'next/font/google') {
     return createNextGoogleFontFallbackSource(fontExportNames);
   }
   return undefined;
+}
+
+/** Supplies the class contract custom Pages Router `_app` modules extend during rendering. */
+function createNextAppFallbackSource(): string {
+  return `
+import * as React from 'react';
+
+export class App extends React.Component {
+  static async getInitialProps(context) {
+    const Component = context?.Component;
+    const pageProps = typeof Component?.getInitialProps === 'function'
+      ? await Component.getInitialProps(context?.ctx ?? {})
+      : {};
+    return { pageProps: pageProps ?? {} };
+  }
+
+  render() {
+    const Component = this.props?.Component;
+    return typeof Component === 'function' || typeof Component === 'string'
+      ? React.createElement(Component, this.props?.pageProps ?? {})
+      : null;
+  }
+}
+
+export class Container extends React.Component {
+  render() { return this.props?.children ?? null; }
+}
+
+export default App;
+`;
+}
+
+/** Keeps visual Head children, including stylesheet links, inside the static preview document. */
+function createNextHeadFallbackSource(): string {
+  return `
+export default function PreviewNextHead(properties) {
+  return properties?.children ?? null;
+}
+`;
 }
 
 /** Creates an ordinary image element while removing framework-only optimization properties. */

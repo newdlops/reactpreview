@@ -148,6 +148,44 @@ describe('PreviewSourceTransformer', () => {
     });
   });
 
+  /** Preserves package-owned Router invariants instead of replacing their internal context hooks. */
+  it('does not instrument installed React Router source as authored preview code', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourceText = [
+      "import { Router, useInRouterContext } from 'react-router';",
+      'export function BrowserRouter() {',
+      '  const nested = useInRouterContext();',
+      '  return nested ? null : Router;',
+      '}',
+    ].join('\n');
+
+    for (const relativePath of [
+      path.join('node_modules', 'react-router', 'dist', 'index.js'),
+      path.join('.yarn', '__virtual__', 'react-router', '0', 'dist', 'index.js'),
+      path.join('.pnpm', 'react-router@6', 'node_modules', 'react-router', 'dist', 'index.js'),
+    ]) {
+      const transformer = new PreviewSourceTransformer({
+        instrumentDataRequests: true,
+        instrumentRenderConditions: true,
+        instrumentRuntimeEffectIsolation: true,
+        instrumentRuntimeHookFallbacks: true,
+        projectRoot: workspaceRoot,
+        workspaceRoot,
+      });
+
+      const transformed = await transformer.transform(
+        path.join(workspaceRoot, relativePath),
+        sourceText,
+      );
+
+      expect(transformed.contents).toBe(sourceText);
+      expect(transformer.getRouterRequirement()).toEqual({
+        consumesRouter: false,
+        ownsRouter: false,
+      });
+    }
+  });
+
   /** Synthesizes only a workspace-owned, statically typed missing React Context default. */
   it('adds bounded context defaults without rewriting external source', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

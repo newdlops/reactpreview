@@ -68,6 +68,7 @@ const MAX_BUILD_EXPANSIONS = 128;
 const MAX_BUILD_MATCH_REFERENCES = 1024;
 const MAX_BUILD_SCANNED_ENTRIES = 16_384;
 const MAX_BUILD_WATCH_DIRECTORIES = 128;
+const INSTALLED_DEPENDENCY_DIRECTORY_NAMES = new Set(['.pnpm', '.yarn', 'node_modules']);
 /** Transformed module source and directories that can gain future matching files. */
 export interface PreviewSourceTransformResult {
   /** JavaScript or TypeScript source containing only explicit bundle-visible imports. */
@@ -151,7 +152,12 @@ export class PreviewSourceTransformer {
     sourcePath: string,
     sourceText: string,
   ): Promise<PreviewSourceTransformResult> {
-    if (isPathInside(this.options.workspaceRoot, sourcePath))
+    const previewOwnedSource = isPreviewOwnedSourcePath(
+      this.options.workspaceRoot,
+      this.options.documentPath,
+      sourcePath,
+    );
+    if (previewOwnedSource)
       sourceText = framework.prepareFrameworkSource(sourcePath, sourceText, this.options);
     if (
       this.options.deferDormantOverlayImports === true &&
@@ -188,7 +194,7 @@ export class PreviewSourceTransformer {
     });
     generatedImports.push(...staticRenderAssets.imports);
     replacements.push(...staticRenderAssets.replacements);
-    if (isPathInside(this.options.workspaceRoot, sourcePath)) {
+    if (previewOwnedSource) {
       const reactJsxNamespaceImport = createPreviewReactJsxNamespaceCompatibilityImport(
         analysis,
         this.options.projectUsesReactRuntime,
@@ -291,10 +297,7 @@ export class PreviewSourceTransformer {
         sourceText.includes('createPortal')
       ) {
         replacements.push(
-          ...createPreviewReactDomPortalContainerReplacements(
-            analysis.getSourceFile(),
-            sourceText,
-          ),
+          ...createPreviewReactDomPortalContainerReplacements(analysis.getSourceFile(), sourceText),
         );
       }
       if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('query=')) {
@@ -396,7 +399,7 @@ export class PreviewSourceTransformer {
       selectCompatiblePreviewSourceReplacements(replacements),
     );
     const dataBoundarySource =
-      this.options.instrumentDataRequests === true
+      previewOwnedSource && this.options.instrumentDataRequests === true
         ? instrumentPreviewDataRequests(sourcePath, compatibilitySource)
         : compatibilitySource;
     const localTargetSource = instrumentPreviewLocalTargetExportBindings(
@@ -405,11 +408,12 @@ export class PreviewSourceTransformer {
       this.options.localTargetExportInstrumentation,
     );
     const runtimeSource = instrumentPreviewRuntimeSource(sourcePath, localTargetSource, {
-      isolateEffects: this.options.instrumentRuntimeEffectIsolation === true,
+      isolateEffects: previewOwnedSource && this.options.instrumentRuntimeEffectIsolation === true,
       registerConditionDefinitions:
-        this.options.documentPath === undefined ||
-        path.normalize(sourcePath) === path.normalize(this.options.documentPath),
-      renderConditions: this.options.instrumentRenderConditions === true,
+        previewOwnedSource &&
+        (this.options.documentPath === undefined ||
+          path.normalize(sourcePath) === path.normalize(this.options.documentPath)),
+      renderConditions: previewOwnedSource && this.options.instrumentRenderConditions === true,
     });
     generatedImports.push(...runtimeSource.registrations);
     return {
@@ -1037,4 +1041,27 @@ function isPathInside(directoryPath: string, candidatePath: string): boolean {
   return (
     relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
   );
+}
+
+/**
+ * Keeps semantic preview instrumentation on authored source instead of installed package internals.
+ *
+ * Package code must preserve its own provider invariants. In particular, synthesizing a local
+ * `useInRouterContext()` result inside React Router can turn its defensive nested-Router check into
+ * an unconditional failure. An explicitly selected document remains eligible so opening a package
+ * source file directly still behaves like any other preview target.
+ */
+function isPreviewOwnedSourcePath(
+  workspaceRoot: string,
+  documentPath: string | undefined,
+  sourcePath: string,
+): boolean {
+  if (!isPathInside(workspaceRoot, sourcePath)) return false;
+  if (documentPath !== undefined && path.normalize(sourcePath) === path.normalize(documentPath)) {
+    return true;
+  }
+  return !path
+    .relative(workspaceRoot, sourcePath)
+    .split(path.sep)
+    .some((segment) => INSTALLED_DEPENDENCY_DIRECTORY_NAMES.has(segment));
 }

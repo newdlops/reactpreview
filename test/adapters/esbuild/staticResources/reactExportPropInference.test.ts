@@ -351,6 +351,32 @@ describe('collectReactExportPropInference', () => {
     });
   });
 
+  /** Restores the implicit props contract used by legacy React and Next custom App classes. */
+  it('infers JSX component props read through a class render method', () => {
+    const source = [
+      "import App from 'next/app';",
+      'class MyApp extends App {',
+      '  render() {',
+      '    const { Component, pageProps } = this.props;',
+      '    return <main><Component {...pageProps} /></main>;',
+      '  }',
+      '}',
+      'export default MyApp;',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/pages/_app.jsx', source);
+
+    expect(result.default?.shape.properties).toMatchObject({
+      Component: { kind: 'component' },
+    });
+    expect(result.default?.shape.properties).not.toHaveProperty('pageProps');
+    expect(result.default?.provenance).toContainEqual({
+      kind: 'component',
+      path: 'Component',
+      source: 'usage',
+    });
+  });
+
   /** Reads the inline component argument from the common styled-components tagged form. */
   it('infers typed props from styled component factories', () => {
     const source = [

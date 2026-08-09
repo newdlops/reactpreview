@@ -88,7 +88,8 @@ export interface PreviewInferredExportProps {
 /** Exact runtime export-name map consumed without evaluating the selected source module. */
 export type PreviewInferredPropsByExport = Readonly<Record<string, PreviewInferredExportProps>>;
 
-type ExportedFunctionLike = ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression;
+type ExportedFunctionLike =
+  ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration;
 type LocalObjectType = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
 
 /** One named or default import ordered for bounded type-contract resolution. */
@@ -144,6 +145,7 @@ interface PropPathBinding {
 /** Export name paired with the function body that React will invoke for that export. */
 interface ExportedComponentFunction {
   /** Props type supplied by a variable annotation such as `React.FC<CardProps>`. */
+  readonly classComponentProps?: true;
   readonly contextualPropsType?: ts.TypeNode;
   readonly exportName: string;
   readonly functionLike: ExportedFunctionLike;
@@ -151,12 +153,15 @@ interface ExportedComponentFunction {
 
 /** Function body plus the optional variable-level React component props contract. */
 interface ComponentFunctionCandidate {
+  /** The function is a class render method whose external prop root is `this.props`. */
+  readonly classComponentProps?: true;
   readonly contextualPropsType?: ts.TypeNode;
   readonly functionLike: ExportedFunctionLike;
 }
 
 /** Same-file declaration that may be a function or a bounded chain of component wrappers. */
 interface LocalComponentDeclaration {
+  readonly classComponentProps?: true;
   readonly contextualPropsType?: ts.TypeNode;
   readonly expression?: ts.Expression;
   readonly functionLike?: ExportedFunctionLike;
@@ -177,6 +182,8 @@ interface InferenceState {
   root: MutableShapeNode;
   readonly sourceFile: ts.SourceFile;
 }
+
+const CLASS_COMPONENT_PROPS_ALIAS = 'this.props';
 
 /**
  * Collects automatic prop recipes for direct exported component functions.
@@ -712,7 +719,7 @@ function inferComponentProps(
 ): PreviewInferredExportProps | undefined {
   const { functionLike } = component;
   const parameter = functionLike.parameters[0];
-  if (parameter === undefined) {
+  if (parameter === undefined && component.classComponentProps !== true) {
     return undefined;
   }
   const root = createMutableNode('object', 'usage');
@@ -729,14 +736,19 @@ function inferComponentProps(
     root,
     sourceFile,
   };
-  collectParameterBindings(parameter.name, [], state.aliases);
-  addTypedParameterRequirements(
-    parameter,
-    component.contextualPropsType,
-    localTypes,
-    state,
-    sourceFile,
-  );
+  if (component.classComponentProps === true) {
+    state.aliases.set(CLASS_COMPONENT_PROPS_ALIAS, { path: [] });
+  }
+  if (parameter !== undefined) {
+    collectParameterBindings(parameter.name, [], state.aliases);
+    addTypedParameterRequirements(
+      parameter,
+      component.contextualPropsType,
+      localTypes,
+      state,
+      sourceFile,
+    );
+  }
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
@@ -827,14 +839,13 @@ function addOverlayVisibilityRequirement(
   state: InferenceState,
   sourceFile: ts.SourceFile,
 ): void {
-  const directPropName = inferReactOverlayVisibilityProp(
-    component.functionLike,
-    component.exportName,
-  );
+  const functionLike = component.functionLike;
+  if (component.classComponentProps === true || ts.isMethodDeclaration(functionLike)) return;
+  const directPropName = inferReactOverlayVisibilityProp(functionLike, component.exportName);
   const visibilityPath =
     directPropName === undefined
       ? inferReactOverlayVisibilityTypePath(
-          component.functionLike,
+          functionLike,
           component.exportName,
           component.contextualPropsType,
           sourceFile,
@@ -2346,14 +2357,26 @@ function readPropPath(
   const current = unwrapExpression(expression);
   if (ts.isIdentifier(current)) return aliases.get(current.text)?.path;
   if (ts.isPropertyAccessExpression(current)) {
+    if (
+      current.name.text === 'props' &&
+      unwrapExpression(current.expression).kind === ts.SyntaxKind.ThisKeyword
+    ) {
+      return aliases.get(CLASS_COMPONENT_PROPS_ALIAS)?.path;
+    }
     const parentPath = readPropPath(current.expression, aliases);
     return parentPath === undefined || BLOCKED_PROPERTY_NAMES.has(current.name.text)
       ? undefined
       : [...parentPath, current.name.text];
   }
   if (ts.isElementAccessExpression(current)) {
-    const parentPath = readPropPath(current.expression, aliases);
     const propertyName = readElementPropertyName(current.argumentExpression);
+    if (
+      propertyName === 'props' &&
+      unwrapExpression(current.expression).kind === ts.SyntaxKind.ThisKeyword
+    ) {
+      return aliases.get(CLASS_COMPONENT_PROPS_ALIAS)?.path;
+    }
+    const parentPath = readPropPath(current.expression, aliases);
     return parentPath === undefined ||
       propertyName === undefined ||
       BLOCKED_PROPERTY_NAMES.has(propertyName)
@@ -2447,6 +2470,13 @@ function collectExportedComponentFunctions(
       if (hasExportModifier(statement)) {
         add(hasDefaultModifier(statement) ? 'default' : (statement.name?.text ?? ''), candidate);
       }
+    } else if (ts.isClassDeclaration(statement)) {
+      if (hasExportModifier(statement)) {
+        add(
+          hasDefaultModifier(statement) ? 'default' : (statement.name?.text ?? ''),
+          resolveClassComponent(statement),
+        );
+      }
     } else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name)) continue;
@@ -2487,6 +2517,9 @@ function collectLocalComponentDeclarations(
   for (const statement of sourceFile.statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
       add(statement.name.text, { functionLike: statement });
+    } else if (ts.isClassDeclaration(statement) && statement.name !== undefined) {
+      const candidate = resolveClassComponent(statement);
+      if (candidate !== undefined) add(statement.name.text, candidate);
     } else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) continue;
@@ -2524,7 +2557,10 @@ function resolveLocalComponent(
   if (declaration === undefined) return undefined;
   activeNames.add(name);
   const candidate = declaration.functionLike
-    ? { functionLike: declaration.functionLike }
+    ? {
+        functionLike: declaration.functionLike,
+        ...(declaration.classComponentProps === true ? { classComponentProps: true as const } : {}),
+      }
     : resolveComponentExpression(declaration.expression, declarations, activeNames, depth + 1);
   activeNames.delete(name);
   return candidate === undefined
@@ -2549,6 +2585,7 @@ function resolveComponentExpression(
   if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
     return { functionLike: current };
   }
+  if (ts.isClassExpression(current)) return resolveClassComponent(current);
   if (ts.isIdentifier(current)) {
     return resolveLocalComponent(current.text, declarations, activeNames, depth + 1);
   }
@@ -2565,6 +2602,23 @@ function resolveComponentExpression(
     if (candidate !== undefined) return candidate;
   }
   return undefined;
+}
+
+/** Resolves one unambiguous instance render method without executing the class or its base. */
+function resolveClassComponent(
+  declaration: ts.ClassDeclaration | ts.ClassExpression,
+): ComponentFunctionCandidate | undefined {
+  const renderMethods = declaration.members.filter(
+    (member): member is ts.MethodDeclaration =>
+      ts.isMethodDeclaration(member) &&
+      member.body !== undefined &&
+      readPropertyName(member.name) === 'render' &&
+      !member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword),
+  );
+  const renderMethod = renderMethods[0];
+  return renderMethods.length === 1 && renderMethod !== undefined
+    ? { classComponentProps: true, functionLike: renderMethod }
+    : undefined;
 }
 
 /** Indexes unique non-generic same-file type/interface declarations. */

@@ -93,6 +93,68 @@ describe('createPreviewNodeBuiltinPlugin', () => {
     });
   });
 
+  /** Keeps pure registry path normalization alive without exposing host filesystem state. */
+  it('preserves POSIX path transforms used by server-authored render metadata', async () => {
+    const result = await build({
+      bundle: true,
+      format: 'cjs',
+      logLevel: 'silent',
+      platform: 'browser',
+      plugins: [createPreviewNodeBuiltinPlugin()],
+      stdin: {
+        contents: [
+          "import path from 'path';",
+          "import nodePath from 'node:path';",
+          "import { promises as fs } from 'fs';",
+          'globalThis.__pathResultPromise = (async () => {',
+          "  const sourcePaths = ['registry/new-york-v4/blocks/dashboard-01/page.tsx', 'registry/new-york-v4/blocks/dashboard-01/components/app-sidebar.tsx'];",
+          '  const files = await Promise.all(sourcePaths.map(async (sourcePath) => ({',
+          "    content: await fs.readFile(sourcePath, 'utf8'),",
+          "    path: path.relative('/', sourcePath),",
+          '  })));',
+          '  const firstDirectory = path.dirname(files[0].path);',
+          '  globalThis.__pathResult = {',
+          "    route: nodePath.join('/view', 'new-york-v4', 'dashboard-01'),",
+          "    resolved: path.resolve('/registry', '../view', 'dashboard-01'),",
+          '    files: files.map((file) => ({',
+          '      content: file.content,',
+          '      extension: path.extname(file.path),',
+          "      leaf: file.path.split('/').at(-1),",
+          '      path: path.relative(firstDirectory, file.path),',
+          '    })),',
+          '  };',
+          '})();',
+        ].join('\n'),
+        loader: 'js',
+      },
+      write: false,
+    });
+    const context: {
+      __pathResult?: Record<string, unknown>;
+      __pathResultPromise?: Promise<void>;
+    } = {};
+    runInNewContext(result.outputFiles[0]?.text ?? '', {
+      console: { warn: vi.fn() },
+      globalThis: context,
+      Uint8Array,
+    });
+    await context.__pathResultPromise;
+
+    expect(context.__pathResult).toEqual({
+      route: '/view/new-york-v4/dashboard-01',
+      resolved: '/view/dashboard-01',
+      files: [
+        { content: '', extension: '.tsx', leaf: 'page.tsx', path: 'page.tsx' },
+        {
+          content: '',
+          extension: '.tsx',
+          leaf: 'app-sidebar.tsx',
+          path: 'components/app-sidebar.tsx',
+        },
+      ],
+    });
+  });
+
   /**
    * Preserves strict-mode prototype augmentation used by legacy readable-stream implementations.
    * The neutral namespace remains entirely browser-local while authored assignments replace its

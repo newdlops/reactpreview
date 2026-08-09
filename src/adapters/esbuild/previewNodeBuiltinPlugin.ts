@@ -5,10 +5,12 @@
  * browser-safe code without granting workspace code access to the extension host filesystem.
  */
 import { builtinModules } from 'node:module';
+import path from 'node:path';
 import type { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, Plugin } from 'esbuild';
 import { PREVIEW_NODE_BUILTIN_NAMESPACE } from './previewPluginProtocol';
 import { createPreviewNodeEventsRuntimeSource } from './previewNodeEventsRuntimeSource';
 import { createPreviewNodeFsRuntimeSource } from './previewNodeFsRuntimeSource';
+import { createPreviewNodePathRuntimeSource } from './previewNodePathRuntimeSource';
 
 /** Bare built-in names accepted with or without Node's explicit `node:` prefix. */
 const NODE_BUILTIN_NAMES = new Set(
@@ -65,7 +67,8 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
           if (
             browserResolution.errors.length === 0 &&
             browserResolution.path.length > 0 &&
-            !browserResolution.external
+            !browserResolution.external &&
+            isLoadablePreviewNodeBuiltinBrowserResolution(browserResolution)
           ) {
             return browserResolution;
           }
@@ -95,6 +98,12 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
         if (arguments_.path === 'fs' || arguments_.path === 'fs/promises') {
           return {
             contents: createPreviewNodeFsRuntimeSource(arguments_.path),
+            loader: 'js',
+          };
+        }
+        if (arguments_.path === 'path' || arguments_.path === 'path/posix') {
+          return {
+            contents: createPreviewNodePathRuntimeSource(),
             loader: 'js',
           };
         }
@@ -134,6 +143,24 @@ export function createPreviewNodeBuiltinPlugin(): Plugin {
       build.onLoad({ filter: /.*/, namespace: PREVIEW_NODE_BUILTIN_NAMESPACE }, loadNodeBuiltin);
     },
   };
+}
+
+/**
+ * Accepts only recursive results that already identify a loadable esbuild module.
+ *
+ * Package `browser` maps such as `{ "fs": false }` return the bare request with an empty
+ * namespace. Forwarding that result makes the outer plugin claim a relative file path. Empty and
+ * explicit `file` namespaces therefore require an absolute path; owned virtual namespaces remain
+ * free to use opaque identities.
+ */
+function isLoadablePreviewNodeBuiltinBrowserResolution(resolution: {
+  readonly namespace: string;
+  readonly path: string;
+}): boolean {
+  return (
+    (resolution.namespace.length > 0 && resolution.namespace !== 'file') ||
+    path.isAbsolute(resolution.path)
+  );
 }
 
 /** Copies resolver metadata only when another plugin supplied a plain record-like value. */

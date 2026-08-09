@@ -10,6 +10,7 @@ import {
   createPreviewPublicEnvironmentCandidatePaths,
   MAX_PREVIEW_PUBLIC_ENVIRONMENT_KEYS,
   parsePublicEnvironmentSource,
+  resolvePreviewPublicApplicationOrigin,
   resolvePreviewPublicEnvironment,
 } from '../../../src/adapters/esbuild/previewPublicEnvironment';
 
@@ -24,6 +25,26 @@ afterEach(async () => {
 });
 
 describe('preview public environment', () => {
+  /** Admits only an exact loopback app origin for optional authored iframe navigation. */
+  it('selects a normalized loopback public application origin', () => {
+    expect(
+      resolvePreviewPublicApplicationOrigin({
+        NEXT_PUBLIC_APP_URL: 'http://localhost:4000/base/path?mode=preview',
+      }),
+    ).toBe('http://localhost:4000');
+    expect(
+      resolvePreviewPublicApplicationOrigin({
+        NEXT_PUBLIC_APP_URL: 'https://production.example/',
+        VITE_APP_URL: 'http://127.0.0.1:5173/app',
+      }),
+    ).toBe('http://127.0.0.1:5173');
+    expect(
+      resolvePreviewPublicApplicationOrigin({
+        NEXT_PUBLIC_APP_URL: 'http://user:secret@localhost:4000/',
+      }),
+    ).toBeUndefined();
+  });
+
   /** Keeps public toolchain prefixes, dotenv quoting, and literal non-expanded references. */
   it('parses only browser-public assignments without expanding secret references', () => {
     expect(

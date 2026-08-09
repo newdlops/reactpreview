@@ -35,8 +35,55 @@ const PREVIEW_PUBLIC_ENVIRONMENT_FILENAMES = [
 /** Browser-visible prefixes recognized by the dominant React build toolchains. */
 const PUBLIC_ENVIRONMENT_PREFIXES = ['NEXT_PUBLIC_', 'VITE_', 'REACT_APP_', 'PUBLIC_'] as const;
 
+/** Conventional browser-public application origins checked in priority order. */
+const PUBLIC_APPLICATION_URL_KEYS = [
+  'NEXT_PUBLIC_APP_URL',
+  'VITE_APP_URL',
+  'REACT_APP_URL',
+  'PUBLIC_APP_URL',
+] as const;
+
 /** Safe environment map embedded into the isolated preview entry. */
 export type PreviewPublicEnvironment = Readonly<Record<string, string>>;
+
+/**
+ * Selects a loopback application origin that may safely host authored iframe routes.
+ *
+ * Remote public URLs remain ordinary component data and never weaken the webview frame boundary.
+ * Credentials, non-HTTP protocols, and URL paths are discarded; only the normalized origin crosses
+ * into presentation metadata.
+ *
+ * @param publicEnvironment Already-filtered browser-public dotenv values.
+ * @returns A normalized localhost/loopback origin, or undefined when none is configured.
+ */
+export function resolvePreviewPublicApplicationOrigin(
+  publicEnvironment: PreviewPublicEnvironment | undefined,
+): string | undefined {
+  for (const key of PUBLIC_APPLICATION_URL_KEYS) {
+    const value = publicEnvironment?.[key];
+    if (value === undefined) continue;
+    try {
+      const candidate = new URL(value);
+      if (
+        (candidate.protocol !== 'http:' && candidate.protocol !== 'https:') ||
+        candidate.username.length > 0 ||
+        candidate.password.length > 0 ||
+        !isPreviewLoopbackHostname(candidate.hostname)
+      ) {
+        continue;
+      }
+      return candidate.origin;
+    } catch {
+      // A malformed public value remains application data and does not enable frame navigation.
+    }
+  }
+  return undefined;
+}
+
+/** Restricts preview-owned frame navigation to an exact local development host. */
+function isPreviewLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
 
 /**
  * Creates every existing-or-future dotenv convention path in deterministic precedence order.

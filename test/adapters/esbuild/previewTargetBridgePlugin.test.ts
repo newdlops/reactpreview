@@ -3,7 +3,7 @@
  * Real in-memory esbuild builds prove explicit slots remain tree-shakable, wildcard slots expand
  * predictably, and direct theme metadata does not require an application bootstrap module.
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { runInNewContext } from 'node:vm';
@@ -13,6 +13,56 @@ import { createPreviewParentSlicePlugin } from '../../../src/adapters/esbuild/pr
 import { createPreviewTargetBridgePlugin } from '../../../src/adapters/esbuild/previewTargetBridgePlugin';
 
 describe('createPreviewTargetBridgePlugin', () => {
+  /** Loads root CSS relative to its authored layout without evaluating that application module. */
+  it('bridges standalone application stylesheets from their original importer', async () => {
+    const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'react-preview-target-style-'));
+    const applicationDirectory = path.join(temporaryDirectory, 'app');
+    const targetDirectory = path.join(temporaryDirectory, 'examples');
+    const documentPath = path.join(targetDirectory, 'Target.ts');
+    const importerPath = path.join(applicationDirectory, 'layout.tsx');
+    const stylesheetPath = path.join(applicationDirectory, 'globals.css');
+    try {
+      await Promise.all([
+        mkdir(applicationDirectory, { recursive: true }),
+        mkdir(targetDirectory, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(documentPath, 'export default function Preview() { return null; }', 'utf8'),
+        writeFile(importerPath, "throw new Error('APPLICATION_LAYOUT_MUST_NOT_RUN');", 'utf8'),
+        writeFile(stylesheetPath, '.application-style-marker { color: rgb(12, 34, 56); }', 'utf8'),
+      ]);
+
+      const result = await build({
+        bundle: true,
+        format: 'esm',
+        logLevel: 'silent',
+        outdir: path.join(temporaryDirectory, 'out'),
+        plugins: [
+          createPreviewTargetBridgePlugin({
+            applicationStylesheetImports: [{ importerPath, moduleSpecifier: './globals.css' }],
+            documentPath,
+          }),
+        ],
+        stdin: {
+          contents: "import targets from 'react-preview:target'; console.log(targets.length);",
+          loader: 'js',
+          resolveDir: temporaryDirectory,
+        },
+        write: false,
+      });
+      const javascript =
+        result.outputFiles.find((output) => output.path.endsWith('.js'))?.text ?? '';
+      const stylesheet =
+        result.outputFiles.find((output) => output.path.endsWith('.css'))?.text ?? '';
+
+      expect(stylesheet).toContain('.application-style-marker');
+      expect(stylesheet).toContain('rgb(12, 34, 56)');
+      expect(javascript).not.toContain('APPLICATION_LAYOUT_MUST_NOT_RUN');
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
   /**
    * Leaves a non-component module completely outside the runtime graph when static selection is empty.
    * Generated registries often export lower-camel data objects whose evaluation reaches thousands of

@@ -35,6 +35,8 @@ export interface ReadyPreviewState {
   readonly documentName: string;
   /** Internal pre-entry browser host shim used only by opt-in headless execution. */
   readonly hostBridgeScriptUri?: string;
+  /** Validated loopback origin used only for authored root-relative iframe documents. */
+  readonly publicApplicationOrigin?: string;
   /** Host-authorized URI for the compiler-selected project `public` directory. */
   readonly publicAssetBaseUri?: string;
   /** Webview URI for the generated ESM entry bundle. */
@@ -80,6 +82,10 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   const retryNonce =
     state.kind === 'error' && state.retry !== undefined ? createRetryNonce(state) : undefined;
   const readyScriptNonce = state.kind === 'ready' ? createReadyScriptNonce(state) : undefined;
+  const publicApplicationOrigin =
+    state.kind === 'ready'
+      ? normalizePreviewPublicApplicationOrigin(state.publicApplicationOrigin)
+      : undefined;
   const csp = [
     "default-src 'none'",
     `script-src ${cspSource}${retryNonce === undefined ? '' : ` 'nonce-${retryNonce}'`}${readyScriptNonce === undefined ? '' : ` 'nonce-${readyScriptNonce}'`}`,
@@ -89,7 +95,9 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
     "connect-src 'none'",
     `media-src ${cspSource} data: blob:`,
     "worker-src 'none'",
-    "frame-src 'none'",
+    publicApplicationOrigin === undefined
+      ? "frame-src 'none'"
+      : `frame-src ${publicApplicationOrigin}`,
     "base-uri 'none'",
     "form-action 'none'",
   ].join('; ');
@@ -132,7 +140,7 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   ${createStylesheetElement(state)}
 </head>
 <body data-react-preview-state="${state.kind}">
-  ${createBody(state, retryNonce, readyScriptNonce)}
+  ${createBody(state, retryNonce, readyScriptNonce, publicApplicationOrigin)}
 </body>
 </html>`;
 }
@@ -171,6 +179,7 @@ function createBody(
   state: PreviewHtmlState,
   retryNonce: string | undefined,
   readyScriptNonce: string | undefined,
+  publicApplicationOrigin: string | undefined,
 ): string {
   switch (state.kind) {
     case 'loading': {
@@ -199,7 +208,26 @@ function createBody(
     case 'ready':
       return `${createReadyProgressHost(createPreviewProgressSnapshot('loading-preview'))}
 <div id="react-preview-root" data-react-preview-mount aria-busy="true"${createRuntimeHandshakeAttributes(state)}></div>
-${createModuleImportMapElement(state, readyScriptNonce)}${createPublicAssetCompatibilityScriptElement(state, readyScriptNonce)}${createGlobalCompatibilityScriptElement(readyScriptNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
+${createModuleImportMapElement(state, readyScriptNonce)}${createPublicAssetCompatibilityScriptElement(state, readyScriptNonce)}${createApplicationFrameCompatibilityScriptElement(publicApplicationOrigin, readyScriptNonce)}${createGlobalCompatibilityScriptElement(readyScriptNonce)}${createHostBridgeScriptElement(state)}<script type="module" src="${escapeHtml(state.scriptUri)}"></script>`;
+  }
+}
+
+/** Keeps presentation callers from widening frame navigation beyond a local development server. */
+function normalizePreviewPublicApplicationOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const candidate = new URL(value);
+    if (
+      (candidate.protocol !== 'http:' && candidate.protocol !== 'https:') ||
+      candidate.username.length > 0 ||
+      candidate.password.length > 0 ||
+      !['localhost', '127.0.0.1', '[::1]'].includes(candidate.hostname)
+    ) {
+      return undefined;
+    }
+    return candidate.origin;
+  } catch {
+    return undefined;
   }
 }
 
@@ -325,6 +353,135 @@ function createPublicAssetCompatibilityScriptElement(
       }
     }).observe(document, {
       attributeFilter: ['src', 'srcset', 'poster', 'href', 'xlink:href'],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    rewriteTree(document);
+  })();
+</script>
+`;
+}
+
+/**
+ * Rehomes only root-relative iframe documents onto a compiler-proven loopback application origin.
+ * Every other URL and element retains the webview's isolated navigation behavior.
+ */
+function createApplicationFrameCompatibilityScriptElement(
+  publicApplicationOrigin: string | undefined,
+  nonce: string | undefined,
+): string {
+  if (publicApplicationOrigin === undefined || nonce === undefined) return '';
+  const encodedOrigin = JSON.stringify(publicApplicationOrigin).replaceAll('<', '\\u003c');
+  return `<script nonce="${nonce}">
+  (() => {
+    const applicationOrigin = new URL(${encodedOrigin});
+    const bridgedFrames = new WeakSet();
+    const frameWindowFacades = new WeakMap();
+    const resolveRootFrame = (value) => {
+      if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\\\')) return value;
+      try {
+        const resolved = new URL(value, applicationOrigin);
+        return resolved.origin === applicationOrigin.origin ? resolved.toString() : value;
+      } catch { return value; }
+    };
+    const markBridgedFrame = (element, value, resolved) => {
+      if (element instanceof HTMLIFrameElement && resolved !== value) bridgedFrames.add(element);
+      return resolved;
+    };
+    const nativeSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      const stringValue = String(value);
+      const nextValue = String(name).toLowerCase() === 'src' && String(this.localName).toLowerCase() === 'iframe'
+        ? markBridgedFrame(this, stringValue, resolveRootFrame(stringValue))
+        : stringValue;
+      return nativeSetAttribute.call(this, name, nextValue);
+    };
+    const srcDescriptor = typeof HTMLIFrameElement === 'function'
+      ? Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')
+      : undefined;
+    if (srcDescriptor?.get !== undefined && srcDescriptor.set !== undefined) {
+      try {
+        Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+          ...srcDescriptor,
+          set(value) {
+            const stringValue = String(value);
+            srcDescriptor.set.call(
+              this,
+              markBridgedFrame(this, stringValue, resolveRootFrame(stringValue))
+            );
+          },
+        });
+      } catch {}
+    }
+    const contentWindowDescriptor = typeof HTMLIFrameElement === 'function'
+      ? Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')
+      : undefined;
+    const createFrameWindowFacade = (frame, targetWindow) => {
+      const cached = frameWindowFacades.get(frame);
+      if (cached?.targetWindow === targetWindow) return cached.facade;
+      const bridgedPostMessage = (message, targetOrigin, transfer) => {
+        let nextTargetOrigin = targetOrigin;
+        if (targetOrigin === window.location.origin) {
+          nextTargetOrigin = applicationOrigin.origin;
+        } else if (
+          targetOrigin !== null &&
+          typeof targetOrigin === 'object' &&
+          targetOrigin.targetOrigin === window.location.origin
+        ) {
+          nextTargetOrigin = { ...targetOrigin, targetOrigin: applicationOrigin.origin };
+        }
+        const postMessage = targetWindow.postMessage;
+        return transfer === undefined
+          ? postMessage.call(targetWindow, message, nextTargetOrigin)
+          : postMessage.call(targetWindow, message, nextTargetOrigin, transfer);
+      };
+      const facade = new Proxy(Object.create(null), {
+        get(_target, property) {
+          if (property === 'postMessage') return bridgedPostMessage;
+          const value = Reflect.get(targetWindow, property);
+          return typeof value === 'function' ? value.bind(targetWindow) : value;
+        },
+        has(_target, property) { return Reflect.has(targetWindow, property); },
+        set(_target, property, value) { return Reflect.set(targetWindow, property, value); },
+      });
+      frameWindowFacades.set(frame, { facade, targetWindow });
+      return facade;
+    };
+    if (contentWindowDescriptor?.get !== undefined) {
+      try {
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+          ...contentWindowDescriptor,
+          get() {
+            const targetWindow = contentWindowDescriptor.get.call(this);
+            return targetWindow === null || !bridgedFrames.has(this)
+              ? targetWindow
+              : createFrameWindowFacade(this, targetWindow);
+          },
+        });
+      } catch {}
+    }
+    const rewriteFrame = (element) => {
+      if (!(element instanceof HTMLIFrameElement)) return;
+      const value = element.getAttribute('src');
+      if (value === null) return;
+      const resolved = resolveRootFrame(value);
+      if (resolved !== value) {
+        bridgedFrames.add(element);
+        nativeSetAttribute.call(element, 'src', resolved);
+      }
+    };
+    const rewriteTree = (root) => {
+      rewriteFrame(root);
+      root?.querySelectorAll?.('iframe[src]').forEach(rewriteFrame);
+    };
+    new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === 'attributes') rewriteFrame(record.target);
+        for (const node of record.addedNodes ?? []) rewriteTree(node);
+      }
+    }).observe(document, {
+      attributeFilter: ['src'],
       attributes: true,
       childList: true,
       subtree: true,

@@ -319,6 +319,8 @@ export interface PreviewBundle {
   readonly inspectorSourceGestureSecret?: string;
   /** Browser mappings for package imports intentionally shared outside the per-preview graph. */
   readonly moduleImports?: readonly PreviewBundleModuleImport[];
+  /** Loopback application origin allowed to serve authored root-relative iframe routes. */
+  readonly publicApplicationOrigin?: string;
   /** Existing project public directory used to recover runtime-computed root-relative assets. */
   readonly publicAssetRoot?: string;
   /** Complete browser JavaScript entry bundle. */
@@ -355,6 +357,8 @@ export interface PreparedPreview {
   readonly contextCoverage?: PreviewContextCoverage;
   /** Input module paths involved in the successful build. */
   readonly dependencies: readonly string[];
+  /** Loopback application origin allowed to serve authored root-relative iframe routes. */
+  readonly publicApplicationOrigin?: string;
   /** Existing project public directory authorized for passive runtime asset loading. */
   readonly publicAssetRoot?: string;
   /** Non-fatal diagnostics produced by the compiler. */

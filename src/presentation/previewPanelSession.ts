@@ -436,6 +436,9 @@ export class PreviewPanelSession implements vscode.Disposable {
       runtimeRevision: requestedRevision,
       runtimeToken: `${requestedRevision.toString()}:${preparedPreview.artifact.contentHash}`,
       scriptUri,
+      ...(preparedPreview.publicApplicationOrigin === undefined
+        ? {}
+        : { publicApplicationOrigin: preparedPreview.publicApplicationOrigin }),
       ...(publicAssetBaseUri === undefined ? {} : { publicAssetBaseUri }),
     };
     const nextHtml = createPreviewHtml(

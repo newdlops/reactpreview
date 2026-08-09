@@ -22,6 +22,7 @@ const BUNDLE: PreviewBundle = {
   dependencies: ['/workspace/Component.tsx'],
   diagnostics: [],
   javascript: new TextEncoder().encode('export {};'),
+  publicApplicationOrigin: 'http://localhost:4000',
   watchDirectories: ['/workspace/pages'],
 };
 
@@ -63,6 +64,7 @@ describe('BuildPreview', () => {
       contextCoverage: 'partial',
       dependencies: BUNDLE.dependencies,
       diagnostics: BUNDLE.diagnostics,
+      publicApplicationOrigin: 'http://localhost:4000',
       watchDirectories: BUNDLE.watchDirectories,
     });
 

@@ -38,6 +38,41 @@ describe('createPreviewHtml', () => {
     expect(html).not.toContain('react-preview-headless-bridge');
   });
 
+  /** Rehomes authored iframe routes only when the compiler proved an exact loopback app origin. */
+  it('allows root-relative iframe documents from a loopback public application origin', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      documentName: 'TypesetPreview.tsx',
+      kind: 'ready',
+      publicApplicationOrigin: 'http://localhost:4000/base/path',
+      runtimeRevision: 8,
+      scriptUri: 'vscode-webview://unit-test/entry.js',
+    });
+
+    expect(html).toContain('frame-src http://localhost:4000');
+    expect(html).toContain('const applicationOrigin = new URL("http://localhost:4000")');
+    expect(html).toContain("querySelectorAll?.('iframe[src]')");
+    expect(html).toContain("Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src')");
+    expect(html).toContain(
+      "Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')",
+    );
+    expect(html).toContain('targetOrigin === window.location.origin');
+    expect(html).toContain('nextTargetOrigin = applicationOrigin.origin');
+  });
+
+  /** Keeps remote public application URLs outside the frame and script policy. */
+  it('rejects a non-loopback public application origin', () => {
+    const html = createPreviewHtml(CSP_SOURCE, {
+      documentName: 'RemoteFrame.tsx',
+      kind: 'ready',
+      publicApplicationOrigin: 'https://remote.example/app',
+      scriptUri: 'vscode-webview://unit-test/entry.js',
+    });
+
+    expect(html).toContain('frame-src &#39;none&#39;');
+    expect(html).not.toContain('remote.example');
+    expect(html).not.toContain('const applicationOrigin = new URL(');
+  });
+
   /** Inserts an escaped internal host shim before the existing module without changing CSP policy. */
   it('places an optional headless host bridge immediately before the entry module', () => {
     const html = createPreviewHtml(CSP_SOURCE, {

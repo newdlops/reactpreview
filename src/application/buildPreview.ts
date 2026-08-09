@@ -54,6 +54,9 @@ export class BuildPreview {
       contextCoverage: bundle.contextCoverage ?? 'partial',
       dependencies: bundle.dependencies,
       diagnostics: bundle.diagnostics,
+      ...(bundle.publicApplicationOrigin === undefined
+        ? {}
+        : { publicApplicationOrigin: bundle.publicApplicationOrigin }),
       ...(bundle.publicAssetRoot === undefined ? {} : { publicAssetRoot: bundle.publicAssetRoot }),
       watchDirectories: bundle.watchDirectories,
     };

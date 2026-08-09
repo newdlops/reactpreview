@@ -348,16 +348,29 @@ function loadTailwindV4Implementation(
     const adapterPath = projectRequire.resolve('@tailwindcss/postcss');
     const adapterRequire = createRequire(adapterPath);
     const postcss = readCallableExport(adapterRequire('postcss'));
-    const tailwind = readCallableExport(projectRequire('@tailwindcss/postcss'));
-    if (postcss === undefined || tailwind === undefined) return undefined;
+    const loadFreshAdapter = (): ((...arguments_: unknown[]) => unknown) | undefined => {
+      // Tailwind v4's PostCSS package keeps its compiler LRU at module scope and keys it only by
+      // stylesheet path/base/options. Preview-only inline candidates are intentionally in-memory,
+      // so their changes cannot advance that cache key or any filesystem mtime. Retire exactly the
+      // project adapter module before a new preview CSS load; transitive project packages remain
+      // cached, while the adapter receives a clean compiler inventory for the current route.
+      Reflect.deleteProperty(adapterRequire.cache, adapterPath);
+      return readCallableExport(adapterRequire(adapterPath));
+    };
+    let initialTailwind = loadFreshAdapter();
+    if (postcss === undefined || initialTailwind === undefined) return undefined;
     const Scanner = readScannerConstructor(safeRequire(adapterRequire, '@tailwindcss/oxide'));
-    const processor = readPostcssProcessor(
-      postcss([tailwind({ base: styleRoot, optimize: false })]),
-    );
     return {
       kind: 'v4',
       ...(Scanner === undefined ? {} : { Scanner }),
-      createProcessor: () => processor,
+      createProcessor: () => {
+        const tailwind = initialTailwind ?? loadFreshAdapter();
+        initialTailwind = undefined;
+        if (tailwind === undefined) {
+          throw new TypeError('The project Tailwind v4 adapter could not be reloaded.');
+        }
+        return readPostcssProcessor(postcss([tailwind({ base: styleRoot, optimize: false })]));
+      },
     };
   } catch {
     return undefined;

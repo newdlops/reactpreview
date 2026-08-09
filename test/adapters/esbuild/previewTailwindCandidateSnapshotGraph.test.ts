@@ -68,4 +68,97 @@ describe('collectPreviewTailwindCandidateSnapshotGraph', () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]?.documentPath).toBe(TARGET);
   });
+
+  it('does not spend the candidate budget on runtime imports resolved to declaration files', async () => {
+    const declarationPath = path.join(ROOT, 'node_modules', 'next', 'link.d.ts');
+    const sources = new Map<string, string>([
+      [
+        TARGET,
+        `import Link from 'next/link'; export const Target = () => <Link className="md:flex" />;`,
+      ],
+      [declarationPath, `export default function Link(): never;`],
+    ]);
+
+    const snapshots = await collectPreviewTailwindCandidateSnapshotGraph({
+      corridorPaths: [],
+      readSource: ({ sourcePath }) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: () => declarationPath,
+      scope: 'critical',
+      targetPath: TARGET,
+      workspaceRoot: ROOT,
+    });
+
+    expect(snapshots.map((snapshot) => snapshot.documentPath)).toEqual([TARGET]);
+  });
+
+  it('retains responsive candidates from every exact source in a component-heavy critical corridor', async () => {
+    const corridorPaths = Array.from({ length: 72 }, (_, index) =>
+      path.join(ROOT, 'src', 'app', `Corridor${index.toString()}.tsx`),
+    );
+    const sources = new Map<string, string>([
+      [TARGET, `export const Target = () => <div className="block" />;`],
+      ...corridorPaths.map(
+        (sourcePath, index) =>
+          [
+            sourcePath,
+            `export const Corridor${index.toString()} = () => <div className="md:grid lg:grid-cols-${(
+              (index % 4) +
+              1
+            ).toString()}" />;`,
+          ] as const,
+      ),
+    ]);
+
+    const snapshots = await collectPreviewTailwindCandidateSnapshotGraph({
+      corridorPaths,
+      readSource: ({ sourcePath }) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: () => undefined,
+      scope: 'critical',
+      targetPath: TARGET,
+      workspaceRoot: ROOT,
+    });
+
+    expect(snapshots).toHaveLength(corridorPaths.length + 1);
+    expect(snapshots.at(-1)?.documentPath).toBe(corridorPaths.at(-1));
+    expect(snapshots.at(-1)?.sourceText).toContain('md:grid');
+  });
+
+  it('follows every bounded static import from a wide component composition module', async () => {
+    const importedPaths = Array.from({ length: 40 }, (_, index) =>
+      path.join(ROOT, 'src', 'cards', `Card${index.toString()}.tsx`),
+    );
+    const targetSource = importedPaths
+      .map((_, index) => `import './cards/Card${index.toString()}';`)
+      .join('\n');
+    const sources = new Map<string, string>([
+      [TARGET, targetSource],
+      ...importedPaths.map(
+        (sourcePath, index) =>
+          [
+            sourcePath,
+            `export const Card${index.toString()} = () => <div className="xl:col-span-${(
+              (index % 4) +
+              1
+            ).toString()}" />;`,
+          ] as const,
+      ),
+    ]);
+
+    const snapshots = await collectPreviewTailwindCandidateSnapshotGraph({
+      corridorPaths: [],
+      readSource: ({ sourcePath }) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier) => {
+        const match = /^\.\/cards\/Card(?<index>\d+)$/u.exec(specifier);
+        return match?.groups?.index === undefined
+          ? undefined
+          : importedPaths[Number.parseInt(match.groups.index, 10)];
+      },
+      scope: 'critical',
+      targetPath: TARGET,
+      workspaceRoot: ROOT,
+    });
+
+    expect(snapshots).toHaveLength(importedPaths.length + 1);
+    expect(snapshots.some((snapshot) => snapshot.documentPath === importedPaths.at(-1))).toBe(true);
+  });
 });

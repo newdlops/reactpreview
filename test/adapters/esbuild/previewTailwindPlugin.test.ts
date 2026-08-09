@@ -471,13 +471,12 @@ async function installFakeTailwindV4(projectRoot: string): Promise<void> {
     writeFile(
       path.join(adapterRoot, 'index.js'),
       [
-        'let processorCreations = 0;',
+        'let compiledInline;',
         'module.exports = (adapterOptions) => {',
-        '  processorCreations += 1;',
-        '  if (processorCreations > 1) throw new Error("processor recreated");',
         '  return {',
         '  transform: async (source, options) => {',
-        '    const inline = /@source inline\\("([^"]*)"\\)/.exec(source)?.[1] || "";',
+        '    compiledInline ??= /@source inline\\("([^"]*)"\\)/.exec(source)?.[1] || "";',
+        '    const inline = compiledInline;',
         '    const workspaceImport = source.includes("packages/shadcn/src/tailwind.css");',
         '    const classes = inline.split(/\\s+/).filter((value) => value.includes("dirty-")).map((value) => `.${value} { display: block; }`).join("\\n");',
         '    return {',

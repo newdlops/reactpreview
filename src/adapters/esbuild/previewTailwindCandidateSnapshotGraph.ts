@@ -17,12 +17,18 @@ const MAX_CANDIDATE_FILES = 128;
 const MAX_CANDIDATE_BYTES = 4 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const MAX_IMPORT_DEPTH = 8;
-const MAX_CRITICAL_CANDIDATE_FILES = 48;
+// Fast Page Inspector output can be accepted as final as soon as the authored target renders.
+// Keep the exact visible corridor within the same file envelope as the selected-complete pass so
+// that accepting that output cannot strand responsive utilities beyond an artificial 48-file cut.
+const MAX_CRITICAL_CANDIDATE_FILES = MAX_CANDIDATE_FILES;
 const MAX_CRITICAL_CANDIDATE_BYTES = 1536 * 1024;
 const MAX_CRITICAL_IMPORT_DEPTH = 5;
-const MAX_IMPORTS_PER_SOURCE = 32;
+// The outer file ceiling remains authoritative. Component composition modules commonly contain
+// more than 32 static imports, so clipping their authored edge list first drops valid UI leaves.
+const MAX_IMPORTS_PER_SOURCE = MAX_CANDIDATE_FILES;
 const MAX_DYNAMIC_IMPORTS_PER_SOURCE = 16;
 const SOURCE_EXTENSION_PATTERN = /\.[cm]?[jt]sx?$/iu;
+const DECLARATION_SOURCE_PATTERN = /\.d\.[cm]?tsx?$/iu;
 
 /** Bounded project-source reader shared with the compiler-lifetime analysis cache. */
 export type ReadPreviewTailwindCandidateSource = (options: {
@@ -35,7 +41,7 @@ export interface CollectPreviewTailwindCandidateSnapshotGraphOptions {
   /** Ancestor/page/layout sources that remain useful after the target closure is exhausted. */
   readonly corridorPaths: readonly string[];
   readonly readSource: ReadPreviewTailwindCandidateSource;
-  /** Exact TypeScript-aware project resolver; unresolved and package-external edges are ignored. */
+  /** Exact TypeScript-aware resolver; unresolved edges and declaration results are ignored. */
   readonly resolveModule: (moduleSpecifier: string, consumerPath: string) => string | undefined;
   /** Current editor file, always explored before the broader page corridor. */
   readonly targetPath: string;
@@ -55,8 +61,8 @@ interface CandidateWorkItem {
  *
  * Complete scope gives the selected target a depth-first pass before page/layout seeds. Critical
  * scope first reserves every exact corridor seed, then expands them breadth-first under its smaller
- * budget. Type-only imports, bare runtime packages, CSS files, and computed dynamic imports never
- * enter this source graph.
+ * budget. Type-only imports, declaration files, CSS files, and computed dynamic imports never enter
+ * this source graph.
  */
 export async function collectPreviewTailwindCandidateSnapshotGraph(
   options: CollectPreviewTailwindCandidateSnapshotGraphOptions,
@@ -82,7 +88,7 @@ export async function collectPreviewTailwindCandidateSnapshotGraph(
       const canonicalPath = canonicalizeExistingPath(item.sourcePath);
       if (
         visited.has(canonicalPath) ||
-        !SOURCE_EXTENSION_PATTERN.test(canonicalPath) ||
+        !isTailwindCandidateSourcePath(canonicalPath) ||
         !isPathInside(workspaceRoot, canonicalPath)
       ) {
         continue;
@@ -111,7 +117,7 @@ export async function collectPreviewTailwindCandidateSnapshotGraph(
       const imports = collectRuntimeModuleSpecifiers(canonicalPath, sourceText)
         .map((specifier) => options.resolveModule(specifier, canonicalPath))
         .filter((resolvedPath): resolvedPath is string => resolvedPath !== undefined)
-        .filter((resolvedPath) => SOURCE_EXTENSION_PATTERN.test(resolvedPath));
+        .filter(isTailwindCandidateSourcePath);
       const importedItems = imports.map((sourcePath) => ({
         depth: item.depth + 1,
         sourcePath,
@@ -215,6 +221,11 @@ function readScriptKind(sourcePath: string): ts.ScriptKind {
   if (extension.endsWith('jsx')) return ts.ScriptKind.JSX;
   if (extension.endsWith('ts')) return ts.ScriptKind.TS;
   return ts.ScriptKind.JS;
+}
+
+/** Declaration surfaces contain no emitted markup and must not consume the authored style graph. */
+function isTailwindCandidateSourcePath(sourcePath: string): boolean {
+  return SOURCE_EXTENSION_PATTERN.test(sourcePath) && !DECLARATION_SOURCE_PATTERN.test(sourcePath);
 }
 
 /** Segment-aware containment prevents symlinked imports from escaping the trusted workspace. */

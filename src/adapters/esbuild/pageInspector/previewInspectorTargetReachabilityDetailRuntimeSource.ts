@@ -19,6 +19,45 @@
  */
 export function createPreviewInspectorTargetReachabilityDetailRuntimeSource(): string {
   return String.raw`
+const PREVIEW_INSPECTOR_TARGET_RESOLVING_STATUSES = new Set([
+  'activating-local-ui',
+  'advancing',
+  'blocked',
+  'filling-requirements',
+  'mounting-contextual-target',
+  'page-root-pending',
+  'probing',
+  'probing-after-manual-condition',
+  'repairing-target-props',
+  'resolving-deferred-render-contract',
+  'resuming-new-requirements',
+  'revealing-overlay',
+  'searching-deterministic-requirements',
+  'searching-requirements',
+  'settling-auto-attempt',
+]);
+
+/** Keeps an active path probe informational until its bounded search reaches a terminal state. */
+function isPreviewInspectorTargetReachabilityResolving(blocker) {
+  const minimumSearchStatus = blocker?.minimumRequirementSearch?.status;
+  if (
+    blocker?.directTarget === true ||
+    blocker?.exhausted === true ||
+    ['candidate-output', 'fallback-output'].includes(blocker?.targetOutputKind) ||
+    ['cycle-detected', 'limit-reached', 'rolled-back'].includes(minimumSearchStatus) ||
+    [
+      'page-blocked',
+      'requirements-stalled',
+      'resolver-cycle-detected',
+      'resolver-limit-reached',
+      'resolver-rolled-back',
+      'target-error',
+    ].includes(blocker?.status)
+  ) return false;
+  return minimumSearchStatus === 'searching' ||
+    PREVIEW_INSPECTOR_TARGET_RESOLVING_STATUSES.has(blocker?.status);
+}
+
 /** Explains a logical path blocker and exposes retry/direct-target recovery without hiding context. */
 function PreviewInspectorTargetReachabilityDetail({ node }) {
   const blocker = node.blocker;
@@ -47,7 +86,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
   const routeChoicePath = selectedCandidate?.routeLocation?.pathname;
   const requiredPathSummary = summarizePreviewInspectorRequiredPaths(blocker.requiredPaths);
   const minimumSearch = blocker.minimumRequirementSearch;
-  const resolving = blocker.status === 'settling-auto-attempt' || minimumSearch?.status === 'searching';
+  const resolving = isPreviewInspectorTargetReachabilityResolving(blocker);
   const circuitOpen = ['cycle-detected', 'limit-reached'].includes(minimumSearch?.status) ||
     minimumSearch?.status === 'rolled-back';
   const invisibleExplanation = fallbackOutput
@@ -75,7 +114,7 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
     { className: 'rpi-detail-content' },
     React.createElement(
       'div',
-      { className: 'rpi-error', role: 'alert' },
+      { className: resolving ? 'rpi-note' : 'rpi-error', role: resolving ? 'status' : 'alert' },
       fallbackOutput
         ? 'Original render error' +
           (typeof targetOutputError?.ownerName === 'string'
@@ -92,13 +131,19 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
                   (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
                 : 'Automatic search stopped after its safe pass limit.' +
                   (targetMountedWithoutOutput ? ' ' + invisibleExplanation : '')
-            : direct
-          ? 'File-only view is active. Return to the page to inspect the real layout.'
-          : pageCommitted
-            ? targetMountedWithoutOutput
-              ? invisibleExplanation
-              : 'The page loaded, but this path did not use ' + blocker.targetExportName + '.'
-            : 'The page is still loading.',
+            : resolving
+              ? pageCommitted
+                ? targetMountedWithoutOutput
+                  ? 'The page loaded. React Preview is still checking this file’s visible output…'
+                  : 'The page loaded. React Preview is still tracing the selected file on this path…'
+                : 'The page is still loading.'
+              : direct
+                ? 'File-only view is active. Return to the page to inspect the real layout.'
+                : pageCommitted
+                  ? targetMountedWithoutOutput
+                    ? invisibleExplanation
+                    : 'The page loaded, but this path did not use ' + blocker.targetExportName + '.'
+                  : 'The page is still loading.',
     ),
     React.createElement('div', { className: 'rpi-note' },
       'Page: ' + blocker.rootName + ' · ' + (pageCommitted ? 'loaded' : 'still loading')),
@@ -108,17 +153,21 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
         ? 'error fallback visible instead'
         : candidateOutput
           ? 'candidate DOM rejected · exact target Fiber absent'
-        : targetMountedWithoutOutput
-        ? deferredCallbackPending
-          ? 'connected · waiting for parent callback'
-          : wrapperHostOnly
-          ? 'ran · fallback visible instead'
-          : routeChoiceName !== undefined
-            ? 'router ran · selected ' + routeChoiceName + ' hidden'
-            : 'ran · no visible element'
-        : targetMounted
-          ? 'visible'
-          : 'not used on this path')),
+          : resolving
+            ? targetMountedWithoutOutput
+              ? 'connected · checking visible output'
+              : 'searching this page path'
+            : targetMountedWithoutOutput
+              ? deferredCallbackPending
+                ? 'connected · waiting for parent callback'
+                : wrapperHostOnly
+                  ? 'ran · fallback visible instead'
+                  : routeChoiceName !== undefined
+                    ? 'router ran · selected ' + routeChoiceName + ' hidden'
+                    : 'ran · no visible element'
+              : targetMounted
+                ? 'visible'
+                : 'not used on this path')),
     React.createElement('div', { className: 'rpi-note' },
       'Page path: ' + blocker.applicationPath.join(' > ')),
     blocker.appliedConditions.length > 0
@@ -127,14 +176,16 @@ function PreviewInspectorTargetReachabilityDetail({ node }) {
             .map((condition) => condition.expression + ' = ' + String(condition.enabled))
             .join(', '))
       : React.createElement('div', { className: 'rpi-note' },
-          targetMountedWithoutOutput
-            ? deferredCallbackPending
-              ? 'Next likely cause: the parent needs data before it calls this render callback.'
-              : routeChoiceName !== undefined
-                ? 'Choose another Page path above, or inspect the first condition inside ' +
-                  routeChoiceName + '.'
-                : 'Next likely cause: an OFF condition, missing data, or a child that intentionally returns nothing.'
-            : 'No login, session, or permission condition has been proven for this path yet.'),
+          resolving
+            ? 'React Preview is following newly revealed conditions and data requirements on this path.'
+            : targetMountedWithoutOutput
+              ? deferredCallbackPending
+                ? 'Next likely cause: the parent needs data before it calls this render callback.'
+                : routeChoiceName !== undefined
+                  ? 'Choose another Page path above, or inspect the first condition inside ' +
+                    routeChoiceName + '.'
+                  : 'Next likely cause: an OFF condition, missing data, or a child that intentionally returns nothing.'
+              : 'No login, session, or permission condition has been proven for this path yet.'),
     requiredPathSummary.totalCount > 0
       ? React.createElement('div', { className: 'rpi-note' },
           'Possible data needed next (' +

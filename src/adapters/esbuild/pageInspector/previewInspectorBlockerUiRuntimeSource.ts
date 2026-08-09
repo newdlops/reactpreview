@@ -207,6 +207,7 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
   const wrapperHostOnly = mountedWithoutOutput && blocker.targetHasAnyHostOutput === true;
   const errorFallbackOutput = blocker.targetOutputKind === 'fallback-output';
   const candidateOutput = blocker.targetOutputKind === 'candidate-output';
+  const resolving = isPreviewInspectorTargetReachabilityResolving(blocker);
   return {
     blocker,
     blockerId: blocker.id,
@@ -218,11 +219,13 @@ function createPreviewInspectorTargetReachabilityTreeNode(blocker) {
       ? 'Error fallback shown instead · '
       : candidateOutput
         ? 'Candidate output is not the current file · '
-        : deferredCallbackPending
-      ? 'Render callback is waiting · '
-      : wrapperHostOnly
-      ? 'Fallback shown instead · '
-      : mountedWithoutOutput ? 'No visible element · ' : 'Current file not used · ') +
+        : resolving
+          ? 'Finding current file · '
+          : deferredCallbackPending
+            ? 'Render callback is waiting · '
+            : wrapperHostOnly
+              ? 'Fallback shown instead · '
+              : mountedWithoutOutput ? 'No visible element · ' : 'Current file not used · ') +
         blocker.targetExportName,
     props: {
       applicationPath: blocker.applicationPath,
@@ -516,7 +519,11 @@ function formatPreviewInspectorBlockerBadge(node) {
     return 'backend data · ' + String(node.blocker?.mode ?? 'seed');
   }
   if (node?.blockerKind === 'target-reachability') {
-    return node.blocker?.directTarget === true ? 'target only' : 'page path';
+    return node.blocker?.directTarget === true
+      ? 'target only'
+      : isPreviewInspectorTargetReachabilityResolving(node.blocker)
+        ? 'searching page path'
+        : 'page path';
   }
   if (node?.blockerKind === 'runtime-global') return 'runtime/compiler';
   if (node?.blockerKind === 'target-error') return 'component error';
@@ -531,6 +538,8 @@ function PreviewInspectorBlockerGuide({ node }) {
     node?.blocker?.pageRootCommitted === true && node?.blocker?.targetMounted !== true;
   const targetInvisible = node?.blockerKind === 'target-reachability' &&
     node?.blocker?.targetMounted === true && node?.blocker?.targetHasOutput !== true;
+  const targetResolving = node?.blockerKind === 'target-reachability' &&
+    isPreviewInspectorTargetReachabilityResolving(node.blocker);
   const runtimeGlobal = node?.blockerKind === 'runtime-global';
   let detail = 'The page can continue, but you can inspect or replace the generated value below.';
   let helpKind = 'assisted';
@@ -556,6 +565,11 @@ function PreviewInspectorBlockerGuide({ node }) {
     helpKind = 'condition';
     icon = '?';
     title = 'This condition chooses which React branch is visible.';
+  } else if (targetResolving) {
+    detail = targetInvisible
+      ? 'The page has loaded and the selected file is connected. Automatic path search is checking its visible output.'
+      : 'The page has loaded. Automatic path search is still following proven conditions and data requirements toward the selected file.';
+    title = 'React Preview is still tracing this page path.';
   } else if (targetAbsent) {
     detail = 'This may be a valid application outcome. Compare another Page path, inspect File components, or provide path values when static evidence is sufficient.';
     helpKind = 'flow-outcome';

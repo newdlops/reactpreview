@@ -34,6 +34,107 @@ const previewInspectorRenderableObjectTypes = new Set([
   Symbol.for('react.memo'),
 ]);
 
+/** Prevents an unusual target from growing an unbounded per-props Suspense record catalog. */
+const PREVIEW_INSPECTOR_ASYNC_TARGET_RECORD_LIMIT = 32;
+const PREVIEW_INSPECTOR_ASYNC_TARGET_TIMEOUT_MS = 1500;
+const previewInspectorAsyncTargetValueIds = new WeakMap();
+let previewInspectorNextAsyncTargetValueId = 1;
+
+/** Returns one stable identifier for non-serializable values participating in async page props. */
+function readPreviewInspectorAsyncTargetValueId(value) {
+  let identifier = previewInspectorAsyncTargetValueIds.get(value);
+  if (identifier !== undefined) return identifier;
+  identifier = previewInspectorNextAsyncTargetValueId;
+  previewInspectorNextAsyncTargetValueId += 1;
+  previewInspectorAsyncTargetValueIds.set(value, identifier);
+  return identifier;
+}
+
+/** Creates a bounded repeatable key so retries reuse the same async component thenable. */
+function stringifyPreviewInspectorAsyncTargetProps(value) {
+  const seen = new WeakSet();
+  try {
+    const serialized = JSON.stringify(value, (_name, propertyValue) => {
+      if (typeof propertyValue === 'bigint') return propertyValue.toString();
+      if (typeof propertyValue === 'symbol') return String(propertyValue);
+      if (typeof propertyValue === 'function') {
+        return '[Function:' + String(readPreviewInspectorAsyncTargetValueId(propertyValue)) + ']';
+      }
+      if (propertyValue !== null && typeof propertyValue === 'object') {
+        if (typeof propertyValue.then === 'function' && Object.keys(propertyValue).length === 0) {
+          return '[Thenable:' + String(readPreviewInspectorAsyncTargetValueId(propertyValue)) + ']';
+        }
+        if (seen.has(propertyValue)) return '[Circular]';
+        seen.add(propertyValue);
+      }
+      return propertyValue;
+    }) ?? '{}';
+    return serialized.length <= 65_536
+      ? serialized
+      : serialized.slice(0, 65_536) + ':' + String(serialized.length);
+  } catch {
+    return '[Unserializable]';
+  }
+}
+
+/**
+ * Converts an async Server Component into a synchronous component with one stable thenable.
+ * React can retry this boundary without invoking the authored async page on every render pass.
+ */
+function adaptPreviewInspectorAsyncTarget(Component, metadata) {
+  if (
+    typeof Component !== 'function' ||
+    Component.constructor?.name !== 'AsyncFunction'
+  ) return Component;
+  const records = new Map();
+  const displayName = metadata?.exportName ?? Component.displayName ?? Component.name ?? 'default';
+  function ReactPreviewAsyncTarget(targetProps) {
+    const propsKey = stringifyPreviewInspectorAsyncTargetProps(targetProps);
+    let record = records.get(propsKey);
+    if (record === undefined) {
+      let resume;
+      const promise = new Promise((resolve) => { resume = resolve; });
+      record = { promise, status: 'pending', value: null };
+      if (records.size >= PREVIEW_INSPECTOR_ASYNC_TARGET_RECORD_LIMIT) {
+        const oldestKey = records.keys().next().value;
+        if (oldestKey !== undefined) records.delete(oldestKey);
+      }
+      records.set(propsKey, record);
+      const timer = setTimeout(() => {
+        if (record.status !== 'pending') return;
+        record.status = 'fulfilled';
+        record.value = React.createElement('span', {
+          'data-react-preview-async-target': 'timeout',
+          role: 'status',
+          title: displayName + ': async server output timed out in preview',
+        }, '…');
+        resume();
+      }, PREVIEW_INSPECTOR_ASYNC_TARGET_TIMEOUT_MS);
+      Promise.resolve().then(() => Component(targetProps)).then(
+        (value) => {
+          if (record.status !== 'pending') return;
+          clearTimeout(timer);
+          record.status = 'fulfilled';
+          record.value = value;
+          resume();
+        },
+        (error) => {
+          if (record.status !== 'pending') return;
+          clearTimeout(timer);
+          record.status = 'rejected';
+          record.value = error;
+          resume();
+        },
+      );
+    }
+    if (record.status === 'pending') throw record.promise;
+    if (record.status === 'rejected') throw record.value;
+    return record.value;
+  }
+  ReactPreviewAsyncTarget.displayName = 'ReactPreviewAsyncTarget(' + displayName + ')';
+  return ReactPreviewAsyncTarget;
+}
+
 /**
  * Distinguishes React element types from GraphQL documents, route metadata, and other plain data.
  *
@@ -101,6 +202,7 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
   inspectorApi?.registerCompilerCapability?.(targetMarker, metadata);
   const displayName =
     metadata?.exportName ?? Component.displayName ?? Component.name ?? 'default';
+  const RenderComponent = adaptPreviewInspectorAsyncTarget(Component, metadata);
   const WrappedPreviewInspectorTarget = React.forwardRef((targetProps, forwardedRef) => {
     const activeInspectorApi = globalThis[PREVIEW_INSPECTOR_API_KEY];
     activeInspectorApi?.registerTargetOwnershipPhase?.(metadata, 'wrapper-render');
@@ -110,12 +212,12 @@ export function wrapPreviewInspectorTarget(Component, metadata) {
       const fallbackProps = forwardedRef === null
         ? targetProps
         : { ...targetProps, ref: forwardedRef };
-      return React.isValidElement(Component)
-        ? React.cloneElement(Component, fallbackProps)
-        : React.createElement(Component, fallbackProps);
+      return React.isValidElement(RenderComponent)
+        ? React.cloneElement(RenderComponent, fallbackProps)
+        : React.createElement(RenderComponent, fallbackProps);
     }
     return React.createElement(TargetRenderer, {
-      Component,
+      Component: RenderComponent,
       forwardedRef,
       metadata,
       targetMarker,

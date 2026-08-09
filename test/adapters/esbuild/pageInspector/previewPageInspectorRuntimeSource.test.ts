@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import * as React from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToReadableStream, renderToStaticMarkup } from 'react-dom/server';
 import { createPreviewEntry } from '../../../../src/adapters/esbuild/createPreviewEntry';
 import {
   createPreviewInspectorFacadeRuntimeSource,
@@ -218,7 +218,37 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('const targetMarker = {}');
     expect(source).toContain('targetMarker,');
     expect(source).toContain('React.forwardRef');
-    expect(source).toContain('React.cloneElement(Component, fallbackProps)');
+    expect(source).toContain('React.cloneElement(RenderComponent, fallbackProps)');
+    expect(source).toContain('function adaptPreviewInspectorAsyncTarget(Component, metadata)');
+    expect(source).toContain("if (record.status === 'pending') throw record.promise");
+  });
+
+  /** Resolves one async page body once even when React retries its synchronous facade. */
+  it('adapts a selected async page to one stable Suspense record', async () => {
+    const facade = await importPreviewInspectorFacade();
+    let invocationCount = 0;
+    const AsyncPage = async ({ name }: { readonly name: string }): Promise<React.ReactNode> => {
+      invocationCount += 1;
+      await Promise.resolve();
+      return React.createElement('main', undefined, `async-page:${name}`);
+    };
+    const wrapAsyncTarget = facade.wrapTarget as unknown as (
+      component: typeof AsyncPage,
+      metadata: { readonly exportName: string },
+    ) => React.ElementType;
+    try {
+      const WrappedAsyncPage = wrapAsyncTarget(AsyncPage, { exportName: 'default' });
+      const stream = await renderToReadableStream(
+        React.createElement(WrappedAsyncPage, { name: 'dashboard' }),
+      );
+      await stream.allReady;
+      const html = await new Response(stream).text();
+
+      expect(html).toBe('<main>async-page:dashboard</main>');
+      expect(invocationCount).toBe(1);
+    } finally {
+      await rm(facade.fixtureDirectory, { force: true, recursive: true });
+    }
   });
 
   /** Prevents copied memo/forwardRef/lazy protocol fields from bypassing the inspector delegate. */

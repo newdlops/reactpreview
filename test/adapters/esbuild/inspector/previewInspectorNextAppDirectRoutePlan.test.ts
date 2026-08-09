@@ -153,4 +153,46 @@ describe('createPreviewInspectorNextAppDirectRoutePlan', () => {
     expect(plan?.dependencyPaths).not.toContain(nestedPagePath);
     expect(plan?.dependencyPaths).not.toContain(siblingPagePath);
   });
+
+  /** Lets a selected layout refine its dynamic descendant from one reached package-local import. */
+  it('refines a direct layout descendant outside the route-only inventory', async () => {
+    const rootLayoutPath = '/workspace/app/layout.tsx';
+    const selectedLayoutPath = '/workspace/app/(view)/preview/layout.tsx';
+    const pagePath = '/workspace/app/(view)/preview/typeset/[name]/page.tsx';
+    const fixturePath = '/workspace/app/(app)/(typeset)/lib/fixtures/index.ts';
+    const fixture = createFixture({
+      [rootLayoutPath]:
+        'export default function RootLayout({ children }) { return <body>{children}</body>; }',
+      [selectedLayoutPath]:
+        'export default function PreviewLayout({ children }) { return <section>{children}</section>; }',
+      [pagePath]: [
+        `import { AVAILABLE_CONTENT_OPTIONS } from '../../../../(app)/(typeset)/lib/fixtures/index';`,
+        'export function generateStaticParams() {',
+        '  return AVAILABLE_CONTENT_OPTIONS.map((option) => ({ name: option.value }));',
+        '}',
+        'export default function Page() { return <main />; }',
+      ].join('\n'),
+      [fixturePath]: [
+        `const CONTENT_OPTIONS = [{ value: 'docs' }, { value: 'chat' }] as const;`,
+        `const DEV_CONTENT_OPTIONS = [] as const;`,
+        'export const AVAILABLE_CONTENT_OPTIONS =',
+        "  process.env.NODE_ENV === 'development'",
+        '    ? [...CONTENT_OPTIONS, ...DEV_CONTENT_OPTIONS]',
+        '    : CONTENT_OPTIONS;',
+      ].join('\n'),
+    });
+
+    const plan = await createPreviewInspectorNextAppDirectRoutePlan({
+      documentPath: selectedLayoutPath,
+      ...fixture,
+      sourcePaths: [rootLayoutPath, selectedLayoutPath, pagePath],
+      staticParameterSourceBoundary: '/workspace',
+    });
+
+    expect(plan?.pageCandidates[0]?.routeLocation).toMatchObject({
+      params: { name: 'docs' },
+      pathname: '/preview/typeset/docs',
+    });
+    expect(plan?.dependencyPaths).toContain(fixturePath);
+  });
 });

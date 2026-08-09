@@ -1,5 +1,5 @@
 /**
- * Infers safe values for dynamic Next.js Pages Router segments from authored static records.
+ * Infers safe values for dynamic Next.js route segments from authored static records.
  *
  * Filesystem routes such as `[hotelName]` do not contain a usable runtime value. Using the
  * parameter name itself is deterministic, but it fails when application code immediately indexes
@@ -37,6 +37,26 @@ export interface RefinePreviewInspectorNextPagesShellOptions {
   readonly staticParameterSourceBoundary?: string;
 }
 
+/** Framework-neutral inputs for finite-record route parameter evidence. */
+export interface CollectPreviewInspectorStaticRecordParameterValuesOptions {
+  /** Already proven values used to resolve a later nested registry lookup. */
+  readonly initialValues?: Readonly<Record<string, string | readonly string[]>>;
+  readonly pagePath: string;
+  readonly pattern: string;
+  readonly readSource: ReadPreviewInspectorSource;
+  readonly resolveModule?: ResolvePreviewRenderGraphModule;
+  readonly signal?: AbortSignal;
+  readonly sourcePaths: readonly string[];
+  /** Optional trusted root for exact reached imports absent from a fast filesystem inventory. */
+  readonly staticParameterSourceBoundary?: string;
+}
+
+/** Proven route values plus every source that must invalidate that evidence. */
+export interface PreviewInspectorStaticRecordParameterValues {
+  readonly dependencyPaths: readonly string[];
+  readonly values: Readonly<Record<string, string>>;
+}
+
 /** Refined shell plus the static evidence files that must participate in hot reload. */
 export interface RefinedPreviewInspectorNextPagesShell {
   readonly dependencyPaths: readonly string[];
@@ -66,9 +86,10 @@ export function createPreviewInspectorNextPagesShellRefiner(
   });
 }
 
-interface ImportBinding {
+interface RecordReference {
   readonly exportName: string;
   readonly moduleSpecifier?: string;
+  readonly propertyPath: readonly string[];
 }
 
 interface RecordLookup {
@@ -106,28 +127,64 @@ export async function refinePreviewInspectorNextPagesShell(
   if (options.shell.routeLocation.evidenceKind !== 'next-pages-filesystem') {
     return Object.freeze({ dependencyPaths: Object.freeze([]), shell: options.shell });
   }
-  const parameterNames = collectDynamicParameterNames(options.shell.routeLocation.pattern);
-  if (parameterNames.length === 0) {
+  const evidence = await collectPreviewInspectorStaticRecordParameterValues({
+    pagePath: options.shell.routeLocation.sourcePath,
+    pattern: options.shell.routeLocation.pattern,
+    readSource: options.readSource,
+    ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    sourcePaths: options.sourcePaths,
+    ...(options.staticParameterSourceBoundary === undefined
+      ? {}
+      : { staticParameterSourceBoundary: options.staticParameterSourceBoundary }),
+  });
+  if (Object.keys(evidence.values).length === 0) {
     return Object.freeze({ dependencyPaths: Object.freeze([]), shell: options.shell });
+  }
+  const refinedShell = collectPreviewInspectorNextPagesShell({
+    dynamicParameterValues: evidence.values,
+    exportName: 'default',
+    pagePath: options.shell.routeLocation.sourcePath,
+    sourcePaths: options.sourcePaths,
+  });
+  return Object.freeze({
+    dependencyPaths: evidence.dependencyPaths,
+    shell: refinedShell ?? options.shell,
+  });
+}
+
+/** Collects finite record keys without evaluating the page or any imported project module. */
+export async function collectPreviewInspectorStaticRecordParameterValues(
+  options: CollectPreviewInspectorStaticRecordParameterValuesOptions,
+): Promise<PreviewInspectorStaticRecordParameterValues> {
+  const parameterNames = collectDynamicParameterNames(options.pattern);
+  if (parameterNames.length === 0) {
+    return Object.freeze({ dependencyPaths: Object.freeze([]), values: Object.freeze({}) });
   }
   const inventory = new Set(options.sourcePaths.map((sourcePath) => path.normalize(sourcePath)));
   const resolveModule =
     options.resolveModule ?? createLexicalInspectorModuleResolver(options.sourcePaths);
+  const sourceBoundary =
+    options.staticParameterSourceBoundary === undefined
+      ? undefined
+      : path.resolve(options.staticParameterSourceBoundary);
   const traversed = await traversePageDependencies({
     inventory,
-    pagePath: options.shell.routeLocation.sourcePath,
+    pagePath: options.pagePath,
     readSource: options.readSource,
     resolveModule,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-    ...(options.staticParameterSourceBoundary === undefined
-      ? {}
-      : { sourceBoundary: path.resolve(options.staticParameterSourceBoundary) }),
+    ...(sourceBoundary === undefined ? {} : { sourceBoundary }),
   });
   const sourceByPath = new Map(traversed.map((source) => [source.sourcePath, source]));
   const valueByParameter: Record<string, string> = {};
+  for (const [name, value] of Object.entries(options.initialValues ?? {})) {
+    if (typeof value === 'string') valueByParameter[name] = value;
+  }
   const dependencies = new Set<string>();
 
   for (const parameterName of parameterNames) {
+    if (valueByParameter[parameterName] !== undefined) continue;
     const candidates: ParameterValueCandidate[] = [];
     for (const source of traversed) {
       const lookups = collectRecordLookups(source.sourceFile, parameterName);
@@ -139,9 +196,8 @@ export async function refinePreviewInspectorNextPagesShell(
           resolveModule,
           source,
           sourceByPath,
-          ...(options.staticParameterSourceBoundary === undefined
-            ? {}
-            : { sourceBoundary: path.resolve(options.staticParameterSourceBoundary) }),
+          parameterValues: valueByParameter,
+          ...(sourceBoundary === undefined ? {} : { sourceBoundary }),
         });
         const value = record.keys[0];
         if (value === undefined) continue;
@@ -163,18 +219,9 @@ export async function refinePreviewInspectorNextPagesShell(
     for (const dependencyPath of selected.dependencyPaths) dependencies.add(dependencyPath);
   }
 
-  if (Object.keys(valueByParameter).length === 0) {
-    return Object.freeze({ dependencyPaths: Object.freeze([]), shell: options.shell });
-  }
-  const refinedShell = collectPreviewInspectorNextPagesShell({
-    dynamicParameterValues: valueByParameter,
-    exportName: 'default',
-    pagePath: options.shell.routeLocation.sourcePath,
-    sourcePaths: options.sourcePaths,
-  });
   return Object.freeze({
     dependencyPaths: Object.freeze([...dependencies].sort()),
-    shell: refinedShell ?? options.shell,
+    values: Object.freeze(valueByParameter),
   });
 }
 
@@ -300,18 +347,27 @@ function expressionContainsQueryIdentity(expression: ts.Expression): boolean {
 async function readStaticRecordKeys(options: {
   readonly expression: ts.Expression;
   readonly inventory: ReadonlySet<string>;
+  readonly parameterValues: Readonly<Record<string, string>>;
   readonly readSource: ReadPreviewInspectorSource;
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly source: TraversedSource;
   readonly sourceByPath: Map<string, TraversedSource>;
   readonly sourceBoundary?: string;
 }): Promise<{ readonly dependencyPaths: readonly string[]; readonly keys: readonly string[] }> {
-  const reference = readRecordReference(options.expression, options.source.sourceFile);
+  const reference = readRecordReference(
+    options.expression,
+    options.source.sourceFile,
+    options.parameterValues,
+  );
   if (reference === undefined) return { dependencyPaths: [], keys: [] };
   if (reference.moduleSpecifier === undefined) {
     return {
       dependencyPaths: [options.source.sourcePath],
-      keys: readNamedObjectKeys(options.source.sourceFile, reference.exportName),
+      keys: readNamedObjectKeys(
+        options.source.sourceFile,
+        reference.exportName,
+        reference.propertyPath,
+      ),
     };
   }
   const resolved = options.resolveModule(reference.moduleSpecifier, options.source.sourcePath);
@@ -334,33 +390,30 @@ async function readStaticRecordKeys(options: {
   }
   return {
     dependencyPaths: [normalized],
-    keys: readNamedObjectKeys(target.sourceFile, reference.exportName),
+    keys: readNamedObjectKeys(target.sourceFile, reference.exportName, reference.propertyPath),
   };
 }
 
-/** Maps a record receiver to either its local declaration or exact imported export. */
+/** Maps a possibly nested record receiver to its local declaration or exact imported export. */
 function readRecordReference(
   expression: ts.Expression,
   sourceFile: ts.SourceFile,
-): ImportBinding | undefined {
-  const current = unwrapExpression(expression);
-  let localName: string;
-  let namespaceProperty: string | undefined;
-  if (ts.isIdentifier(current)) {
-    localName = current.text;
-  } else if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)) {
-    localName = current.expression.text;
-    namespaceProperty = current.name.text;
-  } else {
-    return undefined;
-  }
+  parameterValues: Readonly<Record<string, string>>,
+): RecordReference | undefined {
+  const access = readRecordAccess(expression, parameterValues);
+  if (access === undefined) return undefined;
+  const { localName } = access;
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
       continue;
     }
     const clause = statement.importClause;
-    if (clause?.name?.text === localName && namespaceProperty === undefined) {
-      return { exportName: 'default', moduleSpecifier: statement.moduleSpecifier.text };
+    if (clause?.name?.text === localName) {
+      return {
+        exportName: 'default',
+        moduleSpecifier: statement.moduleSpecifier.text,
+        propertyPath: access.propertyPath,
+      };
     }
     const bindings = clause?.namedBindings;
     if (
@@ -368,39 +421,106 @@ function readRecordReference(
       ts.isNamespaceImport(bindings) &&
       bindings.name.text === localName
     ) {
-      return namespaceProperty === undefined
+      const [exportName, ...propertyPath] = access.propertyPath;
+      return exportName === undefined
         ? undefined
-        : { exportName: namespaceProperty, moduleSpecifier: statement.moduleSpecifier.text };
+        : { exportName, moduleSpecifier: statement.moduleSpecifier.text, propertyPath };
     }
-    if (bindings !== undefined && ts.isNamedImports(bindings) && namespaceProperty === undefined) {
+    if (bindings !== undefined && ts.isNamedImports(bindings)) {
       for (const element of bindings.elements) {
         if (element.name.text !== localName) continue;
         return {
           exportName: element.propertyName?.text ?? element.name.text,
           moduleSpecifier: statement.moduleSpecifier.text,
+          propertyPath: access.propertyPath,
         };
       }
     }
   }
-  return namespaceProperty === undefined ? { exportName: localName } : undefined;
+  return { exportName: localName, propertyPath: access.propertyPath };
 }
 
-/** Extracts safe direct keys from a named variable or default object export. */
-function readNamedObjectKeys(sourceFile: ts.SourceFile, exportName: string): readonly string[] {
+/** Resolves a root identifier plus literal or previously proven nested record keys. */
+function readRecordAccess(
+  expression: ts.Expression,
+  parameterValues: Readonly<Record<string, string>>,
+): { readonly localName: string; readonly propertyPath: readonly string[] } | undefined {
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) {
+    return { localName: current.text, propertyPath: Object.freeze([]) };
+  }
+  const owner =
+    ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)
+      ? readRecordAccess(current.expression, parameterValues)
+      : undefined;
+  if (owner === undefined) return undefined;
+  const propertyName = ts.isPropertyAccessExpression(current)
+    ? current.name.text
+    : ts.isElementAccessExpression(current)
+      ? readRecordAccessProperty(current.argumentExpression, parameterValues)
+      : undefined;
+  return propertyName === undefined || !isSafeRouteValue(propertyName)
+    ? undefined
+    : {
+        localName: owner.localName,
+        propertyPath: Object.freeze([...owner.propertyPath, propertyName]),
+      };
+}
+
+/** Reads a literal selector or a route key already proven by an outer record. */
+function readRecordAccessProperty(
+  expression: ts.Expression,
+  parameterValues: Readonly<Record<string, string>>,
+): string | undefined {
+  const current = unwrapExpression(expression);
+  if (ts.isStringLiteralLike(current) || ts.isNumericLiteral(current)) return current.text;
+  return ts.isIdentifier(current) ? parameterValues[current.text] : undefined;
+}
+
+/** Extracts safe keys below a named variable/default export and an exact nested property path. */
+function readNamedObjectKeys(
+  sourceFile: ts.SourceFile,
+  exportName: string,
+  propertyPath: readonly string[],
+): readonly string[] {
   for (const statement of sourceFile.statements) {
     if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name) || declaration.name.text !== exportName) continue;
-        const keys = readObjectLiteralKeys(declaration.initializer);
+        const keys = readObjectLiteralKeys(
+          readObjectPropertyPath(declaration.initializer, propertyPath),
+        );
         if (keys.length > 0) return keys;
       }
     }
     if (exportName === 'default' && ts.isExportAssignment(statement)) {
-      const keys = readObjectLiteralKeys(statement.expression);
+      const keys = readObjectLiteralKeys(
+        readObjectPropertyPath(statement.expression, propertyPath),
+      );
       if (keys.length > 0) return keys;
     }
   }
   return Object.freeze([]);
+}
+
+/** Walks only directly authored object-literal properties; getters, spreads, and calls fail closed. */
+function readObjectPropertyPath(
+  expression: ts.Expression | undefined,
+  propertyPath: readonly string[],
+): ts.Expression | undefined {
+  let current = expression;
+  for (const propertyName of propertyPath) {
+    if (current === undefined) return undefined;
+    const object = unwrapExpression(current);
+    if (!ts.isObjectLiteralExpression(object)) return undefined;
+    const property = object.properties.find(
+      (candidate): candidate is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(candidate) &&
+        readStaticPropertyName(candidate.name) === propertyName,
+    );
+    current = property?.initializer;
+  }
+  return current;
 }
 
 /** Reads only literal property names; spreads, methods, and computed runtime keys are ignored. */

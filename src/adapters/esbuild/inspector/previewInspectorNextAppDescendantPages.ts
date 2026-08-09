@@ -42,6 +42,8 @@ export interface CollectPreviewInspectorNextAppDescendantPagesOptions {
   readonly resolveModule?: ResolvePreviewRenderGraphModule;
   /** Package-local inventory already collected by the compiler; no new filesystem walk occurs. */
   readonly sourcePaths: readonly string[];
+  /** Optional package root that admits one exact reached parameter import outside the inventory. */
+  readonly staticParameterSourceBoundary?: string;
 }
 
 /** One proven ordinary page and the complete layout shell that will mount it. */
@@ -149,6 +151,9 @@ export async function collectPreviewInspectorNextAppDescendantPages(
           readSource,
           ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
           sourcePaths: options.sourcePaths,
+          ...(options.staticParameterSourceBoundary === undefined
+            ? {}
+            : { staticParameterSourceBoundary: options.staticParameterSourceBoundary }),
         });
         const shell = refinement?.shell ?? initialShell;
         const dependencies = new Set(options.base.dependencyPaths);

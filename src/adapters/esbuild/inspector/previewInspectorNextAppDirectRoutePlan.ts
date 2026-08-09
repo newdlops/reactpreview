@@ -112,6 +112,9 @@ export async function createPreviewInspectorNextAppDirectRoutePlan(
       readSource: options.readSource,
       resolveModule: options.resolveModule,
       sourcePaths: options.sourcePaths,
+      ...(options.staticParameterSourceBoundary === undefined
+        ? {}
+        : { staticParameterSourceBoundary: options.staticParameterSourceBoundary }),
     });
     candidate = descendants[0];
   }

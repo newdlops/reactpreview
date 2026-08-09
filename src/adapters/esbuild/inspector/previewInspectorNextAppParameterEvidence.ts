@@ -1,5 +1,5 @@
 /**
- * Refines Next App Router dynamic segments from local `generateStaticParams` evidence.
+ * Refines Next App Router dynamic segments from static parameter or registry evidence.
  *
  * The browser preview cannot ask Next's server to enumerate a route. This analyzer recognizes
  * literal return objects and bounded literal arrays used by `map`, `flatMap`, or synchronous
@@ -13,6 +13,7 @@ import { throwIfPreviewBuildCancelled } from '../../../domain/previewBuildExecut
 import type { ResolvePreviewRenderGraphModule } from '../renderGraph';
 import type { ReadPreviewInspectorSource } from './previewInspectorAncestorTypes';
 import { createLexicalInspectorModuleResolver } from './previewInspectorLexicalResolver';
+import { mergeNextAppRecordParams } from './previewInspectorNextAppRecordParameterEvidence';
 import {
   collectPreviewInspectorNextAppLayoutChain,
   type CollectPreviewInspectorNextAppLayoutChainOptions,
@@ -162,6 +163,7 @@ export async function collectRefinedPreviewInspectorNextAppLayoutChain(
     context.dependencies.add(sourcePath);
     Object.assign(values, sourceValues);
   }
+  await mergeNextAppRecordParams(options, initial, context.dependencies, values);
   if (Object.keys(values).length === 0) {
     return Object.freeze({ dependencyPaths: Object.freeze([]), shell: initial });
   }

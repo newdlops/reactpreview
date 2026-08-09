@@ -3,6 +3,53 @@ import { describe, expect, it } from 'vitest';
 import { collectRefinedPreviewInspectorNextAppLayoutChain } from '../../../../src/adapters/esbuild/inspector/previewInspectorNextAppParameterEvidence';
 
 describe('collectRefinedPreviewInspectorNextAppLayoutChain', () => {
+  /** Uses one correlated nested registry tuple when a dynamic page omits generateStaticParams. */
+  it('refines nested static registry lookups without executing an App Router page', async () => {
+    const pagePath = '/workspace/app/(view)/examples/[base]/[name]/page.tsx';
+    const indexPath = '/workspace/examples/__index__.tsx';
+    const sources = new Map<string, string>([
+      [
+        pagePath,
+        [
+          `import { ExamplesIndex } from '@/examples/__index__';`,
+          'function getExample(base: string, name: string) {',
+          '  const item = ExamplesIndex[base]?.[name];',
+          '  return item ?? null;',
+          '}',
+          'export default async function Page({ params }) {',
+          '  const { base, name } = await params;',
+          '  return <main>{getExample(base, name)?.name}</main>;',
+          '}',
+        ].join('\n'),
+      ],
+      [
+        indexPath,
+        [
+          'export const ExamplesIndex = {',
+          "  base: { 'accordion-basic': { name: 'accordion-basic' } },",
+          "  radix: { 'button-basic': { name: 'button-basic' } },",
+          '} as const;',
+        ].join('\n'),
+      ],
+    ]);
+
+    const result = await collectRefinedPreviewInspectorNextAppLayoutChain({
+      exportName: 'default',
+      pagePath,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier) => (specifier === '@/examples/__index__' ? indexPath : undefined),
+      sourcePaths: [pagePath, '/workspace/app/layout.tsx'],
+      staticParameterSourceBoundary: '/workspace',
+    });
+
+    expect(result?.shell.routeLocation).toMatchObject({
+      params: { base: 'base', name: 'accordion-basic' },
+      pathname: '/examples/base/accordion-basic',
+      pattern: '/examples/[base]/[name]',
+    });
+    expect(result?.dependencyPaths).toEqual([indexPath, pagePath].sort());
+  });
+
   /** Combines local map values with a bounded collection reached through a project barrel. */
   it('refines mapped local and re-exported literal values as one coherent dynamic route', async () => {
     const pagePath = '/workspace/app/(view)/preview/[base]/[name]/page.tsx';

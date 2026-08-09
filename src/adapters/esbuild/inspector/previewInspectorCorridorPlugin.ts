@@ -39,6 +39,10 @@ import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthored
 import { createPreviewInspectorPackageDemandPathSet } from './previewInspectorPackageDemand';
 import { registerPreviewInspectorBundleFrontierGuard } from './previewInspectorBundleFrontierGuard';
 import {
+  collectPreviewInspectorRouteParameterGroups,
+  matchesPreviewInspectorRouteParameterBranch,
+} from './previewInspectorRouteParameterBranch';
+import {
   createPreviewInspectorVirtualPageComponentSource,
   type PreviewInspectorVirtualPageComponent,
 } from './previewInspectorVirtualPageComponentSource';
@@ -294,7 +298,7 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return undefined;
     }
-    const matchesRouteParameters = matchesPreviewRouteParameters(
+    const matchesRouteParameters = matchesPreviewInspectorRouteParameterBranch(
       arguments_.path,
       routeParameterGroups,
     );
@@ -1071,44 +1075,6 @@ function collectPreviewInspectorRouteComponentSourcePaths(
     ? recursivePathValue.filter((item: unknown): item is string => typeof item === 'string')
     : [];
   return [...new Set([routeLocation.componentSourcePath, ...recursivePaths])];
-}
-
-/**
- * Collects exact Next App Router parameter choices for every selectable page candidate.
- * Group boundaries matter: one deferred request must satisfy all values from one candidate, never
- * an accidental union assembled from unrelated routes.
- */
-function collectPreviewInspectorRouteParameterGroups(
-  plan: PreviewInspectorAncestorPlan,
-): readonly (readonly string[])[] {
-  const groups = plan.pageCandidates.flatMap((candidate) => {
-    const route = candidate.routeLocation;
-    if (route?.evidenceKind !== 'next-app-filesystem' || !('params' in route)) return [];
-    const values = Object.values(route.params).flatMap((value) =>
-      typeof value === 'string' ? [value] : [...value],
-    );
-    const normalizedValues = [...new Set(values.map(normalizeRouteParameterValue).filter(Boolean))];
-    return normalizedValues.length === 0 ? [] : [Object.freeze(normalizedValues)];
-  });
-  return Object.freeze(groups);
-}
-
-/** Keeps one literal lazy branch when its path contains every selected route parameter segment. */
-function matchesPreviewRouteParameters(
-  moduleSpecifier: string,
-  parameterGroups: readonly (readonly string[])[],
-): boolean {
-  if (parameterGroups.length === 0) return false;
-  const cleanSpecifier = moduleSpecifier.split(/[?#]/u, 1)[0] ?? moduleSpecifier;
-  const segments = new Set(
-    cleanSpecifier.split(/[\\/]/u).map(normalizeRouteParameterValue).filter(Boolean),
-  );
-  return parameterGroups.some((group) => group.every((value) => segments.has(value)));
-}
-
-/** Normalizes path-safe evidence without decoding arbitrary URL or filesystem syntax. */
-function normalizeRouteParameterValue(value: string): string {
-  return value.trim().replace(/^['"]|['"]$/gu, '');
 }
 
 /** Checks trusted-root containment while rejecting sibling-prefix lookalikes. */

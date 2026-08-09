@@ -17,7 +17,10 @@ import {
 import type { PreviewImplicitGlobalEvidenceInventory } from './previewImplicitGlobalEvidence';
 import type { PreviewImplicitGlobalEvidenceCache } from './previewImplicitGlobalEvidenceCache';
 import { preparePreviewImplicitGlobalEvidence } from './previewFastImplicitGlobalEvidence';
-import { createImplicitGlobalEvidenceCacheKey } from './previewCompilerDefaults';
+import {
+  createImplicitGlobalEvidenceCacheKey,
+  MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES,
+} from './previewCompilerDefaults';
 import {
   preparePreviewInspectorBundleExecution,
   type PreparedPreviewInspectorBundleExecution,
@@ -32,6 +35,7 @@ import {
   type PreviewRouteExecutionTelemetryContext,
 } from './preparePreviewRouteExecutionPlanner';
 import {
+  completePreviewStyleContextTailwindCandidates,
   preparePreviewStyleContext,
   type PreparedPreviewStyleContext,
   type ReadPreviewStyleContextSource,
@@ -182,7 +186,10 @@ export async function preparePreviewRouteExecutionFinalFrontier(
   );
   const readFrontierSource = async (sourcePath: string): Promise<string | undefined> =>
     snapshotSourceByPath.get(path.normalize(sourcePath)) ??
-    options.readProjectSource({ maximumBytes: 1024 * 1024, sourcePath });
+    options.readProjectSource({
+      maximumBytes: MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES,
+      sourcePath,
+    });
   const plannedRouteExecution = shouldPrepareArtifact
     ? await preparePreviewRouteExecutionPlanner({
         contextDiscoveryTruncated: options.contextDiscoveryTruncated,
@@ -226,6 +233,16 @@ export async function preparePreviewRouteExecutionFinalFrontier(
           styleSnapshotCount: styleContext.tailwindCandidateSnapshots.length,
           workspaceRoot: options.workspaceRoot,
         }));
+  const completedStyleContext =
+    preparedBundleExecution === undefined
+      ? styleContext
+      : await completePreviewStyleContextTailwindCandidates({
+          context: styleContext,
+          readSource: async (readOptions) =>
+            snapshotSourceByPath.get(path.normalize(readOptions.sourcePath)) ??
+            options.readProjectSource(readOptions),
+          sourcePaths: preparedBundleExecution.prepared.frontier.authenticSourcePaths,
+        });
   return Object.freeze({
     activeInspectorDependencyPaths,
     ...(activeInspectorPlan === undefined ? {} : { activeInspectorPlan }),
@@ -236,7 +253,7 @@ export async function preparePreviewRouteExecutionFinalFrontier(
     ...(preparedBundleExecution === undefined ? {} : { preparedBundleExecution }),
     ...(primaryRenderPath === undefined ? {} : { primaryRenderPath }),
     runtimeCompanionSourcePaths,
-    styleContext,
+    styleContext: completedStyleContext,
   });
 }
 

@@ -1,4 +1,6 @@
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { createPreviewAutomaticPropsRuntimeSource } from '../../../../src/adapters/esbuild/previewAutomaticPropsRuntimeSource';
 import { createPreviewInspectorExecutionRootModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorExecutionRootModuleContract';
 import { createPreviewInspectorPageExecutionSource } from '../../../../src/adapters/esbuild/inspector/previewInspectorPageExecutionSource';
 import { createPreviewInspectorTargetModuleContract } from '../../../../src/adapters/esbuild/inspector/previewInspectorTargetModuleContract';
@@ -222,6 +224,101 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     expect(source).toContain('"Component": () => React.createElement(Surface1, null)');
     expect(source).toContain('"pageProps": {}');
     expect(source).not.toContain('route registry');
+  });
+
+  it('passes promise-compatible route records to a selected Next App page surface', async () => {
+    const pagePath = '/workspace/app/(view)/preview/[base]/[name]/page.tsx';
+    const candidate = {
+      browserCandidate: {
+        id: 'next-app-page',
+        root: { exportName: 'default', sourcePath: pagePath },
+      },
+      compositionEdges: [
+        {
+          childSurfaceId: 'page',
+          mode: 'next-layout-slot',
+          parentSurfaceId: 'layout',
+          placementIndex: 0,
+        },
+      ],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'layout',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/app/layout.tsx',
+          strategy: 'framework-page-surface',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: pagePath,
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      executionRootSurfaceId: 'layout',
+      routeRecipe: {
+        kind: 'next-app',
+        loaderPolicy: 'never-execute',
+        mounts: [],
+        params: { base: 'radix', name: 'preview' },
+        pattern: '/preview/[base]/[name]',
+        pathname: '/preview/radix/preview',
+        rootOwnsRouter: false,
+        searchParams: { theme: 'dark' },
+      },
+      runtimeTargetSurfaceId: 'page',
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
+      target: { exportName: 'default', sourcePath: pagePath },
+    });
+
+    expect(source).toContain('function PreviewInspectorCreateNextAppCompatRecord(source)');
+    expect(source).toContain('const PreviewInspectorNextAppPageProps = Object.freeze({');
+    expect(source).toContain(
+      'params: PreviewInspectorCreateNextAppCompatRecord({"base":"radix","name":"preview"})',
+    );
+    expect(source).toContain(
+      'searchParams: PreviewInspectorCreateNextAppCompatRecord({"theme":"dark"})',
+    );
+    expect(source).toContain('React.createElement(Surface1, PreviewInspectorNextAppPageProps)');
+
+    const compatibilityRuntimeStart = source.indexOf(
+      'const PreviewInspectorNextAppCompatRecordPrototype',
+    );
+    const compatibilityRuntimeEnd = source.indexOf(
+      'function PreviewInspectorSelectedRouteSurfacePassthrough',
+      compatibilityRuntimeStart,
+    );
+    const context: { result?: Promise<Record<string, unknown>> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        source.slice(compatibilityRuntimeStart, compatibilityRuntimeEnd),
+        "const shape = { kind: 'object', properties: { params: { kind: 'object', properties: { base: { kind: 'string' }, name: { kind: 'string' }, then: { kind: 'function' } } } } };",
+        'const automatic = createPreviewTargetPropsFromLayers(shape, PreviewInspectorNextAppPageProps);',
+        'const effective = createPreviewPropsFromLayers(undefined, automatic, {}, {});',
+        'globalThis.result = (async () => {',
+        '  const awaited = await effective.params;',
+        '  return { awaitedBase: awaited?.base, directBase: effective.params.base, thenType: typeof effective.params.then };',
+        '})();',
+      ].join('\n'),
+      context,
+    );
+
+    await expect(context.result).resolves.toEqual({
+      awaitedBase: 'radix',
+      directBase: 'radix',
+      thenType: 'function',
+    });
   });
 
   it('creates only the selected React Router v6 branch and no application registry', () => {

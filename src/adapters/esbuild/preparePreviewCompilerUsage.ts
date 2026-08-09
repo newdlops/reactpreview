@@ -7,7 +7,10 @@
 import path from 'node:path';
 import type { PreviewBuildRequest } from '../../domain/preview';
 import type { PreviewCompilerDiscoveryScope } from './previewPreparationPolicy';
-import { EMPTY_TARGET_USAGE_PROPS } from './previewCompilerDefaults';
+import {
+  EMPTY_TARGET_USAGE_PROPS,
+  MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES,
+} from './previewCompilerDefaults';
 import type { PreviewCompilerTargetSelection } from './previewImperativeEntryTarget';
 import {
   createPreviewInspectorModuleConsumerPagePlan,
@@ -39,7 +42,6 @@ import { collectPreviewNextAppDirectRouteInventory } from './previewNextAppDirec
 import { shouldPreferPreviewModulePageContext } from './previewTargetExports';
 import { shouldEscalatePreviewAncestorSearch } from './previewWorkspaceAncestorPolicy';
 
-const MAXIMUM_CONTEXT_SOURCE_BYTES = 4 * 1024 * 1024;
 const NEXT_APP_DIRECT_ROUTE_MODULE_PATTERN = /^(?:layout|page|template)\.[cm]?[jt]sx?$/u;
 const NEXT_APP_ROUTE_STATE_MODULE_PATTERN = /^(?:error|loading|not-found)\.[cm]?[jt]sx?$/u;
 
@@ -375,9 +377,7 @@ export async function preparePreviewCompilerUsage(
         readSource,
         resolveModule: options.resolver.resolve,
         ...(signal === undefined ? {} : { signal }),
-        ...(fastGenericExportName === undefined
-          ? {}
-          : { targetExportName: fastGenericExportName }),
+        ...(fastGenericExportName === undefined ? {} : { targetExportName: fastGenericExportName }),
         workspaceRoot: options.workspaceRoot,
       });
       return Object.freeze({ corridor, packageSourcePaths });
@@ -612,7 +612,7 @@ function createContextSourceReader(
     const snapshotText = snapshots.get(path.normalize(sourcePath));
     if (snapshotText !== undefined) return snapshotText;
     return options.cache.readSourceText({
-      maximumBytes: MAXIMUM_CONTEXT_SOURCE_BYTES,
+      maximumBytes: MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES,
       sourcePath,
     });
   };

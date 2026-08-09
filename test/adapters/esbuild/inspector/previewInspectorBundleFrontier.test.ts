@@ -285,6 +285,103 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     expect(Object.isFrozen(result.frontier)).toBe(true);
   });
 
+  /** Keeps the one generated registry branch named by the selected Next route parameters. */
+  it('admits a parameter-selected lazy component from a broad support registry', async () => {
+    const workspaceRoot = '/workspace';
+    const pagePath = '/workspace/page.tsx';
+    const registryPath = '/workspace/registry.tsx';
+    const selectedPath = '/workspace/registry/new-york-v4/blocks/dashboard-01/page.tsx';
+    const selectedHelperPath = '/workspace/registry/new-york-v4/blocks/dashboard-01/Dashboard.tsx';
+    const siblingPaths = Array.from(
+      { length: 9 },
+      (_, index) =>
+        `/workspace/registry/new-york-v4/blocks/dashboard-${String(index + 2).padStart(2, '0')}/page.tsx`,
+    );
+    const registryEntries = [selectedPath, ...siblingPaths].map((sourcePath) => {
+      const name = path.basename(path.dirname(sourcePath));
+      return `${JSON.stringify(name)}: React.lazy(() => import(${JSON.stringify(`./registry/new-york-v4/blocks/${name}/page`)}))`;
+    });
+    const sources = new Map<string, string>([
+      [
+        pagePath,
+        "import { getRegistryComponent } from './registry'; export default function Page(){ const Component = getRegistryComponent(); return <Component />; }",
+      ],
+      [
+        registryPath,
+        `import * as React from 'react'; const Components = {${registryEntries.join(',')}}; export function getRegistryComponent(){ return Components['dashboard-01']; }`,
+      ],
+      [
+        selectedPath,
+        "import { Dashboard } from './Dashboard'; export default function Page(){ return <Dashboard />; }",
+      ],
+      [selectedHelperPath, 'export function Dashboard(){ return <main>selected</main>; }'],
+      ...siblingPaths.map(
+        (sourcePath, index) =>
+          [
+            sourcePath,
+            `export default function Sibling(){ return <main>${index.toString()}</main>; }`,
+          ] as const,
+      ),
+    ]);
+    const surface = {
+      bypassedWrapperNames: [],
+      exportName: 'default',
+      id: 'page',
+      omittedTopLevelEffectCount: 0,
+      sourcePath: pagePath,
+      strategy: 'authentic-module-export',
+      watchSourcePaths: [pagePath],
+    } as const;
+    const plan = {
+      edges: [],
+      pageCandidates: [],
+      root: { exportName: 'default', sourcePath: pagePath },
+      target: { exportName: 'default', sourcePath: pagePath },
+    } as unknown as PreviewInspectorAncestorPlan;
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: {
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [],
+        criticalSurfaces: [surface],
+        evidenceSourcePaths: [],
+        executionRootSurfaceId: surface.id,
+        fidelity: 'page-authentic',
+        id: 'selected-dashboard',
+        optionalSurfaces: [],
+        routeRecipe: {
+          kind: 'next-app',
+          params: { name: 'dashboard-01', style: 'new-york-v4' },
+        },
+        runtimeTargetSurfaceId: surface.id,
+        watchSourcePaths: [pagePath],
+      } as never,
+      plan,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) => {
+        if (!specifier.startsWith('.')) return undefined;
+        const unresolved = path.resolve(path.dirname(importer), specifier);
+        return [unresolved, `${unresolved}.ts`, `${unresolved}.tsx`].find((candidate) =>
+          sources.has(candidate),
+        );
+      },
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticSourcePaths).toEqual(
+      expect.arrayContaining([pagePath, registryPath, selectedPath, selectedHelperPath]),
+    );
+    expect(
+      result.frontier.authenticSourcePaths.filter((sourcePath) =>
+        siblingPaths.includes(sourcePath),
+      ),
+    ).toEqual([]);
+  });
+
   it('admits every runtime star-export branch that esbuild may evaluate', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
@@ -650,13 +747,18 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     const targetPath = '/workspace/Target.tsx';
     const optionalPath = '/workspace/Optional.tsx';
     const helperPath = '/workspace/optional-helper.ts';
+    const dataPath = '/workspace/optional-data.ts';
     const sources = new Map<string, string>([
       [targetPath, 'export const Target = () => null;'],
       [
         optionalPath,
         "import { helper } from './optional-helper'; export default function Optional() { return helper; }",
       ],
-      [helperPath, 'export const helper = null;'],
+      [
+        helperPath,
+        "export const helper = null; export const loadData = () => import('./optional-data');",
+      ],
+      [dataPath, "export const Index = 'OPTIONAL_DYNAMIC_DATA';"],
     ]);
     const plan = {
       edges: [],
@@ -702,7 +804,11 @@ describe('preparePreviewInspectorBundleFrontier', () => {
       policy,
       readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
       resolveModule: (specifier, importer) =>
-        specifier === './optional-helper' && importer === optionalPath ? helperPath : undefined,
+        specifier === './optional-helper' && importer === optionalPath
+          ? helperPath
+          : specifier === './optional-data' && importer === helperPath
+            ? dataPath
+            : undefined,
       workspaceRoot,
     });
 
@@ -710,8 +816,9 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     expect(result.frontier.version).toBe(2);
     expect(result.frontier.sourceKinds?.[optionalPath]).toBe('optional-surface');
     expect(result.frontier.sourceKinds?.[helperPath]).toBe('optional-support');
+    expect(result.frontier.authenticSourcePaths).toContain(dataPath);
     expect(result.frontier.summary.optionalComponentCount).toBe(1);
-    expect(result.frontier.summary.supportModuleCount).toBe(1);
+    expect(result.frontier.summary.supportModuleCount).toBe(2);
   });
 
   it.each(['DirectorsMeetingAgendaNewIssueEditPage', 'ShareholdersMeetingAgendaNewIssueEditPage'])(

@@ -34,6 +34,7 @@ export function createPreviewInspectorPageExecutionSource(
   options: CreatePreviewInspectorPageExecutionSourceOptions,
 ): string {
   const surfaces = options.candidate.criticalSurfaces;
+  const routeRecipe = options.candidate.routeRecipe;
   const imports = surfaces.map((surface, index) =>
     createSurfaceImport(
       surface,
@@ -71,6 +72,26 @@ export function createPreviewInspectorPageExecutionSource(
   const selectedRouteSurfacePassthrough = 'PreviewInspectorSelectedRouteSurfacePassthrough';
   const selectedRouteSurfaceResolver = 'PreviewInspectorResolveSelectedRouteSurface';
   const contextualTargetFallback = 'PreviewInspectorContextualTargetFallback';
+  const nextAppPageProps = 'PreviewInspectorNextAppPageProps';
+  const nextAppPageRoot = options.candidate.browserCandidate.root;
+  const nextAppLayoutEdges = options.candidate.compositionEdges.filter(
+    (edge) => edge.mode === 'next-layout-slot',
+  );
+  const nextAppLayoutParentIds = new Set(nextAppLayoutEdges.map((edge) => edge.parentSurfaceId));
+  const nextAppLayoutLeafSurfaceId = nextAppLayoutEdges
+    .map((edge) => edge.childSurfaceId)
+    .find((surfaceId) => !nextAppLayoutParentIds.has(surfaceId));
+  const nextAppPageSurfaceId =
+    routeRecipe?.kind === 'next-app'
+      ? (nextAppLayoutLeafSurfaceId ??
+        surfaces.find(
+          (surface) =>
+            path.normalize(surface.sourcePath) === path.normalize(nextAppPageRoot.sourcePath) &&
+            surface.exportName === nextAppPageRoot.exportName,
+        )?.id ??
+        routeRecipe.mounts.at(-1)?.childSurfaceId)
+      : undefined;
+  const nextAppPagePropsSource = createNextAppPagePropsSource(routeRecipe, nextAppPageSurfaceId);
   const authoredContextualTargetEdge = options.candidate.compositionEdges.find(
     (edge) =>
       edge.mode === 'contains-authored-child' &&
@@ -133,7 +154,8 @@ export function createPreviewInspectorPageExecutionSource(
         edge.mode !== 'sibling-before' &&
         edge.mode !== 'sibling-after',
     );
-    let current = `React.createElement(${local}, null)`;
+    const properties = surfaceId === nextAppPageSurfaceId ? nextAppPageProps : 'null';
+    let current = `React.createElement(${local}, ${properties})`;
     if (
       surfaceId === options.candidate.runtimeTargetSurfaceId &&
       contextualTargetWrapperLocal !== undefined
@@ -150,7 +172,6 @@ export function createPreviewInspectorPageExecutionSource(
       : `React.createElement(React.Fragment, null, ${[...before, current, ...after].join(', ')})`;
   };
   const renderedRoot = render(compositionRoot.id, new Set());
-  const routeRecipe = options.candidate.routeRecipe;
   const detachedOverlayEdge =
     options.candidate.browserCandidate.detachedTargetPlacement === 'overlay-sibling'
       ? options.candidate.compositionEdges.find(
@@ -265,6 +286,7 @@ export function createPreviewInspectorPageExecutionSource(
     ...(routerRuntime?.imports ?? []),
     ...virtualPageSourceRegistrations,
     ...(routerRuntime?.declarations ?? []),
+    ...nextAppPagePropsSource,
     `function ${selectedRouteSurfacePassthrough}({ children }) {`,
     '  return children ?? null;',
     '}',
@@ -301,6 +323,39 @@ export function createPreviewInspectorPageExecutionSource(
     `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${contextualRouteElement});`,
     '}',
   ].join('\n');
+}
+
+function createNextAppPagePropsSource(
+  recipe: PreviewInspectorPageExecutionCandidate['routeRecipe'],
+  pageSurfaceId: string | undefined,
+): readonly string[] {
+  if (recipe?.kind !== 'next-app' || pageSurfaceId === undefined) return [];
+  return [
+    'const PreviewInspectorNextAppCompatRecordPrototype = Object.freeze({});',
+    'function PreviewInspectorCreateNextAppCompatRecord(source) {',
+    '  const value = Object.freeze({ ...source });',
+    '  const record = Object.assign(',
+    '    Object.create(PreviewInspectorNextAppCompatRecordPrototype),',
+    '    value,',
+    '  );',
+    '  Object.defineProperties(record, {',
+    "    status: { configurable: false, enumerable: false, value: 'fulfilled' },",
+    '    value: { configurable: false, enumerable: false, value },',
+    '    then: {',
+    '      configurable: false,',
+    '      enumerable: false,',
+    '      value(onFulfilled, onRejected) {',
+    '        return Promise.resolve(value).then(onFulfilled, onRejected);',
+    '      },',
+    '    },',
+    '  });',
+    '  return Object.freeze(record);',
+    '}',
+    'const PreviewInspectorNextAppPageProps = Object.freeze({',
+    `  params: PreviewInspectorCreateNextAppCompatRecord(${JSON.stringify(recipe.params)}),`,
+    `  searchParams: PreviewInspectorCreateNextAppCompatRecord(${JSON.stringify(recipe.searchParams)}),`,
+    '});',
+  ];
 }
 
 /** Finds a same-module overlay root that supplies Context to a detached Content/Portal target. */

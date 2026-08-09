@@ -34,6 +34,10 @@ import {
 } from './previewInspectorBundleFrontierFinalization';
 import { createPreviewInspectorStableMinPriorityQueue } from './previewInspectorStableMinPriorityQueue';
 import {
+  collectPreviewInspectorExecutionRouteParameterGroups,
+  matchesPreviewInspectorRouteParameterBranch,
+} from './previewInspectorRouteParameterBranch';
+import {
   collectPreviewInspectorBundleOptionalClosure,
   collectPreviewInspectorBundleSourceInventory,
   type PreviewInspectorBundleDynamicResolution,
@@ -132,6 +136,9 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       ? options.readSource(sourcePath)
       : diagnostics.measureRawSourceRead(() => options.readSource(sourcePath));
   const authenticInventorySourcePaths = collectAuthenticInventorySourcePaths(options);
+  const selectedRouteParameterGroups = collectPreviewInspectorExecutionRouteParameterGroups(
+    options.executionCandidate,
+  );
   const exactSeedPaths = new Set(
     collectExactSeedPaths(options.plan, options.executionCandidate).map((sourcePath) =>
       path.normalize(sourcePath),
@@ -398,10 +405,10 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         return createResolvedNodeFailure(normalizedSourcePath, representationKey, inventory);
       const runtimeHookProjections =
         slice === undefined
-            ? collectPreviewInspectorRuntimeHookProjectionInventory(
-                normalizedSourcePath,
-                inventorySource,
-              ).projectionsBySpecifier
+          ? collectPreviewInspectorRuntimeHookProjectionInventory(
+              normalizedSourcePath,
+              inventorySource,
+            ).projectionsBySpecifier
           : new Map<string, PreviewInspectorShallowProjection>();
       const staticRouteInventory =
         slice === undefined
@@ -588,8 +595,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         pageShellDynamicInventory !== undefined &&
         (!pageShellDynamicInventory.reliable ||
           pageShellDynamicInventory.truncated ||
-          pageShellDynamicInventory.specifiers.length >
-            MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS);
+          pageShellDynamicInventory.specifiers.length > MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS);
       const enqueueShallowTarget = (
         targetPath: string,
         moduleSpecifier: string,
@@ -806,12 +812,42 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     admittedKinds.set(item.sourcePath, item.kind);
     maximumDepth = Math.max(maximumDepth, item.depth);
     sourceBytes += node.byteLength;
-    for (const edge of node.edges) {
-      if (edge.kind !== 'dynamic-import' || options.executionCandidate === undefined) continue;
+    const dynamicImportEdges = node.edges.filter((edge) => edge.kind === 'dynamic-import');
+    const selectedDynamicEdgeIdentities =
+      options.executionCandidate === undefined
+        ? new Set<string>()
+        : new Set(
+            dynamicImportEdges
+              .filter((edge) => {
+                const resolution = resolveDynamicEdge(node, edge);
+                return (
+                  resolution.targetPath !== undefined &&
+                  (isSelectedDynamicVisualPath(
+                    options.plan,
+                    item.sourcePath,
+                    resolution.targetPath,
+                  ) ||
+                    matchesPreviewInspectorRouteParameterBranch(
+                      edge.moduleSpecifier,
+                      selectedRouteParameterGroups,
+                    ))
+                );
+              })
+              .map((edge) => createRuntimeEdgeIdentity(item.sourcePath, edge)),
+          );
+    const retainSmallSupportDynamicClosure =
+      options.executionCandidate !== undefined &&
+      selectedDynamicEdgeIdentities.size === 0 &&
+      (item.kind === 'support' || item.kind === 'optional-support') &&
+      new Set(dynamicImportEdges.map((edge) => edge.moduleSpecifier)).size <=
+        MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS;
+    for (const edge of dynamicImportEdges) {
+      if (options.executionCandidate === undefined) continue;
       const resolution = resolveDynamicEdge(node, edge);
       if (
         resolution.targetPath !== undefined &&
-        isSelectedDynamicVisualPath(options.plan, item.sourcePath, resolution.targetPath)
+        (selectedDynamicEdgeIdentities.has(createRuntimeEdgeIdentity(item.sourcePath, edge)) ||
+          retainSmallSupportDynamicClosure)
       ) {
         const edgeIdentity = createRuntimeEdgeIdentity(item.sourcePath, edge);
         if (!processedStaticEdges.has(edgeIdentity)) {

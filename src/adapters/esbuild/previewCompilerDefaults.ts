@@ -14,6 +14,13 @@ import type { PreviewGlobalPackageBridgePlan } from './globalPackageBridge/previ
 
 const MAX_PREVIEW_WATCH_DIRECTORIES = 128;
 
+/**
+ * Largest individual authored source admitted while proving and executing one selected route.
+ * Generated route registries can legitimately exceed the smaller fast-frontier soft budget; the
+ * same strict ceiling must therefore govern both route-context discovery and final execution.
+ */
+export const MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES = 4 * 1024 * 1024;
+
 /** Direct preview omits package-wide reverse analysis until background enrichment begins. */
 export const EMPTY_TARGET_USAGE_PROPS: PreviewTargetUsageProps = Object.freeze({
   dependencyPaths: Object.freeze([]),

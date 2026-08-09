@@ -87,7 +87,10 @@ import {
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
-import { createPreviewImportMetaEnvironment } from './previewPublicEnvironment';
+import {
+  createPreviewImportMetaEnvironment,
+  resolvePreviewPublicApplicationOrigin,
+} from './previewPublicEnvironment';
 import { findPreviewPublicAssetRoot } from './previewPublicAssetRoot';
 import { createPreviewInstalledPackageExternalizationPlugin } from './previewInstalledPackageExternalizationPlugin';
 import { preparePreviewCompilerTarget } from './previewImperativeEntryTarget';
@@ -712,6 +715,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ]);
       }
       const {
+        applicationStylesheetImports,
         documentShellEvidence,
         globalStyleImports,
         snapshotSourceByPath,
@@ -1251,6 +1255,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               ...(inspectorPlan === undefined
                 ? [
                     createPreviewTargetBridgePlugin({
+                      applicationStylesheetImports,
                       documentPath: request.documentPath,
                       exports: targetExports,
                       parentSlicesByExport: activeParentSlices,
@@ -1372,6 +1377,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           documentPath: request.documentPath,
           documentShell: { evidence: documentShellEvidence?.shell, portalHostIds },
           environment,
+          applicationStylesheetImports,
           globalPackagePlan,
           globalStyleImports,
           inferredPropsByExport,
@@ -1668,9 +1674,14 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         documentShellDependencyPath: documentShellEvidence?.dependencyPath,
         fallbackDependencies,
         fallbackDiagnostics,
-        globalStyleDependencyPaths: globalStyleImports.map((globalStyleImport) =>
-          path.normalize(globalStyleImport.moduleSpecifier),
-        ),
+        globalStyleDependencyPaths: [
+          ...globalStyleImports.map((globalStyleImport) =>
+            path.normalize(globalStyleImport.moduleSpecifier),
+          ),
+          ...applicationStylesheetImports.map((selection) =>
+            path.normalize(selection.importerPath),
+          ),
+        ],
         inspectorFallbackDiagnostics,
         ...(preparedBundleExecution === undefined
           ? { inspectorBundleFrontier: undefined }
@@ -1700,18 +1711,25 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         globalPackagePlan: buildExecution.globalPackagePlan,
         metafile: buildExecution.result.metafile,
         nodePaths: managedDependencyEnvironment.nodeModulesPaths,
+        projectRoot,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       assertPreviewResolutionPaths(resolutionConfinement, browserBundle.dependencies);
       const publicAssetRoot = await findPreviewPublicAssetRoot(projectRoot);
+      const publicApplicationOrigin = resolvePreviewPublicApplicationOrigin(
+        activeRuntimeEnvironment.publicEnvironment,
+      );
       this.managedDependencyStore?.scheduleAdmission({
         dependencyPaths: collectPreviewBuildDependencies(request, buildExecution.result.metafile),
         profile: managedDependencyEnvironment.profile,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       throwIfPreviewBuildCancelled(buildSignal);
-      const browserBundleWithPublicAssets =
-        publicAssetRoot === undefined ? browserBundle : { ...browserBundle, publicAssetRoot };
+      const browserBundleWithPublicAssets = {
+        ...browserBundle,
+        ...(publicApplicationOrigin === undefined ? {} : { publicApplicationOrigin }),
+        ...(publicAssetRoot === undefined ? {} : { publicAssetRoot }),
+      };
       return inspectorSourceGestureSecret === undefined
         ? browserBundleWithPublicAssets
         : { ...browserBundleWithPublicAssets, inspectorSourceGestureSecret };

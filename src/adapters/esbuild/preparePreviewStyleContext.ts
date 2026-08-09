@@ -5,8 +5,13 @@
  */
 import path from 'node:path';
 import type { PreviewBuildRequest, PreviewSourceSnapshot } from '../../domain/preview';
+import { getPreviewSourceLanguage } from '../../domain/previewTarget';
 import type { PreviewPreparationPolicy } from './previewPreparationPolicy';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
+import {
+  selectPreviewApplicationStylesheetImports,
+  type PreviewApplicationStylesheetImportSelection,
+} from './previewApplicationStylesheetSelection';
 import {
   discoverPreviewDocumentShell,
   type PreviewDocumentShellEvidence,
@@ -29,6 +34,13 @@ import {
 import type { PreviewStyledComponentsPlan } from './previewStyledComponentsPlan';
 import { collectPreviewTailwindCandidateSnapshotGraph } from './previewTailwindCandidateSnapshotGraph';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
+
+/** Final exact execution closure can safely fill the complete Tailwind scanner envelope. */
+const MAX_FINAL_TAILWIND_CANDIDATE_FILES = 192;
+const MAX_FINAL_TAILWIND_CANDIDATE_BYTES = 4 * 1024 * 1024;
+const MAX_FINAL_TAILWIND_SOURCE_BYTES = 1024 * 1024;
+const TAILWIND_SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
+const TAILWIND_DECLARATION_PATTERN = /\.d\.[cm]?tsx?$/iu;
 
 /** Current-source reader owned by the compiler-lifetime project analysis cache. */
 export type ReadPreviewStyleContextSource = (
@@ -55,6 +67,8 @@ export interface PreparePreviewStyleContextOptions {
 
 /** Style evidence plus the snapshot map reused by later runtime-global and GraphQL analysis. */
 export interface PreparedPreviewStyleContext {
+  /** Conventional app-root CSS loaded only when no authentic page/layout root can own styles. */
+  readonly applicationStylesheetImports: readonly PreviewApplicationStylesheetImportSelection[];
   readonly documentShellEvidence?: PreviewDocumentShellEvidence;
   readonly globalStyleImports: readonly PreviewGlobalStyleImportSelection[];
   readonly portalHostIds: readonly string[];
@@ -95,7 +109,13 @@ export async function preparePreviewStyleContext(
     ...(options.applicationStyleRoots ?? []),
     ...createConventionalNextPagesStyleRoots(options.projectRoot),
   ];
-  const [themeImport, documentShellEvidence, globalStyleImports, availability] = await Promise.all([
+  const [
+    themeImport,
+    documentShellEvidence,
+    globalStyleImports,
+    applicationStylesheetImports,
+    availability,
+  ] = await Promise.all([
     options.directThemeImport ??
       (options.inspectorDependencyPaths.length === 0
         ? undefined
@@ -115,6 +135,10 @@ export async function preparePreviewStyleContext(
       readSource: readProjectSource,
       ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
       resolveModule: options.staticModuleResolver.resolve,
+    }),
+    selectPreviewApplicationStylesheetImports({
+      projectRoot: options.projectRoot,
+      readSource: readProjectSource,
     }),
     availabilityPromise,
   ]);
@@ -153,6 +177,7 @@ export async function preparePreviewStyleContext(
     }),
   ]);
   return {
+    applicationStylesheetImports,
     ...(documentShellEvidence === undefined ? {} : { documentShellEvidence }),
     globalStyleImports,
     portalHostIds,
@@ -160,6 +185,70 @@ export async function preparePreviewStyleContext(
     styledComponentsPlan,
     tailwindCandidateSnapshots,
     ...(themeImport === undefined ? {} : { themeImport }),
+  };
+}
+
+/**
+ * Adds exact authored modules admitted only after the Page Execution frontier is frozen.
+ *
+ * Generated lazy registries cannot safely be expanded while the initial style corridor is built:
+ * doing so scans every route branch. The final frontier has already selected one bounded branch,
+ * so its authentic sources can now contribute responsive utility candidates without ambiguity.
+ */
+export async function completePreviewStyleContextTailwindCandidates(options: {
+  readonly context: PreparedPreviewStyleContext;
+  readonly readSource: ReadPreviewStyleContextSource;
+  readonly sourcePaths: readonly string[];
+}): Promise<PreparedPreviewStyleContext> {
+  const snapshots = [...options.context.tailwindCandidateSnapshots];
+  const existingPaths = new Set(
+    snapshots.map((snapshot) => canonicalizeExistingPath(snapshot.documentPath)),
+  );
+  let totalBytes = snapshots.reduce(
+    (sum, snapshot) => sum + Buffer.byteLength(snapshot.sourceText, 'utf8'),
+    0,
+  );
+  for (const sourcePath of options.sourcePaths) {
+    if (
+      snapshots.length >= MAX_FINAL_TAILWIND_CANDIDATE_FILES ||
+      totalBytes >= MAX_FINAL_TAILWIND_CANDIDATE_BYTES
+    ) {
+      break;
+    }
+    const canonicalPath = canonicalizeExistingPath(sourcePath);
+    if (
+      existingPaths.has(canonicalPath) ||
+      !TAILWIND_SOURCE_PATTERN.test(canonicalPath) ||
+      TAILWIND_DECLARATION_PATTERN.test(canonicalPath)
+    ) {
+      continue;
+    }
+    const remainingBytes = MAX_FINAL_TAILWIND_CANDIDATE_BYTES - totalBytes;
+    const sourceText = await options.readSource({
+      maximumBytes: Math.min(MAX_FINAL_TAILWIND_SOURCE_BYTES, remainingBytes),
+      sourcePath: canonicalPath,
+    });
+    if (sourceText === undefined) continue;
+    const language = getPreviewSourceLanguage(canonicalPath);
+    if (language === undefined) continue;
+    const sourceBytes = Buffer.byteLength(sourceText, 'utf8');
+    if (sourceBytes > remainingBytes) continue;
+    existingPaths.add(canonicalPath);
+    totalBytes += sourceBytes;
+    snapshots.push(
+      Object.freeze({
+        documentPath: canonicalPath,
+        language,
+        sourceText,
+      }),
+    );
+  }
+  if (snapshots.length === options.context.tailwindCandidateSnapshots.length) {
+    return options.context;
+  }
+  return {
+    ...options.context,
+    tailwindCandidateSnapshots: Object.freeze(snapshots),
   };
 }
 

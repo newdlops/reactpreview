@@ -17,12 +17,13 @@ import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 
 interface PreviewVendorDemand {
   readonly namedExports: readonly string[];
+  readonly resolveDir: string;
   readonly specifier: string;
   readonly wildcard: boolean;
 }
 
 /** Invalidates persisted vendor outputs whenever the browser-module closure contract changes. */
-const PREVIEW_VENDOR_BUILD_SCHEMA = 3;
+const PREVIEW_VENDOR_BUILD_SCHEMA = 5;
 
 export interface PreviewVendorBuildOutput {
   readonly chunks: readonly PreviewBundleChunk[];
@@ -49,6 +50,8 @@ export interface PreparePreviewVendorModulesOptions {
   readonly globalPackagePlan: PreviewGlobalPackageBridgePlan;
   readonly metafile: Metafile;
   readonly nodePaths: readonly string[];
+  /** Nearest package boundary whose node_modules owns the target's bare dependencies. */
+  readonly projectRoot: string;
   readonly workspaceRoot: string;
 }
 
@@ -60,9 +63,15 @@ export class PreviewVendorModuleBuilder {
   public constructor(private readonly sharedCache?: PreviewVendorModuleCacheBackend) {}
 
   public async prepare(options: PreparePreviewVendorModulesOptions): Promise<PreviewBundle> {
-    const demands = await collectVendorDemands(options.bundle, options.metafile);
+    const demands = await collectVendorDemands(
+      options.bundle,
+      options.metafile,
+      options.projectRoot,
+      options.workspaceRoot,
+    );
     if (demands.length === 0) return options.bundle;
     const environmentIdentity = createVendorEnvironmentIdentity(
+      options.projectRoot,
       options.workspaceRoot,
       options.nodePaths,
       createGlobalPackageBridgeIdentity(options.globalPackagePlan),
@@ -76,6 +85,7 @@ export class PreviewVendorModuleBuilder {
       return attachVendorOutput(options.bundle, await reusable.output);
     }
     const identity = createVendorIdentity(
+      options.projectRoot,
       options.workspaceRoot,
       options.nodePaths,
       demands,
@@ -114,7 +124,12 @@ export class PreviewVendorModuleBuilder {
   }
 }
 
-function collectExternalModuleSpecifiers(metafile: Metafile): readonly string[] {
+/** Associates each emitted bare package edge with its authored importer's resolution directory. */
+function collectExternalModuleDemands(
+  metafile: Metafile,
+  projectRoot: string,
+  workspaceRoot: string,
+): ReadonlyMap<string, string> {
   const specifiers = new Set<string>();
   for (const output of Object.values(metafile.outputs)) {
     for (const imported of output.imports) {
@@ -130,18 +145,49 @@ function collectExternalModuleSpecifiers(metafile: Metafile): readonly string[] 
       }
     }
   }
-  return [...specifiers].sort();
+  const resolveDirectories = new Map<string, Set<string>>();
+  for (const [inputPath, input] of Object.entries(metafile.inputs)) {
+    const resolveDir = readVendorImporterResolveDirectory(inputPath, workspaceRoot);
+    if (resolveDir === undefined) continue;
+    for (const imported of input.imports) {
+      if (
+        !imported.external ||
+        (imported.kind !== 'import-statement' && imported.kind !== 'dynamic-import') ||
+        !specifiers.has(imported.path)
+      ) {
+        continue;
+      }
+      const directories = resolveDirectories.get(imported.path) ?? new Set<string>();
+      directories.add(resolveDir);
+      resolveDirectories.set(imported.path, directories);
+    }
+  }
+  return new Map(
+    [...specifiers]
+      .sort()
+      .map((specifier) => [
+        specifier,
+        [...(resolveDirectories.get(specifier) ?? [])].sort(compareText)[0] ?? projectRoot,
+      ]),
+  );
 }
 
 async function collectVendorDemands(
   bundle: PreviewBundle,
   metafile: Metafile,
+  projectRoot: string,
+  workspaceRoot: string,
 ): Promise<readonly PreviewVendorDemand[]> {
-  const demandBySpecifier = new Map<string, { namedExports: Set<string>; wildcard: boolean }>(
-    collectExternalModuleSpecifiers(metafile).map((specifier) => [
-      specifier,
-      { namedExports: new Set<string>(), wildcard: false },
-    ]),
+  const demandBySpecifier = new Map<
+    string,
+    { namedExports: Set<string>; resolveDir: string; wildcard: boolean }
+  >(
+    [...collectExternalModuleDemands(metafile, projectRoot, workspaceRoot)].map(
+      ([specifier, resolveDir]) => [
+        specifier,
+        { namedExports: new Set<string>(), resolveDir, wildcard: false },
+      ],
+    ),
   );
   const javascriptFiles = [
     bundle.javascript,
@@ -151,20 +197,26 @@ async function collectVendorDemands(
   ];
   await init;
   for (const bytes of javascriptFiles) {
-    collectSourceDemands(new TextDecoder().decode(bytes), demandBySpecifier);
+    collectSourceDemands(new TextDecoder().decode(bytes), demandBySpecifier, projectRoot);
   }
   return [...demandBySpecifier]
     .map(([specifier, demand]) => ({
       namedExports: [...demand.namedExports].sort(),
+      resolveDir: path.resolve(demand.resolveDir),
       specifier,
       wildcard: demand.wildcard,
     }))
-    .sort((left, right) => compareText(left.specifier, right.specifier));
+    .sort(
+      (left, right) =>
+        compareText(left.specifier, right.specifier) ||
+        compareText(left.resolveDir, right.resolveDir),
+    );
 }
 
 function collectSourceDemands(
   source: string,
-  demands: Map<string, { namedExports: Set<string>; wildcard: boolean }>,
+  demands: Map<string, { namedExports: Set<string>; resolveDir: string; wildcard: boolean }>,
+  defaultResolveDir: string,
 ): void {
   const namespaceBindings = new Map<string, string>();
   const [imports] = parse(source);
@@ -173,7 +225,11 @@ function collectSourceDemands(
     let demand = demands.get(imported.n);
     if (demand === undefined) {
       if (!isPreviewBareModuleSpecifier(imported.n)) continue;
-      demand = { namedExports: new Set<string>(), wildcard: false };
+      demand = {
+        namedExports: new Set<string>(),
+        resolveDir: defaultResolveDir,
+        wildcard: false,
+      };
       demands.set(imported.n, demand);
     }
     if (
@@ -259,7 +315,7 @@ async function buildVendorOutput(
     outdir,
     platform: 'browser',
     plugins: [
-      createVendorEntryPlugin(demandByVirtual, options.workspaceRoot),
+      createVendorEntryPlugin(demandByVirtual),
       createPreviewGlobalPackageBridgePlugin({ plan: options.globalPackagePlan }),
       createPreviewNodeBuiltinPlugin(),
     ],
@@ -279,7 +335,6 @@ async function buildVendorOutput(
 
 function createVendorEntryPlugin(
   demandByVirtual: ReadonlyMap<string, PreviewVendorDemand>,
-  workspaceRoot: string,
 ): import('esbuild').Plugin {
   return {
     name: 'preview-vendor-entry',
@@ -294,7 +349,7 @@ function createVendorEntryPlugin(
         return {
           contents: createVendorFacadeSource(demand),
           loader: 'js',
-          resolveDir: workspaceRoot,
+          resolveDir: demand.resolveDir,
         };
       });
     },
@@ -448,6 +503,7 @@ function cloneVendorOutput(output: PreviewVendorBuildOutput): PreviewVendorBuild
 }
 
 function createVendorIdentity(
+  projectRoot: string,
   workspaceRoot: string,
   nodePaths: readonly string[],
   demands: readonly PreviewVendorDemand[],
@@ -460,6 +516,7 @@ function createVendorIdentity(
         demands,
         globalPackageBridgeIdentity,
         nodePaths,
+        projectRoot: path.resolve(projectRoot),
         workspaceRoot: path.resolve(workspaceRoot),
       }),
     )
@@ -467,6 +524,7 @@ function createVendorIdentity(
 }
 
 function createVendorEnvironmentIdentity(
+  projectRoot: string,
   workspaceRoot: string,
   nodePaths: readonly string[],
   globalPackageBridgeIdentity: string,
@@ -477,6 +535,7 @@ function createVendorEnvironmentIdentity(
         buildSchema: PREVIEW_VENDOR_BUILD_SCHEMA,
         globalPackageBridgeIdentity,
         nodePaths,
+        projectRoot: path.resolve(projectRoot),
         workspaceRoot: path.resolve(workspaceRoot),
       }),
     )
@@ -505,10 +564,31 @@ function vendorDemandsCover(
   const availableBySpecifier = new Map(available.map((demand) => [demand.specifier, demand]));
   return requested.every((demand) => {
     const candidate = availableBySpecifier.get(demand.specifier);
-    if (candidate === undefined || (demand.wildcard && !candidate.wildcard)) return false;
+    if (candidate?.resolveDir !== demand.resolveDir || (demand.wildcard && !candidate.wildcard)) {
+      return false;
+    }
     const candidateNames = new Set(candidate.namedExports);
     return demand.namedExports.every((name) => candidateNames.has(name));
   });
+}
+
+/** Restores a file-backed metafile input to the directory that owns its package resolution. */
+function readVendorImporterResolveDirectory(
+  inputPath: string,
+  workspaceRoot: string,
+): string | undefined {
+  if (inputPath.startsWith('<')) return undefined;
+  const sourcePath = path.isAbsolute(inputPath)
+    ? path.normalize(inputPath)
+    : inputPath.includes(':')
+      ? undefined
+      : path.resolve(workspaceRoot, inputPath);
+  if (sourcePath === undefined) return undefined;
+  const relative = path.relative(path.resolve(workspaceRoot), sourcePath);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  return path.dirname(sourcePath);
 }
 
 function concatenateBytes(parts: readonly Uint8Array[]): Uint8Array {

@@ -21,6 +21,7 @@ const MAX_SCANNED_DIRECTORIES = 4096;
 const MAX_DIRECTORY_ENTRIES = 2048;
 const MAX_GLOBSTAR_DEPTH = 12;
 const MAX_EXPORT_TARGETS = 32;
+const MAX_RELATED_DEPENDENCY_PROVIDER_ROOTS = 32;
 const SOURCE_EXTENSIONS = [
   '.tsx',
   '.ts',
@@ -69,6 +70,11 @@ export interface PreviewWorkspacePackageResolver {
   readonly findExactDependencyProviderRoots: (
     requirements: Readonly<Record<string, string>>,
   ) => readonly string[];
+  /** Finds bounded concrete providers that explicitly consume one of the related packages. */
+  readonly findRelatedDependencyProviderRoots: (
+    packageName: string,
+    relatedPackageNames: readonly string[],
+  ) => readonly string[];
   /** Resolves a bare package or package subpath to one existing authored source file. */
   readonly resolve: (moduleSpecifier: string) => string | undefined;
 }
@@ -102,6 +108,42 @@ export function createPreviewWorkspacePackageResolver(
           )
           .map(({ rootPath }) => rootPath)
           .sort(),
+      );
+    },
+    findRelatedDependencyProviderRoots(
+      packageName: string,
+      relatedPackageNames: readonly string[],
+    ): readonly string[] {
+      const request = parseWorkspacePackageRequest(packageName);
+      const relatedNames = [
+        ...new Set(
+          relatedPackageNames.filter((candidate) => {
+            const relatedRequest = parseWorkspacePackageRequest(candidate);
+            return relatedRequest?.packageName === candidate && relatedRequest.subpath.length === 0;
+          }),
+        ),
+      ];
+      if (
+        request?.packageName !== packageName ||
+        request.subpath.length > 0 ||
+        relatedNames.length === 0
+      ) {
+        return Object.freeze([]);
+      }
+      packageRecords ??= discoverWorkspacePackages(canonicalWorkspaceRoot);
+      return Object.freeze(
+        [...packageRecords.values()]
+          .filter(
+            (record): record is WorkspacePackageRecord =>
+              record !== undefined &&
+              providesConcreteDependency(record.manifest, packageName) &&
+              relatedNames.some((relatedName) =>
+                declaresPackageDependency(record.manifest, relatedName),
+              ),
+          )
+          .map(({ rootPath }) => rootPath)
+          .sort()
+          .slice(0, MAX_RELATED_DEPENDENCY_PROVIDER_ROOTS),
       );
     },
     resolve(moduleSpecifier: string): string | undefined {
@@ -140,6 +182,31 @@ function hasExactProductionRequirements(
         dependencies[packageName] === specifier,
     )
   );
+}
+
+/** Requires a concrete install edge rather than another peer that may itself be unbound. */
+function providesConcreteDependency(
+  manifest: Readonly<Record<string, unknown>>,
+  packageName: string,
+): boolean {
+  return ['dependencies', 'devDependencies', 'optionalDependencies'].some((field) =>
+    ownsDependencyKey(manifest[field], packageName),
+  );
+}
+
+/** Proves an explicit relationship to the selected or importing workspace package. */
+function declaresPackageDependency(
+  manifest: Readonly<Record<string, unknown>>,
+  packageName: string,
+): boolean {
+  return ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].some(
+    (field) => ownsDependencyKey(manifest[field], packageName),
+  );
+}
+
+/** Reads only own keys from object-shaped dependency maps. */
+function ownsDependencyKey(value: unknown, packageName: string): boolean {
+  return isPlainObject(value) && Object.prototype.hasOwnProperty.call(value, packageName);
 }
 
 /** Reads the root workspaces declaration and indexes a bounded set of uniquely named packages. */

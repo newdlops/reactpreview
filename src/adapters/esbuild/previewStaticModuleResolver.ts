@@ -16,6 +16,7 @@ import { createPreviewWorkspacePackageResolver } from './previewWorkspacePackage
 import { resolvePreviewYarnVirtualPath } from './previewYarnVirtualPath';
 
 const SOURCE_EXTENSION_PATTERN = /(?:\.d)?\.[cm]?[jt]sx?$/iu;
+const DECLARATION_EXTENSION_PATTERN = /\.d\.(?:cts|mts|ts)$/iu;
 
 /** Immutable resolver inputs bounded by the trusted VS Code workspace. */
 export interface PreviewStaticModuleResolverOptions {
@@ -278,6 +279,11 @@ export function createPreviewStaticModuleResolver(
         workspaceRoot,
       );
       if (physicalPath !== undefined && ts.sys.fileExists(physicalPath)) {
+        const runtimeSibling = resolveRuntimeDeclarationSibling(physicalPath);
+        if (runtimeSibling !== undefined) return canonicalizeExistingPath(runtimeSibling);
+        if (DECLARATION_EXTENSION_PATTERN.test(physicalPath)) {
+          return resolveStaticPackageFallback(cleanSpecifier);
+        }
         return canonicalizeExistingPath(physicalPath);
       }
       return resolveStaticPackageFallback(cleanSpecifier);
@@ -373,6 +379,23 @@ export function createPreviewStaticModuleResolver(
       return compilerOptionsUseAlternativeJsxRuntime(getResolutionContext(consumerPath).options);
     },
   });
+}
+
+/** Maps TypeScript's conditional `types` result to the adjacent runtime package export. */
+function resolveRuntimeDeclarationSibling(sourcePath: string): string | undefined {
+  const match = /^(?<base>.*)\.d\.(?<extension>cts|mts|ts)$/iu.exec(sourcePath);
+  const base = match?.groups?.base;
+  const extension = match?.groups?.extension?.toLowerCase();
+  if (base === undefined || extension === undefined) return undefined;
+  const runtimeExtensions =
+    extension === 'mts'
+      ? ['.mjs', '.js']
+      : extension === 'cts'
+        ? ['.cjs', '.js']
+        : ['.js', '.mjs', '.cjs'];
+  return runtimeExtensions
+    .map((runtimeExtension) => base + runtimeExtension)
+    .find((candidate) => ts.sys.fileExists(candidate));
 }
 
 /** Preserves an exact configured automatic JSX owner without interpreting custom classic factories. */

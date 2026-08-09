@@ -52,9 +52,9 @@ export function createPreviewPnpPeerDependencyPlugin(
   const workspaceRoot = canonicalizeExistingPath(options.workspaceRoot);
   const projectRoot = canonicalizeExistingPath(options.projectRoot);
   const workspacePackageResolver = createPreviewWorkspacePackageResolver(workspaceRoot);
-  const reactDomCompanionRootsPromise = readPackageManifest(
-    path.join(projectRoot, PACKAGE_MANIFEST_NAME),
-  ).then((manifest) =>
+  const projectManifestPromise = readPackageManifest(path.join(projectRoot, PACKAGE_MANIFEST_NAME));
+  const projectPackageNamePromise = projectManifestPromise.then(readPackageName);
+  const reactDomCompanionRootsPromise = projectManifestPromise.then((manifest) =>
     collectReactDomCompanionRoots(
       manifest,
       projectRoot,
@@ -129,7 +129,8 @@ export function createPreviewPnpPeerDependencyPlugin(
           ownerManifest,
           packageName,
         );
-        const peerApplicationRoots = hasDependency(ownerManifest?.peerDependencies, packageName)
+        const ownerDeclaresPeer = hasDependency(ownerManifest?.peerDependencies, packageName);
+        const peerApplicationRoots = ownerDeclaresPeer
           ? applicationManifests
               .filter(
                 ({ manifest, root }) =>
@@ -138,8 +139,7 @@ export function createPreviewPnpPeerDependencyPlugin(
               )
               .map(({ root }) => root)
           : [];
-        const ownerDeclaresApplicationPeer = peerApplicationRoots.length > 0;
-        if (!ownerDeclaresDirectDependency && !ownerDeclaresApplicationPeer) {
+        if (!ownerDeclaresDirectDependency && !ownerDeclaresPeer) {
           return undefined;
         }
 
@@ -170,7 +170,7 @@ export function createPreviewPnpPeerDependencyPlugin(
           }
         }
 
-        if (!ownerDeclaresApplicationPeer) return normalResolution;
+        if (!ownerDeclaresPeer) return normalResolution;
 
         for (const applicationRoot of peerApplicationRoots) {
           const applicationIssuer = path.join(applicationRoot, '__react_preview_peer_issuer__.js');
@@ -196,6 +196,43 @@ export function createPreviewPnpPeerDependencyPlugin(
                       text:
                         `React Preview restored the Yarn PnP peer "${packageName}" ` +
                         `from application package ${formatWorkspacePath(applicationRoot, workspaceRoot)}.`,
+                    },
+                  ]
+                : []),
+            ],
+          };
+        }
+
+        const relatedPackageNames = [
+          await projectPackageNamePromise,
+          readPackageName(ownerManifest),
+        ].filter((candidate): candidate is string => candidate !== undefined);
+        const selectedRoots = new Set(peerApplicationRoots);
+        const relatedProviderRoots = workspacePackageResolver.findRelatedDependencyProviderRoots(
+          packageName,
+          relatedPackageNames,
+        );
+        for (const providerRoot of relatedProviderRoots) {
+          if (providerRoot === ownerPackage?.root || selectedRoots.has(providerRoot)) continue;
+          const providerIssuer = path.join(providerRoot, '__react_preview_peer_issuer__.js');
+          const providerResolution = await resolveWithImporter(build, arguments_, providerIssuer);
+          if ((providerResolution.errors?.length ?? 0) > 0 || providerResolution.external) {
+            continue;
+          }
+
+          const warningKey = `${packageName}\0${path.dirname(physicalImporter)}\0${providerRoot}`;
+          const includeWarning = !warnedPackages.has(warningKey);
+          warnedPackages.add(warningKey);
+          return {
+            ...providerResolution,
+            warnings: [
+              ...(providerResolution.warnings ?? []),
+              ...(includeWarning
+                ? [
+                    {
+                      text:
+                        `React Preview restored the Yarn PnP peer "${packageName}" ` +
+                        `from related workspace consumer ${formatWorkspacePath(providerRoot, workspaceRoot)}.`,
                     },
                   ]
                 : []),
@@ -361,6 +398,15 @@ async function readPackageManifest(
   } catch {
     return undefined;
   }
+}
+
+/** Reads a package identity only from an own, non-empty manifest string. */
+function readPackageName(manifest: PreviewPackageManifest | undefined): string | undefined {
+  if (manifest === undefined || !Object.prototype.hasOwnProperty.call(manifest, 'name')) {
+    return undefined;
+  }
+  const name = (manifest as PreviewPackageManifest & { readonly name?: unknown }).name;
+  return typeof name === 'string' && name.trim().length > 0 ? name.trim() : undefined;
 }
 
 /** Reports whether a dependency map owns an exact package key. */

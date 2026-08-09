@@ -23,6 +23,7 @@ const INSTANCE_BOUND_PACKAGE_NAMES = new Set([
   'react-router-dom',
   'styled-components',
 ]);
+const STATIC_RENDER_BOUNDARY_SPECIFIERS = new Set(['server-only']);
 
 /** Reports whether a specifier can be represented by the preview's closed browser import map. */
 export function isPreviewBareModuleSpecifier(specifier: string): boolean {
@@ -40,6 +41,7 @@ export function createPreviewInstalledPackageExternalizationPlugin(
       build.onResolve({ filter: /^[^./]/ }, async (args) => {
         if (
           !isPreviewBareModuleSpecifier(args.path) ||
+          STATIC_RENDER_BOUNDARY_SPECIFIERS.has(args.path) ||
           (args.pluginData as unknown) === PREVIEW_RESOLVE_GUARD
         ) {
           return undefined;

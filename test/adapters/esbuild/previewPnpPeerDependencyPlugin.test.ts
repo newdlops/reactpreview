@@ -67,6 +67,33 @@ describe('createPreviewPnpPeerDependencyPlugin', () => {
     }
   });
 
+  /** Keeps fast shared-package plans light while recovering from a related concrete consumer. */
+  it('restores a virtual workspace peer from a related consumer without a page root', async () => {
+    const fixture = await createPeerFixture(true);
+    try {
+      const result = await buildPeerFixture(fixture, fixture.sharedRoot);
+
+      expect(result.outputFiles?.[0]?.text).toContain('APPLICATION_PEER_VALUE');
+      expect(result.warnings.map((warning) => warning.text).join('\n')).toContain(
+        'from related workspace consumer projects/application',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Does not borrow a dependency from a workspace package unrelated to the selected package. */
+  it('rejects an unrelated workspace dependency provider', async () => {
+    const fixture = await createPeerFixture(true, 'peer', false);
+    try {
+      await expect(buildPeerFixture(fixture, fixture.sharedRoot)).rejects.toThrow(
+        'virtual peer denied',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Restores React DOM for the generated entry from an exact React-paired workspace issuer. */
   it('restores an exact React DOM companion for a React-only Yarn PnP package', async () => {
     const fixture = await createReactDomCompanionFixture('latest');
@@ -122,6 +149,7 @@ interface ReactDomCompanionFixture {
 async function createPeerFixture(
   applicationDeclaresPeer: boolean,
   ownerDependencyKind: 'direct' | 'peer' = 'peer',
+  applicationConsumesShared = true,
 ): Promise<PeerFixture> {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-pnp-peer-fallback-'));
   const applicationRoot = path.join(workspaceRoot, 'projects', 'application');
@@ -145,9 +173,17 @@ async function createPeerFixture(
   ]);
   await Promise.all([
     writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({ name: 'workspace', private: true, workspaces: ['projects/*', 'shared/*'] }),
+      'utf8',
+    ),
+    writeFile(
       path.join(applicationRoot, 'package.json'),
       JSON.stringify({
-        dependencies: applicationDeclaresPeer ? { 'peer-package': '1.0.0' } : {},
+        dependencies: {
+          ...(applicationConsumesShared ? { '@scope/common': 'workspace:*' } : {}),
+          ...(applicationDeclaresPeer ? { 'peer-package': '1.0.0' } : {}),
+        },
         name: 'application',
       }),
       'utf8',
@@ -169,7 +205,7 @@ async function createPeerFixture(
     ),
     writeFile(
       path.join(sharedRoot, 'src', 'PageConfig.ts'),
-      "import peerValue from 'peer-package'; export const value = peerValue;",
+      "import peerValue from 'peer-package/fp/pluck'; export const value = peerValue;",
       'utf8',
     ),
     writeFile(peerPath, "export default 'APPLICATION_PEER_VALUE';", 'utf8'),
@@ -297,7 +333,7 @@ function createSyntheticPnpResolver(
     name: 'test-synthetic-pnp-peer-resolver',
     setup(buildContext): void {
       buildContext.onResolve({ filter: /^@scope\/common$/ }, () => ({ path: virtualIndexPath }));
-      buildContext.onResolve({ filter: /^peer-package$/ }, (arguments_) =>
+      buildContext.onResolve({ filter: /^peer-package(?:\/.*)?$/ }, (arguments_) =>
         path.basename(arguments_.importer) === '__react_preview_peer_issuer__.js' ||
         (allowPhysicalDependency && !arguments_.importer.includes(`${path.sep}.yarn${path.sep}`))
           ? { path: peerPath }

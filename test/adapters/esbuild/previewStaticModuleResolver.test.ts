@@ -273,6 +273,48 @@ describe('createPreviewStaticModuleResolver', () => {
     }
   });
 
+  /** Uses the runtime export beside a package declaration so analysis matches esbuild inputs. */
+  it('maps a conditional types export to its existing runtime sibling', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-runtime-'));
+    const consumerPath = path.join(workspaceRoot, 'src', 'Page.tsx');
+    const packageRoot = path.join(workspaceRoot, 'node_modules', 'runtime-types-package');
+    const declarationPath = path.join(packageRoot, 'dist', 'feature', 'index.d.ts');
+    const runtimePath = path.join(packageRoot, 'dist', 'feature', 'index.js');
+    try {
+      await Promise.all([
+        mkdir(path.dirname(consumerPath), { recursive: true }),
+        mkdir(path.dirname(declarationPath), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(consumerPath, "import { marker } from 'runtime-types-package/feature';", 'utf8'),
+        writeFile(
+          path.join(packageRoot, 'package.json'),
+          JSON.stringify({
+            exports: {
+              './feature': {
+                types: './dist/feature/index.d.ts',
+                default: './dist/feature/index.js',
+              },
+            },
+            name: 'runtime-types-package',
+            type: 'module',
+          }),
+          'utf8',
+        ),
+        writeFile(declarationPath, 'export declare const marker: string;', 'utf8'),
+        writeFile(runtimePath, "export const marker = 'runtime';", 'utf8'),
+      ]);
+
+      const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+      expect(resolver.resolve('runtime-types-package/feature', consumerPath)).toBe(
+        await realpath(runtimePath),
+      );
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   /** Resolves an authored workspace package even when no node_modules or PnP artifact exists. */
   it('falls back to bounded workspace package source metadata', async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-static-workspace-'));

@@ -23,6 +23,7 @@ import {
 import {
   PREVIEW_APOLLO_SPECIFIER,
   PREVIEW_CONTEXT_SPECIFIER,
+  PREVIEW_DRAG_DROP_SPECIFIER,
   PREVIEW_FORMIK_SPECIFIER,
   PREVIEW_REDUX_SPECIFIER,
   PREVIEW_ROUTER_SPECIFIER,
@@ -87,6 +88,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   const encodedSetupKind = JSON.stringify(options.setupKind);
   const encodedApolloSpecifier = JSON.stringify(PREVIEW_APOLLO_SPECIFIER);
   const encodedContextSpecifier = JSON.stringify(PREVIEW_CONTEXT_SPECIFIER);
+  const encodedDragDropSpecifier = JSON.stringify(PREVIEW_DRAG_DROP_SPECIFIER);
   const encodedFormikSpecifier = JSON.stringify(PREVIEW_FORMIK_SPECIFIER);
   const encodedReduxSpecifier = JSON.stringify(PREVIEW_REDUX_SPECIFIER);
   const encodedRouterSpecifier = JSON.stringify(PREVIEW_ROUTER_SPECIFIER);
@@ -410,7 +412,25 @@ class PreviewErrorBoundary extends React.Component {
 class PreviewRenderedCommitSignal extends React.Component {
   /** Resolves the revision-local readiness gate from React's synchronous commit lifecycle. */
   componentDidMount() {
+    if (${encodedRenderMode} === 'component' && typeof globalThis.setTimeout === 'function') {
+      // Direct previews commonly start memory-only queries from passive effects. Let those effects
+      // subscribe and publish their synchronous static result before the host snapshots the first
+      // committed branch; otherwise a transient authored loader is misreported as final output.
+      this.commitTimer = globalThis.setTimeout(() => {
+        this.commitTimer = undefined;
+        completePreviewCommit();
+      }, 0);
+      return;
+    }
     completePreviewCommit();
+  }
+
+  /** Prevents an abandoned hot revision from publishing a stale delayed terminal. */
+  componentWillUnmount() {
+    if (this.commitTimer !== undefined && typeof globalThis.clearTimeout === 'function') {
+      globalThis.clearTimeout(this.commitTimer);
+      this.commitTimer = undefined;
+    }
   }
 
   /** Adds no wrapper or marker to the inspected project's host DOM. */
@@ -613,6 +633,7 @@ async function preparePreviewElement() {
   const [
     apolloBridge,
     contextBridge,
+    dragDropBridge,
     formikBridge,
     reduxBridge,
     routerBridge,
@@ -623,6 +644,7 @@ async function preparePreviewElement() {
   ] = await Promise.all([
     tagPreviewRuntimePhase(import(${encodedApolloSpecifier}), 'load automatic Apollo bridge'),
     tagPreviewRuntimePhase(import(${encodedContextSpecifier}), 'load automatic Context bridge'),
+    tagPreviewRuntimePhase(import(${encodedDragDropSpecifier}), 'load automatic drag-and-drop bridge'),
     tagPreviewRuntimePhase(import(${encodedFormikSpecifier}), 'load automatic Formik bridge'),
     tagPreviewRuntimePhase(import(${encodedReduxSpecifier}), 'load automatic Redux bridge'),
     tagPreviewRuntimePhase(import(${encodedRouterSpecifier}), 'load automatic Router bridge'),
@@ -643,6 +665,7 @@ async function preparePreviewElement() {
   activePreviewRouterConfiguration = readSetupMember(setupModule, 'routerPreview');
   registerPreviewRuntimeCapability('Apollo', apolloBridge);
   registerPreviewRuntimeCapability('Context', contextBridge);
+  registerPreviewRuntimeCapability('Drag and drop', dragDropBridge);
   registerPreviewRuntimeCapability('Formik', formikBridge);
   registerPreviewRuntimeCapability('Redux', reduxBridge);
   registerPreviewRuntimeCapability('Router', routerBridge);
@@ -728,6 +751,9 @@ async function preparePreviewElement() {
     configuration: readSetupMember(setupModule, 'formikPreview'),
     ...setupContext,
   });
+
+  enterRuntimePhase('compose static drag-and-drop boundaries');
+  previewElement = dragDropBridge.createDragDropPreviewElement(previewElement);
 
   enterRuntimePhase('compose static Apollo boundary');
   previewElement = apolloBridge.createApolloPreviewElement(previewElement, {

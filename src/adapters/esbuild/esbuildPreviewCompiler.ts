@@ -73,6 +73,8 @@ import { EMPTY_RUNTIME_WATCH_INPUTS, createPreviewDocumentName, describeGlobalPa
 import { PreviewDiagnosticEmissionCache } from './previewDiagnosticEmissionCache';
 import type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
 import { createPreviewFormikBridgePlugin } from './previewFormikBridgePlugin';
+import { createPreviewDragDropBridgePlugin } from './previewDragDropBridgePlugin';
+import { collectPreviewDragDropRequirement } from './previewDragDropRequirement';
 import { createPreviewMissingSourceFallbackPlugin } from './previewMissingSourceFallbackPlugin';
 import {
   createPreviewLegacyCommonJsGlobalDefines,
@@ -164,6 +166,7 @@ import { createPreviewThemeCandidatePlugin } from './previewThemeCandidatePlugin
 import { PreviewVendorModuleBuilder } from './previewVendorModuleBuilder';
 import { shouldEscalatePreviewAncestorSearch } from './previewWorkspaceAncestorPolicy';
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
+import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './staticResources/previewRuntimeHookChildPropDemand';
 import { collectReactExportPropInference } from './staticResources/reactExportPropInference';
 // prettier-ignore
 import { createWorkspaceSourcePlugin, type MutableWorkspaceSourceState, type WorkspaceSourceCompilationState } from './workspaceSourcePlugin';
@@ -577,18 +580,42 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       const targetSelection = preparePreviewCompilerTarget(request);
       const routerNeed = collectPreviewRouterRequirement(request.documentPath, request.sourceText);
       const targetExports = targetSelection.targetExports;
-      const inferredPropsByExport = collectReactExportPropInference(
+      const propInferenceSnapshotSourceByPath = new Map(
+        [
+          ...request.dependencySnapshots,
+          {
+            documentPath: request.documentPath,
+            language: request.language,
+            sourceText: request.sourceText,
+          },
+        ].map((snapshot) => [path.normalize(snapshot.documentPath), snapshot.sourceText] as const),
+      );
+      const readPropInferenceSource = (sourcePath: string): string | undefined =>
+        propInferenceSnapshotSourceByPath.get(path.normalize(sourcePath)) ??
+        ts.sys.readFile(sourcePath);
+      const childPropDemandBuilder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+        readSource: readPropInferenceSource,
+        resolveModule: staticModuleResolver.resolve,
+        workspaceRoot: canonicalWorkspaceRoot,
+      });
+      const collectTargetInferredProps = (
+        sourcePath: string,
+        sourceText: string,
+      ): ReturnType<typeof collectReactExportPropInference> =>
+        collectReactExportPropInference(sourcePath, sourceText, {
+          childPropDemands: childPropDemandBuilder.collect(sourcePath, sourceText),
+          resolveImport: (moduleSpecifier, importerPath) => {
+            const resolvedPath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
+            const resolvedSourceText =
+              resolvedPath === undefined ? undefined : readPropInferenceSource(resolvedPath);
+            return resolvedPath === undefined || resolvedSourceText === undefined
+              ? undefined
+              : { sourcePath: resolvedPath, sourceText: resolvedSourceText };
+          },
+        });
+      const inferredPropsByExport = collectTargetInferredProps(
         request.documentPath,
         request.sourceText,
-        {
-          resolveImport: (moduleSpecifier, importerPath) => {
-            const sourcePath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
-            const sourceText = sourcePath === undefined ? undefined : ts.sys.readFile(sourcePath);
-            return sourcePath === undefined || sourceText === undefined
-              ? undefined
-              : { sourcePath, sourceText };
-          },
-        },
       );
       const inspectorExportName = targetSelection.inspectorExportName;
       const themeImport = selectPreviewThemeImport(request.sourceText);
@@ -866,22 +893,19 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             }));
       const localTargetModuleSourceText =
         targetModuleContract === undefined ? request.sourceText : targetModuleSourceText;
+      const initialDragDropRequirement =
+        localTargetModuleContract === undefined || localTargetModuleSourceText === undefined
+          ? undefined
+          : collectPreviewDragDropRequirement(
+              localTargetModuleContract.sourcePath,
+              localTargetModuleSourceText,
+            );
       const runtimeTargetInferredPropsByExport =
         localTargetModuleContract === undefined || localTargetModuleSourceText === undefined
           ? inferredPropsByExport
-          : collectReactExportPropInference(
+          : collectTargetInferredProps(
               localTargetModuleContract.sourcePath,
               localTargetModuleSourceText,
-              {
-                resolveImport: (moduleSpecifier, importerPath) => {
-                  const sourcePath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
-                  const sourceText =
-                    sourcePath === undefined ? undefined : ts.sys.readFile(sourcePath);
-                  return sourcePath === undefined || sourceText === undefined
-                    ? undefined
-                    : { sourcePath, sourceText };
-                },
-              },
             );
       const targetRenderOutcomePlans =
         localTargetModuleContract === undefined || localTargetModuleSourceText === undefined
@@ -1220,6 +1244,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
               createPreviewGlobalPackageBridgePlugin({ plan: globalPackagePlan }),
               createPreviewApolloBridgePlugin({ projectRoot }),
               createPreviewContextBridgePlugin({ projectRoot }),
+              createPreviewDragDropBridgePlugin({
+                ...(initialDragDropRequirement === undefined
+                  ? {}
+                  : { initialRequirement: initialDragDropRequirement }),
+                projectRoot,
+              }),
               createPreviewFormikBridgePlugin({ projectRoot }),
               createPreviewReduxBridgePlugin({
                 ...(automaticReduxState === undefined
@@ -1273,6 +1303,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                   ]
                 : [
                     createPreviewInspectorRootPlugin({
+                      applicationStylesheetImports,
                       displayName: path.basename(
                         (runtimeOwnershipTarget ?? inspectorPlan.target).sourcePath,
                       ),

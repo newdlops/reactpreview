@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPreviewApolloBridgePlugin } from '../../../src/adapters/esbuild/previewApolloBridgePlugin';
 import { createPreviewContextBridgePlugin } from '../../../src/adapters/esbuild/previewContextBridgePlugin';
 import { createPreviewFormikBridgePlugin } from '../../../src/adapters/esbuild/previewFormikBridgePlugin';
+import { createPreviewDragDropBridgePlugin } from '../../../src/adapters/esbuild/previewDragDropBridgePlugin';
 import { createPreviewReduxBridgePlugin } from '../../../src/adapters/esbuild/previewReduxBridgePlugin';
 import { createPreviewRouterBridgePlugin } from '../../../src/adapters/esbuild/previewRouterBridgePlugin';
 import { createPreviewThemeBridgePlugin } from '../../../src/adapters/esbuild/previewThemeBridgePlugin';
@@ -42,6 +43,11 @@ const FIXTURES: readonly ProviderBridgeFixture[] = [
     createPlugin: () => createPreviewFormikBridgePlugin({ projectRoot: PROJECT_ROOT }),
     label: 'Formik',
     specifier: 'react-preview:formik',
+  },
+  {
+    createPlugin: () => createPreviewDragDropBridgePlugin({ projectRoot: PROJECT_ROOT }),
+    label: 'Drag and drop',
+    specifier: 'react-preview:drag-drop',
   },
   {
     createPlugin: () => createPreviewReduxBridgePlugin({ projectRoot: PROJECT_ROOT }),

@@ -64,6 +64,12 @@ export const PREVIEW_FORMIK_BRIDGE_NAMESPACE = 'react-preview-formik-bridge';
 /** Stable virtual import specifier used to load the inert static Formik boundary. */
 export const PREVIEW_FORMIK_SPECIFIER = 'react-preview:formik';
 
+/** Namespace used by the optional, project-owned react-beautiful-dnd runtime bridge. */
+export const PREVIEW_DRAG_DROP_BRIDGE_NAMESPACE = 'react-preview-drag-drop-bridge';
+
+/** Stable virtual specifier used to load the inert drag-and-drop provider corridor. */
+export const PREVIEW_DRAG_DROP_SPECIFIER = 'react-preview:drag-drop';
+
 /** Namespace used by the exact-identity application React Context runtime bridge. */
 export const PREVIEW_CONTEXT_BRIDGE_NAMESPACE = 'react-preview-context-bridge';
 
@@ -116,6 +122,7 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_REDUX_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_FORMIK_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_DRAG_DROP_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_CONTEXT_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_ROUTER_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_THEME_BRIDGE_NAMESPACE ||

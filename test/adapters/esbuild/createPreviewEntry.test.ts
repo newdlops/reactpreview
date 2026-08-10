@@ -23,6 +23,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('await import("react-preview:setup")');
     expect(entry).toContain('import("react-preview:apollo")');
     expect(entry).toContain('import("react-preview:context")');
+    expect(entry).toContain('import("react-preview:drag-drop")');
     expect(entry).toContain('import("react-preview:formik")');
     expect(entry).toContain('import("react-preview:redux")');
     expect(entry).toContain('import("react-preview:router")');
@@ -104,6 +105,9 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('React.createElement(React.Suspense, { fallback: suspenseFallback }');
     expect(entry).toContain("className: 'react-preview-suspense-placeholder'");
     expect(entry).toContain('React.createElement(PreviewRenderedCommitSignal)');
+    expect(entry).toContain('"component" === \'component\'');
+    expect(entry).toContain('this.commitTimer = globalThis.setTimeout(() => {');
+    expect(entry).toContain('globalThis.clearTimeout(this.commitTimer)');
     expect(entry).toContain('const previewPreparationPromise = preparePreviewElement()');
     expect(entry).toContain('React.createElement(\n    React.Fragment,');
     expect(entry).not.toContain(

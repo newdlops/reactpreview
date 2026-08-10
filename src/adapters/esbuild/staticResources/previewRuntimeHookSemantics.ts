@@ -131,6 +131,16 @@ export function inferPreviewRuntimeSemanticFallback(
       value: null,
     };
   }
+  if (
+    /^(?:avatar|image|photo|picture|thumbnail)(?:url|uri|href|src)$/u.test(normalized)
+  ) {
+    return {
+      expression: '""',
+      kind: 'string',
+      label: 'generated empty optional image source',
+      value: '',
+    };
+  }
   if (/(?:search|query)$/u.test(normalized)) {
     return {
       expression: JSON.stringify(createPreviewRuntimeSemanticString(semanticName)),

@@ -2,8 +2,57 @@
 import { describe, expect, it } from 'vitest';
 import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from '../../../../src/adapters/esbuild/staticResources/previewRuntimeHookChildPropDemand';
 import { createPreviewRuntimeHookReplacements } from '../../../../src/adapters/esbuild/staticResources/previewRuntimeHookInstrumentation';
+import { collectReactExportPropInference } from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
 
 describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
+  /** Carries a styled imported feed contract back into an ordinary directly previewed export. */
+  it('completes identity-forwarded props used by an imported styled component', () => {
+    const parentPath = '/workspace/CompanyIrClosingFeed.tsx';
+    const childPath = '/workspace/CompanyFeedBase.tsx';
+    const parentSource = [
+      `import { CompanyFeedBase } from './CompanyFeedBase';`,
+      'export const CompanyIrClosingFeed = ({ object }: any) => {',
+      '  const { company, ir: irInfo } = object;',
+      '  return <CompanyFeedBase company={company} irInfo={irInfo} />;',
+      '};',
+    ].join('\n');
+    const childSource = [
+      `import styled from 'styled-components';`,
+      'type Props = {',
+      '  company: { id: string; name: string; profileLogo: { url: string } | null };',
+      '  irInfo: { uuid: string } | null;',
+      '};',
+      'export const CompanyFeedBase = styled(({ company, irInfo }: Props) => {',
+      '  const { id, name, profileLogo } = company;',
+      '  return <main data-id={id} data-logo={profileLogo?.url}>{name}{irInfo?.uuid}</main>;',
+      '})``;',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === childPath ? childSource : undefined),
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './CompanyFeedBase' ? childPath : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const result = collectReactExportPropInference(parentPath, parentSource, {
+      childPropDemands: builder.collect(parentPath, parentSource),
+    });
+
+    expect(result.CompanyIrClosingFeed?.shape.properties?.object).toMatchObject({
+      properties: {
+        company: {
+          properties: {
+            id: { kind: 'string' },
+            name: { kind: 'string' },
+          },
+        },
+        ir: {
+          properties: { uuid: { kind: 'string' } },
+        },
+      },
+    });
+  });
+
   /** Carries an operation-proven child Array back through a hook-fed JSX carrier property. */
   it('completes a nested query response used by an imported child component', () => {
     const parentPath = '/workspace/HistoryPage.tsx';
@@ -36,10 +85,66 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     );
     const transformed = applyReplacements(parentSource, replacements);
 
+    expect(transformed).toContain('"rides": ((__createPreviewItem)');
+    expect(transformed).toContain('react-file-preview.generated-list-runtime');
+    expect(transformed).toContain('Object.freeze({ "id": "preview-id", "name": "name" })');
     expect(transformed).toContain(
-      '"data": Object.freeze({ "data": Object.freeze({ "rides": Object.freeze([]) }) })',
+      '"requiredPaths":["data.data","data.data.rides.map()","data.data.rides[].id","data.data.rides[].name"]',
     );
-    expect(transformed).toContain('"requiredPaths":["data.data","data.data.rides.map()"]');
+  });
+
+  /** Carries a leaf collection contract through a routed page and an intermediate child. */
+  it('propagates imported child demands transitively through a render-prop boundary', () => {
+    const parentPath = '/workspace/Project.tsx';
+    const boardPath = '/workspace/Board.tsx';
+    const listPath = '/workspace/List.tsx';
+    const parentSource = [
+      `import useApi from './api';`,
+      `import Board from './Board';`,
+      'export default function Project() {',
+      "  const [{ data }] = useApi.get('/project');",
+      '  const { project } = data;',
+      '  return <Route render={() => <Board project={project} />} />;',
+      '}',
+    ].join('\n');
+    const boardSource = [
+      `import List from './List';`,
+      'export default function Board({ project }) {',
+      '  return <List project={project} />;',
+      '}',
+    ].join('\n');
+    const listSource = [
+      'export default function List({ project }) {',
+      '  return project.issues.map((issue) => <span key={issue.id}>{issue.title}</span>);',
+      '}',
+    ].join('\n');
+    const sources = new Map([
+      [boardPath, boardSource],
+      [listPath, listSource],
+    ]);
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => sources.get(sourcePath),
+      resolveModule: (moduleSpecifier, consumerPath) => {
+        if (consumerPath === parentPath && moduleSpecifier === './Board') return boardPath;
+        if (consumerPath === boardPath && moduleSpecifier === './List') return listPath;
+        return undefined;
+      },
+      workspaceRoot: '/workspace',
+    });
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+      ),
+    );
+
+    expect(transformed).toContain('"issues": ((__createPreviewItem)');
+    expect(transformed).toContain('react-file-preview.generated-list-runtime');
+    expect(transformed).toContain('"id": "preview-id"');
+    expect(transformed).toContain('"title": "title"');
+    expect(transformed).toContain('data.project.issues[].title');
   });
 
   /** Leaves authored optional carrier chains untouched because they intentionally short-circuit. */
@@ -131,8 +236,8 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     );
 
     expect(transformed).toContain('"pageNameOrUrl": "pageNameOrUrl"');
-    expect(transformed).toContain('"pageGroups": Object.freeze([');
-    expect(transformed).toContain('"pages": Object.freeze([');
+    expect(transformed).toContain('"pageGroups": ((__createPreviewItem)');
+    expect(transformed).toContain('"pages": ((__createPreviewItem)');
     expect(transformed).toContain('[].pageGroups[].pages[].pageNameOrUrl');
   });
 
@@ -178,10 +283,9 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
       ),
     );
 
-    expect(transformed).toContain(
-      '"items": Object.freeze([Object.freeze({ "children": Object.freeze([',
-    );
-    expect(transformed).toContain('"id": "id"');
+    expect(transformed).toContain('"items": ((__createPreviewItem)');
+    expect(transformed).toContain('"children": ((__createPreviewItem)');
+    expect(transformed).toContain('"id": "preview-id"');
     expect(transformed).toContain('"label": "label"');
     expect(transformed).toContain('"failurePaths":["data.items[]"');
     expect(transformed).toContain('data.items[].children[].label');

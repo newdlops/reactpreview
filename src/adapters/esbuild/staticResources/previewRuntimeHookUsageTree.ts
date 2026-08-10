@@ -10,6 +10,7 @@ import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemanti
 import type { PreviewRuntimeHookAliasUsagePath } from './previewRuntimeHookAliasUsage';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
+import { PREVIEW_GENERATED_LIST_RUNTIME_KEY } from '../previewGeneratedListRuntimeSource';
 
 const COLLECTION_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
 
@@ -95,9 +96,7 @@ function deduplicatePreviewRuntimeHookUsagePaths(
       ...(itemRequiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
-      ...(existing.renderGuard === true || path_.renderGuard !== true
-        ? {}
-        : { renderGuard: true }),
+      ...(existing.renderGuard === true || path_.renderGuard !== true ? {} : { renderGuard: true }),
     });
   }
   const retainedPaths = [...retained.values()];
@@ -147,7 +146,11 @@ function formatPreviewRuntimeHookUsagePath(path_: PreviewRuntimeHookAliasUsagePa
   if (path_.stringProperty !== undefined)
     return `${base.length === 0 ? '<root>' : base}.${path_.stringProperty}()`;
   if (path_.collectionProperty === undefined)
-    return base.length === 0 ? (path_.called ? '<root>()' : '<root>') : base + (path_.called ? '()' : '');
+    return base.length === 0
+      ? path_.called
+        ? '<root>()'
+        : '<root>'
+      : base + (path_.called ? '()' : '');
   if (path_.collectionProperty === 'spread' || path_.collectionProperty === '[]') {
     return `${base}[]`;
   }
@@ -244,7 +247,7 @@ function createUsagePathExpression(
     (path_.collectionProperty !== undefined
       ? path_.collectionItemExpression === undefined
         ? (existingExpression ?? 'Object.freeze([])')
-        : `Object.freeze([${path_.collectionItemExpression}])`
+        : createPreviewGeneratedListExpression(path_.collectionItemExpression)
       : path_.stringProperty !== undefined
         ? JSON.stringify(createPreviewRuntimeSemanticString(semanticName))
         : path_.called
@@ -258,14 +261,7 @@ function createUsagePathExpression(
 /** Creates a short stable string leaf without exposing arbitrary application text. */
 function createPreviewRuntimeSemanticString(propertyName: string): string {
   const fallback = inferPreviewRuntimeSemanticFallback(propertyName);
-  if (fallback?.label === 'generated string') {
-    try {
-      const parsed = JSON.parse(fallback.expression) as unknown;
-      if (typeof parsed === 'string') return parsed;
-    } catch {
-      // Fall through to the readable key name when a future expression is not JSON text.
-    }
-  }
+  if (fallback?.kind === 'string' && typeof fallback.value === 'string') return fallback.value;
   return propertyName;
 }
 
@@ -298,12 +294,23 @@ function serializeUsageNode(node: PreviewRuntimeHookUsageNode): string {
 function serializeCollectionUsageNode(node: PreviewRuntimeHookUsageNode): string | undefined {
   const expressions = node.collectionItemExpressions ?? [];
   if (expressions.length === 0) return node.collectionExpression;
-  if (expressions.length === 1) return `Object.freeze([${expressions[0]}])`;
+  if (expressions.length === 1)
+    return createPreviewGeneratedListExpression(expressions[0] ?? 'undefined');
   if (!expressions.every(isMergeableCollectionItemObjectExpression)) {
     const last = expressions.at(-1);
-    return last === undefined ? node.collectionExpression : `Object.freeze([${last}])`;
+    return last === undefined
+      ? node.collectionExpression
+      : createPreviewGeneratedListExpression(last);
   }
-  return `Object.freeze([Object.freeze(Object.assign({}, ${expressions.join(', ')}))])`;
+  return createPreviewGeneratedListExpression(
+    `Object.freeze(Object.assign({}, ${expressions.join(', ')}))`,
+  );
+}
+
+/** Uses the shared runtime count while retaining a reorderable three-item cold fallback. */
+export function createPreviewGeneratedListExpression(itemExpression: string): string {
+  const runtimeKey = JSON.stringify(PREVIEW_GENERATED_LIST_RUNTIME_KEY);
+  return `((__createPreviewItem) => (globalThis[Symbol.for(${runtimeKey})]?.create?.(__createPreviewItem) ?? Array.from({ length: 3 }, __createPreviewItem)))(() => (${itemExpression}))`;
 }
 
 /** Restricts structural merging to expressions generated as frozen plain object records. */

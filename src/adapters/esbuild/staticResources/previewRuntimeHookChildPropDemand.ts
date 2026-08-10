@@ -12,6 +12,7 @@ import ts from 'typescript';
 import {
   collectReactExportPropInference,
   collectReactLocalComponentPropInference,
+  inferReactFunctionParameterUsageShape,
   type PreviewInferredPropShape,
 } from './reactExportPropInference';
 import {
@@ -28,14 +29,56 @@ import {
   unwrapPreviewRuntimeExpression,
 } from './previewRuntimeHookSyntax';
 import type { PreviewRuntimeFunction } from './previewRuntimeHookSyntax';
+import { createPreviewGeneratedListExpression } from './previewRuntimeHookUsageTree';
+import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 
 const MAX_COMPONENT_IMPORTS = 32;
 const MAX_PROP_DEMANDS = 32;
 const MAX_PROP_DEPTH = 8;
 const MAX_SOURCE_CHARACTERS = 512 * 1024;
+const MAX_TRANSITIVE_COMPONENT_DEPTH = 6;
 const SOURCE_PATTERN = /\.[cm]?[jt]sx?$/iu;
 const COLLECTION_IDENTITY_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 const BLOCKED_PROP_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const JSX_COLLECTION_PROP_NAMES = new Set([
+  'data',
+  'items',
+  'options',
+  'records',
+  'results',
+  'rows',
+  'values',
+]);
+const JSX_COLLECTION_FIELD_CONFIG_PROP_NAMES = new Set(['columns', 'fields']);
+const JSX_COLLECTION_ACTION_CONFIG_PROP_NAMES = new Set([
+  'actions',
+  'itemactions',
+  'rowactions',
+]);
+const JSX_COLLECTION_FIELD_KEY_NAMES = new Set(['accessorkey', 'dataindex', 'field', 'key']);
+const JSX_COLLECTION_FIELD_CALLBACK_NAMES = new Set([
+  'accessor',
+  'cell',
+  'formatter',
+  'getvalue',
+  'render',
+  'valuegetter',
+]);
+const JSX_COLLECTION_ACTION_CALLBACK_NAMES = new Set([
+  'action',
+  'execute',
+  'handler',
+  'onclick',
+]);
+const JSX_COLLECTION_DIRECT_CALLBACK_PROP_NAMES = new Set([
+  'getid',
+  'getkey',
+  'itemkey',
+  'keyextractor',
+  'renderitem',
+  'renderrow',
+  'rowkey',
+]);
 
 /** Operation-shaped use compatible with the hook analyzer's internal property-path contract. */
 export interface PreviewRuntimeHookChildPropUsage {
@@ -90,6 +133,8 @@ interface ImportedComponentBinding {
 /** Optional members are read only when an authored value is already being supplied by its caller. */
 interface PreviewRuntimeHookChildPropDemandCollectOptions {
   readonly includeOptionalTypes?: boolean;
+  /** Internal target-to-leaf depth retained across recursive imported JSX consumers. */
+  readonly transitiveDepth?: number;
 }
 
 /**
@@ -104,6 +149,7 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     string,
     Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> | undefined
   >();
+  private readonly activeInferenceIdentities = new Set<string>();
   private readonly workspaceRoot: string;
   private readonly typeDemands: PreviewRuntimeHookChildTypeDemandResolver;
 
@@ -128,6 +174,7 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
       readScriptKind(sourcePath),
     );
     if (hasParseDiagnostics(sourceFile)) return new Map();
+    const transitiveDepth = options.transitiveDepth ?? 0;
     const imports = collectImportedComponentBindings(sourceFile);
     const usedComponents = new Set(
       collectUsedJsxComponentBindings(sourceFile, collectHookResultBindings(sourceFile)),
@@ -151,9 +198,11 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
         if (imported === undefined) continue;
         const resolvedPath = this.options.resolveModule(imported.moduleSpecifier, sourcePath);
         if (resolvedPath === undefined || !this.isInspectableSource(resolvedPath)) continue;
-        inference = this.readInference(resolvedPath, options.includeOptionalTypes === true)?.[
-          imported.exportName
-        ];
+        inference = this.readInference(
+          resolvedPath,
+          options.includeOptionalTypes === true,
+          transitiveDepth + 1,
+        )?.[imported.exportName];
       }
       const properties = inference?.shape.properties;
       if (properties === undefined || Object.keys(properties).length === 0) continue;
@@ -254,7 +303,8 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
       localName,
       parameterIndex,
     );
-    const property = parameter?.kind === 'object' ? parameter.properties?.[propertyName] : undefined;
+    const property =
+      parameter?.kind === 'object' ? parameter.properties?.[propertyName] : undefined;
     if (property === undefined) return undefined;
     return Object.freeze({
       expression: serializePreviewRuntimeHookChildShape(property, propertyName),
@@ -268,24 +318,58 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
   private readInference(
     sourcePath: string,
     includeOptionalTypes: boolean,
+    transitiveDepth: number,
   ): Readonly<Record<string, { readonly shape: PreviewInferredPropShape }>> | undefined {
+    if (transitiveDepth > MAX_TRANSITIVE_COMPONENT_DEPTH) return undefined;
     const normalizedPath = path.normalize(sourcePath);
-    const cache = includeOptionalTypes
-      ? this.presentValueInferenceCache
-      : this.inferenceCache;
-    if (cache.has(normalizedPath)) return cache.get(normalizedPath);
-    const sourceText = this.options.readSource?.(normalizedPath) ?? ts.sys.readFile(normalizedPath);
-    const inference =
-      sourceText === undefined || sourceText.length > MAX_SOURCE_CHARACTERS
-        ? undefined
-        : mergeComponentInferences(
-            collectReactExportPropInference(normalizedPath, sourceText),
-            this.typeDemands.collect(normalizedPath, sourceText, {
-              includeOptionalProperties: includeOptionalTypes,
-            }),
-          );
-    cache.set(normalizedPath, inference);
-    return inference;
+    const cache = includeOptionalTypes ? this.presentValueInferenceCache : this.inferenceCache;
+    const cacheKey = `${normalizedPath}\0${transitiveDepth.toString()}`;
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+    const activeIdentity = `${normalizedPath}\0${includeOptionalTypes ? 'optional' : 'required'}`;
+    if (this.activeInferenceIdentities.has(activeIdentity)) return undefined;
+    this.activeInferenceIdentities.add(activeIdentity);
+    try {
+      const sourceText =
+        this.options.readSource?.(normalizedPath) ?? ts.sys.readFile(normalizedPath);
+      if (sourceText === undefined || sourceText.length > MAX_SOURCE_CHARACTERS) {
+        cache.set(cacheKey, undefined);
+        return undefined;
+      }
+      const childPropDemands =
+        transitiveDepth >= MAX_TRANSITIVE_COMPONENT_DEPTH
+          ? undefined
+          : this.collect(normalizedPath, sourceText, {
+              includeOptionalTypes,
+              transitiveDepth,
+            });
+      const inference = mergeComponentInferences(
+        collectReactExportPropInference(normalizedPath, sourceText, {
+          ...(childPropDemands === undefined || childPropDemands.size === 0
+            ? {}
+            : { childPropDemands }),
+          resolveImport: (moduleSpecifier, importerPath) => {
+            const importedPath = this.options.resolveModule(moduleSpecifier, importerPath);
+            if (importedPath === undefined || !this.isInspectableSource(importedPath)) {
+              return undefined;
+            }
+            const normalizedImportedPath = path.normalize(importedPath);
+            const importedSource =
+              this.options.readSource?.(normalizedImportedPath) ??
+              ts.sys.readFile(normalizedImportedPath);
+            return importedSource === undefined
+              ? undefined
+              : { sourcePath: normalizedImportedPath, sourceText: importedSource };
+          },
+        }),
+        this.typeDemands.collect(normalizedPath, sourceText, {
+          includeOptionalProperties: includeOptionalTypes,
+        }),
+      );
+      cache.set(cacheKey, inference);
+      return inference;
+    } finally {
+      this.activeInferenceIdentities.delete(activeIdentity);
+    }
   }
 
   /** Rejects generated declarations, non-source assets, and workspace-escaping resolution. */
@@ -347,9 +431,7 @@ export function readPreviewRuntimeHookChildPropUsages(
     ) {
       const expression = node.initializer.expression;
       const sourcePaths =
-        expression === undefined
-          ? []
-          : readRequiredAliasPaths(expression, aliases);
+        expression === undefined ? [] : readRequiredAliasPaths(expression, aliases);
       const propName = ts.isIdentifier(node.name) ? node.name.text : undefined;
       const componentName = readJsxAttributeComponentName(node);
       const shape =
@@ -420,6 +502,175 @@ export function readPreviewRuntimeHookDirectChildPropUsages(
   const usages: PreviewRuntimeHookChildPropUsage[] = [];
   appendShapeUsages(shape, [], [], usages, 0);
   return deduplicateUsages(usages);
+}
+
+/**
+ * Correlates one hook-fed JSX collection with row contracts authored beside that exact prop.
+ *
+ * Generic table/grid packages often expose their row type only through sibling configuration:
+ * `data={rows}`, `columns={[{ key: 'title', formatter: row => row.startDate }]}`, and
+ * `getID={row => row.id}`. The package implementation may live outside the inspectable workspace,
+ * but these local literals and callback reads still prove the generated row fields. Only familiar
+ * collection/config prop names and direct static callbacks participate; arbitrary child props stay
+ * opaque.
+ */
+export function inferPreviewRuntimeHookJsxCollectionItemFallback(
+  identifier: ts.Identifier,
+): PreviewRuntimeHookLocalTypeFallback | undefined {
+  const owner = findNearestPreviewRuntimeFunction(identifier);
+  if (owner === undefined) return undefined;
+  let itemShape: PreviewInferredPropShape | undefined;
+
+  const mergeItemShape = (shape: PreviewInferredPropShape | undefined): void => {
+    if (shape?.kind !== 'object') return;
+    itemShape = mergePreviewRuntimeHookChildPropShapes(itemShape, shape);
+  };
+  const appendField = (fieldName: string): void => {
+    if (fieldName.length === 0 || fieldName.length > 128 || BLOCKED_PROP_NAMES.has(fieldName)) {
+      return;
+    }
+    const semantic = inferPreviewRuntimeSemanticFallback(fieldName);
+    const scalarKind =
+      semantic?.kind === 'boolean' ||
+      semantic?.kind === 'null' ||
+      semantic?.kind === 'number' ||
+      semantic?.kind === 'string'
+        ? semantic.kind
+        : 'string';
+    const value = scalarKind === semantic?.kind ? semantic.value : fieldName;
+    mergeItemShape(
+      Object.freeze({
+        kind: 'object',
+        properties: Object.freeze({
+          [fieldName]: Object.freeze({
+            kind: scalarKind,
+            ...(value === undefined ? {} : { value }),
+          }),
+        }),
+      }),
+    );
+  };
+  const appendCallback = (
+    callback: ts.ArrowFunction | ts.FunctionExpression,
+  ): void => {
+    mergeItemShape(inferReactFunctionParameterUsageShape(callback, 0));
+  };
+  const collectConfig = (
+    expression: ts.Expression,
+    fieldConfig: boolean,
+    callbackNames: ReadonlySet<string>,
+  ): void => {
+    const visitConfig = (node: ts.Node): void => {
+      if (ts.isPropertyAssignment(node)) {
+        const propertyName = readPreviewRuntimeHookStaticPropertyName(node.name)?.toLowerCase();
+        const initializer = unwrapPreviewRuntimeExpression(node.initializer);
+        if (
+          fieldConfig &&
+          propertyName !== undefined &&
+          JSX_COLLECTION_FIELD_KEY_NAMES.has(propertyName) &&
+          ts.isStringLiteralLike(initializer)
+        ) {
+          appendField(initializer.text);
+        }
+        if (
+          propertyName !== undefined &&
+          callbackNames.has(propertyName) &&
+          (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+        ) {
+          appendCallback(initializer);
+          return;
+        }
+      }
+      ts.forEachChild(node, visitConfig);
+    };
+    visitConfig(expression);
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (
+      node !== owner &&
+      isPreviewRuntimeFunction(node) &&
+      functionShadowsName(node, identifier.text)
+    ) {
+      return;
+    }
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const attributes = node.attributes.properties;
+      const collectionAttribute = attributes.find((attribute) => {
+        if (
+          !ts.isJsxAttribute(attribute) ||
+          attribute.initializer === undefined ||
+          !ts.isJsxExpression(attribute.initializer) ||
+          attribute.initializer.expression === undefined
+        ) {
+          return false;
+        }
+        const propName = readPreviewRuntimeHookJsxAttributeName(attribute)?.toLowerCase();
+        const value = unwrapPreviewRuntimeExpression(attribute.initializer.expression);
+        return (
+          propName !== undefined &&
+          JSX_COLLECTION_PROP_NAMES.has(propName) &&
+          ts.isIdentifier(value) &&
+          value.text === identifier.text
+        );
+      });
+      if (collectionAttribute !== undefined) {
+        for (const attribute of attributes) {
+          if (
+            !ts.isJsxAttribute(attribute) ||
+            attribute.initializer === undefined ||
+            !ts.isJsxExpression(attribute.initializer) ||
+            attribute.initializer.expression === undefined
+          ) {
+            continue;
+          }
+          const propName = readPreviewRuntimeHookJsxAttributeName(attribute)?.toLowerCase();
+          if (propName === undefined) continue;
+          const expression = unwrapPreviewRuntimeExpression(attribute.initializer.expression);
+          if (
+            JSX_COLLECTION_DIRECT_CALLBACK_PROP_NAMES.has(propName) &&
+            (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))
+          ) {
+            appendCallback(expression);
+          } else if (JSX_COLLECTION_FIELD_CONFIG_PROP_NAMES.has(propName)) {
+            collectConfig(expression, true, JSX_COLLECTION_FIELD_CALLBACK_NAMES);
+          } else if (JSX_COLLECTION_ACTION_CONFIG_PROP_NAMES.has(propName)) {
+            collectConfig(expression, false, JSX_COLLECTION_ACTION_CALLBACK_NAMES);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+
+  if (itemShape?.kind !== 'object' || Object.keys(itemShape.properties ?? {}).length === 0) {
+    return undefined;
+  }
+  return Object.freeze({
+    expression: serializePreviewRuntimeHookChildShape(itemShape, 'row'),
+    kind: 'object',
+    label: 'generated row from JSX collection configuration',
+    requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(itemShape)),
+  });
+}
+
+/** Reads one ordinary JSX attribute name without admitting namespace syntax. */
+function readPreviewRuntimeHookJsxAttributeName(
+  attribute: ts.JsxAttribute,
+): string | undefined {
+  return ts.isIdentifier(attribute.name) ? attribute.name.text : undefined;
+}
+
+/** Reads one prototype-safe static object-literal property name. */
+function readPreviewRuntimeHookStaticPropertyName(name: ts.PropertyName): string | undefined {
+  const propertyName =
+    ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)
+      ? name.text
+      : undefined;
+  return propertyName === undefined || BLOCKED_PROP_NAMES.has(propertyName)
+    ? undefined
+    : propertyName;
 }
 
 /** Indexes default and named imports; namespace/member JSX remains conservatively unsupported. */
@@ -774,7 +1025,9 @@ function serializePreviewRuntimeHookChildShape(
   if (shape.kind === 'array') {
     return shape.items === undefined
       ? 'Object.freeze([])'
-      : `Object.freeze([${serializePreviewRuntimeHookChildShape(shape.items, propertyName)}])`;
+      : createPreviewGeneratedListExpression(
+          serializePreviewRuntimeHookChildShape(shape.items, propertyName),
+        );
   }
   if (shape.kind === 'boolean')
     return typeof shape.value === 'boolean' ? String(shape.value) : 'false';

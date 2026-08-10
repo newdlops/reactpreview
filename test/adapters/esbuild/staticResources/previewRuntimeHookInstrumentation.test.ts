@@ -31,6 +31,27 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["0","1()"]');
   });
 
+  it('preserves a static custom merge-state initializer instead of guessing its fields', () => {
+    const source = [
+      `import useMergeState from './merge-state';`,
+      'const defaultFilters = { searchTerm: "", userIds: [], myOnly: false, recent: false };',
+      'export function Board() {',
+      '  const [filters, mergeFilters] = useMergeState(defaultFilters);',
+      '  return <main data-active={filters.userIds.includes(1)} onClick={mergeFilters} />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Board.tsx', source),
+    );
+
+    expect(transformed).toContain(
+      'Object.freeze({ "searchTerm": "", "userIds": Object.freeze([]), "myOnly": false, "recent": false })',
+    );
+    expect(transformed).toContain('"fallbackLabel":"authored initial state + no-op setter"');
+  });
+
   /** Infers boolean and destructured object fields for project-alias custom hooks. */
   it('creates bounded static values from custom-hook bindings', () => {
     const source = [
@@ -349,9 +370,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/FeedbackPage.tsx', source),
     );
 
-    expect(transformed).toContain(
-      'Object.freeze({ "data": Object.freeze({ "pages": Object.freeze([Object.freeze({ "items": Object.freeze([]) })]) }) })',
-    );
+    expect(transformed).toContain('"pages": ((__createPreviewItem)');
+    expect(transformed).toContain('Object.freeze({ "items": Object.freeze([]) })');
     expect(transformed).toContain('"failurePaths":["data.pages.flatMap()","data.pages[].items"]');
     expect(transformed).toContain('"requiredPaths":[]');
     expect(transformed).not.toContain('"requiredPaths":["data"]');
@@ -377,9 +397,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/FeedbackPage.tsx', source),
     );
 
-    expect(transformed).toContain(
-      '"data": Object.freeze({ "pages": Object.freeze([Object.freeze({ "items": Object.freeze([]) })]) })',
-    );
+    expect(transformed).toContain('"pages": ((__createPreviewItem)');
+    expect(transformed).toContain('Object.freeze({ "items": Object.freeze([]) })');
     expect(transformed).toContain('"failurePaths":["data.pages.flatMap()","data.pages[].items"]');
     expect(transformed).toContain('"requiredPaths":["fetchNextPage()","hasNextPage"]');
   });
@@ -440,9 +459,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/Navigation.tsx', source),
     );
 
-    expect(transformed).toContain(
-      'Object.freeze([Object.freeze({ "pageGroups": Object.freeze([Object.freeze({ "pages": Object.freeze([Object.freeze({ "activeRoutes": Object.freeze([new RegExp(".*")]) })]) })]) })])',
-    );
+    expect(transformed.match(/react-file-preview\.generated-list-runtime/gu)).toHaveLength(4);
+    expect(transformed).toContain('new RegExp(".*")');
     expect(transformed).toContain(
       '"requiredPaths":["[].pageGroups.forEach()","[].pageGroups[].pages.forEach()","[].pageGroups[].pages[].activeRoutes[]"]',
     );
@@ -654,8 +672,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["shortName","name","subscription"]');
   });
 
-  /** Shapes one list item from callback reads so Auto values renders content instead of an empty list. */
-  it('infers array callback item fields for a visible one-item preview', () => {
+  /** Shapes sample rows from callback reads so Auto values render content instead of an empty list. */
+  it('infers array callback item fields for a visible sample-list preview', () => {
     const source = [
       `import { useEmployees } from './use-employees';`,
       'export function EmployeeList() {',
@@ -669,11 +687,47 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/EmployeeList.tsx', source),
     );
 
-    expect(transformed).toContain('Object.freeze([Object.freeze({');
+    expect(transformed).toContain('react-file-preview.generated-list-runtime');
+    expect(transformed).toContain('() => (Object.freeze({');
     expect(transformed).toContain('"email": "preview@example.invalid"');
     expect(transformed).toContain('"id": "preview-id"');
     expect(transformed).toContain('"name": "name"');
     expect(transformed).toContain('"requiredPaths":["[].id","[].name","[].email"]');
+  });
+
+  /** Correlates package-owned table data with locally authored column and row callback contracts. */
+  it('infers date-safe rows from sibling JSX table configuration', () => {
+    const source = [
+      `import usePatientCarePlans from './use-patient-care-plans';`,
+      'export function CarePlanTable() {',
+      '  const { data, status } = usePatientCarePlans("patient-id");',
+      '  if (data === undefined || status === "loading") return null;',
+      '  return <Table',
+      '    getID={(row) => row.id}',
+      '    data={data}',
+      '    columns={[',
+      '      { label: "Title", key: "title" },',
+      '      { key: "startDate", formatter: (row) => format(new Date(row.startDate)) },',
+      '      { key: "endDate", formatter: (row) => format(new Date(row.endDate)) },',
+      '      { label: "Status", key: "status" },',
+      '    ]}',
+      '    actions={[{ label: "View", action: (row) => navigate(row.id) }]}',
+      '  />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/CarePlanTable.tsx', source),
+    );
+
+    expect(transformed).toContain('"endDate": "2024-01-01T00:00:00.000Z"');
+    expect(transformed).toContain('"id": "preview-id"');
+    expect(transformed).toContain('"startDate": "2024-01-01T00:00:00.000Z"');
+    expect(transformed).toContain('"status": "PREVIEW"');
+    expect(transformed).toContain('"title": "title"');
+    expect(transformed).toContain('data.[].startDate');
+    expect(transformed).toContain('data.[].endDate');
   });
 
   /** Keeps ReactNode-style Context arrays renderable when their map callback returns each item. */
@@ -692,7 +746,8 @@ describe('createPreviewRuntimeHookReplacements', () => {
       createPreviewRuntimeHookReplacements('/workspace/ButtonToolBar.tsx', source),
     );
 
-    expect(transformed).toContain('Object.freeze(["button"])');
+    expect(transformed).toContain('react-file-preview.generated-list-runtime');
+    expect(transformed).toContain('() => ("button")');
     expect(transformed).toContain('"requiredPaths":["[]"]');
     expect(transformed).not.toContain('Object.freeze({ id: "preview-id", name: "name" })');
   });
@@ -761,6 +816,53 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(transformed).not.toContain('"theme": (\'module-theme\')');
     expect(transformed).not.toContain('authored query-state parser defaults');
+  });
+
+  /** Infers the caller-owned tuple behind an imported HTTP hook facade such as useApi.get. */
+  it('wraps bounded data-hook facade methods with their downstream state contract', () => {
+    const source = [
+      `import useApi from 'shared/hooks/api';`,
+      'export function Project() {',
+      `  const [{ data, error, setLocalData }, fetchProject] = useApi.get('/project');`,
+      '  if (!data) return null;',
+      '  if (error) return <div>Error</div>;',
+      '  return data.project.users.map(user => <span key={user.id}>{user.name}</span>);',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Project.jsx', source),
+    );
+
+    expect(transformed).toContain("resolveRuntimeHook(() => (useApi.get('/project'))");
+    expect(transformed).toContain('"hookName":"useApi.get"');
+    expect(transformed).toContain('"data": Object.freeze({ "project": Object.freeze({ "users":');
+    expect(transformed).toContain('react-file-preview.generated-list-runtime');
+    expect(transformed).toContain('"error": null');
+    expect(transformed).toContain('"setLocalData": Object.freeze(() => undefined)');
+    expect(transformed).toContain('"requiredPaths":["0.data.project.users.map()"');
+  });
+
+  /** Leaves a projected inner hook nullish so an instrumented facade caller can repair its tuple. */
+  it('preserves direct lower-case hook-wrapper returns for caller-owned inference', () => {
+    const source = [
+      `import useQuery from './query';`,
+      'export default {',
+      '  get: (...args) => useQuery(...args),',
+      '};',
+    ].join('\n');
+
+    const replacements = createPreviewRuntimeHookReplacements('/workspace/api/index.js', source);
+
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0]?.replacement).toContain('() => (undefined)');
+    expect(replacements[0]?.replacement).toContain(
+      '"fallbackLabel":"preserved hook-wrapper result"',
+    );
+    expect(replacements[0]?.replacement).toContain('"passive":true');
+    expect(replacements[0]?.replacement).toContain('"preserveNullish":true');
+    expect(replacements[0]?.replacement).toContain('"requiredPaths":[]');
   });
 
   /** Instruments state and Context wrapper hooks while leaving React-owned hooks to their bridges. */

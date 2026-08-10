@@ -37,6 +37,11 @@ export interface PreviewRuntimeLocalHelperParameterDemand {
   readonly parameter: ts.ParameterDeclaration;
 }
 
+/** One prop-rooted call argument paired with the exact local helper parameter that receives it. */
+export interface PreviewRuntimeLocalHelperArgumentDemand extends PreviewRuntimeLocalHelperParameterDemand {
+  readonly argument: ts.Expression;
+}
+
 const MAX_LOCAL_HELPER_STATES = 16;
 const ITEM_RESULT_COLLECTION_METHODS = new Set(['find', 'findLast']);
 
@@ -138,6 +143,41 @@ export function collectPreviewRuntimeLocalHelperParameterDemands(
     }
   }
   return Object.freeze(demands);
+}
+
+/**
+ * Finds direct local-helper calls while retaining the full argument expression.
+ * The prop analyzer uses this to carry `project.issues` into `filterIssues(issues)`; the existing
+ * identity graph continues to own transitive identifier-only forwarding.
+ */
+export function collectPreviewRuntimeLocalHelperArgumentDemands(
+  owner: RuntimeFunction,
+  sourceFile: ts.SourceFile,
+): readonly PreviewRuntimeLocalHelperArgumentDemand[] {
+  const declarations = collectUniqueLocalRuntimeFunctions(sourceFile);
+  const demands: PreviewRuntimeLocalHelperArgumentDemand[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isRuntimeFunction(node)) return;
+    if (ts.isCallExpression(node)) {
+      const callee = unwrapPreviewRuntimeExpression(node.expression);
+      const helper = ts.isIdentifier(callee) ? declarations.get(callee.text) : undefined;
+      if (helper !== undefined && helper !== owner) {
+        for (const [argumentIndex, argument] of node.arguments.entries()) {
+          if (ts.isSpreadElement(argument)) continue;
+          const parameter = helper.parameters[argumentIndex];
+          if (parameter === undefined || parameter.dotDotDotToken !== undefined) continue;
+          demands.push({
+            argument: unwrapPreviewRuntimeExpression(argument),
+            owner: helper,
+            parameter,
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  return Object.freeze(demands.slice(0, MAX_LOCAL_HELPER_STATES));
 }
 
 /**

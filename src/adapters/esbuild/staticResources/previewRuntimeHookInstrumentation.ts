@@ -34,6 +34,7 @@ import {
   type PreviewRuntimeHookAliasUsagePath as PreviewRuntimeHookUsagePath,
 } from './previewRuntimeHookAliasUsage';
 import {
+  inferPreviewRuntimeHookJsxCollectionItemFallback,
   type PreviewRuntimeHookLocalTypeFallback,
   readPreviewRuntimeHookChildPropUsages,
   readPreviewRuntimeHookDirectChildPropUsages,
@@ -45,6 +46,7 @@ import { readPreviewRuntimeHookDestructuredPaths } from './previewRuntimeHookDes
 import { inferPreviewRuntimeHookDynamicElementFallback } from './previewRuntimeHookDynamicElementDemand';
 import { readPreviewRuntimeHookGraphqlArguments } from './previewRuntimeHookGraphqlArguments';
 import { readPreviewRuntimeHookIdentityAliasCollectionUsages } from './previewRuntimeHookIdentityAliases';
+import { readPreviewRuntimeHookInitialStateExpression } from './previewRuntimeHookInitialState';
 import { inferPreviewRuntimeHookJsxComponentFallback } from './previewRuntimeHookJsxComponent';
 import {
   inferPreviewRuntimeLocalHelperArrayItemFallback,
@@ -77,7 +79,10 @@ import {
 } from './previewRuntimeHookSyntax';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import { inferPreviewRuntimeHookSpreadItemFallback } from './previewRuntimeHookSpreadItem';
-import { createPreviewRuntimeHookUsageTreeFallback } from './previewRuntimeHookUsageTree';
+import {
+  createPreviewGeneratedListExpression,
+  createPreviewRuntimeHookUsageTreeFallback,
+} from './previewRuntimeHookUsageTree';
 const INSPECTOR_API_SYMBOL = 'newdlops.react-file-preview.page-inspector';
 const MAX_HOOKS_PER_MODULE = 96;
 const MAX_METADATA_TEXT_LENGTH = 180;
@@ -86,6 +91,15 @@ const LAZY_QUERY_HOOK_PATTERN = /^use(?:[A-Z0-9_$][A-Za-z0-9_$]*)?LazyQuery$/u;
 const QUERY_PARAM_MODULE = 'use-query-params';
 const REACT_CONTEXT_HOOK = 'useContext';
 const REACT_MODULE = 'react';
+const DATA_HOOK_FACADE_METHODS = new Set([
+  'delete',
+  'get',
+  'mutation',
+  'patch',
+  'post',
+  'put',
+  'query',
+]);
 const EXCLUDED_MODULES = new Set([
   'react',
   'react-dom',
@@ -429,11 +443,15 @@ function readRuntimeHookBinding(
   if (ts.isIdentifier(unwrapped)) {
     return inventory.direct.get(unwrapped.text);
   }
-  if (
-    ts.isPropertyAccessExpression(unwrapped) &&
-    ts.isIdentifier(unwrapped.expression) &&
-    CUSTOM_HOOK_PATTERN.test(unwrapped.name.text)
-  ) {
+  if (ts.isPropertyAccessExpression(unwrapped) && ts.isIdentifier(unwrapped.expression)) {
+    const directFacade = inventory.direct.get(unwrapped.expression.text);
+    if (directFacade !== undefined && DATA_HOOK_FACADE_METHODS.has(unwrapped.name.text)) {
+      return {
+        hookName: directFacade.hookName + '.' + unwrapped.name.text,
+        moduleSpecifier: directFacade.moduleSpecifier,
+      };
+    }
+    if (!CUSTOM_HOOK_PATTERN.test(unwrapped.name.text)) return undefined;
     const namespace = inventory.namespaces.get(unwrapped.expression.text);
     if (namespace?.moduleSpecifier === REACT_MODULE && unwrapped.name.text !== REACT_CONTEXT_HOOK) {
       return undefined;
@@ -477,6 +495,19 @@ function inferRuntimeHookFallback(
       requiredPaths: ['0', '1()'],
     };
   }
+  const initialStateExpression = readPreviewRuntimeHookInitialStateExpression(
+    call,
+    hook.hookName,
+    sourceFile,
+  );
+  if (initialStateExpression !== undefined) {
+    return {
+      evidence: 'authored static initial state plus an inert merge setter',
+      expression: `Object.freeze([${initialStateExpression}, Object.freeze(() => undefined)])`,
+      label: 'authored initial state + no-op setter',
+      requiredPaths: ['0', '1()'],
+    };
+  }
   const callbackIdentity = createPreviewRuntimeHookCallbackIdentityFallback(
     call,
     hook,
@@ -486,6 +517,16 @@ function inferRuntimeHookFallback(
   if (callbackIdentity !== undefined) return callbackIdentity;
   const expression = unwrapParentExpression(call);
   const parent = expression.parent;
+  if (isPreviewRuntimeDirectHookWrapperReturn(expression)) {
+    return {
+      evidence: 'direct hook-wrapper return delegated to its caller contract',
+      expression: 'undefined',
+      label: 'preserved hook-wrapper result',
+      passive: true,
+      preserveNullish: true,
+      requiredPaths: [],
+    };
+  }
   if (ts.isExpressionStatement(parent)) {
     return {
       evidence: 'hook return value is intentionally ignored',
@@ -563,6 +604,22 @@ function inferRuntimeHookFallback(
 }
 
 /**
+ * Preserves a lower-case hook/facade wrapper's return so its instrumented caller can supply shape.
+ * React components conventionally begin with an uppercase name; their direct rendered hook result
+ * continues through the existing empty-render branch instead of being classified as delegation.
+ */
+function isPreviewRuntimeDirectHookWrapperReturn(expression: ts.Expression): boolean {
+  const owner = findNearestRuntimeFunction(expression);
+  const ownerName = readPreviewRuntimeFunctionName(owner);
+  if (owner === undefined || ownerName === undefined || /^[A-Z]/u.test(ownerName)) return false;
+  if (ts.isArrowFunction(owner) && !ts.isBlock(owner.body)) {
+    return unwrapExpression(owner.body) === expression;
+  }
+  const parent = expression.parent;
+  return ts.isReturnStatement(parent) && parent.expression === expression;
+}
+
+/**
  * Preserves an authored callback when a callback-wrapper hook is unavailable in a projected module.
  *
  * Hooks such as `useEventCallback(() => ++key.current)` return a stable callable rather than a
@@ -623,9 +680,7 @@ function createBindingFallback(
     if (usageShape !== undefined) return withOverlayStateDemand(usageShape);
     const semantic = inferPreviewRuntimeSemanticFallback(binding.text);
     const guardPass =
-      semantic?.kind === 'boolean'
-        ? inferPreviewRuntimeHookGuardPassFallback(binding)
-        : undefined;
+      semantic?.kind === 'boolean' ? inferPreviewRuntimeHookGuardPassFallback(binding) : undefined;
     if (guardPass !== undefined) {
       return withOverlayStateDemand({
         ...guardPass,
@@ -1079,6 +1134,11 @@ function createIdentifierUsageFallback(
       paths.push(usage);
     }
   }
+  const jsxCollectionItemFallback = inferPreviewRuntimeHookJsxCollectionItemFallback(identifier);
+  if (jsxCollectionItemFallback !== undefined) {
+    arrayRootEvidence.push('JSX collection configuration');
+    arrayItemFallbacks.push(jsxCollectionItemFallback);
+  }
   if (arrayRootEvidence.length > 0) {
     const item = [...arrayItemFallbacks].sort(
       (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
@@ -1087,9 +1147,14 @@ function createIdentifierUsageFallback(
       label: 'generated generic preview item',
       requiredPaths: ['id', 'name'],
     };
+    const exactMembership = item.label === 'authored collection membership item';
     return {
-      expression: `Object.freeze([${item.expression}])`,
-      label: 'generated one-item list from local usage',
+      expression: exactMembership
+        ? `Object.freeze([${item.expression}])`
+        : createPreviewGeneratedListExpression(item.expression),
+      label: exactMembership
+        ? 'generated one-item list from local usage'
+        : 'generated sample list from local usage',
       ...(opaqueCallArgumentReferences > 0 ? { neutralCollectionOnOpaqueCall: true } : {}),
       ...(opaqueReferences > 0 ? { projectionUnsafe: true } : {}),
       requiredPaths: prefixPreviewRuntimeHookPaths(item.requiredPaths, '[]'),

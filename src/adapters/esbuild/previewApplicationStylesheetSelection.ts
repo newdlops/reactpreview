@@ -6,6 +6,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import type { ReadPreviewProjectSourceOptions } from './previewProjectFileAnalysisCache';
+import type { PreviewRenderChainCandidate } from './renderGraph/previewRenderGraphTypes';
 
 const MAXIMUM_APPLICATION_ROOT_BYTES = 1024 * 1024;
 const MAXIMUM_APPLICATION_STYLESHEET_IMPORTS = 8;
@@ -26,6 +27,8 @@ export interface SelectPreviewApplicationStylesheetImportsOptions {
   readonly projectRoot: string;
   /** Cached byte-bounded source reader shared with the rest of preview preparation. */
   readonly readSource: (options: ReadPreviewProjectSourceOptions) => Promise<string | undefined>;
+  /** Exact target-to-entry path whose omitted application wrappers may own side-effect CSS. */
+  readonly renderPath?: PreviewRenderChainCandidate;
 }
 
 /** Existing conventional application root plus its current inert source text. */
@@ -43,12 +46,25 @@ interface PreviewConventionalApplicationRoot {
 export async function selectPreviewApplicationStylesheetImports(
   options: SelectPreviewApplicationStylesheetImportsOptions,
 ): Promise<readonly PreviewApplicationStylesheetImportSelection[]> {
-  const root = await selectConventionalApplicationRoot(options);
-  if (root === undefined) return Object.freeze([]);
-  const sourceFile = createApplicationRootSourceFile(root.sourcePath, root.sourceText);
-  if (hasParseDiagnostics(sourceFile)) return Object.freeze([]);
-
   const selections: PreviewApplicationStylesheetImportSelection[] = [];
+  const identities = new Set<string>();
+  const roots = await collectApplicationStyleRoots(options);
+  for (const root of roots) {
+    const sourceFile = createApplicationRootSourceFile(root.sourcePath, root.sourceText);
+    if (hasParseDiagnostics(sourceFile)) continue;
+    collectSourceStylesheetImports(root.sourcePath, sourceFile, selections, identities);
+    if (selections.length >= MAXIMUM_APPLICATION_STYLESHEET_IMPORTS) break;
+  }
+  return Object.freeze(selections);
+}
+
+/** Collects cascade-ordered inert stylesheet imports from one exact application source. */
+function collectSourceStylesheetImports(
+  importerPath: string,
+  sourceFile: ts.SourceFile,
+  selections: PreviewApplicationStylesheetImportSelection[],
+  identities: Set<string>,
+): void {
   for (const statement of sourceFile.statements) {
     if (
       !ts.isImportDeclaration(statement) ||
@@ -59,10 +75,43 @@ export async function selectPreviewApplicationStylesheetImports(
     }
     const moduleSpecifier = statement.moduleSpecifier.text;
     if (!isPreviewApplicationStylesheetPath(moduleSpecifier)) continue;
-    selections.push(Object.freeze({ importerPath: root.sourcePath, moduleSpecifier }));
+    const identity = JSON.stringify([path.normalize(importerPath), moduleSpecifier]);
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    selections.push(Object.freeze({ importerPath, moduleSpecifier }));
     if (selections.length >= MAXIMUM_APPLICATION_STYLESHEET_IMPORTS) break;
   }
-  return Object.freeze(selections);
+}
+
+/** Merges a conventional Next root with exact omitted wrappers from a proven render path. */
+async function collectApplicationStyleRoots(
+  options: SelectPreviewApplicationStylesheetImportsOptions,
+): Promise<readonly PreviewConventionalApplicationRoot[]> {
+  const roots: PreviewConventionalApplicationRoot[] = [];
+  const seen = new Set<string>();
+  const conventional = await selectConventionalApplicationRoot(options);
+  if (conventional !== undefined) {
+    roots.push(conventional);
+    seen.add(path.normalize(conventional.sourcePath));
+  }
+  const renderSources = [
+    ...(options.renderPath?.entryPoint === undefined
+      ? []
+      : [options.renderPath.entryPoint.sourcePath]),
+    ...[...(options.renderPath?.steps ?? [])].reverse().map((step) => step.sourcePath),
+  ];
+  for (const sourcePath of renderSources) {
+    if (roots.length >= MAXIMUM_APPLICATION_STYLESHEET_IMPORTS) break;
+    const normalizedPath = path.normalize(sourcePath);
+    if (seen.has(normalizedPath)) continue;
+    seen.add(normalizedPath);
+    const sourceText = await options.readSource({
+      maximumBytes: MAXIMUM_APPLICATION_ROOT_BYTES,
+      sourcePath: normalizedPath,
+    });
+    if (sourceText !== undefined) roots.push({ sourcePath: normalizedPath, sourceText });
+  }
+  return Object.freeze(roots);
 }
 
 /** Reports whether one query-free request or resolved path uses a supported style extension. */

@@ -139,6 +139,7 @@ export async function preparePreviewStyleContext(
     selectPreviewApplicationStylesheetImports({
       projectRoot: options.projectRoot,
       readSource: readProjectSource,
+      ...(options.renderPath === undefined ? {} : { renderPath: options.renderPath }),
     }),
     availabilityPromise,
   ]);

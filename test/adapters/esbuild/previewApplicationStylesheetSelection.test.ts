@@ -52,4 +52,59 @@ describe('selectPreviewApplicationStylesheetImports', () => {
 
     expect(selections).toEqual([]);
   });
+
+  /** Recovers global font CSS from an exact non-Next React application wrapper. */
+  it('selects side-effect CSS from a proven target-to-entry render path', async () => {
+    const entryPath = path.join(PROJECT_ROOT, 'src', 'index.jsx');
+    const appPath = path.join(PROJECT_ROOT, 'src', 'App', 'index.jsx');
+    const boardPath = path.join(PROJECT_ROOT, 'src', 'Board', 'index.jsx');
+    const sourceByPath = new Map([
+      [entryPath, "import App from './App'; render(<App />);"],
+      [
+        appPath,
+        [
+          "import Routes from './Routes';",
+          "import './fontStyles.css';",
+          'export default function App() { return <Routes />; }',
+        ].join('\n'),
+      ],
+      [boardPath, 'export default function Board() { return <main />; }'],
+    ]);
+
+    const selections = await selectPreviewApplicationStylesheetImports({
+      projectRoot: PROJECT_ROOT,
+      readSource: ({ sourcePath }) => Promise.resolve(sourceByPath.get(path.normalize(sourcePath))),
+      renderPath: {
+        entryPoint: {
+          kind: 'legacy-render',
+          occurrenceStart: 24,
+          sourcePath: entryPath,
+          wrapperNames: [],
+        },
+        id: 'board-to-entry',
+        steps: [
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'Board',
+            occurrenceStart: 0,
+            sourcePath: boardPath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'entry-render',
+            label: 'App',
+            occurrenceStart: 42,
+            sourcePath: appPath,
+            wrapperNames: ['App'],
+          },
+        ],
+      },
+    });
+
+    expect(selections).toEqual([
+      { importerPath: appPath, moduleSpecifier: './fontStyles.css' },
+    ]);
+  });
 });

@@ -11,17 +11,15 @@ import { createPreviewParentSliceSpecifier } from './previewParentSlicePlugin';
 import type { PreviewTargetExportSlot, PreviewThemeImportSelection } from './previewTargetExports';
 import type { PreviewStaticPropsByExport } from './previewTargetUsageProps';
 import type { PreviewInferredPropsByExport } from './staticResources/reactExportPropInference';
+import type { PreviewApplicationStylesheetImportSelection } from './previewApplicationStylesheetSelection';
 import {
-  isPreviewApplicationStylesheetPath,
-  type PreviewApplicationStylesheetImportSelection,
-} from './previewApplicationStylesheetSelection';
+  createPreviewApplicationStylesheetSpecifier,
+  registerPreviewApplicationStylesheetResolver,
+} from './previewApplicationStylesheetBridge';
 import {
-  PREVIEW_RESOLVE_GUARD,
   PREVIEW_TARGET_BRIDGE_NAMESPACE,
   PREVIEW_TARGET_SPECIFIER,
 } from './previewPluginProtocol';
-
-const APPLICATION_STYLESHEET_SPECIFIER_PREFIX = 'react-preview:application-stylesheet/';
 
 /** Immutable source metadata required to create one target gallery bridge. */
 export interface PreviewTargetBridgePluginOptions {
@@ -98,54 +96,13 @@ export function createPreviewTargetBridgePlugin(options: PreviewTargetBridgePlug
     };
   }
 
-  /** Resolves one generated style edge from the application root that originally authored it. */
-  async function resolveApplicationStylesheet(
-    arguments_: OnResolveArgs,
-    build: Parameters<Plugin['setup']>[0],
-  ): Promise<OnResolveResult | undefined> {
-    if (!arguments_.path.startsWith(APPLICATION_STYLESHEET_SPECIFIER_PREFIX)) return undefined;
-    const indexText = arguments_.path.slice(APPLICATION_STYLESHEET_SPECIFIER_PREFIX.length);
-    if (!/^(?:0|[1-9]\d?)$/u.test(indexText)) {
-      return { errors: [{ text: 'React Preview received an invalid application stylesheet.' }] };
-    }
-    const selection = options.applicationStylesheetImports?.[Number(indexText)];
-    if (selection === undefined) {
-      return { errors: [{ text: 'React Preview application stylesheet is unavailable.' }] };
-    }
-    const resolution = await build.resolve(selection.moduleSpecifier, {
-      importer: selection.importerPath,
-      kind: 'import-statement',
-      namespace: 'file',
-      pluginData: PREVIEW_RESOLVE_GUARD,
-      resolveDir: path.dirname(selection.importerPath),
-    });
-    if (resolution.errors.length > 0) {
-      return { errors: resolution.errors, warnings: resolution.warnings };
-    }
-    if (
-      resolution.external ||
-      resolution.namespace !== 'file' ||
-      !path.isAbsolute(resolution.path) ||
-      !isPreviewApplicationStylesheetPath(resolution.path)
-    ) {
-      return {
-        errors: [
-          {
-            text: `React Preview application stylesheets must resolve to local CSS or Sass files: ${selection.moduleSpecifier}`,
-          },
-        ],
-        warnings: resolution.warnings,
-      };
-    }
-    return { ...resolution, sideEffects: true };
-  }
-
   return {
     name: 'react-preview-target-bridge',
     setup(build): void {
       build.onResolve({ filter: /^react-preview:target$/ }, resolveTargetBridge);
-      build.onResolve({ filter: /^react-preview:application-stylesheet\// }, (arguments_) =>
-        resolveApplicationStylesheet(arguments_, build),
+      registerPreviewApplicationStylesheetResolver(
+        build,
+        options.applicationStylesheetImports ?? [],
       );
       build.onLoad({ filter: /.*/, namespace: PREVIEW_TARGET_BRIDGE_NAMESPACE }, loadTargetBridge);
     },
@@ -180,7 +137,7 @@ function createTargetBridgeSource(
       ? []
       : applicationStylesheetImports.map(
           (_selection, index) =>
-            `import ${JSON.stringify(`${APPLICATION_STYLESHEET_SPECIFIER_PREFIX}${index.toString()}`)};`,
+            `import ${JSON.stringify(createPreviewApplicationStylesheetSpecifier(index))};`,
         );
   importLines.push(
     ...explicitSelections.map((selection, index) => {

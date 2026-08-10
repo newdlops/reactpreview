@@ -144,7 +144,15 @@ function chooseStyleSheetPlan(configuration, configurationStatus, plan) {
   return { plan: staticPlan, precedence: 'synthetic' };
 }
 
-function createStyleSheetManagerElement(StyleSheetManager, child, plan) {
+/** Detects styled-components v4's class boundary, which rejects a missing sheet and target. */
+function requiresOwnedLegacyTarget(StyleSheetManager) {
+  const prototype = readOwnDataMember(StyleSheetManager, 'prototype');
+  if (prototype.kind !== 'value') return false;
+  const getContext = readOwnDataMember(prototype.value, 'getContext');
+  return getContext.kind === 'value' && typeof getContext.value === 'function';
+}
+
+function createStyleSheetManagerElement(StyleSheetManager, child, target, plan) {
   let element = child;
   for (let index = plan.layers.length - 1; index >= 0; index -= 1) {
     const layer = plan.layers[index];
@@ -154,18 +162,29 @@ function createStyleSheetManagerElement(StyleSheetManager, child, plan) {
     if (layer.enableVendorPrefixes !== undefined) props.enableVendorPrefixes = layer.enableVendorPrefixes;
     if (layer.shouldForwardProp !== undefined) props.shouldForwardProp = layer.shouldForwardProp;
     if (layer.stylisPlugins !== undefined) props.stylisPlugins = layer.stylisPlugins;
+    if (index === 0 && target !== undefined) props.target = target;
     element = React.createElement(StyleSheetManager, props, element);
   }
   return element;
 }
 
-/** Replays authored StyleSheetManager options without changing its stylesheet ownership. */
+/** Replays authored options and supplies only legacy managers with an isolated required target. */
 export function preparePreviewStyleSheetBoundary(options) {
   const StyleSheetManager = readStyleSheetManager();
   const selected = chooseStyleSheetPlan(options?.configuration, options?.configurationStatus, options?.plan);
+  const targetMode = requiresOwnedLegacyTarget(StyleSheetManager) ? 'owned-legacy' : 'document-default';
+  let target;
   let activated = false;
   let disposed = false;
   let committed = false;
+  const makeTarget = () => {
+    if (targetMode !== 'owned-legacy') return undefined;
+    if (target !== undefined) return target;
+    if (typeof document === 'undefined' || document.head === null || document.head === undefined) return undefined;
+    target = document.createElement('div');
+    target.setAttribute('data-react-preview-styled-components-target', '');
+    return target;
+  };
   const identity = selected.disabled === true || typeof StyleSheetManager !== 'function';
   if (identity) {
     previewStyleSheetRuntimeStatus = selected.disabled === true
@@ -177,10 +196,16 @@ export function preparePreviewStyleSheetBoundary(options) {
   return Object.freeze({
     activate() {
       if (disposed || activated || identity) return;
+      const ownedTarget = makeTarget();
+      if (targetMode === 'owned-legacy' && ownedTarget === undefined) {
+        previewStyleSheetRuntimeStatus = 'unavailable: document.head is not available for legacy StyleSheetManager';
+        return;
+      }
+      if (ownedTarget !== undefined) document.head.appendChild(ownedTarget);
       activated = true;
       reportPreviewStyleSheetRuntimeHealth('styled-components-boundary-composed', {
         evidence: selected.plan.evidence, layerCount: selected.plan.layers.length,
-        sharedRuntimeChunk: selected.plan.sharedRuntimeChunk, targetMode: 'document-default', targetOwned: false,
+        sharedRuntimeChunk: selected.plan.sharedRuntimeChunk, targetMode, targetOwned: ownedTarget !== undefined,
         vendorPrefixMode: selected.plan.layers.some((layer) => layer.disableVendorPrefixes === true) ? 'disabled' : 'default',
       });
       if (selected.plan.ignoredReasons.length > 0) reportPreviewStyleSheetRuntimeHealth('styled-components-configuration-partial', { ignoredReasons: selected.plan.ignoredReasons.slice(0, 16), selectedFallback: selected.precedence });
@@ -188,22 +213,26 @@ export function preparePreviewStyleSheetBoundary(options) {
     commit() {
       if (disposed || committed || !activated) return;
       committed = true;
-      const styles = typeof document === 'undefined'
+      const styles = target !== undefined
+        ? target.querySelectorAll('style')
+        : typeof document === 'undefined'
         ? []
         : document.head?.querySelectorAll('style[data-styled]') ?? [];
       let ruleCount = 0;
       for (const style of styles) {
         try { ruleCount += style.sheet?.cssRules?.length ?? 0; } catch { /* cross-origin rules are intentionally opaque */ }
       }
-      reportPreviewStyleSheetRuntimeHealth('styled-components-style-commit', { ruleCount: Math.min(ruleCount, 1000000), styleTagCount: Math.min(styles.length, 1000000), targetMode: 'document-default', targetOwned: false });
+      reportPreviewStyleSheetRuntimeHealth('styled-components-style-commit', { ruleCount: Math.min(ruleCount, 1000000), styleTagCount: Math.min(styles.length, 1000000), targetMode, targetOwned: target !== undefined });
     },
     createElement(child) {
       if (identity || disposed) return child;
-      return createStyleSheetManagerElement(StyleSheetManager, child, selected.plan);
+      return createStyleSheetManagerElement(StyleSheetManager, child, makeTarget(), selected.plan);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (target?.parentNode !== null && target?.parentNode !== undefined) target.parentNode.removeChild(target);
+      target = undefined;
       activated = false;
     },
     readStatus() { return previewStyleSheetRuntimeStatus; },

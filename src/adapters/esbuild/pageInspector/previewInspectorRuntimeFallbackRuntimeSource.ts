@@ -97,6 +97,13 @@ function initializePreviewInspectorRuntimeFallbackState() {
   }
 }
 
+/** Drops only cached Auto hook values so a new shared collection size is materialized on remount. */
+function resetPreviewInspectorGeneratedRuntimeFallbackValues() {
+  initializePreviewInspectorRuntimeFallbackState();
+  previewInspectorSession.runtimeFallbackValues.clear();
+  previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
+}
+
 /** Remembers a successful exact effect even when a child layout effect precedes boundary mount. */
 function rememberPreviewInspectorSuccessfulRuntimeEffect(rawMetadata, ownershipToken) {
   if (

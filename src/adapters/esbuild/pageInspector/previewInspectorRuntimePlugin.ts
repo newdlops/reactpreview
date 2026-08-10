@@ -95,12 +95,32 @@ export function createPreviewInspectorRuntimePlugin(
             resolveDir: arguments_.resolveDir,
             with: arguments_.with,
           });
-          if (resolved.errors.length > 0 || resolved.path.length === 0) return undefined;
+          let runtimePath: string | undefined;
+          if (resolved.errors.length === 0 && resolved.path.length > 0) {
+            runtimePath = resolved.path;
+          } else {
+            // React 16 predates the automatic JSX subpaths. Admit its stable createElement API only
+            // after the exact project React package itself resolves from the same source corridor.
+            const reactResolution = await build.resolve('react', {
+              importer: arguments_.importer,
+              kind: arguments_.kind,
+              namespace: arguments_.namespace,
+              pluginData: addRuntimeResolutionGuard(
+                arguments_.pluginData,
+                'reactPreviewInspectorJsxResolutionGuard',
+              ),
+              resolveDir: arguments_.resolveDir,
+              with: arguments_.with,
+            });
+            if (reactResolution.errors.length > 0 || reactResolution.path.length === 0) {
+              return undefined;
+            }
+          }
           return {
             namespace: PREVIEW_INSPECTOR_JSX_RUNTIME_NAMESPACE,
             path: JSON.stringify({
               dev: arguments_.path.endsWith('jsx-dev-runtime'),
-              runtimePath: resolved.path,
+              ...(runtimePath === undefined ? {} : { runtimePath }),
             }),
           };
         },
@@ -136,7 +156,7 @@ export function createPreviewInspectorRuntimePlugin(
       build.onLoad(
         { filter: /.*/, namespace: PREVIEW_INSPECTOR_JSX_RUNTIME_NAMESPACE },
         (arguments_) => {
-          const details = JSON.parse(arguments_.path) as { dev: boolean; runtimePath: string };
+          const details = JSON.parse(arguments_.path) as { dev: boolean; runtimePath?: string };
           return {
             contents: createPreviewInspectorJsxRuntimeSource(details),
             loader: 'js',
@@ -159,12 +179,19 @@ export function createPreviewInspectorRuntimePlugin(
 /** Private automatic-JSX adapter. It never changes composites or props and records only host refs. */
 function createPreviewInspectorJsxRuntimeSource(options: {
   readonly dev: boolean;
-  readonly runtimePath: string;
+  readonly runtimePath?: string;
 }): string {
   const factoryNames = options.dev ? ['jsxDEV'] : ['jsx', 'jsxs'];
   return [
     "import * as React from 'react';",
-    `import * as original from ${JSON.stringify(options.runtimePath)};`,
+    ...(options.runtimePath === undefined
+      ? [
+          'function createClassicConfig(props, key, source, self) { const config = props !== null && typeof props === "object" ? { ...props } : {}; if (key !== undefined) config.key = key; if (source !== undefined) config.__source = source; if (self !== undefined) config.__self = self; return config; }',
+          'function classicJsx(type, props, key) { return React.createElement(type, createClassicConfig(props, key)); }',
+          'function classicJsxDEV(type, props, key, _isStaticChildren, source, self) { return React.createElement(type, createClassicConfig(props, key, source, self)); }',
+          'const original = { Fragment: React.Fragment, jsx: classicJsx, jsxs: classicJsx, jsxDEV: classicJsxDEV };',
+        ]
+      : [`import * as original from ${JSON.stringify(options.runtimePath)};`]),
     "const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');",
     "const contextKey = Symbol.for('newdlops.react-file-preview.page-inspector.jsx-ownership-context');",
     'const OwnershipContext = globalThis[contextKey] ?? (globalThis[contextKey] = React.createContext(undefined));',

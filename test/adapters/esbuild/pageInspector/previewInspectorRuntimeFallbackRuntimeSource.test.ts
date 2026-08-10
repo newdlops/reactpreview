@@ -835,6 +835,29 @@ describe('Preview Inspector runtime fallback source', () => {
     ]);
   });
 
+  /** Allows authored avatar initials/placeholders without a fabricated remote image request. */
+  it('keeps repaired optional image sources network inert', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      requiredPaths: ['user.avatarUrl', 'user.name'],
+    };
+    fixture.api.resolve(
+      () => undefined,
+      () => ({ user: {} }),
+      metadata,
+    );
+
+    fixture.api.smart('hook-1');
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => ({}),
+      metadata,
+    ) as { user: { avatarUrl: string; name: string } };
+
+    expect(resolved.user).toEqual({ avatarUrl: '', name: 'name' });
+  });
+
   /** Uses the Array intrinsic when a generated value shadows its own `map` property. */
   it('materializes array overrides without trusting a shadowed map method', () => {
     const fixture = createRuntimeFallbackFixture(true);

@@ -150,6 +150,90 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     }
   });
 
+  it('does not mistake a local Routes component for the React Router v6 export', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-v5-routes-name-'));
+    const applicationPath = path.join(workspaceRoot, 'Routes.jsx');
+    const projectPath = path.join(workspaceRoot, 'Project.jsx');
+    try {
+      const projectSource = 'export default function Project() { return <main>project</main>; }';
+      await Promise.all([
+        writeFile(
+          applicationPath,
+          [
+            "import { Router, Switch, Route } from 'react-router-dom';",
+            "import Project from './Project';",
+            'const Routes = () => (',
+            '  <Router><Switch><Route path="/project" component={Project} /></Switch></Router>',
+            ');',
+            'export default Routes;',
+          ].join('\n'),
+        ),
+        writeFile(projectPath, projectSource),
+      ]);
+      const routeLocation = {
+        componentExportName: 'default',
+        componentName: 'Project',
+        componentSourcePath: projectPath,
+        dependencyPaths: [applicationPath, projectPath],
+        evidenceKind: 'route-jsx' as const,
+        pathname: '/project',
+        pattern: '/project',
+        sourcePath: applicationPath,
+      };
+      const application = {
+        complete: true,
+        dependencyPaths: [applicationPath],
+        edges: [],
+        id: 'v5-local-routes-name',
+        root: { exportName: 'default', sourcePath: applicationPath },
+        rootAutomaticProps: {},
+        rootOwnsRouter: true,
+        routeLocation,
+        stopReason: 'root-reached',
+        targetAutomaticProps: {},
+      } as PreviewInspectorPageCandidate;
+      const [selected] = expandPreviewInspectorRouteChoiceCandidates(
+        [application],
+        [routeLocation],
+      );
+      if (selected === undefined) throw new Error('Expected one expanded v5 route choice.');
+      const plan = {
+        ...selected,
+        pageCandidates: [selected],
+        renderChain: { paths: [] },
+        renderChainsByExport: {},
+        routeSelectionResolution: 'exact',
+        target: { exportName: 'default', sourcePath: applicationPath },
+      } as unknown as PreviewInspectorAncestorPlan;
+
+      const candidate = createPreviewInspectorPageExecutionCandidates({
+        plan,
+        targetMode: 'selected-route-leaf',
+      })[0];
+
+      expect(candidate?.routeRecipe).toMatchObject({
+        kind: 'react-router-v5',
+        pathname: '/project',
+        rootOwnsRouter: false,
+      });
+      if (candidate === undefined) throw new Error('Expected a v5 route execution candidate.');
+      const source = createPreviewInspectorPageExecutionSource({
+        candidate,
+        executionRootModuleContract: createPreviewInspectorExecutionRootModuleContract({
+          exportName: candidate.executionRootContract.exportName,
+          preparedSourceText: projectSource,
+          sourcePath: candidate.executionRootContract.sourcePath,
+          surfaceId: candidate.executionRootContract.surfaceId,
+        }),
+        target: { exportName: 'default', sourcePath: projectPath },
+      });
+      expect(source).toContain("import { MemoryRouter, Route } from 'react-router-dom';");
+      expect(source).not.toContain('MemoryRouter, Route, Routes');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   it('preserves active-document ownership when the opt-in mode is omitted', () => {
     const analysisTarget = { exportName: 'Target', sourcePath: TARGET };
 

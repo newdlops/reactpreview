@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import type { PreviewInspectorAncestorPlan } from './previewInspectorAncestorPlan';
 import type {
   PreviewInspectorComponentReference,
@@ -112,9 +113,7 @@ export function createPreviewInspectorPageExecutionCandidates(
     pageSurface,
     targetSurface,
     derivedOwnerRouteMount?.surface,
-    browserCandidate.detachedTargetPlacement === 'overlay-sibling'
-      ? outerPageSurface
-      : undefined,
+    browserCandidate.detachedTargetPlacement === 'overlay-sibling' ? outerPageSurface : undefined,
   );
   const routeErrorElementRecipe = createRouteErrorElementRecipe(virtualPage, options.plan.target);
   const routeElementEdges = createRouteElementCompositionEdges(
@@ -127,9 +126,7 @@ export function createPreviewInspectorPageExecutionCandidates(
     detachedRouteLeaf && !detachedCatalogOwnerRetained
       ? undefined
       : createPageTargetEdge(
-          browserCandidate.detachedTargetPlacement !== undefined
-            ? outerPageSurface
-            : pageSurface,
+          browserCandidate.detachedTargetPlacement !== undefined ? outerPageSurface : pageSurface,
           targetSurface,
           browserCandidate.detachedTargetPlacement,
         );
@@ -1020,12 +1017,10 @@ function createRouteErrorElementRecipe(
       path.normalize(step.sourcePath) === normalizedTargetPath,
   );
   if (!ownsErrorSlot) return undefined;
-  const runtime = readReactRouterRuntime(
-    [
-      normalizedTargetPath,
-      ...virtualPage.recipe.omittedOuterPath.map((step) => step.sourcePath),
-    ],
-  );
+  const runtime = readReactRouterRuntime([
+    normalizedTargetPath,
+    ...virtualPage.recipe.omittedOuterPath.map((step) => step.sourcePath),
+  ]);
   if (runtime.kind !== 'react-router-v6' || runtime.routerModuleSpecifier === undefined) {
     return undefined;
   }
@@ -1081,23 +1076,87 @@ function readRouteRuntime(
 function readReactRouterRuntime(
   sources: readonly string[],
 ): Pick<PreviewInspectorRouteExecutionRecipe, 'kind' | 'routerModuleSpecifier'> {
-  const sourceText = sources
-    .map(readSource)
-    .filter((value): value is string => value !== undefined)
-    .join('\n');
-  const routerModuleSpecifier = /from\s*['"]react-router-dom['"]/u.test(sourceText)
+  const sourceEntries = sources.flatMap((sourcePath) => {
+    const sourceText = readSource(sourcePath);
+    return sourceText === undefined ? [] : [{ sourcePath, sourceText }];
+  });
+  const evidence = collectReactRouterImportEvidence(sourceEntries);
+  const routerModuleSpecifier = evidence.moduleSpecifiers.has('react-router-dom')
     ? 'react-router-dom'
-    : /from\s*['"]react-router['"]/u.test(sourceText)
+    : evidence.moduleSpecifiers.has('react-router')
       ? 'react-router'
       : undefined;
   if (routerModuleSpecifier === undefined) return { kind: 'generic-memory-location' };
   if (
-    /\b(?:Routes|RouterProvider|useRoutes|create(?:Browser|Hash|Memory)Router)\b/u.test(sourceText)
+    [
+      'Routes',
+      'RouterProvider',
+      'useRoutes',
+      'createBrowserRouter',
+      'createHashRouter',
+      'createMemoryRouter',
+    ].some((binding) => evidence.importedExports.has(binding))
   )
     return { kind: 'react-router-v6', routerModuleSpecifier };
-  if (/\b(?:Switch|withRouter)\b|\b(?:component|render)\s*=/u.test(sourceText))
+  if (
+    ['Switch', 'withRouter'].some((binding) => evidence.importedExports.has(binding)) ||
+    sourceEntries.some(({ sourceText }) => /\b(?:component|render)\s*=/u.test(sourceText))
+  )
     return { kind: 'react-router-v5', routerModuleSpecifier };
   return { kind: 'generic-memory-location' };
+}
+
+/** Reads only bindings imported from React Router, excluding unrelated local names such as Routes. */
+function collectReactRouterImportEvidence(
+  sources: readonly { readonly sourcePath: string; readonly sourceText: string }[],
+): {
+  readonly importedExports: ReadonlySet<string>;
+  readonly moduleSpecifiers: ReadonlySet<string>;
+} {
+  const importedExports = new Set<string>();
+  const moduleSpecifiers = new Set<string>();
+  for (const { sourcePath, sourceText } of sources) {
+    const sourceFile = ts.createSourceFile(
+      sourcePath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      sourcePath.toLowerCase().endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    const namespaceBindings = new Set<string>();
+    for (const statement of sourceFile.statements) {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+        !['react-router', 'react-router-dom'].includes(statement.moduleSpecifier.text)
+      ) {
+        continue;
+      }
+      moduleSpecifiers.add(statement.moduleSpecifier.text);
+      const namedBindings = statement.importClause?.namedBindings;
+      if (namedBindings === undefined) continue;
+      if (ts.isNamespaceImport(namedBindings)) {
+        namespaceBindings.add(namedBindings.name.text);
+        continue;
+      }
+      for (const element of namedBindings.elements) {
+        importedExports.add(element.propertyName?.text ?? element.name.text);
+      }
+    }
+    if (namespaceBindings.size === 0) continue;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        namespaceBindings.has(node.expression.text)
+      ) {
+        importedExports.add(node.name.text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return { importedExports, moduleSpecifiers };
 }
 
 function createRouteCompositionEdges(
@@ -1124,10 +1183,7 @@ function createPageTargetEdge(
   if (isSameSurface(pageSurface, targetSurface)) return undefined;
   return Object.freeze({
     childSurfaceId: targetSurface.id,
-    mode:
-      detachedTargetPlacement !== undefined
-        ? 'sibling-after'
-        : 'contains-authored-child',
+    mode: detachedTargetPlacement !== undefined ? 'sibling-after' : 'contains-authored-child',
     parentSurfaceId: pageSurface.id,
     placementIndex: 0,
   });

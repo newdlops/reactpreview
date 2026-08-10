@@ -246,6 +246,22 @@ describe('createPreviewInspectorRootSource', () => {
     );
   });
 
+  /** Imports inert application CSS without evaluating the omitted app wrapper. */
+  it('imports recovered application stylesheets in Page Inspector mode', () => {
+    const source = createPreviewInspectorRootSource({
+      applicationStylesheetImports: [
+        {
+          importerPath: '/workspace/application/App/index.tsx',
+          moduleSpecifier: './fontStyles.css',
+        },
+      ],
+      plan: createPlan({ exportName: 'Page', sourcePath: PAGE_PATH }),
+    });
+
+    expect(source).toContain('import "react-preview:application-stylesheet/0";');
+    expect(source).not.toContain('/workspace/application/App/index.tsx');
+  });
+
   /** Keeps alternate roots as inert metadata so esbuild receives one executable page graph. */
   it('emits only the selected authored page root while retaining alternate metadata', () => {
     const primaryPlan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
@@ -836,6 +852,13 @@ describe('createPreviewInspectorRootSource', () => {
         ...browserCandidate,
         root: { exportName: 'InlineLayout', sourcePath: TARGET_PATH },
         rootAutomaticProps: {},
+        rootInference: {
+          provenance: [{ kind: 'object', path: 'project', source: 'usage' }],
+          shape: {
+            kind: 'object',
+            properties: { project: { kind: 'object', properties: {} } },
+          },
+        },
         rootOwnsRouter: false,
       },
       compositionEdges: [],
@@ -906,6 +929,10 @@ describe('createPreviewInspectorRootSource', () => {
     expect(source).toContain('"nestedMountCount":1');
     expect(source).toContain('"executionRootSurfaceId":"layout"');
     expect(source).toContain('"runtimeTargetSurfaceId":"page"');
+    expect(source).toContain(
+      `"root":{"exportName":"InlineLayout","sourcePath":${JSON.stringify(TARGET_PATH)}}`,
+    );
+    expect(source).toContain('"rootInferredPropShape":{"kind":"object","properties":{"project"');
     expect(source).not.toContain('direct-target:Target');
     expect(source).not.toContain('react-preview:inspector-direct-target/Target');
   });

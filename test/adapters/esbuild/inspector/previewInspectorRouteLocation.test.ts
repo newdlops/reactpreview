@@ -190,6 +190,79 @@ describe('collectPreviewInspectorRouteLocation', () => {
     });
   });
 
+  /** Recovers the outer v5 route when the selected leaf is rendered inside its page component. */
+  it('uses a proven routed render ancestor instead of the sibling catch-all route', async () => {
+    const targetPath = '/workspace/application/src/Project/IssueCreate.tsx';
+    const projectPath = '/workspace/application/src/Project/index.tsx';
+    const routesPath = '/workspace/application/src/App/Routes.tsx';
+    const pageErrorPath = '/workspace/application/src/PageError.tsx';
+    const sources = {
+      [targetPath]: 'export default function IssueCreate() { return <form />; }',
+      [projectPath]: [
+        'import IssueCreate from "./IssueCreate";',
+        'export default function Project() {',
+        '  return <Modal renderContent={() => <IssueCreate />} />;',
+        '}',
+      ].join('\n'),
+      [routesPath]: [
+        'import Project from "../Project/index";',
+        'import PageError from "../PageError";',
+        '<Switch>',
+        '  <Route path="/project" component={Project} />',
+        '  <Route component={PageError} />',
+        '</Switch>;',
+      ].join('\n'),
+      [pageErrorPath]: 'export default function PageError() { return <main>error</main>; }',
+    };
+    const renderChain: PreviewRenderChainPlan = {
+      dependencyPaths: [targetPath, projectPath, routesPath],
+      paths: [
+        {
+          entryPoint: {
+            kind: 'create-root',
+            occurrenceStart: 100,
+            sourcePath: routesPath,
+            wrapperNames: [],
+          },
+          id: 'issue-create-path',
+          steps: [
+            {
+              certainty: 'conditional',
+              kind: 'route-branch',
+              label: 'IssueCreate (default)',
+              occurrenceStart: 20,
+              sourcePath: targetPath,
+              wrapperNames: ['Modal'],
+            },
+            {
+              certainty: 'conditional',
+              kind: 'route-branch',
+              label: 'Project',
+              occurrenceStart: 40,
+              sourcePath: projectPath,
+              wrapperNames: ['Route', 'Switch'],
+            },
+          ],
+        },
+      ],
+      reachability: 'entry-connected',
+      target: { exportName: 'default', sourcePath: targetPath },
+      truncated: false,
+    };
+
+    const location = await collectPreviewInspectorRouteLocation(
+      createOptions(sources, renderChain),
+    );
+
+    expect(location).toMatchObject({
+      componentName: 'Project',
+      componentSourcePath: projectPath,
+      pathname: '/project',
+      pattern: '/project',
+      sourcePath: routesPath,
+    });
+  });
+
   /** Composes a relative JSX route with the absolute base authored by an app-module factory. */
   it('prepends an enclosing application module base path to a relative Route', async () => {
     const routesPath = '/workspace/application/src/feature-app.tsx';
@@ -498,12 +571,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
         'export default function App() { return useRoutes(routes); }',
       ].join('\n'),
     };
-    const renderChain = createRenderChain(
-      APP_PATH,
-      targetPath,
-      'WorkspaceShell',
-      'WorkspaceShell',
-    );
+    const renderChain = createRenderChain(APP_PATH, targetPath, 'WorkspaceShell', 'WorkspaceShell');
 
     const location = await collectPreviewInspectorRouteLocation(
       createOptions(sources, renderChain),
@@ -738,9 +806,7 @@ describe('collectPreviewInspectorRouteLocation', () => {
     ).toEqual(['route-provenance-ambiguous', 'route-provenance-ambiguous']);
     expect(
       new Set(
-        ambiguousInventory.unresolvedFactoryOptions?.map(
-          (option) => option.occurrenceIdentity,
-        ),
+        ambiguousInventory.unresolvedFactoryOptions?.map((option) => option.occurrenceIdentity),
       ).size,
     ).toBe(2);
 
@@ -768,9 +834,9 @@ describe('collectPreviewInspectorRouteLocation', () => {
 
     expect(duplicateInventory.choices).toHaveLength(1);
     expect(duplicateInventory.directRouteDuplicates).toHaveLength(1);
-    expect(duplicatePlan.branches.filter((branch) => branch.duplicateOf !== undefined)).toHaveLength(
-      1,
-    );
+    expect(
+      duplicatePlan.branches.filter((branch) => branch.duplicateOf !== undefined),
+    ).toHaveLength(1);
   });
 
   it('does not correlate a dynamic direct route through a name-only catalog leaf', async () => {

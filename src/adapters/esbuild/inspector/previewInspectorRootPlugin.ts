@@ -26,6 +26,11 @@ import {
 import type { PreviewInferredExportProps } from '../staticResources/reactExportPropInference';
 import type { PreviewThemeImportSelection } from '../previewTargetExports';
 import type { PreviewGlobalStyleImportSelection } from '../previewGlobalStyleSelection';
+import type { PreviewApplicationStylesheetImportSelection } from '../previewApplicationStylesheetSelection';
+import {
+  createPreviewApplicationStylesheetSpecifier,
+  registerPreviewApplicationStylesheetResolver,
+} from '../previewApplicationStylesheetBridge';
 import {
   PREVIEW_NEXT_APP_CONTROL_SIGNAL_SYMBOL_KEY,
   PREVIEW_NEXT_APP_ROUTE_STATE_SYMBOL_KEY,
@@ -55,6 +60,8 @@ interface PreviewInspectorRenderBootstrapModule {
 }
 /** Inputs required to expose one inspector plan as a preview target descriptor. */
 export interface PreviewInspectorRootPluginOptions {
+  /** Side-effect CSS recovered from exact application wrappers above the mounted page root. */
+  readonly applicationStylesheetImports?: readonly PreviewApplicationStylesheetImportSelection[];
   /** User-facing name of the originally selected export. */
   readonly displayName?: string;
   /** Exported app-level global styles recovered from wrappers above the safe mounted root. */
@@ -105,6 +112,9 @@ export function createPreviewInspectorRootPlugin(
   function loadInspectorRoot(): OnLoadResult {
     return {
       contents: createPreviewInspectorRootSource({
+        ...(options.applicationStylesheetImports === undefined
+          ? {}
+          : { applicationStylesheetImports: options.applicationStylesheetImports }),
         ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
         ...(options.globalStyleImports === undefined
           ? {}
@@ -131,7 +141,10 @@ export function createPreviewInspectorRootPlugin(
       }),
       loader: 'js',
       resolveDir: path.dirname(options.plan.root.sourcePath),
-      watchFiles: [...options.plan.dependencyPaths],
+      watchFiles: [
+        ...options.plan.dependencyPaths,
+        ...(options.applicationStylesheetImports ?? []).map((selection) => selection.importerPath),
+      ],
     };
   }
   /** Resolves only render-bootstrap modules proven and generated for this exact build plan. */
@@ -155,6 +168,10 @@ export function createPreviewInspectorRootPlugin(
     name: 'react-preview-inspector-root',
     setup(build): void {
       build.onResolve({ filter: /^react-preview:target$/ }, resolveInspectorRoot);
+      registerPreviewApplicationStylesheetResolver(
+        build,
+        options.applicationStylesheetImports ?? [],
+      );
       build.onResolve(
         { filter: /^react-preview:inspector-render-bootstrap\// },
         resolveRenderBootstrap,
@@ -300,6 +317,7 @@ function createCandidateModuleImportPromise(
 
 /** Pure source generator inputs used by plugin and bridge contract tests. */
 export interface PreviewInspectorRootSourceOptions {
+  readonly applicationStylesheetImports?: readonly PreviewApplicationStylesheetImportSelection[];
   readonly displayName?: string;
   readonly globalStyleImports?: readonly PreviewGlobalStyleImportSelection[];
   readonly maximumPageCandidates?: number;
@@ -344,11 +362,12 @@ export function createPreviewInspectorRootSource(
     for (const shell of virtualPage.recipe.shells) assertExportName(shell.root.exportName);
   }
   const browserCandidates = virtualPageCandidates.map((virtualPage) => {
-    const { browserCandidate: candidate } = virtualPage;
+    const analysisCandidate = virtualPage.browserCandidate;
     const executionCandidate =
-      options.pageExecutionCandidate?.browserCandidate.id === candidate.id
+      options.pageExecutionCandidate?.browserCandidate.id === analysisCandidate.id
         ? options.pageExecutionCandidate
         : undefined;
+    const candidate = executionCandidate?.browserCandidate ?? analysisCandidate;
     const executionRecipe = executionCandidate?.routeRecipe;
     const runtimeCandidateTarget = executionCandidate?.browserCandidate.target ?? candidate.target;
     const selectedExecutionRootOwnsRouter =
@@ -606,6 +625,10 @@ export function createPreviewInspectorRootSource(
   };
   const themeImport = createInspectorThemeImport(options.themeImport);
   const globalStyleImports = createInspectorGlobalStyleImports(options.globalStyleImports ?? []);
+  const applicationStylesheetStatements = (options.applicationStylesheetImports ?? []).map(
+    (_selection, index) =>
+      `import ${JSON.stringify(createPreviewApplicationStylesheetSpecifier(index))};`,
+  );
   const requiresNextAppRuntime = virtualPageCandidates.some(
     (candidate) => candidate.contentCandidate.routeLocation?.evidenceKind === 'next-app-filesystem',
   );
@@ -615,6 +638,7 @@ export function createPreviewInspectorRootSource(
 
   return [
     "import * as React from 'react';",
+    ...applicationStylesheetStatements,
     ...(requiresNextPagesRuntime
       ? [
           "import __reactPreviewNextPagesRouter, { RouterContext as __reactPreviewNextPagesRouterContext } from 'next/router';",

@@ -235,9 +235,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
         exportName: ownerName,
         readSource: (candidatePath) =>
           readCachedSource(candidatePath, options.readSource, sourceCache),
-        ...(options.resolveModule === undefined
-          ? {}
-          : { resolveModule: options.resolveModule }),
+        ...(options.resolveModule === undefined ? {} : { resolveModule: options.resolveModule }),
         sourcePath,
         sourceText,
       });
@@ -442,9 +440,7 @@ export async function collectPreviewInspectorRouteLocationInventory(
   );
   const primary =
     manifestLocations.find((choice) => targetIdentitySet.has(choice.componentName)) ??
-    contextualManifestLocations.find((choice) =>
-      targetIdentitySet.has(choice.componentName),
-    ) ??
+    contextualManifestLocations.find((choice) => targetIdentitySet.has(choice.componentName)) ??
     contextualPrimary ??
     choices[0];
   const factoryUnresolvedOptions =
@@ -605,36 +601,64 @@ function retargetTransparentRouteComponentLocation(
     componentSourcePath: normalizedDocumentPath,
     dependencyPaths: Object.freeze(
       [
-        ...new Set([
-          ...location.dependencyPaths,
-          normalizedComponentPath,
-          normalizedDocumentPath,
-        ]),
+        ...new Set([...location.dependencyPaths, normalizedComponentPath, normalizedDocumentPath]),
       ].sort(),
     ),
   });
 }
 
-/** Recognizes an exact route binding that reaches the selected file through only inert barrels. */
+/** Recognizes an exact route binding that reaches the selected file or one proven render ancestor. */
 function referencesDirectRouteTarget(
   choice: PreviewInspectorDirectRouteChoice,
   target: CollectPreviewInspectorRouteLocationOptions['renderChain']['target'],
   renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
 ): boolean {
   if (referencesPreviewInspectorDirectRouteTarget(choice, target)) return true;
-  const references = [
-    choice.reference,
-    ...(choice.elementPath ?? []).map((component) => component.reference),
+  const components = [
+    { identities: [choice.componentName], reference: choice.reference },
+    ...(choice.elementPath ?? []).map((component) => ({
+      identities: [component.componentName],
+      reference: component.reference,
+    })),
   ];
-  return references.some(
-    (reference) =>
-      reference !== undefined &&
+  return components.some(({ identities, reference }) => {
+    if (reference === undefined) return false;
+    const componentIdentities = [...identities, reference.exportName];
+    return (
       isTransparentRouteComponentCorridorProven(
         reference.sourcePath,
-        [choice.componentName, reference.exportName],
+        componentIdentities,
         target.sourcePath,
         renderChain,
-      ),
+      ) || isProvenTargetRenderAncestor(reference.sourcePath, componentIdentities, renderChain)
+    );
+  });
+}
+
+/**
+ * Accepts an ordinary component Route only when that exact source and component identity occur on
+ * a target-to-entry render path. This recovers routes such as `/project` for a modal leaf rendered
+ * inside `Project` without admitting sibling or catch-all route components from the same router.
+ */
+function isProvenTargetRenderAncestor(
+  componentSourcePath: string,
+  componentIdentities: readonly (string | undefined)[],
+  renderChain: CollectPreviewInspectorRouteLocationOptions['renderChain'],
+): boolean {
+  const normalizedSourcePath = path.normalize(componentSourcePath);
+  const identities = new Set(
+    componentIdentities.flatMap((identity) => {
+      const normalized = normalizeComponentIdentity(identity);
+      return normalized === undefined ? [] : [normalized];
+    }),
+  );
+  if (identities.size === 0) return false;
+  return renderChain.paths.some((renderPath) =>
+    renderPath.steps.some(
+      (step) =>
+        path.normalize(step.sourcePath) === normalizedSourcePath &&
+        identities.has(normalizeComponentIdentity(step.label) ?? ''),
+    ),
   );
 }
 

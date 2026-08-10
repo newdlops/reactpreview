@@ -427,6 +427,8 @@ describe('createPreviewRouterBridgePlugin', () => {
     expect(source).not.toContain('fetch(');
     expect(source).toContain('class PreviewCandidateRouterErrorBoundary');
     expect(source).toContain('candidate-owned Router detected at runtime');
+    expect(source).toContain('legacyRouterValue !== null && legacyRouterValue !== undefined');
+    expect(source).toContain('you should not use <(?:Link|NavLink|Redirect|Route|Switch)>');
     expect(source).toContain('transition: event');
     expect(source).toContain(
       'use(?:Location|Navigate|Params|Match|Routes|NavigationType|OutletContext)',

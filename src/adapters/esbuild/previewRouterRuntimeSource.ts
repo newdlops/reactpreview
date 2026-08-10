@@ -143,7 +143,7 @@ export function isNestedPreviewRouterError(error) {
 /** Matches only stable React Router hook invariants; arbitrary hook/application failures rethrow. */
 export function isOutsidePreviewRouterError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return /use(?:Location|Navigate|Params|Match|Routes|NavigationType|OutletContext)\(\) may be used only in the context of a <Router> component/iu.test(message);
+  return /use(?:Location|Navigate|Params|Match|Routes|NavigationType|OutletContext)\(\) may be used only in the context of a <Router> component|you should not use <(?:Link|NavLink|Redirect|Route|Switch)> outside a <Router>/iu.test(message);
 }
 
 /** Exposes the two exact retry invariants to the selected-target boundary. */
@@ -226,11 +226,12 @@ class PreviewCandidateRouterErrorBoundary extends React.Component {
 function PreviewCandidateRouterBoundary({ children, configuration }) {
   const useInRouterContext = readUseInRouterContext();
   const legacyRouterContext = readLegacyRouterContext();
+  const legacyRouterValue = legacyRouterContext !== undefined && typeof React.useContext === 'function'
+    ? React.useContext(legacyRouterContext)
+    : undefined;
   const inheritsRouter = typeof useInRouterContext === 'function'
     ? useInRouterContext()
-    : legacyRouterContext !== undefined && typeof React.useContext === 'function'
-      ? React.useContext(legacyRouterContext) !== null
-      : false;
+    : legacyRouterValue !== null && legacyRouterValue !== undefined;
   if (inheritsRouter) {
     previewRuntimeStatus = 'active: selected page candidate inherited an existing Router context';
     return children;

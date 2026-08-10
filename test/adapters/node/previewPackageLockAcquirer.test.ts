@@ -91,6 +91,108 @@ describe('npm package-lock managed dependency acquisition', () => {
   );
 
   /**
+   * Restores npm v1's nested physical graph even when a stale Yarn lock sits beside the manifest.
+   * The package-lock remains admissible only because its selected direct version satisfies the
+   * current manifest range and every archive retains public SHA-512 evidence.
+   */
+  it('materializes a package-lock v1 nested closure with competing lock evidence', async () => {
+    const alphaArchive = Buffer.from('legacy alpha archive');
+    const bravoArchive = Buffer.from('legacy bravo archive');
+    const alphaUrl = publicArchiveUrl('alpha', '1.2.3');
+    const bravoUrl = publicArchiveUrl('bravo', '2.4.0');
+    const fixture = await createLegacyFixture({
+      dependencies: { alpha: '^1.0.0' },
+      lockedDependencies: {
+        alpha: legacyLockedPackageRecord(alphaArchive, alphaUrl, '1.2.3', {
+          dependencies: {
+            bravo: legacyLockedPackageRecord(bravoArchive, bravoUrl, '2.4.0', {
+              integrity: sha1(bravoArchive),
+            }),
+          },
+          requires: { bravo: '^2.0.0' },
+        }),
+      },
+      yarnLock: '# yarn lockfile v1\n\nalpha@^0.1.0:\n  version "0.1.0"\n',
+    });
+    const profile = await requireProfile(fixture);
+    const extracted: PreviewPackageLockExtractRequest[] = [];
+    const metadataRequests: string[] = [];
+    const requestedUrls: string[] = [];
+
+    const result = await acquirePreviewPackageLockDependencies({
+      extractor: recordingExtractor(extracted),
+      profile,
+      projectRoot: fixture.projectRoot,
+      requiredPackageNames: ['alpha'],
+      targetNodeModulesPath: fixture.targetNodeModulesPath,
+      metadataTransport: {
+        download: (request) => {
+          metadataRequests.push(request.url);
+          return Promise.resolve(
+            Buffer.from(
+              JSON.stringify({
+                dist: { integrity: sri(bravoArchive), tarball: bravoUrl },
+                name: 'bravo',
+                version: '2.4.0',
+              }),
+            ),
+          );
+        },
+      },
+      transport: archiveTransport(
+        new Map([
+          [alphaUrl, alphaArchive],
+          [bravoUrl, bravoArchive],
+        ]),
+        requestedUrls,
+      ),
+    });
+
+    expect(Object.keys(profile.lockfileDigests).sort()).toEqual(['package-lock.json', 'yarn.lock']);
+    expect(metadataRequests).toEqual(['https://registry.npmjs.org/bravo/2.4.0']);
+    expect(requestedUrls).toEqual([alphaUrl, bravoUrl]);
+    expect(result?.packages).toMatchObject([
+      { name: 'alpha', relativePath: 'alpha', version: '1.2.3' },
+      {
+        name: 'bravo',
+        relativePath: path.join('alpha', 'node_modules', 'bravo'),
+        version: '2.4.0',
+      },
+    ]);
+    await expect(
+      readPackageName(fixture.targetNodeModulesPath, path.join('alpha', 'node_modules', 'bravo')),
+    ).resolves.toBe('bravo');
+    await expectPathToBeMissing(path.join(fixture.projectRoot, 'node_modules'));
+  });
+
+  /** Prevents stale npm v1 package versions from overriding the current manifest requirement. */
+  it('fails closed for a package-lock v1 direct version outside the authored range', async () => {
+    const archive = Buffer.from('legacy stale alpha archive');
+    const archiveUrl = publicArchiveUrl('alpha', '1.2.3');
+    const fixture = await createLegacyFixture({
+      dependencies: { alpha: '^2.0.0' },
+      lockedDependencies: {
+        alpha: legacyLockedPackageRecord(archive, archiveUrl, '1.2.3'),
+      },
+    });
+    const profile = await requireProfile(fixture);
+    const transportRequests: string[] = [];
+
+    const result = await acquirePreviewPackageLockDependencies({
+      extractor: recordingExtractor([]),
+      profile,
+      projectRoot: fixture.projectRoot,
+      requiredPackageNames: ['alpha'],
+      targetNodeModulesPath: fixture.targetNodeModulesPath,
+      transport: archiveTransport(new Map([[archiveUrl, archive]]), transportRequests),
+    });
+
+    expect(result).toBeUndefined();
+    expect(transportRequests).toEqual([]);
+    await expectPathToBeMissing(fixture.targetNodeModulesPath);
+  });
+
+  /**
    * Retains the dependency name as the physical Node lookup slot while verifying and publishing
    * the actual package identity declared by an npm alias lock record.
    */
@@ -224,6 +326,20 @@ interface LockedPackageRecordOptions {
   readonly name?: string;
 }
 
+/** Exact nested record shape used only by npm package-lock v1 fixtures. */
+interface LegacyLockedPackageRecordOptions {
+  readonly dependencies?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  readonly integrity?: string;
+  readonly requires?: Readonly<Record<string, string>>;
+}
+
+/** Root inputs for one npm v1 fixture with optional competing package-manager evidence. */
+interface LegacyPackageLockFixtureOptions {
+  readonly dependencies: Readonly<Record<string, string>>;
+  readonly lockedDependencies: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  readonly yarnLock?: string;
+}
+
 /**
  * Writes a package manifest and nearest workspace package-lock without installing dependencies.
  * The target path is a sibling of the workspace so successful materialization cannot be confused
@@ -280,6 +396,48 @@ async function createFixture(options: PackageLockFixtureOptions): Promise<Packag
   });
 }
 
+/** Writes a root package-lock v1 graph and never creates a project-local installation. */
+async function createLegacyFixture(
+  options: LegacyPackageLockFixtureOptions,
+): Promise<PackageLockFixture> {
+  const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-package-lock-v1-'));
+  temporaryRoots.push(fixtureRoot);
+  const workspaceRoot = path.join(fixtureRoot, 'workspace');
+  const lockfilePath = path.join(workspaceRoot, 'package-lock.json');
+  await mkdir(workspaceRoot, { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({
+        dependencies: options.dependencies,
+        name: 'fixture-application',
+        version: '1.0.0',
+      }),
+      'utf8',
+    ),
+    writeFile(
+      lockfilePath,
+      JSON.stringify({
+        dependencies: options.lockedDependencies,
+        lockfileVersion: 1,
+        name: 'fixture-application',
+        requires: true,
+        version: '1.0.0',
+      }),
+      'utf8',
+    ),
+    ...(options.yarnLock === undefined
+      ? []
+      : [writeFile(path.join(workspaceRoot, 'yarn.lock'), options.yarnLock, 'utf8')]),
+  ]);
+  return Object.freeze({
+    lockfilePath,
+    projectRoot: workspaceRoot,
+    targetNodeModulesPath: path.join(fixtureRoot, 'managed', 'node_modules'),
+    workspaceRoot,
+  });
+}
+
 /** Requires production profile discovery to capture the nearest workspace lock digest. */
 async function requireProfile(fixture: PackageLockFixture): Promise<PreviewDependencyProfile> {
   const profile = await readPreviewDependencyProfile(fixture.projectRoot, fixture.workspaceRoot);
@@ -300,6 +458,22 @@ function lockedPackageRecord(
     ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }),
     integrity: sri(archive),
     ...(options.name === undefined ? {} : { name: options.name }),
+    resolved,
+    version,
+  });
+}
+
+/** Serializes npm v1's separate requested-edge and nested-physical-package fields. */
+function legacyLockedPackageRecord(
+  archive: Uint8Array,
+  resolved: string,
+  version: string,
+  options: LegacyLockedPackageRecordOptions = {},
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    ...(options.dependencies === undefined ? {} : { dependencies: options.dependencies }),
+    integrity: options.integrity ?? sri(archive),
+    ...(options.requires === undefined ? {} : { requires: options.requires }),
     resolved,
     version,
   });
@@ -362,6 +536,11 @@ function publicArchiveUrl(packageName: string, version: string): string {
 /** Computes the canonical strong integrity token stored in an npm package-lock record. */
 function sri(archive: Uint8Array): string {
   return `sha512-${createHash('sha512').update(archive).digest('base64')}`;
+}
+
+/** Produces the canonical legacy token that must be strengthened through exact metadata. */
+function sha1(archive: Uint8Array): string {
+  return `sha1-${createHash('sha1').update(archive).digest('base64')}`;
 }
 
 /** Asserts that fail-closed or out-of-workspace acquisition left no filesystem entry behind. */

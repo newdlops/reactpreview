@@ -15,7 +15,15 @@ import {
   type PreviewPackageArchiveTransport,
   type PreviewVerifiedPackageArchivePlanEntry,
 } from './previewPackageArchive';
-import type { PreviewDependencyField, PreviewDependencyProfile } from './previewDependencyProfile';
+import {
+  doesPreviewSpecifierAcceptVersion,
+  type PreviewDependencyField,
+  type PreviewDependencyProfile,
+} from './previewDependencyProfile';
+import {
+  DEFAULT_PREVIEW_YARN_METADATA_TRANSPORT,
+  type PreviewYarnMetadataTransport,
+} from './previewYarnLockAcquirer';
 
 export {
   DEFAULT_PREVIEW_PACKAGE_ARCHIVE_EXTRACTOR as DEFAULT_PREVIEW_PACKAGE_LOCK_EXTRACTOR,
@@ -30,6 +38,11 @@ const PACKAGE_LOCK_NAME = 'package-lock.json';
 const MAX_LOCKFILE_BYTES = 16 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_PACKAGE_COUNT = 1_024;
+const MAX_LEGACY_LOCK_RECORD_COUNT = 8_192;
+const MAX_METADATA_BYTES = 1024 * 1024;
+const MAX_TOTAL_METADATA_BYTES = 32 * 1024 * 1024;
+const METADATA_CONCURRENCY = 4;
+const PUBLIC_REGISTRY_HOST = 'registry.npmjs.org';
 const PACKAGE_VERSION_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?)?(?:\+[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?)?$/u;
 const PACKAGE_NAME_PATTERN =
@@ -53,20 +66,52 @@ export interface AcquirePreviewPackageLockDependenciesOptions {
   readonly signal?: AbortSignal;
   /** Fresh unpublished node_modules directory owned by the managed dependency store. */
   readonly targetNodeModulesPath: string;
+  /** Optional exact-version public metadata transport for legacy SHA-1 lock records. */
+  readonly metadataTransport?: PreviewYarnMetadataTransport;
   /** Optional deterministic transport used by networkless tests. */
   readonly transport?: PreviewPackageArchiveTransport;
   /** Optional deterministic extractor used by tar-free tests. */
   readonly extractor?: PreviewPackageArchiveExtractor;
 }
 
-/** Minimal untrusted package-lock shape narrowed before any path or URL is used. */
-interface PackageLockDocument {
+/** npm v2/v3 physical installation map narrowed before any path or URL is used. */
+interface PhysicalPackageLockDocument {
+  readonly lockfileVersion: 2 | 3;
   readonly packages: Readonly<Record<string, unknown>>;
 }
 
+/** npm v1 nested installation graph retained without interpreting package-manager code. */
+interface LegacyPackageLockDocument {
+  readonly dependencies: Readonly<Record<string, unknown>>;
+  readonly lockfileVersion: 1;
+  readonly name?: unknown;
+  readonly version?: unknown;
+}
+
+/** Supported immutable npm lock shapes. */
+type PackageLockDocument = LegacyPackageLockDocument | PhysicalPackageLockDocument;
+
 /** One installed package augmented with its lock key for dependency traversal. */
-interface LockedPackagePlanEntry extends PreviewVerifiedPackageArchivePlanEntry {
+interface LockedPackagePlanEntry extends Omit<
+  PreviewVerifiedPackageArchivePlanEntry,
+  'sha512Digest'
+> {
   readonly lockKey: string;
+  readonly sha512Digest?: Buffer;
+}
+
+/** Traversal-free evidence that may still require exact public SHA-512 metadata. */
+interface PackageLockArchivePlanEntry extends Omit<
+  PreviewVerifiedPackageArchivePlanEntry,
+  'sha512Digest'
+> {
+  readonly sha512Digest?: Buffer;
+}
+
+/** Exact public registry metadata used only to strengthen a legacy SHA-1 lock record. */
+interface PackageLockArchiveMetadata {
+  readonly integrity: string;
+  readonly resolved: string;
 }
 
 /** One unresolved dependency edge while the physical packages map is traversed. */
@@ -99,8 +144,17 @@ export async function acquirePreviewPackageLockDependencies(
   if (options.signal?.aborted === true) throw abortReason(options.signal);
   const entries = await createLockedPackagePlan(options).catch(() => undefined);
   if (entries === undefined || entries.length === 0) return undefined;
-  return materializePreviewPackageArchives({
+  const verifiedEntries = await resolvePackageLockArchiveEntries(
     entries,
+    options.metadataTransport ?? DEFAULT_PREVIEW_YARN_METADATA_TRANSPORT,
+    options.signal,
+  ).catch(() => {
+    if (options.signal?.aborted === true) throw abortReason(options.signal);
+    return undefined;
+  });
+  if (verifiedEntries === undefined) return undefined;
+  return materializePreviewPackageArchives({
+    entries: verifiedEntries,
     ...(options.extractor === undefined ? {} : { extractor: options.extractor }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     targetNodeModulesPath: options.targetNodeModulesPath,
@@ -111,7 +165,7 @@ export async function acquirePreviewPackageLockDependencies(
 /** Reads and validates the one npm package-lock eligible for public acquisition. */
 async function createLockedPackagePlan(
   options: AcquirePreviewPackageLockDependenciesOptions,
-): Promise<readonly PreviewVerifiedPackageArchivePlanEntry[] | undefined> {
+): Promise<readonly PackageLockArchivePlanEntry[] | undefined> {
   const lockPath = selectExactPackageLockPath(options.profile);
   if (lockPath === undefined) return undefined;
   const projectRoot = path.resolve(options.projectRoot);
@@ -134,7 +188,8 @@ async function createLockedPackagePlan(
   ) {
     return undefined;
   }
-  const currentRequirements = readRequirementMaps(parseJsonObject(manifestBytes));
+  const manifestDocument = parseJsonObject(manifestBytes);
+  const currentRequirements = readRequirementMaps(manifestDocument);
   if (
     currentRequirements === undefined ||
     !requirementSetsEqual(currentRequirements, options.profile.requirementsByField)
@@ -143,6 +198,30 @@ async function createLockedPackagePlan(
   }
   const document = readPackageLockDocument(parseJsonObject(lockBytes));
   if (document === undefined) return undefined;
+  const selectedNames = selectDirectPackageNames(currentRequirements, options.requiredPackageNames);
+  if (selectedNames === undefined || selectedNames.length === 0) return undefined;
+  if (document.lockfileVersion === 1) {
+    if (
+      projectRelativePath.length !== 0 ||
+      manifestDocument === undefined ||
+      !legacyProjectIdentityMatches(document, manifestDocument)
+    ) {
+      return undefined;
+    }
+    const packages = createLegacyPhysicalPackages(document.dependencies);
+    if (
+      packages === undefined ||
+      !legacyDirectRequirementsMatch(packages, currentRequirements, selectedNames)
+    ) {
+      return undefined;
+    }
+    return buildLockedPackageClosure(
+      packages,
+      '',
+      createLegacyProjectRecord(currentRequirements),
+      selectedNames,
+    )?.map(toArchivePlanEntry);
+  }
   const projectKey = toPortableProjectKey(projectRelativePath);
   const rootRecord = readObject(document.packages['']);
   const projectRecord = readObject(document.packages[projectKey]);
@@ -154,34 +233,21 @@ async function createLockedPackagePlan(
   ) {
     return undefined;
   }
-  const selectedNames = selectDirectPackageNames(currentRequirements, options.requiredPackageNames);
-  if (selectedNames === undefined || selectedNames.length === 0) return undefined;
   const entries = buildLockedPackageClosure(
     document.packages,
     projectKey,
     projectRecord,
     selectedNames,
   );
-  return entries?.map((entry) =>
-    Object.freeze({
-      packageName: entry.packageName,
-      packageVersion: entry.packageVersion,
-      sha512Digest: entry.sha512Digest,
-      targetRelativePath: entry.targetRelativePath,
-      url: entry.url,
-    }),
-  );
+  return entries?.map(toArchivePlanEntry);
 }
 
-/** Requires exactly one reusable package-lock and no competing package-manager evidence. */
+/** Selects one reusable package-lock; the adapter itself proves manifest and graph compatibility. */
 function selectExactPackageLockPath(profile: PreviewDependencyProfile): string | undefined {
   if (!profile.hasReusableLockEvidence || profile.lockfileEvidenceStatus !== 'reusable') {
     return undefined;
   }
-  if (
-    Object.keys(profile.lockfileDigests).length !== 1 ||
-    profile.lockfileDigests[PACKAGE_LOCK_NAME] === undefined
-  ) {
+  if (profile.lockfileDigests[PACKAGE_LOCK_NAME] === undefined) {
     return undefined;
   }
   const candidates = profile.dependencyPaths.filter(
@@ -212,15 +278,137 @@ function parseJsonObject(bytes: Uint8Array): Readonly<Record<string, unknown>> |
   }
 }
 
-/** Narrows package-lock v2/v3 and its authoritative packages map. */
+/** Narrows package-lock v1, v2, or v3 without treating unknown shapes as compatible. */
 function readPackageLockDocument(
   value: Readonly<Record<string, unknown>> | undefined,
 ): PackageLockDocument | undefined {
+  if (value?.lockfileVersion === 1) {
+    const dependencies = readObject(value.dependencies);
+    return dependencies === undefined
+      ? undefined
+      : Object.freeze({
+          dependencies,
+          lockfileVersion: 1 as const,
+          ...(value.name === undefined ? {} : { name: value.name }),
+          ...(value.version === undefined ? {} : { version: value.version }),
+        });
+  }
   if (value === undefined || (value.lockfileVersion !== 2 && value.lockfileVersion !== 3)) {
     return undefined;
   }
   const packages = readObject(value.packages);
-  return packages === undefined ? undefined : Object.freeze({ packages });
+  return packages === undefined
+    ? undefined
+    : Object.freeze({ lockfileVersion: value.lockfileVersion, packages });
+}
+
+/** Keeps optional npm v1 project identity evidence aligned with the adjacent package manifest. */
+function legacyProjectIdentityMatches(
+  lock: LegacyPackageLockDocument,
+  manifest: Readonly<Record<string, unknown>>,
+): boolean {
+  for (const field of ['name', 'version'] as const) {
+    const lockedValue = lock[field];
+    if (
+      lockedValue !== undefined &&
+      (typeof lockedValue !== 'string' || lockedValue !== manifest[field])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Converts npm v1's nested records into the same inert physical map used by v2/v3 traversal. */
+function createLegacyPhysicalPackages(
+  rootDependencies: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
+  const packages: Record<string, unknown> = {};
+  let recordCount = 0;
+  const visit = (dependencies: Readonly<Record<string, unknown>>, ownerKey: string): boolean => {
+    for (const [packageSlot, rawRecord] of Object.entries(dependencies).sort(([left], [right]) =>
+      compareStrings(left, right),
+    )) {
+      const record = readObject(rawRecord);
+      const nestedDependencies =
+        record?.dependencies === undefined ? Object.freeze({}) : readObject(record.dependencies);
+      const requiredDependencies = readStringMap(record?.requires);
+      if (
+        record === undefined ||
+        !PACKAGE_NAME_PATTERN.test(packageSlot) ||
+        nestedDependencies === undefined ||
+        requiredDependencies === undefined
+      ) {
+        return false;
+      }
+      const lockKey = ownerKey
+        ? `${ownerKey}/node_modules/${packageSlot}`
+        : `node_modules/${packageSlot}`;
+      if (Object.hasOwn(packages, lockKey) || ++recordCount > MAX_LEGACY_LOCK_RECORD_COUNT) {
+        return false;
+      }
+      packages[lockKey] = Object.freeze({ ...record, dependencies: requiredDependencies });
+      if (!visit(nestedDependencies, lockKey)) return false;
+    }
+    return true;
+  };
+  return visit(rootDependencies, '') ? Object.freeze(packages) : undefined;
+}
+
+/** Proves each selected npm v1 root still satisfies its current authored registry range. */
+function legacyDirectRequirementsMatch(
+  packages: Readonly<Record<string, unknown>>,
+  requirements: Readonly<Record<PreviewDependencyField, Readonly<Record<string, string>>>>,
+  selectedNames: readonly string[],
+): boolean {
+  return selectedNames.every((packageName) => {
+    const record = readObject(packages[`node_modules/${packageName}`]);
+    const specifier = findRequirementSpecifier(requirements, packageName);
+    return (
+      typeof record?.version === 'string' &&
+      specifier !== undefined &&
+      doesPreviewSpecifierAcceptVersion(specifier, record.version)
+    );
+  });
+}
+
+/** Applies the same direct dependency precedence used by Node package installation. */
+function findRequirementSpecifier(
+  requirements: Readonly<Record<PreviewDependencyField, Readonly<Record<string, string>>>>,
+  packageName: string,
+): string | undefined {
+  for (const field of [
+    'dependencies',
+    'optionalDependencies',
+    'peerDependencies',
+    'devDependencies',
+  ] as const) {
+    const specifier = requirements[field][packageName];
+    if (specifier !== undefined) return specifier;
+  }
+  return undefined;
+}
+
+/** Supplies direct request metadata while npm v1 retains only resolved package records. */
+function createLegacyProjectRecord(
+  requirements: Readonly<Record<PreviewDependencyField, Readonly<Record<string, string>>>>,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    dependencies: requirements.dependencies,
+    optionalDependencies: requirements.optionalDependencies,
+    peerDependencies: requirements.peerDependencies,
+  });
+}
+
+/** Drops traversal-only lock keys before handing archive evidence to the materializer. */
+function toArchivePlanEntry(entry: LockedPackagePlanEntry): PackageLockArchivePlanEntry {
+  return Object.freeze({
+    packageName: entry.packageName,
+    packageVersion: entry.packageVersion,
+    ...(entry.sha512Digest === undefined ? {} : { sha512Digest: entry.sha512Digest }),
+    targetRelativePath: entry.targetRelativePath,
+    url: entry.url,
+  });
 }
 
 /** Reads all dependency maps and rejects malformed fields rather than treating them as empty. */
@@ -466,16 +654,170 @@ function readLockedPackageEntry(
     return undefined;
   }
   const sha512Digest = parsePreviewPackageSha512Integrity(record.integrity);
-  return sha512Digest === undefined
-    ? undefined
-    : Object.freeze({
-        lockKey,
-        packageName,
-        packageVersion: record.version,
-        sha512Digest,
-        targetRelativePath: installedPath.targetRelativePath,
-        url: record.resolved,
-      });
+  if (sha512Digest === undefined && !isCanonicalLegacySha1Integrity(record.integrity)) {
+    return undefined;
+  }
+  return Object.freeze({
+    lockKey,
+    packageName,
+    packageVersion: record.version,
+    ...(sha512Digest === undefined ? {} : { sha512Digest }),
+    targetRelativePath: installedPath.targetRelativePath,
+    url: record.resolved,
+  });
+}
+
+/** Accepts SHA-1 only as a signal to fetch exact public SHA-512 metadata before download. */
+function isCanonicalLegacySha1Integrity(value: string): boolean {
+  const encodedDigest = /^sha1-([A-Za-z0-9+/]+={0,2})$/u.exec(value)?.[1];
+  if (encodedDigest === undefined) return false;
+  const digest = Buffer.from(encodedDigest, 'base64');
+  return (
+    digest.byteLength === 20 &&
+    digest.toString('base64').replace(/=+$/u, '') === encodedDigest.replace(/=+$/u, '')
+  );
+}
+
+/** Completes only legacy weak-integrity entries through exact public package metadata. */
+async function resolvePackageLockArchiveEntries(
+  entries: readonly PackageLockArchivePlanEntry[],
+  transport: PreviewYarnMetadataTransport,
+  signal: AbortSignal | undefined,
+): Promise<readonly PreviewVerifiedPackageArchivePlanEntry[] | undefined> {
+  const missingMetadata = new Map<string, PackageLockArchivePlanEntry>();
+  for (const entry of entries) {
+    if (entry.sha512Digest === undefined) missingMetadata.set(packageIdentity(entry), entry);
+  }
+  const metadata = await downloadPackageLockMetadata(
+    [...missingMetadata.values()],
+    transport,
+    signal,
+  );
+  if (metadata === undefined) return undefined;
+  const verified: PreviewVerifiedPackageArchivePlanEntry[] = [];
+  for (const entry of entries) {
+    const exactMetadata =
+      entry.sha512Digest === undefined ? metadata.get(packageIdentity(entry)) : undefined;
+    const sha512Digest =
+      entry.sha512Digest ??
+      (exactMetadata === undefined
+        ? undefined
+        : parsePreviewPackageSha512Integrity(exactMetadata.integrity));
+    if (
+      sha512Digest === undefined ||
+      (exactMetadata !== undefined && exactMetadata.resolved !== entry.url)
+    ) {
+      return undefined;
+    }
+    verified.push(Object.freeze({ ...entry, sha512Digest }));
+  }
+  return Object.freeze(verified);
+}
+
+/** Fetches distinct exact-version metadata with bounded concurrency and aggregate bytes. */
+async function downloadPackageLockMetadata(
+  entries: readonly PackageLockArchivePlanEntry[],
+  transport: PreviewYarnMetadataTransport,
+  signal: AbortSignal | undefined,
+): Promise<ReadonlyMap<string, PackageLockArchiveMetadata> | undefined> {
+  if (entries.length === 0) return new Map();
+  const controller = new AbortController();
+  const detachAbort = forwardAbort(signal, controller);
+  const metadata = new Map<string, PackageLockArchiveMetadata>();
+  let nextIndex = 0;
+  let totalBytes = 0;
+  const workers = Array.from(
+    { length: Math.min(METADATA_CONCURRENCY, entries.length) },
+    async () => {
+      while (!controller.signal.aborted) {
+        const entry = entries[nextIndex++];
+        if (entry === undefined) return;
+        const downloaded = await transport.download({
+          maximumBytes: MAX_METADATA_BYTES,
+          packageName: entry.packageName,
+          packageVersion: entry.packageVersion,
+          signal: controller.signal,
+          url: createExactMetadataUrl(entry.packageName, entry.packageVersion),
+        });
+        if (!(downloaded instanceof Uint8Array) || downloaded.byteLength > MAX_METADATA_BYTES) {
+          throw new Error('Registry metadata transport returned an invalid response.');
+        }
+        totalBytes += downloaded.byteLength;
+        if (totalBytes > MAX_TOTAL_METADATA_BYTES) {
+          throw new Error('Registry metadata exceeds the aggregate safety limit.');
+        }
+        const parsed = readExactArchiveMetadata(
+          downloaded,
+          entry.packageName,
+          entry.packageVersion,
+        );
+        if (parsed === undefined)
+          throw new Error('Registry metadata lacks exact archive evidence.');
+        metadata.set(packageIdentity(entry), parsed);
+      }
+    },
+  );
+  try {
+    await Promise.all(workers);
+    return metadata;
+  } catch (error) {
+    controller.abort(error instanceof Error ? error : undefined);
+    await Promise.allSettled(workers);
+    if (signal?.aborted === true) throw abortReason(signal);
+    return undefined;
+  } finally {
+    detachAbort();
+  }
+}
+
+/** Narrows registry JSON to the requested identity and one strong canonical archive. */
+function readExactArchiveMetadata(
+  bytes: Uint8Array,
+  packageName: string,
+  packageVersion: string,
+): PackageLockArchiveMetadata | undefined {
+  try {
+    const parsed = readObject(JSON.parse(Buffer.from(bytes).toString('utf8')));
+    const dist = readObject(parsed?.dist);
+    if (
+      parsed?.name !== packageName ||
+      parsed.version !== packageVersion ||
+      typeof dist?.tarball !== 'string' ||
+      !isPublicPreviewPackageArchiveUrl(dist.tarball) ||
+      typeof dist.integrity !== 'string' ||
+      parsePreviewPackageSha512Integrity(dist.integrity) === undefined
+    ) {
+      return undefined;
+    }
+    return Object.freeze({ integrity: dist.integrity, resolved: dist.tarball });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Constructs the sole accepted exact-version public registry metadata endpoint. */
+function createExactMetadataUrl(packageName: string, packageVersion: string): string {
+  return `https://${PUBLIC_REGISTRY_HOST}/${encodeURIComponent(packageName)}/${encodeURIComponent(packageVersion)}`;
+}
+
+/** Deduplicates exact metadata across nested physical package slots. */
+function packageIdentity(entry: PackageLockArchivePlanEntry): string {
+  return `${entry.packageName}\0${entry.packageVersion}`;
+}
+
+/** Forwards caller cancellation into the private metadata batch. */
+function forwardAbort(signal: AbortSignal | undefined, controller: AbortController): () => void {
+  if (signal === undefined) {
+    return () => undefined;
+  }
+  const onAbort = (): void => {
+    controller.abort(abortReason(signal));
+  };
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
+  return () => {
+    signal.removeEventListener('abort', onAbort);
+  };
 }
 
 /** Parses a packages-map key and strips ancestry before its first node_modules. */

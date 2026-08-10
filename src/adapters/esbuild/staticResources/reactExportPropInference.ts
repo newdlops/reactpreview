@@ -8,7 +8,10 @@ import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
-import { collectPreviewRuntimeLocalHelperParameterDemands } from './previewRuntimeHookLocalHelperItem';
+import {
+  collectPreviewRuntimeLocalHelperArgumentDemands,
+  collectPreviewRuntimeLocalHelperParameterDemands,
+} from './previewRuntimeHookLocalHelperItem';
 import { isReactComponentTypeSyntax } from './reactComponentTypeSyntax';
 import {
   inferReactOverlayVisibilityProp,
@@ -23,6 +26,8 @@ const MAX_INFERRED_DEPTH = 10;
 const MAX_INFERRED_NODES = 192;
 const MAX_IMPORTED_TYPE_MODULES = 12;
 const MAX_IMPORTED_TYPE_BYTES = 2 * 1024 * 1024;
+const MAX_STATIC_REGISTRY_HINTS = 16;
+const MAX_STATIC_REGISTRY_SOURCE_BYTES = 512 * 1024;
 const BLOCKED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'key', 'prototype', 'ref']);
 const ARRAY_METHOD_NAMES = new Set<string>(PREVIEW_COLLECTION_METHOD_NAMES);
 const ARRAY_ITEM_CALLBACK_METHOD_NAMES = new Set([
@@ -38,6 +43,10 @@ const ARRAY_ITEM_CALLBACK_METHOD_NAMES = new Set([
   'some',
 ]);
 const ARRAY_ITEM_IDENTITY_METHOD_NAMES = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
+const LOCAL_HELPER_ITEM_IDENTITY_METHOD_NAMES = new Set([
+  ...ARRAY_ITEM_IDENTITY_METHOD_NAMES,
+  'sort',
+]);
 const STRING_METHOD_NAMES = new Set<string>(PREVIEW_STRING_ONLY_METHOD_NAMES);
 const STRING_COLLECTION_SHARED_METHOD_NAMES = new Set([
   'at',
@@ -47,6 +56,7 @@ const STRING_COLLECTION_SHARED_METHOD_NAMES = new Set([
   'lastIndexOf',
   'slice',
 ]);
+const KEYED_COLLECTION_HELPER_PATTERN = /^(?:group|index|key|order|sort).*By/iu;
 
 /** Neutral value categories understood by the generated browser materializer. */
 export type PreviewInferredPropKind =
@@ -71,6 +81,12 @@ export interface PreviewInferredPropShape {
   readonly properties?: Readonly<Record<string, PreviewInferredPropShape>>;
   readonly value?: boolean | number | string | null;
 }
+
+/** Exact child-component prop contracts indexed by local JSX binding and attribute name. */
+export type PreviewChildPropDemandCatalog = ReadonlyMap<
+  string,
+  ReadonlyMap<string, PreviewInferredPropShape>
+>;
 
 /** Human-readable provenance shown beside editable values in React Page Inspector. */
 export interface PreviewInferredPropProvenance {
@@ -119,11 +135,16 @@ interface ResolvedImportedObjectType {
 
 /** Bounded parse-only import reader shared by compiler and child-demand callers. */
 export interface PreviewPropInferenceOptions {
+  /** Imported/local child contracts used only for identity-preserving JSX prop forwarding. */
+  readonly childPropDemands?: PreviewChildPropDemandCatalog;
   readonly resolveImport?: (
     moduleSpecifier: string,
     importerPath: string,
   ) => Readonly<{ sourcePath: string; sourceText: string }> | undefined;
 }
+
+/** Primitive key accepted by one statically resolved label/renderer registry. */
+type PreviewStaticRegistryKey = boolean | number | string;
 
 /** Mutable internal node that retains merge provenance before deterministic serialization. */
 interface MutableShapeNode {
@@ -172,13 +193,18 @@ interface InferenceState {
   /** Component names already traversed while carrying one exact local JSX prop demand. */
   readonly activeLocalComponentNames: ReadonlySet<string>;
   readonly aliases: Map<string, PropPathBinding>;
+  readonly childPropDemands: PreviewChildPropDemandCatalog | undefined;
   readonly collectionDemandDepth: number;
   readonly functionLike: ExportedFunctionLike;
   readonly graphqlDocumentTypeNames: ReadonlySet<string>;
+  /** Local helper parameters whose returned arrays retain the original item identities. */
+  readonly identityCollectionHelperParameters: ReadonlyMap<string, ReadonlySet<number>>;
   readonly localComponents: ReadonlyMap<string, LocalComponentDeclaration>;
   readonly localComponentDemandDepth: number;
   readonly localTypes: ReadonlyMap<string, LocalObjectType>;
   nodeCount: number;
+  /** Source-proven registry keys that replace generic name-derived discriminator text. */
+  readonly registryDiscriminantHints: ReadonlyMap<string, PreviewStaticRegistryKey>;
   root: MutableShapeNode;
   readonly sourceFile: ts.SourceFile;
 }
@@ -213,12 +239,30 @@ export function collectReactExportPropInference(
   }
   const localTypes = collectResolvableObjectTypes(sourceFile, sourcePath, options);
   const localComponents = collectLocalComponentDeclarations(sourceFile);
+  const identityCollectionHelperParameters =
+    collectIdentityCollectionHelperParameters(sourceFile);
+  const registryDiscriminantHints = collectStaticRegistryDiscriminantHints(
+    sourceFile,
+    sourcePath,
+    options,
+  );
   const results: Record<string, PreviewInferredExportProps> = {};
   for (const component of collectExportedComponentFunctions(sourceFile).slice(
     0,
     MAX_COMPONENT_EXPORTS,
   )) {
-    const inference = inferComponentProps(component, localTypes, sourceFile, localComponents);
+    const inference = inferComponentProps(
+      component,
+      localTypes,
+      sourceFile,
+      localComponents,
+      0,
+      new Set([component.exportName]),
+      false,
+      options.childPropDemands,
+      registryDiscriminantHints,
+      identityCollectionHelperParameters,
+    );
     if (inference !== undefined && inference.provenance.length > 0) {
       results[component.exportName] = inference;
     }
@@ -250,6 +294,13 @@ export function collectReactLocalComponentPropInference(
   if (hasParseDiagnostics(sourceFile)) return {};
   const localTypes = collectResolvableObjectTypes(sourceFile, sourcePath, options);
   const declarations = collectLocalComponentDeclarations(sourceFile);
+  const identityCollectionHelperParameters =
+    collectIdentityCollectionHelperParameters(sourceFile);
+  const registryDiscriminantHints = collectStaticRegistryDiscriminantHints(
+    sourceFile,
+    sourcePath,
+    options,
+  );
   const results: Record<string, PreviewInferredExportProps> = {};
   for (const componentName of [...new Set(componentNames)].slice(0, MAX_COMPONENT_EXPORTS)) {
     if (!/^\p{Lu}/u.test(componentName)) continue;
@@ -260,12 +311,248 @@ export function collectReactLocalComponentPropInference(
       localTypes,
       sourceFile,
       declarations,
+      0,
+      new Set([componentName]),
+      false,
+      options.childPropDemands,
+      registryDiscriminantHints,
+      identityCollectionHelperParameters,
     );
     if (inference !== undefined && inference.provenance.length > 0) {
       results[componentName] = inference;
     }
   }
   return Object.freeze(results);
+}
+
+interface PreviewStaticRegistryImportBinding {
+  readonly importedName: string;
+  readonly moduleSpecifier: string;
+}
+
+interface PreviewStaticRegistryModule {
+  readonly enums: ReadonlyMap<string, ts.EnumDeclaration>;
+  readonly objects: ReadonlyMap<string, ts.ObjectLiteralExpression>;
+  readonly values: ReadonlyMap<string, ts.Expression>;
+}
+
+/**
+ * Recovers one accepted discriminator from a statically indexed label/renderer registry.
+ *
+ * A component that renders `StatusCopy[status]` proves that `status` must be one of the registry's
+ * keys. Generic name semantics would otherwise generate `"PREVIEW"`, which is structurally valid
+ * but rejected by every authored status branch. Only direct local/named-import object bindings and
+ * primitive object keys participate; calls, getters, spreads, and transitive imports stay opaque.
+ */
+function collectStaticRegistryDiscriminantHints(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+  options: PreviewPropInferenceOptions,
+): ReadonlyMap<string, PreviewStaticRegistryKey> {
+  const localModule = collectStaticRegistryModule(sourceFile);
+  const imports = collectStaticRegistryImports(sourceFile);
+  const resolvedKeys = new Map<string, PreviewStaticRegistryKey | undefined>();
+  const hints = new Map<string, PreviewStaticRegistryKey>();
+  const readRegistryKey = (bindingName: string): PreviewStaticRegistryKey | undefined => {
+    if (resolvedKeys.has(bindingName)) return resolvedKeys.get(bindingName);
+    let key = readStaticRegistryObjectFirstKey(
+      localModule.objects.get(bindingName),
+      localModule,
+    );
+    const imported = imports.get(bindingName);
+    if (key === undefined && imported !== undefined && options.resolveImport !== undefined) {
+      const resolved = options.resolveImport(imported.moduleSpecifier, sourcePath);
+      if (
+        resolved !== undefined &&
+        Buffer.byteLength(resolved.sourceText, 'utf8') <= MAX_STATIC_REGISTRY_SOURCE_BYTES
+      ) {
+        const importedFile = ts.createSourceFile(
+          resolved.sourcePath,
+          resolved.sourceText,
+          ts.ScriptTarget.Latest,
+          true,
+          readScriptKind(resolved.sourcePath),
+        );
+        if (!hasParseDiagnostics(importedFile)) {
+          const importedModule = collectStaticRegistryModule(importedFile);
+          key = readStaticRegistryObjectFirstKey(
+            importedModule.objects.get(imported.importedName),
+            importedModule,
+          );
+        }
+      }
+    }
+    resolvedKeys.set(bindingName, key);
+    return key;
+  };
+  const visit = (node: ts.Node): void => {
+    if (hints.size >= MAX_STATIC_REGISTRY_HINTS) return;
+    if (ts.isElementAccessExpression(node)) {
+      const registry = unwrapExpression(node.expression);
+      const discriminant = unwrapExpression(node.argumentExpression);
+      const discriminantName = ts.isIdentifier(discriminant)
+        ? discriminant.text
+        : ts.isPropertyAccessExpression(discriminant)
+          ? discriminant.name.text
+          : undefined;
+      if (
+        ts.isIdentifier(registry) &&
+        discriminantName !== undefined &&
+        !hints.has(discriminantName)
+      ) {
+        const key = readRegistryKey(registry.text);
+        if (key !== undefined) hints.set(discriminantName, key);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return hints;
+}
+
+/** Indexes only top-level immutable-looking declarations used by one static registry read. */
+function collectStaticRegistryModule(sourceFile: ts.SourceFile): PreviewStaticRegistryModule {
+  const enums = new Map<string, ts.EnumDeclaration>();
+  const objects = new Map<string, ts.ObjectLiteralExpression>();
+  const values = new Map<string, ts.Expression>();
+  for (const statement of sourceFile.statements) {
+    if (ts.isEnumDeclaration(statement)) {
+      enums.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      values.set(declaration.name.text, initializer);
+      if (ts.isObjectLiteralExpression(initializer)) {
+        objects.set(declaration.name.text, initializer);
+      }
+    }
+  }
+  return { enums, objects, values };
+}
+
+/** Maps direct named imports to their source binding without evaluating either module. */
+function collectStaticRegistryImports(
+  sourceFile: ts.SourceFile,
+): ReadonlyMap<string, PreviewStaticRegistryImportBinding> {
+  const imports = new Map<string, PreviewStaticRegistryImportBinding>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      statement.importClause?.namedBindings === undefined ||
+      !ts.isNamedImports(statement.importClause.namedBindings)
+    ) {
+      continue;
+    }
+    for (const element of statement.importClause.namedBindings.elements) {
+      imports.set(element.name.text, {
+        importedName: element.propertyName?.text ?? element.name.text,
+        moduleSpecifier: statement.moduleSpecifier.text,
+      });
+    }
+  }
+  return imports;
+}
+
+/** Reads the first primitive object key under a fixed recursive expression budget. */
+function readStaticRegistryObjectFirstKey(
+  object: ts.ObjectLiteralExpression | undefined,
+  module: PreviewStaticRegistryModule,
+): PreviewStaticRegistryKey | undefined {
+  if (object === undefined) return undefined;
+  const budget = { nodes: 0 };
+  for (const property of object.properties) {
+    if (ts.isSpreadAssignment(property)) continue;
+    const key = readStaticRegistryPropertyKey(property.name, module, budget);
+    if (key !== undefined) return key;
+  }
+  return undefined;
+}
+
+/** Resolves an ordinary or computed object property name to its runtime primitive key. */
+function readStaticRegistryPropertyKey(
+  name: ts.PropertyName | undefined,
+  module: PreviewStaticRegistryModule,
+  budget: { nodes: number },
+): PreviewStaticRegistryKey | undefined {
+  if (name === undefined) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return Number(name.text);
+  return ts.isComputedPropertyName(name)
+    ? readStaticRegistryPrimitive(name.expression, module, budget)
+    : undefined;
+}
+
+/** Resolves literals and same-module constant/enum member reads without executing project code. */
+function readStaticRegistryPrimitive(
+  expression: ts.Expression,
+  module: PreviewStaticRegistryModule,
+  budget: { nodes: number },
+): PreviewStaticRegistryKey | undefined {
+  if (budget.nodes >= 64) return undefined;
+  budget.nodes += 1;
+  const current = unwrapExpression(expression);
+  if (ts.isStringLiteralLike(current)) return current.text;
+  if (ts.isNumericLiteral(current)) return Number(current.text);
+  if (current.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (current.kind === ts.SyntaxKind.FalseKeyword) return false;
+  if (
+    ts.isPrefixUnaryExpression(current) &&
+    current.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(unwrapExpression(current.operand))
+  ) {
+    return -Number(unwrapExpression(current.operand).getText());
+  }
+  if (ts.isIdentifier(current)) {
+    const value = module.values.get(current.text);
+    return value === undefined ? undefined : readStaticRegistryPrimitive(value, module, budget);
+  }
+  const member = readStaticRegistryMemberAccess(current);
+  if (member === undefined) return undefined;
+  const object = module.objects.get(member.ownerName);
+  if (object !== undefined) {
+    for (const property of object.properties) {
+      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+        continue;
+      }
+      const key = readStaticRegistryPropertyKey(property.name, module, budget);
+      if (String(key) !== member.memberName) continue;
+      const value = ts.isPropertyAssignment(property)
+        ? property.initializer
+        : module.values.get(property.name.text);
+      return value === undefined ? undefined : readStaticRegistryPrimitive(value, module, budget);
+    }
+  }
+  const declaration = module.enums.get(member.ownerName);
+  const enumMember = declaration?.members.find(
+    (candidate) => readStaticRegistryPropertyKey(candidate.name, module, budget) === member.memberName,
+  );
+  return enumMember?.initializer === undefined
+    ? undefined
+    : readStaticRegistryPrimitive(enumMember.initializer, module, budget);
+}
+
+/** Reads `Registry.KEY` and `Registry['KEY']` without following arbitrary access chains. */
+function readStaticRegistryMemberAccess(
+  expression: ts.Expression,
+): { readonly memberName: string; readonly ownerName: string } | undefined {
+  if (ts.isPropertyAccessExpression(expression)) {
+    const owner = unwrapExpression(expression.expression);
+    return ts.isIdentifier(owner)
+      ? { memberName: expression.name.text, ownerName: owner.text }
+      : undefined;
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    const owner = unwrapExpression(expression.expression);
+    const member = unwrapExpression(expression.argumentExpression);
+    return ts.isIdentifier(owner) && (ts.isStringLiteralLike(member) || ts.isNumericLiteral(member))
+      ? { memberName: member.text, ownerName: owner.text }
+      : undefined;
+  }
+  return undefined;
 }
 
 /** Resolves direct imported aliases and one re-export chain without evaluating a project module. */
@@ -359,7 +646,9 @@ function collectResolvableObjectTypeImports(
     } else if (ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression)) {
       destination.add(node.expression.text);
     }
-    ts.forEachChild(node, (child) => collectReferencedTypeName(child, destination));
+    ts.forEachChild(node, (child) => {
+      collectReferencedTypeName(child, destination);
+    });
   };
   collectReferencedTypeName(sourceFile);
   for (const [name, declaration] of collectLocalObjectTypes(sourceFile)) {
@@ -566,12 +855,12 @@ function collectImportedObjectTypeClosure(
   const closure = new Map<string, LocalObjectType>();
   const loadedModules = new Map<string, ResolvedObjectTypeModule | undefined>();
   const processed = new Set<string>();
-  const pending: Array<{
+  const pending: {
     declaration: LocalObjectType;
     depth: number;
     localName: string;
     module: ResolvedObjectTypeModule;
-  }> = [
+  }[] = [
     {
       declaration: root.declaration,
       depth: 0,
@@ -646,7 +935,9 @@ function collectImportedObjectTypeClosure(
         referencedNames.push(node.expression.text);
         if (heritage) heritageReferencedNames.add(node.expression.text);
       }
-      ts.forEachChild(node, (child) => inspect(child, heritage));
+      ts.forEachChild(node, (child) => {
+        inspect(child, heritage);
+      });
     };
     if (ts.isInterfaceDeclaration(current.declaration)) {
       for (const heritage of current.declaration.heritageClauses ?? []) inspect(heritage, true);
@@ -716,6 +1007,9 @@ function inferComponentProps(
   localComponentDemandDepth = 0,
   activeLocalComponentNames: ReadonlySet<string> = new Set([component.exportName]),
   followLocalJsxPropForwarding = false,
+  childPropDemands?: PreviewChildPropDemandCatalog,
+  registryDiscriminantHints: ReadonlyMap<string, PreviewStaticRegistryKey> = new Map(),
+  identityCollectionHelperParameters: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
 ): PreviewInferredExportProps | undefined {
   const { functionLike } = component;
   const parameter = functionLike.parameters[0];
@@ -726,13 +1020,16 @@ function inferComponentProps(
   const state: InferenceState = {
     activeLocalComponentNames,
     aliases: new Map(),
+    childPropDemands,
     collectionDemandDepth: 0,
     functionLike,
     graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(sourceFile),
+    identityCollectionHelperParameters,
     localComponents,
     localComponentDemandDepth,
     localTypes,
     nodeCount: 1,
+    registryDiscriminantHints,
     root,
     sourceFile,
   };
@@ -750,9 +1047,12 @@ function inferComponentProps(
     );
   }
   collectLocalPropAliases(functionLike, state);
+  collectLocalHelperForwardedPropRequirements(functionLike, state);
+  collectKeyedCollectionHelperRequirements(functionLike, state);
   collectUsageRequirements(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
+  collectCatalogJsxForwardedPropRequirements(functionLike, state);
   if (followLocalJsxPropForwarding) {
     collectLocalJsxForwardedPropRequirements(functionLike, state);
   }
@@ -761,6 +1061,109 @@ function inferComponentProps(
     return undefined;
   }
   return freezeInference(state.root);
+}
+
+/**
+ * Carries a prop identity through an unambiguous same-file helper call.
+ *
+ * Components often keep render-only collection access in helpers such as
+ * `createOptions(project)` or `renderUser(project)`. Direct component scanning can prove only that
+ * `project` is an object in those cases. The shared helper graph follows the unchanged identifier
+ * into one uniquely declared local function; that helper's ordinary usage inference then supplies
+ * the missing nested Array/item contract without resolving imports or executing application code.
+ */
+function collectLocalHelperForwardedPropRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  if (ts.isMethodDeclaration(functionLike)) return;
+  for (const demand of collectPreviewRuntimeLocalHelperArgumentDemands(
+    functionLike,
+    state.sourceFile,
+  )) {
+    const argumentPath = readPropPath(demand.argument, state.aliases);
+    if (argumentPath === undefined || argumentPath.length > MAX_INFERRED_DEPTH) continue;
+    const requirement = inferFunctionBindingRequirement(demand.owner, demand.parameter.name, state);
+    if (requirement !== undefined) {
+      mergeMutableShapeAtPath(state.root, argumentPath, requirement, state);
+    }
+  }
+  for (const [aliasName, binding] of state.aliases) {
+    for (const demand of collectPreviewRuntimeLocalHelperParameterDemands(
+      functionLike,
+      aliasName,
+      state.sourceFile,
+    )) {
+      const requirement = inferFunctionBindingRequirement(
+        demand.owner,
+        demand.parameter.name,
+        state,
+      );
+      if (requirement !== undefined) {
+        mergeMutableShapeAtPath(state.root, binding.path, requirement, state);
+      }
+    }
+  }
+}
+
+/**
+ * Recovers the item key supplied to conventional collection helpers such as
+ * `sortByNewest(project.issues, 'createdAt')`. The helper name, prop-rooted first argument, and
+ * literal key must all be present; no imported helper is executed or assumed to return a value.
+ */
+function collectKeyedCollectionHelperRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  if (functionLike.body === undefined) return;
+  const visit = (node: ts.Node): void => {
+    if (
+      node !== functionLike &&
+      (ts.isArrowFunction(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isMethodDeclaration(node))
+    ) {
+      return;
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      KEYED_COLLECTION_HELPER_PATTERN.test(node.expression.text)
+    ) {
+      const collectionArgument = node.arguments[0];
+      const keyArgument = node.arguments[1];
+      if (
+        collectionArgument !== undefined &&
+        keyArgument !== undefined &&
+        !ts.isSpreadElement(collectionArgument) &&
+        !ts.isSpreadElement(keyArgument)
+      ) {
+        const collectionPath = readPropPath(collectionArgument, state.aliases);
+        const keyValue = unwrapExpression(keyArgument);
+        const key = ts.isStringLiteralLike(keyValue) ? keyValue.text : undefined;
+        if (
+          collectionPath !== undefined &&
+          collectionPath.length > 0 &&
+          collectionPath.length < MAX_INFERRED_DEPTH &&
+          key !== undefined &&
+          !BLOCKED_PROPERTY_NAMES.has(key) &&
+          !isShadowedPathRoot(collectionArgument, state)
+        ) {
+          const semantic = inferPreviewUsageSemanticFallback(state, key);
+          const item = createMutableNode('object', 'usage');
+          const property = createMutableNode(semantic?.kind ?? 'string', 'usage');
+          if (semantic?.value !== undefined) property.value = semantic.value;
+          if (semantic?.exactValue === true) property.exactValue = true;
+          item.children.set(key, property);
+          requirePath(state, collectionPath, 'array', 'usage');
+          setArrayItemRequirement(state, collectionPath, item);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(functionLike.body);
 }
 
 /**
@@ -786,8 +1189,15 @@ function collectRequiredPropertyReadTerminals(
         !isShadowedPathRoot(node, state) &&
         !hasPreviewInferredPropTerminal(state, path_)
       ) {
-        const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
-        requirePath(state, path_, semantic?.kind ?? 'object', 'usage', semantic?.value);
+        const semantic = inferPreviewUsageSemanticFallback(state, path_.at(-1) ?? '');
+        requirePath(
+          state,
+          path_,
+          semantic?.kind ?? 'object',
+          'usage',
+          semantic?.value,
+          semantic?.exactValue,
+        );
       }
     }
     ts.forEachChild(node, visit);
@@ -812,13 +1222,22 @@ export function inferReactFunctionParameterUsageShape(
   const parentState: InferenceState = {
     activeLocalComponentNames: new Set(),
     aliases: new Map(),
+    childPropDemands: undefined,
     collectionDemandDepth: 0,
     functionLike,
     graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(functionLike.getSourceFile()),
+    identityCollectionHelperParameters: collectIdentityCollectionHelperParameters(
+      functionLike.getSourceFile(),
+    ),
     localComponents: collectLocalComponentDeclarations(functionLike.getSourceFile()),
     localComponentDemandDepth: 0,
     localTypes: collectLocalObjectTypes(functionLike.getSourceFile()),
     nodeCount: 1,
+    registryDiscriminantHints: collectStaticRegistryDiscriminantHints(
+      functionLike.getSourceFile(),
+      functionLike.getSourceFile().fileName,
+      {},
+    ),
     root: createMutableNode('object', 'usage'),
     sourceFile: functionLike.getSourceFile(),
   };
@@ -959,10 +1378,7 @@ function readObjectTypeMembers(
   try {
     const typeParameters = declaration.typeParameters;
     const typeArguments = reference.typeArguments;
-    if (
-      typeParameters !== undefined &&
-      (typeArguments === undefined || typeParameters.length !== typeArguments.length)
-    ) {
+    if (typeParameters !== undefined && typeParameters.length !== typeArguments?.length) {
       return undefined;
     }
     const nestedSubstitutions = new Map(substitutions);
@@ -1281,7 +1697,7 @@ function addGraphqlDocumentRequirement(
   if (operation === undefined || typeReference.typeArguments?.[0] === undefined) return;
   requirePath(state, path_, 'graphql-document', 'type');
   const document = readMutablePathNode(state, path_);
-  if (document === undefined || document.kind !== 'graphql-document') return;
+  if (document?.kind !== 'graphql-document') return;
   const response = createTypeShape(
     typeReference.typeArguments[0],
     localTypes,
@@ -1482,7 +1898,7 @@ function setArrayItemRequirement(
 ): void {
   // A scalar element does not prove a structured UI branch. Retain only object-shaped element
   // contracts, which are the bounded evidence needed for a pill/list item without inventing data.
-  if (items === undefined || items.kind !== 'object') return;
+  if (items?.kind !== 'object') return;
   let node = state.root;
   for (const name of path_) {
     const next = node.children.get(name);
@@ -1512,17 +1928,177 @@ function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableS
   }
 }
 
+/** Merges an already-inferred mutable requirement beneath one prop-rooted alias path. */
+function mergeMutableShapeAtPath(
+  root: MutableShapeNode,
+  path_: readonly string[],
+  requirement: MutableShapeNode,
+  state: InferenceState,
+): void {
+  let current = root;
+  for (const propertyName of path_) {
+    if (BLOCKED_PROPERTY_NAMES.has(propertyName)) return;
+    let child = current.children.get(propertyName);
+    if (child === undefined) {
+      if (state.nodeCount >= MAX_INFERRED_NODES) return;
+      state.nodeCount += 1;
+      child = createMutableNode('object', 'usage');
+      current.children.set(propertyName, child);
+    }
+    current = child;
+  }
+  mergeMutableShapeRequirement(current, requirement);
+}
+
+/** Finds local helpers whose result keeps every returned item from one Array parameter unchanged. */
+function collectIdentityCollectionHelperParameters(
+  sourceFile: ts.SourceFile,
+): ReadonlyMap<string, ReadonlySet<number>> {
+  const candidates = new Map<string, ExportedFunctionLike[]>();
+  const append = (name: string, functionLike: ExportedFunctionLike): void => {
+    const values = candidates.get(name) ?? [];
+    values.push(functionLike);
+    candidates.set(name, values);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+      append(node.name.text, node);
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined
+    ) {
+      const initializer = unwrapExpression(node.initializer);
+      if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+        append(node.name.text, initializer);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  const result = new Map<string, ReadonlySet<number>>();
+  for (const [name, declarations] of candidates) {
+    const declaration = declarations.length === 1 ? declarations[0] : undefined;
+    if (declaration === undefined) continue;
+    const parameters = new Set<number>();
+    for (const [index, parameter] of declaration.parameters.entries()) {
+      if (
+        ts.isIdentifier(parameter.name) &&
+        doesLocalHelperReturnIdentityCollection(declaration, parameter.name.text)
+      ) {
+        parameters.add(index);
+      }
+    }
+    if (parameters.size > 0) result.set(name, parameters);
+  }
+  return result;
+}
+
+/** Accepts only direct filter/sort/slice chains and aliases rooted in the selected parameter. */
+function doesLocalHelperReturnIdentityCollection(
+  functionLike: ExportedFunctionLike,
+  parameterName: string,
+): boolean {
+  const body = functionLike.body;
+  if (body === undefined) return false;
+  const aliases = new Set([parameterName]);
+  if (!ts.isBlock(body)) return isIdentityCollectionCarrier(body, aliases);
+  const returnState = { returned: false, unsupported: false };
+  const visit = (node: ts.Node): void => {
+    if (
+      node !== body &&
+      (ts.isArrowFunction(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isMethodDeclaration(node))
+    ) {
+      return;
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined
+    ) {
+      if (isIdentityCollectionCarrier(node.initializer, aliases)) aliases.add(node.name.text);
+      else aliases.delete(node.name.text);
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(unwrapExpression(node.left))
+    ) {
+      const name = (unwrapExpression(node.left) as ts.Identifier).text;
+      if (isIdentityCollectionCarrier(node.right, aliases)) aliases.add(name);
+      else aliases.delete(name);
+    } else if (ts.isReturnStatement(node)) {
+      if (node.expression !== undefined && isIdentityCollectionCarrier(node.expression, aliases)) {
+        returnState.returned = true;
+      } else {
+        returnState.unsupported = true;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return returnState.returned && !returnState.unsupported;
+}
+
+/** Reports an expression whose Array transforms cannot replace or reshape its items. */
+function isIdentityCollectionCarrier(
+  expression: ts.Expression,
+  aliases: ReadonlySet<string>,
+): boolean {
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) return aliases.has(current.text);
+  if (!ts.isCallExpression(current)) return false;
+  const callee = unwrapExpression(current.expression);
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    LOCAL_HELPER_ITEM_IDENTITY_METHOD_NAMES.has(callee.name.text) &&
+    isIdentityCollectionCarrier(callee.expression, aliases)
+  );
+}
+
+/** Carries a prop Array path through one proven same-file identity-preserving helper call. */
+function readIdentityCollectionHelperCallPath(
+  expression: ts.Expression,
+  state: InferenceState,
+): readonly string[] | undefined {
+  const current = unwrapExpression(expression);
+  if (!ts.isCallExpression(current)) return undefined;
+  const callee = unwrapExpression(current.expression);
+  if (!ts.isIdentifier(callee)) return undefined;
+  const parameterIndexes = state.identityCollectionHelperParameters.get(callee.text);
+  if (parameterIndexes === undefined) return undefined;
+  for (const parameterIndex of parameterIndexes) {
+    const argument = current.arguments[parameterIndex];
+    if (argument === undefined || ts.isSpreadElement(argument)) continue;
+    const path_ =
+      readPropPath(argument, state.aliases) ?? readIdentityCollectionHelperCallPath(argument, state);
+    if (path_ !== undefined) return path_;
+  }
+  return undefined;
+}
+
 /** Collects simple local aliases before evaluating later receiver paths in callbacks and JSX. */
 function collectLocalPropAliases(functionLike: ExportedFunctionLike, state: InferenceState): void {
   const body = functionLike.body;
   if (body === undefined) return;
   const visit = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
-      const sourcePath = readPropPath(node.initializer, state.aliases);
+      const sourcePath =
+        readPropPath(node.initializer, state.aliases) ??
+        readIdentityCollectionHelperCallPath(node.initializer, state);
       if (sourcePath !== undefined) {
         if (ts.isIdentifier(node.name)) {
           state.aliases.set(node.name.text, { path: sourcePath });
         } else if (ts.isObjectBindingPattern(node.name)) {
+          /* Object binding throws for a nullish receiver even when every bound leaf is only
+           * forwarded opaquely. Retain the prop-derived container before mapping its aliases so a
+           * direct preview can execute chains such as `const { ir: irInfo } = object` followed by
+           * another destructure or child-prop forwarding. */
+          if (!isInsideNestedFunction(node, state.functionLike)) {
+            requirePath(state, sourcePath, 'object', 'usage');
+          }
           for (const element of node.name.elements) {
             const propertyName = readBindingPropertyName(element);
             if (
@@ -1676,7 +2252,7 @@ function inferArrayCallbackItemRequirement(
   return combined;
 }
 
-/** Carries an array item into the exact prop contract of a same-file JSX child component. */
+/** Carries an array item into the exact prop contract of a local or catalogued JSX child. */
 function inferLocalJsxForwardedItemRequirement(
   callback: ts.ArrowFunction | ts.FunctionExpression,
   binding: ts.BindingName,
@@ -1719,12 +2295,13 @@ function inferLocalJsxForwardedItemRequirement(
         !seen.has(identity)
       ) {
         seen.add(identity);
+        const catalogShape = parentState.childPropDemands?.get(tagName)?.get(node.name.text);
         const candidate = resolveLocalComponent(tagName, parentState.localComponents);
         const activeLocalComponentNames = new Set(parentState.activeLocalComponentNames);
         const recursivelyActive = activeLocalComponentNames.has(tagName);
         activeLocalComponentNames.add(tagName);
         const inference =
-          candidate === undefined || recursivelyActive
+          catalogShape !== undefined || candidate === undefined || recursivelyActive
             ? undefined
             : inferComponentProps(
                 { exportName: tagName, ...candidate },
@@ -1734,8 +2311,11 @@ function inferLocalJsxForwardedItemRequirement(
                 parentState.localComponentDemandDepth + 1,
                 activeLocalComponentNames,
                 true,
+                parentState.childPropDemands,
+                parentState.registryDiscriminantHints,
+                parentState.identityCollectionHelperParameters,
               );
-        const shape = inference?.shape.properties?.[node.name.text];
+        const shape = catalogShape ?? inference?.shape.properties?.[node.name.text];
         if (shape !== undefined) mergeFrozenShapeAtPath(root, path_, shape, parentState);
       }
     }
@@ -1743,6 +2323,61 @@ function inferLocalJsxForwardedItemRequirement(
   };
   visit(callback.body);
   return root.children.size === 0 ? undefined : root;
+}
+
+/**
+ * Carries an exact imported/local child prop contract back through one JSX identity edge.
+ *
+ * The catalog is built by a bounded parse-only module walker. This layer accepts only direct
+ * identifier attributes such as `company={company}` whose expression is already rooted at the
+ * selected component's props; calls, object literals, spreads, and optional carriers remain
+ * authored because they do not prove an identity-preserving value relationship.
+ */
+function collectCatalogJsxForwardedPropRequirements(
+  functionLike: ExportedFunctionLike,
+  state: InferenceState,
+): void {
+  const catalog = state.childPropDemands;
+  if (catalog === undefined || catalog.size === 0 || functionLike.body === undefined) return;
+  const seen = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isJsxAttribute(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression !== undefined &&
+      isInsideSelectedPropSwitchClause(node, state)
+    ) {
+      const opening = node.parent.parent;
+      const tagName =
+        (ts.isJsxOpeningElement(opening) || ts.isJsxSelfClosingElement(opening)) &&
+        ts.isIdentifier(opening.tagName)
+          ? opening.tagName.text
+          : undefined;
+      const expression = node.initializer.expression;
+      const path_ = readPropPath(expression, state.aliases);
+      const shape = tagName === undefined ? undefined : catalog.get(tagName)?.get(node.name.text);
+      const identity =
+        tagName === undefined || shape === undefined || path_ === undefined
+          ? undefined
+          : `${tagName}\0${node.name.text}\0${path_.join('.')}`;
+      if (
+        shape !== undefined &&
+        path_ !== undefined &&
+        path_.length > 0 &&
+        path_.length <= MAX_INFERRED_DEPTH &&
+        identity !== undefined &&
+        !seen.has(identity) &&
+        !isShadowedPathRoot(expression, state)
+      ) {
+        seen.add(identity);
+        mergeFrozenShapeAtPath(state.root, path_, shape, state);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(functionLike.body);
 }
 
 /**
@@ -1803,6 +2438,9 @@ function collectLocalJsxForwardedPropRequirements(
             state.localComponentDemandDepth + 1,
             activeLocalComponentNames,
             true,
+            state.childPropDemands,
+            state.registryDiscriminantHints,
+            state.identityCollectionHelperParameters,
           );
           const shape = inference?.shape.properties?.[node.name.text];
           if (shape !== undefined) mergeFrozenShapeAtPath(state.root, path_, shape, state);
@@ -1816,8 +2454,8 @@ function collectLocalJsxForwardedPropRequirements(
 
 /** Rejects JSX from non-selected direct switch clauses once an exact prop value is known. */
 function isInsideSelectedPropSwitchClause(node: ts.Node, state: InferenceState): boolean {
-  let current: ts.Node | undefined = node;
-  while (current !== undefined && current !== state.functionLike) {
+  let current = node;
+  while (current !== state.functionLike) {
     if (ts.isCaseClause(current) || ts.isDefaultClause(current)) {
       const caseBlock = current.parent;
       const statement = caseBlock.parent;
@@ -1841,6 +2479,7 @@ function isInsideSelectedPropSwitchClause(node: ts.Node, state: InferenceState):
         }
       }
     }
+    if (ts.isSourceFile(current)) return true;
     current = current.parent;
   }
   return true;
@@ -1916,28 +2555,32 @@ function inferFunctionBindingRequirement(
   binding: ts.BindingName,
   parentState: InferenceState,
 ): MutableShapeNode | undefined {
+  const bindingRoot = '__reactPreviewBindingRoot';
   const root = createMutableNode('object', 'usage');
   const state: InferenceState = {
     activeLocalComponentNames: parentState.activeLocalComponentNames,
     aliases: new Map(),
+    childPropDemands: parentState.childPropDemands,
     collectionDemandDepth: parentState.collectionDemandDepth + 1,
     functionLike,
     graphqlDocumentTypeNames: parentState.graphqlDocumentTypeNames,
+    identityCollectionHelperParameters: parentState.identityCollectionHelperParameters,
     localComponents: parentState.localComponents,
     localComponentDemandDepth: parentState.localComponentDemandDepth,
     localTypes: parentState.localTypes,
     nodeCount: parentState.nodeCount,
+    registryDiscriminantHints: parentState.registryDiscriminantHints,
     root,
     sourceFile: parentState.sourceFile,
   };
-  collectParameterBindings(binding, [], state.aliases);
+  collectParameterBindings(binding, [bindingRoot], state.aliases);
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
   collectRequiredPropertyReadTerminals(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
   parentState.nodeCount = state.nodeCount;
-  return root.children.size === 0 ? undefined : root;
+  return root.children.get(bindingRoot);
 }
 
 /**
@@ -2087,6 +2730,16 @@ function addOperationRequirement(
     requirePath(state, path_, 'component', 'usage');
     return;
   }
+  const directJsxPropName = readDirectJsxPropName(node);
+  if (directJsxPropName !== undefined) {
+    const semantic =
+      inferPreviewUsageSemanticFallback(state, path_.at(-1) ?? '') ??
+      inferPreviewUsageSemanticFallback(state, directJsxPropName);
+    if (semantic !== undefined) {
+      requirePath(state, path_, semantic.kind, 'usage', semantic.value, semantic.exactValue);
+      return;
+    }
+  }
   if (
     ts.isCallExpression(parent) &&
     parent.expression === node &&
@@ -2101,7 +2754,7 @@ function addOperationRequirement(
   ) {
     /* Negation proves truthiness, not Boolean type. Preserve a semantic URL/data value so an exact
      * target can pass `if (!value) return null` instead of receiving a self-defeating `false`. */
-    const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
+    const semantic = inferPreviewUsageSemanticFallback(state, path_.at(-1) ?? '');
     if (isRenderTerminatingNegatedGuard(parent)) {
       if (semantic?.kind === 'boolean') {
         requirePath(state, path_, 'boolean', 'usage', true, true);
@@ -2120,7 +2773,28 @@ function addOperationRequirement(
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node) {
     const methodName = path_.at(-1);
     const receiverPath = path_.slice(0, -1);
-    const semanticReceiver = inferPreviewRuntimeSemanticFallback(receiverPath.at(-1) ?? '');
+    const semanticReceiver = inferPreviewUsageSemanticFallback(
+      state,
+      receiverPath.at(-1) ?? '',
+    );
+    if (
+      receiverPath.length > 0 &&
+      methodName === 'toString' &&
+      semanticReceiver !== undefined &&
+      (semanticReceiver.kind === 'boolean' ||
+        semanticReceiver.kind === 'number' ||
+        semanticReceiver.kind === 'string')
+    ) {
+      requirePath(
+        state,
+        receiverPath,
+        semanticReceiver.kind,
+        'usage',
+        semanticReceiver.value,
+        semanticReceiver.exactValue,
+      );
+      return;
+    }
     const sharedStringReceiver =
       methodName !== undefined &&
       STRING_COLLECTION_SHARED_METHOD_NAMES.has(methodName) &&
@@ -2155,11 +2829,48 @@ function addOperationRequirement(
     !hasPreviewInferredPropTerminal(state, path_) &&
     isReactRenderedValueExpression(node)
   ) {
-    const semantic = inferPreviewRuntimeSemanticFallback(path_.at(-1) ?? '');
+    const semantic = inferPreviewUsageSemanticFallback(state, path_.at(-1) ?? '');
     if (semantic !== undefined) {
-      requirePath(state, path_, semantic.kind, 'usage', semantic.value);
+      requirePath(state, path_, semantic.kind, 'usage', semantic.value, semantic.exactValue);
     }
   }
+}
+
+/** Prefers a source-proven registry key over generic text derived from the field name. */
+function inferPreviewUsageSemanticFallback(state: InferenceState, rawName: string): {
+  readonly exactValue?: true;
+  readonly kind: PreviewInferredPropKind;
+  readonly value?: boolean | number | string | null;
+} | undefined {
+  const registryValue = state.registryDiscriminantHints.get(rawName);
+  if (registryValue !== undefined) {
+    return {
+      exactValue: true,
+      kind: readPrimitiveValueKind(registryValue),
+      value: registryValue,
+    };
+  }
+  const semantic = inferPreviewRuntimeSemanticFallback(rawName);
+  return semantic === undefined
+    ? undefined
+    : {
+        kind: semantic.kind,
+        ...(semantic.value === undefined ? {} : { value: semantic.value }),
+      };
+}
+
+/** Reads an unchanged value forwarded through one ordinary JSX attribute. */
+function readDirectJsxPropName(expression: ts.Expression): string | undefined {
+  const container = expression.parent;
+  if (
+    !ts.isJsxExpression(container) ||
+    container.expression !== expression ||
+    !ts.isJsxAttribute(container.parent) ||
+    !ts.isIdentifier(container.parent.name)
+  ) {
+    return undefined;
+  }
+  return container.parent.name.text;
 }
 
 /** Selects the neutral number proven by a direct arithmetic operation. */
@@ -2409,6 +3120,16 @@ function isShadowedIdentifier(
     current = current.parent;
   }
   return false;
+}
+
+/** Keeps eager container materialization within the selected component's own render scope. */
+function isInsideNestedFunction(node: ts.Node, functionLike: ExportedFunctionLike): boolean {
+  let current = node.parent;
+  while (current !== functionLike && !ts.isSourceFile(current)) {
+    if (isFunctionLike(current)) return true;
+    current = current.parent;
+  }
+  return current !== functionLike;
 }
 
 /** Freezes one deterministic JSON-safe shape and its flattened provenance inventory. */

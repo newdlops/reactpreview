@@ -1,8 +1,120 @@
 /** Exercises bounded target-prop inference without resolving or executing project modules. */
 import { describe, expect, it } from 'vitest';
-import { collectReactExportPropInference } from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
+import {
+  collectReactExportPropInference,
+  type PreviewChildPropDemandCatalog,
+} from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
 
 describe('collectReactExportPropInference', () => {
+  /** Keeps a semantically named scalar as the receiver of the ubiquitous toString method. */
+  it('infers an id receiver through toString without inventing a callable object', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/Issue.jsx',
+      'export function Issue({ issue }) { return <a href={`/issues/${issue.id}`}>{issue.id.toString()}</a>; }',
+    );
+
+    expect(result.Issue?.shape.properties?.issue).toEqual({
+      kind: 'object',
+      properties: { id: { kind: 'string', value: 'preview-id' } },
+    });
+  });
+
+  /** Preserves a semantic root scalar when a component forwards it unchanged to a JSX prop. */
+  it('infers a numeric index forwarded directly to a drag-and-drop child', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/Issue.jsx',
+      'export function Issue({ index }) { return <Draggable index={index} />; }',
+    );
+
+    expect(result.Issue?.shape.properties?.index).toEqual({ kind: 'number', value: 0 });
+  });
+
+  /** Recovers the collection contract hidden behind Jira's same-file option/render helpers. */
+  it('infers prop collection items forwarded unchanged into local helpers', () => {
+    const source = [
+      'const userOptions = project => project.users.map(user => ({ value: user.id, label: user.name }));',
+      'const renderUser = project => userId => {',
+      '  const user = project.users.find(({ id }) => id === userId);',
+      '  return <div><img src={user.avatarUrl} />{user.name}</div>;',
+      '};',
+      'export default function IssueCreate({ project }) {',
+      '  return <Select options={userOptions(project)} renderValue={renderUser(project)} />;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/IssueCreate/index.jsx', source);
+
+    expect(result.default?.shape.properties?.project).toEqual({
+      kind: 'object',
+      properties: {
+        users: {
+          items: {
+            kind: 'object',
+            properties: {
+              id: { kind: 'string', value: 'preview-id' },
+              name: { kind: 'string', value: 'name' },
+            },
+          },
+          kind: 'array',
+        },
+      },
+    });
+  });
+
+  it('infers a nested prop collection forwarded into a same-file helper', () => {
+    const source = [
+      'const sortedIssues = issues => issues.filter(issue => issue.status === "OPEN")',
+      '  .sort((left, right) => left.listPosition - right.listPosition);',
+      'export function List({ project }) {',
+      '  return sortedIssues(project.issues).map(issue => <span key={issue.id}>{issue.title}</span>);',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/List.jsx', source);
+
+    expect(result.List?.shape.properties?.project).toMatchObject({
+      kind: 'object',
+      properties: {
+        issues: {
+          kind: 'array',
+          items: {
+            kind: 'object',
+            properties: {
+              status: { kind: 'string' },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('uses a literal sort-helper key as an item requirement', () => {
+    const source = [
+      `import { sortByNewest } from './utils';`,
+      'export function Search({ project }) {',
+      '  return sortByNewest(project.issues, "createdAt").slice(0, 3).length;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/Search.jsx', source);
+
+    expect(result.Search?.shape.properties?.project).toMatchObject({
+      properties: {
+        issues: {
+          items: {
+            properties: {
+              createdAt: {
+                kind: 'string',
+                value: '2024-01-01T00:00:00.000Z',
+              },
+            },
+          },
+          kind: 'array',
+        },
+      },
+    });
+  });
+
   /** Carries a type-proven list element contract so automatic props can exercise a pill branch. */
   it('infers a nullable typed collection with its one inert item structure', () => {
     const source = [
@@ -286,6 +398,101 @@ describe('collectReactExportPropInference', () => {
       expect.arrayContaining([
         { kind: 'object', path: 'field.value.addressInput', source: 'usage' },
         { kind: 'function', path: 'helpers.setValue', source: 'usage' },
+      ]),
+    );
+  });
+
+  /** Keeps renamed, repeatedly destructured prop containers non-null before opaque forwarding. */
+  it('infers a prop-derived object receiver through renamed local destructuring', () => {
+    const source = [
+      'export const CompanyIrClosingFeed = ({ object }: any) => {',
+      '  const { ir: irInfo, totalCommittedInvestments } = object;',
+      '  const { desiredInvestmentAmountCategory, desiredInvestmentAmount } = irInfo;',
+      '  totalCommittedInvestments.reduce((sum: number) => sum, 0);',
+      '  return <Child dataProps={{',
+      '    desiredInvestmentAmountCategory,',
+      '    desiredInvestmentAmount,',
+      '    committedInvestmentAmounts: totalCommittedInvestments,',
+      '  }} />;',
+      '};',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/CompanyIrClosingFeed.tsx', source);
+
+    expect(result.CompanyIrClosingFeed?.shape.properties?.object).toMatchObject({
+      kind: 'object',
+      properties: {
+        ir: { kind: 'object', properties: {} },
+        totalCommittedInvestments: { kind: 'array' },
+      },
+    });
+    expect(result.CompanyIrClosingFeed?.provenance).toContainEqual({
+      kind: 'object',
+      path: 'object.ir',
+      source: 'usage',
+    });
+  });
+
+  /** Carries a reached imported child's exact prop contract through renamed local aliases. */
+  it('infers identity-forwarded props from a child component demand catalog', () => {
+    const source = [
+      `import { CompanyFeedBase } from './CompanyFeedBase';`,
+      'export const CompanyIrClosingFeed = ({ object }: any) => {',
+      '  const { company, ir: irInfo } = object;',
+      '  return <CompanyFeedBase company={company} irInfo={irInfo} />;',
+      '};',
+    ].join('\n');
+    const childPropDemands: PreviewChildPropDemandCatalog = new Map([
+      [
+        'CompanyFeedBase',
+        new Map([
+          [
+            'company',
+            {
+              kind: 'object',
+              properties: {
+                id: { kind: 'string' },
+                name: { kind: 'string' },
+                profileLogo: { kind: 'null', value: null },
+              },
+            },
+          ],
+          [
+            'irInfo',
+            {
+              kind: 'object',
+              properties: { uuid: { kind: 'string' } },
+            },
+          ],
+        ]),
+      ],
+    ]);
+
+    const result = collectReactExportPropInference('/workspace/CompanyIrClosingFeed.tsx', source, {
+      childPropDemands,
+    });
+
+    expect(result.CompanyIrClosingFeed?.shape.properties?.object).toMatchObject({
+      kind: 'object',
+      properties: {
+        company: {
+          kind: 'object',
+          properties: {
+            id: { kind: 'string' },
+            name: { kind: 'string' },
+            profileLogo: { kind: 'null', value: null },
+          },
+        },
+        ir: {
+          kind: 'object',
+          properties: { uuid: { kind: 'string' } },
+        },
+      },
+    });
+    expect(result.CompanyIrClosingFeed?.provenance).toEqual(
+      expect.arrayContaining([
+        { kind: 'string', path: 'object.company.name', source: 'usage' },
+        { kind: 'string', path: 'object.ir.uuid', source: 'usage' },
       ]),
     );
   });

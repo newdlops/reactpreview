@@ -23,7 +23,12 @@ import {
   type PreviewRouterRequirement,
 } from '../previewRouterRequirement';
 import { collectPreviewFormikRequirement } from '../previewFormikRequirement';
-import { PREVIEW_FORMIK_SPECIFIER, PREVIEW_REDUX_SPECIFIER } from '../previewPluginProtocol';
+import { collectPreviewDragDropRequirement } from '../previewDragDropRequirement';
+import {
+  PREVIEW_DRAG_DROP_SPECIFIER,
+  PREVIEW_FORMIK_SPECIFIER,
+  PREVIEW_REDUX_SPECIFIER,
+} from '../previewPluginProtocol';
 import { createPreviewThemeSourceInstrumentation } from './previewThemeSourceInstrumentation';
 import {
   expandStaticPatterns,
@@ -230,6 +235,20 @@ export class PreviewSourceTransformer {
           generatedImports.push(
             `import { registerPreviewFormikRequirement as ${registrationBinding} } from ${JSON.stringify(PREVIEW_FORMIK_SPECIFIER)};`,
             `${registrationBinding}(${JSON.stringify(formikRequirement)});`,
+          );
+        }
+      }
+      if (sourceText.includes('react-beautiful-dnd')) {
+        const dragDropRequirement = collectPreviewDragDropRequirement(sourcePath, sourceText);
+        if (
+          dragDropRequirement.consumesDragDropContext ||
+          dragDropRequirement.ownsDragDropContext ||
+          dragDropRequirement.ownsDroppableContext
+        ) {
+          const registrationBinding = bindings.next('dragDropRequirement');
+          generatedImports.push(
+            `import { registerPreviewDragDropRequirement as ${registrationBinding} } from ${JSON.stringify(PREVIEW_DRAG_DROP_SPECIFIER)};`,
+            `${registrationBinding}(${JSON.stringify(dragDropRequirement)});`,
           );
         }
       }

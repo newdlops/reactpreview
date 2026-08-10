@@ -10,6 +10,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
+import { createPreviewGeneratedListExpression } from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeHookAssignmentGuardPassFallback } from './previewRuntimeHookGuardValue';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import {
@@ -473,8 +474,7 @@ function analyzeCandidateScope(
   localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
   globalObjectShadowed: boolean,
   resolveImportedCollectionCallbackItem:
-    | ResolvePreviewRuntimeHookImportedHelperItemFallback
-    | undefined,
+    ResolvePreviewRuntimeHookImportedHelperItemFallback | undefined,
 ): void {
   plan.scopeCount += 1;
   if (plan.scopeCount > MAX_SCOPES_PER_CANDIDATE || plan.invalid) {
@@ -626,8 +626,7 @@ function inspectScopeOperations(
   localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
   globalObjectShadowed: boolean,
   resolveImportedCollectionCallbackItem:
-    | ResolvePreviewRuntimeHookImportedHelperItemFallback
-    | undefined,
+    ResolvePreviewRuntimeHookImportedHelperItemFallback | undefined,
 ): void {
   visitDirectScopeNodes(scope, (node) => {
     if (plan.invalid) return;
@@ -796,8 +795,7 @@ function inspectCallExpression(
   localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
   globalObjectShadowed: boolean,
   resolveImportedCollectionCallbackItem:
-    | ResolvePreviewRuntimeHookImportedHelperItemFallback
-    | undefined,
+    ResolvePreviewRuntimeHookImportedHelperItemFallback | undefined,
 ): void {
   if (call.questionDotToken !== undefined && isRootedAtCandidate(call.expression, bindings, plan)) {
     if (!recordOptionalBase(call.expression, bindings, plan, localReturnFunctions)) {
@@ -855,7 +853,10 @@ function inspectCallExpression(
     const callResultExpression = readCallableResultExpression(call, plan);
     plan.required = true;
     if (callResultExpression === null) return;
-    if (callResultExpression === false || callee.paths.some((calleePath) => calleePath.length === 0)) {
+    if (
+      callResultExpression === false ||
+      callee.paths.some((calleePath) => calleePath.length === 0)
+    ) {
       plan.invalid = true;
       return;
     }
@@ -934,14 +935,11 @@ function inspectJsxAttribute(
   localReturnFunctions: ReadonlyMap<string, RuntimeFunction>,
 ): void {
   const attributeName = attribute.name.getText();
-  const expression = attribute.initializer !== undefined &&
-    ts.isJsxExpression(attribute.initializer)
-    ? attribute.initializer.expression
-    : undefined;
-  if (
-    expression === undefined ||
-    !looksLikeStrongContextCollectionName(attributeName)
-  ) return;
+  const expression =
+    attribute.initializer !== undefined && ts.isJsxExpression(attribute.initializer)
+      ? attribute.initializer.expression
+      : undefined;
+  if (expression === undefined || !looksLikeStrongContextCollectionName(attributeName)) return;
   const resolved = readHookBoundValue(
     expression,
     bindings,
@@ -970,9 +968,13 @@ function looksLikeStrongContextCollectionName(propertyName: string | undefined):
   ) {
     return false;
   }
-  return /(?:items|nodes|edges|rows|records|results|entries|connections|collection|datalist)$/u.test(
-    name,
-  ) || name.endsWith('ies') || name.endsWith('s');
+  return (
+    /(?:items|nodes|edges|rows|records|results|entries|connections|collection|datalist)$/u.test(
+      name,
+    ) ||
+    name.endsWith('ies') ||
+    name.endsWith('s')
+  );
 }
 
 /**
@@ -984,7 +986,10 @@ function readCallableResultExpression(
   plan: HookFallbackPlan,
 ): string | false | null | undefined {
   const parent = call.parent;
-  if (ts.isExpressionStatement(parent) || (ts.isReturnStatement(parent) && parent.expression === call)) {
+  if (
+    ts.isExpressionStatement(parent) ||
+    (ts.isReturnStatement(parent) && parent.expression === call)
+  ) {
     return undefined;
   }
   if (
@@ -1286,8 +1291,7 @@ function addCollectionLeaf(
       if (
         item !== undefined &&
         (child.collectionItemExpression === undefined ||
-          (item.requiredPaths?.length ?? 0) >
-            (child.collectionItemRequiredPaths?.length ?? 0))
+          (item.requiredPaths?.length ?? 0) > (child.collectionItemRequiredPaths?.length ?? 0))
       ) {
         child.collectionItemExpression = item.expression;
         child.collectionItemRequiredPaths = Object.freeze([...(item.requiredPaths ?? [])]);
@@ -1424,7 +1428,7 @@ function serializeFallbackShape(shape: FallbackShape): string {
   if (shape.kind === 'collection') {
     return shape.collectionItemExpression === undefined
       ? 'Object.freeze([])'
-      : `Object.freeze([${shape.collectionItemExpression}])`;
+      : createPreviewGeneratedListExpression(shape.collectionItemExpression);
   }
   if (shape.kind === 'scalar') return shape.scalarExpression ?? 'undefined';
   const properties = [...shape.children]

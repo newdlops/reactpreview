@@ -253,6 +253,26 @@ describe('PreviewSourceTransformer', () => {
     );
   });
 
+  /** Registers exact drag consumer evidence without rewriting application component syntax. */
+  it('registers react-beautiful-dnd consumers and provider ownership', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const sourcePath = path.join(workspaceRoot, 'Issue.tsx');
+    const sourceText = [
+      "import { Draggable as Item } from 'react-beautiful-dnd';",
+      "export const Issue = () => <Item draggableId='issue-1' index={0}>{() => null}</Item>;",
+    ].join('\n');
+
+    const transformed = await createTransformer(workspaceRoot).transform(sourcePath, sourceText);
+
+    expect(transformed.contents).toContain(
+      'registerPreviewDragDropRequirement as __reactPreview_dragDropRequirement_0',
+    );
+    expect(transformed.contents).toContain(
+      '__reactPreview_dragDropRequirement_0({"consumesDragDropContext":true,"consumesDroppableContext":true,"ownsDragDropContext":false,"ownsDroppableContext":false});',
+    );
+    expect(transformed.contents).toContain("<Item draggableId='issue-1' index={0}>");
+  });
+
   /** Guards callable theme tokens only inside a tagged template owned by styled-components. */
   it('isolates malformed nested theme helpers with exact styled-template usage evidence', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

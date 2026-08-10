@@ -3,6 +3,7 @@
  * Build-time analysis emits data-only shape nodes; this runtime turns them into neutral values and
  * overlays real usage, setup, and Inspector values without evaluating project factories or types.
  */
+import { createPreviewGeneratedListRuntimeSource } from './previewGeneratedListRuntimeSource';
 
 /** Global symbol key carried by generated React component props through editable Inspector JSON. */
 export const PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY = 'react-file-preview.automatic-component-prop';
@@ -21,7 +22,10 @@ export const PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY_KEY =
  * @returns Plain JavaScript source that declares automatic-prop materialization and merge helpers.
  */
 export function createPreviewAutomaticPropsRuntimeSource(): string {
+  const generatedListRuntimeSource = createPreviewGeneratedListRuntimeSource();
   return String.raw`
+${generatedListRuntimeSource}
+
 const PREVIEW_AUTOMATIC_PROP_MAX_DEPTH = 12;
 const PREVIEW_AUTOMATIC_PROP_MAX_NODES = 256;
 const PREVIEW_AUTOMATIC_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
@@ -38,7 +42,44 @@ const PREVIEW_AUTOMATIC_GENERATED_VALUE_REGISTRY = (() => {
     return undefined;
   }
 })();
+const PREVIEW_AUTOMATIC_EXACT_CHILD_REGISTRY = new WeakMap();
 const blockedPreviewAutomaticPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** Remembers direct primitive children whose authored syntax proved one exact accepted value. */
+function registerPreviewAutomaticExactChildren(value, names) {
+  if (!isPreviewAutomaticPropRecord(value) || names.length === 0) return;
+  try { PREVIEW_AUTOMATIC_EXACT_CHILD_REGISTRY.set(value, new Set(names)); } catch {}
+}
+
+/** Checks exact-value metadata without exposing compiler bookkeeping on project-visible objects. */
+function isPreviewAutomaticExactChild(value, name) {
+  try { return PREVIEW_AUTOMATIC_EXACT_CHILD_REGISTRY.get(value)?.has(name) === true; }
+  catch { return false; }
+}
+
+/** Reattaches exact-child metadata after generated-list cloning creates new frozen identities. */
+function registerPreviewAutomaticExactShape(value, node, budget = { nodes: 0 }, depth = 0) {
+  if (
+    node === null || typeof node !== 'object' ||
+    depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH || budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES
+  ) return;
+  budget.nodes += 1;
+  if (node.kind === 'array' && Array.isArray(value) && node.items !== undefined) {
+    for (const item of value) {
+      registerPreviewAutomaticExactShape(item, node.items, budget, depth + 1);
+    }
+    return;
+  }
+  if (node.kind !== 'object' || !isPreviewAutomaticPropRecord(value)) return;
+  const properties = isPreviewAutomaticPropRecord(node.properties) ? node.properties : {};
+  const exactChildren = [];
+  for (const [name, childNode] of readPreviewAutomaticPropEntries(properties)) {
+    if (blockedPreviewAutomaticPropNames.has(name)) continue;
+    if (childNode?.exactValue === true) exactChildren.push(name);
+    registerPreviewAutomaticExactShape(value[name], childNode, budget, depth + 1);
+  }
+  registerPreviewAutomaticExactChildren(value, exactChildren);
+}
 
 /** Reports whether a value is a plain record that can be copied without invoking accessors. */
 function isPreviewAutomaticPropRecord(value) {
@@ -116,11 +157,13 @@ function materializePreviewAutomaticPropNode(node, budget, depth) {
   budget.nodes += 1;
   switch (node.kind) {
     case 'array': {
-      // A one-item list is admitted only when static type evidence supplied an element contract.
+      // A sample list is admitted only when static type evidence supplied an element contract.
       // Unknown arrays stay empty so automatic props cannot invent application collection semantics.
       if (node.items === undefined) return [];
-      const item = materializePreviewAutomaticPropNode(node.items, budget, depth + 1);
-      return item === undefined ? [] : [item];
+      const items = createPreviewGeneratedList(() =>
+        materializePreviewAutomaticPropNode(node.items, budget, depth + 1),
+      );
+      return items.filter((item) => item !== undefined);
     }
     case 'boolean': return typeof node.value === 'boolean' ? node.value : false;
     case 'component': {
@@ -192,6 +235,7 @@ function createPreviewAutomaticGraphqlSelectionSet(properties, budget, depth) {
 /** Returns a plain root prop record or an empty record for absent/invalid generated evidence. */
 function materializePreviewAutomaticProps(shape) {
   const value = materializePreviewAutomaticPropNode(shape, { nodes: 0 }, 0);
+  registerPreviewAutomaticExactShape(value, shape);
   markPreviewAutomaticGeneratedValue(value);
   return isPreviewAutomaticPropRecord(value) ? value : {};
 }
@@ -213,6 +257,8 @@ function overlayPreviewAutomaticPropValue(
   repairNullishPlaceholder,
 ) {
   if (authoredValue === undefined) return inferredValue;
+  const authoredIsGenerated = isPreviewAutomaticGeneratedValue(authoredValue);
+  const repairGeneratedPlaceholder = repairNeutralPlaceholder === true || authoredIsGenerated;
   if (
     repairNullishPlaceholder === true &&
     authoredValue === null &&
@@ -221,12 +267,12 @@ function overlayPreviewAutomaticPropValue(
   ) return inferredValue;
   const inferredType = typeof inferredValue;
   if (
-    repairNeutralPlaceholder === true &&
-    isPreviewAutomaticGeneratedValue(authoredValue) &&
+    repairGeneratedPlaceholder &&
+    authoredIsGenerated &&
     doPreviewAutomaticValueKindsConflict(inferredValue, authoredValue)
   ) return inferredValue;
   if (
-    repairNeutralPlaceholder === true &&
+    repairGeneratedPlaceholder &&
     isPreviewAutomaticNeutralEmptyRecord(authoredValue) &&
     (
       Array.isArray(inferredValue) ||
@@ -237,6 +283,34 @@ function overlayPreviewAutomaticPropValue(
     )
   ) return inferredValue;
   if (
+    Array.isArray(inferredValue) &&
+    Array.isArray(authoredValue) &&
+    authoredIsGenerated
+  ) {
+    if (authoredValue.length === 0) return inferredValue;
+    if (
+      inferredValue.length === 0 ||
+      depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH ||
+      budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES
+    ) return authoredValue;
+    budget.nodes += 1;
+    let changed = false;
+    const merged = authoredValue.map((item, index) => {
+      const inferredItem = inferredValue[index] ?? inferredValue[0];
+      const completedItem = overlayPreviewAutomaticPropValue(
+        inferredItem,
+        item,
+        budget,
+        depth + 1,
+        true,
+        repairNullishPlaceholder,
+      );
+      if (completedItem !== item) changed = true;
+      return completedItem;
+    });
+    return changed ? markPreviewAutomaticGeneratedValue(merged) : authoredValue;
+  }
+  if (
     !isPreviewAutomaticPropRecord(inferredValue) ||
     !isPreviewAutomaticPropRecord(authoredValue) ||
     depth > PREVIEW_AUTOMATIC_PROP_MAX_DEPTH || budget.nodes >= PREVIEW_AUTOMATIC_PROP_MAX_NODES
@@ -245,6 +319,7 @@ function overlayPreviewAutomaticPropValue(
   const result = { ...inferredValue };
   for (const [name, value] of readPreviewAutomaticPropEntries(authoredValue)) {
     if (blockedPreviewAutomaticPropNames.has(name)) continue;
+    if (authoredIsGenerated && isPreviewAutomaticExactChild(inferredValue, name)) continue;
     result[name] = overlayPreviewAutomaticPropValue(
       result[name],
       value,

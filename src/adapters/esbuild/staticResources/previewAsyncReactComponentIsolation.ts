@@ -8,9 +8,10 @@
  * rejection or timeout produces only a compact inline marker at that component boundary.
  *
  * Admission is intentionally narrow: a top-level PascalCase async declaration must own a JSX
- * return and another declaration in the same module must render its exact local JSX tag. Route
- * roots, exported-only components, aliases, HOCs, helpers, generators, and `use client` modules
- * therefore fail closed. The adapter runs after all source-position-based instrumentation.
+ * return and either be a default Next App `page` root or be rendered by another declaration in the
+ * same module through its exact local JSX tag. Other route roots, exported-only components,
+ * aliases, HOCs, helpers, generators, and `use client` modules therefore fail closed. The adapter
+ * runs after all source-position-based instrumentation.
  */
 import path from 'node:path';
 import ts from 'typescript';
@@ -75,9 +76,10 @@ export function isolatePreviewAsyncReactComponents(sourcePath: string, sourceTex
   const candidates = collectAsyncComponentCandidates(sourceFile)
     .filter(
       (candidate) =>
-        !defaultExportedNames.has(candidate.componentName) &&
         !containsSelfReference(candidate) &&
-        hasDistinctLocalJsxUsage(sourceFile, candidate),
+        (defaultExportedNames.has(candidate.componentName)
+          ? isNextAppPageSource(sourcePath)
+          : hasDistinctLocalJsxUsage(sourceFile, candidate)),
     )
     .slice(0, MAX_ASYNC_COMPONENT_ISOLATIONS_PER_MODULE);
   if (candidates.length === 0) return sourceText;
@@ -224,6 +226,13 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   return (
     ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((item) => item.kind === kind) === true
   );
+}
+
+/** Admits only Next App page roots, whose async server contract cannot run directly in a client. */
+function isNextAppPageSource(sourcePath: string): boolean {
+  const segments = sourcePath.replaceAll('\\', '/').split('/').filter(Boolean);
+  const fileName = segments.at(-1) ?? '';
+  return /^page\.[cm]?[jt]sx?$/iu.test(fileName) && segments.slice(0, -1).includes('app');
 }
 
 /** Excludes recursive async render contracts whose rewritten self-call could change semantics. */

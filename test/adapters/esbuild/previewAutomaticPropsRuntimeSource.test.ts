@@ -103,23 +103,62 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     });
   });
 
-  /** Materializes exactly one inert item only when type inference provided its element contract. */
-  it('keeps unknown arrays empty and creates one structured typed list item', () => {
+  /** Materializes three independent samples only when inference provided an element contract. */
+  it('keeps unknown arrays empty and creates a configurable structured sample list', () => {
     const context: { result?: Record<string, unknown> } = {};
     runInNewContext(
       [
         createPreviewAutomaticPropsRuntimeSource(),
-        "const shape = { kind: 'object', properties: { unknown: { kind: 'array' }, pills: { kind: 'array', items: { kind: 'object', properties: { id: { kind: 'string' }, label: { kind: 'string' } } } } } };",
+        "const shape = { kind: 'object', properties: { unknown: { kind: 'array' }, pills: { kind: 'array', items: { kind: 'object', properties: { id: { kind: 'string', value: 'preview-id' }, label: { kind: 'string', value: 'label' } } } } } };",
         'const value = createPreviewPropsFromLayers(shape);',
-        'globalThis.result = { unknownLength: value.unknown.length, pillLength: value.pills.length, pill: value.pills[0] };',
+        'setPreviewGeneratedListSampleCount(5);',
+        'const resized = createPreviewPropsFromLayers(shape);',
+        'value.pills.sort((left, right) => right.id.localeCompare(left.id));',
+        'globalThis.result = { mutable: !Object.isFrozen(value.pills), unknownLength: value.unknown.length, pills: value.pills, resizedLength: resized.pills.length };',
       ].join('\n'),
       context,
     );
 
     expect(context.result).toEqual({
+      mutable: true,
       unknownLength: 0,
-      pillLength: 1,
-      pill: { id: '', label: '' },
+      pills: [
+        { id: 'preview-id-3', label: 'label 3' },
+        { id: 'preview-id-2', label: 'label 2' },
+        { id: 'preview-id', label: 'label' },
+      ],
+      resizedLength: 5,
+    });
+  });
+
+  /** Completes compiler-generated parent rows with fields proven by the selected child target. */
+  it('repairs nested generated array items without rewriting an authored list', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { project: { kind: 'object', properties: { issues: { kind: 'array', items: { kind: 'object', properties: { status: { exactValue: true, kind: 'string', value: 'backlog' }, title: { kind: 'string', value: 'title' }, userIds: { kind: 'array' } } } } } } } };",
+        "const generatedParent = { project: { issues: [{ createdAt: '2024-01-01', status: 'PREVIEW', title: 'upstream title' }] } };",
+        'markPreviewAutomaticGeneratedValue(generatedParent);',
+        'const repaired = createPreviewTargetPropsFromLayers(shape, generatedParent);',
+        "const authoredParent = { project: { issues: [{ createdAt: 'authored', status: 'custom' }] } };",
+        'const authored = createPreviewTargetPropsFromLayers(shape, authoredParent);',
+        'globalThis.result = {',
+        '  authoredIssue: authored.project.issues[0],',
+        '  repairedIssue: repaired.project.issues[0],',
+        '};',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({
+      authoredIssue: { createdAt: 'authored', status: 'custom' },
+      repairedIssue: {
+        createdAt: '2024-01-01',
+        status: 'backlog',
+        title: 'upstream title',
+        userIds: [],
+      },
     });
   });
 

@@ -6,7 +6,7 @@ import {
 } from '../../../../src/adapters/esbuild/staticResources/previewAsyncReactComponentIsolation';
 
 describe('isolatePreviewAsyncReactComponents', () => {
-  /** Keeps route output authored while adapting a locally rendered nested async component. */
+  /** Keeps a non-route default export authored while adapting its locally rendered async child. */
   it('returns resolved authored JSX through one stable Suspense record', () => {
     const source = [
       'export default async function Dashboard({ id }: { id: string }) {',
@@ -22,7 +22,7 @@ describe('isolatePreviewAsyncReactComponents', () => {
       '}',
     ].join('\n');
 
-    const transformed = isolatePreviewAsyncReactComponents('/workspace/app/page.tsx', source);
+    const transformed = isolatePreviewAsyncReactComponents('/workspace/src/Dashboard.tsx', source);
 
     expect(transformed).toContain('export default async function Dashboard');
     expect(transformed).toContain('ASYNC_DASHBOARD_BODY');
@@ -70,8 +70,30 @@ describe('isolatePreviewAsyncReactComponents', () => {
     expect(isolatePreviewAsyncReactComponents('/workspace/src/helpers.tsx', source)).toBe(source);
   });
 
-  /** Protects explicit client modules and every common default-export identity form. */
-  it('fails closed for client modules and aliased page roots', () => {
+  /** Stabilizes a selected async Next App page before React retries it in the client preview. */
+  it('adapts a default async Next App page root through one stable Suspense record', () => {
+    const source = [
+      'export default async function BlockPage({ params }) {',
+      '  const values = await params;',
+      '  return <main>{values.name}</main>;',
+      '}',
+    ].join('\n');
+    const sourcePath = '/workspace/apps/web/app/(view)/preview/[name]/page.tsx';
+
+    const transformed = isolatePreviewAsyncReactComponents(sourcePath, source);
+
+    expect(transformed).not.toContain('default async function BlockPage');
+    expect(transformed).toContain('const values = await params');
+    expect(transformed).toContain(`${PREVIEW_ASYNC_COMPONENT_ATTRIBUTE}="BlockPage"`);
+    expect(transformed).toContain('Promise.resolve().then(load)');
+    expect(transformed).toContain("if(record.status==='pending')throw record.promise");
+    expect(
+      isolatePreviewAsyncReactComponents(sourcePath.replace('page.tsx', 'layout.tsx'), source),
+    ).toBe(source);
+  });
+
+  /** Protects explicit client modules and non-route default-export identity forms. */
+  it('fails closed for client modules and aliased non-route roots', () => {
     const clientSource = [
       '"use client";',
       'async function Panel(){ return <div />; }',
@@ -86,9 +108,9 @@ describe('isolatePreviewAsyncReactComponents', () => {
     expect(isolatePreviewAsyncReactComponents('/workspace/Client.tsx', clientSource)).toBe(
       clientSource,
     );
-    expect(isolatePreviewAsyncReactComponents('/workspace/page.tsx', defaultSource)).toBe(
-      defaultSource,
-    );
+    expect(
+      isolatePreviewAsyncReactComponents('/workspace/src/components/Page.tsx', defaultSource),
+    ).toBe(defaultSource);
   });
 
   /** Caps admitted render-use candidates so generated runtime state stays bounded. */

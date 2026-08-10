@@ -67,9 +67,73 @@ function collectFragments(document) {
   return fragments;
 }
 
+/** Infers interface/union membership only from sibling concrete inline branches in one operation. */
+function collectStaticApolloPossibleTypes(document, operationName) {
+  const fragments = collectFragments(document);
+  const possibleTypes = new Map();
+  const activeFragments = new Set();
+  const budget = { selectionSets: 0 };
+  function visit(selectionSet, depth) {
+    if (
+      depth > MAX_STATIC_APOLLO_DEPTH ||
+      budget.selectionSets >= MAX_STATIC_APOLLO_FIELDS ||
+      !Array.isArray(selectionSet?.selections)
+    ) return;
+    budget.selectionSets += 1;
+    const concreteTypes = [...new Set(selectionSet.selections.flatMap((selection) => {
+      const typeName = selection?.kind === 'InlineFragment'
+        ? selection.typeCondition?.name?.value
+        : undefined;
+      return typeof typeName === 'string' && typeName.length > 0 ? [typeName] : [];
+    }))];
+    if (concreteTypes.length > 0) {
+      for (const selection of selectionSet.selections) {
+        if (selection?.kind !== 'FragmentSpread') continue;
+        const fragmentName = selection.name?.value;
+        const fragment = typeof fragmentName === 'string' ? fragments.get(fragmentName) : undefined;
+        const abstractType = fragment?.typeCondition?.name?.value;
+        if (typeof abstractType !== 'string' || concreteTypes.includes(abstractType)) continue;
+        const registered = possibleTypes.get(abstractType) ?? new Set();
+        for (const concreteType of concreteTypes) registered.add(concreteType);
+        possibleTypes.set(abstractType, registered);
+      }
+    }
+    for (const selection of selectionSet.selections) {
+      if (selection?.kind === 'Field' || selection?.kind === 'InlineFragment') {
+        visit(selection.selectionSet, depth + 1);
+        continue;
+      }
+      if (selection?.kind !== 'FragmentSpread') continue;
+      const fragmentName = selection.name?.value;
+      if (typeof fragmentName !== 'string' || activeFragments.has(fragmentName)) continue;
+      const fragment = fragments.get(fragmentName);
+      if (fragment === undefined) continue;
+      activeFragments.add(fragmentName);
+      visit(fragment.selectionSet, depth + 1);
+      activeFragments.delete(fragmentName);
+    }
+  }
+  visit(selectOperation(document, operationName)?.selectionSet, 0);
+  return Object.fromEntries(
+    [...possibleTypes.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([typeName, concreteTypes]) => [typeName, [...concreteTypes].sort()]),
+  );
+}
+
+/** Adds only query-proven abstract-type relationships to Apollo's current memory cache. */
+function registerStaticApolloPossibleTypes(cache, document, operationName) {
+  const addPossibleTypes = cache?.policies?.addPossibleTypes;
+  if (typeof addPossibleTypes !== 'function') return;
+  const possibleTypes = collectStaticApolloPossibleTypes(document, operationName);
+  if (Object.keys(possibleTypes).length === 0) return;
+  addPossibleTypes.call(cache.policies, possibleTypes);
+}
+
 /** Recognizes field names that conventionally represent GraphQL lists without using a schema. */
 function looksLikeCollection(fieldName) {
-  const lowerName = fieldName.toLowerCase();
+  const sourceName = String(fieldName);
+  const lowerName = sourceName.toLowerCase();
   if (/(items|nodes|edges|list|collection|connections|results|features)$/.test(lowerName)) {
     return true;
   }
@@ -80,8 +144,30 @@ function looksLikeCollection(fieldName) {
   ) {
     return false;
   }
-  if (hasNumericUnitFieldSuffix(fieldName)) return false;
-  return lowerName.startsWith('all') || lowerName.endsWith('ies') || lowerName.endsWith('s');
+  if (hasNumericUnitFieldSuffix(sourceName)) return false;
+  if (lowerName.startsWith('all') || lowerName.endsWith('ies') || lowerName.endsWith('s')) {
+    return true;
+  }
+  const words = sourceName
+    .replace(/([a-z\\d])([A-Z])/gu, '$1 $2')
+    .split(/[^A-Za-z\\d]+/u)
+    .map((word) => word.toLowerCase())
+    .filter(Boolean);
+  const terminalSingularContainers = new Set([
+    'connection', 'context', 'detail', 'entity', 'info', 'item', 'node', 'page', 'record',
+    'request', 'response', 'result', 'state', 'summary',
+  ]);
+  if (terminalSingularContainers.has(words.at(-1) ?? '')) return false;
+  const relationWords = new Set(['by', 'for', 'from', 'of', 'to', 'under', 'with']);
+  const nonCollectionPlurals = new Set([
+    'access', 'address', 'analysis', 'business', 'news', 'process', 'progress', 'relations', 'series',
+    'days', 'hours', 'minutes', 'months', 'seconds', 'statistics', 'status', 'years',
+  ]);
+  return words.some((word, index) =>
+    relationWords.has(words[index + 1] ?? '') &&
+    !nonCollectionPlurals.has(word) &&
+    (word.endsWith('ies') || word.endsWith('s')),
+  );
 }
 
 /** Recognizes numeric units only at authored word boundaries, so holidays is still a list. */
@@ -150,7 +236,18 @@ function isStaticApolloConnectionSelection(selectionSet) {
   return hasPagination && hasCollection;
 }
 
-/** Proves one collection item can be materialized without guessing conditional response shape. */
+/** Selects one deterministic concrete branch when a collection item is a GraphQL union. */
+function readStaticApolloRepresentativeTypeName(selectionSet) {
+  if (!Array.isArray(selectionSet?.selections)) return undefined;
+  for (const selection of selectionSet.selections) {
+    if (selection?.kind !== 'InlineFragment') continue;
+    const typeName = selection.typeCondition?.name?.value;
+    if (typeof typeName === 'string' && typeName.length > 0) return typeName;
+  }
+  return undefined;
+}
+
+/** Proves one collection item can be materialized from one deterministic conditional branch. */
 function isSafeStaticApolloRepresentativeSelection(
   selectionSet,
   fragments,
@@ -158,7 +255,6 @@ function isSafeStaticApolloRepresentativeSelection(
   depth,
   activeFragments,
   responseNames,
-  typeConditions,
 ) {
   if (
     depth > MAX_STATIC_APOLLO_DEPTH ||
@@ -167,6 +263,7 @@ function isSafeStaticApolloRepresentativeSelection(
   ) {
     return false;
   }
+  const representativeTypeName = readStaticApolloRepresentativeTypeName(selectionSet);
   for (const selection of selectionSet.selections) {
     if (Array.isArray(selection?.directives) && selection.directives.length > 0) return false;
     if (selection?.kind === 'Field') {
@@ -186,7 +283,6 @@ function isSafeStaticApolloRepresentativeSelection(
           depth + 1,
           activeFragments,
           new Set(),
-          new Set(),
         )
       ) {
         return false;
@@ -196,9 +292,12 @@ function isSafeStaticApolloRepresentativeSelection(
     if (selection?.kind === 'InlineFragment') {
       const typeName = selection.typeCondition?.name?.value;
       if (selection.typeCondition !== undefined && typeof typeName !== 'string') return false;
-      if (typeof typeName === 'string') {
-        typeConditions.add(typeName);
-        if (typeConditions.size > 1) return false;
+      if (
+        representativeTypeName !== undefined &&
+        typeof typeName === 'string' &&
+        typeName !== representativeTypeName
+      ) {
+        continue;
       }
       if (
         !isSafeStaticApolloRepresentativeSelection(
@@ -208,7 +307,6 @@ function isSafeStaticApolloRepresentativeSelection(
           depth + 1,
           activeFragments,
           responseNames,
-          typeConditions,
         )
       ) {
         return false;
@@ -227,10 +325,6 @@ function isSafeStaticApolloRepresentativeSelection(
     }
     const typeName = fragment.typeCondition?.name?.value;
     if (fragment.typeCondition !== undefined && typeof typeName !== 'string') return false;
-    if (typeof typeName === 'string') {
-      typeConditions.add(typeName);
-      if (typeConditions.size > 1) return false;
-    }
     activeFragments.add(fragmentName);
     const safe = isSafeStaticApolloRepresentativeSelection(
       fragment.selectionSet,
@@ -239,7 +333,6 @@ function isSafeStaticApolloRepresentativeSelection(
       depth + 1,
       activeFragments,
       responseNames,
-      typeConditions,
     );
     activeFragments.delete(fragmentName);
     if (!safe) return false;
@@ -264,7 +357,6 @@ function createStaticApolloRepresentativeItem(
       depth,
       new Set(activeFragments),
       new Set(),
-      new Set(),
     )
   ) {
     return undefined;
@@ -272,6 +364,10 @@ function createStaticApolloRepresentativeItem(
   const item = {};
   const initialFieldCount = budget.fields;
   appendSelections(item, selectionSet, fragments, budget, depth, activeFragments);
+  const representativeTypeName = readStaticApolloRepresentativeTypeName(selectionSet);
+  if (representativeTypeName !== undefined && Object.hasOwn(item, '__typename')) {
+    item.__typename = representativeTypeName;
+  }
   return budget.fields - initialFieldCount === validationBudget.fields - initialFieldCount &&
     Object.keys(item).length > 0
     ? item
@@ -279,11 +375,21 @@ function createStaticApolloRepresentativeItem(
 }
 
 /** Adds selections to one response object while enforcing field, depth, and fragment-cycle limits. */
-function appendSelections(target, selectionSet, fragments, budget, depth, activeFragments) {
+function appendSelections(
+  target,
+  selectionSet,
+  fragments,
+  budget,
+  depth,
+  activeFragments,
+  inheritedTypeName,
+) {
   if (depth > MAX_STATIC_APOLLO_DEPTH || !Array.isArray(selectionSet?.selections)) {
     return;
   }
 
+  const representativeTypeName =
+    readStaticApolloRepresentativeTypeName(selectionSet) ?? inheritedTypeName;
   for (const selection of selectionSet.selections) {
     if (selection?.kind === 'Field') {
       if (budget.fields >= MAX_STATIC_APOLLO_FIELDS) {
@@ -311,13 +417,31 @@ function appendSelections(target, selectionSet, fragments, budget, depth, active
         appendSelections(child, selection.selectionSet, fragments, budget, depth + 1, activeFragments);
         target[responseName] = child;
       } else {
-        target[responseName] = createNeutralScalar(fieldName);
+        target[responseName] = fieldName === '__typename' && representativeTypeName !== undefined
+          ? representativeTypeName
+          : createNeutralScalar(fieldName);
       }
       continue;
     }
 
     if (selection?.kind === 'InlineFragment') {
-      appendSelections(target, selection.selectionSet, fragments, budget, depth + 1, activeFragments);
+      const typeName = selection.typeCondition?.name?.value;
+      if (
+        representativeTypeName !== undefined &&
+        typeof typeName === 'string' &&
+        typeName !== representativeTypeName
+      ) {
+        continue;
+      }
+      appendSelections(
+        target,
+        selection.selectionSet,
+        fragments,
+        budget,
+        depth + 1,
+        activeFragments,
+        typeof typeName === 'string' ? typeName : representativeTypeName,
+      );
       continue;
     }
 
@@ -333,7 +457,17 @@ function appendSelections(target, selectionSet, fragments, budget, depth, active
       continue;
     }
     activeFragments.add(fragmentName);
-    appendSelections(target, fragment.selectionSet, fragments, budget, depth + 1, activeFragments);
+    const fragmentTypeName = fragment.typeCondition?.name?.value;
+    appendSelections(
+      target,
+      fragment.selectionSet,
+      fragments,
+      budget,
+      depth + 1,
+      activeFragments,
+      representativeTypeName ??
+        (typeof fragmentTypeName === 'string' ? fragmentTypeName : undefined),
+    );
     activeFragments.delete(fragmentName);
   }
 }
@@ -509,9 +643,23 @@ async function resolveStaticOperation(operation, configuration, setupContext) {
 }
 
 /** Creates a terminating observable link that cannot reach a backend transport. */
-function createStaticApolloLink(configuration, setupContext) {
+function createStaticApolloLink(configuration, setupContext, cache) {
+  const registeredOperations = new WeakMap();
   return new ApolloCore.ApolloLink((operation) => new ApolloCore.Observable((observer) => {
     let subscribed = true;
+    const document = operation?.query;
+    const operationName = operation?.operationName ?? '';
+    if (
+      document !== null &&
+      (typeof document === 'object' || typeof document === 'function')
+    ) {
+      const registeredNames = registeredOperations.get(document) ?? new Set();
+      if (!registeredNames.has(operationName)) {
+        registerStaticApolloPossibleTypes(cache, document, operationName);
+        registeredNames.add(operationName);
+        registeredOperations.set(document, registeredNames);
+      }
+    }
     void resolveStaticOperation(operation, configuration, setupContext).then(
       (result) => {
         if (!subscribed) {
@@ -569,9 +717,10 @@ export function createApolloPreviewElement(children, options) {
     return children;
   }
 
+  const cache = createStaticApolloCache(configuration);
   const client = new ApolloCore.ApolloClient({
     assumeImmutableResults: true,
-    cache: createStaticApolloCache(configuration),
+    cache,
     connectToDevTools: false,
     defaultOptions: {
       mutate: { errorPolicy: 'all' },
@@ -579,7 +728,7 @@ export function createApolloPreviewElement(children, options) {
       watchQuery: { errorPolicy: 'all', fetchPolicy: 'no-cache' },
     },
     devtools: { enabled: false },
-    link: createStaticApolloLink(configuration, options ?? {}),
+    link: createStaticApolloLink(configuration, options ?? {}, cache),
     queryDeduplication: false,
   });
   const ApolloProvider = ApolloReact.ApolloProvider ?? ApolloCore.ApolloProvider;

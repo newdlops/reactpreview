@@ -123,13 +123,24 @@ describe('createPreviewApolloBridgePlugin', () => {
             monthlyPrice: '0',
             profile: { displayName: '' },
           },
-          eventList: { objectList: [], pageInfo: { count: 0 } },
+          eventList: { objectList: [{ id: 'preview' }], pageInfo: { count: 0 } },
           publicInvestorRelations: {
             companyInfo: { name: '', profileLogo: { url: '' } },
+            investorsUnderIrReview: [{ name: '' }],
           },
-          recentItems: [],
+          polymorphicFeeds: [
+            {
+              __typename: 'OpenFeed',
+              detail: { title: '' },
+              id: 'preview',
+            },
+          ],
+          recentItems: [{ id: 'preview' }],
         },
       });
+      expect(JSON.parse(JSON.stringify(context.__apolloPossibleTypes))).toEqual([
+        { FeedInterface: ['ClosedFeed', 'OpenFeed'] },
+      ]);
     } finally {
       await rm(projectRoot, { force: true, recursive: true });
     }
@@ -202,6 +213,10 @@ describe('createPreviewApolloBridgePlugin', () => {
                     },
                   },
                   kind: 'object',
+                },
+                investorsUnderIrReview: {
+                  items: { kind: 'object' },
+                  kind: 'array',
                 },
               },
               kind: 'object',
@@ -331,6 +346,11 @@ const field = (name, selectionSet, alias) => ({
   ...(alias === undefined ? {} : { alias: { value: alias } }),
   ...(selectionSet === undefined ? {} : { selectionSet }),
 });
+const inlineFragment = (typeName, selections) => ({
+  kind: 'InlineFragment',
+  typeCondition: { name: { value: typeName } },
+  selectionSet: { selections },
+});
 const query = {
   definitions: [
     {
@@ -356,9 +376,22 @@ const query = {
           field('publicInvestorRelations', {
             selections: [
               field('companyInfo', { selections: [field('name')] }),
+              field('investorsUnderIrReview', { selections: [field('name')] }),
               field('companyInfo', {
                 selections: [field('profileLogo', { selections: [field('url')] })],
               }),
+            ],
+          }),
+          field('polymorphicFeeds', {
+            selections: [
+              field('__typename'),
+              { kind: 'FragmentSpread', name: { value: 'FeedBase' } },
+              inlineFragment('OpenFeed', [
+                field('detail', { selections: [field('title')] }),
+              ]),
+              inlineFragment('ClosedFeed', [
+                field('detail', { selections: [field('reason')] }),
+              ]),
             ],
           }),
         ],
@@ -371,6 +404,12 @@ const query = {
         selections: [field('profile', { selections: [field('name', undefined, 'displayName')] })],
       },
     },
+    {
+      kind: 'FragmentDefinition',
+      name: { value: 'FeedBase' },
+      typeCondition: { name: { value: 'FeedInterface' } },
+      selectionSet: { selections: [field('id')] },
+    },
   ],
 };
 const element = createApolloPreviewElement('target', {
@@ -378,6 +417,7 @@ const element = createApolloPreviewElement('target', {
   documentName: 'src/Company.tsx',
   setupKind: 'none',
 });
+globalThis.__apolloPossibleTypes = element.props.client.cache.possibleTypes;
 globalThis.__apolloStaticResult = new Promise((resolve, reject) => {
   element.props.client.link.request({ operationName: 'StaticCompany', query, variables: {} })
     .subscribe({ complete() {}, error: reject, next: resolve });

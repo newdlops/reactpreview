@@ -39,6 +39,8 @@ ${identityRuntimeSource}
 const PREVIEW_INSPECTOR_DATA_REQUEST_LIMIT = 256;
 const PREVIEW_INSPECTOR_DATA_DEPTH_LIMIT = 10;
 const PREVIEW_INSPECTOR_DATA_FIELD_LIMIT = 512;
+const PREVIEW_INSPECTOR_LIST_SAMPLE_COUNT_OPTIONS = Object.freeze([1, 2, 3, 5, 10]);
+setPreviewGeneratedListSampleCount(readPersistedPreviewInspectorState().dataListSampleCount);
 ${virtualBackendRuntimeSource}
 const previewInspectorDataScheduleMicrotask = typeof globalThis.queueMicrotask === 'function'
   ? globalThis.queueMicrotask.bind(globalThis)
@@ -76,6 +78,13 @@ function initializePreviewInspectorDataState() {
     previewInspectorSession.dataAutoEnabled =
       readPersistedPreviewInspectorState().dataAutoEnabled !== false;
   }
+  if (!Number.isSafeInteger(previewInspectorSession.dataListSampleCount)) {
+    previewInspectorSession.dataListSampleCount = readPreviewGeneratedListSampleCount();
+  } else {
+    previewInspectorSession.dataListSampleCount = setPreviewGeneratedListSampleCount(
+      previewInspectorSession.dataListSampleCount,
+    );
+  }
   if (!Number.isSafeInteger(previewInspectorSession.dataRevision)) {
     previewInspectorSession.dataRevision = 0;
   }
@@ -96,6 +105,12 @@ function serializePreviewInspectorDataOverrides() {
 function readPreviewInspectorDataAutoEnabled() {
   initializePreviewInspectorDataState();
   return previewInspectorSession.dataAutoEnabled;
+}
+
+/** Returns the persisted number of rows used by non-minimum generated collection fixtures. */
+function readPreviewInspectorDataListSampleCount() {
+  initializePreviewInspectorDataState();
+  return previewInspectorSession.dataListSampleCount;
 }
 
 /** Summarizes local request generation for detailed render-error diagnostics. */
@@ -249,7 +264,7 @@ function looksLikePreviewInspectorCollection(fieldName) {
     'request', 'response', 'result', 'state', 'summary',
   ]);
   if (terminalSingularContainers.has(words.at(-1) ?? '')) return false;
-  const relationWords = new Set(['by', 'for', 'from', 'of', 'to', 'with']);
+  const relationWords = new Set(['by', 'for', 'from', 'of', 'to', 'under', 'with']);
   const nonCollectionPlurals = new Set([
     'access', 'address', 'analysis', 'business', 'news', 'process', 'progress', 'relations', 'series',
     'days', 'hours', 'minutes', 'months', 'seconds', 'statistics', 'status', 'years',
@@ -282,6 +297,7 @@ function createPreviewInspectorStringValue(fieldName, mode, itemIndex) {
   if (/(date|time|timestamp|createdat|updatedat|deletedat)$/u.test(name)) {
     return '2026-01-' + String(15 + Math.min(itemIndex, 9)).padStart(2, '0') + 'T09:00:00.000Z';
   }
+  if (/^(avatar|image|photo|picture|thumbnail)(url|uri|href|src)$/u.test(name)) return '';
   if (/(url|uri|href|link)$/u.test(name)) return 'https://example.com/preview/' + suffix;
   if (mode === 'lorem') {
     if (/(name|owner|author|assignee)$/u.test(name)) return 'Lorem Ipsum';
@@ -313,13 +329,13 @@ function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex,
     // deliberately selected by Smart/Lorem, a bounded item lets map/render traversal discover the
     // next concrete requirement without inventing truthy flags, enum values, or backend identity.
     if (shape.items?.kind === 'unknown') {
-      const indexes = mode === 'corridor-auto' ? [] : mode === 'smart' ? [0] : [0, 1];
+      const indexes = createPreviewInspectorDataItemIndexes(mode);
       return indexes.map(() => ({}));
     }
     // Initial authored-page traversal keeps lists empty so unrelated dashboard siblings cannot
     // execute enum switches before target reachability is known. The incremental Smart frontier
     // adds one typed item for a selected request; ordinary gallery Auto and Lorem retain samples.
-    const indexes = mode === 'corridor-auto' ? [] : mode === 'smart' ? [0] : [0, 1];
+    const indexes = createPreviewInspectorDataItemIndexes(mode);
     return indexes.map((index) =>
       materializePreviewInspectorDataValue(shape.items, fieldName, mode, index, depth + 1),
     );
@@ -344,6 +360,13 @@ function materializePreviewInspectorDataValue(shape, fieldName, mode, itemIndex,
     if (scalarKind === 'number') return createPreviewInspectorNumberValue(fieldName, itemIndex);
   }
   return createPreviewInspectorStringValue(fieldName, mode, itemIndex);
+}
+
+/** Keeps corridor traversal empty and Smart minimal while making ordinary samples configurable. */
+function createPreviewInspectorDataItemIndexes(mode) {
+  if (mode === 'corridor-auto') return [];
+  if (mode === 'smart') return [0];
+  return Array.from({ length: readPreviewGeneratedListSampleCount() }, (_, index) => index);
 }
 
 /** Validates one external shape once before deterministic payload materialization. */
@@ -632,6 +655,49 @@ function commitPreviewInspectorDataChange() {
   persistPreviewInspectorState();
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
+}
+
+/**
+ * Regenerates only inferred Auto/Lorem resources after the user changes the shared list size.
+ * Custom JSON and Smart-custom values remain byte-for-byte user owned; Smart stays a one-row
+ * reachability minimum independently of this presentation-oriented sample setting.
+ */
+function setPreviewInspectorDataListSampleCount(value) {
+  initializePreviewInspectorDataState();
+  const next = setPreviewGeneratedListSampleCount(value);
+  if (next === previewInspectorSession.dataListSampleCount) return false;
+  previewInspectorSession.dataListSampleCount = next;
+  // Resolver props and hook results are generated Auto state, never persisted user JSON. Rebuild
+  // those caches at the new cardinality while preserving explicit prop/payload/hook overrides.
+  if (previewInspectorSession.resolverPropsByExport instanceof Map) {
+    previewInspectorSession.resolverPropsByExport.clear();
+  }
+  if (typeof resetPreviewInspectorGeneratedRuntimeFallbackValues === 'function') {
+    resetPreviewInspectorGeneratedRuntimeFallbackValues();
+  }
+  for (const [requestId, record] of previewInspectorSession.dataRequests) {
+    const autoPayload = generatePreviewInspectorDataValue(
+      record.shape,
+      '',
+      record.autoPayloadProfile ?? 'auto',
+    );
+    previewInspectorSession.dataRequests.set(requestId, { ...record, autoPayload });
+    const override = previewInspectorSession.dataPayloadOverrides.get(requestId);
+    if (override?.mode === 'lorem') {
+      previewInspectorSession.dataPayloadOverrides.set(requestId, {
+        mode: 'lorem',
+        payload: generatePreviewInspectorDataValue(record.shape, '', 'lorem'),
+      });
+    }
+    if (
+      override?.mode === 'lorem' ||
+      (override === undefined && previewInspectorSession.dataAutoEnabled)
+    ) {
+      clearPreviewInspectorVirtualBackendResource(requestId);
+    }
+  }
+  commitPreviewInspectorDataChange();
+  return true;
 }
 
 /**

@@ -311,9 +311,18 @@ function PreviewInspectorComponentPayloadDetail({ node, scope }) {
     ),
     scope.requests.length === 0
       ? React.createElement(
-          'div',
-          { className: 'rpi-empty' },
-          'No backend or GraphQL request is proven to be owned by this component.',
+          React.Fragment,
+          undefined,
+          React.createElement(
+            'div',
+            { className: 'rpi-actions' },
+            React.createElement(PreviewInspectorListSampleCountControl),
+          ),
+          React.createElement(
+            'div',
+            { className: 'rpi-empty' },
+            'No backend or GraphQL request is proven to be owned by this component.',
+          ),
         )
       : React.createElement(PreviewInspectorDataDetail, {
           requestIds: scope.requests.map((request) => request.id),

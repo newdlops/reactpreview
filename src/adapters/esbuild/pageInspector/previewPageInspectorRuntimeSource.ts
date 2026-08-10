@@ -789,12 +789,13 @@ function PreviewInspectorTargetRenderer({ Component, contextualBoundaryRoleToken
       )
     : undefined;
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
+  const generatedListSampleCount = readPreviewGeneratedListSampleCount();
   const automaticTargetProps = React.useMemo(
     () => createPreviewTargetPropsFromLayers(
       fallbackValuesEnabled ? metadata?.inferredPropShape : undefined,
       targetProps,
     ),
-    [fallbackValuesEnabled, metadata?.inferredPropShape, targetProps],
+    [fallbackValuesEnabled, generatedListSampleCount, metadata?.inferredPropShape, targetProps],
   );
   React.useEffect(() => {
     registerPreviewInspectorBaseProps(exportName, automaticTargetProps);

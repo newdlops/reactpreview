@@ -122,6 +122,7 @@ function createPreviewInspectorRequiredPathLeaf(propertyName, callable) {
   if (name === 'id' || name.endsWith('id') || name === 'uuid') return 'preview-1';
   if (name.includes('email')) return 'preview@example.invalid';
   if (/(?:date|time|timestamp|createdat|updatedat)$/u.test(name)) return '2026-01-15T09:00:00.000Z';
+  if (/^(?:avatar|image|photo|picture|thumbnail)(?:url|uri|href|src)$/u.test(name)) return '';
   if (/(?:url|uri|href|link)$/u.test(name)) return 'https://example.invalid/preview/1';
   /* Image/data adapters commonly call String methods on src without requiring a valid URL. */
   if (name === 'src' || name.endsWith('src')) return keyText;

@@ -57,6 +57,30 @@ function formatPreviewInspectorVirtualBackendScenario(mode) {
   return 'SUCCESS RESPONSE';
 }
 
+/** Keeps generated collection cardinality editable even when no backend request is selected. */
+function PreviewInspectorListSampleCountControl() {
+  return React.createElement(
+    'label',
+    { className: 'rpi-note' },
+    'List samples ',
+    React.createElement(
+      'select',
+      {
+        'aria-label': 'Generated list sample count',
+        className: 'rpi-select',
+        onChange: (event) => setPreviewInspectorDataListSampleCount(event.target.value),
+        title: 'Number of items generated for Auto, Lorem, component props, and hook lists',
+        value: String(readPreviewInspectorDataListSampleCount()),
+      },
+      PREVIEW_INSPECTOR_LIST_SAMPLE_COUNT_OPTIONS.map((sampleCount) => React.createElement(
+        'option',
+        { key: sampleCount, value: String(sampleCount) },
+        String(sampleCount),
+      )),
+    ),
+  );
+}
+
 /** Renders request selection, inferred evidence, JSON editing, and generation actions. */
 function PreviewInspectorDataDetail({ requestId, requestIds } = {}) {
   const requests = filterPreviewInspectorDataRequests(
@@ -155,6 +179,7 @@ function PreviewInspectorDataDetail({ requestId, requestIds } = {}) {
         },
         'Auto payloads',
       ),
+      React.createElement(PreviewInspectorListSampleCountControl),
       requests.length > 0
         ? React.createElement(
             'select',
@@ -368,7 +393,7 @@ function PreviewInspectorDataDetail({ requestId, requestIds } = {}) {
           React.createElement(
             'div',
             { className: 'rpi-note' },
-            'Smart fill preserves user JSON, then adds one deterministic item per inferred list and only fields requested by the component. Successful REST mutations update the local resource store. Generated values never leave this preview.',
+            'List samples controls Auto, Lorem, component-prop, and hook collections; Smart fill remains a one-item reachability minimum. User JSON is never resized. Successful REST mutations update the local resource store. Generated values never leave this preview.',
           ),
         ),
   );

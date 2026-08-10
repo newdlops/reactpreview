@@ -95,6 +95,7 @@ function persistPreviewInspectorState() {
       ...(currentState !== null && typeof currentState === 'object' ? currentState : {}),
       [PREVIEW_INSPECTOR_STATE_KEY]: {
         dataAutoEnabled: readPreviewInspectorDataAutoEnabled(),
+        dataListSampleCount: readPreviewInspectorDataListSampleCount(),
         dataPayloadOverrides: serializePreviewInspectorDataOverrides(),
         virtualBackendScenarios: serializePreviewInspectorVirtualBackendScenarios(),
         fallbackValuesEnabled: readPreviewInspectorFallbackValuesEnabled(),

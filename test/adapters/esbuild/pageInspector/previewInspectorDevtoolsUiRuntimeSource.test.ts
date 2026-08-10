@@ -96,6 +96,13 @@ describe('Page Inspector DevTools UI runtime source', () => {
     expect(source).toContain("'No console messages captured yet.'");
     expect(source).toContain('clearPreviewInspectorConsoleEntries');
     expect(source).toContain("'Auto payloads'");
+    expect(source).toContain('function PreviewInspectorListSampleCountControl()');
+    expect(
+      source.match(/React\.createElement\(PreviewInspectorListSampleCountControl\)/gu),
+    ).toHaveLength(2);
+    expect(source).toContain("'Generated list sample count'");
+    expect(source).toContain("'List samples '");
+    expect(source).toContain('setPreviewInspectorDataListSampleCount');
     expect(source).toContain("'Generate Lorem'");
     expect(source).toContain("'Smart fill minimum'");
     expect(source).toContain('smartFillPreviewInspectorDataPayload');

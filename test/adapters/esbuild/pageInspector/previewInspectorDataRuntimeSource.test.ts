@@ -2,6 +2,7 @@
 import vm from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createPreviewInspectorDataRuntimeSource } from '../../../../src/adapters/esbuild/pageInspector/previewInspectorDataRuntimeSource';
+import { createPreviewGeneratedListRuntimeSource } from '../../../../src/adapters/esbuild/previewGeneratedListRuntimeSource';
 
 describe('Page Inspector data runtime source', () => {
   /** Treats a singular Relations entity as an object and merges repeated GraphQL selections. */
@@ -59,6 +60,7 @@ describe('Page Inspector data runtime source', () => {
       employees: [
         { active: true, id: 'preview-1', name: 'name', salary: 1 },
         { active: true, id: 'preview-2', name: 'name', salary: 2 },
+        { active: true, id: 'preview-3', name: 'name', salary: 3 },
       ],
     });
     expect(cloneJson(runtime.requests())[0]).toMatchObject({ mode: 'auto' });
@@ -78,6 +80,7 @@ describe('Page Inspector data runtime source', () => {
         employees: [
           { active: true, id: 'preview-1', name: 'Lorem Ipsum', salary: 1 },
           { active: true, id: 'preview-2', name: 'Lorem Ipsum', salary: 2 },
+          { active: true, id: 'preview-3', name: 'Lorem Ipsum', salary: 3 },
         ],
       },
     });
@@ -101,6 +104,51 @@ describe('Page Inspector data runtime source', () => {
         ],
       },
     });
+  });
+
+  /** Keeps fabricated image sources offline while preserving ordinary URL fixture semantics. */
+  it('uses an authored fallback instead of requesting a generated avatar asset', () => {
+    const runtime = evaluateDataRuntime();
+    const shape = {
+      fields: {
+        avatarUrl: { kind: 'string' },
+        documentationUrl: { kind: 'string' },
+      },
+      kind: 'object',
+    };
+
+    expect(cloneJson(runtime.generate(shape))).toEqual({
+      avatarUrl: '',
+      documentationUrl: 'https://example.com/preview/1',
+    });
+  });
+
+  /** Persists one shared sample policy while leaving user-authored payload cardinality untouched. */
+  it('defaults generated lists to three and lets the user resize only generated fixtures', () => {
+    const runtime = evaluateDataRuntime();
+    const metadata = {
+      id: 'projects',
+      kind: 'rest',
+      label: 'GET /projects',
+      shape: {
+        items: { fields: { id: { kind: 'string' } }, kind: 'object' },
+        kind: 'array',
+      },
+    };
+
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([
+      { id: 'preview-1' },
+      { id: 'preview-2' },
+      { id: 'preview-3' },
+    ]);
+    expect(runtime.listSampleCount()).toBe(3);
+    expect(runtime.setListSampleCount(5)).toBe(true);
+    expect(cloneJson(runtime.resolve(metadata, []))).toHaveLength(5);
+    expect(runtime.generatedCacheState()).toEqual({ hookResets: 1, resolverProps: 0 });
+
+    runtime.set('projects', [{ id: 'authored-only' }], 'custom');
+    expect(runtime.setListSampleCount(2)).toBe(true);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([{ id: 'authored-only' }]);
   });
 
   /** Keeps sibling collections dormant until the target-path Smart frontier selects the request. */
@@ -132,7 +180,7 @@ describe('Page Inspector data runtime source', () => {
   });
 
   // prettier-ignore
-  it.each([['authored-page', undefined, 'corridor-auto', []], ['file-components', undefined, 'auto', ['value', 'value']], ['file-components', 'page:Target', 'corridor-auto', []]])('uses %s with active key %s', (scenario, activeKey, profile, payload) => {
+  it.each([['authored-page', undefined, 'corridor-auto', []], ['file-components', undefined, 'auto', ['value', 'value', 'value']], ['file-components', 'page:Target', 'corridor-auto', []]])('uses %s with active key %s', (scenario, activeKey, profile, payload) => {
     const runtime = evaluateDataRuntime(undefined, activeKey, scenario);
     const metadata: unknown = JSON.parse('{"id":"profile-race","kind":"graphql","label":"ProfileRace","shape":{"items":{"kind":"string"},"kind":"array"}}');
     expect(cloneJson(runtime.resolve(metadata, []))).toEqual(payload);
@@ -153,7 +201,7 @@ describe('Page Inspector data runtime source', () => {
     runtime.smart('unknown-list');
     expect(cloneJson(runtime.resolve(metadata, []))).toEqual([{}]);
     runtime.lorem('unknown-list');
-    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([{}, {}]);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual([{}, {}, {}]);
   });
 
   /** Prevents cached gallery samples from leaking into an active root-to-target corridor. */
@@ -166,11 +214,11 @@ describe('Page Inspector data runtime source', () => {
       shape: { items: { kind: 'string' }, kind: 'array' },
     };
 
-    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value']);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value', 'value']);
     runtime.target('page:Target');
     expect(cloneJson(runtime.resolve(metadata, []))).toEqual([]);
     runtime.target(undefined);
-    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value']);
+    expect(cloneJson(runtime.resolve(metadata, []))).toEqual(['value', 'value', 'value']);
   });
 
   /** Uses compact field keys for Auto text while leaving deliberate Lorem generation explicit. */
@@ -241,7 +289,7 @@ describe('Page Inspector data runtime source', () => {
       initialPage: 'initialPage',
       metadata: {},
       results: [],
-      siblingItems: [{}, {}],
+      siblingItems: [{}, {}, {}],
       sum: 0,
       title: 'title',
       totalSum: 0,
@@ -615,7 +663,11 @@ describe('Page Inspector data runtime source', () => {
       url: '/api/employees',
     });
 
-    await expect(response.json()).resolves.toEqual([{ id: 'preview-1' }, { id: 'preview-2' }]);
+    await expect(response.json()).resolves.toEqual([
+      { id: 'preview-1' },
+      { id: 'preview-2' },
+      { id: 'preview-3' },
+    ]);
     expect(nativeFetchCalls).toBe(0);
   });
 
@@ -652,6 +704,7 @@ describe('Page Inspector data runtime source', () => {
         staff: [
           { id: 'preview-1', isActive: true, name: 'name' },
           { id: 'preview-2', isActive: true, name: 'name' },
+          { id: 'preview-3', isActive: true, name: 'name' },
         ],
       },
     });
@@ -675,7 +728,34 @@ describe('Page Inspector data runtime source', () => {
         legalPartnersForCompanyCreate: [
           { id: 'preview-1', isRecommendedForCompanyCreate: false, name: 'name' },
           { id: 'preview-2', isRecommendedForCompanyCreate: false, name: 'name' },
+          { id: 'preview-3', isRecommendedForCompanyCreate: false, name: 'name' },
         ],
+      },
+    });
+  });
+
+  /** Recognizes a plural nested relation before `Under`, as used by investor review payloads. */
+  it('generates arrays for plural GraphQL fields qualified by under', async () => {
+    const runtime = evaluateDataRuntime();
+    const response = await runtime.fetch('/graphql', {
+      body: JSON.stringify({
+        operationName: 'InvestorFeeds',
+        query: `query InvestorFeeds {
+          vcmInvestorCompanyFeeds {
+            ir { investorsUnderIrReview { name } }
+          }
+        }`,
+      }),
+      method: 'POST',
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      data: {
+        vcmInvestorCompanyFeeds: Array.from({ length: 3 }, () => ({
+          ir: {
+            investorsUnderIrReview: Array.from({ length: 3 }, () => ({ name: 'name' })),
+          },
+        })),
       },
     });
   });
@@ -702,6 +782,7 @@ describe('Page Inspector data runtime source', () => {
           objectList: [
             { id: 'preview-1', title: 'title' },
             { id: 'preview-2', title: 'title' },
+            { id: 'preview-3', title: 'title' },
           ],
           pageInfo: { count: 1, hasNext: false },
         },
@@ -726,6 +807,7 @@ describe('Page Inspector data runtime source', () => {
           objectList: [
             { id: 'preview-1', status: 'ACTIVE' },
             { id: 'preview-2', status: 'ACTIVE' },
+            { id: 'preview-3', status: 'ACTIVE' },
           ],
         },
       },
@@ -758,6 +840,12 @@ describe('Page Inspector data runtime source', () => {
         active: true,
         description: 'description',
         id: 'preview-2',
+        name: 'name',
+      },
+      {
+        active: true,
+        description: 'description',
+        id: 'preview-3',
         name: 'name',
       },
     ]);
@@ -800,7 +888,7 @@ describe('Page Inspector data runtime source', () => {
       { ...collectionMetadata, id: 'create-employee', method: 'POST', shape: mutationShape },
     );
     await expect(createdResponse.json()).resolves.toMatchObject({
-      id: 'preview-3',
+      id: 'preview-4',
       name: 'Created employee',
     });
     await runtime.fetch(
@@ -811,42 +899,42 @@ describe('Page Inspector data runtime source', () => {
     const replayedCollection = await (
       await runtime.fetch('/api/employees', undefined, collectionMetadata)
     ).json();
-    expect(replayedCollection).toHaveLength(3);
+    expect(replayedCollection).toHaveLength(4);
 
     await runtime.fetch(
-      '/api/employees/preview-3',
+      '/api/employees/preview-4',
       { body: JSON.stringify({ name: 'Edited employee' }), method: 'PATCH' },
       {
         ...collectionMetadata,
         id: 'edit-employee',
         method: 'PATCH',
         shape: mutationShape,
-        url: '/api/employees/preview-3',
+        url: '/api/employees/preview-4',
       },
     );
     const editedCollection = await (
       await runtime.fetch('/api/employees', undefined, collectionMetadata)
     ).json();
     expect(editedCollection).toEqual(
-      expect.arrayContaining([{ active: true, id: 'preview-3', name: 'Edited employee' }]),
+      expect.arrayContaining([{ active: true, id: 'preview-4', name: 'Edited employee' }]),
     );
 
     await runtime.fetch(
-      '/api/employees/preview-3',
+      '/api/employees/preview-4',
       { method: 'DELETE' },
       {
         ...collectionMetadata,
         id: 'delete-employee',
         method: 'DELETE',
         shape: mutationShape,
-        url: '/api/employees/preview-3',
+        url: '/api/employees/preview-4',
       },
     );
     const deletedCollection = await (
       await runtime.fetch('/api/employees', undefined, collectionMetadata)
     ).json();
     expect(deletedCollection).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 'preview-3' })]),
+      expect.arrayContaining([expect.objectContaining({ id: 'preview-4' })]),
     );
   });
 
@@ -950,13 +1038,16 @@ interface EvaluatedDataRuntime {
     metadata?: unknown,
   ) => Promise<{ readonly ok: boolean; readonly status: number; json(): Promise<unknown> }>;
   readonly generate: (shape: unknown) => unknown;
+  readonly generatedCacheState: () => { readonly hookResets: number; readonly resolverProps: number };
   readonly inferGraphql: (source: string, operationName: string) => unknown;
   readonly lorem: (id: string) => void;
+  readonly listSampleCount: () => number;
   readonly paths: (shape: unknown) => readonly string[];
   readonly requests: () => readonly unknown[];
   readonly resolve: (metadata: unknown, seed: unknown, requestContext?: unknown) => unknown;
   readonly scenario: (id: string, scenario: unknown) => void;
   readonly set: (id: string, payload: unknown, mode: string) => void;
+  readonly setListSampleCount: (value: number) => boolean;
   readonly smart: (id: string) => void;
   readonly target: (reachabilityKey?: string) => void;
   readonly smartReachability: (
@@ -978,6 +1069,7 @@ function evaluateDataRuntime(
 const previewHotRuntime = { inspectorNativeFetch: globalThis.__nativeFetch };
 const previewInspectorSession = {
   activeTargetReachabilityKey: ${JSON.stringify(activeTargetReachabilityKey)},
+  resolverPropsByExport: new Map([['GeneratedTarget', { items: [1, 2, 3] }]]),
 };
 const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
 let persistedState = {};
@@ -987,6 +1079,11 @@ function persistPreviewInspectorState() {}
 function notifyPreviewInspector() {}
 function schedulePreviewInspectorTreeRefresh() {}
 function readPreviewInspectorRenderScenario() { return ${JSON.stringify(renderScenario)}; }
+let generatedRuntimeFallbackResetCount = 0;
+function resetPreviewInspectorGeneratedRuntimeFallbackValues() {
+  generatedRuntimeFallbackResetCount += 1;
+}
+${createPreviewGeneratedListRuntimeSource()}
 ${createPreviewInspectorDataRuntimeSource()}
 globalThis.__dataRuntime = {
   auto: setPreviewInspectorDataAutoEnabled,
@@ -994,13 +1091,19 @@ globalThis.__dataRuntime = {
   createXhr: () => new PreviewInspectorXmlHttpRequest(),
   fetch: previewInspectorFetch,
   generate: (shape) => generatePreviewInspectorDataValue(shape, '', 'smart'),
+  generatedCacheState: () => ({
+    hookResets: generatedRuntimeFallbackResetCount,
+    resolverProps: previewInspectorSession.resolverPropsByExport.size,
+  }),
   inferGraphql: inferPreviewInspectorGraphqlQueryShape,
   lorem: generatePreviewInspectorLoremPayload,
+  listSampleCount: readPreviewInspectorDataListSampleCount,
   paths: readPreviewInspectorDataShapePaths,
   requests: readPreviewInspectorDataRequests,
   resolve: resolvePreviewInspectorDataPayload,
   scenario: setPreviewInspectorVirtualBackendScenario,
   set: setPreviewInspectorDataPayload,
+  setListSampleCount: setPreviewInspectorDataListSampleCount,
   smart: smartFillPreviewInspectorDataPayload,
   smartReachability: smartFillPreviewInspectorDataPayloadsForReachability,
   target: (reachabilityKey) => {

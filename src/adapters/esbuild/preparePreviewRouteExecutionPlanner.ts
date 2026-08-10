@@ -1,4 +1,5 @@
 /** Shared real fast-context route planner used by inventory analysis and compilation. */
+import path from 'node:path';
 import type { PreviewBuildRequest, PreviewRouteExecutionPlanArtifact } from '../../domain/preview';
 import {
   PreviewCompilationError,
@@ -33,6 +34,7 @@ import {
 } from './inspector/previewInspectorBundleDiagnostics';
 import type { PreviewInspectorBundleSourceInventoryMemo } from './inspector/previewInspectorBundleFrontier';
 import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
+import { inferPreviewInspectorPageExecutionRootProps } from './inspector/previewInspectorPageExecutionRootInference';
 import type { PreviewInspectorTargetModuleContract } from './inspector/previewInspectorTargetModuleContract';
 import {
   preparePreviewInspectorBundleExecution,
@@ -223,7 +225,7 @@ export async function preparePreviewRouteExecutionPlanner(
       analysisPlan === undefined
         ? undefined
         : createPreviewInspectorExecutablePlan(analysisPlan, request.inspectorPageCandidateId);
-    candidates =
+    const eligibleCandidates =
       activeInspectorPlan === undefined
         ? []
         : createEligiblePreviewInspectorPageExecutionCandidates(
@@ -232,6 +234,18 @@ export async function preparePreviewRouteExecutionPlanner(
             request.inspectorPageExecutionCandidateId,
             request.inspectorTargetMode,
           );
+    candidates = await inferPreviewInspectorPageExecutionRootProps({
+      candidates: eligibleCandidates,
+      readSource: options.readSource,
+      resolveModule: options.resolveModule,
+      snapshotSourceByPath: new Map(
+        [
+          { documentPath: request.documentPath, sourceText: request.sourceText },
+          ...request.dependencySnapshots,
+        ].map((snapshot) => [path.normalize(snapshot.documentPath), snapshot.sourceText]),
+      ),
+      workspaceRoot: options.workspaceRoot,
+    });
   } catch (error) {
     const invariant = structuralInvariant(
       'executionCandidateId',

@@ -301,8 +301,12 @@ export async function preparePreviewCompilerUsage(
       fastGenericExportName === undefined &&
       !shouldTryFastGenericConsumerContext)
   ) {
+    const implicitGlobalSourcePaths =
+      selectedCorridor && request.renderMode === 'component' && hasPreviewableTarget
+        ? await options.cache.getSourcePaths(options.workspaceRoot, options.projectRoot, signal)
+        : Object.freeze<string[]>([]);
     return {
-      implicitGlobalSourcePaths: Object.freeze([]),
+      implicitGlobalSourcePaths,
       packageTargetUsageProps: EMPTY_TARGET_USAGE_PROPS,
     };
   }

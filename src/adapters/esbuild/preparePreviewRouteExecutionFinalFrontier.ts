@@ -10,6 +10,7 @@ import {
 import type { PreviewInspectorAncestorPlan } from './inspector/previewInspectorAncestorTypes';
 import type { PreviewInspectorBundleSourceInventoryMemo } from './inspector/previewInspectorBundleFrontier';
 import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
+import { inferPreviewInspectorPageExecutionRootProps } from './inspector/previewInspectorPageExecutionRootInference';
 import {
   createPreviewGlobalPackageBridgeEvidencePolicy,
   type PreviewGlobalPackageBridgeEvidencePolicy,
@@ -96,7 +97,7 @@ export async function preparePreviewRouteExecutionFinalFrontier(
     analysisPlan === undefined
       ? undefined
       : createPreviewInspectorExecutablePlan(analysisPlan, request.inspectorPageCandidateId);
-  const pageExecutionCandidates =
+  const rawPageExecutionCandidates =
     activeInspectorPlan === undefined
       ? []
       : createEligiblePreviewInspectorPageExecutionCandidates(
@@ -190,6 +191,13 @@ export async function preparePreviewRouteExecutionFinalFrontier(
       maximumBytes: MAXIMUM_PREVIEW_ROUTE_SOURCE_BYTES,
       sourcePath,
     });
+  const pageExecutionCandidates = await inferPreviewInspectorPageExecutionRootProps({
+    candidates: rawPageExecutionCandidates,
+    readSource: readFrontierSource,
+    resolveModule: options.staticModuleResolver.resolve,
+    snapshotSourceByPath,
+    workspaceRoot: options.workspaceRoot,
+  });
   const plannedRouteExecution = shouldPrepareArtifact
     ? await preparePreviewRouteExecutionPlanner({
         contextDiscoveryTruncated: options.contextDiscoveryTruncated,

@@ -68,6 +68,43 @@ async function prepareWithInventoryProbe(
 }
 
 describe('preparePreviewCompilerUsage inventory policy', () => {
+  /** Direct fast previews retain path-only bootstrap evidence without doing parent usage analysis. */
+  it('indexes conventional bootstrap sources for a component export gallery', async () => {
+    const request: PreviewBuildRequest = {
+      ...createRequest(
+        '/workspace/src/components/TargetCard.tsx',
+        'export function TargetCard() { return <main />; }',
+      ),
+      renderMode: 'component',
+    };
+    const sourcePaths = Object.freeze([
+      '/workspace/src/index.tsx',
+      '/workspace/src/components/TargetCard.tsx',
+    ]);
+    const getSourcePaths = vi.fn(() => Promise.resolve(sourcePaths));
+    const discover = vi.fn();
+    const cache = {
+      discover,
+      getSourcePaths,
+      readSourceText: vi.fn(() => Promise.resolve(undefined)),
+    } as unknown as PreviewProjectUsageCache;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot: WORKSPACE_ROOT,
+      projectUsesNextRuntime: false,
+      request,
+      resolver: createResolverStub(),
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+
+    expect(getSourcePaths).toHaveBeenCalledTimes(1);
+    expect(discover).not.toHaveBeenCalled();
+    expect(prepared.implicitGlobalSourcePaths).toBe(sourcePaths);
+  });
+
   /** Failed invariant work remains retryable and terminal release rejects later access. */
   it('retains only successful route-usage context stages', async () => {
     const usageContext = createPreviewCompleteRouteUsageContext();

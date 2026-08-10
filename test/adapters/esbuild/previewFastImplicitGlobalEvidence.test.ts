@@ -136,30 +136,48 @@ describe('preparePreviewImplicitGlobalEvidence', () => {
     expect(result.truncated).toBe(true);
   });
 
-  /** Export galleries have no authored app corridor and therefore retain the zero-scan fast path. */
-  it('does not inspect fallback inventory for a fast non-page preview', async () => {
-    let readCount = 0;
+  /** Direct exports still need conventional bootstrap globals that sit outside their module graph. */
+  it('inspects only conventional bootstrap candidates for a fast non-page preview', async () => {
+    const entryPath = '/workspace/src/index.tsx';
+    const decimalPath = '/workspace/src/runtime/decimal.ts';
+    const unrelatedPath = '/workspace/src/features/unrelated-card.tsx';
+    const readPaths: string[] = [];
 
     const result = await preparePreviewImplicitGlobalEvidence({
       cache: new PreviewImplicitGlobalEvidenceCache(),
       cacheKey: '/workspace\0nearest-config',
-      fallbackSourcePaths: ['/workspace/src/index.tsx'],
+      fallbackSourcePaths: [unrelatedPath, entryPath],
       fast: true,
-      inspectorDependencyPaths: ['/workspace/src/index.tsx'],
+      inspectorDependencyPaths: [],
       pageInspector: false,
       prioritizedSourcePath: undefined,
-      readSource: () => {
-        readCount += 1;
-        return "import value from './value'; globalThis.value = value;";
+      readSource: (sourcePath) => {
+        readPaths.push(sourcePath);
+        return sourcePath === entryPath
+          ? "import decimalValue from './runtime/decimal'; globalThis.decimal = decimalValue;"
+          : 'export const unrelated = true;';
       },
-      resolveModule: () => '/workspace/src/value.ts',
+      resolveModule: (moduleSpecifier, sourcePath) =>
+        sourcePath === entryPath && moduleSpecifier === './runtime/decimal'
+          ? decimalPath
+          : undefined,
       runtimeDependencyPaths: [],
       snapshotSourceByPath: EMPTY_SNAPSHOTS,
     });
 
-    expect(result.evidence).toEqual([]);
+    expect(result.evidence).toEqual([
+      {
+        evidenceKind: 'runtime-assignment',
+        exportKind: 'default',
+        globalName: 'decimal',
+        modulePath: decimalPath,
+        moduleSpecifier: './runtime/decimal',
+        sourcePath: entryPath,
+      },
+    ]);
     expect(result.truncated).toBe(false);
-    expect(readCount).toBe(0);
+    expect(readPaths).toEqual([entryPath]);
+    expect(readPaths).not.toContain(unrelatedPath);
   });
 
   /** Full preparation keeps the existing package-inventory cache contract unchanged. */

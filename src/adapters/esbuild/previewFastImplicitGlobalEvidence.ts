@@ -2,9 +2,10 @@
  * Selects bounded implicit-global discovery for fast and fully enriched preview preparation.
  *
  * Fast Page Inspector already owns a small statically proven entry-to-target dependency corridor.
- * Scanning only that corridor recovers application-bootstrap assignments such as
- * `globalThis.utility = importedUtility` without recreating the package-wide inventory that fast
- * preparation intentionally avoids. Full preparation continues to use the shared evidence cache.
+ * Direct export galleries retain a path-only package inventory and preselect only conventional
+ * bootstrap filenames from it. Both recover assignments such as `globalThis.utility =
+ * importedUtility` without parsing unrelated feature modules. Full preparation continues to use
+ * the shared evidence cache.
  */
 import { open } from 'node:fs/promises';
 import path from 'node:path';
@@ -60,7 +61,7 @@ export interface PreparePreviewImplicitGlobalEvidenceOptions {
 }
 
 /**
- * Recovers only corridor-proven bootstrap globals in fast mode and preserves full-mode behavior.
+ * Recovers corridor-proven or convention-bounded bootstrap globals in fast mode.
  */
 export async function preparePreviewImplicitGlobalEvidence(
   options: PreparePreviewImplicitGlobalEvidenceOptions,
@@ -68,9 +69,9 @@ export async function preparePreviewImplicitGlobalEvidence(
   const usesInspectorCorridor =
     options.pageInspector && options.inspectorDependencyPaths.length > 0;
   if (options.fast) {
-    const hasCriticalEvidenceSources =
-      options.pageInspector &&
-      (usesInspectorCorridor || options.runtimeDependencyPaths.length > 0);
+    const hasCriticalEvidenceSources = options.pageInspector
+      ? usesInspectorCorridor || options.runtimeDependencyPaths.length > 0
+      : options.fallbackSourcePaths.length > 0 || options.runtimeDependencyPaths.length > 0;
     if (!hasCriticalEvidenceSources) return EMPTY_IMPLICIT_GLOBAL_EVIDENCE;
     const selectedSources = await selectFastImplicitGlobalSources(options);
     if (selectedSources.sourcePaths.length === 0) {
@@ -124,10 +125,10 @@ interface FastImplicitGlobalSourceRead {
 }
 
 /**
- * Reduces a potentially broad Inspector dependency inventory before invoking the fail-closed
- * evidence collector. Exact ReactDOM entry points are inspected first, then conventional bootstrap
- * files by shallow-path affinity. Only files containing a global-assignment or declaration marker
- * cross into the TypeScript parser.
+ * Reduces a potentially broad dependency inventory before invoking the fail-closed evidence
+ * collector. Exact ReactDOM entry points are inspected first, then conventional bootstrap files by
+ * shallow-path affinity. Only files containing a global-assignment or declaration marker cross
+ * into the TypeScript parser.
  */
 async function selectFastImplicitGlobalSources(
   options: PreparePreviewImplicitGlobalEvidenceOptions,
@@ -140,7 +141,7 @@ async function selectFastImplicitGlobalSources(
     prioritizedPaths.map((sourcePath, index) => [sourcePath, prioritizedPaths.length - index]),
   );
   const rankedCandidates = normalizeSourcePaths([
-    ...options.inspectorDependencyPaths,
+    ...(options.pageInspector ? options.inspectorDependencyPaths : options.fallbackSourcePaths),
     ...options.runtimeDependencyPaths,
   ])
     .filter(

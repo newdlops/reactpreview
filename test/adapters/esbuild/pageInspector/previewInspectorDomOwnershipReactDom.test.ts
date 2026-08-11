@@ -23,8 +23,12 @@ afterEach(async () => {
 
 const chromiumPath = findChromiumPath();
 
-describe('Preview Inspector DOM ownership with ReactDOM 19', () => {
-  it.skipIf(chromiumPath === undefined)(
+for (const runtime of [
+  { label: 'ReactDOM 18', react: 'react-preview-react-18', reactDom: 'react-preview-react-dom-18' },
+  { label: 'ReactDOM 19', react: 'react', reactDom: 'react-dom' },
+]) {
+  describe(`Preview Inspector DOM ownership with ${runtime.label}`, () => {
+    it.skipIf(chromiumPath === undefined)(
     'keeps only connected inline intrinsic refs for simultaneous targets, ref replacement, portals, errors, and remounts',
     async () => {
       const directory = await mkdtemp(path.join(os.tmpdir(), 'react-preview-dom-ownership-'));
@@ -34,7 +38,11 @@ describe('Preview Inspector DOM ownership with ReactDOM 19', () => {
       const page = path.join(directory, 'index.html');
       await writeFile(
         entry,
-        browserFixtureSource(createPreviewInspectorDomOwnershipRuntimeSource()),
+        browserFixtureSource(
+          createPreviewInspectorDomOwnershipRuntimeSource(),
+          runtime.react,
+          runtime.reactDom,
+        ),
         'utf8',
       );
       await build({
@@ -44,6 +52,9 @@ describe('Preview Inspector DOM ownership with ReactDOM 19', () => {
         globalName: 'PreviewOwnershipFixture',
         jsx: 'automatic',
         jsxDev: true,
+        ...(runtime.react === 'react'
+          ? {}
+          : { alias: { react: runtime.react, 'react-dom': runtime.reactDom } }),
         nodePaths: [path.join(process.cwd(), 'node_modules')],
         outfile: bundle,
         platform: 'browser',
@@ -87,15 +98,21 @@ describe('Preview Inspector DOM ownership with ReactDOM 19', () => {
       expect(parsed.staleRejected).toBe(true);
       expect(parsed.callbackAttaches).toBeGreaterThan(0);
       expect(parsed.callbackCleanups).toBeGreaterThan(0);
+      expect(parsed.callbackCleanups).toBe(parsed.callbackAttaches);
       expect(parsed.noRefChurn).toBe(true);
       expect(parsed.noCleanupAttaches).toBeGreaterThan(0);
       expect(parsed.noCleanupNulls).toBeGreaterThan(0);
+      expect(parsed.noCleanupNulls).toBe(parsed.noCleanupAttaches);
+      expect(parsed.objectRefCleared).toBe(true);
       expect(parsed.privateAttaches).toBeGreaterThan(0);
       expect(parsed.privateReleases).toBeGreaterThan(0);
+      expect(parsed.privateReleases).toBe(parsed.privateAttaches);
+      expect(parsed.callbackRefWarning).toBe(false);
     },
     30_000,
-  );
-});
+    );
+  });
+}
 
 /** Decodes the two entities emitted by Chromium's serialized output element. */
 function decodeHtml(value: string): string {
@@ -118,16 +135,21 @@ function findChromiumPath(): string | undefined {
 }
 
 /** Returns the compiled browser fixture without relying on test-environment DOM shims. */
-function browserFixtureSource(ownershipRuntimeSource: string): string {
+function browserFixtureSource(
+  ownershipRuntimeSource: string,
+  reactSpecifier: string,
+  reactDomSpecifier: string,
+): string {
   return (
     ownershipRuntimeSource +
     String.raw`
-import * as React from 'react';
-import { createRoot } from 'react-dom/client';
-import ReactDOM, * as ReactDOMNamespace from 'react-dom';
-import { createPortal } from 'react-dom';
-import { jsx as productionJsx } from 'react/jsx-runtime';
+import * as React from ${JSON.stringify(reactSpecifier)};
+import { createRoot } from ${JSON.stringify(`${reactDomSpecifier}/client`)};
+import ReactDOM, * as ReactDOMNamespace from ${JSON.stringify(reactDomSpecifier)};
+import { createPortal } from ${JSON.stringify(reactDomSpecifier)};
+import { jsx as productionJsx } from ${JSON.stringify(`${reactSpecifier}/jsx-runtime`)};
 const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');
+const consoleErrors = []; const originalConsoleError = console.error; console.error = (...values) => { consoleErrors.push(values.map((value) => String(value)).join(' ')); originalConsoleError(...values); };
 const OwnershipContext = globalThis[apiKey].readJsxOwnershipContext();
 globalThis[apiKey].registerOwnedHost = registerPreviewInspectorOwnedHost;
 globalThis.findSelectedPreviewInspectorDescriptor = () => ({ inspector: { target: { sourcePath: '/workspace/Target.tsx' } } });
@@ -151,8 +173,8 @@ export async function run() {
   const namespace = tokenFor(); render(target('namespace', namespace, { portalMode: 'namespace' }, noCleanup)); await pause(); const namespacePortalRejected = !gate(namespace) && document.querySelector('#portal-namespace') !== null;
   const portal = tokenFor(); render(target('portal', portal, { portalMode: 'default' }, noCleanup)); await pause(); const defaultPortalRejected = !gate(portal) && document.querySelector('#portal-default') !== null;
   const failure = tokenFor(); render(target('failure', failure, { throwError: true }, noCleanup)); await pause(); const errorRejected = !gate(failure) && document.querySelector('#failure') !== null;
-  const remount = tokenFor(); render(target('remount', remount, {}, noCleanup)); await pause(); const remountAuthorized = gate(remount); root.unmount(); await pause(); const staleRejected = !readPreviewInspectorOwnedHosts(boundaries.get(remount), { targetExportName: 'default' }).length;
-  const output = document.createElement('output'); output.id = 'result'; output.textContent = JSON.stringify({ callbackAttaches, callbackCleanups, crossInstanceRejected, defaultPortalRejected, errorRejected, invalidCapabilityRejected, invalidExportRejected, invalidSourceRejected, namedPortalRejected, namespacePortalRejected, noCleanupAttaches, noCleanupNulls, noRefChurn, normalAuthorized, privateAttaches, privateReleases, remountAuthorized, secondAuthorized, staleRejected, unchangedMarkup }); document.body.append(output);
+  const remount = tokenFor(); render(target('remount', remount, {}, noCleanup)); await pause(); const remountAuthorized = gate(remount); root.unmount(); await pause(); const staleRejected = !readPreviewInspectorOwnedHosts(boundaries.get(remount), { targetExportName: 'default' }).length; const objectRefCleared = objectRef.current === null; const callbackRefWarning = consoleErrors.some((message) => message.includes('Unexpected return value from a callback ref'));
+  const output = document.createElement('output'); output.id = 'result'; output.textContent = JSON.stringify({ callbackAttaches, callbackCleanups, callbackRefWarning, crossInstanceRejected, defaultPortalRejected, errorRejected, invalidCapabilityRejected, invalidExportRejected, invalidSourceRejected, namedPortalRejected, namespacePortalRejected, noCleanupAttaches, noCleanupNulls, noRefChurn, normalAuthorized, objectRefCleared, privateAttaches, privateReleases, remountAuthorized, secondAuthorized, staleRejected, unchangedMarkup }); document.body.append(output);
 }
 `
   );

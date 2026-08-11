@@ -6,6 +6,105 @@ import {
 } from '../../../../src/adapters/esbuild/staticResources/reactExportPropInference';
 
 describe('collectReactExportPropInference', () => {
+  /** Keeps a reducer item contract and its enclosing object available to direct page fallbacks. */
+  it('infers the current item parameter of a collection reducer', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/company-ir-closing-feed.tsx',
+      [
+        'export function CompanyIrClosingFeed({ object }) {',
+        '  const { totalCommittedInvestments } = object;',
+        '  const total = totalCommittedInvestments.reduce((sum, investment) => {',
+        '    return sum + Number(investment.investmentAmount);',
+        '  }, 0);',
+        '  return <span>{total}</span>;',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(result.CompanyIrClosingFeed?.shape.properties?.object).toEqual({
+      kind: 'object',
+      properties: {
+        totalCommittedInvestments: {
+          items: {
+            kind: 'object',
+            properties: {
+              investmentAmount: { kind: 'number', value: 0 },
+            },
+          },
+          kind: 'array',
+        },
+      },
+    });
+  });
+
+  /** Uses an authored primitive fallback to avoid generating an object as visible React text. */
+  it('infers a scalar from a logical fallback rendered in JSX', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/ai-recommend-notice.tsx',
+      [
+        'export function AiRecommendNotice({ reason }) {',
+        '  if (!reason) return null;',
+        '  return <span>{reason || "No reason available"}</span>;',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(result.AiRecommendNotice?.shape.properties?.reason).toEqual({
+      kind: 'string',
+      value: 'No reason available',
+    });
+  });
+
+  /** An empty-array nullish default is structural evidence, even before a deferred modal maps it. */
+  it('keeps a nullish empty-array fallback array-shaped through a local row helper', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/InfoMappingCard.tsx',
+      [
+        'type Investor = { stakeholderId: string; name: string };',
+        'type File = { documentId: number; investors?: Investor[] | null };',
+        'const getRowStatus = (file: File) => (file.investors ?? []).length === 0;',
+        'export function InfoMappingCard({ files }: { files: File[] }) {',
+        '  return files.map((file) => <button key={file.documentId}>{getRowStatus(file) ? "Edit" : "Done"}</button>);',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(result.InfoMappingCard?.shape.properties?.files?.items?.properties?.investors).toEqual({
+      kind: 'array',
+    });
+  });
+
+  /** Retains the carrier identity so the later map callback can describe generated item fields. */
+  it('infers item fields through a nullish empty-array alias', () => {
+    const result = collectReactExportPropInference(
+      '/workspace/DocumentInfoModal.tsx',
+      [
+        'export function DocumentInfoModal({ file }) {',
+        '  const initialInvestors = file.investors ?? [];',
+        '  return initialInvestors.map((investor) => (',
+        '    <span key={investor.stakeholderId}>{investor.name}</span>',
+        '  ));',
+        '}',
+      ].join('\n'),
+    );
+
+    expect(result.DocumentInfoModal?.shape.properties?.file).toEqual({
+      kind: 'object',
+      properties: {
+        investors: {
+          items: {
+            kind: 'object',
+            properties: {
+              name: { kind: 'string', value: 'name' },
+              stakeholderId: { kind: 'string', value: 'preview-id' },
+            },
+          },
+          kind: 'array',
+        },
+      },
+    });
+  });
+
   /** Keeps a semantically named scalar as the receiver of the ubiquitous toString method. */
   it('infers an id receiver through toString without inventing a callable object', () => {
     const result = collectReactExportPropInference(

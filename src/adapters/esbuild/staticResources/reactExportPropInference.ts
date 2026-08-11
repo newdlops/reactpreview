@@ -40,7 +40,13 @@ const ARRAY_ITEM_CALLBACK_METHOD_NAMES = new Set([
   'flatMap',
   'forEach',
   'map',
+  'reduce',
+  'reduceRight',
   'some',
+]);
+const ARRAY_ITEM_CALLBACK_PARAMETER_INDEX = new Map<string, number>([
+  ['reduce', 1],
+  ['reduceRight', 1],
 ]);
 const ARRAY_ITEM_IDENTITY_METHOD_NAMES = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 const LOCAL_HELPER_ITEM_IDENTITY_METHOD_NAMES = new Set([
@@ -154,6 +160,8 @@ interface MutableShapeNode {
   /** Element contract for an Array node, retained only when its syntax is statically resolvable. */
   items?: MutableShapeNode;
   kind: PreviewInferredPropKind;
+  /** The callback item itself was emitted as React child content rather than only keyed. */
+  renderedValue?: true;
   source: PreviewInferredPropProvenance['source'];
   value?: boolean | number | string | null;
 }
@@ -192,6 +200,8 @@ interface LocalComponentDeclaration {
 interface InferenceState {
   /** Component names already traversed while carrying one exact local JSX prop demand. */
   readonly activeLocalComponentNames: ReadonlySet<string>;
+  /** Allows only a detached Array callback item to become a scalar ReactNode fallback. */
+  readonly allowRenderedRootScalar: boolean;
   readonly aliases: Map<string, PropPathBinding>;
   readonly childPropDemands: PreviewChildPropDemandCatalog | undefined;
   readonly collectionDemandDepth: number;
@@ -239,8 +249,7 @@ export function collectReactExportPropInference(
   }
   const localTypes = collectResolvableObjectTypes(sourceFile, sourcePath, options);
   const localComponents = collectLocalComponentDeclarations(sourceFile);
-  const identityCollectionHelperParameters =
-    collectIdentityCollectionHelperParameters(sourceFile);
+  const identityCollectionHelperParameters = collectIdentityCollectionHelperParameters(sourceFile);
   const registryDiscriminantHints = collectStaticRegistryDiscriminantHints(
     sourceFile,
     sourcePath,
@@ -294,8 +303,7 @@ export function collectReactLocalComponentPropInference(
   if (hasParseDiagnostics(sourceFile)) return {};
   const localTypes = collectResolvableObjectTypes(sourceFile, sourcePath, options);
   const declarations = collectLocalComponentDeclarations(sourceFile);
-  const identityCollectionHelperParameters =
-    collectIdentityCollectionHelperParameters(sourceFile);
+  const identityCollectionHelperParameters = collectIdentityCollectionHelperParameters(sourceFile);
   const registryDiscriminantHints = collectStaticRegistryDiscriminantHints(
     sourceFile,
     sourcePath,
@@ -355,10 +363,7 @@ function collectStaticRegistryDiscriminantHints(
   const hints = new Map<string, PreviewStaticRegistryKey>();
   const readRegistryKey = (bindingName: string): PreviewStaticRegistryKey | undefined => {
     if (resolvedKeys.has(bindingName)) return resolvedKeys.get(bindingName);
-    let key = readStaticRegistryObjectFirstKey(
-      localModule.objects.get(bindingName),
-      localModule,
-    );
+    let key = readStaticRegistryObjectFirstKey(localModule.objects.get(bindingName), localModule);
     const imported = imports.get(bindingName);
     if (key === undefined && imported !== undefined && options.resolveImport !== undefined) {
       const resolved = options.resolveImport(imported.moduleSpecifier, sourcePath);
@@ -528,7 +533,8 @@ function readStaticRegistryPrimitive(
   }
   const declaration = module.enums.get(member.ownerName);
   const enumMember = declaration?.members.find(
-    (candidate) => readStaticRegistryPropertyKey(candidate.name, module, budget) === member.memberName,
+    (candidate) =>
+      readStaticRegistryPropertyKey(candidate.name, module, budget) === member.memberName,
   );
   return enumMember?.initializer === undefined
     ? undefined
@@ -1019,6 +1025,7 @@ function inferComponentProps(
   const root = createMutableNode('object', 'usage');
   const state: InferenceState = {
     activeLocalComponentNames,
+    allowRenderedRootScalar: false,
     aliases: new Map(),
     childPropDemands,
     collectionDemandDepth: 0,
@@ -1221,6 +1228,7 @@ export function inferReactFunctionParameterUsageShape(
   if (parameter === undefined || parameter.dotDotDotToken !== undefined) return undefined;
   const parentState: InferenceState = {
     activeLocalComponentNames: new Set(),
+    allowRenderedRootScalar: false,
     aliases: new Map(),
     childPropDemands: undefined,
     collectionDemandDepth: 0,
@@ -1896,9 +1904,18 @@ function setArrayItemRequirement(
   path_: readonly string[],
   items: MutableShapeNode | undefined,
 ): void {
-  // A scalar element does not prove a structured UI branch. Retain only object-shaped element
-  // contracts, which are the bounded evidence needed for a pill/list item without inventing data.
-  if (items?.kind !== 'object') return;
+  /*
+   * Object readers prove structured rows. A string/number root is equally strong only when the
+   * callback itself rendered that item as React child content; retaining it prevents the runtime
+   * Smart-fill layer from replacing a legitimate enum/text list with `{ id, name }` records.
+   */
+  if (
+    items === undefined ||
+    (items.kind !== 'object' &&
+      !(items.renderedValue === true && (items.kind === 'number' || items.kind === 'string')))
+  ) {
+    return;
+  }
   let node = state.root;
   for (const name of path_) {
     const next = node.children.get(name);
@@ -1914,6 +1931,7 @@ function setArrayItemRequirement(
 function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableShapeNode): void {
   mergeNodeKind(target, source.kind, source.source, source.value, source.exactValue);
   if (target.kind !== source.kind) return;
+  if (source.renderedValue === true) target.renderedValue = true;
   if (source.source === 'type') target.source = 'type';
   if (source.value !== undefined) target.value = source.value;
   if (source.exactValue === true) target.exactValue = true;
@@ -2073,7 +2091,8 @@ function readIdentityCollectionHelperCallPath(
     const argument = current.arguments[parameterIndex];
     if (argument === undefined || ts.isSpreadElement(argument)) continue;
     const path_ =
-      readPropPath(argument, state.aliases) ?? readIdentityCollectionHelperCallPath(argument, state);
+      readPropPath(argument, state.aliases) ??
+      readIdentityCollectionHelperCallPath(argument, state);
     if (path_ !== undefined) return path_;
   }
   return undefined;
@@ -2087,6 +2106,7 @@ function collectLocalPropAliases(functionLike: ExportedFunctionLike, state: Infe
     if (ts.isVariableDeclaration(node) && node.initializer !== undefined) {
       const sourcePath =
         readPropPath(node.initializer, state.aliases) ??
+        readEmptyCollectionDefaultPropPath(node.initializer, state.aliases) ??
         readIdentityCollectionHelperCallPath(node.initializer, state);
       if (sourcePath !== undefined) {
         if (ts.isIdentifier(node.name)) {
@@ -2183,7 +2203,11 @@ function collectArrayCallbackItemRequirements(body: ts.ConciseBody, state: Infer
         setArrayItemRequirement(
           state,
           receiver.path,
-          inferArrayCallbackItemRequirement(callback, state),
+          inferArrayCallbackItemRequirement(
+            callback,
+            state,
+            ARRAY_ITEM_CALLBACK_PARAMETER_INDEX.get(node.expression.name.text) ?? 0,
+          ),
         );
       }
     }
@@ -2218,8 +2242,9 @@ function readCollectionCarrierPropPath(
 function inferArrayCallbackItemRequirement(
   callback: ts.ArrowFunction | ts.FunctionExpression,
   parentState: InferenceState,
+  itemParameterIndex = 0,
 ): MutableShapeNode | undefined {
-  const parameter = callback.parameters[0];
+  const parameter = callback.parameters[itemParameterIndex];
   if (
     parameter === undefined ||
     parameter.dotDotDotToken !== undefined ||
@@ -2227,7 +2252,7 @@ function inferArrayCallbackItemRequirement(
   ) {
     return undefined;
   }
-  let combined = inferFunctionBindingRequirement(callback, parameter.name, parentState);
+  let combined = inferFunctionBindingRequirement(callback, parameter.name, parentState, true);
   if (ts.isIdentifier(parameter.name)) {
     for (const demand of collectPreviewRuntimeLocalHelperParameterDemands(
       callback,
@@ -2238,6 +2263,7 @@ function inferArrayCallbackItemRequirement(
         demand.owner,
         demand.parameter.name,
         parentState,
+        true,
       );
       if (helper === undefined) continue;
       if (combined === undefined) combined = helper;
@@ -2554,11 +2580,13 @@ function inferFunctionBindingRequirement(
   functionLike: ExportedFunctionLike,
   binding: ts.BindingName,
   parentState: InferenceState,
+  allowRenderedRootScalar = parentState.allowRenderedRootScalar,
 ): MutableShapeNode | undefined {
   const bindingRoot = '__reactPreviewBindingRoot';
   const root = createMutableNode('object', 'usage');
   const state: InferenceState = {
     activeLocalComponentNames: parentState.activeLocalComponentNames,
+    allowRenderedRootScalar,
     aliases: new Map(),
     childPropDemands: parentState.childPropDemands,
     collectionDemandDepth: parentState.collectionDemandDepth + 1,
@@ -2717,6 +2745,21 @@ function addOperationRequirement(
     requirePath(state, path_, 'number', 'usage', arithmeticNeutralValue, true);
     return;
   }
+  if (isLogicalEmptyArrayFallback(node, parent)) {
+    requirePath(state, path_, 'array', 'usage');
+    return;
+  }
+  const logicalFallbackValue = readLogicalPrimitiveFallbackValue(node, parent);
+  if (logicalFallbackValue !== undefined) {
+    requirePath(
+      state,
+      path_,
+      readPrimitiveValueKind(logicalFallbackValue),
+      'usage',
+      logicalFallbackValue,
+    );
+    return;
+  }
   const overlayNeutralValue = inferReactOverlayVisibilityNeutralValue(node);
   if (overlayNeutralValue !== undefined) {
     requirePath(state, path_, overlayNeutralValue.kind, 'usage', overlayNeutralValue.value, true);
@@ -2773,10 +2816,7 @@ function addOperationRequirement(
   if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === node) {
     const methodName = path_.at(-1);
     const receiverPath = path_.slice(0, -1);
-    const semanticReceiver = inferPreviewUsageSemanticFallback(
-      state,
-      receiverPath.at(-1) ?? '',
-    );
+    const semanticReceiver = inferPreviewUsageSemanticFallback(state, receiverPath.at(-1) ?? '');
     if (
       receiverPath.length > 0 &&
       methodName === 'toString' &&
@@ -2834,14 +2874,85 @@ function addOperationRequirement(
       requirePath(state, path_, semantic.kind, 'usage', semantic.value, semantic.exactValue);
     }
   }
+  if (
+    state.allowRenderedRootScalar &&
+    path_.length === 1 &&
+    ts.isIdentifier(node) &&
+    !hasPreviewInferredPropTerminal(state, path_) &&
+    isReactRenderedChildValueExpression(node)
+  ) {
+    const renderedName = node.text;
+    requirePath(
+      state,
+      path_,
+      'string',
+      'usage',
+      renderedName.length <= 32 ? renderedName : `${renderedName.slice(0, 31)}…`,
+    );
+    let renderedNode = state.root;
+    for (const propertyName of path_) {
+      const child = renderedNode.children.get(propertyName);
+      if (child === undefined) return;
+      renderedNode = child;
+    }
+    renderedNode.renderedValue = true;
+  }
+}
+
+/** Distinguishes actual React child content from an opaque JSX attribute forwarding edge. */
+function isReactRenderedChildValueExpression(node: ts.Expression): boolean {
+  let current: ts.Expression = node;
+  let parent = current.parent;
+  while (
+    ts.isParenthesizedExpression(parent) ||
+    ts.isAsExpression(parent) ||
+    ts.isSatisfiesExpression(parent) ||
+    ts.isNonNullExpression(parent) ||
+    ts.isTypeAssertionExpression(parent)
+  ) {
+    current = parent;
+    parent = current.parent;
+  }
+  return (
+    ts.isJsxExpression(parent) &&
+    parent.expression === current &&
+    (ts.isJsxElement(parent.parent) || ts.isJsxFragment(parent.parent))
+  );
+}
+
+/**
+ * Carries a prop collection through `const rows = value ?? []` without inventing membership.
+ * The empty fallback proves the runtime container kind while preserving every authored item from
+ * the left side, so a later `rows.map(...)` can safely refine the original prop's item contract.
+ */
+function readEmptyCollectionDefaultPropPath(
+  expression: ts.Expression,
+  aliases: ReadonlyMap<string, PropPathBinding>,
+): readonly string[] | undefined {
+  const current = unwrapExpression(expression);
+  if (
+    !ts.isBinaryExpression(current) ||
+    (current.operatorToken.kind !== ts.SyntaxKind.BarBarToken &&
+      current.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return undefined;
+  }
+  const fallback = unwrapExpression(current.right);
+  if (!ts.isArrayLiteralExpression(fallback) || fallback.elements.length !== 0) return undefined;
+  return readPropPath(current.left, aliases);
 }
 
 /** Prefers a source-proven registry key over generic text derived from the field name. */
-function inferPreviewUsageSemanticFallback(state: InferenceState, rawName: string): {
-  readonly exactValue?: true;
-  readonly kind: PreviewInferredPropKind;
-  readonly value?: boolean | number | string | null;
-} | undefined {
+function inferPreviewUsageSemanticFallback(
+  state: InferenceState,
+  rawName: string,
+):
+  | {
+      readonly exactValue?: true;
+      readonly kind: PreviewInferredPropKind;
+      readonly value?: boolean | number | string | null;
+    }
+  | undefined {
   const registryValue = state.registryDiscriminantHints.get(rawName);
   if (registryValue !== undefined) {
     return {
@@ -2904,6 +3015,41 @@ function readArithmeticNeutralValue(
   if (operator !== ts.SyntaxKind.PlusToken) return undefined;
   const other = parent.left === expression ? parent.right : parent.left;
   return ts.isNumericLiteral(unwrapExpression(other)) ? 0 : undefined;
+}
+
+/** Reuses a direct primitive `value || fallback`/`value ?? fallback` as a render-safe sample. */
+function readLogicalPrimitiveFallbackValue(
+  expression: ts.Expression,
+  parent: ts.Node,
+): boolean | number | string | undefined {
+  if (
+    !ts.isBinaryExpression(parent) ||
+    parent.left !== expression ||
+    (parent.operatorToken.kind !== ts.SyntaxKind.BarBarToken &&
+      parent.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return undefined;
+  }
+  const fallback = unwrapExpression(parent.right);
+  if (ts.isStringLiteralLike(fallback)) return fallback.text;
+  if (ts.isNumericLiteral(fallback)) return Number(fallback.text);
+  if (fallback.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (fallback.kind === ts.SyntaxKind.FalseKeyword) return false;
+  return undefined;
+}
+
+/** Treats a direct `value || []` / `value ?? []` receiver as an Array contract. */
+function isLogicalEmptyArrayFallback(expression: ts.Expression, parent: ts.Node): boolean {
+  if (
+    !ts.isBinaryExpression(parent) ||
+    parent.left !== expression ||
+    (parent.operatorToken.kind !== ts.SyntaxKind.BarBarToken &&
+      parent.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken)
+  ) {
+    return false;
+  }
+  const fallback = unwrapExpression(parent.right);
+  return ts.isArrayLiteralExpression(fallback) && fallback.elements.length === 0;
 }
 
 /** Reports a negated prop guard whose selected branch exits before visible component output. */

@@ -22,6 +22,7 @@ import {
 import {
   collectPreviewRuntimeHookAliasPaths,
   type PreviewRuntimeHookAliasPathCatalog,
+  type PreviewRuntimeHookImportedHelperNestedUsage,
 } from './previewRuntimeHookAliasUsage';
 import {
   findNearestPreviewRuntimeFunction,
@@ -29,7 +30,10 @@ import {
   unwrapPreviewRuntimeExpression,
 } from './previewRuntimeHookSyntax';
 import type { PreviewRuntimeFunction } from './previewRuntimeHookSyntax';
-import { createPreviewGeneratedListExpression } from './previewRuntimeHookUsageTree';
+import {
+  createPreviewGeneratedListExpression,
+  mergePreviewRuntimeHookCollectionItemExpressions,
+} from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 
 const MAX_COMPONENT_IMPORTS = 32;
@@ -50,11 +54,7 @@ const JSX_COLLECTION_PROP_NAMES = new Set([
   'values',
 ]);
 const JSX_COLLECTION_FIELD_CONFIG_PROP_NAMES = new Set(['columns', 'fields']);
-const JSX_COLLECTION_ACTION_CONFIG_PROP_NAMES = new Set([
-  'actions',
-  'itemactions',
-  'rowactions',
-]);
+const JSX_COLLECTION_ACTION_CONFIG_PROP_NAMES = new Set(['actions', 'itemactions', 'rowactions']);
 const JSX_COLLECTION_FIELD_KEY_NAMES = new Set(['accessorkey', 'dataindex', 'field', 'key']);
 const JSX_COLLECTION_FIELD_CALLBACK_NAMES = new Set([
   'accessor',
@@ -64,12 +64,7 @@ const JSX_COLLECTION_FIELD_CALLBACK_NAMES = new Set([
   'render',
   'valuegetter',
 ]);
-const JSX_COLLECTION_ACTION_CALLBACK_NAMES = new Set([
-  'action',
-  'execute',
-  'handler',
-  'onclick',
-]);
+const JSX_COLLECTION_ACTION_CALLBACK_NAMES = new Set(['action', 'execute', 'handler', 'onclick']);
 const JSX_COLLECTION_DIRECT_CALLBACK_PROP_NAMES = new Set([
   'getid',
   'getkey',
@@ -110,6 +105,8 @@ export interface PreviewRuntimeHookLocalTypeFallback {
   readonly kind: PreviewInferredPropShape['kind'];
   /** Concise provenance shown when the generated value is surfaced as a blocker. */
   readonly label: string;
+  /** Helper-relative structured uses retained for deep merging with caller-local hook demand. */
+  readonly nestedUsages?: readonly PreviewRuntimeHookImportedHelperNestedUsage[];
   /** Nested item properties required by the expanded type. */
   readonly requiredPaths: readonly string[];
 }
@@ -306,10 +303,19 @@ export class PreviewRuntimeHookChildPropDemandCatalogBuilder {
     const property =
       parameter?.kind === 'object' ? parameter.properties?.[propertyName] : undefined;
     if (property === undefined) return undefined;
+    const nestedUsages: PreviewRuntimeHookChildPropUsage[] = [];
+    appendShapeUsages(property, [], [], nestedUsages, 0);
     return Object.freeze({
       expression: serializePreviewRuntimeHookChildShape(property, propertyName),
       kind: property.kind,
       label: 'generated value from imported helper parameter property',
+      ...(nestedUsages.length === 0
+        ? {}
+        : {
+            nestedUsages: Object.freeze(
+              nestedUsages.map((usage) => Object.freeze({ ...usage })),
+            ),
+          }),
       requiredPaths: Object.freeze(collectPreviewRuntimeHookChildShapePaths(property)),
     });
   }
@@ -550,9 +556,7 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
       }),
     );
   };
-  const appendCallback = (
-    callback: ts.ArrowFunction | ts.FunctionExpression,
-  ): void => {
+  const appendCallback = (callback: ts.ArrowFunction | ts.FunctionExpression): void => {
     mergeItemShape(inferReactFunctionParameterUsageShape(callback, 0));
   };
   const collectConfig = (
@@ -656,9 +660,7 @@ export function inferPreviewRuntimeHookJsxCollectionItemFallback(
 }
 
 /** Reads one ordinary JSX attribute name without admitting namespace syntax. */
-function readPreviewRuntimeHookJsxAttributeName(
-  attribute: ts.JsxAttribute,
-): string | undefined {
+function readPreviewRuntimeHookJsxAttributeName(attribute: ts.JsxAttribute): string | undefined {
   return ts.isIdentifier(attribute.name) ? attribute.name.text : undefined;
 }
 
@@ -960,12 +962,13 @@ function deduplicateUsages(
         ...(usage.collectionItemRequiredPaths ?? []),
       ]),
     ];
+    const collectionItemExpression = mergePreviewRuntimeHookCollectionItemExpressions(
+      existing.collectionItemExpression,
+      usage.collectionItemExpression,
+    );
     retained.set(key, {
       ...existing,
-      ...(existing.collectionItemExpression === undefined &&
-      usage.collectionItemExpression !== undefined
-        ? { collectionItemExpression: usage.collectionItemExpression }
-        : {}),
+      ...(collectionItemExpression === undefined ? {} : { collectionItemExpression }),
       ...(requiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(requiredPaths) }),

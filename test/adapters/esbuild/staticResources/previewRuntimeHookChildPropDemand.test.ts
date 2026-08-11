@@ -147,6 +147,62 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain('data.project.issues[].title');
   });
 
+  /** Merges complementary row contracts when sibling children consume the same hook collection. */
+  it('retains exact discriminators from a later child collection consumer', () => {
+    const parentPath = '/workspace/Project.tsx';
+    const recentPath = '/workspace/RecentIssues.tsx';
+    const boardPath = '/workspace/Board.tsx';
+    const parentSource = [
+      `import useApi from './api';`,
+      `import RecentIssues from './RecentIssues';`,
+      `import Board from './Board';`,
+      'export default function Project() {',
+      "  const [{ data }] = useApi.get('/project');",
+      '  return <><RecentIssues project={data.project} /><Board project={data.project} /></>;',
+      '}',
+    ].join('\n');
+    const recentSource = [
+      'export default function RecentIssues({ project }) {',
+      '  return project.issues.map((issue) => <time>{issue.createdAt}</time>);',
+      '}',
+    ].join('\n');
+    const boardSource = [
+      'const StatusCopy = { backlog: "Backlog", done: "Done" };',
+      'export default function Board({ project }) {',
+      '  return project.issues.map((issue) => (',
+      '    <article key={issue.id}>{StatusCopy[issue.status]} {issue.title}</article>',
+      '  ));',
+      '}',
+    ].join('\n');
+    const sources = new Map([
+      [recentPath, recentSource],
+      [boardPath, boardSource],
+    ]);
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => sources.get(sourcePath),
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './RecentIssues'
+          ? recentPath
+          : moduleSpecifier === './Board'
+            ? boardPath
+            : undefined,
+      workspaceRoot: '/workspace',
+    });
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+      ),
+    );
+
+    expect(transformed).toContain('Object.freeze(Object.assign({}, Object.freeze({ "createdAt":');
+    expect(transformed).toContain('Object.freeze({ "id": "preview-id", "status": "backlog"');
+    expect(transformed).toContain('data.project.issues[].createdAt');
+    expect(transformed).toContain('data.project.issues[].status');
+  });
+
   /** Leaves authored optional carrier chains untouched because they intentionally short-circuit. */
   it('does not turn an optional JSX carrier into a hard hook requirement', () => {
     const parentPath = '/workspace/HistoryPage.tsx';
@@ -235,7 +291,7 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
       ),
     );
 
-    expect(transformed).toContain('"pageNameOrUrl": "pageNameOrUrl"');
+    expect(transformed).toContain('"pageNameOrUrl": "https://example.invalid/"');
     expect(transformed).toContain('"pageGroups": ((__createPreviewItem)');
     expect(transformed).toContain('"pages": ((__createPreviewItem)');
     expect(transformed).toContain('[].pageGroups[].pages[].pageNameOrUrl');
@@ -289,6 +345,132 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain('"label": "label"');
     expect(transformed).toContain('"failurePaths":["data.items[]"');
     expect(transformed).toContain('data.items[].children[].label');
+  });
+
+  /** Preserves an imported helper Array contract for a direct nested query-field argument. */
+  it('propagates a directly forwarded query collection through an imported helper', () => {
+    const parentPath = '/workspace/FeedList.tsx';
+    const helperPath = '/workspace/filter-feeds.ts';
+    const typesPath = '/workspace/feed-types.ts';
+    const parentSource = [
+      `import { useQuery } from './use-query';`,
+      `import { filterFeeds } from './filter-feeds';`,
+      'export function FeedList() {',
+      '  const { data, loading } = useQuery();',
+      '  if (loading || !data) return null;',
+      '  const feeds = filterFeeds(data.companyFeeds, []);',
+      '  return <main>{feeds.length}</main>;',
+      '}',
+    ].join('\n');
+    const helperSource = [
+      `import type { Feed } from './feed-types';`,
+      'export function filterFeeds<T extends Feed>(feeds: readonly T[], selected: string[]): T[] {',
+      '  if (selected.length === 0) return [...feeds];',
+      '  return feeds.filter((feed) => feed.ir.round === selected[0]);',
+      '}',
+    ].join('\n');
+    const typesSource = [
+      `// ${'generated '.repeat(64 * 1024)}`,
+      'type FeedBase = {',
+      '  __typename: "ClosingFeed";',
+      '  id: string;',
+      '  company: { id: string; name: string };',
+      '  desiredInvestmentAmountCategory: string;',
+      '  desiredInvestmentAmount: string;',
+      '  totalCommittedInvestments: Array<{ investmentAmount: string }>;',
+      '};',
+      'export type Feed = FeedBase & {',
+      '  ir: { round: string };',
+      '};',
+    ].join('\n');
+    const sources = new Map([
+      [parentPath, parentSource],
+      [helperPath, helperSource],
+      [typesPath, typesSource],
+    ]);
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => sources.get(sourcePath),
+      resolveModule: (moduleSpecifier, consumerPath) => {
+        if (consumerPath === parentPath && moduleSpecifier === './filter-feeds') return helperPath;
+        if (consumerPath === helperPath && moduleSpecifier === './feed-types') return typesPath;
+        return undefined;
+      },
+      workspaceRoot: '/workspace',
+    });
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+        (typeNode) => builder.inferLocalTypeFallback(parentPath, parentSource, typeNode),
+        builder.inferImportedHelperArrayItemFallback.bind(builder, parentPath, parentSource),
+      ),
+    );
+
+    expect(transformed).toContain('"companyFeeds": ((__createPreviewItem)');
+    expect(transformed).toContain('"__typename": "ClosingFeed"');
+    expect(transformed).toContain(
+      '"company": Object.freeze({ "id": "preview-id", "name": "name" })',
+    );
+    expect(transformed).toContain('"desiredInvestmentAmountCategory": "min"');
+    expect(transformed).toContain('"desiredInvestmentAmount": "100000000"');
+    expect(transformed).toContain('"investmentAmount": "100000000"');
+    expect(transformed).toContain('data.companyFeeds[].ir.round');
+  });
+
+  /** Keeps an untyped helper's directly rendered collection item scalar across the import edge. */
+  it('propagates a rendered scalar collection through an imported helper', () => {
+    const parentPath = '/workspace/MeetingFormSteps.tsx';
+    const helperPath = '/workspace/create-agenda-steps.tsx';
+    const parentSource = [
+      `import { useMeetingFormContext } from './meeting-form-context';`,
+      `import { createAgendaSteps } from './create-agenda-steps';`,
+      'export function MeetingFormSteps() {',
+      '  const { formikProps } = useMeetingFormContext();',
+      '  return <>{createAgendaSteps({ formikProps })}</>;',
+      '}',
+    ].join('\n');
+    const helperSource = [
+      'export const createAgendaSteps = ({ formikProps }) => {',
+      '  return formikProps.values.agendaSelection.map((agenda) => (',
+      '    <section key={agenda}><strong>{agenda}</strong></section>',
+      '  ));',
+      '};',
+    ].join('\n');
+    const sources = new Map([
+      [parentPath, parentSource],
+      [helperPath, helperSource],
+    ]);
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => sources.get(sourcePath),
+      resolveModule: (moduleSpecifier, consumerPath) =>
+        consumerPath === parentPath && moduleSpecifier === './create-agenda-steps'
+          ? helperPath
+          : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource),
+        (typeNode) => builder.inferLocalTypeFallback(parentPath, parentSource, typeNode),
+        builder.inferImportedHelperArrayItemFallback.bind(builder, parentPath, parentSource),
+        builder.inferImportedHelperParameterPropertyFallback.bind(
+          builder,
+          parentPath,
+          parentSource,
+        ),
+      ),
+    );
+
+    expect(transformed).toContain('"agendaSelection": ((__createPreviewItem)');
+    expect(transformed).toContain('() => ("agenda")');
+    expect(transformed).toContain('formikProps.values.agendaSelection[]');
+    expect(transformed).not.toContain('Object.freeze({ id: "preview-id", name: "name" })');
   });
 
   /**

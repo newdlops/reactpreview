@@ -159,6 +159,8 @@ interface MutableShapeNode {
   exactValue?: true;
   /** Element contract for an Array node, retained only when its syntax is statically resolvable. */
   items?: MutableShapeNode;
+  /** Direct iterable destructuring proves that an otherwise scalar-typed Array needs one sample. */
+  itemConsumed?: true;
   kind: PreviewInferredPropKind;
   /** The callback item itself was emitted as React child content rather than only keyed. */
   renderedValue?: true;
@@ -1904,18 +1906,6 @@ function setArrayItemRequirement(
   path_: readonly string[],
   items: MutableShapeNode | undefined,
 ): void {
-  /*
-   * Object readers prove structured rows. A string/number root is equally strong only when the
-   * callback itself rendered that item as React child content; retaining it prevents the runtime
-   * Smart-fill layer from replacing a legitimate enum/text list with `{ id, name }` records.
-   */
-  if (
-    items === undefined ||
-    (items.kind !== 'object' &&
-      !(items.renderedValue === true && (items.kind === 'number' || items.kind === 'string')))
-  ) {
-    return;
-  }
   let node = state.root;
   for (const name of path_) {
     const next = node.children.get(name);
@@ -1923,6 +1913,21 @@ function setArrayItemRequirement(
     node = next;
   }
   if (node.kind !== 'array') return;
+  /*
+   * Object readers prove structured rows. A string/number root is equally strong only when the
+   * callback rendered it or direct iterable destructuring consumes a type-proven item. Retaining
+   * those cases prevents both invalid Smart-fill records and empty arrays that defeat `[first]`.
+   */
+  if (
+    items === undefined ||
+    (items.kind !== 'object' &&
+      !(
+        (items.renderedValue === true || (node.itemConsumed === true && items.source === 'type')) &&
+        (items.kind === 'number' || items.kind === 'string')
+      ))
+  ) {
+    return;
+  }
   if (node.items === undefined) node.items = items;
   else mergeMutableShapeRequirement(node.items, items);
 }
@@ -1931,6 +1936,7 @@ function setArrayItemRequirement(
 function mergeMutableShapeRequirement(target: MutableShapeNode, source: MutableShapeNode): void {
   mergeNodeKind(target, source.kind, source.source, source.value, source.exactValue);
   if (target.kind !== source.kind) return;
+  if (source.itemConsumed === true) target.itemConsumed = true;
   if (source.renderedValue === true) target.renderedValue = true;
   if (source.source === 'type') target.source = 'type';
   if (source.value !== undefined) target.value = source.value;
@@ -2602,8 +2608,25 @@ function inferFunctionBindingRequirement(
     sourceFile: parentState.sourceFile,
   };
   collectParameterBindings(binding, [bindingRoot], state.aliases);
+  const typedParameter = functionLike.parameters.find((parameter) => parameter.name === binding);
   collectLocalPropAliases(functionLike, state);
   collectUsageRequirements(functionLike, state);
+  if (
+    ts.isIdentifier(binding) &&
+    typedParameter?.type !== undefined &&
+    typedParameter.questionToken === undefined &&
+    typedParameter.initializer === undefined &&
+    typedParameter.dotDotDotToken === undefined
+  ) {
+    addTypeRequirement(
+      [bindingRoot],
+      typedParameter.type,
+      state.localTypes,
+      state,
+      state.sourceFile,
+      new Set(),
+    );
+  }
   collectRequiredPropertyReadTerminals(functionLike, state);
   collectEqualityDiscriminantRequirements(functionLike, state);
   collectSwitchDiscriminantRequirements(functionLike, state);
@@ -2747,6 +2770,16 @@ function addOperationRequirement(
   }
   if (isLogicalEmptyArrayFallback(node, parent)) {
     requirePath(state, path_, 'array', 'usage');
+    return;
+  }
+  if (
+    ts.isVariableDeclaration(parent) &&
+    parent.initializer === node &&
+    ts.isArrayBindingPattern(parent.name)
+  ) {
+    requirePath(state, path_, 'array', 'usage');
+    const arrayNode = readMutablePathNode(state, path_);
+    if (arrayNode?.kind === 'array') arrayNode.itemConsumed = true;
     return;
   }
   const logicalFallbackValue = readLogicalPrimitiveFallbackValue(node, parent);

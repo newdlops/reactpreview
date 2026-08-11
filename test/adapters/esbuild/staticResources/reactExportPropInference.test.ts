@@ -187,6 +187,77 @@ describe('collectReactExportPropInference', () => {
     });
   });
 
+  /** Array binding is direct iterable evidence even when the local helper has no usable type. */
+  it('infers an untyped prop collection destructured inside a local helper', () => {
+    const source = [
+      'const firstDocumentId = row => {',
+      '  const [documentId] = row.documentIds;',
+      '  return documentId;',
+      '};',
+      'export function DocumentModal({ modals }) {',
+      '  return <span>{firstDocumentId(modals.documentInfoTarget)}</span>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/DocumentModal.jsx', source);
+
+    expect(
+      result.DocumentModal?.shape.properties?.modals?.properties?.documentInfoTarget?.properties
+        ?.documentIds,
+    ).toEqual({ kind: 'array' });
+  });
+
+  /** A required helper parameter contract supplies exact nested collection and item shapes. */
+  it('carries typed local helper collection contracts back to the prop argument', () => {
+    const source = [
+      'import type { Row } from "./rows";',
+      'const toDocumentInfoFile = (row: Row | null) => {',
+      '  if (row == null) return null;',
+      '  const [documentId] = row.documentIds;',
+      '  return {',
+      '    documentId,',
+      '    fileName: row.files[0]?.name ?? "",',
+      '    investors: row.investors,',
+      '  };',
+      '};',
+      'export function DocumentModal({ modals }) {',
+      '  const file = toDocumentInfoFile(modals.documentInfoTarget);',
+      '  return file == null ? null : <span>{file.fileName}</span>;',
+      '}',
+    ].join('\n');
+
+    const result = collectReactExportPropInference('/workspace/DocumentModal.tsx', source, {
+      resolveImport: () => ({
+        sourcePath: '/workspace/rows.ts',
+        sourceText: [
+          'export type Row = {',
+          '  documentIds: number[];',
+          '  files: { name: string }[];',
+          '  investors: { stakeholderId: string; name: string }[];',
+          '};',
+        ].join('\n'),
+      }),
+    });
+    const target =
+      result.DocumentModal?.shape.properties?.modals?.properties?.documentInfoTarget?.properties;
+
+    expect(target?.documentIds).toEqual({ kind: 'array', items: { kind: 'number' } });
+    expect(target?.files).toEqual({
+      kind: 'array',
+      items: { kind: 'object', properties: { name: { kind: 'string' } } },
+    });
+    expect(target?.investors).toEqual({
+      kind: 'array',
+      items: {
+        kind: 'object',
+        properties: {
+          name: { kind: 'string' },
+          stakeholderId: { kind: 'string' },
+        },
+      },
+    });
+  });
+
   it('uses a literal sort-helper key as an item requirement', () => {
     const source = [
       `import { sortByNewest } from './utils';`,

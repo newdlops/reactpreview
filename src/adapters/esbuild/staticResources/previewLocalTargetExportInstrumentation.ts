@@ -50,6 +50,8 @@ export interface PreviewLocalTargetExportMetadata {
   readonly intentionalNavigationOutput?: true;
   readonly preparedSourceDigest: string;
   readonly sourcePath: string;
+  /** Exact compiler proof that this artifact intentionally mounts the target-owned slice. */
+  readonly targetOnlyExecution?: true;
 }
 
 /** One target-module rewrite plan supplied by the Page Inspector compiler. */
@@ -201,8 +203,11 @@ function collectSelectedPublicNamesByLocalName(
 
 /** Detects only an explicit value export modifier on the containing variable statement. */
 function hasExportModifier(node: ts.Node): boolean {
-  return ts.canHaveModifiers(node) &&
-    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+  return (
+    ts.canHaveModifiers(node) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ===
+      true
+  );
 }
 
 /** Chooses parser grammar from the actual module extension. */

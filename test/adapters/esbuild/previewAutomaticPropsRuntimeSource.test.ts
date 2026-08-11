@@ -131,6 +131,40 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     });
   });
 
+  /** Keeps a typed scalar collection iterable and non-empty for direct array destructuring. */
+  it('materializes samples for a consumed scalar array contract', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { documentIds: { kind: 'array', items: { kind: 'number' } } } };",
+        'const value = createPreviewPropsFromLayers(shape);',
+        'const [firstDocumentId] = value.documentIds;',
+        'globalThis.result = { firstDocumentId, isArray: Array.isArray(value.documentIds), length: value.documentIds.length };',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({ firstDocumentId: 0, isArray: true, length: 3 });
+  });
+
+  /** Keeps an already materialized list when later prop layers start without another shape. */
+  it('preserves generated list props through the final resolver and override merge', () => {
+    const context: { result?: Record<string, unknown> } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "const shape = { kind: 'object', properties: { rows: { kind: 'array', items: { kind: 'object', properties: { id: { kind: 'string', value: 'row' } } } } } };",
+        'const automatic = createPreviewTargetPropsFromLayers(shape, {});',
+        'const effective = createPreviewPropsFromLayers(undefined, automatic, {}, {});',
+        'globalThis.result = { ids: effective.rows.map((row) => row.id), length: effective.rows.length };',
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual({ ids: ['row', 'row-2', 'row-3'], length: 3 });
+  });
+
   /** Varies display identities without corrupting the GraphQL union discriminator. */
   it('keeps generated GraphQL typenames stable across repeated samples', () => {
     const context: { result?: unknown } = {};

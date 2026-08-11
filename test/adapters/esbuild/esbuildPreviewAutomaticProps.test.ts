@@ -4,10 +4,38 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EsbuildPreviewCompiler } from '../../../src/adapters/esbuild/esbuildPreviewCompiler';
+import { createPreviewTargetPropInferenceMemo } from '../../../src/adapters/esbuild/previewTargetPropInferenceMemo';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 describe('EsbuildPreviewCompiler automatic target props', () => {
+  it('reuses one exact prop-inference result within a compile attempt', () => {
+    let calls = 0;
+    const collect = createPreviewTargetPropInferenceMemo((sourcePath, sourceText) => {
+      calls += 1;
+      if (sourceText === 'throw') {
+        throw new Error('expected inference failure');
+      }
+      return { sourcePath, sourceText, calls };
+    });
+
+    expect(collect('/workspace/Target.tsx', 'source')).toEqual({
+      sourcePath: '/workspace/Target.tsx',
+      sourceText: 'source',
+      calls: 1,
+    });
+    expect(collect('/workspace/Target.tsx', 'source')).toEqual({
+      sourcePath: '/workspace/Target.tsx',
+      sourceText: 'source',
+      calls: 1,
+    });
+    expect(collect('/workspace/Other.tsx', 'source').calls).toBe(2);
+    expect(collect('/workspace/Other.tsx', 'changed').calls).toBe(3);
+    expect(() => collect('/workspace/Other.tsx', 'throw')).toThrow('expected inference failure');
+    expect(() => collect('/workspace/Other.tsx', 'throw')).toThrow('expected inference failure');
+    expect(calls).toBe(5);
+  });
+
   /** Carries inferred Formik-like receiver paths into the editable Inspector descriptor. */
   it('emits data-only object and function shapes for a direct target fallback', async () => {
     const projectRoot = await mkdtemp(

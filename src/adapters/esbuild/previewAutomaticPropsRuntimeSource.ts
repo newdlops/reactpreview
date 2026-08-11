@@ -257,6 +257,7 @@ function overlayPreviewAutomaticPropValue(
   repairNullishPlaceholder,
 ) {
   if (authoredValue === undefined) return inferredValue;
+  if (inferredValue === undefined) return authoredValue;
   const authoredIsGenerated = isPreviewAutomaticGeneratedValue(authoredValue);
   const repairGeneratedPlaceholder = repairNeutralPlaceholder === true || authoredIsGenerated;
   if (

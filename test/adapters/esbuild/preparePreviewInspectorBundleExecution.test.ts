@@ -77,6 +77,63 @@ describe('preparePreviewInspectorBundleExecution', () => {
     });
   });
 
+  it('reuses request-local immutable frontier work across serial candidates', async () => {
+    const targetPath = '/workspace/Target.tsx';
+    let clockMicros = 0n;
+    const bundleDiagnostics = createPreviewInspectorBundleDiagnosticsCollector(true, () => {
+      const now = clockMicros;
+      clockMicros += 1_000n;
+      return now;
+    });
+    if (bundleDiagnostics === undefined) throw new Error('Expected bundle diagnostics.');
+    const sharedSurface = {
+      bypassedWrapperNames: [],
+      exportName: 'Target',
+      id: 'target',
+      omittedTopLevelEffectCount: 0,
+      sourcePath: targetPath,
+      strategy: 'authentic-module-export',
+      watchSourcePaths: [targetPath],
+    } as const;
+    const result = await preparePreviewInspectorBundleExecution({
+      analysisCandidateCount: 2,
+      bundleDiagnostics,
+      corridorSourceCount: 1,
+      dependencySnapshotCount: 0,
+      discoveryTruncated: false,
+      executablePlan: {
+        edges: [],
+        pageCandidates: [],
+        root: { exportName: 'Target', sourcePath: targetPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as unknown as PreviewInspectorAncestorPlan,
+      executionCandidates: ['first', 'second'].map((id) => ({
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [],
+        criticalSurfaces: [sharedSurface],
+        evidenceSourcePaths: [],
+        fidelity: 'target-only',
+        id,
+        optionalSurfaces: [],
+        watchSourcePaths: [targetPath],
+      })) as never,
+      policy: createPreviewPreparationPolicy({ preparationMode: 'fast' }),
+      readSource: () => Promise.resolve('export const Target = null;'),
+      resolveModule: () => undefined,
+      styleSnapshotCount: 0,
+      workspaceRoot: '/workspace',
+    });
+
+    if (result === undefined) throw new Error('Expected an automatic frontier result.');
+    expect(result.executionCandidate?.id).toBe('first');
+    expect(result.activity.pageExecution).toMatchObject({ candidateId: 'first' });
+    expect(bundleDiagnostics.snapshot()).toMatchObject({
+      frontierCount: 2,
+      inventoryComputationCount: 1,
+      queueIterationCount: 1,
+    });
+  });
+
   it('reports candidate-unavailable when automatic Page Execution has no candidate', async () => {
     const targetPath = '/workspace/Target.tsx';
     let caught: unknown;

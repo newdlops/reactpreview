@@ -168,6 +168,7 @@ import { shouldEscalatePreviewAncestorSearch } from './previewWorkspaceAncestorP
 import { PreviewSourceTransformer } from './staticResources/previewSourceTransformer';
 import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './staticResources/previewRuntimeHookChildPropDemand';
 import { collectReactExportPropInference } from './staticResources/reactExportPropInference';
+import { createPreviewTargetPropInferenceMemo } from './previewTargetPropInferenceMemo';
 // prettier-ignore
 import { createWorkspaceSourcePlugin, type MutableWorkspaceSourceState, type WorkspaceSourceCompilationState } from './workspaceSourcePlugin';
 export type { EsbuildPreviewCompilerOptions } from './previewCompilerOptions';
@@ -598,21 +599,23 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         resolveModule: staticModuleResolver.resolve,
         workspaceRoot: canonicalWorkspaceRoot,
       });
-      const collectTargetInferredProps = (
-        sourcePath: string,
-        sourceText: string,
-      ): ReturnType<typeof collectReactExportPropInference> =>
-        collectReactExportPropInference(sourcePath, sourceText, {
-          childPropDemands: childPropDemandBuilder.collect(sourcePath, sourceText),
-          resolveImport: (moduleSpecifier, importerPath) => {
-            const resolvedPath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
-            const resolvedSourceText =
-              resolvedPath === undefined ? undefined : readPropInferenceSource(resolvedPath);
-            return resolvedPath === undefined || resolvedSourceText === undefined
-              ? undefined
-              : { sourcePath: resolvedPath, sourceText: resolvedSourceText };
-          },
-        });
+      const collectTargetInferredProps = createPreviewTargetPropInferenceMemo(
+        (
+          sourcePath: string,
+          sourceText: string,
+        ): ReturnType<typeof collectReactExportPropInference> =>
+          collectReactExportPropInference(sourcePath, sourceText, {
+            childPropDemands: childPropDemandBuilder.collect(sourcePath, sourceText),
+            resolveImport: (moduleSpecifier, importerPath) => {
+              const resolvedPath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
+              const resolvedSourceText =
+                resolvedPath === undefined ? undefined : readPropInferenceSource(resolvedPath);
+              return resolvedPath === undefined || resolvedSourceText === undefined
+                ? undefined
+                : { sourcePath: resolvedPath, sourceText: resolvedSourceText };
+            },
+          }),
+      );
       const inferredPropsByExport = collectTargetInferredProps(
         request.documentPath,
         request.sourceText,
@@ -1065,6 +1068,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                             : {}),
                           preparedSourceDigest: localTargetModuleContract.preparedSourceDigest,
                           sourcePath: localTargetModuleContract.sourcePath,
+                          ...(activePageExecutionCandidate?.fidelity === 'target-only'
+                            ? { targetOnlyExecution: true as const }
+                            : {}),
                         },
                       ];
                     }),
@@ -1191,6 +1197,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                       inferredPropsByExport: runtimeTargetInferredPropsByExport,
                       effectControllerExportNames: effectControllerTargetExportNames,
                       navigationOnlyExportNames: navigationOnlyTargetExportNames,
+                      targetOnlyExecution: activePageExecutionCandidate?.fidelity === 'target-only',
                       targetModuleContract:
                         targetModuleContract ??
                         createPreviewInspectorTargetModuleContract({

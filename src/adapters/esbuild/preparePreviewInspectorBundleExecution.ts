@@ -9,6 +9,7 @@ import type { PreviewInspectorBundleDiagnosticsCollector } from './inspector/pre
 import type { PreviewInspectorPageExecutionCandidate } from './inspector/previewInspectorPageExecutionTypes';
 import { preparePreviewInspectorPageExecutionSelection } from './inspector/previewInspectorPageFrontier';
 import {
+  createPreviewInspectorBundleSourceInventoryMemo,
   preparePreviewInspectorBundleFrontier,
   type PreviewInspectorBundleSourceInventoryMemo,
   type PreparedPreviewInspectorBundleFrontier,
@@ -68,10 +69,16 @@ export async function preparePreviewInspectorBundleExecution(
       activity,
     );
   }
-  const selectionResult =
-    options.executionCandidates === undefined
+  const ownedSourceInventoryMemo =
+    options.executionCandidates === undefined || options.sourceInventoryMemo !== undefined
       ? undefined
-      : await preparePreviewInspectorPageExecutionSelection({
+      : createPreviewInspectorBundleSourceInventoryMemo();
+  const sourceInventoryMemo = options.sourceInventoryMemo ?? ownedSourceInventoryMemo;
+  try {
+    const selectionResult =
+      options.executionCandidates === undefined
+        ? undefined
+        : await preparePreviewInspectorPageExecutionSelection({
           candidates: options.executionCandidates,
           ...(options.bundleDiagnostics === undefined
             ? {}
@@ -83,18 +90,18 @@ export async function preparePreviewInspectorBundleExecution(
           policy: options.policy.frontierPolicy,
           readSource: options.readSource,
           resolveModule: options.resolveModule,
-          ...(options.sourceInventoryMemo === undefined
+          ...(sourceInventoryMemo === undefined
             ? {}
-            : { sourceInventoryMemo: options.sourceInventoryMemo }),
+            : { sourceInventoryMemo }),
           workspaceRoot: options.workspaceRoot,
         });
-  const selection = selectionResult?.kind === 'selected' ? selectionResult : undefined;
-  const rejectedSelection = selectionResult?.kind === 'rejected' ? selectionResult : undefined;
-  const pageExecutionCandidate =
-    selection === undefined ? rejectedSelection?.candidate : selection.executionPlan.candidate;
-  const prepared =
-    selectionResult?.prepared ??
-    (await preparePreviewInspectorBundleFrontier({
+    const selection = selectionResult?.kind === 'selected' ? selectionResult : undefined;
+    const rejectedSelection = selectionResult?.kind === 'rejected' ? selectionResult : undefined;
+    const pageExecutionCandidate =
+      selection === undefined ? rejectedSelection?.candidate : selection.executionPlan.candidate;
+    const prepared =
+      selectionResult?.prepared ??
+      (await preparePreviewInspectorBundleFrontier({
       ...(options.runtimeCompanionSourcePaths === undefined
         ? {}
         : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
@@ -105,13 +112,13 @@ export async function preparePreviewInspectorBundleExecution(
         : { bundleDiagnostics: options.bundleDiagnostics }),
       readSource: options.readSource,
       resolveModule: options.resolveModule,
-      ...(options.sourceInventoryMemo === undefined
+      ...(sourceInventoryMemo === undefined
         ? {}
-        : { sourceInventoryMemo: options.sourceInventoryMemo }),
+        : { sourceInventoryMemo }),
       workspaceRoot: options.workspaceRoot,
-    }));
-  const summary = prepared.frontier.summary;
-  const activity: PreviewCompilerBundleFrontierActivity = {
+      }));
+    const summary = prepared.frontier.summary;
+    const activity: PreviewCompilerBundleFrontierActivity = {
     analysisCandidateCount: options.analysisCandidateCount,
     authoredEdgeCount: summary.authoredEdgeCount,
     corridorSourceCount: options.corridorSourceCount,
@@ -146,7 +153,7 @@ export async function preparePreviewInspectorBundleExecution(
           },
         }),
   };
-  return {
+    return {
     activity,
     ...(selection === undefined ? {} : { executionCandidate: selection.executionPlan.candidate }),
     prepared,
@@ -160,5 +167,8 @@ export async function preparePreviewInspectorBundleExecution(
           activity,
         );
     },
-  };
+    };
+  } finally {
+    ownedSourceInventoryMemo?.release();
+  }
 }

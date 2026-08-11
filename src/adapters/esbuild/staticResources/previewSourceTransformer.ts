@@ -41,7 +41,10 @@ import { collectPreviewImplicitPackageGlobals } from './previewImplicitPackageGl
 import { instrumentPreviewDataRequests } from './previewDataRequestInstrumentation';
 import { createPreviewRuntimeHookReplacements } from './previewRuntimeHookInstrumentation';
 import { PreviewRuntimeHookChildPropDemandCatalogBuilder } from './previewRuntimeHookChildPropDemand';
-import { createPreviewGraphqlRenderPropUsageReplacements } from './previewGraphqlRenderPropUsageInstrumentation';
+import {
+  createPreviewGraphqlRenderPropUsageReplacements,
+  mayContainPreviewGraphqlRenderPropUsage,
+} from './previewGraphqlRenderPropUsageInstrumentation';
 import * as framework from './previewFrameworkReplacements';
 import { instrumentPreviewRuntimeSource } from './previewRuntimeSourceInstrumentation';
 import { instrumentPreviewLocalTargetExportBindings } from './previewLocalTargetExportInstrumentation';
@@ -319,7 +322,10 @@ export class PreviewSourceTransformer {
           ...createPreviewReactDomPortalContainerReplacements(analysis.getSourceFile(), sourceText),
         );
       }
-      if (this.options.instrumentRuntimeHookFallbacks === true && sourceText.includes('query=')) {
+      if (
+        this.options.instrumentRuntimeHookFallbacks === true &&
+        mayContainPreviewGraphqlRenderPropUsage(sourceText)
+      ) {
         replacements.push(
           ...createPreviewGraphqlRenderPropUsageReplacements(
             sourcePath,

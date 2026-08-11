@@ -15,13 +15,18 @@ const PREVIEW_INSPECTOR_HOOK_GRAPHQL_SOURCE_LIMIT = 1_000_000;
 const previewInspectorHookGraphqlDocumentIdentities = new WeakMap();
 const previewInspectorHookGraphqlRenderPropUsages = new WeakMap();
 const previewInspectorHookGraphqlRenderPropLiteralDemands = new WeakMap();
+const previewInspectorHookGraphqlFixedRendererDocuments = new WeakMap();
 
 /** Registers compiler-proven render-prop demand and returns the same DocumentNode identity. */
 function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawLiteralDemands) {
   if ((typeof document !== 'object' && typeof document !== 'function') || document === null ||
     !Array.isArray(rawPaths)) return document;
-  const paths = [...new Set(rawPaths.filter((path) => typeof path === 'string' &&
-    /^data(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\.\[\]){1,12}$/u.test(path)))].sort().slice(0, 32);
+  const paths = [...new Set(rawPaths.flatMap((path) => {
+    const expanded = typeof path === 'string'
+      ? expandPreviewInspectorGraphqlConnectionRelativePath(document, path)
+      : undefined;
+    return expanded === undefined ? [] : [expanded];
+  }))].sort().slice(0, 32);
   if (paths.length === 0) return document;
   const previous = previewInspectorHookGraphqlRenderPropUsages.get(document);
   const merged = [...new Set([...(previous ?? []), ...paths])].sort().slice(0, 32);
@@ -30,7 +35,9 @@ function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawL
   const literalDemands = new Map(previousLiteralDemands.map((demand) => [demand.path, demand]));
   if (Array.isArray(rawLiteralDemands)) {
     for (const rawDemand of rawLiteralDemands.slice(0, 32)) {
-      const demand = normalizePreviewInspectorGraphqlRenderPropLiteralDemand(rawDemand);
+      const demand = normalizePreviewInspectorGraphqlRenderPropLiteralDemand(
+        expandPreviewInspectorGraphqlLiteralDemand(document, rawDemand),
+      );
       if (
         demand !== undefined &&
         !literalDemands.has(demand.path) &&
@@ -46,6 +53,70 @@ function registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawL
     Object.freeze([...literalDemands.values()].sort((left, right) => left.path.localeCompare(right.path))),
   );
   return document;
+}
+
+/** Associates one fixed-query renderer tuple with the exact DocumentNode captured by its factory. */
+function registerPreviewInspectorGraphqlFixedRenderer(factoryResult, document) {
+  if (!Array.isArray(factoryResult)) return factoryResult;
+  const renderer = readPreviewInspectorHookGraphqlOwnValue(factoryResult, '0');
+  if (
+    (typeof renderer !== 'object' && typeof renderer !== 'function') ||
+    renderer === null ||
+    (typeof document !== 'object' && typeof document !== 'function') ||
+    document === null
+  ) {
+    return factoryResult;
+  }
+  previewInspectorHookGraphqlFixedRendererDocuments.set(renderer, document);
+  return factoryResult;
+}
+
+/** Registers one consumer callback's static collection demand without replacing that callback. */
+function registerPreviewInspectorGraphqlFixedRendererUsage(renderer, rawPaths, rawLiteralDemands) {
+  if ((typeof renderer !== 'object' && typeof renderer !== 'function') || renderer === null) {
+    return renderer;
+  }
+  const document = previewInspectorHookGraphqlFixedRendererDocuments.get(renderer);
+  if (document !== undefined) {
+    registerPreviewInspectorGraphqlRenderPropUsage(document, rawPaths, rawLiteralDemands);
+  }
+  return renderer;
+}
+
+/** Expands a compiler-tagged connection path only for one unambiguous selected response root. */
+function expandPreviewInspectorGraphqlConnectionRelativePath(document, path) {
+  if (/^data(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\.\[\]){1,12}$/u.test(path)) return path;
+  if (!/^@connection\.objectList\.\[\](?:\.[A-Za-z_$][A-Za-z0-9_$]*){0,10}$/u.test(path)) {
+    return undefined;
+  }
+  try {
+    const operations = Array.isArray(document?.definitions)
+      ? document.definitions.filter((definition) => definition?.kind === 'OperationDefinition')
+      : [];
+    if (operations.length !== 1) return undefined;
+    const selections = operations[0]?.selectionSet?.selections;
+    if (!Array.isArray(selections) || selections.length !== 1 || selections[0]?.kind !== 'Field') {
+      return undefined;
+    }
+    const root = selections[0];
+    const childSelections = root?.selectionSet?.selections;
+    if (!Array.isArray(childSelections) || !childSelections.some(
+      (selection) => selection?.kind === 'Field' && selection?.name?.value === 'objectList',
+    )) return undefined;
+    const responseName = typeof root?.alias?.value === 'string'
+      ? root.alias.value
+      : typeof root?.name?.value === 'string' ? root.name.value : undefined;
+    return responseName === undefined ? undefined : 'data.' + responseName + '.' + path.slice('@connection.'.length);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Expands the path of one literal demand before its ordinary strict validation. */
+function expandPreviewInspectorGraphqlLiteralDemand(document, rawDemand) {
+  if (rawDemand === null || typeof rawDemand !== 'object') return rawDemand;
+  const path = expandPreviewInspectorGraphqlConnectionRelativePath(document, rawDemand.path);
+  return path === undefined ? rawDemand : { ...rawDemand, path };
 }
 
 /** Validates one compiler literal demand without admitting project expressions or unsafe paths. */

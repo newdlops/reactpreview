@@ -9,6 +9,7 @@ import { canonicalizeExistingPath } from '../../../shared/pathIdentity';
 import { matchesPreviewParentSliceTargetImport } from '../parentSlice/previewParentSliceImports';
 import { PREVIEW_INSPECTOR_TARGET_NAMESPACE } from '../previewPluginProtocol';
 import type { PreviewInferredPropsByExport } from '../staticResources/reactExportPropInference';
+import { readPreviewInspectorPageSurfaceImporterPath } from './previewInspectorPageExecutionPlugin';
 import type { PreviewInspectorTargetModuleContract } from './previewInspectorTargetModuleContract';
 
 const INSPECTOR_TARGET_FACADE_PATH = 'selected-target-facade';
@@ -41,6 +42,8 @@ export interface PreviewInspectorTargetMetadata {
   readonly intentionalNavigationOutput?: true;
   readonly preparedSourceDigest: string;
   readonly sourcePath: string;
+  /** Exact compiler proof that this artifact intentionally mounts the target-owned slice. */
+  readonly targetOnlyExecution?: true;
 }
 
 /** Inputs for exact target import interception in one Page Inspector build. */
@@ -57,6 +60,16 @@ export interface PreviewInspectorTargetPluginOptions {
   readonly runtimeSpecifier?: string;
   /** Prepared-source export evidence shared with PageExecution and facade generation. */
   readonly targetModuleContract: PreviewInspectorTargetModuleContract;
+  /** Enables inferred first-render props only for the compiler's target-owned execution slice. */
+  readonly targetOnlyExecution?: boolean;
+}
+
+/** Maps a frozen Page Execution surface back to the authored module that owns its imports. */
+function readPreviewInspectorTargetImporterPath(arguments_: OnResolveArgs): string | undefined {
+  if (arguments_.importer.length > 0 && path.isAbsolute(arguments_.importer)) {
+    return arguments_.importer;
+  }
+  return readPreviewInspectorPageSurfaceImporterPath(arguments_.pluginData);
 }
 
 /**
@@ -119,13 +132,13 @@ export function createPreviewInspectorTargetPlugin(
         path: INSPECTOR_DIRECT_TARGET_PATH_PREFIX + encodeURIComponent(exportName),
       };
     }
+    const authoredImporterPath = readPreviewInspectorTargetImporterPath(arguments_);
     if (
-      arguments_.importer.length === 0 ||
-      !path.isAbsolute(arguments_.importer) ||
-      (arguments_.namespace === 'file' && path.normalize(arguments_.importer) === targetPath) ||
+      authoredImporterPath === undefined ||
+      path.normalize(authoredImporterPath) === targetPath ||
       !matchesPreviewParentSliceTargetImport(
         arguments_.path,
-        arguments_.importer,
+        authoredImporterPath,
         targetPath,
         acceptedSpecifiers,
       )
@@ -149,6 +162,9 @@ export function createPreviewInspectorTargetPlugin(
         runtimeSpecifier,
         navigationOnlyExportNames: [...navigationOnlyExportNames],
         targetModuleContract: options.targetModuleContract,
+        ...(options.targetOnlyExecution === undefined
+          ? {}
+          : { targetOnlyExecution: options.targetOnlyExecution }),
       }),
       loader: 'js',
       resolveDir: path.dirname(targetPath),
@@ -187,20 +203,23 @@ export function createPreviewInspectorTargetPlugin(
        * avoids performing the same default resolution twice during this Inspector-only build.
        */
       build.onResolve({ filter: /.*/ }, async (arguments_) => {
+        const authoredImporterPath = readPreviewInspectorTargetImporterPath(arguments_);
         if (
-          arguments_.importer.length === 0 ||
-          !path.isAbsolute(arguments_.importer) ||
+          authoredImporterPath === undefined ||
           hasInspectorResolutionGuard(arguments_.pluginData) ||
           !mayResolveToInspectorTarget(arguments_.path, targetModuleStem)
         ) {
           return undefined;
         }
+        const virtualPageSurface = authoredImporterPath !== arguments_.importer;
         const resolution = await build.resolve(arguments_.path, {
-          importer: arguments_.importer,
+          importer: authoredImporterPath,
           kind: arguments_.kind,
-          namespace: arguments_.namespace,
+          namespace: virtualPageSurface ? 'file' : arguments_.namespace,
           pluginData: addInspectorResolutionGuard(arguments_.pluginData),
-          resolveDir: arguments_.resolveDir,
+          resolveDir: virtualPageSurface
+            ? path.dirname(authoredImporterPath)
+            : arguments_.resolveDir,
           with: arguments_.with,
         });
         if (
@@ -275,6 +294,7 @@ export interface PreviewInspectorTargetFacadeSourceOptions {
   readonly navigationOnlyExportNames?: readonly string[];
   readonly runtimeSpecifier?: string;
   readonly targetModuleContract: PreviewInspectorTargetModuleContract;
+  readonly targetOnlyExecution?: boolean;
 }
 
 /**
@@ -332,13 +352,13 @@ export function createPreviewInspectorTargetFacadeSource(
 
   for (const [index, exportName] of namedExports.entries()) {
     lines.push(
-      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName], navigationOnlyExportNames.has(exportName), effectControllerExportNames.has(exportName))});`,
+      `const __reactPreviewSelected${index.toString()} = /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalSelected${index.toString()}, ${serializeMetadata(options.targetModuleContract, exportName, options.inferredPropsByExport?.[exportName], navigationOnlyExportNames.has(exportName), effectControllerExportNames.has(exportName), options.targetOnlyExecution === true)});`,
       `export { __reactPreviewSelected${index.toString()} as ${exportName} };`,
     );
   }
   if (selectedDefault) {
     lines.push(
-      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default, navigationOnlyExportNames.has('default'), effectControllerExportNames.has('default'))});`,
+      `export default /* @__PURE__ */ __reactPreviewWrap(__reactPreviewOriginalDefault, ${serializeMetadata(options.targetModuleContract, 'default', options.inferredPropsByExport?.default, navigationOnlyExportNames.has('default'), effectControllerExportNames.has('default'), options.targetOnlyExecution === true)});`,
     );
   } else if (options.targetModuleContract.hasDefaultExport) {
     lines.push('export { __reactPreviewOriginalDefault as default };');
@@ -353,6 +373,7 @@ function serializeMetadata(
   inference: PreviewInferredPropsByExport[string] | undefined,
   navigationOnlyOutput: boolean,
   effectControllerOutputCandidate: boolean,
+  targetOnlyExecution: boolean,
 ): string {
   return JSON.stringify({
     compilerExportEvidence: true,
@@ -360,6 +381,7 @@ function serializeMetadata(
     facadeResolutionEvidence: true,
     ...(effectControllerOutputCandidate ? { effectControllerOutputCandidate: true } : {}),
     ...(navigationOnlyOutput ? { intentionalNavigationOutput: true } : {}),
+    ...(targetOnlyExecution ? { targetOnlyExecution: true } : {}),
     ...(inference === undefined
       ? {}
       : { inferredPropShape: inference.shape, inferredProps: inference.provenance }),

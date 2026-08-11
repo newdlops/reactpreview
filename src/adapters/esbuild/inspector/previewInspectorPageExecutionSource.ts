@@ -120,6 +120,8 @@ export function createPreviewInspectorPageExecutionSource(
     options.targetModuleContract?.transparentOrdinaryChildrenOutputExportNames.includes(
       options.target.exportName,
     ) === true;
+  const contextualTargetSupportsDeferredSibling =
+    contextualTargetEdge !== undefined && options.targetModuleContract !== undefined;
   const contextualTargetReachabilityKey = `${options.candidate.browserCandidate.id}:${options.target.exportName}`;
   const contextualTargetFallbackCapabilityRevision = JSON.stringify({
     mountedTransparentChildren: contextualTargetSupportsMountedTransparentChildren,
@@ -207,8 +209,7 @@ export function createPreviewInspectorPageExecutionSource(
             .filter((local): local is string => local !== undefined),
         });
   const virtualPageOwnerFrame =
-    routerRuntime !== undefined &&
-    virtualPageOwnerSurfaceId !== undefined
+    routerRuntime !== undefined && virtualPageOwnerSurfaceId !== undefined
       ? [
           `function ${virtualPageOwnerFrameLocal}() {`,
           `  return ${detachedOverlayPage ?? renderedRoot};`,
@@ -218,9 +219,7 @@ export function createPreviewInspectorPageExecutionSource(
   const routeStatePrelude = shouldInstallPreviewInspectorPageRouteStatePrelude(routeRecipe);
   const routeElement = routerRuntime !== undefined ? routerRuntime.routeElement : renderedRoot;
   const contextualTargetFallbackSource =
-    contextualTargetLocal === undefined ||
-    contextualTargetEdge === undefined ||
-    !contextualTargetSupportsMountedTransparentChildren
+    contextualTargetLocal === undefined || !contextualTargetSupportsDeferredSibling
       ? []
       : [
           `const ${contextualTargetFallback}ReachabilityKey = ${JSON.stringify(contextualTargetReachabilityKey)};`,
@@ -251,16 +250,18 @@ export function createPreviewInspectorPageExecutionSource(
           "      if (typeof registration === 'function') registration();",
           '    };',
           '  }, [inspectorSession, contextualOwner]);',
-          `  const targetElement = inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current, children) ?? null;`,
+          `  const targetElement = inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current${contextualTargetSupportsMountedTransparentChildren ? ', children' : ''}) ?? null;`,
           `  return inspectorSession?.shouldRenderContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, contextualOwner) === true`,
           `    ? ${contextualTargetWrapperLocal === undefined ? 'targetElement' : `React.createElement(${contextualTargetWrapperLocal}, { open: true }, targetElement)`}`,
-          '    : children;',
+          `    : ${contextualTargetSupportsMountedTransparentChildren ? 'children' : 'null'};`,
           '}',
         ];
   const contextualRouteElement =
     contextualTargetFallbackSource.length === 0
       ? routeElement
-      : `React.createElement(${contextualTargetFallback}, null, ${routeElement})`;
+      : contextualTargetSupportsMountedTransparentChildren
+        ? `React.createElement(${contextualTargetFallback}, null, ${routeElement})`
+        : `React.createElement(React.Fragment, null, ${routeElement}, React.createElement(${contextualTargetFallback}, null))`;
   const virtualPageSourceRegistrations = createVirtualPageSourceRegistrations(
     options.candidate.optionalSurfaces,
   );

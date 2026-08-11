@@ -128,6 +128,65 @@ describe('createPreviewInspectorPageExecutionSource', () => {
     ).toThrow('does not match the prepared target module contract');
   });
 
+  it('retains an authored page while mounting a compiler-proven inactive descendant as a sibling', () => {
+    const candidate = {
+      browserCandidate: { id: 'inactive-descendant' },
+      compositionEdges: [
+        {
+          childSurfaceId: 'target',
+          mode: 'contains-authored-child',
+          parentSurfaceId: 'page',
+          placementIndex: 0,
+        },
+      ],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'Page',
+          id: 'page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/Page.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'TargetTable',
+          id: 'target',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/TargetTable.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      executionRootSurfaceId: 'page',
+      runtimeTargetSurfaceId: 'target',
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
+      target: { exportName: 'TargetTable', sourcePath: '/workspace/TargetTable.tsx' },
+      targetModuleContract: createPreviewInspectorTargetModuleContract({
+        preparedSourceText: 'export function TargetTable() { return <table><tbody /></table>; }',
+        selectedExportNames: ['TargetTable'],
+        sourcePath: '/workspace/TargetTable.tsx',
+      }),
+    });
+
+    expect(source).toContain('function PreviewInspectorContextualTargetFallback({ children })');
+    expect(source).toContain(
+      'const PreviewInspectorContextualTargetFallbackCapability = Object.freeze({"mountedTransparentChildren":false,"retainedRoutePage":false});',
+    );
+    expect(source).toContain(
+      'createContextualTargetElement?.(Surface1, {"exportName":"TargetTable","sourcePath":"/workspace/TargetTable.tsx"}, contextualRoleToken.current)',
+    );
+    expect(source).toContain('    : null;');
+    expect(source).toContain(
+      'React.createElement(React.Fragment, null, React.createElement(PreviewInspectorExecutionRootBridge, null), React.createElement(PreviewInspectorContextualTargetFallback, null))',
+    );
+  });
+
   it('installs a generic selected route without importing a route registry or executing loaders', () => {
     const candidate = {
       browserCandidate: { id: 'selected' },
@@ -563,7 +622,10 @@ describe('createPreviewInspectorPageExecutionSource', () => {
   });
 });
 
-function createExecutionRootContract(candidate: PreviewInspectorPageExecutionCandidate) {
+/** Creates the exact prepared execution-root contract required by one source fixture. */
+function createExecutionRootContract(
+  candidate: PreviewInspectorPageExecutionCandidate,
+): ReturnType<typeof createPreviewInspectorExecutionRootModuleContract> {
   const surface = candidate.criticalSurfaces.find(
     (candidateSurface) => candidateSurface.id === candidate.executionRootSurfaceId,
   );

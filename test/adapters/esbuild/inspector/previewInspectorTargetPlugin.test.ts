@@ -3,6 +3,8 @@ import vm from 'node:vm';
 import { build, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
+  createPreviewInspectorPageExecutionPlugin,
+  createPreviewInspectorPageSurfaceSpecifier,
   createPreviewInspectorTargetFacadeSource,
   createPreviewInspectorTargetModuleContract,
   createPreviewInspectorTargetPlugin,
@@ -23,6 +25,7 @@ describe('createPreviewInspectorTargetFacadeSource', () => {
         },
       },
       navigationOnlyExportNames: ['default'],
+      targetOnlyExecution: true,
       runtimeSpecifier: RUNTIME_SPECIFIER,
       targetModuleContract: createPreviewInspectorTargetModuleContract({
         preparedSourceText: [
@@ -43,6 +46,7 @@ describe('createPreviewInspectorTargetFacadeSource', () => {
     expect(source).toContain('"compilerExportEvidence":true');
     expect(source).toContain('"facadeResolutionEvidence":true');
     expect(source).toContain('"intentionalNavigationOutput":true');
+    expect(source).toContain('"targetOnlyExecution":true');
     expect(source).toContain('"inferredPropShape":{"kind":"object"');
     expect(source).toContain('"inferredProps":[{"kind":"object","path":"field"');
   });
@@ -261,5 +265,67 @@ describe('createPreviewInspectorTargetPlugin', () => {
         untouched: 'original',
       },
     });
+  });
+
+  /** Resolves target imports from a frozen Page Execution slice using its authored importer. */
+  it('wraps a target imported by a virtual page surface', async () => {
+    const surfaceId = 'parent-surface';
+    const sources = new Map<string, string>([
+      [
+        PARENT_PATH,
+        ["import { Target } from '@design/Target';", 'export const Parent = Target;'].join('\n'),
+      ],
+      [TARGET_PATH, 'export const Target = () => "target";'],
+    ]);
+    const virtualFilesPlugin: Plugin = {
+      name: 'inspector-page-surface-target-files',
+      setup(context): void {
+        context.onResolve({ filter: /^@design\/Target$/ }, () => ({ path: TARGET_PATH }));
+        context.onResolve({ filter: /^virtual:inspector-runtime$/ }, () => ({
+          namespace: 'inspector-test-runtime',
+          path: RUNTIME_SPECIFIER,
+        }));
+        context.onLoad({ filter: /.*/, namespace: 'inspector-test-runtime' }, () => ({
+          contents:
+            'export function wrapPreviewInspectorTarget(value, metadata) { value.metadata = metadata; return value; }',
+          loader: 'js',
+        }));
+        context.onLoad({ filter: /\/workspace\/application\/.+\.tsx$/ }, (arguments_) => ({
+          contents: sources.get(arguments_.path) ?? '',
+          loader: 'tsx',
+          resolveDir: '/workspace/application',
+        }));
+      },
+    };
+    const result = await build({
+      bundle: true,
+      entryPoints: [createPreviewInspectorPageSurfaceSpecifier(surfaceId)],
+      format: 'cjs',
+      platform: 'node',
+      plugins: [
+        createPreviewInspectorTargetPlugin({
+          runtimeSpecifier: RUNTIME_SPECIFIER,
+          targetModuleContract: createPreviewInspectorTargetModuleContract({
+            preparedSourceText: sources.get(TARGET_PATH) ?? '',
+            selectedExportNames: ['Target'],
+            sourcePath: TARGET_PATH,
+          }),
+        }),
+        createPreviewInspectorPageExecutionPlugin({
+          readSource: (sourcePath) => sources.get(sourcePath),
+          surfaces: [{ exportName: 'Parent', id: surfaceId, sourcePath: PARENT_PATH }],
+        }),
+        virtualFilesPlugin,
+      ],
+      write: false,
+    });
+    const output = result.outputFiles[0]?.text;
+    if (output === undefined) throw new Error('Virtual page target facade bundle was not emitted.');
+    const moduleRecord: { exports: { Parent?: { metadata?: { exportName?: string } } } } = {
+      exports: {},
+    };
+    vm.runInNewContext(output, { exports: moduleRecord.exports, module: moduleRecord });
+
+    expect(moduleRecord.exports.Parent?.metadata?.exportName).toBe('Target');
   });
 });

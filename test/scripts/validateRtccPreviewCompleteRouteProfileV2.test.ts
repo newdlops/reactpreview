@@ -48,7 +48,7 @@ interface SubprocessResult {
 const validatorModulePath = '../../scripts/validate-rtcc-preview-complete-route-profile-v2.mjs';
 const validator = (await import(validatorModulePath)) as unknown as ValidatorModule;
 const repositoryRoot = path.resolve('.');
-const nodePath = '/Users/lky/.nvm/versions/node/v22.22.2/bin/node';
+const nodePath = process.execPath;
 const scriptPath = path.join(
   repositoryRoot,
   'scripts/validate-rtcc-preview-complete-route-profile-v2.mjs',

@@ -143,13 +143,18 @@ export function environmentIsExact(environment = process.env) {
   );
 }
 
-/** Applies the same exact runtime gate to every parent and worker mode. */
+/** Applies the frozen official runtime gate to official parent and worker modes. */
 export function runtimeIsExact(environment = process.env) {
   return (
     process.cwd() === REPOSITORY_ROOT &&
     process.execPath === NODE_PATH &&
     environmentIsExact(environment)
   );
+}
+
+/** Applies the portable runtime gate to non-official probe parent and worker modes. */
+function gateRuntimeIsExact(environment = process.env) {
+  return process.cwd() === REPOSITORY_ROOT && environmentIsExact(environment);
 }
 
 /** Returns the only valid retained account of the terminal v5.5.24 validator failure. */
@@ -464,7 +469,7 @@ function collectChild(child) {
 async function runGateWorker(simulateInheritanceDrift = false) {
   process.stdout.write(GATE_WORKER_MARKER);
   if (simulateInheritanceDrift) process.env.__CF_USER_TEXT_ENCODING = 'worker-drift';
-  if (!runtimeIsExact()) {
+  if (!gateRuntimeIsExact()) {
     process.stderr.write('Invalid validator v2 gate worker environment.\n');
     process.exitCode = 64;
     return;
@@ -477,7 +482,7 @@ export async function runGateProbeForTest() {
 }
 
 async function runGateParent(simulateWorkerDrift) {
-  if (!runtimeIsExact()) {
+  if (!gateRuntimeIsExact()) {
     process.stderr.write('Invalid validator v2 gate parent environment.\n');
     process.exitCode = 64;
     return;

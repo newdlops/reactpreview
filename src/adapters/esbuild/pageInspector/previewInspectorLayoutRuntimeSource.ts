@@ -284,7 +284,7 @@ const previewInspectorDevtoolsCss = [
   '.rpi-card-height-handle:hover::after,.rpi-card-height-handle:focus-visible::after,',
   '.rpi-section-height-handle:hover::after,.rpi-section-height-handle:focus-visible::after,',
   '.rpi-shell-section-height-handle:hover::after,.rpi-shell-section-height-handle:focus-visible::after{background:var(--vscode-focusBorder,#007fd4);opacity:1}',
-  '.rpi-console{grid-template-rows:auto auto minmax(0,1fr);height:100%}',
+  '.rpi-console{grid-template-rows:auto auto auto minmax(0,1fr);height:100%}',
   '.rpi-console-controls{display:grid;gap:6px;grid-template-columns:auto minmax(0,1fr) auto;max-width:100%;min-width:0}',
   '.rpi-console-list{border:1px solid var(--rpi-border);border-radius:3px;min-height:0;overflow:auto}',
   '.rpi-console-entry{border-left:3px solid var(--rpi-muted);display:grid;gap:4px;padding:7px 8px}',

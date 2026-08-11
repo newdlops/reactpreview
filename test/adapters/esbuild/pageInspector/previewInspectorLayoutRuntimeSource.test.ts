@@ -94,6 +94,18 @@ describe('Preview Inspector layout runtime source', () => {
     expect(source).toContain('.rpi-scenario-scroll{min-height:0;min-width:0;overflow:auto');
   });
 
+  /** Reserves intrinsic space for both Console notes before the independently scrolling log list. */
+  it('keeps Console guidance from covering the first log entry', () => {
+    const source = createPreviewInspectorLayoutRuntimeSource();
+
+    expect(source).toContain(
+      '.rpi-console{grid-template-rows:auto auto auto minmax(0,1fr);height:100%}',
+    );
+    expect(source).toContain(
+      '.rpi-console-list{border:1px solid var(--rpi-border);border-radius:3px;min-height:0;overflow:auto}',
+    );
+  });
+
   /** Removes every graph/setup stylesheet while preserving owner-local blocker detail styling. */
   it('omits retired graph, setup navigation, and simple resolver CSS', () => {
     const source = createPreviewInspectorLayoutRuntimeSource();

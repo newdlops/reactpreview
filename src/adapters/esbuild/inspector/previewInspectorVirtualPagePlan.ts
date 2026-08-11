@@ -10,6 +10,7 @@
  * This module is deliberately data-only. It does not read source files, resolve modules, or emit
  * JavaScript, so candidate selection remains deterministic and independently testable.
  */
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { PreviewInspectorPageCandidate } from './previewInspectorAncestorTypes';
 import type { PreviewInspectorRouteLocation } from './previewInspectorRouteLocationTypes';
@@ -103,7 +104,12 @@ export function createPreviewInspectorVirtualPageCandidates(
   shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[] = [],
 ): readonly PreviewInspectorVirtualPageCandidate[] {
   const boundedMaximum = Math.max(1, Math.floor(maximumCount));
-  const virtualPages: PreviewInspectorVirtualPageCandidate[] = [];
+  const emissions: {
+    readonly authoredCandidate: PreviewInspectorPageCandidate;
+    readonly contentCandidate: PreviewInspectorPageCandidate;
+    readonly emittedKey: string;
+    readonly recipe: PreviewInspectorVirtualPageRecipe;
+  }[] = [];
   const emittedKeys = new Set<string>();
 
   for (const authoredCandidate of candidates) {
@@ -120,18 +126,58 @@ export function createPreviewInspectorVirtualPageCandidates(
     const emittedKey = createVirtualPageEmissionKey(authoredCandidate, contentCandidate);
     if (emittedKeys.has(emittedKey)) continue;
     emittedKeys.add(emittedKey);
-    virtualPages.push(
-      Object.freeze({
-        authoredCandidate,
-        browserCandidate: createBrowserCandidate(authoredCandidate, contentCandidate),
-        contentCandidate,
-        recipe,
-      }),
-    );
-    if (virtualPages.length >= boundedMaximum) break;
+    emissions.push({ authoredCandidate, contentCandidate, emittedKey, recipe });
   }
 
-  return Object.freeze(virtualPages);
+  const browserIdsByEmissionKey = createBrowserCandidateIds(emissions);
+  return Object.freeze(
+    emissions.slice(0, boundedMaximum).map((emission) =>
+      Object.freeze({
+        authoredCandidate: emission.authoredCandidate,
+        browserCandidate: createBrowserCandidate(
+          emission.authoredCandidate,
+          emission.contentCandidate,
+          browserIdsByEmissionKey.get(emission.emittedKey) ?? emission.authoredCandidate.id,
+        ),
+        contentCandidate: emission.contentCandidate,
+        recipe: emission.recipe,
+      }),
+    ),
+  );
+}
+
+/** Assigns opaque browser IDs after every distinct emission is known, before output truncation. */
+function createBrowserCandidateIds(
+  emissions: readonly {
+    readonly authoredCandidate: PreviewInspectorPageCandidate;
+    readonly emittedKey: string;
+  }[],
+): ReadonlyMap<string, string> {
+  const emissionsByAuthoredId = new Map<string, typeof emissions>();
+  for (const emission of emissions) {
+    const group = emissionsByAuthoredId.get(emission.authoredCandidate.id) ?? [];
+    emissionsByAuthoredId.set(emission.authoredCandidate.id, [...group, emission]);
+  }
+  const browserIdsByEmissionKey = new Map<string, string>();
+  for (const [authoredId, group] of emissionsByAuthoredId) {
+    for (const emission of group) {
+      browserIdsByEmissionKey.set(
+        emission.emittedKey,
+        group.length === 1
+          ? authoredId
+          : createCollidingVirtualPageBrowserCandidateId(authoredId, emission.emittedKey),
+      );
+    }
+  }
+  return browserIdsByEmissionKey;
+}
+
+/** Produces a bounded selector-protocol-safe ID without making collisions order-dependent. */
+function createCollidingVirtualPageBrowserCandidateId(authoredId: string, emittedKey: string): string {
+  const safeAuthoredId = authoredId.replace(/[^A-Za-z0-9._:/@-]+/gu, '_').slice(0, 478);
+  const prefix = safeAuthoredId.length === 0 ? 'candidate' : safeAuthoredId;
+  const digest = createHash('sha256').update(authoredId).update('\0').update(emittedKey).digest('hex');
+  return `${prefix}:virtual-page-${digest.slice(0, 20)}`;
 }
 
 /**
@@ -311,6 +357,7 @@ function selectPreviewInspectorRouteOwnerCandidate(
 function createBrowserCandidate(
   authoredCandidate: PreviewInspectorPageCandidate,
   contentCandidate: PreviewInspectorPageCandidate,
+  browserCandidateId: string,
 ): PreviewInspectorPageCandidate {
   const renderPath = authoredCandidate.renderPath ?? contentCandidate.renderPath;
   const detachedTargetPlacement =
@@ -337,7 +384,7 @@ function createBrowserCandidate(
   return Object.freeze({
     ...contentCandidate,
     ...(detachedTargetPlacement === undefined ? {} : { detachedTargetPlacement }),
-    id: authoredCandidate.id,
+    id: browserCandidateId,
     ...(renderPath === undefined ? {} : { renderPath }),
     ...(routeLocation === undefined ? {} : { routeLocation }),
     ...(routeMount === undefined

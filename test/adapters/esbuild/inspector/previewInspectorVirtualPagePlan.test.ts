@@ -6,6 +6,7 @@ import {
   createPreviewInspectorVirtualPageCandidates,
   selectPreviewInspectorVirtualPageContentCandidate,
 } from '../../../../src/adapters/esbuild/inspector/previewInspectorVirtualPagePlan';
+import { selectPreviewInspectorExecutableCandidate } from '../../../../src/adapters/esbuild/inspector/previewInspectorExecutableCandidateSelection';
 import { expandPreviewInspectorRouteChoiceCandidates } from '../../../../src/adapters/esbuild/inspector/previewInspectorRouteChoiceCandidates';
 import type { PreviewInspectorOneHopVisualPath } from '../../../../src/adapters/esbuild/inspector/previewInspectorShallowVisualTypes';
 
@@ -771,6 +772,55 @@ describe('PreviewInspectorVirtualPagePlan', () => {
       PAGE_PATH,
       staffPagePath,
     ]);
+  });
+
+  it('disambiguates colliding VirtualPage candidate identities', () => {
+    const hrmPortalPath = '/workspace/hrm/HrmPortalApp.tsx';
+    const hrmRenderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'target-to-hrm-portal',
+      steps: [
+        readRenderPathStep(0),
+        {
+          ...readRenderPathStep(1),
+          label: 'HrmPortalApp',
+          sourcePath: hrmPortalPath,
+        },
+      ],
+    };
+    const appRouteOwner = createCandidate({
+      complete: true,
+      id: 'shared-browser-id',
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootStepIndex: 2,
+      stopReason: 'root-reached',
+    });
+    const hrmPortalProjection = createCandidate({
+      id: 'shared-browser-id',
+      renderPath: hrmRenderPath,
+      root: { exportName: 'HrmPortalApp', sourcePath: hrmPortalPath },
+      rootStepIndex: 1,
+    });
+    const unrelated = createCandidate({
+      id: 'unambiguous-browser-id',
+      renderPath: { ...RENDER_PATH, id: 'target-to-unrelated-page' },
+      root: { exportName: 'UnrelatedPage', sourcePath: '/workspace/pages/UnrelatedPage.tsx' },
+      rootStepIndex: 1,
+    });
+
+    const candidates = [appRouteOwner, hrmPortalProjection, unrelated];
+    const capped = createPreviewInspectorVirtualPageCandidates(candidates, 2);
+    const uncapped = createPreviewInspectorVirtualPageCandidates(candidates, 3);
+    const cappedIds = capped.map((candidate) => candidate.browserCandidate.id);
+    const uncappedIds = uncapped.map((candidate) => candidate.browserCandidate.id);
+
+    expect(cappedIds).toHaveLength(2);
+    expect(new Set(cappedIds).size).toBe(2);
+    expect(cappedIds).toEqual(uncappedIds.slice(0, 2));
+    expect(cappedIds.every((id) => id.startsWith('shared-browser-id:virtual-page-'))).toBe(true);
+    expect(uncapped[2]?.browserCandidate.id).toBe('unambiguous-browser-id');
+    const selected = selectPreviewInspectorExecutableCandidate(uncapped, cappedIds[1]);
+    expect(selected?.active.contentCandidate.root).toEqual(hrmPortalProjection.root);
   });
 
   /**

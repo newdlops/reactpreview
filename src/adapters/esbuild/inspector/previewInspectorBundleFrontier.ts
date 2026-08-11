@@ -1517,15 +1517,6 @@ function collectPreviewInspectorExecutionCorridorSeedPaths(
   const candidateRootPath = pageCandidate?.root.sourcePath;
   const normalizedCandidateRootPath =
     candidateRootPath === undefined ? undefined : path.normalize(candidateRootPath);
-  // Route-leaf and pinned-browser candidates intentionally omit rootStepIndex. Recover only the
-  // exact checkpoint whose candidate root is also the admitted execution root; every other
-  // missing or invalid index keeps the older fail-closed behavior.
-  const canRecoverCheckpointRoot =
-    !hasValidRootStepIndex &&
-    pageCandidate?.stopReason === 'render-path-checkpoint' &&
-    normalizedCandidateRootPath !== undefined &&
-    normalizedCandidateRootPath === normalizedExecutionRootPath &&
-    pageCandidate.root.exportName === executionRootSurface?.exportName;
   const executionRootStepIndex =
     normalizedExecutionRootPath === undefined
       ? -1
@@ -1534,7 +1525,74 @@ function collectPreviewInspectorExecutionCorridorSeedPaths(
             index >= (hasValidRootStepIndex ? safeRootStepIndex : 0) &&
             path.normalize(step.sourcePath) === normalizedExecutionRootPath,
         );
-  if (!hasValidRootStepIndex && (!canRecoverCheckpointRoot || executionRootStepIndex < 0)) {
+  const findExactReferenceStepIndex = (reference: {
+    readonly exportName: string;
+    readonly sourcePath: string;
+  }): number =>
+    steps.findIndex(
+      (step) =>
+        path.normalize(step.sourcePath) === path.normalize(reference.sourcePath) &&
+        (step.label === reference.exportName ||
+          (reference.exportName === 'default' && step.label === '@default')),
+    );
+  // Route-leaf and pinned-browser candidates intentionally omit rootStepIndex. Recover an exact
+  // checkpoint whose candidate root is also the admitted execution root; other missing-index
+  // shapes remain fail-closed unless selected-route evidence below proves the whole corridor.
+  const canRecoverCheckpointRoot =
+    !hasValidRootStepIndex &&
+    pageCandidate?.stopReason === 'render-path-checkpoint' &&
+    normalizedCandidateRootPath !== undefined &&
+    normalizedCandidateRootPath === normalizedExecutionRootPath &&
+    pageCandidate.root.exportName === executionRootSurface?.exportName;
+  const routeLocation = pageCandidate?.routeLocation;
+  const routeTarget = pageCandidate?.target;
+  const routeComponentSourcePath =
+    routeLocation !== undefined && 'componentSourcePath' in routeLocation
+      ? routeLocation.componentSourcePath
+      : undefined;
+  const routeComponentExportName =
+    routeLocation !== undefined && 'componentExportName' in routeLocation
+      ? routeLocation.componentExportName
+      : undefined;
+  const routeOwnerMatchesExecutionRoot =
+    routeLocation !== undefined &&
+    normalizedExecutionRootPath !== undefined &&
+    path.normalize(routeLocation.sourcePath) === normalizedExecutionRootPath;
+  const routeTargetMatchesLocation =
+    routeComponentSourcePath !== undefined &&
+    routeTarget !== undefined &&
+    path.normalize(routeComponentSourcePath) === path.normalize(routeTarget.sourcePath) &&
+    (routeComponentExportName ?? 'default') === routeTarget.exportName;
+  const analysisTargetStepIndex = findExactReferenceStepIndex(plan.target);
+  const candidateRootStepIndex =
+    pageCandidate === undefined ? -1 : findExactReferenceStepIndex(pageCandidate.root);
+  const routeTargetStepIndex =
+    routeTarget === undefined ? -1 : findExactReferenceStepIndex(routeTarget);
+  const exactExecutionRootStepIndex =
+    executionRootSurface === undefined ? -1 : findExactReferenceStepIndex(executionRootSurface);
+  const selectedRouteCorridorIsProven =
+    analysisTargetStepIndex >= 0 &&
+    exactExecutionRootStepIndex >= analysisTargetStepIndex &&
+    steps
+      .slice(analysisTargetStepIndex, exactExecutionRootStepIndex + 1)
+      .every((step) => provenPaths.has(path.normalize(step.sourcePath)));
+  // Expanding a statically selected route intentionally replaces the browser candidate target
+  // with its barrel export and omits rootStepIndex. Admit that shape only when the exact ordered
+  // target -> page root -> route export -> route owner chain is present in the selected path.
+  const canRecoverSelectedRouteRoot =
+    !hasValidRootStepIndex &&
+    pageCandidate?.stopReason === 'root-reached' &&
+    routeOwnerMatchesExecutionRoot &&
+    routeTargetMatchesLocation &&
+    selectedRouteCorridorIsProven &&
+    analysisTargetStepIndex >= 0 &&
+    candidateRootStepIndex >= analysisTargetStepIndex &&
+    routeTargetStepIndex >= candidateRootStepIndex &&
+    exactExecutionRootStepIndex >= routeTargetStepIndex;
+  if (
+    !hasValidRootStepIndex &&
+    ((!canRecoverCheckpointRoot && !canRecoverSelectedRouteRoot) || executionRootStepIndex < 0)
+  ) {
     return Object.freeze([]);
   }
   const corridorEndStepIndex = Math.max(safeRootStepIndex, executionRootStepIndex);

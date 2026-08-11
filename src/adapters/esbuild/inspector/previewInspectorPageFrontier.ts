@@ -187,6 +187,8 @@ function compareProbe(
   },
 ): number {
   return (
+    selectedSurfacePriority(left.candidate.fidelity) -
+      selectedSurfacePriority(right.candidate.fidelity) ||
     fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
     left.prepared.frontier.summary.totalAuthoredModuleCount -
       right.prepared.frontier.summary.totalAuthoredModuleCount ||
@@ -215,6 +217,12 @@ function compareRejectedProbe(
     fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
     left.candidate.id.localeCompare(right.candidate.id)
   );
+}
+
+/** Prefers selected-export context while keeping standalone output behind connected scenes. */
+function selectedSurfacePriority(value: PreviewInspectorPageFidelity): number {
+  if (value === 'target-contextual') return 0;
+  return value === 'target-only' ? 2 : 1;
 }
 
 function fidelityPriority(value: PreviewInspectorPageFidelity): number {

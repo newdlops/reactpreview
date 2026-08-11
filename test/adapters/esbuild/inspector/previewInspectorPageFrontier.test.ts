@@ -167,7 +167,7 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(selection?.prepared.frontier.summary.totalAuthoredModuleCount).toBe(2_000);
   });
 
-  it('selects the highest-fidelity soft candidate before considering a smaller target-only slice', async () => {
+  it('prefers selected-export context, then connected pages, before the target-only fallback', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const pagePath = '/workspace/Page.tsx';
@@ -179,13 +179,14 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
       id: string,
       sourcePath: string,
       exportName: string,
+      strategy: 'authentic-module-export' | 'selected-export-slice' = 'authentic-module-export',
     ): PreviewInspectorPageExecutionCandidate['criticalSurfaces'][number] => ({
       bypassedWrapperNames: [],
       exportName,
       id,
       omittedTopLevelEffectCount: 0,
       sourcePath,
-      strategy: 'authentic-module-export' as const,
+      strategy,
       watchSourcePaths: [sourcePath],
     });
     const candidate = (
@@ -211,6 +212,10 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
           surface('page', pagePath, 'Page'),
           surface('target', targetPath, 'Target'),
         ]),
+        candidate('target-contextual', [
+          surface('page-context', pagePath, 'Page'),
+          surface('target', targetPath, 'Target'),
+        ]),
         candidate('target-only', [surface('target', targetPath, 'Target')]),
       ],
       plan: {
@@ -229,7 +234,91 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(selection?.disposition).toBe('accepted-unbounded');
     expect(selection?.kind).toBe('selected');
     if (selection?.kind !== 'selected') throw new Error('Expected selected Page Execution.');
-    expect(selection.executionPlan.candidate.fidelity).toBe('page-authentic');
+    expect(selection.executionPlan.candidate.fidelity).toBe('target-contextual');
+    expect(selection.executionPlan.alternatives).toEqual([
+      { candidateId: 'page-authentic', fidelity: 'page-authentic' },
+      { candidateId: 'target-contextual', fidelity: 'target-contextual' },
+      { candidateId: 'target-only', fidelity: 'target-only' },
+    ]);
+    const connectedPageSelection = await preparePreviewInspectorPageExecutionSelection({
+      candidates: [
+        candidate('route-page-authentic', [
+          surface('page', pagePath, 'Page'),
+          surface('target', targetPath, 'Target'),
+        ]),
+        candidate('target-only', [surface('target', targetPath, 'Target')]),
+      ],
+      plan: {
+        edges: [],
+        pageCandidates: [],
+        root: { exportName: 'Target', sourcePath: targetPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as never,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) =>
+        specifier === './Target' && importer === pagePath ? targetPath : undefined,
+      workspaceRoot,
+    });
+
+    expect(connectedPageSelection).toMatchObject({
+      disposition: 'accepted-unbounded',
+      executionPlan: { candidate: { fidelity: 'route-page-authentic' } },
+      kind: 'selected',
+    });
+    const standaloneSelection = await preparePreviewInspectorPageExecutionSelection({
+      candidates: [candidate('target-only', [surface('target', targetPath, 'Target')])],
+      plan: {
+        edges: [],
+        pageCandidates: [],
+        root: { exportName: 'Target', sourcePath: targetPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as never,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: () => undefined,
+      workspaceRoot,
+    });
+
+    expect(standaloneSelection).toMatchObject({
+      disposition: 'accepted-unbounded',
+      executionPlan: { candidate: { fidelity: 'target-only' } },
+      kind: 'selected',
+    });
+    const rejectedSelection = await preparePreviewInspectorPageExecutionSelection({
+      candidates: [
+        candidate('page-authentic', [
+          surface('page', pagePath, 'Page'),
+          surface('target', targetPath, 'Target'),
+        ]),
+        candidate('target-only', [
+          surface('target', targetPath, 'Missing', 'selected-export-slice'),
+        ]),
+      ],
+      plan: {
+        edges: [],
+        pageCandidates: [],
+        root: { exportName: 'Target', sourcePath: targetPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as never,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) =>
+        specifier === './Target' && importer === pagePath ? targetPath : undefined,
+      workspaceRoot,
+    });
+
+    expect(rejectedSelection).toMatchObject({
+      disposition: 'accepted-unbounded',
+      kind: 'selected',
+    });
+    if (rejectedSelection?.kind !== 'selected')
+      throw new Error('Expected selected Page Execution.');
+    expect(rejectedSelection.executionPlan.candidate.fidelity).toBe('page-authentic');
+    expect(rejectedSelection.executionPlan.alternatives).toEqual([
+      { candidateId: 'page-authentic', fidelity: 'page-authentic' },
+      { candidateId: 'target-only', fidelity: 'target-only', reason: 'slice-unavailable' },
+    ]);
   });
 
   it('admits a critical support chain beyond the former fast depth contract', async () => {
@@ -612,14 +701,19 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(JSON.stringify(second.selection)).toBe(JSON.stringify(withoutMemo.selection));
     expect(first.sourceReads).toEqual(withoutMemo.sourceReads);
     expect(second.sourceReads).toEqual([]);
-    expect(first.resolutions).toEqual(withoutMemo.resolutions);
+    expect(first.resolutions).toEqual([
+      `${pagePath}\0./Target`,
+      `${pagePath}\0./Target`,
+      `${pagePath}\0./unused`,
+      `${pagePath}\0./Target`,
+    ]);
     expect(second.resolutions).toEqual([]);
     expect(JSON.stringify(withDiagnostics.selection)).toBe(JSON.stringify(withoutMemo.selection));
     expect(JSON.stringify(withDiagnosticsHit.selection)).toBe(
       JSON.stringify(withoutMemo.selection),
     );
     expect(withDiagnostics.sourceReads).toEqual(withoutMemo.sourceReads);
-    expect(withDiagnostics.resolutions).toEqual(withoutMemo.resolutions);
+    expect(withDiagnostics.resolutions).toEqual(first.resolutions);
     expect(withDiagnosticsHit.sourceReads).toEqual([]);
     expect(withDiagnosticsHit.resolutions).toEqual([]);
     expect(first.selection?.kind).toBe('selected');

@@ -103,7 +103,7 @@ export async function preparePreviewRouteExecutionFinalFrontier(
       : createEligiblePreviewInspectorPageExecutionCandidates(
           analysisPlan ?? activeInspectorPlan,
           request.inspectorPageCandidateId,
-          request.inspectorPageExecutionCandidateId,
+          undefined,
           request.inspectorTargetMode,
         );
   const primaryRenderPath =
@@ -198,6 +198,16 @@ export async function preparePreviewRouteExecutionFinalFrontier(
     snapshotSourceByPath,
     workspaceRoot: options.workspaceRoot,
   });
+  const requestedPageExecutionCandidates =
+    request.inspectorPageExecutionCandidateId === undefined
+      ? pageExecutionCandidates
+      : pageExecutionCandidates.filter(
+          (candidate) => candidate.id === request.inspectorPageExecutionCandidateId,
+        );
+  const activePageExecutionCandidates =
+    requestedPageExecutionCandidates.length === 0
+      ? pageExecutionCandidates
+      : requestedPageExecutionCandidates;
   const plannedRouteExecution = shouldPrepareArtifact
     ? await preparePreviewRouteExecutionPlanner({
         contextDiscoveryTruncated: options.contextDiscoveryTruncated,
@@ -231,7 +241,7 @@ export async function preparePreviewRouteExecutionFinalFrontier(
           executablePlan: activeInspectorPlan,
           ...(activeInspectorPlan === undefined
             ? {}
-            : { executionCandidates: pageExecutionCandidates }),
+            : { executionCandidates: activePageExecutionCandidates }),
           policy: options.policy,
           readSource: readFrontierSource,
           resolveModule: options.staticModuleResolver.resolve,

@@ -909,7 +909,7 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     },
   );
 
-  it('recovers a selected lazy corridor only for an exact omitted-index checkpoint', async () => {
+  it('recovers an omitted-index lazy corridor only from exact checkpoint or selected-route evidence', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/pages/Target.tsx';
     const flowPath = '/workspace/pages/DashboardFlow.tsx';
@@ -963,6 +963,41 @@ describe('preparePreviewInspectorBundleFrontier', () => {
       },
       {
         candidateRoot: { exportName: 'default', sourcePath: pagePath },
+        candidateTarget: { exportName: 'DashboardPage', sourcePath: barrelPath },
+        id: 'selected-route-root',
+        retainsCorridor: true,
+        routeLocation: {
+          componentExportName: 'DashboardPage',
+          componentName: 'DashboardPage',
+          componentSourcePath: barrelPath,
+          dependencyPaths: [barrelPath, appPath],
+          evidenceKind: 'route-catalog',
+          pathname: '/dashboard',
+          pattern: '/dashboard',
+          sourcePath: appPath,
+        },
+        stopReason: 'root-reached',
+      },
+      {
+        candidateRoot: { exportName: 'default', sourcePath: pagePath },
+        candidateTarget: { exportName: 'DashboardPage', sourcePath: barrelPath },
+        evidenceSourcePaths: [targetPath, pagePath, appPath],
+        id: 'unproven-selected-route-root',
+        retainsCorridor: false,
+        routeLocation: {
+          componentExportName: 'DashboardPage',
+          componentName: 'DashboardPage',
+          componentSourcePath: barrelPath,
+          dependencyPaths: [barrelPath, appPath],
+          evidenceKind: 'route-catalog',
+          pathname: '/dashboard',
+          pattern: '/dashboard',
+          sourcePath: appPath,
+        },
+        stopReason: 'root-reached',
+      },
+      {
+        candidateRoot: { exportName: 'default', sourcePath: pagePath },
         id: 'mismatched-checkpoint-root',
         retainsCorridor: false,
         stopReason: 'render-path-checkpoint',
@@ -990,8 +1025,12 @@ describe('preparePreviewInspectorBundleFrontier', () => {
             },
             root: scenario.candidateRoot,
             ...('rootStepIndex' in scenario ? { rootStepIndex: scenario.rootStepIndex } : {}),
+            ...('routeLocation' in scenario ? { routeLocation: scenario.routeLocation } : {}),
             stopReason: scenario.stopReason,
-            target: { exportName: 'Target', sourcePath: targetPath },
+            target:
+              'candidateTarget' in scenario
+                ? scenario.candidateTarget
+                : { exportName: 'Target', sourcePath: targetPath },
           },
         ],
         root: { exportName: 'App', sourcePath: appPath },
@@ -1030,7 +1069,10 @@ describe('preparePreviewInspectorBundleFrontier', () => {
             watchSourcePaths: [targetPath],
           },
         ],
-        evidenceSourcePaths: [targetPath, flowPath, pagePath, barrelPath, appPath],
+        evidenceSourcePaths:
+          'evidenceSourcePaths' in scenario
+            ? scenario.evidenceSourcePaths
+            : [targetPath, flowPath, pagePath, barrelPath, appPath],
         executionRootSurfaceId: 'app',
         fidelity: 'target-contextual',
         id: 'candidate',

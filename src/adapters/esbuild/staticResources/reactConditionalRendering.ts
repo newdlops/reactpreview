@@ -11,7 +11,6 @@ import path from 'node:path';
 import ts from 'typescript';
 import {
   applyPreviewReactConditionalReplacements,
-  selectOutermostPreviewReactConditionalReplacements,
   type PreviewReactConditionalReplacement,
 } from './previewReactConditionalReplacements';
 import { expandPreviewReactLogicalAndExpression } from './previewReactLogicalAnd';
@@ -173,16 +172,12 @@ export function instrumentReactConditionalRendering(
   const prepared = candidates.map((candidate, index) =>
     createConditionalRenderReplacement(sourceFile, sourcePath, candidate, index),
   );
-  const selectedConditionReplacements = selectOutermostPreviewReactConditionalReplacements(
-    prepared.map((item) => item.replacement),
-  );
-  const selectedConditionReplacementSet = new Set(selectedConditionReplacements);
-  const selectedDefinitions = prepared
-    .filter((item) => selectedConditionReplacementSet.has(item.replacement))
-    .map((item) => item.definition);
   if (definitionRegistrations !== undefined) {
     definitionRegistrations.push(
-      createConditionalRenderDefinitionsRegistration(sourcePath, selectedDefinitions),
+      createConditionalRenderDefinitionsRegistration(
+        sourcePath,
+        prepared.map((item) => item.definition),
+      ),
     );
   }
   const overlayReplacements = createPreviewReactOverlayActivationReplacements(
@@ -198,10 +193,7 @@ export function instrumentReactConditionalRendering(
           ],
     ),
   );
-  const replacements = selectOutermostPreviewReactConditionalReplacements([
-    ...selectedConditionReplacements,
-    ...overlayReplacements,
-  ]);
+  const replacements = [...prepared.map((item) => item.replacement), ...overlayReplacements];
   return applyPreviewReactConditionalReplacements(switchInstrumentedSource, replacements);
 }
 
@@ -493,9 +485,11 @@ function readPreviewReactMissingGuardedAccess(
 /** Recognizes only literal null/undefined checks; arbitrary comparisons remain selectable. */
 function isPreviewReactNullishGuardLiteral(expression: ts.Expression): boolean {
   const current = unwrapConditionalExpression(expression);
-  return current.kind === ts.SyntaxKind.NullKeyword ||
+  return (
+    current.kind === ts.SyntaxKind.NullKeyword ||
     (ts.isIdentifier(current) && current.text === 'undefined') ||
-    (ts.isVoidExpression(current) && ts.isNumericLiteral(current.expression));
+    (ts.isVoidExpression(current) && ts.isNumericLiteral(current.expression))
+  );
 }
 
 /** Converts one identifier/property chain to a bounded syntax-only identity. */
@@ -518,8 +512,10 @@ function havePreviewReactGuardedAccessPath(
   left: PreviewReactGuardedAccessPath,
   right: PreviewReactGuardedAccessPath,
 ): boolean {
-  return left.names.length === right.names.length &&
-    left.names.every((name, index) => name === right.names[index]);
+  return (
+    left.names.length === right.names.length &&
+    left.names.every((name, index) => name === right.names[index])
+  );
 }
 
 /** Requires a direct dereference/call/destructure before treating a bare identifier as protected. */
@@ -528,11 +524,14 @@ function isPreviewReactUnsafeGuardedRootUse(expression: ts.Expression): boolean 
   if (
     (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
     parent.expression === expression
-  ) return true;
+  )
+    return true;
   if (ts.isCallExpression(parent) && parent.expression === expression) return true;
-  return ts.isVariableDeclaration(parent) &&
+  return (
+    ts.isVariableDeclaration(parent) &&
     parent.initializer === expression &&
-    !ts.isIdentifier(parent.name);
+    !ts.isIdentifier(parent.name)
+  );
 }
 
 /** Labels a proven returned render expression consistently for one-sided and two-sided branches. */
@@ -544,9 +543,44 @@ function describeReturnedRenderExpression(
   if (expression?.kind === ts.SyntaxKind.NullKeyword) return 'empty return';
   if (expression !== undefined && isConventionalReactFallbackExpression(expression))
     return boundMetadataText(expression.getText(sourceFile));
+  if (expression !== undefined) {
+    const unwrapped = unwrapConditionalExpression(expression);
+    if (
+      ts.isJsxElement(unwrapped) ||
+      ts.isJsxSelfClosingElement(unwrapped) ||
+      ts.isJsxFragment(unwrapped)
+    ) {
+      return describeReturnedJsxRenderExpression(unwrapped, sourceFile);
+    }
+  }
   return expression === undefined
     ? 'early return'
     : describeRenderBranch(expression, sourceFile, portalBindings);
+}
+
+/** Keeps direct child component names so a shared returned wrapper cannot hide the selected target. */
+function describeReturnedJsxRenderExpression(
+  expression: ts.JsxElement | ts.JsxSelfClosingElement | ts.JsxFragment,
+  sourceFile: ts.SourceFile,
+): string {
+  if (ts.isJsxFragment(expression)) return describeJsxFragment(expression, sourceFile);
+  if (ts.isJsxSelfClosingElement(expression)) {
+    return `<${boundMetadataText(expression.tagName.getText(sourceFile))}>`;
+  }
+  const containerName = boundMetadataText(expression.openingElement.tagName.getText(sourceFile));
+  const childNames: string[] = [];
+  for (const child of expression.children) {
+    const tagName = ts.isJsxElement(child)
+      ? child.openingElement.tagName.getText(sourceFile)
+      : ts.isJsxSelfClosingElement(child)
+        ? child.tagName.getText(sourceFile)
+        : undefined;
+    if (tagName === undefined || childNames.includes(tagName) || childNames.length >= 8) continue;
+    childNames.push(boundMetadataText(tagName));
+  }
+  return childNames.length === 0
+    ? `<${containerName}>`
+    : `<${containerName}: ${childNames.join(', ')}>`;
 }
 
 /**
@@ -586,11 +620,7 @@ function readSingleReturnedRenderExpression(
 
 /** Recognizes conventional render-prop names without treating arbitrary callback props as React. */
 function isPreviewReactRenderPropName(name: string): boolean {
-  return (
-    name === 'children' ||
-    /^render(?:[$_\p{Lu}]|$)/u.test(name) ||
-    /Renderer$/u.test(name)
-  );
+  return name === 'children' || /^render(?:[$_\p{Lu}]|$)/u.test(name) || /Renderer$/u.test(name);
 }
 
 /** Proves that one local identifier was destructured from a render-prop component parameter. */
@@ -600,10 +630,7 @@ function isPreviewReactRenderPropParameterBinding(
 ): boolean {
   for (const parameter of owner.parameters) {
     if (ts.isIdentifier(parameter.name)) {
-      if (
-        parameter.name.text === localName &&
-        isPreviewReactRenderPropName(parameter.name.text)
-      ) {
+      if (parameter.name.text === localName && isPreviewReactRenderPropName(parameter.name.text)) {
         return true;
       }
       continue;
@@ -640,8 +667,7 @@ function isPreviewReactRenderPropParameterAccess(
   }
   const parameterName = expression.expression.text;
   return owner.parameters.some(
-    (parameter) =>
-      ts.isIdentifier(parameter.name) && parameter.name.text === parameterName,
+    (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === parameterName,
   );
 }
 
@@ -936,14 +962,11 @@ function createConditionalRenderReplacement(
   };
   const conditionId = createConditionalRenderIdentity(sourcePath, metadata, occurrence);
   const apiExpression = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
-  const authoredValueExpression =
-    candidate.negateRuntimeResult === true
-      ? `(!(${authoredExpression}))`
-      : `(${authoredExpression})`;
-  const resolverCall =
+  const resolverPrefix =
     candidate.metadata.kind === 'logical-and'
-      ? `${apiExpression}.resolveRenderConditionLazy(${JSON.stringify(conditionId)}, () => ${authoredValueExpression}, ${JSON.stringify(metadata)})`
-      : `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, ${authoredValueExpression}, ${JSON.stringify(metadata)})`;
+      ? `${apiExpression}.resolveRenderConditionLazy(${JSON.stringify(conditionId)}, () => (`
+      : `${apiExpression}.resolveRenderCondition(${JSON.stringify(conditionId)}, (`;
+  const resolverSuffix = `), ${JSON.stringify(metadata)})`;
   return {
     conditionId,
     definition: { id: conditionId, metadata },
@@ -952,8 +975,9 @@ function createConditionalRenderReplacement(
       : { overlayActivationTerminal: candidate.overlayActivationTerminal }),
     replacement: {
       end,
-      replacement: candidate.negateRuntimeResult === true ? `!(${resolverCall})` : resolverCall,
+      prefix: candidate.negateRuntimeResult === true ? `!(${resolverPrefix}` : resolverPrefix,
       start,
+      suffix: candidate.negateRuntimeResult === true ? `${resolverSuffix})` : resolverSuffix,
     },
   };
 }

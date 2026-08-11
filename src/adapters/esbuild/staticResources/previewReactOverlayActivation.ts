@@ -31,9 +31,9 @@ interface PreviewReactOverlayActivationGroup {
 /**
  * Inserts balanced wrapper calls around direct overlay terminals.
  *
- * Prefix and suffix edits are zero-width so independently instrumented conditions inside sibling
- * expressions retain their original source ranges. Conditions in one logical-AND chain are grouped,
- * ensuring the terminal is cloned at most once even when several switches guard it.
+ * Range wrappers compose with condition resolvers that may be nested around other source ranges.
+ * Conditions in one logical-AND chain are grouped, ensuring the terminal is cloned at most once
+ * even when several switches guard it.
  */
 export function createPreviewReactOverlayActivationReplacements(
   sourceFile: ts.SourceFile,
@@ -61,18 +61,12 @@ export function createPreviewReactOverlayActivationReplacements(
   const api = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
   const replacements: PreviewReactConditionalReplacement[] = [];
   for (const group of groups.values()) {
-    replacements.push(
-      {
-        end: group.start,
-        replacement: `${api}.resolveOverlayActivationRenderValue(${JSON.stringify(group.conditionIds)}, (`,
-        start: group.start,
-      },
-      {
-        end: group.end,
-        replacement: '))',
-        start: group.end,
-      },
-    );
+    replacements.push({
+      end: group.end,
+      prefix: `${api}.resolveOverlayActivationRenderValue(${JSON.stringify(group.conditionIds)}, (`,
+      start: group.start,
+      suffix: '))',
+    });
   }
   return replacements;
 }

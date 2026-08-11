@@ -208,25 +208,31 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"truthyLabel":"<Panel>"');
   });
 
-  /** Keeps the source-wide logical decision that static return-outcome analysis identifies. */
-  it('prefers an outer logical guard over its overlapping nested ternary condition', () => {
+  /** Retains a nested ternary whose condition shares the outer logical guard's start boundary. */
+  it('instruments overlapping logical and ternary conditions with both resolver kinds', () => {
     const source = [
       'export function Page({ flag }) {',
       '  return (flag ? <Gate /> : null) && <Panel />;',
       '}',
     ].join('\n');
 
-    const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source);
+    const definitions: string[] = [];
+    const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source, definitions);
 
-    expect(readRenderConditionCalls(transformed)).toHaveLength(1);
-    expect(readAuthoredExpressions(transformed)).toEqual(['flag ? <Gate /> : null']);
+    expect(readRenderConditionCalls(transformed)).toHaveLength(2);
+    expect(readAuthoredExpressions(transformed)).toEqual(
+      expect.arrayContaining(['flag', 'flag ? <Gate /> : null']),
+    );
     expect(transformed).toContain('.resolveRenderConditionLazy(');
+    expect(transformed).toContain('.resolveRenderCondition(');
     expect(transformed).toContain('"kind":"logical-and"');
-    expect(transformed).not.toContain('"authoredExpression":"flag"');
+    expect(transformed).toContain('"kind":"ternary"');
+    expect(definitions.join('\n')).toContain('"authoredExpression":"flag"');
+    expect(definitions.join('\n')).toContain('"authoredExpression":"flag ? <Gate /> : null"');
   });
 
-  /** Keeps the outer ternary choice when its complete condition contains a JSX logical gate. */
-  it('prefers an outer ternary condition over its overlapping nested logical guard', () => {
+  /** Retains an inner logical guard when its rendered result is the outer ternary condition. */
+  it('instruments overlapping ternary and logical conditions', () => {
     const source = [
       'export function Page({ allowed }) {',
       '  return (allowed && <Gate />) ? <Panel /> : <Fallback />;',
@@ -236,12 +242,14 @@ describe('React conditional rendering instrumentation', () => {
     const transformed = instrumentReactConditionalRendering('/workspace/src/Page.tsx', source);
     const authoredExpressions = readAuthoredExpressions(transformed);
 
-    expect(readRenderConditionCalls(transformed)).toHaveLength(1);
-    expect(authoredExpressions).toHaveLength(1);
-    expect(authoredExpressions[0]).toContain('allowed && <Gate />');
+    expect(readRenderConditionCalls(transformed)).toHaveLength(2);
+    expect(authoredExpressions).toEqual(
+      expect.arrayContaining(['allowed', '(allowed && <Gate />)']),
+    );
     expect(transformed).toContain('.resolveRenderCondition(');
+    expect(transformed).toContain('.resolveRenderConditionLazy(');
     expect(transformed).toContain('"kind":"ternary"');
-    expect(transformed).not.toContain('"authoredExpression":"allowed"');
+    expect(transformed).toContain('"kind":"logical-and"');
   });
 
   /** Avoids controls whose authored values were frozen when the module was first evaluated. */
@@ -471,6 +479,24 @@ describe('React conditional rendering instrumentation', () => {
     expect(transformed).toContain('"ownerName":"Application"');
     expect(transformed).toContain('"targetBranch":"falsy"');
     expect(transformed).toContain('"falsyLabel":"continue <Application>"');
+  });
+
+  /** Retains the selected child identity when two early returns use the same shared wrapper. */
+  it('labels direct children of a returned JSX wrapper', () => {
+    const source = [
+      'export function Dashboard({ hasSummary, showOutdated }) {',
+      '  if (hasSummary) return <FlexBox><Summary /></FlexBox>;',
+      '  if (showOutdated) {',
+      '    return <FlexBox><RtccSummaryOutdatedPanel /><FileList /></FlexBox>;',
+      '  }',
+      '  return null;',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactConditionalRendering('/workspace/src/Dashboard.tsx', source);
+
+    expect(transformed).toContain('"truthyLabel":"<FlexBox: Summary>"');
+    expect(transformed).toContain('"truthyLabel":"<FlexBox: RtccSummaryOutdatedPanel, FileList>"');
   });
 
   /** Keeps a provider shell reachable when its query hook directly returns a React fallback. */

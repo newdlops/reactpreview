@@ -23,18 +23,34 @@ Publisher ID는 생성 뒤 변경할 수 없고 삭제한 extension name도 다�
 
 ## 배포 전 사용자 문서
 
-Marketplace 상세 페이지는 저장소 루트의 `README.md`를 사용합니다. 릴리스마다 다음 문서가 실제
-동작과 일치하는지 확인합니다.
+Marketplace 상세 본문은 패키지 루트의 `README.md`를 사용합니다. 이 문서는 처음 보는 사용자가
+설치와 첫 프리뷰까지 바로 진행할 수 있도록 다음 내용만 유지합니다.
 
-- `README.md`: 설치, 사용법, 요구사항, 지원 범위, 보안과 개인정보
-- `CHANGELOG.md`: 사용자에게 영향을 주는 현재 버전의 변경사항
-- `SUPPORT.md`: 일반 문제와 기능 요청 경로
-- `SECURITY.md`: 취약점 비공개 제보 경로와 지원 버전
-- `LICENSE`: 배포물의 MIT 라이선스
+- 한 문단의 제품 설명과 Preview 릴리스 범위
+- 사용자가 체감하는 주요 특징
+- 설치와 빠른 시작
+- Page Context, Export Gallery와 Refresh 명령의 사용 시점
+- Inspector의 대표 작업과 최소 요구사항
+- GitHub 상세 문서, Issues, 보안 제보와 라이선스 링크
 
-README나 CHANGELOG에 이미지를 추가한다면 HTTPS URL 또는 공개 GitHub 저장소에서 변환 가능한
-상대경로를 사용합니다. Marketplace는 사용자 제공 SVG icon을 거부하므로 manifest icon은
-`assets/icon.png`인 256×256 PNG입니다. 요구사항은 [Extension Manifest](https://code.visualstudio.com/api/references/extension-manifest)와
+내부 알고리즘, 전체 호환 표, setup 계약, 설정 reference, 문제 해결 표, 보안 구현, 개발 규칙과 배포
+절차는 Marketplace README에 복사하지 않습니다. 상세 문서는 공개 GitHub 저장소에 다음처럼 나눕니다.
+
+- `docs/README.md`: 모든 문서의 시작점과 상황별 탐색
+- `docs/user-guide.md`: Page Inspector와 데이터 제어를 포함한 상세 사용법
+- `docs/compatibility.md`: 파일, 스타일, 자산, 런타임 지원 범위와 제한
+- `docs/project-setup.md`: Provider, props, route, theme와 업무 fixture 계약
+- `SUPPORT.md`, `SECURITY.md`, `CHANGELOG.md`: 지원, 보안과 릴리스 이력
+- `docs/architecture.md`, `CONTRIBUTING.md`, `docs/publishing.md`: 개발·유지관리 문서
+
+Marketplace README의 상세 문서 링크는 설치된 VSIX 안의 파일에 의존하지 않는 공개 GitHub HTTPS URL을
+사용합니다. manifest의 `homepage`도 `docs/README.md`를 가리켜 Marketplace Resources의 Homepage에서
+같은 문서 허브로 이동하게 합니다. `.vscodeignore`는 상세 문서를 VSIX에서 제외하고 GitHub를 단일 원본으로
+유지합니다.
+
+README에 이미지를 추가한다면 HTTPS URL 또는 공개 GitHub 저장소에서 변환 가능한 상대경로를 사용합니다.
+Marketplace는 사용자 제공 SVG icon을 거부하므로 manifest icon은 `assets/icon.png`인 256×256 PNG입니다.
+요구사항은 [Extension Manifest](https://code.visualstudio.com/api/references/extension-manifest)와
 [Marketplace integration](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#marketplace-integration)을
 기준으로 합니다.
 
@@ -42,7 +58,7 @@ README나 CHANGELOG에 이미지를 추가한다면 HTTPS URL 또는 공개 GitH
 
 1. `package.json.version`을 SemVer `major.minor.patch` 형식으로 명시적으로 수정합니다.
 2. 같은 버전 제목을 `CHANGELOG.md`에 추가하고 릴리스 날짜를 기록합니다.
-3. 지원 범위, 설정, 보안 설명이 현재 코드와 일치하는지 확인합니다.
+3. Marketplace README의 특징·사용법과 GitHub 상세 문서가 현재 코드와 일치하는지 확인합니다.
 4. 깨끗한 checkout에서 의존성을 설치하고 전체 검사를 실행합니다.
 
 ```bash
@@ -108,7 +124,9 @@ code --install-extension react-file-preview-<version>-<target>.vsix --force
 검수 기준:
 
 - manifest의 `Publisher`가 `newdlops`, `TargetPlatform`이 파일명의 target과 같습니다.
-- `assets/icon.png`, README, CHANGELOG, LICENSE, SUPPORT, SECURITY가 포함됩니다.
+- `assets/icon.png`, 간결한 README와 LICENSE가 포함됩니다.
+- `docs`, CHANGELOG, SUPPORT, SECURITY와 유지관리 문서는 포함되지 않고 README의 공개 GitHub 링크로
+  접근할 수 있습니다.
 - `src`, `test`, `scripts`, source map, `.git`, `.github`, `.lh`, 로컬 상태 파일은 없습니다.
 - `node_modules/@esbuild/<target>`에는 target과 일치하는 네이티브 실행 파일 하나만 있습니다.
 - 설치한 Extension Development Host 또는 별도 VS Code 프로필에서 예제 TSX가 렌더링됩니다.
@@ -118,7 +136,7 @@ code --install-extension react-file-preview-<version>-<target>.vsix --force
 
 ### 2026년 12월 1일 이전의 전환용 PAT
 
-2026년 7월 현재 PAT를 통한 수동 게시가 가능하지만 Azure DevOps Global PAT는 2026년 12월 1일
+2026년 8월 현재 PAT를 통한 수동 게시가 가능하지만 Azure DevOps Global PAT는 2026년 12월 1일
 종료됩니다. 신규 자동화에는 PAT를 사용하지 말고 다음 절의 Microsoft Entra ID 방식을 준비합니다.
 
 전환 기간에 최초 수동 게시를 해야 한다면 Azure DevOps에서 다음 최소 범위로 PAT를 만듭니다.
@@ -163,7 +181,7 @@ Tenant, subscription, managed identity resource ID와 서비스 연결 이름은
 
 ## 게시 후 확인
 
-1. Marketplace에서 publisher, 아이콘, Preview 표시, README, 라이선스와 지원 링크를 확인합니다.
+1. Marketplace에서 publisher, 아이콘, Preview 표시, 간결한 README와 GitHub 문서 링크를 확인합니다.
 2. 각 target의 VS Code에서 `newdlops.react-file-preview`를 새로 설치합니다.
 3. `examples/HelloPreview.tsx`와 별도 React 18 프로젝트에서 열기·편집·오류·새로고침을 확인합니다.
 4. Remote 지원 target은 실제 Remote SSH 또는 Dev Container extension host에서 확인합니다.
@@ -183,11 +201,12 @@ Tenant, subscription, managed identity resource ID와 서비스 연결 이름은
 
 - [ ] `newdlops` Publisher 소유권과 extension name을 확인했다.
 - [ ] package version과 CHANGELOG 날짜가 일치한다.
-- [ ] README, SUPPORT, SECURITY, LICENSE가 현재 동작과 일치한다.
+- [ ] README에는 특징·사용법만 있고 상세 내용은 공개 GitHub 문서로 연결된다.
+- [ ] 문서 허브, 사용자 가이드, 호환성, SUPPORT, SECURITY와 LICENSE가 현재 동작과 일치한다.
 - [ ] `npm run check`가 깨끗한 설치에서 통과한다.
 - [ ] 게시할 모든 target의 VSIX를 해당 환경에서 생성했다.
 - [ ] 각 VSIX의 target, 파일 목록, esbuild binary와 icon을 확인했다.
 - [ ] 각 VSIX 설치 후 React 프리뷰 smoke test를 통과했다.
 - [ ] secret을 저장소, 명령 인자와 log에 남기지 않았다.
 - [ ] 같은 version의 모든 target을 게시했다.
-- [ ] Marketplace 표시와 신규 설치를 다시 확인했다.
+- [ ] Marketplace 표시, 모든 GitHub 문서 링크와 신규 설치를 다시 확인했다.

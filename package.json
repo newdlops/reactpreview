@@ -1,15 +1,15 @@
 {
   "name": "react-file-preview",
   "displayName": "React File Preview",
-  "description": "Open multiple file-pinned React previews in isolated VS Code webviews without a web server.",
-  "version": "0.1.1313",
+  "description": "Preview React files in their authored page context with an inspector, without running a development server.",
+  "version": "0.1.1325",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
     "url": "https://github.com/newdlops"
   },
   "license": "SEE LICENSE IN LICENSE",
-  "homepage": "https://github.com/newdlops/reactpreview#readme",
+  "homepage": "https://github.com/newdlops/reactpreview/blob/main/docs/README.md",
   "bugs": {
     "url": "https://github.com/newdlops/reactpreview/issues"
   },
@@ -38,9 +38,13 @@
     "react",
     "preview",
     "component",
+    "page",
+    "inspector",
     "tsx",
     "jsx",
-    "webview"
+    "webview",
+    "storybook",
+    "tailwind"
   ],
   "main": "./dist/extension.mjs",
   "activationEvents": [

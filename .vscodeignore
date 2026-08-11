@@ -11,10 +11,10 @@ frozen-frontier-authentic-target-authority-*.md
 .vscode/**
 coverage/**
 docs/**
-!docs/architecture.md
-!docs/changelog-archive.md
-!docs/project-setup.md
-!docs/publishing.md
+CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
+SUPPORT.md
 examples/**
 scripts/**
 src/**

@@ -53,8 +53,10 @@ import {
   type PreviewRuntimeLocalHelperItemFallback,
 } from './previewRuntimeHookLocalHelperItem';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
+import { inferPreviewRuntimeHookLayoutDimensionDemand } from './previewRuntimeHookLayoutDimensionDemand';
 import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { inferPreviewRuntimeHookOverlayStateDemand } from './previewRuntimeHookOverlayStateDemand';
+import { inferPreviewRuntimeHookRenderableStateDemand } from './previewRuntimeHookRenderableStateDemand';
 import {
   readPreviewRuntimeQueryParamDefaultExpression,
   readPreviewRuntimeQueryStatesDefaults,
@@ -163,6 +165,8 @@ interface PreviewRuntimeHookFallback extends PreviewRuntimeHookArrayLengthConstr
   readonly passive?: boolean;
   /** Keeps an authored nullish sentinel when every proven local use is guarded by optional access. */
   readonly preserveNullish?: boolean;
+  /** Keeps a compiler-serialized authored value intact during minimum-path convergence. */
+  readonly preserveSmartValue?: true;
   /** Prevents replacing the hook module when its result also crosses an opaque value-flow edge. */
   readonly projectionUnsafe?: true;
   /** Relative scalar paths whose compiler-proven value is required to pass an early render guard. */
@@ -505,6 +509,7 @@ function inferRuntimeHookFallback(
       evidence: 'authored static initial state plus an inert merge setter',
       expression: `Object.freeze([${initialStateExpression}, Object.freeze(() => undefined)])`,
       label: 'authored initial state + no-op setter',
+      preserveSmartValue: true,
       requiredPaths: ['0', '1()'],
     };
   }
@@ -654,19 +659,40 @@ function createBindingFallback(
   callResultDepth = 0,
 ): PreviewRuntimeHookValueFallback | undefined {
   if (ts.isIdentifier(binding)) {
+    const layoutDimensionDemand = inferPreviewRuntimeHookLayoutDimensionDemand(binding);
     const overlayStateDemand = inferPreviewRuntimeHookOverlayStateDemand(binding, sourceFile);
+    const renderableStateDemand = inferPreviewRuntimeHookRenderableStateDemand(binding, sourceFile);
     const withOverlayStateDemand = (
       fallback: PreviewRuntimeHookValueFallback,
     ): PreviewRuntimeHookValueFallback => {
       const safeFallback = createPreviewRuntimeHookProjectionSafeFallback(fallback);
-      return overlayStateDemand === undefined
+      const smartPathValueExpressions = [
+        ...(safeFallback.smartPathValueExpressions ?? []),
+        ...(layoutDimensionDemand === undefined
+          ? []
+          : [
+              Object.freeze({
+                expression: layoutDimensionDemand.expression,
+                path: layoutDimensionDemand.path,
+              }),
+            ]),
+        ...(overlayStateDemand === undefined
+          ? []
+          : [Object.freeze({ expression: overlayStateDemand.expression, path: '<root>' })]),
+        ...(renderableStateDemand === undefined
+          ? []
+          : [
+              Object.freeze({
+                expression: renderableStateDemand.expression,
+                path: renderableStateDemand.path,
+              }),
+            ]),
+      ];
+      return smartPathValueExpressions.length === 0
         ? safeFallback
         : {
             ...safeFallback,
-            smartPathValueExpressions: Object.freeze([
-              ...(safeFallback.smartPathValueExpressions ?? []),
-              Object.freeze({ expression: overlayStateDemand.expression, path: '<root>' }),
-            ]),
+            smartPathValueExpressions: Object.freeze(smartPathValueExpressions),
           };
     };
     const jsxComponent = inferPreviewRuntimeHookJsxComponentFallback(
@@ -723,6 +749,13 @@ function createBindingFallback(
       }
       return withOverlayStateDemand({
         ...directUsage,
+        requiredPaths: ['<root>'],
+      });
+    }
+    if (layoutDimensionDemand !== undefined) {
+      return withOverlayStateDemand({
+        expression: '0',
+        label: 'generated zero layout dimension',
         requiredPaths: ['<root>'],
       });
     }
@@ -846,10 +879,7 @@ function createBindingFallback(
 function createPreviewRuntimeHookProjectionSafeFallback(
   fallback: PreviewRuntimeHookValueFallback,
 ): PreviewRuntimeHookValueFallback {
-  if (
-    fallback.neutralCollectionOnOpaqueCall !== true ||
-    !fallback.expression.startsWith('Object.freeze([')
-  ) {
+  if (fallback.neutralCollectionOnOpaqueCall !== true) {
     return fallback;
   }
   return {
@@ -1023,7 +1053,12 @@ function createIdentifierUsageFallback(
             ...(stringReceiver ? { stringProperty: collectionProperty ?? '' } : {}),
             ...(terminalMutableRef ? { valueExpression: '({ current: null })' } : {}),
             ...(terminalEmptyRenderable ? { valueExpression: 'null' } : {}),
-            ...(renderedExpression === undefined || terminalEmptyRenderable
+            /*
+             * Rendering `rows.length` consumes the scalar result of an Array property read; it
+             * does not turn the `rows` receiver into a number. Keep the collection constraint on
+             * the receiver so a later map/filter call cannot inherit the rendered `0` expression.
+             */
+            ...(renderedExpression === undefined || terminalEmptyRenderable || collection
               ? {}
               : { valueExpression: renderedExpression }),
           });
@@ -1103,6 +1138,15 @@ function createIdentifierUsageFallback(
   visit(owner);
   for (const usage of readPreviewRuntimeHookIdentityAliasCollectionUsages(identifier, owner))
     (usage.optional ? optionalPaths : paths).push({ called: false, ...usage });
+  const childPropUsages = readPreviewRuntimeHookChildPropUsages(
+    identifier,
+    childPropDemandsBySourceFile.get(identifier.getSourceFile()),
+  );
+  const childProvenCollectionPaths = new Set(
+    childPropUsages
+      .filter((usage) => usage.collectionProperty !== undefined)
+      .map((usage) => usage.names.join('.')),
+  );
   paths.push(
     ...readPreviewRuntimeHookAliasUsagePaths(
       identifier,
@@ -1110,6 +1154,7 @@ function createIdentifierUsageFallback(
       importedHelperItemFallbackBySourceFile.get(identifier.getSourceFile()),
       importedHelperPropertyFallbackBySourceFile.get(identifier.getSourceFile()),
       importedCollectionCallbackItemFallbackBySourceFile.get(identifier.getSourceFile()),
+      childProvenCollectionPaths,
     ),
   );
   /*
@@ -1117,10 +1162,7 @@ function createIdentifierUsageFallback(
    * `items.filter(... )`. Such a carrier has no property-name prefix, so retain its inferred child
    * item beside callback-derived candidates instead of trying to serialize it as an object path.
    */
-  for (const usage of readPreviewRuntimeHookChildPropUsages(
-    identifier,
-    childPropDemandsBySourceFile.get(identifier.getSourceFile()),
-  )) {
+  for (const usage of childPropUsages) {
     if (usage.names.length === 0 && usage.collectionProperty !== undefined) {
       arrayRootEvidence.push('child component collection prop');
       if (usage.collectionItemExpression !== undefined) {
@@ -1264,6 +1306,10 @@ function createRuntimeHookReplacement(
   const end = candidate.call.end;
   const location = sourceFile.getLineAndCharacterOfPosition(start);
   const originalCall = sourceText.slice(start, end);
+  const hookIdentityExpression = sourceText.slice(
+    candidate.call.expression.getStart(sourceFile),
+    candidate.call.expression.end,
+  );
   const graphqlArguments = readPreviewRuntimeHookGraphqlArguments(
     candidate.hook.hookName,
     candidate.call,
@@ -1285,6 +1331,7 @@ function createRuntimeHookReplacement(
       : { failurePaths: candidate.fallback.failurePaths }),
     ...(candidate.fallback.passive === true ? { passive: true } : {}),
     ...(candidate.fallback.preserveNullish === true ? { preserveNullish: true } : {}),
+    ...(candidate.fallback.preserveSmartValue === true ? { preserveSmartValue: true } : {}),
     ...(candidate.fallback.renderGuardPaths === undefined
       ? {}
       : { renderGuardPaths: candidate.fallback.renderGuardPaths }),
@@ -1305,10 +1352,18 @@ function createRuntimeHookReplacement(
               `Object.freeze({ path: ${JSON.stringify(value.path)}, value: (${value.expression}) })`,
           )
           .join(', ')}]) })`;
+  const graphqlRuntimeArguments =
+    graphqlArguments === undefined
+      ? ', undefined, undefined'
+      : `, () => (${graphqlArguments.documentExpression})${
+          graphqlArguments.optionsExpression === undefined
+            ? ', undefined'
+            : `, () => (${graphqlArguments.optionsExpression})`
+        }`;
   return {
     end,
     ...(candidate.hook.hookName.endsWith('Context') ? { priority: 1 } : {}),
-    replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${metadataExpression}${graphqlArguments === undefined ? '' : `, () => (${graphqlArguments.documentExpression})${graphqlArguments.optionsExpression === undefined ? '' : `, () => (${graphqlArguments.optionsExpression})`}`})`,
+    replacement: `${api}.resolveRuntimeHook(() => (${originalCall}), () => (${candidate.fallback.expression}), ${metadataExpression}${graphqlRuntimeArguments}, () => (${hookIdentityExpression}))`,
     start,
   };
 }

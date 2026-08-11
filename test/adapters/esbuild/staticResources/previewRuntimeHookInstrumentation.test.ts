@@ -50,6 +50,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
       'Object.freeze({ "searchTerm": "", "userIds": Object.freeze([]), "myOnly": false, "recent": false })',
     );
     expect(transformed).toContain('"fallbackLabel":"authored initial state + no-op setter"');
+    expect(transformed).toContain('"preserveSmartValue":true');
   });
 
   /** Infers boolean and destructured object fields for project-alias custom hooks. */
@@ -96,6 +97,28 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"messages": Object.freeze([])');
     expect(transformed).toContain('"requiredPaths":["messages","sendMessage()"]');
     expect(transformed).not.toContain('"messages": Object.freeze([Object.freeze({');
+  });
+
+  /** A route-filter selection must stay empty so generated page records are not filtered away. */
+  it('keeps a tuple selection collection neutral across a filtering helper', () => {
+    const source = [
+      `import { useRoundFilter } from './use-round-filter';`,
+      `import { filterFeeds } from './filter-feeds';`,
+      'export function FeedList({ data }) {',
+      '  const [selectedRounds] = useRoundFilter();',
+      '  const feeds = filterFeeds(data.companyFeeds, selectedRounds);',
+      '  if (selectedRounds.length > 0) return null;',
+      '  return <main>{feeds.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/FeedList.tsx', source),
+    );
+
+    expect(transformed).toContain('Object.freeze([Object.freeze([])])');
+    expect(transformed).not.toContain('react-file-preview.generated-list-runtime');
   });
 
   /** Retains named query fields and flattens properties proven through an object rest binding. */
@@ -431,6 +454,43 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"failurePaths":["data.items[]"]');
   });
 
+  /** Carries an exact property-access argument into an imported helper's Array contract. */
+  it('materializes a nested query collection passed directly to an imported helper', () => {
+    const source = [
+      `import { useQuery } from './use-query';`,
+      `import { filterFeeds } from './filter-feeds';`,
+      'export function FeedList() {',
+      '  const { data, loading } = useQuery();',
+      '  if (loading || !data) return null;',
+      '  const feeds = filterFeeds(data.companyFeeds, []);',
+      '  return <main>{feeds.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements(
+        '/workspace/FeedList.tsx',
+        source,
+        undefined,
+        undefined,
+        (localName, parameterIndex) =>
+          localName === 'filterFeeds' && parameterIndex === 0
+            ? {
+                expression: 'Object.freeze({ __typename: "ClosingFeed", id: "preview-id" })',
+                requiredPaths: ['__typename', 'id'],
+              }
+            : undefined,
+      ),
+    );
+
+    expect(transformed).toContain('"companyFeeds": ((__createPreviewItem)');
+    expect(transformed).toContain('__typename: "ClosingFeed"');
+    expect(transformed).toContain(
+      '"requiredPaths":["data.companyFeeds.imported-helper-array-parameter()","data.companyFeeds[].__typename","data.companyFeeds[].id","loading"]',
+    );
+  });
+
   /**
    * Carries callback-item demand through every nested collection instead of stopping after the
    * first `forEach`. This mirrors navigation trees where a generated category must contain groups,
@@ -587,6 +647,67 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('() => ("indicatorType")');
     expect(transformed).not.toContain('() => (State.Loading)');
     expect(transformed).not.toContain('() => (Type.OVERLAY)');
+  });
+
+  /** Keeps a dormant panel's parent layout and target branch on one compiler-proven state. */
+  it('emits an inert renderable discriminator as target-guided Smart metadata', () => {
+    const source = [
+      `import { usePanel } from './panel-context';`,
+      'export function Panel() {',
+      '  const { state, currentWidth, close } = usePanel();',
+      '  if (state.status === "closed" || state.status === "failed") return null;',
+      '  return <aside style={{ width: currentWidth }}>',
+      '    {state.status === "loading" && <Loader onCancel={close} />}',
+      '    {(state.status === "open" || state.status === "closing") && (',
+      '      <iframe src={state.iframeUrl} title="Panel" />',
+      '    )}',
+      '  </aside>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Panel.tsx', source),
+    );
+
+    expect(transformed).toContain('path: "state.status", value: ("loading")');
+    expect(transformed).toContain('path: "currentWidth"');
+    expect(transformed).toContain('Number(globalThis.innerWidth)');
+    expect(transformed).not.toContain('path: "state.status", value: ("open")');
+    expect(transformed).toContain(
+      '"requiredPaths":["state.status","state.iframeUrl","currentWidth","close()"]',
+    );
+  });
+
+  /** Recovers a page-state literal when a local render helper owns the selected JSX branch. */
+  it('coordinates a derived completion gate before a descendant render branch', () => {
+    const source = [
+      `import { useSummary } from './use-summary';`,
+      'export function Dashboard() {',
+      '  const summaryHandle = useSummary();',
+      '  const { status, summaryTree, requiresManagerConfirmation } = summaryHandle;',
+      '  const hasCompletedSummary = status === "COMPLETED" && summaryTree != null;',
+      '  if (hasCompletedSummary && requiresManagerConfirmation) return <Navigate />;',
+      '  const renderBody = () => {',
+      '    if (hasCompletedSummary) {',
+      '      return <section><InfoMappingCard /><Summary tree={summaryTree} /></section>;',
+      '    }',
+      '    return <Intro />;',
+      '  };',
+      '  return <main>{renderBody()}</main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/Dashboard.tsx', source),
+    );
+
+    expect(transformed).toContain('path: "status", value: ("COMPLETED")');
+    expect(transformed).toContain('"requiresManagerConfirmation": false');
+    expect(transformed).toContain(
+      '"requiredPaths":["status","summaryTree","requiresManagerConfirmation"]',
+    );
   });
 
   /** Marks a destructured selector count as non-negative when it feeds an Array length. */
@@ -887,7 +1008,9 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(replacements).toHaveLength(2);
     expect(replacements[0]?.replacement).toContain('useQuery(DOCUMENT, queryOptions)');
     expect(replacements[0]?.replacement).toContain('"data": Object.freeze({})');
-    expect(replacements[0]?.replacement).toContain(', () => (DOCUMENT), () => (queryOptions))');
+    expect(replacements[0]?.replacement).toContain(
+      ', () => (DOCUMENT), () => (queryOptions), () => (useQuery))',
+    );
     expect(replacements[0]?.replacement).not.toContain('useTheme()');
     expect(replacements[1]?.replacement).toContain('useAppContext()');
     expect(replacements[1]?.replacement).toContain('"user": Object.freeze({ "name": "name" })');
@@ -937,7 +1060,7 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"data": Object.freeze({})');
     expect(transformed).toContain('"loading": false');
     expect(transformed).toContain('"fallback": null');
-    expect(transformed).toContain(', () => (DOCUMENT))');
+    expect(transformed).toContain(', () => (DOCUMENT), undefined, () => (useQuery))');
   });
 
   /** Creates Formik tuple fields that can render even when the installed hook has no Provider. */
@@ -1017,6 +1140,29 @@ describe('createPreviewRuntimeHookReplacements', () => {
 
     expect(transformed).toContain('"replace": Object.freeze(() => undefined)');
     expect(transformed).toContain('"requiredPaths":["replace()"]');
+  });
+
+  /** A rendered length is the result of an Array read, not the shape of its receiver. */
+  it('keeps a nested hook field array-shaped when length is rendered before map', () => {
+    const source = [
+      `import { useMeetingDraftSaver } from './use-meeting-draft-saver';`,
+      'export function DraftSaveHeader() {',
+      '  const { meetingFormValues } = useMeetingDraftSaver();',
+      '  return <main>',
+      '    <span>{meetingFormValues.agendaSelection.length}</span>',
+      '    {meetingFormValues.agendaSelection.map(createAgendaText).join(", ")}',
+      '  </main>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/DraftSaveHeader.tsx', source),
+    );
+
+    expect(transformed).toContain('"agendaSelection": Object.freeze([])');
+    expect(transformed).not.toContain('"agendaSelection": 0');
+    expect(transformed).toContain('meetingFormValues.agendaSelection.map()');
   });
 
   /** Handles callable and conditional hook bindings without guessing their package semantics. */

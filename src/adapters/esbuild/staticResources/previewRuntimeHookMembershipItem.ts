@@ -15,11 +15,13 @@ export function inferPreviewRuntimeHookMembershipItemFallback(
   propertyAccess: ts.PropertyAccessExpression,
   receiverName: string,
   sourceFile: ts.SourceFile,
+  collectionReceiverProven = false,
 ): PreviewRuntimeLocalHelperItemFallback | undefined {
   if (
     propertyAccess.name.text !== 'includes' ||
     propertyAccess.questionDotToken !== undefined ||
-    inferPreviewRuntimeSemanticFallback(receiverName)?.kind !== 'array'
+    (!collectionReceiverProven &&
+      inferPreviewRuntimeSemanticFallback(receiverName)?.kind !== 'array')
   ) {
     return undefined;
   }

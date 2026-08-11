@@ -83,6 +83,9 @@ function deduplicatePreviewRuntimeHookUsagePaths(
         ...(path_.collectionItemRequiredPaths ?? []),
       ]),
     ];
+    const valueRequiredPaths = [
+      ...new Set([...(existing.valueRequiredPaths ?? []), ...(path_.valueRequiredPaths ?? [])]),
+    ];
     const collectionItemExpression = mergePreviewRuntimeHookCollectionItemExpressions(
       existing.collectionItemExpression,
       path_.collectionItemExpression,
@@ -96,6 +99,9 @@ function deduplicatePreviewRuntimeHookUsagePaths(
       ...(itemRequiredPaths.length === 0
         ? {}
         : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
+      ...(valueRequiredPaths.length === 0
+        ? {}
+        : { valueRequiredPaths: Object.freeze(valueRequiredPaths) }),
       ...(existing.renderGuard === true || path_.renderGuard !== true ? {} : { renderGuard: true }),
     });
   }
@@ -128,7 +134,7 @@ function deduplicatePreviewRuntimeHookUsagePaths(
 }
 
 /** Retains complementary object fields when the same Array operation has multiple proven readers. */
-function mergePreviewRuntimeHookCollectionItemExpressions(
+export function mergePreviewRuntimeHookCollectionItemExpressions(
   existing: string | undefined,
   next: string | undefined,
 ): string | undefined {
@@ -163,6 +169,13 @@ function formatPreviewRuntimeHookUsagePaths(
   path_: PreviewRuntimeHookAliasUsagePath,
 ): readonly string[] {
   const base = formatPreviewRuntimeHookUsagePath(path_);
+  if ((path_.valueRequiredPaths?.length ?? 0) > 0) {
+    const receiver = path_.names.join('.');
+    return (path_.valueRequiredPaths ?? []).map((requiredPath) => {
+      if (requiredPath === '<root>') return receiver.length === 0 ? '<root>' : receiver;
+      return receiver.length === 0 ? requiredPath : `${receiver}.${requiredPath}`;
+    });
+  }
   if (
     path_.collectionProperty === undefined ||
     path_.collectionProperty === 'length' ||

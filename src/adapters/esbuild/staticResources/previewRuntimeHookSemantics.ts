@@ -53,7 +53,7 @@ export function inferPreviewRuntimeSemanticFallback(
     };
   }
   if (
-    /^(?:is|has|can|should|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
+    /^(?:is|has|can|should|requires|will|did|does|was|were)(?=[A-Z0-9_$]|$)/u.test(semanticName) ||
     /(?:enabled|disabled|visible|loading|valid|active|selected|checked|suspended|touched|dirty|pristine|pending|matches)$/u.test(
       normalized,
     )
@@ -131,14 +131,30 @@ export function inferPreviewRuntimeSemanticFallback(
       value: null,
     };
   }
-  if (
-    /^(?:avatar|image|photo|picture|thumbnail)(?:url|uri|href|src)$/u.test(normalized)
-  ) {
+  if (/^(?:avatar|image|photo|picture|thumbnail)(?:url|uri|href|src)$/u.test(normalized)) {
     return {
       expression: '""',
       kind: 'string',
       label: 'generated empty optional image source',
       value: '',
+    };
+  }
+  if (/(?:url|uri)$/u.test(normalized)) {
+    const value = 'https://example.invalid/';
+    return {
+      expression: JSON.stringify(value),
+      kind: 'string',
+      label: 'generated inert absolute URL',
+      value,
+    };
+  }
+  if (/(?:href|pathname|path|link|to)$/u.test(normalized)) {
+    const value = '/';
+    return {
+      expression: JSON.stringify(value),
+      kind: 'string',
+      label: 'generated root-relative location',
+      value,
     };
   }
   if (/(?:search|query)$/u.test(normalized)) {

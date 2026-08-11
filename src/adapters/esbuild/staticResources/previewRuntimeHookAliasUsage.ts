@@ -18,6 +18,7 @@ import {
 } from './previewRuntimeHookSyntax';
 import { inferPreviewRuntimeHookExpressionGuardPassFallback } from './previewRuntimeHookGuardValue';
 import { inferPreviewRuntimeHookLocalScalarFallback } from './previewRuntimeHookLocalScalarDemand';
+import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
 import {
   isPreviewRuntimeHookEmptyRenderableJsxValue,
@@ -63,6 +64,17 @@ const COLLECTION_UTILITY_CALLBACK_ARGUMENTS = new Map<string, readonly [number, 
   ['sumBy', [0, 1]],
   ['uniqBy', [0, 1]],
 ]);
+const COLLECTION_ONLY_USAGE_PROPERTIES = new Set([
+  'every',
+  'filter',
+  'find',
+  'findIndex',
+  'flatMap',
+  'forEach',
+  'map',
+  'reduce',
+  'some',
+]);
 
 /** One downstream use already normalized for the hook fallback usage-tree serializer. */
 export interface PreviewRuntimeHookAliasUsagePath {
@@ -84,6 +96,8 @@ export interface PreviewRuntimeHookAliasUsagePath {
   readonly stringProperty?: string;
   /** Side-effect-free scalar expression proven by a reached child component's render contract. */
   readonly valueExpression?: string;
+  /** Nested paths retained when `valueExpression` is a structured imported-helper contract. */
+  readonly valueRequiredPaths?: readonly string[];
 }
 
 /** Item fallback supplied by the bounded imported-helper type resolver. */
@@ -98,9 +112,23 @@ export interface PreviewRuntimeHookImportedHelperItemFallback {
     | 'graphql-document'
     | 'null'
     | 'number'
-    | 'object'
-    | 'string';
+      | 'object'
+      | 'string';
+  /** Structured child usages retained when an imported object parameter has nested contracts. */
+  readonly nestedUsages?: readonly PreviewRuntimeHookImportedHelperNestedUsage[];
   readonly requiredPaths?: readonly string[];
+}
+
+/** One helper-relative usage ready to be prefixed by the caller's hook alias path. */
+export interface PreviewRuntimeHookImportedHelperNestedUsage {
+  readonly called: boolean;
+  readonly collectionItemExpression?: string;
+  readonly collectionItemRequiredPaths?: readonly string[];
+  readonly collectionProperty?: string;
+  readonly names: readonly string[];
+  readonly renderGuard?: true;
+  readonly stringProperty?: string;
+  readonly valueExpression?: string;
 }
 
 /** Resolves one exact direct-import call argument to an Array item contract. */
@@ -141,11 +169,17 @@ export function readPreviewRuntimeHookAliasUsagePaths(
   resolveImportedHelperItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   resolveImportedHelperProperty?: ResolvePreviewRuntimeHookImportedHelperPropertyFallback,
   resolveImportedCollectionCallbackItem?: ResolvePreviewRuntimeHookImportedHelperItemFallback,
+  externallyProvenCollectionPaths?: ReadonlySet<string>,
 ): readonly PreviewRuntimeHookAliasUsagePath[] {
   const declarations = collectOwnerConstDeclarations(owner);
   const bindingCounts = countBindingNames(declarations);
   const memoBindings = collectReactMemoBindings(identifier.getSourceFile());
   const aliases = collectPreviewRuntimeHookAliasPaths(identifier, owner);
+  const provenCollectionPaths = collectAliasCollectionReceiverPaths(
+    owner,
+    aliases,
+    externallyProvenCollectionPaths,
+  );
   if (
     aliases.size <= 1 &&
     resolveImportedHelperItem === undefined &&
@@ -189,7 +223,13 @@ export function readPreviewRuntimeHookAliasUsagePaths(
       const access = readAliasAccess(node, aliases);
       if (access !== undefined && access.aliasName !== identifier.text) {
         for (const names of access.names) {
-          const usage = normalizeAliasUsage(node, names, identifier.text, identifier.getStart());
+          const usage = normalizeAliasUsage(
+            node,
+            names,
+            identifier.text,
+            identifier.getStart(),
+            provenCollectionPaths,
+          );
           if (usage === undefined) continue;
           const terminalKind =
             usage.collectionProperty ?? usage.stringProperty ?? (usage.called ? 'call' : 'value');
@@ -198,13 +238,7 @@ export function readPreviewRuntimeHookAliasUsagePaths(
       }
     }
     if (ts.isCallExpression(node) && resolveImportedHelperItem !== undefined) {
-      appendImportedHelperAliasUsages(
-        node,
-        identifier.text,
-        aliases,
-        resolveImportedHelperItem,
-        usages,
-      );
+      appendImportedHelperAliasUsages(node, aliases, resolveImportedHelperItem, usages);
     }
     if (ts.isCallExpression(node) && resolveImportedCollectionCallbackItem !== undefined) {
       appendImportedCollectionCallbackAliasUsage(
@@ -401,10 +435,33 @@ function appendImportedHelperPropertyUsages(
       if (fallback === undefined) continue;
       for (const names of propertyBinding.paths) {
         if (names.length > MAXIMUM_ALIAS_DEPTH) continue;
+        if ((fallback.nestedUsages?.length ?? 0) > 0) {
+          for (const nested of fallback.nestedUsages ?? []) {
+            const nestedNames = [...names, ...nested.names];
+            if (nestedNames.length > MAXIMUM_ALIAS_DEPTH) continue;
+            const usage: PreviewRuntimeHookAliasUsagePath = Object.freeze({
+              ...nested,
+              names: Object.freeze(nestedNames),
+            });
+            const terminalKind =
+              usage.collectionProperty ??
+              usage.stringProperty ??
+              (usage.valueExpression !== undefined
+                ? 'imported-helper-expression'
+                : usage.called
+                  ? 'imported-helper-callable'
+                  : 'imported-helper-value');
+            usages.set(`${nestedNames.join('.')}\0${terminalKind}`, usage);
+          }
+          continue;
+        }
         const usage: PreviewRuntimeHookAliasUsagePath = Object.freeze({
           called: fallback.kind === 'function',
           names: Object.freeze([...names]),
           ...(fallback.kind === 'function' ? {} : { valueExpression: fallback.expression }),
+          ...(fallback.kind === 'function' || fallback.requiredPaths === undefined
+            ? {}
+            : { valueRequiredPaths: Object.freeze([...fallback.requiredPaths]) }),
         });
         const terminal =
           fallback.kind === 'function' ? 'imported-helper-callable' : 'imported-helper-value';
@@ -770,7 +827,6 @@ function readAliasAccess(
 /** Adds collection structure proven by a direct imported helper's typed Array parameter. */
 function appendImportedHelperAliasUsages(
   call: ts.CallExpression,
-  rootName: string,
   aliases: PreviewRuntimeHookAliasPathCatalog,
   resolveItem: ResolvePreviewRuntimeHookImportedHelperItemFallback,
   usages: Map<string, PreviewRuntimeHookAliasUsagePath>,
@@ -780,12 +836,11 @@ function appendImportedHelperAliasUsages(
   for (const [parameterIndex, argument] of call.arguments.entries()) {
     if (usages.size >= MAXIMUM_USAGE_PATHS) return;
     const value = unwrapPreviewRuntimeExpression(argument);
-    if (!ts.isIdentifier(value) || value.text === rootName) continue;
-    const prefixes = aliases.get(value.text);
-    if (prefixes === undefined) continue;
+    const paths = readIdentityPaths(value, aliases);
+    if (paths.length === 0) continue;
     const item = resolveItem(callee.text, parameterIndex);
     if (item === undefined) continue;
-    for (const names of prefixes) {
+    for (const names of paths) {
       if (names.length === 0 || names.length > MAXIMUM_ALIAS_DEPTH) continue;
       const usage = Object.freeze({
         called: false,
@@ -807,12 +862,21 @@ function normalizeAliasUsage(
   names: readonly string[],
   rootName: string,
   availableBeforePosition: number,
+  provenCollectionPaths: ReadonlySet<string>,
 ): PreviewRuntimeHookAliasUsagePath | undefined {
   if (names.length === 0 || names.length > 12) return undefined;
   const terminal = names.at(-1);
   const called =
     ts.isCallExpression(expression.parent) && expression.parent.expression === expression;
-  const collection = isPreviewRuntimeHookArrayUsageProperty(terminal);
+  const receiverNames = names.slice(0, -1);
+  const membershipItem = inferPreviewRuntimeHookMembershipItemFallback(
+    expression,
+    names.at(-2) ?? rootName,
+    expression.getSourceFile(),
+    provenCollectionPaths.has(receiverNames.join('.')),
+  );
+  const collection =
+    isPreviewRuntimeHookArrayUsageProperty(terminal) || membershipItem !== undefined;
   const stringReceiver =
     called &&
     isPreviewRuntimeHookStringUsageProperty(terminal) &&
@@ -834,6 +898,14 @@ function normalizeAliasUsage(
     : undefined;
   return Object.freeze({
     called: !collection && !stringReceiver && called,
+    ...(membershipItem === undefined
+      ? {}
+      : {
+          collectionItemExpression: membershipItem.expression,
+          collectionItemRequiredPaths: Object.freeze([
+            ...(membershipItem.requiredPaths ?? []),
+          ]),
+        }),
     ...(collection && terminal !== undefined ? { collectionProperty: terminal } : {}),
     names: Object.freeze(collection || stringReceiver ? names.slice(0, -1) : [...names]),
     ...(guardPass === undefined
@@ -846,6 +918,34 @@ function normalizeAliasUsage(
       : { valueExpression: renderedExpression }),
     ...(stringReceiver ? { stringProperty: terminal ?? '' } : {}),
   });
+}
+
+/**
+ * Collects exact hook-relative receivers already proven to be Arrays before interpreting
+ * `includes`. The shared String methods `at`, `includes`, and `length` deliberately do not prove a
+ * collection by themselves; an imported child Array contract may supply the same evidence.
+ */
+function collectAliasCollectionReceiverPaths(
+  owner: PreviewRuntimeFunction,
+  aliases: PreviewRuntimeHookAliasPathCatalog,
+  externalPaths: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const paths = new Set(externalPaths ?? []);
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isPreviewRuntimeFunction(node)) return;
+    if (ts.isPropertyAccessExpression(node) && !ts.isPropertyAccessExpression(node.parent)) {
+      const access = readAliasAccess(node, aliases);
+      if (access !== undefined && COLLECTION_ONLY_USAGE_PROPERTIES.has(node.name.text)) {
+        for (const names of access.names) {
+          const receiverNames = names.slice(0, -1);
+          if (receiverNames.length > 0) paths.add(receiverNames.join('.'));
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  return paths;
 }
 
 /** Keeps only logical operators that select a value without executing application code. */

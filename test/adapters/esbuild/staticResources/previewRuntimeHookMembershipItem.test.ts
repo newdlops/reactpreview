@@ -42,6 +42,43 @@ describe('runtime hook membership item inference', () => {
 
     expect(transformed).not.toContain('Object.freeze([Permissions.ReadPatients])');
   });
+
+  /** Carries an exact enum member through an alias once a reached child proves the value is Array. */
+  it('combines child Array demand with an aliased static membership item', () => {
+    const source = [
+      `import { useMeetingFormContext } from './meeting-form-context';`,
+      `import { AgendaInput } from './agenda-input';`,
+      `import { AGENDA } from './agenda-constants';`,
+      'export function AgendaInputSection() {',
+      '  const { formikProps } = useMeetingFormContext();',
+      '  const agendaSelection = formikProps.values.agendaSelection;',
+      '  const selected = agendaSelection.includes(AGENDA.CEO_ADDRESS_CHANGE);',
+      '  return <AgendaInput selected={selected} agendaSelection={agendaSelection} />;',
+      '}',
+    ].join('\n');
+    const childDemands = new Map([
+      [
+        'AgendaInput',
+        new Map([
+          ['agendaSelection', { kind: 'array' as const }],
+          ['selected', { kind: 'boolean' as const }],
+        ]),
+      ],
+    ]);
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements(
+        '/workspace/AgendaInputSection.tsx',
+        source,
+        childDemands,
+      ),
+    );
+
+    expect(transformed).toContain('() => (AGENDA.CEO_ADDRESS_CHANGE)');
+    expect(transformed).toContain('formikProps.values.agendaSelection[]');
+    expect(transformed).not.toContain('Object.freeze({ id: "preview-id", name: "name" })');
+  });
 });
 
 /** Applies replacements with the production transformer's right-to-left offset policy. */

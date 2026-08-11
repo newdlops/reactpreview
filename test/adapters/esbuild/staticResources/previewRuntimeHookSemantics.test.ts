@@ -17,11 +17,27 @@ describe('inferPreviewRuntimeSemanticFallback', () => {
     });
   });
 
-  /** Retains ordinary navigation URL semantics for components that require a destination. */
-  it('does not erase non-image URLs', () => {
+  /** Keeps generated destinations parseable and inert instead of echoing an invalid field name. */
+  it('uses safe locations for non-image URL and path fields', () => {
     expect(inferPreviewRuntimeSemanticFallback('url')).toMatchObject({
       kind: 'string',
-      value: 'url',
+      value: 'https://example.invalid/',
+    });
+    expect(inferPreviewRuntimeSemanticFallback('pageNameOrUrl')).toMatchObject({
+      kind: 'string',
+      value: 'https://example.invalid/',
+    });
+    expect(inferPreviewRuntimeSemanticFallback('pathname')).toMatchObject({
+      kind: 'string',
+      value: '/',
+    });
+  });
+
+  it('treats requirement flags as booleans', () => {
+    expect(inferPreviewRuntimeSemanticFallback('requiresManagerConfirmation')).toMatchObject({
+      expression: 'false',
+      kind: 'boolean',
+      value: false,
     });
   });
 });

@@ -11,6 +11,13 @@ import {
 
 export const PREVIEW_INSPECTOR_PAGE_SURFACE_SPECIFIER_PREFIX = 'react-preview:page-surface/';
 
+const PREVIEW_INSPECTOR_PAGE_SURFACE_IMPORTER_PATH_KEY =
+  'reactPreviewInspectorPageSurfaceImporterPath';
+
+interface PreviewInspectorPageSurfaceImporterData {
+  readonly [PREVIEW_INSPECTOR_PAGE_SURFACE_IMPORTER_PATH_KEY]: string;
+}
+
 export interface PreviewInspectorPageExecutionPluginSurface {
   readonly exportName: string;
   readonly id: string;
@@ -42,6 +49,19 @@ export interface PreviewInspectorPageExecutionSurfaceLoad {
 /** Creates the opaque specifier used by generated root/composition source. */
 export function createPreviewInspectorPageSurfaceSpecifier(surfaceId: string): string {
   return PREVIEW_INSPECTOR_PAGE_SURFACE_SPECIFIER_PREFIX + encodeURIComponent(surfaceId);
+}
+
+/** Recovers the authored module identity carried by a virtual Page Execution slice. */
+export function readPreviewInspectorPageSurfaceImporterPath(value: unknown): string | undefined {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !(PREVIEW_INSPECTOR_PAGE_SURFACE_IMPORTER_PATH_KEY in value)
+  ) {
+    return undefined;
+  }
+  const sourcePath = value[PREVIEW_INSPECTOR_PAGE_SURFACE_IMPORTER_PATH_KEY];
+  return typeof sourcePath === 'string' && path.isAbsolute(sourcePath) ? sourcePath : undefined;
 }
 
 /**
@@ -91,6 +111,9 @@ export function createPreviewInspectorPageExecutionPlugin(
       return {
         contents: transformed?.contents ?? result.slice.contents,
         loader: surface.sourcePath.toLowerCase().endsWith('x') ? 'tsx' : 'ts',
+        pluginData: Object.freeze({
+          [PREVIEW_INSPECTOR_PAGE_SURFACE_IMPORTER_PATH_KEY]: surface.sourcePath,
+        } satisfies PreviewInspectorPageSurfaceImporterData),
         resolveDir: path.dirname(surface.sourcePath),
         ...(transformed?.watchDirectories === undefined
           ? {}

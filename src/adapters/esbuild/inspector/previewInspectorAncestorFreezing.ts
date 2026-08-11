@@ -59,26 +59,14 @@ export function freezePreviewInspectorPageCandidate(
   options: FreezePreviewInspectorPageCandidateOptions,
 ): PreviewInspectorPageCandidate {
   const targetStep = options.renderPath?.steps[0];
-  const targetInvocation = targetStep?.invocation;
-  const hasDeferredRenderPropAncestor =
-    options.renderPath?.steps
-      .slice(1)
-      .some(
-        (step) =>
-          step.invocation?.deferred === true && step.invocation.mode === 'render-prop',
-      ) === true;
   const detachedTargetPlacement =
     options.detachedTargetPlacement ??
-    (targetInvocation?.deferred === true || hasDeferredRenderPropAncestor
-      ? 'deferred-sibling'
-      : targetStep?.wrapperNames.some((name) => isReactOverlayComponentName(name)) === true
-        ? 'overlay-sibling'
+    (targetStep?.wrapperNames.some((name) => isReactOverlayComponentName(name)) === true
+      ? 'overlay-sibling'
       : undefined);
   return Object.freeze({
     complete: options.complete,
-    ...(detachedTargetPlacement === undefined
-      ? {}
-      : { detachedTargetPlacement }),
+    ...(detachedTargetPlacement === undefined ? {} : { detachedTargetPlacement }),
     dependencyPaths: Object.freeze([...options.dependencies].sort()),
     edges: Object.freeze([...options.edges]),
     id: options.id,

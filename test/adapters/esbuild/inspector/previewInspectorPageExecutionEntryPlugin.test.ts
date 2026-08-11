@@ -139,6 +139,81 @@ describe('registerPreviewInspectorPageExecutionEntryPlugin', () => {
     expect(output).toContain('function SelectedTarget');
   });
 
+  /** Defines the synthetic owner frame even when a target-only retry omits that owner surface. */
+  it('keeps a virtual route-owner frame defined for a target-only candidate', () => {
+    const candidate = {
+      browserCandidate: {
+        id: 'target-only-owner-route',
+        root: { exportName: 'default', sourcePath: '/workspace/Target.tsx' },
+        target: { exportName: 'default', sourcePath: '/workspace/Target.tsx' },
+      },
+      compositionEdges: [],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'default',
+          id: 'target',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/Target.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: ['/workspace/Target.tsx'],
+        },
+      ],
+      evidenceSourcePaths: [],
+      executionRootContract: {
+        exportName: 'default',
+        sourcePath: '/workspace/Target.tsx',
+        surfaceId: 'target',
+      },
+      executionRootSurfaceId: 'target',
+      fidelity: 'target-only',
+      id: 'target-only-owner-route',
+      optionalSurfaces: [],
+      routeRecipe: {
+        kind: 'react-router-v6',
+        loaderPolicy: 'never-execute',
+        mounts: [
+          {
+            basePath: '/company/:companyId(\\d+)',
+            childSurfaceId: 'target',
+            contextOrigin: 'virtual-page-owner',
+            contextPattern: '/company/:companyId(\\d+)/*',
+            hasWildcardFallback: true,
+            parentSurfaceId: 'omitted-owner',
+            pattern: '/company/:companyId(\\d+)/dashboard',
+          },
+        ],
+        params: { companyId: '1' },
+        pathname: '/company/1/dashboard',
+        pattern: '/company/:companyId(\\d+)/dashboard',
+        rootOwnsRouter: false,
+        routerModuleSpecifier: 'react-router-dom',
+        searchParams: {},
+        targetRole: 'element',
+      },
+      runtimeTargetContract: {
+        exportName: 'default',
+        sourcePath: '/workspace/Target.tsx',
+        surfaceId: 'target',
+      },
+      runtimeTargetSurfaceId: 'target',
+      watchSourcePaths: ['/workspace/Target.tsx'],
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      executionRootModuleContract: createPreviewInspectorExecutionRootModuleContract({
+        exportName: 'default',
+        preparedSourceText: 'export default function Target() { return null; }',
+        sourcePath: '/workspace/Target.tsx',
+        surfaceId: 'target',
+      }),
+      target: { exportName: 'default', sourcePath: '/workspace/Target.tsx' },
+    });
+
+    expect(source).toContain('function PreviewInspectorVirtualPageOwnerRouteFrame()');
+    expect(source.match(/PreviewInspectorVirtualPageOwnerRouteFrame/gu)).toHaveLength(2);
+  });
+
   it('fails the real bundle when prepared named-root evidence drifts from the loaded module', async () => {
     const candidate = createNamedRootCandidate();
     const executionRootModuleContract = createPreviewInspectorExecutionRootModuleContract({

@@ -245,7 +245,7 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     ).toBe(analysisTarget);
   });
 
-  it('derives automatic route-leaf ownership from the compiler-selected route candidate', () => {
+  it('keeps active-document ownership for an automatically selected route candidate', () => {
     const leaf = { exportName: 'NamedPage', sourcePath: PAGE };
     const plan = {
       pageCandidates: [
@@ -264,38 +264,8 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       target: { exportName: 'default', sourcePath: APP },
     } as unknown as PreviewInspectorAncestorPlan;
     const targetMode = resolvePreviewInspectorRuntimeTargetMode(plan, undefined);
-    const candidate = {
-      browserCandidate: {
-        root: leaf,
-        routeLocation: plan.pageCandidates[0]?.routeLocation,
-        target: leaf,
-      },
-      criticalSurfaces: [
-        {
-          exportName: leaf.exportName,
-          id: 'leaf',
-          sourcePath: leaf.sourcePath,
-          strategy: 'authentic-module-export',
-        },
-      ],
-      executionRootSurfaceId: 'leaf',
-      runtimeTargetSurfaceId: 'leaf',
-    } as unknown as NonNullable<
-      Parameters<typeof resolvePreviewInspectorRuntimeOwnershipTarget>[0]['candidate']
-    >;
 
-    expect(targetMode).toBe('selected-route-leaf');
-    if (targetMode === undefined) throw new Error('Expected automatic route-leaf ownership.');
-    expect(
-      resolvePreviewInspectorRuntimeOwnershipTarget({
-        analysisTarget: { exportName: 'default', sourcePath: APP },
-        candidate,
-        diagnosticPath: APP,
-        routeSelectionResolution: 'automatic',
-        selectedLeafSourceText: 'export function NamedPage() { return <main>named</main>; }',
-        targetMode,
-      }),
-    ).toEqual(leaf);
+    expect(targetMode).toBeUndefined();
   });
 
   it('keeps active-document ownership when an automatic route already targets that document', () => {
@@ -649,6 +619,159 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
       true,
       false,
     ]);
+    const authenticRouteCandidate = candidates[0];
+    if (authenticRouteCandidate === undefined) {
+      throw new Error('Expected one authentic route candidate.');
+    }
+    const executionRoot = authenticRouteCandidate.criticalSurfaces.find(
+      (surface) => surface.id === authenticRouteCandidate.executionRootSurfaceId,
+    );
+    if (executionRoot === undefined) throw new Error('Expected an execution-root surface.');
+    const executionSource = createPreviewInspectorPageExecutionSource({
+      candidate: authenticRouteCandidate,
+      executionRootModuleContract: createPreviewInspectorExecutionRootModuleContract({
+        exportName: executionRoot.exportName,
+        preparedSourceText:
+          executionRoot.exportName === 'default'
+            ? 'export default function PreviewRouteRoot() { return null; }'
+            : `export function ${executionRoot.exportName}() { return null; }`,
+        sourcePath: executionRoot.sourcePath,
+        surfaceId: executionRoot.id,
+      }),
+      target: plan.target,
+    });
+    expect(executionSource).not.toContain('PreviewInspectorContextualTargetFallback');
+  });
+
+  it('keeps shared descendant chrome outside an outer route mount', () => {
+    const contentAndPanelPath = '/workspace/ContentAndPanel.tsx';
+    const featureBranchPath = '/workspace/FeatureBranch.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      entryPoint: {
+        kind: 'create-root',
+        occurrenceStart: 10,
+        sourcePath: '/workspace/main.tsx',
+        wrapperNames: [],
+      },
+      id: 'shared-descendant-route-path',
+      steps: [
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'Target',
+          occurrenceStart: 1,
+          sourcePath: TARGET,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'ContentAndPanel',
+          occurrenceStart: 2,
+          sourcePath: contentAndPanelPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'FeatureBranch',
+          occurrenceStart: 3,
+          sourcePath: featureBranchPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'Application',
+          occurrenceStart: 4,
+          sourcePath: APP,
+          wrapperNames: [],
+        },
+      ],
+    };
+    const routeLocation = {
+      componentExportName: 'FeatureBranch',
+      componentName: 'FeatureBranch',
+      componentSourcePath: featureBranchPath,
+      dependencyPaths: [APP, featureBranchPath],
+      evidenceKind: 'route-jsx' as const,
+      pathname: '/feature',
+      pattern: '/feature',
+      routeMounts: [
+        {
+          basePath: '/',
+          exportName: 'Application',
+          hasWildcardFallback: false,
+          routeSlotCount: 1,
+          sourcePath: APP,
+        },
+      ],
+      sourcePath: APP,
+    };
+    const createSharedCandidate = (
+      id: string,
+      root: PreviewInspectorPageCandidate['root'],
+      rootStepIndex: number,
+    ): PreviewInspectorPageCandidate => ({
+      complete: rootStepIndex === 3,
+      dependencyPaths: [TARGET, contentAndPanelPath, featureBranchPath, APP],
+      edges: [],
+      id,
+      renderPath,
+      root,
+      rootAutomaticProps: {},
+      rootOwnsRouter: rootStepIndex === 3,
+      rootStepIndex,
+      routeLocation,
+      stopReason: rootStepIndex === 3 ? 'root-reached' : 'render-path-checkpoint',
+      target: { exportName: 'FeatureBranch', sourcePath: featureBranchPath },
+      targetAutomaticProps: {},
+    });
+    const plan = {
+      pageCandidates: [
+        createSharedCandidate(
+          'shared-application',
+          { exportName: 'Application', sourcePath: APP },
+          3,
+        ),
+        createSharedCandidate(
+          'shared-route-leaf',
+          { exportName: 'FeatureBranch', sourcePath: featureBranchPath },
+          2,
+        ),
+        createSharedCandidate(
+          'shared-content-checkpoint',
+          { exportName: 'ContentAndPanel', sourcePath: contentAndPanelPath },
+          1,
+        ),
+      ],
+      renderChain: { paths: [renderPath] },
+      renderChainsByExport: { Target: { paths: [renderPath] } },
+      target: { exportName: 'Target', sourcePath: TARGET },
+    } as unknown as PreviewInspectorAncestorPlan;
+
+    const candidates = createPreviewInspectorPageExecutionCandidates({ plan });
+
+    expect(candidates.map((candidate) => candidate.fidelity)).toEqual([
+      'page-authentic',
+      'page-sliced',
+      'target-only',
+    ]);
+    expect(candidates[0]?.browserCandidate.root).toEqual({
+      exportName: 'ContentAndPanel',
+      sourcePath: contentAndPanelPath,
+    });
+    expect(candidates[0]?.browserCandidate.routeLocation).toMatchObject({
+      pathname: '/feature',
+      routeMounts: [],
+    });
+    expect(candidates[0]?.criticalSurfaces.map((surface) => surface.sourcePath)).toEqual([
+      contentAndPanelPath,
+      TARGET,
+    ]);
+    expect(candidates.every((candidate) => candidate.routeRecipe?.pathname === '/feature')).toBe(
+      true,
+    );
   });
 
   it('recreates the parent Route context for a retained useRoutes owner', async () => {

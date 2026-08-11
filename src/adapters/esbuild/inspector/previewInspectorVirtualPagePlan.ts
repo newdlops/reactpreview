@@ -147,10 +147,12 @@ export function selectPreviewInspectorVirtualPageContentCandidate(
   authoredCandidate: PreviewInspectorPageCandidate,
 ): PreviewInspectorPageCandidate {
   if (isFrameworkComposedCandidate(authoredCandidate)) return authoredCandidate;
-  const routeOwner = selectPreviewInspectorRouteOwnerCandidate(candidates, authoredCandidate);
-  if (routeOwner !== undefined) return routeOwner;
-  const selectedRouteLeaf = createPreviewInspectorSelectedRouteLeafCandidate(authoredCandidate);
-  if (selectedRouteLeaf !== undefined) return selectedRouteLeaf;
+  if (routeSelectionDescribesSelectedSurface(authoredCandidate)) {
+    const routeOwner = selectPreviewInspectorRouteOwnerCandidate(candidates, authoredCandidate);
+    if (routeOwner !== undefined) return routeOwner;
+    const selectedRouteLeaf = createPreviewInspectorSelectedRouteLeafCandidate(authoredCandidate);
+    if (selectedRouteLeaf !== undefined) return selectedRouteLeaf;
+  }
   const renderPathId = authoredCandidate.renderPath?.id;
   if (renderPathId === undefined) return authoredCandidate;
   const samePathCandidates = candidates.filter(
@@ -169,6 +171,49 @@ export function selectPreviewInspectorVirtualPageContentCandidate(
         (left, right) => right.score - left.score || left.discoveryIndex - right.discoveryIndex,
       )[0]?.candidate ?? authoredCandidate
   );
+}
+
+/**
+ * Distinguishes a selected route page from route metadata attached to a shared descendant surface.
+ *
+ * Route-choice expansion annotates every candidate on the current file's render path. When that
+ * file is shared chrome (for example a panel beside several routed pages), the resolved route leaf
+ * is only an outer corridor choice. Promoting its route owner would execute application gates while
+ * bypassing a nearer, already-proven structural checkpoint. The innermost render-path step is the
+ * authoritative selected surface whenever it exists; exact root identity remains the fallback for
+ * detached route-leaf candidates that have no reverse-path proof.
+ */
+function routeSelectionDescribesSelectedSurface(
+  authoredCandidate: PreviewInspectorPageCandidate,
+): boolean {
+  const location = readPreviewInspectorGenericRouteLocation(authoredCandidate.routeLocation);
+  const componentSourcePath = location?.componentSourcePath;
+  if (componentSourcePath === undefined) return true;
+  const normalizedComponentPath = path.normalize(componentSourcePath);
+  const renderPathSteps = authoredCandidate.renderPath?.steps ?? [];
+  const selectedSurfaceStep = renderPathSteps[0];
+  if (selectedSurfaceStep !== undefined) {
+    if (path.normalize(selectedSurfaceStep.sourcePath) === normalizedComponentPath) return true;
+    const routeStepIndex = renderPathSteps.findIndex(
+      (step) => path.normalize(step.sourcePath) === normalizedComponentPath,
+    );
+    if (
+      routeStepIndex > 0 &&
+      renderPathSteps.slice(0, routeStepIndex).some((step) => {
+        const invocationSourcePath = step.invocation?.sourcePath;
+        return (
+          invocationSourcePath !== undefined &&
+          path.normalize(invocationSourcePath) === normalizedComponentPath
+        );
+      })
+    ) {
+      // The selected document is a proven descendant rendered by this exact route page. Keep the
+      // page's route owner; merely being deeper than the catalog leaf does not make it shared chrome.
+      return true;
+    }
+    return false;
+  }
+  return path.normalize(authoredCandidate.root.sourcePath) === normalizedComponentPath;
 }
 
 /**
@@ -276,10 +321,18 @@ function createBrowserCandidate(
    * may be the first same-path candidate chosen only for dependency safety. Preserve authored route
    * identity so switching the Inspector selector changes MemoryRouter rather than only its label.
    */
-  const routeLocation = attachPreviewInspectorDirectRouteOwnerMount(
+  const attachedRouteLocation = attachPreviewInspectorDirectRouteOwnerMount(
     authoredCandidate.routeLocation ?? contentCandidate.routeLocation,
     contentCandidate.root,
   );
+  const replacedAuthoredRoot =
+    path.normalize(authoredCandidate.root.sourcePath) !==
+      path.normalize(contentCandidate.root.sourcePath) ||
+    authoredCandidate.root.exportName !== contentCandidate.root.exportName;
+  const routeLocation =
+    replacedAuthoredRoot && !routeSelectionDescribesSelectedSurface(authoredCandidate)
+      ? retainPreviewInspectorRouteStateWithoutOuterComposition(attachedRouteLocation)
+      : attachedRouteLocation;
   const routeMount = selectPreviewInspectorRouteMount(routeLocation, contentCandidate.root);
   return Object.freeze({
     ...contentCandidate,
@@ -294,6 +347,26 @@ function createBrowserCandidate(
           routeSlotCount: routeMount.routeSlotCount,
           wildcardFallbackPresent: routeMount.hasWildcardFallback,
         }),
+  });
+}
+
+/**
+ * Keeps the selected pathname and parameters for shared chrome without re-entering its outer app.
+ *
+ * Route mounts and element wrappers compose the resolved leaf, not a panel or shell nested inside
+ * that leaf's broader application path. An isolated structural checkpoint still receives a local
+ * memory location from the retained route metadata; an authentic VirtualPage owner may add back a
+ * narrower, compiler-proven mount later during Page Execution planning.
+ */
+function retainPreviewInspectorRouteStateWithoutOuterComposition(
+  routeLocation: PreviewInspectorPageCandidate['routeLocation'],
+): PreviewInspectorPageCandidate['routeLocation'] {
+  const genericLocation = readPreviewInspectorGenericRouteLocation(routeLocation);
+  if (genericLocation === undefined) return routeLocation;
+  return Object.freeze({
+    ...genericLocation,
+    elementWrappers: Object.freeze([]),
+    routeMounts: Object.freeze([]),
   });
 }
 
@@ -444,6 +517,9 @@ function collectVirtualPageShells(
     omittedOuterPath,
     shallowVisualPaths,
     contentPath,
+    contentCandidate.routeLocation,
+    contentCandidate,
+    pageCandidates,
   );
   const ownerSteps = omittedOuterPath.filter(
     (step) => isVirtualPageOwnerStep(step) || step === structuralOwnerStep,
@@ -645,7 +721,38 @@ function findNearestVirtualPageStructuralOwner(
   omittedOuterPath: readonly PreviewInspectorVirtualPagePathStep[],
   visualPaths: readonly PreviewInspectorOneHopVisualPath[],
   contentPath: string,
+  routeLocation: PreviewInspectorPageCandidate['routeLocation'],
+  contentCandidate: PreviewInspectorPageCandidate,
+  pageCandidates: readonly PreviewInspectorPageCandidate[],
 ): PreviewInspectorVirtualPagePathStep | undefined {
+  const genericRouteLocation = readPreviewInspectorGenericRouteLocation(routeLocation);
+  const exactRouteOwnerSourcePath = genericRouteLocation?.sourcePath;
+  if (exactRouteOwnerSourcePath !== undefined) {
+    const normalizedExactRouteOwnerSourcePath = path.normalize(exactRouteOwnerSourcePath);
+    const renderPathId = contentCandidate.renderPath?.id;
+    const provenStepKeys = new Set(
+      pageCandidates.flatMap((candidate) => {
+        if (path.normalize(candidate.root.sourcePath) !== normalizedExactRouteOwnerSourcePath) {
+          return [];
+        }
+        if (renderPathId !== undefined && candidate.renderPath?.id !== renderPathId) return [];
+        const rootStepIndex = candidate.rootStepIndex;
+        if (rootStepIndex === undefined) return [];
+        const rootStep = candidate.renderPath?.steps[rootStepIndex];
+        if (
+          rootStep === undefined ||
+          path.normalize(rootStep.sourcePath) !== normalizedExactRouteOwnerSourcePath
+        ) {
+          return [];
+        }
+        return [`${normalizedExactRouteOwnerSourcePath}\0${rootStep.label}`];
+      }),
+    );
+    const exactRouteOwner = [...omittedOuterPath]
+      .reverse()
+      .find((step) => provenStepKeys.has(`${path.normalize(step.sourcePath)}\0${step.label}`));
+    if (exactRouteOwner !== undefined) return exactRouteOwner;
+  }
   const corridorSourcePaths = new Set([
     contentPath,
     ...omittedOuterPath.map((step) => path.normalize(step.sourcePath)),

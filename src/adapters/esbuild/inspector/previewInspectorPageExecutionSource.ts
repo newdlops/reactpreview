@@ -116,11 +116,6 @@ export function createPreviewInspectorPageExecutionSource(
     contextualTargetWrapperExportName === undefined
       ? undefined
       : 'PreviewInspectorContextualTargetOverlayRoot';
-  const contextualTargetAcceptsAuthoredChild =
-    authoredContextualTargetEdge !== undefined &&
-    options.targetModuleContract?.transparentOrdinaryChildrenOutputExportNames.includes(
-      options.target.exportName,
-    ) === true;
   const contextualTargetSupportsMountedTransparentChildren =
     options.targetModuleContract?.transparentOrdinaryChildrenOutputExportNames.includes(
       options.target.exportName,
@@ -213,8 +208,7 @@ export function createPreviewInspectorPageExecutionSource(
         });
   const virtualPageOwnerFrame =
     routerRuntime !== undefined &&
-    virtualPageOwnerSurfaceId !== undefined &&
-    localById.has(virtualPageOwnerSurfaceId)
+    virtualPageOwnerSurfaceId !== undefined
       ? [
           `function ${virtualPageOwnerFrameLocal}() {`,
           `  return ${detachedOverlayPage ?? renderedRoot};`,
@@ -225,7 +219,8 @@ export function createPreviewInspectorPageExecutionSource(
   const routeElement = routerRuntime !== undefined ? routerRuntime.routeElement : renderedRoot;
   const contextualTargetFallbackSource =
     contextualTargetLocal === undefined ||
-    (contextualTargetEdge === undefined && !contextualTargetSupportsMountedTransparentChildren)
+    contextualTargetEdge === undefined ||
+    !contextualTargetSupportsMountedTransparentChildren
       ? []
       : [
           `const ${contextualTargetFallback}ReachabilityKey = ${JSON.stringify(contextualTargetReachabilityKey)};`,
@@ -256,18 +251,16 @@ export function createPreviewInspectorPageExecutionSource(
           "      if (typeof registration === 'function') registration();",
           '    };',
           '  }, [inspectorSession, contextualOwner]);',
-          `  const targetElement = inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? ', children' : ''}) ?? null;`,
+          `  const targetElement = inspectorSession?.createContextualTargetElement?.(${contextualTargetLocal}, ${JSON.stringify(options.target)}, contextualRoleToken.current, children) ?? null;`,
           `  return inspectorSession?.shouldRenderContextualTargetFallback?.(${contextualTargetFallback}ReachabilityKey, contextualOwner) === true`,
           `    ? ${contextualTargetWrapperLocal === undefined ? 'targetElement' : `React.createElement(${contextualTargetWrapperLocal}, { open: true }, targetElement)`}`,
-          `    : ${contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild ? 'children' : 'null'};`,
+          '    : children;',
           '}',
         ];
   const contextualRouteElement =
     contextualTargetFallbackSource.length === 0
       ? routeElement
-      : contextualTargetSupportsMountedTransparentChildren || contextualTargetAcceptsAuthoredChild
-        ? `React.createElement(${contextualTargetFallback}, null, ${routeElement})`
-        : `React.createElement(React.Fragment, null, ${routeElement}, React.createElement(${contextualTargetFallback}, null))`;
+      : `React.createElement(${contextualTargetFallback}, null, ${routeElement})`;
   const virtualPageSourceRegistrations = createVirtualPageSourceRegistrations(
     options.candidate.optionalSurfaces,
   );

@@ -173,9 +173,10 @@ describe('PreviewInspectorVirtualPagePlan', () => {
 
   /**
    * Reconstructs the full JSX frame rather than retaining only components named Layout or Shell.
-   * Authored wrappers contain before/after siblings, while alternate error UI remains inactive.
+   * Authored visual wrappers contain before/after siblings, while infrastructure providers and
+   * alternate error UI remain authentic or inactive instead of becoming detached shells.
    */
-  it('keeps providers and ordinary page siblings around the selected content slot', () => {
+  it('keeps visual wrappers and ordinary page siblings around the selected content slot', () => {
     const application = createCandidate({
       complete: true,
       id: 'application-root',
@@ -209,7 +210,7 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     });
 
     const [virtualPage] = createPreviewInspectorVirtualPageCandidates([application, page], 1, [
-      visualPath('PageProvider', 20, 'wrapper', '/workspace/application/PageProvider.tsx'),
+      visualPath('PageFrame', 20, 'wrapper', '/workspace/application/PageFrame.tsx'),
       visualPath('PrimaryNavigation', 30, 'sibling', '/workspace/application/Nav.tsx'),
       visualPath('PageTools', 40, 'component-prop', '/workspace/application/PageTools.tsx'),
       visualPath('PageFooter', 70, 'sibling', '/workspace/application/Footer.tsx'),
@@ -221,8 +222,8 @@ describe('PreviewInspectorVirtualPagePlan', () => {
         importerPath: APP_PATH,
         relation: 'wrapper',
         root: {
-          exportName: 'PageProvider',
-          sourcePath: '/workspace/application/PageProvider.tsx',
+          exportName: 'PageFrame',
+          sourcePath: '/workspace/application/PageFrame.tsx',
         },
       },
       {
@@ -449,6 +450,180 @@ describe('PreviewInspectorVirtualPagePlan', () => {
         root: { exportName: 'CompanyPortalApp', sourcePath: factoryPath },
       },
     ]);
+  });
+
+  /** Prefers the selected catalog's exact inner owner over an outer app with similar page chrome. */
+  it('keeps the exact nested route owner ahead of an outer structural shell', () => {
+    const companyOwnerPath = '/workspace/application/CompanyOwnerApp.tsx';
+    const featureOwnerPath = '/workspace/features/FeatureApp.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'nested-exact-route-owner',
+      steps: [
+        readRenderPathStep(0),
+        readRenderPathStep(1),
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'FeatureApp',
+          occurrenceStart: 25,
+          sourcePath: featureOwnerPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'CompanyOwnerApp',
+          occurrenceStart: 30,
+          sourcePath: companyOwnerPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(2),
+      ],
+    };
+    const routeLocation = {
+      componentName: 'DashboardPage',
+      dependencyPaths: [featureOwnerPath, PAGE_PATH],
+      evidenceKind: 'route-catalog' as const,
+      pathname: '/company/1/feature/dashboard',
+      pattern: '/company/:companyId(\\d+)/feature/dashboard',
+      sourcePath: featureOwnerPath,
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'nested-owner-application',
+      renderPath,
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootStepIndex: 4,
+      routeLocation,
+      stopReason: 'root-reached',
+    });
+    const featureOwner = createCandidate({
+      id: 'nested-feature-owner',
+      renderPath,
+      root: { exportName: 'FeatureApp', sourcePath: featureOwnerPath },
+      rootStepIndex: 2,
+      routeLocation,
+    });
+    const page = createCandidate({
+      id: 'nested-owner-page',
+      renderPath,
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+      routeLocation,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(
+      [application, featureOwner, page],
+      1,
+      [
+        {
+          exportName: 'CompanyPortalLayout',
+          importerPath: companyOwnerPath,
+          importKind: 'static',
+          localEdges: [],
+          moduleSpecifier: './CompanyPortalLayout',
+          occurrenceStart: 40,
+          relation: 'sibling',
+          renderedLocalName: 'CompanyPortalLayout',
+          renderBoundaryStart: 20,
+          selectedChildPath: PAGE_PATH,
+          sourcePath: '/workspace/application/CompanyPortalLayout.tsx',
+        },
+      ],
+    );
+
+    expect(virtualPage?.contentCandidate).toBe(page);
+    expect(virtualPage?.recipe.shells.filter((shell) => shell.relation === 'owner')).toEqual([
+      {
+        importerPath: featureOwnerPath,
+        relation: 'owner',
+        root: { exportName: 'FeatureApp', sourcePath: featureOwnerPath },
+      },
+    ]);
+    expect(
+      virtualPage?.recipe.shells
+        .filter((shell) => shell.relation === 'owner')
+        .map((shell) => shell.root.sourcePath),
+    ).not.toContain(companyOwnerPath);
+  });
+
+  /** Does not mistake a same-file route registry object for the exported application owner. */
+  it('keeps a proven route owner ahead of an unexported same-file catalog', () => {
+    const routeOwnerPath = '/workspace/application/InvestorApp.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'same-file-route-catalog',
+      steps: [
+        readRenderPathStep(0),
+        readRenderPathStep(1),
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'IrPages',
+          occurrenceStart: 25,
+          sourcePath: routeOwnerPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'value-flow',
+          label: 'VcmInvestorGpApp',
+          occurrenceStart: 30,
+          sourcePath: routeOwnerPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(2),
+      ],
+    };
+    const routeLocation = {
+      componentName: 'DashboardPage',
+      dependencyPaths: [routeOwnerPath, PAGE_PATH],
+      evidenceKind: 'route-catalog' as const,
+      pathname: '/investor/ir',
+      pattern: '/investor/ir',
+      sourcePath: routeOwnerPath,
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'catalog-application',
+      renderPath,
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootStepIndex: 4,
+      routeLocation,
+      stopReason: 'root-reached',
+    });
+    const routeOwner = createCandidate({
+      id: 'catalog-route-owner',
+      renderPath,
+      root: { exportName: 'VcmInvestorGpApp', sourcePath: routeOwnerPath },
+      rootStepIndex: 3,
+      routeLocation,
+    });
+    const page = createCandidate({
+      id: 'catalog-page',
+      renderPath,
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+      routeLocation,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(
+      [application, routeOwner, page],
+      1,
+    );
+
+    expect(virtualPage?.contentCandidate).toBe(page);
+    expect(virtualPage?.recipe.shells.filter((shell) => shell.relation === 'owner')).toEqual([
+      {
+        importerPath: routeOwnerPath,
+        relation: 'owner',
+        root: { exportName: 'VcmInvestorGpApp', sourcePath: routeOwnerPath },
+      },
+    ]);
+    expect(virtualPage?.recipe.shells.map((shell) => shell.root.exportName)).not.toContain(
+      'IrPages',
+    );
   });
 
   /** Rejects mutually exclusive route-layout siblings instead of stacking every catalog branch. */
@@ -835,10 +1010,230 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     expect(virtualPage?.browserCandidate.routeLocation?.pathname).toBe('/dashboard');
   });
 
+  /**
+   * A route choice attached to shared page chrome describes only the outer corridor. Executing its
+   * application owner can stop at an unrelated route gate before the selected panel ever mounts.
+   */
+  it('keeps the nearest shared-surface checkpoint outside the selected route leaf', () => {
+    const selectedPanelPath = '/workspace/features/SelectedPanel.tsx';
+    const contentAndPanelPath = '/workspace/layout/ContentAndPanel.tsx';
+    const featureRoutePath = '/workspace/routes/FeatureRoute.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'shared-panel-through-route',
+      steps: [
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'SelectedPanel',
+          occurrenceStart: 10,
+          sourcePath: selectedPanelPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'ContentAndPanel',
+          occurrenceStart: 20,
+          sourcePath: contentAndPanelPath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'FeatureRoute',
+          occurrenceStart: 30,
+          sourcePath: featureRoutePath,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed',
+          kind: 'component-render',
+          label: 'Application',
+          occurrenceStart: 40,
+          sourcePath: APP_PATH,
+          wrapperNames: [],
+        },
+      ],
+    };
+    const routeLocation = {
+      componentExportName: 'FeatureRoute',
+      componentName: 'FeatureRoute',
+      componentSourcePath: featureRoutePath,
+      dependencyPaths: [APP_PATH, featureRoutePath],
+      evidenceKind: 'route-jsx' as const,
+      pathname: '/feature',
+      pattern: '/feature',
+      routeMounts: [
+        {
+          basePath: '/',
+          exportName: 'Application',
+          hasWildcardFallback: false,
+          routeSlotCount: 1,
+          sourcePath: APP_PATH,
+        },
+      ],
+      sourcePath: APP_PATH,
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'shared-panel-application',
+      renderPath,
+      root: { exportName: 'Application', sourcePath: APP_PATH },
+      rootOwnsRouter: true,
+      rootStepIndex: 3,
+      routeLocation,
+      stopReason: 'root-reached',
+      target: { exportName: 'FeatureRoute', sourcePath: featureRoutePath },
+    });
+    const contentAndPanel = createCandidate({
+      id: 'shared-panel-checkpoint',
+      renderPath,
+      root: { exportName: 'ContentAndPanel', sourcePath: contentAndPanelPath },
+      rootStepIndex: 1,
+      routeLocation,
+      target: { exportName: 'FeatureRoute', sourcePath: featureRoutePath },
+    });
+    const featureRoute = createCandidate({
+      id: 'shared-panel-route-leaf',
+      renderPath,
+      root: { exportName: 'FeatureRoute', sourcePath: featureRoutePath },
+      rootStepIndex: 2,
+      routeLocation,
+      target: { exportName: 'FeatureRoute', sourcePath: featureRoutePath },
+    });
+
+    expect(
+      selectPreviewInspectorVirtualPageContentCandidate(
+        [application, featureRoute, contentAndPanel],
+        featureRoute,
+      ),
+    ).toBe(contentAndPanel);
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates(
+      [application, featureRoute, contentAndPanel],
+      1,
+    );
+
+    expect(virtualPage?.contentCandidate).toBe(contentAndPanel);
+    expect(virtualPage?.browserCandidate.root).toEqual(contentAndPanel.root);
+    expect(virtualPage?.browserCandidate.routeLocation).toEqual({
+      ...routeLocation,
+      elementWrappers: [],
+      routeMounts: [],
+    });
+  });
+
+  /** Keeps the inner route owner when the selected component is proven below its concrete page. */
+  it('keeps a route owner for a target reached through the selected page invocation', () => {
+    const featureAppPath = '/workspace/routes/FeatureApp.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'selected-page-descendant',
+      steps: [
+        {
+          ...readRenderPathStep(0),
+          invocation: {
+            calleeName: 'TargetPanel',
+            mode: 'jsx',
+            sourcePath: PAGE_PATH,
+          },
+        },
+        readRenderPathStep(1),
+        {
+          certainty: 'conditional',
+          kind: 'route-branch',
+          label: 'FeatureApp',
+          occurrenceStart: 25,
+          sourcePath: featureAppPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(2),
+      ],
+    };
+    const routeLocation = {
+      componentExportName: 'DashboardPage',
+      componentName: 'DashboardPage',
+      componentSourcePath: PAGE_PATH,
+      dependencyPaths: [featureAppPath, PAGE_PATH],
+      evidenceKind: 'route-catalog' as const,
+      pathname: '/company/1/feature/dashboard',
+      pattern: '/company/:companyId(\\d+)/feature/dashboard',
+      routeMounts: [
+        {
+          basePath: '/company/:companyId(\\d+)/feature',
+          contextOrigin: 'virtual-page-owner' as const,
+          contextPattern: '/company/:companyId(\\d+)/feature/*',
+          exportName: 'FeatureApp',
+          hasWildcardFallback: true,
+          routeSlotCount: 2,
+          sourcePath: featureAppPath,
+        },
+      ],
+      sourcePath: featureAppPath,
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'selected-page-application',
+      renderPath,
+      root: { exportName: 'Application', sourcePath: APP_PATH },
+      rootOwnsRouter: true,
+      rootStepIndex: 3,
+      routeLocation,
+      stopReason: 'root-reached',
+    });
+    const featureApp = createCandidate({
+      id: 'selected-page-feature-app',
+      renderPath,
+      root: { exportName: 'FeatureApp', sourcePath: featureAppPath },
+      rootStepIndex: 2,
+      routeLocation,
+    });
+    const page = createCandidate({
+      id: 'selected-page-checkpoint',
+      renderPath,
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+      rootStepIndex: 1,
+      routeLocation,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates([
+      application,
+      featureApp,
+      page,
+    ]);
+
+    expect(virtualPage?.contentCandidate).toBe(featureApp);
+    expect(virtualPage?.browserCandidate.root).toEqual(featureApp.root);
+    const retainedRouteLocation = virtualPage?.browserCandidate.routeLocation;
+    expect(
+      retainedRouteLocation !== undefined && 'routeMounts' in retainedRouteLocation
+        ? retainedRouteLocation.routeMounts
+        : undefined,
+    ).toEqual(routeLocation.routeMounts);
+  });
+
   it('mounts a direct nested route owner instead of its detached child page', () => {
     const ownerPath = '/workspace/routes/NestedOwner.tsx';
+    const routeLeafRenderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'nested-route-leaf',
+      steps: [
+        {
+          ...readRenderPathStep(0),
+          label: 'ChildPage',
+          sourcePath: PAGE_PATH,
+        },
+        {
+          ...readRenderPathStep(1),
+          label: 'NestedOwner',
+          sourcePath: ownerPath,
+        },
+      ],
+    };
     const child = createCandidate({
       id: 'nested-child',
+      renderPath: routeLeafRenderPath,
       root: { exportName: 'default', sourcePath: PAGE_PATH },
       routeLocation: {
         componentExportName: 'default',
@@ -862,6 +1257,7 @@ describe('PreviewInspectorVirtualPagePlan', () => {
     });
     const owner = createCandidate({
       id: 'nested-owner',
+      renderPath: routeLeafRenderPath,
       root: { exportName: 'default', sourcePath: ownerPath },
       rootOwnsRouter: false,
     });

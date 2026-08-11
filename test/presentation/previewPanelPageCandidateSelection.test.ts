@@ -2,6 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { PreviewPanelPageCandidateSelection } from '../../src/presentation/previewPanelPageCandidateSelection';
 
 describe('PreviewPanelPageCandidateSelection', () => {
+  it('seeds the automatic page candidate when its first execution retry comes from the runtime', () => {
+    const selection = new PreviewPanelPageCandidateSelection();
+    const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;
+
+    expect(selection.beginExecutionCandidate('execution-sliced', 'page-auto')).toBe(true);
+    expect(selection.applyTo(target).request).toMatchObject({
+      inspectorPageCandidateId: 'page-auto',
+      inspectorPageExecutionCandidateId: 'execution-sliced',
+    });
+
+    selection.commit();
+    expect(selection.current()).toBe('page-auto');
+    expect(selection.currentExecutionCandidate()).toBe('execution-sliced');
+    expect(selection.beginExecutionCandidate('execution-target', 'page-other')).toBe(false);
+  });
+
   it('commits one host-owned inner execution retry without changing the browser page candidate', () => {
     const selection = new PreviewPanelPageCandidateSelection();
     const target = { request: { documentPath: '/workspace/Target.tsx' } } as never;

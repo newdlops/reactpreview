@@ -79,7 +79,7 @@ export class PreviewPanelSession implements vscode.Disposable {
   private displayedArtifactHash: string | undefined;
   private displayedRuntimeRevision = 0;
   private moduleImportMapIdentity: string | undefined;
-  private readonly preparationState = new PreviewPanelPreparationState();
+  private readonly preparationState: PreviewPanelPreparationState;
   private readonly inspectorRouteSelection = new PreviewPanelRouteSelection();
   private readonly inspectorPageCandidateSelection = new PreviewPanelPageCandidateSelection();
   private readonly inspectorSelection = new PreviewPanelInspectorSelectionController();
@@ -105,6 +105,7 @@ export class PreviewPanelSession implements vscode.Disposable {
   private hotReloadSequence = 0;
   private verifiedTargetOutputArtifactHash: string | undefined;
   public constructor(private readonly options: PreviewPanelSessionOptions) {
+    this.preparationState = new PreviewPanelPreparationState(options.renderMode);
     this.targetPath = canonicalizeExistingPath(options.initialTarget.request.documentPath);
     this.dependencies = createExistingPathIdentitySet([options.initialTarget.request.documentPath]);
     this.performanceTrace = new PreviewPerformanceTrace((trace) => {
@@ -831,7 +832,8 @@ export class PreviewPanelSession implements vscode.Disposable {
   private selectInspectorPageExecutionRetry(
     request: PreviewInspectorPageExecutionRetryRequest,
   ): void {
-    if (this.inspectorPageCandidateSelection.current() !== request.candidateId) return;
+    const currentCandidateId = this.inspectorPageCandidateSelection.current();
+    if (currentCandidateId !== undefined && currentCandidateId !== request.candidateId) return;
     const admission = this.inspectorSelection.beginPageCandidate(
       {
         candidateId: request.candidateId,
@@ -843,7 +845,10 @@ export class PreviewPanelSession implements vscode.Disposable {
     );
     this.publishInspectorSelectionStatuses(admission.statuses);
     if (!admission.shouldBuild) return;
-    if (!this.inspectorPageCandidateSelection.beginExecutionCandidate(request.executionCandidateId)) {
+    if (!this.inspectorPageCandidateSelection.beginExecutionCandidate(
+      request.executionCandidateId,
+      request.candidateId,
+    )) {
       this.rollbackInspectorSelection(this.revision + 1, 'already-active');
       return;
     }

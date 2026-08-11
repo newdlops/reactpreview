@@ -6,7 +6,7 @@
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import type { PreparedPreview } from '../../src/domain/preview';
+import type { PreparedPreview, PreviewRenderMode } from '../../src/domain/preview';
 import { PreviewBuildCancelledError } from '../../src/domain/previewBuildExecution';
 import type { ResolvedPreviewTarget } from '../../src/presentation/activePreviewTarget';
 import {
@@ -256,6 +256,36 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
     fixture.session.dispose();
   });
 
+  /** Defers Page Inspector context enrichment until browser acknowledgement of its fast artifact. */
+  it('enqueues one Page Inspector context enrichment build after browser commit', async () => {
+    const fixture = createSessionFixture('page-corridor', undefined, 'page-inspector');
+
+    fixture.session.start();
+    await settleSessionBuild();
+
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.execute.mock.calls[0]?.[0]).toMatchObject({
+      buildIntent: 'foreground',
+      preparationMode: 'fast',
+      renderMode: 'page-inspector',
+    });
+
+    fixture.panel.emitMessage({
+      revision: 1,
+      token: '1:page-corridor',
+      type: 'react-preview-runtime-ready',
+    });
+    await settleSessionBuild();
+
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+    expect(fixture.execute.mock.calls[1]?.[0]).toMatchObject({
+      buildIntent: 'context-enrichment',
+      preparationMode: 'corridor',
+      renderMode: 'page-inspector',
+    });
+    fixture.session.dispose();
+  });
+
   /** A proven fast target must not be replaced by a slower optional corridor regression. */
   it('cancels optional context enrichment after exact target output is verified', async () => {
     const contentHash = 'aaaaaaaaaaaaaaaa';
@@ -289,7 +319,7 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
         warn: vi.fn(),
       } as unknown as vscode.LogOutputChannel,
       panel: panel as unknown as vscode.WebviewPanel,
-      renderMode: 'page-inspector',
+      renderMode: 'component',
       resolveTarget: vi.fn(() => Promise.resolve(target)),
     });
 
@@ -347,7 +377,7 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
         warn: vi.fn(),
       } as unknown as vscode.LogOutputChannel,
       panel: panel as unknown as vscode.WebviewPanel,
-      renderMode: 'page-inspector',
+      renderMode: 'component',
       resolveTarget: vi.fn(() => Promise.resolve(target)),
     });
 
@@ -394,7 +424,7 @@ describe('PreviewPanelSession initial runtime watchdog', () => {
         warn: vi.fn(),
       } as unknown as vscode.LogOutputChannel,
       panel: panel as unknown as vscode.WebviewPanel,
-      renderMode: 'page-inspector',
+      renderMode: 'component',
       resolveTarget: vi.fn(() => Promise.resolve(target)),
     });
 
@@ -454,7 +484,11 @@ interface SessionFixture {
  * @param contentHash Artifact identity encoded into the full-document startup token.
  * @returns Session plus observable panel and release spy.
  */
-function createSessionFixture(contentHash: string, enrichmentFailure?: Error): SessionFixture {
+function createSessionFixture(
+  contentHash: string,
+  enrichmentFailure?: Error,
+  renderMode: PreviewRenderMode = 'component',
+): SessionFixture {
   const target = createTarget('/workspace/src/WatchdogTarget.tsx');
   const panel = new WatchdogPanel();
   const releaseArtifact = vi.fn(() => Promise.resolve());
@@ -483,7 +517,7 @@ function createSessionFixture(contentHash: string, enrichmentFailure?: Error): S
       warn: vi.fn(),
     } as unknown as vscode.LogOutputChannel,
     panel: panel as unknown as vscode.WebviewPanel,
-    renderMode: 'component',
+    renderMode,
     resolveTarget: vi.fn(() => Promise.resolve(target)),
   });
   return { execute, panel, releaseArtifact, session };

@@ -64,8 +64,8 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('full');
   });
 
-  /** Paints the direct Inspector target before package-wide actual-parent discovery completes. */
-  it('defers complete page context until after the first Page Inspector artifact', async () => {
+  /** Publishes a fast Page Inspector artifact before its context enrichment. */
+  it('defers complete Page Inspector context until after the first artifact', async () => {
     const execute = vi.fn<BuildPreview['execute']>(() =>
       Promise.resolve(createPreparedPreview('page-first-paint')),
     );
@@ -80,6 +80,7 @@ describe('preparePreviewFirstPaint', () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      buildIntent: 'foreground',
       preparationMode: 'fast',
       renderMode: 'page-inspector',
     });
@@ -87,8 +88,8 @@ describe('preparePreviewFirstPaint', () => {
     expect(result.preparedPreview.artifact.contentHash).toBe('page-first-paint');
   });
 
-  /** Always schedules corridor validation after fast Page Inspector paint. */
-  it('keeps complete fast Page Inspector coverage eligible for corridor enrichment', async () => {
+  /** Keeps complete Page Inspector fast coverage eligible for deferred context enrichment. */
+  it('requests Page Inspector enrichment after a complete fast build', async () => {
     const execute = vi.fn<BuildPreview['execute']>(() =>
       Promise.resolve({
         ...createPreparedPreview('page-complete'),
@@ -105,6 +106,11 @@ describe('preparePreviewFirstPaint', () => {
     });
 
     expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      buildIntent: 'foreground',
+      preparationMode: 'fast',
+      renderMode: 'page-inspector',
+    });
     expect(result.requiresContextEnrichment).toBe(true);
     expect(result.preparedPreview.contextCoverage).toBe('complete');
   });

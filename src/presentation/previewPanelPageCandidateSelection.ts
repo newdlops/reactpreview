@@ -45,14 +45,24 @@ export class PreviewPanelPageCandidateSelection {
   }
 
   /** Starts one host-owned inner-fidelity retry without changing the visible browser candidate. */
-  public beginExecutionCandidate(executionCandidateId: string): boolean {
+  public beginExecutionCandidate(
+    executionCandidateId: string,
+    candidateId = this.candidateId,
+  ): boolean {
+    const selectedCandidateId = this.hasPendingSelection
+      ? this.pendingCandidateId
+      : this.candidateId;
+    const selectedExecutionCandidateId = this.hasPendingSelection
+      ? this.pendingExecutionCandidateId
+      : this.executionCandidateId;
     if (
-      this.candidateId === undefined ||
-      (this.hasPendingSelection ? this.pendingExecutionCandidateId : this.executionCandidateId) ===
-        executionCandidateId
-    )
+      candidateId === undefined ||
+      (selectedCandidateId !== undefined && selectedCandidateId !== candidateId) ||
+      (selectedCandidateId === candidateId && selectedExecutionCandidateId === executionCandidateId)
+    ) {
       return false;
-    this.pendingCandidateId = this.candidateId;
+    }
+    this.pendingCandidateId = selectedCandidateId ?? candidateId;
     this.pendingExecutionCandidateId = executionCandidateId;
     this.hasPendingSelection = true;
     return true;

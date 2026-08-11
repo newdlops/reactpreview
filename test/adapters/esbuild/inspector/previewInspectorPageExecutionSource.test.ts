@@ -182,7 +182,85 @@ describe('createPreviewInspectorPageExecutionSource', () => {
       'createContextualTargetElement?.(Surface1, {"exportName":"TargetTable","sourcePath":"/workspace/TargetTable.tsx"}, contextualRoleToken.current)',
     );
     expect(source).toContain('    : null;');
+    expect(source).toContain('function PreviewInspectorContextualTargetParentFrame(frameProps)');
     expect(source).toContain(
+      'React.createElement(PreviewInspectorExecutionRootBridge, frameProps)',
+    );
+    expect(source).toContain(
+      'React.createElement(PreviewInspectorContextualTargetParentFrame, null)',
+    );
+  });
+
+  /** Keeps contextual recovery inside the authored parent slot instead of after outer page chrome. */
+  it('mounts an inactive wizard fallback inside its outer layout content', () => {
+    const candidate = {
+      browserCandidate: { id: 'inactive-wizard' },
+      compositionEdges: [
+        {
+          childSurfaceId: 'page',
+          mode: 'children-slot',
+          parentSurfaceId: 'layout',
+          placementIndex: 0,
+        },
+        {
+          childSurfaceId: 'target',
+          mode: 'contains-authored-child',
+          parentSurfaceId: 'page',
+          placementIndex: 0,
+        },
+      ],
+      criticalSurfaces: [
+        {
+          bypassedWrapperNames: [],
+          exportName: 'CompanyLayout',
+          id: 'layout',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/CompanyLayout.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'EditPage',
+          id: 'page',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/EditPage.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+        {
+          bypassedWrapperNames: [],
+          exportName: 'EditWizardForm',
+          id: 'target',
+          omittedTopLevelEffectCount: 0,
+          sourcePath: '/workspace/EditWizardForm.tsx',
+          strategy: 'authentic-module-export',
+          watchSourcePaths: [],
+        },
+      ],
+      executionRootSurfaceId: 'layout',
+      runtimeTargetSurfaceId: 'target',
+    } as unknown as PreviewInspectorPageExecutionCandidate;
+
+    const source = createPreviewInspectorPageExecutionSource({
+      candidate,
+      executionRootModuleContract: createExecutionRootContract(candidate),
+      target: { exportName: 'EditWizardForm', sourcePath: '/workspace/EditWizardForm.tsx' },
+      targetModuleContract: createPreviewInspectorTargetModuleContract({
+        preparedSourceText:
+          'export function EditWizardForm() { return <WizardForm>{() => null}</WizardForm>; }',
+        selectedExportNames: ['EditWizardForm'],
+        sourcePath: '/workspace/EditWizardForm.tsx',
+      }),
+    });
+
+    expect(source).toContain(
+      'React.createElement(Surface1, frameProps),\n    React.createElement(PreviewInspectorContextualTargetFallback, null)',
+    );
+    expect(source).toContain(
+      'React.createElement(PreviewInspectorExecutionRootBridge, null, React.createElement(PreviewInspectorContextualTargetParentFrame, null))',
+    );
+    expect(source).not.toContain(
       'React.createElement(React.Fragment, null, React.createElement(PreviewInspectorExecutionRootBridge, null), React.createElement(PreviewInspectorContextualTargetFallback, null))',
     );
   });

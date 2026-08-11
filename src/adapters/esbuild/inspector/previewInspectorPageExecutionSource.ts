@@ -72,6 +72,7 @@ export function createPreviewInspectorPageExecutionSource(
   const selectedRouteSurfacePassthrough = 'PreviewInspectorSelectedRouteSurfacePassthrough';
   const selectedRouteSurfaceResolver = 'PreviewInspectorResolveSelectedRouteSurface';
   const contextualTargetFallback = 'PreviewInspectorContextualTargetFallback';
+  const contextualTargetParentFrame = 'PreviewInspectorContextualTargetParentFrame';
   const nextAppPageProps = 'PreviewInspectorNextAppPageProps';
   const nextAppPageRoot = options.candidate.browserCandidate.root;
   const nextAppLayoutEdges = options.candidate.compositionEdges.filter(
@@ -128,6 +129,21 @@ export function createPreviewInspectorPageExecutionSource(
     retainedRoutePage: contextualTargetSupportsMountedTransparentChildren,
   });
   localById.set(root.id, executionRootBridge);
+  // Keep ordinary recovery beside its authored parent inside any outer layout. Mounting it beside
+  // the complete route element places forms after application chrome such as a global footer.
+  const contextualTargetParentSurfaceId =
+    contextualTargetEdge !== undefined &&
+    options.targetModuleContract !== undefined &&
+    !contextualTargetSupportsMountedTransparentChildren
+      ? contextualTargetEdge.parentSurfaceId
+      : undefined;
+  const contextualTargetParentLocal =
+    contextualTargetParentSurfaceId === undefined
+      ? undefined
+      : localById.get(contextualTargetParentSurfaceId);
+  if (contextualTargetParentLocal !== undefined && contextualTargetParentSurfaceId !== undefined) {
+    localById.set(contextualTargetParentSurfaceId, contextualTargetParentFrame);
+  }
   const compositionRoot = surfaces.find((surface) => !childIds.has(surface.id)) ?? root;
   const render = (surfaceId: string, active: Set<string>): string => {
     const local = localById.get(surfaceId);
@@ -256,12 +272,27 @@ export function createPreviewInspectorPageExecutionSource(
           `    : ${contextualTargetSupportsMountedTransparentChildren ? 'children' : 'null'};`,
           '}',
         ];
+  const contextualTargetParentFrameSource =
+    contextualTargetFallbackSource.length === 0 || contextualTargetParentLocal === undefined
+      ? []
+      : [
+          `function ${contextualTargetParentFrame}(frameProps) {`,
+          '  return React.createElement(',
+          '    React.Fragment,',
+          '    null,',
+          `    React.createElement(${contextualTargetParentLocal}, frameProps),`,
+          `    React.createElement(${contextualTargetFallback}, null),`,
+          '  );',
+          '}',
+        ];
   const contextualRouteElement =
     contextualTargetFallbackSource.length === 0
       ? routeElement
       : contextualTargetSupportsMountedTransparentChildren
         ? `React.createElement(${contextualTargetFallback}, null, ${routeElement})`
-        : `React.createElement(React.Fragment, null, ${routeElement}, React.createElement(${contextualTargetFallback}, null))`;
+        : contextualTargetParentFrameSource.length > 0
+          ? routeElement
+          : `React.createElement(React.Fragment, null, ${routeElement}, React.createElement(${contextualTargetFallback}, null))`;
   const virtualPageSourceRegistrations = createVirtualPageSourceRegistrations(
     options.candidate.optionalSurfaces,
   );
@@ -312,6 +343,7 @@ export function createPreviewInspectorPageExecutionSource(
     `    : React.createElement(${executionRootLocal}, rootProps);`,
     '}',
     ...contextualTargetFallbackSource,
+    ...contextualTargetParentFrameSource,
     ...virtualPageOwnerFrame,
     'export default function PreviewInspectorPageExecution(previewProps) {',
     `  return React.createElement(${executionPropsContext}.Provider, { value: previewProps ?? Object.freeze({}) }, ${contextualRouteElement});`,

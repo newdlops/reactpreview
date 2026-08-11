@@ -71,7 +71,20 @@ function collectPreviewInspectorLocalUiControllerLeaves(value) {
       const path = [...current.path, propertyName];
       const visibilityName = normalizePreviewInspectorLocalUiStateName(propertyName, false);
       if (child === false && visibilityName !== undefined) {
-        visibility.push({ name: visibilityName, path: path.join('.') });
+        const callableLeaves = new Set();
+        let visibilityDescriptors;
+        try { visibilityDescriptors = Object.getOwnPropertyDescriptors(current.value); } catch {}
+        for (const descriptor of Object.values(visibilityDescriptors ?? {})) {
+          if (Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'function') {
+            callableLeaves.add(descriptor.value);
+          }
+        }
+        visibility.push({
+          callableLeaves,
+          name: visibilityName,
+          path: path.join('.'),
+          receiver: current.value,
+        });
         continue;
       }
       const actionName = normalizePreviewInspectorLocalUiStateName(propertyName, true);
@@ -114,7 +127,9 @@ function rememberPreviewInspectorLocalUiController(metadata, value) {
         : undefined,
     receiver: pair.action.receiver,
     sourcePath: metadata.sourcePath.replaceAll('\\', '/'),
+    visibilityCallableLeaves: pair.visibility.callableLeaves,
     visibilityPath: pair.visibility.path,
+    visibilityReceiver: pair.visibility.receiver,
   };
   controllers.set(metadata.id, controller);
   return controller;
@@ -151,6 +166,69 @@ function hasPreviewInspectorExactTargetLocalUiOverlayEvidence(state) {
     String(condition.sourcePath ?? '').replaceAll('\\', '/') === targetSourcePath &&
     exactOwnerNames.has(condition.ownerName),
   );
+}
+
+/** Reads an own data property without invoking project accessors or inherited behavior. */
+function readPreviewInspectorLocalUiOwnData(value, propertyName) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return undefined;
+  }
+  let descriptor;
+  try { descriptor = Object.getOwnPropertyDescriptor(value, propertyName); } catch { return undefined; }
+  return descriptor !== undefined && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+}
+
+/** Finds the one committed exact target boundary without retaining project props beyond this probe. */
+function readPreviewInspectorExactTargetLocalUiBoundaries(state) {
+  const boundaries = previewInspectorSession.boundariesByExport?.get?.(state?.targetExportName);
+  if (typeof boundaries?.values !== 'function') return [];
+  const targetSourcePath = String(state?.targetSourcePath ?? '').replaceAll('\\', '/');
+  return [...boundaries].filter((boundary) => {
+    const props = readPreviewInspectorLocalUiOwnData(boundary, 'props');
+    return readPreviewInspectorLocalUiOwnData(props, 'exportName') === state.targetExportName &&
+      String(readPreviewInspectorLocalUiOwnData(props, 'sourcePath') ?? '').replaceAll('\\', '/') ===
+        targetSourcePath;
+  });
+}
+
+/** Proves a target input prop still holds the caller's false-state record or callback identity. */
+function hasPreviewInspectorCallerLocalUiTargetPropProof(boundary, controller) {
+  const boundaryProps = readPreviewInspectorLocalUiOwnData(boundary, 'props');
+  const targetElement = readPreviewInspectorLocalUiOwnData(boundaryProps, 'children');
+  const targetProps = readPreviewInspectorLocalUiOwnData(targetElement, 'props');
+  const receiver = controller?.visibilityReceiver;
+  const callableLeaves = controller?.visibilityCallableLeaves;
+  if (
+    (typeof receiver !== 'object' && typeof receiver !== 'function') || receiver === null ||
+    !(callableLeaves instanceof Set)
+  ) return false;
+  const pending = [targetProps];
+  let visited = 0;
+  while (pending.length > 0 && visited < 48) {
+    const current = pending.shift();
+    if ((typeof current !== 'object' && typeof current !== 'function') || current === null) continue;
+    visited += 1;
+    let descriptors;
+    try { descriptors = Object.getOwnPropertyDescriptors(current); } catch { continue; }
+    for (const [propertyName, descriptor] of Object.entries(descriptors).slice(0, 32)) {
+      if (blockedInspectorPropNames.has(propertyName) || !Object.hasOwn(descriptor, 'value')) continue;
+      const child = descriptor.value;
+      if (child === receiver || (typeof child === 'function' && callableLeaves.has(child))) return true;
+      if (typeof child === 'object' && child !== null && visited < 48) pending.push(child);
+    }
+  }
+  return false;
+}
+
+/** Admits a caller controller only through one authored path and one identity-safe target input. */
+function hasPreviewInspectorCallerLocalUiControllerProof(state, controller) {
+  if (
+    !Array.isArray(state?.applicationPath) ||
+    !state.applicationPath.includes(controller?.ownerName) ||
+    controller?.sourcePath === state.targetSourcePath
+  ) return false;
+  const boundaries = readPreviewInspectorExactTargetLocalUiBoundaries(state);
+  return boundaries.length === 1 && hasPreviewInspectorCallerLocalUiTargetPropProof(boundaries[0], controller);
 }
 
 /** Retains an authored positive overlay listener without changing emitter dispatch semantics. */
@@ -231,9 +309,10 @@ function autoActivatePreviewInspectorTargetLocalUiController(state) {
   }
   const targetSourcePath = String(state.targetSourcePath ?? '').replaceAll('\\', '/');
   const matches = [...previewInspectorSession.localUiControllers.values()].filter((controller) =>
-    controller?.reachabilityKey === state.key &&
-    controller.sourcePath === targetSourcePath &&
-    exactOwnerNames.has(controller.ownerName),
+    controller?.reachabilityKey === state.key && (
+      (controller.sourcePath === targetSourcePath && exactOwnerNames.has(controller.ownerName)) ||
+      hasPreviewInspectorCallerLocalUiControllerProof(state, controller)
+    ),
   );
   if (matches.length !== 1) return undefined;
   const controller = matches[0];

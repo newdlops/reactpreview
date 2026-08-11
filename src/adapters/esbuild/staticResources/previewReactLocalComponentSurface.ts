@@ -150,7 +150,9 @@ function resolveExpression(
       depth + 1,
     );
     active.delete(current.text);
-    return resolved;
+    return resolved === undefined || resolved.localName !== undefined
+      ? resolved
+      : Object.freeze({ ...resolved, localName: current.text });
   }
   if (!ts.isCallExpression(current) || current.arguments.length === 0) return undefined;
   const wrapper = readCalleeName(current.expression);

@@ -49,6 +49,37 @@ describe('React switch rendering instrumentation', () => {
     expect(transformed.match(/"selectable":false/gu)).toHaveLength(3);
   });
 
+  /** Observes static members in authored order and admits stacked render cases with an opaque default. */
+  it('selects static-member cases without evaluating them ahead of the authored switch', () => {
+    const source = [
+      'export function AgendaField({ agenda }) {',
+      '  switch (agenda) {',
+      '    case AGENDA.FINANCIAL_STATEMENTS: return <FinancialStatementsField />;',
+      '    case AgendaCeoAddressChange.type: return <CeoAddressChangeField />;',
+      "    case 'empty-a':",
+      "    case 'empty-b': return null;",
+      '    default:',
+      '      console.warn(agenda);',
+      '      return null;',
+      '  }',
+      '}',
+    ].join('\n');
+
+    const transformed = instrumentReactSwitchRendering('/workspace/AgendaField.tsx', source);
+
+    expect(transformed.match(/\.resolveRenderChoice\(/gu)).toHaveLength(1);
+    expect(transformed.match(/\.observeRenderChoiceCase\(/gu)).toHaveLength(2);
+    expect(transformed).toContain('observeRenderChoiceCase');
+    expect(transformed).toContain('(AGENDA.FINANCIAL_STATEMENTS)');
+    expect(transformed).toContain('(AgendaCeoAddressChange.type)');
+    expect(transformed).toContain('"calls":["CeoAddressChangeField"]');
+    expect(transformed).toContain("case 'empty-a' \u2192 empty return");
+    expect(transformed).toContain('default \u2192 authored branch');
+    expect(transformed.match(/"observedValueKey":"[a-f0-9]{16}"/gu)).toHaveLength(2);
+    expect(transformed.match(/"selectable":true/gu)).toHaveLength(4);
+    expect(transformed.match(/"selectable":false/gu)).toHaveLength(1);
+  });
+
   /** Accepts exact imported portals and null while composing with existing boolean JSX controls. */
   it('composes portal switch choices with boolean conditional instrumentation', () => {
     const source = [

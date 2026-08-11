@@ -19,6 +19,8 @@ function normalizePreviewGeneratedListSampleCount(value) {
 /** Adds deterministic variation only to familiar generated display/identity strings. */
 function diversifyPreviewGeneratedListString(value, fieldName, itemIndex) {
   if (itemIndex === 0 || value.length === 0) return value;
+  // GraphQL discriminators select authored union branches and must remain identical for every row.
+  if (fieldName === '__typename') return value;
   const name = String(fieldName).replaceAll('_', '').toLowerCase();
   const suffix = String(itemIndex + 1);
   if (name === 'id' || name.endsWith('id') || name === 'uuid') return value + '-' + suffix;

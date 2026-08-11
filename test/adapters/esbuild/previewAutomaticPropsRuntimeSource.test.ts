@@ -131,6 +131,24 @@ describe('createPreviewAutomaticPropsRuntimeSource', () => {
     });
   });
 
+  /** Varies display identities without corrupting the GraphQL union discriminator. */
+  it('keeps generated GraphQL typenames stable across repeated samples', () => {
+    const context: { result?: unknown } = {};
+    runInNewContext(
+      [
+        createPreviewAutomaticPropsRuntimeSource(),
+        "globalThis.result = createPreviewGeneratedList(() => ({ __typename: 'ClosingFeed', id: 'preview-id', name: 'Company' }));",
+      ].join('\n'),
+      context,
+    );
+
+    expect(context.result).toEqual([
+      { __typename: 'ClosingFeed', id: 'preview-id', name: 'Company' },
+      { __typename: 'ClosingFeed', id: 'preview-id-2', name: 'Company 2' },
+      { __typename: 'ClosingFeed', id: 'preview-id-3', name: 'Company 3' },
+    ]);
+  });
+
   /** Completes compiler-generated parent rows with fields proven by the selected child target. */
   it('repairs nested generated array items without rewriting an authored list', () => {
     const context: { result?: Record<string, unknown> } = {};

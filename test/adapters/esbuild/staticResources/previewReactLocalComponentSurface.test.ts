@@ -23,6 +23,26 @@ describe('resolvePreviewReactLocalComponentSurface', () => {
     expect(surface?.functionRange.start).toBeGreaterThan(0);
   });
 
+  /** Retains the variable binding that gives an anonymous arrow component its importable name. */
+  it('recovers an anonymous arrow page binding behind a project HOC', () => {
+    const sourceText = [
+      'const DashboardPage = () => <main>Dashboard</main>;',
+      'export default withPagePermission(DashboardPage, "DashboardPage");',
+    ].join('\n');
+
+    expect(
+      resolvePreviewReactLocalComponentSurface({
+        exportName: 'default',
+        sourcePath: '/workspace/DashboardPage.tsx',
+        sourceText,
+      }),
+    ).toMatchObject({
+      bypassedWrapperNames: ['withPagePermission'],
+      localName: 'DashboardPage',
+      preservedWrapperKinds: [],
+    });
+  });
+
   it('fails closed for an external export without a same-file body', () => {
     expect(
       resolvePreviewReactLocalComponentSurface({

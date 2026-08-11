@@ -2,9 +2,10 @@
  * Instruments bounded component-local switch returns for React Page Inspector render choices.
  *
  * The transform is intentionally syntax-only. It never evaluates project code, replaces only the
- * switch discriminant, and admits a switch only when every clause directly returns JSX, an exact
- * ReactDOM portal, or null. Literal cases can then be selected without inventing project values;
- * dynamic cases remain useful read-only flow evidence.
+ * switch discriminant, and admits a switch only when at least one non-default clause directly
+ * returns JSX, an exact ReactDOM portal, or null. Literal cases are selectable immediately; static
+ * member cases become selectable only after the authored switch has evaluated their primitive
+ * values. Calls and other dynamic expressions remain read-only flow evidence.
  */
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -35,7 +36,9 @@ export interface ReactSwitchRenderBranchMetadata {
   readonly id: string;
   /** Bounded source-and-render label shown in the Inspector. */
   readonly label: string;
-  /** Whether the browser may safely force this branch without evaluating a case expression. */
+  /** Stable compiler key for a static member value observed during normal case evaluation. */
+  readonly observedValueKey?: string;
+  /** Whether the browser may force this branch from a literal or authored observed primitive. */
   readonly selectable: boolean;
   /** Exact primitive discriminant for supported literal cases. */
   readonly value?: ReactSwitchLiteralValue;
@@ -74,6 +77,8 @@ interface ReactSwitchClauseEvidence {
   readonly label: string;
   readonly literal?: ReactSwitchLiteralValue;
   readonly literalSupported: boolean;
+  readonly observedValueKey?: string;
+  readonly renderSupported: boolean;
 }
 
 /**
@@ -103,13 +108,13 @@ export function instrumentReactSwitchRendering(sourcePath: string, sourceText: s
     0,
     MAX_SWITCHES_PER_MODULE,
   );
-  const replacements = candidates.map((candidate, occurrence) =>
-    createSwitchRenderReplacement(sourceFile, sourcePath, candidate, occurrence, portalBindings),
+  const replacements = candidates.flatMap((candidate, occurrence) =>
+    createSwitchRenderReplacements(sourceFile, sourcePath, candidate, occurrence, portalBindings),
   );
   return applySwitchRenderReplacements(sourceText, replacements);
 }
 
-/** Collects only PascalCase component switches whose complete clause set is directly renderable. */
+/** Collects PascalCase component switches with at least one direct non-default render clause. */
 function collectSwitchRenderCandidates(
   sourceFile: ts.SourceFile,
   portalBindings: ReactDomPortalBindings,
@@ -133,7 +138,11 @@ function collectSwitchRenderCandidates(
   return candidates;
 }
 
-/** Requires every bounded clause to contain exactly one direct supported return statement. */
+/**
+ * Retains direct render clauses while keeping unsupported siblings as ordering evidence.
+ * Empty case clauses may share the next direct return; a complex branch remains read-only and
+ * cannot make the whole component switch invisible to target-guided selection.
+ */
 function readSwitchClauseEvidence(
   statement: ts.SwitchStatement,
   sourceFile: ts.SourceFile,
@@ -142,47 +151,81 @@ function readSwitchClauseEvidence(
   const clauses = statement.caseBlock.clauses;
   if (clauses.length < 2 || clauses.length > MAX_SWITCH_BRANCHES) return undefined;
   const evidence: ReactSwitchClauseEvidence[] = [];
-  for (const clause of clauses) {
-    if (clause.statements.length !== 1) return undefined;
-    const returned = clause.statements[0];
-    if (returned === undefined) return undefined;
-    if (!ts.isReturnStatement(returned) || returned.expression === undefined) return undefined;
-    const renderExpression = unwrapExpression(returned.expression);
-    if (
-      renderExpression.kind !== ts.SyntaxKind.NullKeyword &&
-      !isDirectJsxExpression(renderExpression) &&
-      !isReactDomPortalCall(renderExpression, portalBindings)
-    ) {
-      return undefined;
-    }
+  for (const [clauseIndex, clause] of clauses.entries()) {
+    const renderExpression = readSwitchClauseRenderExpression(
+      clauses,
+      clauseIndex,
+      portalBindings,
+    );
     const defaultClause = ts.isDefaultClause(clause);
     const caseExpression = defaultClause ? undefined : clause.expression;
     const literalEvidence =
       caseExpression === undefined ? undefined : readSwitchLiteralValue(caseExpression);
-    const renderLabel = describeReturnedRender(renderExpression, sourceFile, portalBindings);
+    const observedValueKey =
+      caseExpression !== undefined &&
+      literalEvidence?.supported !== true &&
+      isObservableStaticCaseExpression(caseExpression)
+        ? createObservedCaseValueKey(caseExpression.getText(sourceFile))
+        : undefined;
+    const renderLabel =
+      renderExpression === undefined
+        ? 'authored branch'
+        : describeReturnedRender(renderExpression, sourceFile, portalBindings);
     const caseLabel = defaultClause
       ? 'default'
       : `case ${boundMetadataText(caseExpression?.getText(sourceFile) ?? 'unknown')}`;
     evidence.push({
-      calls: collectReturnedComponentCalls(renderExpression, sourceFile),
+      calls:
+        renderExpression === undefined
+          ? []
+          : collectReturnedComponentCalls(renderExpression, sourceFile),
       default: defaultClause,
       ...(caseExpression === undefined ? {} : { expression: caseExpression }),
       label: `${caseLabel} → ${renderLabel}`,
       ...(literalEvidence?.supported === true ? { literal: literalEvidence.value } : {}),
       literalSupported: literalEvidence?.supported === true,
+      ...(observedValueKey === undefined ? {} : { observedValueKey }),
+      renderSupported: renderExpression !== undefined,
     });
   }
-  return evidence;
+  return evidence.some((branch) => !branch.default && branch.renderSupported)
+    ? evidence
+    : undefined;
 }
 
-/** Creates stable branch metadata and a resolver call that contains the discriminant exactly once. */
-function createSwitchRenderReplacement(
+/** Finds one direct render return, following only empty authored fall-through case labels. */
+function readSwitchClauseRenderExpression(
+  clauses: ts.NodeArray<ts.CaseOrDefaultClause>,
+  startIndex: number,
+  portalBindings: ReactDomPortalBindings,
+): ts.Expression | undefined {
+  for (let index = startIndex; index < clauses.length; index += 1) {
+    const clause = clauses[index];
+    if (clause === undefined) return undefined;
+    if (clause.statements.length === 0) continue;
+    if (clause.statements.length !== 1) return undefined;
+    const returned = clause.statements[0];
+    if (returned === undefined || !ts.isReturnStatement(returned) || returned.expression === undefined) {
+      return undefined;
+    }
+    const renderExpression = unwrapExpression(returned.expression);
+    return renderExpression.kind === ts.SyntaxKind.NullKeyword ||
+      isDirectJsxExpression(renderExpression) ||
+      isReactDomPortalCall(renderExpression, portalBindings)
+      ? renderExpression
+      : undefined;
+  }
+  return undefined;
+}
+
+/** Creates stable metadata plus normal-evaluation observers for static member case values. */
+function createSwitchRenderReplacements(
   sourceFile: ts.SourceFile,
   sourcePath: string,
   candidate: ReactSwitchRenderCandidate,
   occurrence: number,
   portalBindings: ReactDomPortalBindings,
-): ReactSwitchRenderReplacement {
+): readonly ReactSwitchRenderReplacement[] {
   const start = candidate.discriminant.getStart(sourceFile);
   const end = candidate.discriminant.end;
   const authoredExpression = sourceFile.text.slice(start, end);
@@ -196,33 +239,47 @@ function createSwitchRenderReplacement(
     occurrence,
   );
   const clauseEvidence = readSwitchClauseEvidence(candidate.statement, sourceFile, portalBindings);
-  const allCasesLiteral =
-    clauseEvidence?.every((branch) => branch.default || branch.literalSupported) === true;
-  let dynamicCaseSeen = false;
-  const seenLiterals = new Set<string>();
-  const branches: ReactSwitchRenderBranchMetadata[] = (clauseEvidence ?? []).map(
-    (branch, index) => {
-      const branchId = `${choiceId}:${branch.default ? 'default' : `case-${String(index)}`}`;
-      let selectable = false;
-      if (branch.default) {
-        selectable = allCasesLiteral;
-      } else if (branch.literalSupported) {
-        const literalKey = createSwitchLiteralKey(branch.literal);
-        selectable = !dynamicCaseSeen && !seenLiterals.has(literalKey);
-        seenLiterals.add(literalKey);
-      } else {
-        dynamicCaseSeen = true;
-      }
-      return {
-        ...(branch.calls.length === 0 ? {} : { calls: branch.calls }),
-        ...(branch.default ? { default: true as const } : {}),
-        id: branchId,
-        label: branch.label,
-        selectable,
-        ...(branch.literalSupported ? { value: branch.literal } : {}),
-      };
-    },
-  );
+  const allCasesObservable =
+    clauseEvidence?.every(
+      (branch) =>
+        branch.default || branch.literalSupported || branch.observedValueKey !== undefined,
+    ) === true;
+  const observationReplacements: ReactSwitchRenderReplacement[] = [];
+  let unsafeDynamicCaseSeen = false;
+  const branches: ReactSwitchRenderBranchMetadata[] = [];
+  for (const [index, branch] of (clauseEvidence ?? []).entries()) {
+    const branchId = `${choiceId}:${branch.default ? 'default' : `case-${String(index)}`}`;
+    const safelyValued = branch.literalSupported || branch.observedValueKey !== undefined;
+    const selectable = branch.default
+      ? branch.renderSupported && allCasesObservable
+      : branch.renderSupported && safelyValued && !unsafeDynamicCaseSeen;
+    branches.push({
+      ...(branch.calls.length === 0 ? {} : { calls: branch.calls }),
+      ...(branch.default ? { default: true as const } : {}),
+      id: branchId,
+      label: branch.label,
+      ...(branch.observedValueKey === undefined
+        ? {}
+        : { observedValueKey: branch.observedValueKey }),
+      selectable,
+      ...(branch.literalSupported ? { value: branch.literal } : {}),
+    });
+    if (
+      branch.expression !== undefined &&
+      branch.observedValueKey !== undefined
+    ) {
+      const caseStart = branch.expression.getStart(sourceFile);
+      const caseEnd = branch.expression.end;
+      const caseExpression = sourceFile.text.slice(caseStart, caseEnd);
+      const apiExpression = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
+      observationReplacements.push({
+        end: caseEnd,
+        replacement: `${apiExpression}.observeRenderChoiceCase(${JSON.stringify(choiceId)}, ${JSON.stringify(branchId)}, ${JSON.stringify(branch.observedValueKey)}, (${caseExpression}))`,
+        start: caseStart,
+      });
+    }
+    if (!branch.default && !safelyValued) unsafeDynamicCaseSeen = true;
+  }
   const metadata: ReactSwitchRenderMetadata = {
     branches,
     column: location.character + 1,
@@ -233,11 +290,14 @@ function createSwitchRenderReplacement(
     sourcePath: normalizedSourcePath,
   };
   const apiExpression = `globalThis[Symbol.for(${JSON.stringify(PREVIEW_INSPECTOR_API_SYMBOL)})]`;
-  return {
-    end,
-    replacement: `${apiExpression}.resolveRenderChoice(${JSON.stringify(choiceId)}, (${authoredExpression}), ${JSON.stringify(metadata)})`,
-    start,
-  };
+  return [
+    {
+      end,
+      replacement: `${apiExpression}.resolveRenderChoice(${JSON.stringify(choiceId)}, (${authoredExpression}), ${JSON.stringify(metadata)})`,
+      start,
+    },
+    ...observationReplacements,
+  ];
 }
 
 /** Reads primitive case syntax without resolving identifiers, enums, calls, or property access. */
@@ -268,13 +328,24 @@ function readSwitchLiteralValue(
   return undefined;
 }
 
-/** Produces strict-equality-compatible duplicate keys for selectable primitive case values. */
-function createSwitchLiteralKey(value: ReactSwitchLiteralValue | undefined): string {
-  if (value === null) return 'null';
-  if (typeof value === 'number') {
-    return `number:${String(Object.is(value, -0) ? 0 : value)}`;
+/**
+ * Admits only qualified static member reads that the authored switch already evaluates.
+ * Calls, computed properties, optional access, lower-case runtime objects, and arbitrary binary
+ * expressions remain read-only because observing them would broaden application execution.
+ */
+function isObservableStaticCaseExpression(expression: ts.Expression): boolean {
+  let current = unwrapExpression(expression);
+  let memberCount = 0;
+  while (ts.isPropertyAccessExpression(current) && current.questionDotToken === undefined) {
+    memberCount += 1;
+    current = unwrapExpression(current.expression);
   }
-  return `${typeof value}:${String(value)}`;
+  return memberCount > 0 && ts.isIdentifier(current) && /^[A-Z_$]/u.test(current.text);
+}
+
+/** Invalidates retained observations when the authored case member expression changes in place. */
+function createObservedCaseValueKey(expressionText: string): string {
+  return createHash('sha256').update(expressionText).digest('hex').slice(0, 16);
 }
 
 /** Reads component-like JSX tags from a returned branch without crossing nested functions. */

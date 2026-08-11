@@ -909,6 +909,173 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     },
   );
 
+  it('recovers a selected lazy corridor only for an exact omitted-index checkpoint', async () => {
+    const workspaceRoot = '/workspace';
+    const targetPath = '/workspace/pages/Target.tsx';
+    const flowPath = '/workspace/pages/DashboardFlow.tsx';
+    const pagePath = '/workspace/pages/DashboardPage.tsx';
+    const siblingPath = '/workspace/pages/SiblingPage.tsx';
+    const barrelPath = '/workspace/pages/index.ts';
+    const appPath = '/workspace/App.tsx';
+    const sources = new Map<string, string>([
+      [targetPath, 'export const Target = () => <section>TARGET</section>;'],
+      [
+        flowPath,
+        "import { Target } from './Target'; export const DashboardFlow = () => <Target />;",
+      ],
+      [
+        pagePath,
+        "import { DashboardFlow } from './DashboardFlow'; const DashboardPage = () => <DashboardFlow />; export default withPermission(DashboardPage);",
+      ],
+      [siblingPath, 'export default function SiblingPage() { return null; }'],
+      [
+        barrelPath,
+        [
+          "import { lazy } from 'react';",
+          "export const DashboardPage = lazy(() => import('./DashboardPage'));",
+          "export const SiblingPage = lazy(() => import('./SiblingPage'));",
+        ].join('\n'),
+      ],
+      [
+        appPath,
+        "import { DashboardPage, SiblingPage } from './pages'; export const App = () => <DashboardPage />; void SiblingPage;",
+      ],
+    ]);
+    const scenarios = [
+      {
+        candidateRoot: { exportName: 'App', sourcePath: appPath },
+        id: 'indexed-root',
+        retainsCorridor: true,
+        rootStepIndex: 2,
+        stopReason: 'root-reached',
+      },
+      {
+        candidateRoot: { exportName: 'App', sourcePath: appPath },
+        id: 'matching-checkpoint-root',
+        retainsCorridor: true,
+        stopReason: 'render-path-checkpoint',
+      },
+      {
+        candidateRoot: { exportName: 'App', sourcePath: appPath },
+        id: 'unproven-missing-root',
+        retainsCorridor: false,
+        stopReason: 'root-reached',
+      },
+      {
+        candidateRoot: { exportName: 'default', sourcePath: pagePath },
+        id: 'mismatched-checkpoint-root',
+        retainsCorridor: false,
+        stopReason: 'render-path-checkpoint',
+      },
+    ] as const;
+    for (const scenario of scenarios) {
+      const candidateId = `selected-dashboard-${scenario.id}`;
+      const plan = {
+        edges: [],
+        pageCandidates: [
+          {
+            dependencyPaths: [...sources.keys()],
+            edges: [],
+            id: candidateId,
+            renderPath: {
+              id: 'selected-dashboard-path',
+              steps: [
+                { label: 'Target', sourcePath: targetPath },
+                { label: 'DashboardFlow', sourcePath: flowPath },
+                { label: 'DashboardPage', sourcePath: pagePath },
+                { label: '@default', sourcePath: pagePath },
+                { label: 'DashboardPage', sourcePath: barrelPath },
+                { label: 'App', sourcePath: appPath },
+              ],
+            },
+            root: scenario.candidateRoot,
+            ...('rootStepIndex' in scenario ? { rootStepIndex: scenario.rootStepIndex } : {}),
+            stopReason: scenario.stopReason,
+            target: { exportName: 'Target', sourcePath: targetPath },
+          },
+        ],
+        root: { exportName: 'App', sourcePath: appPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as unknown as PreviewInspectorAncestorPlan;
+      const executionCandidate = {
+        browserCandidate: { id: candidateId },
+        compositionEdges: [],
+        criticalSurfaces: [
+          {
+            bypassedWrapperNames: [],
+            exportName: 'App',
+            id: 'app',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: appPath,
+            strategy: 'selected-route-surface',
+            watchSourcePaths: [appPath],
+          },
+          {
+            bypassedWrapperNames: ['withPermission'],
+            exportName: 'default',
+            id: 'page',
+            localName: 'DashboardPage',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: pagePath,
+            strategy: 'inner-local-component-slice',
+            watchSourcePaths: [pagePath],
+          },
+          {
+            bypassedWrapperNames: [],
+            exportName: 'Target',
+            id: 'target',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: targetPath,
+            strategy: 'authentic-module-export',
+            watchSourcePaths: [targetPath],
+          },
+        ],
+        evidenceSourcePaths: [targetPath, flowPath, pagePath, barrelPath, appPath],
+        executionRootSurfaceId: 'app',
+        fidelity: 'target-contextual',
+        id: 'candidate',
+        optionalSurfaces: [],
+        runtimeTargetSurfaceId: 'target',
+        watchSourcePaths: [...sources.keys()],
+      } as unknown as PreviewInspectorPageExecutionCandidate;
+      const policy = createPreviewCompilerFrontierPolicy('fast');
+      if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+
+      const result = await preparePreviewInspectorBundleFrontier({
+        executionCandidate,
+        plan,
+        policy,
+        readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+        resolveModule: (specifier, importer) => {
+          if (!specifier.startsWith('.')) return undefined;
+          const unresolved = path.resolve(path.dirname(importer), specifier);
+          return [...sources.keys()].find(
+            (sourcePath) =>
+              sourcePath === unresolved ||
+              sourcePath === `${unresolved}.ts` ||
+              sourcePath === `${unresolved}.tsx` ||
+              sourcePath === path.join(unresolved, 'index.ts'),
+          );
+        },
+        workspaceRoot,
+      });
+
+      expect(result.rejected).toBe(false);
+      if (scenario.retainsCorridor) {
+        expect(result.frontier.exactSourcePaths).toEqual(
+          expect.arrayContaining([targetPath, flowPath, pagePath, barrelPath, appPath]),
+        );
+        expect(result.frontier.authenticSourcePaths).not.toContain(siblingPath);
+        expect(result.frontier.projectedEdges).not.toContainEqual(
+          expect.objectContaining({ importerPath: appPath, targetPath: barrelPath }),
+        );
+      } else {
+        expect(result.frontier.exactSourcePaths).not.toContain(flowPath);
+        expect(result.frontier.exactSourcePaths).not.toContain(barrelPath);
+      }
+    }
+  });
+
   it('uses full authored inventory when a sliced Page Execution source also has an authentic surface', async () => {
     const workspaceRoot = '/workspace';
     const appPath = '/workspace/legal/app/app.tsx';

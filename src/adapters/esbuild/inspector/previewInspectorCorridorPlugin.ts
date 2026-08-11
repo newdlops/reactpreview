@@ -37,6 +37,7 @@ import {
 } from './previewInspectorShallowProjection';
 import { hasPreviewInspectorAuthoredHookLogic } from './previewInspectorAuthoredHookLogic';
 import { createPreviewInspectorPackageDemandPathSet } from './previewInspectorPackageDemand';
+import { readPreviewInspectorPageSurfaceImporterPath } from './previewInspectorPageExecutionPlugin';
 import { registerPreviewInspectorBundleFrontierGuard } from './previewInspectorBundleFrontierGuard';
 import {
   collectPreviewInspectorRouteParameterGroups,
@@ -89,6 +90,16 @@ export interface PreviewInspectorCorridorPluginOptions {
   readonly readSource?: (sourcePath: string) => string | undefined;
   readonly resolveModule: ResolvePreviewRenderGraphModule;
   readonly workspaceRoot: string;
+}
+
+/** Maps imports emitted by a virtual page slice back to the authored module it was cut from. */
+function readPreviewInspectorAuthoredImporterPath(
+  arguments_: OnResolveArgs,
+): string | undefined {
+  if (arguments_.importer.length > 0 && path.isAbsolute(arguments_.importer)) {
+    return arguments_.importer;
+  }
+  return readPreviewInspectorPageSurfaceImporterPath(arguments_.pluginData);
 }
 
 export function createPreviewInspectorCorridorPlugin(
@@ -190,13 +201,13 @@ export function createPreviewInspectorCorridorPlugin(
   ): Promise<OnResolveResult | undefined> {
     if (
       (arguments_.kind !== 'import-statement' && arguments_.kind !== 'dynamic-import') ||
-      (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD ||
-      arguments_.importer.length === 0 ||
-      !path.isAbsolute(arguments_.importer)
+      (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD
     ) {
       return undefined;
     }
-    const canonicalImporter = canonicalizePath(arguments_.importer);
+    const authoredImporterPath = readPreviewInspectorAuthoredImporterPath(arguments_);
+    if (authoredImporterPath === undefined) return undefined;
+    const canonicalImporter = canonicalizePath(authoredImporterPath);
     if (!corridorPaths.has(canonicalImporter)) return undefined;
     const frozenProjectedEdge = frozenProjectedEdges.get(
       createPreviewInspectorFrozenProjectedEdgeKey(canonicalImporter, arguments_.path),
@@ -208,7 +219,7 @@ export function createPreviewInspectorCorridorPlugin(
         : await readRuntimeHookImporterEvidence(canonicalImporter)
       ).projectionsBySpecifier.get(arguments_.path);
     if (projection === undefined) return undefined;
-    const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
+    const resolvedPath = options.resolveModule(arguments_.path, authoredImporterPath);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
     const canonicalTarget = canonicalizePath(resolvedPath);
     if (
@@ -283,13 +294,13 @@ export function createPreviewInspectorCorridorPlugin(
   ): Promise<OnResolveResult | undefined> {
     if (
       arguments_.kind !== 'dynamic-import' ||
-      (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD ||
-      arguments_.importer.length === 0 ||
-      !path.isAbsolute(arguments_.importer)
+      (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD
     ) {
       return undefined;
     }
-    const canonicalImporter = canonicalizePath(arguments_.importer);
+    const authoredImporterPath = readPreviewInspectorAuthoredImporterPath(arguments_);
+    if (authoredImporterPath === undefined) return undefined;
+    const canonicalImporter = canonicalizePath(authoredImporterPath);
     if (
       !SOURCE_MODULE_PATTERN.test(canonicalImporter) ||
       !isPathInside(workspaceRoot, canonicalImporter) ||
@@ -316,7 +327,7 @@ export function createPreviewInspectorCorridorPlugin(
     ) {
       return createOmittedDeferredBranch();
     }
-    const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
+    const resolvedPath = options.resolveModule(arguments_.path, authoredImporterPath);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) {
       if (!importerEvidence.isBroadRegistry) return undefined;
       return createOmittedDeferredBranch();
@@ -352,13 +363,13 @@ export function createPreviewInspectorCorridorPlugin(
   ): Promise<OnResolveResult | undefined> {
     if (
       arguments_.kind !== 'import-statement' ||
-      (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD ||
-      arguments_.importer.length === 0 ||
-      !path.isAbsolute(arguments_.importer)
+      (arguments_.pluginData as unknown) === PREVIEW_RESOLVE_GUARD
     ) {
       return undefined;
     }
-    const canonicalImporter = canonicalizePath(arguments_.importer);
+    const authoredImporterPath = readPreviewInspectorAuthoredImporterPath(arguments_);
+    if (authoredImporterPath === undefined) return undefined;
+    const canonicalImporter = canonicalizePath(authoredImporterPath);
     if (
       !corridorPaths.has(canonicalImporter) ||
       !SOURCE_MODULE_PATTERN.test(canonicalImporter) ||
@@ -372,7 +383,7 @@ export function createPreviewInspectorCorridorPlugin(
     if (evidence.branchCount <= maximumSmallStaticRouteImports) return undefined;
     const projection = evidence.projectionsBySpecifier.get(arguments_.path);
     if (projection === undefined) return undefined;
-    const resolvedPath = options.resolveModule(arguments_.path, arguments_.importer);
+    const resolvedPath = options.resolveModule(arguments_.path, authoredImporterPath);
     if (resolvedPath === undefined || !SOURCE_MODULE_PATTERN.test(resolvedPath)) return undefined;
     const canonicalTarget = canonicalizePath(resolvedPath);
     if (

@@ -1483,9 +1483,9 @@ function collectExactSeedPaths(
  * reach its selected descendant through a barrel, React.lazy import, permission HOC, and ordinary
  * component parents. Those modules are compiler-proven by the same selected render path and must
  * remain authentic frontier members; otherwise broad-registry pruning replaces the lazy page and
- * the authored owner legitimately falls through without ever invoking the target. Steps outside
- * the chosen page root remain excluded so application entry and unrelated outer routes do not
- * expand the bounded execution slice.
+ * the authored owner legitimately falls through without ever invoking the target. Steps above
+ * the chosen execution root remain excluded so application entry and unrelated outer routes do
+ * not expand the bounded execution slice.
  */
 function collectPreviewInspectorExecutionCorridorSeedPaths(
   plan: PreviewInspectorAncestorPlan,
@@ -1496,20 +1496,50 @@ function collectPreviewInspectorExecutionCorridorSeedPaths(
   );
   const rootStepIndex = pageCandidate?.rootStepIndex;
   const steps = pageCandidate?.renderPath?.steps;
-  if (
-    steps === undefined ||
-    !Number.isSafeInteger(rootStepIndex) ||
-    rootStepIndex === undefined ||
-    rootStepIndex < 0 ||
-    rootStepIndex >= steps.length
-  ) {
-    return Object.freeze([]);
-  }
+  if (steps === undefined) return Object.freeze([]);
+  const safeRootStepIndex =
+    typeof rootStepIndex === 'number' &&
+    Number.isSafeInteger(rootStepIndex) &&
+    rootStepIndex >= 0 &&
+    rootStepIndex < steps.length
+      ? rootStepIndex
+      : -1;
+  const hasValidRootStepIndex = safeRootStepIndex >= 0;
   const provenPaths = new Set(
     executionCandidate.evidenceSourcePaths.map((sourcePath) => path.normalize(sourcePath)),
   );
+  const executionRootSurface = executionCandidate.criticalSurfaces.find(
+    (surface) => surface.id === executionCandidate.executionRootSurfaceId,
+  );
+  const executionRootPath = executionRootSurface?.sourcePath;
+  const normalizedExecutionRootPath =
+    executionRootPath === undefined ? undefined : path.normalize(executionRootPath);
+  const candidateRootPath = pageCandidate?.root.sourcePath;
+  const normalizedCandidateRootPath =
+    candidateRootPath === undefined ? undefined : path.normalize(candidateRootPath);
+  // Route-leaf and pinned-browser candidates intentionally omit rootStepIndex. Recover only the
+  // exact checkpoint whose candidate root is also the admitted execution root; every other
+  // missing or invalid index keeps the older fail-closed behavior.
+  const canRecoverCheckpointRoot =
+    !hasValidRootStepIndex &&
+    pageCandidate?.stopReason === 'render-path-checkpoint' &&
+    normalizedCandidateRootPath !== undefined &&
+    normalizedCandidateRootPath === normalizedExecutionRootPath &&
+    pageCandidate.root.exportName === executionRootSurface?.exportName;
+  const executionRootStepIndex =
+    normalizedExecutionRootPath === undefined
+      ? -1
+      : steps.findIndex(
+          (step, index) =>
+            index >= (hasValidRootStepIndex ? safeRootStepIndex : 0) &&
+            path.normalize(step.sourcePath) === normalizedExecutionRootPath,
+        );
+  if (!hasValidRootStepIndex && (!canRecoverCheckpointRoot || executionRootStepIndex < 0)) {
+    return Object.freeze([]);
+  }
+  const corridorEndStepIndex = Math.max(safeRootStepIndex, executionRootStepIndex);
   const corridorPaths = new Set<string>();
-  for (const step of steps.slice(0, rootStepIndex + 1)) {
+  for (const step of steps.slice(0, corridorEndStepIndex + 1)) {
     for (const sourcePath of [step.sourcePath, ...(step.evidenceSourcePaths ?? [])]) {
       const normalizedPath = path.normalize(sourcePath);
       if (provenPaths.has(normalizedPath)) corridorPaths.add(normalizedPath);

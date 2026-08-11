@@ -6,6 +6,8 @@ import { build, type Plugin } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
   createPreviewInspectorCorridorPlugin,
+  createPreviewInspectorPageExecutionPlugin,
+  createPreviewInspectorPageSurfaceSpecifier,
   type PreviewInspectorAncestorPlan,
 } from '../../../../src/adapters/esbuild/inspector';
 import { createPreviewStaticModuleResolver } from '../../../../src/adapters/esbuild/previewStaticModuleResolver';
@@ -13,6 +15,80 @@ import { PREVIEW_RESOLVE_GUARD } from '../../../../src/adapters/esbuild/previewP
 
 /** Keeps frozen selected inputs authentic while broad route candidates become inert modules. */
 describe('createPreviewInspectorCorridorPlugin', () => {
+  it('projects a frozen child imported by a virtual local-page slice', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
+    const sourceRoot = path.join(workspaceRoot, 'src');
+    const pagePath = path.join(sourceRoot, 'Page.tsx');
+    const pageTitlePath = path.join(sourceRoot, 'PageTitle.tsx');
+    const pageSource = [
+      `import { PageTitle } from './PageTitle';`,
+      `const LocalPage = () => <PageTitle />;`,
+      `export default withOwnerPagePermission(LocalPage, 'LocalPage');`,
+    ].join('\n');
+    await mkdir(sourceRoot, { recursive: true });
+    await Promise.all([
+      writeFile(pagePath, pageSource),
+      writeFile(
+        pageTitlePath,
+        `export const PageTitle = () => <h1>UNEXPECTED_AUTHORED_PAGE_TITLE</h1>;`,
+      ),
+    ]);
+    const surfaceSpecifier = createPreviewInspectorPageSurfaceSpecifier('local-page');
+    const resolver = createPreviewStaticModuleResolver({ workspaceRoot });
+
+    const result = await build({
+      absWorkingDir: workspaceRoot,
+      bundle: true,
+      external: ['react', 'react/jsx-runtime'],
+      format: 'esm',
+      metafile: true,
+      plugins: [
+        createPreviewInspectorPageExecutionPlugin({
+          readSource: (sourcePath) => (sourcePath === pagePath ? pageSource : undefined),
+          surfaces: [
+            {
+              exportName: 'default',
+              id: 'local-page',
+              localName: 'LocalPage',
+              sourcePath: pagePath,
+            },
+          ],
+        }),
+        createPreviewInspectorCorridorPlugin({
+          frozenAuthenticSourcePaths: [pagePath],
+          plan: createCorridorPlan(pagePath, pagePath),
+          projectedEdges: [
+            {
+              exportNames: ['PageTitle'],
+              importerPath: pagePath,
+              moduleSpecifier: './PageTitle',
+              occurrenceStart: 0,
+              reason: 'budget-projection',
+              runtimeHookExportNames: [],
+              targetPath: pageTitlePath,
+            },
+          ],
+          projectRoot: workspaceRoot,
+          resolveModule: resolver.resolve,
+          workspaceRoot,
+        }),
+      ],
+      stdin: {
+        contents: `import LocalPage from ${JSON.stringify(surfaceSpecifier)}; console.log(LocalPage);`,
+        loader: 'js',
+        resolveDir: workspaceRoot,
+      },
+      write: false,
+    });
+    const source = result.outputFiles.map((outputFile) => outputFile.text).join('\n');
+    const inputs = Object.keys(result.metafile.inputs).map((key) => key.replaceAll(path.sep, '/'));
+
+    expect(source).toContain('createShallowComponent');
+    expect(source).toContain('./PageTitle:PageTitle');
+    expect(source).not.toContain('UNEXPECTED_AUTHORED_PAGE_TITLE');
+    expect(inputs.some((key) => key.endsWith('/src/PageTitle.tsx'))).toBe(false);
+  });
+
   it('does not let broad candidate evidence override selected frozen membership', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-corridor-'));
     const entryPath = path.join(workspaceRoot, 'src', 'entry.ts');

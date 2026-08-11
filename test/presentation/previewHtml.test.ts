@@ -34,6 +34,9 @@ describe('createPreviewHtml', () => {
     expect(html).toContain(
       ":where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }",
     );
+    expect(html).toContain(
+      '#react-preview-root { box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; min-height: 100vh; }',
+    );
     expect(html).not.toContain('<main id="react-preview-root">');
     expect(html).not.toContain('react-preview-headless-bridge');
   });

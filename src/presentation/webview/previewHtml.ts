@@ -111,7 +111,8 @@ export function createPreviewHtml(cspSource: string, state: PreviewHtmlState): s
   <title>${escapeHtml(getDocumentTitle(state))}</title>
   <style>
     :root { color-scheme: light dark; }
-    html, body, #react-preview-root { box-sizing: border-box; min-height: 100%; }
+    html, body { box-sizing: border-box; min-height: 100%; }
+    #react-preview-root { box-sizing: border-box; display: flex; flex-direction: column; height: 100vh; min-height: 100vh; }
     body { margin: 0; }
     body:not([data-react-preview-state='ready']) { color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); }
     :where(body[data-react-preview-state='ready']) { color: #111; background: #fff; }

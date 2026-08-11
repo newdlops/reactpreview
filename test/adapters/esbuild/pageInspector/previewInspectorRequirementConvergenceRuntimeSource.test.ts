@@ -18,6 +18,8 @@ function runConvergenceScenario(scenario: string): unknown {
       let notifications = 0;
       let treeRefreshes = 0;
       let commits = 0;
+      let deferredClears = 0;
+      let deferredReleases = 0;
       let persists = 0;
       const hookRecord = {
         id: 'session-hook',
@@ -54,6 +56,14 @@ function runConvergenceScenario(scenario: string): unknown {
       const persistPreviewInspectorState = () => { persists += 1; };
       const schedulePreviewInspectorTreeRefresh = () => { treeRefreshes += 1; };
       const schedulePreviewInspectorCommitRefresh = () => { commits += 1; };
+      const clearPreviewInspectorDeferredRequirementContinuation = () => {
+        deferredClears += 1;
+        return true;
+      };
+      const releasePreviewInspectorDeferredRequirementContinuation = () => {
+        deferredReleases += 1;
+        return true;
+      };
       const clearedResources = [];
       const clearPreviewInspectorVirtualBackendResource = (id) => clearedResources.push(id);
       ${createPreviewInspectorRequirementConvergenceRuntimeSource()}
@@ -163,6 +173,24 @@ describe('Preview Inspector requirement convergence runtime source', () => {
       automaticRestart: false,
       explicitRetry: true,
       settledStatus: 'settled',
+    });
+  });
+
+  /** Releases a registry update that became actionable during the pass that just settled. */
+  it('releases a deferred child requirement at the settled search boundary', () => {
+    const result = runConvergenceScenario(`
+      settlePreviewInspectorMinimumRequirementSearch(state);
+      globalThis.__result = {
+        convergenceStatus: readPreviewInspectorRequirementConvergence(state).status,
+        deferredReleases,
+        searchStatus: search.status,
+      };
+    `);
+
+    expect(result).toEqual({
+      convergenceStatus: 'settled',
+      deferredReleases: 1,
+      searchStatus: 'settled',
     });
   });
 

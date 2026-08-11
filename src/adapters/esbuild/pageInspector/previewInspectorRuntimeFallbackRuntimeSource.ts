@@ -77,6 +77,12 @@ function initializePreviewInspectorRuntimeFallbackState() {
   if (!(previewInspectorSession.runtimeFallbackCompletions instanceof WeakMap)) {
     previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
   }
+  if (!(previewInspectorSession.runtimeFallbackAuthoredValues instanceof Map)) {
+    previewInspectorSession.runtimeFallbackAuthoredValues = new Map();
+  }
+  if (!(previewInspectorSession.runtimeFallbackSharedSmartPathValues instanceof WeakMap)) {
+    previewInspectorSession.runtimeFallbackSharedSmartPathValues = new WeakMap();
+  }
   if (!(previewInspectorSession.runtimeFallbackSmartIds instanceof Set)) {
     previewInspectorSession.runtimeFallbackSmartIds = new Set();
   }
@@ -399,6 +405,7 @@ function normalizePreviewInspectorRuntimeFallbackMetadata(metadata) {
     ownerName: readText('ownerName'),
     passive: source.passive === true,
     preserveNullish: source.preserveNullish === true,
+    preserveSmartValue: source.preserveSmartValue === true,
     renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths(source.renderGuardPaths),
     requiredPaths: normalizePreviewInspectorRequiredPropertyPaths(source.requiredPaths),
     smartPathValues: normalizePreviewInspectorRuntimeSmartPathValues(source.smartPathValues),
@@ -570,6 +577,123 @@ function createPreviewInspectorRuntimeSmartCompletionMetadata(metadata) {
       ...(metadata.renderGuardPaths ?? []),
       ...smartPaths,
     ]),
+  };
+}
+
+/** Reports whether a successful hook result can safely act as a shared state-carrier identity. */
+function isPreviewInspectorRuntimeFallbackSharedIdentity(value) {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null;
+}
+
+/** Canonicalizes a bounded exact-scalar overlay independently of compiler discovery order. */
+function createPreviewInspectorRuntimeSharedSmartSignature(values) {
+  return JSON.stringify(
+    (Array.isArray(values) ? values : [])
+      .map((item) => [item?.path, item?.value])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  );
+}
+
+/**
+ * Shares a selected target's Smart discriminator with consumers of the same authored hook carrier.
+ *
+ * Context hooks commonly expose one memoized value to the page shell and selected panel. Object
+ * identity is stronger than import spelling (aliases and relative paths can name the same hook),
+ * and it prevents an inferred state from leaking to an unrelated hook with a coincidentally equal
+ * shape. When the hook itself throws because its Provider is absent, the exact imported hook
+ * function is the only shared carrier available; it is used only for failed calls. Conflicting
+ * scalars fail closed while complementary exact paths are merged.
+ */
+function promotePreviewInspectorRuntimeSmartValueToSharedIdentity(fallbackId, metadata) {
+  initializePreviewInspectorRuntimeFallbackState();
+  const authored = previewInspectorSession.runtimeFallbackAuthoredValues.get(fallbackId);
+  if (!isPreviewInspectorRuntimeFallbackSharedIdentity(authored)) return false;
+  const incoming = Array.isArray(metadata?.smartPathValues)
+    ? metadata.smartPathValues.slice(0, 32)
+    : [];
+  if (incoming.length === 0) return false;
+  const previous = previewInspectorSession.runtimeFallbackSharedSmartPathValues.get(authored);
+  const byPath = new Map(
+    (Array.isArray(previous?.values) ? previous.values : []).map((item) => [item.path, item]),
+  );
+  for (const item of incoming) {
+    const retained = byPath.get(item.path);
+    if (retained === undefined) {
+      byPath.set(item.path, item);
+    } else if (!Object.is(retained.value, item.value)) {
+      // Two selected-target proofs disagree about one state carrier. Preserve the first bounded
+      // decision instead of creating a state combination that no authored render can produce.
+      continue;
+    }
+  }
+  const values = Object.freeze([...byPath.values()]);
+  const signature = createPreviewInspectorRuntimeSharedSmartSignature(values);
+  if (previous?.signature === signature) return false;
+  previewInspectorSession.runtimeFallbackSharedSmartPathValues.set(
+    authored,
+    Object.freeze({ signature, values }),
+  );
+  return true;
+}
+
+/** Retains only exact Smart-capable hook identities and refreshes a changed memoized carrier. */
+function rememberPreviewInspectorRuntimeSmartAuthoredValue(metadata, value, failedHookIdentity) {
+  initializePreviewInspectorRuntimeFallbackState();
+  const carrier = isPreviewInspectorRuntimeFallbackSharedIdentity(value)
+    ? value
+    : isPreviewInspectorRuntimeFallbackSharedIdentity(failedHookIdentity)
+      ? failedHookIdentity
+      : undefined;
+  if (
+    carrier === undefined ||
+    !Array.isArray(metadata?.smartPathValues) ||
+    metadata.smartPathValues.length === 0
+  ) return false;
+  if (
+    !previewInspectorSession.runtimeFallbackAuthoredValues.has(metadata.id) &&
+    previewInspectorSession.runtimeFallbackAuthoredValues.size >=
+      PREVIEW_INSPECTOR_RUNTIME_FALLBACK_LIMIT
+  ) return false;
+  previewInspectorSession.runtimeFallbackAuthoredValues.set(metadata.id, carrier);
+  if (!previewInspectorSession.runtimeFallbackSmartIds.has(metadata.id)) return false;
+  return promotePreviewInspectorRuntimeSmartValueToSharedIdentity(metadata.id, metadata);
+}
+
+/** Reads a previously selected projection only from the exact shared authored object. */
+function readPreviewInspectorRuntimeSharedSmartProjection(value) {
+  initializePreviewInspectorRuntimeFallbackState();
+  return isPreviewInspectorRuntimeFallbackSharedIdentity(value)
+    ? previewInspectorSession.runtimeFallbackSharedSmartPathValues.get(value)
+    : undefined;
+}
+
+/** Adds a shared exact-state overlay to this consumer's compiler fallback without losing fields. */
+function createPreviewInspectorRuntimeSharedSmartCompletion(metadata, value, fallback) {
+  const projection = readPreviewInspectorRuntimeSharedSmartProjection(value);
+  const values = Array.isArray(projection?.values) ? projection.values : [];
+  const paths = values.map((item) => item?.path).filter(
+    (path) => typeof path === 'string' && path.length > 0,
+  );
+  if (paths.length === 0) return { fallback, metadata, projected: false };
+  const generated = createPreviewInspectorRuntimeFallbackSmartValue(value, paths, values);
+  const completedFallback = completePreviewInspectorGeneratedValue(fallback, generated, {
+    renderGuardPaths: paths,
+    requiredPaths: paths,
+  });
+  return {
+    fallback: completedFallback.changed ? completedFallback.value : fallback,
+    metadata: {
+      ...metadata,
+      renderGuardPaths: normalizePreviewInspectorRequiredPropertyPaths([
+        ...(metadata.renderGuardPaths ?? []),
+        ...paths,
+      ]),
+      requiredPaths: normalizePreviewInspectorRequiredPropertyPaths([
+        ...(metadata.requiredPaths ?? []),
+        ...paths,
+      ]),
+    },
+    projected: true,
   };
 }
 
@@ -765,6 +889,7 @@ function resolvePreviewInspectorRuntimeHook(
   rawMetadata,
   readGraphqlDocument,
   readGraphqlOptions,
+  readHookIdentity,
 ) {
   const metadata = scopePreviewInspectorRuntimeFallbackMetadata(
     normalizePreviewInspectorRuntimeFallbackMetadata(rawMetadata),
@@ -780,7 +905,13 @@ function resolvePreviewInspectorRuntimeHook(
   }
   let value;
   let failure;
+  let hookIdentity;
   const manualOverride = hasPreviewInspectorRuntimeFallbackOverride(metadata.id);
+  if (typeof readHookIdentity === 'function') {
+    try {
+      hookIdentity = readHookIdentity();
+    } catch {}
+  }
   try {
     value = readHook();
   } catch (error) {
@@ -791,6 +922,16 @@ function resolvePreviewInspectorRuntimeHook(
       throw error;
     }
     failure = error;
+  }
+  const sharedIdentityChanged = rememberPreviewInspectorRuntimeSmartAuthoredValue(
+    metadata,
+    failure === undefined ? value : undefined,
+    failure === undefined ? undefined : hookIdentity,
+  );
+  if (sharedIdentityChanged) {
+    schedulePreviewInspectorRuntimeFallbackRefresh(
+      previewInspectorSession.activeTargetReachabilityKey,
+    );
   }
   const retainedLocalUiController = failure === undefined
     ? rememberPreviewInspectorLocalUiController(metadata, value)
@@ -819,14 +960,24 @@ function resolvePreviewInspectorRuntimeHook(
     clearPreviewInspectorRuntimeFallback(completionMetadata);
     return value;
   }
-  const fallback = readPreviewInspectorRuntimeFallbackValue(
+  const compilerFallback = readPreviewInspectorRuntimeFallbackValue(
     completionMetadata,
     createFallback,
     readGraphqlDocument,
     readGraphqlOptions,
   );
-  const effectiveCompletionMetadata =
-    createPreviewInspectorRuntimeSmartCompletionMetadata(completionMetadata);
+  const sharedCarrier = failure === undefined ? value : hookIdentity;
+  const sharedCompletion = !manualOverride
+    ? createPreviewInspectorRuntimeSharedSmartCompletion(
+        completionMetadata,
+        sharedCarrier,
+        compilerFallback,
+      )
+    : { fallback: compilerFallback, metadata: completionMetadata, projected: false };
+  const fallback = sharedCompletion.fallback;
+  const effectiveCompletionMetadata = createPreviewInspectorRuntimeSmartCompletionMetadata(
+    sharedCompletion.metadata,
+  );
   if (
     failure === undefined &&
     shouldUsePreviewInspectorHookGraphqlFallback(value, readGraphqlDocument)
@@ -868,6 +1019,15 @@ function resolvePreviewInspectorRuntimeHook(
       }
       return value;
     }
+    if (
+      sharedCompletion.projected === true &&
+      !previewInspectorSession.runtimeFallbackSmartIds.has(effectiveCompletionMetadata.id)
+    ) {
+      // A sibling shell consumer receives the exact state selected by the target hook. It is not a
+      // second blocker and should not emit a duplicate partial-value warning or occupy a frontier.
+      clearPreviewInspectorRuntimeFallback(effectiveCompletionMetadata);
+      return completion.value;
+    }
     recordPreviewInspectorRuntimeFallback(
       effectiveCompletionMetadata,
       fallback,
@@ -876,6 +1036,15 @@ function resolvePreviewInspectorRuntimeHook(
       completion.paths,
     );
     return completion.value;
+  }
+  if (
+    sharedCompletion.projected === true &&
+    !previewInspectorSession.runtimeFallbackSmartIds.has(effectiveCompletionMetadata.id)
+  ) {
+    // A Provider-less sibling call failed at the same exact imported hook function. It receives
+    // the target's coherent Smart state without becoming a second missing-provider blocker.
+    clearPreviewInspectorRuntimeFallback(effectiveCompletionMetadata);
+    return fallback;
   }
   recordPreviewInspectorRuntimeFallback(
     effectiveCompletionMetadata,
@@ -1228,6 +1397,8 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
   );
   const previousPathSignature =
     previewInspectorSession.runtimeFallbackSmartPathSignatures.get(fallbackId);
+  const sharedIdentityChanged =
+    promotePreviewInspectorRuntimeSmartValueToSharedIdentity(fallbackId, record);
   if (manualValue !== undefined) {
     const minimum = record.graphqlSelectionBacked === true
       ? copyPreviewInspectorBlockerValueForJson(fallback, { nodes: 0 })
@@ -1255,7 +1426,8 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       ...record,
       mode: 'smart-manual',
     });
-    return completion.changed || !wasSmart || previousPathSignature !== pathSignature;
+    return completion.changed || sharedIdentityChanged || !wasSmart ||
+      previousPathSignature !== pathSignature;
   }
   if (record.graphqlSelectionBacked === true) {
     /*
@@ -1269,7 +1441,21 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       ...record,
       mode: 'smart',
     });
-    return !wasSmart || previousPathSignature !== pathSignature;
+    return sharedIdentityChanged || !wasSmart || previousPathSignature !== pathSignature;
+  }
+  if (record.preserveSmartValue === true) {
+    /*
+     * A syntax-serialized authored initializer is already stronger than a path-derived minimum.
+     * Narrowing a tuple such as [defaultFilters, setter] at path "0" would erase the object's
+     * known fields and make a later retry less renderable than the first compiler fallback.
+     */
+    previewInspectorSession.runtimeFallbackSmartIds.add(fallbackId);
+    previewInspectorSession.runtimeFallbackSmartPathSignatures.set(fallbackId, pathSignature);
+    previewInspectorSession.runtimeFallbacks.set(fallbackId, {
+      ...record,
+      mode: 'smart',
+    });
+    return sharedIdentityChanged || !wasSmart || previousPathSignature !== pathSignature;
   }
   if (hasPreviewInspectorGeneratedRuntimeOnlyNativeValue(fallback)) {
     /*
@@ -1283,7 +1469,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
       ...record,
       mode: 'smart',
     });
-    return !wasSmart || previousPathSignature !== pathSignature;
+    return sharedIdentityChanged || !wasSmart || previousPathSignature !== pathSignature;
   }
   previewInspectorSession.runtimeFallbackValues.set(
     fallbackId,
@@ -1301,7 +1487,7 @@ function applyPreviewInspectorRuntimeFallbackSmartValue(fallbackId) {
     ...record,
     mode: 'smart',
   });
-  return !wasSmart || previousPathSignature !== pathSignature;
+  return sharedIdentityChanged || !wasSmart || previousPathSignature !== pathSignature;
 }
 
 /** Replaces one generated hook result with only the paths proven necessary by downstream reads. */

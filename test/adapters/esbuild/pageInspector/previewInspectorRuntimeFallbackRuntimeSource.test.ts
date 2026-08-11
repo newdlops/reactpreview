@@ -807,6 +807,155 @@ describe('Preview Inspector runtime fallback source', () => {
     });
   });
 
+  /** A compiler-serialized initializer must not lose known fields during automatic retries. */
+  it('preserves an authored static state tuple during Smart convergence', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const metadata = {
+      ...createMetadata(),
+      preserveSmartValue: true,
+      requiredPaths: ['0', '1()'],
+    };
+    const fallback = [
+      { searchTerm: '', userIds: [], myOnly: false, recent: false },
+      () => undefined,
+    ];
+
+    fixture.api.resolve(
+      () => undefined,
+      () => fallback,
+      metadata,
+    );
+    fixture.api.smart('hook-1');
+    const resolved = fixture.api.resolve(
+      () => undefined,
+      () => [{ ignoredAfterStableFallbackCreation: true }, () => undefined],
+      metadata,
+    ) as [
+      { searchTerm: string; userIds: unknown[]; myOnly: boolean; recent: boolean },
+      () => unknown,
+    ];
+
+    expect(resolved[0]).toEqual({ searchTerm: '', userIds: [], myOnly: false, recent: false });
+    expect(typeof resolved[1]).toBe('function');
+    expect(fixture.api.read()[0]?.mode).toBe('smart');
+  });
+
+  /** Projects one selected state through the memoized Context object used by its page shell. */
+  it('shares a target Smart discriminator with sibling consumers of the same hook identity', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const authoredClose = (): undefined => undefined;
+    const authored = {
+      close: authoredClose,
+      currentWidth: 600,
+      state: { status: 'closed' },
+    };
+    const targetMetadata = {
+      ...createMetadata(),
+      hookName: 'usePanel',
+      id: 'target-panel-hook',
+      ownerName: 'Panel',
+      requiredPaths: ['state.status', 'currentWidth', 'close()'],
+      smartPathValues: [{ path: 'state.status', value: 'loading' }],
+      sourcePath: '/workspace/Panel.tsx',
+    };
+    const shellMetadata = {
+      ...createMetadata(),
+      hookName: 'usePanel',
+      id: 'page-shell-hook',
+      ownerName: 'PageShell',
+      requiredPaths: ['state'],
+      sourcePath: '/workspace/PageShell.tsx',
+    };
+
+    expect(
+      fixture.api.resolve(
+        () => authored,
+        () => ({ close: () => undefined, currentWidth: 0, state: { status: 'PREVIEW' } }),
+        targetMetadata,
+      ),
+    ).toBe(authored);
+    expect(fixture.api.read()).toHaveLength(1);
+
+    fixture.api.smart('target-panel-hook');
+    const shellValue = fixture.api.resolve(
+      () => authored,
+      () => ({ state: {} }),
+      shellMetadata,
+    ) as typeof authored;
+    const targetValue = fixture.api.resolve(
+      () => authored,
+      () => ({ close: () => undefined, currentWidth: 0, state: { status: 'PREVIEW' } }),
+      targetMetadata,
+    ) as typeof authored;
+
+    expect(shellValue.state.status).toBe('loading');
+    expect(targetValue.state.status).toBe('loading');
+    expect(shellValue.close).toBe(authoredClose);
+    expect(authored.state.status).toBe('closed');
+    expect(fixture.api.read().map((record) => record.id)).toEqual(['target-panel-hook']);
+  });
+
+  /** Uses the exact hook function as a carrier only when a missing Provider makes both calls fail. */
+  it('shares target Smart state across Provider-less calls of the same hook function', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const usePanel = (): never => {
+      throw new Error('usePanel must be used within PanelProvider');
+    };
+    const targetMetadata = {
+      ...createMetadata(),
+      hookName: 'usePanel',
+      id: 'providerless-target-panel-hook',
+      ownerName: 'Panel',
+      requiredPaths: ['state.status', 'currentWidth'],
+      smartPathValues: [
+        { path: 'state.status', value: 'loading' },
+        { path: 'currentWidth', value: 420 },
+      ],
+      sourcePath: '/workspace/Panel.tsx',
+    };
+    const shellMetadata = {
+      ...createMetadata(),
+      hookName: 'usePanel',
+      id: 'providerless-page-shell-hook',
+      ownerName: 'PageShell',
+      requiredPaths: ['state.status'],
+      sourcePath: '/workspace/PageShell.tsx',
+    };
+
+    fixture.api.resolve(
+      usePanel,
+      () => ({ currentWidth: 0, state: { status: 'PREVIEW' } }),
+      targetMetadata,
+      undefined,
+      undefined,
+      () => usePanel,
+    );
+    fixture.api.smart('providerless-target-panel-hook');
+
+    const shellValue = fixture.api.resolve(
+      usePanel,
+      () => ({ state: { status: 'PREVIEW' } }),
+      shellMetadata,
+      undefined,
+      undefined,
+      () => usePanel,
+    ) as { state: { status: string } };
+    const targetValue = fixture.api.resolve(
+      usePanel,
+      () => ({ currentWidth: 0, state: { status: 'PREVIEW' } }),
+      targetMetadata,
+      undefined,
+      undefined,
+      () => usePanel,
+    ) as { currentWidth: number; state: { status: string } };
+
+    expect(shellValue.state.status).toBe('loading');
+    expect(targetValue).toMatchObject({ currentWidth: 420, state: { status: 'loading' } });
+    expect(fixture.api.read().map((record) => record.id)).toEqual([
+      'providerless-target-panel-hook',
+    ]);
+  });
+
   /** Replaces neutral proxy objects at text/link leaves before React receives them as children. */
   it('uses scalar property semantics over object-shaped placeholder leaves', () => {
     const fixture = createRuntimeFallbackFixture(true);

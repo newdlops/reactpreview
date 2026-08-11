@@ -613,7 +613,12 @@ class PreviewInspectorPageRootCommitBoundary extends React.Component {
     state.pageCommitBoundary = this;
     state.pageRootCommitted = true;
     state.rootName = this.props.rootName ?? state.rootName;
-    if (changed) schedulePreviewInspectorTreeRefresh();
+    if (changed) {
+      if (typeof releasePreviewInspectorDeferredRequirementContinuation === 'function') {
+        releasePreviewInspectorDeferredRequirementContinuation(state);
+      }
+      schedulePreviewInspectorTreeRefresh();
+    }
   }
 
   render() {

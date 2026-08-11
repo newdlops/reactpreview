@@ -257,6 +257,9 @@ function resetPreviewInspectorRequirementConvergence(stateOrKey) {
   initializePreviewInspectorRequirementConvergenceState();
   const reachabilityKey = typeof stateOrKey === 'string' ? stateOrKey : stateOrKey?.key;
   if (typeof reachabilityKey !== 'string') return false;
+  if (typeof clearPreviewInspectorDeferredRequirementContinuation === 'function') {
+    clearPreviewInspectorDeferredRequirementContinuation(reachabilityKey);
+  }
   return previewInspectorSession.requirementConvergenceByKey.delete(
     createPreviewInspectorRequirementConvergenceKey({ key: reachabilityKey }),
   );
@@ -379,6 +382,9 @@ function createPreviewInspectorRequirementFrontierFingerprint(state, batch) {
 /** Emits one circuit-open diagnostic and leaves the authored page mounted for manual inspection. */
 function stopPreviewInspectorRequirementConvergence(state, search, status, cycleLength = 0) {
   const convergence = readPreviewInspectorRequirementConvergence(state);
+  if (typeof clearPreviewInspectorDeferredRequirementContinuation === 'function') {
+    clearPreviewInspectorDeferredRequirementContinuation(state.key);
+  }
   convergence.status = status;
   search.status = status;
   search.cycleLength = cycleLength;
@@ -458,6 +464,9 @@ function beginPreviewInspectorRequirementFrontier(state, search, batch) {
       search.totalPasses = convergence.totalPasses;
       state.exhausted = false;
       state.status = 'requirements-stalled';
+      if (typeof releasePreviewInspectorDeferredRequirementContinuation === 'function') {
+        releasePreviewInspectorDeferredRequirementContinuation(state);
+      }
       return undefined;
     }
     stopPreviewInspectorRequirementConvergence(
@@ -472,7 +481,7 @@ function beginPreviewInspectorRequirementFrontier(state, search, batch) {
 }
 
 /** Records an observed frontier and consumes budget only when it schedules a changed page commit. */
-function completePreviewInspectorRequirementFrontier(search, frontier, changed) {
+function completePreviewInspectorRequirementFrontier(search, frontier, changed, state) {
   const { convergence, fingerprint } = frontier;
   convergence.fingerprints.push(fingerprint);
   if (convergence.fingerprints.length > PREVIEW_INSPECTOR_REQUIREMENT_FRONTIER_HISTORY_LIMIT) {
@@ -484,6 +493,9 @@ function completePreviewInspectorRequirementFrontier(search, frontier, changed) 
     /* No mutation was available in this new frontier; report completion, not an apparent loop. */
     convergence.status = 'settled';
     search.status = 'settled';
+    if (typeof releasePreviewInspectorDeferredRequirementContinuation === 'function') {
+      releasePreviewInspectorDeferredRequirementContinuation(state);
+    }
     return;
   }
   convergence.totalPasses += 1;
@@ -492,7 +504,12 @@ function completePreviewInspectorRequirementFrontier(search, frontier, changed) 
     : 'searching';
   search.pass = convergence.totalPasses;
   search.totalPasses = convergence.totalPasses;
-  if (convergence.status === 'limit-reached') search.status = 'limit-reached';
+  if (convergence.status === 'limit-reached') {
+    search.status = 'limit-reached';
+    if (typeof clearPreviewInspectorDeferredRequirementContinuation === 'function') {
+      clearPreviewInspectorDeferredRequirementContinuation(state?.key);
+    }
+  }
 }
 
 /** Prevents a terminal deterministic search from reopening unless its semantic frontier is new. */
@@ -520,6 +537,9 @@ function stopPreviewInspectorRequirementConvergenceAtLimit(state) {
 function completePreviewInspectorMinimumRequirementSearch(state) {
   const search = readPreviewInspectorMinimumRequirementSearch(state);
   if (search === undefined) return;
+  if (typeof clearPreviewInspectorDeferredRequirementContinuation === 'function') {
+    clearPreviewInspectorDeferredRequirementContinuation(state.key);
+  }
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   search.status = 'reached';
   readPreviewInspectorRequirementConvergence(state).status = 'reached';
@@ -532,6 +552,9 @@ function settlePreviewInspectorMinimumRequirementSearch(state) {
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   search.status = 'settled';
   readPreviewInspectorRequirementConvergence(state).status = 'settled';
+  if (typeof releasePreviewInspectorDeferredRequirementContinuation === 'function') {
+    releasePreviewInspectorDeferredRequirementContinuation(state);
+  }
 }
 `;
 }

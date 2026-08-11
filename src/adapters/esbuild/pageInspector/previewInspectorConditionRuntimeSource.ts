@@ -41,6 +41,9 @@ function initializePreviewInspectorConditionState() {
   if (!(previewInspectorSession.renderChoices instanceof Map)) {
     previewInspectorSession.renderChoices = new Map();
   }
+  if (!(previewInspectorSession.renderChoiceObservedValues instanceof Map)) {
+    previewInspectorSession.renderChoiceObservedValues = new Map();
+  }
   if (!(previewInspectorSession.renderConditionOverrides instanceof Map)) {
     const persisted = readPersistedPreviewInspectorState();
     const persistedOverrides = persisted.renderConditionOverrides;
@@ -155,7 +158,7 @@ function normalizePreviewInspectorConditionMetadata(metadata) {
 }
 
 /** Bounds compiler-issued switch/JSX-array metadata and verifies selectable primitive branches. */
-function normalizePreviewInspectorRenderChoiceMetadata(metadata) {
+function normalizePreviewInspectorRenderChoiceMetadata(choiceId, metadata) {
   const source = metadata !== null && typeof metadata === 'object' ? metadata : {};
   const readText = (name, fallback = '') =>
     typeof source[name] === 'string' ? source[name].slice(0, 512) : fallback;
@@ -170,8 +173,20 @@ function normalizePreviewInspectorRenderChoiceMetadata(metadata) {
     if (id.length === 0 || seenIds.has(id)) continue;
     seenIds.add(id);
     const ownsValue = Object.prototype.hasOwnProperty.call(rawBranch, 'value');
-    const value = rawBranch.value;
+    const observedValueKey = typeof rawBranch.observedValueKey === 'string'
+      ? rawBranch.observedValueKey.slice(0, 64)
+      : '';
+    const observed = observedValueKey.length === 0
+      ? undefined
+      : previewInspectorSession.renderChoiceObservedValues.get(choiceId + '\0' + id);
+    const ownsObservedValue = observed?.key === observedValueKey;
+    const value = ownsValue ? rawBranch.value : observed?.value;
     const literalSupported = ownsValue && (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+    ) || ownsObservedValue && (
       value === null ||
       typeof value === 'string' ||
       typeof value === 'boolean' ||
@@ -190,6 +205,7 @@ function normalizePreviewInspectorRenderChoiceMetadata(metadata) {
       label: typeof rawBranch.label === 'string'
         ? rawBranch.label.slice(0, 512)
         : rawBranch.default === true ? 'default' : 'case',
+      ...(observedValueKey.length === 0 ? {} : { observedValueKey }),
       requestedSelectable: rawBranch.selectable === true,
       ...(literalSupported ? { value } : {}),
     });
@@ -292,6 +308,35 @@ function didPreviewInspectorRenderChoiceChange(previous, next) {
 }
 
 /**
+ * Records a primitive static-member case value while the authored switch evaluates that case.
+ * The wrapper returns the exact value unchanged; a coalesced retry lets the discriminant resolver
+ * select a target branch on the next render without evaluating any project expression early.
+ */
+function observePreviewInspectorRenderChoiceCase(choiceId, branchId, valueKey, value) {
+  initializePreviewInspectorConditionState();
+  const validValue = value === null || typeof value === 'string' || typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value));
+  if (
+    typeof choiceId !== 'string' || choiceId.length === 0 || choiceId.length > 128 ||
+    typeof branchId !== 'string' || branchId.length === 0 || branchId.length > 160 ||
+    typeof valueKey !== 'string' || valueKey.length === 0 || valueKey.length > 64 ||
+    !validValue
+  ) {
+    return value;
+  }
+  const identity = choiceId + '\0' + branchId;
+  const observedValues = previewInspectorSession.renderChoiceObservedValues;
+  const previous = observedValues.get(identity);
+  if (previous?.key === valueKey && Object.is(previous.value, value)) return value;
+  if (!observedValues.has(identity) && observedValues.size >= PREVIEW_INSPECTOR_RENDER_CONDITION_LIMIT * 2) {
+    return value;
+  }
+  observedValues.set(identity, { key: valueKey, value });
+  schedulePreviewInspectorCommitRefresh();
+  return value;
+}
+
+/**
  * Resolves one compiler-issued switch discriminant while preserving its exact authored identity.
  * A forced literal is returned only for a selectable case; a safe default uses an unmatched Symbol.
  */
@@ -300,7 +345,7 @@ function resolvePreviewInspectorRenderChoice(choiceId, authoredValue, metadata) 
   if (typeof choiceId !== 'string' || choiceId.length === 0 || choiceId.length > 128) {
     return authoredValue;
   }
-  const normalizedMetadata = normalizePreviewInspectorRenderChoiceMetadata(metadata);
+  const normalizedMetadata = normalizePreviewInspectorRenderChoiceMetadata(choiceId, metadata);
   const authoredBranchId = readPreviewInspectorAuthoredChoiceBranchId(
     authoredValue,
     normalizedMetadata.branches,

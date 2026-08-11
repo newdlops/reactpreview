@@ -39,6 +39,7 @@ export interface TestRuntimeFallbackApi {
     metadata: object,
     readGraphqlDocument?: () => unknown,
     readGraphqlOptions?: () => unknown,
+    readHookIdentity?: () => unknown,
   ): unknown;
   resolveFragment(
     readFragment: () => unknown,

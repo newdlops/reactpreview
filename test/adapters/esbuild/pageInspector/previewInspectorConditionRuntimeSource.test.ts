@@ -17,6 +17,12 @@ interface ConditionRuntimeHarness {
     candidates: readonly Record<string, unknown>[],
   ) => boolean;
   readonly isAutoConditionRejected: (conditionId: string, reachabilityKey: string) => boolean;
+  readonly observeChoice: (
+    choiceId: string,
+    branchId: string,
+    valueKey: string,
+    value: unknown,
+  ) => unknown;
   readonly resetCondition: (conditionId: string) => void;
   readonly resetChoice: (choiceId: string) => boolean;
   readonly resolveChoice: (
@@ -313,6 +319,66 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.readChoices()[0]).toMatchObject({
       authoredBranchId: undefined,
       effectiveBranchId: undefined,
+    });
+  });
+
+  /** Reuses static-member values observed by the authored case evaluation on the next render. */
+  it('selects an observed static-member switch branch without eager project evaluation', () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn(), { fallbackValuesEnabled: true });
+    const reachabilityKey = 'candidate:CeoAddressChangeField';
+    harness.session.activeTargetReachabilityKey = reachabilityKey;
+    harness.session.targetReachabilityByKey = new Map([
+      [
+        reachabilityKey,
+        {
+          applicationPath: ['MeetingFormSteps', 'AgendaField', 'CeoAddressChangeField'],
+          directTarget: false,
+          targetExportName: 'CeoAddressChangeField',
+        },
+      ],
+    ]);
+    const metadata = {
+      branches: [
+        {
+          calls: ['SummaryPanel'],
+          id: 'summary',
+          label: 'case AGENDA.SUMMARY',
+          observedValueKey: 'summary-key',
+          selectable: true,
+        },
+        {
+          calls: ['CeoAddressChangeField'],
+          id: 'ceo',
+          label: 'case AgendaCeoAddressChange.type',
+          observedValueKey: 'ceo-key',
+          selectable: true,
+        },
+      ],
+      expression: 'agenda',
+      kind: 'switch',
+      sourcePath: '/workspace/AgendaField.tsx',
+    };
+
+    expect(harness.resolveChoice('agenda-choice', 'authored', metadata)).toBe('authored');
+    expect(harness.setChoice('agenda-choice', 'ceo')).toBe(false);
+    expect(
+      harness.observeChoice('agenda-choice', 'summary', 'summary-key', 'financialStatements'),
+    ).toBe('financialStatements');
+    expect(
+      harness.observeChoice('agenda-choice', 'ceo', 'ceo-key', 'ceoAddressChange'),
+    ).toBe('ceoAddressChange');
+
+    expect(harness.resolveChoice('agenda-choice', 'financialStatements', metadata)).toBe(
+      'ceoAddressChange',
+    );
+    expect(harness.readChoices()[0]).toMatchObject({ targetGuidedBranchId: 'ceo' });
+    expect(harness.setChoice('agenda-choice', 'ceo')).toBe(true);
+    expect(harness.resolveChoice('agenda-choice', 'financialStatements', metadata)).toBe(
+      'ceoAddressChange',
+    );
+    expect(harness.readChoices()[0]).toMatchObject({
+      authoredBranchId: 'summary',
+      effectiveBranchId: 'ceo',
     });
   });
 
@@ -891,6 +957,7 @@ function createConditionRuntimeHarness(
         registerDefinitions: registerPreviewInspectorRenderConditionDefinitions,
         registerVirtualPageSource: registerPreviewInspectorVirtualPageSource,
         isAutoConditionRejected: isPreviewInspectorTargetGuidedConditionRejected,
+        observeChoice: observePreviewInspectorRenderChoiceCase,
         resetCondition: resetPreviewInspectorRenderConditionOverride,
         resetChoice: resetPreviewInspectorRenderChoiceOverride,
         resolveChoice: resolvePreviewInspectorRenderChoice,

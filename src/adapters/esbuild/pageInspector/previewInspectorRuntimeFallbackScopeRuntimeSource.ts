@@ -79,6 +79,8 @@ function activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget) {
     previewInspectorSession.runtimeFallbacks.delete(fallbackId);
   }
   previewInspectorSession.runtimeFallbackCompletions = new WeakMap();
+  previewInspectorSession.runtimeFallbackAuthoredValues?.clear?.();
+  previewInspectorSession.runtimeFallbackSharedSmartPathValues = new WeakMap();
   previewInspectorSession.localUiControllers?.clear?.();
   previewInspectorSession.localUiControllerAttemptKeys?.clear?.();
   const clearedEffectCount = previewInspectorSession.runtimeEffectIsolations.size;
@@ -164,6 +166,7 @@ function resolvePreviewInspectorScopedRuntimeHook(
   rawMetadata,
   readGraphqlDocument,
   readGraphqlOptions,
+  readHookIdentity,
 ) {
   const fallbackId = typeof rawMetadata?.id === 'string' ? rawMetadata.id : '';
   if (
@@ -177,6 +180,7 @@ function resolvePreviewInspectorScopedRuntimeHook(
       rawMetadata,
       readGraphqlDocument,
       readGraphqlOptions,
+      readHookIdentity,
     );
   }
   let value;
@@ -189,6 +193,7 @@ function resolvePreviewInspectorScopedRuntimeHook(
       rawMetadata,
       readGraphqlDocument,
       readGraphqlOptions,
+      readHookIdentity,
     );
   }
   if (shouldPreservePreviewInspectorOwnedRouterHookValue(rawMetadata)) {
@@ -203,6 +208,7 @@ function resolvePreviewInspectorScopedRuntimeHook(
     rawMetadata,
     readGraphqlDocument,
     readGraphqlOptions,
+    readHookIdentity,
   );
 }
 `;

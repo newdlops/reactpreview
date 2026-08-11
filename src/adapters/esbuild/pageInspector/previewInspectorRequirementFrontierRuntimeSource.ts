@@ -10,15 +10,19 @@ export function createPreviewInspectorRequirementFrontierRuntimeSource(): string
 const PREVIEW_INSPECTOR_REQUIREMENT_HOOK_BATCH_LIMIT = 8;
 const PREVIEW_INSPECTOR_REQUIREMENT_DATA_BATCH_LIMIT = 4;
 
+/** Reports whether compiler evidence carries a branch-opening scalar Smart fill. */
+function hasPreviewInspectorExactSmartScalar(record) {
+  return (record?.smartPathValues ?? []).some((item) =>
+    typeof item?.path === 'string' && item.path.length > 0,
+  );
+}
+
 /** Reports whether compiler evidence names a shape or exact scalar Smart fill can materialize. */
 function hasPreviewInspectorMaterializableHookRequirement(record) {
   const hasMaterializablePath = (record?.requiredPaths ?? []).some((path) =>
     typeof path === 'string' && path.length > 0 && path !== '<root>' && path !== '<root>()',
   );
-  const hasExactSmartScalar = (record?.smartPathValues ?? []).some((item) =>
-    typeof item?.path === 'string' && item.path.length > 0,
-  );
-  return hasMaterializablePath || hasExactSmartScalar;
+  return hasMaterializablePath || hasPreviewInspectorExactSmartScalar(record);
 }
 
 /** Returns whether a formerly Smart record has discovered a shape not covered by its last fill. */
@@ -167,10 +171,20 @@ function scorePreviewInspectorRequirementRecord(record, evidence) {
  */
 function selectPreviewInspectorRequirementIds(records, evidence, limit) {
   const ranked = records
-    .map((record) => ({ record, score: scorePreviewInspectorRequirementRecord(record, evidence) }))
-    .sort((left, right) => right.score - left.score);
+    .map((record) => ({
+      exactSmartScalar: hasPreviewInspectorExactSmartScalar(record),
+      record,
+      score: scorePreviewInspectorRequirementRecord(record, evidence),
+    }));
   const pathLocal = ranked.filter((candidate) => candidate.score > 0);
-  return (pathLocal.length > 0 ? pathLocal : ranked)
+  const pool = pathLocal.length > 0 ? pathLocal : ranked;
+  pool.sort((left, right) =>
+    (pathLocal.length > 0
+      ? Number(right.exactSmartScalar) - Number(left.exactSmartScalar)
+      : 0) ||
+    right.score - left.score,
+  );
+  return pool
     .slice(0, limit)
     .map((candidate) => candidate.record.id);
 }
@@ -244,8 +258,30 @@ function createPreviewInspectorActionableRequirementSignature(batch) {
  * Registry updates are coalesced into one microtask, semantic signatures suppress duplicates, and
  * the shared convergence history still owns the hard pass limit and A-B-A cycle detection.
  */
+function clearPreviewInspectorDeferredRequirementContinuation(reachabilityKey) {
+  const deferred = previewInspectorSession.requirementContinuationDeferredKeys;
+  return deferred instanceof Set ? deferred.delete(reachabilityKey) : false;
+}
+
+/** Retains one registry update that arrived while its corridor was still completing a pass. */
+function deferPreviewInspectorTargetRequirementContinuation(reachabilityKey) {
+  const deferred = previewInspectorSession.requirementContinuationDeferredKeys ??= new Set();
+  deferred.add(reachabilityKey);
+}
+
+/** Requeues a retained registry update only after the active pass has reached a stable boundary. */
+function releasePreviewInspectorDeferredRequirementContinuation(state) {
+  if (
+    typeof state?.key !== 'string' ||
+    !clearPreviewInspectorDeferredRequirementContinuation(state.key)
+  ) return false;
+  return schedulePreviewInspectorTargetRequirementContinuation(state.key);
+}
+
 function schedulePreviewInspectorTargetRequirementContinuation(reachabilityKey) {
   if (typeof reachabilityKey !== 'string' || reachabilityKey.length === 0) return false;
+  const deferred = previewInspectorSession.requirementContinuationDeferredKeys ??= new Set();
+  if (deferred.has(reachabilityKey)) return false;
   const pending = previewInspectorSession.requirementContinuationPendingKeys ??= new Set();
   if (pending.has(reachabilityKey)) return false;
   pending.add(reachabilityKey);
@@ -257,10 +293,13 @@ function schedulePreviewInspectorTargetRequirementContinuation(reachabilityKey) 
     if (
       state === undefined ||
       state.directTarget === true ||
-      state.pageRootCommitted !== true ||
       state.status === 'resolver-cycle-detected' ||
       state.status === 'resolver-limit-reached'
     ) return;
+    if (state.pageRootCommitted !== true) {
+      deferPreviewInspectorTargetRequirementContinuation(reachabilityKey);
+      return;
+    }
     state.targetMounted = hasMountedPreviewInspectorTarget(state);
     state.targetHasOutput = hasPreviewInspectorTargetHostOutput(state);
     if (state.targetHasOutput === true) return;
@@ -272,7 +311,10 @@ function schedulePreviewInspectorTargetRequirementContinuation(reachabilityKey) 
       : undefined;
     if (descriptor === undefined || candidate === undefined) return;
     const current = readPreviewInspectorMinimumRequirementSearch(state);
-    if (current?.status === 'searching') return;
+    if (current?.status === 'searching') {
+      deferPreviewInspectorTargetRequirementContinuation(reachabilityKey);
+      return;
+    }
     const preserveUserValues = current?.origin !== 'user';
     const batch = readPreviewInspectorRequirementBatch(
       descriptor,
@@ -391,7 +433,7 @@ function advancePreviewInspectorTargetFailureRequirement(state) {
     { commit: false },
   );
   if (result.changed !== true) {
-    completePreviewInspectorRequirementFrontier(search, frontier, false);
+    completePreviewInspectorRequirementFrontier(search, frontier, false, state);
     return false;
   }
   let traceId;
@@ -417,7 +459,7 @@ function advancePreviewInspectorTargetFailureRequirement(state) {
   }
   if (rollbackSnapshot !== undefined) rollbackSnapshot.mode = 'target-prop-repair-auto';
   registerPreviewInspectorRequirementAutoRollback(traceId, rollbackSnapshot);
-  completePreviewInspectorRequirementFrontier(search, frontier, true);
+  completePreviewInspectorRequirementFrontier(search, frontier, true, state);
   state.exhausted = false;
   state.idlePasses = 0;
   state.lastTargetRepairFingerprint = mutation.fingerprint;

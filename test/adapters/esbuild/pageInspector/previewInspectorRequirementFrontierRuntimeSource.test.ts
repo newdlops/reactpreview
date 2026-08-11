@@ -33,7 +33,7 @@ describe('Preview Inspector requirement frontier runtime source', () => {
           },
         ];
         const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
-        const createPreviewInspectorRuntimeFallbackPathSignature = (paths) =>
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
           JSON.stringify([...new Set(paths)].sort());
         const readPreviewInspectorTargetPathEvidence = () => ({ nameScores: new Map(), paths: [] });
         const readPreviewInspectorRuntimeFallbacks = () => records;
@@ -50,6 +50,62 @@ describe('Preview Inspector requirement frontier runtime source', () => {
     expect(context.__result).toEqual({ hookIds: ['stale'], requestIds: [] });
   });
 
+  /** Opens exact branch gates before broad shell shapes consume the bounded hook batch. */
+  it('prioritizes path-local exact Smart scalars within a crowded requirement batch', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = { runtimeFallbackSmartPathSignatures: new Map() };
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
+          JSON.stringify([...new Set(paths)].sort());
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          ambiguousNames: new Set(), nameScores: new Map([['Dashboard', 1000]]),
+          pathScores: new Map(), paths: [], runtimeOwnerNames: new Set(),
+        });
+        const shellRecords = Array.from({ length: 8 }, (_, index) => ({
+          id: 'shell-' + index, mode: 'auto', ownerName: 'Dashboard',
+          reachabilityKey: 'page:Target', requiredPaths: ['data.shell.' + index],
+        }));
+        const exactGate = {
+          id: 'completion-gate', mode: 'auto', ownerName: 'Dashboard',
+          reachabilityKey: 'page:Target', requiredPaths: ['status'],
+          smartPathValues: [{ path: 'status', value: 'COMPLETED' }],
+        };
+        const unrelatedGate = {
+          id: 'unrelated-gate', mode: 'auto', ownerName: 'Elsewhere',
+          reachabilityKey: 'page:Target', requiredPaths: ['status'],
+          smartPathValues: [{ path: 'status', value: 'COMPLETED' }],
+        };
+        const readPreviewInspectorRuntimeFallbacks = () => [
+          ...shellRecords, unrelatedGate, exactGate,
+        ];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const readPreviewInspectorTargetRenderPath = () => undefined;
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        globalThis.__result = readPreviewInspectorRequirementBatch(
+          {}, {}, { key: 'page:Target' }, false,
+        );
+      `,
+      context,
+    );
+
+    expect(context.__result).toMatchObject({
+      hookIds: [
+        'completion-gate',
+        'shell-0',
+        'shell-1',
+        'shell-2',
+        'shell-3',
+        'shell-4',
+        'shell-5',
+        'shell-6',
+      ],
+      requestIds: [],
+    });
+  });
+
   /** Protects an explicit user value during background inference even if its Smart shape is stale. */
   it('does not revise a stale Smart manual value during deterministic search', () => {
     const context: { __result?: unknown } = {};
@@ -57,7 +113,7 @@ describe('Preview Inspector requirement frontier runtime source', () => {
       `
         const previewInspectorSession = { runtimeFallbackSmartPathSignatures: new Map() };
         const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
-        const createPreviewInspectorRuntimeFallbackPathSignature = (paths) =>
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) =>
           JSON.stringify([...new Set(paths)].sort());
         const readPreviewInspectorTargetPathEvidence = () => ({ nameScores: new Map(), paths: [] });
         const readPreviewInspectorRuntimeFallbacks = () => [{
@@ -89,7 +145,7 @@ describe('Preview Inspector requirement frontier runtime source', () => {
           ]),
         };
         const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
-        const createPreviewInspectorRuntimeFallbackPathSignature = (paths) => JSON.stringify(paths);
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) => JSON.stringify(paths);
         const readPreviewInspectorTargetPathEvidence = () => ({ nameScores: new Map(), paths: [] });
         const readPreviewInspectorTargetRenderPath = () => undefined;
         const readPreviewInspectorRuntimeFallbacks = () => [];
@@ -116,7 +172,7 @@ describe('Preview Inspector requirement frontier runtime source', () => {
       `
         const previewInspectorSession = {};
         const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
-        const createPreviewInspectorRuntimeFallbackPathSignature = (paths) => JSON.stringify(paths);
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) => JSON.stringify(paths);
         const readPreviewInspectorRuntimeFallbacks = () => [];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
@@ -168,6 +224,94 @@ describe('Preview Inspector requirement frontier runtime source', () => {
     });
   });
 
+  /** Preserves a child requirement discovered during the active pass and resumes it once. */
+  it('defers a continuation until the current requirement search settles', () => {
+    const context: { __result?: unknown } = {};
+    vm.runInNewContext(
+      `
+        const callbacks = [];
+        let notifications = 0;
+        let treeRefreshes = 0;
+        const state = {
+          directTarget: false, exhausted: false, idlePasses: 0, key: 'page:Target',
+          pageRootCommitted: false, probeRevision: 6, status: 'filling-requirements',
+          targetExportName: 'Target', targetHasOutput: false, targetMounted: false,
+        };
+        const search = { origin: 'deterministic-auto', pass: 6, status: 'searching' };
+        const hookRecord = {
+          id: 'late-completion-gate', mode: 'auto', ownerName: 'Target', passive: false,
+          reachabilityKey: state.key, requiredPaths: ['status'],
+          smartPathValues: [{ path: 'status', value: 'COMPLETED' }],
+        };
+        const previewInspectorSession = {
+          minimumRequirementSearchByKey: new Map([[state.key, search]]),
+          requirementConvergenceByKey: new Map(),
+          runtimeFallbackSmartPathSignatures: new Map(),
+          targetReachabilityByKey: new Map([[state.key, state]]),
+        };
+        const initializePreviewInspectorTargetReachabilityState = () => undefined;
+        const hasMountedPreviewInspectorTarget = () => false;
+        const hasPreviewInspectorTargetHostOutput = () => false;
+        const findSelectedPreviewInspectorDescriptor = () => ({ inspector: {} });
+        const readSelectedPreviewInspectorPageCandidate = () => ({});
+        const readPreviewInspectorMinimumRequirementSearch = () => search;
+        const readPreviewInspectorTargetPathEvidence = () => ({
+          ambiguousNames: new Set(), nameScores: new Map([['Target', 1000]]),
+          pathScores: new Map(), paths: [], runtimeOwnerNames: new Set(),
+        });
+        const normalizePreviewInspectorReachabilityPath = (value) => String(value ?? '');
+        const readPreviewInspectorTargetRenderPath = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [hookRecord];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) => JSON.stringify(paths);
+        const canStartPreviewInspectorDeterministicRequirementSearch = () => true;
+        const readPreviewInspectorRequirementConvergence = () => ({ totalPasses: 6 });
+        const readPreviewInspectorTargetReachabilityRequiredPaths = () => hookRecord.requiredPaths;
+        const notifyPreviewInspector = () => { notifications += 1; };
+        const schedulePreviewInspectorTreeRefresh = () => { treeRefreshes += 1; };
+        globalThis.queueMicrotask = (callback) => callbacks.push(callback);
+        ${createPreviewInspectorRequirementFrontierRuntimeSource()}
+        const scheduled = schedulePreviewInspectorTargetRequirementContinuation(state.key);
+        callbacks.shift()();
+        const deferredBeforeCommit =
+          previewInspectorSession.requirementContinuationDeferredKeys.has(state.key);
+        state.pageRootCommitted = true;
+        const releasedAtCommit = releasePreviewInspectorDeferredRequirementContinuation(state);
+        callbacks.shift()();
+        const deferredDuringSearch =
+          previewInspectorSession.requirementContinuationDeferredKeys.has(state.key);
+        const duplicate = schedulePreviewInspectorTargetRequirementContinuation(state.key);
+        search.status = 'settled';
+        const released = releasePreviewInspectorDeferredRequirementContinuation(state);
+        const queuedAfterRelease = callbacks.length;
+        callbacks.shift()();
+        globalThis.__result = {
+          deferredBeforeCommit, deferredDuringSearch, duplicate, notifications,
+          probeRevision: state.probeRevision, queuedAfterRelease, released, releasedAtCommit,
+          scheduled, searchStatus: search.status,
+          stateStatus: state.status, treeRefreshes,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      deferredBeforeCommit: true,
+      deferredDuringSearch: true,
+      duplicate: false,
+      notifications: 1,
+      probeRevision: 7,
+      queuedAfterRelease: 1,
+      released: true,
+      releasedAtCommit: true,
+      scheduled: true,
+      searchStatus: 'searching',
+      stateStatus: 'resuming-new-requirements',
+      treeRefreshes: 1,
+    });
+  });
+
   /** Reopens a settled corridor once for new actionable evidence, but not after host output exists. */
   it('coalesces bounded continuation around newly discovered child requirements', () => {
     const context: { __result?: unknown } = {};
@@ -206,7 +350,7 @@ describe('Preview Inspector requirement frontier runtime source', () => {
         const readPreviewInspectorRuntimeFallbacks = () => [hookRecord];
         const readPreviewInspectorDataRequests = () => [];
         const readPreviewInspectorDataShapePaths = () => [];
-        const createPreviewInspectorRuntimeFallbackPathSignature = (paths) => JSON.stringify(paths);
+        const createPreviewInspectorRuntimeFallbackSmartSignature = (_record, paths) => JSON.stringify(paths);
         const canStartPreviewInspectorDeterministicRequirementSearch = () => true;
         const readPreviewInspectorRequirementConvergence = () => ({ totalPasses: 4 });
         const readPreviewInspectorTargetReachabilityRequiredPaths = () => hookRecord.requiredPaths;

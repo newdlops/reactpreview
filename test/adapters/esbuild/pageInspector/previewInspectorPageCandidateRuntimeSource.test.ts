@@ -153,6 +153,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('PreviewInspectorTargetReachabilityProbe');
     expect(source).toContain('class PreviewInspectorPageRootCommitBoundary');
     expect(source).toContain('state.pageRootCommitted = true');
+    expect(source).toContain('releasePreviewInspectorDeferredRequirementContinuation(state)');
     expect(source).toContain('pageCorridorElement');
     expect(source).toContain(
       'activatePreviewInspectorRuntimeFallbackScope(candidate, directTarget)',

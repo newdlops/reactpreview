@@ -178,6 +178,15 @@ function scorePreviewInspectorTargetConditionLabel(label, evidence) {
   }
   return score;
 }
+/** Reports whether one branch label names the selected export itself, not only a shared ancestor. */
+function labelsPreviewInspectorExactTargetCondition(label, evidence) {
+  const normalized = String(label ?? '').replace(/[<>]/gu, '');
+  const tokens = normalized.split(/[^A-Za-z0-9_$]+/u).filter(Boolean);
+  for (const name of evidence.exactTargetNames ?? []) {
+    if (normalized === String(name) || tokens.includes(String(name))) return true;
+  }
+  return false;
+}
 /** Requires a gate to belong to a statically proven path source or named path component. */
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   if (evidence.exactConditionIds?.has(condition?.id)) return true;
@@ -212,6 +221,20 @@ function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
 function readPreviewInspectorTargetConditionValue(condition, evidence) {
   const truthyScore = scorePreviewInspectorTargetConditionLabel(condition?.truthyLabel, evidence);
   const falsyScore = scorePreviewInspectorTargetConditionLabel(condition?.falsyLabel, evidence);
+  const truthyNamesExactTarget = labelsPreviewInspectorExactTargetCondition(
+    condition?.truthyLabel,
+    evidence,
+  );
+  const falsyNamesExactTarget = labelsPreviewInspectorExactTargetCondition(
+    condition?.falsyLabel,
+    evidence,
+  );
+  /* An exact target label can correct conservative continuation metadata. Shared wrapper labels cannot. */
+  if (truthyNamesExactTarget !== falsyNamesExactTarget) return truthyNamesExactTarget;
+  if (condition?.targetBranch === 'truthy') return true;
+  if (condition?.targetBranch === 'falsy') return false;
+  /* Every compiler-issued logical-and guard exposes its JSX terminal only on the truthy side. */
+  if (condition?.kind === 'logical-and') return true;
   if (truthyScore !== falsyScore && Math.max(truthyScore, falsyScore) > 0) {
     return truthyScore > falsyScore;
   }
@@ -223,14 +246,6 @@ function readPreviewInspectorTargetConditionValue(condition, evidence) {
   ) {
     return true;
   }
-  /*
-   * Every compiler-issued logical-and guard exposes its JSX terminal only on the truthy side.
-   * Path membership is checked separately before this value is applied, so a target-local guard
-   * remains actionable even when its terminal label names only a Fragment or a shared component.
-   */
-  if (condition?.kind === 'logical-and') return true;
-  if (condition?.targetBranch === 'truthy') return true;
-  if (condition?.targetBranch === 'falsy') return false;
   if (condition?.fallbackBranch === 'truthy') return false;
   if (condition?.fallbackBranch === 'falsy') return true;
   return undefined;

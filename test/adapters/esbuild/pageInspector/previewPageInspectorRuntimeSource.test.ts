@@ -77,10 +77,15 @@ describe('Page Inspector runtime source', () => {
     expect(source).toContain('rememberCapturedReactError(error)');
     expect(source).toContain("'react-preview-target-error'");
     expect(source).toContain('remountPreviewInspectorExport(this.props.exportName)');
-    expect(source).toContain('fallbackValuesEnabled ? metadata?.inferredPropShape : undefined');
-    expect(source).toContain('const generatedListSampleCount = readPreviewGeneratedListSampleCount()');
+    expect(source).toContain('metadata?.targetOnlyExecution === true');
     expect(source).toContain(
-      '[fallbackValuesEnabled, generatedListSampleCount, metadata?.inferredPropShape, targetProps]',
+      'inferredTargetPropsEnabled ? metadata?.inferredPropShape : undefined',
+    );
+    expect(source).toContain(
+      'const generatedListSampleCount = readPreviewGeneratedListSampleCount()',
+    );
+    expect(source).toContain(
+      '[inferredTargetPropsEnabled, generatedListSampleCount, metadata?.inferredPropShape, targetProps]',
     );
     expect(source).toContain('function resetPreviewInspectorGeneratedRuntimeFallbackValues()');
     expect(source).toContain('previewInspectorSession.runtimeFallbackValues.clear()');
@@ -156,6 +161,23 @@ describe('Page Inspector runtime source', () => {
     );
     expect(rootSource).not.toContain('const DirectPreviewTarget');
     expect(rootSource).not.toContain('const RoutedDirectPreviewTarget');
+  });
+
+  /** Remounts the authored page so an automatic condition choice reaches project render code. */
+  it('keys the authored page root by the render-condition revision', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const rootStart = source.indexOf('function PreviewPageInspectorRootRenderer');
+    const rootEnd = source.indexOf('function PreviewPageInspectorExportBoundary', rootStart);
+    const rootSource = source.slice(rootStart, rootEnd);
+
+    expect(rootSource).toContain(
+      'const conditionRevision = readPreviewInspectorRenderConditionRevision()',
+    );
+    expect(rootSource).toContain(
+      "const renderKey = candidateKey + ':condition:' + String(conditionRevision)",
+    );
+    expect(rootSource.match(/key: renderKey/gu)).toHaveLength(2);
+    expect(rootSource).not.toContain('key: candidateKey');
   });
 
   /** Separates ordinary prop/error refreshes from the user's explicit target-only Remount action. */

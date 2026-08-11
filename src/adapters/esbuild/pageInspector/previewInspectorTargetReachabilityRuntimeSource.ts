@@ -1307,6 +1307,16 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   ) {
     settlePreviewInspectorMinimumRequirementSearch(state);
     if (requestPreviewInspectorContextualTargetFallback(state)) return;
+    if (
+      typeof requestPreviewInspectorPageExecutionRetry === 'function' &&
+      requestPreviewInspectorPageExecutionRetry(descriptor, candidate)
+    ) {
+      state.exhausted = true;
+      state.status = 'retrying-page-execution';
+      notifyPreviewInspector();
+      schedulePreviewInspectorTreeRefresh();
+      return;
+    }
     state.exhausted = true;
     state.status = 'page-blocked';
     reportPreviewInspectorPageCorridorBlocked(state);

@@ -151,6 +151,15 @@ function readSelectedPreviewInspectorCandidateTarget(descriptor) {
     descriptor?.inspector?.target;
 }
 
+/** Returns the compiler-owned inner execution slice selected for the current page artifact. */
+function readSelectedPreviewInspectorPageExecutionCandidate(descriptor) {
+  const executionCandidateId = descriptor?.inspector?.pageExecutionCandidateId;
+  const executionCandidates = descriptor?.inspector?.pageExecutionCandidates;
+  return Array.isArray(executionCandidates)
+    ? executionCandidates.find((candidate) => candidate?.id === executionCandidateId)
+    : undefined;
+}
+
 /** Reconciles browser state with the single caller path actually compiled into this artifact. */
 function reconcilePreviewInspectorPageCandidateSelection(candidateIds) {
   const descriptor = findSelectedPreviewInspectorDescriptor();
@@ -174,12 +183,7 @@ function doesSelectedPreviewInspectorPageCandidateOwnRouter() {
   if (typeof findSelectedPreviewInspectorDescriptor !== 'function') return false;
   const descriptor = findSelectedPreviewInspectorDescriptor();
   if (readSelectedPreviewInspectorPageCandidate(descriptor)?.rootOwnsRouter === true) return true;
-  const executionCandidateId = descriptor?.inspector?.pageExecutionCandidateId;
-  const executionCandidates = descriptor?.inspector?.pageExecutionCandidates;
-  return Array.isArray(executionCandidates) && executionCandidates.some(
-    (candidate) =>
-      candidate?.id === executionCandidateId && candidate?.ownsGeneratedRouter === true,
-  );
+  return readSelectedPreviewInspectorPageExecutionCandidate(descriptor)?.ownsGeneratedRouter === true;
 }
 
 /** Validates an inert compiler or runtime base path before it can affect Router state. */

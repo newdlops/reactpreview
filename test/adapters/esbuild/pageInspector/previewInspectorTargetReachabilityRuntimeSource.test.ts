@@ -58,6 +58,7 @@ interface ReachabilityResult {
   readonly siblingOverlaySelection: string;
   readonly sharedModalExactSourcePathLocal: boolean;
   readonly sharedModalNameOnlyPathLocal: boolean;
+  readonly sharedWrapperTargetValue: boolean;
   readonly targetOverlaySelection: string;
   readonly targetNameOnlyPathLocal: boolean;
   readonly targetSourceScore: number;
@@ -328,6 +329,11 @@ describe('Preview Inspector target reachability runtime source', () => {
             sourcePath: '/workspace/unrelated-document-preview-modal.tsx',
             truthyLabel: 'visible <Modal>',
           }, evidence),
+          sharedWrapperTargetValue: readPreviewInspectorTargetConditionValue({
+            falsyLabel: 'continue <DashboardFlow>',
+            targetBranch: 'falsy',
+            truthyLabel: '<Modal>',
+          }, evidence),
           targetOverlaySelection,
           targetNameOnlyPathLocal: isPreviewInspectorConditionOnTargetPath({
             ownerName: 'DashboardPanel',
@@ -360,6 +366,7 @@ describe('Preview Inspector target reachability runtime source', () => {
       siblingOverlaySelection: 'none',
       sharedModalExactSourcePathLocal: true,
       sharedModalNameOnlyPathLocal: false,
+      sharedWrapperTargetValue: false,
       targetOverlaySelection: 'target-overlay',
       targetNameOnlyPathLocal: true,
       targetSourceScore: 800,
@@ -387,6 +394,8 @@ describe('Preview Inspector target reachability runtime source', () => {
     );
     expect(source).not.toContain('OVERLAY_TARGET_NAME_PATTERN');
     expect(source).toContain('startPreviewInspectorDeterministicRequirementSearch');
+    expect(source).toContain('requestPreviewInspectorPageExecutionRetry(descriptor, candidate)');
+    expect(source).toContain("state.status = 'retrying-page-execution'");
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
   });
 

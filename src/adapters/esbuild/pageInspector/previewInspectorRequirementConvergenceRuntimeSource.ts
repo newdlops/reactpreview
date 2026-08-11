@@ -379,16 +379,52 @@ function createPreviewInspectorRequirementFrontierFingerprint(state, batch) {
   });
 }
 
-/** Emits one circuit-open diagnostic and leaves the authored page mounted for manual inspection. */
+/** Hands an exhausted value-search lane to the next bounded page-corridor recovery. */
+function handOffPreviewInspectorRequirementConvergence(state, search, convergence) {
+  if (
+    typeof requestPreviewInspectorContextualTargetFallback === 'function' &&
+    requestPreviewInspectorContextualTargetFallback(state)
+  ) {
+    convergence.status = 'settled';
+    search.status = 'settled';
+    delete search.cycleLength;
+    return true;
+  }
+  if (
+    typeof findSelectedPreviewInspectorDescriptor !== 'function' ||
+    typeof readSelectedPreviewInspectorPageCandidate !== 'function' ||
+    typeof createPreviewInspectorTargetReachabilityKey !== 'function' ||
+    typeof requestPreviewInspectorPageExecutionRetry !== 'function'
+  ) return false;
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidate = readSelectedPreviewInspectorPageCandidate(descriptor);
+  if (
+    descriptor === undefined ||
+    candidate === undefined ||
+    createPreviewInspectorTargetReachabilityKey(descriptor, candidate) !== state.key ||
+    !requestPreviewInspectorPageExecutionRetry(descriptor, candidate)
+  ) return false;
+  convergence.status = 'settled';
+  search.status = 'settled';
+  delete search.cycleLength;
+  state.exhausted = true;
+  state.status = 'retrying-page-execution';
+  notifyPreviewInspector();
+  schedulePreviewInspectorTreeRefresh();
+  return true;
+}
+
+/** Emits one circuit-open diagnostic only after every bounded page recovery is unavailable. */
 function stopPreviewInspectorRequirementConvergence(state, search, status, cycleLength = 0) {
   const convergence = readPreviewInspectorRequirementConvergence(state);
   if (typeof clearPreviewInspectorDeferredRequirementContinuation === 'function') {
     clearPreviewInspectorDeferredRequirementContinuation(state.key);
   }
+  search.totalPasses = convergence.totalPasses;
+  if (handOffPreviewInspectorRequirementConvergence(state, search, convergence)) return true;
   convergence.status = status;
   search.status = status;
   search.cycleLength = cycleLength;
-  search.totalPasses = convergence.totalPasses;
   state.exhausted = true;
   state.status = 'resolver-' + status;
   if (convergence.warningReported !== true) {
@@ -439,6 +475,7 @@ function stopPreviewInspectorRequirementConvergence(state, search, status, cycle
   }
   notifyPreviewInspector();
   schedulePreviewInspectorTreeRefresh();
+  return false;
 }
 
 /** Inspects a candidate pass and distinguishes a settled A -> A frontier from real oscillation. */

@@ -789,13 +789,15 @@ function PreviewInspectorTargetRenderer({ Component, contextualBoundaryRoleToken
       )
     : undefined;
   const fallbackValuesEnabled = readPreviewInspectorFallbackValuesEnabled();
+  const inferredTargetPropsEnabled = fallbackValuesEnabled ||
+    metadata?.targetOnlyExecution === true;
   const generatedListSampleCount = readPreviewGeneratedListSampleCount();
   const automaticTargetProps = React.useMemo(
     () => createPreviewTargetPropsFromLayers(
-      fallbackValuesEnabled ? metadata?.inferredPropShape : undefined,
+      inferredTargetPropsEnabled ? metadata?.inferredPropShape : undefined,
       targetProps,
     ),
-    [fallbackValuesEnabled, generatedListSampleCount, metadata?.inferredPropShape, targetProps],
+    [inferredTargetPropsEnabled, generatedListSampleCount, metadata?.inferredPropShape, targetProps],
   );
   React.useEffect(() => {
     registerPreviewInspectorBaseProps(exportName, automaticTargetProps);
@@ -1077,17 +1079,19 @@ function PreviewPageInspectorRootRenderer({ descriptor, previewConfig, storyCont
   );
   const effectiveProps = { ...baseRootProps, ...overrideProps };
   const candidateKey = selectedCandidate?.id ?? 'nearest-authored-owner';
+  const conditionRevision = readPreviewInspectorRenderConditionRevision();
+  const renderKey = candidateKey + ':condition:' + String(conditionRevision);
   return useStorybook
     ? React.createElement(StorybookPreviewRoot, {
         PreviewTarget: descriptor.value,
-        key: candidateKey,
+        key: renderKey,
         previewConfig,
         storyContext: { ...storyContext, args: effectiveProps },
         targetProps: effectiveProps,
       })
     : createPreviewInspectorElement(descriptor.value, {
         ...effectiveProps,
-        key: candidateKey,
+        key: renderKey,
       });
 }
 function PreviewPageInspectorExportBoundary({ descriptor, children }) {
@@ -1146,6 +1150,8 @@ const previewInspectorApi = {
   registerLocalUiEventListener: registerPreviewInspectorLocalUiEventListener,
   registerRenderConditionDefinitions: registerPreviewInspectorRenderConditionDefinitions,
   observeRenderChoiceCase: observePreviewInspectorRenderChoiceCase,
+  registerGraphqlFixedRenderer: registerPreviewInspectorGraphqlFixedRenderer,
+  registerGraphqlFixedRendererUsage: registerPreviewInspectorGraphqlFixedRendererUsage,
   registerGraphqlRenderPropUsage: registerPreviewInspectorGraphqlRenderPropUsage,
   previewAxiosRequest: previewInspectorAxiosRequest,
   previewFetch: previewInspectorFetch,

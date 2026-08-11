@@ -20,6 +20,10 @@ function runConvergenceScenario(scenario: string): unknown {
       let commits = 0;
       let deferredClears = 0;
       let deferredReleases = 0;
+      let contextualFallbackAccepted = false;
+      let contextualFallbackRequests = 0;
+      let pageExecutionRetryAccepted = false;
+      let pageExecutionRetryRequests = 0;
       let persists = 0;
       const hookRecord = {
         id: 'session-hook',
@@ -63,6 +67,22 @@ function runConvergenceScenario(scenario: string): unknown {
       const releasePreviewInspectorDeferredRequirementContinuation = () => {
         deferredReleases += 1;
         return true;
+      };
+      const selectedCandidate = { id: 'browser-candidate' };
+      const selectedDescriptor = { inspector: { id: 'descriptor' } };
+      const findSelectedPreviewInspectorDescriptor = () => selectedDescriptor;
+      const readSelectedPreviewInspectorPageCandidate = () => selectedCandidate;
+      const createPreviewInspectorTargetReachabilityKey = () => 'page:Target';
+      const requestPreviewInspectorContextualTargetFallback = () => {
+        contextualFallbackRequests += 1;
+        if (!contextualFallbackAccepted) return false;
+        state.exhausted = false;
+        state.status = 'mounting-contextual-target';
+        return true;
+      };
+      const requestPreviewInspectorPageExecutionRetry = () => {
+        pageExecutionRetryRequests += 1;
+        return pageExecutionRetryAccepted;
       };
       const clearedResources = [];
       const clearPreviewInspectorVirtualBackendResource = (id) => clearedResources.push(id);
@@ -132,6 +152,49 @@ describe('Preview Inspector requirement convergence runtime source', () => {
       repeated: undefined,
       status: 'cycle-detected',
       warnings: 1,
+    });
+  });
+
+  /** Tries the next compiler-owned page execution before exposing a terminal value-search loop. */
+  it('hands an A-B-A requirement oscillation to the next page execution candidate', () => {
+    const result = runConvergenceScenario(`
+      const first = beginPreviewInspectorRequirementFrontier(state, search, batch);
+      completePreviewInspectorRequirementFrontier(search, first, true, state);
+      previewInspectorSession.runtimeFallbackValues.set(
+        'session-hook',
+        { session: { user: { id: 'B' } } },
+      );
+      const second = beginPreviewInspectorRequirementFrontier(state, search, batch);
+      completePreviewInspectorRequirementFrontier(search, second, true, state);
+      previewInspectorSession.runtimeFallbackValues.set(
+        'session-hook',
+        { session: { user: { id: 'A' } } },
+      );
+      pageExecutionRetryAccepted = true;
+      const repeated = beginPreviewInspectorRequirementFrontier(state, search, batch);
+      globalThis.__result = {
+        contextualFallbackRequests,
+        convergenceStatus: readPreviewInspectorRequirementConvergence(state).status,
+        exhausted: state.exhausted,
+        pageExecutionRetryRequests,
+        repeated,
+        stateStatus: state.status,
+        status: search.status,
+        treeRefreshes,
+        warnings: warnings.length,
+      };
+    `);
+
+    expect(result).toEqual({
+      contextualFallbackRequests: 1,
+      convergenceStatus: 'settled',
+      exhausted: true,
+      pageExecutionRetryRequests: 1,
+      repeated: undefined,
+      stateStatus: 'retrying-page-execution',
+      status: 'settled',
+      treeRefreshes: 1,
+      warnings: 0,
     });
   });
 

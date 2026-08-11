@@ -124,6 +124,7 @@ describe('Preview Inspector page-candidate runtime source', () => {
     expect(source).toContain('function PreviewInspectorPageCandidateLoader');
     expect(source).toContain('function PreviewInspectorAuthoredPageLoader');
     expect(source).toContain('function requestPreviewInspectorPageExecutionRetry');
+    expect(source).toContain('function readSelectedPreviewInspectorPageExecutionCandidate');
     expect(source).toContain("type: 'react-preview-inspector-page-execution-retry'");
     expect(source).toContain('pageExecutionRetryRevision === previewEntryRevision');
     expect(source).toContain('return definition.load();');

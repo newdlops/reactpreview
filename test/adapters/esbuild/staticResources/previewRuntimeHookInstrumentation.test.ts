@@ -526,6 +526,65 @@ describe('createPreviewRuntimeHookReplacements', () => {
     );
   });
 
+  /** Completes an immutable literal-zero item alias without evaluating the authored hook result. */
+  it('materializes nested collection demand through an exact indexed item alias', () => {
+    const source = [
+      `import { useCreateGrantedRsuFormContext } from './create-granted-rsu-wizard-form';`,
+      'export function EditGrantedRsu() {',
+      '  const { formikProps: { values: { rsuInputs } } } = useCreateGrantedRsuFormContext();',
+      '  const rsuInput = rsuInputs[0];',
+      '  const totalQuantity = rsuInput.rsuInput.grantQuantity;',
+      '  const currentQuantity = rsuInput.vestingItemsInput.filter((vestingItem) => vestingItem.quantityNum).reduce((sum, vestingItem) => sum + vestingItem.quantityDen, 0);',
+      '  return <div data-current={currentQuantity} data-total={totalQuantity} />;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/EditGrantedRsu.tsx', source),
+    );
+
+    expect(transformed).toContain('"rsuInputs": ((__createPreviewItem)');
+    expect(transformed).toContain('"rsuInput": Object.freeze({ "grantQuantity": 0 })');
+    expect(transformed).toContain('"grantQuantity": 0');
+    expect(transformed).toContain('"vestingItemsInput": ((__createPreviewItem)');
+    expect(transformed).toContain('"quantityNum": 0');
+    expect(transformed).toContain('"quantityDen": 0');
+    expect(transformed).toContain('formikProps.values.rsuInputs.[].rsuInput.grantQuantity');
+    expect(transformed).toContain('formikProps.values.rsuInputs.[].vestingItemsInput.filter()');
+    expect(transformed).toContain(
+      'formikProps.values.rsuInputs.[].vestingItemsInput[].quantityNum',
+    );
+    expect(transformed).toContain(
+      'formikProps.values.rsuInputs.[].vestingItemsInput[].quantityDen',
+    );
+    expect(transformed).not.toContain('Object.freeze({ [0]: Object.freeze({}) })');
+    expect(transformed).not.toContain('formikProps.values.rsuInputs.[0]');
+  });
+
+  /** Rejects aliases whose item selection can change or short-circuit at runtime. */
+  it('fails closed for computed or optional indexed item aliases', () => {
+    const sources = [
+      'const rsuInput = rsuInputs[index];',
+      'const rsuInput = rsuInputs?.[0];',
+    ];
+    for (const alias of sources) {
+      const source = [
+        `import { useGrantedRsuWizard } from './use-granted-rsu-wizard';`,
+        'export function EditGrantedRsu() {',
+        '  const { data: { rsuInputs } } = useGrantedRsuWizard();',
+        `  ${alias}`,
+        '  return <span>{rsuInput.grantQuantity}</span>;',
+        '}',
+      ].join('\n');
+      const transformed = applyHookReplacements(
+        source,
+        createPreviewRuntimeHookReplacements('/workspace/EditGrantedRsu.tsx', source),
+      );
+      expect(transformed).not.toContain('data.rsuInputs[].grantQuantity');
+    }
+  });
+
   /**
    * Carries collection-item demand through a uniquely declared same-file formatter/helper call.
    */

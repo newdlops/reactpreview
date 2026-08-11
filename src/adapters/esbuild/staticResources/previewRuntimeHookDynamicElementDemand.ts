@@ -29,6 +29,7 @@ export interface PreviewRuntimeHookDynamicElementFallback {
 export function inferPreviewRuntimeHookDynamicElementFallback(
   identifier: ts.Identifier,
   sourceFile: ts.SourceFile,
+  ignoredKeyTexts?: ReadonlySet<string>,
 ): PreviewRuntimeHookDynamicElementFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
@@ -44,7 +45,12 @@ export function inferPreviewRuntimeHookDynamicElementFallback(
     if (ts.isElementAccessExpression(node)) {
       const receiver = unwrapPreviewRuntimeExpression(node.expression);
       const key = readSafeDynamicKey(node.argumentExpression, sourceFile, owner);
-      if (ts.isIdentifier(receiver) && receiver.text === identifier.text && key !== undefined) {
+      if (
+        ts.isIdentifier(receiver) &&
+        receiver.text === identifier.text &&
+        key !== undefined &&
+        ignoredKeyTexts?.has(key.text) !== true
+      ) {
         const collection = hasCollectionDemand(node, owner, sourceFile);
         const prior = entries.get(key.text);
         if (prior === undefined || (!prior.collection && collection)) {

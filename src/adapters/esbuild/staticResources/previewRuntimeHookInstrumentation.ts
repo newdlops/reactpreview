@@ -93,6 +93,8 @@ const LAZY_QUERY_HOOK_PATTERN = /^use(?:[A-Z0-9_$][A-Za-z0-9_$]*)?LazyQuery$/u;
 const QUERY_PARAM_MODULE = 'use-query-params';
 const REACT_CONTEXT_HOOK = 'useContext';
 const REACT_MODULE = 'react';
+const INDEXED_ITEM_ALIAS_DYNAMIC_KEYS = new Set(['0']);
+const REDUCE_IDENTITY_CARRIER_METHODS = new Set(['filter', 'slice', 'toReversed', 'toSorted']);
 const DATA_HOOK_FACADE_METHODS = new Set([
   'delete',
   'get',
@@ -948,9 +950,16 @@ function createIdentifierUsageFallback(
 ): PreviewRuntimeHookValueFallback | undefined {
   const owner = findNearestRuntimeFunction(identifier);
   if (owner === undefined) return undefined;
+  const indexedItemAliasUsages = readPreviewRuntimeHookIndexedItemAliasUsages(
+    identifier,
+    owner,
+    sourceFile,
+    callResultDepth,
+  );
   const dynamicElementFallback = inferPreviewRuntimeHookDynamicElementFallback(
     identifier,
     sourceFile,
+    indexedItemAliasUsages.length === 0 ? undefined : INDEXED_ITEM_ALIAS_DYNAMIC_KEYS,
   );
   const paths: PreviewRuntimeHookUsagePath[] = [];
   const optionalPaths: PreviewRuntimeHookUsagePath[] = [];
@@ -1136,6 +1145,7 @@ function createIdentifierUsageFallback(
     ts.forEachChild(node, visit);
   };
   visit(owner);
+  paths.push(...indexedItemAliasUsages);
   for (const usage of readPreviewRuntimeHookIdentityAliasCollectionUsages(identifier, owner))
     (usage.optional ? optionalPaths : paths).push({ called: false, ...usage });
   const childPropUsages = readPreviewRuntimeHookChildPropUsages(
@@ -1245,16 +1255,166 @@ function createIdentifierUsageFallback(
   };
 }
 
+/**
+ * Carries item demand through one exact immutable `const item = collection[0]` local alias.
+ *
+ * This deliberately stays narrower than general identity aliases: only a unique same-function
+ * binding from the literal zero index is admitted, and nested scopes that reuse either local make
+ * the proof ambiguous. The item fallback is still derived entirely from syntax; no authored code
+ * is evaluated.
+ */
+function readPreviewRuntimeHookIndexedItemAliasUsages(
+  identifier: ts.Identifier,
+  owner: ReturnType<typeof findNearestRuntimeFunction>,
+  sourceFile: ts.SourceFile,
+  callResultDepth: number,
+): readonly PreviewRuntimeHookUsagePath[] {
+  if (owner === undefined) return [];
+  const declarations: ts.VariableDeclaration[] = [];
+  const bindingCounts = new Map<string, number>();
+  const nestedBindingCounts = new Map<string, number>();
+  const appendBindings = (binding: ts.BindingName, counts: Map<string, number>): void => {
+    if (ts.isIdentifier(binding)) {
+      counts.set(binding.text, (counts.get(binding.text) ?? 0) + 1);
+      return;
+    }
+    for (const element of binding.elements) {
+      if (!ts.isOmittedExpression(element)) appendBindings(element.name, counts);
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (node !== owner && isRuntimeFunction(node)) {
+      forEachBindingInRuntimeFunction(node, (binding) => appendBindings(binding, nestedBindingCounts));
+      return;
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      declarations.push(node);
+      appendBindings(node.name, bindingCounts);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner);
+  if (bindingCounts.get(identifier.text) !== 1) return [];
+  const usages: PreviewRuntimeHookUsagePath[] = [];
+  for (const declaration of declarations) {
+    if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) continue;
+    const alias = declaration.name;
+    if (bindingCounts.get(alias.text) !== 1 || nestedBindingCounts.has(alias.text)) continue;
+    const initializer = unwrapExpression(declaration.initializer);
+    const collectionExpression = ts.isElementAccessExpression(initializer)
+      ? unwrapExpression(initializer.expression)
+      : undefined;
+    const indexExpression =
+      ts.isElementAccessExpression(initializer) && initializer.argumentExpression !== undefined
+        ? unwrapExpression(initializer.argumentExpression)
+        : undefined;
+    if (
+      !ts.isElementAccessExpression(initializer) ||
+      initializer.questionDotToken !== undefined ||
+      collectionExpression === undefined ||
+      !ts.isIdentifier(collectionExpression) ||
+      collectionExpression.text !== identifier.text ||
+      indexExpression === undefined ||
+      !ts.isNumericLiteral(indexExpression) ||
+      indexExpression.text !== '0'
+    ) {
+      continue;
+    }
+    const item = createIdentifierUsageFallback(alias, sourceFile, callResultDepth);
+    if (item === undefined || item.projectionUnsafe === true) continue;
+    usages.push({
+      called: false,
+      collectionItemExpression: item.expression,
+      ...(item.requiredPaths === undefined
+        ? {}
+        : { collectionItemRequiredPaths: item.requiredPaths }),
+      collectionProperty: '[]',
+      names: [],
+    });
+  }
+  return usages;
+}
+
+/** Counts parameter and local names below one nested function without traversing another scope. */
+function forEachBindingInRuntimeFunction(
+  scope: ReturnType<typeof findNearestRuntimeFunction>,
+  consume: (binding: ts.BindingName) => void,
+): void {
+  if (scope === undefined) return;
+  for (const parameter of scope.parameters) consume(parameter.name);
+  const visit = (node: ts.Node): void => {
+    if (node !== scope && isRuntimeFunction(node)) return;
+    if (ts.isVariableDeclaration(node)) consume(node.name);
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+}
+
 /** Infers the first array-callback parameter from the fields actually read inside that callback. */
 export const inferPreviewRuntimeArrayItemFallback = (
   propertyAccess: ts.PropertyAccessExpression,
   sourceFile: ts.SourceFile,
-): PreviewRuntimeLocalHelperItemFallback | undefined =>
-  inferPreviewRuntimeLocalHelperArrayItemFallback(
+): PreviewRuntimeLocalHelperItemFallback | undefined => {
+  const primary = inferPreviewRuntimeLocalHelperArrayItemFallback(
     propertyAccess,
     sourceFile,
     createBindingFallback,
   );
+  const reducePropertyAccess = findPreviewRuntimeIdentityChainedReduce(propertyAccess);
+  if (reducePropertyAccess === undefined) return primary;
+  const call = reducePropertyAccess.parent;
+  const callbackArgument =
+    ts.isCallExpression(call) && call.expression === reducePropertyAccess
+      ? call.arguments[0]
+      : undefined;
+  const callback = callbackArgument === undefined ? undefined : unwrapExpression(callbackArgument);
+  if (
+    callback === undefined ||
+    (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
+  ) {
+    return primary;
+  }
+  const itemParameter = callback.parameters[1];
+  if (itemParameter === undefined || itemParameter.dotDotDotToken !== undefined) return primary;
+  const item = createBindingFallback(itemParameter.name, sourceFile);
+  if (item === undefined) return primary;
+  if (primary === undefined) return item;
+  if (
+    !primary.expression.startsWith('Object.freeze({') ||
+    !item.expression.startsWith('Object.freeze({')
+  ) {
+    return primary;
+  }
+  return {
+    expression: `Object.freeze(Object.assign({}, ${primary.expression}, ${item.expression}))`,
+    label: 'generated reduce collection item',
+    requiredPaths: Object.freeze([
+      ...new Set([...(primary.requiredPaths ?? []), ...(item.requiredPaths ?? [])]),
+    ]),
+  };
+};
+
+/** Follows only identity-preserving Array operations from one reached receiver into `reduce`. */
+function findPreviewRuntimeIdentityChainedReduce(
+  propertyAccess: ts.PropertyAccessExpression,
+): ts.PropertyAccessExpression | undefined {
+  let current = propertyAccess;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current.name.text === 'reduce') return current;
+    if (!REDUCE_IDENTITY_CARRIER_METHODS.has(current.name.text)) return undefined;
+    const call = current.parent;
+    if (!ts.isCallExpression(call) || call.expression !== current) return undefined;
+    const callValue = unwrapParentExpression(call);
+    const next = callValue.parent;
+    if (!ts.isPropertyAccessExpression(next) || next.expression !== callValue) return undefined;
+    current = next;
+  }
+  return undefined;
+}
 
 /** Builds one nested object for a direct non-optional `useHook().field` access. */
 function createDirectPropertyFallback(

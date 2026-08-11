@@ -7,6 +7,7 @@
  * This adapter joins bounded static outcomes with live Fiber names and never mutates project Fiber.
  */
 import type { PreviewReactRenderOutcomePlan } from '../staticResources/previewReactRenderOutcomeTypes';
+import { createPreviewInspectorHostGeometryRuntimeSource } from './previewInspectorHostGeometryRuntimeSource';
 
 /** Proves that one complete export inventory can only produce router navigation elements. */
 export function isPreviewInspectorNavigationOnlyRenderOutcomePlan(
@@ -44,8 +45,7 @@ export function isPreviewInspectorEffectControllerRenderOutcomePlan(
     return false;
   }
   const [root] = outcome.componentTree;
-  return root !== undefined && root.children.length === 0 &&
-    hasPreviewInspectorControllerOutputName(root.name);
+  return root?.children.length === 0 && hasPreviewInspectorControllerOutputName(root.name);
 }
 
 /** Recognizes semantic controller roles without admitting generic wrappers or visual components. */
@@ -65,10 +65,12 @@ function normalizePreviewInspectorNavigationOutputName(value: string): string {
 
 /** Creates browser source for authored target-output verification. */
 export function createPreviewInspectorTargetOutputRuntimeSource(): string {
+  const hostGeometryRuntimeSource = createPreviewInspectorHostGeometryRuntimeSource();
   return String.raw`
 function createPreviewInspectorTargetOutputFactory() {
 const PREVIEW_INSPECTOR_TARGET_OUTPUT_FIBER_LIMIT = 512;
 const PREVIEW_INSPECTOR_TARGET_RENDER_CHAIN_BRIDGE = Symbol.for('newdlops.react-file-preview.target-render-chain');
+${hostGeometryRuntimeSource}
 
 /** Resolves one exact target through each current/alternate boundary-local hostless chain. */
 function readPreviewInspectorBoundaryOwnedTargetFibers(boundary, targetType) {
@@ -148,8 +150,7 @@ function readPreviewInspectorTargetTopologySample(boundary, targetType, locatorT
         const node = readPreviewInspectorOwnData(fiber, 'stateNode');
         if (node?.nodeType === 1 && node.isConnected === true && mountNode?.contains?.(node) === true &&
           node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null && node.hidden !== true) {
-          const style = globalThis.getComputedStyle?.(node);
-          if (style?.display !== 'none' && style?.visibility !== 'hidden') connectedVisibleHosts += 1;
+          if (hasPreviewInspectorRenderableHostGeometry(node)) connectedVisibleHosts += 1;
         }
       }
       const child = readPreviewInspectorFiberLink(fiber, 'child');
@@ -258,8 +259,7 @@ function observePreviewInspectorTargetRenderCommitChain(boundary) {
           node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
           node.hidden !== true
         ) {
-          const style = globalThis.getComputedStyle?.(node);
-          if (style?.display !== 'none' && style?.visibility !== 'hidden') ownedHosts.add(node);
+          if (hasPreviewInspectorRenderableHostGeometry(node)) ownedHosts.add(node);
         }
       }
     }
@@ -547,7 +547,8 @@ function hasPreviewInspectorAuthenticProjectedTargetOutput(boundary, expected, t
       node?.nodeType === 1 &&
       node.isConnected === true &&
       typeof projectedIdentity === 'string' &&
-      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
+      hasPreviewInspectorRenderableHostGeometry(node)
     ) return true;
   }
   return false;
@@ -600,7 +601,8 @@ function hasPreviewInspectorAuthenticExpectedTargetOutput(boundary, expected) {
     if (
       node?.nodeType === 1 &&
       node.isConnected === true &&
-      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
+      hasPreviewInspectorRenderableHostGeometry(node)
     ) return true;
   }
   return false;
@@ -658,7 +660,8 @@ function hasPreviewInspectorDirectTargetElementOutput(boundary) {
     return (
       node?.nodeType === 1 &&
       node.isConnected === true &&
-      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
+      hasPreviewInspectorRenderableHostGeometry(node)
     );
   };
   if (isConnectedProjectHost(targetFiber)) return true;
@@ -706,7 +709,8 @@ function hasPreviewInspectorDetachedTargetBoundaryOutput(boundary, state) {
   return collectPreviewInspectorFiberElements(boundary).some((node) =>
     node?.nodeType === 1 &&
     node.isConnected === true &&
-    node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null
+    node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
+    hasPreviewInspectorRenderableHostGeometry(node)
   );
 }
 
@@ -791,7 +795,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     ? readPreviewInspectorOwnedHosts(boundary, state)
     : [];
   const inlineTargetDomOwnership = privatelyOwnedHosts.some((node) =>
-    node?.nodeType === 1 && node.isConnected === true && mountNode?.contains?.(node) === true,
+    node?.nodeType === 1 && node.isConnected === true && mountNode?.contains?.(node) === true &&
+      hasPreviewInspectorRenderableHostGeometry(node),
   );
   const targetPortalOwnership = typeof collectPreviewInspectorFiberElements === 'function' &&
     collectPreviewInspectorFiberElements(boundary).some((node) =>
@@ -799,7 +804,8 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
       node.isConnected === true &&
       mountNode?.contains?.(node) !== true &&
       document.documentElement?.contains?.(node) === true &&
-      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null,
+      node.closest?.('[' + PREVIEW_INSPECTOR_UI_ATTRIBUTE + ']') === null &&
+      hasPreviewInspectorRenderableHostGeometry(node),
     );
   const targetDomOwnership = inlineTargetDomOwnership || targetPortalOwnership;
   observePreviewInspectorTargetRenderCommitChain(boundary);

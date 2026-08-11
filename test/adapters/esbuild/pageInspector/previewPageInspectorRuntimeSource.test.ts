@@ -106,6 +106,7 @@ describe('Page Inspector runtime source', () => {
       'resolveOverlayActivationRenderValue: resolvePreviewInspectorOverlayActivationRenderValue',
     );
     expect(source).toContain('resolveRenderChoice: resolvePreviewInspectorRenderChoice');
+    expect(source).toContain('observeRenderChoiceCase: observePreviewInspectorRenderChoiceCase');
     expect(source).toContain('resolveDataPayload: resolvePreviewInspectorDataPayload');
     expect(source).toContain(
       'resolveGraphqlInterpolation: resolvePreviewInspectorGraphqlInterpolation',

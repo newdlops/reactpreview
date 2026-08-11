@@ -49,6 +49,7 @@ function evaluateResolvedOutput(
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
+    readonly ownedHost?: Record<string, unknown>;
     readonly additionalOutcomes?: readonly Record<string, unknown>[];
     readonly selected?: boolean;
     readonly targetExportName?: string;
@@ -79,6 +80,7 @@ function evaluateResolvedOutput(
     __cleared: number;
     __exactOwnership: boolean;
     __outcome: typeof outcome;
+    __ownedHost: Record<string, unknown>;
     __planOutcomes: readonly Record<string, unknown>[];
     __result?: boolean;
     __scheduled?: { readonly delay: number };
@@ -94,6 +96,11 @@ function evaluateResolvedOutput(
     __includePlan: options.includePlan !== false,
     __liveChild: liveChild,
     __outcome: outcome,
+    __ownedHost: options.ownedHost ?? {
+      inside: options.exactOwnership !== false,
+      isConnected: true,
+      nodeType: 1,
+    },
     __planOutcomes: [outcome, ...(options.additionalOutcomes ?? [])],
     __selected: options.selected !== false,
     __targetExportName: options.targetExportName ?? 'default',
@@ -118,8 +125,9 @@ function evaluateResolvedOutput(
       const namePreviewInspectorFiber = (fiber) => fiber?.name ?? 'Anonymous';
       const isPreviewInspectorOwnedFiber = () => false;
       const mountNode = { contains: (node) => node?.inside === true };
+      globalThis.getComputedStyle = (node) => node?.style;
       const readPreviewInspectorOwnedHosts = (_boundary, _state) =>
-        globalThis.__host ? [{ inside: globalThis.__exactOwnership, isConnected: true, nodeType: 1 }] : [];
+        globalThis.__host ? [globalThis.__ownedHost] : [];
       const readPreviewInspectorRuntimeHealthTargetError = () => globalThis.__activeError;
       const clearPreviewInspectorRuntimeHealthTargetError = () => {
         globalThis.__activeError = undefined;
@@ -169,6 +177,7 @@ function hasResolvedOutput(
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
+    readonly ownedHost?: Record<string, unknown>;
     readonly additionalOutcomes?: readonly Record<string, unknown>[];
     readonly selected?: boolean;
     readonly targetExportName?: string;
@@ -508,6 +517,33 @@ describe('Preview Inspector target output runtime source', () => {
       }),
     ).toBe(false);
     expect(hasResolvedOutput([], undefined, { host: false, includePlan: false })).toBe(false);
+  });
+
+  /** A retained resize handle clipped by a zero-width drawer is DOM, but not visible output. */
+  it('rejects target-owned hosts fully clipped by an overflow-hidden zero-width ancestor', () => {
+    const clippingParent = {
+      getBoundingClientRect: () => ({ bottom: 100, left: 0, right: 0, top: 0 }),
+      parentElement: null,
+      style: { display: 'block', opacity: '1', overflowX: 'hidden', visibility: 'visible' },
+    };
+    const ownedHost = {
+      getBoundingClientRect: () => ({ bottom: 100, left: 0, right: 5, top: 0 }),
+      inside: true,
+      isConnected: true,
+      nodeType: 1,
+      parentElement: clippingParent,
+    };
+
+    expect(
+      hasResolvedOutput(
+        [],
+        { kind: 'function', name: 'Target' },
+        {
+          includePlan: false,
+          ownedHost,
+        },
+      ),
+    ).toBe(false);
   });
 
   /** A committed application error page cannot turn target reachability green as its DOM grows. */

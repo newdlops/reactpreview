@@ -889,6 +889,33 @@ function readPreviewInspectorDeterministicRequirementEvidence(descriptor, candid
     .slice(0, 24);
   return { hookIds, requestIds };
 }
+
+/**
+ * Reports whether the mounted empty target owns one exact Smart scalar in the next frontier.
+ *
+ * A coherent hook discriminator is stronger than independently forcing the target's early-return
+ * and child JSX conditions: the same memoized Context value also updates page-shell layout flags.
+ * Source/owner equality keeps this priority unavailable to sibling hooks elsewhere on the page.
+ */
+function hasPreviewInspectorExactTargetSmartRequirement(descriptor, candidate, state) {
+  const evidence = readPreviewInspectorDeterministicRequirementEvidence(
+    descriptor,
+    candidate,
+    state,
+  );
+  const admittedIds = new Set(evidence.hookIds);
+  const targetSourcePath = normalizePreviewInspectorReachabilityPath(state.targetSourcePath);
+  return readPreviewInspectorRuntimeFallbacks().some((record) => {
+    if (
+      !admittedIds.has(record.id) ||
+      !Array.isArray(record.smartPathValues) ||
+      record.smartPathValues.length === 0
+    ) return false;
+    const sourcePath = normalizePreviewInspectorReachabilityPath(record.sourcePath);
+    return record.ownerName === state.targetExportName ||
+      (targetSourcePath.length > 0 && sourcePath === targetSourcePath);
+  });
+}
 /** Applies one newly observed hook/API batch and remounts only when that batch changed values. */
 function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, state) {
   const search = readPreviewInspectorMinimumRequirementSearch(state);
@@ -925,7 +952,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
     },
   );
   if (!runtimeChanged && !dataChanged) {
-    completePreviewInspectorRequirementFrontier(search, frontier, false);
+    completePreviewInspectorRequirementFrontier(search, frontier, false, state);
     return false;
   }
   let traceId;
@@ -981,7 +1008,7 @@ function advancePreviewInspectorMinimumRequirementSearch(descriptor, candidate, 
     }
     registerPreviewInspectorRequirementAutoRollback(traceId, rollbackSnapshot);
   }
-  completePreviewInspectorRequirementFrontier(search, frontier, true);
+  completePreviewInspectorRequirementFrontier(search, frontier, true, state);
   search.observedPathCount = readPreviewInspectorTargetReachabilityRequiredPaths(state).length;
   state.exhausted = false;
   state.idlePasses = 0;
@@ -1193,6 +1220,14 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
   if (isPreviewInspectorTargetAutoAttemptPending(state)) {
     state.status = 'settling-auto-attempt';
     schedulePreviewInspectorTreeRefresh();
+    return;
+  }
+  if (
+    (state.targetMounted || state.targetWasMounted) &&
+    !state.targetHasOutput &&
+    hasPreviewInspectorExactTargetSmartRequirement(descriptor, candidate, state) &&
+    startPreviewInspectorDeterministicRequirementSearch(descriptor, candidate, state)
+  ) {
     return;
   }
   const mountedTargetGate = (state.targetMounted || state.targetWasMounted) && !state.targetHasOutput

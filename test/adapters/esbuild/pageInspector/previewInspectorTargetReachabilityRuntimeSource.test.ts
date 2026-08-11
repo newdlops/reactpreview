@@ -682,6 +682,93 @@ describe('Preview Inspector target reachability runtime source', () => {
     });
   });
 
+  /** Applies coherent target state before independently bypassing its authored JSX guards. */
+  it('prioritizes an exact target Smart discriminator over a mounted empty gate', () => {
+    const context: {
+      __result?: {
+        readonly conditionCalls: number;
+        readonly runtimeCalls: number;
+        readonly status: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        let activeKey = '';
+        let conditionCalls = 0;
+        let runtimeCalls = 0;
+        const previewInspectorSession = {
+          boundariesByExport: new Map([['Target', new Set([{
+            props: { exportName: 'Target', sourcePath: '/Target.tsx' },
+          }])]]),
+          dataRequests: new Map(),
+          dataPayloadOverrides: new Map(),
+          dataPayloadSmartShapeSignatures: new Map(),
+          dataRevision: 0,
+          fallbackValuesEnabled: true,
+          renderConditionOverrides: new Map(),
+          renderConditionRevision: 0,
+          renderConditions: new Map(),
+          runtimeFallbackMaterializedOverrides: new Map(),
+          runtimeFallbackOverrides: new Map(),
+          runtimeFallbacks: new Map(),
+          runtimeFallbackSmartIds: new Set(),
+          runtimeFallbackSmartPathSignatures: new Map(),
+          runtimeFallbackValues: new Map([['target-state', { state: { status: 'PREVIEW' } }]]),
+          selectedExportName: 'Target',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [{
+          id: 'target-state', mode: 'auto', ownerName: 'Target',
+          reachabilityKey: activeKey, requiredPaths: ['state.status'],
+          smartPathValues: [{ path: 'state.status', value: 'loading' }],
+          sourcePath: '/Target.tsx',
+        }];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const smartFillPreviewInspectorRuntimeFallbacksForReachability = () => {
+          runtimeCalls += 1;
+          return true;
+        };
+        const smartFillPreviewInspectorDataPayloadsForReachability = () => false;
+        const persistPreviewInspectorState = () => undefined;
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        const setPreviewInspectorTargetGuidedConditionOverride = () => {
+          conditionCalls += 1;
+          return true;
+        };
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        const recordPreviewInspectorBlockerAutoDecision = () => undefined;
+        const createPreviewInspectorRuntimeFallbackSmartDraftTemplate = () => ({});
+        const generatePreviewInspectorDataValue = () => ({});
+        const collectPreviewInspectorFiberElements = () => [];
+        const blockedInspectorPropNames = new Set(['__proto__', 'constructor', 'prototype']);
+        ${createTargetReachabilityFixtureSource()}
+        ${createPageTargetDescriptorCandidateFixtureSource()}
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        activeKey = state.key;
+        state.pageRootCommitted = true;
+        previewInspectorSession.renderConditions.set('target-gate', {
+          authoredValueKind: 'boolean', effectiveEnabled: true,
+          expression: '<Target> gate: state.status === "closed"', id: 'target-gate',
+          kind: 'early-return', ownerName: 'Target', reachabilityKey: state.key,
+          sourcePath: '/Target.tsx', targetBranch: 'falsy',
+        });
+        evaluatePreviewInspectorTargetReachability(descriptor, candidate, state);
+        globalThis.__result = { conditionCalls, runtimeCalls, status: state.status };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      conditionCalls: 0,
+      runtimeCalls: 1,
+      status: 'filling-requirements',
+    });
+  });
+
   /** Re-admits a stale Smart backend shape to deterministic convergence without an Inspector click. */
   it('auto-starts deterministic minimum requirements for an expanded Smart payload', () => {
     const context: { __result?: unknown } = {};

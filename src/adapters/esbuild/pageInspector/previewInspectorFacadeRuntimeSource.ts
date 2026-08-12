@@ -169,6 +169,24 @@ function copyPreviewInspectorComponentStatics(source, target) {
       // Frozen or exotic React component objects may reject a non-essential static property.
     }
   }
+  pinPreviewInspectorStyledCompositionTarget(source, target);
+}
+
+/** Keeps styled(styled(Target)) composition from flattening past the Inspector boundary. */
+function pinPreviewInspectorStyledCompositionTarget(source, target) {
+  try {
+    const styledComponentId = Object.getOwnPropertyDescriptor(source, 'styledComponentId');
+    const styledTarget = Object.getOwnPropertyDescriptor(target, 'target');
+    if (
+      typeof styledComponentId?.value !== 'string' ||
+      styledComponentId.value.length === 0 ||
+      styledTarget === undefined ||
+      !Object.hasOwn(styledTarget, 'value')
+    ) return;
+    Object.defineProperty(target, 'target', { ...styledTarget, value: target });
+  } catch {
+    // The copied styled contract remains usable even when an exotic target is not configurable.
+  }
 }
 
 /**

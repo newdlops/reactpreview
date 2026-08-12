@@ -496,24 +496,29 @@ function rememberPreviewInspectorDirectTargetCondition(conditionId) {
 /**
  * Resolves one compiler-issued condition from an exact whole-outcome choice, a manual edit, bounded
  * automatic continuation, or authored semantics in that order. A truthy authored object is returned
- * unchanged when no override applies so logical-and retains its exact normal result. The Inspector
- * presents that branch as a boolean switch without coercing project values in authored mode.
+ * unchanged when no override applies so logical-and retains its exact normal result. Compiler-marked
+ * negated expressions instead return visible-state booleans; the generated outer negation then
+ * recreates the exact source guard while the Inspector consistently presents true as visible.
  */
 function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, metadata) {
   initializePreviewInspectorConditionState();
+  const normalizedMetadata = normalizePreviewInspectorConditionMetadata(metadata);
+  const authoredExpressionNegated = normalizedMetadata.authoredExpressionNegated === true;
+  const authoredEnabled = authoredExpressionNegated
+    ? !Boolean(authoredValue)
+    : Boolean(authoredValue);
+  const authoredResult = authoredExpressionNegated ? authoredEnabled : authoredValue;
   if (
     typeof conditionId !== 'string' ||
     conditionId.length === 0 ||
     conditionId.length > 128
   ) {
-    return authoredValue;
+    return authoredResult;
   }
   const overrides = previewInspectorSession.renderConditionOverrides;
   const autoOverrides = previewInspectorSession.renderConditionAutoOverrides;
   let override = overrides.get(conditionId);
   let autoOverride = autoOverrides.get(conditionId);
-  const authoredEnabled = Boolean(authoredValue);
-  const normalizedMetadata = normalizePreviewInspectorConditionMetadata(metadata);
   const outcomeOverride = typeof readPreviewInspectorRenderOutcomeConditionOverride === 'function'
     ? readPreviewInspectorRenderOutcomeConditionOverride(normalizedMetadata)
     : undefined;
@@ -612,9 +617,9 @@ function resolvePreviewInspectorRenderCondition(conditionId, authoredValue, meta
     });
   }
   const selectedOverride = applicableOverrides.outcomeOverride ?? applicableOverrides.manualOverride ?? applicableOverrides.autoOverride;
-  if (selectedOverride === undefined) return authoredValue;
+  if (selectedOverride === undefined) return authoredResult;
   if (selectedOverride === false) return false;
-  return authoredEnabled ? authoredValue : true;
+  return authoredEnabled ? authoredResult : true;
 }
 
 /**

@@ -9,7 +9,10 @@
 import { PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY } from '../previewAutomaticPropsRuntimeSource';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { PREVIEW_STRING_ONLY_METHOD_NAMES } from '../previewStringMethodNames';
-import { PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY } from '../staticResources/previewRuntimeCallableFallback';
+import {
+  PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY,
+  PREVIEW_RUNTIME_PROMISE_RESULT_MARKER_KEY,
+} from '../staticResources/previewRuntimeCallableFallback';
 
 /** Text stored in editable JSON wherever the preview runtime inferred a no-op callback. */
 export const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = '[Preview no-op function]';
@@ -20,14 +23,20 @@ export const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = '[Preview component pl
 /** JSON object key carrying the return payload of one extension-generated inert function. */
 export const PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY = '[Preview generated call result]';
 
+/** JSON object key retaining the fulfillment payload of a generated Promise-returning function. */
+export const PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY =
+  '[Preview generated Promise result]';
+
 /** Creates browser helpers for editable fallback templates and safe runtime materialization. */
 export function createPreviewInspectorBlockerValueRuntimeSource(): string {
   return String.raw`
 const PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL)};
 const PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL = ${JSON.stringify(PREVIEW_INSPECTOR_COMPONENT_VALUE_SENTINEL)};
 const PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY = ${JSON.stringify(PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY)};
+const PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY = ${JSON.stringify(PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY)};
 const PREVIEW_INSPECTOR_COMPONENT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_AUTOMATIC_COMPONENT_MARKER_KEY)});
 const PREVIEW_INSPECTOR_CALL_RESULT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_RUNTIME_CALL_RESULT_MARKER_KEY)});
+const PREVIEW_INSPECTOR_PROMISE_RESULT_MARKER = Symbol.for(${JSON.stringify(PREVIEW_RUNTIME_PROMISE_RESULT_MARKER_KEY)});
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_DEPTH_LIMIT = 12;
 const PREVIEW_INSPECTOR_BLOCKER_VALUE_NODE_LIMIT = 256;
 const PREVIEW_INSPECTOR_COLLECTION_METHOD_NAMES = new Set(
@@ -50,11 +59,19 @@ function copyPreviewInspectorBlockerValueForJson(value, state, depth = 0) {
       value,
       PREVIEW_INSPECTOR_CALL_RESULT_MARKER,
     );
+    const promiseResult = Object.getOwnPropertyDescriptor(
+      value,
+      PREVIEW_INSPECTOR_PROMISE_RESULT_MARKER,
+    );
     return callResult !== undefined && Object.hasOwn(callResult, 'value')
       ? {
-          [PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY]:
+          [promiseResult?.value === true
+            ? PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY
+            : PREVIEW_INSPECTOR_CALL_RESULT_TEMPLATE_KEY]:
             copyPreviewInspectorBlockerValueForJson(callResult.value, state, depth + 1),
         }
+      : promiseResult?.value === true
+        ? { [PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY]: null }
       : PREVIEW_INSPECTOR_NOOP_VALUE_SENTINEL;
   }
   if (value === undefined || typeof value === 'symbol') return null;
@@ -462,6 +479,23 @@ function materializePreviewInspectorRuntimeFallbackOverride(value, depth = 0) {
       PREVIEW_INSPECTOR_CALL_RESULT_MARKER,
       { value: callResult },
     ));
+  }
+  if (
+    !Array.isArray(value) &&
+    Object.hasOwn(value, PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY) &&
+    Object.keys(value).length === 1
+  ) {
+    const callResult = materializePreviewInspectorRuntimeFallbackOverride(
+      value[PREVIEW_INSPECTOR_PROMISE_RESULT_TEMPLATE_KEY],
+      depth + 1,
+    );
+    const callable = Object.defineProperty(
+      () => Promise.resolve(callResult),
+      PREVIEW_INSPECTOR_CALL_RESULT_MARKER,
+      { value: callResult },
+    );
+    Object.defineProperty(callable, PREVIEW_INSPECTOR_PROMISE_RESULT_MARKER, { value: true });
+    return Object.freeze(callable);
   }
   if (Array.isArray(value)) {
     /*

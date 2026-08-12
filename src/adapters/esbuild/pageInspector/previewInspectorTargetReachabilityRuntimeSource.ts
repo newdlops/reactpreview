@@ -8,6 +8,7 @@
  */
 import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previewInspectorRequirementFrontierRuntimeSource';
 import { createPreviewInspectorRequirementConvergenceRuntimeSource } from './previewInspectorRequirementConvergenceRuntimeSource';
+import { createPreviewInspectorPageTabActivationRuntimeSource } from './previewInspectorPageTabActivationRuntimeSource';
 import { createPreviewInspectorTargetPathEvidenceRuntimeSource } from './previewInspectorTargetPathEvidenceRuntimeSource';
 /**
  * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
@@ -21,6 +22,7 @@ export function createPreviewInspectorTargetReachabilityRuntimeSource(): string 
   const requirementFrontierRuntimeSource = createPreviewInspectorRequirementFrontierRuntimeSource();
   const requirementConvergenceRuntimeSource =
     createPreviewInspectorRequirementConvergenceRuntimeSource();
+  const pageTabActivationRuntimeSource = createPreviewInspectorPageTabActivationRuntimeSource();
   const targetPathEvidenceRuntimeSource = createPreviewInspectorTargetPathEvidenceRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
@@ -31,6 +33,7 @@ const PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48;
 const PREVIEW_INSPECTOR_TARGET_DIRECT_PROBE_DELAY_MS = 32;
 ${requirementFrontierRuntimeSource}
 ${requirementConvergenceRuntimeSource}
+${pageTabActivationRuntimeSource}
 ${targetPathEvidenceRuntimeSource}
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
@@ -446,8 +449,14 @@ function readPreviewInspectorExpectedTargetExport(descriptor, candidate) {
 }
 /** Creates one stable traversal identity per page candidate and selected current-file export. */
 function createPreviewInspectorTargetReachabilityKey(descriptor, candidate) {
+  const targetPageTabKey = Array.isArray(candidate?.targetPageTabKeys)
+    ? candidate.targetPageTabKeys.filter((value) =>
+        typeof value === 'string' && value.length > 0 && value.length <= 128,
+      ).join('\0')
+    : '';
   return String(candidate?.id ?? 'nearest-authored-owner') + ':' +
-    readPreviewInspectorExpectedTargetExport(descriptor, candidate);
+    readPreviewInspectorExpectedTargetExport(descriptor, candidate) +
+    (targetPageTabKey.length > 0 ? ':' + targetPageTabKey : '');
 }
 /** Reads target-to-entry metadata for the selected export, falling back to candidate-local evidence. */
 function readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExportName) {
@@ -483,7 +492,11 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
   const renderPath = readPreviewInspectorTargetRenderPath(descriptor, candidate, targetExportName);
   const applicationPath = [...(renderPath?.steps ?? [])]
     .reverse()
-    .flatMap((step) => [...[...(step?.wrapperNames ?? [])].reverse(), step?.label])
+    .flatMap((step) => [
+      ...[...(step?.wrapperNames ?? [])].reverse(),
+      ...[...(step?.invocation?.localOwnerNames ?? [])].reverse(),
+      step?.label,
+    ])
     .filter((name, index, names) =>
       typeof name === 'string' && name.length > 0 && names.indexOf(name) === index,
     );
@@ -514,6 +527,11 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
     ),
     targetHasOutput: false,
     targetMounted: false,
+    targetPageTabKeys: Array.isArray(candidate?.targetPageTabKeys)
+      ? [...new Set(candidate.targetPageTabKeys.filter((value) =>
+          typeof value === 'string' && value.length > 0 && value.length <= 128,
+        ))].slice(0, 8)
+      : [],
     targetWasMounted: false,
   };
 }
@@ -1207,6 +1225,20 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
       state.probeRevision += 1;
       return;
     }
+  }
+  if (
+    state.targetMounted !== true &&
+    state.targetWasMounted !== true &&
+    autoActivatePreviewInspectorTargetPageTab(state) !== undefined
+  ) {
+    state.exhausted = false;
+    state.idlePasses = 0;
+    state.status = 'activating-page-tab';
+    state.probeRevision += 1;
+    notifyPreviewInspector();
+    schedulePreviewInspectorTreeRefresh();
+    schedulePreviewInspectorCommitRefresh();
+    return;
   }
   if (state.directTarget) {
     state.status = state.targetHasOutput

@@ -19,7 +19,11 @@ function readPreviewInspectorPageCandidates(descriptor) {
   const inspector = descriptor?.inspector;
   if (inspector === undefined) return [];
   if (Array.isArray(inspector.pageCandidates) && inspector.pageCandidates.length > 0) {
-    return inspector.pageCandidates;
+    const selectedExportName = previewInspectorSession.selectedExportName;
+    const exportCandidates = inspector.pageCandidates.filter((candidate) =>
+      candidate?.target?.exportName === selectedExportName,
+    );
+    return exportCandidates.length > 0 ? exportCandidates : inspector.pageCandidates;
   }
   if (inspector.root === undefined) return [];
   return [{

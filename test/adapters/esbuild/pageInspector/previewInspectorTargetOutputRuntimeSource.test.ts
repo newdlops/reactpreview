@@ -11,6 +11,7 @@ interface TestFiber {
   readonly child?: TestFiber;
   readonly elementType?: object;
   readonly kind: string;
+  readonly memoizedProps?: Record<string, unknown>;
   readonly name: string;
   readonly sibling?: TestFiber;
   readonly stateNode?: { readonly isConnected?: boolean };
@@ -45,11 +46,13 @@ function evaluateResolvedOutput(
       readonly ownerName?: string;
       readonly timestamp: number;
     };
+    readonly directElementOutput?: boolean;
     readonly exactOwnership?: boolean;
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
     readonly ownedHost?: Record<string, unknown>;
+    readonly ownershipProvider?: boolean;
     readonly additionalOutcomes?: readonly Record<string, unknown>[];
     readonly selected?: boolean;
     readonly targetExportName?: string;
@@ -78,9 +81,11 @@ function evaluateResolvedOutput(
         }
       | undefined;
     __cleared: number;
+    __directElementOutput: boolean;
     __exactOwnership: boolean;
     __outcome: typeof outcome;
     __ownedHost: Record<string, unknown>;
+    __ownershipProvider: boolean;
     __planOutcomes: readonly Record<string, unknown>[];
     __result?: boolean;
     __scheduled?: { readonly delay: number };
@@ -91,6 +96,7 @@ function evaluateResolvedOutput(
   } = {
     __activeError: options.activeError,
     __cleared: 0,
+    __directElementOutput: options.directElementOutput === true,
     __exactOwnership: options.exactOwnership !== false,
     __host: options.host !== false,
     __includePlan: options.includePlan !== false,
@@ -101,6 +107,7 @@ function evaluateResolvedOutput(
       isConnected: true,
       nodeType: 1,
     },
+    __ownershipProvider: options.ownershipProvider === true,
     __planOutcomes: [outcome, ...(options.additionalOutcomes ?? [])],
     __selected: options.selected !== false,
     __targetExportName: options.targetExportName ?? 'default',
@@ -110,6 +117,29 @@ function evaluateResolvedOutput(
     `
       const outcome = globalThis.__outcome;
       const liveChild = globalThis.__liveChild;
+      const directTargetType = {};
+      const directHost = {
+        closest: () => null,
+        isConnected: true,
+        nodeType: 1,
+      };
+      const boundaryChild = globalThis.__directElementOutput
+        ? {
+            child: { child: liveChild, kind: 'host', name: 'div', stateNode: directHost },
+            kind: 'function',
+            name: 'ReactPreviewAsyncNextComponent',
+            type: directTargetType,
+          }
+        : liveChild;
+      const ownershipToken = {};
+      const boundaryRoot = globalThis.__ownershipProvider
+        ? {
+            child: boundaryChild,
+            kind: 'context',
+            memoizedProps: { value: ownershipToken },
+            name: 'Context.Provider',
+          }
+        : boundaryChild;
       const descriptor = { inspector: { target: { sourcePath: '/workspace/Target.tsx' }, renderOutcomesByExport: {
         default: globalThis.__includePlan
           ? { outcomes: globalThis.__planOutcomes, truncated: globalThis.__truncated }
@@ -124,6 +154,7 @@ function evaluateResolvedOutput(
       const classifyPreviewInspectorFiber = (fiber) => fiber?.kind ?? 'other';
       const namePreviewInspectorFiber = (fiber) => fiber?.name ?? 'Anonymous';
       const isPreviewInspectorOwnedFiber = () => false;
+      const PREVIEW_INSPECTOR_UI_ATTRIBUTE = 'data-react-preview-inspector-ui';
       const mountNode = { contains: (node) => node?.inside === true };
       globalThis.getComputedStyle = (node) => node?.style;
       const readPreviewInspectorOwnedHosts = (_boundary, _state) =>
@@ -145,7 +176,11 @@ function evaluateResolvedOutput(
       const state = { targetExportName: globalThis.__targetExportName };
       globalThis.__result = hasPreviewInspectorResolvedTargetOutput(
         {
-          fiber: { child: liveChild },
+          fiber: { child: boundaryRoot },
+          ownershipToken,
+          props: globalThis.__directElementOutput
+            ? { children: { type: directTargetType } }
+            : undefined,
         },
         state,
       );
@@ -173,11 +208,13 @@ function hasResolvedOutput(
       readonly ownerName?: string;
       readonly timestamp: number;
     };
+    readonly directElementOutput?: boolean;
     readonly exactOwnership?: boolean;
     readonly host?: boolean;
     readonly includePlan?: boolean;
     readonly kind?: 'empty' | 'jsx';
     readonly ownedHost?: Record<string, unknown>;
+    readonly ownershipProvider?: boolean;
     readonly additionalOutcomes?: readonly Record<string, unknown>[];
     readonly selected?: boolean;
     readonly targetExportName?: string;
@@ -235,6 +272,25 @@ describe('Preview Inspector target output runtime source', () => {
       {
         includePlan: false,
         targetExportName: 'HrmPortalNotFoundStatus',
+      },
+    );
+
+    expect(evaluation.resolved).toBe(true);
+    expect(evaluation.state.targetOutputKind).toBe('target-output');
+  });
+
+  /** A showcase loader below an exact async page is content when no branch contract says otherwise. */
+  it('accepts exact async page output with an unmodeled loading showcase descendant', () => {
+    const evaluation = evaluateResolvedOutput(
+      [],
+      {
+        kind: 'function',
+        name: 'SkeletonLoading',
+        sibling: { kind: 'function', name: 'StyleOverview' },
+      },
+      {
+        directElementOutput: true,
+        includePlan: false,
       },
     );
 
@@ -400,6 +456,54 @@ describe('Preview Inspector target output runtime source', () => {
     expect(loadingEvaluation.state.targetDeferredCallbackPending).toBe(true);
     expect(readyEvaluation.resolved).toBe(true);
     expect(readyEvaluation.state.targetDeferredCallbackPending).toBe(false);
+  });
+
+  /** Exact callback-owned DOM survives styled names while the Inspector provider stays private. */
+  it('accepts a styled render-prop body with exact host ownership', () => {
+    const expected = [
+      {
+        children: [
+          { children: [], name: 'SectionLoader' },
+          {
+            children: [{ children: [], name: 'Context.Provider' }],
+            name: 'QueryRendererContextProvider',
+          },
+          {
+            children: [],
+            name: '#deferred-host-output',
+            renderMode: 'deferred-callback',
+          },
+          { children: [], name: 'Label', renderMode: 'deferred-callback' },
+          { children: [], name: 'Switch', renderMode: 'deferred-callback' },
+        ],
+        name: 'QueryRenderer',
+      },
+    ];
+    const styledBody = {
+      child: { kind: 'host', name: 'span' },
+      kind: 'forward-ref',
+      name: 'Styled(Component)',
+    };
+    const receiver = { child: styledBody, kind: 'function', name: 'QueryRenderer' };
+    const fallbackReceiver = {
+      child: { kind: 'function', name: 'SectionLoader' },
+      kind: 'function',
+      name: 'QueryRenderer',
+    };
+
+    const ready = evaluateResolvedOutput(expected, receiver, {
+      directElementOutput: true,
+      ownershipProvider: true,
+    });
+    const fallback = evaluateResolvedOutput(expected, fallbackReceiver, {
+      directElementOutput: true,
+      ownershipProvider: true,
+    });
+
+    expect(ready.resolved).toBe(true);
+    expect(ready.state.targetDeferredCallbackPending).toBe(false);
+    expect(fallback.resolved).toBe(false);
+    expect(fallback.state.targetDeferredCallbackPending).toBe(true);
   });
 
   /** A callback below an absent modal receiver is unresolved output, not a live callback wait. */

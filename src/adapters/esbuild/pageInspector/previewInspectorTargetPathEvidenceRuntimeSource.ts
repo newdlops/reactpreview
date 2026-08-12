@@ -39,6 +39,7 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     state.targetExportName,
     ...(state.applicationPath ?? []),
   ]);
+  const localComponentOwnerNames = new Set();
   const runtimeOwnerNames = new Set(state.runtimeOwnerNames ?? []);
   const names = new Set([...staticNames, ...runtimeOwnerNames]);
   /*
@@ -109,6 +110,14 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
       corridorOwnerNames.add(wrapperName);
       if (!nameScores.has(wrapperName)) nameScores.set(wrapperName, 1);
     }
+    for (const ownerName of step?.invocation?.localOwnerNames ?? []) {
+      if (typeof ownerName !== 'string' || ownerName.length === 0) continue;
+      localComponentOwnerNames.add(ownerName);
+      names.add(ownerName);
+      corridorOwnerNames.add(ownerName);
+      staticNames.add(ownerName);
+      if (!nameScores.has(ownerName)) nameScores.set(ownerName, 1);
+    }
   }
   for (const edge of candidate?.edges ?? []) {
     paths.add(normalizePreviewInspectorReachabilityPath(edge?.child?.sourcePath));
@@ -137,6 +146,7 @@ function readPreviewInspectorTargetPathEvidence(descriptor, candidate, state) {
     corridorOwnerNames,
     exactConditionIds,
     exactTargetNames,
+    localComponentOwnerNames,
     nameScores,
     names,
     pathScores,
@@ -160,6 +170,9 @@ function isPreviewInspectorExactTargetOverlayCondition(condition, evidence) {
   const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
   if (ownerName.length === 0) return false;
   if (evidence.exactTargetNames?.has(ownerName)) return true;
+  if (evidence.localComponentOwnerNames?.has(ownerName)) {
+    return !evidence.repeatedOwnerNames?.has(ownerName);
+  }
   return evidence.corridorOwnerNames?.has(ownerName) &&
     !evidence.repeatedOwnerNames?.has(ownerName);
 }
@@ -191,6 +204,10 @@ function labelsPreviewInspectorExactTargetCondition(label, evidence) {
 function isPreviewInspectorConditionOnTargetPath(condition, evidence) {
   if (evidence.exactConditionIds?.has(condition?.id)) return true;
   const ownerName = typeof condition?.ownerName === 'string' ? condition.ownerName : '';
+  if (
+    evidence.localComponentOwnerNames?.has(ownerName) &&
+    !evidence.repeatedOwnerNames?.has(ownerName)
+  ) return true;
   const runtimeOnlyOwner =
     evidence.runtimeOwnerNames?.has(ownerName) && !evidence.staticNames?.has(ownerName);
   if (

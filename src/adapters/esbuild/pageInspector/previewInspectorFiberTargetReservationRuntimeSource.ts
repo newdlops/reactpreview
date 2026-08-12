@@ -46,6 +46,12 @@ function reservePreviewInspectorTargetNode(entry, exportName, index, collections
   const representative = readPreviewInspectorFiberLink(entry.fiber, 'child') ?? entry.fiber;
   const collectedId = collections.nodeIdByFiber.get(representative);
   if (collectedId !== undefined && collections.nodeById.has(collectedId)) {
+    const collectedNode = collections.nodeById.get(collectedId);
+    /*
+     * jsxDEV points source at the page invocation site. Preserve that navigation detail while
+     * carrying the separately proven export-definition identity into UI reconciliation.
+     */
+    collectedNode.currentFileExportSourcePath = boundarySourcePath;
     return collectedId;
   }
 
@@ -59,6 +65,7 @@ function reservePreviewInspectorTargetNode(entry, exportName, index, collections
   const node = {
     children: [],
     currentFileExport: true,
+    currentFileExportSourcePath: boundarySourcePath,
     exportName,
     hostElementCount: hosts.length,
     id,

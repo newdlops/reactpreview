@@ -349,6 +349,53 @@ describe('Preview Inspector runtime fallback source', () => {
     expect(second.refetch).toBe(first.refetch);
   });
 
+  /** Exact renderer literals must replace an incompatible scalar already returned by a query. */
+  it('applies a render-prop literal demand to partial authored GraphQL data', () => {
+    const fixture = createRuntimeFallbackFixture(true);
+    const document = {
+      definitions: [
+        {
+          kind: 'OperationDefinition',
+          selectionSet: {
+            selections: [
+              {
+                kind: 'Field',
+                name: { value: 'documents' },
+                selectionSet: {
+                  selections: [{ kind: 'Field', name: { value: 'objectList' } }],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    fixture.api.registerGraphql(
+      document,
+      ['@connection.objectList.[]'],
+      [{ path: '@connection.objectList.[].status', value: 'requested' }],
+    );
+    const authored = {
+      data: { documents: { objectList: [{ status: 'ACTIVE' }] } },
+      fallback: null,
+      loading: false,
+      refetch: () => undefined,
+    };
+
+    const resolved = fixture.api.resolve(
+      () => authored,
+      () => ({ data: {}, fallback: null, loading: false, refetch: () => undefined }),
+      {
+        ...createMetadata(),
+        requiredPaths: ['data', 'fallback', 'loading', 'refetch()'],
+      },
+      () => document,
+    ) as typeof authored;
+
+    expect(resolved.data.documents.objectList[0]?.status).toBe('requested');
+    expect(authored.data.documents.objectList[0]?.status).toBe('ACTIVE');
+  });
+
   /** Completes an empty Codegen fragment carrier from its exact authored fragment selection. */
   it('uses selection-shaped data for a generated fragment-unmasking helper', () => {
     const fixture = createRuntimeFallbackFixture(true);

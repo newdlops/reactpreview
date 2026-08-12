@@ -416,7 +416,11 @@ function readPreviewInspectorExpectedTargetOutput(state) {
       if (name.length > 0) deferredReceiverNames.add(name);
       for (const evidence of childEvidence) {
         if (!evidence.unownedDeferred) {
-          for (const childName of evidence.synchronousNames) deferredFallbackNames.add(childName);
+          for (const childName of evidence.synchronousNames) {
+            // Context providers can wrap either the callback result or an unrelated descendant.
+            // Their generic Fiber names cannot prove that a render-prop receiver chose fallback UI.
+            if (!/Provider$/u.test(childName)) deferredFallbackNames.add(childName);
+          }
         }
       }
       return { synchronousNames: new Set(), unownedDeferred: false };
@@ -478,7 +482,11 @@ function readPreviewInspectorLiveTargetOutputNames(boundary) {
     if (child !== undefined) pending.push(child);
     const kind = classifyPreviewInspectorFiber(fiber);
     const name = namePreviewInspectorFiber(fiber, kind);
-    if (!isPreviewInspectorOwnedFiber(fiber, name, kind) && !['host', 'text'].includes(kind)) {
+    const memoizedProps = readPreviewInspectorOwnData(fiber, 'memoizedProps');
+    const inspectorOwnershipProvider = kind === 'context' &&
+      readPreviewInspectorOwnData(memoizedProps, 'value') === boundary?.ownershipToken;
+    if (!inspectorOwnershipProvider && !isPreviewInspectorOwnedFiber(fiber, name, kind) &&
+      !['host', 'text'].includes(kind)) {
       const normalized = normalizePreviewInspectorTargetOutputName(name);
       if (normalized.length > 0) names.add(normalized);
     }
@@ -881,12 +889,21 @@ function hasPreviewInspectorResolvedTargetOutput(boundary, state) {
     state.targetExportName,
     expected.deferredFallbackNames,
   );
+  /*
+   * An async Next App page has no synchronous render-outcome inventory, but its adapted exact
+   * element type can still commit authored host output. Do not let a legitimate showcase child
+   * such as SkeletonLoading turn that stronger identity proof into a synthetic fallback. When
+   * branch evidence exists, its loading/error contract continues to take precedence below.
+   */
+  const exactDirectOutputWithoutBranchEvidence =
+    directTargetElementOutput && !expected.hasEvidence;
   // An exact projected root/descendant already proves that the selected export executed one of its
   // authored JSX nodes. Requiring a second non-projected descendant would incorrectly reject files
   // whose entire shared UI layer is intentionally represented by compatibility hosts.
   let resolved =
     projectedCompatibilityOutput ||
     contextualTransparentDescendantOutput ||
+    exactDirectOutputWithoutBranchEvidence ||
     ((authenticExpectedOutput || directTargetElementOutput || detachedBoundaryOutput) &&
       !fallbackLikeOutput);
   if (expected.deferredNames.size > 0) {

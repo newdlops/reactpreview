@@ -44,6 +44,7 @@ interface FiberSourceSnapshot {
 interface FiberTreeNode {
   readonly children: FiberTreeNode[];
   readonly currentFileExport?: boolean;
+  readonly currentFileExportSourcePath?: string;
   readonly exportName?: string;
   readonly hostElementCount: number;
   readonly id: string;
@@ -175,10 +176,20 @@ describe('preview Inspector Fiber runtime source', () => {
   it('collects multiple current-file export boundaries in one authored page tree', () => {
     const runtime = evaluateFiberRuntime();
     const first = createFiber(0, namedComponent('FirstCard'));
+    first._debugSource = {
+      columnNumber: 7,
+      fileName: '/workspace/DashboardPage.tsx',
+      lineNumber: 50,
+    };
     connectChildren(first, [createFiber(5, 'section', createHostElement())]);
     const firstBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
     connectChildren(firstBoundary, [first]);
     const second = createFiber(0, namedComponent('SecondCard'));
+    second._debugSource = {
+      columnNumber: 9,
+      fileName: '/workspace/DashboardPage.tsx',
+      lineNumber: 63,
+    };
     connectChildren(second, [createFiber(5, 'aside', createHostElement())]);
     const secondBoundary = createFiber(1, namedComponent('PreviewInspectorTargetBoundary'));
     connectChildren(secondBoundary, [second]);
@@ -190,13 +201,13 @@ describe('preview Inspector Fiber runtime source', () => {
     const snapshot = runtime.collect(
       [
         {
-          boundary: { _reactInternals: secondBoundary },
-          exportName: 'SecondCard',
+          boundary: { _reactInternals: firstBoundary },
+          exportName: 'FirstCard',
           sourcePath: '/workspace/Cards.tsx',
         },
         {
-          boundary: { _reactInternals: firstBoundary },
-          exportName: 'FirstCard',
+          boundary: { _reactInternals: secondBoundary },
+          exportName: 'SecondCard',
           sourcePath: '/workspace/Cards.tsx',
         },
       ],
@@ -205,6 +216,9 @@ describe('preview Inspector Fiber runtime source', () => {
         descriptor: {
           inspector: {
             renderChainsByExport: {
+              FirstCard: {
+                target: { exportName: 'FirstCard', sourcePath: '/workspace/Cards.tsx' },
+              },
               SecondCard: {
                 target: { exportName: 'SecondCard', sourcePath: '/workspace/Cards.tsx' },
               },
@@ -213,23 +227,27 @@ describe('preview Inspector Fiber runtime source', () => {
             target: { exportName: 'FirstCard', sourcePath: '/workspace/Cards.tsx' },
           },
         },
-        selectedExportName: 'SecondCard',
-        targetExportName: 'SecondCard',
+        selectedExportName: 'FirstCard',
+        targetExportName: 'FirstCard',
         targetExportNames: ['FirstCard', 'SecondCard'],
       },
     );
 
     expect(findTreeNode(snapshot.roots, 'FirstCard')).toMatchObject({
       currentFileExport: true,
+      currentFileExportSourcePath: '/workspace/Cards.tsx',
       exportName: 'FirstCard',
       mounted: true,
+      source: { sourcePath: '/workspace/DashboardPage.tsx' },
     });
     expect(findTreeNode(snapshot.roots, 'SecondCard')).toMatchObject({
       currentFileExport: true,
+      currentFileExportSourcePath: '/workspace/Cards.tsx',
       exportName: 'SecondCard',
       mounted: true,
+      source: { sourcePath: '/workspace/DashboardPage.tsx' },
     });
-    expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.node.name).toBe('SecondCard');
+    expect(runtime.select(snapshot, snapshot.selectedId ?? '')?.node.name).toBe('FirstCard');
   });
 
   it('requires the mounted boundary Fiber to match the exact target source and export', () => {

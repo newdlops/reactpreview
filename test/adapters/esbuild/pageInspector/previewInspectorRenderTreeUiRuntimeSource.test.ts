@@ -8,6 +8,7 @@ interface RenderTreeNode {
   readonly children: readonly RenderTreeNode[];
   readonly contextOnly?: boolean;
   readonly currentFileExport?: boolean;
+  readonly currentFileExportSourcePath?: string;
   readonly edgeKind?: string;
   readonly expectedFrontier?: boolean;
   readonly expectedOutcomeActive?: boolean;
@@ -182,6 +183,68 @@ describe('Preview Inspector render-tree UI runtime source', () => {
       currentFileExport: true,
       mounted: false,
     });
+  });
+
+  /** Uses exact boundary ownership without replacing the live JSX invocation source. */
+  it('keeps mounted exports out of the unmounted inventory when JSX source points at the page', () => {
+    const descriptor = {
+      inspector: {
+        renderChainsByExport: {
+          CurrentCard: {
+            paths: [],
+            target: { exportName: 'CurrentCard', sourcePath: '/workspace/Cards.tsx' },
+          },
+          SiblingDialog: {
+            paths: [],
+            target: { exportName: 'SiblingDialog', sourcePath: '/workspace/Cards.tsx' },
+          },
+        },
+        target: { exportName: 'CurrentCard', sourcePath: '/workspace/Cards.tsx' },
+      },
+    };
+    const runtime = evaluateRenderTreeRuntime(descriptor, {
+      root: { exportName: 'DashboardPage', sourcePath: '/workspace/DashboardPage.tsx' },
+    });
+    const snapshot = runtime.enrich({
+      roots: [
+        {
+          children: [
+            {
+              children: [],
+              currentFileExport: true,
+              currentFileExportSourcePath: '/workspace/Cards.tsx',
+              exportName: 'CurrentCard',
+              id: 'current-card',
+              kind: 'function',
+              mounted: true,
+              name: 'CurrentCard',
+              source: { path: '/workspace/DashboardPage.tsx' },
+            },
+            {
+              children: [],
+              currentFileExport: true,
+              currentFileExportSourcePath: '/workspace/Cards.tsx',
+              exportName: 'SiblingDialog',
+              id: 'sibling-dialog',
+              kind: 'function',
+              mounted: true,
+              name: 'SiblingDialog',
+              source: { path: '/workspace/DashboardPage.tsx' },
+            },
+          ],
+          id: 'page',
+          kind: 'function',
+          mounted: true,
+          name: 'DashboardPage',
+          source: { path: '/workspace/DashboardPage.tsx' },
+        },
+      ],
+      status: 'available',
+    });
+
+    expect(findNode(snapshot.roots, 'CurrentCard')).toMatchObject({ mounted: true });
+    expect(findNode(snapshot.roots, 'SiblingDialog')).toMatchObject({ mounted: true });
+    expect(findNode(snapshot.roots, 'Unmounted current-file exports')).toBeUndefined();
   });
 
   /** Never treats an unrelated page's common `default` export spelling as current-file Fiber. */

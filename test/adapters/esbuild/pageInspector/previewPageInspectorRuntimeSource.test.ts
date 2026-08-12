@@ -143,6 +143,21 @@ describe('Page Inspector runtime source', () => {
     expect(source).not.toContain('__REACT_DEVTOOLS_GLOBAL_HOOK__');
   });
 
+  /** Moves a named-export selection to that export's compiler-proven page candidate. */
+  it('switches a named export together with its authored page scenario', () => {
+    const source = createPreviewPageInspectorRuntimeSource();
+    const candidatesStart = source.indexOf('function readPreviewInspectorPageCandidates');
+    const candidatesEnd = source.indexOf('function readPreviewInspectorRouteBranches');
+    const selectionStart = source.indexOf('function selectPreviewInspectorExport');
+    const selectionEnd = source.indexOf('function setPreviewInspectorPropsOverride');
+    const candidatesSource = source.slice(candidatesStart, candidatesEnd);
+    const selectionSource = source.slice(selectionStart, selectionEnd);
+
+    expect(candidatesSource).toContain('candidate?.target?.exportName === selectedExportName');
+    expect(selectionSource).toContain('readPreviewInspectorPageCandidates(descriptor)');
+    expect(selectionSource).toContain('selectPreviewInspectorPageCandidate(preferredCandidate.id)');
+  });
+
   /** Keeps cold first-paint Router and target identities stable across Inspector store updates. */
   it('declares direct-target component types outside the subscribed root renderer', () => {
     const source = createPreviewPageInspectorRuntimeSource();
@@ -348,6 +363,48 @@ describe('Page Inspector runtime source', () => {
       expect(Reflect.ownKeys(wrappedLazyTarget as object)).not.toEqual(
         expect.arrayContaining(['_payload', '_init', '_debugInfo']),
       );
+    } finally {
+      Reflect.deleteProperty(globalRecord, apiKey);
+      await rm(facade.fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
+  /** Keeps a second styled() call from flattening directly to the authored leaf component. */
+  it('pins copied styled-component composition to the inspector facade', async () => {
+    const facade = await importPreviewInspectorFacade();
+    const apiKey = Symbol.for('newdlops.react-file-preview.page-inspector');
+    const globalRecord = globalThis as unknown as Record<PropertyKey, unknown>;
+    const delegatedLabels: string[] = [];
+    globalRecord[apiKey] = {
+      TargetRenderer({ Component, targetProps }: FacadeTargetRendererProps) {
+        delegatedLabels.push(String(targetProps.label));
+        return React.createElement(Component, targetProps);
+      },
+    };
+    const AuthoredLeaf = ({ label }: { readonly label: string }): React.ReactElement =>
+      React.createElement('strong', undefined, label);
+    const StyledTarget = React.forwardRef<HTMLElement, { readonly label: string }>((props) =>
+      React.createElement(AuthoredLeaf, props),
+    ) as unknown as React.ElementType & Record<string, unknown>;
+    StyledTarget.styledComponentId = 'sc-tax-type-badge';
+    StyledTarget.componentStyle = {};
+    StyledTarget.target = AuthoredLeaf;
+    try {
+      const WrappedTarget = facade.wrapTarget(StyledTarget, {
+        exportName: 'TaxTypeBadge',
+      }) as React.ElementType & Record<string, unknown>;
+      const composedTarget =
+        WrappedTarget.styledComponentId === undefined
+          ? WrappedTarget
+          : (WrappedTarget.target as React.ElementType);
+      const ComposedStyledTarget = (props: { readonly label: string }): React.ReactElement =>
+        React.createElement(composedTarget, props);
+
+      expect(WrappedTarget.target).toBe(WrappedTarget);
+      expect(
+        renderToStaticMarkup(React.createElement(ComposedStyledTarget, { label: '면제' })),
+      ).toBe('<strong>면제</strong>');
+      expect(delegatedLabels).toEqual(['면제']);
     } finally {
       Reflect.deleteProperty(globalRecord, apiKey);
       await rm(facade.fixtureDirectory, { force: true, recursive: true });

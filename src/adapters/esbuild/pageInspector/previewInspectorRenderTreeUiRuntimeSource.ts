@@ -677,7 +677,13 @@ function markPreviewInspectorCurrentFileExports(
 ) {
   return nodes.map((node) => {
     const matching = exports.find((item) => {
-      const nodePath = normalizePreviewInspectorConditionSourcePath(node.source?.path);
+      /*
+       * Live JSX source identifies the invocation page, while an exact instrumented Fiber boundary
+       * identifies the export definition. Prefer the latter only when the collector proved it.
+       */
+      const nodePath = normalizePreviewInspectorConditionSourcePath(
+        node.currentFileExportSourcePath ?? node.source?.path,
+      );
       const itemPath = normalizePreviewInspectorConditionSourcePath(item.sourcePath);
       const sourceMatches = nodePath.length > 0 && itemPath.length > 0 &&
         matchesPreviewInspectorConditionSourcePath(nodePath, itemPath);

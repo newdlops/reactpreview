@@ -590,6 +590,18 @@ function selectPreviewInspectorExport(exportName) {
   resetPreviewInspectorTargetReachability();
   previewInspectorSession.selectedExportName = exportName;
   persistPreviewInspectorState();
+  const descriptor = findSelectedPreviewInspectorDescriptor();
+  const candidates = readPreviewInspectorPageCandidates(descriptor);
+  const preferredCandidate = candidates.find(
+    (candidate) => candidate?.id === previewInspectorSession.userSelectedPageCandidateId,
+  ) ?? candidates[0];
+  if (
+    preferredCandidate !== undefined &&
+    preferredCandidate.id !== previewInspectorSession.selectedPageCandidateId
+  ) {
+    selectPreviewInspectorPageCandidate(preferredCandidate.id);
+    return;
+  }
   schedulePreviewInspectorTreeRefresh();
   schedulePreviewInspectorCommitRefresh();
 }
@@ -927,6 +939,24 @@ function copyPreviewInspectorLocalTargetStatics(source, target) {
     } catch {
       /* Frozen or exotic component statics are non-essential to the render boundary. */
     }
+  }
+  pinPreviewInspectorLocalStyledCompositionTarget(source, target);
+}
+
+/** Keeps styled(styled(Target)) composition from flattening past the local Inspector boundary. */
+function pinPreviewInspectorLocalStyledCompositionTarget(source, target) {
+  try {
+    const styledComponentId = Object.getOwnPropertyDescriptor(source, 'styledComponentId');
+    const styledTarget = Object.getOwnPropertyDescriptor(target, 'target');
+    if (
+      typeof styledComponentId?.value !== 'string' ||
+      styledComponentId.value.length === 0 ||
+      styledTarget === undefined ||
+      !Object.hasOwn(styledTarget, 'value')
+    ) return;
+    Object.defineProperty(target, 'target', { ...styledTarget, value: target });
+  } catch {
+    /* The copied styled contract remains usable when an exotic target is not configurable. */
   }
 }
 

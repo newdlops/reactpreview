@@ -375,6 +375,13 @@ function readPreviewInspectorStaticSource(name, options) {
   const descriptor = readPreviewInspectorOwnData(options, 'descriptor');
   const inspector = readPreviewInspectorOwnData(descriptor, 'inspector') ?? descriptor;
   const pageCandidate = readPreviewInspectorSelectedPageCandidate(options);
+  const renderChainsByExport = readPreviewInspectorOwnData(inspector, 'renderChainsByExport');
+  const exportRenderChain = readPreviewInspectorOwnData(renderChainsByExport, name);
+  const exportRenderChainTarget = readPreviewInspectorOwnData(exportRenderChain, 'target');
+  if (readPreviewInspectorOwnData(exportRenderChainTarget, 'exportName') === name) {
+    const source = normalizePreviewInspectorSource(exportRenderChainTarget, 'render-chain');
+    if (source !== undefined) return source;
+  }
   const selectedRenderChain = readPreviewInspectorSelectedRenderChain(inspector, options);
   const renderChainTarget = readPreviewInspectorOwnData(selectedRenderChain, 'target');
   if (readPreviewInspectorOwnData(renderChainTarget, 'exportName') === name) {

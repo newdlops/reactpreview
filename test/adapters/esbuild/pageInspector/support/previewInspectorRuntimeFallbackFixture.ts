@@ -30,6 +30,11 @@ export interface TestRuntimeFallbackApi {
   draft(fallbackId: string): unknown;
   effect(readEffect: () => unknown, metadata: object): unknown;
   pathSignature(requiredPaths: readonly string[]): string;
+  registerGraphql(
+    document: object,
+    paths: readonly string[],
+    literalDemands: readonly object[],
+  ): unknown;
   read(): TestRuntimeFallbackRecord[];
   readEffectiveDirectTarget(candidateId: string): boolean;
   reset(fallbackId: string): void;
@@ -181,6 +186,7 @@ export function createRuntimeFallbackFixture(
       ' draft: readPreviewInspectorRuntimeFallbackDraft,' +
       ' effect: resolvePreviewInspectorRuntimeEffect,' +
       ' pathSignature: createPreviewInspectorRuntimeFallbackPathSignature,' +
+      ' registerGraphql: registerPreviewInspectorGraphqlRenderPropUsage,' +
       ' read: readPreviewInspectorRuntimeFallbacks,' +
       ' readEffectiveDirectTarget: (candidateId) => ' +
       'readPreviewInspectorRuntimeFallbackDirectTarget({}, { id: candidateId }),' +

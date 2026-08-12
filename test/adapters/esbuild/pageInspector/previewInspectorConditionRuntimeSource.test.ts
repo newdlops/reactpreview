@@ -194,6 +194,49 @@ describe('Preview Inspector condition runtime source', () => {
     expect(harness.resolveCondition('logical-zero', 0, metadata)).toBe(0);
   });
 
+  /** Keeps hidden-state source guards exact while presenting their control as true=visible. */
+  it('preserves negated overlay guards and applies visible-state overrides', async () => {
+    const harness = createConditionRuntimeHarness({}, vi.fn());
+    const metadata = {
+      authoredExpression: 'file == null',
+      authoredExpressionNegated: true,
+      expression: '<DocumentInfoModal> visibility: file == null',
+      falsyLabel: 'hidden <DocumentInfoModal> overlay',
+      kind: 'overlay-visibility',
+      role: 'overlay',
+      sourcePath: '/workspace/DocumentInfoModal.tsx',
+      truthyLabel: 'visible <DocumentInfoModal> overlay',
+    };
+
+    const hiddenGuard = harness.resolveCondition('modal-hidden', true, metadata);
+    const visibleGuard = harness.resolveCondition('modal-visible', false, metadata);
+
+    expect(hiddenGuard).toBe(false);
+    expect(!hiddenGuard).toBe(true);
+    expect(visibleGuard).toBe(true);
+    expect(!visibleGuard).toBe(false);
+    await Promise.resolve();
+    expect(harness.readConditions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authoredEnabled: false,
+          effectiveEnabled: false,
+          id: 'modal-hidden',
+        }),
+        expect.objectContaining({
+          authoredEnabled: true,
+          effectiveEnabled: true,
+          id: 'modal-visible',
+        }),
+      ]),
+    );
+
+    harness.setCondition('modal-hidden', true);
+    expect(harness.resolveCondition('modal-hidden', true, metadata)).toBe(true);
+    harness.setCondition('modal-visible', false);
+    expect(harness.resolveCondition('modal-visible', false, metadata)).toBe(false);
+  });
+
   /** Converts newly exposed dependent-property failures into another controllable render gate. */
   it('lazily catches dependent guard errors while preserving authored values and short circuiting', () => {
     const harness = createConditionRuntimeHarness({}, vi.fn());

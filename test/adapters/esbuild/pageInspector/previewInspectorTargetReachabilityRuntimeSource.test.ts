@@ -67,6 +67,91 @@ interface ReachabilityResult {
 }
 
 describe('Preview Inspector target reachability runtime source', () => {
+  /** Selects a modal passed through a render-local component alias without opening its sibling. */
+  it('keeps nested local component owners on the exact overlay corridor', () => {
+    const context: {
+      __result?: {
+        readonly applicationPath: readonly string[];
+        readonly selectedConditionId: string;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        const previewInspectorSession = {
+          boundariesByExport: new Map(),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'TaxTypeBadge',
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        ${createTargetReachabilityFixtureSource()}
+        const descriptor = { inspector: {
+          renderChainsByExport: { TaxTypeBadge: { paths: [] } },
+          target: { exportName: 'TaxTypeBadge', sourcePath: '/meeting/tax-type-badge.tsx' },
+        } };
+        const candidate = {
+          edges: [],
+          id: 'payment-page',
+          renderPath: { id: 'tax-type-path', steps: [
+            { label: 'TaxTypeBadge', sourcePath: '/meeting/tax-type-badge.tsx', wrapperNames: [] },
+            {
+              invocation: { localOwnerNames: ['TaxDetailsModal'] },
+              label: 'DetailsModal',
+              sourcePath: '/meeting/details-modal.tsx',
+              wrapperNames: ['ModalBody', 'Modal'],
+            },
+            { label: 'PaymentPage', sourcePath: '/meeting/payment-page.tsx', wrapperNames: [] },
+          ] },
+          root: { exportName: 'PaymentPage' },
+          target: { exportName: 'TaxTypeBadge', sourcePath: '/meeting/tax-type-badge.tsx' },
+        };
+        const state = readPreviewInspectorTargetReachabilityState(descriptor, candidate);
+        const overlayBase = {
+          effectiveEnabled: false,
+          kind: 'overlay-visibility',
+          reachabilityKey: state.key,
+          role: 'overlay',
+          targetBranch: 'truthy',
+        };
+        previewInspectorSession.renderConditions.set('sibling-modal', {
+          ...overlayBase,
+          id: 'sibling-modal',
+          ownerName: 'DeleteModal',
+          reachabilityDiscoveryOrder: 1,
+          sourcePath: '/meeting/tax-fee-table.tsx',
+        });
+        previewInspectorSession.renderConditions.set('tax-details-modal', {
+          ...overlayBase,
+          id: 'tax-details-modal',
+          ownerName: 'TaxDetailsModal',
+          reachabilityDiscoveryOrder: 2,
+          sourcePath: '/meeting/tax-fee-table.tsx',
+        });
+        globalThis.__result = {
+          applicationPath: state.applicationPath,
+          selectedConditionId:
+            selectPreviewInspectorNextTargetGate(descriptor, candidate, state)?.condition?.id ?? 'none',
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      applicationPath: [
+        'PaymentPage',
+        'Modal',
+        'ModalBody',
+        'TaxDetailsModal',
+        'DetailsModal',
+        'TaxTypeBadge',
+      ],
+      selectedConditionId: 'tax-details-modal',
+    });
+  });
+
   /** Recovers a nested HOC guard from the exact target Fiber without admitting a shell sibling. */
   it('remembers the selected target single-child owner chain and settles its cold retry', () => {
     const context: {

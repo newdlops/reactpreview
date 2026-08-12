@@ -89,12 +89,21 @@ export async function preparePreviewInspectorPageExecutionSelection(
     sourceTextByPath.set(sourcePath, read);
     return read;
   };
-  const probes: {
+  type Probe = {
     candidate: PreviewInspectorPageExecutionCandidate;
     disposition: PreviewInspectorPageFrontierDisposition;
     prepared: PreparedPreviewInspectorBundleFrontier;
-  }[] = [];
-  for (const candidate of options.candidates) {
+  };
+  const probes: Probe[] = Array(options.candidates.length);
+  const probeSchedule = options.candidates
+    .map((candidate, originalIndex) => ({ candidate, originalIndex }))
+    .sort(
+      (left, right) =>
+        preparationPriority(left.candidate) - preparationPriority(right.candidate) ||
+        fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
+        left.originalIndex - right.originalIndex,
+    );
+  for (const { candidate, originalIndex } of probeSchedule) {
     const prepared = await preparePreviewInspectorBundleFrontier({
       ...(options.runtimeCompanionSourcePaths === undefined
         ? {}
@@ -115,7 +124,7 @@ export async function preparePreviewInspectorPageExecutionSelection(
         : { sourceInventoryMemo: options.sourceInventoryMemo }),
       workspaceRoot: options.workspaceRoot,
     });
-    probes.push({
+    probes[originalIndex] = {
       candidate,
       disposition: prepared.rejected
         ? 'rejected-structural'
@@ -123,17 +132,32 @@ export async function preparePreviewInspectorPageExecutionSelection(
           ? 'accepted-bounded'
           : 'accepted-unbounded',
       prepared,
-    });
+    };
   }
-  const selectAccepted = (): (typeof probes)[number] | undefined =>
-    probes.filter((probe) => probe.disposition !== 'rejected-structural').sort(compareProbe)[0];
+  const hasConnectedCandidate = probes.some(
+    (probe) => probe.candidate.fidelity !== 'target-only',
+  );
+  const isEligibleAcceptedProbe = (probe: Probe): boolean =>
+    probe.disposition !== 'rejected-structural' &&
+    (!hasConnectedCandidate ||
+      probe.candidate.fidelity !== 'target-only' ||
+      probe.candidate.standaloneTarget === true);
+  const selectAccepted = (): Probe | undefined =>
+    probes.filter(isEligibleAcceptedProbe).sort(compareProbe)[0];
   const selected =
     options.bundleDiagnostics === undefined
       ? selectAccepted()
       : options.bundleDiagnostics.measureCandidateSelection(selectAccepted);
   if (selected === undefined) {
-    const selectRejected = (): (typeof probes)[number] | undefined =>
-      [...probes].sort(compareRejectedProbe)[0];
+    const selectRejected = (): Probe | undefined =>
+      [...probes]
+        .filter(
+          (probe) =>
+            !hasConnectedCandidate ||
+            probe.candidate.fidelity !== 'target-only' ||
+            probe.candidate.standaloneTarget === true,
+        )
+        .sort(compareRejectedProbe)[0];
     const rejected =
       options.bundleDiagnostics === undefined
         ? selectRejected()
@@ -187,8 +211,6 @@ function compareProbe(
   },
 ): number {
   return (
-    selectedSurfacePriority(left.candidate.fidelity) -
-      selectedSurfacePriority(right.candidate.fidelity) ||
     fidelityPriority(left.candidate.fidelity) - fidelityPriority(right.candidate.fidelity) ||
     left.prepared.frontier.summary.totalAuthoredModuleCount -
       right.prepared.frontier.summary.totalAuthoredModuleCount ||
@@ -219,10 +241,8 @@ function compareRejectedProbe(
   );
 }
 
-/** Prefers selected-export context while keeping standalone output behind connected scenes. */
-function selectedSurfacePriority(value: PreviewInspectorPageFidelity): number {
-  if (value === 'target-contextual') return 0;
-  return value === 'target-only' ? 2 : 1;
+function preparationPriority(candidate: PreviewInspectorPageExecutionCandidate): number {
+  return candidate.fidelity === 'target-contextual' ? 0 : 1;
 }
 
 function fidelityPriority(value: PreviewInspectorPageFidelity): number {

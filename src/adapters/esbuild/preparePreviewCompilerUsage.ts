@@ -24,6 +24,10 @@ import {
   type PreviewInspectorAncestorUsageContext,
 } from './inspector/previewInspectorAncestorPlan';
 import {
+  createPreviewInspectorNamedExportScenarioPlan,
+  hasPreviewInspectorNamedExportScenarios,
+} from './inspector/previewInspectorNamedExportScenarioPlan';
+import {
   collectPreviewInspectorFastPageCorridor,
   type PreviewInspectorFastPageCorridor,
 } from './inspector/previewInspectorFastPageCorridor';
@@ -250,6 +254,9 @@ export async function preparePreviewCompilerUsage(
     (options.discoveryScope ?? (useFastPreparation ? 'selected-corridor' : 'workspace')) ===
     'selected-corridor';
   const hasPreviewableTarget = targetSelection.targetExports.length > 0;
+  const namedExportScenarios = hasPreviewInspectorNamedExportScenarios(
+    targetSelection.explicitExportNames,
+  );
   const hasGenericCallableContext =
     request.renderMode === 'page-inspector' &&
     !targetSelection.isImperativeEntry &&
@@ -400,7 +407,8 @@ export async function preparePreviewCompilerUsage(
       if (
         corridor.nextAppPagePath !== undefined &&
         fastGenericExportName !== undefined &&
-        options.projectUsesNextRuntime
+        options.projectUsesNextRuntime &&
+        !namedExportScenarios
       ) {
         const nextAppPlan = await createPreviewInspectorNextAppModulePagePlan({
           componentTargetExportName: fastGenericExportName,
@@ -444,6 +452,51 @@ export async function preparePreviewCompilerUsage(
               sourcePaths: corridor.sourcePaths,
               ...(options.usageContext === undefined ? {} : { usageContext: options.usageContext }),
             });
+      if (
+        inspectorPlan !== undefined &&
+        fastGenericExportName !== undefined &&
+        namedExportScenarios
+      ) {
+        inspectorPlan = await createPreviewInspectorNamedExportScenarioPlan({
+          createPlan: async (exportName) => {
+            const createPlanForSources = (sourcePaths: readonly string[]) =>
+              createPreviewInspectorAncestorPlan({
+                acceptedImportSpecifiers: (target) =>
+                  options.resolver.getMatchedSpecifiers(target.sourcePath),
+                documentPath: request.documentPath,
+                exportName,
+                readSource,
+                resolveModule: options.resolver.resolve,
+                ...(request.inspectorRouteSelection === undefined
+                  ? {}
+                  : { routeSelection: request.inspectorRouteSelection }),
+                ...(signal === undefined ? {} : { signal }),
+                sourcePaths,
+              });
+            const localPlan = await createPlanForSources(corridor.sourcePaths);
+            if (!isWeakGenericConsumerPlan(localPlan)) return localPlan;
+            const exportCorridor = await collectPreviewInspectorFastPageCorridor({
+              additionalSourcePaths: mergeInventorySnapshots(
+                packageSourcePaths,
+                snapshotSourceByPath.keys(),
+                options.workspaceRoot,
+              ),
+              documentPath: request.documentPath,
+              projectRoot: options.projectRoot,
+              readSource,
+              resolveModule: options.resolver.resolve,
+              ...(signal === undefined ? {} : { signal }),
+              targetExportName: exportName,
+              workspaceRoot: options.workspaceRoot,
+            });
+            return exportCorridor === undefined
+              ? localPlan
+              : createPlanForSources(exportCorridor.sourcePaths);
+          },
+          exportNames: targetSelection.explicitExportNames,
+          primaryPlan: inspectorPlan,
+        });
+      }
       /*
        * A mixed module can expose both an ordinary component and a JSX-producing hook/HOC factory.
        * Keep a real entry-connected component path when one exists, but do not let a target-only

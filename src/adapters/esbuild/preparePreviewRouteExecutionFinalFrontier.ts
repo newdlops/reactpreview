@@ -46,6 +46,7 @@ import type { PreviewTargetUsageProps } from './previewTargetUsageProps';
 import type { PreviewThemeImportSelection } from './previewTargetExports';
 
 export interface PreparePreviewRouteExecutionFinalFrontierOptions {
+  readonly collectTailwindCandidates?: boolean;
   readonly contextDiscoveryTruncated: boolean;
   readonly directThemeImport?: PreviewThemeImportSelection;
   readonly implicitGlobalEvidenceCache: PreviewImplicitGlobalEvidenceCache;
@@ -119,6 +120,9 @@ export async function preparePreviewRouteExecutionFinalFrontier(
   emitPreviewRouteExecutionTelemetry(options.telemetry, 'execution-frontier-style', 'start');
   const styleContext = await preparePreviewStyleContext({
     applicationStyleRoots,
+    ...(options.collectTailwindCandidates === undefined
+      ? {}
+      : { collectTailwindCandidates: options.collectTailwindCandidates }),
     ...(options.directThemeImport === undefined
       ? {}
       : { directThemeImport: options.directThemeImport }),

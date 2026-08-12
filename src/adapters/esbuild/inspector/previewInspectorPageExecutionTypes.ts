@@ -145,6 +145,8 @@ export interface PreviewInspectorPageExecutionCandidate {
   readonly runtimeTargetSurfaceId: string;
   /** Complete graph evidence proves this export has no authored application-entry consumer. */
   readonly standaloneTarget?: boolean;
+  /** Outer-to-inner static event keys for authored tabs proven to contain the selected target. */
+  readonly targetPageTabKeys?: readonly string[];
   readonly watchSourcePaths: readonly string[];
 }
 
@@ -212,6 +214,9 @@ export function freezePreviewInspectorPageExecutionPlan(
       ? {}
       : { routeRecipe: freezeRecipe(plan.candidate.routeRecipe) }),
     runtimeTargetContract: Object.freeze({ ...plan.candidate.runtimeTargetContract }),
+    ...(plan.candidate.targetPageTabKeys === undefined
+      ? {}
+      : { targetPageTabKeys: Object.freeze([...plan.candidate.targetPageTabKeys]) }),
     watchSourcePaths: Object.freeze([...plan.candidate.watchSourcePaths]),
   });
   return Object.freeze({

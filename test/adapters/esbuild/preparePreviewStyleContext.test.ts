@@ -30,6 +30,44 @@ function createEmptyStaticModuleResolver(): PreviewStaticModuleResolver {
 }
 
 describe('preparePreviewStyleContext', () => {
+  /** Avoids building a source snapshot graph when no installed Tailwind runtime can consume it. */
+  it('skips Tailwind candidate snapshots when package evidence disables their consumer', async () => {
+    const targetSource = 'export const Target = () => <main className="p-4">Target</main>;';
+    const request: PreviewBuildRequest = {
+      dependencySnapshots: [],
+      documentPath: TARGET_PATH,
+      language: 'tsx',
+      renderMode: 'page-inspector',
+      sourceText: targetSource,
+      workspaceRoot: WORKSPACE_ROOT,
+    };
+
+    const context = await preparePreviewStyleContext({
+      collectTailwindCandidates: false,
+      inspectorDependencyPaths: [LAZY_PAGE_PATH],
+      portalHostDependencyPaths: [],
+      projectRoot: WORKSPACE_ROOT,
+      readSource: ({ sourcePath }) =>
+        Promise.resolve(
+          path.normalize(sourcePath) === path.normalize(TARGET_PATH) ? targetSource : undefined,
+        ),
+      request,
+      staticModuleResolver: createEmptyStaticModuleResolver(),
+      workspaceRoot: WORKSPACE_ROOT,
+    });
+    const completed = await completePreviewStyleContextTailwindCandidates({
+      context,
+      readSource: () => {
+        throw new Error('Disabled Tailwind completion must not read final-frontier source.');
+      },
+      sourcePaths: [TARGET_PATH, LAZY_PAGE_PATH],
+    });
+
+    expect(context.tailwindCandidateCollectionEnabled).toBe(false);
+    expect(context.tailwindCandidateSnapshots).toEqual([]);
+    expect(completed).toBe(context);
+  });
+
   /** Includes page ancestors when the selected target itself does not declare shared portal roots. */
   it('discovers portal hosts from Inspector ancestor dependencies', async () => {
     const targetSource = 'export const Target = () => <main>Target</main>;';

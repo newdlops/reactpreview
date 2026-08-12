@@ -61,12 +61,14 @@ export function selectPreviewInspectorFastPageConsumerPaths(
   const targetSegments = relativeSegments(normalizedRoot, documentPath);
   const rankedPaths = sourcePaths
     .filter((sourcePath) => isLikelyPageConsumer(sourcePath, normalizedRoot))
-    .sort((left, right) => {
-      const scoreDifference =
-        scorePageConsumer(right, normalizedRoot, targetSegments) -
-        scorePageConsumer(left, normalizedRoot, targetSegments);
-      return scoreDifference !== 0 ? scoreDifference : left.localeCompare(right);
-    });
+    .map((sourcePath) => ({
+      score: scorePageConsumer(sourcePath, normalizedRoot, targetSegments),
+      sourcePath,
+    }))
+    .sort(
+      (left, right) => right.score - left.score || left.sourcePath.localeCompare(right.sourcePath),
+    )
+    .map((candidate) => candidate.sourcePath);
   return diversifyPageConsumerPaths(rankedPaths, normalizedRoot);
 }
 
@@ -85,19 +87,21 @@ export function selectPreviewInspectorFastReverseProbePaths(
   const normalizedRoot = path.resolve(projectRoot);
   const targetSegments = relativeSegments(normalizedRoot, documentPath);
   const targetTokens = collectMeaningfulPathTokens(targetSegments);
+  const normalizedDocumentPath = path.normalize(documentPath);
   const rankedPaths = sourcePaths
     .map((sourcePath) => path.normalize(sourcePath))
     .filter(
       (sourcePath) =>
-        sourcePath !== path.normalize(documentPath) &&
-        isProbeEligibleSource(sourcePath, normalizedRoot),
+        sourcePath !== normalizedDocumentPath && isProbeEligibleSource(sourcePath, normalizedRoot),
     )
-    .sort((left, right) => {
-      const scoreDifference =
-        scoreReverseProbe(right, normalizedRoot, targetSegments, targetTokens) -
-        scoreReverseProbe(left, normalizedRoot, targetSegments, targetTokens);
-      return scoreDifference !== 0 ? scoreDifference : left.localeCompare(right);
-    });
+    .map((sourcePath) => ({
+      score: scoreReverseProbe(sourcePath, normalizedRoot, targetSegments, targetTokens),
+      sourcePath,
+    }))
+    .sort(
+      (left, right) => right.score - left.score || left.sourcePath.localeCompare(right.sourcePath),
+    )
+    .map((candidate) => candidate.sourcePath);
   return Object.freeze(
     diversifyReverseProbePaths(rankedPaths, normalizedRoot).slice(0, MAXIMUM_REVERSE_PROBE_PATHS),
   );

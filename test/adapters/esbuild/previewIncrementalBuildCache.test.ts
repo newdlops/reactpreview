@@ -12,16 +12,29 @@ import type {
   WorkspaceSourceCompilationState,
 } from '../../../src/adapters/esbuild/workspaceSourcePlugin';
 
-const esbuildMocks = vi.hoisted(() => ({ context: vi.fn() }));
+const esbuildMocks = vi.hoisted(() => ({ context: vi.fn(), initialize: vi.fn() }));
 
 vi.mock('esbuild', async (importOriginal) => ({
   ...(await importOriginal<typeof import('esbuild')>()),
   context: esbuildMocks.context,
+  initialize: esbuildMocks.initialize,
 }));
 
 describe('PreviewIncrementalBuildCache', () => {
   beforeEach(() => {
     esbuildMocks.context.mockReset();
+    esbuildMocks.initialize.mockReset().mockResolvedValue(undefined);
+  });
+
+  /** Starts the shared native process once while later caches retain the same service generation. */
+  it('starts esbuild once before the first cached context is requested', async () => {
+    const first = new PreviewIncrementalBuildCache();
+    const second = new PreviewIncrementalBuildCache();
+
+    expect(esbuildMocks.initialize).toHaveBeenCalledOnce();
+    expect(esbuildMocks.initialize).toHaveBeenCalledWith({});
+
+    await Promise.all([first.shutdown(), second.shutdown()]);
   });
 
   /** Reuses one context key while atomically advancing its editor snapshot and transformer. */

@@ -199,67 +199,33 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
   );
   if (authenticRuntimeTargetSurface !== undefined) {
     await collectExactVisualAdmissions(
-      authenticRuntimeTargetSurface,
-      optionalExportsByPath,
-      optionalIdentities,
-      pending,
-      readRawSource,
-      resolveModule,
-      checkAuthoredPath,
-      'static',
-      'target-component',
+      authenticRuntimeTargetSurface, optionalExportsByPath, optionalIdentities, pending,
+      readRawSource, resolveModule, checkAuthoredPath, 'static', 'target-component',
     );
     await collectExactVisualAdmissions(
-      authenticRuntimeTargetSurface,
-      optionalExportsByPath,
-      optionalIdentities,
-      pending,
-      readRawSource,
-      resolveModule,
-      checkAuthoredPath,
-      'dynamic-import',
-      'target-component',
+      authenticRuntimeTargetSurface, optionalExportsByPath, optionalIdentities, pending,
+      readRawSource, resolveModule, checkAuthoredPath, 'dynamic-import', 'target-component',
     );
   }
-  const authenticExecutionRootSurface = options.executionCandidate?.criticalSurfaces.find(
+  const fullAuthoredExecutionRootSurface = options.executionCandidate?.criticalSurfaces.find(
     (surface) =>
       surface.id === options.executionCandidate?.executionRootSurfaceId &&
-      surface.strategy === 'authentic-module-export',
+      (surface.strategy === 'authentic-module-export' ||
+        surface.strategy === 'selected-route-surface'),
   );
   if (
-    authenticExecutionRootSurface !== undefined &&
+    fullAuthoredExecutionRootSurface !== undefined &&
     (authenticRuntimeTargetSurface === undefined ||
-      authenticExecutionRootSurface.sourcePath !== authenticRuntimeTargetSurface.sourcePath ||
-      authenticExecutionRootSurface.exportName !== authenticRuntimeTargetSurface.exportName)
+      fullAuthoredExecutionRootSurface.sourcePath !== authenticRuntimeTargetSurface.sourcePath ||
+      fullAuthoredExecutionRootSurface.exportName !== authenticRuntimeTargetSurface.exportName)
   ) {
-    /*
-     * The application/page root owns the authored chrome around the selected target. Promote its
-     * directly rendered layout boundary ahead of generic support closure so a large route catalog
-     * cannot turn the sidebar/topbar into a structural placeholder before optional admission runs.
-     */
     await collectExactVisualAdmissions(
-      authenticExecutionRootSurface,
-      optionalExportsByPath,
-      optionalIdentities,
-      pending,
-      readRawSource,
-      resolveModule,
-      checkAuthoredPath,
-      'static',
-      'page-shell-component',
-      options.plan,
+      fullAuthoredExecutionRootSurface, optionalExportsByPath, optionalIdentities, pending,
+      readRawSource, resolveModule, checkAuthoredPath, 'static', 'page-shell-component', options.plan,
     );
     await collectExactVisualAdmissions(
-      authenticExecutionRootSurface,
-      optionalExportsByPath,
-      optionalIdentities,
-      pending,
-      readRawSource,
-      resolveModule,
-      checkAuthoredPath,
-      'dynamic-import',
-      'page-shell-component',
-      options.plan,
+      fullAuthoredExecutionRootSurface, optionalExportsByPath, optionalIdentities, pending,
+      readRawSource, resolveModule, checkAuthoredPath, 'dynamic-import', 'page-shell-component', options.plan,
     );
   }
   for (const surface of options.executionCandidate?.optionalSurfaces ?? []) {
@@ -279,7 +245,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
     optionalExportsByPath.set(sourcePath, new Set(edge.exportNames));
     pending.push({
       depth: 1,
-      kind: 'target-component',
+      kind: 'optional-component',
       optionalEdge: edge,
       sourcePath,
     });
@@ -548,9 +514,7 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         : diagnostics.measureQueueSort(() => queue.popMinimum());
     if (item === undefined || admittedKinds.has(item.sourcePath)) continue;
     if (
-      (item.kind === 'optional-component' ||
-        item.kind === 'page-shell-component' ||
-        item.kind === 'target-component') &&
+      (item.kind === 'page-shell-component' || item.kind === 'target-component') &&
       options.executionCandidate !== undefined
     ) {
       const node = await readNode(item.sourcePath);
@@ -759,13 +723,15 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
         appendProjection(projectedEdges, item, 'budget-projection');
         continue;
       }
-      for (const sourcePath of proposal.sourcePaths)
+      for (const sourcePath of proposal.sourcePaths) {
+        if (admittedKinds.has(sourcePath)) continue;
         admittedKinds.set(
           sourcePath,
           sourcePath === item.sourcePath ? 'optional-component' : 'optional-support',
         );
+      }
       for (const sourcePath of proposal.supportPaths) {
-        if (sourcePath !== item.sourcePath && admittedKinds.get(sourcePath) !== 'exact')
+        if (sourcePath !== item.sourcePath && !admittedKinds.has(sourcePath))
           admittedKinds.set(sourcePath, 'optional-support');
       }
       authoredEdgeCount += proposal.authoredEdgeCount;
@@ -799,6 +765,47 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
             kind: 'optional-component',
             optionalEdge: edgeRecord,
             sourcePath,
+          });
+        }
+      }
+      for (const sourcePath of [...proposal.supportPaths].sort()) {
+        const supportNode = graph.entries.find((entry) => entry.sourcePath === sourcePath)?.node;
+        if (supportNode === undefined || supportNode.failure !== undefined) continue;
+        const dynamicImportEdges = supportNode.edges.filter((edge) => edge.kind === 'dynamic-import');
+        const selectedDynamicEdgeIdentities = new Set(
+          dynamicImportEdges
+            .filter((edge) => {
+              const resolution = resolveDynamicEdge(supportNode, edge);
+              return (
+                resolution.targetPath !== undefined &&
+                (isSelectedDynamicVisualPath(options.plan, sourcePath, resolution.targetPath) ||
+                  matchesPreviewInspectorRouteParameterBranch(
+                    edge.moduleSpecifier,
+                    selectedRouteParameterGroups,
+                  ))
+              );
+            })
+            .map((edge) => createRuntimeEdgeIdentity(sourcePath, edge)),
+        );
+        const retainSmallSupportDynamicClosure =
+          selectedDynamicEdgeIdentities.size === 0 &&
+          new Set(dynamicImportEdges.map((edge) => edge.moduleSpecifier)).size <=
+            MAXIMUM_SMALL_PAGE_SHELL_DYNAMIC_IMPORTS;
+        for (const edge of dynamicImportEdges) {
+          const resolution = resolveDynamicEdge(supportNode, edge);
+          const edgeIdentity = createRuntimeEdgeIdentity(sourcePath, edge);
+          if (
+            resolution.targetPath === undefined ||
+            (!selectedDynamicEdgeIdentities.has(edgeIdentity) && !retainSmallSupportDynamicClosure) ||
+            processedStaticEdges.has(edgeIdentity)
+          )
+            continue;
+          processedStaticEdges.add(edgeIdentity);
+          authoredEdgeCount += 1;
+          queue.push({
+            depth: item.depth + 1,
+            kind: 'support',
+            sourcePath: resolution.targetPath,
           });
         }
       }
@@ -936,6 +943,193 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
       }
     }
   }
+  const slicedExecutionRoot = options.executionCandidate?.criticalSurfaces.find(
+    (surface) =>
+      surface.id === options.executionCandidate?.executionRootSurfaceId &&
+      isVirtualSliceSurface(surface),
+  );
+  if (slicedExecutionRoot !== undefined) {
+    type PhaseTwoItem = {
+      readonly depth: number;
+      readonly exportNames?: readonly string[];
+      readonly importerPath: string;
+      readonly kind: 'component' | 'support';
+      readonly occurrenceStart: number;
+      readonly sourcePath: string;
+    };
+    const comparePhaseTwoItems = (left: PhaseTwoItem, right: PhaseTwoItem): number =>
+      left.depth - right.depth ||
+      (left.kind === 'component' ? 0 : 1) - (right.kind === 'component' ? 0 : 1) ||
+      left.importerPath.localeCompare(right.importerPath) ||
+      left.occurrenceStart - right.occurrenceStart ||
+      left.sourcePath.localeCompare(right.sourcePath) ||
+      (left.exportNames ?? []).join('\0').localeCompare((right.exportNames ?? []).join('\0'));
+    const phaseTwoQueue = createPreviewInspectorStableMinPriorityQueue<PhaseTwoItem>(
+      [],
+      comparePhaseTwoItems,
+    );
+    const componentExpansions = new Set<string>();
+    const phaseTwoQueuedComponents = new Set<string>();
+    const phaseTwoQueuedSupport = new Set<string>();
+    let phaseTwoFailure = false;
+    const queueComponent = (
+      sourcePath: string,
+      exportNames: readonly string[],
+      depth: number,
+      importerPath: string,
+      occurrenceStart: number,
+    ): void => {
+      const normalizedPath = path.normalize(sourcePath);
+      const names = [...new Set(exportNames)].sort();
+      const identity = `${normalizedPath}\0${names.join('\0')}`;
+      if (phaseTwoQueuedComponents.has(identity) || componentExpansions.has(identity)) return;
+      phaseTwoQueuedComponents.add(identity);
+      phaseTwoQueue.push({ depth, exportNames: Object.freeze(names), importerPath, kind: 'component', occurrenceStart, sourcePath: normalizedPath });
+    };
+    const queueSupport = (
+      sourcePath: string,
+      depth: number,
+      importerPath: string,
+      occurrenceStart: number,
+    ): void => {
+      const normalizedPath = path.normalize(sourcePath);
+      if (admittedKinds.has(normalizedPath) || phaseTwoQueuedSupport.has(normalizedPath)) return;
+      phaseTwoQueuedSupport.add(normalizedPath);
+      phaseTwoQueue.push({ depth, importerPath, kind: 'support', occurrenceStart, sourcePath: normalizedPath });
+    };
+    queueComponent(
+      slicedExecutionRoot.sourcePath,
+      [slicedExecutionRoot.exportName],
+      0,
+      path.normalize(slicedExecutionRoot.sourcePath),
+      0,
+    );
+    while (phaseTwoQueue.size > 0 && !phaseTwoFailure) {
+      const item = phaseTwoQueue.popMinimum();
+      if (item === undefined) continue;
+      const node = await readNode(item.sourcePath);
+      if (node.failure !== undefined) {
+        reasons.add(node.failure);
+        phaseTwoFailure = true;
+        continue;
+      }
+      if (item.kind === 'support') {
+        if (!admittedKinds.has(item.sourcePath)) {
+          if (
+            admittedKinds.size + 1 > options.policy.maximumAuthoredModules ||
+            sourceBytes + node.byteLength > options.policy.maximumSourceBytes
+          ) {
+            reasons.add('frontier-mismatch');
+            phaseTwoFailure = true;
+            continue;
+          }
+          admittedKinds.set(item.sourcePath, 'optional-support');
+          sourceBytes += node.byteLength;
+          maximumDepth = Math.max(maximumDepth, item.depth);
+        }
+        for (const edge of node.staticEdges) {
+          if (edge.kind === 'package-demand') {
+            packageDemandPaths.add(item.sourcePath);
+            continue;
+          }
+          if (edge.targetPath === undefined) continue;
+          if (!processedStaticEdges.has(edge.identity)) {
+            processedStaticEdges.add(edge.identity);
+            authoredEdgeCount += 1;
+          }
+          queueSupport(edge.targetPath, item.depth + 1, item.sourcePath, edge.occurrenceStart ?? 0);
+        }
+        continue;
+      }
+      const exportNames = item.exportNames ?? [];
+      const expansionIdentity = `${item.sourcePath}\0${exportNames.join('\0')}`;
+      if (componentExpansions.has(expansionIdentity)) continue;
+      componentExpansions.add(expansionIdentity);
+      const recordedExports = optionalExportsByPath.get(item.sourcePath) ?? new Set<string>();
+      for (const exportName of exportNames) recordedExports.add(exportName);
+      optionalExportsByPath.set(item.sourcePath, recordedExports);
+      if (!admittedKinds.has(item.sourcePath)) {
+        if (
+          admittedKinds.size + 1 > options.policy.maximumAuthoredModules ||
+          sourceBytes + node.byteLength > options.policy.maximumSourceBytes
+        ) {
+          reasons.add('frontier-mismatch');
+          phaseTwoFailure = true;
+          continue;
+        }
+        admittedKinds.set(item.sourcePath, 'page-shell-component');
+        sourceBytes += node.byteLength;
+        maximumDepth = Math.max(maximumDepth, item.depth);
+      }
+      const sourceText = await readRawSource(item.sourcePath);
+      if (sourceText === undefined) {
+        reasons.add('exact-source-unreadable');
+        phaseTwoFailure = true;
+        continue;
+      }
+      const representation =
+        item.sourcePath === path.normalize(slicedExecutionRoot.sourcePath)
+          ? slicedExecutionRoot.strategy === 'inner-local-component-slice' &&
+              slicedExecutionRoot.localName !== undefined
+            ? createPreviewInspectorLocalComponentSlice({
+                localName: slicedExecutionRoot.localName,
+                preservedWrapperKinds: slicedExecutionRoot.preservedWrapperKinds ?? [],
+                sourcePath: item.sourcePath,
+                sourceText,
+              })
+            : createPreviewInspectorSelectedExportSlice({
+                exportName: slicedExecutionRoot.exportName,
+                sourcePath: item.sourcePath,
+                sourceText,
+              })
+          : undefined;
+      if (representation !== undefined && representation.kind !== 'success') {
+        reasons.add('slice-unavailable');
+        phaseTwoFailure = true;
+        continue;
+      }
+      const inventorySource = representation?.kind === 'success' ? representation.slice.contents : sourceText;
+      const projections = collectPreviewInspectorShallowProjectionInventory(
+        item.sourcePath,
+        inventorySource,
+        new Set(exportNames),
+      );
+      if (projections.truncated) {
+        reasons.add('frontier-mismatch');
+        phaseTwoFailure = true;
+        continue;
+      }
+      const runtimeEdges = collectPreviewInspectorRuntimeImportInventory(item.sourcePath, inventorySource);
+      for (const projection of projections.projectionsBySpecifier.values()) {
+        const edge = runtimeEdges.find((candidate) => candidate.moduleSpecifier === projection.moduleSpecifier);
+        if (edge === undefined) continue;
+        const resolved = resolveModule(projection.moduleSpecifier, item.sourcePath);
+        if (resolved === undefined || !checkAuthoredPath(resolved)) {
+          if (projection.moduleSpecifier.startsWith('.') || path.isAbsolute(projection.moduleSpecifier)) {
+            reasons.add('frontier-mismatch');
+            phaseTwoFailure = true;
+            break;
+          }
+          continue;
+        }
+        queueComponent(path.normalize(resolved), projection.exportNames, item.depth + 1, item.sourcePath, edge.occurrenceStart);
+      }
+      if (phaseTwoFailure) continue;
+      for (const edge of node.staticEdges) {
+        if (edge.kind === 'package-demand') {
+          packageDemandPaths.add(item.sourcePath);
+          continue;
+        }
+        if (edge.targetPath === undefined) continue;
+        if (!processedStaticEdges.has(edge.identity)) {
+          processedStaticEdges.add(edge.identity);
+          authoredEdgeCount += 1;
+        }
+        if (edge.moduleSpecifier !== undefined && projections.projectionsBySpecifier.has(edge.moduleSpecifier)) continue;
+        queueSupport(edge.targetPath, item.depth + 1, item.sourcePath, edge.occurrenceStart ?? 0);
+      }
+    }
+  }
   const authenticSourcePaths = Object.freeze([...admittedKinds.keys()].sort());
   const exactSourcePaths = Object.freeze(
     authenticSourcePaths.filter((sourcePath) => admittedKinds.get(sourcePath) === 'exact'),
@@ -958,11 +1152,12 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
   );
   const packageDemandSourcePaths = Object.freeze([...packageDemandPaths].sort());
   const truncationReasons = Object.freeze(sortPreviewInspectorBundleFrontierReasons(reasons));
+  const boundedProjectionCount = effectiveProjectedEdges.filter(
+    (edge) => edge.reason === 'budget-projection',
+  ).length;
   const summary = Object.freeze({
     authoredEdgeCount,
-    boundedProjectionCount: effectiveProjectedEdges.filter(
-      (edge) => edge.reason === 'budget-projection',
-    ).length,
+    ...(boundedProjectionCount === 0 ? {} : { boundedProjectionCount }),
     exactModuleCount: exactSourcePaths.length,
     maximumDepth,
     optionalComponentCount: optionalSourcePaths.length,
@@ -1017,7 +1212,7 @@ function materializePreviewInspectorBundleFrontier(
   const finalize = (): PreparedPreviewInspectorBundleFrontier => {
     const collectIdentity = (): string =>
       createPreviewInspectorBundleFrontierIdentity(
-        options.policy,
+        Object.freeze({ mode: options.policy.mode }),
         options.executionCandidate,
         template.authenticSourcePaths,
         template.exactSourcePaths,
@@ -1238,6 +1433,20 @@ function isSelectedDynamicVisualPath(
       visualPath.relation !== 'route-alternative',
   );
 }
+
+/** Excludes a dynamically imported page that the analyzer proved belongs to another route. */
+function isRouteAlternativeVisualPath(
+  plan: PreviewInspectorAncestorPlan,
+  importerPath: string,
+  sourcePath: string,
+): boolean {
+  return (plan.shallowVisualPaths ?? []).some(
+    (visualPath) =>
+      path.normalize(visualPath.importerPath) === path.normalize(importerPath) &&
+      path.normalize(visualPath.sourcePath) === path.normalize(sourcePath) &&
+      visualPath.relation === 'route-alternative',
+  );
+}
 /** Promotes proven JSX children of an exact render root when broad plan evidence omits them. */
 async function collectExactVisualAdmissions(
   reference: { readonly exportName: string; readonly sourcePath: string },
@@ -1273,6 +1482,14 @@ async function collectExactVisualAdmissions(
     queueKind === 'page-shell-component' && edgeKind === 'dynamic-import'
       ? collectPreviewDynamicImportInventory(importerPath, sourceText)
       : undefined;
+  const hasExactPageShellDynamicVisualEvidence =
+    pageShellDynamicInventory !== undefined &&
+    plan?.shallowVisualPaths?.some(
+      (visualPath) =>
+        path.normalize(visualPath.importerPath) === importerPath &&
+        visualPath.importKind === 'react-lazy' &&
+        visualPath.relation !== 'route-alternative',
+    ) === true;
   const hasBroadPageShellDynamicRegistry =
     pageShellDynamicInventory !== undefined &&
     (!pageShellDynamicInventory.reliable ||
@@ -1290,6 +1507,20 @@ async function collectExactVisualAdmissions(
     const resolved = resolveModule(projection.moduleSpecifier, importerPath);
     if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
     const sourcePath = path.normalize(resolved);
+    if (
+      hasExactPageShellDynamicVisualEvidence &&
+      (plan === undefined || !isSelectedDynamicVisualPath(plan, importerPath, sourcePath))
+    ) {
+      continue;
+    }
+    if (
+      queueKind === 'page-shell-component' &&
+      edgeKind === 'dynamic-import' &&
+      plan !== undefined &&
+      isRouteAlternativeVisualPath(plan, importerPath, sourcePath)
+    ) {
+      continue;
+    }
     if (
       hasBroadPageShellDynamicRegistry &&
       (plan === undefined || !isSelectedDynamicVisualPath(plan, importerPath, sourcePath))
@@ -1314,9 +1545,15 @@ async function collectExactVisualAdmissions(
     if (optionalIdentities.has(identity)) continue;
     optionalIdentities.add(identity);
     optionalExportsByPath.set(sourcePath, new Set(projection.exportNames));
-    pending.push({ depth: 1, kind: queueKind, optionalEdge: edge, sourcePath });
+    pending.push({
+      depth: 1,
+      kind: queueKind,
+      optionalEdge: edge,
+      sourcePath,
+    });
   }
 }
+
 /** Raises an already-discovered visual root without duplicating its immutable incoming edge. */
 function promotePendingPreviewInspectorComponent(
   pending: FrontierSourceQueueItem[],
@@ -1491,9 +1728,38 @@ function collectPreviewInspectorExecutionCorridorSeedPaths(
   plan: PreviewInspectorAncestorPlan,
   executionCandidate: PreviewInspectorPageExecutionCandidate,
 ): readonly string[] {
-  const pageCandidate = plan.pageCandidates.find(
+  const plannedPageCandidate = plan.pageCandidates.find(
     (candidate) => candidate.id === executionCandidate.browserCandidate.id,
   );
+  const executionPageCandidate = executionCandidate.browserCandidate;
+  const executionRootSurface = executionCandidate.criticalSurfaces.find(
+    (surface) => surface.id === executionCandidate.executionRootSurfaceId,
+  );
+  const executionRootPath = executionRootSurface?.sourcePath;
+  const normalizedExecutionRootPath =
+    executionRootPath === undefined ? undefined : path.normalize(executionRootPath);
+  const executionPageRootMatchesSurface =
+    normalizedExecutionRootPath !== undefined &&
+    executionPageCandidate.renderPath !== undefined &&
+    path.normalize(executionPageCandidate.root.sourcePath) === normalizedExecutionRootPath &&
+    executionPageCandidate.root.exportName === executionRootSurface?.exportName;
+  const plannedPageRootMatchesSurface =
+    normalizedExecutionRootPath !== undefined &&
+    plannedPageCandidate !== undefined &&
+    path.normalize(plannedPageCandidate.root.sourcePath) === normalizedExecutionRootPath &&
+    plannedPageCandidate.root.exportName === executionRootSurface?.exportName;
+  // Page Execution can pin a selected route to an authentic owner shell after the executable
+  // plan was narrowed. Prefer that compiler-owned root/render path so checkpoint recovery follows
+  // the component that esbuild will actually mount; the candidate id and proven-path filter below
+  // still prevent unrelated analysis paths from entering the exact frontier.
+  const pageCandidate =
+    plannedPageCandidate?.id === executionPageCandidate.id &&
+    executionPageCandidate.renderPath !== undefined &&
+    executionPageCandidate.stopReason === 'render-path-checkpoint' &&
+    executionPageRootMatchesSurface &&
+    !plannedPageRootMatchesSurface
+      ? executionPageCandidate
+      : plannedPageCandidate;
   const rootStepIndex = pageCandidate?.rootStepIndex;
   const steps = pageCandidate?.renderPath?.steps;
   if (steps === undefined) return Object.freeze([]);
@@ -1508,12 +1774,6 @@ function collectPreviewInspectorExecutionCorridorSeedPaths(
   const provenPaths = new Set(
     executionCandidate.evidenceSourcePaths.map((sourcePath) => path.normalize(sourcePath)),
   );
-  const executionRootSurface = executionCandidate.criticalSurfaces.find(
-    (surface) => surface.id === executionCandidate.executionRootSurfaceId,
-  );
-  const executionRootPath = executionRootSurface?.sourcePath;
-  const normalizedExecutionRootPath =
-    executionRootPath === undefined ? undefined : path.normalize(executionRootPath);
   const candidateRootPath = pageCandidate?.root.sourcePath;
   const normalizedCandidateRootPath =
     candidateRootPath === undefined ? undefined : path.normalize(candidateRootPath);

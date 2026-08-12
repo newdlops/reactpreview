@@ -130,13 +130,36 @@ describe('createPreviewInspectorStableMinPriorityQueue', () => {
     expect(single.size).toBe(0);
   });
 
-  it('propagates comparator errors unchanged and contains no production sort or shift call', () => {
+  it('bounds the source-inventory directory frontier with exact UTF-16 heap ordering', () => {
+    const directoryCount = 3_000;
+    const directories = Array.from(
+      { length: directoryCount },
+      (_, index) => `/workspace/src/${String(directoryCount - index).padStart(4, '0')}-${index % 2 === 0 ? 'é' : '🙂'}`,
+    );
+    let comparisonCount = 0;
+    const queue = createPreviewInspectorStableMinPriorityQueue(['/workspace'], (left, right) => {
+      comparisonCount += 1;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+    for (const directoryPath of directories) queue.push(directoryPath);
+    const drainedDirectories: string[] = [];
+    while (queue.size > 0) {
+      const directoryPath = queue.popMinimum();
+      if (directoryPath === undefined) throw new Error('Expected one retained directory.');
+      drainedDirectories.push(directoryPath);
+    }
+    const totalDirectories = directoryCount + 1;
+    expect(drainedDirectories).toEqual(['/workspace', ...directories.slice().sort()]);
+    expect(comparisonCount).toBeLessThanOrEqual(
+      4 * totalDirectories * Math.ceil(Math.log2(totalDirectories)),
+    );
+
     const comparatorError = new Error('comparator failed');
-    const queue = createPreviewInspectorStableMinPriorityQueue([2], () => {
+    const errorQueue = createPreviewInspectorStableMinPriorityQueue([2], () => {
       throw comparatorError;
     });
     expect(() => {
-      queue.push(1);
+      errorQueue.push(1);
     }).toThrow(comparatorError);
 
     const source = readFileSync(
@@ -147,5 +170,24 @@ describe('createPreviewInspectorStableMinPriorityQueue', () => {
       'utf8',
     );
     expect(source).not.toMatch(/\.(?:sort|shift)\s*\(/u);
+
+    const targetUsagePropsSource = readFileSync(
+      new URL('../../../../src/adapters/esbuild/previewTargetUsageProps.ts', import.meta.url),
+      'utf8',
+    );
+    const pendingDirectoriesStart = targetUsagePropsSource.indexOf('const pendingDirectories');
+    const pendingDirectoriesEnd = targetUsagePropsSource.indexOf(
+      '\n}\n\n/**',
+      pendingDirectoriesStart,
+    );
+    const pendingDirectories = targetUsagePropsSource.slice(
+      pendingDirectoriesStart,
+      pendingDirectoriesEnd,
+    );
+    expect(pendingDirectories).toContain('createPreviewInspectorStableMinPriorityQueue');
+    expect(pendingDirectories).toContain('pendingDirectories.popMinimum()');
+    expect(pendingDirectories).toContain('pendingDirectories.push(entryPath)');
+    expect(pendingDirectories).toContain('left < right ? -1 : left > right ? 1 : 0');
+    expect(pendingDirectories).not.toMatch(/pendingDirectories\.(?:sort|shift)\s*\(/u);
   });
 });

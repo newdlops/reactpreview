@@ -167,23 +167,36 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(selection?.prepared.frontier.summary.totalAuthoredModuleCount).toBe(2_000);
   });
 
-  it('prefers selected-export context, then connected pages, before the target-only fallback', async () => {
+  it('prefers an authentic page with its Page Context wrapper over an inner-local contextual slice', async () => {
     const workspaceRoot = '/workspace';
     const targetPath = '/workspace/Target.tsx';
     const pagePath = '/workspace/Page.tsx';
     const sources = new Map([
       [targetPath, 'export const Target = () => null;'],
-      [pagePath, "import { Target } from './Target'; export const Page = () => <Target />;"],
+      [
+        pagePath,
+        [
+          "import { Target } from './Target';",
+          'const withPageContext = (Component: () => unknown) => Component;',
+          'const EmployeePageInner = () => <Target />;',
+          'export const EmployeePage = withPageContext(EmployeePageInner);',
+        ].join(' '),
+      ],
     ]);
     const surface = (
       id: string,
       sourcePath: string,
       exportName: string,
-      strategy: 'authentic-module-export' | 'selected-export-slice' = 'authentic-module-export',
+      strategy:
+        | 'authentic-module-export'
+        | 'inner-local-component-slice'
+        | 'selected-export-slice' = 'authentic-module-export',
+      localName?: string,
     ): PreviewInspectorPageExecutionCandidate['criticalSurfaces'][number] => ({
       bypassedWrapperNames: [],
       exportName,
       id,
+      ...(localName === undefined ? {} : { localName }),
       omittedTopLevelEffectCount: 0,
       sourcePath,
       strategy,
@@ -209,13 +222,33 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     const selection = await preparePreviewInspectorPageExecutionSelection({
       candidates: [
         candidate('page-authentic', [
-          surface('page', pagePath, 'Page'),
+          surface('page', pagePath, 'EmployeePage'),
           surface('target', targetPath, 'Target'),
         ]),
-        candidate('target-contextual', [
-          surface('page-context', pagePath, 'Page'),
-          surface('target', targetPath, 'Target'),
-        ]),
+        {
+          ...candidate('target-contextual', [
+            surface(
+              'page-context',
+              pagePath,
+              'EmployeePage',
+              'inner-local-component-slice',
+              'EmployeePageInner',
+            ),
+            surface('target', targetPath, 'Target'),
+          ]),
+          executionRootContract: {
+            exportName: 'EmployeePage',
+            sourcePath: pagePath,
+            surfaceId: 'page-context',
+          },
+          executionRootSurfaceId: 'page-context',
+          runtimeTargetContract: {
+            exportName: 'Target',
+            sourcePath: targetPath,
+            surfaceId: 'target',
+          },
+          runtimeTargetSurfaceId: 'target',
+        },
         candidate('target-only', [surface('target', targetPath, 'Target')]),
       ],
       plan: {
@@ -234,7 +267,7 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     expect(selection?.disposition).toBe('accepted-unbounded');
     expect(selection?.kind).toBe('selected');
     if (selection?.kind !== 'selected') throw new Error('Expected selected Page Execution.');
-    expect(selection.executionPlan.candidate.fidelity).toBe('target-contextual');
+    expect(selection.executionPlan.candidate.fidelity).toBe('page-authentic');
     expect(selection.executionPlan.alternatives).toEqual([
       { candidateId: 'page-authentic', fidelity: 'page-authentic' },
       { candidateId: 'target-contextual', fidelity: 'target-contextual' },
@@ -243,7 +276,7 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     const connectedPageSelection = await preparePreviewInspectorPageExecutionSelection({
       candidates: [
         candidate('route-page-authentic', [
-          surface('page', pagePath, 'Page'),
+          surface('page', pagePath, 'EmployeePage'),
           surface('target', targetPath, 'Target'),
         ]),
         candidate('target-only', [surface('target', targetPath, 'Target')]),
@@ -288,12 +321,22 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     const rejectedSelection = await preparePreviewInspectorPageExecutionSelection({
       candidates: [
         candidate('page-authentic', [
-          surface('page', pagePath, 'Page'),
+          surface('page', pagePath, 'MissingEmployeePage', 'selected-export-slice'),
           surface('target', targetPath, 'Target'),
         ]),
-        candidate('target-only', [
-          surface('target', targetPath, 'Missing', 'selected-export-slice'),
-        ]),
+        {
+          ...candidate('target-contextual', [
+            surface(
+              'page-context',
+              pagePath,
+              'EmployeePage',
+              'inner-local-component-slice',
+              'EmployeePageInner',
+            ),
+            surface('target', targetPath, 'Target'),
+          ]),
+          id: 'target-contextual-fallback',
+        },
       ],
       plan: {
         edges: [],
@@ -314,10 +357,10 @@ describe('preparePreviewInspectorPageExecutionSelection', () => {
     });
     if (rejectedSelection?.kind !== 'selected')
       throw new Error('Expected selected Page Execution.');
-    expect(rejectedSelection.executionPlan.candidate.fidelity).toBe('page-authentic');
+    expect(rejectedSelection.executionPlan.candidate.fidelity).toBe('target-contextual');
     expect(rejectedSelection.executionPlan.alternatives).toEqual([
-      { candidateId: 'page-authentic', fidelity: 'page-authentic' },
-      { candidateId: 'target-only', fidelity: 'target-only', reason: 'slice-unavailable' },
+      { candidateId: 'page-authentic', fidelity: 'page-authentic', reason: 'slice-unavailable' },
+      { candidateId: 'target-contextual-fallback', fidelity: 'target-contextual' },
     ]);
   });
 

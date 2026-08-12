@@ -102,6 +102,11 @@ export {
 } from './previewInspectorRenderBootstrapSlice';
 export { createPreviewInspectorExecutablePlan } from './previewInspectorExecutablePlan';
 export {
+  createPreviewInspectorNamedExportScenarioPlan,
+  hasPreviewInspectorNamedExportScenarios,
+  type CreatePreviewInspectorNamedExportScenarioPlanOptions,
+} from './previewInspectorNamedExportScenarioPlan';
+export {
   freezePreviewInspectorPageExecutionPlan,
   type PreviewInspectorMountSurface,
   type PreviewInspectorMountSurfaceStrategy,

@@ -50,6 +50,8 @@ export type ReadPreviewStyleContextSource = (
 /** Immutable inputs for one target revision's pre-render style preparation. */
 export interface PreparePreviewStyleContextOptions {
   readonly applicationStyleRoots?: readonly PreviewApplicationStyleRoot[];
+  /** False only when package evidence proves no Tailwind runtime can consume candidate snapshots. */
+  readonly collectTailwindCandidates?: boolean;
   readonly directThemeImport?: PreviewThemeImportSelection;
   readonly inspectorDependencyPaths: readonly string[];
   /** Exact Inspector root; absent for component gallery where a synthetic boundary is used. */
@@ -75,6 +77,8 @@ export interface PreparedPreviewStyleContext {
   readonly snapshotSourceByPath: ReadonlyMap<string, string>;
   /** Immutable styled-components boundary plan shared by entry generation and the compiler. */
   readonly styledComponentsPlan: PreviewStyledComponentsPlan;
+  /** Keeps final-frontier completion from rebuilding an intentionally disabled candidate graph. */
+  readonly tailwindCandidateCollectionEnabled: boolean;
   /** Bounded page-corridor source text supplied to Tailwind without a filesystem scan. */
   readonly tailwindCandidateSnapshots: readonly PreviewSourceSnapshot[];
   readonly themeImport?: PreviewThemeImportSelection;
@@ -154,6 +158,7 @@ export async function preparePreviewStyleContext(
     (options.styleEvidence ??
       (options.request.preparationMode === 'fast' ? 'critical' : 'workspace-complete')) ===
     'critical';
+  const tailwindCandidateCollectionEnabled = options.collectTailwindCandidates !== false;
   // Critical first paint still needs class candidates from the exact visible page/layout corridor.
   // It uses a smaller target-first graph; only portal discovery and the broader candidate budget
   // remain deferred until full enrichment.
@@ -168,14 +173,16 @@ export async function preparePreviewStyleContext(
           ],
           readSource,
         }),
-    collectPreviewTailwindCandidateSnapshotGraph({
-      corridorPaths: options.inspectorDependencyPaths,
-      readSource: readProjectSource,
-      resolveModule: options.staticModuleResolver.resolve,
-      scope: criticalStyleEvidence ? 'critical' : 'complete',
-      targetPath: options.request.documentPath,
-      workspaceRoot: options.workspaceRoot,
-    }),
+    tailwindCandidateCollectionEnabled
+      ? collectPreviewTailwindCandidateSnapshotGraph({
+          corridorPaths: options.inspectorDependencyPaths,
+          readSource: readProjectSource,
+          resolveModule: options.staticModuleResolver.resolve,
+          scope: criticalStyleEvidence ? 'critical' : 'complete',
+          targetPath: options.request.documentPath,
+          workspaceRoot: options.workspaceRoot,
+        })
+      : Promise.resolve<readonly PreviewSourceSnapshot[]>(Object.freeze([])),
   ]);
   return {
     applicationStylesheetImports,
@@ -184,6 +191,7 @@ export async function preparePreviewStyleContext(
     portalHostIds,
     snapshotSourceByPath,
     styledComponentsPlan,
+    tailwindCandidateCollectionEnabled,
     tailwindCandidateSnapshots,
     ...(themeImport === undefined ? {} : { themeImport }),
   };
@@ -201,6 +209,7 @@ export async function completePreviewStyleContextTailwindCandidates(options: {
   readonly readSource: ReadPreviewStyleContextSource;
   readonly sourcePaths: readonly string[];
 }): Promise<PreparedPreviewStyleContext> {
+  if (!options.context.tailwindCandidateCollectionEnabled) return options.context;
   const snapshots = [...options.context.tailwindCandidateSnapshots];
   const existingPaths = new Set(
     snapshots.map((snapshot) => canonicalizeExistingPath(snapshot.documentPath)),

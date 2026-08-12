@@ -47,6 +47,7 @@ describe('freezePreviewInspectorPageExecutionPlan', () => {
           searchParams: {},
         },
         runtimeTargetSurfaceId: 'page',
+        targetPageTabKeys: ['guideEmail'],
         watchSourcePaths: ['/workspace/main.tsx', '/workspace/Page.tsx'],
       },
       descriptorPlan: { dependencyPaths: ['/workspace/main.tsx'] },
@@ -68,6 +69,7 @@ describe('freezePreviewInspectorPageExecutionPlan', () => {
     expect(Object.isFrozen(frozen.candidate.criticalSurfaces[0]?.preservedWrapperKinds)).toBe(true);
     expect(Object.isFrozen(frozen.candidate.routeRecipe?.mounts)).toBe(true);
     expect(Object.isFrozen(frozen.candidate.routeRecipe?.params.scope)).toBe(true);
+    expect(Object.isFrozen(frozen.candidate.targetPageTabKeys)).toBe(true);
     expect(Object.isFrozen(frozen.descriptorPlan)).toBe(false);
   });
 });

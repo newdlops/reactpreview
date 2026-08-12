@@ -28,10 +28,30 @@ export function createPreviewInspectorExecutablePlan(
   const selection = selectPreviewInspectorExecutableCandidate(candidates, selectedPageCandidateId);
   if (selection === undefined) return plan;
   const active = selection.active.browserCandidate;
-  const targetExportName = plan.target.exportName;
+  /*
+   * Route-choice expansion may replace a candidate target with an importable route leaf before
+   * VirtualPage selects its execution root. That leaf is page context, not current-file ownership.
+   * A named-export scenario is allowed to change the export only when it still belongs to the
+   * prepared target module and has an analyzed render chain there.
+   */
+  const authoredTarget = selection.active.authoredCandidate.target;
+  const activeTarget =
+    authoredTarget?.sourcePath === plan.target.sourcePath &&
+    plan.renderChainsByExport[authoredTarget.exportName] !== undefined
+      ? authoredTarget
+      : plan.target;
+  const targetExportName = activeTarget.exportName;
   const targetRenderChain = plan.renderChainsByExport[targetExportName] ?? plan.renderChain;
+  const executableRenderChain =
+    active.renderPath === undefined
+      ? targetRenderChain
+      : Object.freeze({
+          ...targetRenderChain,
+          dependencyPaths: Object.freeze([...active.dependencyPaths]),
+          paths: Object.freeze([active.renderPath]),
+        });
   const dependencyPaths = new Set([
-    plan.target.sourcePath,
+    activeTarget.sourcePath,
     active.root.sourcePath,
     ...active.dependencyPaths,
     ...(active.renderPath?.steps.flatMap((step) => [
@@ -40,7 +60,7 @@ export function createPreviewInspectorExecutablePlan(
     ]) ?? []),
   ]);
   const corridorPaths = new Set<string>([
-    plan.target.sourcePath,
+    activeTarget.sourcePath,
     active.root.sourcePath,
     ...active.dependencyPaths,
     ...(active.renderPath?.steps.flatMap((step) => [
@@ -57,15 +77,8 @@ export function createPreviewInspectorExecutablePlan(
     dependencyPaths: Object.freeze([...dependencyPaths]),
     edges: Object.freeze([...active.edges]),
     pageCandidates: Object.freeze([active]),
-    renderChain:
-      active.renderPath === undefined
-        ? targetRenderChain
-        : Object.freeze({
-            ...targetRenderChain,
-            dependencyPaths: Object.freeze([...active.dependencyPaths]),
-            paths: Object.freeze([active.renderPath]),
-          }),
-    renderChainsByExport: Object.freeze({ [targetExportName]: targetRenderChain }),
+    renderChain: executableRenderChain,
+    renderChainsByExport: Object.freeze({ [targetExportName]: executableRenderChain }),
     ...(plan.renderOutcomesByExport?.[targetExportName] === undefined
       ? {}
       : {
@@ -76,6 +89,7 @@ export function createPreviewInspectorExecutablePlan(
     root: active.root,
     rootAutomaticProps: active.rootAutomaticProps,
     stopReason: active.stopReason,
+    target: activeTarget,
     targetAutomaticProps: active.targetAutomaticProps,
     ...(shallowVisualPaths === undefined
       ? {}

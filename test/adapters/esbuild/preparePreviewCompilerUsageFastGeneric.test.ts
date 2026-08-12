@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PreviewBuildRequest } from '../../../src/domain/preview';
+import { createPreviewInspectorExecutablePlan } from '../../../src/adapters/esbuild/inspector';
 import { preparePreviewCompilerTarget } from '../../../src/adapters/esbuild/previewImperativeEntryTarget';
 import {
   createPreviewCompleteRouteUsageContext,
@@ -161,6 +162,119 @@ describe('preparePreviewCompilerUsage fast generic page context', () => {
         path.join(projectRoot, 'src/pages/Dashboard.tsx'),
       ]),
     );
+  });
+
+  /** Keeps every no-default JSX export selectable and binds each one to an authored page scenario. */
+  it('prepares page scenarios for every named component export without a default', async () => {
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'prepare-fast-named-scenarios-'));
+    temporaryRoots.push(projectRoot);
+    const sources = await Promise.all([
+      writeSource(
+        projectRoot,
+        'src/main.tsx',
+        [
+          "import { createRoot } from 'react-dom/client';",
+          "import App from './App';",
+          'createRoot(document.body).render(<App />);',
+        ].join('\n'),
+      ),
+      writeSource(
+        projectRoot,
+        'src/App.tsx',
+        [
+          "import UploadPage from './UploadPage';",
+          'export default function App() { return <UploadPage />; }',
+        ].join('\n'),
+      ),
+      writeSource(
+        projectRoot,
+        'src/UploadPage.tsx',
+        [
+          "import { UploadHelpLink, UploadPanel, UploadStartButton } from './upload-components';",
+          'export default function UploadPage() {',
+          '  return <main><header><UploadStartButton /></header><UploadPanel /><UploadHelpLink /></main>;',
+          '}',
+        ].join('\n'),
+      ),
+      writeSource(
+        projectRoot,
+        'src/upload-components.tsx',
+        [
+          'export const UploadStartButton = () => <button>Start</button>;',
+          'export const UploadPanel = () => <section>Upload</section>;',
+          'export const UploadHelpLink = () => <a href="/help">Help</a>;',
+        ].join('\n'),
+      ),
+    ]);
+    const documentPath = path.join(projectRoot, 'src/upload-components.tsx');
+    const uploadPagePath = path.join(projectRoot, 'src/UploadPage.tsx');
+    const request: PreviewBuildRequest = {
+      dependencySnapshots: [],
+      documentPath,
+      language: 'tsx',
+      preparationMode: 'fast',
+      renderMode: 'page-inspector',
+      sourceText: await readFile(documentPath, 'utf8'),
+      useStorybookPreview: false,
+      workspaceRoot: projectRoot,
+    };
+    const cache = {
+      discover: vi.fn(),
+      getSourcePaths: vi.fn(() => Promise.resolve(Object.freeze(sources))),
+      readSourceText: vi.fn(({ sourcePath }: { readonly sourcePath: string }) =>
+        readFile(sourcePath, 'utf8').catch(() => undefined),
+      ),
+    } as unknown as PreviewProjectUsageCache;
+
+    const prepared = await preparePreviewCompilerUsage({
+      cache,
+      projectRoot,
+      projectUsesNextRuntime: false,
+      request,
+      resolver: createResolverStub(sources),
+      setupKind: 'none',
+      targetSelection: preparePreviewCompilerTarget(request),
+      workspaceRoot: projectRoot,
+    });
+
+    const plan = prepared.packageTargetUsageProps.inspectorPlan;
+    expect(Object.keys(plan?.renderChainsByExport ?? {})).toEqual([
+      'UploadStartButton',
+      'UploadPanel',
+      'UploadHelpLink',
+    ]);
+    expect([
+      ...new Set(plan?.pageCandidates.map((candidate) => candidate.target?.exportName)),
+    ]).toEqual(['UploadStartButton', 'UploadPanel', 'UploadHelpLink']);
+    expect(plan?.pageCandidates
+      .filter((candidate) => candidate.root.sourcePath === uploadPagePath)
+      .map((candidate) => ({
+        root: candidate.root,
+        targetExportName: candidate.target?.exportName,
+      }))).toEqual([
+      {
+        root: { exportName: 'default', sourcePath: uploadPagePath },
+        targetExportName: 'UploadStartButton',
+      },
+      {
+        root: { exportName: 'default', sourcePath: uploadPagePath },
+        targetExportName: 'UploadPanel',
+      },
+      {
+        root: { exportName: 'default', sourcePath: uploadPagePath },
+        targetExportName: 'UploadHelpLink',
+      },
+    ]);
+    const panelCandidate = plan?.pageCandidates.find(
+      (candidate) => candidate.target?.exportName === 'UploadPanel',
+    );
+    expect(panelCandidate).toBeDefined();
+    if (plan === undefined || panelCandidate === undefined) {
+      throw new Error('Expected a page scenario for UploadPanel.');
+    }
+    const executable = createPreviewInspectorExecutablePlan(plan, panelCandidate.id);
+    expect(executable.target).toEqual({ exportName: 'UploadPanel', sourcePath: documentPath });
+    expect(Object.keys(executable.renderChainsByExport)).toEqual(['UploadPanel']);
   });
 
   /**

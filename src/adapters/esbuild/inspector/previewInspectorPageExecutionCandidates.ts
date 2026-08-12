@@ -62,6 +62,11 @@ export function createPreviewInspectorPageExecutionCandidates(
     candidate: unmountedBrowserCandidate,
     plan: options.plan,
   });
+  const renderPath =
+    unmountedBrowserCandidate.renderPath ??
+    options.plan.renderChainsByExport[options.plan.target.exportName]?.paths[0] ??
+    options.plan.renderChain.paths[0];
+  const targetPageTabKeys = collectPreviewInspectorTargetPageTabKeys(renderPath);
   const targetSurface = createAuthenticSurface(unmountedBrowserCandidate.target, 'target');
   const standaloneTarget =
     options.plan.renderChain.reachability === 'entry-unreachable' &&
@@ -69,9 +74,14 @@ export function createPreviewInspectorPageExecutionCandidates(
   const pageSurface = createAuthenticSurface(virtualPage.contentCandidate.root, 'page');
   const pageSlicedSurface = createSelectedExportSurface(virtualPage.contentCandidate.root, 'page');
   const pageLocalSurface = createLocalComponentSurface(virtualPage.contentCandidate.root, 'page');
-  const detachedRouteLeaf =
+  const isRouteLeafDetachedFromTarget =
     unmountedBrowserCandidate.detachedTargetPlacement === undefined &&
     isDetachedRouteLeaf(unmountedBrowserCandidate, options.plan.target);
+  const retainsRenderedTargetWithinRouteLeaf =
+    isRouteLeafDetachedFromTarget &&
+    hasProvenNestedRouteTarget(unmountedBrowserCandidate, options.plan.target);
+  const detachedRouteLeaf =
+    isRouteLeafDetachedFromTarget && !retainsRenderedTargetWithinRouteLeaf;
   const detachedCatalogOwnerRetained = hasRetainedDetachedCatalogOwner(unmountedBrowserCandidate);
   const routeSurfaces =
     detachedRouteLeaf && !detachedCatalogOwnerRetained
@@ -79,11 +89,18 @@ export function createPreviewInspectorPageExecutionCandidates(
       : createRouteSurfaces(unmountedBrowserCandidate);
   const routeElementSurfaces = createRouteElementSurfaces(unmountedBrowserCandidate);
   const frameworkSurfaces = createFrameworkSurfaces(unmountedBrowserCandidate);
-  const shellSurfaces = createShellSurfaces(virtualPage);
+  const discoveredShellSurfaces = createShellSurfaces(virtualPage);
   const derivedOwnerRouteMount = collectVirtualPageOwnerRouteMount(
     unmountedBrowserCandidate,
     virtualPage,
-    shellSurfaces,
+    discoveredShellSurfaces,
+  );
+  const shellSurfaces = selectRouteAwareShellSurfaces(
+    unmountedBrowserCandidate,
+    virtualPage,
+    discoveredShellSurfaces,
+    derivedOwnerRouteMount,
+    [...routeSurfaces, ...routeElementSurfaces, ...frameworkSurfaces],
   );
   const browserCandidate = attachVirtualPageOwnerRouteMount(
     unmountedBrowserCandidate,
@@ -216,6 +233,7 @@ export function createPreviewInspectorPageExecutionCandidates(
         evidenceSourcePaths,
         fidelity: 'route-page-authentic',
         ...(routeRecipe === undefined ? {} : { routeRecipe }),
+        targetPageTabKeys,
         watchSourcePaths,
       }),
     );
@@ -240,6 +258,7 @@ export function createPreviewInspectorPageExecutionCandidates(
         evidenceSourcePaths,
         fidelity: 'route-page-sliced',
         ...(routeRecipe === undefined ? {} : { routeRecipe }),
+        targetPageTabKeys,
         watchSourcePaths,
       }),
     );
@@ -273,6 +292,7 @@ export function createPreviewInspectorPageExecutionCandidates(
         evidenceSourcePaths,
         fidelity: 'page-authentic',
         ...(routeRecipe === undefined ? {} : { routeRecipe }),
+        targetPageTabKeys,
         watchSourcePaths,
       }),
     );
@@ -294,6 +314,7 @@ export function createPreviewInspectorPageExecutionCandidates(
         evidenceSourcePaths,
         fidelity: 'page-sliced',
         ...(routeRecipe === undefined ? {} : { routeRecipe }),
+        targetPageTabKeys,
         watchSourcePaths,
       }),
     );
@@ -317,6 +338,7 @@ export function createPreviewInspectorPageExecutionCandidates(
           evidenceSourcePaths,
           fidelity: 'target-contextual',
           ...(routeRecipe === undefined ? {} : { routeRecipe }),
+          targetPageTabKeys,
           watchSourcePaths,
         }),
       );
@@ -331,6 +353,7 @@ export function createPreviewInspectorPageExecutionCandidates(
         evidenceSourcePaths,
         fidelity: 'target-contextual',
         routeRecipe: routeErrorElementRecipe,
+        targetPageTabKeys,
         watchSourcePaths: targetSurface.watchSourcePaths,
       }),
     );
@@ -347,6 +370,7 @@ export function createPreviewInspectorPageExecutionCandidates(
         fidelity: 'target-only',
         ...(routeRecipe === undefined ? {} : { routeRecipe }),
         standaloneTarget,
+        targetPageTabKeys,
         watchSourcePaths: targetSurface.watchSourcePaths,
       }),
     );
@@ -566,6 +590,111 @@ function readSource(sourcePath: string): string | undefined {
   }
 }
 
+const PREVIEW_INSPECTOR_TARGET_PAGE_TAB_KEY_LIMIT = 8;
+const PREVIEW_INSPECTOR_TARGET_PAGE_TAB_WRAPPERS = new Set(['TabItem', 'TabPane', 'TabPanel']);
+
+/**
+ * Reads only literal event keys from exact JSX ancestors retained by the selected render path.
+ * Dynamic keys and merely adjacent tabs fail closed instead of becoming browser actions.
+ */
+function collectPreviewInspectorTargetPageTabKeys(
+  renderPath: PreviewInspectorPageCandidate['renderPath'],
+): readonly string[] {
+  if (renderPath === undefined) return Object.freeze([]);
+  const innerToOuterKeys: string[] = [];
+  for (const step of renderPath.steps) {
+    if (
+      step.invocation?.mode !== 'jsx' ||
+      !step.wrapperNames.some((name) =>
+        PREVIEW_INSPECTOR_TARGET_PAGE_TAB_WRAPPERS.has(name.split('.').at(-1) ?? ''),
+      )
+    ) {
+      continue;
+    }
+    const sourcePath = step.invocation.sourcePath ?? step.sourcePath;
+    const sourceText = readSource(sourcePath);
+    if (
+      sourceText === undefined ||
+      step.occurrenceStart < 0 ||
+      step.occurrenceStart >= sourceText.length
+    ) {
+      continue;
+    }
+    const sourceFile = ts.createSourceFile(
+      sourcePath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    let current = findDeepestPreviewInspectorNodeAtPosition(
+      sourceFile,
+      step.occurrenceStart,
+    );
+    while (!ts.isSourceFile(current)) {
+      if (ts.isJsxElement(current)) {
+        const tagName = current.openingElement.tagName.getText(sourceFile).split('.').at(-1) ?? '';
+        if (
+          PREVIEW_INSPECTOR_TARGET_PAGE_TAB_WRAPPERS.has(tagName) &&
+          step.wrapperNames.some((name) => name.split('.').at(-1) === tagName)
+        ) {
+          const eventKey = readPreviewInspectorStaticJsxStringAttribute(
+            current.openingElement.attributes,
+            'eventKey',
+          );
+          if (eventKey !== undefined) innerToOuterKeys.push(eventKey);
+        }
+      }
+      current = current.parent;
+    }
+  }
+  const keys = [...new Set(innerToOuterKeys.reverse())].slice(
+    0,
+    PREVIEW_INSPECTOR_TARGET_PAGE_TAB_KEY_LIMIT,
+  );
+  return Object.freeze(keys);
+}
+
+/** Finds the narrowest parsed node that contains one analyzer-owned occurrence offset. */
+function findDeepestPreviewInspectorNodeAtPosition(node: ts.Node, position: number): ts.Node {
+  let match = node;
+  node.forEachChild((child) => {
+    if (child.getFullStart() <= position && position < child.getEnd()) {
+      match = findDeepestPreviewInspectorNodeAtPosition(child, position);
+    }
+  });
+  return match;
+}
+
+/** Accepts string literals and no-substitution template literals, never evaluated expressions. */
+function readPreviewInspectorStaticJsxStringAttribute(
+  attributes: ts.JsxAttributes,
+  attributeName: string,
+): string | undefined {
+  for (const property of attributes.properties) {
+    if (
+      !ts.isJsxAttribute(property) ||
+      !ts.isIdentifier(property.name) ||
+      property.name.text !== attributeName
+    ) {
+      continue;
+    }
+    const initializer = property.initializer;
+    const value =
+      initializer !== undefined && ts.isStringLiteral(initializer)
+        ? initializer.text
+        : initializer !== undefined &&
+            ts.isJsxExpression(initializer) &&
+            initializer.expression !== undefined &&
+            (ts.isStringLiteral(initializer.expression) ||
+              ts.isNoSubstitutionTemplateLiteral(initializer.expression))
+          ? initializer.expression.text
+          : undefined;
+    return value !== undefined && value.length > 0 && value.length <= 128 ? value : undefined;
+  }
+  return undefined;
+}
+
 function createRouteSurfaces(
   candidate: PreviewInspectorPageCandidate,
 ): readonly PreviewInspectorMountSurface[] {
@@ -653,6 +782,39 @@ function createShellSurfaces(
 ): readonly PreviewInspectorMountSurface[] {
   return Object.freeze(
     virtualPage.recipe.shells.map((shell) => createModuleFallbackSurface(shell.root, 'shell')),
+  );
+}
+
+/**
+ * Keeps selected-path layout wrappers when a nested route owner supplies the live page body.
+ *
+ * Route surfaces already reproduce Router/Route composition, so sibling shells remain excluded
+ * here. A wrapper recipe is different: it is inert one-hop evidence that the authored outer app
+ * placed a layout, frame, or chrome component around this exact nested owner. Dropping it turns a
+ * valid Page Context into the leaf page alone even though the compiler already proved the shell.
+ */
+function selectRouteAwareShellSurfaces(
+  candidate: PreviewInspectorPageCandidate,
+  virtualPage: PreviewInspectorVirtualPageCandidate,
+  discoveredShellSurfaces: readonly PreviewInspectorMountSurface[],
+  derivedOwnerRouteMount: PreviewInspectorDerivedOwnerRouteMount | undefined,
+  routeCompositionSurfaces: readonly PreviewInspectorMountSurface[],
+): readonly PreviewInspectorMountSurface[] {
+  if (candidate.routeLocation === undefined) return discoveredShellSurfaces;
+  const routeCompositionIdentities = new Set(
+    routeCompositionSurfaces.map(createSurfaceReferenceKey),
+  );
+  const ownerIdentity =
+    derivedOwnerRouteMount === undefined
+      ? undefined
+      : createSurfaceReferenceKey(derivedOwnerRouteMount.surface);
+  return Object.freeze(
+    discoveredShellSurfaces.filter((surface) => {
+      const identity = createSurfaceReferenceKey(surface);
+      if (identity === ownerIdentity) return true;
+      const recipe = findVirtualPageShellRecipe(virtualPage, surface)?.shell;
+      return recipe?.relation === 'wrapper' && !routeCompositionIdentities.has(identity);
+    }),
   );
 }
 
@@ -785,10 +947,12 @@ function createShellCompositionEdges(
 ): readonly PreviewInspectorPageCompositionEdge[] {
   const edges: PreviewInspectorPageCompositionEdge[] = [];
   let current = pageSurface;
-  for (let index = shellSurfaces.length - 1; index >= 0; index -= 1) {
-    const shell = shellSurfaces[index];
-    const recipe = virtualPage.recipe.shells[index];
-    if (shell === undefined || recipe === undefined) continue;
+  for (let surfaceIndex = shellSurfaces.length - 1; surfaceIndex >= 0; surfaceIndex -= 1) {
+    const shell = shellSurfaces[surfaceIndex];
+    if (shell === undefined) continue;
+    const locatedRecipe = findVirtualPageShellRecipe(virtualPage, shell);
+    if (locatedRecipe === undefined) continue;
+    const { index, shell: recipe } = locatedRecipe;
     if (recipe.relation === 'sibling') {
       edges.push(
         Object.freeze({
@@ -811,6 +975,29 @@ function createShellCompositionEdges(
     current = shell;
   }
   return Object.freeze(edges);
+}
+
+/** Resolves a filtered execution surface back to its immutable VirtualPage relation and order. */
+function findVirtualPageShellRecipe(
+  virtualPage: PreviewInspectorVirtualPageCandidate,
+  surface: PreviewInspectorMountSurface,
+):
+  | {
+      readonly index: number;
+      readonly shell: PreviewInspectorVirtualPageCandidate['recipe']['shells'][number];
+    }
+  | undefined {
+  const identity = createSurfaceReferenceKey(surface);
+  const index = virtualPage.recipe.shells.findIndex(
+    (shell) => createSurfaceReferenceKey(shell.root) === identity,
+  );
+  const shell = virtualPage.recipe.shells[index];
+  return index < 0 || shell === undefined ? undefined : Object.freeze({ index, shell });
+}
+
+/** Creates one normalized module/export identity for shell and surface comparisons. */
+function createSurfaceReferenceKey(reference: PreviewInspectorComponentReference): string {
+  return `${path.normalize(reference.sourcePath)}\0${reference.exportName}`;
 }
 
 /** Finds the live outer surface after wrapper/owner shell composition. */
@@ -860,6 +1047,25 @@ function isDetachedRouteLeaf(
     (path.normalize(candidate.root.sourcePath) !== path.normalize(target.sourcePath) ||
       candidate.root.exportName !== target.exportName)
   );
+}
+
+/** Retains a selected route owner only when the exact target-to-entry chain crosses that owner. */
+function hasProvenNestedRouteTarget(
+  candidate: PreviewInspectorPageCandidate,
+  target: PreviewInspectorComponentReference,
+): boolean {
+  const steps = candidate.renderPath?.steps;
+  if (steps === undefined) return false;
+  const targetPath = path.normalize(target.sourcePath);
+  const routeRootPath = path.normalize(candidate.root.sourcePath);
+  const targetStepIndex = steps.findIndex(
+    (step) => path.normalize(step.sourcePath) === targetPath,
+  );
+  const routeRootStepIndex = steps.findIndex(
+    (step, index) =>
+      index > targetStepIndex && path.normalize(step.sourcePath) === routeRootPath,
+  );
+  return targetStepIndex >= 0 && routeRootStepIndex > targetStepIndex;
 }
 
 /** Admits only the exact labeled JSX owner authenticated into retained route-mount evidence. */
@@ -1197,6 +1403,7 @@ function createCandidate(options: {
   readonly fidelity: PreviewInspectorPageFidelity;
   readonly routeRecipe?: PreviewInspectorRouteExecutionRecipe;
   readonly standaloneTarget?: boolean;
+  readonly targetPageTabKeys: readonly string[];
   readonly watchSourcePaths: readonly string[];
 }): PreviewInspectorPageExecutionCandidate {
   const roles = derivePageExecutionRoles(options);
@@ -1250,6 +1457,7 @@ function createCandidate(options: {
     runtimeTargetContract,
     runtimeTargetSurfaceId: roles.runtimeTargetSurfaceId,
     standaloneTarget: options.standaloneTarget === true,
+    targetPageTabKeys: options.targetPageTabKeys,
     watchSourcePaths: options.watchSourcePaths,
   });
 }

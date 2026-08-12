@@ -75,6 +75,69 @@ function createPlan(root: PreviewInspectorAncestorPlan['root']): PreviewInspecto
 }
 
 describe('createPreviewInspectorRootSource', () => {
+  /** Browser blocker discovery must see only the caller path compiled into this artifact. */
+  it('removes inactive references of the selected export from descriptor render chains', () => {
+    const plan = createPlan({ exportName: 'Page', sourcePath: PAGE_PATH });
+    const createRenderPath = (id: string, occurrenceStart: number) => ({
+      id,
+      steps: [
+        {
+          certainty: 'confirmed' as const,
+          evidenceSourcePaths: [],
+          invocation: {
+            calleeName: 'Target',
+            mode: 'jsx' as const,
+            sourcePath: PAGE_PATH,
+          },
+          kind: 'component-render' as const,
+          label: 'Target',
+          occurrenceStart,
+          sourcePath: TARGET_PATH,
+          wrapperNames: [],
+        },
+        {
+          certainty: 'confirmed' as const,
+          evidenceSourcePaths: [],
+          kind: 'component-render' as const,
+          label: 'Page',
+          occurrenceStart: 100,
+          sourcePath: PAGE_PATH,
+          wrapperNames: [],
+        },
+      ],
+    });
+    const selectedRenderPath = createRenderPath('selected-target-reference', 10);
+    const inactiveRenderPath = createRenderPath('inactive-target-reference', 20);
+    const selectedChain = {
+      ...plan.renderChain,
+      paths: [selectedRenderPath, inactiveRenderPath],
+    };
+    const secondaryChain = {
+      ...plan.renderChain,
+      paths: [createRenderPath('secondary-export-reference', 30)],
+      target: { exportName: 'SecondaryCard', sourcePath: TARGET_PATH },
+    };
+    const pageCandidate = {
+      ...plan.pageCandidates[0]!,
+      renderPath: selectedRenderPath,
+    };
+    const source = createPreviewInspectorRootSource({
+      plan: {
+        ...plan,
+        pageCandidates: [pageCandidate],
+        renderChain: selectedChain,
+        renderChainsByExport: {
+          SecondaryCard: secondaryChain,
+          Target: selectedChain,
+        },
+      },
+    });
+
+    expect(source).toContain('selected-target-reference');
+    expect(source).not.toContain('inactive-target-reference');
+    expect(source).toContain('secondary-export-reference');
+  });
+
   /** Imports an actual named owner and exposes ancestry plus editable target/root props. */
   it('emits one real-owner descriptor for the unchanged preview browser entry', () => {
     const source = createPreviewInspectorRootSource({

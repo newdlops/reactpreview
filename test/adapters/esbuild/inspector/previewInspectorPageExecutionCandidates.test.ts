@@ -150,6 +150,85 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     }
   });
 
+  it('carries the exact static target tab key into the browser descriptor', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-target-tab-'));
+    const pagePath = path.join(workspaceRoot, 'SelectedPage.tsx');
+    const targetPath = path.join(workspaceRoot, 'Target.tsx');
+    try {
+      const pageSource = [
+        "import { Target } from './Target';",
+        'const otherKey = "other";',
+        'export function SelectedPage() {',
+        '  return (',
+        '    <Tab>',
+        '      <TabItem eventKey={otherKey}><div>Other</div></TabItem>',
+        '      <TabItem eventKey="guideEmail"><Target /></TabItem>',
+        '    </Tab>',
+        '  );',
+        '}',
+      ].join('\n');
+      await Promise.all([
+        writeFile(pagePath, pageSource),
+        writeFile(targetPath, 'export function Target() { return <table />; }'),
+      ]);
+      const renderPath: PreviewRenderChainCandidate = {
+        id: 'target-tab-path',
+        steps: [
+          {
+            certainty: 'confirmed',
+            invocation: { calleeName: 'Target', mode: 'jsx', sourcePath: pagePath },
+            kind: 'component-render',
+            label: 'Target',
+            occurrenceStart: pageSource.indexOf('<Target'),
+            sourcePath: targetPath,
+            wrapperNames: ['TabItem', 'Tab'],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'SelectedPage',
+            occurrenceStart: pageSource.indexOf('SelectedPage'),
+            sourcePath: pagePath,
+            wrapperNames: [],
+          },
+        ],
+      };
+      const browserCandidate = {
+        complete: true,
+        dependencyPaths: [targetPath, pagePath],
+        edges: [],
+        id: 'target-tab-page',
+        renderPath,
+        root: { exportName: 'SelectedPage', sourcePath: pagePath },
+        rootAutomaticProps: {},
+        rootOwnsRouter: false,
+        rootStepIndex: 1,
+        stopReason: 'root-reached',
+        targetAutomaticProps: {},
+      } as PreviewInspectorPageCandidate;
+      const plan = {
+        ...browserCandidate,
+        pageCandidates: [browserCandidate],
+        renderChain: { paths: [renderPath] },
+        renderChainsByExport: { Target: { paths: [renderPath] } },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as unknown as PreviewInspectorAncestorPlan;
+
+      const candidate = createPreviewInspectorPageExecutionCandidates({ plan })[0];
+
+      expect(candidate?.targetPageTabKeys).toEqual(['guideEmail']);
+      if (candidate === undefined) throw new Error('Expected a target-tab execution candidate.');
+      const rootSource = createPreviewInspectorRootSource({
+        pageExecutionCandidate: candidate,
+        plan,
+      });
+      expect(rootSource).toContain('"targetPageTabKeys":["guideEmail"]');
+      expect(rootSource).not.toContain('"targetPageTabKeys":["other"]');
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   it('does not mistake a local Routes component for the React Router v6 export', async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-v5-routes-name-'));
     const applicationPath = path.join(workspaceRoot, 'Routes.jsx');
@@ -772,6 +851,226 @@ describe('createPreviewInspectorPageExecutionCandidates', () => {
     expect(candidates.every((candidate) => candidate.routeRecipe?.pathname === '/feature')).toBe(
       true,
     );
+  });
+
+  it('keeps an outer page-layout wrapper around an exact nested route owner', async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'react-preview-nested-page-shell-'));
+    const applicationPath = path.join(workspaceRoot, 'Application.tsx');
+    const companyOwnerPath = path.join(workspaceRoot, 'CompanyOwnerApp.tsx');
+    const featureOwnerPath = path.join(workspaceRoot, 'FeatureApp.tsx');
+    const layoutPath = path.join(workspaceRoot, 'CompanyOwnerLayout.tsx');
+    const pagePath = path.join(workspaceRoot, 'SelectedPage.tsx');
+    const targetPath = path.join(workspaceRoot, 'TargetPanel.tsx');
+    try {
+      await Promise.all([
+        writeFile(
+          featureOwnerPath,
+          [
+            "import { Route, Routes } from 'react-router-dom';",
+            "import SelectedPage from './SelectedPage';",
+            'export const FeatureApp = createAppModule(',
+            "  '/company/:companyId(\\\\d+)/feature',",
+            '  { SelectedPage },',
+            '  [],',
+            '  ({ pageRoutes }) => <Routes>{pageRoutes}<Route path="*" element={null} /></Routes>,',
+            ');',
+          ].join('\n'),
+        ),
+        writeFile(
+          layoutPath,
+          'export function CompanyOwnerLayout({ children }) { return <main>{children}</main>; }',
+        ),
+        writeFile(
+          pagePath,
+          "import { TargetPanel } from './TargetPanel'; export default function SelectedPage() { return <TargetPanel />; }",
+        ),
+        writeFile(
+          targetPath,
+          'export function TargetPanel() { return <section>target</section>; }',
+        ),
+      ]);
+      const renderPath: PreviewRenderChainCandidate = {
+        entryPoint: {
+          kind: 'create-root',
+          occurrenceStart: 50,
+          sourcePath: applicationPath,
+          wrapperNames: [],
+        },
+        id: 'nested-route-with-outer-page-shell',
+        steps: [
+          {
+            certainty: 'confirmed',
+            invocation: { calleeName: 'TargetPanel', mode: 'jsx', sourcePath: pagePath },
+            kind: 'component-render',
+            label: 'TargetPanel',
+            occurrenceStart: 1,
+            sourcePath: targetPath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'route-branch',
+            label: 'SelectedPage',
+            occurrenceStart: 2,
+            sourcePath: pagePath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'conditional',
+            kind: 'route-branch',
+            label: 'FeatureApp',
+            occurrenceStart: 3,
+            sourcePath: featureOwnerPath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'conditional',
+            kind: 'route-branch',
+            label: 'CompanyOwnerApp',
+            occurrenceStart: 4,
+            sourcePath: companyOwnerPath,
+            wrapperNames: [],
+          },
+          {
+            certainty: 'confirmed',
+            kind: 'component-render',
+            label: 'Application',
+            occurrenceStart: 5,
+            sourcePath: applicationPath,
+            wrapperNames: [],
+          },
+        ],
+      };
+      const routeLocation = {
+        componentExportName: 'default',
+        componentName: 'SelectedPage',
+        componentSourcePath: pagePath,
+        dependencyPaths: [applicationPath, companyOwnerPath, featureOwnerPath, pagePath],
+        evidenceKind: 'route-catalog' as const,
+        pathname: '/company/1/feature/dashboard',
+        pattern: '/company/:companyId(\\d+)/feature/dashboard',
+        sourcePath: featureOwnerPath,
+      };
+      const createPageCandidate = (
+        id: string,
+        root: PreviewInspectorPageCandidate['root'],
+        rootStepIndex: number,
+      ): PreviewInspectorPageCandidate => ({
+        complete: rootStepIndex === 4,
+        dependencyPaths: [
+          applicationPath,
+          companyOwnerPath,
+          featureOwnerPath,
+          pagePath,
+          targetPath,
+        ],
+        edges: [],
+        id,
+        renderPath,
+        root,
+        rootAutomaticProps: {},
+        rootOwnsRouter: rootStepIndex === 4,
+        rootStepIndex,
+        routeLocation,
+        stopReason: rootStepIndex === 4 ? 'root-reached' : 'render-path-checkpoint',
+        target: { exportName: 'TargetPanel', sourcePath: targetPath },
+        targetAutomaticProps: {},
+      });
+      const plan = {
+        complete: true,
+        dependencyPaths: [
+          applicationPath,
+          companyOwnerPath,
+          featureOwnerPath,
+          layoutPath,
+          pagePath,
+          targetPath,
+        ],
+        edges: [],
+        pageCandidates: [
+          createPageCandidate(
+            'nested-shell-application',
+            { exportName: 'Application', sourcePath: applicationPath },
+            4,
+          ),
+          createPageCandidate(
+            'nested-shell-feature-owner',
+            { exportName: 'FeatureApp', sourcePath: featureOwnerPath },
+            2,
+          ),
+          createPageCandidate(
+            'nested-shell-page',
+            { exportName: 'default', sourcePath: pagePath },
+            1,
+          ),
+        ],
+        renderChain: {
+          paths: [renderPath],
+          target: { exportName: 'TargetPanel', sourcePath: targetPath },
+        },
+        renderChainsByExport: { TargetPanel: { paths: [renderPath] } },
+        root: { exportName: 'Application', sourcePath: applicationPath },
+        rootAutomaticProps: {},
+        shallowVisualPaths: [
+          {
+            exportName: 'CompanyOwnerLayout',
+            importerPath: companyOwnerPath,
+            importKind: 'static',
+            localEdges: [],
+            moduleSpecifier: './CompanyOwnerLayout',
+            occurrenceStart: 40,
+            relation: 'wrapper',
+            renderedLocalName: 'CompanyOwnerLayout',
+            renderBoundaryStart: 30,
+            selectedChildPath: featureOwnerPath,
+            sourcePath: layoutPath,
+          },
+        ],
+        stopReason: 'root-reached',
+        target: { exportName: 'TargetPanel', sourcePath: targetPath },
+        targetAutomaticProps: {},
+      } as unknown as PreviewInspectorAncestorPlan;
+
+      const candidate = createPreviewInspectorPageExecutionCandidates({ plan }).find(
+        (item) => item.fidelity === 'page-authentic',
+      );
+      if (candidate === undefined)
+        throw new Error('Expected a page-authentic execution candidate.');
+      const layoutSurface = candidate.criticalSurfaces.find(
+        (surface) => surface.sourcePath === layoutPath,
+      );
+      const ownerSurface = candidate.criticalSurfaces.find(
+        (surface) => surface.sourcePath === featureOwnerPath,
+      );
+      const pageSurface = candidate.criticalSurfaces.find(
+        (surface) => surface.sourcePath === pagePath,
+      );
+
+      expect(layoutSurface).toBeDefined();
+      expect(ownerSurface).toBeDefined();
+      expect(pageSurface).toBeDefined();
+      expect(candidate.compositionEdges).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            childSurfaceId: ownerSurface?.id,
+            mode: 'children-slot',
+            parentSurfaceId: layoutSurface?.id,
+          }),
+          expect.objectContaining({
+            childSurfaceId: pageSurface?.id,
+            mode: 'contains-authored-child',
+            parentSurfaceId: ownerSurface?.id,
+          }),
+        ]),
+      );
+      expect(candidate.executionRootSurfaceId).toBe(ownerSurface?.id);
+      expect(candidate.browserCandidate.root).toEqual({
+        exportName: 'FeatureApp',
+        sourcePath: featureOwnerPath,
+      });
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
   });
 
   it('recreates the parent Route context for a retained useRoutes owner', async () => {

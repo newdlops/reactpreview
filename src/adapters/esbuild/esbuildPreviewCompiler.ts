@@ -532,6 +532,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
     this.activeBuildControllers.add(buildController);
     const buildSignal = buildController.signal;
     let acquisitionContext: PreviewMissingDependencyAcquisitionContext | undefined;
+    let staticModuleResolutionMemo: PreviewStaticModuleResolutionMemo | undefined;
     try {
       throwIfPreviewBuildCancelled(buildSignal);
       context?.reportProgress?.('discovering-components');
@@ -577,7 +578,42 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 return resolved;
               },
             };
-      assertPreviewReactTarget(request, dependencyProfile, staticModuleResolver);
+      const analysisResolutionMemo =
+        request.renderMode === 'page-inspector'
+          ? createPreviewStaticModuleResolutionMemo()
+          : undefined;
+      staticModuleResolutionMemo = analysisResolutionMemo;
+      const analysisStaticModuleResolver =
+        analysisResolutionMemo === undefined
+          ? staticModuleResolver
+          : resolutionConfinement === undefined
+            ? {
+                ...baseStaticModuleResolver,
+                resolve(moduleSpecifier: string, consumerPath: string) {
+                  return analysisResolutionMemo.resolve(moduleSpecifier, consumerPath, () =>
+                    baseStaticModuleResolver.resolve(moduleSpecifier, consumerPath),
+                  );
+                },
+              }
+            : {
+                ...baseStaticModuleResolver,
+                resolve(moduleSpecifier: string, consumerPath: string) {
+                  assertPreviewResolutionPath(resolutionConfinement, consumerPath);
+                  const resolved = analysisResolutionMemo.resolve(
+                    moduleSpecifier,
+                    consumerPath,
+                    () => baseStaticModuleResolver.resolve(moduleSpecifier, consumerPath),
+                  );
+                  if (resolved !== undefined) {
+                    assertPreviewResolutionPath(resolutionConfinement, resolved);
+                  }
+                  return resolved;
+                },
+              };
+      const collectTailwindCandidates =
+        findPreviewDependencySpecifier(dependencyProfile, 'tailwindcss') !== undefined ||
+        analysisStaticModuleResolver.resolve('tailwindcss', request.documentPath) !== undefined;
+      assertPreviewReactTarget(request, dependencyProfile, analysisStaticModuleResolver);
       const targetSelection = preparePreviewCompilerTarget(request);
       const routerNeed = collectPreviewRouterRequirement(request.documentPath, request.sourceText);
       const targetExports = targetSelection.targetExports;
@@ -596,7 +632,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         ts.sys.readFile(sourcePath);
       const childPropDemandBuilder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
         readSource: readPropInferenceSource,
-        resolveModule: staticModuleResolver.resolve,
+        resolveModule: analysisStaticModuleResolver.resolve,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       const collectTargetInferredProps = createPreviewTargetPropInferenceMemo(
@@ -607,7 +643,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           collectReactExportPropInference(sourcePath, sourceText, {
             childPropDemands: childPropDemandBuilder.collect(sourcePath, sourceText),
             resolveImport: (moduleSpecifier, importerPath) => {
-              const resolvedPath = staticModuleResolver.resolve(moduleSpecifier, importerPath);
+              const resolvedPath = analysisStaticModuleResolver.resolve(
+                moduleSpecifier,
+                importerPath,
+              );
               const resolvedSourceText =
                 resolvedPath === undefined ? undefined : readPropInferenceSource(resolvedPath);
               return resolvedPath === undefined || resolvedSourceText === undefined
@@ -643,7 +682,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           projectRoot,
           projectUsesNextRuntime: nextEvidence.routeContext,
           request,
-          resolver: staticModuleResolver,
+          resolver: analysisStaticModuleResolver,
           signal: buildSignal,
           setupKind: runtimeEnvironment.setupKind,
           targetSelection,
@@ -690,7 +729,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       throwIfPreviewBuildCancelled(buildSignal);
       context?.reportProgress?.('preparing-runtime');
       const reactDomRootKind = selectPreviewReactDomRootKind(
-        staticModuleResolver,
+        analysisStaticModuleResolver,
         request.documentPath,
       );
       const preparedSetupFallback = await prepareAutomaticPreviewSetupFallback({
@@ -701,10 +740,11 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         runtimeEnvironment,
         runtimeWatchInputs,
         signal: buildSignal,
-        staticModuleResolver,
+        staticModuleResolver: analysisStaticModuleResolver,
         workspaceRoot: canonicalWorkspaceRoot,
       });
       const finalFrontier = await preparePreviewRouteExecutionFinalFrontier({
+        collectTailwindCandidates,
         contextDiscoveryTruncated: contextDiscoveryTruncated === true,
         ...(themeImport === undefined ? {} : { directThemeImport: themeImport }),
         implicitGlobalEvidenceCache: this.implicitGlobalEvidenceCache,
@@ -719,7 +759,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           ? {}
           : { runtimeSetupModulePath: runtimeEnvironment.setupModulePath }),
         signal: buildSignal,
-        staticModuleResolver,
+        staticModuleResolver: analysisStaticModuleResolver,
         targetSelection,
         targetUsageProps,
         workspaceRoot: canonicalWorkspaceRoot,
@@ -767,6 +807,15 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       let portalHostIds = styleContext.portalHostIds;
       const activePageExecutionCandidate =
         preparedBundleExecution?.executionCandidate ?? pageExecutionCandidates[0];
+      const criticalSurfaceSourcePaths = Object.freeze(
+        [
+          ...new Set(
+            (activePageExecutionCandidate?.criticalSurfaces ?? []).map((surface) =>
+              path.normalize(surface.sourcePath),
+            ),
+          ),
+        ].sort(),
+      );
       const compilerGraphSummary: PreviewCompilerGraphSummary = {
         analysisCandidateCount: targetUsageProps.inspectorPlan?.pageCandidates.length ?? 0,
         corridorSourceCount: activeInspectorDependencyPaths.length,
@@ -983,9 +1032,10 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
         sourcePaths:
           preparedBundleExecution?.prepared.frontier.authenticSourcePaths ??
           activeInspectorDependencyPaths,
-        staticModuleResolver,
+        staticModuleResolver: analysisStaticModuleResolver,
         workspaceRoot: canonicalWorkspaceRoot,
       });
+      staticModuleResolutionMemo?.release();
       const createStorybookFallbackBoundary = (
         environment: PreviewRuntimeEnvironment,
       ): PreviewSetupFallbackBoundary | undefined =>
@@ -1021,6 +1071,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ? targetUsageProps.parentSlicesByExport
             : {};
         const sourceTransformer = new PreviewSourceTransformer({
+          ...(criticalSurfaceSourcePaths.length === 0
+            ? {}
+            : { criticalSurfaceSourcePaths }),
           deferDormantOverlayImports: policy.deferDormantOverlayImports,
           documentPath: canonicalizeExistingPath(
             runtimeTargetMode === 'selected-route-leaf'
@@ -1787,6 +1840,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
           }),
       });
     } finally {
+      staticModuleResolutionMemo?.release();
       detachCallerAbort();
       this.activeBuildControllers.delete(buildController);
     }

@@ -28,7 +28,7 @@ export function sortPreviewInspectorBundleFrontierReasons(
 
 /** Produces a context-reuse key from immutable membership and fixed policy values. */
 export function createPreviewInspectorBundleFrontierIdentity(
-  policy: PreviewCompilerFrontierPolicy,
+  policy: Readonly<Pick<PreviewCompilerFrontierPolicy, 'mode'>>,
   executionCandidate: PreviewInspectorPageExecutionCandidate | undefined,
   authenticSourcePaths: readonly string[],
   exactSourcePaths: readonly string[],

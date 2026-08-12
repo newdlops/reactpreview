@@ -285,6 +285,195 @@ describe('preparePreviewInspectorBundleFrontier', () => {
     expect(Object.isFrozen(result.frontier)).toBe(true);
   });
 
+  it('admits rendered page-shell descendants from a selected-export execution-root slice', async () => {
+    const workspaceRoot = '/workspace';
+    const rootPath = '/workspace/RootLayout.tsx';
+    const headerPath = '/workspace/Header.tsx';
+    const sidebarPath = '/workspace/Sidebar.tsx';
+    const pagePath = '/workspace/SelectedPage.tsx';
+    const deepChildPath = '/workspace/DeepChild.tsx';
+    const targetPath = '/workspace/Target.tsx';
+    const unusedPath = '/workspace/Unused.tsx';
+    const inactivePath = '/workspace/InactiveRoute.tsx';
+    const sources = new Map<string, string>([
+      [
+        rootPath,
+        [
+          "import { Header } from './Header';",
+          "import { Sidebar } from './Sidebar';",
+          "import { SelectedPage } from './SelectedPage';",
+          "import { Unused } from './Unused';",
+          "import { InactiveRoute } from './InactiveRoute';",
+          'export function RootLayout() { return <main><Header /><Sidebar /><SelectedPage /></main>; }',
+          'export function RouteCatalog() { return <InactiveRoute />; }',
+          'void Unused;',
+        ].join('\n'),
+      ],
+      [headerPath, "import { DeepChild } from './DeepChild'; export function Header() { return <header><DeepChild /></header>; }"],
+      [sidebarPath, 'export function Sidebar() { return <aside />; }'],
+      [pagePath, "import { Target } from './Target'; export function SelectedPage() { return <Target />; }"],
+      [deepChildPath, 'export function DeepChild() { return <span />; }'],
+      [targetPath, 'export function Target() { return <article />; }'],
+      [unusedPath, 'export function Unused() { return <aside />; }'],
+      [inactivePath, 'export function InactiveRoute() { return <aside />; }'],
+    ]);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: {
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [],
+        criticalSurfaces: [
+          {
+            bypassedWrapperNames: [],
+            exportName: 'RootLayout',
+            id: 'root',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: rootPath,
+            strategy: 'selected-export-slice',
+            watchSourcePaths: [rootPath],
+          },
+          {
+            bypassedWrapperNames: [],
+            exportName: 'Target',
+            id: 'target',
+            omittedTopLevelEffectCount: 0,
+            sourcePath: targetPath,
+            strategy: 'authentic-module-export',
+            watchSourcePaths: [targetPath],
+          },
+        ],
+        evidenceSourcePaths: [],
+        executionRootSurfaceId: 'root',
+        fidelity: 'page-sliced',
+        id: 'selected',
+        optionalSurfaces: [],
+        runtimeTargetSurfaceId: 'target',
+        watchSourcePaths: [rootPath, targetPath],
+      } as never,
+      plan: {
+        edges: [],
+        pageCandidates: [],
+        root: { exportName: 'RootLayout', sourcePath: rootPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as unknown as PreviewInspectorAncestorPlan,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) => {
+        const sourcePath = path.resolve(path.dirname(importer), `${specifier}.tsx`);
+        return sources.has(sourcePath) ? sourcePath : undefined;
+      },
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticSourcePaths).toEqual(
+      expect.arrayContaining([rootPath, headerPath, sidebarPath, pagePath, deepChildPath, targetPath]),
+    );
+    expect(result.frontier.authenticSourcePaths).not.toEqual(
+      expect.arrayContaining([unusedPath, inactivePath]),
+    );
+    expect(result.frontier.authenticComponentExports).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ exportNames: ['Header'], sourcePath: headerPath }),
+        expect.objectContaining({ exportNames: ['Sidebar'], sourcePath: sidebarPath }),
+        expect.objectContaining({ exportNames: ['SelectedPage'], sourcePath: pagePath }),
+        expect.objectContaining({ exportNames: ['DeepChild'], sourcePath: deepChildPath }),
+      ]),
+    );
+  });
+
+  it('admits rendered descendants from a selected-route execution root without recording inactive imports', async () => {
+    const workspaceRoot = '/workspace';
+    const rootPath = '/workspace/RootLayout.tsx';
+    const headerPath = '/workspace/Header.tsx';
+    const sidebarPath = '/workspace/Sidebar.tsx';
+    const pagePath = '/workspace/SelectedPage.tsx';
+    const deepChildPath = '/workspace/DeepChild.tsx';
+    const targetPath = '/workspace/Target.tsx';
+    const unusedPath = '/workspace/Unused.tsx';
+    const inactivePath = '/workspace/InactiveRoute.tsx';
+    const sources = new Map<string, string>([
+      [
+        rootPath,
+        [
+          "import { Header } from './Header';",
+          "import { Sidebar } from './Sidebar';",
+          "import { SelectedPage } from './SelectedPage';",
+          "import { Unused } from './Unused';",
+          "import { InactiveRoute } from './InactiveRoute';",
+          'export function RootLayout() { return <main><Header /><Sidebar /><SelectedPage /></main>; }',
+          'export function InactiveCatalog() { return <InactiveRoute />; }',
+          'void Unused;',
+        ].join('\n'),
+      ],
+      [headerPath, "import { DeepChild } from './DeepChild'; export function Header() { return <header><DeepChild /></header>; }"],
+      [sidebarPath, 'export function Sidebar() { return <aside />; }'],
+      [pagePath, "import { Target } from './Target'; export function SelectedPage() { return <Target />; }"],
+      [deepChildPath, 'export function DeepChild() { return <span />; }'],
+      [targetPath, 'export function Target() { return <article />; }'],
+      [unusedPath, 'export function Unused() { return <aside />; }'],
+      [inactivePath, 'export function InactiveRoute() { return <aside />; }'],
+    ]);
+    const policy = createPreviewCompilerFrontierPolicy('fast');
+    if (policy === undefined) throw new Error('Expected the automatic fast frontier policy.');
+    const result = await preparePreviewInspectorBundleFrontier({
+      executionCandidate: {
+        browserCandidate: { id: 'selected' },
+        compositionEdges: [{ childSurfaceId: 'page', ownerSurfaceId: 'root', relation: 'contains-authored-child' }],
+        criticalSurfaces: [
+          { bypassedWrapperNames: [], exportName: 'RootLayout', id: 'root', omittedTopLevelEffectCount: 0, sourcePath: rootPath, strategy: 'selected-route-surface', watchSourcePaths: [rootPath] },
+          { bypassedWrapperNames: [], exportName: 'SelectedPage', id: 'page', omittedTopLevelEffectCount: 0, sourcePath: pagePath, strategy: 'authentic-module-export', watchSourcePaths: [pagePath] },
+          { bypassedWrapperNames: [], exportName: 'Target', id: 'target', omittedTopLevelEffectCount: 0, sourcePath: targetPath, strategy: 'authentic-module-export', watchSourcePaths: [targetPath] },
+        ],
+        evidenceSourcePaths: [],
+        executionRootSurfaceId: 'root',
+        fidelity: 'page-authentic',
+        id: 'selected-route-root',
+        optionalSurfaces: [],
+        runtimeTargetSurfaceId: 'target',
+        watchSourcePaths: [rootPath, pagePath, targetPath],
+      } as never,
+      plan: {
+        edges: [],
+        pageCandidates: [],
+        root: { exportName: 'RootLayout', sourcePath: rootPath },
+        target: { exportName: 'Target', sourcePath: targetPath },
+      } as unknown as PreviewInspectorAncestorPlan,
+      policy,
+      readSource: (sourcePath) => Promise.resolve(sources.get(sourcePath)),
+      resolveModule: (specifier, importer) => {
+        const sourcePath = path.resolve(path.dirname(importer), `${specifier}.tsx`);
+        return sources.has(sourcePath) ? sourcePath : undefined;
+      },
+      workspaceRoot,
+    });
+
+    expect(result.rejected).toBe(false);
+    expect(result.frontier.authenticComponentExports).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ exportNames: ['Header'], sourcePath: headerPath }),
+        expect.objectContaining({ exportNames: ['Sidebar'], sourcePath: sidebarPath }),
+        expect.objectContaining({ exportNames: ['SelectedPage'], sourcePath: pagePath }),
+        expect.objectContaining({ exportNames: ['DeepChild'], sourcePath: deepChildPath }),
+      ]),
+    );
+    expect(result.frontier.authenticComponentExports).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourcePath: unusedPath }),
+        expect.objectContaining({ sourcePath: inactivePath }),
+      ]),
+    );
+    expect(result.frontier.projectedEdges).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetPath: headerPath }),
+        expect.objectContaining({ targetPath: sidebarPath }),
+        expect.objectContaining({ targetPath: pagePath }),
+        expect.objectContaining({ targetPath: deepChildPath }),
+      ]),
+    );
+  });
+
   /** Keeps the one generated registry branch named by the selected Next route parameters. */
   it('admits a parameter-selected lazy component from a broad support registry', async () => {
     const workspaceRoot = '/workspace';
@@ -980,6 +1169,23 @@ describe('preparePreviewInspectorBundleFrontier', () => {
       },
       {
         candidateRoot: { exportName: 'default', sourcePath: pagePath },
+        executionRootPinned: true,
+        id: 'execution-pinned-checkpoint-root',
+        retainsCorridor: true,
+        routeLocation: {
+          componentExportName: 'DashboardPage',
+          componentName: 'DashboardPage',
+          componentSourcePath: barrelPath,
+          dependencyPaths: [barrelPath, appPath],
+          evidenceKind: 'route-catalog',
+          pathname: '/dashboard',
+          pattern: '/dashboard',
+          sourcePath: appPath,
+        },
+        stopReason: 'root-reached',
+      },
+      {
+        candidateRoot: { exportName: 'default', sourcePath: pagePath },
         candidateTarget: { exportName: 'DashboardPage', sourcePath: barrelPath },
         evidenceSourcePaths: [targetPath, pagePath, appPath],
         id: 'unproven-selected-route-root',
@@ -1037,7 +1243,15 @@ describe('preparePreviewInspectorBundleFrontier', () => {
         target: { exportName: 'Target', sourcePath: targetPath },
       } as unknown as PreviewInspectorAncestorPlan;
       const executionCandidate = {
-        browserCandidate: { id: candidateId },
+        browserCandidate:
+          'executionRootPinned' in scenario
+            ? {
+                ...plan.pageCandidates[0],
+                root: { exportName: 'App', sourcePath: appPath },
+                rootStepIndex: undefined,
+                stopReason: 'render-path-checkpoint',
+              }
+            : { id: candidateId },
         compositionEdges: [],
         criticalSurfaces: [
           {

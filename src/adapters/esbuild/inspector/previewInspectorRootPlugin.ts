@@ -354,6 +354,14 @@ export function createPreviewInspectorRootSource(
     virtualPageCandidates,
     options.selectedPageCandidateId,
   );
+  const selectedRenderPath =
+    options.pageExecutionCandidate?.browserCandidate.renderPath ??
+    executableCandidate?.active.browserCandidate.renderPath;
+  const descriptorRenderChains = createPreviewInspectorDescriptorRenderChains(
+    plan,
+    runtimeOwnershipTarget,
+    selectedRenderPath,
+  );
   const pageCandidates = virtualPageCandidates.map((candidate) => candidate.browserCandidate);
   for (const candidate of pageCandidates) {
     assertExportName(candidate.root.exportName);
@@ -429,6 +437,10 @@ export function createPreviewInspectorRootSource(
       stopReason: candidate.stopReason,
       targetAutomaticProps:
         executionCandidate?.browserCandidate.targetAutomaticProps ?? candidate.targetAutomaticProps,
+      ...(executionCandidate?.targetPageTabKeys === undefined ||
+      executionCandidate.targetPageTabKeys.length === 0
+        ? {}
+        : { targetPageTabKeys: executionCandidate.targetPageTabKeys }),
       ...(runtimeCandidateTarget === undefined ? {} : { target: runtimeCandidateTarget }),
       virtualPage: virtualPage.recipe,
     };
@@ -591,8 +603,8 @@ export function createPreviewInspectorRootSource(
       ...(executableCandidate?.requestedCandidateWasUnavailable === true
         ? { requestedPageCandidateUnavailable: true }
         : {}),
-      renderChain: plan.renderChain,
-      renderChainsByExport: plan.renderChainsByExport,
+      renderChain: descriptorRenderChains.renderChain,
+      renderChainsByExport: descriptorRenderChains.renderChainsByExport,
       renderOutcomesByExport: plan.renderOutcomesByExport ?? {},
       routeBranches:
         plan.routeBranches?.map((branch) => ({
@@ -989,6 +1001,42 @@ export function createPreviewInspectorRootSource(
     `export const previewGlobalStyles = Object.freeze([${globalStyleImports.references.join(',')}]);`,
     'export default Object.freeze([Object.freeze(__reactPreviewInspectorDescriptor)]);',
   ].join('\n');
+}
+
+/**
+ * Keeps alternate current-file exports selectable while removing inactive references of the
+ * currently compiled export from browser-side blocker and JSX-case discovery.
+ */
+function createPreviewInspectorDescriptorRenderChains(
+  plan: PreviewInspectorAncestorPlan,
+  runtimeTarget: PreviewInspectorComponentReference,
+  selectedRenderPath: PreviewInspectorPageCandidate['renderPath'],
+): Pick<PreviewInspectorAncestorPlan, 'renderChain' | 'renderChainsByExport'> {
+  const targetRenderChain = plan.renderChainsByExport[runtimeTarget.exportName];
+  const firstStep = selectedRenderPath?.steps[0];
+  const exactSelectedTargetPath =
+    targetRenderChain !== undefined &&
+    firstStep !== undefined &&
+    path.normalize(firstStep.sourcePath) === path.normalize(runtimeTarget.sourcePath) &&
+    (firstStep.label === runtimeTarget.exportName ||
+      (runtimeTarget.exportName === 'default' && firstStep.label.endsWith(' (default)')));
+  if (!exactSelectedTargetPath || selectedRenderPath === undefined || targetRenderChain === undefined) {
+    return {
+      renderChain: plan.renderChain,
+      renderChainsByExport: plan.renderChainsByExport,
+    };
+  }
+  const selectedRenderChain = Object.freeze({
+    ...targetRenderChain,
+    paths: Object.freeze([selectedRenderPath]),
+  });
+  return {
+    renderChain: selectedRenderChain,
+    renderChainsByExport: Object.freeze({
+      ...plan.renderChainsByExport,
+      [runtimeTarget.exportName]: selectedRenderChain,
+    }),
+  };
 }
 
 /** Per-layout navigation context serialized beside one composed App Router candidate. */

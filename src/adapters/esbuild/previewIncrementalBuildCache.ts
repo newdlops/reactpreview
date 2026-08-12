@@ -3,7 +3,7 @@
  * Context options and virtual-module plans are immutable per cache key, while editor snapshots and
  * the compilation-scoped source transformer advance through one explicit mutable state boundary.
  */
-import { context, type BuildContext, type BuildOptions, type BuildResult } from 'esbuild';
+import { context, initialize, type BuildContext, type BuildOptions, type BuildResult } from 'esbuild';
 import type { PreviewCompilerNativeBuildActivity } from '../../domain/previewCompilerActivity';
 import {
   createPreviewSassPlugin,
@@ -14,6 +14,19 @@ import {
   MutableWorkspaceSourceState,
   type WorkspaceSourceCompilationState,
 } from './workspaceSourcePlugin';
+
+let previewEsbuildServiceInitializationAttempted = false;
+
+/** Starts esbuild's native child process once without submitting competing transform work. */
+function startPreviewEsbuildService(): void {
+  if (previewEsbuildServiceInitializationAttempted) return;
+  previewEsbuildServiceInitializationAttempted = true;
+  try {
+    void initialize({}).catch(() => undefined);
+  } catch {
+    // Warmup is best effort; context() retains esbuild's ordinary lazy-start behavior.
+  }
+}
 
 /** Exact esbuild result contract consumed by the preview output planner. */
 export type PreviewIncrementalBuildResult = BuildResult<{ metafile: true; write: false }>;
@@ -79,6 +92,10 @@ export class PreviewIncrementalBuildCache {
   /** Storybook builds use isolated contexts but still participate in orderly shutdown. */
   private readonly oneShotBuilds = new Set<Promise<PreviewIncrementalBuildResult>>();
   private shutdownPromise: Promise<void> | undefined;
+
+  public constructor() {
+    startPreviewEsbuildService();
+  }
 
   /**
    * Rebuilds one immutable plan with the latest editor overlays and supports active cancellation.

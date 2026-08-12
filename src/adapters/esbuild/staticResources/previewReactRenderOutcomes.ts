@@ -549,19 +549,22 @@ function expandNestedJsxNode(
     ).map((variant) => ({
       ...variant,
       componentTree: child.deferred
-        ? variant.componentTree.length === 0 && variant.hasHostOutput === true
-          ? [
-              {
-                children: [],
-                ...readLocation(state.sourceFile, child.expression),
-                name: DEFERRED_HOST_OUTPUT_NAME,
-                renderMode: 'deferred-callback' as const,
-              },
-            ]
-          : variant.componentTree.map((component) => ({
+        ? [
+            ...(variant.hasHostOutput === true
+              ? [
+                  {
+                    children: [],
+                    ...readLocation(state.sourceFile, child.expression),
+                    name: DEFERRED_HOST_OUTPUT_NAME,
+                    renderMode: 'deferred-callback' as const,
+                  },
+                ]
+              : []),
+            ...variant.componentTree.map((component) => ({
               ...component,
               renderMode: 'deferred-callback' as const,
-            }))
+            })),
+          ]
         : variant.componentTree,
     }));
     variants = combineNestedVariants(variants, childVariants, state);

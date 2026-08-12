@@ -305,6 +305,30 @@ describe('createPreviewRuntimeHookReplacements', () => {
     expect(transformed).toContain('"requiredPaths":["checkPagePermission()"]');
   });
 
+  /** Preserves a mutation Promise and derives its fulfillment payload from an inline callback. */
+  it('infers a Promise-returning tuple callable from a chained then callback', () => {
+    const source = [
+      `import { useBaseMutation } from './use-mutation';`,
+      'export function DownloadButton() {',
+      '  const [mutate] = useBaseMutation();',
+      '  const handleDownload = () => mutate({ variables: {} }).then(({ data }) => {',
+      '    if (data.documentFile) window.open(data.documentFile.url);',
+      '  }).finally(() => undefined);',
+      '  return <button onClick={handleDownload}>Download</button>;',
+      '}',
+    ].join('\n');
+
+    const transformed = applyHookReplacements(
+      source,
+      createPreviewRuntimeHookReplacements('/workspace/DownloadButton.tsx', source),
+    );
+
+    expect(transformed).toContain('() => Promise.resolve(generatedCallResult)');
+    expect(transformed).toContain('"data": Object.freeze({ "documentFile":');
+    expect(transformed).toContain('"url":');
+    expect(transformed).toContain('"requiredPaths":["0()"]');
+  });
+
   /** Applies the same iterable result inference to a method called directly from a hook result. */
   it('infers a destructured return from a direct hook property call', () => {
     const source = [

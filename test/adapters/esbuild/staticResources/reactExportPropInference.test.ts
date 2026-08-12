@@ -667,6 +667,61 @@ describe('collectReactExportPropInference', () => {
     );
   });
 
+  /** Carries a reached child's item contract through a literal Array element access. */
+  it('infers child props forwarded from the first generated collection item', () => {
+    const source = [
+      `import { ShareholdersMeetingTitle } from './ShareholdersMeetingTitle';`,
+      'type Props = { meeting: { shareholdersMeetings: unknown[] } };',
+      'export const MeetingTitle = ({ meeting }: Props) => {',
+      '  if (meeting.shareholdersMeetings.length === 0) return null;',
+      '  return <ShareholdersMeetingTitle shareholdersMeeting={meeting.shareholdersMeetings[0]} />;',
+      '};',
+    ].join('\n');
+    const childPropDemands: PreviewChildPropDemandCatalog = new Map([
+      [
+        'ShareholdersMeetingTitle',
+        new Map([
+          [
+            'shareholdersMeeting',
+            {
+              kind: 'object',
+              properties: {
+                meetingDate: { kind: 'string', value: '2026-08-12' },
+                meetingType: { kind: 'string', value: 'regular' },
+              },
+            },
+          ],
+        ]),
+      ],
+    ]);
+
+    const result = collectReactExportPropInference('/workspace/MeetingTitle.tsx', source, {
+      childPropDemands,
+    });
+
+    expect(result.MeetingTitle?.shape.properties?.meeting).toMatchObject({
+      kind: 'object',
+      properties: {
+        shareholdersMeetings: {
+          kind: 'array',
+          items: {
+            kind: 'object',
+            properties: {
+              meetingDate: { kind: 'string', value: '2026-08-12' },
+              meetingType: { kind: 'string', value: 'regular' },
+            },
+          },
+        },
+      },
+    });
+    expect(result.MeetingTitle?.provenance).toEqual(
+      expect.arrayContaining([
+        { kind: 'object', path: 'meeting.shareholdersMeetings.[]', source: 'usage' },
+        { kind: 'string', path: 'meeting.shareholdersMeetings.[].meetingDate', source: 'usage' },
+      ]),
+    );
+  });
+
   /** Reads required props when the component keeps a typed identifier instead of destructuring it. */
   it('infers required local members from identifier props and inherited intersections', () => {
     const source = [

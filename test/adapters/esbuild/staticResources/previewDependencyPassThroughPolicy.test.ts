@@ -43,4 +43,52 @@ describe('preview dependency pass-through policy', () => {
       ),
     ).toBe(false);
   });
+
+  /** Ordinary TSX has no Inspector behavior to preserve and remains a native esbuild input. */
+  it('admits a presentational TSX dependency while render instrumentation is enabled', () => {
+    expect(
+      canPassThroughPreviewDependency(
+        '/workspace/src/Panel.tsx',
+        'export function Panel() { return <section className="panel">Panel</section>; }',
+        { instrumentRenderConditions: true, selectiveDependencyPassThrough: true },
+      ),
+    ).toBe(true);
+  });
+
+  /** Compiler-proven Page Execution surfaces retain their composition transforms. */
+  it('rejects an otherwise ordinary TSX dependency when its normalized path is critical', () => {
+    const sourcePath = '/workspace/src/shell/Panel.tsx';
+    const sourceText =
+      'export function Panel() { return <section className="panel">Panel</section>; }';
+
+    expect(
+      canPassThroughPreviewDependency(sourcePath, sourceText, {
+        instrumentRenderConditions: true,
+        selectiveDependencyPassThrough: true,
+      }),
+    ).toBe(true);
+    expect(
+      canPassThroughPreviewDependency(sourcePath, sourceText, {
+        criticalSurfaceSourcePaths: ['/workspace/src/shell/./Panel.tsx'],
+        instrumentRenderConditions: true,
+        selectiveDependencyPassThrough: true,
+      }),
+    ).toBe(false);
+  });
+
+  /** Every runtime-instrumentation lexical family remains on the conservative path. */
+  it.each([
+    ['deferred event', 'export const Panel = () => <button onClick={() => modal.show()}>Open</button>;'],
+    ['conditional JSX', 'export const Panel = () => enabled && <section />;'],
+    ['async component', 'async function Panel() { return <section />; } export const App = () => <Panel />;'],
+    ['React effect', "import { useEffect } from 'react'; export const Panel = () => { useEffect(() => {}); return <section />; };"],
+    ['ambiguous syntax', 'export const Panel = () => enabled ? <section /> :'],
+  ])('rejects %s source', (_family, sourceText) => {
+    expect(
+      canPassThroughPreviewDependency('/workspace/src/Panel.tsx', sourceText, {
+        instrumentRenderConditions: true,
+        selectiveDependencyPassThrough: true,
+      }),
+    ).toBe(false);
+  });
 });

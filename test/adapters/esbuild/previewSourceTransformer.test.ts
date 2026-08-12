@@ -384,6 +384,48 @@ describe('PreviewSourceTransformer', () => {
     expect(transformed.contents).toContain('"refetch": Object.freeze(() => undefined)');
   });
 
+  /** Uses a supplied optional child prop as structural evidence for a failed hook result. */
+  it('forwards an optional form-state contract into the runtime hook fallback', async () => {
+    const workspaceRoot = await createTemporaryWorkspace();
+    const pagePath = path.join(workspaceRoot, 'MeetingEditPage.tsx');
+    const formPath = path.join(workspaceRoot, 'MeetingForm.tsx');
+    const pageSource = [
+      `import { useMeetingRestore } from './use-meeting-restore';`,
+      `import { MeetingForm } from './MeetingForm';`,
+      'type MeetingEditFormState = { formikValues: { step: number; agendaSelection: string[] } };',
+      'export function MeetingEditPage() {',
+      '  const { state } = useMeetingRestore();',
+      '  return <MeetingForm initialState={state as MeetingEditFormState} />;',
+      '}',
+    ].join('\n');
+    const formSource = [
+      'type MeetingEditFormState = { formikValues: { step: number; agendaSelection: string[] } };',
+      'type Props = { initialState?: MeetingEditFormState };',
+      'export function MeetingForm({ initialState }: Props) {',
+      '  return <main>{initialState.formikValues.step > initialState.formikValues.agendaSelection.length}</main>;',
+      '}',
+    ].join('\n');
+    await writeFile(formPath, formSource);
+    const transformer = new PreviewSourceTransformer({
+      graphqlModuleResolver: {
+        resolve: (moduleSpecifier, consumerPath) =>
+          moduleSpecifier === './MeetingForm' && consumerPath === pagePath ? formPath : undefined,
+      },
+      instrumentRuntimeHookFallbacks: true,
+      projectRoot: workspaceRoot,
+      workspaceRoot,
+    });
+
+    const transformed = await transformer.transform(pagePath, pageSource);
+
+    expect(transformed.contents).toContain(
+      '"state": Object.freeze({ "formikValues": Object.freeze({',
+    );
+    expect(transformed.contents).toContain('"step": 0');
+    expect(transformed.contents).toContain('state.formikValues.step');
+    expect(transformed.contents).toContain('state.formikValues.agendaSelection');
+  });
+
   /** Completes Codegen fragment carriers from the authored selection before destructuring runs. */
   it('instruments a generated GraphQL fragment-unmasking helper', async () => {
     const workspaceRoot = await createTemporaryWorkspace();

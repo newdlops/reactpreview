@@ -320,6 +320,28 @@ describe('React render outcome analysis', () => {
     expect(outcome?.componentNames).toEqual(['QueryRenderer']);
   });
 
+  /** Keeps callback-owned DOM evidence when that intrinsic root also contains composites. */
+  it('retains a deferred host placeholder beside styled callback children', () => {
+    const source = [
+      'export function Page() {',
+      '  return (',
+      '    <QueryRenderer>',
+      '      {() => <span><Label /><Switch /></span>}',
+      '    </QueryRenderer>',
+      '  );',
+      '}',
+    ].join('\n');
+
+    const children = analyzePreviewReactRenderOutcomes('/workspace/src/Page.tsx', source)[0]
+      ?.outcomes[0]?.componentTree[0]?.children;
+
+    expect(children).toMatchObject([
+      { name: '#deferred-host-output', renderMode: 'deferred-callback' },
+      { name: 'Label', renderMode: 'deferred-callback' },
+      { name: 'Switch', renderMode: 'deferred-callback' },
+    ]);
+  });
+
   /** A callback with a proven empty result must not manufacture deferred DOM evidence. */
   it('does not create a host placeholder for a null render callback', () => {
     const source = [

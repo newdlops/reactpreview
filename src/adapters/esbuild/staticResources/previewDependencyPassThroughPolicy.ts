@@ -7,9 +7,12 @@
  */
 import path from 'node:path';
 import { requiresPreviewDependencyCompatibility } from './previewDependencyCompatibility';
+import { mayRequirePreviewRuntimeSourceInstrumentation } from './previewRuntimeSourceInstrumentation';
 
 /** Minimal build options required to decide whether a module can bypass compatibility analysis. */
 export interface PreviewDependencyPassThroughOptions {
+  /** Compiler-proven Page Execution source paths that must retain composition transforms. */
+  readonly criticalSurfaceSourcePaths?: readonly string[];
   /** Exact editor document that must always use the complete transform pipeline. */
   readonly documentPath?: string;
   /** Whether selected-corridor compilation may bypass preview-insensitive dependencies. */
@@ -39,13 +42,16 @@ export function canPassThroughPreviewDependency(
   ) {
     return false;
   }
-  // Page Inspector searches through authored JSX branches and deferred controls in dependencies,
-  // not only in the selected editor file. Passing a JSX-bearing module straight to esbuild would
-  // leave those branches invisible to the runtime search and can make a reachable nested target
-  // look permanently unrendered.
+  if (
+    options.criticalSurfaceSourcePaths?.some(
+      (criticalSurfacePath) => path.normalize(sourcePath) === path.normalize(criticalSurfacePath),
+    ) === true
+  ) {
+    return false;
+  }
   if (
     options.instrumentRenderConditions === true &&
-    (/[.]jsx?$/iu.test(sourcePath) || /[.]tsx$/iu.test(sourcePath))
+    mayRequirePreviewRuntimeSourceInstrumentation(sourcePath, sourceText)
   ) {
     return false;
   }

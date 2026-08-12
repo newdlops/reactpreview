@@ -19,6 +19,13 @@ const COLLECTION_CONFIG_CALLBACK_NAMES = new Set([
   'render',
   'valueGetter',
 ]);
+const COLLECTION_RENDERER_ITEM_WRAPPER_NAMES = new Set([
+  'item',
+  'object',
+  'record',
+  'row',
+  'value',
+]);
 
 type PreviewGraphqlLiteralDemand = Readonly<{
   path: string;
@@ -346,7 +353,7 @@ function appendSiblingCollectionRendererDemands(
       ) {
         paths.add([...collection, '[]'].join('.'));
         const itemBindings = new Map(
-          [...collectCallbackItemBindings(candidate.parameters[0])].map(
+          [...collectCollectionRendererItemBindings(candidate.parameters[0])].map(
             ([name, relative]) => [name, [...collection, '[]', ...relative]] as const,
           ),
         );
@@ -357,6 +364,28 @@ function appendSiblingCollectionRendererDemands(
     };
     visit(attribute.initializer.expression);
   }
+}
+
+/**
+ * Treats conventional table callback wrappers as the collection item they carry.
+ *
+ * Legacy tables commonly call a column as `render({ object })` even though `object` is the row
+ * supplied by the sibling `objectList` prop. Keeping the wrapper segment would write demands to
+ * `objectList[].object.status` while the rendered component reads `objectList[].status`.
+ */
+function collectCollectionRendererItemBindings(
+  parameter: ts.ParameterDeclaration,
+): Map<string, readonly string[]> {
+  const bindings = collectCallbackItemBindings(parameter);
+  if (!ts.isObjectBindingPattern(parameter.name)) return bindings;
+  return new Map(
+    [...bindings].map(([name, path]) => [
+      name,
+      path[0] !== undefined && COLLECTION_RENDERER_ITEM_WRAPPER_NAMES.has(path[0])
+        ? path.slice(1)
+        : path,
+    ]),
+  );
 }
 
 /** Applies imported child contracts reached within one item renderer. */

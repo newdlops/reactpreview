@@ -370,6 +370,42 @@ describe('createPreviewRenderChainPlan', () => {
     });
   });
 
+  /** Keeps a render-local component alias that owns a deferred modal visibility switch. */
+  it('preserves nested local component owners on an imported JSX edge', async () => {
+    const ownerPath = `${ROOT}/PaymentPage.tsx`;
+    const sources = {
+      [TARGET_PATH]: 'export const TaxTypeBadge = () => <span />;',
+      [ownerPath]: [
+        "import { TaxTypeBadge as ActualModal } from './pages/SelectedPage';",
+        'export const PaymentPage = () => {',
+        '  const TaxDetailsModal = (props) => <ActualModal {...props} />;',
+        '  return <TaxDetailsModal />;',
+        '};',
+      ].join('\n'),
+      [ENTRY_PATH]: [
+        "import { createRoot } from 'react-dom/client';",
+        "import { PaymentPage } from './PaymentPage';",
+        'createRoot(document.body).render(<PaymentPage />);',
+      ].join('\n'),
+    };
+    const fixture = createFixture(sources);
+
+    const plan = await createPreviewRenderChainPlan({
+      documentPath: TARGET_PATH,
+      exportName: 'TaxTypeBadge',
+      ...fixture,
+      sourcePaths: Object.keys(sources),
+    });
+
+    expect(plan.paths[0]?.steps[0]?.invocation).toEqual({
+      calleeName: 'ActualModal',
+      deferred: true,
+      localOwnerNames: ['TaxDetailsModal'],
+      mode: 'jsx',
+      sourcePath: ownerPath,
+    });
+  });
+
   /** Crosses the same lazy page, route array, router object, app lazy map, and entry used by large apps. */
   it('finds the application entry through lazy and route configuration value flow', async () => {
     const sources = {

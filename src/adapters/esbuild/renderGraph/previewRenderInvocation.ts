@@ -48,6 +48,11 @@ export function readPreviewRenderInvocation(
   boundary: ts.Node,
 ): PreviewRenderInvocation | undefined {
   const deferred = isPreviewRenderInvocationDeferred(identifier, boundary);
+  const localOwnerNames = collectPreviewRenderLocalComponentOwnerNames(identifier, boundary);
+  const localOwnerEvidence =
+    localOwnerNames.length === 0
+      ? {}
+      : { localOwnerNames: Object.freeze(localOwnerNames) };
   const attribute = findContainingJsxAttribute(identifier, boundary);
   if (attribute !== undefined) {
     const slotName = attribute.name.getText();
@@ -59,6 +64,7 @@ export function readPreviewRenderInvocation(
         ...(calleeName === undefined ? {} : { calleeName }),
         ...(deferred ? { deferred: true } : {}),
         ...(factoryNames.length === 0 ? {} : { factoryNames: Object.freeze(factoryNames) }),
+        ...localOwnerEvidence,
         mode,
         slotName,
       });
@@ -70,6 +76,7 @@ export function readPreviewRenderInvocation(
     return Object.freeze({
       calleeName: childRenderSlot.receiverName,
       deferred: true,
+      ...localOwnerEvidence,
       mode: 'render-prop',
       slotName: 'children',
     });
@@ -80,6 +87,7 @@ export function readPreviewRenderInvocation(
     return Object.freeze({
       ...(calleeName === undefined ? {} : { calleeName }),
       ...(deferred ? { deferred: true } : {}),
+      ...localOwnerEvidence,
       mode: 'jsx',
     });
   }
@@ -88,6 +96,7 @@ export function readPreviewRenderInvocation(
     return Object.freeze({
       calleeName: 'createElement',
       ...(deferred ? { deferred: true } : {}),
+      ...localOwnerEvidence,
       mode: 'create-element',
     });
   }
@@ -97,6 +106,7 @@ export function readPreviewRenderInvocation(
       calleeName: 'styled',
       ...(deferred ? { deferred: true } : {}),
       factoryNames: Object.freeze(['styled']),
+      ...localOwnerEvidence,
       mode: 'styled',
     });
   }
@@ -109,8 +119,63 @@ export function readPreviewRenderInvocation(
     calleeName: outermostFactory,
     ...(deferred ? { deferred: true } : {}),
     factoryNames: Object.freeze(factoryNames),
+    ...localOwnerEvidence,
     mode: classifyHocMode(factoryNames),
   });
+}
+
+/**
+ * Retains named local React wrappers crossed before a top-level graph owner.
+ *
+ * A page can declare `const TaxDetailsModal = props => <DetailsModal {...props} />` inside a
+ * render callback, then pass that local component through another component prop. The graph safely
+ * connects the imported `DetailsModal` to the top-level page, but without this narrow syntax fact
+ * the Inspector loses the local JSX name that owns the modal's `show` condition. PascalCase keeps
+ * ordinary callbacks and event handlers out of the render corridor.
+ */
+function collectPreviewRenderLocalComponentOwnerNames(
+  identifier: ts.Identifier,
+  boundary: ts.Node,
+): string[] {
+  const names: string[] = [];
+  let current: ts.Node = identifier.parent;
+  while (current !== boundary && !ts.isSourceFile(current)) {
+    if (
+      ts.isArrowFunction(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isFunctionDeclaration(current)
+    ) {
+      const name = readPreviewRenderLocalComponentOwnerName(current);
+      if (name !== undefined && !names.includes(name)) names.push(name);
+    }
+    current = current.parent;
+  }
+  return names;
+}
+
+/** Reads only explicitly named PascalCase functions or const-initialized function expressions. */
+function readPreviewRenderLocalComponentOwnerName(
+  functionLike: ts.ArrowFunction | ts.FunctionDeclaration | ts.FunctionExpression,
+): string | undefined {
+  if (functionLike.name !== undefined && /^[A-Z][A-Za-z0-9_$]*$/u.test(functionLike.name.text)) {
+    return functionLike.name.text;
+  }
+  let current: ts.Node = functionLike;
+  while (
+    ts.isParenthesizedExpression(current.parent) ||
+    ts.isAsExpression(current.parent) ||
+    ts.isSatisfiesExpression(current.parent) ||
+    ts.isNonNullExpression(current.parent)
+  ) {
+    current = current.parent;
+  }
+  const declaration = current.parent;
+  return ts.isVariableDeclaration(declaration) &&
+    declaration.initializer === current &&
+    ts.isIdentifier(declaration.name) &&
+    /^[A-Z][A-Za-z0-9_$]*$/u.test(declaration.name.text)
+    ? declaration.name.text
+    : undefined;
 }
 
 /**

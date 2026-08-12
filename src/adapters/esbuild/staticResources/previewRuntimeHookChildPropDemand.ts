@@ -879,7 +879,13 @@ function readRequiredAliasPaths(
   return (aliases.get(current.text) ?? []).map((prefix) => [...prefix, ...suffix]);
 }
 
-/** Flattens operation-proven child leaves onto the hook-relative carrier path. */
+/**
+ * Flattens operation-proven child leaves onto the hook-relative carrier path.
+ *
+ * Visit shallow siblings before deep descendants. A wide form contract can otherwise spend the
+ * bounded demand budget inside its first nested field and omit a later Array/object container
+ * that the reached child reads eagerly (for example with `Object.entries`).
+ */
 function appendShapeUsages(
   shape: PreviewInferredPropShape,
   sourcePath: readonly string[],
@@ -887,56 +893,84 @@ function appendShapeUsages(
   usages: PreviewRuntimeHookChildPropUsage[],
   depth: number,
 ): void {
-  if (depth > MAX_PROP_DEPTH || usages.length >= MAX_PROP_DEMANDS) return;
-  const names = [...sourcePath, ...relativePath];
-  if (shape.kind === 'array') {
-    const itemExpression =
-      shape.items === undefined
-        ? undefined
-        : serializePreviewRuntimeHookChildShape(shape.items, names.at(-1) ?? 'item');
-    const itemRequiredPaths =
-      shape.items === undefined ? [] : collectPreviewRuntimeHookChildShapePaths(shape.items);
-    usages.push({
-      called: false,
-      ...(itemExpression === undefined ? {} : { collectionItemExpression: itemExpression }),
-      ...(itemRequiredPaths.length === 0
-        ? {}
-        : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
-      collectionProperty: 'map',
-      names,
-    });
-    return;
-  }
-  if (shape.kind === 'function') {
-    usages.push({ called: true, names });
-    return;
-  }
-  if (shape.kind === 'boolean' || shape.kind === 'null' || shape.kind === 'number') {
-    usages.push({
-      called: false,
-      names,
-      ...(shape.exactValue === true ? { renderGuard: true as const } : {}),
-      valueExpression: serializePreviewRuntimeHookChildShape(shape, names.at(-1) ?? 'value'),
-    });
-    return;
-  }
-  if (shape.kind === 'string') {
-    usages.push(
-      shape.value === undefined
-        ? { called: false, names, stringProperty: 'trim' }
-        : {
-            called: false,
-            names,
-            ...(shape.exactValue === true ? { renderGuard: true as const } : {}),
-            valueExpression: serializePreviewRuntimeHookChildShape(shape, names.at(-1) ?? 'value'),
-          },
-    );
-    return;
-  }
-  if (shape.kind !== 'object' || shape.properties === undefined) return;
-  for (const [propertyName, child] of Object.entries(shape.properties)) {
-    if (usages.length >= MAX_PROP_DEMANDS) break;
-    appendShapeUsages(child, sourcePath, [...relativePath, propertyName], usages, depth + 1);
+  const pending: Array<{
+    readonly depth: number;
+    readonly relativePath: readonly string[];
+    readonly shape: PreviewInferredPropShape;
+  }> = [{ depth, relativePath, shape }];
+  for (let index = 0; index < pending.length && usages.length < MAX_PROP_DEMANDS; index += 1) {
+    const current = pending[index];
+    if (current === undefined || current.depth > MAX_PROP_DEPTH) continue;
+    const names = [...sourcePath, ...current.relativePath];
+    if (current.shape.kind === 'array') {
+      const itemExpression =
+        current.shape.items === undefined
+          ? undefined
+          : serializePreviewRuntimeHookChildShape(current.shape.items, names.at(-1) ?? 'item');
+      const itemRequiredPaths =
+        current.shape.items === undefined
+          ? []
+          : collectPreviewRuntimeHookChildShapePaths(current.shape.items);
+      usages.push({
+        called: false,
+        ...(itemExpression === undefined ? {} : { collectionItemExpression: itemExpression }),
+        ...(itemRequiredPaths.length === 0
+          ? {}
+          : { collectionItemRequiredPaths: Object.freeze(itemRequiredPaths) }),
+        collectionProperty: 'map',
+        names,
+      });
+      continue;
+    }
+    if (current.shape.kind === 'function') {
+      usages.push({ called: true, names });
+      continue;
+    }
+    if (
+      current.shape.kind === 'boolean' ||
+      current.shape.kind === 'null' ||
+      current.shape.kind === 'number'
+    ) {
+      usages.push({
+        called: false,
+        names,
+        ...(current.shape.exactValue === true ? { renderGuard: true as const } : {}),
+        valueExpression: serializePreviewRuntimeHookChildShape(
+          current.shape,
+          names.at(-1) ?? 'value',
+        ),
+      });
+      continue;
+    }
+    if (current.shape.kind === 'string') {
+      usages.push(
+        current.shape.value === undefined
+          ? { called: false, names, stringProperty: 'trim' }
+          : {
+              called: false,
+              names,
+              ...(current.shape.exactValue === true ? { renderGuard: true as const } : {}),
+              valueExpression: serializePreviewRuntimeHookChildShape(
+                current.shape,
+                names.at(-1) ?? 'value',
+              ),
+            },
+      );
+      continue;
+    }
+    if (current.shape.kind !== 'object' || current.shape.properties === undefined) continue;
+    const properties = Object.entries(current.shape.properties);
+    if (properties.length === 0) {
+      usages.push({ called: false, names });
+      continue;
+    }
+    for (const [propertyName, child] of properties) {
+      pending.push({
+        depth: current.depth + 1,
+        relativePath: [...current.relativePath, propertyName],
+        shape: child,
+      });
+    }
   }
 }
 

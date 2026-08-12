@@ -8,6 +8,8 @@ import type { PreviewLocalTargetExportInstrumentation } from './previewLocalTarg
 
 /** Immutable transformer configuration for one compilation request. */
 export interface PreviewSourceTransformerOptions {
+  /** Compiler-proven Page Execution surfaces that must retain the complete transform pipeline. */
+  readonly criticalSurfaceSourcePaths?: readonly string[];
   /** Removes proven false-state overlays from fast builds behind visible provisional markers. */
   readonly deferDormantOverlayImports?: boolean;
   /** Lets selected-corridor dependencies with no preview-sensitive syntax use esbuild directly. */

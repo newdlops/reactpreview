@@ -162,6 +162,17 @@ function createLocalTargetWrapperExpression(
     '__reactPreviewDeferredTarget, __reactPreviewStaticName, __reactPreviewStaticDescriptor);' +
     '} catch {}' +
     '}' +
+    'const __reactPreviewStyledComponentId = Object.getOwnPropertyDescriptor(' +
+    '__reactPreviewLocalTarget, "styledComponentId");' +
+    'const __reactPreviewStyledTarget = Object.getOwnPropertyDescriptor(' +
+    '__reactPreviewDeferredTarget, "target");' +
+    'if (typeof __reactPreviewStyledComponentId?.value === "string" && ' +
+    '__reactPreviewStyledComponentId.value.length > 0 && ' +
+    '__reactPreviewStyledTarget !== undefined && ' +
+    'Object.hasOwn(__reactPreviewStyledTarget, "value")) {' +
+    'try { Object.defineProperty(__reactPreviewDeferredTarget, "target", {' +
+    '...__reactPreviewStyledTarget, value: __reactPreviewDeferredTarget}); } catch {}' +
+    '}' +
     'return __reactPreviewDeferredTarget;' +
     `})(${initializer}, ${JSON.stringify(metadata)})`
   );

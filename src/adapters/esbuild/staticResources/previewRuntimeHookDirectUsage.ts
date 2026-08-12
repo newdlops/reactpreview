@@ -14,10 +14,14 @@ export interface PreviewRuntimeHookDirectUsageFallback {
   readonly callable?: boolean;
   /** Variable bindings that prove a called fallback must return a particular static shape. */
   readonly callResultBindings?: readonly ts.BindingName[];
+  /** Fulfillment bindings proving that a called fallback must preserve a Promise contract. */
+  readonly promiseResultBindings?: readonly ts.BindingName[];
   /** Side-effect-free JavaScript expression evaluated only by the Inspector fallback boundary. */
   readonly expression: string;
   /** Concise explanation displayed beside the generated render value. */
   readonly label: string;
+  /** Whether local syntax directly chains the callable result as a Promise. */
+  readonly promiseReturning?: boolean;
 }
 
 /** Function-like scope in which one hook result can be consumed during rendering. */
@@ -46,6 +50,8 @@ export function createPreviewRuntimeHookDirectUsageFallback(
     emptyRenderable: false,
     mutableRef: false,
     nullishDefault: false,
+    promiseResultBindings: [] as ts.BindingName[],
+    promiseReturning: false,
     rendered: false,
   };
   const visit = (node: ts.Node): void => {
@@ -64,6 +70,19 @@ export function createPreviewRuntimeHookDirectUsageFallback(
           )
         ) {
           usage.callResultBindings.push(resultBinding);
+        }
+        const promiseResult = readPromiseResultDemand(parent);
+        if (promiseResult !== undefined) {
+          usage.promiseReturning = true;
+          const binding = promiseResult.binding;
+          if (
+            binding !== undefined &&
+            !usage.promiseResultBindings.some(
+              (candidate) => candidate.getStart() === binding.getStart(),
+            )
+          ) {
+            usage.promiseResultBindings.push(binding);
+          }
         }
       } else if (
         ts.isBinaryExpression(parent) &&
@@ -93,6 +112,10 @@ export function createPreviewRuntimeHookDirectUsageFallback(
       ...(usage.callResultBindings.length === 0
         ? {}
         : { callResultBindings: Object.freeze([...usage.callResultBindings]) }),
+      ...(usage.promiseResultBindings.length === 0
+        ? {}
+        : { promiseResultBindings: Object.freeze([...usage.promiseResultBindings]) }),
+      ...(usage.promiseReturning ? { promiseReturning: true } : {}),
       expression: 'Object.freeze(() => undefined)',
       label: 'generated no-op function from local call',
     };
@@ -118,6 +141,53 @@ export function createPreviewRuntimeHookDirectUsageFallback(
         label: 'generated rendered key text',
       }
     : undefined;
+}
+
+/** Promise-chain evidence and the first fulfillment callback binding, when authored inline. */
+interface PreviewRuntimePromiseResultDemand {
+  readonly binding?: ts.BindingName;
+}
+
+/**
+ * Recognizes an immediate `.then`, `.catch`, or `.finally` consumer of one generated call.
+ *
+ * A synchronous no-op is compatible with `await`, but not with direct Promise chaining. For
+ * `.then`, the first inline callback parameter also provides an exact fulfillment payload shape.
+ */
+function readPromiseResultDemand(
+  call: ts.CallExpression,
+): PreviewRuntimePromiseResultDemand | undefined {
+  let result: ts.Expression = call;
+  while (
+    (ts.isParenthesizedExpression(result.parent) ||
+      ts.isAsExpression(result.parent) ||
+      ts.isTypeAssertionExpression(result.parent) ||
+      ts.isNonNullExpression(result.parent) ||
+      ts.isSatisfiesExpression(result.parent)) &&
+    result.parent.expression === result
+  ) {
+    result = result.parent;
+  }
+  const access = result.parent;
+  if (
+    !ts.isPropertyAccessExpression(access) ||
+    access.expression !== result ||
+    !['then', 'catch', 'finally'].includes(access.name.text)
+  ) {
+    return undefined;
+  }
+  const chainCall = access.parent;
+  if (!ts.isCallExpression(chainCall) || chainCall.expression !== access) return undefined;
+  if (access.name.text !== 'then') return {};
+  const callback = chainCall.arguments[0];
+  if (
+    callback === undefined ||
+    (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
+  ) {
+    return {};
+  }
+  const binding = callback.parameters[0]?.name;
+  return binding === undefined ? {} : { binding };
 }
 
 /** Bounds a source identifier before exposing it as visible generated component text. */

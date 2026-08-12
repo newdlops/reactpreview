@@ -10,6 +10,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import { PREVIEW_COLLECTION_METHOD_NAMES } from '../previewCollectionMethodNames';
 import { createPreviewRuntimeCallableFallbackExpression } from './previewRuntimeCallableFallback';
+import { inferPreviewRuntimeHookMembershipItemFallback } from './previewRuntimeHookMembershipItem';
 import { createPreviewGeneratedListExpression } from './previewRuntimeHookUsageTree';
 import { inferPreviewRuntimeHookAssignmentGuardPassFallback } from './previewRuntimeHookGuardValue';
 import { inferPreviewRuntimeSemanticFallback } from './previewRuntimeHookSemantics';
@@ -129,6 +130,8 @@ interface HookBoundValue {
 interface FallbackShape {
   /** Deterministically keyed object children, unused for callable/collection leaves. */
   readonly children: Map<string, FallbackShape>;
+  /** Distinct authored membership operands retained as one exact frozen collection scenario. */
+  collectionExactItemExpressions?: string[];
   /** Side-effect-free item expression proven by an imported collection callback contract. */
   collectionItemExpression?: string;
   /** Item-relative paths retained for runtime structural completion and diagnostics. */
@@ -828,7 +831,16 @@ function inspectCallExpression(
           : unwrapExpression(callback);
       const collectionMethod = collectionPaths[0]?.methodName;
       const propertyAccess = unwrapExpression(call.expression);
-      const collectionItem =
+      const membershipItem =
+        collectionMethod === 'includes' && ts.isPropertyAccessExpression(propertyAccess)
+          ? inferPreviewRuntimeHookMembershipItemFallback(
+              propertyAccess,
+              collectionPaths[0]?.receiverPath.at(-1) ?? '',
+              call.getSourceFile(),
+              true,
+            )
+          : undefined;
+      const callbackItem =
         collectionMethod !== undefined &&
         COLLECTION_ITEM_CALLBACK_METHODS.has(collectionMethod) &&
         callbackValue !== undefined &&
@@ -839,10 +851,11 @@ function inspectCallExpression(
               ts.isPropertyAccessExpression(propertyAccess)
             ? inferPreviewRuntimeArrayItemFallback(propertyAccess, call.getSourceFile())
             : undefined;
+      const collectionItem = membershipItem ?? callbackItem;
       for (const { receiverPath } of collectionPaths) {
         if (
           !addProperObjectPrefixes(receiverPath, plan) ||
-          !addCollectionLeaf(receiverPath, plan, collectionItem)
+          !addCollectionLeaf(receiverPath, plan, collectionItem, membershipItem !== undefined)
         ) {
           plan.invalid = true;
           return;
@@ -1263,6 +1276,7 @@ function addCollectionLeaf(
   path_: readonly string[],
   plan: HookFallbackPlan,
   item?: PreviewRuntimeHookImportedHelperItemFallback,
+  retainExactItem = false,
 ): boolean {
   if (path_.length === 0 || !isSafePath(path_) || !reserveShapePath(path_, 'collection', plan)) {
     return false;
@@ -1284,10 +1298,20 @@ function addCollectionLeaf(
                 collectionItemExpression: item.expression,
                 collectionItemRequiredPaths: Object.freeze([...(item.requiredPaths ?? [])]),
               }),
+          ...(retainExactItem && item !== undefined
+            ? { collectionExactItemExpressions: [item.expression] }
+            : {}),
         };
         node.children.set(propertyName, child);
       }
       if (child.kind !== 'collection' || child.children.size !== 0) return false;
+      if (retainExactItem && item !== undefined) {
+        const expressions = child.collectionExactItemExpressions ?? [];
+        if (!expressions.includes(item.expression) && expressions.length < MAX_VALUE_CHOICE_PATHS) {
+          expressions.push(item.expression);
+        }
+        child.collectionExactItemExpressions = expressions;
+      }
       if (
         item !== undefined &&
         (child.collectionItemExpression === undefined ||
@@ -1426,6 +1450,10 @@ function serializeFallbackShape(shape: FallbackShape): string {
     return createPreviewRuntimeCallableFallbackExpression(shape.callResultExpression);
   }
   if (shape.kind === 'collection') {
+    const exactItemExpressions = shape.collectionExactItemExpressions;
+    if (exactItemExpressions !== undefined && exactItemExpressions.length > 0) {
+      return `Object.freeze([${exactItemExpressions.join(', ')}])`;
+    }
     return shape.collectionItemExpression === undefined
       ? 'Object.freeze([])'
       : createPreviewGeneratedListExpression(shape.collectionItemExpression);
@@ -1451,10 +1479,12 @@ function collectFallbackRequiredPaths(
   if (shape.kind === 'collection') {
     const base = path_.length === 0 ? '[]' : `${path_.join('.')}.[]`;
     return [
-      base,
-      ...(shape.collectionItemRequiredPaths ?? []).map((itemPath) =>
-        itemPath === '<root>' ? base : `${base}.${itemPath}`,
-      ),
+      ...new Set([
+        base,
+        ...(shape.collectionItemRequiredPaths ?? []).map((itemPath) =>
+          itemPath === '<root>' ? base : `${base}.${itemPath}`,
+        ),
+      ]),
     ];
   }
   if (shape.kind === 'scalar') {

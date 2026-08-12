@@ -107,6 +107,35 @@ describe('createReactContextHookFallbackTransform', () => {
     expect(transform.declarations.join('\n')).toContain('"submit": Object.freeze(() => undefined)');
   });
 
+  /** Keeps a valid enum value when a Context-backed array is consumed by an includes gate. */
+  it('uses an authored membership item for a Context-backed collection', () => {
+    const source = [
+      `import { useMeetingFormContext } from './meeting-form-context';`,
+      `import { AGENDA } from './agenda-constants';`,
+      'export function AgendaInputSection() {',
+      '  const { formikProps } = useMeetingFormContext();',
+      '  const agendaSelection = formikProps.values.agendaSelection;',
+      '  const selected = agendaSelection.includes(AGENDA.BRANCH_CHANGES)',
+      '    && agendaSelection.includes(AGENDA.HEAD_OFFICE_RELOCATION);',
+      '  return <main>{selected ? "warning" : agendaSelection.length}</main>;',
+      '}',
+    ].join('\n');
+
+    const transform = createReactContextHookFallbackTransform(
+      '/workspace/AgendaInputSection.tsx',
+      source,
+    );
+
+    expect(transform.declarations).toHaveLength(1);
+    expect(transform.declarations[0]).toContain(
+      '"agendaSelection": Object.freeze([AGENDA.BRANCH_CHANGES, AGENDA.HEAD_OFFICE_RELOCATION])',
+    );
+    expect(transform.declarations[0]).not.toContain('Object.freeze({ "id": "preview-id"');
+    expect(transform.replacements[0]?.replacement).toContain(
+      '"requiredPaths":["formikProps.values.agendaSelection.[]"]',
+    );
+  });
+
   /**
    * Reproduces an application permission hook where required Context destructuring and optional
    * application values coexist. Optional descendants must not discard the already-proven root

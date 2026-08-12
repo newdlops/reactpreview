@@ -208,6 +208,8 @@ interface InferenceState {
   readonly childPropDemands: PreviewChildPropDemandCatalog | undefined;
   readonly collectionDemandDepth: number;
   readonly functionLike: ExportedFunctionLike;
+  /** Local bindings of the canonical GraphQL fragment identity helper. */
+  readonly graphqlFragmentUnmaskBindings: ReadonlySet<string>;
   readonly graphqlDocumentTypeNames: ReadonlySet<string>;
   /** Local helper parameters whose returned arrays retain the original item identities. */
   readonly identityCollectionHelperParameters: ReadonlyMap<string, ReadonlySet<number>>;
@@ -1032,6 +1034,7 @@ function inferComponentProps(
     childPropDemands,
     collectionDemandDepth: 0,
     functionLike,
+    graphqlFragmentUnmaskBindings: collectGraphqlFragmentUnmaskBindings(sourceFile),
     graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(sourceFile),
     identityCollectionHelperParameters,
     localComponents,
@@ -1235,6 +1238,9 @@ export function inferReactFunctionParameterUsageShape(
     childPropDemands: undefined,
     collectionDemandDepth: 0,
     functionLike,
+    graphqlFragmentUnmaskBindings: collectGraphqlFragmentUnmaskBindings(
+      functionLike.getSourceFile(),
+    ),
     graphqlDocumentTypeNames: collectGraphqlDocumentTypeNames(functionLike.getSourceFile()),
     identityCollectionHelperParameters: collectIdentityCollectionHelperParameters(
       functionLike.getSourceFile(),
@@ -1694,6 +1700,28 @@ function collectGraphqlDocumentTypeNames(sourceFile: ts.SourceFile): ReadonlySet
   return names;
 }
 
+/** Finds only the named GraphQL Code Generator fragment-masking identity helper import. */
+function collectGraphqlFragmentUnmaskBindings(sourceFile: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+      !/(?:^|\/)graphql-codegen\/fragment-masking$/u.test(statement.moduleSpecifier.text)
+    ) {
+      continue;
+    }
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      if ((binding.propertyName ?? binding.name).text === 'getFragmentData') {
+        names.add(binding.name.text);
+      }
+    }
+  }
+  return names;
+}
+
 /** Creates a minimum executable GraphQL document from canonical type evidence and response shape. */
 function addGraphqlDocumentRequirement(
   path_: readonly string[],
@@ -2113,7 +2141,8 @@ function collectLocalPropAliases(functionLike: ExportedFunctionLike, state: Infe
       const sourcePath =
         readPropPath(node.initializer, state.aliases) ??
         readEmptyCollectionDefaultPropPath(node.initializer, state.aliases) ??
-        readIdentityCollectionHelperCallPath(node.initializer, state);
+        readIdentityCollectionHelperCallPath(node.initializer, state) ??
+        readGraphqlFragmentUnmaskCallPath(node.initializer, state);
       if (sourcePath !== undefined) {
         if (ts.isIdentifier(node.name)) {
           state.aliases.set(node.name.text, { path: sourcePath });
@@ -2141,6 +2170,31 @@ function collectLocalPropAliases(functionLike: ExportedFunctionLike, state: Infe
     ts.forEachChild(node, visit);
   };
   visit(body);
+}
+
+/**
+ * Carries a generated GraphQL fragment value through the canonical masking helper.
+ *
+ * `getFragmentData(document, value)` is a compile-time masking boundary whose runtime result is
+ * the same response object. Accept only its direct imported binding and second argument so an
+ * unrelated two-argument helper can never be treated as an identity transform.
+ */
+function readGraphqlFragmentUnmaskCallPath(
+  expression: ts.Expression,
+  state: InferenceState,
+): readonly string[] | undefined {
+  const current = unwrapExpression(expression);
+  if (
+    !ts.isCallExpression(current) ||
+    !ts.isIdentifier(current.expression) ||
+    !state.graphqlFragmentUnmaskBindings.has(current.expression.text) ||
+    current.arguments.length < 2
+  ) {
+    return undefined;
+  }
+  const value = current.arguments[1];
+  if (value === undefined || ts.isSpreadElement(value)) return undefined;
+  return readPropPath(value, state.aliases);
 }
 
 /** Derives receiver containers and operation kinds from property paths rooted in known props. */
@@ -2547,6 +2601,16 @@ function mergeFrozenShapeAtPath(
   let current = root;
   for (const propertyName of path_) {
     if (BLOCKED_PROPERTY_NAMES.has(propertyName)) return;
+    if (current.kind === 'array' && /^(?:0|[1-9]\d*)$/u.test(propertyName)) {
+      if (current.items === undefined) {
+        if (state.nodeCount >= MAX_INFERRED_NODES) return;
+        state.nodeCount += 1;
+        current.items = createMutableNode('object', 'usage');
+      }
+      current = current.items;
+      continue;
+    }
+    if (current.kind !== 'object') return;
     let child = current.children.get(propertyName);
     if (child === undefined) {
       if (state.nodeCount >= MAX_INFERRED_NODES) return;
@@ -2597,6 +2661,7 @@ function inferFunctionBindingRequirement(
     childPropDemands: parentState.childPropDemands,
     collectionDemandDepth: parentState.collectionDemandDepth + 1,
     functionLike,
+    graphqlFragmentUnmaskBindings: parentState.graphqlFragmentUnmaskBindings,
     graphqlDocumentTypeNames: parentState.graphqlDocumentTypeNames,
     identityCollectionHelperParameters: parentState.identityCollectionHelperParameters,
     localComponents: parentState.localComponents,

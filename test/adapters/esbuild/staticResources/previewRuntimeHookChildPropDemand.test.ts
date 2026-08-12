@@ -53,6 +53,67 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     });
   });
 
+  /** Expands an imported Pick contract before forwarding a literal collection item. */
+  it('materializes a typed meeting title item selected by zero index', () => {
+    const parentPath = '/workspace/MeetingTitle.tsx';
+    const childPath = '/workspace/ShareholdersMeetingTitle.tsx';
+    const typePath = '/workspace/meeting-types.ts';
+    const parentSource = [
+      `import { ShareholdersMeetingTitle } from './ShareholdersMeetingTitle';`,
+      'type Props = { meeting: { shareholdersMeetings: unknown[] } };',
+      'export function MeetingTitle({ meeting }: Props) {',
+      '  return meeting.shareholdersMeetings.length > 0',
+      '    ? <ShareholdersMeetingTitle shareholdersMeeting={meeting.shareholdersMeetings[0]} />',
+      '    : null;',
+      '}',
+    ].join('\n');
+    const childSource = [
+      `import type { ShareholdersMeeting } from './meeting-types';`,
+      'type Props = {',
+      '  shareholdersMeeting: Pick<ShareholdersMeeting, "meetingDate" | "meetingType">;',
+      '};',
+      'export function ShareholdersMeetingTitle({ shareholdersMeeting }: Props) {',
+      '  return <span>{shareholdersMeeting.meetingDate}{shareholdersMeeting.meetingType}</span>;',
+      '}',
+    ].join('\n');
+    const typeSource = [
+      'export type ShareholdersMeeting = {',
+      '  id: string;',
+      '  meetingDate: string;',
+      '  meetingType: "regular_meeting" | "special_meeting";',
+      '};',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) =>
+        sourcePath === childPath ? childSource : sourcePath === typePath ? typeSource : undefined,
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './ShareholdersMeetingTitle'
+          ? childPath
+          : moduleSpecifier === './meeting-types'
+            ? typePath
+            : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const result = collectReactExportPropInference(parentPath, parentSource, {
+      childPropDemands: builder.collect(parentPath, parentSource),
+    });
+
+    expect(result.MeetingTitle?.shape.properties?.meeting).toMatchObject({
+      properties: {
+        shareholdersMeetings: {
+          kind: 'array',
+          items: {
+            properties: {
+              meetingDate: { kind: 'string', value: '2024-01-01T00:00:00.000Z' },
+              meetingType: { kind: 'string', value: 'regular_meeting', exactValue: true },
+            },
+          },
+        },
+      },
+    });
+  });
+
   /** Carries an operation-proven child Array back through a hook-fed JSX carrier property. */
   it('completes a nested query response used by an imported child component', () => {
     const parentPath = '/workspace/HistoryPage.tsx';
@@ -91,6 +152,94 @@ describe('PreviewRuntimeHookChildPropDemandCatalogBuilder', () => {
     expect(transformed).toContain(
       '"requiredPaths":["data.data","data.data.rides.map()","data.data.rides[].id","data.data.rides[].name"]',
     );
+  });
+
+  /**
+   * An optional prop becomes required for preview shape inference when authored JSX supplies it.
+   * This models an edit page forwarding a restored form state into a child with a default value.
+   */
+  it('completes an explicitly supplied optional child prop from a hook result', () => {
+    const parentPath = '/workspace/MeetingEditPage.tsx';
+    const childPath = '/workspace/MeetingForm.tsx';
+    const parentSource = [
+      `import { useMeetingRestore } from './use-meeting-restore';`,
+      `import { MeetingForm } from './MeetingForm';`,
+      'type MeetingEditFormState = { formikValues: { step: number; agendaSelection: string[] } };',
+      'export function MeetingEditPage() {',
+      '  const { state } = useMeetingRestore();',
+      '  return <MeetingForm initialState={state as MeetingEditFormState} />;',
+      '}',
+    ].join('\n');
+    const childSource = [
+      'type MeetingEditFormState = { formikValues: { step: number; agendaSelection: string[] } };',
+      'type Props = { initialState?: MeetingEditFormState };',
+      'export function MeetingForm({ initialState }: Props) {',
+      '  return <main>{initialState.formikValues.step > initialState.formikValues.agendaSelection.length}</main>;',
+      '}',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === childPath ? childSource : undefined),
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './MeetingForm' ? childPath : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource, { includeOptionalTypes: true }),
+      ),
+    );
+
+    expect(transformed).toContain('"state": Object.freeze({ "formikValues": Object.freeze({');
+    expect(transformed).toContain('"step": 0');
+    expect(transformed).toContain('state.formikValues.step');
+    expect(transformed).toContain('state.formikValues.agendaSelection');
+  });
+
+  /** Preserves shallow form containers even when an earlier nested contract exceeds the cap. */
+  it('retains later shallow containers ahead of a wide optional branch', () => {
+    const parentPath = '/workspace/MeetingEditPage.tsx';
+    const childPath = '/workspace/MeetingForm.tsx';
+    const wideAgendaFields = Array.from(
+      { length: 40 },
+      (_, index) => `field${index.toString()}: string;`,
+    ).join(' ');
+    const parentSource = [
+      `import { useMeetingRestore } from './use-meeting-restore';`,
+      `import { MeetingForm } from './MeetingForm';`,
+      'export function MeetingEditPage() {',
+      '  const { state } = useMeetingRestore();',
+      '  return <MeetingForm initialState={state} />;',
+      '}',
+    ].join('\n');
+    const childSource = [
+      `type Props = { initialState?: { formikValues: { agenda: { ${wideAgendaFields} }; meetingSchedules: string[] } } };`,
+      'export function MeetingForm({ initialState }: Props) {',
+      '  return <main>{Object.entries(initialState.formikValues.agenda).length + Object.entries(initialState.formikValues.meetingSchedules).length}</main>;',
+      '}',
+    ].join('\n');
+    const builder = new PreviewRuntimeHookChildPropDemandCatalogBuilder({
+      readSource: (sourcePath) => (sourcePath === childPath ? childSource : undefined),
+      resolveModule: (moduleSpecifier) =>
+        moduleSpecifier === './MeetingForm' ? childPath : undefined,
+      workspaceRoot: '/workspace',
+    });
+
+    const transformed = applyReplacements(
+      parentSource,
+      createPreviewRuntimeHookReplacements(
+        parentPath,
+        parentSource,
+        builder.collect(parentPath, parentSource, { includeOptionalTypes: true }),
+      ),
+    );
+
+    expect(transformed).toContain('"agenda": Object.freeze({');
+    expect(transformed).toContain('"meetingSchedules": ((__createPreviewItem)');
+    expect(transformed).toContain('state.formikValues.meetingSchedules.map()');
   });
 
   /** Carries a leaf collection contract through a routed page and an intermediate child. */

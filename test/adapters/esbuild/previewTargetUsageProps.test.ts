@@ -180,8 +180,8 @@ describe('discoverPreviewTargetUsageProps', () => {
         writeFile(
           sectionPath,
           [
-            "import { Target } from './Target';",
-            'export const Section = () => <section><Target enabled /></section>;',
+            "import { Secondary, Target } from './Target';",
+            'export const Section = () => <section><Target enabled /><Secondary /></section>;',
           ].join('\n'),
           'utf8',
         ),
@@ -220,6 +220,11 @@ describe('discoverPreviewTargetUsageProps', () => {
         'Target',
         'Secondary',
       ]);
+      expect([
+        ...new Set(
+          result.inspectorPlan?.pageCandidates.map((candidate) => candidate.target?.exportName),
+        ),
+      ]).toEqual(['Target', 'Secondary']);
       expect(result.dependencyPaths).toEqual([pagePath, sectionPath, targetPath].sort());
     } finally {
       await rm(projectRoot, { force: true, recursive: true });

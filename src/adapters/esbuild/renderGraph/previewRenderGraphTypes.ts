@@ -73,6 +73,8 @@ export interface PreviewRenderInvocation {
   readonly calleeName?: string;
   /** Nested higher-order factories crossed from inner to outer. */
   readonly factoryNames?: readonly string[];
+  /** Nested local component declarations crossed from inner to outer at this reference. */
+  readonly localOwnerNames?: readonly string[];
   /** Authored module containing the call/JSX prop occurrence, when it differs from the child step. */
   readonly sourcePath?: string;
   /** JSX prop that receives the component value, such as `component`, `as`, or `renderItem`. */

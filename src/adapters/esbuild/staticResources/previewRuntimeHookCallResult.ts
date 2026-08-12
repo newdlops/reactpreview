@@ -57,11 +57,15 @@ export function createPreviewRuntimeHookCallableFallback(
   depth: number,
   createBindingFallback: PreviewRuntimeHookCallResultFactory,
 ): PreviewRuntimeHookCallResultFallback {
+  const resultBindings = [
+    ...(usage.callResultBindings ?? []),
+    ...(usage.promiseResultBindings ?? []),
+  ];
   const callResult =
     depth >= MAX_CALL_RESULT_DEPTH
       ? undefined
-      : usage.callResultBindings
-          ?.map((binding) => createBindingFallback(binding, sourceFile, depth + 1))
+      : resultBindings
+          .map((binding) => createBindingFallback(binding, sourceFile, depth + 1))
           .filter(
             (fallback): fallback is PreviewRuntimeHookCallResultFallback => fallback !== undefined,
           )
@@ -69,7 +73,10 @@ export function createPreviewRuntimeHookCallableFallback(
             (left, right) => (right.requiredPaths?.length ?? 0) - (left.requiredPaths?.length ?? 0),
           )[0];
   return {
-    expression: createPreviewRuntimeCallableFallbackExpression(callResult?.expression),
+    expression: createPreviewRuntimeCallableFallbackExpression(
+      callResult?.expression,
+      usage.promiseReturning === true,
+    ),
     label:
       callResult === undefined ? usage.label : `generated callable returning ${callResult.label}`,
     requiredPaths: ['<root>()'],

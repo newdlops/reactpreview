@@ -292,7 +292,7 @@ export class PreviewSourceTransformer {
           ...createPreviewRuntimeHookReplacements(
             sourcePath,
             sourceText,
-            typeDemand?.collect(sourcePath, sourceText),
+            typeDemand?.collect(sourcePath, sourceText, { includeOptionalTypes: true }),
             typeDemand === undefined
               ? undefined
               : (typeNode) => typeDemand.inferLocalTypeFallback(sourcePath, sourceText, typeNode),

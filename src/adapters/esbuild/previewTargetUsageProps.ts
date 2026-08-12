@@ -10,7 +10,12 @@ import type {
   PreviewSourceSnapshot,
 } from '../../domain/preview';
 import { throwIfPreviewBuildCancelled } from '../../domain/previewBuildExecution';
-import { createPreviewInspectorAncestorPlan, type PreviewInspectorAncestorPlan } from './inspector';
+import {
+  createPreviewInspectorAncestorPlan,
+  createPreviewInspectorNamedExportScenarioPlan,
+  type PreviewInspectorAncestorPlan,
+} from './inspector';
+import { createPreviewInspectorStableMinPriorityQueue } from './inspector/previewInspectorStableMinPriorityQueue';
 import {
   analyzePreviewParentSlices,
   climbPreviewParentSliceProject,
@@ -300,7 +305,7 @@ export async function discoverPreviewTargetUsageProps(
     }
   }
 
-  const inspectorPlan =
+  const primaryInspectorPlan =
     !shouldDiscoverInspector || renderChainsByExport === undefined
       ? undefined
       : await createPreviewInspectorAncestorPlan({
@@ -315,6 +320,27 @@ export async function discoverPreviewTargetUsageProps(
             : { routeSelection: options.routeSelection }),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
           sourcePaths: [...sourcePaths, boundary.documentPath],
+        });
+  const inspectorPlan =
+    primaryInspectorPlan === undefined || renderChainsByExport === undefined
+      ? primaryInspectorPlan
+      : await createPreviewInspectorNamedExportScenarioPlan({
+          createPlan: (exportName, sharedRenderChains) =>
+            createPreviewInspectorAncestorPlan({
+              documentPath: boundary.documentPath,
+              exportName,
+              matchesTargetImport: moduleResolver.matchesTarget,
+              readSource: readCachedUsageSource,
+              resolveModule: moduleResolver.resolve,
+              renderChainsByExport: sharedRenderChains,
+              ...(options.routeSelection === undefined
+                ? {}
+                : { routeSelection: options.routeSelection }),
+              ...(options.signal === undefined ? {} : { signal: options.signal }),
+              sourcePaths: [...sourcePaths, boundary.documentPath],
+            }),
+          exportNames: explicitExportNames,
+          primaryPlan: primaryInspectorPlan,
         });
 
   const dependencies = new Set<string>([
@@ -445,12 +471,15 @@ async function collectProjectSourcePaths(
   packageRoot: string,
   signal?: AbortSignal,
 ): Promise<readonly string[]> {
-  const pendingDirectories = [packageRoot];
+  const pendingDirectories = createPreviewInspectorStableMinPriorityQueue(
+    [packageRoot],
+    (left, right) => left < right ? -1 : left > right ? 1 : 0,
+  );
   const sourcePaths: string[] = [];
 
-  while (pendingDirectories.length > 0 && sourcePaths.length < MAX_SCANNED_SOURCE_FILES) {
+  while (pendingDirectories.size > 0 && sourcePaths.length < MAX_SCANNED_SOURCE_FILES) {
     throwIfPreviewBuildCancelled(signal);
-    const directoryPath = pendingDirectories.shift();
+    const directoryPath = pendingDirectories.popMinimum();
     if (directoryPath === undefined) {
       break;
     }
@@ -478,7 +507,6 @@ async function collectProjectSourcePaths(
         }
       }
     }
-    pendingDirectories.sort();
   }
   return sourcePaths.sort();
 }

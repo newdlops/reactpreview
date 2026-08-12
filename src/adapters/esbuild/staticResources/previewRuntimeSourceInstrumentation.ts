@@ -10,6 +10,7 @@
 import { instrumentPreviewDeferredUiTriggers } from './previewDeferredUiTriggerInstrumentation';
 import { instrumentPreviewReactEffects } from './previewReactEffectInstrumentation';
 import { isolatePreviewAsyncReactComponents } from './previewAsyncReactComponentIsolation';
+import ts from 'typescript';
 import {
   applyPreviewSourceReplacements,
   selectCompatiblePreviewSourceReplacements,
@@ -32,6 +33,56 @@ export interface PreviewRuntimeSourceInstrumentationResult {
   readonly registrations: readonly string[];
   /** Source after condition, deferred-trigger, and effect transforms. */
   readonly source: string;
+}
+
+/**
+ * Reports whether a source module might require one of the Page Inspector runtime rewrites.
+ *
+ * A source passes only when the existing deferred-trigger, conditional-render, effect, and async
+ * stages all prove to be no-ops. Unsupported grammar, parser recovery, or an inconclusive stage
+ * fails closed so native esbuild parsing cannot omit Inspector behavior.
+ */
+export function mayRequirePreviewRuntimeSourceInstrumentation(
+  sourcePath: string,
+  sourceText: string,
+): boolean {
+  const scriptKind = selectRuntimeInstrumentationScriptKind(sourcePath);
+  if (scriptKind === undefined) return true;
+  try {
+    const sourceFile = ts.createSourceFile(
+      sourcePath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKind,
+    );
+    const parseDiagnostics = (
+      sourceFile as ts.SourceFile & { readonly parseDiagnostics?: readonly ts.Diagnostic[] }
+    ).parseDiagnostics;
+    if ((parseDiagnostics?.length ?? 0) > 0) return true;
+
+    const deferred = instrumentPreviewDeferredUiTriggers(sourcePath, sourceText);
+    if (deferred.registrations.length > 0 || deferred.replacements.length > 0) return true;
+    const deferredSource = applyPreviewSourceReplacements(
+      sourceText,
+      selectCompatiblePreviewSourceReplacements(deferred.replacements),
+    );
+    const conditionSource = instrumentReactConditionalRendering(sourcePath, deferredSource);
+    if (conditionSource !== deferredSource) return true;
+    const effectSource = instrumentPreviewReactEffects(sourcePath, conditionSource);
+    if (effectSource !== conditionSource) return true;
+    return isolatePreviewAsyncReactComponents(sourcePath, effectSource) !== effectSource;
+  } catch {
+    return true;
+  }
+}
+
+/** Aligns the conservative probe with the source grammars accepted by runtime instrumentation. */
+function selectRuntimeInstrumentationScriptKind(sourcePath: string): ts.ScriptKind | undefined {
+  if (/\.tsx$/iu.test(sourcePath)) return ts.ScriptKind.TSX;
+  if (/\.(?:ts|mts|cts)$/iu.test(sourcePath)) return ts.ScriptKind.TS;
+  if (/\.(?:jsx|js|mjs|cjs)$/iu.test(sourcePath)) return ts.ScriptKind.JSX;
+  return undefined;
 }
 
 /** Applies cooperating runtime transforms without allowing authored-offset analyses to drift. */

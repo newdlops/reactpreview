@@ -456,6 +456,25 @@ export class PreviewRuntimeHookChildTypeDemandResolver {
         includeOptionalProperties,
       );
     }
+    if (name === 'Pick' && reference.typeArguments?.[0] !== undefined) {
+      const selectedNames = readStaticTypePropertyNames(reference.typeArguments[1]);
+      if (selectedNames === undefined) return undefined;
+      const objectShape = this.inferShape(
+        reference.typeArguments[0],
+        module,
+        consumerHints,
+        activeTypes,
+        budget,
+        includeOptionalProperties,
+      );
+      if (objectShape?.kind !== 'object') return undefined;
+      const properties: Record<string, PreviewInferredPropShape> = {};
+      for (const propertyName of selectedNames) {
+        const property = objectShape.properties?.[propertyName];
+        if (property !== undefined) properties[propertyName] = property;
+      }
+      return Object.freeze({ kind: 'object', properties: Object.freeze(properties) });
+    }
     if (
       (name === 'Readonly' || name === 'Required' || name === 'Partial') &&
       reference.typeArguments?.[0] !== undefined
@@ -891,6 +910,22 @@ function readStaticIndexedAccessTypeProperty(typeNode: ts.TypeNode): string | un
   return ts.isLiteralTypeNode(current) && ts.isStringLiteralLike(current.literal)
     ? current.literal.text
     : undefined;
+}
+
+/** Reads the finite string-key set accepted by a built-in `Pick<T, Keys>` utility type. */
+function readStaticTypePropertyNames(
+  typeNode: ts.TypeNode | undefined,
+): readonly string[] | undefined {
+  if (typeNode === undefined) return undefined;
+  const current = unwrapTypeNode(typeNode);
+  const members = ts.isUnionTypeNode(current) ? current.types : [current];
+  const names: string[] = [];
+  for (const member of members) {
+    const propertyName = readStaticIndexedAccessTypeProperty(member);
+    if (propertyName === undefined || BLOCKED_PROPERTY_NAMES.has(propertyName)) return undefined;
+    names.push(propertyName);
+  }
+  return Object.freeze([...new Set(names)]);
 }
 
 /** Indexes type bindings, local component bodies, and exact export identities for one module. */

@@ -468,6 +468,7 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('PREVIEW_INSPECTOR_MINIMUM_REQUIREMENT_PASS_LIMIT = 8');
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_INITIAL_PROBE_DELAY_MS = 160');
     expect(source).toContain('PREVIEW_INSPECTOR_TARGET_CONTINUATION_PROBE_DELAY_MS = 48');
+    expect(source).toContain('PREVIEW_INSPECTOR_TARGET_VIEWPORT_REVEAL_DELAY_MS = 900');
     expect(source).toContain('hasMountedPreviewInspectorTarget(state)');
     expect(source).toContain('activatePreviewInspectorDirectTarget(state)');
     expect(source).toContain('readPreviewInspectorTargetReachabilityRequiredPaths');
@@ -481,7 +482,111 @@ describe('Preview Inspector target reachability runtime source', () => {
     expect(source).toContain('startPreviewInspectorDeterministicRequirementSearch');
     expect(source).toContain('requestPreviewInspectorPageExecutionRetry(descriptor, candidate)');
     expect(source).toContain("state.status = 'retrying-page-execution'");
+    expect(source).toContain(
+      'revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state)',
+    );
     expect(source).toContain('retryPreviewInspectorTargetApplicationPath');
+  });
+
+  /** Reveals only exact mounted target DOM waiting behind authored scroll-triggered animation. */
+  it('scrolls an opacity-gated exact target into view only once', () => {
+    const context: {
+      __result?: {
+        readonly attempted: boolean;
+        readonly first: boolean;
+        readonly options: unknown;
+        readonly scrollCount: number;
+        readonly second: boolean;
+      };
+    } = {};
+    vm.runInNewContext(
+      `
+        let scrollCount = 0;
+        let options;
+        const mountNode = {
+          getBoundingClientRect: () => ({ bottom: 600, left: 0, right: 800, top: 0 }),
+          parentElement: null,
+        };
+        const opacityGate = {
+          getBoundingClientRect: () => ({ bottom: 900, left: 0, right: 800, top: 700 }),
+          parentElement: mountNode,
+        };
+        const targetElement = {
+          closest: () => null,
+          getBoundingClientRect: () => ({ bottom: 760, left: 40, right: 240, top: 720 }),
+          hidden: false,
+          isConnected: true,
+          nodeType: 1,
+          parentElement: opacityGate,
+          scrollIntoView: (value) => { scrollCount += 1; options = value; },
+        };
+        const boundary = {
+          props: { exportName: 'Target', sourcePath: '/Target.tsx' },
+        };
+        const previewInspectorSession = {
+          activeTargetReachabilityKey: 'page:Target',
+          boundariesByExport: new Map([['Target', new Set([boundary])]]),
+          renderConditionOverrides: new Map(),
+          renderConditions: new Map(),
+          selectedExportName: 'Target',
+          targetReachabilityByKey: new Map(),
+        };
+        const initializePreviewInspectorConditionState = () => undefined;
+        const readPreviewInspectorRuntimeFallbacks = () => [];
+        const readPreviewInspectorDataRequests = () => [];
+        const readPreviewInspectorDataShapePaths = () => [];
+        const collectPreviewInspectorFiberElements = () => [targetElement];
+        const isPreviewInspectorUiElement = () => false;
+        const notifyPreviewInspector = () => undefined;
+        const schedulePreviewInspectorTreeRefresh = () => undefined;
+        const schedulePreviewInspectorCommitRefresh = () => undefined;
+        const findSelectedPreviewInspectorDescriptor = () => undefined;
+        const readSelectedPreviewInspectorPageCandidate = () => undefined;
+        const recordPreviewInspectorConsoleEntry = () => undefined;
+        const readPreviewInspectorConsolePrimitives = () => ({ warn: () => undefined });
+        globalThis.innerHeight = 600;
+        globalThis.innerWidth = 800;
+        globalThis.getComputedStyle = (element) => ({
+          display: 'block',
+          opacity: element === opacityGate ? '0' : '1',
+          overflow: 'visible',
+          visibility: 'visible',
+        });
+        globalThis.setTimeout = () => 1;
+        ${createTargetReachabilityFixtureSource()}
+        const descriptor = { inspector: { target: { exportName: 'Target' } } };
+        const candidate = { id: 'page' };
+        const state = {
+          directTarget: false,
+          key: 'page:Target',
+          pageRootCommitted: true,
+          probeRevision: 0,
+          targetExportName: 'Target',
+          targetSourcePath: '/Target.tsx',
+          viewportRevealAttempted: false,
+          viewportRevealPending: false,
+        };
+        previewInspectorSession.targetReachabilityByKey.set(state.key, state);
+        const first = revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state);
+        const second = revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state);
+        globalThis.__result = {
+          attempted: state.viewportRevealAttempted,
+          first,
+          options,
+          scrollCount,
+          second,
+        };
+      `,
+      context,
+    );
+
+    expect(context.__result).toEqual({
+      attempted: true,
+      first: true,
+      options: { behavior: 'auto', block: 'nearest', inline: 'nearest' },
+      scrollCount: 1,
+      second: false,
+    });
   });
 
   /** Prioritizes a bounded target corridor frontier and excludes passive hook observations. */

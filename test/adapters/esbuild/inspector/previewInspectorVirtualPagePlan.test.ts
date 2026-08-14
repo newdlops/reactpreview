@@ -173,6 +173,96 @@ describe('PreviewInspectorVirtualPagePlan', () => {
   });
 
   /**
+   * Route promotion drops the authored candidate's root index because it belongs to another root.
+   * The promoted page still has one exact position on the shared path; descendants below that
+   * position are content slots, not wrappers around the whole page.
+   */
+  it('does not wrap a promoted route page with descendants below its recovered path boundary', () => {
+    const issueListPath = '/workspace/project/IssueList.tsx';
+    const issueListFramePath = '/workspace/project/IssueListFrame.tsx';
+    const applicationFramePath = '/workspace/application/ApplicationFrame.tsx';
+    const renderPath: PreviewRenderChainCandidate = {
+      ...RENDER_PATH,
+      id: 'issue-through-promoted-route-page',
+      steps: [
+        readRenderPathStep(0),
+        {
+          certainty: 'confirmed',
+          invocation: {
+            calleeName: 'IssueList',
+            mode: 'jsx',
+            sourcePath: PAGE_PATH,
+          },
+          kind: 'component-render',
+          label: 'IssueList',
+          occurrenceStart: 15,
+          sourcePath: issueListPath,
+          wrapperNames: [],
+        },
+        readRenderPathStep(1),
+        readRenderPathStep(2),
+      ],
+    };
+    const application = createCandidate({
+      complete: true,
+      id: 'application-with-promoted-project-route',
+      renderPath,
+      root: { exportName: 'App', sourcePath: APP_PATH },
+      rootOwnsRouter: true,
+      rootStepIndex: 3,
+      routeLocation: {
+        componentExportName: 'DashboardPage',
+        componentName: 'DashboardPage',
+        componentSourcePath: PAGE_PATH,
+        dependencyPaths: [APP_PATH, PAGE_PATH],
+        evidenceKind: 'route-jsx',
+        pathname: '/project',
+        pattern: '/project',
+        routeMounts: [],
+        sourcePath: APP_PATH,
+      },
+      stopReason: 'root-reached',
+    });
+    const visualPath = (
+      exportName: string,
+      importerPath: string,
+      sourcePath: string,
+    ): PreviewInspectorOneHopVisualPath => ({
+      exportName,
+      importerPath,
+      importKind: 'static',
+      localEdges: [],
+      moduleSpecifier: `./${exportName}`,
+      occurrenceStart: 40,
+      relation: 'wrapper',
+      renderedLocalName: exportName,
+      renderBoundaryStart: 20,
+      selectedChildPath: TARGET_PATH,
+      sourcePath,
+    });
+
+    const [virtualPage] = createPreviewInspectorVirtualPageCandidates([application], 1, [
+      visualPath('IssueListFrame', issueListPath, issueListFramePath),
+      visualPath('ApplicationFrame', APP_PATH, applicationFramePath),
+    ]);
+
+    expect(virtualPage?.contentCandidate).toMatchObject({
+      root: { exportName: 'DashboardPage', sourcePath: PAGE_PATH },
+    });
+    expect(virtualPage?.contentCandidate.rootStepIndex).toBeUndefined();
+    expect(virtualPage?.recipe.omittedOuterPath).toEqual([
+      expect.objectContaining({ label: 'Application', sourcePath: APP_PATH }),
+    ]);
+    expect(virtualPage?.recipe.shells).toEqual([
+      {
+        importerPath: APP_PATH,
+        relation: 'owner',
+        root: { exportName: 'App', sourcePath: APP_PATH },
+      },
+    ]);
+  });
+
+  /**
    * Reconstructs the full JSX frame rather than retaining only components named Layout or Shell.
    * Authored visual wrappers contain before/after siblings, while infrastructure providers and
    * alternate error UI remain authentic or inactive instead of becoming detached shells.

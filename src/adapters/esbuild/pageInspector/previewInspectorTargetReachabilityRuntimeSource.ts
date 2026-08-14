@@ -10,6 +10,7 @@ import { createPreviewInspectorRequirementFrontierRuntimeSource } from './previe
 import { createPreviewInspectorRequirementConvergenceRuntimeSource } from './previewInspectorRequirementConvergenceRuntimeSource';
 import { createPreviewInspectorPageTabActivationRuntimeSource } from './previewInspectorPageTabActivationRuntimeSource';
 import { createPreviewInspectorTargetPathEvidenceRuntimeSource } from './previewInspectorTargetPathEvidenceRuntimeSource';
+import { createPreviewInspectorTargetViewportRevealRuntimeSource } from './previewInspectorTargetViewportRevealRuntimeSource';
 /**
  * Creates browser source for bounded DFS page traversal and explicit target-only diagnostics.
  *
@@ -24,6 +25,8 @@ export function createPreviewInspectorTargetReachabilityRuntimeSource(): string 
     createPreviewInspectorRequirementConvergenceRuntimeSource();
   const pageTabActivationRuntimeSource = createPreviewInspectorPageTabActivationRuntimeSource();
   const targetPathEvidenceRuntimeSource = createPreviewInspectorTargetPathEvidenceRuntimeSource();
+  const targetViewportRevealRuntimeSource =
+    createPreviewInspectorTargetViewportRevealRuntimeSource();
   return String.raw`
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_PASS_LIMIT = 16;
 const PREVIEW_INSPECTOR_TARGET_REACHABILITY_IDLE_LIMIT = 2;
@@ -35,6 +38,7 @@ ${requirementFrontierRuntimeSource}
 ${requirementConvergenceRuntimeSource}
 ${pageTabActivationRuntimeSource}
 ${targetPathEvidenceRuntimeSource}
+${targetViewportRevealRuntimeSource}
 /** Lazily initializes ephemeral traversal state retained only by the pinned preview webview. */
 function initializePreviewInspectorTargetReachabilityState() {
   if (!(previewInspectorSession.targetReachabilityByKey instanceof Map)) {
@@ -533,6 +537,8 @@ function createPreviewInspectorTargetReachabilityState(descriptor, candidate) {
         ))].slice(0, 8)
       : [],
     targetWasMounted: false,
+    viewportRevealAttempted: false,
+    viewportRevealPending: false,
   };
 }
 /** Returns only committed boundaries carrying the state's exact compiler facade identity. */
@@ -589,6 +595,8 @@ function readPreviewInspectorStandaloneTargetReachabilityState(descriptor) {
     targetMounted: false,
     targetSourcePath,
     targetWasMounted: false,
+    viewportRevealAttempted: false,
+    viewportRevealPending: false,
   };
   const boundaries = readPreviewInspectorTargetBoundaries(state);
   state.targetMounted = boundaries.size > 0;
@@ -1176,6 +1184,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     state.targetMounted = true;
   }
   if (!targetRenderError && hasReachedPreviewInspectorPageCorridor(state)) {
+    state.viewportRevealPending = false;
     completePreviewInspectorMinimumRequirementSearch(state);
     state.status = 'reached';
     state.idlePasses = 0;
@@ -1184,6 +1193,7 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     return;
   }
   if (targetRenderError) {
+    state.viewportRevealPending = false;
     if (isPreviewInspectorTargetAutoAttemptPending(state)) {
       state.status = 'settling-auto-attempt';
       schedulePreviewInspectorTreeRefresh();
@@ -1240,6 +1250,20 @@ function evaluatePreviewInspectorTargetReachability(descriptor, candidate, state
     schedulePreviewInspectorCommitRefresh();
     return;
   }
+  if (
+    (state.targetMounted || state.targetWasMounted) &&
+    !state.targetHasOutput &&
+    state.viewportRevealPending === true
+  ) {
+    state.status = 'revealing-target-viewport';
+    schedulePreviewInspectorTreeRefresh();
+    return;
+  }
+  if (
+    (state.targetMounted || state.targetWasMounted) &&
+    !state.targetHasOutput &&
+    revealPreviewInspectorMountedTargetViewport(descriptor, candidate, state)
+  ) return;
   if (state.directTarget) {
     state.status = state.targetHasOutput
       ? 'target-only'
@@ -1738,6 +1762,8 @@ function returnPreviewInspectorToPageContext() {
   state.targetHasOutput = false;
   state.targetMounted = false;
   state.targetWasMounted = false;
+  state.viewportRevealAttempted = false;
+  state.viewportRevealPending = false;
   state.probeRevision += 1;
   notifyPreviewInspector();
   schedulePreviewInspectorCommitRefresh();

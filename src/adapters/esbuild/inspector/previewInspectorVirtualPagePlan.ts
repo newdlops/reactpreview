@@ -173,10 +173,17 @@ function createBrowserCandidateIds(
 }
 
 /** Produces a bounded selector-protocol-safe ID without making collisions order-dependent. */
-function createCollidingVirtualPageBrowserCandidateId(authoredId: string, emittedKey: string): string {
+function createCollidingVirtualPageBrowserCandidateId(
+  authoredId: string,
+  emittedKey: string,
+): string {
   const safeAuthoredId = authoredId.replace(/[^A-Za-z0-9._:/@-]+/gu, '_').slice(0, 478);
   const prefix = safeAuthoredId.length === 0 ? 'candidate' : safeAuthoredId;
-  const digest = createHash('sha256').update(authoredId).update('\0').update(emittedKey).digest('hex');
+  const digest = createHash('sha256')
+    .update(authoredId)
+    .update('\0')
+    .update(emittedKey)
+    .digest('hex');
   return `${prefix}:virtual-page-${digest.slice(0, 20)}`;
 }
 
@@ -495,9 +502,9 @@ function createVirtualPageRecipe(
   shallowVisualPaths: readonly PreviewInspectorOneHopVisualPath[],
   pageCandidates: readonly PreviewInspectorPageCandidate[],
 ): PreviewInspectorVirtualPageRecipe {
-  const authoredStepIndex = authoredCandidate.rootStepIndex;
-  const contentStepIndex = contentCandidate.rootStepIndex;
   const renderPath = authoredCandidate.renderPath ?? contentCandidate.renderPath;
+  const authoredStepIndex = authoredCandidate.rootStepIndex;
+  const contentStepIndex = resolveVirtualPageRecipeStepIndex(contentCandidate, renderPath);
   const outerStart =
     contentStepIndex === undefined ? 0 : Math.max(0, Math.floor(contentStepIndex) + 1);
   const outerEnd =
@@ -536,6 +543,33 @@ function createVirtualPageRecipe(
     ...(renderPath?.id === undefined ? {} : { renderPathId: renderPath.id }),
     shells,
   });
+}
+
+/**
+ * Recovers a route-promoted content checkpoint's exact boundary without publishing a stale root
+ * index on the derived browser candidate. A promoted leaf intentionally drops `rootStepIndex`, but
+ * its unique source can still occur on the same immutable render path. Treating that missing index
+ * as zero misclassifies target-side descendants as outer shells and nests the complete page inside
+ * its own content slot.
+ */
+function resolveVirtualPageRecipeStepIndex(
+  candidate: PreviewInspectorPageCandidate,
+  renderPath: PreviewInspectorPageCandidate['renderPath'],
+): number | undefined {
+  if (candidate.rootStepIndex !== undefined) return candidate.rootStepIndex;
+  const normalizedRootPath = path.normalize(candidate.root.sourcePath);
+  const routeLocation = readPreviewInspectorGenericRouteLocation(candidate.routeLocation);
+  if (
+    routeLocation?.componentSourcePath === undefined ||
+    path.normalize(routeLocation.componentSourcePath) !== normalizedRootPath ||
+    (routeLocation.componentExportName ?? 'default') !== candidate.root.exportName
+  ) {
+    return undefined;
+  }
+  const matchingIndexes = (renderPath?.steps ?? []).flatMap((step, index) =>
+    path.normalize(step.sourcePath) === normalizedRootPath ? [index] : [],
+  );
+  return matchingIndexes.length === 1 ? matchingIndexes[0] : undefined;
 }
 
 /**

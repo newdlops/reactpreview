@@ -25,6 +25,7 @@ import {
 } from './previewInspectorShallowProjection';
 import { collectPreviewStaticRouteProjectionInventory } from './previewInspectorStaticRouteProjection';
 import { collectPreviewStyleSignals } from '../previewStyleInventory';
+import { collectPreviewImportMetaGlobInventory } from '../staticResources/previewImportMetaGlobInventory';
 import type { PreviewInspectorBundleDiagnosticsCollector } from './previewInspectorBundleDiagnostics';
 import {
   createPreviewInspectorBundleFrontierIdentity,
@@ -74,6 +75,8 @@ export interface PreparePreviewInspectorBundleFrontierOptions {
   readonly executionCandidate?: PreviewInspectorPageExecutionCandidate;
   readonly plan: PreviewInspectorAncestorPlan;
   readonly policy: PreviewCompilerFrontierPolicy;
+  /** Vite-root-relative glob base; defaults to the workspace for direct/test callers. */
+  readonly projectRoot?: string;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   /** Page selection accounts only shared-cache misses upstream to avoid duplicate raw-read counts. */
   readonly rawSourceReadAccounting?: 'upstream-page-cache';
@@ -458,6 +461,26 @@ async function collectPreviewInspectorBundleSourceClosureTemplate(
             }),
           );
         }
+      }
+      for (const reference of await collectPreviewImportMetaGlobInventory({
+        projectRoot: options.projectRoot ?? options.workspaceRoot,
+        sourcePath: normalizedSourcePath,
+        sourceText: inventorySource,
+        workspaceRoot: options.workspaceRoot,
+      })) {
+        const resolved = resolveModule(reference.moduleSpecifier, normalizedSourcePath);
+        if (resolved === undefined || !checkAuthoredPath(resolved)) continue;
+        staticEdges.push(
+          Object.freeze({
+            compilerGeneratedSupport: true as const,
+            identity: `${normalizedSourcePath}\0preview-generated-import-meta-glob\0${reference.occurrenceStart.toString()}\0${reference.moduleSpecifier}`,
+            importedNames: Object.freeze([]),
+            kind: 'authored' as const,
+            moduleSpecifier: reference.moduleSpecifier,
+            occurrenceStart: reference.occurrenceStart,
+            targetPath: path.normalize(resolved),
+          }),
+        );
       }
       return Object.freeze({
         byteLength: inventory.byteLength,
@@ -1263,6 +1286,7 @@ function createPreviewInspectorBundleSourceClosureKey(
     1,
     PREVIEW_INSPECTOR_PAGE_EXECUTION_FRONTIER_FORMAT_VERSION,
     path.normalize(options.workspaceRoot),
+    path.normalize(options.projectRoot ?? options.workspaceRoot),
     options.policy.maximumAuthoredModules,
     options.policy.maximumSourceBytes,
     [...(options.runtimeCompanionSourcePaths ?? [])]

@@ -29,6 +29,7 @@ export interface PreparePreviewInspectorPageExecutionSelectionOptions {
   readonly candidates: readonly PreviewInspectorPageExecutionCandidate[];
   readonly plan: PreviewInspectorAncestorPlan;
   readonly policy: PreviewCompilerFrontierPolicy;
+  readonly projectRoot?: string;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   readonly resolveModule: (specifier: string, importer: string) => string | undefined;
   readonly sourceInventoryMemo?: PreviewInspectorBundleSourceInventoryMemo;
@@ -117,6 +118,7 @@ export async function preparePreviewInspectorPageExecutionSelection(
           }),
       plan: options.plan,
       policy: options.policy,
+      ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
       readSource: readSharedSource,
       resolveModule: options.resolveModule,
       ...(options.sourceInventoryMemo === undefined

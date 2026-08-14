@@ -25,6 +25,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('import("react-preview:context")');
     expect(entry).toContain('import("react-preview:drag-drop")');
     expect(entry).toContain('import("react-preview:formik")');
+    expect(entry).toContain('import("react-preview:yarn-libui")');
     expect(entry).toContain('import("react-preview:redux")');
     expect(entry).toContain('import("react-preview:router")');
     expect(entry).toContain('import("react-preview:theme")');
@@ -80,6 +81,7 @@ describe('createPreviewEntry', () => {
     expect(entry).toContain('Apollo invariant payload (decoded locally):');
     expect(entry).toContain('apolloBridge.createApolloPreviewElement');
     expect(entry).toContain('contextBridge.createContextPreviewElement');
+    expect(entry).toContain('yarnLibuiBridge.createYarnLibuiPreviewElement');
     expect(entry).toContain("registerPreviewRuntimeCapability('Context', contextBridge)");
     expect(entry).toContain("readSetupMember(setupModule, 'apolloPreview')");
     expect(entry).toContain('formikBridge.createFormikPreviewElement');

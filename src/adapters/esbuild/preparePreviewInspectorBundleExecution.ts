@@ -33,6 +33,7 @@ export interface PreparePreviewInspectorBundleExecutionOptions {
   readonly executablePlan: PreviewInspectorAncestorPlan | undefined;
   readonly executionCandidates?: readonly PreviewInspectorPageExecutionCandidate[];
   readonly policy: PreviewPreparationPolicy;
+  readonly projectRoot?: string;
   readonly readSource: (sourcePath: string) => Promise<string | undefined>;
   readonly resolveModule: (specifier: string, importer: string) => string | undefined;
   readonly sourceInventoryMemo?: PreviewInspectorBundleSourceInventoryMemo;
@@ -88,6 +89,7 @@ export async function preparePreviewInspectorBundleExecution(
             : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
           plan: options.executablePlan,
           policy: options.policy.frontierPolicy,
+          ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
           readSource: options.readSource,
           resolveModule: options.resolveModule,
           ...(sourceInventoryMemo === undefined
@@ -107,6 +109,7 @@ export async function preparePreviewInspectorBundleExecution(
         : { runtimeCompanionSourcePaths: options.runtimeCompanionSourcePaths }),
       plan: options.executablePlan,
       policy: options.policy.frontierPolicy,
+      ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
       ...(options.bundleDiagnostics === undefined
         ? {}
         : { bundleDiagnostics: options.bundleDiagnostics }),

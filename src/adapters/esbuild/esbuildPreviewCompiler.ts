@@ -19,7 +19,11 @@ import {
   PreviewManagedDependencyStore,
   type PreviewManagedDependencyEnvironment,
 } from '../node/previewManagedDependencyStore';
-import { findPreviewDependencySpecifier } from '../node/previewDependencyProfile';
+import {
+  findPreviewDependencySpecifier,
+  readPreviewDependencyProfile,
+} from '../node/previewDependencyProfile';
+import { findPreviewYarnLockedPackageVersion } from '../node/previewYarnLockPlan';
 import { createPreviewEntry } from './createPreviewEntry';
 // prettier-ignore
 import { createPreviewInspectorExecutionRootModuleContract, createPreviewInspectorPageExecutionBuildPlugin, createPreviewInspectorRootPlugin, createPreviewInspectorTargetModuleContract, createPreviewInspectorTargetPlugin, resolvePreviewInspectorRuntimeOwnershipTarget, resolvePreviewInspectorRuntimeTargetMode } from './inspector';
@@ -81,6 +85,7 @@ import {
   discoverPreviewLegacyCommonJsGlobals,
 } from './previewLegacyCommonJsGlobalDiscovery';
 import { createPreviewManagedDependencyPeerPlugin } from './previewManagedDependencyPeerPlugin';
+import { createPreviewLegacyNbindCspPlugin } from './previewLegacyNbindCspPlugin';
 import { createPreviewMdxFallbackPlugin } from './previewMdxFallbackPlugin';
 import {
   tryAcquirePreviewMissingDependencies,
@@ -89,6 +94,7 @@ import {
 import { createPreviewNodeBuiltinPlugin } from './previewNodeBuiltinPlugin';
 import { createPreviewParentSlicePlugin } from './previewParentSlicePlugin';
 import { createPreviewPnpPeerDependencyPlugin } from './previewPnpPeerDependencyPlugin';
+import { createPreviewYarnLibuiBridgePlugin } from './previewYarnLibuiBridgePlugin';
 import {
   createPreviewImportMetaEnvironment,
   resolvePreviewPublicApplicationOrigin,
@@ -728,10 +734,31 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
       }
       throwIfPreviewBuildCancelled(buildSignal);
       context?.reportProgress?.('preparing-runtime');
-      const reactDomRootKind = selectPreviewReactDomRootKind(
+      let reactDomRootKind = selectPreviewReactDomRootKind(
         analysisStaticModuleResolver,
         request.documentPath,
       );
+      if (reactDomRootKind === 'legacy') {
+        const reactDomDependencyProfile =
+          dependencyProfile ??
+          (await readPreviewDependencyProfile(projectRoot, canonicalWorkspaceRoot));
+        if (
+          reactDomDependencyProfile?.dependencyPaths.some(
+            (dependencyPath) => path.basename(dependencyPath) === 'yarn.lock',
+          ) === true
+        ) {
+          const lockedRuntimeVersion = await findPreviewYarnLockedPackageVersion({
+            packageName: 'react-dom',
+            profile: reactDomDependencyProfile,
+            projectRoot,
+          });
+          reactDomRootKind = selectPreviewReactDomRootKind(
+            analysisStaticModuleResolver,
+            request.documentPath,
+            lockedRuntimeVersion,
+          );
+        }
+      }
       const preparedSetupFallback = await prepareAutomaticPreviewSetupFallback({
         cache: this.setupFailureCache,
         dependencySnapshots: request.dependencySnapshots,
@@ -1071,9 +1098,12 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
             ? targetUsageProps.parentSlicesByExport
             : {};
         const sourceTransformer = new PreviewSourceTransformer({
-          ...(criticalSurfaceSourcePaths.length === 0
-            ? {}
-            : { criticalSurfaceSourcePaths }),
+          ...(findPreviewDependencySpecifier(dependencyProfile, 'ag-grid-enterprise') !== undefined
+            ? { agGridModulePackage: 'enterprise' as const }
+            : findPreviewDependencySpecifier(dependencyProfile, 'ag-grid-community') !== undefined
+              ? { agGridModulePackage: 'community' as const }
+              : {}),
+          ...(criticalSurfaceSourcePaths.length === 0 ? {} : { criticalSurfaceSourcePaths }),
           deferDormantOverlayImports: policy.deferDormantOverlayImports,
           documentPath: canonicalizeExistingPath(
             runtimeTargetMode === 'selected-route-leaf'
@@ -1236,6 +1266,9 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 projectRoot,
                 workspaceRoot: canonicalWorkspaceRoot,
               }),
+              createPreviewLegacyNbindCspPlugin({
+                readSource: (options) => this.projectUsageCache.readSourceText(options),
+              }),
               ...(inspectorPlan === undefined
                 ? []
                 : [
@@ -1311,6 +1344,7 @@ export class EsbuildPreviewCompiler implements PreviewCompiler {
                 projectRoot,
               }),
               createPreviewFormikBridgePlugin({ projectRoot }),
+              createPreviewYarnLibuiBridgePlugin({ projectRoot }),
               createPreviewReduxBridgePlugin({
                 ...(automaticReduxState === undefined
                   ? {}

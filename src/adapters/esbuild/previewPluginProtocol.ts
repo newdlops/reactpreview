@@ -64,6 +64,12 @@ export const PREVIEW_FORMIK_BRIDGE_NAMESPACE = 'react-preview-formik-bridge';
 /** Stable virtual import specifier used to load the inert static Formik boundary. */
 export const PREVIEW_FORMIK_SPECIFIER = 'react-preview:formik';
 
+/** Namespace used by the optional, project-owned @yarnpkg/libui Application bridge. */
+export const PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE = 'react-preview-yarn-libui-bridge';
+
+/** Stable virtual specifier used to load the exact libui ministore provider boundary. */
+export const PREVIEW_YARN_LIBUI_SPECIFIER = 'react-preview:yarn-libui';
+
 /** Namespace used by the optional, project-owned react-beautiful-dnd runtime bridge. */
 export const PREVIEW_DRAG_DROP_BRIDGE_NAMESPACE = 'react-preview-drag-drop-bridge';
 
@@ -122,6 +128,7 @@ export function isFileBackedPreviewNamespace(namespace: string): boolean {
     namespace === PREVIEW_APOLLO_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_REDUX_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_FORMIK_BRIDGE_NAMESPACE ||
+    namespace === PREVIEW_YARN_LIBUI_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_DRAG_DROP_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_CONTEXT_BRIDGE_NAMESPACE ||
     namespace === PREVIEW_ROUTER_BRIDGE_NAMESPACE ||

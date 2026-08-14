@@ -326,6 +326,7 @@ export async function preparePreviewRouteExecutionPlanner(
       executablePlan: activeInspectorPlan,
       ...(activeInspectorPlan === undefined ? {} : { executionCandidates: candidates }),
       policy: options.policy,
+      projectRoot: options.projectRoot,
       readSource: options.readSource,
       resolveModule: options.resolveModule,
       ...(options.sourceInventoryMemo === undefined

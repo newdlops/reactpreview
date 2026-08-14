@@ -247,6 +247,7 @@ export async function preparePreviewRouteExecutionFinalFrontier(
             ? {}
             : { executionCandidates: activePageExecutionCandidates }),
           policy: options.policy,
+          projectRoot: options.projectRoot,
           readSource: readFrontierSource,
           resolveModule: options.staticModuleResolver.resolve,
           ...(options.sourceInventoryMemo === undefined

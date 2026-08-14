@@ -31,6 +31,7 @@ import {
   PREVIEW_STYLE_SHEET_MANAGER_SPECIFIER,
   PREVIEW_TARGET_SPECIFIER,
   PREVIEW_THEME_SPECIFIER,
+  PREVIEW_YARN_LIBUI_SPECIFIER,
 } from './previewPluginProtocol';
 import { createPreviewRuntimeErrorSource } from './previewRuntimeErrorSource';
 import { createPreviewStorybookRuntimeSource } from './previewStorybookRuntimeSource';
@@ -99,6 +100,7 @@ export function createPreviewEntry(options: PreviewEntryOptions): string {
   );
   const encodedTargetSpecifier = JSON.stringify(PREVIEW_TARGET_SPECIFIER);
   const encodedThemeSpecifier = JSON.stringify(PREVIEW_THEME_SPECIFIER);
+  const encodedYarnLibuiSpecifier = JSON.stringify(PREVIEW_YARN_LIBUI_SPECIFIER);
   const runtimeErrorSource = createPreviewRuntimeErrorSource(options);
   const automaticPropsRuntimeSource = createPreviewAutomaticPropsRuntimeSource();
   const browserProcessRuntimeSource = createPreviewBrowserProcessRuntimeSource(
@@ -638,6 +640,7 @@ async function preparePreviewElement() {
     reduxBridge,
     routerBridge,
     themeBridge,
+    yarnLibuiBridge,
     styleSheetManagerPlanModule,
     targetProps,
     previewModule,
@@ -649,6 +652,7 @@ async function preparePreviewElement() {
     tagPreviewRuntimePhase(import(${encodedReduxSpecifier}), 'load automatic Redux bridge'),
     tagPreviewRuntimePhase(import(${encodedRouterSpecifier}), 'load automatic Router bridge'),
     tagPreviewRuntimePhase(import(${encodedThemeSpecifier}), 'load automatic Theme bridge'),
+    tagPreviewRuntimePhase(import(${encodedYarnLibuiSpecifier}), 'load automatic Yarn libui bridge'),
     ${encodedStyleSheetManagerPlanEnabled} && styledComponentsSetup.status === 'absent'
       ? tagPreviewRuntimePhase(
           import(${encodedStyleSheetManagerSpecifier}),
@@ -670,6 +674,7 @@ async function preparePreviewElement() {
   registerPreviewRuntimeCapability('Redux', reduxBridge);
   registerPreviewRuntimeCapability('Router', routerBridge);
   registerPreviewRuntimeCapability('Theme', themeBridge);
+  registerPreviewRuntimeCapability('Yarn libui', yarnLibuiBridge);
   const previewTargets = selectReactLikePreviewDescriptors(previewModule.default);
   const previewConfig = {
     decorators: readSetupMember(setupModule, 'decorators') ?? [],
@@ -714,6 +719,9 @@ async function preparePreviewElement() {
 
   enterRuntimePhase('compose static application Context boundaries');
   previewElement = contextBridge.createContextPreviewElement(previewElement);
+
+  enterRuntimePhase('compose public Yarn libui Application boundary');
+  previewElement = yarnLibuiBridge.createYarnLibuiPreviewElement(previewElement);
 
   enterRuntimePhase('compose app-level global styles');
   previewElement = createPreviewGlobalStyleElement(

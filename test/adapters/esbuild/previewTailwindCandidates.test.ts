@@ -31,6 +31,23 @@ describe('collectPreviewTailwindSnapshotSources', () => {
     expect(sources[1]?.sourceText).toContain('essential');
   });
 
+  it('retains exact final-frontier sources beyond the initial 128-file graph', () => {
+    const workspaceRoot = path.resolve('/workspace');
+    const snapshots = Array.from({ length: 138 }, (_, index) => ({
+      documentPath: path.join(workspaceRoot, 'src', `Candidate${index.toString()}.tsx`),
+      language: 'tsx' as const,
+      sourceText:
+        index === 137
+          ? 'export const SelectedLazyLeaf = () => <div className="flex-col max-w-lg" />;'
+          : `export const Candidate${index.toString()} = () => null;`,
+    }));
+
+    const sources = collectPreviewTailwindSnapshotSources(snapshots, workspaceRoot, workspaceRoot);
+
+    expect(sources).toHaveLength(138);
+    expect(sources.at(-1)?.sourceText).toContain('flex-col max-w-lg');
+  });
+
   /**
    * A large application shell can expose more candidates than the inline safety limit. The current
    * target is the first snapshot, so its classes must survive even when the native scanner returns

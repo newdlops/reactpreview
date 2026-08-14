@@ -8,7 +8,10 @@ import {
   readPreviewDependencyProfile,
   type PreviewDependencyProfile,
 } from '../../../src/adapters/node/previewDependencyProfile';
-import { createPreviewYarnLockPlan } from '../../../src/adapters/node/previewYarnLockPlan';
+import {
+  createPreviewYarnLockPlan,
+  findPreviewYarnLockedPackageVersion,
+} from '../../../src/adapters/node/previewYarnLockPlan';
 
 const temporaryRoots: string[] = [];
 const SHA512_SRI = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
@@ -22,6 +25,37 @@ afterEach(async () => {
 });
 
 describe('createPreviewYarnLockPlan', () => {
+  /** Uses a concrete development descriptor when a workspace library also publishes a broad peer. */
+  it('reads the exact locked React DOM version without planning an unrelated peer closure', async () => {
+    const projectRoot = await createProject(
+      {},
+      [
+        '__metadata:',
+        '  version: 6',
+        '',
+        '"react-dom@npm:latest":',
+        '  version: 18.2.0',
+        '  resolution: "react-dom@npm:18.2.0"',
+        '  languageName: node',
+        '  linkType: hard',
+        '',
+      ].join('\n'),
+      {
+        devDependencies: { 'react-dom': 'latest' },
+        peerDependencies: { 'react-dom': '*' },
+      },
+    );
+    const profile = await requireProfile(projectRoot);
+
+    await expect(
+      findPreviewYarnLockedPackageVersion({
+        packageName: 'react-dom',
+        profile,
+        projectRoot,
+      }),
+    ).resolves.toBe('18.2.0');
+  });
+
   /** Follows classic runtime edges, skips every optional edge, and normalizes the public URL. */
   it('plans a Yarn v1 dependency closure from declared missing roots', async () => {
     const projectRoot = await createProject(

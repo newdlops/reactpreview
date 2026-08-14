@@ -12,6 +12,10 @@ import {
   collectPreviewRenderModuleSpecifiers,
   type PreviewRenderSourceAnalysis,
 } from './renderGraph/previewRenderSourceAnalysis';
+import {
+  readPreviewYarnZipArchiveFingerprint,
+  readPreviewYarnZipSource,
+} from './previewYarnZipSource';
 
 const MAX_CACHED_SOURCE_FILES = 16_384;
 const MAX_CACHED_SOURCE_BYTES = 128 * 1024 * 1024;
@@ -29,11 +33,18 @@ export interface PreviewProjectSourceRecord {
   readonly sourceText: string;
 }
 
-/** Cached source plus whether it came from the filesystem or an unsaved editor overlay. */
-interface SourceCacheEntry {
-  readonly origin: 'disk' | 'snapshot';
-  readonly record: PreviewProjectSourceRecord;
-}
+/** Cached source plus the metadata needed to revalidate its exact storage origin. */
+type SourceCacheEntry =
+  | {
+      readonly origin: 'disk' | 'snapshot';
+      readonly record: PreviewProjectSourceRecord;
+    }
+  | {
+      readonly archiveFingerprint: string;
+      readonly archivePath: string;
+      readonly origin: 'yarn-zip';
+      readonly record: PreviewProjectSourceRecord;
+    };
 
 /** One file's AST-derived facts keyed by the exact source fingerprint that produced them. */
 interface RenderAnalysisCacheEntry {
@@ -66,10 +77,7 @@ export interface ReadPreviewProjectSourceOptions {
  */
 export class PreviewProjectFileAnalysisCache {
   private readonly importFactsByPath = new Map<string, ImportFactsCacheEntry>();
-  private readonly pendingDiskReads = new Map<
-    string,
-    Promise<PreviewProjectSourceRecord | undefined>
-  >();
+  private readonly pendingSourceReads = new Map<string, Promise<SourceCacheEntry | undefined>>();
   private readonly renderAnalysisByPath = new Map<string, RenderAnalysisCacheEntry>();
   private readonly sourceByPath = new Map<string, SourceCacheEntry>();
   private retainedSourceBytes = 0;
@@ -89,27 +97,38 @@ export class PreviewProjectFileAnalysisCache {
     }
 
     const cached = this.sourceByPath.get(normalizedPath);
+    if (cached?.origin === 'yarn-zip') {
+      const archiveFingerprint = await readPreviewYarnZipArchiveFingerprint(cached.archivePath);
+      if (
+        archiveFingerprint === cached.archiveFingerprint &&
+        cached.record.byteLength <= options.maximumBytes
+      ) {
+        refreshMapEntry(this.sourceByPath, normalizedPath, cached);
+        return cached.record;
+      }
+      this.deleteSource(normalizedPath);
+    }
     if (cached?.origin !== 'disk') {
       const pendingKey = `${normalizedPath}\0first-read`;
-      const pending = this.pendingDiskReads.get(pendingKey);
+      const pending = this.pendingSourceReads.get(pendingKey);
       if (pending !== undefined) {
-        return pending;
+        return (await pending)?.record;
       }
       /*
        * A cold entry has no metadata identity to validate. Opening it directly removes one `stat`
        * syscall per source from the first package graph while `loadDiskSource` still performs an
        * fstat before reading, preserving the exact file and byte ceilings.
        */
-      const readPromise = this.loadDiskSource(normalizedPath, options.maximumBytes);
-      this.pendingDiskReads.set(pendingKey, readPromise);
+      const readPromise = this.loadStoredSource(normalizedPath, options.maximumBytes);
+      this.pendingSourceReads.set(pendingKey, readPromise);
       try {
-        const record = await readPromise;
-        if (record !== undefined) {
-          this.storeSource(normalizedPath, { origin: 'disk', record });
+        const entry = await readPromise;
+        if (entry !== undefined) {
+          this.storeSource(normalizedPath, entry);
         }
-        return record;
+        return entry?.record;
       } finally {
-        this.pendingDiskReads.delete(pendingKey);
+        this.pendingSourceReads.delete(pendingKey);
       }
     }
 
@@ -134,20 +153,20 @@ export class PreviewProjectFileAnalysisCache {
     }
 
     const pendingKey = `${normalizedPath}\0${fingerprint}`;
-    const pending = this.pendingDiskReads.get(pendingKey);
+    const pending = this.pendingSourceReads.get(pendingKey);
     if (pending !== undefined) {
-      return pending;
+      return (await pending)?.record;
     }
-    const readPromise = this.loadDiskSource(normalizedPath, options.maximumBytes);
-    this.pendingDiskReads.set(pendingKey, readPromise);
+    const readPromise = this.loadStoredSource(normalizedPath, options.maximumBytes);
+    this.pendingSourceReads.set(pendingKey, readPromise);
     try {
-      const record = await readPromise;
-      if (record !== undefined) {
-        this.storeSource(normalizedPath, { origin: 'disk', record });
+      const entry = await readPromise;
+      if (entry !== undefined) {
+        this.storeSource(normalizedPath, entry);
       }
-      return record;
+      return entry?.record;
     } finally {
-      this.pendingDiskReads.delete(pendingKey);
+      this.pendingSourceReads.delete(pendingKey);
     }
   }
 
@@ -196,7 +215,7 @@ export class PreviewProjectFileAnalysisCache {
   /** Removes all retained text and inert facts during compiler shutdown. */
   public clear(): void {
     this.importFactsByPath.clear();
-    this.pendingDiskReads.clear();
+    this.pendingSourceReads.clear();
     this.renderAnalysisByPath.clear();
     this.sourceByPath.clear();
     this.retainedSourceBytes = 0;
@@ -252,6 +271,29 @@ export class PreviewProjectFileAnalysisCache {
     } catch {
       return undefined;
     }
+  }
+
+  /** Falls back to an inert Yarn cache entry only when the native filesystem path is virtual. */
+  private async loadStoredSource(
+    sourcePath: string,
+    maximumBytes: number,
+  ): Promise<SourceCacheEntry | undefined> {
+    const diskRecord = await this.loadDiskSource(sourcePath, maximumBytes);
+    if (diskRecord !== undefined) return { origin: 'disk', record: diskRecord };
+    const archiveRecord = await readPreviewYarnZipSource(sourcePath, maximumBytes);
+    return archiveRecord === undefined
+      ? undefined
+      : {
+          archiveFingerprint: archiveRecord.archiveFingerprint,
+          archivePath: archiveRecord.archivePath,
+          origin: 'yarn-zip',
+          record: Object.freeze({
+            byteLength: archiveRecord.byteLength,
+            filePath: sourcePath,
+            fingerprint: archiveRecord.fingerprint,
+            sourceText: archiveRecord.sourceText,
+          }),
+        };
   }
 
   /** Reads the already-known source identity, hashing only direct uncached caller text. */

@@ -2,7 +2,7 @@
   "name": "react-file-preview",
   "displayName": "React File Preview",
   "description": "Preview React files in their authored page context with an inspector, without running a development server.",
-  "version": "0.1.1373",
+  "version": "0.1.1387",
   "publisher": "newdlops",
   "author": {
     "name": "newdlops",
@@ -170,6 +170,7 @@
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "tar": "7.5.20",
+    "yauzl": "3.4.0",
     "yaml": "2.8.1"
   },
   "devDependencies": {
@@ -189,7 +190,8 @@
     "react-preview-scheduler-18": "npm:scheduler@0.23.2",
     "typescript": "6.0.3",
     "typescript-eslint": "8.64.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "yazl": "2.5.1"
   },
   "packageManager": "npm@10.9.7"
 }

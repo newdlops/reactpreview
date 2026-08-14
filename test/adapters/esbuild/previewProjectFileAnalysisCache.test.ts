@@ -1,8 +1,11 @@
 /** Verifies file-granular source, module-fact, and literal-import reuse across rebuilds. */
+import { createWriteStream } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { pipeline } from 'node:stream/promises';
 import { describe, expect, it } from 'vitest';
+import { ZipFile } from 'yazl';
 import { PreviewProjectFileAnalysisCache } from '../../../src/adapters/esbuild/previewProjectFileAnalysisCache';
 
 describe('PreviewProjectFileAnalysisCache', () => {
@@ -89,4 +92,41 @@ describe('PreviewProjectFileAnalysisCache', () => {
     expect(second).toBe(first);
     expect(second?.fingerprint).toMatch(/^snapshot:/u);
   });
+
+  /** Reads and reuses exact source entries stored inside a Yarn PnP cache archive. */
+  it('caches a bounded Yarn zip source without executing the PnP manifest', async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'react-preview-yarn-zip-cache-'));
+    const archivePath = path.join(workspaceRoot, '.yarn', 'cache', 'legacy-npm-1.0.0.zip');
+    const entryPath = 'node_modules/legacy/index.js';
+    const virtualSourcePath = path.join(archivePath, ...entryPath.split('/'));
+    const sourceText = 'module.exports = function legacy() { accidental = true; };';
+    try {
+      await mkdir(path.dirname(archivePath), { recursive: true });
+      await writeSourceArchive(archivePath, entryPath, sourceText);
+      const cache = new PreviewProjectFileAnalysisCache();
+
+      const first = await cache.readSource({ maximumBytes: 1024, sourcePath: virtualSourcePath });
+      const second = await cache.readSource({ maximumBytes: 1024, sourcePath: virtualSourcePath });
+      const oversized = await cache.readSource({ maximumBytes: 8, sourcePath: virtualSourcePath });
+
+      expect(first?.sourceText).toBe(sourceText);
+      expect(first?.fingerprint).toMatch(/^yarn-zip:/u);
+      expect(second).toBe(first);
+      expect(oversized).toBeUndefined();
+    } finally {
+      await rm(workspaceRoot, { force: true, recursive: true });
+    }
+  });
 });
+
+/** Writes one deterministic test source into the same cache archive shape Yarn PnP exposes. */
+async function writeSourceArchive(
+  archivePath: string,
+  entryPath: string,
+  sourceText: string,
+): Promise<void> {
+  const archive = new ZipFile();
+  archive.addBuffer(Buffer.from(sourceText), entryPath);
+  archive.end();
+  await pipeline(archive.outputStream, createWriteStream(archivePath));
+}

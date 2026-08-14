@@ -61,6 +61,13 @@ export interface CreatePreviewYarnLockPlanOptions {
   readonly requiredPackageNames: readonly string[];
 }
 
+/** Inputs for reading one exact direct dependency version without planning its full closure. */
+export interface FindPreviewYarnLockedPackageVersionOptions {
+  readonly packageName: string;
+  readonly profile: PreviewDependencyProfile;
+  readonly projectRoot: string;
+}
+
 /** Narrowed descriptor such as `react@^18` or `react@npm:latest`. */
 interface YarnDescriptor {
   readonly name: string;
@@ -125,6 +132,107 @@ export async function createPreviewYarnLockPlan(
   } catch {
     return undefined;
   }
+}
+
+/** Revalidates only the queried direct descriptor and the exact Yarn lock bytes that select it. */
+async function readDirectYarnPackageEvidence(
+  options: FindPreviewYarnLockedPackageVersionOptions,
+): Promise<{ readonly lockText: string } | undefined> {
+  const lockPaths = options.profile.dependencyPaths.filter(
+    (candidate) => path.basename(candidate) === YARN_LOCK_NAME,
+  );
+  const lockPath = lockPaths.length === 1 ? lockPaths[0] : undefined;
+  const projectRoot = path.resolve(options.projectRoot);
+  if (
+    !options.profile.hasReusableLockEvidence ||
+    options.profile.lockfileEvidenceStatus !== 'reusable' ||
+    lockPath === undefined ||
+    path.resolve(options.profile.manifestPath) !== path.join(projectRoot, 'package.json') ||
+    !isPathAtOrInside(path.dirname(lockPath), projectRoot)
+  ) {
+    return undefined;
+  }
+  const [lockBytes, manifestBytes] = await Promise.all([
+    readBoundedFile(lockPath, MAX_LOCKFILE_BYTES),
+    readBoundedFile(options.profile.manifestPath, MAX_MANIFEST_BYTES),
+  ]);
+  const expectedDigest = options.profile.lockfileDigests[YARN_LOCK_NAME];
+  if (
+    expectedDigest === undefined ||
+    createHash('sha256').update(lockBytes).digest('hex') !== expectedDigest
+  ) {
+    return undefined;
+  }
+  const manifest = readObject(JSON.parse(manifestBytes.toString('utf8')));
+  const unchanged = DEPENDENCY_FIELDS.every((field) => {
+    const dependencies = readObject(manifest?.[field]);
+    const value = dependencies?.[options.packageName];
+    const current =
+      Object.hasOwn(dependencies ?? {}, options.packageName) && typeof value === 'string'
+        ? value
+        : undefined;
+    return current === options.profile.requirementsByField[field][options.packageName];
+  });
+  return unchanged ? Object.freeze({ lockText: lockBytes.toString('utf8') }) : undefined;
+}
+
+/**
+ * Reads the exact public-registry version selected for one direct Yarn dependency.
+ *
+ * This reuses the lockfile and manifest revalidation boundary above, but deliberately stops before
+ * dependency placement. Runtime capability checks such as ReactDOM's client-root selection need
+ * the package's concrete version, not a synthetic node_modules closure.
+ */
+export async function findPreviewYarnLockedPackageVersion(
+  options: FindPreviewYarnLockedPackageVersionOptions,
+): Promise<string | undefined> {
+  if (!PACKAGE_NAME_PATTERN.test(options.packageName)) return undefined;
+  try {
+    const evidence = await readDirectYarnPackageEvidence(options);
+    if (evidence === undefined) return undefined;
+    const parsed = parseSyml(evidence.lockText) as unknown;
+    const lock = readObject(parsed);
+    if (lock === undefined) return undefined;
+    const flavor = readYarnFlavor(lock);
+    if (flavor === undefined) return undefined;
+    const records = DEPENDENCY_FIELDS.flatMap((field) => {
+      const specifier = options.profile.requirementsByField[field][options.packageName];
+      if (specifier === undefined || !isRegistryDependencySpecifier(specifier)) return [];
+      const record = findExactYarnPackageRecord(
+        lock,
+        flavor,
+        createDescriptorName(options.packageName, specifier, flavor),
+      );
+      return record?.packageName === options.packageName ? [record] : [];
+    });
+    const versions = [...new Set(records.map((record) => record.version))];
+    return versions.length === 1 ? versions[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads one descriptor without letting unrelated duplicate lock records invalidate the query. */
+function findExactYarnPackageRecord(
+  lock: Readonly<Record<string, unknown>>,
+  flavor: 'berry' | 'classic',
+  descriptorName: string,
+): YarnPackageRecord | undefined {
+  let selected: YarnPackageRecord | undefined;
+  for (const [joinedDescriptors, value] of Object.entries(lock)) {
+    if (joinedDescriptors === '__metadata') continue;
+    const descriptors = splitJoinedDescriptors(joinedDescriptors);
+    if (descriptors?.includes(descriptorName) !== true) continue;
+    const recordValue = readObject(value);
+    const record =
+      recordValue === undefined ? undefined : readYarnPackageRecord(recordValue, flavor);
+    if (record === undefined) return undefined;
+    if (selected !== undefined && packageIdentity(selected) !== packageIdentity(record)) {
+      return undefined;
+    }
+    selected = record;
+  }
+  return selected;
 }
 
 /** Reads bounded current bytes and proves they still match the compiler-selected profile. */

@@ -94,8 +94,8 @@ describe('createPreviewPnpPeerDependencyPlugin', () => {
     }
   });
 
-  /** Restores React DOM for the generated entry from an exact React-paired workspace issuer. */
-  it('restores an exact React DOM companion for a React-only Yarn PnP package', async () => {
+  /** Restores both generated React DOM imports from an exact React-paired workspace issuer. */
+  it('restores exact React DOM companions for a nested React-only Yarn PnP entry', async () => {
     const fixture = await createReactDomCompanionFixture('latest');
     try {
       expect(
@@ -106,8 +106,21 @@ describe('createPreviewPnpPeerDependencyPlugin', () => {
       const result = await buildReactDomCompanionFixture(fixture);
 
       expect(result.outputFiles?.[0]?.text).toContain('MATCHED_REACT_DOM');
+      expect(result.outputFiles?.[0]?.text).toContain('MATCHED_REACT_DOM_CLIENT');
       expect(result.warnings.map((warning) => warning.text).join('\n')).toContain(
         'restored the Yarn PnP React DOM companion from workspace package projects/application',
+      );
+    } finally {
+      await rm(fixture.workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
+  /** Does not let an unrelated generated-looking module borrow the selected package's companion. */
+  it('rejects a React DOM companion outside the selected package entry boundary', async () => {
+    const fixture = await createReactDomCompanionFixture('latest');
+    try {
+      await expect(buildReactDomCompanionFixture(fixture, fixture.workspaceRoot)).rejects.toThrow(
+        'synthetic preview entry denied',
       );
     } finally {
       await rm(fixture.workspaceRoot, { force: true, recursive: true });
@@ -142,6 +155,7 @@ interface ReactDomCompanionFixture {
   readonly applicationRoot: string;
   readonly projectRoot: string;
   readonly reactDomPath: string;
+  readonly reactDomClientPath: string;
   readonly workspaceRoot: string;
 }
 
@@ -268,9 +282,10 @@ async function createReactDomCompanionFixture(
   const applicationRoot = path.join(workspaceRoot, 'projects', 'application');
   const projectRoot = path.join(workspaceRoot, 'plugin');
   const reactDomPath = path.join(workspaceRoot, 'installed', 'react-dom.js');
+  const reactDomClientPath = path.join(workspaceRoot, 'installed', 'react-dom-client.js');
   await Promise.all([
     mkdir(applicationRoot, { recursive: true }),
-    mkdir(projectRoot, { recursive: true }),
+    mkdir(path.join(projectRoot, 'sources', 'components'), { recursive: true }),
     mkdir(path.dirname(reactDomPath), { recursive: true }),
   ]);
   await Promise.all([
@@ -293,13 +308,15 @@ async function createReactDomCompanionFixture(
       'utf8',
     ),
     writeFile(reactDomPath, "export default 'MATCHED_REACT_DOM';", 'utf8'),
+    writeFile(reactDomClientPath, "export default 'MATCHED_REACT_DOM_CLIENT';", 'utf8'),
   ]);
-  return { applicationRoot, projectRoot, reactDomPath, workspaceRoot };
+  return { applicationRoot, projectRoot, reactDomClientPath, reactDomPath, workspaceRoot };
 }
 
 /** Bundles the generated preview entry against a resolver that enforces Yarn PnP issuer ownership. */
 async function buildReactDomCompanionFixture(
   fixture: ReactDomCompanionFixture,
+  entryDirectory = path.join(fixture.projectRoot, 'sources', 'components'),
 ): Promise<BuildResult> {
   return build({
     absWorkingDir: fixture.workspaceRoot,
@@ -311,13 +328,21 @@ async function buildReactDomCompanionFixture(
         projectRoot: fixture.projectRoot,
         workspaceRoot: fixture.workspaceRoot,
       }),
-      createSyntheticReactDomPnpResolver(fixture.applicationRoot, fixture.reactDomPath),
+      createSyntheticReactDomPnpResolver(
+        fixture.applicationRoot,
+        fixture.reactDomPath,
+        fixture.reactDomClientPath,
+      ),
     ],
     stdin: {
-      contents: "import reactDom from 'react-dom'; console.log(reactDom);",
+      contents: [
+        "import reactDom from 'react-dom';",
+        "import reactDomClient from 'react-dom/client';",
+        'console.log(reactDom, reactDomClient);',
+      ].join('\n'),
       loader: 'ts',
       resolveDir: fixture.projectRoot,
-      sourcefile: path.join(fixture.workspaceRoot, '<react-preview-entry>'),
+      sourcefile: path.join(entryDirectory, '<react-preview-entry>'),
     },
     write: false,
   });
@@ -344,15 +369,19 @@ function createSyntheticPnpResolver(
 }
 
 /** Allows React DOM only when resolution is retried from the declared sibling application. */
-function createSyntheticReactDomPnpResolver(applicationRoot: string, reactDomPath: string): Plugin {
+function createSyntheticReactDomPnpResolver(
+  applicationRoot: string,
+  reactDomPath: string,
+  reactDomClientPath: string,
+): Plugin {
   return {
     name: 'test-synthetic-react-dom-pnp-resolver',
     setup(buildContext): void {
-      buildContext.onResolve({ filter: /^react-dom$/ }, (arguments_) =>
+      buildContext.onResolve({ filter: /^react-dom(?:\/client)?$/ }, (arguments_) =>
         path.basename(arguments_.importer) === '__react_preview_peer_issuer__.js' &&
         canonicalizeExistingPath(path.dirname(arguments_.importer)) ===
           canonicalizeExistingPath(applicationRoot)
-          ? { path: reactDomPath }
+          ? { path: arguments_.path === 'react-dom/client' ? reactDomClientPath : reactDomPath }
           : {
               errors: [
                 {

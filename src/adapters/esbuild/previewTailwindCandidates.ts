@@ -7,7 +7,10 @@ import path from 'node:path';
 import type { PreviewSourceSnapshot } from '../../domain/preview';
 import { canonicalizeExistingPath } from '../../shared/pathIdentity';
 
-const MAX_SNAPSHOT_FILES = 128;
+// Final-frontier completion can safely admit up to 192 exact authored modules. Keep the scanner
+// envelope aligned with that producer budget so late-selected lazy leaves are not silently clipped
+// after they have already passed the bounded source and byte checks.
+const MAX_SNAPSHOT_FILES = 192;
 const MAX_PRIORITY_SNAPSHOT_FILES = 8;
 const MAX_SNAPSHOT_SOURCE_BYTES = 4 * 1024 * 1024;
 const MAX_INLINE_CANDIDATES = 8_192;

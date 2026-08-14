@@ -83,7 +83,7 @@ export function createPreviewPnpPeerDependencyPlugin(
       async function resolvePeerDependency(
         arguments_: OnResolveArgs,
       ): Promise<OnResolveResult | undefined> {
-        if (isSyntheticReactDomCompanionRequest(arguments_, workspaceRoot)) {
+        if (isSyntheticReactDomCompanionRequest(arguments_, projectRoot)) {
           for (const providerRoot of await reactDomCompanionRootsPromise) {
             const providerIssuer = path.join(providerRoot, '__react_preview_peer_issuer__.js');
             const providerResolution = await resolveWithImporter(build, arguments_, providerIssuer);
@@ -272,18 +272,21 @@ function collectReactDomCompanionRoots(
   );
 }
 
-/** Limits companion inference to the extension-owned root import in the generated browser entry. */
+/** Limits companion inference to React DOM imports owned by the generated browser entry. */
 function isSyntheticReactDomCompanionRequest(
   arguments_: OnResolveArgs,
-  workspaceRoot: string,
+  projectRoot: string,
 ): boolean {
+  const importerDirectory = path.dirname(arguments_.importer);
+  const canonicalImporterDirectory = canonicalizeExistingPath(importerDirectory);
   return (
     arguments_.namespace === 'file' &&
     (arguments_.pluginData as unknown) !== PREVIEW_RESOLVE_GUARD &&
-    arguments_.path === 'react-dom' &&
+    (arguments_.path === 'react-dom' || arguments_.path === 'react-dom/client') &&
     path.isAbsolute(arguments_.importer) &&
     path.basename(arguments_.importer) === PREVIEW_ENTRY_NAME &&
-    canonicalizeExistingPath(path.dirname(arguments_.importer)) === workspaceRoot
+    (canonicalImporterDirectory === projectRoot ||
+      isPathInside(projectRoot, canonicalImporterDirectory))
   );
 }
 
